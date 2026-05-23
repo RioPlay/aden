@@ -99,6 +99,7 @@ aden ci-check .
 |`aden heal --scan <path>` |To detect contract drift (StaleHash, MissingContract, etc.).
 |`aden ci-check <path>` |To run all local gates (check, heal, test, secrets) in one shot.
 |`aden doctor <path>` |To audit your environment: tool versions, repo health, signing keys.
+|`aden licenses <path>` |Generate third-party attribution report from `Cargo.lock`.
 |`aden search <query>` |Full-text semantic search across all contracts.
 |===
 
