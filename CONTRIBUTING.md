@@ -25,3 +25,29 @@ Contributions are received under the AGPL license. The BDFL (RioPlay) retains th
 3. Ensure all `<<refs>>` resolve to existing `[[anchors]]`.
 4. Include a `Signed-off-by` line on every commit.
 5. Open a pull request with a clear description of changes.
+
+## Developer Ritual
+
+Aden templates are embedded in the binary via `include_str!`. When templates change, the binary must be rebuilt and the local `.agent/` workspace re-initialized.
+
+### The Stable Binary Ritual (Do This Every Time Templates Change)
+
+```
+# 1. Build a clean release binary
+cargo build --workspace --release
+
+# 2. Save it as the stable reference
+cp target/release/aden ~/.cargo/bin/aden-stable
+
+# 3. Re-initialize the workspace with the new binary
+aden-stable init
+
+# 4. Run all gates
+aden-stable ci-check .
+
+# 5. Only then commit
+```
+
+### Why This Matters
+
+If you skip step 3, the `.agent/` workspace on disk will contain stale templates that don't match the binary's embedded versions. This causes silent drift that breaks downstream projects and wastes debugging time.

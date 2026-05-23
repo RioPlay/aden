@@ -236,12 +236,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
+/// Scaffold `.agent/` workspace in a target repository.
+///
+/// IMPORTANT: Templates are embedded via `include_str!`. If you modify
+/// any template file under `.agent/templates/`, you MUST rebuild the
+/// binary (`cargo build --workspace --release`), install it as stable
+/// (`cp target/release/aden ~/.cargo/bin/aden-stable`), then re-run
+/// `aden init` to propagate changes to the local workspace.
+/// See CONTRIBUTING.md for the full stable binary ritual.
 fn cmd_init(target: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let agent_dir = target.join(".agent");
     let templates_dir = agent_dir.join("templates");
     std::fs::create_dir_all(&templates_dir)?;
 
-    // Core templates (embedded at compile time)
+    // Core templates (embedded at compile time via include_str!)
     std::fs::write(
         templates_dir.join("plan.adoc"),
         include_str!("../../../.agent/templates/plan.adoc"),
