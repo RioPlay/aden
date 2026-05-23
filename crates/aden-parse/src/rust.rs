@@ -243,29 +243,33 @@ fn extract_function(
     // Extract call sites from function body
     if let Some(body) = node.child_by_field_name("body") {
         let calls = extract_call_sites(body, source);
-        if !calls.is_empty() {
-            blocks.push(Block::Paragraph("== Call Sites".to_string()));
-            let mut call_rows = vec![vec!["Callee".to_string(), "Line".to_string()]];
-            let mut edge_lines: Vec<String> = Vec::new();
-            for (callee, line) in &calls {
-                call_rows.push(vec![callee.clone(), line.to_string()]);
-                edge_lines.push(format!("edge::calls[{}]", callee));
-            }
+        let filtered: Vec<_> = calls.into_iter()
+            .filter(|(c, _)| !is_std_noise(c))
+            .collect();
+        if !filtered.is_empty() {
+            let call_rows: Vec<Vec<String>> = filtered.iter()
+                .map(|(callee, line)| vec![callee.clone(), line.to_string()])
+                .collect();
             blocks.push(Block::Table(aden_core::Table {
                 headers: vec!["Callee".to_string(), "Line".to_string()],
                 rows: call_rows,
             }));
-            // Emit typed edge macros for graph ingestion after the table
-            for line in edge_lines {
-                blocks.push(Block::Paragraph(line));
-            }
+            // Emit typed edge macros as a listing block for graph ingestion
+            let edge_code: String = filtered.iter()
+                .map(|(callee, _)| format!("edge::calls[{}]", callee))
+                .collect::<Vec<_>>()
+                .join("\n");
+            blocks.push(Block::Listing {
+                language: None,
+                code: edge_code,
+            });
         }
     }
 
     if !buffered_comments.is_empty() {
         blocks.push(Block::Admonition {
             kind: aden_core::AdmonitionKind::Note,
-            text: "agent-note:: Extracted from source code via tree-sitter. Confidence is heuristic.".to_string(),
+            text: "Extracted from source code via tree-sitter. Confidence is heuristic.".to_string(),
         });
     }
     Some(Document {
@@ -296,6 +300,10 @@ const SKIP_CALLEES: &[&str] = &[
     "read_to_string", "read_dir", "read", "write_all", "create_dir_all",
     "canonicalize", "join", "parent", "extension", "file_name", "file_stem",
 ];
+
+fn is_std_noise(name: &str) -> bool {
+    SKIP_CALLEES.contains(&name)
+}
 
 /// Recursively walk an AST subtree and collect all `call_expression` nodes.
 /// Returns a list of (callee_name, 1-based_line_number) for each *meaningful* call found.
@@ -402,7 +410,7 @@ fn extract_struct(
     if !buffered_comments.is_empty() {
         blocks.push(Block::Admonition {
             kind: aden_core::AdmonitionKind::Note,
-            text: "agent-note:: Extracted from source code via tree-sitter. Confidence is heuristic.".to_string(),
+            text: "Extracted from source code via tree-sitter. Confidence is heuristic.".to_string(),
         });
     }
     Some(Document {
@@ -459,7 +467,7 @@ fn extract_enum(
     if !buffered_comments.is_empty() {
         blocks.push(Block::Admonition {
             kind: aden_core::AdmonitionKind::Note,
-            text: "agent-note:: Extracted from source code via tree-sitter. Confidence is heuristic.".to_string(),
+            text: "Extracted from source code via tree-sitter. Confidence is heuristic.".to_string(),
         });
     }
     Some(Document {

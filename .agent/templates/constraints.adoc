@@ -4,7 +4,14 @@
 [[constraints]]
 = Negative Constraints: What AI Must Never Do
 
+[TIP]
+====
+These are non-negotiable. Violating any of them is a critical failure.
+Return to xref:onboarding.adoc[Onboarding Protocol] if you are unsure.
+====
+
 == File System
+
 . Never write outside the working directory without explicit user permission.
 . Never delete files unless the user explicitly requests it.
 . Never ignore `.gitignore` or `.adenignore` rules when creating new files.
@@ -12,42 +19,62 @@
 . Never write private keys, tokens, or credentials to ANY file in the repo.
 
 == Code Quality
-. Never suppress compiler warnings or linter diagnostics without a `// SAFETY:` comment.
+
+. Never suppress compiler warnings without a `// SAFETY:` comment.
 . Never use `unwrap()` or `expect()` on user-provided or external data.
-. Never leave `TODO` comments without a corresponding `agent-note::TODO[ticket-id]` block.
+. Never leave `TODO` comments without a corresponding xref:session.adoc[session entry] linking to a ticket.
 . Never modify tested behavior without adding or updating tests.
 . Never commit code that fails your project's test suite.
 
 == Aden Workflow (Mandatory)
-. **Never** modify code without running `aden ask` on impacted symbols first.
-. **Never** declare a task complete if `aden check .` reports broken references.
-. **Never** edit `.aden` contract files by hand — always regenerate with `aden gen`.
-. **Never** skip `aden heal --scan .` before closing a session.
-. **Never** generate a contract without reviewing it for accuracy.
-. **Never** commit if `aden ci-check .` fails any gate.
+
+. [big]**Never** modify code without running `aden ask` on impacted symbols first.
+. [big]**Never** declare a task complete if `aden check .` reports broken references.
+. [big]**Never** edit `.aden` contract files by hand — always regenerate with `aden gen`.
+. [big]**Never** skip `aden heal --scan .` before closing a session.
+. [big]**Never** commit if `aden ci-check .` fails any gate.
+. [big]**Never** generate a contract without reviewing it for accuracy.
+
+[WARNING]
+====
+If you violate the Aden workflow, you risk introducing undetected drift.
+This undermines the entire knowledge graph and wastes human review time.
+====
 
 == Documentation
+
 . Never create documentation files without `[[anchors]]`.
 . Never use YAML frontmatter; only AsciiDoc `:key: value` attributes.
 . Never duplicate glossary terms across files; use `<<glossary.adoc#term>>`.
 . Never emit broken `<<references>>`; run `aden check .` after any document edit.
-. Never leave contracts with empty descriptions — every contract must explain what the symbol does.
+. Never leave contracts with empty descriptions.
+. xref:style-guide.adoc[Never use ASCII art in contracts] — use AsciiDoc semantic blocks.
 
 == Coordination
-. Never start work without reading `.agent/session.adoc`.
+
+. Never start work without reading xref:session.adoc[.agent/session.adoc].
 . Never modify files another agent is actively working on (check session log).
-. Never close a session without updating your entry in `session.adoc`.
-. Never ignore `agent-note::WARNING` blocks with confidence < 0.7.
+. Never close a session without updating your entry in xref:session.adoc[session.adoc].
+. Never ignore xref:style-guide.adoc#admonitions[WARNING admonitions] with confidence < 0.7.
 . Never conflict with another agent — if found, re-read and resolve with `aden ask`.
 
 == Security & Privacy
-. Never expose secret or sensitive information in contracts. Aden defaults to `internal` mode; contracts contain paths and signatures.
+
+. Never expose secrets in contracts. Contracts are private build artifacts.
 . Never share `contracts/` or `.aden/` directories outside the local machine.
 . If a contract accidentally leaks, treat it as a repo security event.
 . Never include internal URLs, email addresses, or build server names in public-facing documentation.
 
 == Inference Efficiency
+
 . Never scan the entire repo if `aden heal --since HEAD~1` suffices.
 . Never request large-context semantic review for trivial changes.
-. Never duplicate effort already recorded in `session.adoc`.
+. Never duplicate effort already recorded in xref:session.adoc[session.adoc].
 . Never waste tokens on full assembly when `aden ask --budget 2048` would suffice.
+
+[IMPORTANT]
+====
+Contracts are part of the software supply chain.
+A bad actor who injects or modifies contracts can silently redirect every downstream developer toward insecure code.
+Guard them accordingly.
+====

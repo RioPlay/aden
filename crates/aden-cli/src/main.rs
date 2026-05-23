@@ -249,6 +249,10 @@ fn cmd_init(target: &Path) -> Result<(), Box<dyn std::error::Error>> {
         include_str!("../../../.agent/templates/aden-guide.adoc"),
     )?;
     std::fs::write(
+        templates_dir.join("style-guide.adoc"),
+        include_str!("../../../.agent/templates/style-guide.adoc"),
+    )?;
+    std::fs::write(
         templates_dir.join("constraints.adoc"),
         include_str!("../../../.agent/templates/constraints.adoc"),
     )?;

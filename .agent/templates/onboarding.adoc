@@ -3,95 +3,120 @@
 [[onboarding]]
 = Agent Onboarding Protocol
 
-== Pre-Flight Checklist (Do These First — Always)
-. Read `.agent/context.adoc` — project shared memory
-. Read `.agent/aden-guide.adoc` — how to use aden correctly (this is canonical)
-. Read `.agent/constraints.adoc` — what you must never do
-. Read `.agent/session.adoc` — who is active right now
-. Read `.agent/glossary.adoc` — terminology reference
+== Pre-Flight Checklist
+
+. Read xref:context.adoc[.agent/context.adoc] — shared memory
+. Read xref:aden-guide.adoc[.agent/aden-guide.adoc] — canonical command reference
+. Read xref:constraints.adoc[.agent/constraints.adoc] — mandatory negative rules
+. Read xref:session.adoc[.agent/session.adoc] — who is active right now
+. Read xref:glossary.adoc[.agent/glossary.adoc] — terminology
+. Read xref:style-guide.adoc[.agent/style-guide.adoc] — AsciiDoc formatting rules (no ASCII art)
 
 == Phase 1: Assess Baseline Health (Before Code)
-```
-aden check .                              # All refs resolve? Health = 1.0?
-aden doctor .                             # Environment OK? No leaks detected?
-aden heal --scan . --since HEAD~1        # What drift exists from recent work?
-```
-If `aden check` returns errors, STOP. Ask for human clarification or fix drift first.
+
+[source,bash]
+----
+aden check .                # All refs resolve? Health = 1.0?
+aden doctor .               # Environment OK? No leaks detected?
+aden heal --scan . --since HEAD~1
+----
+
+[IMPORTANT]
+====
+If `aden check` returns errors, STOP.
+Ask for human clarification or fix drift first.
+====
 
 == Phase 2: Lock Your Session
-Mandatory atomic protocol (read → append → write → verify):
 
-```
+Mandatory atomic protocol: read → append → write → verify.
+
+[source,bash]
+----
 # 1. Read session.adoc into memory
 cat .agent/session.adoc
 
 # 2. Append your entry (use ISO-8601 timestamp, UTC)
 # Example:
-# |2026-05-23T14:30:00Z |agent-7 |Refactor parser error handling |src/parser/error.ext
+# |2026-05-23T14:30:00Z |agent-7 |Refactor parser |src/parser/error.ext
 # |in_progress |High
 
 # 3. Overwrite session.adoc atomically
 # 4. Re-read to confirm your entry exists
-```
+----
 
 === Entry Format (Strict)
-```
+
+[source,asciidoc]
+----
 |Timestamp |Agent |Task |Files |Status |Confidence
 |===
-```
+----
 
-Confidence levels: **High** (>0.9), **Medium** (0.7-0.9), **Low** (<0.7).
-If confidence is Low, include a `blocker:` field explaining why.
+Confidence levels:
+* **High** (>0.9)
+* **Medium** (0.7–0.9)
+* **Low** (<0.7) — include a `blocker:` field explaining why
 
 == Phase 3: Impact Analysis (Before Editing)
-Before modifying ANY existing symbol:
 
-```
+Before modifying any existing symbol:
+
+[source,bash]
+----
 aden ask --from <symbol_name> "What depends on this and what breaks if I change it?"
-aden graph --depth 2 <symbol_name>        # Visual dependency map
-aden locate --caller-of <symbol_name>     # Who calls this
-```
+aden graph --depth 2 <symbol_name>
+aden locate --caller-of <symbol_name>
+----
 
 If over 10 backlinks exist, include `aden asm --from <symbol_name>` in your analysis.
 
 == Phase 4: Implement + Generate
+
 . Write code.
-. Immediately generate its contract: `aden gen <file.rs>`.
+. Immediately generate its contract: `aden gen <file>`.
 . Review the generated contract — does it accurately describe your change?
 . If you changed a public API, update or create the module-level contract too.
 
 === Contract Quality Checklist
-- [ ] Does the contract have a `[[unique-anchor]]`?
-- [ ] Is the `Description` paragraph non-empty and accurate?
-- [ ] Are parameters current (match source signature)?
-- [ ] Did you add an `agent-note::` if behavior is uncertain or experimental?
+
+[circle]
+- Does the contract have a `[[unique-anchor]]`?
+- Is the Description paragraph non-empty and accurate?
+- Are parameters current (match source signature)?
+- Did you add an xref:style-guide.adoc#admonitions[admonition block] if behavior is uncertain?
 
 == Phase 5: Validation
-```
-<your-test-command>                       # All tests pass (e.g. `cargo test`, `pytest`, `go test`)
-aden check .                              # No broken references
-aden heal --scan .                        # No drift (Health Score == 1.00)
-aden ci-check .                           # Full local CI gate passes
-```
+
+[source,bash]
+----
+<your-test-command>         # All tests pass (e.g. cargo test, pytest, go test)
+aden check .
+aden heal --scan .
+aden ci-check .
+----
 
 If any step fails, do not declare completion. Fix and re-run.
 
 == Phase 6: Close Session
-. Update your entry in `.agent/session.adoc`:
-  - Change `Status` to `completed` or `cancelled`
-  - Add `Result:` field summarizing outcome
+
+. Update your entry in xref:session.adoc[.agent/session.adoc]:
+** Change `Status` to `completed` or `cancelled`
+** Add `Result:` field summarizing outcome
 . Run `aden check .` one final time.
 . If contracts changed, they are in `contracts/` — do NOT stage them.
 
 == Emergency Procedures
+
+[cols="1,2"]
 |===
 |Situation |Immediate Action
 
 |Circular include detected by `aden check`
-|Run `aden graph` to find cycle, remove redundant include
+|Run `aden graph` to find cycle. Remove redundant include.
 
 |Broken `<<refs>>` after rename
-|Use `aden search "old_name"` to find all references, update them
+|Use `aden search "old_name"` to find all references, update them.
 
 |`aden heal` shows StaleHash on your file
 |You edited code without regenerating contract. Run `aden gen <file>`.
@@ -106,6 +131,14 @@ If any step fails, do not declare completion. Fix and re-run.
 |Subdivide: ask smaller scoped questions. Use `aden locate` for precision.
 
 |Low confidence (<0.7) on implementation
-|Add `agent-note::WARNING` explaining risk. Do NOT auto-apply.
+|Add xref:style-guide.adoc#admonitions[WARNING admonition] explaining risk. Do NOT auto-apply.
 
 |===
+
+[sidebar]
+.Why Contracts Must Stay Private
+****
+A malicious actor who can modify or inject contracts can silently redirect every downstream developer toward insecure patterns.
+Contracts are part of the software supply chain.
+Never commit `contracts/` or `.aden/`.
+****
