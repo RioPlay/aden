@@ -7,80 +7,152 @@
 :icons: font
 
 [[readme]]
-= Aden: A Dense Referential Context Compiler
-
-== Tagline
-
-Aden — **A Dense** Referential Context Compiler.
-
-The name *is* the mission statement. Every token is load-bearing. Every edge is typed. Every anchor resolves.
+= Aden: From Legacy Docs to S-Tier Context in Minutes
 
 == What Is Aden?
 
-Aden is a Rust-based toolchain that turns any codebase — code, docs, plans, runbooks — into a traversable, token-dense knowledge graph using AsciiDoc as its native substrate.
+Aden is a **context compiler** — not a documentation generator.
 
-In the era where AI agents operate autonomously on codebases, context is everything. Aden ensures that every agent (or human) consuming your project receives precisely the right context: no more, no less.
+It turns any codebase into a **traversable, token-dense knowledge graph** where every function, module, and decision is a node, and every relationship is a typed, resolvable edge. AI agents (and humans) can then query this graph with natural language, locate symbols instantly, and understand impact before touching code.
 
-== Current Phase
+== Why Aden?
 
-All phases through Governance are implemented. The toolchain compiles, self-documents, and can be operated recursively (Aden on Aden).
+Every codebase eventually becomes too large to fit in a single mind. Aden solves this by making your project's structure machine-readable:
+
+- **Never guess** what breaks when you refactor — `aden ask "What depends on X?"`
+- **Never read stale docs** — contracts are derived from source, not typed by hand
+- **Never lose context** between discrete tool windows — everything is assembled into a single AsciiDoc artifact
+- **Never leak internal architecture** — contracts are private build artifacts by default
+
+== Supported Languages
+
+|===
+|Language |Extraction |Contracts |Call Site Analysis
+
+|Rust |Full (tree-sitter) |Full |Yes (feature-gated)
+|Python |Full |Full |Planned
+|PowerShell |Full |Full |Planned
+|JavaScript / TypeScript |Partial |Partial |Planned
+|Any text |Manual `.adoc` |Full |No
+|===
+
+== Install
+
+=== Via Cargo (recommended)
+[source,bash]
+----
+cargo install --git https://github.com/RioPlay/aden
+----
+
+=== From Source
+[source,bash]
+----
+git clone https://github.com/RioPlay/aden.git
+cd aden
+cargo build --workspace --release
+# Binary will be at target/release/aden
+----
+
+=== Pre-built Binaries
+Download from the https://github.com/RioPlay/aden/releases[Releases^] page.
+
+== Quick Start: Zero → S-Tier in 60 Seconds
+
+[source,bash]
+----
+# 1. Initialize a project (scaffolds .agent/ templates, .adenignore, etc.)
+aden init
+
+# 2. Generate contracts from your source code
+aden gen src/lib.rs
+
+# 3. Check that every reference resolves (知识 graph integrity)
+aden check .
+
+# 4. Ask questions in natural language
+aden ask "How does the error handling work?"
+
+# 5. See what breaks if you change a symbol
+aden ask --from parse_module "What depends on me?"
+
+# 6. Find the exact line where a symbol is defined
+aden locate parse_module
+
+# 7. Detect drift between code and contracts
+aden heal --scan .
+
+# 8. Run all local CI gates before committing
+aden ci-check .
+----
+
+== Command Reference
+
+|===
+|Command |When to Use
+
+|`aden init` |First time in any repository. Scaffolds `.agent/`, `.adenignore`, security manifest.
+|`aden gen <path>` |After adding or modifying source files. Creates/updates `.adoc` contracts.
+|`aden check <path>` |Before committing. Validates all `<<refs>>` and graph integrity.
+|`aden ask <question>` |When you need architectural reasoning or impact analysis.
+|`aden locate <symbol>` |When you know the name but not the file or line.
+|`aden graph --depth N <symbol>` |To visualize dependency chains.
+|`aden heal --scan <path>` |To detect contract drift (StaleHash, MissingContract, etc.).
+|`aden ci-check <path>` |To run all local gates (check, heal, test, secrets) in one shot.
+|`aden doctor <path>` |To audit your environment: tool versions, repo health, signing keys.
+|`aden search <query>` |Full-text semantic search across all contracts.
+|===
+
+== Security: Private by Default
+
+Aden assumes **contracts are build artifacts**, not source code.
+
+- `contracts/` and `.aden/` are added to `.gitignore` automatically by `aden init`
+- Contracts contain source paths and signatures — never commit them
+- Pre-commit hooks scan for secrets (keys, tokens, env files)
+- `ProfileMode = Internal` is the default; public redaction requires explicit opt-in
+- If a contract ever leaks, treat it as a repo security event
 
 == Architecture
 
 |===
-|Crate |Purpose
+|Crate |Responsibility
 
-|aden-core |Universal schema: Document, Block, Edge, Table, Symbol
-|aden-parse |Language router: Rust (tree-sitter), Python, PowerShell
+|aden-core |Schema: Document, Block, Edge, Table, Symbol, ProfileConfig
+|aden-parse |Language routers: Rust (tree-sitter), Python, PowerShell
 |aden-emit |Deterministic AsciiDoc emitter for all node types
-|aden-graph |Referential graph: DiGraph, cycle detection, typed edges
-|aden-asm |Context assembler: BFS traversal, token budgeting
-|aden-index |Semantic full-text search over the graph
-|aden-lsp |Language Server Protocol for .adoc/.aden files
-|aden-py |PyO3 Python bindings
-|aden-heal |Self-healing documentation engine: drift detection
+|aden-graph |Referential integrity: DiGraph, cycle detection, typed edges
+|aden-asm |Context assembly: BFS traversal, token budgeting, assembly output
+|aden-index |Semantic full-text search (tf-idf) over the graph
+|aden-heal |Self-healing engine: drift detection, patch proposals, health scoring
 |aden-propose |Patch generation, stub generation, proposal lifecycle
+|aden-lsp |Language Server Protocol for `.adoc`/`.aden` files
+|aden-py |PyO3 Python bindings for programmatic access
 |===
 
-== Quick Start
+== For AI Agents
 
-[source,bash]
+If you are an AI agent reading this file, your canonical next step is:
+
+[source,asciidoc]
 ----
-# Build the entire workspace
-cargo build --workspace
-
-# See available commands
-aden --help
-
-# Generate contracts from source files
-aden gen src/lib.rs
-
-# Check documentation integrity
-aden check docs/
-
-# Self-healing: detect drift
-aden heal --scan .
+include::.agent/aden-guide.adoc[]
 ----
 
 == Author
 
 RioPlay is the original author, BDFL, and architectural final authority.
 
-Email: rioplay@rioplay.dev
+* Email: rioplay@rioplay.dev
+* Pronoun: they/them (RioPlay) / he/him (Ernest)
 
 == License
 
 Copyright (c) 2026 RioPlay <rioplay@rioplay.dev>
 All rights reserved.
 
-Aden is released under the GNU Affero General Public License v3.0 (AGPL-3.0-or-later).
-
-This program is free software: you can redistribute it and/or modify it under the terms of the GNU Affero General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.
-
-This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU Affero General Public License for more details.
-
+Released under the GNU Affero General Public License v3.0 (AGPL-3.0-or-later).
 Enterprise dual-licensing is available from the copyright holder upon request.
 
 == Contributing
 
-All contributions require a `Signed-off-by` line in the commit message, attesting to the Developer Certificate of Origin (DCO). See CONTRIBUTING.md for full details.
+All contributions require a `Signed-off-by` line in the commit message, attesting to the Developer Certificate of Origin (DCO). See `CONTRIBUTING.md` for full details.
