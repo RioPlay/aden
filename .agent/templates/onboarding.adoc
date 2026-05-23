@@ -1,0 +1,43 @@
+:proj: {project}
+
+[[onboarding]]
+= Agent Onboarding Protocol
+
+== Step 1: Ingest Context (Mandatory)
+Before writing any code:
+
+. Read `.agent/context.adoc` — shared memory and glossary
+. Read `.agent/constraints.adoc` — what you must never do
+. Read `.agent/session.adoc` — current agent activity log
+. Read `docs/context.adoc` — project-wide standards
+
+== Step 2: Understand Current State
+. Run `aden check docs/` to verify baseline health
+. Run `aden heal --scan . --since HEAD~1` to see recent drift
+. Review `docs/plan-phase*.adoc` for active initiatives
+
+== Step 3: Lock Your Session
+. Append an entry to `.agent/session.adoc` with:
+  - Timestamp
+  - Your task description
+  - Files you intend to touch
+  - Estimated confidence
+. This prevents other agents from conflicting with your work
+
+== Step 4: Implement with Checks
+. Write code
+. Simultaneously write or update the matching `.adoc` contract
+. Run `cargo test` and `aden check` before declaring done
+. If `aden heal` detects drift, generate proposals with `--propose`
+
+== Step 5: Close Session
+. Update `.agent/session.adoc` with completion status
+. Run `aden check` one final time
+. Ensure all `<<refs>>` resolve to existing `[[anchors]]`
+
+== Emergency Contacts
+If you encounter:
+- Circular `include::[]` references → Run `aden check` for cycle detection
+- Broken `<<refs>>` → Use fuzzy anchor recovery with `aden heal --scan`
+- Drift in existing contracts → Generate `.patch.adoc` proposals
+- Another agent conflict → Read `session.adoc` and coordinate

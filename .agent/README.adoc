@@ -1,0 +1,11 @@
+= .agent Directory
+
+This directory contains agent-facing templates and standards for this repository.
+
+== Templates
+- `templates/plan.adoc` — initiative specification
+- `templates/module.adoc` — component contract
+- `templates/context.adoc` — shared agent memory
+
+== Usage
+Run `aden init` to scaffold these templates into any repository.

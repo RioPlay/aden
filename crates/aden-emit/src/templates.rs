@@ -65,6 +65,7 @@ pub fn module_contract(
         node_type: NodeType::Module,
         attributes,
         blocks,
+        source_span: None,
     }
 }
 
@@ -110,6 +111,7 @@ pub fn adr(
         node_type: NodeType::Adr,
         attributes,
         blocks,
+        source_span: None,
     }
 }
 
@@ -147,6 +149,7 @@ pub fn rfc(
         node_type: NodeType::Spec,
         attributes,
         blocks,
+        source_span: None,
     }
 }
 
@@ -188,6 +191,7 @@ pub fn runbook(
         node_type: NodeType::Runbook,
         attributes,
         blocks,
+        source_span: None,
     }
 }
 
@@ -228,6 +232,7 @@ pub fn plan(
         node_type: NodeType::Plan,
         attributes,
         blocks,
+        source_span: None,
     }
 }
 
@@ -262,5 +267,6 @@ pub fn context(
         node_type: NodeType::Context,
         attributes,
         blocks,
+        source_span: None,
     }
 }

@@ -237,6 +237,7 @@ fn extract_function(
         node_type: NodeType::Function,
         attributes: attrs,
         blocks,
+        source_span: None,
     })
 }
 
@@ -298,6 +299,7 @@ fn extract_struct(
         node_type: NodeType::Type,
         attributes: attrs,
         blocks,
+        source_span: None,
     })
 }
 
@@ -353,6 +355,7 @@ fn extract_enum(
         node_type: NodeType::Type,
         attributes: attrs,
         blocks,
+        source_span: None,
     })
 }
 
@@ -378,6 +381,7 @@ fn extract_module(
         node_type: NodeType::Module,
         attributes: attrs,
         blocks,
+        source_span: None,
     })
 }
 
@@ -403,5 +407,6 @@ fn extract_trait(
         node_type: NodeType::Type,
         attributes: attrs,
         blocks,
+        source_span: None,
     })
 }

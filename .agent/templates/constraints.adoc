@@ -1,0 +1,34 @@
+:proj: {project}
+:ai_name: {ai_name}
+
+[[constraints]]
+= Negative Constraints: What AI Must Never Do
+
+== File System
+. Never write outside the working directory without explicit permission.
+. Never delete files unless the user explicitly requests it.
+. Never overwrite `.adoc` contracts without regenerating via `aden gen` first.
+. Never ignore `.gitignore` rules when creating new files.
+
+== Code Quality
+. Never suppress compiler warnings with `#[allow(...)]` without a `// SAFETY:` comment.
+. Never use `unwrap()` or `expect()` on user-provided data.
+. Never leave `TODO` comments without an `agent-note::TODO[ticket-id]` block.
+. Never modify tested behavior without updating or adding tests.
+
+== Documentation
+. Never create documentation files without `[[anchors]]`.
+. Never use YAML frontmatter; only AsciiDoc `:key: value` attributes.
+. Never duplicate glossary terms across files; use `include::glossary.adoc[]`.
+. Never emit broken `<<references>>`; run `aden check` first.
+
+== Coordination
+. Never start work without reading `.agent/session.adoc`.
+. Never modify files another agent is working on (check session log).
+. Never commit without appending your session entry to `session.adoc`.
+. Never ignore low-confidence `agent-note::WARNING` blocks.
+
+== Inference Efficiency
+. Never scan the entire repo if `aden heal --since HEAD~1` suffices.
+. Never request large-context semantic review for trivial changes.
+. Never duplicate effort already recorded in `session.adoc`.

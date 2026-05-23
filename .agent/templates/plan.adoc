@@ -1,0 +1,30 @@
+:proj: {project}
+:phase: {phase}
+:agent_role: {role}
+:scope: {scope}
+
+[[plan-phase{phase}]]
+= Phase {phase}: {title}
+
+== Objective
+{objective}
+
+== Constraints
+:idempotent: {idempotent}
+:rollback: {rollback}
+
+== Deliverables
+|===
+|Module |Deliverable |Acceptance Criteria
+
+|{module} |{deliverable} |{criteria}
+|===
+
+== Dependencies
+{dependencies}
+
+== Trace
+- *{date}*: Initial plan
+
+== Included Context
+include::context.adoc[]

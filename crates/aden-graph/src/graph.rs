@@ -78,7 +78,8 @@ impl AdenGraph {
                 anchor: primary_anchor.clone(),
                 node_type: aden_core::NodeType::Note, // will be refined by attribute
                 attributes: parsed.attributes.clone(),
-                blocks: Vec::new(), // blocks filled later if needed
+                blocks: Vec::new(),
+                source_span: None,
             };
 
             let node = DocumentNode {

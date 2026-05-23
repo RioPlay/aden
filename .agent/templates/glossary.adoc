@@ -1,0 +1,17 @@
+:proj: {project}
+
+[[glossary]]
+= Project Glossary
+
+Document:: The atomic node in the knowledge graph. Has an anchor, type, attributes, and blocks.
+Edge:: Typed relationship between two Documents. Enforced by `aden-graph`.
+Contract:: A table block within a Document describing an API surface or behavioral guarantee.
+Block:: A content unit within a Document: table, paragraph, listing, admonition, or description list.
+Symbol:: A named entity extracted from source code (function, type, trait, module).
+Anchor:: A globally unique AsciiDoc identifier matching `^[a-z0-9_-]+$`.
+Emitter:: The `aden-emit` crate responsible for serializing Documents into `.adoc`/`.aden` text.
+Extraction:: The process of parsing source code into a `Vec<Document>`.
+Drift:: Divergence between code reality and documented contracts.
+Proposal:: A `.patch.adoc` file suggesting contract changes, with confidence score and rationale.
+Stub:: An auto-generated `.aden` contract with `agent-note::STUB` requiring human review.
+anchor-note:: Block of temporal metadata, uncertainty flags, or rationale within a Document.

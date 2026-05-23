@@ -1,0 +1,42 @@
+:session: current
+:coordination: true
+:proj: aden
+
+[[agent-session]]
+= Agent Session Log
+
+== Purpose
+This file is the canonical shared memory for parallel subagent sessions. Every agent that modifies files must append an entry here before completing. This prevents race conditions and silent overwrites.
+
+== Format
+Each entry is a table row with timestamp, agent ID, action, files touched, and blockers.
+
+== Active Session
+
+|===
+|Timestamp |Agent |Action |Files Touched |Blockers |Status
+
+|2026-05-23T03:45:00 |architect-main |Phase 0-1 scaffold |`aden-core`, `aden-parse`, `aden-emit`, `aden-cli` |none |completed
+|2026-05-23T03:55:00 |architect-main |Phase 2-3 graph + asm |`aden-graph`, `aden-asm`, `aden-cli` (query, asm) |none |completed
+|2026-05-23T04:15:00 |subagent-A |Phase 4: graph validation |`aden-graph` (typed edges, semantic diff, integrity) |none |completed
+|2026-05-23T04:20:00 |subagent-B |Phase 4: query CLI |`aden-cli` (`query` subcommand) |none |completed
+|2026-05-23T04:25:00 |subagent-C |Phase 5: aden-index |`aden-index` crate, CLI search |none |completed
+|2026-05-23T04:30:00 |subagent-D |Phase 5: watch + benchmarks |`aden-cli` (watch), `benches/` |none |completed
+|2026-05-23T04:35:00 |subagent-E |Phase 5: PyO3 + PS |`aden-py`, `tools/ps-adapter/Aden.ps*` |none |completed
+|2026-05-23T04:38:00 |subagent-F |Phase 5: distribution |`README.adoc`, `.github/workflows/ci.yml`, `docs/context.adoc` |none |completed
+|2026-05-23T04:42:00 |architect-main |Fix subagent gaps |`aden-cli` (Search, Watch), `aden-lsp`, `editors/vscode` |subagent D Watch/Search missing from CLI; subagent A LSP failed |completed
+|===
+
+== Known Invariants
+. Every agent must read this file before starting work.
+. Every agent must append a row before declaring done.
+. If two agents touch the same file, the later agent must reconcile with the earlier.
+. No agent may delete rows; only append.
+
+== Gaps Discovered
+. *Subagent D* reported adding `Watch` and `Search` to CLI but did not actually write them. Architect-main had to add them manually.
+. *Subagent A* (LSP + VSCode) failed silently and returned empty. Architect-main created `aden-lsp` and `editors/vscode/` directly.
+. Mitigation: enforce `.adoc` session logging for all subagents; they must write their row and validate file existence.
+
+== Next Phase
+Phase 6: Federation & Network API. Not started.

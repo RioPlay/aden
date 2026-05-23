@@ -133,6 +133,7 @@ pub fn extract_documents(path: &Path, _source: &str) -> Result<Vec<Document>> {
             node_type: NodeType::Function,
             attributes: attrs,
             blocks,
+            source_span: None,
         });
     }
 
@@ -157,6 +158,7 @@ pub fn extract_documents(path: &Path, _source: &str) -> Result<Vec<Document>> {
             node_type: NodeType::Type,
             attributes: attrs,
             blocks,
+            source_span: None,
         });
     }
 
