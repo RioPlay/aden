@@ -1,0 +1,47 @@
+:proj: aden
+:phase: 6
+:agent_role: architect
+:scope: self-healing-documentation-engine
+
+[[plan-phase6]]
+= Phase 6: Self-Healing Documentation Engine
+
+== Objective
+Detect drift between code reality and documented contracts. Never mutate unilaterally. Propose, explain, and await approval.
+
+== Constraints
+:idempotent: true
+:rollback: true
+:mode: propose-only by default
+:mutation_requires: --apply flag explicitly
+
+== Deliverables
+|===
+|Module |Deliverable |Acceptance Criteria
+
+|aden-heal |Drift scanner |Walks repo, compares parsed AST to stored contracts, emits DriftEvent
+|aden-heal |Health report |Aggregates events into HealthReport with overall_score (0-1)
+|aden-heal |Fuzzy anchor recovery |Levenshtein distance over anchor namespace, suggests matches >= 0.85
+|aden-propose |Patch generation |AsciiDoc-native patches showing exact line changes
+|aden-propose |Stub generator |Emits minimal .aden with agent-note::STUB and valid :source_hash:
+|aden-propose |Proposal persistence |Writes .patch.adoc to .aden/proposals/ with :status:, :confidence:, :target:
+|aden-cli |heal --scan |Read-only health check; safe for CI
+|aden-cli |heal --scan --propose |Generates .patch.adoc files but does not mutate
+|aden-cli |heal --apply <id> |Applies single reviewed proposal
+|tools/git-hooks |Pre-commit hook |Fails commit if CRITICAL drift detected
+|===
+
+== Drift Types
+|===
+|Drift |Detection |Action
+
+|Stale Hash|:source_hash: mismatch|Regenerate contract from AST
+|Signature Mismatch|Function signature changed in AST|Update == Signature table
+|Missing Contract|Public symbol has no .aden file|Emit stub with agent-note::STUB
+|Orphan Anchor|Anchor exists in .aden but no source symbol|Flag for archival
+|Broken Reference|`<<ref>>` points to deleted node|Fuzzy-match replacement
+|Dead Link|include::[] target removed|Suggest removal
+|===
+
+== Trace
+- *2026-05-23*: Plan written.

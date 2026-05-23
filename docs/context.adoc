@@ -1,0 +1,80 @@
+:org: aden-project
+:standard: rust-2024
+:proj: aden
+:lang: rust
+
+[[context]]
+= Shared Context
+
+ifdef::agent[]
+This file is the canonical shared memory for all agent sessions working on Aden.
+Include it at the top of every prompt with `include::context.adoc[]`.
+endif::[]
+
+== Language Defaults
+ifdef::agent[]
+- Use Rust Edition 2021/2024, latest stable.
+- `thiserror` for all error enums.
+- `serde` for all data interchange.
+- Prefer `std::collections::HashMap` over `BTreeMap` unless order is required.
+- All public APIs must have `#[derive(Debug)]`.
+- All public API items must have doc comments.
+endif::agent[]
+
+== Project Glossary
+
+Document:: The atomic node in the Aden knowledge graph. Has an anchor, a node type, attributes, and blocks.
+Edge:: Typed relationship between two Documents. Enforced by `aden-graph`.
+Contract:: A table block within a Document describing an API surface or behavioral guarantee.
+Block:: A content unit within a Document: table, paragraph, listing, admonition, or description list.
+Symbol:: A named entity extracted from source code (function, type, trait, module).
+Anchor:: A globally unique AsciiDoc identifier matching `^[a-z0-9_-]+$`.
+Emitter:: The `aden-emit` crate responsible for serializing `Document` structs into `.adoc` / `.aden` text.
+Extraction:: The process of parsing source code (Rust, Python, PowerShell) into a `Vec<Document>`.
+
+== Agent Conventions
+
+. Every `.adoc` file must declare an anchor immediately before the title.
+. Every table must have a header row.
+. Use `agent-note::` blocks for temporal annotations and uncertainty.
+. Use `ifdef::agent[]` to hide human prose from AI context.
+. Never use YAML frontmatter; use AsciiDoc attributes (`:key: value`).
+. Resolve every `<<reference>>` to an existing `[[anchor]]`.
+. Include this file rather than duplicating definitions.
+
+== Dependencies
+|===
+|Crate |Purpose |Version Policy
+
+|tree-sitter |Polyglot parsing |Latest stable
+|clap |CLI argument parsing |Latest stable
+|thiserror |Error ergonomics |Latest stable
+|serde |AST interchange |Latest stable
+|serde_json |JSON consumer for bridges |Latest stable
+|blake3 |Content hashing |Latest stable
+|petgraph |Graph data structure |Latest stable
+|regex |Lightweight AsciiDoc parsing |Latest stable
+|===
+
+== Phase 2-5 Crate Map
+|===
+|Crate |Purpose |Status
+
+|aden-graph |Backlinks, typed edges, integrity checks |Phase 2
+|aden-asm |Context assembler (prompt builder) |Phase 3
+|aden-index |Inverted-index semantic search over .adoc / .aden documents |Phase 5
+|aden-lsp |LSP server diagnostics + go-to-definition for .adoc / .aden |Phase 5
+|aden-py |PyO3 Python bindings (`import aden; aden.generate(path)`) |Phase 5
+|Aden PowerShell module |`Invoke-AdenAssemble`, `Test-AdenIntegrity` (`tools/ps-adapter/`) |Phase 5
+|===
+
+== Legal & Governance
+
+Project:: Aden — A Dense Referential Context Compiler
+License:: AGPL-3.0-or-later
+Copyright:: 2026 RioPlay <rioplay@rioplay.dev>
+Author:: RioPlay
+Governance:: BDFL model; DCO required for contributions
+Maintainers:: See MAINTAINERS.md
+Contributing:: See CONTRIBUTING.md
+

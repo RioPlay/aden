@@ -1,0 +1,50 @@
+:proj: aden
+:number: 002
+:status: accepted
+:date: 2026-05-23
+
+[[adr-002]]
+= ADR-002: AGPL-3.0 and Dual-Name Attribution
+
+== Context
+Aden is a toolchain for AI agents operating on codebases. As such, it will almost certainly be run as a network service (SaaS, CI pipeline, remote context assembly API).
+
+We need a license that:
+. Is open-source and copyleft.
+. Prevents cloud capture (proprietary SaaS wrapping without sharing modifications).
+. Maintains OSI legitimacy for enterprise adoption.
+. Preserves the copyright holder's right to offer dual-licensing.
+
+== Decision
+We will use the **GNU Affero General Public License v3.0** (AGPL-3.0-or-later) for all code.
+
+Attribution will be dual:
+- **Public identity**: RioPlay
+- **Legal identity**: RioPlay
+
+== Consequences
+
+|===
+|Factor |AGPL-3.0 |MIT |Apache-2.0
+
+|Network services covered|:icon-check: Yes|No|No
+|Copyleft|:icon-check: Yes|No|Weak
+|Dual-licensing option|:icon-check: Yes|Yes|Yes
+|Patent grant|:icon-check: Yes|No|:icon-check: Yes
+|Enterprise adoption barrier|Higher|SaaS capture risk|Lower
+|===
+
+The AGPL was chosen because Aden's primary use case (network-accessible AI context assembly) is exactly the scenario AGPL was designed to protect.
+
+== Attribution Model
+.Public name:: RioPlay
+.Legal name:: RioPlay
+.Copyright holder:: RioPlay
+.BDFL:: RioPlay
+
+All contributions require DCO sign-off under the contributor's legal name.
+Dual-licensing is managed by the copyright holder (RioPlay).
+
+== Trace
+- *2026-05-23*: Initial ADR drafted.
+- *Adoption*: Adopted immediately; all existing code relicensed from MIT OR Apache-2.0.

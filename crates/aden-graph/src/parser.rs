@@ -1,0 +1,315 @@
+// Copyright (c) 2026 RioPlay <rioplay@rioplay.dev>
+// All rights reserved.
+//
+// Aden: A Dense Referential Context Compiler
+// Original author and maintainer: RioPlay
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published
+// by the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU Affero General Public License for more details.
+//
+use regex::Regex;
+use std::collections::HashMap;
+use std::io::Read;
+use std::path::Path;
+use std::sync::LazyLock;
+
+static ATTR_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^:\s*([^:\s]+)\s*:\s*(.*)$").expect("static regex")
+});
+static ANCHOR_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\[\[([^\]]+)\]\]\s*$").expect("static regex")
+});
+static REF_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"<<([^>,]+)(?:,[^>]*)?>>").expect("static regex")
+});
+static INCLUDE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^include::([^\[]+)\[(.*)\]\s*$").expect("static regex")
+});
+static IFDEF_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^ifdef::([^\[]+)\[\]\s*$").expect("static regex")
+});
+static IFNDEF_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^ifndef::([^\[]+)\[\]\s*$").expect("static regex")
+});
+static IFEVAL_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^ifeval::\[([^\]]+)\]\s*$").expect("static regex")
+});
+static ENDIF_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^endif::\[\]\s*$").expect("static regex")
+});
+static SEMANTIC_DIFF_CHANGED_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^agent-note::CHANGED\[([^\]]+)\]\s*(.*)$").expect("static regex")
+});
+static SEMANTIC_DIFF_DEPRECATED_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^agent-note::DEPRECATED\[([^\]]+)\]\s*(.*)$").expect("static regex")
+});
+static SEMANTIC_DIFF_ADDED_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^agent-note::ADDED\[([^\]]+)\]\s*$").expect("static regex")
+});
+
+/// A document parsed from an AsciiDoc source.
+#[derive(Debug, Clone)]
+pub struct ParsedDocument {
+    pub source_path: String,
+    pub attributes: HashMap<String, String>,
+    pub anchors: Vec<String>,
+    pub refs: Vec<String>,
+    pub includes: Vec<Include>,
+    pub edges: Vec<EdgeMacro>,
+    pub conditional_stack: Vec<Conditional>,
+    pub raw_content: String,
+    pub semantic_diffs: Vec<SemanticDiff>,
+}
+
+/// An `include::path[attributes]` directive.
+#[derive(Debug, Clone)]
+pub struct Include {
+    pub path: String,
+    pub tags: Option<String>,
+    pub lines: Option<String>,
+    pub leveloffset: Option<i32>,
+}
+
+/// A custom `edge::type[...]` macro.
+#[derive(Debug, Clone)]
+pub struct EdgeMacro {
+    pub edge_type: String,
+    pub target: String,
+}
+
+/// A semantic diff entry parsed from agent-note macros.
+#[derive(Debug, Clone)]
+pub enum SemanticDiff {
+    Changed { date: String, description: String },
+    Deprecated { date: String, replacement: Option<String> },
+    Added { date: String },
+}
+
+/// A conditional block.
+#[derive(Debug, Clone)]
+pub enum Conditional {
+    Ifdef { attr: String, active: bool },
+    Ifndef { attr: String, active: bool },
+    Ifeval { expr: String, active: bool },
+}
+
+/// Errors during AsciiDoc parsing.
+#[derive(Debug, thiserror::Error)]
+pub enum ParseError {
+    #[error("IO error: {0}")]
+    Io(String),
+}
+
+/// Parse an AsciiDoc file into a `ParsedDocument`.
+pub fn parse_file(path: &Path) -> Result<ParsedDocument, ParseError> {
+    let mut file = std::fs::File::open(path)
+        .map_err(|e| ParseError::Io(e.to_string()))?;
+    let mut raw = String::new();
+    file.read_to_string(&mut raw)
+        .map_err(|e| ParseError::Io(e.to_string()))?;
+
+    let mut attrs = HashMap::new();
+    let mut anchors = Vec::new();
+    let mut refs = Vec::new();
+    let mut includes = Vec::new();
+    let mut edges = Vec::new();
+    let mut conditional_stack = Vec::new();
+    let mut semantic_diffs = Vec::new();
+
+    let mut in_header = true;
+
+    for line in raw.lines() {
+        let trimmed = line.trim();
+
+        // Skip comments (but not doc comments)
+        if trimmed.starts_with("//") && !trimmed.starts_with("///") {
+            continue;
+        }
+
+        // End of header block when we hit a blank line after attributes
+        if in_header && trimmed.is_empty() && !attrs.is_empty() {
+            in_header = false;
+        }
+
+        // Attributes
+        if (in_header || trimmed.starts_with(':'))
+            && let Some(cap) = ATTR_RE.captures(trimmed) {
+                let key = cap[1].to_string();
+                let value = cap[2].to_string();
+                attrs.insert(key, value);
+                continue;
+            }
+
+        // Anchors
+        if let Some(cap) = ANCHOR_RE.captures(trimmed) {
+            anchors.push(cap[1].to_string());
+            continue;
+        }
+
+        // Includes
+        if let Some(cap) = INCLUDE_RE.captures(trimmed) {
+            let path = cap[1].to_string();
+            let attrs_str = &cap[2];
+            let mut tag = None;
+            let mut lines_spec = None;
+            let mut leveloff = None;
+            for part in attrs_str.split(';') {
+                let part = part.trim();
+                if let Some(val) = part.strip_prefix("tags=") {
+                    tag = Some(val.trim_matches('"').to_string());
+                } else if let Some(val) = part.strip_prefix("lines=") {
+                    lines_spec = Some(val.trim_matches('"').to_string());
+                } else if let Some(val) = part.strip_prefix("leveloffset=")
+                    && let Ok(v) = val.trim_matches('"').parse::<i32>() {
+                        leveloff = Some(v);
+                    }
+            }
+            includes.push(Include {
+                path,
+                tags: tag,
+                lines: lines_spec,
+                leveloffset: leveloff,
+            });
+            continue;
+        }
+
+        // Conditionals
+        if let Some(cap) = IFDEF_RE.captures(trimmed) {
+            let attr = cap[1].to_string();
+            let active = attrs.contains_key(&attr);
+            conditional_stack.push(Conditional::Ifdef { attr, active });
+            continue;
+        }
+        if let Some(cap) = IFNDEF_RE.captures(trimmed) {
+            let attr = cap[1].to_string();
+            let active = !attrs.contains_key(&attr);
+            conditional_stack.push(Conditional::Ifndef { attr, active });
+            continue;
+        }
+        if let Some(cap) = IFEVAL_RE.captures(trimmed) {
+            let expr = cap[1].to_string();
+            let active = eval_ifeval(&expr, &attrs);
+            conditional_stack.push(Conditional::Ifeval { expr, active });
+            continue;
+        }
+        if ENDIF_RE.is_match(trimmed) {
+            conditional_stack.pop();
+            continue;
+        }
+
+        // References (xrefs) - only if not inside a backtick-quoted span
+        let mut refs_on_line: Vec<String> = Vec::new();
+        for cap in REF_RE.captures_iter(line) {
+            let m = cap.get(0).expect("regex group 0 always exists for a match");
+            // Check if this match is inside backticks
+            let prefix = &line[..m.start()];
+            let backtick_count = prefix.matches('`').count();
+            if backtick_count % 2 == 0 {
+                let ref_text = cap[1].trim().to_string();
+                if !ref_text.is_empty() && !ref_text.contains(' ') {
+                    refs_on_line.push(ref_text);
+                }
+            }
+        }
+        refs.extend(refs_on_line);
+
+        // edge:: macros
+        if trimmed.starts_with("edge::")
+            && let Some(end) = trimmed.find('[') {
+                let edge_type = trimmed[6..end].to_string();
+                let rest = &trimmed[end + 1..];
+                if let Some(close) = rest.rfind(']') {
+                    let target = rest[..close].to_string();
+                    edges.push(EdgeMacro { edge_type, target });
+                }
+            }
+
+        // Semantic diffs
+        if let Some(cap) = SEMANTIC_DIFF_CHANGED_RE.captures(trimmed) {
+            let date = cap[1].to_string();
+            let description = cap[2].to_string();
+            semantic_diffs.push(SemanticDiff::Changed { date, description });
+        } else if let Some(cap) = SEMANTIC_DIFF_DEPRECATED_RE.captures(trimmed) {
+            let date = cap[1].to_string();
+            let replacement = cap[2].to_string();
+            let replacement = if replacement.is_empty() { None } else { Some(replacement) };
+            semantic_diffs.push(SemanticDiff::Deprecated { date, replacement });
+        } else if let Some(cap) = SEMANTIC_DIFF_ADDED_RE.captures(trimmed) {
+            let date = cap[1].to_string();
+            semantic_diffs.push(SemanticDiff::Added { date });
+        }
+    }
+
+    // If no anchors found, generate one from filename
+    if anchors.is_empty()
+        && let Some(stem) = path.file_stem() {
+            anchors.push(stem.to_string_lossy().to_string());
+        }
+
+    Ok(ParsedDocument {
+        source_path: path.to_string_lossy().to_string(),
+        attributes: attrs,
+        anchors,
+        refs,
+        includes,
+        edges,
+        conditional_stack,
+        raw_content: raw,
+        semantic_diffs,
+    })
+}
+
+/// Evaluate an `ifeval` expression.
+/// Supported forms:
+/// - `{attr} == value`
+/// - `{attr} != value`
+/// - `{attr} < value` (numeric)
+/// - `{attr} > value` (numeric)
+/// - `{attr} <= value` (numeric)
+/// - `{attr} >= value` (numeric)
+fn eval_ifeval(expr: &str, attrs: &HashMap<String, String>) -> bool {
+    let trimmed = expr.trim();
+    // Find the operator
+    let operators = ["<=", ">=", "==", "!=", "<", ">"];
+    for op in &operators {
+        if let Some(pos) = trimmed.find(op) {
+            let left = trimmed[..pos].trim();
+            let right = trimmed[pos + op.len()..].trim();
+            // Resolve attribute on left side
+            let left_val = if left.starts_with('{') && left.ends_with('}') {
+                let attr_name = &left[1..left.len() - 1];
+                attrs.get(attr_name).map(|s| s.as_str()).unwrap_or("")
+            } else {
+                left
+            };
+            let right = right.trim_matches('"');
+            return match *op {
+                "==" => left_val == right,
+                "!=" => left_val != right,
+                "<" | ">" | "<=" | ">=" => {
+                    let l_num = left_val.parse::<f64>();
+                    let r_num = right.parse::<f64>();
+                    match (l_num, r_num) {
+                        (Ok(l), Ok(r)) => match *op {
+                            "<" => l < r,
+                            ">" => l > r,
+                            "<=" => l <= r,
+                            ">=" => l >= r,
+                            _ => false,
+                        },
+                        _ => false,
+                    }
+                }
+                _ => false,
+            };
+        }
+    }
+    false
+}

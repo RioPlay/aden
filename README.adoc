@@ -1,0 +1,86 @@
+= Aden: A Dense Referential Context Compiler
+:author: RioPlay
+:email: rioplay@rioplay.dev
+:lang: rust
+:toc: left
+:toclevels: 2
+:icons: font
+
+[[readme]]
+= Aden: A Dense Referential Context Compiler
+
+== Tagline
+
+Aden — **A Dense** Referential Context Compiler.
+
+The name *is* the mission statement. Every token is load-bearing. Every edge is typed. Every anchor resolves.
+
+== What Is Aden?
+
+Aden is a Rust-based toolchain that turns any codebase — code, docs, plans, runbooks — into a traversable, token-dense knowledge graph using AsciiDoc as its native substrate.
+
+In the era where AI agents operate autonomously on codebases, context is everything. Aden ensures that every agent (or human) consuming your project receives precisely the right context: no more, no less.
+
+== Current Phase
+
+All phases through Governance are implemented. The toolchain compiles, self-documents, and can be operated recursively (Aden on Aden).
+
+== Architecture
+
+|===
+|Crate |Purpose
+
+|aden-core |Universal schema: Document, Block, Edge, Table, Symbol
+|aden-parse |Language router: Rust (tree-sitter), Python, PowerShell
+|aden-emit |Deterministic AsciiDoc emitter for all node types
+|aden-graph |Referential graph: DiGraph, cycle detection, typed edges
+|aden-asm |Context assembler: BFS traversal, token budgeting
+|aden-index |Semantic full-text search over the graph
+|aden-lsp |Language Server Protocol for .adoc/.aden files
+|aden-py |PyO3 Python bindings
+|aden-heal |Self-healing documentation engine: drift detection
+|aden-propose |Patch generation, stub generation, proposal lifecycle
+|===
+
+== Quick Start
+
+[source,bash]
+----
+# Build the entire workspace
+cargo build --workspace
+
+# See available commands
+aden --help
+
+# Generate contracts from source files
+aden gen src/lib.rs
+
+# Check documentation integrity
+aden check docs/
+
+# Self-healing: detect drift
+aden heal --scan .
+----
+
+== Author
+
+RioPlay is the original author, BDFL, and architectural final authority.
+
+Email: rioplay@rioplay.dev
+
+== License
+
+Copyright (c) 2026 RioPlay <rioplay@rioplay.dev>
+All rights reserved.
+
+Aden is released under the GNU Affero General Public License v3.0 (AGPL-3.0-or-later).
+
+This program is free software: you can redistribute it and/or modify it under the terms of the GNU Affero General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU Affero General Public License for more details.
+
+Enterprise dual-licensing is available from the copyright holder upon request.
+
+== Contributing
+
+All contributions require a `Signed-off-by` line in the commit message, attesting to the Developer Certificate of Origin (DCO). See CONTRIBUTING.md for full details.

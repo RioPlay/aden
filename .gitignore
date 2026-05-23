@@ -1,0 +1,12 @@
+/target
+/contracts
+/.aden
+Cargo.lock
+*.bak
+*.swp
+*.swo
+*.tmp
+*.temp
+.DS_Store
+.vscode/
+.idea/

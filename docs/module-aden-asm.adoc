@@ -1,0 +1,31 @@
+:proj: aden
+:module: aden-asm
+:path: crates/aden-asm/src/
+:lang: rust
+
+[[mod-aden-asm]]
+= module::aden-asm
+
+== Objective
+Context assembler: transforms a subgraph of `.aden` documents into a single flat AsciiDoc string ready for LLM ingestion.
+
+== Signature
+|===
+|Function |Signature |Description
+
+|`preprocess`|`pub fn preprocess(path: &Path, attrs: &HashMap<String, String>, visited: &mut Vec<PathBuf>, level_offset: usize) -> Result<String, PreprocessError>`|Resolve includes, conditionals, leveloffset
+|`assemble`|`pub fn assemble(graph: &AdenGraph, opts: &AssemblyOptions) -> Result<String, AssemblyError>`|BFS traversal with token budgeting
+|`AssemblyOptions`|struct|start_anchor, max_depth, token_budget, edge_types filter
+|===
+
+== Invariants
+. `visited` stack prevents recursive include loops.
+. `leveloffset` is clamped to `min(6, max(1, base + offset))`.
+. `ifdef`/`ifndef`/`ifeval` support attribute resolution and numeric comparison only.
+. Assembly order: start anchor first, then BFS neighbors.
+. Token budget is approximate (bytes/4 heuristic).
+. Deduplication: same anchor reached via multiple paths emitted exactly once.
+
+== Agent Notes
+agent-note::SIMPLIFICATION
+Preprocessor subset: no inline conditionals, no nested `ifeval` arithmetic, no macro definitions. Sufficient for deterministic agent context assembly.

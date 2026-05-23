@@ -1,0 +1,29 @@
+:proj: aden
+:module: aden-py
+:path: crates/aden-py/src/
+:lang: rust
+
+[[mod-aden-py]]
+= module::aden-py
+
+== Objective
+PyO3 bindings exposing Aden core functionality to Python.
+
+== Signature
+|===
+|Function |Python Signature |Description
+
+|`generate`|`def generate(path: str) -> list[str]`|Parse source file, emit `.adoc` strings for each extracted Document
+|`assemble`|`def assemble(from_anchor: str, budget: int) -> str`|Placeholder assembly (returns scaffold `.adoc`)
+|`check`|`def check(path: str) -> str`|Verify AsciiDoc references; return report string
+|===
+
+== Invariants
+. `generate` delegates to `aden_parse::parse_file` and `aden_emit::emit_document`.
+. `check` delegates to `aden_emit::check::verify`.
+. All errors are raised as Python `ValueError` or `IOError`.
+. Crate type is `cdylib`; module name is `aden`.
+
+== Agent Notes
+agent-note::SIMPLIFICATION
+`assemble` is a placeholder because full graph construction from Python requires additional infrastructure. Actual graph assembly should be done via the CLI or Rust API for now.

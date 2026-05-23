@@ -1,0 +1,39 @@
+:proj: aden
+:phase: 0
+:agent_role: architect
+:scope: spec-lock + scaffold
+
+[[plan-phase0]]
+= Phase 0: Spec & Scaffold
+
+== Objective
+Lock the AsciiDoc schema and bootstrap the Cargo workspace for the Aden referential context compiler.
+
+== Constraints
+:idempotent: true
+:rollback: true
+
+== Deliverables
+|===
+|Crate |Module |Acceptance Criteria
+
+|aden-core |Schema types |Compiles. Exports `Document`, `Block`, `Table`, `Symbol`, `FunctionSig`, `TypeDef`, `Contract`, `Edge`, `EdgeType`, `Error`.
+|aden-core |Error handling |Uses `thiserror`. Single unified `Error` enum with clear variants.
+|aden-cli |CLI skeleton |`aden --version` and `aden --help` work.
+|docs |context.adoc |Exists. Defines at least 3 glossary terms.
+|docs |plan-phase0.adoc |Exists. Validates against schema.
+|docs |adr-001.adoc |Exists. Justifies AsciiDoc over Markdown and Rust over alternatives.
+|===
+
+== Dependencies
+- `tree-sitter` crate (polyglot parsing)
+- `clap` (CLI)
+- `thiserror` (error handling)
+- `serde` + `serde_json` (AST interchange)
+- `blake3` (content hashing)
+
+== Trace
+- *2026-05-23*: Initial plan written.
+
+== Included Context
+include::context.adoc[]

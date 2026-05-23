@@ -1,0 +1,44 @@
+:proj: aden
+:phase: 3
+:agent_role: architect
+:scope: context-assembler
+
+[[plan-phase3]]
+= Phase 3: Context Assembler
+
+== Objective
+Build the prompt compiler: transform a subgraph of `.aden` documents into a single flat AsciiDoc string for LLM ingestion.
+
+== Constraints
+:idempotent: true
+:rollback: true
+
+== Deliverables
+|===
+|Module |Deliverable |Acceptance Criteria
+
+|aden-asm |Preprocessor engine |Resolves `include::[]` with `tags=` and `lines=`; evaluates `ifdef`/`ifndef`/`ifeval`; handles `leveloffset`; deduplicates anchors
+|aden-asm |Graph traversal |BFS/DFS from `--from` anchor up to `--depth` hops
+|aden-asm |Edge filtering |Respect `--edge-types`; default follows all
+|aden-asm |Token budgeting |Estimates token cost; stops when `--budget` exceeded; prefers closer hops
+|aden-asm |Assembly order |Starting anchor first, then dependencies in traversal order
+|aden-cli |`asm` command |`--from <anchor> --depth <n> --budget <tokens> --out prompt.adoc`
+|===
+
+== Supported Preprocessor Subset (Strict)
+- `include::path[tags=...]` — extract lines between `// tag::name[]` and `// end::name[]`
+- `include::path[lines=...]` — extract line ranges (`1..5`, `10..`)
+- `ifdef::attr[]` / `ifndef::attr[]` — attribute presence checks
+- `ifeval::[expr]` — equality and numeric comparison only (`==`, `!=`, `<`, `>`, `<=`, `>=`)
+- `leveloffset` — adjust heading levels (no negative offsets)
+- `endif::[]` — closes conditional
+
+agent-note::SIMPLIFICATION
+No inline conditionals. No nested `ifeval` arithmetic beyond simple comparisons. No macro definitions. This is a deterministic subset sufficient for agent context assembly.
+
+== Dependencies
+- `aden-core`, `aden-graph`
+- `petgraph` (for BFS traversal)
+
+== Trace
+- *2026-05-23*: Plan written.

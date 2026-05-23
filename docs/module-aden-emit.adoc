@@ -1,0 +1,32 @@
+:proj: aden
+:module: aden-emit
+:path: crates/aden-emit/src/
+:lang: rust
+
+[[mod-aden-emit]]
+= module::aden-emit
+
+== Objective
+Serialize `Document` structs into AsciiDoc (`.adoc` / `.aden`) text.
+
+== Signature
+|===
+|Function |Signature |Description
+
+|`emit_document`|`pub fn emit_document(doc: &Document) -> String`|Emit a single Document
+|`emit`|`pub fn emit(documents: &[Document]) -> String`|Emit multiple Documents joined by page breaks
+|`verify`|`pub fn verify(output: &str) -> Result<(), String>`|Verify all `<<refs>>` resolve
+|`collect_anchors`|`pub fn collect_anchors(output: &str) -> HashSet<String>`|Collect all `[[anchor]]` declarations
+|`find_refs`|`pub fn find_refs(line: &str) -> Vec<String>`|Find all `<<reference>>` patterns
+|===
+
+== Invariants
+. Every emitted Document must begin with `:attribute:` lines, then `[[anchor]]`, then `= Title`.
+. Tables must always have a header row.
+. Admonitions map directly to AsciiDoc labels (`NOTE`, `WARNING`, etc.).
+. Listings must wrap code in `----` blocks.
+
+== Agent Notes
+agent-note::OPEN QUESTION
+Should `emit` produce one file per Document or concatenate? Current behavior concatenates with `<<<` separator.
+

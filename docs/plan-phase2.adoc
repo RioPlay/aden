@@ -1,0 +1,35 @@
+:proj: aden
+:phase: 2
+:agent_role: architect
+:scope: emitter-completion + graph-construction
+
+[[plan-phase2]]
+= Phase 2: Universal Emitter + Graph Construction
+
+== Objective
+Complete the AsciiDoc emitter templates and build the referential graph engine.
+
+== Constraints
+:idempotent: true
+:rollback: true
+
+== Deliverables
+|===
+|Module |Deliverable |Acceptance Criteria
+
+|aden-emit |6 template emitters |module, adr, rfc, runbook, plan, context — each emits valid AsciiDoc with header row tables
+|aden-graph |DiGraph builder |Parses `.aden`/`.adoc` files; nodes = Document; edges = typed refs + includes
+|aden-graph |Cycle detection |Fails on `include::[]` cycles via DFS
+|aden-graph |Backlink injection |Appends `== Referenced By` table to every document before final emit
+|aden-graph |Integrity checks |Verifies `:source_hash:`; warns if stale
+|aden-cli |`check` command |Validates refs, anchors, cycles, orphans across a directory
+|aden-cli |`graph` command |`--from <anchor> --depth <n>` outputs neighborhood debug report
+|===
+
+== Dependencies
+- `petgraph` (graph data structure)
+- `regex` (lightweight AsciiDoc parsing)
+- `blake3` (integrity hashing)
+
+== Trace
+- *2026-05-23*: Plan written. Phase 1 foundation complete.

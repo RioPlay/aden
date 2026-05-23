@@ -1,0 +1,15 @@
+[package]
+name = "aden-graph"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+aden-core = { path = "../aden-core" }
+petgraph = "0.8.3"
+regex = "1.12.3"
+thiserror = "2.0.18"
+
+[dev-dependencies]
+tempfile = "3.27.0"

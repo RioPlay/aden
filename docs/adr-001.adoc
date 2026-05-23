@@ -1,0 +1,50 @@
+:proj: aden
+:number: 001
+:status: accepted
+:date: 2026-05-23
+
+[[adr-001]]
+= ADR-001: AsciiDoc as the Native Substrate and Rust as the Implementation Language
+
+== Context
+Aden is a semantic compression and context assembly toolchain. It must represent code, documentation, plans, and runbooks as a traversable, token-dense knowledge graph. We need to select:
+. A markup language that serves as the native substrate for this knowledge graph.
+. An implementation language for the extraction, emission, and assembly engines.
+
+== Decision
+We will use **AsciiDoc** as the native markup substrate and **Rust** as the implementation language.
+
+== Consequences — AsciiDoc
+
+|===
+|Factor |AsciiDoc |Markdown
+
+|Anchors|Native `[[anchor]]` and `<<reference>>` syntax. OOB.|Requires HTML anchors or YAML frontmatter. Fragile.
+|Tables|First-class block syntax with header rows. Dense for contracts.|Limited standard support; relies on extensions.
+|Attributes|Document-level `:key: value` metadata. No frontmatter.|YAML frontmatter or HTML comments. Not spec-native.
+|Includes|`include::[]` for composable, single-source-of-truth documents.|No native include; must use preprocessor or build tool.
+|Conditionals|`ifdef::[]` for agent/human dual-use. No alternatives.|No native conditionals.
+|Tooling|Slightly less ubiquitous, but structurally superior for agents.|Widely supported but semantically impoverished.
+|===
+
+AsciiDoc is chosen because the project's core constraint is that every token must be load-bearing and every edge must be typed. AsciiDoc's native features map directly to these requirements without requiring non-standard extensions.
+
+== Consequences — Rust
+
+|===
+|Factor |Rust |Go |TypeScript
+
+|Memory safety|Compile-time ownership. Zero-cost abstractions.|Garbage collected. Simpler but less precise.|Garbage collected via V8.
+|Tree-sitter integration|Native C bindings. Excellent crate ecosystem.|Available, but less mature in the ecosystem.|Node bindings; slower and heavier.
+|Error handling|`Result` + `thiserror`. Explicit and composable.|Verbose error values. No `?` sugar for custom types.|Runtime exceptions or `Result<T,E>` via libraries.
+|Binary size|Small, statically linked.|Moderate.|Requires Node runtime.
+|===
+
+Rust is chosen because the toolchain must parse large codebases with minimal overhead and because tree-sitter integration is most mature in the Rust ecosystem.
+
+== Risks
+- AsciiDoc editor support is weaker than Markdown in some IDEs. Mitigated by the fact that Aden outputs are consumed by agents and renderers, not hand-edited.
+- Rust compile times are slower. Mitigated by the workspace crate decomposition and targeted incremental builds.
+
+== Trace
+- *2026-05-23*: Initial ADR drafted.

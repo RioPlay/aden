@@ -1,0 +1,56 @@
+[package]
+name = "aden"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+aden-core = { path = "crates/aden-core" }
+aden-parse = { path = "crates/aden-parse" }
+aden-emit = { path = "crates/aden-emit" }
+aden-graph = { path = "crates/aden-graph" }
+aden-asm = { path = "crates/aden-asm" }
+
+[workspace]
+members = [
+    "crates/aden-core",
+    "crates/aden-parse",
+    "crates/aden-emit",
+    "crates/aden-asm",
+    "crates/aden-graph",
+    "crates/aden-index",
+    "crates/aden-cli",
+    "crates/aden-py",
+    "crates/aden-lsp",
+    "crates/aden-heal",
+    "crates/aden-propose",
+]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+authors = ["RioPlay <rioplay@rioplay.dev>"]
+license = "AGPL-3.0-or-later"
+rust-version = "1.85"
+description = "Aden: A Dense Referential Context Compiler — token-dense, graph-backed context assembly for AI agents"
+repository = "https://github.com/RioPlay/aden"
+homepage = "https://aden.rioplay.dev"
+documentation = "https://docs.rs/aden"
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "token_density"
+harness = false
+
+[[bench]]
+name = "graph_construction"
+harness = false
+
+[[bench]]
+name = "assembly"
+harness = false

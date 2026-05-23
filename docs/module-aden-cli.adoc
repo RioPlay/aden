@@ -1,0 +1,48 @@
+:proj: aden
+:module: aden-cli
+:path: crates/aden-cli/src/
+:lang: rust
+
+[[mod-aden-cli]]
+= module::aden-cli
+
+== Objective
+User-facing binary for the Aden toolchain.
+
+== Signature
+|===
+|Command |Args |Behavior
+
+|`aden init`|`--path <dir>`|Scaffold `.agent/` templates
+|`aden gen`|`<path> [--out-dir <dir>]`|Parse source and emit `.adoc` to stdout or `--out-dir`
+|`aden check`|`<path>`|Verify refs, anchors, cycles, orphans, source_hash integrity
+|`aden graph`|`--from <anchor> --depth <n> <path>`|Output graph neighborhood debug report
+|`aden asm`|`--from <anchor> --depth <n> --budget <tokens> [--edge-types TYPES] [--out FILE] <path>`|Assemble context prompt from graph
+|`aden query`|`--from <anchor> [--edge-type <type>] --depth <n> <path>`|Return JSON array of reachable nodes
+|`aden query`|`--backlinks <anchor> <path>`|Return JSON array of nodes referencing target anchor (incoming edges)
+|`aden query`|`--impact <anchor> <path>`|Return JSON transitive closure following uses, calls, constrains, invokes edges
+|`aden search`|`<query> <path>`|Search index and print ranked results with snippets
+|`aden watch`|`<path>`|Watch source files and auto-regenerate contracts on change
+|`aden --version`|none|Print version
+|`aden --help`|none|Print help
+|===
+
+== Invariants
+. `gen` on a file delegates to `aden_parse::parse_file`.
+. `gen` on a directory walks recursively via `aden_parse::parse_directory`.
+. `check` aggregates anchors across all `.adoc` / `.aden` files.
+. `check` builds full graph to detect cycles and orphans.
+. `check` verifies `:source_hash:` integrity via `aden_graph::integrity::check_hashes`.
+. `graph` performs BFS from `--from` anchor up to `--depth`.
+. `asm` assembles within `--budget` tokens using BFS traversal.
+. `query` emits JSON via `serde_json`.
+. `query --from` filters by optional `--edge-type` and respects `--depth`.
+. `query --backlinks` returns incoming neighbors as a flat JSON array.
+. `query --impact` computes transitive closure over Uses, Calls, Constrains, Invokes edges.
+. `search` builds an in-memory inverted index from all `.adoc`/`.aden` files and ranks by term frequency.
+. `watch` uses `notify` crate recursive watcher; regenerates `.aden` on source changes and validates on contract changes.
+. `init` includes template files embedded at compile time via `include_str!`.
+
+== Agent Notes
+agent-note::CONFIDENCE HIGH
+CLI uses `clap` derive macros. No open questions for Phase 2-3.

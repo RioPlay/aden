@@ -1,0 +1,37 @@
+:proj: aden
+:module: aden-graph
+:path: crates/aden-graph/src/
+:lang: rust
+
+[[mod-aden-graph]]
+= module::aden-graph
+
+== Objective
+Graph engine for the Aden knowledge graph. Builds `petgraph::DiGraph` from `.adoc`/`.aden` files, validates references, detects cycles, and injects backlinks.
+
+== Signature
+|===
+|Type/Function |Signature |Description
+
+|`AdenGraph`|struct|The Aden knowledge graph wrapping petgraph::DiGraph
+|`DocumentNode`|struct|Node in graph: anchor, doc, parsed metadata, source_path
+|`build_from_directory`|`pub fn build_from_directory(dir: &Path) -> Result<AdenGraph, GraphError>`|Parse all `.adoc`/`.aden` files and build graph
+|`unresolved_refs`|`pub fn unresolved_refs(&self) -> Vec<(String, String)>`|Find all unresolved `<<refs>>`
+|`orphans`|`pub fn orphans(&self) -> Vec<String>`|Nodes with no edges
+|`get_node`|`pub fn get_node(&self, anchor: &str) -> Option<&DocumentNode>`|Lookup node by anchor
+|`get_index`|`pub fn get_index(&self, anchor: &str) -> Option<NodeIndex>`|Lookup node index
+|`find_cycles` (cycles module)|`pub fn find_cycles(graph: &AdenGraph) -> Vec<Vec<String>>`|DFS cycle detection
+|`inject_backlinks` (backlinks module)|`pub fn inject_backlinks(graph: &mut AdenGraph)`|Append `== Referenced By` tables
+|`check_hashes` (integrity module)|`pub fn check_hashes(graph: &AdenGraph) -> Vec<(String, String)>`|Verify `:source_hash:` integrity
+|`parse_file` (parser module)|`pub fn parse_file(path: &Path) -> Result<ParsedDocument, ParseError>`|Parse AsciiDoc attributes, anchors, refs, includes, conditionals, edge macros
+|===
+
+== Invariants
+. Anchors must be unique across the graph. Duplicates are a hard error.
+. `include::[]` edges are typed as `Requires`.
+. `<<refs>>` edges are typed as `Uses`.
+. Explicit `edge::` macros override default edge types.
+
+== Agent Notes
+agent-note::SIMPLIFICATION
+Only parses a subset of AsciiDoc: header attributes, block anchors, `<<refs>>`, `include::[]`, `ifdef`/`ifndef`/`ifeval`, and custom `edge::` macros. Full AsciiDoc parsing is not required.

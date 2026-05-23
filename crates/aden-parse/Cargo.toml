@@ -1,0 +1,21 @@
+[package]
+name = "aden-parse"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+aden-core = { path = "../aden-core" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tree-sitter = { version = "0.25", optional = true }
+tree-sitter-rust = { version = "0.24", optional = true }
+fnv = "1"
+
+[dev-dependencies]
+serde_json = "1.0"
+
+[features]
+default = ["rust-parser"]
+rust-parser = ["tree-sitter", "tree-sitter-rust"]

@@ -1,0 +1,29 @@
+:proj: aden
+:phase: 1
+:agent_role: architect
+:scope: extraction-engine
+
+[[plan-phase1]]
+= Phase 1: Extraction Engine
+
+== Objective
+Build the language router and AST extraction pipeline.
+
+== Constraints
+:idempotent: true
+:rollback: true
+
+== Deliverables
+|===
+|Module |Deliverable |Acceptance Criteria
+
+|aden-parse |Language router |Extension-based dispatch to parser adapters
+|aden-parse |Tree-sitter Rust |Extracts functions, structs, enums, traits
+|aden-parse |Tree-sitter Python |Extracts functions, classes, methods
+|aden-parse |PowerShell bridge |Export-AST.ps1 JSON consumer
+|aden-emit |Basic emitter |Document -> .adoc string with tables
+|aden-cli |gen command |Parses single file or directory, emits to stdout
+|===
+
+== Trace
+- *2026-05-23*: Plan written retroactively to complete documentation set.

@@ -1,0 +1,30 @@
+:proj: aden
+:module: aden-parse
+:path: crates/aden-parse/src/
+:lang: rust
+
+[[mod-aden-parse]]
+= module::aden-parse
+
+== Objective
+Extraction engine: turns source files into `Vec<Document>`.
+
+== Signature
+|===
+|Function |Signature |Description
+
+|`parse_file`|`pub fn parse_file(path: &Path, source: &str) -> Result<Vec<Document>>`|Route by extension to language adapter
+|`parse_directory`|`pub fn parse_directory(dir: &Path) -> Result<Vec<Document>>`|Recursive directory walk
+|`extract_documents (rust)`|`pub fn extract_documents(path: &Path, source: &str) -> Result<Vec<Document>>`|Tree-sitter Rust adapter
+|`extract_documents (powershell)`|`pub fn extract_documents(path: &Path, source: &str) -> Result<Vec<Document>>`|PowerShell JSON consumer
+|===
+
+== Invariants
+. Extension-based routing must be deterministic.
+. Tree-sitter Rust adapter extracts `function_item`, `struct_item`, `enum_item`, `mod_item`, `trait_item`.
+. Doc comments are buffered as preceding-sibling heuristics; confidence is not guaranteed.
+. PowerShell adapter shells out to `pwsh`/`powershell` with a `.ps1` script; arguments are passed via `argv` (no shell injection).
+
+== Agent Notes
+agent-note::OPEN QUESTION
+Should we support nested items (impl blocks, inner fns)? Defer to Phase 2.

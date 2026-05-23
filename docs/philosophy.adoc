@@ -1,0 +1,148 @@
+:proj: aden
+:author: RioPlay
+:email: rioplay@rioplay.dev
+
+[[philosophy]]
+= Aden Philosophy & Use Cases
+
+== The Core Thesis
+
+The bottleneck in AI-assisted software development is not model intelligence — it is *context*.
+
+Large language models are capable of sophisticated reasoning, but they are constrained by a finite context window. When an AI agent is dropped into a codebase of 100,000+ lines, it faces the same problem a human faces: information overload. The agent does not know which 10 files out of 500 are relevant to the task at hand. It does not know that changing `Database::connect()` will break `QueueWorker::drain()`. It has no mental map of the system.
+
+Aden exists to solve this problem by making the *structure of understanding* explicit, machine-readable, and traversable.
+
+== What Aden Is (And Is Not)
+
+Aden is a **referential context compiler**. It takes raw source code, documentation, notes, and plans — in any language — and compiles them into a traversable knowledge graph where every node is an AsciiDoc document with typed edges.
+
+Aden is *not* a documentation generator like Rustdoc or Javadoc. Those tools produce human-readable HTML for browsing. Aden produces *machine-navigable* context for *reasoning* — whether by a human, an AI agent, or a CI pipeline.
+
+Aden is *not* a static analysis tool like clippy or Semgrep. It does not find bugs by analyzing control flow. It finds *semantic relationships* between concepts and ensures they stay synchronized as code evolves.
+
+Aden is *not* a replacement for your IDE. It is a substrate that your IDE, your agent, or your build pipeline can query to understand the system.
+
+== The Design Thought Process
+
+=== Why AsciiDoc?
+
+We chose AsciiDoc as the native format because it is simultaneously:
+
+. **Human-readable** — a senior engineer can open any `.adoc` or `.aden` file and understand it without tooling.
+. **Machine-parseable** — the grammar is regular enough to be parsed by simple regexes or small state machines.
+. **Rich-structured** — it supports attributes (`:key: value`), anchors (`[[name]]`), cross-references (`<<name>>`), tables, conditionals, and includes. These map naturally to graph nodes and edges.
+. **Version-control-friendly** — unlike binary ASTs or JSON blobs, `.adoc` files diff cleanly in Git.
+. **Referential by default** — the `<<anchor>>` syntax encourages linking, which is exactly what a knowledge graph needs.
+
+The name *Aden* — "A Dense Referential Context Compiler" — is also the mission statement. Every token in an Aden-compiled document must justify its existence. Fluff is the enemy.
+
+=== Why a Graph?
+
+Software is not linear. A codebase is a network:
+- Modules `use` and `require` each other
+- Functions `call` and `invoke` each other
+- ADRs `constrain` and `justify` design choices
+- Tests `verify` and `document` behavior
+- Plans `supersede` and `amend` other plans
+
+A flat directory tree (the filesystem) cannot express these relationships. A graph can. Aden builds a directed graph where nodes are documents and edges are typed semantic relationships. This lets you ask questions that are impossible with `grep`:
+
+- "What depends on this function?"
+- "Which contracts are stale relative to the source?"
+- "What is the blast radius of changing this module?"
+- "What context must I include in a prompt for an agent modifying this file?"
+
+=== Why Token Density?
+
+When an LLM consumes context, every token costs. A verbose 500-comment documentation file might consume 8,000 tokens and bury the signal in noise. Aden's assembly phase (`aden asm`) performs a budgeted graph traversal: starting from any anchor, it walks edges and assembles a context prompt that fits within a token budget while preserving the most critical structural relationships.
+
+This is the difference between dumping an entire codebase into a prompt and *surgically* selecting the precise context an agent needs.
+
+== Primary Use Cases
+
+=== Use Case 1: AI Agent Onboarding
+
+**Problem:** You hire an AI agent (or a human contractor) to work on your codebase. They need to understand the architecture, conventions, and constraints before writing code. Traditional onboarding involves scrolling through READMEs, Slack history, and tribal knowledge.
+
+**Aden Solution:**
+[source,bash]
+----
+aden init  # Scaffolds .agent/ with constraints, glossary, and protocol
+aden asm --from context --depth 3 --budget 8192 --edge-types "constrains,justifies,documents"
+----
+The agent receives a token-dense, graph-traversed context prompt that includes exactly the relevant ADRs, constraints, glossary terms, and module contracts — no more, no less.
+
+=== Use Case 2: Documentation That Stays Alive
+
+**Problem:** Documentation rots. A function changes its signature, but the `.md` file describing it is forgotten. Six months later, a new developer reads stale docs and designs the wrong thing.
+
+**Aden Solution:**
+[source,bash]
+----
+aden gen src/lib.rs  # Generate .aden contract from source
+aden heal --scan . --propose  # Detect drift between code and contracts
+# Review proposals in .aden/proposals/
+aden heal --apply <proposal-id>
+----
+The `gen` command extracts a semantic contract directly from source code. The `heal` command continuously monitors for drift — when the source changes, Aden flags the stale contract and proposes a patch. Documentation becomes a living, version-controlled artifact that is tested at CI time, just like unit tests.
+
+=== Use Case 3: Architectural Safety During Refactoring
+
+**Problem:** You want to rename a core module. You know it will break things, but you do not know *which* things.
+
+**Aden Solution:**
+[source,bash]
+----
+aden graph --from module-core --depth 3
+# Outputs every document reachable from module-core through Uses, Calls, Implements edges
+aden query --backlinks module-core
+# Outputs every document that references module-core as a dependency
+----
+You see the blast radius *before* you commit the change. The graph reveals implicit dependencies that would otherwise only surface as runtime failures.
+
+=== Use Case 4: Cross-Team Alignment
+
+**Problem:** A platform team designs an API. Three product teams consume it. One team misreads the spec and writes a client that violates an invariant. Integration tests fail weeks later.
+
+**Aden Solution:** The API contract is an `.aden` document with typed edges: `ApiContract::Constrains -> ClientModule`. When the API changes, the `heal` engine detects that downstream contracts have stale hashes and proposes updates to all three teams simultaneously. The constraint is explicit, machine-checkable, and versioned.
+
+=== Use Case 5: Regulatory & Compliance Documentation
+
+**Problem:** Your system must satisfy SOC 2, HIPAA, or GDPR. Auditors ask: "How do you know this function enforces the data-retention policy?" You point to a Word document from 2021.
+
+**Aden Solution:** Policies are `.adoc` documents with `edge::constrains[]` macros linking them to the functions they govern. The `check` command verifies that every policy edge resolves to a live contract. The `heal` engine flags any code change that breaks a policy link. Compliance becomes continuous and testable, not an annual ritual.
+
+=== Use Case 6: Knowledge Preservation for Solo Projects
+
+**Problem:** You are a solo founder building a product over two years. You context-switch between frontend, backend, DevOps, and legal. By month 18, you have forgotten why month 3's architectural decision exists.
+
+**Aden Solution:** Every ADR, every plan, every API contract, and every runbook is an `.aden` document in the same graph as your code. When you return to a module after six months, `aden asm --from module-x --depth 2` assembles the context you need: the ADR that justifies its design, the functions it depends on, and the tests that verify its invariants. You never truly "forget" your own codebase.
+
+== The Agent-First Mindset
+
+Aden was designed with a specific user in mind: **the autonomous AI agent**.
+
+An agent does not need beautiful HTML. It needs:
+. A guaranteed-accurate map of relationships (the graph)
+. A way to know when the map is stale (`heal`)
+. A way to assemble just enough context to complete a task (`asm`)
+. A way to verify its work before committing (`check`)
+. A way to leave breadcrumbs about what it changed (`session`)
+
+Aden provides all five. When a human reviews an agent's pull request, they do not read the agent's "thoughts" — they read the `.aden` contracts, run `aden check`, and verify that `session.adoc` explains what changed and why.
+
+== Security as a First-Class Concern
+
+Because Aden is designed for automated agents that read files and execute commands, security is embedded in its design:
+
+. **Path Traversal Prevention:** Include directives (`include::[]`) are canonicalized and bounded to the project directory. An agent cannot accidentally (or maliciously) inline `/etc/passwd`.
+. **Safe Execution:** PowerShell discovery avoids cwd resolution to prevent binary planting attacks. JSON deserialization is bounded and uses `deny_unknown_fields`.
+. **Id & Filename Sanitization:** Proposal IDs are validated against ASCII-safe whitelists before being used as filenames.
+. **No `unsafe` Code:** The project contains zero `unsafe` blocks in application code.
+
+== Conclusion
+
+Aden is a bet on a future where software is not written by humans alone, but by **hybrid teams** of humans and agents. In that future, context is the scarcest resource. Aden makes context explicit, dense, traversable, and self-healing — turning an opaque codebase into a navigable knowledge graph that both humans and machines can reason about.
+
+The name is the mission: **A Dense Referential Context Compiler**. Every token is load-bearing. Every edge is typed. Every anchor resolves.

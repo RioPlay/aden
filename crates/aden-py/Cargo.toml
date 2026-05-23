@@ -1,0 +1,17 @@
+[package]
+name = "aden-py"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "aden_py"
+crate-type = ["cdylib"]
+
+[dependencies]
+aden-core = { path = "../aden-core" }
+aden-parse = { path = "../aden-parse" }
+aden-emit = { path = "../aden-emit" }
+pyo3 = { version = "0.24", features = ["extension-module", "abi3-py310"] }

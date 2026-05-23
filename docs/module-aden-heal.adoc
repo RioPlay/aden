@@ -1,0 +1,34 @@
+:proj: aden
+:module: aden-heal
+:path: crates/aden-heal/src/
+:lang: rust
+
+[[mod-aden-heal]]
+= module::aden-heal
+
+== Objective
+Self-healing documentation engine. Detects drift between code reality and documented contracts.
+
+== Signature
+|===
+|Type/Function |Signature |Description
+
+|`DriftEvent`|enum|StaleHash, SignatureMismatch, MissingContract, OrphanAnchor, BrokenReference, DeadLink
+|`DriftSeverity`|enum|Critical, High, Medium, Low — with weight() for scoring
+|`Scanner`|struct|Walks repo, compares parsed AST to stored contracts
+|`scan`|`pub fn scan(&self) -> Result<Vec<DriftEvent>, HealError>`|Full repo drift detection
+|`HealthReport`|struct|Aggregates events with overall_score (0-1)
+|`generate`|`pub fn generate(events: Vec<DriftEvent>, repo_path: &Path) -> HealthReport`|Score calculator
+|`suggest_anchor`|`pub fn suggest_anchor(query: &str, candidates: &[String]) -> Option<(String, f64)>`|Levenshtein recovery >= 0.85 confidence
+|===
+
+== Invariants
+. Scanner skips files that fail to parse rather than failing the entire scan.
+. Graph building for broken-reference detection is best-effort; duplicate anchors are tolerated.
+. Health score is 1.0 - (weighted_event_count / total_contracts).
+. Fuzzy anchor recovery uses normalized Levenshtein distance.
+. Drift detection never mutates files; read-only by default.
+
+== Agent Notes
+agent-note::CONFIDENCE HIGH
+No open questions for Phase 6.
