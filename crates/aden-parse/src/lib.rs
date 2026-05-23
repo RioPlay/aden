@@ -65,14 +65,25 @@ pub(crate) fn make_anchor(crate_name: &str, file_name: &str, symbol: &str) -> St
     format!("aden://module/{crate_name}/{file_name}#{symbol}")
 }
 
-/// Build mandatory attributes for a code-emitted Document.
-pub(crate) fn build_code_attributes(source: &str, node_type: &str, source_file: Option<&std::path::Path>) -> std::collections::HashMap<String, String> {
+/// Build mandatory attributes for a code-emitted Document, optionally including source span.
+pub(crate) fn build_code_attributes(
+    source: &str,
+    node_type: &str,
+    source_file: Option<&std::path::Path>,
+    span: Option<&aden_core::SourceSpan>,
+) -> std::collections::HashMap<String, String> {
     let mut attrs = std::collections::HashMap::new();
     attrs.insert("source_hash".to_string(), aden_core::stable_hash(source.as_bytes()));
     attrs.insert("last-verified".to_string(), aden_core::rfc3339_now());
     attrs.insert("node-type".to_string(), node_type.to_string());
     if let Some(path) = source_file {
         attrs.insert("source_file".to_string(), path.to_string_lossy().to_string());
+    }
+    if let Some(s) = span {
+        attrs.insert("start_line".to_string(), s.start_line.to_string());
+        attrs.insert("end_line".to_string(), s.end_line.to_string());
+        attrs.insert("start_byte".to_string(), s.start_byte.to_string());
+        attrs.insert("end_byte".to_string(), s.end_byte.to_string());
     }
     attrs
 }

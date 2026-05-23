@@ -89,6 +89,17 @@ enum Commands {
         #[arg(value_name = "PATH", value_hint = ValueHint::DirPath)]
         path: PathBuf,
     },
+    /// Locate a symbol definition or its call sites in the knowledge graph
+    Locate {
+        #[arg(long, value_name = "SYMBOL")]
+        symbol: Option<String>,
+        #[arg(long, value_name = "SYMBOL")]
+        caller_of: Option<String>,
+        #[arg(long, value_name = "FORMAT", default_value = "plain")]
+        format: String,
+        #[arg(value_name = "PATH", value_hint = ValueHint::DirPath)]
+        path: PathBuf,
+    },
     /// Watch source files for changes and auto-regenerate contracts
     #[cfg(feature = "watch")]
     Watch {
@@ -150,6 +161,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Commands::Search { query, path } => {
             cmd_search(&path, &query)
+        }
+        Commands::Locate { symbol, caller_of, format, path } => {
+            cmd_locate(&path, symbol.as_deref(), caller_of.as_deref(), &format)
         }
         #[cfg(feature = "watch")]
         Commands::Watch { path } => {
@@ -609,6 +623,82 @@ fn cmd_search(path: &Path, query: &str) -> Result<(), Box<dyn std::error::Error>
         println!("| {} | {:.1} | {} |", r.anchor, r.score, snippet);
     }
     Ok(())
+}
+
+fn cmd_locate(
+    path: &Path,
+    symbol: Option<&str>,
+    caller_of: Option<&str>,
+    format: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use aden_graph::graph::AdenGraph;
+    use serde_json::json;
+
+    if !path.is_dir() {
+        return Err("locate requires a directory path".into());
+    }
+
+    let graph = AdenGraph::build_from_directory(path)?;
+
+    // If --symbol is given, find the definition.
+    if let Some(sym) = symbol {
+        let mut hits = Vec::new();
+        for node in graph.graph.node_indices() {
+            let anchor = &graph.graph[node].anchor;
+            // Match by exact anchor suffix or partial anchor string
+            if anchor.ends_with(sym) || anchor.contains(sym) {
+                let attrs = &graph.graph[node].doc.attributes;
+                let file = attrs.get("source_file").cloned().unwrap_or_default();
+                let start_line = attrs.get("start_line").cloned().unwrap_or_default();
+                let end_line = attrs.get("end_line").cloned().unwrap_or_default();
+                let node_type = attrs
+                    .get("node-type")
+                    .cloned()
+                    .unwrap_or_else(|| format!("{:?}", graph.graph[node].doc.node_type));
+                hits.push(json!({
+                    "anchor": anchor,
+                    "node_type": node_type,
+                    "file": file,
+                    "start_line": start_line,
+                    "end_line": end_line,
+                }));
+            }
+        }
+
+        if hits.is_empty() {
+            println!("No symbol found matching '{}'", sym);
+            return Ok(());
+        }
+
+        if format == "json" {
+            println!("{}", serde_json::to_string_pretty(&hits)?);
+        } else {
+            for h in &hits {
+                let file = h["file"].as_str().unwrap_or("");
+                let start = h["start_line"].as_str().unwrap_or("");
+                let end = h["end_line"].as_str().unwrap_or("");
+                let anchor = h["anchor"].as_str().unwrap_or("");
+                let nt = h["node_type"].as_str().unwrap_or("");
+                if file.is_empty() || start.is_empty() {
+                    println!("{} ({})", anchor, nt);
+                } else if start == end {
+                    println!("{} {}:{}", anchor, file, start);
+                } else {
+                    println!("{} {}:{}–{}", anchor, file, start, end);
+                }
+            }
+        }
+        return Ok(());
+    }
+
+    // If --caller-of is given, show call sites (requires call-graph edges with span metadata).
+    if let Some(_target) = caller_of {
+        println!("caller-of requires call-graph edges with line metadata (not yet implemented)");
+        println!("Use 'aden graph --from <anchor> --depth 1' for module-level callers instead.");
+        return Ok(());
+    }
+
+    Err("locate requires one of --symbol or --caller-of".into())
 }
 
 #[cfg(feature = "watch")]

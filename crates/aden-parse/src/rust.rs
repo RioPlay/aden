@@ -111,6 +111,19 @@ fn node_text<'a>(node: tree_sitter::Node<'a>, source: &'a str) -> &'a str {
     node.utf8_text(source.as_bytes()).unwrap_or("")
 }
 
+/// Convert a tree-sitter node into an Aden SourceSpan.
+fn node_to_span(node: tree_sitter::Node, path: &Path) -> aden_core::SourceSpan {
+    let start = node.start_position();
+    let end = node.end_position();
+    aden_core::SourceSpan {
+        file: path.to_string_lossy().to_string(),
+        start_line: start.row + 1,
+        end_line: end.row + 1,
+        start_byte: node.start_byte(),
+        end_byte: node.end_byte(),
+    }
+}
+
 fn get_visibility_with_source(node: tree_sitter::Node, source: &str) -> Visibility {
     if let Some(vis) = node.child_by_field_name("visibility_modifier") {
         let text = node_text(vis, source);
@@ -197,7 +210,8 @@ fn extract_function(
         Some(buffered_comments.join("\n"))
     };
     let anchor = make_anchor(crate_name, file_name, name);
-    let attrs = build_code_attributes(source, "function", Some(path));
+    let span = node_to_span(node, path);
+    let attrs = build_code_attributes(source, "function", Some(path), Some(&span));
     let mut blocks = Vec::new();
     if let Some(doc) = doc_comment {
         blocks.push(Block::Paragraph(doc));
@@ -272,7 +286,8 @@ fn extract_struct(
     }
     let doc_comment = if buffered_comments.is_empty() { None } else { Some(buffered_comments.join("\n")) };
     let anchor = make_anchor(crate_name, file_name, name);
-    let attrs = build_code_attributes(source, "type", Some(path));
+    let span = node_to_span(node, path);
+    let attrs = build_code_attributes(source, "type", Some(path), Some(&span));
     let mut blocks = Vec::new();
     if let Some(doc) = doc_comment {
         blocks.push(Block::Paragraph(doc));
@@ -331,7 +346,8 @@ fn extract_enum(
     }
     let doc_comment = if buffered_comments.is_empty() { None } else { Some(buffered_comments.join("\n")) };
     let anchor = make_anchor(crate_name, file_name, name);
-    let attrs = build_code_attributes(source, "type", Some(path));
+    let span = node_to_span(node, path);
+    let attrs = build_code_attributes(source, "type", Some(path), Some(&span));
     let mut blocks = Vec::new();
     if let Some(doc) = doc_comment {
         blocks.push(Block::Paragraph(doc));
@@ -370,7 +386,8 @@ fn extract_module(
     let name_node = node.child_by_field_name("name")?;
     let name = node_text(name_node, source);
     let anchor = make_anchor(crate_name, file_name, name);
-    let attrs = build_code_attributes(source, "module", Some(path));
+    let span = node_to_span(node, path);
+    let attrs = build_code_attributes(source, "module", Some(path), Some(&span));
     let mut blocks = Vec::new();
     if !buffered_comments.is_empty() {
         blocks.push(Block::Paragraph(buffered_comments.join("\n")));
@@ -396,7 +413,8 @@ fn extract_trait(
     let name_node = node.child_by_field_name("name")?;
     let name = node_text(name_node, source);
     let anchor = make_anchor(crate_name, file_name, name);
-    let attrs = build_code_attributes(source, "type", Some(path));
+    let span = node_to_span(node, path);
+    let attrs = build_code_attributes(source, "type", Some(path), Some(&span));
     let mut blocks = Vec::new();
     if !buffered_comments.is_empty() {
         blocks.push(Block::Paragraph(buffered_comments.join("\n")));

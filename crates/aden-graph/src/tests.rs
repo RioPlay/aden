@@ -131,12 +131,14 @@ agent-note::DEPRECATED[2024-03-01] Use new_module instead
             node_type: NodeType::Module,
             attributes: HashMap::new(),
             blocks: Vec::new(),
+            source_span: None,
         };
         let doc2 = Document {
             anchor: "func-b".to_string(),
             node_type: NodeType::Function,
             attributes: HashMap::new(),
             blocks: Vec::new(),
+            source_span: None,
         };
         let node1 = DocumentNode {
             anchor: "mod-a".to_string(),
@@ -179,12 +181,14 @@ agent-note::DEPRECATED[2024-03-01] Use new_module instead
             node_type: NodeType::Note,
             attributes: HashMap::new(),
             blocks: Vec::new(),
+            source_span: None,
         };
         let doc2 = Document {
             anchor: "adr-b".to_string(),
             node_type: NodeType::Adr,
             attributes: HashMap::new(),
             blocks: Vec::new(),
+            source_span: None,
         };
         let node1 = DocumentNode {
             anchor: "note-a".to_string(),
