@@ -10,3 +10,26 @@ Cargo.lock
 .DS_Store
 .vscode/
 .idea/
+
+# Secrets — NEVER commit these
+*.pem
+*.key
+*.p8
+*.p12
+*.pfx
+.env
+.env.local
+.env.*.local
+secrets/
+private/
+id_rsa
+id_ecdsa
+id_ed25519
+*.pub
+!tools/keys/.gitkeep
+.den/
+
+# Generated signing artifacts (public keys OK, private NO)
+/signatures/
+*.sig
+asc/

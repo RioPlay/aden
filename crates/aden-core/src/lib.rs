@@ -19,6 +19,8 @@
 //! This crate defines the knowledge graph types used across all other crates.
 //! It has no dependencies on parsing, I/O, or emission logic.
 
+pub mod filter;
+
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -154,13 +156,107 @@ pub struct Document {
 }
 
 impl Document {
-    /// Convenience: merge source-span attributes into the attribute map.
+    /// Merge source-span attributes into the attribute map.
     pub fn with_span(mut self, span: &SourceSpan) -> Self {
         for (k, v) in span.to_attributes() {
             self.attributes.insert(k, v);
         }
         self.source_span = Some(span.clone());
         self
+    }
+
+    /// Strip/redact sensitive attributes according to profile.
+    pub fn sanitize(&mut self, config: &AdenConfig) {
+        if config.profile.mode == ProfileMode::Internal {
+            return;
+        }
+        for key in &config.profile.redact_fields {
+            if self.attributes.contains_key(key) {
+                self.attributes.insert(key.clone(), "[REDACTED]".to_string());
+            }
+        }
+    }
+}
+
+/// Runtime profile for Aden: controls what is emitted vs redacted.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub enum ProfileMode {
+    /// Internal development — full fidelity, all contracts visible.
+    #[default]
+    Internal,
+    /// Public-facing — sensitive fields redacted, private contracts hidden.
+    Public,
+}
+
+impl std::str::FromStr for ProfileMode {
+    type Err = String;
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "internal" | "dev" | "developer" => Ok(ProfileMode::Internal),
+            "public" | "open" | "external" => Ok(ProfileMode::Public),
+            _ => Err(format!("Unknown profile mode: {} (expected: internal, public)", s)),
+        }
+    }
+}
+
+/// Aden configuration loaded from `aden.toml`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AdenConfig {
+    /// Profile controls redaction and private-directory visibility.
+    #[serde(default)]
+    pub profile: ProfileConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ProfileConfig {
+    pub mode: ProfileMode,
+    /// Attribute keys to redact when mode == Public.
+    #[serde(default = "default_redact_fields")]
+    pub redact_fields: Vec<String>,
+    /// Directories that are only visible in Internal mode.
+    #[serde(default = "default_private_dirs")]
+    pub private_dirs: Vec<String>,
+}
+
+fn default_redact_fields() -> Vec<String> {
+    vec![
+        "source_file".to_string(),
+        "author_email".to_string(),
+        "author".to_string(),
+        "commit".to_string(),
+        "internal_url".to_string(),
+    ]
+}
+
+fn default_private_dirs() -> Vec<String> {
+    vec![
+        ".aden/private".to_string(),
+        ".ci".to_string(),
+        "tools/internal".to_string(),
+    ]
+}
+
+impl AdenConfig {
+    /// Load `aden.toml` from the given directory, or return defaults if absent.
+    pub fn load(dir: &std::path::Path) -> Self {
+        let path = dir.join("aden.toml");
+        if path.exists() {
+            std::fs::read_to_string(&path)
+                .ok()
+                .and_then(|s| toml::from_str(&s).ok())
+                .unwrap_or_default()
+        } else {
+            Self::default()
+        }
+    }
+
+    /// Is the given path inside a private directory?
+    pub fn is_private(&self, path: &std::path::Path) -> bool {
+        if self.profile.mode == ProfileMode::Internal {
+            return false;
+        }
+        let path_str = path.to_string_lossy();
+        self.profile.private_dirs.iter().any(|d| path_str.contains(d))
     }
 }
 

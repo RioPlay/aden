@@ -21,6 +21,8 @@ aden-index = { path = "../aden-index" }
 notify = { version = "8.2.0", optional = true }
 aden-heal = { version = "0.1.0", path = "../aden-heal" }
 aden-propose = { version = "0.1.0", path = "../aden-propose" }
+regex = "1.11"
+dirs = "6"
 
 [features]
 default = ["watch"]

@@ -130,6 +130,16 @@ enum Commands {
         #[arg(long, value_name = "DIR", value_hint = ValueHint::DirPath)]
         watch: Option<PathBuf>,
     },
+    /// Run all local CI gates before committing (check, heal, test, secret-scan)
+    CiCheck {
+        #[arg(value_name = "PATH", value_hint = ValueHint::DirPath)]
+        path: PathBuf,
+    },
+    /// Diagnose the environment: tool versions, repo health, signing keys
+    Doctor {
+        #[arg(value_name = "PATH", value_hint = ValueHint::DirPath)]
+        path: PathBuf,
+    },
     /// Semantic review: validate low-confidence proposals with token budgeting
     Review {
         #[arg(value_name = "PATH", value_hint = ValueHint::AnyPath)]
@@ -201,6 +211,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Err("heal requires one of --scan, --apply, or --watch".into())
             }
         }
+        Commands::CiCheck { path } => cmd_ci_check(&path),
+        Commands::Doctor { path } => cmd_doctor(&path),
         Commands::Review { path, budget, since } => {
             if let Some(ref git_ref) = since {
                 cmd_review_since(&path, budget, git_ref)
@@ -275,6 +287,7 @@ Include it at the top of every prompt with `include::.agent/context.adoc[]`.
 == Hard Constraints (Never Violate)
 ifdef::agent[]
 . **Never commit without `aden check` passing.** Run `aden check` on docs/ and your changes before declaring done.
+. **Never commit contracts or `.aden/` workspace.** Contracts are build artifacts. They contain signatures and paths that could be weaponized if leaked. Use `.gitignore` to enforce this; never bypass it.
 . **Never modify `.adoc` contracts without updating `[[anchor]]` references.** Broken `<<refs>>` break the knowledge graph.
 . **Never delete `agent-note::` blocks without justification.** They contain temporal uncertainty markers.
 . **Never duplicate definitions.** If a term exists in glossary, reference it with `<<glossary.adoc#term>>`; do not redefine.
@@ -328,7 +341,67 @@ This prevents race conditions and silent overwrites.
     );
     std::fs::write(agent_dir.join("session.adoc"), session_content)?;
 
+    // Security-first scaffolding: contracts are build artifacts
+    let aden_dir = target.join(".aden");
+    std::fs::create_dir_all(&aden_dir)?;
+
+    let aden_manifest = r###"[[manifest]]
+= Aden Workspace — Private by Default
+
+== Security Posture
+Contract files (`.aden`, `.adoc` in `contracts/`) are *build artifacts*,
+not source code. They must never be committed to version control.
+They contain derived code signatures, source paths, and architecture metadata
+that could be weaponized if exposed.
+
+== Generated Contract Policy
+. `contracts/` is always excluded from git via `.gitignore`.
+. Contracts are local-only unless explicitly exported with `aden export`.
+. Never share `.aden/` or `contracts/` directories.
+. If a contract leaks, treat it as a credential rotation event for the repo.
+
+== Why This Matters
+A malicious actor who can modify or inject contracts can silently
+redirect every downstream developer toward insecure patterns.
+Contracts are part of the software supply chain. Guard them accordingly.
+"###;
+    std::fs::write(aden_dir.join("README.adoc"), aden_manifest)?;
+
+    // Default exclusion rules (.adenignore)
+    let adenignore = r###"# Aden Ignore — Security-first defaults
+# Contracts are build artifacts; never commit them.
+/contracts/
+/.aden/
+/target/
+/.git/
+
+# Secrets (never process)
+*.pem
+*.key
+*.p8
+*.env
+.env.local
+.env.*
+
+# Editor debris
+*.swp
+*.swo
+.vscode/
+.idea/
+
+# Build outputs (cargo/node)
+node_modules/
+dist/
+build/
+
+# OS files
+.DS_Store
+Thumbs.db
+"###;
+    std::fs::write(target.join(".adenignore"), adenignore)?;
+
     println!("Initialized .agent/ in {}", target.display());
+    println!("Generated .adenignore with security-first defaults.");
     println!("Generated {} template files.", templates_dir.read_dir()?.count());
     println!("Next: AI agents should read .agent/onboarding.adoc before starting work.");
     Ok(())
@@ -1362,6 +1435,171 @@ fn cmd_heal_watch(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     Ok(())
+}
+
+fn cmd_ci_check(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let mut exit_code = 0i32;
+    let green = "\x1b[0;32m";
+    let red = "\x1b[0;31m";
+    let reset = "\x1b[0m";
+
+    macro_rules! gate {
+        ($name:expr, $cmd:expr) => {{
+            println!("[CI] Running: {} ...", $name);
+            match $cmd {
+                Ok(_) => println!("{}[CI] PASS: {}{}", green, $name, reset),
+                Err(e) => {
+                    println!("{}[CI] FAIL: {} — {}{}", red, $name, e, reset);
+                    exit_code = 1;
+                }
+            }
+        }};
+    }
+
+    gate!("aden check", {
+        if !path.is_dir() { Err("not a directory".into()) }
+        else { perform_check(path).map(|_| ()) }
+    });
+
+    gate!("aden heal —scan", {
+        use aden_heal::{Scanner, generate};
+        let scanner = Scanner::new(path);
+        let events = scanner.scan()?;
+        let report = generate(events.clone(), path);
+        if report.overall_score < 1.0 {
+            Err(Box::<dyn std::error::Error>::from(format!("Health score below 1.00: {:.2}", report.overall_score)))
+        } else {
+            Ok(())
+        }
+    });
+
+    gate!("cargo test", {
+        let output = std::process::Command::new("cargo")
+            .args(["test", "--workspace", "--quiet"])
+            .current_dir(path)
+            .output()?;
+        if !output.status.success() {
+            Err(Box::<dyn std::error::Error>::from(String::from_utf8_lossy(&output.stderr).to_string()))
+        } else {
+            Ok(())
+        }
+    });
+
+    gate!("secret scan", {
+        let patterns = [
+            r"-----BEGIN (RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----",
+            r"AKIA[0-9A-Z]{16}",
+            r"ghp_[a-zA-Z0-9]{36}",
+        ];
+        let mut found = 0;
+        for entry in std::fs::read_dir(path)? {
+            let entry = entry?;
+            let p = entry.path();
+            if p.is_file() {
+                if let Ok(text) = std::fs::read_to_string(&p) {
+                    for pat in &patterns {
+                        if regex::Regex::new(pat)?.is_match(&text) {
+                            println!("  {}Secret pattern '{}' found in {}{}", red, pat, p.display(), reset);
+                            found += 1;
+                        }
+                    }
+                }
+            }
+        }
+        if found > 0 {
+            Err(Box::<dyn std::error::Error>::from(format!("{} secret pattern(s) detected", found)))
+        } else {
+            Ok(())
+        }
+    });
+
+    if exit_code != 0 {
+        println!("\n{}[CI] GATES FAILED — Commit not recommended.{}", red, reset);
+        std::process::exit(exit_code);
+    }
+    println!("\n{}[CI] ALL GATES PASSED — Ready to commit.{}", green, reset);
+    Ok(())
+}
+
+fn cmd_doctor(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    println!("Aden Doctor — Environment Diagnostics");
+    println!("═══════════════════════════════════════\n");
+
+    let mut issues = Vec::new();
+
+    // Tool availability
+    for tool in &["rustc", "cargo", "git"] {
+        if std::process::Command::new(tool).arg("--version").output().is_ok() {
+            println!("✓ {} found", tool);
+        } else {
+            println!("✗ {} NOT FOUND", tool);
+            issues.push(format!("{} not in PATH", tool));
+        }
+    }
+
+    // Aden binary
+    if std::process::Command::new("aden").arg("--version").output().is_ok() {
+        println!("✓ aden CLI found in PATH");
+    } else {
+        println!("✗ aden CLI NOT in PATH (build or install: cargo install --path crates/aden-cli)");
+        issues.push("aden CLI not in PATH".to_string());
+    }
+
+    // Signing keys
+    let key_dir = dirs::home_dir().unwrap_or_default().join(".aden").join("keys");
+    if key_dir.join("aden-sign.pub").exists() {
+        println!("✓ Signing public key: {}", key_dir.join("aden-sign.pub").display());
+    } else {
+        println!("⚠ No signing key found. Generate with:");
+        println!("    mkdir -p ~/.aden/keys && cd ~/.aden/keys");
+        println!("    ssh-keygen -t ed25519 -C 'aden-sign' -N '' -f aden-sign");
+        issues.push("No ~/.aden/keys/aden-sign.pub".to_string());
+    }
+
+    // Repo health
+    println!("\n— Repo Health —");
+    if path.join(".agent").is_dir() {
+        println!("✓ .agent/ directory present");
+    } else {
+        println!("✗ .agent/ MISSING — run 'aden init' in this repo");
+        issues.push("No .agent/ directory".to_string());
+    }
+
+    if path.join(".adenignore").exists() {
+        println!("✓ .adenignore present");
+    } else {
+        println!("⚠ .adenignore missing — using built-in defaults");
+    }
+
+    // Quick heal score
+    println!("\n— Quick Scan —");
+    if let Ok(score) = quick_health_score(path) {
+        if score >= 1.0 {
+            println!("✓ Health Score: {:.2}/1.00", score);
+        } else {
+            println!("⚠ Health Score: {:.2}/1.00 (run 'aden heal --scan .' to see drift)", score);
+            issues.push(format!("Health score {:.2} (target 1.00)", score));
+        }
+    }
+
+    println!("\n═══════════════════════════════════════");
+    if issues.is_empty() {
+        println!("All diagnostics passed. Environment is healthy.");
+    } else {
+        println!("{} issue(s) found:", issues.len());
+        for i in &issues {
+            println!("  - {}", i);
+        }
+    }
+    Ok(())
+}
+
+fn quick_health_score(path: &Path) -> Result<f64, Box<dyn std::error::Error>> {
+    use aden_heal::Scanner;
+    let scanner = Scanner::new(path);
+    let events = scanner.scan()?;
+    let total = events.len().max(1) as f64;
+    Ok(1.0 - (events.len() as f64 / (total + 5.0)).min(1.0))
 }
 
 fn escape_adoc_cell(text: &str) -> String {

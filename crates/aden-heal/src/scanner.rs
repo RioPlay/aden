@@ -18,32 +18,90 @@ use crate::drift::DriftEvent;
 use crate::HealError;
 use aden_core::{Block, Document};
 use aden_graph::graph::AdenGraph;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+#[derive(Default, Serialize, Deserialize)]
+struct SourceCache {
+    /// path relative to repo_root → (mtime_secs, serialized_doc_json)
+    entries: HashMap<String, (u64, String)>,
+    timestamp_secs: u64,
+}
 
 pub struct Scanner {
     pub repo_root: PathBuf,
+    cache: Option<SourceCache>,
+    cache_path: PathBuf,
 }
 
 impl Scanner {
     pub fn new(repo_root: impl AsRef<Path>) -> Self {
+        let root = repo_root.as_ref().to_path_buf();
+        let cache_path = root.join(".aden").join("scan-cache.json");
+        let cache = std::fs::read(&cache_path)
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok());
         Self {
-            repo_root: repo_root.as_ref().to_path_buf(),
+            repo_root: root,
+            cache,
+            cache_path,
         }
+    }
+
+    fn mtime(path: &Path) -> u64 {
+        std::fs::metadata(path)
+            .and_then(|m| m.modified())
+            .unwrap_or(UNIX_EPOCH)
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
     }
 
     pub fn scan(&self) -> Result<Vec<DriftEvent>, HealError> {
         let mut events = Vec::new();
+        let mut new_cache = SourceCache {
+            timestamp_secs: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+            ..SourceCache::default()
+        };
 
-        // a. Find and parse all source files
+        // a. Find and parse all source files — skip unchanged ones from cache
         let mut source_paths = Vec::new();
         self.collect_source_files(&self.repo_root, &mut source_paths)?;
 
         let mut source_entries: Vec<(PathBuf, Document)> = Vec::new();
         for path in &source_paths {
+            let rel = path.strip_prefix(&self.repo_root).unwrap_or(path);
+            let rel_str = rel.to_string_lossy().to_string();
+            let current_mtime = Self::mtime(path);
+
+            // Try cache fast-path: mtime matches and we have a serialized doc
+            if let Some(cached_json) = self.cache.as_ref().and_then(|c| {
+                let (mt, json) = c.entries.get(&rel_str)?;
+                if *mt == current_mtime {
+                    Some(json.clone())
+                } else {
+                    None
+                }
+            }) {
+                if let Ok(doc) = serde_json::from_str::<Document>(&cached_json) {
+                    new_cache.entries.insert(rel_str.clone(), (current_mtime, cached_json));
+                    source_entries.push((path.clone(), doc));
+                    continue;
+                }
+            }
+
+            // Slow path: read & parse
             if let Ok(content) = std::fs::read_to_string(path) {
                 if let Ok(docs) = aden_parse::parse_file(path, &content) {
                     for doc in docs {
+                        if let Ok(json) = serde_json::to_string(&doc) {
+                            new_cache.entries.insert(rel_str.clone(), (current_mtime, json));
+                        }
                         source_entries.push((path.clone(), doc));
                     }
                 }
@@ -162,6 +220,12 @@ impl Scanner {
                     }
                 }
             }
+        }
+
+        // Persist cache for next incremental scan
+        if let Ok(json) = serde_json::to_string_pretty(&new_cache) {
+            let _ = std::fs::create_dir_all(self.cache_path.parent().unwrap_or(Path::new(".")));
+            let _ = std::fs::write(&self.cache_path, json);
         }
 
         Ok(events)

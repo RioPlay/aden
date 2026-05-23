@@ -35,6 +35,7 @@ pub struct AdenGraph {
     pub graph: DiGraph<DocumentNode, EdgeType>,
     pub anchor_to_index: HashMap<String, NodeIndex>,
     pub path_to_index: HashMap<PathBuf, NodeIndex>,
+    filter: aden_core::filter::AdenFilter,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -54,16 +55,20 @@ pub enum GraphError {
 impl AdenGraph {
     /// Create an empty graph.
     pub fn new() -> Self {
+        use aden_core::filter::AdenFilter;
         Self {
             graph: DiGraph::new(),
             anchor_to_index: HashMap::new(),
             path_to_index: HashMap::new(),
+            filter: AdenFilter::from_directory(Path::new(".")),
         }
     }
 
     /// Parse all `.adoc` / `.aden` files in a directory and build the graph.
     pub fn build_from_directory(dir: &Path) -> Result<Self, GraphError> {
+        use aden_core::filter::AdenFilter;
         let mut graph = Self::new();
+        graph.filter = AdenFilter::from_directory(dir);
         let mut files = Vec::new();
         graph.collect_files(dir, &mut files)?;
 
@@ -131,19 +136,37 @@ impl AdenGraph {
     }
 
     fn collect_files(&self, dir: &Path, files: &mut Vec<PathBuf>) -> Result<(), GraphError> {
+        // Attempt to find project root for relative-path filtering
+        let root = self.find_root(dir);
+        self.collect_files_inner(dir, &root, files)?;
+        Ok(())
+    }
+
+    fn find_root(&self, start: &Path) -> PathBuf {
+        let mut current = start.to_path_buf();
+        loop {
+            if current.join("Cargo.toml").exists() || current.join("aden.toml").exists() || current.join(".adenignore").exists() {
+                return current;
+            }
+            if let Some(parent) = current.parent() {
+                current = parent.to_path_buf();
+            } else {
+                return start.to_path_buf();
+            }
+        }
+    }
+
+    fn collect_files_inner(&self, dir: &Path, root: &Path, files: &mut Vec<PathBuf>) -> Result<(), GraphError> {
         for entry in std::fs::read_dir(dir).map_err(|e| GraphError::Io(e.to_string()))? {
             let entry = entry.map_err(|e| GraphError::Io(e.to_string()))?;
             let path = entry.path();
-            if path.is_dir() {
-                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                // Skip hidden dirs, build dirs, and template/runtime dirs
-                if !name.starts_with('.')
-                    && name != "target"
-                    && name != "node_modules"
-                    && name != ".agent"
-                {
-                    self.collect_files(&path, files)?;
+            if let Ok(rel) = path.strip_prefix(root) {
+                if self.filter.should_skip(rel) {
+                    continue;
                 }
+            }
+            if path.is_dir() {
+                self.collect_files_inner(&path, root, files)?;
             } else if path.is_file() {
                 let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
                 if ext == "adoc" || ext == "aden" {
