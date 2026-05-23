@@ -5,30 +5,49 @@
 = Negative Constraints: What AI Must Never Do
 
 == File System
-. Never write outside the working directory without explicit permission.
+. Never write outside the working directory without explicit user permission.
 . Never delete files unless the user explicitly requests it.
-. Never overwrite `.adoc` contracts without regenerating via `aden gen` first.
-. Never ignore `.gitignore` rules when creating new files.
+. Never ignore `.gitignore` or `.adenignore` rules when creating new files.
+. Never commit `contracts/`, `.aden/`, or secret artifacts — these are local-only build outputs.
+. Never write private keys, tokens, or credentials to ANY file in the repo.
 
 == Code Quality
-. Never suppress compiler warnings with `#[allow(...)]` without a `// SAFETY:` comment.
-. Never use `unwrap()` or `expect()` on user-provided data.
-. Never leave `TODO` comments without an `agent-note::TODO[ticket-id]` block.
-. Never modify tested behavior without updating or adding tests.
+. Never suppress compiler warnings or linter diagnostics without a `// SAFETY:` comment.
+. Never use `unwrap()` or `expect()` on user-provided or external data.
+. Never leave `TODO` comments without a corresponding `agent-note::TODO[ticket-id]` block.
+. Never modify tested behavior without adding or updating tests.
+. Never commit code that fails your project's test suite.
+
+== Aden Workflow (Mandatory)
+. **Never** modify code without running `aden ask` on impacted symbols first.
+. **Never** declare a task complete if `aden check .` reports broken references.
+. **Never** edit `.aden` contract files by hand — always regenerate with `aden gen`.
+. **Never** skip `aden heal --scan .` before closing a session.
+. **Never** generate a contract without reviewing it for accuracy.
+. **Never** commit if `aden ci-check .` fails any gate.
 
 == Documentation
 . Never create documentation files without `[[anchors]]`.
 . Never use YAML frontmatter; only AsciiDoc `:key: value` attributes.
-. Never duplicate glossary terms across files; use `include::glossary.adoc[]`.
-. Never emit broken `<<references>>`; run `aden check` first.
+. Never duplicate glossary terms across files; use `<<glossary.adoc#term>>`.
+. Never emit broken `<<references>>`; run `aden check .` after any document edit.
+. Never leave contracts with empty descriptions — every contract must explain what the symbol does.
 
 == Coordination
 . Never start work without reading `.agent/session.adoc`.
-. Never modify files another agent is working on (check session log).
-. Never commit without appending your session entry to `session.adoc`.
-. Never ignore low-confidence `agent-note::WARNING` blocks.
+. Never modify files another agent is actively working on (check session log).
+. Never close a session without updating your entry in `session.adoc`.
+. Never ignore `agent-note::WARNING` blocks with confidence < 0.7.
+. Never conflict with another agent — if found, re-read and resolve with `aden ask`.
+
+== Security & Privacy
+. Never expose secret or sensitive information in contracts. Aden defaults to `internal` mode; contracts contain paths and signatures.
+. Never share `contracts/` or `.aden/` directories outside the local machine.
+. If a contract accidentally leaks, treat it as a repo security event.
+. Never include internal URLs, email addresses, or build server names in public-facing documentation.
 
 == Inference Efficiency
 . Never scan the entire repo if `aden heal --since HEAD~1` suffices.
 . Never request large-context semantic review for trivial changes.
 . Never duplicate effort already recorded in `session.adoc`.
+. Never waste tokens on full assembly when `aden ask --budget 2048` would suffice.

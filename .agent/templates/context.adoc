@@ -22,9 +22,9 @@ These are non-negotiable. Violating any of these is a critical failure.
 . **Never modify `.adoc` contracts without updating `[[anchor]]` references.** Broken `<<refs>>` break the knowledge graph.
 . **Never delete `agent-note::` blocks without impunity review.** They contain temporal uncertainty markers.
 . **Never duplicate definitions.** If a term exists in `glossary.adoc`, reference it with `<<glossary.adoc#term>>`; do not redefine.
-. **Never use unsafe code** in Rust without an explicit `agent-note::UNSAFE` block with justification.
+. **Never use unsafe code** without an explicit `agent-note::UNSAFE` block with justification.
 . **Never emit files to paths outside the working directory** without user confirmation.
-. **Never ignore test failures.** If `cargo test` fails, fix before proceeding.
+. **Never ignore test failures.** If the test suite fails, fix before proceeding.
 endif::agent[]
 
 == Language Defaults

@@ -3,41 +3,109 @@
 [[onboarding]]
 = Agent Onboarding Protocol
 
-== Step 1: Ingest Context (Mandatory)
-Before writing any code:
-
-. Read `.agent/context.adoc` — shared memory and glossary
+== Pre-Flight Checklist (Do These First — Always)
+. Read `.agent/context.adoc` — project shared memory
+. Read `.agent/aden-guide.adoc` — how to use aden correctly (this is canonical)
 . Read `.agent/constraints.adoc` — what you must never do
-. Read `.agent/session.adoc` — current agent activity log
-. Read `docs/context.adoc` — project-wide standards
+. Read `.agent/session.adoc` — who is active right now
+. Read `.agent/glossary.adoc` — terminology reference
 
-== Step 2: Understand Current State
-. Run `aden check docs/` to verify baseline health
-. Run `aden heal --scan . --since HEAD~1` to see recent drift
-. Review `docs/plan-phase*.adoc` for active initiatives
+== Phase 1: Assess Baseline Health (Before Code)
+```
+aden check .                              # All refs resolve? Health = 1.0?
+aden doctor .                             # Environment OK? No leaks detected?
+aden heal --scan . --since HEAD~1        # What drift exists from recent work?
+```
+If `aden check` returns errors, STOP. Ask for human clarification or fix drift first.
 
-== Step 3: Lock Your Session
-. Append an entry to `.agent/session.adoc` with:
-  - Timestamp
-  - Your task description
-  - Files you intend to touch
-  - Estimated confidence
-. This prevents other agents from conflicting with your work
+== Phase 2: Lock Your Session
+Mandatory atomic protocol (read → append → write → verify):
 
-== Step 4: Implement with Checks
-. Write code
-. Simultaneously write or update the matching `.adoc` contract
-. Run `cargo test` and `aden check` before declaring done
-. If `aden heal` detects drift, generate proposals with `--propose`
+```
+# 1. Read session.adoc into memory
+cat .agent/session.adoc
 
-== Step 5: Close Session
-. Update `.agent/session.adoc` with completion status
-. Run `aden check` one final time
-. Ensure all `<<refs>>` resolve to existing `[[anchors]]`
+# 2. Append your entry (use ISO-8601 timestamp, UTC)
+# Example:
+# |2026-05-23T14:30:00Z |agent-7 |Refactor parser error handling |src/parser/error.ext
+# |in_progress |High
 
-== Emergency Contacts
-If you encounter:
-- Circular `include::[]` references → Run `aden check` for cycle detection
-- Broken `<<refs>>` → Use fuzzy anchor recovery with `aden heal --scan`
-- Drift in existing contracts → Generate `.patch.adoc` proposals
-- Another agent conflict → Read `session.adoc` and coordinate
+# 3. Overwrite session.adoc atomically
+# 4. Re-read to confirm your entry exists
+```
+
+=== Entry Format (Strict)
+```
+|Timestamp |Agent |Task |Files |Status |Confidence
+|===
+```
+
+Confidence levels: **High** (>0.9), **Medium** (0.7-0.9), **Low** (<0.7).
+If confidence is Low, include a `blocker:` field explaining why.
+
+== Phase 3: Impact Analysis (Before Editing)
+Before modifying ANY existing symbol:
+
+```
+aden ask --from <symbol_name> "What depends on this and what breaks if I change it?"
+aden graph --depth 2 <symbol_name>        # Visual dependency map
+aden locate --caller-of <symbol_name>     # Who calls this
+```
+
+If over 10 backlinks exist, include `aden asm --from <symbol_name>` in your analysis.
+
+== Phase 4: Implement + Generate
+. Write code.
+. Immediately generate its contract: `aden gen <file.rs>`.
+. Review the generated contract — does it accurately describe your change?
+. If you changed a public API, update or create the module-level contract too.
+
+=== Contract Quality Checklist
+- [ ] Does the contract have a `[[unique-anchor]]`?
+- [ ] Is the `Description` paragraph non-empty and accurate?
+- [ ] Are parameters current (match source signature)?
+- [ ] Did you add an `agent-note::` if behavior is uncertain or experimental?
+
+== Phase 5: Validation
+```
+<your-test-command>                       # All tests pass (e.g. `cargo test`, `pytest`, `go test`)
+aden check .                              # No broken references
+aden heal --scan .                        # No drift (Health Score == 1.00)
+aden ci-check .                           # Full local CI gate passes
+```
+
+If any step fails, do not declare completion. Fix and re-run.
+
+== Phase 6: Close Session
+. Update your entry in `.agent/session.adoc`:
+  - Change `Status` to `completed` or `cancelled`
+  - Add `Result:` field summarizing outcome
+. Run `aden check .` one final time.
+. If contracts changed, they are in `contracts/` — do NOT stage them.
+
+== Emergency Procedures
+|===
+|Situation |Immediate Action
+
+|Circular include detected by `aden check`
+|Run `aden graph` to find cycle, remove redundant include
+
+|Broken `<<refs>>` after rename
+|Use `aden search "old_name"` to find all references, update them
+
+|`aden heal` shows StaleHash on your file
+|You edited code without regenerating contract. Run `aden gen <file>`.
+
+|Another agent modified a file you're editing (session conflict)
+|Stop. Rebase your mental model: read their contract, resolve manually.
+
+|Drift score drops below 1.0 after your changes
+|Your code and contracts are out of sync. Review `aden heal --scan`.
+
+|Token budget exceeded during reasoning
+|Subdivide: ask smaller scoped questions. Use `aden locate` for precision.
+
+|Low confidence (<0.7) on implementation
+|Add `agent-note::WARNING` explaining risk. Do NOT auto-apply.
+
+|===

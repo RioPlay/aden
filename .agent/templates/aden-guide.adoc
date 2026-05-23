@@ -1,0 +1,99 @@
+:proj: {project}
+:lang: rust
+
+[[aden-guide]]
+= How to Use Aden Correctly — AI Agent Reference
+
+== What Aden Is (and Is Not)
+Aden is a **context compiler**, not a documentation generator. It extracts structure from source code and turns it into a traversable knowledge graph. Contracts are build artifacts — they are never committed to version control.
+
+**Do NOT**:
+- Treat contracts as hand-written docs (they are machine-derived)
+- Edit `.aden` files directly (use `aden gen` + review)
+- Commit `contracts/` or `.aden/` (they are in `.gitignore`)
+
+**DO**:
+- Use contracts to understand code you haven't read yet
+- Use `aden ask` to reason about impact before modifying code
+- Use `aden heal` to find drift between code and contracts
+
+== Command Decision Tree
+
+=== Before touching ANY code
+```
+aden ask --from <symbol> "What breaks if I change X?"
+aden graph --depth 2 <symbol>               # See dependents
+aden locate <symbol>                          # Find exact definition
+```
+
+=== After writing code
+```
+aden check .                                  # Verify all <<refs>> resolve
+aden heal --scan .                            # Detect contract drift
+aden gen <file.rs>                            # Regenerate contract for file
+```
+
+=== Before committing
+```
+aden ci-check .                               # Run all gates locally
+```
+
+=== When lost or investigating
+```
+aden ask "How does the filter engine work?"    # Natural language query
+aden search "fnv hasher"                       # Full-text search across contracts
+aden doctor .                                  # Environment + security audit
+```
+
+== Writing Good Contracts (for `aden gen`)
+A good contract contains:
+. A clear `[[anchor]]` matching the source symbol name
+. Attribute tables with: Visibility, Parameters, Return Type, Source File
+. A Description paragraph (not just params)
+. agent-note:: blocks for uncertainty or TODOs
+
+A bad contract contains:
+. No description (just raw signature)
+. Hardcoded absolute paths in `:source_file:`
+. Stale params that don't match source
+. Missing visibility information
+
+== Reference Integrity Rules
+. Every `<<anchor>>` must resolve. Run `aden check` after any anchor change.
+. Every `include::path[]` must exist. Broken includes break the graph.
+. Circular references between contracts are forbidden — checked by `aden graph`.
+. Anchor names must be lowercase ASCII with hyphens: `^[a-z0-9_-]+$`.
+
+== Common Failure Modes
+[cols="1,2,1"]
+|===
+|Symptom |Cause |Fix
+
+|Broken `<<refs>>` after refactor
+|Renamed symbol, old anchor in contract
+|Run `aden gen` on modified file, then `aden check`
+
+|`aden heal` reports StaleHash
+|Source changed, contract not regenerated
+|Run `aden heal --scan --propose` and review patches
+
+|MissingContract for public symbol
+|Forgot to run `aden gen` on new file
+|Run `aden gen` or `aden gen <file>`
+
+|DeadLink in include
+|Moved or deleted included file
+|Update include path or remove reference
+
+|Health Score < 1.0
+|At least one drift event exists
+|Run `aden heal --scan` to see all drift
+
+|===
+
+== Token Economy
+Aden compresses code context. Use it wisely:
+- `aden ask --budget 2048` for quick lookups
+- `aden ask --budget 8192` for deep architectural reasoning
+- Assembly (`aden asm`) costs tokens proportional to graph depth — default 8192
+- When in doubt, use `aden ask` first — it's cheaper than full assembly
