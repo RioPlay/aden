@@ -40,21 +40,43 @@ pub fn parse_file(path: &Path, source: &str) -> Result<Vec<Document>> {
 }
 
 /// Walk a directory and parse every supported source file.
+/// Includes DoS guards: depth limit, file count limit, and size checks.
 pub fn parse_directory(dir: &Path) -> Result<Vec<Document>> {
+    parse_directory_inner(dir, 0, &mut 0)
+}
+
+const MAX_SCAN_DEPTH: usize = 20;
+const MAX_FILES_SCANNED: usize = 5_000;
+const MAX_FILE_SIZE: u64 = 1024 * 1024; // 1 MB
+
+fn parse_directory_inner(dir: &Path, depth: usize, file_count: &mut usize) -> Result<Vec<Document>> {
+    if depth > MAX_SCAN_DEPTH {
+        return Ok(Vec::new());
+    }
     let mut docs = Vec::new();
     for entry in std::fs::read_dir(dir).map_err(|e| Error::Io(e.to_string()))? {
         let entry = entry.map_err(|e| Error::Io(e.to_string()))?;
         let path = entry.path();
         if path.is_file() {
+            *file_count += 1;
+            if *file_count > MAX_FILES_SCANNED {
+                return Ok(docs);
+            }
             let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
             #[allow(unreachable_patterns)]
             if matches!(ext, "ps1" | "psm1" | "psd1") || cfg!(feature = "rust-parser") && ext == "rs" {
+                // Skip files too large to avoid DoS
+                if let Ok(meta) = std::fs::metadata(&path) {
+                    if meta.len() > MAX_FILE_SIZE {
+                        continue;
+                    }
+                }
                 let source = std::fs::read_to_string(&path)
                     .map_err(|e| Error::Io(e.to_string()))?;
                 docs.extend(parse_file(&path, &source)?);
             }
         } else if path.is_dir() {
-            docs.extend(parse_directory(&path)?);
+            docs.extend(parse_directory_inner(&path, depth + 1, file_count)?);
         }
     }
     Ok(docs)

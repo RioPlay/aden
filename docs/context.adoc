@@ -3,8 +3,8 @@
 :proj: aden
 :lang: rust
 
-[[context]]
-= Shared Context
+[[project-context]]
+= Project Context
 
 ifdef::agent[]
 This file is the canonical shared memory for all agent sessions working on Aden.

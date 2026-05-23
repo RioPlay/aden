@@ -43,7 +43,11 @@ pub fn assemble(graph: &AdenGraph, opts: &AssemblyOptions) -> Result<String, Ass
 
     queue.push_back((start_idx, 0usize));
 
+    const MAX_VISITED_NODES: usize = 10_000;
     while let Some((node, depth)) = queue.pop_front() {
+        if visited.len() >= MAX_VISITED_NODES {
+            break; // DoS guard: hard limit on nodes processed
+        }
         if visited.contains(&node) {
             continue;
         }
