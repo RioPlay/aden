@@ -82,6 +82,17 @@ enum Commands {
         #[arg(value_name = "PATH", value_hint = ValueHint::AnyPath)]
         path: PathBuf,
     },
+    /// Ask a natural-language question; Aden resolves it to a subgraph and assembles context.
+    Ask {
+        #[arg(value_name = "QUESTION")]
+        question: String,
+        #[arg(long, value_name = "ANCHOR")]
+        from: Option<String>,
+        #[arg(long, value_name = "TOKENS", default_value = "4096")]
+        budget: usize,
+        #[arg(value_name = "PATH", value_hint = ValueHint::DirPath)]
+        path: PathBuf,
+    },
     /// Search the knowledge graph for documents matching a query
     Search {
         #[arg(value_name = "QUERY")]
@@ -158,6 +169,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Commands::Query { from, edge_type, depth, backlinks, impact, path } => {
             cmd_query(&path, from.as_deref(), edge_type.as_deref(), depth, backlinks.as_deref(), impact.as_deref())
+        }
+        Commands::Ask { question, from, budget, path } => {
+            cmd_ask(&path, &question, from.as_deref(), budget)
         }
         Commands::Search { query, path } => {
             cmd_search(&path, &query)
@@ -569,6 +583,129 @@ fn cmd_query(
     }
 
     println!("{}", serde_json::to_string_pretty(&results)?);
+    Ok(())
+}
+
+/// Intent classification for natural-language queries.
+#[derive(Debug)]
+enum QueryIntent {
+    Debug,    // "Why does X fail?"
+    Usage,    // "How do I use X?"
+    Explain,  // "What does X do?"
+    Refactor, // "Refactor X"
+    Impact,   // "What depends on X?"
+    General,  // default
+}
+
+fn classify_intent(question: &str) -> QueryIntent {
+    let q = question.to_lowercase();
+    if q.contains("fail") || q.contains("error") || q.contains("panic") || q.contains("crash") || q.contains("broken") {
+        QueryIntent::Debug
+    } else if q.contains("how do i") || q.contains("how to") || q.contains("usage") || q.contains("example") {
+        QueryIntent::Usage
+    } else if q.contains("refactor") || q.contains("rewrite") || q.contains("rename") {
+        QueryIntent::Refactor
+    } else if q.contains("depend") || q.contains("blast radius") || q.contains("what uses") || q.contains("who calls") {
+        QueryIntent::Impact
+    } else if q.contains("what is") || q.contains("what does") || q.contains("explain") || q.contains("how does") {
+        QueryIntent::Explain
+    } else {
+        QueryIntent::General
+    }
+}
+
+fn edge_types_for_intent(intent: &QueryIntent) -> Vec<aden_core::EdgeType> {
+    use aden_core::EdgeType::*;
+    match intent {
+        QueryIntent::Debug => vec![Constrains, Documents, Calls, Invokes, Requires],
+        QueryIntent::Usage => vec![Uses, Invokes, Requires, Documents],
+        QueryIntent::Explain => vec![Uses, Calls, Implements, Documents],
+        QueryIntent::Refactor => vec![Calls, Uses, Mutates, Supersedes, Amends],
+        QueryIntent::Impact => vec![Uses, Calls, Constrains],
+        QueryIntent::General => vec![Uses, Documents, Constrains],
+    }
+}
+
+fn depth_for_intent(intent: &QueryIntent) -> usize {
+    match intent {
+        QueryIntent::Debug => 3,
+        QueryIntent::Usage => 2,
+        QueryIntent::Explain => 2,
+        QueryIntent::Refactor => 4,
+        QueryIntent::Impact => 3,
+        QueryIntent::General => 2,
+    }
+}
+
+fn cmd_ask(
+    path: &Path,
+    question: &str,
+    from_override: Option<&str>,
+    budget: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use aden_asm::traverse::{assemble, AssemblyOptions};
+    use aden_graph::graph::AdenGraph;
+    use aden_index::Index;
+
+    if !path.is_dir() {
+        return Err("ask requires a directory path".into());
+    }
+
+    // Step 1: Resolve question to an anchor via search, or use override
+    let start_anchor = if let Some(anchor) = from_override {
+        anchor.to_string()
+    } else {
+        let idx = Index::from_directory(path)?;
+        let results = idx.query(question);
+        if results.is_empty() {
+            println!("No relevant documents found for: {}", question);
+            println!("Tips:\n  - Use more specific keywords from the codebase.\n  - Try `aden search <term>` to see available anchors.\n  - Or pin an anchor with --from <anchor>.");
+            return Ok(());
+        }
+        results[0].anchor.clone()
+    };
+
+    println!("// Aden Ask: '{}' → [[{}]]", question, start_anchor);
+    if from_override.is_some() {
+        println!("// (pinned by --from)");
+    }
+    println!();
+
+    // Step 2: Classify intent and route assembly strategy
+    let intent = classify_intent(question);
+    let edge_types = edge_types_for_intent(&intent);
+    let depth = depth_for_intent(&intent);
+
+    println!("// Strategy: {:?} | Depth: {} | Edges: {:?}", intent, depth,
+             edge_types.iter().map(|e| format!("{:?}", e)).collect::<Vec<_>>().join(", "));
+    println!();
+
+    // Step 3: Build graph and assemble context
+    let graph = AdenGraph::build_from_directory(path)?;
+    let opts = AssemblyOptions {
+        start_anchor: start_anchor.clone(),
+        max_depth: depth,
+        token_budget: budget,
+        edge_types,
+    };
+    let assembled = assemble(&graph, &opts)?;
+
+    // Step 4: Print context and footer
+    let consumed = assembled.len();
+    let budget_label = if consumed > budget { "OVER BUDGET" } else { "on budget" };
+    let page_breaks = assembled.matches("\n<<<\n").count();
+    let node_count = page_breaks + 1;
+
+    println!("{}", assembled);
+    println!();
+    println!("// ────────────────────────────────────────────────");
+    println!("// Aden Ask Summary");
+    println!("//   Question: {}", question);
+    println!("//   Anchor  : [[{}]]", start_anchor);
+    println!("//   Strategy: {:?} | Depth: {}", intent, depth);
+    println!("//   Nodes   : {} | Tokens: {} / {} ({})", node_count, consumed, budget, budget_label);
+    println!("// ────────────────────────────────────────────────");
+
     Ok(())
 }
 

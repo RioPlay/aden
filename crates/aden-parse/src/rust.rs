@@ -240,6 +240,28 @@ fn extract_function(
         headers: vec!["Property".to_string(), "Value".to_string()],
         rows: sig_rows,
     }));
+    // Extract call sites from function body
+    if let Some(body) = node.child_by_field_name("body") {
+        let calls = extract_call_sites(body, source);
+        if !calls.is_empty() {
+            blocks.push(Block::Paragraph("== Call Sites".to_string()));
+            let mut call_rows = vec![vec!["Callee".to_string(), "Line".to_string()]];
+            let mut edge_lines: Vec<String> = Vec::new();
+            for (callee, line) in &calls {
+                call_rows.push(vec![callee.clone(), line.to_string()]);
+                edge_lines.push(format!("edge::calls[{}]", callee));
+            }
+            blocks.push(Block::Table(aden_core::Table {
+                headers: vec!["Callee".to_string(), "Line".to_string()],
+                rows: call_rows,
+            }));
+            // Emit typed edge macros for graph ingestion after the table
+            for line in edge_lines {
+                blocks.push(Block::Paragraph(line));
+            }
+        }
+    }
+
     if !buffered_comments.is_empty() {
         blocks.push(Block::Admonition {
             kind: aden_core::AdmonitionKind::Note,
@@ -248,11 +270,85 @@ fn extract_function(
     }
     Some(Document {
         anchor,
-        node_type: NodeType::Function,
+        node_type: NodeType::Type,
         attributes: attrs,
         blocks,
         source_span: None,
     })
+}
+
+/// Standard-library and common utility functions to exclude from call-graph extraction.
+/// These generate noise (to_string, push, unwrap, etc.) without meaningful cross-module edges.
+const SKIP_CALLEES: &[&str] = &[
+    "to_string", "to_string_lossy", "to_str", "to_path_buf", "to_owned",
+    "clone", "copy", "eq", "ne", "partial_cmp", "cmp",
+    "push", "pop", "insert", "remove", "clear", "extend", "append",
+    "map", "filter", "fold", "collect", "join", "split", "iter", "into_iter",
+    "contains", "is_empty", "len", "get", "get_mut", "entry",
+    "unwrap", "unwrap_or", "unwrap_or_else", "expect", "ok", "err", "map_err",
+    "new", "default", "from", "into", "try_from", "try_into",
+    "parse", "format", "write", "writeln", "print", "println", "eprintln",
+    "walk", "children", "goto_first_child", "goto_next_sibling", "goto_parent",
+    "kind", "utf8_text", "start_position", "end_position", "start_byte", "end_byte",
+    "is_named", "is_ok", "is_err", "is_some", "is_none",
+    "as_ref", "as_mut", "as_str", "as_bytes", "as_path",
+    "chars", "lines", "bytes", "trim", "trim_start", "trim_end",
+    "read_to_string", "read_dir", "read", "write_all", "create_dir_all",
+    "canonicalize", "join", "parent", "extension", "file_name", "file_stem",
+];
+
+/// Recursively walk an AST subtree and collect all `call_expression` nodes.
+/// Returns a list of (callee_name, 1-based_line_number) for each *meaningful* call found.
+/// Filters out std-lib noise and very short names.
+fn extract_call_sites(node: tree_sitter::Node, source: &str) -> Vec<(String, usize)> {
+    let mut calls = Vec::new();
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        calls.extend(extract_call_sites(child, source));
+    }
+    if node.kind() == "call_expression" {
+        if let Some(func) = node.child_by_field_name("function") {
+            let callee = resolve_callee_name(func, source);
+            if !callee.is_empty()
+                && callee.len() >= 3
+                && !SKIP_CALLEES.contains(&callee.as_str())
+            {
+                let line = func.start_position().row + 1;
+                calls.push((callee, line));
+            }
+        }
+    }
+    calls
+}
+
+fn resolve_callee_name(node: tree_sitter::Node, source: &str) -> String {
+    match node.kind() {
+        "identifier" => node_text(node, source).to_string(),
+        "field_expression" => {
+            if let Some(name) = node.child_by_field_name("field") {
+                node_text(name, source).to_string()
+            } else {
+                node_text(node, source).to_string()
+            }
+        }
+        "scoped_identifier" => {
+            let mut name_parts = Vec::new();
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                if child.kind() == "identifier" {
+                    name_parts.push(node_text(child, source));
+                }
+            }
+            if name_parts.len() >= 2 {
+                format!("{}::{}", name_parts[name_parts.len() - 2], name_parts[name_parts.len() - 1])
+            } else if !name_parts.is_empty() {
+                name_parts.last().unwrap().to_string()
+            } else {
+                node_text(node, source).to_string()
+            }
+        }
+        _ => node_text(node, source).to_string(),
+    }
 }
 
 fn extract_struct(
