@@ -24,6 +24,10 @@ Every codebase eventually becomes too large to fit in a single mind. Aden solves
 - **Never lose context** between discrete tool windows — everything is assembled into a single AsciiDoc artifact
 - **Never leak internal architecture** — contracts are private build artifacts by default
 
+== What Can Aden Do?
+
+Aden turns any body of knowledge into a traversable, attributed, token-dense graph. For a deep dive into domains beyond software, see docs/use-cases.adoc.
+
 == Supported Languages
 
 |===

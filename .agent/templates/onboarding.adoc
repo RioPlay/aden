@@ -3,7 +3,65 @@
 [[onboarding]]
 = Agent Onboarding Protocol
 
-== Pre-Flight Checklist
+[TIP]
+====
+This document has **two paths**:
+
+* **Path A** — You are starting a *new project from scratch*.
+* **Path B** — You are joining an *existing codebase*.
+
+Pick the one that applies. Do not mix them.
+====
+
+== Path A: Starting a New Project
+
+Use this when there is no code yet, only an idea.
+
+=== Step 1: Validate the Idea
+
+Before touching code:
+
+. Write xref:kickoff.adoc[]. Fill every section. If you cannot, the idea is not ready.
+. Do not write code until the kickoff is complete.
+. Kickoff defines success criteria. Without them, you cannot know when you are done.
+
+=== Step 2: Design Before Building
+
+. Write xref:design.adoc[] for the core architecture.
+. Write xref:adr-{number}.adoc[] for every non-obvious decision.
+. No code without an accepted ADR. No ADR without a kickoff.
+
+=== Step 3: Specify What You Will Build
+
+. Write xref:spec.adoc[] with acceptance criteria.
+. Break the spec into xref:task.adoc[] entries.
+. Every task must trace back to a spec criterion.
+
+=== Step 4: Build with Checks
+
+. Write code.
+. Generate contracts: `aden gen <file>`
+. Run tests.
+. Run `aden check .`
+. Run `aden ci-check .`
+. Only then commit.
+
+=== Step 5: Publish Runbook
+
+Before shipping:
+
+. Write xref:runbook.adoc[] for operations.
+. Write monitoring checks.
+. Define incident severity.
+. Write xref:retrospective.adoc[] *template* for when things go wrong.
+
+---
+
+== Path B: Joining an Existing Project
+
+Use this when the project already has code and contracts.
+
+=== Pre-Flight Checklist
 
 . Read xref:context.adoc[.agent/context.adoc] — shared memory
 . Read xref:aden-guide.adoc[.agent/aden-guide.adoc] — canonical command reference

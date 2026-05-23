@@ -1,0 +1,240 @@
+:proj: aden
+:author: RioPlay
+
+[[use-cases]]
+= Aden Use Cases — Beyond Code
+
+Aden is a **context compiler** — it turns any body of knowledge into a traversable, attributed, token-dense graph. What follows is a non-exhaustive list of domains where this capability unlocks value that traditional documentation, wiki, or note-taking tools cannot provide.
+
+== The Core Pattern
+
+Every use case below follows the same workflow:
+
+. **Ingest** — Parse raw material (code, interview transcripts, regulations, etc.)
+. **Extract** — Identify entities, relationships, claims, and obligations
+. **Compile** — Turn them into a traversable knowledge graph with typed edges
+. **Query** — Ask natural-language questions; get precise, contextual answers
+. **Drift** — Detect when reality and documentation diverge
+. **Audit** — Verify attribution, accreditation, and provenance
+
+== 1. Software Engineering (The Origin Story)
+
+Already implemented. Aden extracts symbols, call graphs, and API contracts from source code, producing machine-readable documentation that AI agents and humans can query without reading every file.
+
+*Impact:* Eliminates stale documentation, ensures every refactor propagates correctly, makes onboarding instant.
+
+== 2. Academic Research & Literature Reviews
+
+A PhD student ingests 200 papers into aden. Each paper becomes a `Document`. Key claims become typed edges (`Supports`, `Contradicts`, `Extends`, `Replicates`). The student can ask:
+
+----
+aden ask "Which papers contradict the central claim of Smith 2024?"
+----
+
+Aden assembles a subgraph of all papers that cite Smith negatively, with pull quotes and confidence flags.
+
+*Differentiator:* Unlike Zotero or Obsidian, aden tracks **contradiction edges** and **confidence degradation** over time. If a replication study later invalidates a claim, aden detects the drift and flags all downstream papers that built on it.
+
+== 3. Legal Due Diligence & Contract Analysis
+
+A law firm ingests 5,000 pages of contracts, NDAs, and regulatory filings. Each clause is a node. Obligations flow as edges (`Requires`, `Prohibits`, `Entitles`).
+
+----
+aden ask "What obligations do we have under Section 7.3 that expire in Q2?"
+----
+
+Aden locates the clause, traces all dependent clauses, and assembles a digest with source spans.
+
+*Differentiator:* Detects **cross-contract conflicts** (e.g., NDA clause X contradicts Employment Agreement clause Y). Traditional CLM tools cannot do this without manual mapping.
+
+== 4. Investigative Journalism
+
+A journalist builds a knowledge graph from leaked documents, interview transcripts, and public records. Entities (people, companies, assets) are nodes. Relationships are edges (`Owns`, `Funnelled-to`, `Obfuscated-by`).
+
+----
+aden graph --depth 3 "shell-company-X"
+----
+
+Reveals the full ownership chain in seconds instead of weeks of spreadsheet work.
+
+*Differentiator:* **Source attribution is immutable**. Every claim in the graph carries an audit trail back to the original PDF page or transcript timestamp. Bias and fabrication are structurally harder.
+
+== 5. Medical Protocol & Clinical Guidelines
+
+A hospital network encodes clinical protocols as aden contracts. Each drug interaction, contraindication, and dosing rule is a typed edge.
+
+----
+aden ask "Patient has condition X and takes drug Y. What is the protocol?"
+----
+
+Aden assembles the relevant subgraph, flags outdated protocols (via StaleHash), and requires human sign-off on high-risk conflicts.
+
+*Differentiator:* Detects **protocol drift** — when a new study invalidates an existing guideline but the ward is still operating under the old rule.
+
+== 6. Open Source Intelligence (OSINT)
+
+Analysts scrape public data (social media, registry filings, satellite imagery metadata). Aden compiles it into a temporal graph.
+
+----
+aden ask "What changed about Organization Z's infrastructure between January and March?"
+----
+
+Aden diffs the graph states, highlights new edges (new facilities, new personnel), and produces a confidence-graded timeline.
+
+*Differentiator:* Unlike manual spreadsheets, the graph is **self-checking** — if two sources contradict, aden flags it as BrokenReference.
+
+== 7. Manufacturing & Supply Chain
+
+A manufacturer models their supply chain: suppliers, parts, certifications, and compliance requirements. Each part number is a node. Each certification is an edge (`Certified-by`, `Required-for`).
+
+----
+aden ask "If Supplier A stops producing Part B, which products can't ship?"
+----
+
+Aden traverses downstream from the part, identifies all finished goods that require it, and estimates revenue impact.
+
+*Differentiator:* **Impact analysis is automatic**. No manual Bill of Materials walkthrough required. When a supplier updates their spec, aden detects the SignatureMismatch and flags affected assemblies.
+
+== 8. Financial Modeling & Audit Trails
+
+An investment fund models portfolio companies as nodes. Due diligence findings, board resolutions, and covenant compliance are edges.
+
+----
+aden ask "Which portfolio companies are out of compliance with covenant 4.2?"
+----
+
+Aden evaluates the current state against the contractual graph, flags drift, and generates a compliance report.
+
+*Differentiator:* Every number in the report is traceable to a source document and line. Regulators can verify without manual document review.
+
+== 9. Game Design & Worldbuilding
+
+A game studio encodes their lore bible: characters, factions, locations, events. Relationships are edges (`Alliance`, `Betrayed`, `Descended-from`).
+
+----
+aden ask "What are all the unresolved prophecies that mention Location X?"
+----
+
+Aden locates prophecies, checks which have been fulfilled (Status:Resolved edges), and returns the open ones with impact analysis on the narrative.
+
+*Differentiator:* Detects **lore contradictions** — when a new writer contradicts an established event, aden flags it before publication.
+
+== 10. Crisis Management & Incident Response
+
+During an outage, an SRE team encodes the incident: symptoms, affected systems, mitigation steps, root causes. Each is a node with temporal edges (`Preceded-by`, `Caused-by`, `Mitigated-by`).
+
+----
+aden ask "What symptoms preceded the database failure but were not acted on?"
+----
+
+Aden reconstructs the causal chain, identifies ignored warning signals, and appends to the post-mortem.
+
+*Differentiator:* Post-mortems are **live graphs**, not static documents. Six months later, when a similar symptom appears, aden locates the prior incident and assembles the context instantly.
+
+== 11. Education & Curriculum Design
+
+A university department models their curriculum: courses, learning outcomes, prerequisites, and assessments. Each course is a node. Each prerequisite is a `Requires` edge.
+
+----
+aden ask "If we remove Course X, which degree paths become invalid?"
+----
+
+Aden traverses all paths that depend on Course X, identifies affected programs, and estimates student impact.
+
+*Differentiator:* Detects **prerequisite drift** — when a course description changes but degree requirements still reference the old version.
+
+== 12. Standards & Specifications Engineering
+
+An industry working group encodes a technical standard: sections, requirements, test assertions, and reference implementations. Each requirement is a node. Each test is a `Validates` edge.
+
+----
+aden ask "Which requirements lack a test assertion?"
+----
+
+Aden identifies orphan nodes (requirements with no incoming `Validates` edges) and generates a coverage report.
+
+*Differentiator:* When the standard updates, aden detects which implementations have StaleHash and need re-certification.
+
+== 13. Historical & Cultural Preservation
+
+Archivists encode oral histories, photographs, and artifacts as nodes. Provenance chains (`Acquired-from`, `Photographed-by`, `Described-in`) are edges.
+
+----
+aden ask "Which artifacts in Collection X have disputed provenance?"
+----
+
+Aden finds artifacts where `Acquired-from` edges conflict with `Documentation` edges, flagging them for further research.
+
+*Differentiator:* **Immutable attribution** — every claim about an artifact carries a citation to the archivist, date, and source document. Future scholars can verify without relying on institutional memory.
+
+== 14. Personal Knowledge Management (PKM)
+
+A researcher maintains a personal knowledge base across decades of reading, experiments, and conversations. Aden compiles it into a single queryable graph.
+
+----
+aden ask "What did I believe about Topic Y in 2018, and what do I believe now?"
+----
+
+Aden compares two temporal graph slices, highlights changed anchors, and assembles an evolution narrative.
+
+*Differentiator:* Unlike Roam or Obsidian, aden tracks **confidence degradation** — beliefs that were once "Certain" that have since been contradicted.
+
+== 15. Regulatory Compliance & Policy
+
+A government agency models regulations, guidance documents, and enforcement actions. Each regulation is a node. Amendments are `Supersedes` edges.
+
+----
+aden ask "Which regulations reference the outdated standard Z and need updating?"
+----
+
+Aden finds all regulations with DeadLink or BrokenReference to deprecated standards, and generates a regulatory amendment proposal.
+
+*Differentiator:* Detects **regulatory drift** — when guidance contradicts updated law, or when two agencies issue conflicting rules.
+
+== 16. Patent & Intellectual Property Research
+
+Patent attorneys model prior art: patents, publications, inventions. Each patent is a node. Citations are `Cites` edges. Rejections are `Rejected-due-to` edges.
+
+----
+aden ask "What prior art invalidates Claim 3 of Patent X?"
+----
+
+Aden traverses citation chains, identifies the strongest prior art, and assembles an invalidity argument with source spans.
+
+*Differentiator:* Graph-based prior art search finds **multi-hop citations** that keyword search misses (e.g., Patent A cites Patent B cites Patent C; keyword search finds B but not C).
+
+== 17. Environmental Impact & Sustainability
+
+Environmental scientists model ecosystems: species, habitats, pollutants, interventions. Each species is a node. Each dependency (`Preys-on`, `Polluted-by`) is an edge.
+
+----
+aden ask "If pollutant P is introduced, which species are affected within 3 trophic levels?"
+----
+
+Aden performs BFS from the pollutant node, collects all species within 3 hops, and estimates biodiversity impact.
+
+*Differentiator:* Detects **model drift** — when new field data contradicts the existing ecological model, aden flags which impact assessments need revision.
+
+== 18. Architecture & Construction
+
+Architects and engineers model a building: systems (HVAC, electrical, structural), components, and requirements. Each system is a node. Dependencies are edges (`Powered-by`, `Requires-clearance`).
+
+----
+aden ask "If we relocate Wall X, which systems require redesign?"
+----
+
+Aden traces all edges through Wall X, identifies affected systems, and estimates change orders.
+
+*Differentiator:* Detects **specification drift** — when a contractor installs a different component than specified, aden flags the SignatureMismatch against the contract.
+
+== The Common Thread
+
+In every domain, the value of aden is the same:
+
+. **Context assembly** — Ask a question; get precisely the right context, not too much, not too little.
+. **Drift detection** — Know immediately when reality and documentation diverge.
+. **Attribution** — Every claim is traceable to its source. No authority without evidence.
+. **Cross-reference integrity** — Circular references, dead links, and contradictions are caught automatically.
+. **Token density** — Compress knowledge to its essence. Eliminate fluff.
+
+Aden is not a documentation tool. It is a **knowledge integrity system**.

@@ -295,6 +295,34 @@ fn cmd_init(target: &Path) -> Result<(), Box<dyn std::error::Error>> {
         include_str!("../../../.agent/templates/policy.adoc"),
     )?;
     std::fs::write(
+        templates_dir.join("kickoff.adoc"),
+        include_str!("../../../.agent/templates/kickoff.adoc"),
+    )?;
+    std::fs::write(
+        templates_dir.join("design.adoc"),
+        include_str!("../../../.agent/templates/design.adoc"),
+    )?;
+    std::fs::write(
+        templates_dir.join("spec.adoc"),
+        include_str!("../../../.agent/templates/spec.adoc"),
+    )?;
+    std::fs::write(
+        templates_dir.join("task.adoc"),
+        include_str!("../../../.agent/templates/task.adoc"),
+    )?;
+    std::fs::write(
+        templates_dir.join("adr.adoc"),
+        include_str!("../../../.agent/templates/adr.adoc"),
+    )?;
+    std::fs::write(
+        templates_dir.join("runbook.adoc"),
+        include_str!("../../../.agent/templates/runbook.adoc"),
+    )?;
+    std::fs::write(
+        templates_dir.join("retrospective.adoc"),
+        include_str!("../../../.agent/templates/retrospective.adoc"),
+    )?;
+    std::fs::write(
         agent_dir.join("README.adoc"),
         include_str!("../../../.agent/README.adoc"),
     )?;

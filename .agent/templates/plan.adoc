@@ -1,30 +1,69 @@
 :proj: {project}
 :phase: {phase}
-:agent_role: {role}
-:scope: {scope}
 
 [[plan-phase{phase}]]
 = Phase {phase}: {title}
 
+[IMPORTANT]
+====
+A plan without acceptance criteria is a wish.
+Every deliverable must have a Definition of Done.
+====
+
 == Objective
-{objective}
+
+In one sentence: What does success look like for this phase?
+
+== How We Got Here
+
+Reference the xref:kickoff.adoc[Kickoff] or xref:spec.adoc[Specification] that spawned this plan.
+Summarize why this phase exists in the larger roadmap.
 
 == Constraints
-:idempotent: {idempotent}
-:rollback: {rollback}
+
+. **Non-negotiables**: What must remain true regardless of circumstances?
+. **Rollback**: How do we undo this phase if something goes wrong?
+. **Deadline**: Hard date or "when ready"?
 
 == Deliverables
-|===
-|Module |Deliverable |Acceptance Criteria
 
-|{module} |{deliverable} |{criteria}
 |===
+|Module |Deliverable |Acceptance Criteria |Owner |
+
+| | | | |
+
+|===
+
+=== Definition of Done for This Phase
+
+. All acceptance criteria pass
+. xref:adr-{number}.adoc[ADRs] are accepted
+. xref:runbook.adoc[Runbook] is updated
+. No xref:constraints.adoc[constraints] violated
 
 == Dependencies
-{dependencies}
+
+What must be finished before this phase can begin?
+
+|===
+|Dependency |Status |Blocker |
+
+| | | |
+
+|===
+
+== Risk
+
+What is the single biggest risk to this phase shipping on time?
+How do we know if the risk is materializing?
 
 == Trace
-- *{date}*: Initial plan
 
-== Included Context
-include::context.adoc[]
+- *{date}*: Initial plan
+- *{date}*: Updated because ____________
+
+== Related
+
+* xref:kickoff.adoc[Kickoff]
+* xref:spec.adoc[Specification]
+* xref:task.adoc[Tasks]
