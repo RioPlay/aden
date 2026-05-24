@@ -1,55 +1,60 @@
 :proj: aden
-:standard: ""
 :lang: rust
+:ai_name: agent
+:standard: cargo
 
 [[agent-context]]
 = Shared Context for Agent Sessions
 
-This file is the canonical shared memory for all agent sessions working on `unknown`.
+This file is the canonical shared memory for all agent sessions working on `aden`.
 Include it at the top of every prompt with `include::.agent/context.adoc[]`.
+
+== Project Identity
+
+[cols="1,2"]
+|===
+|Name |aden
+|Language |rust
+|AI Name |agent
+|Standard |cargo workspace
+|===
 
 == Hard Constraints (Never Violate)
 ifdef::agent[]
-. **Never commit without `aden check` passing.** Run `aden check` on docs/ and your changes before declaring done.
-. **Never commit contracts or `.aden/` workspace.** Contracts are build artifacts. They contain signatures and paths that could be weaponized if leaked. Use `.gitignore` to enforce this; never bypass it.
-. **Never modify `.adoc` contracts without updating `[[anchor]]` references.** Broken `<<refs>>` break the knowledge graph.
-. **Never delete `agent-note::` blocks without justification.** They contain temporal uncertainty markers.
-. **Never duplicate definitions.** If a term exists in glossary, reference it with `<<glossary.adoc#term>>`; do not redefine.
-. **Never emit files outside the working directory** without user confirmation.
-. **Never ignore test failures.** If tests fail, fix before proceeding.
+
+. **Never commit without `aden check` passing.**
+. **Never edit contracts by hand — always regenerate with `aden gen`.**
+. **Never emit files outside the working directory** without confirmation.
+. **Never ignore test failures.**
+. **Never commit `contracts/` or `.aden/`** (they are build artifacts).
+
 endif::agent[]
 
-== Agent Conventions
-. Every `.adoc` file must declare an anchor immediately before the title.
-. Every table must have a header row.
-. Use `agent-note::` blocks for temporal annotations and uncertainty.
-. Use `ifdef::agent[]` to hide human prose from AI context.
-. Never use YAML frontmatter; use AsciiDoc attributes (`:key: value`).
-. Resolve every `<<reference>>` to an existing `[[anchor]]`.
-
-== Security Posture
+== Language Defaults
 ifdef::agent[]
-Security is a first-class concern. Every agent session must follow these patterns, derived from prior audits:
-
-. Subprocess safety :: Pass `--` before all user-controlled args to `Command::new(...)`. Never trust PATH for helper scripts.
-. Symlink hardening :: Skip symlinks during all directory traversals (`entry.file_type().is_symlink()`).
-. Temp file safety :: Use unique filenames + `create_new(true)` in shared temp directories (`std::env::temp_dir()`).
-. Regex DoS prevention :: Compile regexes once (`OnceLock` / `lazy_static`), never per-file or per-request.
-. Path leakage prevention :: Strip absolute prefixes from `:source_file:` attributes before emitting contracts.
-. Atomic writes :: Use temp+rename for any file read by concurrent agents (e.g., `.agent/session.adoc`).
-. Crash isolation :: Wrap server handlers in `catch_unwind`. A request bug must not kill the process.
-. Timestamp safety :: Use `unwrap_or_default()` on `SystemTime::duration_since(UNIX_EPOCH)`.
+- Primary language: `unknown`
+- Edition / version: 2024
+- Standard framework / runtime: unknown
 endif::agent[]
+
+== Dependencies
+|===
+|Name |Purpose |Version Policy
+
+| | |
+|===
 
 == Next Steps
-. Run `aden init` in this repository (already done if you're reading this).
+
 . Read `.agent/onboarding.adoc` before your first session.
 . Read `.agent/constraints.adoc` to know what not to do.
 . Append your session entry to `.agent/session.adoc` before starting work.
 
-== Navigation
+== Related Documents
 
-. <<agent-readme>>
+. <<agent-onboarding>>
 . <<agent-session>>
-. <<readme>>
-. <<project-context>>
+. <<security-audit-2026-05-24>>
+. <<getting-started>>
+. <<user-guide>>
+. <<ai-integration>>

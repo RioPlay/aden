@@ -83,7 +83,7 @@ impl AdenGraph {
                 anchor: primary_anchor.clone(),
                 node_type: aden_core::NodeType::Note, // will be refined by attribute
                 attributes: parsed.attributes.clone(),
-                blocks: Vec::new(),
+                blocks: parsed.blocks.clone(),
                 source_span: None,
             };
 

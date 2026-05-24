@@ -1,28 +1,35 @@
-:proj: aden
+:proj: unknown
 :session: active
 
 [[agent-session]]
 = Agent Session Log
 
-== Purpose
-This file is the canonical shared memory for parallel subagent sessions.
+This file is the canonical shared memory for parallel agent sessions.
 Every agent that modifies files must append an entry here before completing.
-This prevents race conditions and silent overwrites.
 
 == Active Sessions
 
 |===
-|Timestamp |Agent |Task |Files Touched |Status
+|Timestamp |Agent |Task |Files |Status |Confidence
 |===
 
-== Known Invariants
-. Every agent must read this file before starting work.
-. Every agent must append a row before declaring done.
-. If two agents touch the same file, the later agent must reconcile with the earlier.
-. No agent may delete rows; only append.
+== How to Append
 
-== Navigation
+[source,asciidoc]
+----
+|2026-05-24T14:30:00Z |agent-7 |Refactor parser |src/parser.rs |in_progress |High
+----
 
-. <<agent-readme>>
+Confidence: High (>0.9), Medium (0.7–0.9), Low (<0.7 — include blocker in task description).
+
+== Invariants
+
+. Read this file before every session.
+. Append a row before declaring work complete.
+. If two agents touch the same file, reconcile before committing.
+. Never delete rows; only append.
+
+== Related Documents
+
 . <<agent-context>>
-. <<readme>>
+. <<agent-onboarding>>

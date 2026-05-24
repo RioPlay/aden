@@ -87,64 +87,71 @@ pub enum AssemblyError {
 }
 
 fn document_to_text(doc: &DocumentNode) -> String {
-    use aden_core::{Block, AdmonitionKind};
-    let mut out = String::new();
-    // Attributes
-    for (key, value) in &doc.doc.attributes {
-        out.push_str(&format!(":{key}: {value}\n"));
-    }
-    out.push('\n');
-    // Anchor + Title
-    out.push_str(&format!("[[{}]]\n", doc.anchor));
-    let title = doc.anchor.rfind('#').map(|p| &doc.anchor[p+1..]).unwrap_or(&doc.anchor);
-    out.push_str(&format!("= {title}\n\n"));
-    // Blocks
-    for block in &doc.doc.blocks {
-        match block {
-            Block::Paragraph(t) => {
-                out.push_str(t);
-                out.push('\n');
-            }
-            Block::Table(table) => {
-                out.push_str("|===\n");
-                let header = table.headers.iter().map(|h| format!("|{h}")).collect::<String>();
-                out.push_str(&header);
-                out.push('\n');
-                for row in &table.rows {
-                    let row_str = row.iter().map(|c| format!("|{c}")).collect::<String>();
-                    out.push_str(&row_str);
+    // If blocks were populated during parsing, emit structured content.
+    // Otherwise fall back to the original raw source so the assembled
+    // context is never empty.
+    if !doc.doc.blocks.is_empty() {
+        use aden_core::{Block, AdmonitionKind};
+        let mut out = String::new();
+        // Attributes
+        for (key, value) in &doc.doc.attributes {
+            out.push_str(&format!(":{key}: {value}\n"));
+        }
+        out.push('\n');
+        // Anchor + Title
+        out.push_str(&format!("[[{}]]\n", doc.anchor));
+        let title = doc.anchor.rfind('#').map(|p| &doc.anchor[p+1..]).unwrap_or(&doc.anchor);
+        out.push_str(&format!("= {title}\n\n"));
+        // Blocks
+        for block in &doc.doc.blocks {
+            match block {
+                Block::Paragraph(t) => {
+                    out.push_str(t);
                     out.push('\n');
                 }
-                out.push_str("|===\n");
-            }
-            Block::Listing { language, code } => {
-                if let Some(lang) = language {
-                    out.push_str(&format!("[source,{lang}]\n"));
-                } else {
-                    out.push_str("[listing]\n");
+                Block::Table(table) => {
+                    out.push_str("|===\n");
+                    let header = table.headers.iter().map(|h| format!("|{h}")).collect::<String>();
+                    out.push_str(&header);
+                    out.push('\n');
+                    for row in &table.rows {
+                        let row_str = row.iter().map(|c| format!("|{c}")).collect::<String>();
+                        out.push_str(&row_str);
+                        out.push('\n');
+                    }
+                    out.push_str("|===\n");
                 }
-                out.push_str("----\n");
-                out.push_str(code);
-                out.push_str("\n----\n");
-            }
-            Block::Admonition { kind, text } => {
-                let label = match kind {
-                    AdmonitionKind::Note => "NOTE",
-                    AdmonitionKind::Tip => "TIP",
-                    AdmonitionKind::Warning => "WARNING",
-                    AdmonitionKind::Important => "IMPORTANT",
-                    AdmonitionKind::Caution => "CAUTION",
-                };
-                out.push_str(&format!("{label}: {text}\n"));
-            }
-            Block::DescriptionList(items) => {
-                for (term, def) in items {
-                    out.push_str(&format!("{term}:: {def}\n"));
+                Block::Listing { language, code } => {
+                    if let Some(lang) = language {
+                        out.push_str(&format!("[source,{lang}]\n"));
+                    } else {
+                        out.push_str("[listing]\n");
+                    }
+                    out.push_str("----\n");
+                    out.push_str(code);
+                    out.push_str("\n----\n");
+                }
+                Block::Admonition { kind, text } => {
+                    let label = match kind {
+                        AdmonitionKind::Note => "NOTE",
+                        AdmonitionKind::Tip => "TIP",
+                        AdmonitionKind::Warning => "WARNING",
+                        AdmonitionKind::Important => "IMPORTANT",
+                        AdmonitionKind::Caution => "CAUTION",
+                    };
+                    out.push_str(&format!("{label}: {text}\n"));
+                }
+                Block::DescriptionList(items) => {
+                    for (term, def) in items {
+                        out.push_str(&format!("{term}:: {def}\n"));
+                    }
                 }
             }
         }
+        out
+    } else {
+        doc.parsed.raw_content.trim().to_string()
     }
-    out
 }
 
 /// Improved token estimation using a word-based heuristic.

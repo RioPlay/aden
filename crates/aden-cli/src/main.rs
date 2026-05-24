@@ -2797,6 +2797,7 @@ fn cmd_ci_check(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     });
 
     gate!("secret scan", {
+        use aden_core::filter::AdenFilter;
         use regex::Regex;
         use std::sync::OnceLock;
 
@@ -2834,6 +2835,7 @@ fn cmd_ci_check(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
 
         const MAX_SCAN_SIZE: u64 = 1024 * 1024;
         let mut found = 0;
+        let filter = AdenFilter::from_directory(path);
 
         for entry in walkdir::WalkDir::new(path)
             .follow_links(false)
@@ -2842,6 +2844,9 @@ fn cmd_ci_check(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         {
             let p = entry.path();
             if !p.is_file() { continue; }
+            if let Ok(rel) = p.strip_prefix(path) {
+                if filter.should_skip(rel) { continue; }
+            }
             if let Some(ext) = p.extension().and_then(|e| e.to_str()) {
                 if non_text_exts.contains(ext.to_lowercase().as_str()) { continue; }
             }
@@ -2851,6 +2856,17 @@ fn cmd_ci_check(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
             if let Ok(text) = std::fs::read_to_string(&p) {
                 for (re, name) in patterns {
                     for cap in re.find_iter(&text) {
+                        let line_start = text[..cap.start()].rfind('\n').map(|i| i + 1).unwrap_or(0);
+                        let line_end = text[cap.end()..].find('\n').map(|i| cap.end() + i).unwrap_or(text.len());
+                        let line = &text[line_start..line_end];
+                        if line.contains("Regex::new") { continue; }
+                        // Skip ignore-file entries that list .env patterns (not actual env contents)
+                        if *name == "env file" {
+                            let trimmed = line.trim();
+                            if trimmed.starts_with(".env") || trimmed.starts_with("*.env") {
+                                continue;
+                            }
+                        }
                         let snippet = &text[cap.start().saturating_sub(20)..(cap.end() + 20).min(text.len())];
                         println!("  {}Secret ({}) in {}: ...{}...{}", red, name, p.display(), snippet.replace('\n', " "), reset);
                         found += 1;
@@ -2880,9 +2896,128 @@ fn cmd_ci_check(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         cmd_audit(path, None, "text", true)
     });
 
+    gate!("merge conflict markers", {
+        use aden_core::filter::AdenFilter;
+        let mut found = 0;
+        let filter = AdenFilter::from_directory(path);
+        for entry in walkdir::WalkDir::new(path)
+            .follow_links(false)
+            .into_iter()
+            .filter_map(|e| e.ok())
+        {
+            let p = entry.path();
+            if !p.is_file() { continue; }
+            if let Ok(rel) = p.strip_prefix(path) {
+                if filter.should_skip(rel) { continue; }
+            }
+            if let Ok(text) = std::fs::read_to_string(&p) {
+                for line in text.lines() {
+                    let trimmed = line.trim();
+                    if trimmed.starts_with("<<<<<<< ") || trimmed.starts_with(">>>>>>> ") || trimmed == "=======" {
+                        println!("  {}Merge conflict marker in {}: {}{}", red, p.display(), trimmed, reset);
+                        found += 1;
+                    }
+                }
+            }
+        }
+        if found > 0 {
+            Err(Box::<dyn std::error::Error>::from(format!("{} merge conflict marker(s) detected", found)))
+        } else {
+            Ok(())
+        }
+    });
+
+    warn!("insecure protocol", {
+        use aden_core::filter::AdenFilter;
+        let mut found = 0;
+        let insecure_re = Regex::new(r"(?i)http://\S+").unwrap();
+        let skip_exts: std::collections::HashSet<&str> = ["lock", "adoc", "md", "txt", "svg", "html", "xml"].iter().copied().collect();
+        let filter = AdenFilter::from_directory(path);
+        for entry in walkdir::WalkDir::new(path)
+            .follow_links(false)
+            .into_iter()
+            .filter_map(|e| e.ok())
+        {
+            let p = entry.path();
+            if !p.is_file() { continue; }
+            if let Ok(rel) = p.strip_prefix(path) {
+                if filter.should_skip(rel) { continue; }
+            }
+            if let Some(ext) = p.extension().and_then(|e| e.to_str()) {
+                if skip_exts.contains(ext) { continue; }
+            }
+            if let Ok(text) = std::fs::read_to_string(&p) {
+                for line in text.lines() {
+                    let trimmed = line.trim();
+                    if trimmed.starts_with("//") || trimmed.starts_with("#") || trimmed.starts_with("<!--") {
+                        continue;
+                    }
+                    if line.contains("Regex::new") || line.contains("xmlns=") {
+                        continue;
+                    }
+                    if insecure_re.is_match(line) {
+                        println!("  {}Insecure http:// URL in {}: {}{}", red, p.display(), line.trim(), reset);
+                        found += 1;
+                    }
+                }
+            }
+        }
+        if found > 0 {
+            Err(Box::<dyn std::error::Error>::from(format!("{} insecure http:// URL(s) detected", found)))
+        } else {
+            Ok(())
+        }
+    });
+
     // ── WARNING GATES ─────────────────────────────────────
     // These catch StaleHash / MissingContract — expected during active development.
     // They warn but do NOT block the commit.
+
+    warn!("cargo clippy", {
+        if !path.join("Cargo.toml").exists() {
+            Ok(())
+        } else {
+            let output = std::process::Command::new("cargo")
+                .args(["clippy", "--workspace", "--", "-W", "clippy::unwrap_used", "-W", "clippy::expect_used", "-W", "clippy::panic"])
+                .current_dir(path)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .output()?;
+            if output.status.success() {
+                Ok(())
+            } else {
+                Err(Box::<dyn std::error::Error>::from(
+                    format!("cargo clippy found issues:\n{}", String::from_utf8_lossy(&output.stderr))
+                ))
+            }
+        }
+    });
+
+    warn!("cargo audit", {
+        if !path.join("Cargo.toml").exists() {
+            Ok(())
+        } else {
+            let output = std::process::Command::new("cargo")
+                .args(["audit"])
+                .current_dir(path)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .output()?;
+            if output.status.success() {
+                Ok(())
+            } else {
+                // cargo audit is optional; warn if it's not installed
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                if stderr.contains("not found") || stderr.contains("No such file") {
+                    Err(Box::<dyn std::error::Error>::from("cargo audit not installed. Install with: cargo install cargo-audit".to_string()))
+                } else {
+                    Err(Box::<dyn std::error::Error>::from(
+                        format!("cargo audit found vulnerabilities:\n{}", stderr)
+                    ))
+                }
+            }
+        }
+    });
 
     warn!("contract freshness", {
         use aden_heal::{Scanner, generate};
