@@ -66,11 +66,20 @@ Download from the https://github.com/RioPlay/aden/releases[Releases^] page.
 
 [source,bash]
 ----
+# 0. Scaffold a brand-new project with aden built-in
+aden new my-project --lang rust --path .
+cd my-project
+aden kickoff --interactive --name my-project
+aden workflow design --from docs/kickoff-my-project.adoc
+
 # 1. Initialize a project (scaffolds .agent/ templates, .adenignore, etc.)
 aden init
 
 # 2. Generate contracts from your source code
 aden gen src/lib.rs
+
+# 2a. Or auto-generate all contracts in a directory tree
+aden gen src/ --auto
 
 # 3. Check that every reference resolves (graph integrity)
 aden check .
@@ -156,6 +165,25 @@ All rights reserved.
 
 Released under the GNU Affero General Public License v3.0 (AGPL-3.0-or-later).
 Enterprise dual-licensing is available from the copyright holder upon request.
+
+== Documentation Index
+
+[[documentation-index]]
+This is the navigation hub for the Aden knowledge graph.
+
+*Project context:* <<project-context>>
+
+*Plans:* <<plan-phase0>>, <<plan-phase1>>, <<plan-phase2>>, <<plan-phase3>>, <<plan-phase4>>, <<plan-phase5>>, <<plan-phase6>>, <<plan-governance>>
+
+*Architecture decisions:* <<adr-001>>, <<adr-002>>
+
+*Module contracts:* <<mod-aden-core>>, <<mod-aden-parse>>, <<mod-aden-emit>>, <<mod-aden-cli>>, <<mod-aden-graph>>, <<mod-aden-asm>>, <<mod-aden-index>>, <<mod-aden-lsp>>, <<mod-aden-py>>, <<mod-Aden-PowerShell>>, <<mod-aden-heal>>, <<mod-aden-propose>>
+
+*Background:* <<philosophy>>, <<use-cases>>
+
+*Agent workspace:* <<agent-readme>>, <<agent-context>>, <<agent-session>>
+
+*Security:* <<security-audit-2026-05-24>>
 
 == Contributing
 

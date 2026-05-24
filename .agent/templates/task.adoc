@@ -71,3 +71,8 @@ If a task blocks another, mark it RED in session.adoc.
 * xref:spec.adoc[Specification]
 * xref:design.adoc[Design]
 * xref:session.adoc[Session Log]
+
+== Related Documents
+
+. <<spec-{feature}>>
+. <<design-{feature}>>

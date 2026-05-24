@@ -82,3 +82,8 @@ Every non-obvious choice must have an ADR. List them here:
 * xref:kickoff.adoc[Kickoff]
 * xref:spec.adoc[Specification]
 * xref:task.adoc[Tasks]
+
+== Related Documents
+
+. <<spec-{feature}>>
+. <<adr-{number}>>

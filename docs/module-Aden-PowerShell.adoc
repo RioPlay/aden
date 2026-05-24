@@ -3,6 +3,7 @@
 :path: tools/ps-adapter/
 :lang: powershell
 
+
 [[mod-Aden-PowerShell]]
 = module::Aden-PowerShell
 
@@ -26,3 +27,8 @@ PowerShell module wrapping the Aden CLI for idiomatic Windows/admin usage.
 == Agent Notes
 agent-note::CONFIDENCE HIGH
 Module is a thin wrapper. No open questions.
+
+== Related Documents
+
+. <<project-context>>
+. <<adr-001>>

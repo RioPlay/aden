@@ -13,6 +13,7 @@ use crate::extractor::LanguageExtractor;
 use crate::generic::GenericExtractor;
 #[cfg(feature = "rust-deep")]
 use crate::rust::RustExtractor;
+use crate::c_resolver::CResolver;
 use crate::python_resolver::PythonResolver;
 use crate::go_resolver::GoResolver;
 use crate::typescript_resolver::TypeScriptResolver;
@@ -59,6 +60,11 @@ impl LanguageRouter {
             self.by_extension.insert("mjs", Arc::clone(&ts));
             self.by_extension.insert("cjs", Arc::clone(&ts));
         }
+        {
+            let c: Arc<dyn LanguageExtractor> = Arc::new(CResolver::new());
+            self.by_extension.insert("c", Arc::clone(&c));
+            self.by_extension.insert("h", Arc::clone(&c));
+        }
     }
 
     /// Register a custom extractor.  Later registrations shadow earlier ones.
@@ -72,10 +78,35 @@ impl LanguageRouter {
 
     /// Extract `Document`s from a single source file.
     pub fn parse_file(&self, path: &Path, source: &str) -> Result<Vec<Document>> {
-        let ext = path
+        let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        let mut ext = path
             .extension()
             .and_then(|e| e.to_str())
             .unwrap_or("");
+
+        // Extensionless file detection (e.g., Makefile, Dockerfile, CMakeLists.txt).
+        if ext.is_empty() {
+            ext = match file_name {
+                "Makefile" | "makefile" | "GNUmakefile" => "makefile",
+                "Dockerfile" | "dockerfile" => "dockerfile",
+                "BUILD" | "WORKSPACE" => "bzl",
+                _ => ext,
+            };
+            // Known plaintext / non-code files: silently skip.
+            if file_name == "Kconfig"
+                || file_name.starts_with("README")
+                || file_name.starts_with("COPYING")
+                || file_name.starts_with("AUTHORS")
+                || file_name.starts_with("INSTALL")
+                || file_name == "Build"
+                || file_name == "config"
+                || file_name == "settings"
+            {
+                return Ok(Vec::new());
+            }
+        } else if file_name == "CMakeLists.txt" {
+            ext = "cmake";
+        }
 
         // 1. Try a deep extractor first.
         if let Some(extractor) = self.by_extension.get(ext) {
@@ -106,56 +137,159 @@ fn ext_to_language_pack_id(ext: &str) -> Option<&'static str> {
     // The pack supports 305+ languages; we enumerate the highest-value
     // ones here and leave the rest for future expansion.
     let lang = match ext {
+        // Core deep-resolved languages (already have dedicated extractors)
         "py" => "python",
+        "rs" => "rust",
+        "go" => "go",
         "js" | "mjs" | "cjs" => "javascript",
         "ts" => "typescript",
         "tsx" => "tsx",
-        "go" => "go",
+
+        // JVM ecosystem
         "java" => "java",
+        "kt" | "kts" => "kotlin",
+        "scala" => "scala",
+        "cs" => "csharp",
+        "fs" | "fsx" => "fsharp",
+        "fsi" => "fsharp_signature",
+        "clj" | "cljs" | "cljc" => "clojure",
+
+        // Systems / C family
         "c" | "h" => "c",
         "cpp" | "cc" | "cxx" | "hpp" => "cpp",
-        "rb" => "ruby",
-        "cs" => "c_sharp", // may require downloading 'all' group in tree-sitter-language-pack
-        "swift" => "swift",
-        "kt" => "kotlin",
-        "scala" => "scala",
         "zig" => "zig",
-        "lua" => "lua",
-        "hs" => "haskell",
-        "ml" => "ocaml",
-        "ex" | "exs" => "elixir",
-        "erl" => "erlang",
-        "gleam" => "gleam",
-        "rs" => "rust", // Shallow fallback when rust-deep is disabled
-        "php" => "php",
-        "json" => "json",
-        "yaml" | "yml" => "yaml",
-        "toml" => "toml",
-        "sql" => "sql",
-        "sh" | "bash" => "bash",
-        "dockerfile" => "dockerfile",
+        "odin" => "odin",
+        "m" | "mm" => "objc",
+        "swift" => "swift",
+        "d" => "d",
+
+        // Web front-end
         "html" => "html",
         "css" => "css",
         "scss" => "scss",
         "vue" => "vue",
         "svelte" => "svelte",
-        "proto" => "protobuf",
-        "tf" => "hcl",
-        "cmake" => "cmake",
-        // Modern / systems / emerging
-        "dart" => "dart",
-        "groovy" => "groovy",
-        "jl" => "julia",
-        "clj" | "cljs" | "cljc" => "clojure",
+        "astro" => "astro",
+        "graphql" | "gql" => "graphql",
+
+        // Data & config
+        "json" => "json",
+        "json5" => "json5",
+        "yaml" | "yml" => "yaml",
+        "toml" => "toml",
+        "xml" => "xml",
+        "proto" => "proto",
+
+        // Dynamic / scripting
+        "rb" => "ruby",
+        "php" => "php",
+        "lua" => "lua",
         "pl" | "pm" => "perl",
         "r" | "R" => "r",
-        "m" | "mm" => "objc",
-        "graphql" | "gql" => "graphql",
-        "xml" => "xml",
+        "sh" | "bash" => "bash",
+        "zsh" => "zsh",
+        "fish" => "fish",
+        "awk" => "awk",
+
+        // Functional / typed
+        "hs" => "haskell",
+        "ml" => "ocaml",
+        "mli" => "ocaml_interface",
+        "ex" | "exs" => "elixir",
+        "erl" => "erlang",
+        "gleam" => "gleam",
+        "elm" => "elm",
+        "lean" => "lean",
+
+        // Lisp family
+        "lisp" | "cl" => "commonlisp",
+        "el" => "elisp",
+        "scm" => "scheme",
+        "rkt" => "racket",
+
+        // DevOps / ops
+        "sql" => "sql",
+        "dockerfile" => "dockerfile",
+        "makefile" | "Makefile" | "GNUmakefile" | "mk" => "make",
+        "cmake" => "cmake",
+        "tf" | "tfvars" => "hcl",
+        "bicep" => "bicep",
+        "cue" => "cue",
+        "dhall" => "dhall",
+        "rego" => "rego",
+        "pkl" => "pkl",
+        "star" | "bzl" => "starlark",
+        "nginx" | "conf" => "nginx",
+        "ini" | "cfg" => "ini",
+        "properties" => "properties",
+
+        // Docs / markup
         "md" | "markdown" => "markdown",
+        "adoc" | "asciidoc" => "asciidoc",
+        "rst" => "rst",
+        "org" => "org",
+        "tex" => "latex",
+        "bib" => "bibtex",
+        "typst" => "typst",
+
+        // Mobile / modern
+        "dart" => "dart",
+        "gd" => "gdscript",
+        "jl" => "julia",
+        "groovy" => "groovy",
+
+        // Embedded / hardware
+        "ino" => "arduino",
+        "asm" | "s" | "S" => "asm",
+        "nasm" => "nasm",
+        "dts" | "dtsi" => "devicetree",
+        "v" => "v",
+        "vhd" | "vhdl" => "vhdl",
+        "verilog" => "verilog",
+        "sv" | "svh" => "systemverilog",
+
+        // Scientific / HPC
+        "f" | "f90" | "f95" | "f03" | "f08" => "fortran",
+
+        // Web templates
+        "pug" => "pug",
+        "j2" | "jinja2" => "jinja2",
+        "hbs" => "glimmer",
+        "blade" => "blade",
+        "eex" | "leex" => "eex",
+        "heex" => "heex",
+        "razor" | "cshtml" => "razor",
+
+        // Graphics / shaders
+        "glsl" => "glsl",
+        "hlsl" => "hlsl",
+        "wgsl" => "wgsl",
+        "slang" => "slang",
+
+        // Blockchain / emerging
+        "sol" => "solidity",
+        "cairo" => "cairo",
+        "move" => "move",
+        "mojo" => "mojo",
+        "cr" => "crystal",
+        "hx" => "haxe",
+        "nim" | "nims" => "nim",
+        "nu" => "nushell",
+
+        // Data interchange
+        "csv" => "csv",
+        "tsv" => "tsv",
+        "diff" | "patch" => "diff",
+
+        // Nix family
         "nix" => "nix",
+
+        // Roc
         "roc" => "roc",
-        "odin" => "odin",
+
+        // PowerShell (ready for when JSON bridge is retired)
+        "ps1" | "psm1" | "psd1" => "powershell",
+
         _ => return None,
     };
     Some(lang)

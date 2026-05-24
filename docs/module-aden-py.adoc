@@ -3,6 +3,7 @@
 :path: crates/aden-py/src/
 :lang: rust
 
+
 [[mod-aden-py]]
 = module::aden-py
 
@@ -27,3 +28,8 @@ PyO3 bindings exposing Aden core functionality to Python.
 == Agent Notes
 agent-note::SIMPLIFICATION
 `assemble` is a placeholder because full graph construction from Python requires additional infrastructure. Actual graph assembly should be done via the CLI or Rust API for now.
+
+== Related Documents
+
+. <<project-context>>
+. <<adr-001>>

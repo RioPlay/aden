@@ -41,3 +41,7 @@ Each agent session has a budget:
 - **Emergency debugging**: 4096 tokens
 
 Exceeding budget requires human approval or session subdivision.
+
+== Related Documents
+
+. <<policy>>

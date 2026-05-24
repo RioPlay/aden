@@ -33,3 +33,10 @@ Complete the AsciiDoc emitter templates and build the referential graph engine.
 
 == Trace
 - *2026-05-23*: Plan written. Phase 1 foundation complete.
+
+== Related Documents
+
+. <<project-context>>
+. <<adr-001>>
+. Previous: <<plan-phase1>>
+. Next: <<plan-phase3>>

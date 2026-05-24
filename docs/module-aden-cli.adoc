@@ -3,6 +3,7 @@
 :path: crates/aden-cli/src/
 :lang: rust
 
+
 [[mod-aden-cli]]
 = module::aden-cli
 
@@ -46,3 +47,8 @@ User-facing binary for the Aden toolchain.
 == Agent Notes
 agent-note::CONFIDENCE HIGH
 CLI uses `clap` derive macros. No open questions for Phase 2-3.
+
+== Related Documents
+
+. <<project-context>>
+. <<adr-001>>

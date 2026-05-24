@@ -65,3 +65,8 @@ We will ____________.
 |===
 
 An ADR is accepted when a reviewer acknowledges it. No code should implement a decision before its ADR is accepted.
+
+== Related Documents
+
+. <<plan-phase{phase}>>
+. <<adr-{number}>>

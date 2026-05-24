@@ -1,3 +1,4 @@
+[[agent-readme]]
 = .agent Directory
 
 This directory contains agent-facing templates and standards for this repository.
@@ -9,3 +10,9 @@ This directory contains agent-facing templates and standards for this repository
 
 == Usage
 Run `aden init` to scaffold these templates into any repository.
+
+== Navigation
+
+. <<readme>>
+. <<agent-context>>
+. <<agent-session>>

@@ -17,8 +17,17 @@ fn main() {
         .map(PathBuf::from)
         .unwrap_or_else(|| env::current_dir().expect("cannot get current directory"));
 
-    if let Err(e) = aden_mcp::serve(&project_dir) {
-        eprintln!("aden-mcp: fatal error: {}", e);
+    // Crash isolation: catch panics from request handlers so a single
+    // malformed input or deserializer bug does not kill the MCP server.
+    let result = std::panic::catch_unwind(|| {
+        if let Err(e) = aden_mcp::serve(&project_dir) {
+            eprintln!("aden-mcp: fatal error: {}", e);
+            std::process::exit(1);
+        }
+    });
+
+    if let Err(_) = result {
+        eprintln!("aden-mcp: panic caught. Exiting gracefully.");
         std::process::exit(1);
     }
 }

@@ -206,9 +206,10 @@ agent-note::DEPRECATED[2024-03-01] Use new_module instead
         let idx2 = graph.graph.add_node(node2);
         graph.anchor_to_index.insert("note-a".to_string(), idx1);
         graph.anchor_to_index.insert("adr-b".to_string(), idx2);
-        graph.graph.add_edge(idx1, idx2, EdgeType::Uses);
+        // Calls between two document nodes is invalid
+        graph.graph.add_edge(idx1, idx2, EdgeType::Calls);
 
         let errors = graph.validate_typed_edges();
-        assert!(!errors.is_empty(), "Expected validation errors for invalid edge");
+        assert!(!errors.is_empty(), "Expected validation errors for invalid Calls edge between documents");
     }
 }

@@ -29,3 +29,10 @@ Turn Aden from a CLI into a multi-tool platform: semantic search, IDE integratio
 
 == Trace
 - *2026-05-23*: Plan written.
+
+== Related Documents
+
+. <<project-context>>
+. <<adr-001>>
+. Previous: <<plan-phase4>>
+. Next: <<plan-phase6>>

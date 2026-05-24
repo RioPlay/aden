@@ -31,3 +31,7 @@
 . Every agent appends to `.agent/session.adoc` before starting
 . Append must be atomic (read -> append -> write)
 . Conflicts resolved by timestamp ordering
+
+== Related Documents
+
+. <<protocol>>

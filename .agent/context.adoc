@@ -27,8 +27,29 @@ endif::agent[]
 . Never use YAML frontmatter; use AsciiDoc attributes (`:key: value`).
 . Resolve every `<<reference>>` to an existing `[[anchor]]`.
 
+== Security Posture
+ifdef::agent[]
+Security is a first-class concern. Every agent session must follow these patterns, derived from prior audits:
+
+. Subprocess safety :: Pass `--` before all user-controlled args to `Command::new(...)`. Never trust PATH for helper scripts.
+. Symlink hardening :: Skip symlinks during all directory traversals (`entry.file_type().is_symlink()`).
+. Temp file safety :: Use unique filenames + `create_new(true)` in shared temp directories (`std::env::temp_dir()`).
+. Regex DoS prevention :: Compile regexes once (`OnceLock` / `lazy_static`), never per-file or per-request.
+. Path leakage prevention :: Strip absolute prefixes from `:source_file:` attributes before emitting contracts.
+. Atomic writes :: Use temp+rename for any file read by concurrent agents (e.g., `.agent/session.adoc`).
+. Crash isolation :: Wrap server handlers in `catch_unwind`. A request bug must not kill the process.
+. Timestamp safety :: Use `unwrap_or_default()` on `SystemTime::duration_since(UNIX_EPOCH)`.
+endif::agent[]
+
 == Next Steps
 . Run `aden init` in this repository (already done if you're reading this).
 . Read `.agent/onboarding.adoc` before your first session.
 . Read `.agent/constraints.adoc` to know what not to do.
 . Append your session entry to `.agent/session.adoc` before starting work.
+
+== Navigation
+
+. <<agent-readme>>
+. <<agent-session>>
+. <<readme>>
+. <<project-context>>

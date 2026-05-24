@@ -65,10 +65,11 @@ Use this when the project already has code and contracts.
 
 . Read xref:context.adoc[.agent/context.adoc] — shared memory
 . Read xref:aden-guide.adoc[.agent/aden-guide.adoc] — canonical command reference
-. Read xref:constraints.adoc[.agent/constraints.adoc] — mandatory negative rules
+. Read xref:constraints.adoc[.agent/constraints.adoc] — mandatory negative rules (especially the Security & Subprocess sections)
 . Read xref:session.adoc[.agent/session.adoc] — who is active right now
 . Read xref:glossary.adoc[.agent/glossary.adoc] — terminology
 . Read xref:style-guide.adoc[.agent/style-guide.adoc] — AsciiDoc formatting rules (no ASCII art)
+. Read xref:security-audit.adoc[latest security audit] — what has been fixed and what patterns to avoid
 
 == Phase 1: Assess Baseline Health (Before Code)
 
@@ -77,6 +78,8 @@ Use this when the project already has code and contracts.
 aden check .                # All refs resolve? Health = 1.0?
 aden doctor .               # Environment OK? No leaks detected?
 aden heal --scan . --since HEAD~1
+# If a security audit exists, verify no new HIGH-severity findings appear:
+cat .agent/security_audit.adoc | grep -E "^\| High\s+\|" | head -1
 ----
 
 [IMPORTANT]
@@ -200,3 +203,8 @@ A malicious actor who can modify or inject contracts can silently redirect every
 Contracts are part of the software supply chain.
 Never commit `contracts/` or `.aden/`.
 ****
+
+== Related Documents
+
+. <<context>>
+. <<aden-guide>>

@@ -48,3 +48,9 @@ Dual-licensing is managed by the copyright holder (RioPlay).
 == Trace
 - *2026-05-23*: Initial ADR drafted.
 - *Adoption*: Adopted immediately; all existing code relicensed from MIT OR Apache-2.0.
+
+== Related Documents
+
+. <<plan-phase0>>
+. Complementary decision: <<adr-001>>
+. <<project-context>>

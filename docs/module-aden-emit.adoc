@@ -3,6 +3,7 @@
 :path: crates/aden-emit/src/
 :lang: rust
 
+
 [[mod-aden-emit]]
 = module::aden-emit
 
@@ -30,3 +31,8 @@ Serialize `Document` structs into AsciiDoc (`.adoc` / `.aden`) text.
 agent-note::OPEN QUESTION
 Should `emit` produce one file per Document or concatenate? Current behavior concatenates with `<<<` separator.
 
+
+== Related Documents
+
+. <<project-context>>
+. <<adr-001>>

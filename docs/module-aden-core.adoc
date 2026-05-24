@@ -3,6 +3,7 @@
 :path: crates/aden-core/src/
 :lang: rust
 
+
 [[mod-aden-core]]
 = module::aden-core
 
@@ -35,3 +36,8 @@ Universal schema for the Aden referential context compiler.
 == Agent Notes
 agent-note::OPEN QUESTION
 Should `Edge` types be an enum or open strings? Locked to enum for now; revisit in Phase 2.
+
+== Related Documents
+
+. <<project-context>>
+. <<adr-001>>

@@ -3,6 +3,7 @@
 :path: crates/aden-index/src/
 :lang: rust
 
+
 [[mod-aden-index]]
 = module::aden-index
 
@@ -29,3 +30,8 @@ Semantic and full-text search over the Aden knowledge graph using an in-memory i
 == Agent Notes
 agent-note::SIMPLIFICATION
 No BM25, no stemming, no phrase queries. Pure inverted index with term-frequency scoring. Sufficient for agent-scale repos (<10k documents).
+
+== Related Documents
+
+. <<project-context>>
+. <<adr-001>>

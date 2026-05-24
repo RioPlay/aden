@@ -67,3 +67,8 @@ How do we know if the risk is materializing?
 * xref:kickoff.adoc[Kickoff]
 * xref:spec.adoc[Specification]
 * xref:task.adoc[Tasks]
+
+== Related Documents
+
+. <<adr-{number}>>
+. <<spec-{feature}>>

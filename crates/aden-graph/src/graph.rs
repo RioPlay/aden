@@ -225,7 +225,22 @@ impl AdenGraph {
             let edge_type = self.graph[edge_idx];
 
             let valid = match edge_type {
-                EdgeType::Uses | EdgeType::Calls => {
+                EdgeType::Uses => {
+                    let source_is_doc = matches!(
+                        source.doc.node_type,
+                        NodeType::Note | NodeType::Adr | NodeType::Plan | NodeType::Spec | NodeType::Context | NodeType::Manifest | NodeType::Runbook
+                    );
+                    source_is_doc || (
+                        matches!(
+                            source.doc.node_type,
+                            NodeType::Module | NodeType::Function | NodeType::Script
+                        ) && matches!(
+                            target.doc.node_type,
+                            NodeType::Module | NodeType::Function
+                        )
+                    )
+                }
+                EdgeType::Calls => {
                     matches!(
                         source.doc.node_type,
                         NodeType::Module | NodeType::Function | NodeType::Script

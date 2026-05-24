@@ -37,3 +37,9 @@ Lock the AsciiDoc schema and bootstrap the Cargo workspace for the Aden referent
 
 == Included Context
 include::context.adoc[]
+
+== Related Documents
+
+. <<project-context>>
+. <<adr-001>>
+. Next: <<plan-phase1>>

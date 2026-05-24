@@ -23,3 +23,7 @@ Symbol:: A named entity extracted from source code (function, type, trait, modul
 Stub:: An auto-generated `.aden` contract with `agent-note::STUB` requiring human review.
 Token Density:: The ratio of useful semantic tokens to total characters. Aden optimizes for high density.
 agent-note:: An AsciiDoc admonition block (`NOTE`, `WARNING`, `TODO`) containing temporal metadata or uncertainty.
+
+== Related Documents
+
+. <<style-guide>>

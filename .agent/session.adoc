@@ -20,3 +20,9 @@ This prevents race conditions and silent overwrites.
 . Every agent must append a row before declaring done.
 . If two agents touch the same file, the later agent must reconcile with the earlier.
 . No agent may delete rows; only append.
+
+== Navigation
+
+. <<agent-readme>>
+. <<agent-context>>
+. <<readme>>

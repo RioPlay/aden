@@ -27,3 +27,10 @@ Build the language router and AST extraction pipeline.
 
 == Trace
 - *2026-05-23*: Plan written retroactively to complete documentation set.
+
+== Related Documents
+
+. <<project-context>>
+. <<adr-001>>
+. Previous: <<plan-phase0>>
+. Next: <<plan-phase2>>

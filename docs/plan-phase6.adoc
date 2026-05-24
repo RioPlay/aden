@@ -45,3 +45,10 @@ Detect drift between code reality and documented contracts. Never mutate unilate
 
 == Trace
 - *2026-05-23*: Plan written.
+
+== Related Documents
+
+. <<project-context>>
+. <<adr-001>>
+. Previous: <<plan-phase5>>
+. Next: <<plan-governance>>

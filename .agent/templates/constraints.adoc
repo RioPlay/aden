@@ -65,6 +65,30 @@ This undermines the entire knowledge graph and wastes human review time.
 . If a contract accidentally leaks, treat it as a repo security event.
 . Never include internal URLs, email addresses, or build server names in public-facing documentation.
 
+== Subprocess & Shell Sanitization
+
+. Never pass user-controlled strings to `Command::new()` without `--` terminators.
+  * BAD: `.args(["git", "diff", "--name-only", since])`
+  * GOOD: `.args(["git", "diff", "--name-only", "--", since])`
+. Never resolve helper scripts via relative paths or CWD. Always anchor to the binary directory or a fixed config path.
+. Never use `std::process::Command` with unsanitized PATH variables — always prefer absolute paths.
+
+== File System Safety
+
+. Never traverse directories without skipping symlinks (`entry.file_type().map(|ft| ft.is_symlink()).unwrap_or(false)`).
+. Never write to fixed filenames in shared temp directories (`/tmp/foo.txt`). Always use unique names or `create_new(true)`.
+. Never emit absolute paths in contract `:source_file:` attributes. Always relativize to the project root before emission.
+. Never perform non-atomic overwrites on files that may be accessed concurrently. Always use temp+rename (`write(tmp); rename(tmp, target)`).
+
+== Runtime Safety
+
+. Never compile regexes inside loops or per-file operations. Use `std::sync::OnceLock` or `lazy_static`. (ReDoS risk.)
+. Never use `.unwrap()` or `.expect()` on user-provided data, external APIs, or time operations that can fail.
+  * BAD: `SystemTime::now().duration_since(UNIX_EPOCH).unwrap()`
+  * GOOD: `duration_since(UNIX_EPOCH).unwrap_or_default()`
+. Never leave servers (MCP, LSP, HTTP) without crash isolation. Wrap request handlers in `catch_unwind`.
+. Never expose internal file paths in LSP goto-definition or hover responses without `canonicalize()` + `starts_with(root)` validation.
+
 == Inference Efficiency
 
 . Never scan the entire repo if `aden heal --since HEAD~1` suffices.
@@ -78,3 +102,8 @@ Contracts are part of the software supply chain.
 A bad actor who injects or modifies contracts can silently redirect every downstream developer toward insecure code.
 Guard them accordingly.
 ====
+
+== Related Documents
+
+. <<onboarding>>
+. <<policy>>

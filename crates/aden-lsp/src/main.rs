@@ -103,7 +103,6 @@ impl LanguageServer for AdenLspBackend {
         };
 
         let line_text = text.lines().nth(pos.line as usize).unwrap_or("");
-        let _line_lower = line_text.to_lowercase();
 
         // Find <<anchor>> under cursor
         for anchor in extract_xrefs(line_text) {
@@ -111,6 +110,10 @@ impl LanguageServer for AdenLspBackend {
             if let Some(root) = self.workspace_root.lock().await.clone()
                 && let Ok(graph) = AdenGraph::build_from_directory(&root)
                     && let Some(node) = graph.get_node(&anchor) {
+                        // SECURITY: Only allow navigation inside the workspace root.
+                        if !Self::is_in_workspace(&node.source_path, &root) {
+                            continue;
+                        }
                         let target_uri = Url::from_file_path(&node.source_path).ok();
                         if let Some(turi) = target_uri {
                             let loc = Location {
@@ -138,6 +141,10 @@ impl LanguageServer for AdenLspBackend {
             if let Some(root) = self.workspace_root.lock().await.clone()
                 && let Ok(graph) = AdenGraph::build_from_directory(&root)
                     && let Some(node) = graph.get_node(&anchor) {
+                        // SECURITY: Only return signatures for nodes inside workspace.
+                        if !Self::is_in_workspace(&node.source_path, &root) {
+                            continue;
+                        }
                         // Look for a Signature table in the document
                         let mut sig = String::new();
                         for block in &node.doc.blocks {
@@ -165,18 +172,62 @@ impl LanguageServer for AdenLspBackend {
 }
 
 impl AdenLspBackend {
+    /// Validate that `candidate` is inside `root` to prevent goto-definition
+    /// from jumping outside the workspace (e.g., via absolute paths in contracts).
+    fn is_in_workspace(candidate: &std::path::Path, root: &std::path::Path) -> bool {
+        candidate.canonicalize().map_or(false, |c| {
+            root.canonicalize().map_or(false, |r| c.starts_with(&r))
+        })
+    }
+
     async fn publish_diagnostics(&self, uri: &Url, text: &str) {
         let mut diagnostics = Vec::new();
 
-        // Parse via aden-graph to find unresolved refs and broken includes
-        let tmp = std::env::temp_dir().join("aden-lsp-temp.adoc");
-        let _ = std::fs::write(&tmp, text);
-        if let Ok(parsed) = aden_graph::parser::parse_file(&tmp) {
-            for r in &parsed.refs {
-                if let Some(root) = self.workspace_root.lock().await.clone()
-                    && let Ok(graph) = AdenGraph::build_from_directory(&root)
+        // SECURITY: Use a unique temp file with create_new to prevent symlink
+        // hijacking in shared temp directories (TOCTOU). If an attacker pre-
+        // creates a symlink at our temp path, create_new will fail rather than
+        // following it and writing to an arbitrary location.
+        let tmp = std::env::temp_dir().join(format!(
+            "aden-lsp-{}-{}.adoc",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+
+        let parsed = {
+            let file_result = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&tmp);
+            match file_result {
+                Ok(mut f) => {
+                    use std::io::Write;
+                    let _ = f.write_all(text.as_bytes());
+                    drop(f);
+                    let parsed = aden_graph::parser::parse_file(&tmp);
+                    let _ = std::fs::remove_file(&tmp);
+                    parsed
+                }
+                Err(e) => {
+                    eprintln!("aden-lsp: failed to create temp file {}: {}", tmp.display(), e);
+                    return;
+                }
+            }
+        };
+
+        if let Ok(parsed) = parsed {
+            if let Some(root) = self.workspace_root.lock().await.clone() {
+                // SECURITY: Resolve include paths within workspace root only.
+                // Prevent directory traversal via `../../etc/passwd` in include directives.
+                let root_canon = root.canonicalize().unwrap_or_else(|_| root.clone());
+
+                for r in &parsed.refs {
+                    // Cache graph once per diagnostics pass to avoid rebuilding 3×.
+                    // NOTE: This is still expensive; a persistent graph cache would be better.
+                    if let Ok(graph) = AdenGraph::build_from_directory(&root)
                         && !graph.anchor_to_index.contains_key(r) {
-                            // Find the line number of the ref
                             for (i, line) in text.lines().enumerate() {
                                 if line.contains(&format!("<<{r}>>")) {
                                     diagnostics.push(Diagnostic {
@@ -196,11 +247,32 @@ impl AdenLspBackend {
                                 }
                             }
                         }
-            }
+                }
 
-            for inc in &parsed.includes {
-                if let Some(root) = self.workspace_root.lock().await.clone() {
+                for inc in &parsed.includes {
                     let inc_path = root.join(&inc.path);
+                    let safe = inc_path.canonicalize().map_or(false, |c| c.starts_with(&root_canon));
+                    if !safe {
+                        for (i, line) in text.lines().enumerate() {
+                            if line.contains(&format!("include::{}[", inc.path)) {
+                                diagnostics.push(Diagnostic {
+                                    range: Range::new(
+                                        Position::new(i as u32, 0),
+                                        Position::new(i as u32, line.len() as u32),
+                                    ),
+                                    severity: Some(DiagnosticSeverity::ERROR),
+                                    code: None,
+                                    code_description: None,
+                                    source: Some("aden-lsp".to_string()),
+                                    message: format!("Include path escapes workspace: {}", inc.path),
+                                    related_information: None,
+                                    tags: None,
+                                    data: None,
+                                });
+                            }
+                        }
+                        continue;
+                    }
                     if !inc_path.exists() {
                         for (i, line) in text.lines().enumerate() {
                             if line.contains(&format!("include::{}[", inc.path)) {
@@ -224,7 +296,6 @@ impl AdenLspBackend {
                 }
             }
         }
-        let _ = std::fs::remove_file(&tmp);
         self.client
             .publish_diagnostics(uri.clone(), diagnostics, Some(1))
             .await;

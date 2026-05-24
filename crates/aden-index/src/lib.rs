@@ -204,6 +204,10 @@ impl Index {
         for entry in std::fs::read_dir(dir)? {
             let entry = entry?;
             let path = entry.path();
+            // SECURITY: Skip symlinks to prevent traversal outside the repo.
+            if entry.file_type().map(|ft| ft.is_symlink()).unwrap_or(false) {
+                continue;
+            }
             if path.is_dir() {
                 Self::collect_files(&path, out)?;
             } else if path.is_file() {

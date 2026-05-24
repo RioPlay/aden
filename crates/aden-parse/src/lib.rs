@@ -13,6 +13,7 @@
 //! extraction only (no call resolution).
 
 mod extractor;
+pub mod c_resolver;
 pub mod generic;
 pub mod go_resolver;
 mod powershell;
@@ -71,19 +72,41 @@ fn parse_directory_inner(dir: &Path, depth: usize, file_count: &mut usize) -> Re
     for entry in std::fs::read_dir(dir).map_err(|e| Error::Io(e.to_string()))? {
         let entry = entry.map_err(|e| Error::Io(e.to_string()))?;
         let path = entry.path();
+
+        // SECURITY: Skip symlinks to prevent traversal outside the repo.
+        if entry.file_type().map(|ft| ft.is_symlink()).unwrap_or(false) {
+            continue;
+        }
+
         if path.is_file() {
             *file_count += 1;
             if *file_count > MAX_FILES_SCANNED {
+                eprintln!(
+                    "[aden] WARNING: Scan limit reached ({} files). Remaining files skipped. Consider raising limit.",
+                    MAX_FILES_SCANNED
+                );
                 return Ok(docs);
             }
             // Skip files too large to avoid DoS
             if let Ok(meta) = std::fs::metadata(&path) {
                 if meta.len() > MAX_FILE_SIZE {
+                    eprintln!(
+                        "[aden] WARNING: Skipping {} ({} bytes > {} MiB limit). Consider using 'aden gen <file>' instead.",
+                        path.display(),
+                        meta.len(),
+                        MAX_FILE_SIZE / (1024 * 1024)
+                    );
                     continue;
                 }
             }
-            let source = std::fs::read_to_string(&path)
-                .map_err(|e| Error::Io(e.to_string()))?;
+            let source = match std::fs::read_to_string(&path) {
+                Ok(s) => s,
+                Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
+                    // Non-UTF-8 file (binary blob, encoded text); skip gracefully.
+                    continue;
+                }
+                Err(e) => return Err(Error::Io(e.to_string())),
+            };
             match parse_file(&path, &source) {
                 Ok(file_docs) => docs.extend(file_docs),
                 Err(Error::UnsupportedLanguage(_)) => {

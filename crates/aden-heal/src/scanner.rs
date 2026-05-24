@@ -242,6 +242,10 @@ impl Scanner {
         for entry in std::fs::read_dir(dir)? {
             let entry = entry?;
             let path = entry.path();
+            // SECURITY: Skip symlinks to prevent traversal outside the repo.
+            if entry.file_type().map(|ft| ft.is_symlink()).unwrap_or(false) {
+                continue;
+            }
             if path.is_dir() {
                 if !Self::is_excluded_dir(&path) {
                     self.collect_source_files(&path, files)?;
@@ -264,6 +268,10 @@ impl Scanner {
         for entry in std::fs::read_dir(dir)? {
             let entry = entry?;
             let path = entry.path();
+            // SECURITY: Skip symlinks to prevent traversal outside the repo.
+            if entry.file_type().map(|ft| ft.is_symlink()).unwrap_or(false) {
+                continue;
+            }
             if path.is_dir() {
                 if !Self::is_excluded_dir(&path) {
                     self.collect_contract_files(&path, files)?;

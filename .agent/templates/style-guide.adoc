@@ -107,3 +107,7 @@ If a flowchart is needed, describe it in prose or generate a Mermaid diagram via
 image::aden-flow.svg[Diagram of Aden extraction pipeline]
 ```
 Never draw boxes with `+---+` or `│ ┌─┐` characters.
+
+== Related Documents
+
+. <<glossary>>

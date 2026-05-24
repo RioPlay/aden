@@ -78,3 +78,11 @@ Governance:: BDFL model; DCO required for contributions
 Maintainers:: See MAINTAINERS.md
 Contributing:: See CONTRIBUTING.md
 
+
+== Related Documents
+
+. Root entry point: <<readme>>
+. Phase plans: <<plan-phase0>>, <<plan-phase1>>, <<plan-phase2>>, <<plan-phase3>>, <<plan-phase4>>, <<plan-phase5>>, <<plan-phase6>>, <<plan-governance>>
+. Architecture decisions: <<adr-001>>, <<adr-002>>
+. Background: <<philosophy>>, <<use-cases>>
+. Agent workspace: <<agent-context>>

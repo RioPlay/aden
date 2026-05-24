@@ -106,8 +106,9 @@ fn compile_rules(lines: &[String]) -> Vec<GlobRule> {
                 return None;
             }
             let is_dir = trimmed.ends_with('/');
+            let pat = trimmed.trim_end_matches('/').trim_start_matches('/').to_string();
             Some(GlobRule {
-                pattern: trimmed.trim_end_matches('/').to_string(),
+                pattern: pat,
                 is_dir_rule: is_dir,
             })
         })

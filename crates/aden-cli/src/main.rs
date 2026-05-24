@@ -31,12 +31,43 @@ enum Commands {
         #[arg(long, value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
         path: PathBuf,
     },
+    /// Create a new project from a language template with aden scaffolding
+    New {
+        #[arg(value_name = "NAME")]
+        name: String,
+        #[arg(long, value_name = "LANG", default_value = "rust")]
+        lang: String,
+        #[arg(long, value_name = "DIR", default_value = ".")]
+        path: PathBuf,
+    },
+    /// Create a kickoff document for a new initiative (interactive or from a brief)
+    Kickoff {
+        #[arg(long, value_name = "NAME")]
+        name: String,
+        #[arg(long, help = "Interactive wizard mode")]
+        interactive: bool,
+        #[arg(long, value_name = "DIR", default_value = ".")]
+        path: PathBuf,
+    },
+    /// Workflow engine: instantiate templates with substitutions and chain documents
+    Workflow {
+        #[arg(value_name = "TEMPLATE", help = "Template to instantiate: kickoff, design, spec, task, adr")]
+        template: String,
+        #[arg(long, value_name = "FILE", help = "Source document to derive from")]
+        from: Option<String>,
+        #[arg(long, value_name = "FILE", help = "Output path")]
+        out: Option<PathBuf>,
+        #[arg(long, value_name = "DIR", default_value = ".")]
+        path: PathBuf,
+    },
     /// Parse source file(s) and emit .aden / .adoc contracts
     Gen {
         #[arg(value_name = "PATH", value_hint = ValueHint::AnyPath)]
         path: PathBuf,
         #[arg(long, value_name = "DIR", value_hint = ValueHint::DirPath)]
         out_dir: Option<PathBuf>,
+        #[arg(long, help = "Auto-discover source files from build system (Cargo, go.mod, package.json) and generate contracts incrementally")]
+        auto: bool,
     },
     /// Verify all <<refs>> resolve to existing [[anchors]]
     Check {
@@ -175,7 +206,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     match cli.command {
         Commands::Init { path } => cmd_init(&path),
-        Commands::Gen { path, out_dir } => cmd_gen(&path, out_dir.as_deref()),
+        Commands::Gen { path, out_dir, auto } => cmd_gen(&path, out_dir.as_deref(), auto),
         Commands::Check { path } => cmd_check(&path),
         Commands::Graph { from, depth, path } => cmd_graph(&path, &from, depth),
         Commands::Asm { from, depth, budget, edge_types, out, path } => {
@@ -233,7 +264,361 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Licenses { path, out } => {
             cmd_licenses(&path, out.as_deref())
         }
+        Commands::New { name, lang, path } => cmd_new(&name, &lang, &path),
+        Commands::Kickoff { name, interactive, path } => cmd_kickoff(&name, interactive, &path),
+        Commands::Workflow { template, from, out, path } => cmd_workflow(&template, from.as_deref(), out.as_deref(), &path),
     }
+}
+
+// ── Project Acceleration Commands ───────────────────────────────
+
+/// Reject project names that could traverse directories.
+fn validate_name(name: &str) -> Result<(), Box<dyn std::error::Error>> {
+    if name.contains('/') || name.contains('\\') || name == ".." || name.starts_with("../") {
+        return Err(format!(
+            "Invalid project name '{}': must not contain path separators or parent references",
+            name
+        )
+        .into());
+    }
+    Ok(())
+}
+
+/// Create a new project from a language template.
+/// Scaffolds build system, aden workspace, and initial documents.
+fn cmd_new(name: &str, lang: &str, parent: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    validate_name(name)?;
+    let project_dir = parent.join(name);
+    if project_dir.exists() {
+        return Err(format!("Directory {} already exists", project_dir.display()).into());
+    }
+    std::fs::create_dir_all(&project_dir)?;
+
+    let lang_lower = lang.to_lowercase();
+    match lang_lower.as_str() {
+        "rust" | "rs" => scaffold_rust(&project_dir, name)?,
+        "go" | "golang" => scaffold_go(&project_dir, name)?,
+        "ts" | "typescript" | "js" | "javascript" => scaffold_js(&project_dir, name)?,
+        _ => return Err(format!("Language '{}' not yet supported. Try: rust, go, typescript", lang).into()),
+    }
+
+    // Run aden init in the new project
+    cmd_init(&project_dir)?;
+
+    // Create initial docs directory
+    let docs_dir = project_dir.join("docs");
+    std::fs::create_dir_all(&docs_dir)?;
+
+    // Create README with project identity
+    let readme = format!(r###"= {name}
+:proj: {name}
+:lang: {lang}
+
+[[readme]]
+= {name}
+
+Project scaffolded by `aden new {name} --lang={lang}`.
+
+== Quick Start
+
+[source,bash]
+----
+# Build
+<your-build-command>
+
+# Check aden graph integrity
+aden check .
+
+# Generate contracts after code changes
+aden gen src/ --auto
+
+# Run CI gates
+aden ci-check .
+----
+
+== Documentation
+
+* xref:kickoff.adoc[Project Kickoff]
+* xref:design.adoc[Design Document]
+* xref:spec.adoc[Specification]
+* xref:adr-001.adoc[Architecture Decisions]
+
+== Navigation
+
+. <<kickoff-{name}>>
+. <<design-{name}>>
+"###,
+        name = name,
+        lang = lang_lower
+    );
+    std::fs::write(docs_dir.join("README.adoc"), readme)?;
+
+    println!("✓ Created project {} in {}", name, project_dir.display());
+    println!("✓ Language: {}", lang_lower);
+    println!("✓ Scaffolding: aden init, docs/, build system");
+    println!("  Next steps:");
+    println!("    cd {}", project_dir.display());
+    println!("    aden kickoff --interactive --name {}", name);
+    println!("    aden workflow design --from docs/kickoff.adoc");
+    println!("    aden workflow spec --from docs/design.adoc");
+    Ok(())
+}
+
+fn scaffold_rust(dir: &Path, name: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let cargo_toml = format!(r####"[package]
+name = "{name}"
+version = "0.1.0"
+edition = "2024"
+authors = [""]
+license = "AGPL-3.0-or-later"
+description = "{name} — Add your project description here"
+repository = "https://github.com/<user>/{name}"
+
+[dependencies]
+thiserror = "2"
+serde = {{ version = "2", features = ["derive"] }}
+
+[[bin]]
+name = "{name}"
+path = "src/main.rs"
+"####, name = name);
+    std::fs::write(dir.join("Cargo.toml"), cargo_toml)?;
+
+    let src_dir = dir.join("src");
+    std::fs::create_dir_all(&src_dir)?;
+    std::fs::write(
+        src_dir.join("main.rs"),
+        "fn main() {\n    println!(\"Hello from {}!\");\n}\n".replace("{}", name),
+    )?;
+
+    std::fs::write(dir.join(".gitignore"), "/target/\nCargo.lock\n")?;
+    Ok(())
+}
+
+fn scaffold_go(dir: &Path, _name: &str) -> Result<(), Box<dyn std::error::Error>> {
+    std::fs::write(dir.join("go.mod"), "module example.com/project\n\ngo 1.24\n")?;
+    let main_go = r##"package main
+
+import "fmt"
+
+func main() {
+    fmt.Println("Hello, World!")
+}
+"##;
+    std::fs::create_dir_all(dir.join("cmd").join("server"))?;
+    std::fs::write(dir.join("cmd").join("server").join("main.go"), main_go)?;
+    std::fs::write(dir.join(".gitignore"), "*.exe\n*.dll\n*.so\ndist/\n")?;
+    Ok(())
+}
+
+fn scaffold_js(dir: &Path, name: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let pkg = format!(r###"{{
+  "name": "{name}",
+  "version": "0.1.0",
+  "description": "",
+  "main": "src/index.ts",
+  "scripts": {{
+    "build": "tsc",
+    "dev": "tsx watch src/index.ts"
+  }},
+  "devDependencies": {{
+    "typescript": "^5.8"
+  }}
+}}"###, name = name);
+    std::fs::write(dir.join("package.json"), pkg)?;
+    std::fs::create_dir_all(dir.join("src"))?;
+    std::fs::write(dir.join("src").join("index.ts"), "console.log('Hello, World!');\n")?;
+    std::fs::write(dir.join("tsconfig.json"), "\n")?;
+    std::fs::write(dir.join(".gitignore"), "node_modules/\ndist/\n*.log\n")?;
+    Ok(())
+}
+
+/// Interactive kickoff wizard. Fills the kickoff template via Q&A.
+fn cmd_kickoff(
+    name: &str,
+    interactive: bool,
+    repo: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    validate_name(name)?;
+    use std::io::{self, Write};
+
+    let kickoff_template = include_str!("../../../.agent/templates/kickoff.adoc");
+    let out_path = repo.join("docs").join(format!("kickoff-{}.adoc", name));
+    std::fs::create_dir_all(out_path.parent().unwrap())?;
+
+    if interactive {
+        println!("=== Aden Kickoff Wizard ===");
+        println!("Answer a few questions to scaffold the kickoff document.\n");
+
+        let q = |prompt: &str| -> Result<String, Box<dyn std::error::Error>> {
+            print!("{}", prompt);
+            io::stdout().flush()?;
+            let mut buf = String::new();
+            io::stdin().read_line(&mut buf)?;
+            Ok(buf.trim().to_string())
+        };
+
+        let problem = q("What problem does this solve? ")?;
+        let who = q("Who has this problem? ")?;
+        let _success = q("What does success look like? ")?;
+        let _non_goal = q("What is explicitly NOT in scope? ")?;
+        let _deadline = q("Deadline (or 'TBD')? ")?;
+        let owner = q("Primary owner? ")?;
+
+        let resolved = kickoff_template
+            .replace("{project}", name)
+            .replace("{date}", &aden_core::rfc3339_now().split('T').next().unwrap_or("2026-01-01").to_string())
+            .replace("{author}", &owner)
+            .replace("{idea}", &name.to_lowercase().replace(" ", "-"));
+
+        // Replace template placeholders with guided content
+        let mut output = String::from(resolved);
+        // Replace first blank line in Problem section
+        output = output.replace(
+            ". Who has this problem?\n. ",
+            &format!(". Who has this problem?\n  *Answer:* {}\n. ", who),
+        );
+        output = output.replace(
+            ". What do they do today without your solution?\n",
+            &format!(". What do they do today without your solution?\n  *Answer:* {}\n", problem),
+        );
+
+        std::fs::write(&out_path, output)?;
+        println!("\n✓ Generated {}", out_path.display());
+        println!("  Review and edit before proceeding to `aden workflow design`.");
+    } else {
+        // Non-interactive: just fill placeholders from template
+        let resolved = kickoff_template
+            .replace("{project}", name)
+            .replace("{date}", &aden_core::rfc3339_now().split('T').next().unwrap_or("2026-01-01").to_string())
+            .replace("{author}", "<author>")
+            .replace("{idea}", &name.to_lowercase().replace(" ", "-"));
+        std::fs::write(&out_path, resolved)?;
+        println!("Generated kickoff template: {}", out_path.display());
+        println!("  Fill in the blank sections, then run:");
+        println!("    aden workflow design --from {}", out_path.display());
+    }
+
+    Ok(())
+}
+
+/// Reject paths containing parent-directory references.
+fn safe_relative(path_str: &str) -> Result<(), Box<dyn std::error::Error>> {
+    if path_str.contains("..") {
+        return Err(format!(
+            "Path traversal blocked: '{}' contains '..'",
+            path_str
+        )
+        .into());
+    }
+    Ok(())
+}
+
+/// Workflow engine: instantiate a template from a source document.
+fn cmd_workflow(
+    template: &str,
+    from: Option<&str>,
+    out: Option<&Path>,
+    repo: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let templates: std::collections::HashMap<&str, &str> = [
+        ("design", include_str!("../../../.agent/templates/design.adoc")),
+        ("spec", include_str!("../../../.agent/templates/spec.adoc")),
+        ("task", include_str!("../../../.agent/templates/task.adoc")),
+        ("adr", include_str!("../../../.agent/templates/adr.adoc")),
+        ("kickoff", include_str!("../../../.agent/templates/kickoff.adoc")),
+        ("plan", include_str!("../../../.agent/templates/plan.adoc")),
+        ("context", include_str!("../../../.agent/templates/context.adoc")),
+        ("module", include_str!("../../../.agent/templates/module.adoc")),
+        ("runbook", include_str!("../../../.agent/templates/runbook.adoc")),
+        ("glossary", include_str!("../../../.agent/templates/glossary.adoc")),
+        ("constraints", include_str!("../../../.agent/templates/constraints.adoc")),
+    ]
+    .into_iter()
+    .collect();
+
+    let tmpl = templates.get(template).ok_or_else(|| {
+        format!(
+            "Unknown template '{}'. Supported: {}",
+            template,
+            templates.keys().copied().collect::<Vec<_>>().join(", ")
+        )
+    })?;
+
+    // Resolve placeholders from source doc if --from is given
+    let mut resolved = tmpl.to_string();
+    if let Some(src_path_str) = from {
+        safe_relative(src_path_str)?;
+        let src_path = repo.join(src_path_str);
+        if src_path.exists() {
+            let src_text = std::fs::read_to_string(&src_path)?;
+            // Extract key-value pairs from AsciiDoc attributes
+            for line in src_text.lines() {
+                if line.starts_with(':') && line.contains(": ") {
+                    if let Some((key, value)) = line.trim().split_once(": ") {
+                        let key = key.trim_start_matches(':');
+                        let placeholder = format!("{{{key}}}");
+                        resolved = resolved.replace(&placeholder, value.trim());
+                    }
+                }
+            }
+            // Extract anchor as {feature}/{idea} if present
+            if let Some(anchor) = src_text.lines().find(|l| l.starts_with("[[")) {
+                let inner = anchor.trim_start_matches("[[").trim_end_matches("]]");
+                let clean = inner.replace(['{', '}'], "");
+                resolved = resolved.replace("{feature}", &clean);
+                resolved = resolved.replace("{idea}", &clean);
+            }
+        }
+    }
+
+    // Default values for any remaining placeholders
+    let now = aden_core::rfc3339_now().split('T').next().unwrap_or("2026-01-01").to_string();
+    resolved = resolved.replace("{date}", &now);
+    resolved = resolved.replace("{author}", "<author>");
+    resolved = resolved.replace("{project_name}", repo.file_name().and_then(|n| n.to_str()).unwrap_or("unknown"));
+    resolved = resolved.replace("{project}", repo.file_name().and_then(|n| n.to_str()).unwrap_or("unknown"));
+    resolved = resolved.replace("{feature}", "feature-name");
+    resolved = resolved.replace("{idea}", "idea-name");
+    resolved = resolved.replace("{number}", "001");
+    resolved = resolved.replace("{phase}", "0");
+    resolved = resolved.replace("{standard}", "unknown");
+    resolved = resolved.replace("{lang}", "unknown");
+    resolved = resolved.replace("{ai_name}", "agent");
+    resolved = resolved.replace("{primary_lang}", "unknown");
+    resolved = resolved.replace("{framework}", "unknown");
+    resolved = resolved.replace("{edition}", "2024");
+    resolved = resolved.replace("{glossary}", "(fill me in)");
+    resolved = resolved.replace("{dependencies}", "(fill me in)");
+
+    // Auto-next step suggestion
+    let next_hint = match template {
+        "kickoff" => Some("aden workflow design --from docs/kickoff-<name>.adoc"),
+        "design" => Some("aden workflow adr --from docs/design-<name>.adoc"),
+        "adr" => Some("aden workflow spec --from docs/design-<name>.adoc"),
+        "spec" => Some("aden workflow task --from docs/spec-<name>.adoc"),
+        "task" => Some("start implementing, then run: aden gen src/"),
+        _ => None,
+    };
+
+    if let Some(out_path) = out {
+        safe_relative(&out_path.to_string_lossy())?;
+    }
+    let dest = if let Some(out_path) = out {
+        out_path.to_path_buf()
+    } else {
+        let safe = template.to_lowercase().replace(" ", "-");
+        repo.join("docs").join(format!("{}-unnamed.adoc", safe))
+    };
+
+    std::fs::create_dir_all(dest.parent().unwrap_or(Path::new(".")))?;
+    std::fs::write(&dest, resolved)?;
+    println!("✓ Generated workflow document: {}", dest.display());
+    if let Some(hint) = next_hint {
+        println!("  Next step: {}", hint);
+    }
+
+    Ok(())
 }
 
 /// Scaffold `.agent/` workspace in a target repository.
@@ -332,6 +717,9 @@ fn cmd_init(target: &Path) -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|n| n.to_str())
         .unwrap_or("unknown");
 
+    // NOTE: This content should match .agent/context.adoc in this repository.
+    // Future: move to a proper template file read via include_str! with
+    // {project_name} substitution so aden init always picks up edits.
     let context_content = format!(r###":proj: {project_name}
 :standard: unknown
 :lang: unknown
@@ -361,17 +749,38 @@ endif::agent[]
 . Never use YAML frontmatter; use AsciiDoc attributes (`:key: value`).
 . Resolve every `<<reference>>` to an existing `[[anchor]]`.
 
+== Security Posture
+ifdef::agent[]
+Security is a first-class concern. Every agent session must follow these patterns, derived from prior audits:
+
+. Subprocess safety :: Pass `--` before all user-controlled args to `Command::new(...)`. Never trust PATH for helper scripts.
+. Symlink hardening :: Skip symlinks during all directory traversals (`entry.file_type().is_symlink()`).
+. Temp file safety :: Use unique filenames + `create_new(true)` in shared temp directories (`std::env::temp_dir()`).
+. Regex DoS prevention :: Compile regexes once (`OnceLock` / `lazy_static`), never per-file or per-request.
+. Path leakage prevention :: Strip absolute prefixes from `:source_file:` attributes before emitting contracts.
+. Atomic writes :: Use temp+rename for any file read by concurrent agents (e.g., `.agent/session.adoc`).
+. Crash isolation :: Wrap server handlers in `catch_unwind`. A request bug must not kill the process.
+. Timestamp safety :: Use `unwrap_or_default()` on `SystemTime::duration_since(UNIX_EPOCH)`.
+endif::agent[]
+
 == Next Steps
 . Run `aden init` in this repository (already done if you're reading this).
 . Read `.agent/onboarding.adoc` before your first session.
 . Read `.agent/constraints.adoc` to know what not to do.
 . Append your session entry to `.agent/session.adoc` before starting work.
+
+== Navigation
+
+. <<agent-readme>>
+. <<agent-session>>
+. <<readme>>
+. <<project-context>>
 "###,
         project_name = project_name
     );
     std::fs::write(agent_dir.join("context.adoc"), context_content)?;
 
-    // Generate session log (empty, ready for agents)
+    // NOTE: This content should match .agent/session.adoc in this repository.
     let session_content = format!(r###":proj: {project_name}
 :session: active
 
@@ -394,6 +803,12 @@ This prevents race conditions and silent overwrites.
 . Every agent must append a row before declaring done.
 . If two agents touch the same file, the later agent must reconcile with the earlier.
 . No agent may delete rows; only append.
+
+== Navigation
+
+. <<agent-readme>>
+. <<agent-context>>
+. <<readme>>
 "###,
         project_name = project_name
     );
@@ -428,10 +843,10 @@ Contracts are part of the software supply chain. Guard them accordingly.
     // Default exclusion rules (.adenignore)
     let adenignore = r###"# Aden Ignore — Security-first defaults
 # Contracts are build artifacts; never commit them.
-/contracts/
-/.aden/
-/target/
-/.git/
+contracts/
+.aden/
+target/
+.git/
 
 # Secrets (never process)
 *.pem
@@ -480,19 +895,141 @@ Always verify that third-party licenses are compatible with your project's licen
     Ok(())
 }
 
-fn cmd_gen(path: &Path, out_dir: Option<&Path>) -> Result<(), Box<dyn std::error::Error>> {
-    let docs = if path.is_file() {
+/// Auto-document a codebase: discover source files, skip unchanged,
+/// emit structured contracts, and generate an index.
+fn cmd_gen(path: &Path, out_dir: Option<&Path>, auto: bool) -> Result<(), Box<dyn std::error::Error>> {
+    if path.is_file() {
+        // Single-file mode: backward compatible
         let source = std::fs::read_to_string(path)?;
-        aden_parse::parse_file(path, &source)?
-    } else if path.is_dir() {
-        aden_parse::parse_directory(path)?
-    } else {
-        return Err("Path does not exist or is not a file/directory".into());
-    };
+        let docs = aden_parse::parse_file(path, &source)?;
+        return emit_docs(docs, out_dir, path);
+    }
 
+    if !path.is_dir() {
+        return Err("Path does not exist or is not a file/directory".into());
+    }
+
+    let root = find_project_root(path);
+    let effective_out = out_dir.unwrap_or_else(|| Path::new("contracts"));
+
+    if auto {
+        // ── AUTO MODE: workspace-aware incremental generation ────────────────
+        let sources = discover_source_files(&root)?;
+        if sources.is_empty() {
+            eprintln!("No source files discovered in {}. Is this a supported project?", root.display());
+            return Ok(());
+        }
+
+        std::fs::create_dir_all(effective_out)?;
+
+        let cache_path = root.join(".aden").join("gen-cache.json");
+        let mut cache = load_gen_cache(&cache_path);
+        let mut generated = Vec::new();
+        let mut skipped = 0usize;
+
+        for src_path in &sources {
+            let rel = src_path.strip_prefix(&root).unwrap_or(src_path);
+            let contract_rel = rel.with_extension("adoc");
+            let contract_path = effective_out.join(&contract_rel);
+
+            // Ensure parent dirs exist
+            if let Some(parent) = contract_path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+
+            // Check mtime cache
+            let src_mtime = src_path.metadata()
+                .and_then(|m| m.modified())
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+            let entry = cache.entries.get(contract_path.to_string_lossy().as_ref());
+            if let Some(e) = entry {
+                if e.source_mtime == src_mtime.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs()
+                    && contract_path.exists()
+                {
+                    skipped += 1;
+                    continue;
+                }
+            }
+
+            let source = match std::fs::read_to_string(src_path) {
+                Ok(s) => s,
+                Err(e) if e.kind() == std::io::ErrorKind::InvalidData => continue,
+                Err(e) => {
+                    eprintln!("WARN: Failed to read {}: {}", src_path.display(), e);
+                    continue;
+                }
+            };
+
+            let docs = match aden_parse::parse_file(src_path, &source) {
+                Ok(d) => d,
+                Err(aden_core::Error::UnsupportedLanguage(_)) => continue,
+                Err(e) => {
+                    eprintln!("WARN: Parse failed for {}: {}", src_path.display(), e);
+                    continue;
+                }
+            };
+
+            for doc in &docs {
+                let file_name = format!("{}.adoc", sanitize_anchor(&doc.anchor));
+                let file_path = contract_path.parent()
+                    .unwrap_or(effective_out)
+                    .join(&file_name);
+                let mut doc_clone = doc.clone();
+                sanitize_source_file(&mut doc_clone);
+                std::fs::write(&file_path, aden_emit::emit_document(&doc_clone))?;
+                generated.push(file_name.clone());
+                println!("Emitted {}", file_path.display());
+
+                // Update cache
+                let mtime_secs = src_mtime.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+                cache.entries.insert(
+                    file_path.to_string_lossy().to_string(),
+                    GenCacheEntry {
+                        source_mtime: mtime_secs,
+                        source_path: src_path.to_string_lossy().to_string(),
+                    }
+                );
+            }
+        }
+
+        save_gen_cache(&cache_path, &cache)?;
+
+        // Generate index
+        if !generated.is_empty() {
+            let index_path = effective_out.join("README.adoc");
+            let mut index = String::new();
+            index.push_str("= Contracts Index\n\n");
+            index.push_str("Auto-generated by `aden gen --auto .`\n\n");
+            index.push_str("|===\n|Symbol |File |Anchor\n");
+            for name in &generated {
+                index.push_str(&format!("|{} |{} |[[{}]]\n", name, name, name.trim_end_matches(".adoc")));
+            }
+            index.push_str("|===\n");
+            std::fs::write(&index_path, index)?;
+            println!("Generated index: {}", index_path.display());
+        }
+
+        println!("\nGenerated {} contracts. Skipped {} unchanged files.", generated.len(), skipped);
+    } else {
+        // ── LEGACY MODE: flat parse_directory output ────────────────────────
+        let docs = aden_parse::parse_directory(path)?;
+        return emit_docs(docs, out_dir, path);
+    }
+
+    Ok(())
+}
+
+fn emit_docs(
+    mut docs: Vec<aden_core::Document>,
+    out_dir: Option<&Path>,
+    _source: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
     if docs.is_empty() {
-        eprintln!("No documents extracted from {}", path.display());
         return Ok(());
+    }
+    // SECURITY: Strip absolute paths from source_file attributes before emitting
+    for doc in &mut docs {
+        sanitize_source_file(doc);
     }
 
     let output = aden_emit::emit(&docs);
@@ -508,7 +1045,115 @@ fn cmd_gen(path: &Path, out_dir: Option<&Path>) -> Result<(), Box<dyn std::error
     } else {
         println!("{output}");
     }
+
     Ok(())
+}
+
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+
+#[derive(Default, Serialize, Deserialize)]
+struct GenCache {
+    entries: HashMap<String, GenCacheEntry>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct GenCacheEntry {
+    source_mtime: u64,
+    source_path: String,
+}
+
+fn load_gen_cache(path: &Path) -> GenCache {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+fn save_gen_cache(path: &Path, cache: &GenCache) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let json = serde_json::to_string_pretty(cache)?;
+    std::fs::write(path, json)?;
+    Ok(())
+}
+
+/// Find project root by walking up from `start` looking for Cargo.toml,
+/// aden.toml, go.mod, or package.json.
+/// Recursively walk a directory and collect files matching any of `exts`.
+/// Skips paths that contain any substring in `skip_patterns`.
+fn walk_src_files(
+    dir: &Path,
+    exts: &[&str],
+    out: &mut Vec<PathBuf>,
+    skip_patterns: &[&str],
+) -> Result<(), Box<dyn std::error::Error>> {
+    for entry in std::fs::read_dir(dir).map_err(|e| format!("read_dir: {}", e))? {
+        let entry = entry.map_err(|e| format!("entry: {}", e))?;
+        let p = entry.path();
+        let p_str = p.to_string_lossy();
+        if skip_patterns.iter().any(|pat| p_str.contains(pat)) {
+            continue;
+        }
+        if entry.file_type()?.is_symlink() {
+            continue;
+        }
+        if entry.file_type()?.is_dir() {
+            walk_src_files(&p, exts, out, skip_patterns)?;
+        } else if entry.file_type()?.is_file() {
+            if let Some(ext) = p.extension().and_then(|e| e.to_str()) {
+                if exts.contains(&ext) {
+                    out.push(p);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn find_project_root(start: &Path) -> PathBuf {
+    let mut current = start.canonicalize().unwrap_or_else(|_| start.to_path_buf());
+    loop {
+        if current.join("Cargo.toml").exists()
+            || current.join("aden.toml").exists()
+            || current.join("go.mod").exists()
+            || current.join("package.json").exists()
+        {
+            return current;
+        }
+        if let Some(parent) = current.parent() {
+            current = parent.to_path_buf();
+        } else {
+            return start.canonicalize().unwrap_or_else(|_| start.to_path_buf());
+        }
+    }
+}
+
+/// Discover source files based on build system detected at `root`.
+fn discover_source_files(root: &Path) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
+    let mut files = Vec::new();
+
+    if root.join("Cargo.toml").exists() {
+        // Rust: walk all .rs files, prioritizing src/ directories
+        walk_src_files(root, &["rs"], &mut files, &["/.git/", "/target/"])?;
+        files.sort_by(|a, b| {
+            let a_is_src = a.to_string_lossy().contains("/src/");
+            let b_is_src = b.to_string_lossy().contains("/src/");
+            b_is_src.cmp(&a_is_src)
+        });
+    } else if root.join("go.mod").exists() {
+        // Go: walk **/*.go excluding vendor/
+        walk_src_files(root, &["go"], &mut files, &["/vendor/", "/.git/"])?;
+    } else if root.join("package.json").exists() {
+        // JS/TS: walk src/**/*.{ts,tsx,js,jsx,mjs}
+        walk_src_files(root, &["ts", "tsx", "js", "jsx", "mjs", "cjs"], &mut files, &["/node_modules/", "/.git/"])?;
+    } else {
+        // Generic fallback: all supported extensions
+        walk_src_files(root, &["rs", "py", "js", "ts", "go", "c", "cpp", "h"], &mut files, &["/.git/", "/target/"])?;
+    }
+
+    Ok(files)
 }
 
 fn cmd_check(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
@@ -623,11 +1268,155 @@ fn parse_edge_types(input: &str) -> Vec<aden_core::EdgeType> {
     input.split(',').filter_map(parse_single_edge_type).collect()
 }
 
+/// Strip absolute prefix from source_file attributes to prevent
+/// username / home-directory leakage in emitted contracts.
+fn sanitize_source_file(doc: &mut aden_core::Document) {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    if let Some(source_file) = doc.attributes.get("source_file") {
+        let p = std::path::Path::new(source_file);
+        if p.is_absolute() {
+            if let Ok(rel) = p.strip_prefix(&cwd) {
+                doc.attributes.insert(
+                    "source_file".to_string(),
+                    rel.to_string_lossy().to_string(),
+                );
+            }
+        }
+    }
+}
+
 fn sanitize_anchor(anchor: &str) -> String {
-    anchor
+    let s = anchor
         .replace(['/', '#'], "-")
         .replace(":", "-")
-        .replace(" ", "-")
+        .replace(" ", "-");
+    // Truncate to 128 characters to stay well under POSIX max-filename
+    // limits while remaining human-readable.
+    if s.len() > 128 {
+        let hash = aden_core::stable_hash(s.as_bytes());
+        format!("{}-{}", &s[..118], &hash[..8])
+    } else {
+        s
+    }
+}
+
+/// Walk a directory and compute a combined stable hash of every file.
+fn hash_directory(dir: &Path) -> Result<String, Box<dyn std::error::Error>> {
+    use std::collections::BTreeMap;
+    let mut files: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_file() {
+            let rel = path.strip_prefix(dir).unwrap_or(&path);
+            files.insert(rel.to_string_lossy().to_string(), std::fs::read(&path)?);
+        } else if path.is_dir() {
+            let sub_hash = hash_directory(&path)?;
+            files.insert(
+                path.file_name().unwrap_or_default().to_string_lossy().to_string() + "/",
+                sub_hash.into_bytes(),
+            );
+        }
+    }
+    let mut combined = Vec::new();
+    for (name, content) in files {
+        combined.extend_from_slice(name.as_bytes());
+        combined.extend_from_slice(content.as_slice());
+    }
+    Ok(aden_core::stable_hash(&combined))
+}
+
+/// Scan docs/ for module contracts whose :path: attribute overlaps with
+/// `changed_path` (a source file or directory). Re-compute the hash of that
+/// module's source tree and update :source_hash: in the docs contract.
+fn sync_docs_source_hashes(changed_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    // Find project root (directory containing Cargo.toml)
+    let mut root = changed_path.canonicalize().unwrap_or_else(|_| changed_path.to_path_buf());
+    loop {
+        if root.join("Cargo.toml").exists() || root.join("aden.toml").exists() {
+            break;
+        }
+        if let Some(parent) = root.parent() {
+            root = parent.to_path_buf();
+        } else {
+            return Ok(()); // No project root found; skip docs sync
+        }
+    }
+
+    let docs_dir = root.join("docs");
+    if !docs_dir.is_dir() {
+        return Ok(());
+    }
+
+    let changed_canon = changed_path.canonicalize().unwrap_or_else(|_| changed_path.to_path_buf());
+
+    for entry in std::fs::read_dir(&docs_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("adoc") {
+            continue;
+        }
+
+        // Parse :path: and :source_hash: lines
+        let text = std::fs::read_to_string(&path)?;
+        let mut module_path: Option<String> = None;
+        for line in text.lines() {
+            if line.starts_with(":path:") {
+                module_path = Some(line[6..].trim().to_string());
+                break;
+            }
+        }
+
+        let Some(module_rel) = module_path else { continue };
+        let module_abs = root.join(&module_rel);
+        let module_canon = match module_abs.canonicalize() {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+
+        // Does the changed path intersect with this module's source tree?
+        let intersects = changed_canon.starts_with(&module_canon)
+            || module_canon.starts_with(&changed_canon)
+            || changed_canon == module_canon;
+
+        if !intersects {
+            continue;
+        }
+
+        // Recompute hash
+        let new_hash = hash_directory(&module_canon)?;
+
+        // Update :source_hash: in file
+        let mut new_lines = Vec::new();
+        let mut updated = false;
+        for line in text.lines() {
+            if line.starts_with(":source_hash:") {
+                new_lines.push(format!(":source_hash: {}", new_hash));
+                updated = true;
+            } else {
+                new_lines.push(line.to_string());
+            }
+        }
+
+        if !updated {
+            // Insert after :lang: line
+            for i in (0..new_lines.len()).rev() {
+                if new_lines[i].starts_with(":lang:") {
+                    new_lines.insert(i + 1, format!(":source_hash: {}", new_hash));
+                    new_lines.insert(i + 2, String::new());
+                    updated = true;
+                    break;
+                }
+            }
+        }
+
+        if updated {
+            std::fs::write(&path, new_lines.join("\n") + "\n")?;
+            println!("Updated docs contract: {} (:source_hash synced)", path.display());
+        }
+    }
+
+    Ok(())
 }
 
 fn cmd_query(
@@ -1028,8 +1817,9 @@ fn cmd_watch(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
                     println!("INFO: Source change detected in {}", p.display());
                     if let Ok(source) = std::fs::read_to_string(p) {
                         match aden_parse::parse_file(p, &source) {
-                            Ok(docs) if !docs.is_empty() => {
-                                for doc in &docs {
+                            Ok(mut docs) if !docs.is_empty() => {
+                                for doc in &mut docs {
+                                    sanitize_source_file(doc);
                                     let safe_anchor = sanitize_anchor(&doc.anchor);
                                     let out_path = contracts_dir.join(format!("{}.adoc", safe_anchor));
                                     if let Err(e) = std::fs::write(&out_path, aden_emit::emit_document(doc)) {
@@ -1202,20 +1992,24 @@ fn cmd_session(
     );
 
     let mut content = std::fs::read_to_string(&session_path)?;
-    
+
     // Find the table body and append
     if let Some(pos) = content.find("|===\n\n== Known Invariants") {
         let insert_pos = pos; // Insert before "== Known Invariants"
         let before = &content[..insert_pos];
         let after = &content[insert_pos..];
         let new_content = format!("{}\n{}\n{}", before.trim_end(), entry, after);
-        std::fs::write(&session_path, new_content)?;
+        content = new_content;
     } else {
         // Fallback: append to end
         content.push('\n');
         content.push_str(&entry);
-        std::fs::write(&session_path, content)?;
     }
+
+    // Atomic write: temp file + rename to prevent race conditions between agents
+    let temp_path = session_path.with_extension("tmp");
+    std::fs::write(&temp_path, &content)?;
+    std::fs::rename(&temp_path, &session_path)?;
 
     println!("Session entry logged for agent '{}': {}", agent_id, session_path.display());
     Ok(())
@@ -1346,13 +2140,14 @@ fn cmd_review_since(path: &Path, budget: usize, since: &str) -> Result<(), Box<d
     use aden_heal::Scanner;
     
     println!("Reviewing changes since '{}' with budget {} tokens", since, budget);
-    
+
     // Get changed files from git
+    // SECURITY: `--` terminates option parsing to prevent argument confusion.
     let output = std::process::Command::new("git")
-        .args(["diff", "--name-only", since])
+        .args(["diff", "--name-only", "--", since])
         .current_dir(path)
         .output()?;
-    
+
     let changed = String::from_utf8_lossy(&output.stdout);
     let files: Vec<&str> = changed.lines().filter(|l| !l.is_empty()).collect();
 
@@ -1412,8 +2207,9 @@ fn cmd_heal_scan_since(path: &Path, propose: bool, since: &str) -> Result<(), Bo
     println!("================================");
 
     // Get changed files from git
+    // SECURITY: `--` terminates option parsing to prevent argument confusion.
     let output = std::process::Command::new("git")
-        .args(["diff", "--name-only", since])
+        .args(["diff", "--name-only", "--", since])
         .current_dir(path)
         .output()?;
     
@@ -1671,11 +2467,20 @@ fn cmd_ci_check(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     });
 
     gate!("secret scan", {
-        let patterns = [
-            r"-----BEGIN (RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----",
-            r"AKIA[0-9A-Z]{16}",
-            r"ghp_[a-zA-Z0-9]{36}",
-        ];
+        use regex::Regex;
+        use std::sync::OnceLock;
+
+        static SECRET_PATTERNS: OnceLock<Vec<Regex>> = OnceLock::new();
+        let patterns = SECRET_PATTERNS.get_or_init(|| {
+            [
+                r"-----BEGIN (RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----",
+                r"AKIA[0-9A-Z]{16}",
+                r"ghp_[a-zA-Z0-9]{36}",
+            ]
+            .into_iter()
+            .filter_map(|p| Regex::new(p).ok())
+            .collect::<Vec<_>>()
+        });
         let non_text_exts: std::collections::HashSet<&str> = [
             "png", "jpg", "jpeg", "gif", "svg", "ico", "bmp",
             "pdf", "zip", "tar", "gz", "bz2", "xz", "7z", "rar",
@@ -1696,12 +2501,10 @@ fn cmd_ci_check(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
                 if meta.len() > MAX_SCAN_SIZE { continue; }
             }
             if let Ok(text) = std::fs::read_to_string(&p) {
-                for pat in &patterns {
-                    if let Ok(re) = regex::Regex::new(pat) {
-                        if re.is_match(&text) {
-                            println!("  {}Secret pattern '{}' found in {}{}", red, pat, p.display(), reset);
-                            found += 1;
-                        }
+                for re in patterns {
+                    if re.is_match(&text) {
+                        println!("  {}Secret pattern '{}' found in {}{}", red, re.as_str(), p.display(), reset);
+                        found += 1;
                     }
                 }
             }
@@ -1880,7 +2683,10 @@ fn is_safe_id(id: &str) -> bool {
 
 fn generate_proposal_id() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
-    let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
     let pid = std::process::id();
     format!("{pid}-{ts}")
 }

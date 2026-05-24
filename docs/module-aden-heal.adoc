@@ -3,6 +3,7 @@
 :path: crates/aden-heal/src/
 :lang: rust
 
+
 [[mod-aden-heal]]
 = module::aden-heal
 
@@ -32,3 +33,8 @@ Self-healing documentation engine. Detects drift between code reality and docume
 == Agent Notes
 agent-note::CONFIDENCE HIGH
 No open questions for Phase 6.
+
+== Related Documents
+
+. <<project-context>>
+. <<adr-001>>

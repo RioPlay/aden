@@ -3,6 +3,7 @@
 :path: crates/aden-graph/src/
 :lang: rust
 
+
 [[mod-aden-graph]]
 = module::aden-graph
 
@@ -35,3 +36,8 @@ Graph engine for the Aden knowledge graph. Builds `petgraph::DiGraph` from `.ado
 == Agent Notes
 agent-note::SIMPLIFICATION
 Only parses a subset of AsciiDoc: header attributes, block anchors, `<<refs>>`, `include::[]`, `ifdef`/`ifndef`/`ifeval`, and custom `edge::` macros. Full AsciiDoc parsing is not required.
+
+== Related Documents
+
+. <<project-context>>
+. <<adr-001>>

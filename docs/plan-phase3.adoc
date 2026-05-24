@@ -42,3 +42,10 @@ No inline conditionals. No nested `ifeval` arithmetic beyond simple comparisons.
 
 == Trace
 - *2026-05-23*: Plan written.
+
+== Related Documents
+
+. <<project-context>>
+. <<adr-001>>
+. Previous: <<plan-phase2>>
+. Next: <<plan-phase4>>
