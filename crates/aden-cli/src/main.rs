@@ -1006,42 +1006,59 @@ fn cmd_watch(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     watcher.watch(path, RecursiveMode::Recursive)?;
     println!("Watching {} for changes... Press Ctrl+C to stop.", path.display());
 
+    // Supported source extensions that parse_file can handle
+    let source_exts = [
+        "rs", "py", "js", "ts", "tsx", "jsx", "mjs", "cjs", "go",
+        "java", "c", "cpp", "cc", "cxx", "h", "hpp", "rb", "cs",
+        "swift", "kt", "scala", "zig", "lua", "hs", "ml", "php",
+        "ex", "exs", "erl", "gleam", "sh", "bash", "dockerfile",
+        "html", "css", "scss", "vue", "svelte", "proto", "tf",
+        "cmake",
+    ];
+
+    // Contracts directory
+    let contracts_dir = path.join("contracts");
+    std::fs::create_dir_all(&contracts_dir)?;
+
     for event in rx {
         for p in &event.paths {
-            if let Some(ext) = p.extension().and_then(|e| e.to_str())
-                && matches!(ext, "rs" | "ps1" | "adoc" | "aden") {
-                    println!("INFO: Change detected in {}", p.display());
-                    if matches!(ext, "rs" | "ps1") {
-                        // Regenerate contract
-                        if let Ok(source) = std::fs::read_to_string(p) {
-                            match aden_parse::parse_file(p, &source) {
-                                Ok(docs) if !docs.is_empty() => {
-                                    let out = aden_emit::emit(&docs);
-                                    let out_path = p.with_extension("aden");
-                                    if let Err(e) = std::fs::write(&out_path, out) {
+            if let Some(ext) = p.extension().and_then(|e| e.to_str()) {
+                let ext = ext.to_lowercase();
+                if source_exts.contains(&ext.as_str()) {
+                    println!("INFO: Source change detected in {}", p.display());
+                    if let Ok(source) = std::fs::read_to_string(p) {
+                        match aden_parse::parse_file(p, &source) {
+                            Ok(docs) if !docs.is_empty() => {
+                                for doc in &docs {
+                                    let safe_anchor = sanitize_anchor(&doc.anchor);
+                                    let out_path = contracts_dir.join(format!("{}.adoc", safe_anchor));
+                                    if let Err(e) = std::fs::write(&out_path, aden_emit::emit_document(doc)) {
                                         eprintln!("ERROR: Failed to write {}: {}", out_path.display(), e);
                                     } else {
                                         println!("INFO: Regenerated {}", out_path.display());
                                     }
                                 }
-                                Ok(_) => {}
-                                Err(e) => eprintln!("ERROR: Parse failed for {}: {}", p.display(), e),
                             }
-                        }
-                    } else if matches!(ext, "adoc" | "aden") {
-                        // Validate
-                        if let Some(parent) = p.parent() {
-                            match perform_check(parent) {
-                                Ok(messages) => {
-                                    for msg in messages {
-                                        println!("{}", msg);
-                                    }
-                                }
-                                Err(e) => eprintln!("ERROR: Check failed: {}", e),
+                            Ok(_) => {}
+                            Err(aden_core::Error::UnsupportedLanguage(_)) => {
+                                // Silently skip; may be a file extension we don't support yet.
                             }
+                            Err(e) => eprintln!("ERROR: Parse failed for {}: {}", p.display(), e),
                         }
                     }
+                } else if matches!(ext.as_str(), "adoc" | "aden") {
+                    println!("INFO: Doc change detected in {}", p.display());
+                    // Validate
+                    match perform_check(path) {
+                        Ok(messages) => {
+                            for msg in messages {
+                                println!("{}", msg);
+                            }
+                        }
+                        Err(e) => eprintln!("ERROR: Check failed: {}", e),
+                    }
                 }
+            }
         }
     }
     Ok(())

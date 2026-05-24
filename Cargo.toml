@@ -26,6 +26,7 @@ members = [
     "crates/aden-lsp",
     "crates/aden-heal",
     "crates/aden-propose",
+    "crates/aden-mcp",
 ]
 resolver = "3"
 

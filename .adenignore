@@ -27,3 +27,9 @@ build/
 # OS files
 .DS_Store
 Thumbs.db
+
+# Templates, agent workspace, and high-level docs (orphans by design)
+.agent/
+.aden/
+docs/
+README.adoc

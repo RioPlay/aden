@@ -33,10 +33,12 @@ Aden turns any body of knowledge into a traversable, attributed, token-dense gra
 |===
 |Language |Extraction |Contracts |Call Site Analysis
 
-|Rust |Full (tree-sitter) |Full |Yes (feature-gated)
-|Python |Full |Full |Planned
-|PowerShell |Full |Full |Planned
-|JavaScript / TypeScript |Partial |Partial |Planned
+|Rust |Deep (tree-sitter) |Full |Yes (full call graph)
+|Python |Deep (tree-sitter) |Full |Yes (import-aware)
+|Go |Deep (tree-sitter) |Full |Yes (go.mod + methods)
+|TypeScript / JavaScript |Deep (tree-sitter) |Full |Yes (ES + CommonJS)
+|PowerShell |Via JSON bridge |Full |Planned
+|305+ others |Shallow (generic AST) |Full |No
 |Any text |Manual `.adoc` |Full |No
 |===
 
@@ -101,6 +103,7 @@ aden ci-check .
 |`aden locate <symbol>` |When you know the name but not the file or line.
 |`aden graph --depth N <symbol>` |To visualize dependency chains.
 |`aden heal --scan <path>` |To detect contract drift (StaleHash, MissingContract, etc.).
+|`aden watch <path>` |Watch source files and auto-regenerate contracts on change.
 |`aden ci-check <path>` |To run all local gates (check, heal, test, secrets) in one shot.
 |`aden doctor <path>` |To audit your environment: tool versions, repo health, signing keys.
 |`aden licenses <path>` |Generate third-party attribution report from `Cargo.lock`.
@@ -123,13 +126,14 @@ Aden assumes **contracts are build artifacts**, not source code.
 |Crate |Responsibility
 
 |aden-core |Schema: Document, Block, Edge, Table, Symbol, ProfileConfig
-|aden-parse |Language routers: Rust (tree-sitter), Python, PowerShell
+|aden-parse |Language routers: Rust, Python, Go, TS/JS (deep) + 305+ generic
 |aden-emit |Deterministic AsciiDoc emitter for all node types
 |aden-graph |Referential integrity: DiGraph, cycle detection, typed edges
 |aden-asm |Context assembly: BFS traversal, token budgeting, assembly output
 |aden-index |Semantic full-text search (tf-idf) over the graph
 |aden-heal |Self-healing engine: drift detection, patch proposals, health scoring
 |aden-propose |Patch generation, stub generation, proposal lifecycle
+|aden-mcp |Model Context Protocol server — Claude, Cursor, Zed, Windsurf
 |aden-lsp |Language Server Protocol for `.adoc`/`.aden` files
 |aden-py |PyO3 Python bindings for programmatic access
 |===
