@@ -14,16 +14,41 @@
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 // GNU Affero General Public License for more details.
 //
-use crate::{build_code_attributes, make_anchor};
+use crate::extractor::{build_code_attributes, make_anchor, LanguageExtractor};
 use aden_core::{
     Block, Document, NodeType, Parameter, Result, Visibility, FieldDef,
 };
 use std::path::Path;
 
+/// Deep Rust extractor — implements `LanguageExtractor` for fully-resolved
+/// call-site analysis, visibility, doc comments, and edge macros.
+pub struct RustExtractor;
+
+impl RustExtractor {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl LanguageExtractor for RustExtractor {
+    fn language_id(&self) -> &'static str {
+        "rust"
+    }
+
+    fn file_extensions(&self) -> &'static [&'static str] {
+        &["rs"]
+    }
+
+    fn extract_documents(&self, source: &str, path: &Path) -> Result<Vec<Document>> {
+        extract_documents_inner(path, source)
+    }
+}
+
 /// Extract Documents from a Rust source file using tree-sitter.
-pub fn extract_documents(path: &Path, source: &str) -> Result<Vec<Document>> {
+pub fn extract_documents_inner(path: &Path, source: &str) -> Result<Vec<Document>> {
+    let language = tree_sitter_language_pack::get_language("rust")
+        .map_err(|e| aden_core::Error::Parse(format!("language-pack: {}", e)))?;
     let mut parser = tree_sitter::Parser::new();
-    let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
     parser
         .set_language(&language)
         .map_err(|e| aden_core::Error::Parse(e.to_string()))?;
