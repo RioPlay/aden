@@ -11,6 +11,9 @@ Cargo.lock
 .vscode/
 .idea/
 
+# IDE / Editor runtime files
+.opencode/
+
 # Secrets — NEVER commit these
 *.pem
 *.key
