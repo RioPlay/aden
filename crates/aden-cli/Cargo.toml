@@ -24,6 +24,7 @@ aden-heal = { version = "0.1.0", path = "../aden-heal" }
 aden-propose = { version = "0.1.0", path = "../aden-propose" }
 regex = "1.11"
 dirs = "6"
+walkdir = "2"
 
 [features]
 default = ["watch"]

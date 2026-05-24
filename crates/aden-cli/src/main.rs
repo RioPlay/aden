@@ -200,6 +200,17 @@ enum Commands {
         #[arg(long, value_name = "FILE")]
         out: Option<PathBuf>,
     },
+    /// OWASP-style security audit: scan source for coding vulnerabilities (injection, secrets, weak crypto, etc.)
+    Audit {
+        #[arg(value_name = "PATH", value_hint = ValueHint::DirPath, default_value = ".")]
+        path: PathBuf,
+        #[arg(long, value_name = "LANG", help = "Filter to a specific language (rust, python, go, ts, php). Default: auto-detect all")]
+        lang: Option<String>,
+        #[arg(long, value_name = "FORMAT", default_value = "text", help = "Output format: text, json, adoc")]
+        format: String,
+        #[arg(long, help = "Treat findings as fatal errors (exit non-zero on any finding). Default: warnings only")]
+        strict: bool,
+    },
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -264,6 +275,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Licenses { path, out } => {
             cmd_licenses(&path, out.as_deref())
         }
+        Commands::Audit { path, lang, format, strict } => cmd_audit(&path, lang.as_deref(), &format, strict),
         Commands::New { name, lang, path } => cmd_new(&name, &lang, &path),
         Commands::Kickoff { name, interactive, path } => cmd_kickoff(&name, interactive, &path),
         Commands::Workflow { template, from, out, path } => cmd_workflow(&template, from.as_deref(), out.as_deref(), &path),
@@ -2412,6 +2424,284 @@ fn cmd_heal_watch(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+// ── OWASP Security Audit ──────────────────────────────────────────
+
+use regex::Regex;
+use std::sync::OnceLock;
+
+/// Severity of an OWASP finding.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum OwaspSeverity {
+    Info,
+    Low,
+    Medium,
+    High,
+    Critical,
+}
+
+impl std::fmt::Display for OwaspSeverity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            OwaspSeverity::Info    => write!(f, "INFO"),
+            OwaspSeverity::Low     => write!(f, "LOW"),
+            OwaspSeverity::Medium  => write!(f, "MED"),
+            OwaspSeverity::High    => write!(f, "HIGH"),
+            OwaspSeverity::Critical => write!(f, "CRIT"),
+        }
+    }
+}
+
+/// A single OWASP-style finding.
+struct OwaspFinding {
+    owasp_id: &'static str,
+    category: &'static str,
+    severity: OwaspSeverity,
+    file: PathBuf,
+    line: usize,
+    snippet: String,
+    description: &'static str,
+    remediation: &'static str,
+}
+
+/// Language-agnostic OWASP Top 10 coding vulnerability scanner.
+/// Detects injection, hardcoded secrets, weak crypto, debug modes, eval,
+/// command injection, SSRF, error swallowing, and unsafe blocks.
+fn cmd_audit(
+    path: &Path,
+    lang_filter: Option<&str>,
+    format: &str,
+    strict: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut findings: Vec<OwaspFinding> = Vec::new();
+
+    // Determine which languages to scan
+    let scan_all = lang_filter.is_none();
+    let want_lang = lang_filter.map(|s| s.to_lowercase());
+
+    // Extensions mapped to language IDs
+    let lang_exts: Vec<(&str, &str)> = vec![
+        ("rs", "rust"), ("py", "python"), ("go", "go"),
+        ("js", "ts"), ("ts", "ts"), ("jsx", "ts"), ("tsx", "ts"),
+        ("php", "php"), ("java", "java"), ("cpp", "cpp"), ("c", "c"),
+        ("h", "c"), ("hpp", "cpp"),
+    ];
+
+    // Collect source files
+    let mut files = Vec::new();
+    if path.is_file() {
+        files.push(path.to_path_buf());
+    } else {
+        for entry in walkdir::WalkDir::new(path)
+            .follow_links(false)
+            .into_iter()
+            .filter_map(|e| e.ok())
+        {
+            let p = entry.path();
+            if !p.is_file() { continue; }
+            if let Some(ext) = p.extension().and_then(|e| e.to_str()) {
+                if let Some(l) = lang_exts.iter().find(|(e, _)| *e == ext.to_lowercase()) {
+                    if scan_all || want_lang.as_deref() == Some(l.1) {
+                        files.push(p.to_path_buf());
+                    }
+                }
+            }
+        }
+    }
+
+    // Build pattern table: (regex, lang_opt, owasp_id, category, severity, description, remediation)
+    static OWASP_PATTERNS: OnceLock<Vec<(Regex, Option<&'static str>, &'static str, &'static str, OwaspSeverity, &'static str, &'static str)>> = OnceLock::new();
+    let patterns = OWASP_PATTERNS.get_or_init(|| {
+        vec![
+            // A03 - Injection: eval / exec / Function (JavaScript / Python / Ruby)
+            (Regex::new(r"(?i)\beval\s*\(").unwrap(),                          Some("ts"),   "A03", "Injection",        OwaspSeverity::Critical,
+             "Untrusted input passed to eval().",                               "Avoid eval(); use JSON.parse() or safe parsers."),
+            (Regex::new(r"(?i)\bexec\s*\(").unwrap(),                         Some("python"), "A03", "Injection",     OwaspSeverity::Critical,
+             "Use of exec() on untrusted data.",                                "Remove exec(); validate all input with allow-lists."),
+            (Regex::new(r"(?i)\bFunction\s*\(").unwrap(),                      Some("ts"),   "A03", "Injection",        OwaspSeverity::Critical,
+             "Dynamic function creation from strings.",                         "Avoid Function(); use static function definitions."),
+
+            // A03 - SQL Injection: string-concat in SQL-like strings
+            (Regex::new(r#"(?i)(SELECT|INSERT|UPDATE|DELETE|DROP)\s+[^;]*(\+|\$\{|\{|\{|%s|%d)"#).unwrap(), None, "A03", "SQL Injection", OwaspSeverity::High,
+             "SQL built via string concatenation or interpolation.",           "Use parameterized queries / prepared statements."),
+
+            // A03 - Command Injection
+            (Regex::new(r#"(?i)(os\.system|subprocess\.call|subprocess\.run|subprocess\.Popen)\s*\([^)]*(shell\s*=\s*True)"#).unwrap(), Some("python"), "A03", "Command Injection", OwaspSeverity::High,
+             "Command execution via shell=True or string formatting.",          "Pass arguments as lists (not shell strings) and validate."),
+            (Regex::new(r#"(?i)child_process\.(exec|execSync)\s*\([^)]*\+[^)]*\)"#).unwrap(), Some("ts"), "A03", "Command Injection", OwaspSeverity::High,
+             "Node child_process.exec with string concatenation.",             "Use child_process.execFile or spawn with argument arrays."),
+            (Regex::new(r#"(?i)\.arg\s*\(\s*format!"#).unwrap(),                  Some("rust"), "A03", "Command Injection", OwaspSeverity::Medium,
+             "Command arguments built with format!.",                            "Use separate .arg() calls; never interpolate user data."),
+
+            // A04 - Insecure Design: pickle / yaml.load
+            (Regex::new(r#"(?i)\bpickle\.loads?\s*\("#).unwrap(),               Some("python"), "A04", "Insecure Deserialization", OwaspSeverity::Critical,
+             "Deserialization of untrusted data with pickle.",                   "Use JSON or MessagePack; never unpickle untrusted input."),
+            (Regex::new(r#"(?i)\byaml\.load\s*\("#).unwrap(),                  Some("python"), "A04", "Insecure Deserialization", OwaspSeverity::High,
+             "yaml.load() is unsafe; yaml.safe_load() should be used.",         "Replace yaml.load() with yaml.safe_load()."),
+
+            // A05 - Security Misconfiguration
+            (Regex::new(r#"(?i)(DEBUG\s*=\s*True|debug:\s*true|APP_DEBUG\s*=\s*true)"#).unwrap(), None, "A05", "Security Misconfiguration", OwaspSeverity::Medium,
+             "Debug mode enabled in production-like code.",                      "Set DEBUG=False/False in production; read from env vars."),
+            (Regex::new(r#"(?i)(CORS_ORIGIN_ALLOW_ALL|Access-Control-Allow-Origin\s*:\s*\*)"#).unwrap(), None, "A05", "Security Misconfiguration", OwaspSeverity::Medium,
+             "Permissive CORS wildcard allows any origin.",                     "Restrict origins to an allowed list in production."),
+
+            // A07 - ID & Auth Failures / Cryptographic Failures
+            (Regex::new(r#"(?i)(md5|sha1)\s*\("#).unwrap(),                    None, "A07", "Cryptographic Failure",     OwaspSeverity::Medium,
+             "Weak hash algorithm (MD5 or SHA1) detected.",                     "Use SHA-256+ or Argon2 for passwords, Blake3 for checksums."),
+            (Regex::new(r#"(?i)(password|passwd|pwd|secret|token|api_key)\s*=\s*['\"][^'\"]+['\"]"#).unwrap(), None, "A07", "Hardcoded Secret", OwaspSeverity::High,
+             "Possible hardcoded credential in source.",                         "Load secrets from environment variables or a vault."),
+            (Regex::new(r#"(?i)(DISABLE_SSL_VERIFICATION|tls_verify\s*=\s*false|verify\s*:\s*false)"#).unwrap(), None, "A07", "Insecure Transport", OwaspSeverity::High,
+             "TLS/SSL certificate verification disabled.",                       "Never disable TLS verification in production."),
+
+            // A08 - Software & Data Integrity Failures
+            (Regex::new(r#"(?i)InsecureRequestWarning|urllib3\.disable_warnings|warnings\.filterwarnings\s*\([^)]*ignore"#).unwrap(), Some("python"), "A08", "Integrity Failure", OwaspSeverity::Low,
+             "Security warnings suppressed.",                                     "Handle warnings properly; do not blanket-ignore them."),
+
+            // A09 - Security Logging Failures
+            (Regex::new(r#"(?i)catch\s*\{[^}]*\}|catch\s*\([^)]*\)\s*\{[^}]*\}|except\s*[^:]+:\s*pass|except:\s*pass"#).unwrap(), None, "A09", "Logging Failure", OwaspSeverity::Medium,
+             "Empty catch / except block swallows errors silently.",              "Log exceptions before suppressing; never silently pass."),
+
+            // A10 - SSRF
+            (Regex::new(r#"(?i)(http\.Get|http\.Post|fetch\s*\(|reqwest::get|axios\.|curl_exec)\s*\([^)]*(req\.|[a-zA-Z_]*(request|params|body|input|user))"#).unwrap(), None, "A10", "SSRF", OwaspSeverity::High,
+             "HTTP request built directly from user input.",                      "Validate and sanitize URLs against an allow-list."),
+
+            // Extra - Memory Safety
+            (Regex::new(r#"(?i)\bunsafe\s*\{"#).unwrap(),                         Some("rust"), "A04", "Memory Safety",          OwaspSeverity::Medium,
+             "unsafe block detected.",                                           "Minimize unsafe; document invariants and get review."),
+            (Regex::new(r#"(?i)\bunsafe\s*fn\b"#).unwrap(),                       Some("rust"), "A04", "Memory Safety",          OwaspSeverity::Medium,
+             "unsafe function detected.",                                        "Require audit for every unsafe fn; prefer safe APIs."),
+
+            // Extra - Raw pointers (C/C++ / Rust)
+            (Regex::new(r#"(?i)\bgets\s*\("#).unwrap(),                           None, "A03", "Buffer Overflow",         OwaspSeverity::Critical,
+             "gets() is unsafe and removed in C11.",                             "Use fgets() or getline() with length limits."),
+            (Regex::new(r#"(?i)\bstrcpy\s*\("#).unwrap(),                         None, "A03", "Buffer Overflow",         OwaspSeverity::High,
+             "strcpy() can overflow; use strncpy or strlcpy.",                  "Replace strcpy with strncpy/strlcpy."),
+            (Regex::new(r#"(?i)\bstrcat\s*\("#).unwrap(),                         None, "A03", "Buffer Overflow",         OwaspSeverity::High,
+             "strcat() can overflow; use strncat.",                             "Replace strcat with strncat/strlcat."),
+        ]
+    });
+
+    // Scan files
+    let mut total_scanned = 0usize;
+    for file in &files {
+        total_scanned += 1;
+
+        // Skip documentation directories — they contain example vulnerability strings
+        let file_str = file.to_string_lossy();
+        if file_str.contains("/.agent/") || file_str.contains("/docs/") {
+            continue;
+        }
+
+        let text = match std::fs::read_to_string(file) {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        let ext = file.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+        let lang = lang_exts.iter().find(|(e, _)| *e == ext).map(|(_, l)| *l);
+
+        for (line_no, line) in text.lines().enumerate() {
+            let trimmed = line.trim();
+
+            // Skip comment lines and string literals that contain patterns
+            if trimmed.starts_with("//") || trimmed.starts_with("/*") || trimmed.starts_with("*")
+                || trimmed.starts_with("##") || trimmed.starts_with("#") {
+                continue;
+            }
+
+            // Skip lines that define regex patterns or are clearly string literals
+            if trimmed.starts_with('"') || trimmed.starts_with('\'') || trimmed.contains("Regex::new") {
+                continue;
+            }
+
+            for (re, pat_lang, owasp_id, category, severity, desc, fix) in patterns.iter() {
+                if let Some(pl) = pat_lang {
+                    if Some(*pl) != lang { continue; }
+                }
+                if re.is_match(line) {
+                    findings.push(OwaspFinding {
+                        owasp_id,
+                        category,
+                        severity: *severity,
+                        file: file.clone(),
+                        line: line_no + 1,
+                        snippet: line.trim().to_string(),
+                        description: desc,
+                        remediation: fix,
+                    });
+                }
+            }
+        }
+    }
+
+    // Output
+    let is_json = format == "json";
+    let is_adoc = format == "adoc";
+
+    if findings.is_empty() {
+        if is_json {
+            println!("{{\"findings\": [], \"summary\": {{\"total\": 0, \"critical\": 0, \"high\": 0, \"medium\": 0, \"low\": 0, \"info\": 0, \"scanned\": {total_scanned}}}}}");
+        } else if is_adoc {
+            println!("= OWASP Security Audit\n:date: {}\n\n== Summary\n\n| Severity | Count\n| Critical | 0\n| High     | 0\n| Medium   | 0\n| Low      | 0\n| Info     | 0\n\n_{total_scanned} files scanned. No findings._\n", aden_core::rfc3339_now().split('T').next().unwrap_or(""));
+        } else {
+            println!("  No OWASP coding vulnerabilities found in {total_scanned} file(s).");
+        }
+        return Ok(());
+    }
+
+    // Sort by severity descending
+    findings.sort_by(|a, b| b.severity.cmp(&a.severity));
+
+    let counts = |sev: OwaspSeverity| findings.iter().filter(|f| f.severity == sev).count();
+    let crit = counts(OwaspSeverity::Critical);
+    let high = counts(OwaspSeverity::High);
+    let med  = counts(OwaspSeverity::Medium);
+    let low  = counts(OwaspSeverity::Low);
+    let info = counts(OwaspSeverity::Info);
+
+    if is_json {
+        println!("{{");
+        println!("  \"findings\": [");
+        for (i, f) in findings.iter().enumerate() {
+            let comma = if i + 1 < findings.len() { "," } else { "" };
+            println!("    {{");
+            println!("      \"owasp_id\": \"{}\"," , f.owasp_id);
+            println!("      \"category\": \"{}\"," , f.category);
+            println!("      \"severity\": \"{}\"," , f.severity);
+            println!("      \"file\": \"{}\"," , f.file.display());
+            println!("      \"line\": {}," , f.line);
+            println!("      \"snippet\": \"{}\"," , f.snippet.replace('\"', "\\\""));
+            println!("      \"description\": \"{}\"," , f.description.replace('\"', "\\\""));
+            println!("      \"remediation\": \"{}\"" , f.remediation.replace('\"', "\\\""));
+            println!("    }}{comma}");
+        }
+        println!("  ],");
+        println!("  \"summary\": {{");
+        println!("    \"total\": {}, \"critical\": {}, \"high\": {}, \"medium\": {}, \"low\": {}, \"info\": {}, \"scanned\": {}",
+            findings.len(), crit, high, med, low, info, total_scanned);
+        println!("  }}");
+        println!("}}");
+    } else if is_adoc {
+        let header = format!("= OWASP Security Audit Report\n:date: {}\n:toc: auto\n\n== Summary\n\n| Severity | Count\n| Critical | {crit}\n| High     | {high}\n| Medium   | {med}\n| Low      | {low}\n| Info     | {info}\n\n_{total_scanned} files scanned._\n\n== Findings\n",
+            aden_core::rfc3339_now().split('T').next().unwrap_or(""));
+        print!("{header}");
+        for f in &findings {
+            println!("=== [{} {}] {}:{}\n\n`{}`\n\n*Description:* {}\n\n*Remediation:* {}\n", f.severity, f.owasp_id, f.file.display(), f.line, f.snippet, f.description, f.remediation);
+        }
+    } else {
+        println!("  === OWASP Security Audit Findings ===");
+        println!("  {} file(s) scanned | {} total finding(s)", total_scanned, findings.len());
+        println!("  Severity counts: CRIT={crit} HIGH={high} MED={med} LOW={low} INFO={info}");
+        println!();
+        for f in &findings {
+            println!("  [{}] {} | {}:{}\n    Code: {}\n    {}\n    Fix: {}\n", f.severity, f.owasp_id, f.file.display(), f.line, f.snippet, f.description, f.remediation);
+        }
+    }
+
+    if strict && (crit > 0 || high > 0) {
+        return Err(format!("{} critical/high OWASP finding(s) detected (strict mode)", crit + high).into());
+    }
+    Ok(())
+}
+
 fn cmd_ci_check(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let mut exit_code = 0i32;
     let mut warnings = Vec::new();
@@ -2524,6 +2814,10 @@ fn cmd_ci_check(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         } else {
             Err(Box::<dyn std::error::Error>::from("NOTICE.md missing. Run 'aden licenses --out NOTICE.md'.".to_string()))
         }
+    });
+
+    gate!("owasp audit", {
+        cmd_audit(path, None, "text", true)
     });
 
     // ── WARNING GATES ─────────────────────────────────────

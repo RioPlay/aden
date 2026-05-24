@@ -248,6 +248,7 @@ The inverted-index scanner traversed into symlinked directories, bypassing the h
 | 5 | `cmd_new` path traversal via `name` | Fixed in `main.rs:276` (`validate_name`) | 2026-05-24
 | 5 | `cmd_kickoff` path traversal via `name` | Fixed in `main.rs:441` (`validate_name`) | 2026-05-24
 | 5 | `cmd_workflow` path traversal via `--from`/`--out` | Fixed in `main.rs:508,551` (`safe_relative`) | 2026-05-24
+| 6 | OWASP Top 10 source code scanner | Added `aden audit` + CI gate in `main.rs:2683` | 2026-05-24
 
 == New Command Security Review
 
@@ -276,3 +277,42 @@ During implementation of `aden new`, `aden kickoff`, and `aden workflow`, three 
 `--from` and `--out` user strings are joined with `repo`. A value of `../../etc/passwd` could read or write arbitrary files.
 
 **Fix Applied:** Added `safe_relative()` helper at `main.rs:508` which rejects any path string containing `..`.
+
+== OWASP Top 10 Coding Vulnerability Scanner
+
+A new static analysis gate (`owasp audit`) was added to `aden ci-check` and exposed as the standalone `aden audit` command. It scans source files across Rust, Python, Go, TypeScript/JavaScript, PHP, Java, and C/C++ for OWASP Top 10 coding patterns.
+
+=== Coverage
+
+| OWASP ID | Category | Patterns Detected | Languages
+| A03 | Injection | eval(), exec(), Function(), SQL string concatenation, command injection via shell=True / exec / format! | All
+| A04 | Insecure Deserialization | pickle.loads(), yaml.load() (unsafe) | Python
+| A05 | Security Misconfiguration | DEBUG=True, permissive CORS wildcards | All
+| A07 | Cryptographic Failure / Hardcoded Secrets | MD5/SHA1 usage, hardcoded passwords/tokens, disabled TLS verification | All
+| A08 | Integrity Failures | Suppressed security warnings | Python
+| A09 | Logging Failures | Empty catch/except/pass blocks | All
+| A10 | SSRF | HTTP requests built from user input without URL validation | All
+| Extra | Memory Safety | unsafe blocks/functions | Rust
+| Extra | Buffer Overflow | gets(), strcpy(), strcat() | C/C++
+
+=== Architecture
+- Uses `Regex` patterns compiled once via `std::sync::OnceLock` (ReDoS-safe)
+- Skips `.agent/` and `docs/` directories (documentation containing example strings)
+- Skips comment lines and string literals to reduce false positives
+- Skips lines containing `Regex::new` (pattern definitions themselves)
+- Language-tagged rules avoid cross-language false matches
+- Supports `--format text|json|adoc`
+- `--strict` mode treats critical/high findings as CI-blocking
+
+=== Known Limitations
+- SAST regex-based; cannot track data flow across functions
+- May miss context-sensitive issues (e.g., `eval` used with a completely static string)
+- Does not analyze compiled bytecode or bytecode-equivalent AST
+
+== Updated Toolchain Capabilities
+
+| Command | New/Updated | Description
+| `aden audit <path>` | New | OWASP Top 10 source code vulnerability scanner
+| `aden ci-check` | Updated | Now includes `owasp audit` as a blocking gate
+| `aden audit --format json` | New | Machine-readable SARF-like output
+| `aden audit --strict` | New | Exit non-zero on critical/high findings
