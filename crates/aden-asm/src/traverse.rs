@@ -14,10 +14,20 @@
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 // GNU Affero General Public License for more details.
 //
-use aden_core::EdgeType;
+use aden_core::{Block, EdgeType};
 use aden_graph::{AdenGraph, graph::DocumentNode};
 use petgraph::Direction;
 use std::collections::{HashSet, VecDeque};
+
+/// Which block types to include when assembling a document.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BlockKind {
+    Table,
+    Paragraph,
+    Listing,
+    Admonition,
+    DescriptionList,
+}
 
 /// Options for assembling a context prompt.
 #[derive(Debug, Clone)]
@@ -28,6 +38,9 @@ pub struct AssemblyOptions {
     pub token_budget: usize,
     /// Edge types to follow. If empty, follow all.
     pub edge_types: Vec<EdgeType>,
+    /// Block types to include when emitting documents.
+    /// If empty, include all blocks.
+    pub block_filter: Vec<BlockKind>,
 }
 
 /// Assemble a flat `.adoc` prompt from a graph neighborhood.
@@ -55,7 +68,7 @@ pub fn assemble(graph: &AdenGraph, opts: &AssemblyOptions) -> Result<String, Ass
             continue;
         }
         let doc = &graph.graph[node];
-        let text = document_to_text(doc);
+        let text = document_to_text(doc, &opts.block_filter);
         let tokens = estimate_tokens(&text);
         if total_tokens + tokens > opts.token_budget {
             break;
@@ -86,12 +99,25 @@ pub enum AssemblyError {
     Graph(String),
 }
 
-fn document_to_text(doc: &DocumentNode) -> String {
+fn document_to_text(doc: &DocumentNode, block_filter: &[BlockKind]) -> String {
+    let has_filter = !block_filter.is_empty();
+    let should_include = |b: &Block| -> bool {
+        if !has_filter { return true; }
+        let kind = match b {
+            Block::Table(_) => BlockKind::Table,
+            Block::Paragraph(_) => BlockKind::Paragraph,
+            Block::Listing { .. } => BlockKind::Listing,
+            Block::Admonition { .. } => BlockKind::Admonition,
+            Block::DescriptionList(_) => BlockKind::DescriptionList,
+        };
+        block_filter.contains(&kind)
+    };
+
     // If blocks were populated during parsing, emit structured content.
     // Otherwise fall back to the original raw source so the assembled
     // context is never empty.
     if !doc.doc.blocks.is_empty() {
-        use aden_core::{Block, AdmonitionKind};
+        use aden_core::AdmonitionKind;
         let mut out = String::new();
         // Attributes
         for (key, value) in &doc.doc.attributes {
@@ -104,6 +130,7 @@ fn document_to_text(doc: &DocumentNode) -> String {
         out.push_str(&format!("= {title}\n\n"));
         // Blocks
         for block in &doc.doc.blocks {
+            if !should_include(block) { continue; }
             match block {
                 Block::Paragraph(t) => {
                     out.push_str(t);

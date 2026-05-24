@@ -293,6 +293,7 @@ fn tool_context_for(
             aden_core::EdgeType::Implements,
             aden_core::EdgeType::Documents,
         ],
+        block_filter: Vec::new(),
     };
 
     let assembled = aden_asm::traverse::assemble(g, &opts)

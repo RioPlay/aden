@@ -1178,6 +1178,7 @@ fn cmd_asm(
         max_depth: depth,
         token_budget: budget,
         edge_types,
+        block_filter: Vec::new(),
     };
 
     let output = assemble(&graph, &opts)?;
@@ -1399,6 +1400,18 @@ fn depth_for_intent(intent: &QueryIntent) -> usize {
     }
 }
 
+fn block_filter_for_intent(intent: &QueryIntent) -> Vec<aden_asm::traverse::BlockKind> {
+    use aden_asm::traverse::BlockKind::*;
+    match intent {
+        QueryIntent::Debug => vec![Table, Admonition, Paragraph],
+        QueryIntent::Usage => vec![Listing, Table, DescriptionList],
+        QueryIntent::Explain => vec![Paragraph, Table, Listing],
+        QueryIntent::Refactor => vec![Table, Admonition, Paragraph],
+        QueryIntent::Impact => vec![Table, Listing],
+        QueryIntent::General => vec![Paragraph, Table, Listing, Admonition, DescriptionList],
+    }
+}
+
 fn cmd_ask(
     path: &Path,
     question: &str,
@@ -1445,11 +1458,13 @@ fn cmd_ask(
 
     // Step 3: Build graph and assemble context
     let graph = aden_graph::cache::build_from_directory_cached(path)?;
+    let block_filter = block_filter_for_intent(&intent);
     let opts = AssemblyOptions {
         start_anchor: start_anchor.clone(),
         max_depth: depth,
         token_budget: budget,
         edge_types,
+        block_filter,
     };
     let assembled = assemble(&graph, &opts)?;
 
