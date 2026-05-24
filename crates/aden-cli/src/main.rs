@@ -515,7 +515,7 @@ fn cmd_kickoff(
 
     let kickoff_template = include_str!("../../../.agent/templates/kickoff.adoc");
     let out_path = repo.join("docs").join(format!("kickoff-{}.adoc", name));
-    std::fs::create_dir_all(out_path.parent().unwrap())?;
+    std::fs::create_dir_all(out_path.parent().unwrap_or(Path::new(".")))?;
 
     if interactive {
         println!("=== Aden Kickoff Wizard ===");
