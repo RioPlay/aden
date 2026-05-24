@@ -956,6 +956,12 @@ fn cmd_gen(path: &Path, out_dir: Option<&Path>, auto: bool) -> Result<(), Box<dy
         return emit_docs(docs, out_dir, path);
     }
 
+    // Invalidate caches after generating contracts so next query rebuilds
+    let cache_dir = path.join(".aden/cache");
+    let _ = std::fs::remove_file(cache_dir.join("graph-cache.json"));
+    let _ = std::fs::remove_file(cache_dir.join("index-cache.json"));
+    let _ = std::fs::remove_file(cache_dir.join("cache-index.json"));
+
     Ok(())
 }
 
@@ -1119,13 +1125,13 @@ fn cmd_check(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn cmd_graph(path: &Path, from: &str, depth: usize) -> Result<(), Box<dyn std::error::Error>> {
-    use aden_graph::{Direction, graph::AdenGraph};
+    use aden_graph::{Direction};
 
     if !path.is_dir() {
         return Err("graph requires a directory path".into());
     }
 
-    let graph = AdenGraph::build_from_directory(path)?;
+    let graph = aden_graph::cache::build_from_directory_cached(path)?;
     let start_idx = graph.get_index(from).ok_or_else(|| format!("Anchor '{}' not found", from))?;
 
     println!("Graph neighborhood from anchor '{}' (depth <= {})", from, depth);
@@ -1160,13 +1166,13 @@ fn cmd_asm(
     out: Option<&Path>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use aden_asm::traverse::{assemble, AssemblyOptions};
-    use aden_graph::graph::AdenGraph;
+    
 
     if !path.is_dir() {
         return Err("asm requires a directory path".into());
     }
 
-    let graph = AdenGraph::build_from_directory(path)?;
+    let graph = aden_graph::cache::build_from_directory_cached(path)?;
     let opts = AssemblyOptions {
         start_anchor: from.to_string(),
         max_depth: depth,
@@ -1248,14 +1254,14 @@ fn cmd_query(
     backlinks: Option<&str>,
     impact: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use aden_graph::{Direction, graph::AdenGraph};
+    use aden_graph::{Direction};
     use std::collections::{HashSet, VecDeque};
 
     if !path.is_dir() {
         return Err("query requires a directory path".into());
     }
 
-    let graph = AdenGraph::build_from_directory(path)?;
+    let graph = aden_graph::cache::build_from_directory_cached(path)?;
 
     let mode_count = from.is_some() as u8 + backlinks.is_some() as u8 + impact.is_some() as u8;
     if mode_count != 1 {
@@ -1401,8 +1407,8 @@ fn cmd_ask(
     model: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use aden_asm::traverse::{assemble, AssemblyOptions};
-    use aden_graph::graph::AdenGraph;
-    use aden_index::Index;
+    
+    
 
     if !path.is_dir() {
         return Err("ask requires a directory path".into());
@@ -1412,7 +1418,7 @@ fn cmd_ask(
     let start_anchor = if let Some(anchor) = from_override {
         anchor.to_string()
     } else {
-        let idx = Index::from_directory(path)?;
+        let idx = load_or_build_index(path)?;
         let results = idx.query(question);
         if results.is_empty() {
             println!("No relevant documents found for: {}", question);
@@ -1438,7 +1444,7 @@ fn cmd_ask(
     println!();
 
     // Step 3: Build graph and assemble context
-    let graph = AdenGraph::build_from_directory(path)?;
+    let graph = aden_graph::cache::build_from_directory_cached(path)?;
     let opts = AssemblyOptions {
         start_anchor: start_anchor.clone(),
         max_depth: depth,
@@ -1599,13 +1605,13 @@ fn resolve_node_type(node: &aden_graph::DocumentNode) -> String {
 }
 
 fn cmd_search(path: &Path, query: &str) -> Result<(), Box<dyn std::error::Error>> {
-    use aden_index::Index;
+    
 
     if !path.is_dir() {
         return Err("search requires a directory path".into());
     }
 
-    let index = Index::from_directory(path)?;
+    let index = load_or_build_index(path)?;
     let results = index.query(query);
 
     if results.is_empty() {
@@ -1632,14 +1638,14 @@ fn cmd_locate(
     caller_of: Option<&str>,
     format: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use aden_graph::graph::AdenGraph;
+    
     use serde_json::json;
 
     if !path.is_dir() {
         return Err("locate requires a directory path".into());
     }
 
-    let graph = AdenGraph::build_from_directory(path)?;
+    let graph = aden_graph::cache::build_from_directory_cached(path)?;
 
     // If --symbol is given, find the definition.
     if let Some(sym) = symbol {
@@ -1785,14 +1791,14 @@ fn cmd_watch(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
 
 fn perform_check(path: &Path) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     use aden_emit::check::{collect_anchors, find_refs};
-    use aden_graph::{cycles::find_cycles, graph::AdenGraph, integrity::check_hashes};
+    use aden_graph::{cycles::find_cycles, integrity::check_hashes};
     use std::collections::HashSet;
     use std::io::Read;
 
     let mut messages = Vec::new();
     let mut all_anchors: HashSet<String> = HashSet::new();
 
-    let graph = AdenGraph::build_from_directory(path)?;
+    let graph = aden_graph::cache::build_from_directory_cached(path)?;
 
     // Collect local anchors
     for entry in std::fs::read_dir(path)? {
@@ -3054,6 +3060,16 @@ fn cmd_ci_check(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     }
     println!("\n{}[CI] ALL GATES PASSED — Ready to commit.{}", green, reset);
     Ok(())
+}
+
+/// Load the search index from disk cache, or build and cache it.
+fn load_or_build_index(path: &Path) -> Result<aden_index::Index, Box<dyn std::error::Error>> {
+    if let Some(cached) = aden_index::try_load(path) {
+        return Ok(cached);
+    }
+    let index = aden_index::Index::from_directory(path)?;
+    let _ = aden_index::save(&index, path);
+    Ok(index)
 }
 
 fn cmd_doctor(path: &Path) -> Result<(), Box<dyn std::error::Error>> {

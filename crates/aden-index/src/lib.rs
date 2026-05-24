@@ -33,7 +33,7 @@ pub struct SearchResult {
 }
 
 /// In-memory inverted index built from a directory of `.adoc`/`.aden` files.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Index {
     /// token -> [(anchor, occurrences_in_document)]
     inverted: HashMap<String, Vec<(String, usize)>>,
@@ -41,6 +41,29 @@ pub struct Index {
     anchor_paths: HashMap<String, PathBuf>,
     /// anchor -> full file text (for snippet generation)
     anchor_text: HashMap<String, String>,
+}
+
+const INDEX_CACHE_FILE: &str = ".aden/cache/index-cache.json";
+
+/// Build an index, using the on-disk cache when possible.
+/// `key` should be a hash of all `.adoc`/`.aden` file paths + mtimes.
+pub fn try_load(dir: &std::path::Path) -> Option<Index> {
+    let index_path = dir.join(INDEX_CACHE_FILE);
+    if !index_path.exists() {
+        return None;
+    }
+    let text = std::fs::read_to_string(&index_path).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+/// Save the index to disk cache.
+pub fn save(index: &Index, dir: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+    let cache_dir = dir.join(".aden/cache");
+    std::fs::create_dir_all(&cache_dir)?;
+    let index_path = cache_dir.join("index-cache.json");
+    let json = serde_json::to_string_pretty(index)?;
+    std::fs::write(&index_path, json)?;
+    Ok(())
 }
 
 /// Set of common English stop words ignored during indexing and querying.

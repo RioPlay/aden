@@ -35,7 +35,7 @@ pub struct AdenGraph {
     pub graph: DiGraph<DocumentNode, EdgeType>,
     pub anchor_to_index: HashMap<String, NodeIndex>,
     pub path_to_index: HashMap<PathBuf, NodeIndex>,
-    filter: aden_core::filter::AdenFilter,
+    pub filter: aden_core::filter::AdenFilter,
 }
 
 #[derive(Debug, thiserror::Error)]

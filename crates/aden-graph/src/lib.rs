@@ -20,6 +20,7 @@
 //! validates references, detects cycles, and injects backlinks.
 
 pub mod backlinks;
+pub mod cache;
 pub mod cycles;
 pub mod graph;
 pub mod integrity;
