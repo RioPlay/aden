@@ -15,6 +15,11 @@ Aden is a **context compiler** — not a documentation generator.
 
 It turns any codebase into a **traversable, token-dense knowledge graph** where every function, module, and decision is a node, and every relationship is a typed, resolvable edge. AI agents (and humans) can then query this graph with natural language, locate symbols instantly, and understand impact before touching code.
 
+== For AI Agents
+
+If you are an AI agent (Claude, Codex, Cursor, OpenCode, etc.) reading this repository, start at **`AGENTS.md`** in the project root.
+It contains the canonical onboarding path, command decision tree, and rules for working with this AsciiDoc-native knowledge graph.
+
 == Why Aden?
 
 Every codebase eventually becomes too large to fit in a single mind. Aden solves this by making your project's structure machine-readable:
@@ -147,9 +152,15 @@ Aden assumes **contracts are build artifacts**, not source code.
 |aden-py |PyO3 Python bindings for programmatic access
 |===
 
-== For AI Agents
+== Agent Resources
 
-If you are an AI agent reading this file, your canonical next step is to read `.agent/templates/aden-guide.adoc` in this repository. It contains the full command decision tree, token economy rules, and contract quality checklist.
+Full agent guidance lives in **`AGENTS.md`** (project root).
+It points into the AsciiDoc-native `.agent/` workspace:
+
+- `.agent/onboarding.adoc` — Session locking, impact analysis, validation protocol
+- `.agent/constraints.adoc` — Never-commit rules, security posture
+- `.agent/templates/aden-guide.adoc` — Token economy, common failure modes, contract quality
+- `.agent/context.adoc` — Project identity, dependencies, codebase-specific patterns
 
 == Author
 

@@ -1,6 +1,6 @@
-:proj: unknown
-:standard: unknown
-:lang: unknown
+:proj: aden
+:standard: ""
+:lang: rust
 
 [[agent-context]]
 = Shared Context for Agent Sessions

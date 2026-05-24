@@ -102,6 +102,11 @@ impl LanguageRouter {
         }
     }
 
+    /// Returns true when a registered (deep) extractor handles this extension.
+    pub fn has_extractor(&self, ext: &str) -> bool {
+        self.by_extension.contains_key(ext)
+    }
+
     /// Extract `Document`s from a single source file.
     pub fn parse_file(&self, path: &Path, source: &str) -> Result<Vec<Document>> {
         let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");

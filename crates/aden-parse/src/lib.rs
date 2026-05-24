@@ -33,6 +33,9 @@ pub use extractor::LanguageExtractor;
 pub(crate) use extractor::make_anchor;
 pub use router::LanguageRouter;
 
+#[cfg(test)]
+mod tests;
+
 use aden_core::{Document, Error, Result};
 use std::path::Path;
 
