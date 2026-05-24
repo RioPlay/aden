@@ -84,6 +84,7 @@ struct ImportBinding {
     original_name: Option<String>, // Some for `from x import y`, None for `import x`
 }
 
+#[allow(dead_code)]
 struct ExtractionContext<'a> {
     symbols: Vec<SymbolInfo<'a>>,
     imports: Vec<ImportBinding>,

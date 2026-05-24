@@ -147,7 +147,12 @@ fn document_to_text(doc: &DocumentNode) -> String {
     out
 }
 
-/// Simple token estimation: roughly 1 token per 4 bytes (text) or 1 token per 3 bytes (code).
+/// Improved token estimation using a word-based heuristic.
+/// Typical LLM tokenization yields roughly 0.75 words per token.
 fn estimate_tokens(text: &str) -> usize {
-    text.len() / 4 + 1
+    let word_count = text
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
+        .filter(|s| !s.is_empty())
+        .count();
+    (word_count * 4 / 3).max(1)
 }

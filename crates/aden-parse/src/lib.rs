@@ -14,12 +14,17 @@
 
 mod extractor;
 pub mod c_resolver;
+pub mod csharp_resolver;
 pub mod generic;
 pub mod go_resolver;
+pub mod java_resolver;
+pub mod kotlin_resolver;
 mod powershell;
+pub mod php_resolver;
 pub mod python_resolver;
 #[cfg(feature = "rust-deep")]
 pub mod rust;
+pub mod ruby_resolver;
 pub mod router;
 pub mod tree_sitter_common;
 pub mod typescript_resolver;

@@ -14,8 +14,13 @@ use crate::generic::GenericExtractor;
 #[cfg(feature = "rust-deep")]
 use crate::rust::RustExtractor;
 use crate::c_resolver::CResolver;
-use crate::python_resolver::PythonResolver;
+use crate::csharp_resolver::CSharpResolver;
 use crate::go_resolver::GoResolver;
+use crate::java_resolver::JavaResolver;
+use crate::kotlin_resolver::KotlinResolver;
+use crate::php_resolver::PhpResolver;
+use crate::python_resolver::PythonResolver;
+use crate::ruby_resolver::RubyResolver;
 use crate::typescript_resolver::TypeScriptResolver;
 use aden_core::{Document, Error, Result};
 use std::collections::HashMap;
@@ -64,6 +69,27 @@ impl LanguageRouter {
             let c: Arc<dyn LanguageExtractor> = Arc::new(CResolver::new());
             self.by_extension.insert("c", Arc::clone(&c));
             self.by_extension.insert("h", Arc::clone(&c));
+        }
+        {
+            let java: Arc<dyn LanguageExtractor> = Arc::new(JavaResolver::new());
+            self.by_extension.insert("java", Arc::clone(&java));
+        }
+        {
+            let kotlin: Arc<dyn LanguageExtractor> = Arc::new(KotlinResolver::new());
+            self.by_extension.insert("kt", Arc::clone(&kotlin));
+            self.by_extension.insert("kts", Arc::clone(&kotlin));
+        }
+        {
+            let csharp: Arc<dyn LanguageExtractor> = Arc::new(CSharpResolver::new());
+            self.by_extension.insert("cs", Arc::clone(&csharp));
+        }
+        {
+            let ruby: Arc<dyn LanguageExtractor> = Arc::new(RubyResolver::new());
+            self.by_extension.insert("rb", Arc::clone(&ruby));
+        }
+        {
+            let php: Arc<dyn LanguageExtractor> = Arc::new(PhpResolver::new());
+            self.by_extension.insert("php", Arc::clone(&php));
         }
     }
 

@@ -182,7 +182,7 @@ fn handle_tools_list(req: &JsonRpcRequest) -> JsonRpcResponse {
             }
         }
     ]);
-    JsonRpcResponse::success(req.id.clone(), tools)
+    JsonRpcResponse::success(req.id.clone(), serde_json::json!({ "tools": tools }))
 }
 
 fn handle_tools_call(

@@ -84,6 +84,7 @@ struct GoImport {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 struct GoSymbol<'a> {
     name: String,
     kind: NodeType,

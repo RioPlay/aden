@@ -14,6 +14,8 @@
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 // GNU Affero General Public License for more details.
 //
+mod mcp;
+
 use clap::{Parser, Subcommand, ValueHint};
 use std::path::{Path, PathBuf};
 
@@ -28,7 +30,8 @@ struct Cli {
 enum Commands {
     /// Scaffold .agent/ templates in target repository
     Init {
-        #[arg(long, value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
+        /// Target directory to initialize (default: current directory)
+        #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
         path: PathBuf,
     },
     /// Create a new project from a language template with aden scaffolding
@@ -37,7 +40,8 @@ enum Commands {
         name: String,
         #[arg(long, value_name = "LANG", default_value = "rust")]
         lang: String,
-        #[arg(long, value_name = "DIR", default_value = ".")]
+        /// Parent directory for the new project (default: current directory)
+        #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
         path: PathBuf,
     },
     /// Create a kickoff document for a new initiative (interactive or from a brief)
@@ -46,7 +50,8 @@ enum Commands {
         name: String,
         #[arg(long, help = "Interactive wizard mode")]
         interactive: bool,
-        #[arg(long, value_name = "DIR", default_value = ".")]
+        /// Project directory (default: current directory)
+        #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
         path: PathBuf,
     },
     /// Workflow engine: instantiate templates with substitutions and chain documents
@@ -57,36 +62,41 @@ enum Commands {
         from: Option<String>,
         #[arg(long, value_name = "FILE", help = "Output path")]
         out: Option<PathBuf>,
-        #[arg(long, value_name = "DIR", default_value = ".")]
+        /// Project directory (default: current directory)
+        #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
         path: PathBuf,
     },
     /// Parse source file(s) and emit .aden / .adoc contracts
     Gen {
         #[arg(value_name = "PATH", value_hint = ValueHint::AnyPath)]
         path: PathBuf,
-        #[arg(long, value_name = "DIR", value_hint = ValueHint::DirPath)]
+        #[arg(long, value_name = "DIR", value_hint = ValueHint::DirPath, help = "Output directory (default: ./contracts/)")]
         out_dir: Option<PathBuf>,
-        #[arg(long, help = "Auto-discover source files from build system (Cargo, go.mod, package.json) and generate contracts incrementally")]
+        #[arg(long, help = "Auto-discover source files and generate contracts for the whole project")]
         auto: bool,
     },
     /// Verify all <<refs>> resolve to existing [[anchors]]
     Check {
-        #[arg(value_name = "PATH", value_hint = ValueHint::AnyPath)]
+        #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::AnyPath)]
         path: PathBuf,
     },
     /// Output the local graph neighborhood as a debug report
     Graph {
-        #[arg(long, value_name = "ANCHOR")]
+        #[arg(value_name = "ANCHOR")]
         from: String,
+        /// Project directory (default: current directory)
+        #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
+        path: PathBuf,
         #[arg(long, value_name = "N", default_value = "3")]
         depth: usize,
-        #[arg(value_name = "PATH", value_hint = ValueHint::AnyPath)]
-        path: PathBuf,
     },
     /// Assemble a context prompt from the knowledge graph
     Asm {
         #[arg(long, value_name = "ANCHOR")]
         from: String,
+        /// Project directory (default: current directory)
+        #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
+        path: PathBuf,
         #[arg(long, value_name = "N", default_value = "3")]
         depth: usize,
         #[arg(long, value_name = "TOKENS", default_value = "8192")]
@@ -95,11 +105,12 @@ enum Commands {
         edge_types: Option<String>,
         #[arg(long, value_name = "FILE")]
         out: Option<PathBuf>,
-        #[arg(value_name = "PATH", value_hint = ValueHint::AnyPath)]
-        path: PathBuf,
     },
     /// Query the knowledge graph and emit JSON
     Query {
+        /// Project directory (default: current directory)
+        #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::AnyPath)]
+        path: PathBuf,
         #[arg(long, value_name = "ANCHOR")]
         from: Option<String>,
         #[arg(long, value_name = "TYPE")]
@@ -110,75 +121,80 @@ enum Commands {
         backlinks: Option<String>,
         #[arg(long, value_name = "ANCHOR")]
         impact: Option<String>,
-        #[arg(value_name = "PATH", value_hint = ValueHint::AnyPath)]
-        path: PathBuf,
     },
     /// Ask a natural-language question; Aden resolves it to a subgraph and assembles context.
     Ask {
         #[arg(value_name = "QUESTION")]
         question: String,
+        /// Project directory (default: current directory)
+        #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
+        path: PathBuf,
         #[arg(long, value_name = "ANCHOR")]
         from: Option<String>,
         #[arg(long, value_name = "TOKENS", default_value = "4096")]
         budget: usize,
-        #[arg(value_name = "PATH", value_hint = ValueHint::DirPath)]
-        path: PathBuf,
+        #[arg(long, value_name = "MODEL", help = "LLM model: ollama:<name>, openai:<name>, or auto")]
+        model: Option<String>,
     },
     /// Search the knowledge graph for documents matching a query
     Search {
         #[arg(value_name = "QUERY")]
         query: String,
-        #[arg(value_name = "PATH", value_hint = ValueHint::DirPath)]
+        /// Project directory (default: current directory)
+        #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
         path: PathBuf,
     },
     /// Locate a symbol definition or its call sites in the knowledge graph
     Locate {
-        #[arg(long, value_name = "SYMBOL")]
+        #[arg(long, value_name = "SYMBOL", help = "Find definition of this symbol")]
         symbol: Option<String>,
-        #[arg(long, value_name = "SYMBOL")]
+        #[arg(long, value_name = "SYMBOL", help = "Find call sites of this symbol")]
         caller_of: Option<String>,
         #[arg(long, value_name = "FORMAT", default_value = "plain")]
         format: String,
-        #[arg(value_name = "PATH", value_hint = ValueHint::DirPath)]
+        /// Project directory (default: current directory)
+        #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
         path: PathBuf,
     },
     /// Watch source files for changes and auto-regenerate contracts
     #[cfg(feature = "watch")]
     Watch {
-        #[arg(value_name = "PATH", value_hint = ValueHint::DirPath)]
+        #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
         path: PathBuf,
     },
     /// Self-healing documentation engine: scan for drift, propose patches, apply reviewed changes
     Heal {
-        #[arg(long, value_name = "DIR", value_hint = ValueHint::DirPath)]
-        scan: Option<PathBuf>,
-        #[arg(long)]
+        /// Directory to scan (default: current directory)
+        #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
+        path: PathBuf,
+        #[arg(long, help = "Generate patch proposals for review")]
         propose: bool,
-        #[arg(long, value_name = "ID")]
-        apply: Option<String>,
-        #[arg(long, value_name = "REF")]
+        #[arg(long, value_name = "REF", help = "Limit scan to files changed since git ref")]
         since: Option<String>,
-        #[arg(long, value_name = "DIR", value_hint = ValueHint::DirPath)]
+        #[arg(long, value_name = "ID", help = "Apply a specific proposal by ID")]
+        apply: Option<String>,
+        #[cfg(feature = "watch")]
+        #[arg(long, value_name = "DIR", help = "Watch directory and auto-heal on changes")]
         watch: Option<PathBuf>,
     },
     /// Run all local CI gates before committing (check, heal, test, secret-scan)
     CiCheck {
-        #[arg(value_name = "PATH", value_hint = ValueHint::DirPath)]
+        #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
         path: PathBuf,
     },
     /// Diagnose the environment: tool versions, repo health, signing keys
     Doctor {
-        #[arg(value_name = "PATH", value_hint = ValueHint::DirPath)]
+        #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
         path: PathBuf,
     },
     /// Semantic review: validate low-confidence proposals with token budgeting
     Review {
-        #[arg(value_name = "PATH", value_hint = ValueHint::AnyPath)]
+        #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::AnyPath)]
         path: PathBuf,
+        #[arg(long, value_name = "REF", help = "Review only files changed since git ref")]
+        since: Option<String>,
         #[arg(long, value_name = "TOKENS", default_value = "2048")]
         budget: usize,
-        #[arg(long, value_name = "REF")]
-        since: Option<String>,
     },
     /// Atomic session lock: append entry to .agent/session.adoc
     Session {
@@ -190,27 +206,63 @@ enum Commands {
         files: Option<String>,
         #[arg(long, value_name = "STATUS")]
         status: Option<String>,
-        #[arg(value_name = "PATH", value_hint = ValueHint::DirPath)]
+        /// Project directory (default: current directory)
+        #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
         path: PathBuf,
     },
     /// Generate third-party accreditation report from Cargo.lock
     Licenses {
-        #[arg(value_name = "PATH", value_hint = ValueHint::DirPath, default_value = ".")]
+        /// Project directory (default: current directory)
+        #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
         path: PathBuf,
-        #[arg(long, value_name = "FILE")]
+        #[arg(long, value_name = "FILE", help = "Write output to file instead of stdout")]
         out: Option<PathBuf>,
     },
-    /// OWASP-style security audit: scan source for coding vulnerabilities (injection, secrets, weak crypto, etc.)
+    /// OWASP-style security audit: scan source for vulnerabilities
     Audit {
-        #[arg(value_name = "PATH", value_hint = ValueHint::DirPath, default_value = ".")]
+        /// Directory to scan (default: current directory)
+        #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
         path: PathBuf,
         #[arg(long, value_name = "LANG", help = "Filter to a specific language (rust, python, go, ts, php). Default: auto-detect all")]
         lang: Option<String>,
         #[arg(long, value_name = "FORMAT", default_value = "text", help = "Output format: text, json, adoc")]
         format: String,
-        #[arg(long, help = "Treat findings as fatal errors (exit non-zero on any finding). Default: warnings only")]
+        #[arg(long, help = "Exit non-zero on any finding (default: warnings only)")]
         strict: bool,
     },
+    /// MCP (Model Context Protocol) integration management
+    Mcp {
+        #[command(subcommand)]
+        action: McpAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum McpAction {
+    /// Install aden MCP into supported AI platforms
+    Install {
+        #[arg(long, value_name = "PLATFORM", help = "Target platform: opencode, claude, cursor, codex, zed, windsurf")]
+        platform: Option<String>,
+        #[arg(long, value_name = "PATH", help = "Path to aden-mcp binary")]
+        binary: Option<PathBuf>,
+        #[arg(long, value_name = "PATH", help = "Project directory to serve")]
+        project: Option<PathBuf>,
+        #[arg(long, help = "Install for all platforms, not just detected ones")]
+        all: bool,
+        #[arg(long, help = "Show what would be done without writing files")]
+        dry_run: bool,
+    },
+    /// Remove aden MCP from supported AI platforms
+    Uninstall {
+        #[arg(long, value_name = "PLATFORM", help = "Target platform")]
+        platform: Option<String>,
+        #[arg(long, help = "Remove from all supported platforms")]
+        all: bool,
+        #[arg(long, help = "Show what would be done without writing files")]
+        dry_run: bool,
+    },
+    /// List supported platforms and their status
+    List,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -229,8 +281,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Query { from, edge_type, depth, backlinks, impact, path } => {
             cmd_query(&path, from.as_deref(), edge_type.as_deref(), depth, backlinks.as_deref(), impact.as_deref())
         }
-        Commands::Ask { question, from, budget, path } => {
-            cmd_ask(&path, &question, from.as_deref(), budget)
+        Commands::Ask { question, from, budget, model, path } => {
+            cmd_ask(&path, &question, from.as_deref(), budget, model.as_deref())
         }
         Commands::Search { query, path } => {
             cmd_search(&path, &query)
@@ -242,22 +294,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Watch { path } => {
             cmd_watch(&path)
         }
-        Commands::Heal { scan, propose, apply, since, watch } => {
-            if let Some(path) = scan {
-                if let Some(ref git_ref) = since {
-                    cmd_heal_scan_since(&path, propose, git_ref)
-                } else {
-                    cmd_heal_scan(&path, propose)
-                }
-            } else if let Some(id) = apply {
-                cmd_heal_apply(std::env::current_dir()?.as_path(), &id)
-            } else if let Some(path) = watch {
+        Commands::Heal { path, propose, since, apply, watch } => {
+            if let Some(id) = apply {
+                cmd_heal_apply(&path, &id)
+            } else if let Some(watch_path) = watch {
                 #[cfg(feature = "watch")]
-                { cmd_heal_watch(&path) }
+                { cmd_heal_watch(&watch_path) }
                 #[cfg(not(feature = "watch"))]
                 { Err("watch feature is not enabled in this build".into()) }
+            } else if let Some(ref git_ref) = since {
+                cmd_heal_scan_since(&path, propose, git_ref)
             } else {
-                Err("heal requires one of --scan, --apply, or --watch".into())
+                cmd_heal_scan(&path, propose)
             }
         }
         Commands::CiCheck { path } => cmd_ci_check(&path),
@@ -279,6 +327,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::New { name, lang, path } => cmd_new(&name, &lang, &path),
         Commands::Kickoff { name, interactive, path } => cmd_kickoff(&name, interactive, &path),
         Commands::Workflow { template, from, out, path } => cmd_workflow(&template, from.as_deref(), out.as_deref(), &path),
+        Commands::Mcp { action } => match action {
+            McpAction::Install { platform, binary, project, all, dry_run } => {
+                let platforms = platform.map_or_else(Vec::new, |p| vec![p]);
+                mcp::run_install(&platforms, binary.as_deref(), project.as_deref(), all, dry_run)
+            }
+            McpAction::Uninstall { platform, all, dry_run } => {
+                let platforms = platform.map_or_else(Vec::new, |p| vec![p]);
+                mcp::run_uninstall(&platforms, all, dry_run)
+            }
+            McpAction::List => mcp::run_list(),
+        },
     }
 }
 
@@ -646,184 +705,53 @@ fn cmd_init(target: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let templates_dir = agent_dir.join("templates");
     std::fs::create_dir_all(&templates_dir)?;
 
-    // Core templates (embedded at compile time via include_str!)
-    std::fs::write(
-        templates_dir.join("plan.adoc"),
-        include_str!("../../../.agent/templates/plan.adoc"),
-    )?;
-    std::fs::write(
-        templates_dir.join("module.adoc"),
-        include_str!("../../../.agent/templates/module.adoc"),
-    )?;
-    std::fs::write(
-        templates_dir.join("context.adoc"),
-        include_str!("../../../.agent/templates/context.adoc"),
-    )?;
-    std::fs::write(
-        templates_dir.join("aden-guide.adoc"),
-        include_str!("../../../.agent/templates/aden-guide.adoc"),
-    )?;
-    std::fs::write(
-        templates_dir.join("style-guide.adoc"),
-        include_str!("../../../.agent/templates/style-guide.adoc"),
-    )?;
-    std::fs::write(
-        templates_dir.join("research.adoc"),
-        include_str!("../../../.agent/templates/research.adoc"),
-    )?;
-    std::fs::write(
-        templates_dir.join("constraints.adoc"),
-        include_str!("../../../.agent/templates/constraints.adoc"),
-    )?;
-    std::fs::write(
-        templates_dir.join("onboarding.adoc"),
-        include_str!("../../../.agent/templates/onboarding.adoc"),
-    )?;
-    std::fs::write(
-        templates_dir.join("protocol.adoc"),
-        include_str!("../../../.agent/templates/protocol.adoc"),
-    )?;
-    std::fs::write(
-        templates_dir.join("glossary.adoc"),
-        include_str!("../../../.agent/templates/glossary.adoc"),
-    )?;
-    std::fs::write(
-        templates_dir.join("policy.adoc"),
-        include_str!("../../../.agent/templates/policy.adoc"),
-    )?;
-    std::fs::write(
-        templates_dir.join("kickoff.adoc"),
-        include_str!("../../../.agent/templates/kickoff.adoc"),
-    )?;
-    std::fs::write(
-        templates_dir.join("design.adoc"),
-        include_str!("../../../.agent/templates/design.adoc"),
-    )?;
-    std::fs::write(
-        templates_dir.join("spec.adoc"),
-        include_str!("../../../.agent/templates/spec.adoc"),
-    )?;
-    std::fs::write(
-        templates_dir.join("task.adoc"),
-        include_str!("../../../.agent/templates/task.adoc"),
-    )?;
-    std::fs::write(
-        templates_dir.join("adr.adoc"),
-        include_str!("../../../.agent/templates/adr.adoc"),
-    )?;
-    std::fs::write(
-        templates_dir.join("runbook.adoc"),
-        include_str!("../../../.agent/templates/runbook.adoc"),
-    )?;
-    std::fs::write(
-        templates_dir.join("retrospective.adoc"),
-        include_str!("../../../.agent/templates/retrospective.adoc"),
-    )?;
+    // Reference templates (user-editable starting points — do NOT put live
+    // files like context.adoc / session.adoc here; they are generated below).
+    for (name, content) in [
+        ("plan.adoc", include_str!("../../../.agent/templates/plan.adoc")),
+        ("module.adoc", include_str!("../../../.agent/templates/module.adoc")),
+        ("aden-guide.adoc", include_str!("../../../.agent/templates/aden-guide.adoc")),
+        ("style-guide.adoc", include_str!("../../../.agent/templates/style-guide.adoc")),
+        ("research.adoc", include_str!("../../../.agent/templates/research.adoc")),
+        ("constraints.adoc", include_str!("../../../.agent/templates/constraints.adoc")),
+        ("onboarding.adoc", include_str!("../../../.agent/templates/onboarding.adoc")),
+        ("protocol.adoc", include_str!("../../../.agent/templates/protocol.adoc")),
+        ("glossary.adoc", include_str!("../../../.agent/templates/glossary.adoc")),
+        ("policy.adoc", include_str!("../../../.agent/templates/policy.adoc")),
+        ("kickoff.adoc", include_str!("../../../.agent/templates/kickoff.adoc")),
+        ("design.adoc", include_str!("../../../.agent/templates/design.adoc")),
+        ("spec.adoc", include_str!("../../../.agent/templates/spec.adoc")),
+        ("task.adoc", include_str!("../../../.agent/templates/task.adoc")),
+        ("adr.adoc", include_str!("../../../.agent/templates/adr.adoc")),
+        ("runbook.adoc", include_str!("../../../.agent/templates/runbook.adoc")),
+        ("retrospective.adoc", include_str!("../../../.agent/templates/retrospective.adoc")),
+    ] {
+        std::fs::write(templates_dir.join(name), content)?;
+    }
+
     std::fs::write(
         agent_dir.join("README.adoc"),
         include_str!("../../../.agent/README.adoc"),
     )?;
 
-    // Generate live context.adoc in the project root
+    // Generate live context.adoc and session.adoc from templates
     let project_name = target.file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("unknown");
 
-    // NOTE: This content should match .agent/context.adoc in this repository.
-    // Future: move to a proper template file read via include_str! with
-    // {project_name} substitution so aden init always picks up edits.
-    let context_content = format!(r###":proj: {project_name}
-:standard: unknown
-:lang: unknown
-
-[[agent-context]]
-= Shared Context for Agent Sessions
-
-This file is the canonical shared memory for all agent sessions working on `{project_name}`.
-Include it at the top of every prompt with `include::.agent/context.adoc[]`.
-
-== Hard Constraints (Never Violate)
-ifdef::agent[]
-. **Never commit without `aden check` passing.** Run `aden check` on docs/ and your changes before declaring done.
-. **Never commit contracts or `.aden/` workspace.** Contracts are build artifacts. They contain signatures and paths that could be weaponized if leaked. Use `.gitignore` to enforce this; never bypass it.
-. **Never modify `.adoc` contracts without updating `[[anchor]]` references.** Broken `<<refs>>` break the knowledge graph.
-. **Never delete `agent-note::` blocks without justification.** They contain temporal uncertainty markers.
-. **Never duplicate definitions.** If a term exists in glossary, reference it with `<<glossary.adoc#term>>`; do not redefine.
-. **Never emit files outside the working directory** without user confirmation.
-. **Never ignore test failures.** If tests fail, fix before proceeding.
-endif::agent[]
-
-== Agent Conventions
-. Every `.adoc` file must declare an anchor immediately before the title.
-. Every table must have a header row.
-. Use `agent-note::` blocks for temporal annotations and uncertainty.
-. Use `ifdef::agent[]` to hide human prose from AI context.
-. Never use YAML frontmatter; use AsciiDoc attributes (`:key: value`).
-. Resolve every `<<reference>>` to an existing `[[anchor]]`.
-
-== Security Posture
-ifdef::agent[]
-Security is a first-class concern. Every agent session must follow these patterns, derived from prior audits:
-
-. Subprocess safety :: Pass `--` before all user-controlled args to `Command::new(...)`. Never trust PATH for helper scripts.
-. Symlink hardening :: Skip symlinks during all directory traversals (`entry.file_type().is_symlink()`).
-. Temp file safety :: Use unique filenames + `create_new(true)` in shared temp directories (`std::env::temp_dir()`).
-. Regex DoS prevention :: Compile regexes once (`OnceLock` / `lazy_static`), never per-file or per-request.
-. Path leakage prevention :: Strip absolute prefixes from `:source_file:` attributes before emitting contracts.
-. Atomic writes :: Use temp+rename for any file read by concurrent agents (e.g., `.agent/session.adoc`).
-. Crash isolation :: Wrap server handlers in `catch_unwind`. A request bug must not kill the process.
-. Timestamp safety :: Use `unwrap_or_default()` on `SystemTime::duration_since(UNIX_EPOCH)`.
-endif::agent[]
-
-== Next Steps
-. Run `aden init` in this repository (already done if you're reading this).
-. Read `.agent/onboarding.adoc` before your first session.
-. Read `.agent/constraints.adoc` to know what not to do.
-. Append your session entry to `.agent/session.adoc` before starting work.
-
-== Navigation
-
-. <<agent-readme>>
-. <<agent-session>>
-. <<readme>>
-. <<project-context>>
-"###,
-        project_name = project_name
-    );
+    let context_tpl = include_str!("../../../.agent/templates/context.adoc");
+    let context_content = context_tpl
+        .replace("{project}", project_name)
+        .replace("{lang}", "unknown")
+        .replace("{ai_name}", "agent")
+        .replace("{standard}", "unknown")
+        .replace("{edition}", "2024")
+        .replace("{dependencies}", "| | |");
     std::fs::write(agent_dir.join("context.adoc"), context_content)?;
 
-    // NOTE: This content should match .agent/session.adoc in this repository.
-    let session_content = format!(r###":proj: {project_name}
-:session: active
-
-[[agent-session]]
-= Agent Session Log
-
-== Purpose
-This file is the canonical shared memory for parallel subagent sessions.
-Every agent that modifies files must append an entry here before completing.
-This prevents race conditions and silent overwrites.
-
-== Active Sessions
-
-|===
-|Timestamp |Agent |Task |Files Touched |Status
-|===
-
-== Known Invariants
-. Every agent must read this file before starting work.
-. Every agent must append a row before declaring done.
-. If two agents touch the same file, the later agent must reconcile with the earlier.
-. No agent may delete rows; only append.
-
-== Navigation
-
-. <<agent-readme>>
-. <<agent-context>>
-. <<readme>>
-"###,
-        project_name = project_name
-    );
+    let session_tpl = include_str!("../../../.agent/templates/session.adoc");
+    let session_content = session_tpl
+        .replace("{project}", project_name);
     std::fs::write(agent_dir.join("session.adoc"), session_content)?;
 
     // Security-first scaffolding: contracts are build artifacts
@@ -1312,125 +1240,6 @@ fn sanitize_anchor(anchor: &str) -> String {
     }
 }
 
-/// Walk a directory and compute a combined stable hash of every file.
-fn hash_directory(dir: &Path) -> Result<String, Box<dyn std::error::Error>> {
-    use std::collections::BTreeMap;
-    let mut files: BTreeMap<String, Vec<u8>> = BTreeMap::new();
-    for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.is_file() {
-            let rel = path.strip_prefix(dir).unwrap_or(&path);
-            files.insert(rel.to_string_lossy().to_string(), std::fs::read(&path)?);
-        } else if path.is_dir() {
-            let sub_hash = hash_directory(&path)?;
-            files.insert(
-                path.file_name().unwrap_or_default().to_string_lossy().to_string() + "/",
-                sub_hash.into_bytes(),
-            );
-        }
-    }
-    let mut combined = Vec::new();
-    for (name, content) in files {
-        combined.extend_from_slice(name.as_bytes());
-        combined.extend_from_slice(content.as_slice());
-    }
-    Ok(aden_core::stable_hash(&combined))
-}
-
-/// Scan docs/ for module contracts whose :path: attribute overlaps with
-/// `changed_path` (a source file or directory). Re-compute the hash of that
-/// module's source tree and update :source_hash: in the docs contract.
-fn sync_docs_source_hashes(changed_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    // Find project root (directory containing Cargo.toml)
-    let mut root = changed_path.canonicalize().unwrap_or_else(|_| changed_path.to_path_buf());
-    loop {
-        if root.join("Cargo.toml").exists() || root.join("aden.toml").exists() {
-            break;
-        }
-        if let Some(parent) = root.parent() {
-            root = parent.to_path_buf();
-        } else {
-            return Ok(()); // No project root found; skip docs sync
-        }
-    }
-
-    let docs_dir = root.join("docs");
-    if !docs_dir.is_dir() {
-        return Ok(());
-    }
-
-    let changed_canon = changed_path.canonicalize().unwrap_or_else(|_| changed_path.to_path_buf());
-
-    for entry in std::fs::read_dir(&docs_dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("adoc") {
-            continue;
-        }
-
-        // Parse :path: and :source_hash: lines
-        let text = std::fs::read_to_string(&path)?;
-        let mut module_path: Option<String> = None;
-        for line in text.lines() {
-            if line.starts_with(":path:") {
-                module_path = Some(line[6..].trim().to_string());
-                break;
-            }
-        }
-
-        let Some(module_rel) = module_path else { continue };
-        let module_abs = root.join(&module_rel);
-        let module_canon = match module_abs.canonicalize() {
-            Ok(p) => p,
-            Err(_) => continue,
-        };
-
-        // Does the changed path intersect with this module's source tree?
-        let intersects = changed_canon.starts_with(&module_canon)
-            || module_canon.starts_with(&changed_canon)
-            || changed_canon == module_canon;
-
-        if !intersects {
-            continue;
-        }
-
-        // Recompute hash
-        let new_hash = hash_directory(&module_canon)?;
-
-        // Update :source_hash: in file
-        let mut new_lines = Vec::new();
-        let mut updated = false;
-        for line in text.lines() {
-            if line.starts_with(":source_hash:") {
-                new_lines.push(format!(":source_hash: {}", new_hash));
-                updated = true;
-            } else {
-                new_lines.push(line.to_string());
-            }
-        }
-
-        if !updated {
-            // Insert after :lang: line
-            for i in (0..new_lines.len()).rev() {
-                if new_lines[i].starts_with(":lang:") {
-                    new_lines.insert(i + 1, format!(":source_hash: {}", new_hash));
-                    new_lines.insert(i + 2, String::new());
-                    updated = true;
-                    break;
-                }
-            }
-        }
-
-        if updated {
-            std::fs::write(&path, new_lines.join("\n") + "\n")?;
-            println!("Updated docs contract: {} (:source_hash synced)", path.display());
-        }
-    }
-
-    Ok(())
-}
-
 fn cmd_query(
     path: &Path,
     from: Option<&str>,
@@ -1589,6 +1398,7 @@ fn cmd_ask(
     question: &str,
     from_override: Option<&str>,
     budget: usize,
+    model: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use aden_asm::traverse::{assemble, AssemblyOptions};
     use aden_graph::graph::AdenGraph;
@@ -1637,21 +1447,128 @@ fn cmd_ask(
     };
     let assembled = assemble(&graph, &opts)?;
 
-    // Step 4: Print context and footer
-    let consumed = assembled.len();
-    let budget_label = if consumed > budget { "OVER BUDGET" } else { "on budget" };
-    let page_breaks = assembled.matches("\n<<<\n").count();
-    let node_count = page_breaks + 1;
+    // Step 4: Send to LLM or print raw context
+    if let Some(model_spec) = model {
+        query_llm(model_spec, question, &assembled, &start_anchor)?;
+    } else {
+        let consumed = assembled.len();
+        let budget_label = if consumed > budget { "OVER BUDGET" } else { "on budget" };
+        let page_breaks = assembled.matches("\n<<<\n").count();
+        let node_count = page_breaks + 1;
 
-    println!("{}", assembled);
-    println!();
-    println!("// ────────────────────────────────────────────────");
-    println!("// Aden Ask Summary");
-    println!("//   Question: {}", question);
-    println!("//   Anchor  : [[{}]]", start_anchor);
-    println!("//   Strategy: {:?} | Depth: {}", intent, depth);
-    println!("//   Nodes   : {} | Tokens: {} / {} ({})", node_count, consumed, budget, budget_label);
-    println!("// ────────────────────────────────────────────────");
+        println!("{}", assembled);
+        println!();
+        println!("// ────────────────────────────────────────────────");
+        println!("// Aden Ask Summary");
+        println!("//   Question: {}", question);
+        println!("//   Anchor  : [[{}]]", start_anchor);
+        println!("//   Strategy: {:?} | Depth: {}", intent, depth);
+        println!("//   Nodes   : {} | Bytes: {} / {} ({})", node_count, consumed, budget, budget_label);
+        println!("// ────────────────────────────────────────────────");
+    }
+
+    Ok(())
+}
+
+fn query_llm(
+    model_spec: &str,
+    question: &str,
+    context: &str,
+    anchor: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let system_prompt = format!(
+        r#"You are an expert software engineering assistant analyzing a codebase.
+The user asked: "{}"
+I have retrieved the relevant context starting from anchor [[{}]].
+Please answer the question based ONLY on the provided context. If the context does not contain enough information, say so explicitly.
+
+Context begins below (--- separates different documents):
+"#,
+        question, anchor
+    );
+
+    let full_prompt = format!("{}\n{}\n", system_prompt, context);
+
+    let (provider, model_name) = if let Some(pos) = model_spec.find(':') {
+        (&model_spec[..pos], &model_spec[pos + 1..])
+    } else {
+        // Auto-detect: try ollama first
+        if std::process::Command::new("ollama").arg("list").output().is_ok() {
+            ("ollama", model_spec)
+        } else {
+            return Err("No LLM provider prefix given (e.g., ollama:llama3) and ollama is not available".into());
+        }
+    };
+
+    match provider {
+        "ollama" => {
+            println!("Asking ollama ({}) via stdin...", model_name);
+            let mut child = std::process::Command::new("ollama")
+                .args(["run", model_name])
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .spawn()?;
+
+            if let Some(stdin) = child.stdin.take() {
+                use std::io::Write;
+                let mut stdin = stdin;
+                stdin.write_all(full_prompt.as_bytes())?;
+                // drop stdin to signal EOF
+            }
+
+            let output = child.wait_with_output()?;
+            if output.status.success() {
+                let response = String::from_utf8_lossy(&output.stdout);
+                println!("\n=== LLM Response ===\n{}", response);
+            } else {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(format!("ollama run failed: {}", stderr).into());
+            }
+        }
+        "openai" => {
+            let api_key = std::env::var("OPENAI_API_KEY")
+                .map_err(|_| "OPENAI_API_KEY not set. Export it to use --model openai:<name>")?;
+            println!("QueryingOpenAI ({})...", model_name);
+
+            let payload = serde_json::json!({
+                "model": model_name,
+                "messages": [
+                    { "role": "system", "content": &system_prompt },
+                    { "role": "user", "content": context }
+                ],
+                "temperature": 0.3,
+                "max_tokens": 2048
+            });
+
+            let output = std::process::Command::new("curl")
+                .args([
+                    "-sS", "https://api.openai.com/v1/chat/completions",
+                    "-H", &format!("Authorization: Bearer {}", api_key),
+                    "-H", "Content-Type: application/json",
+                    "-d", &payload.to_string(),
+                ])
+                .output()?;
+
+            if output.status.success() {
+                let json: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+                if let Some(content) = json["choices"][0]["message"]["content"].as_str() {
+                    println!("\n=== LLM Response ===\n{}", content);
+                } else {
+                    println!("Unexpected OpenAI response: {}", String::from_utf8_lossy(&output.stdout));
+                }
+            } else {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(format!("OpenAI API call failed: {}", stderr).into());
+            }
+        }
+        other => {
+            return Err(format!(
+                "Unknown LLM provider '{}'. Supported: ollama:<model>, openai:<model>",
+                other
+            )
+            .into());
+        }
+    }
 
     Ok(())
 }
@@ -2352,28 +2269,86 @@ fn cmd_heal_apply(repo_path: &Path, id: &str) -> Result<(), Box<dyn std::error::
     if !is_safe_id(id) {
         return Err(format!("Invalid proposal ID: {}", id).into());
     }
+
+    let proposal = aden_propose::load(id, repo_path)
+        .map_err(|e| format!("Failed to load proposal '{}': {}", id, e))?;
+
     println!("Applying proposal: {}", id);
+    println!("  Drift type: {}", proposal.drift_type);
+    println!("  Target: {}", proposal.target_path.display());
+    println!("  Confidence: {:.2}", proposal.confidence);
+    println!();
 
-    let store_dir = repo_path.join(".aden").join("proposals");
-    let patch_path = store_dir.join(format!("{}.patch.adoc", id));
-
-    if !patch_path.exists() {
-        return Err(format!("Proposal not found: {}", patch_path.display()).into());
+    if proposal.confidence < 0.9 {
+        println!("WARNING: Low-confidence proposal ({:.2}). Review carefully.", proposal.confidence);
     }
 
-    let content = std::fs::read_to_string(&patch_path)?;
-    println!("Proposal content:");
-    println!("---");
-    println!("{}", content);
-    println!("---");
-    println!();
-    println!("This is a PROPOSE-ONLY engine. To apply this change:");
-    println!("1. Review the proposal above");
-    println!("2. If approved, manually edit the target file");
-    println!("3. Then mark proposal as applied");
-    println!();
-    println!("Target file: {}", patch_path.display());
+    // Dispatch based on drift type
+    match proposal.drift_type.as_str() {
+        "StaleHash" => apply_stale_hash(&proposal)?,
+        "MissingContract" => apply_missing_contract(&proposal)?,
+        "BrokenReference" => {
+            println!("BrokenReference requires manual review. The patch content:");
+            println!("---");
+            println!("{}", proposal.patch_asciidoc);
+            println!("---");
+            println!("Cannot auto-apply: requires finding the correct replacement anchor.");
+        }
+        other => {
+            println!("Unknown drift type '{}'. Cannot auto-apply.", other);
+            println!("Patch content:");
+            println!("---");
+            println!("{}", proposal.patch_asciidoc);
+            println!("---");
+        }
+    }
 
+    // Mark proposal as applied in the store
+    let mut updated = proposal;
+    updated.status = aden_propose::ProposalStatus::Applied;
+    aden_propose::persist(&updated, repo_path)?;
+
+    println!("\nProposal {} marked as APPLIED.", id);
+    Ok(())
+}
+
+fn apply_stale_hash(proposal: &aden_propose::Proposal) -> Result<(), Box<dyn std::error::Error>> {
+    let target = &proposal.target_path;
+    if !target.exists() {
+        return Err(format!("Target file not found: {}", target.display()).into());
+    }
+
+    let content = std::fs::read_to_string(target)?;
+    let new_line = proposal.patch_asciidoc.trim();
+
+    if !new_line.starts_with(":source_hash:") {
+        return Err("Patch does not contain a valid :source_hash: line".into());
+    }
+
+    let updated = content
+        .lines()
+        .map(|line| {
+            if line.trim_start().starts_with(":source_hash:") {
+                new_line
+            } else {
+                line
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    std::fs::write(target, updated)?;
+    println!("Updated source hash in {}", target.display());
+    Ok(())
+}
+
+fn apply_missing_contract(proposal: &aden_propose::Proposal) -> Result<(), Box<dyn std::error::Error>> {
+    let target = &proposal.target_path;
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(target, &proposal.patch_asciidoc)?;
+    println!("Created contract at {}", target.display());
     Ok(())
 }
 
@@ -2702,6 +2677,79 @@ fn cmd_audit(
     Ok(())
 }
 
+fn run_project_tests(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let has_cargo = path.join("Cargo.toml").exists();
+    let has_go_mod = path.join("go.mod").exists();
+    let has_pkg_json = path.join("package.json").exists();
+    let has_pyproject = path.join("pyproject.toml").exists();
+    let has_setup_py = path.join("setup.py").exists();
+    let has_reqs = path.join("requirements.txt").exists();
+
+    if has_cargo {
+        let output = std::process::Command::new("cargo")
+            .args(["test", "--workspace", "--quiet"])
+            .current_dir(path)
+            .output()?;
+        if !output.status.success() {
+            return Err(format!("cargo test failed:\n{}", String::from_utf8_lossy(&output.stderr)).into());
+        }
+        return Ok(());
+    }
+
+    if has_go_mod {
+        let output = std::process::Command::new("go")
+            .args(["test", "./..."])
+            .current_dir(path)
+            .output()?;
+        if !output.status.success() {
+            return Err(format!("go test failed:\n{}", String::from_utf8_lossy(&output.stderr)).into());
+        }
+        return Ok(());
+    }
+
+    if has_pkg_json {
+        // prefer npm, fall back to yarn or pnpm
+        let runner = if std::process::Command::new("npm").arg("--version").output().is_ok() {
+            "npm"
+        } else if std::process::Command::new("yarn").arg("--version").output().is_ok() {
+            "yarn"
+        } else if std::process::Command::new("pnpm").arg("--version").output().is_ok() {
+            "pnpm"
+        } else {
+            return Err("No JS package manager found (npm/yarn/pnpm)".into());
+        };
+        let output = std::process::Command::new(runner)
+            .args(["test"])
+            .current_dir(path)
+            .output()?;
+        if !output.status.success() {
+            return Err(format!("{} test failed:\n{}", runner, String::from_utf8_lossy(&output.stderr)).into());
+        }
+        return Ok(());
+    }
+
+    if has_pyproject || has_setup_py || has_reqs {
+        // try pytest first, then python -m unittest
+        let output = std::process::Command::new("pytest")
+            .args(["-q"])
+            .current_dir(path)
+            .output()?;
+        if output.status.success() {
+            return Ok(());
+        }
+        let output = std::process::Command::new("python")
+            .args(["-m", "pytest", "-q"])
+            .current_dir(path)
+            .output()?;
+        if output.status.success() {
+            return Ok(());
+        }
+        return Err("Python tests failed or no test runner found (tried pytest, python -m pytest)".into());
+    }
+
+    Err("No recognized test framework found (checked Cargo.toml, go.mod, package.json, pyproject.toml, setup.py, requirements.txt)".into())
+}
+
 fn cmd_ci_check(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let mut exit_code = 0i32;
     let mut warnings = Vec::new();
@@ -2744,44 +2792,54 @@ fn cmd_ci_check(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         else { perform_check(path).map(|_| ()) }
     });
 
-    gate!("cargo test", {
-        let output = std::process::Command::new("cargo")
-            .args(["test", "--workspace", "--quiet"])
-            .current_dir(path)
-            .output()?;
-        if !output.status.success() {
-            Err(Box::<dyn std::error::Error>::from(String::from_utf8_lossy(&output.stderr).to_string()))
-        } else {
-            Ok(())
-        }
+    gate!("tests", {
+        run_project_tests(path)
     });
 
     gate!("secret scan", {
         use regex::Regex;
         use std::sync::OnceLock;
 
-        static SECRET_PATTERNS: OnceLock<Vec<Regex>> = OnceLock::new();
+        static SECRET_PATTERNS: OnceLock<Vec<(Regex, &'static str)>> = OnceLock::new();
         let patterns = SECRET_PATTERNS.get_or_init(|| {
-            [
-                r"-----BEGIN (RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----",
-                r"AKIA[0-9A-Z]{16}",
-                r"ghp_[a-zA-Z0-9]{36}",
+            vec![
+                (Regex::new(r"-----BEGIN (RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----").unwrap(), "private key"),
+                (Regex::new(r"AKIA[0-9A-Z]{16}").unwrap(), "AWS access key"),
+                (Regex::new(r"ghp_[a-zA-Z0-9]{36}").unwrap(), "GitHub token"),
+                (Regex::new(r"gho_[a-zA-Z0-9]{36}").unwrap(), "GitHub OAuth"),
+                (Regex::new(r"\b[0-9a-zA-Z]{32,64}\b").unwrap(), "long hex secret (possible API key)"),
+                (Regex::new(r#"api[_-]?key\s*=\s*['"][^'"]{8,}['"]"#).unwrap(), "API key assignment"),
+                (Regex::new(r#"password\s*=\s*['"][^'"]{4,}['"]"#).unwrap(), "hardcoded password"),
+                (Regex::new(r#"secret\s*=\s*['"][^'"]{8,}['"]"#).unwrap(), "hardcoded secret"),
+                (Regex::new(r#"token\s*=\s*['"][^'"]{8,}['"]"#).unwrap(), "hardcoded token"),
+                (Regex::new(r"eyJ[a-zA-Z0-9_-]*\.eyJ[a-zA-Z0-9_-]*\.[a-zA-Z0-9_-]*").unwrap(), "JWT token"),
+                (Regex::new(r"bearer\s+[a-zA-Z0-9_\-\.]{20,}").unwrap(), "Bearer token"),
+                (Regex::new(r"mongodb(\+srv)?://[^:]+:[^@]+@").unwrap(), "MongoDB connection string"),
+                (Regex::new(r"postgres(ql)?://[^:]+:[^@]+@").unwrap(), "PostgreSQL connection string"),
+                (Regex::new(r"mysql://[^:]+:[^@]+@").unwrap(), "MySQL connection string"),
+                (Regex::new(r"redis://:[^@]+@").unwrap(), "Redis connection string"),
+                (Regex::new(r"\.env\.[a-zA-Z]+\s*\n").unwrap(), "env file"),
+                (Regex::new(r"DATABASE_URL\s*=\s*").unwrap(), "DATABASE_URL"),
+                (Regex::new(r"sk-[a-zA-Z0-9]{48,}").unwrap(), "OpenAI/sk key"),
             ]
-            .into_iter()
-            .filter_map(|p| Regex::new(p).ok())
-            .collect::<Vec<_>>()
         });
+
         let non_text_exts: std::collections::HashSet<&str> = [
             "png", "jpg", "jpeg", "gif", "svg", "ico", "bmp",
             "pdf", "zip", "tar", "gz", "bz2", "xz", "7z", "rar",
             "mp3", "mp4", "avi", "mov", "mkv", "wav", "flac",
             "wasm", "so", "dll", "dylib", "exe", "bin", "o", "a",
-            "ttf", "otf", "woff", "woff2", "eot",
+            "ttf", "otf", "woff", "woff2", "eot", "jpg", "mp3", "mp4",
         ].iter().copied().collect();
+
         const MAX_SCAN_SIZE: u64 = 1024 * 1024;
         let mut found = 0;
-        for entry in std::fs::read_dir(path)? {
-            let entry = entry?;
+
+        for entry in walkdir::WalkDir::new(path)
+            .follow_links(false)
+            .into_iter()
+            .filter_map(|e| e.ok())
+        {
             let p = entry.path();
             if !p.is_file() { continue; }
             if let Some(ext) = p.extension().and_then(|e| e.to_str()) {
@@ -2791,14 +2849,16 @@ fn cmd_ci_check(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
                 if meta.len() > MAX_SCAN_SIZE { continue; }
             }
             if let Ok(text) = std::fs::read_to_string(&p) {
-                for re in patterns {
-                    if re.is_match(&text) {
-                        println!("  {}Secret pattern '{}' found in {}{}", red, re.as_str(), p.display(), reset);
+                for (re, name) in patterns {
+                    for cap in re.find_iter(&text) {
+                        let snippet = &text[cap.start().saturating_sub(20)..(cap.end() + 20).min(text.len())];
+                        println!("  {}Secret ({}) in {}: ...{}...{}", red, name, p.display(), snippet.replace('\n', " "), reset);
                         found += 1;
                     }
                 }
             }
         }
+
         if found > 0 {
             Err(Box::<dyn std::error::Error>::from(format!("{} secret pattern(s) detected", found)))
         } else {
@@ -2997,7 +3057,6 @@ fn generate_proposal(
     let mut patch = String::new();
     let mut target = repo_path.to_path_buf();
     let mut confidence = 0.5;
-    let drift_type = format!("{:?}", std::mem::discriminant(event));
 
     match event {
         aden_heal::DriftEvent::StaleHash { target_path, expected_hash, actual_hash } => {
@@ -3009,6 +3068,16 @@ fn generate_proposal(
 
             target = PathBuf::from(target_path);
             writeln!(patch, ":source_hash: {}", actual_hash).unwrap();
+
+            Ok(Proposal {
+                id,
+                target_path: target,
+                drift_type: "StaleHash".to_string(),
+                confidence,
+                status: ProposalStatus::PendingReview,
+                rationale,
+                patch_asciidoc: patch,
+            })
         }
         aden_heal::DriftEvent::MissingContract { source_path, anchor, symbol_name } => {
             confidence = 0.85;
@@ -3016,11 +3085,21 @@ fn generate_proposal(
             writeln!(rationale, "Source: {}", source_path).unwrap();
             writeln!(rationale, "Suggested anchor: {}", anchor).unwrap();
 
-            target = PathBuf::from(source_path).with_extension("aden");
+            target = PathBuf::from(source_path).with_extension("adoc");
             writeln!(patch, "[[{}]]", anchor).unwrap();
             writeln!(patch, "= {}", symbol_name).unwrap();
             writeln!(patch).unwrap();
             writeln!(patch, "agent-note::STUB[Auto-generated by aden-heal. Review before removing this note.]").unwrap();
+
+            Ok(Proposal {
+                id,
+                target_path: target,
+                drift_type: "MissingContract".to_string(),
+                confidence,
+                status: ProposalStatus::PendingReview,
+                rationale,
+                patch_asciidoc: patch,
+            })
         }
         aden_heal::DriftEvent::BrokenReference { contract_path, ref_anchor, line } => {
             confidence = 0.70;
@@ -3030,20 +3109,30 @@ fn generate_proposal(
 
             target = PathBuf::from(contract_path);
             writeln!(patch, "// TODO: Fix broken reference to <<{}>> on line {}", ref_anchor, line).unwrap();
+
+            Ok(Proposal {
+                id,
+                target_path: target,
+                drift_type: "BrokenReference".to_string(),
+                confidence,
+                status: ProposalStatus::PendingReview,
+                rationale,
+                patch_asciidoc: patch,
+            })
         }
-        _ => {
-            writeln!(rationale, "Drift event detected: {:?}", event).unwrap();
+        other => {
+            writeln!(rationale, "Drift event detected: {:?}", other).unwrap();
             writeln!(patch, "// Proposed changes for drift event").unwrap();
+
+            Ok(Proposal {
+                id,
+                target_path: target,
+                drift_type: "Unknown".to_string(),
+                confidence,
+                status: ProposalStatus::PendingReview,
+                rationale,
+                patch_asciidoc: patch,
+            })
         }
     }
-
-    Ok(Proposal {
-        id,
-        target_path: target,
-        drift_type,
-        confidence,
-        status: ProposalStatus::PendingReview,
-        rationale,
-        patch_asciidoc: patch,
-    })
 }
