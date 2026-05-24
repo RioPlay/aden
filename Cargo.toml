@@ -28,6 +28,10 @@ members = [
     "crates/aden-propose",
     "crates/aden-mcp",
 ]
+
+# NOTE: aden-py is NOT in the default workspace build because it requires
+# Python development headers (libpython). Build it separately with:
+#   cd crates/aden-py && cargo build
 resolver = "3"
 
 [workspace.package]
