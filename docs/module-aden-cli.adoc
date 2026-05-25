@@ -20,9 +20,8 @@ User-facing binary for the Aden toolchain. Orchestrates all crates through a uni
 |`aden workflow`|`--from <template> [--out <file>]`|Instantiate templates with substitutions and chain documents
 |`aden gen`|`<PATH> [--out-dir <dir>] [--auto] [--merge] [--propose]`|Parse source file(s) and emit contracts; supports --merge (preserve human blocks) and --propose (dry-run)
 |`aden check`|`<DIR>` (default `.`)|Verify refs, anchors, cycles, orphans, and source_hash integrity
-|`aden graph`|`<ANCHOR> [--depth <n>] <DIR>`|Output graph neighborhood as a debug report
 |`aden asm`|`--from <anchor> --depth <n> --budget <tokens> [--edge-types TYPES] [--out FILE] [--format aden|adg] <DIR>`|Assemble context prompt from graph via BFS
-|`aden query`|`--from <anchor> [--edge-type <type>] --depth <n> <DIR>`|Return JSON array of reachable nodes
+|`aden query`|`--from <anchor> [--edge-type <type>] --depth <n> <DIR>`|Return JSON array of reachable nodes; `--format table` outputs graph neighborhood
 |`aden query`|`--backlinks <anchor> <DIR>`|Return JSON array of nodes with incoming edges to target
 |`aden query`|`--impact <anchor> <DIR>`|Return JSON transitive closure over dependency edges (blast radius)
 |`aden query-adq`|<SCRIPT> <DIR>|Execute Aden Query script (node(), incoming(), outgoing(), nodes, edges)
@@ -51,7 +50,7 @@ User-facing binary for the Aden toolchain. Orchestrates all crates through a uni
 - `init` embeds template files at compile time via `include_str!`.
 - `gen` delegates to `aden_parse::parse_file` and `aden_parse::parse_directory`.
 - `check` aggregates anchors across all `.adoc` / `.aden` files, builds full graph via `aden_graph`, verifies `:source_hash:` via `aden_graph::integrity::check_hashes`.
-- `graph` performs BFS from `--from` anchor up to `--depth`.
+- `query` performs BFS from `--from` anchor up to `--depth` (replaces deprecated `graph`).
 - `asm` assembles within `--budget` tokens using BFS traversal from `--from`.
 - `query` emits JSON via `serde_json`. Sub-modes: `--from`, `--backlinks`, `--impact`.
 - `ask` is the AI-facing entry point: search → classify intent → assemble → optionally send to LLM via `ollama:<name>` or `openai:<name>`.
