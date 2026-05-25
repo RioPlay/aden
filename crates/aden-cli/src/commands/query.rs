@@ -524,6 +524,7 @@ pub fn cmd_list(
         Some(f) => anchors.iter().filter(|a| a.contains(f)).cloned().collect(),
         None => anchors,
     };
+    let filtered_count = filtered.len();
 
     let limited: Vec<_> = filtered.into_iter().take(limit).collect();
 
@@ -549,8 +550,8 @@ pub fn cmd_list(
         }
     }
 
-    if limited.len() >= limit {
-        println!("\n... {} more (use --limit to see more)", limited.len() - limit);
+    if limited.len() == limit && filtered_count > limit {
+        println!("\n... {} more (use --limit to see more)", filtered_count - limit);
     }
 
     Ok(())
