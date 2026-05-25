@@ -81,10 +81,10 @@ The agent receives a token-dense, graph-traversed context prompt that includes e
 **Aden Solution:**
 [source,bash]
 ----
-aden gen src/lib.rs  # Generate .aden contract from source
-aden heal --scan . --propose  # Detect drift between code and contracts
+aden gen src/lib.rs --auto  # Generate .aden contract from source
+aden heal . --propose      # Detect drift between code and contracts
 # Review proposals in .aden/proposals/
-aden heal --apply <proposal-id>
+aden heal . --apply <proposal-id>
 ----
 The `gen` command extracts a semantic contract directly from source code. The `heal` command continuously monitors for drift — when the source changes, Aden flags the stale contract and proposes a patch. Documentation becomes a living, version-controlled artifact that is tested at CI time, just like unit tests.
 
