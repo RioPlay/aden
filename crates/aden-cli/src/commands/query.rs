@@ -5,7 +5,7 @@ use aden_graph::Direction;
 
 use crate::types::QueryIntent;
 use crate::util::{
-    load_or_build_index, node_to_json, parse_single_edge_type, perform_check, sanitize_anchor, sanitize_source_file,
+    load_or_build_index, node_to_json, parse_single_edge_type, perform_check, sanitize_anchor, sanitize_source_file, valid_edge_types,
 };
 
 pub fn cmd_check(path: &Path, severity: &str) -> Result<(), Box<dyn std::error::Error>> {
@@ -145,7 +145,8 @@ pub fn cmd_query(
             .get_index(anchor)
             .ok_or_else(|| format!("Anchor '{}' not found. Run 'aden list .' to see available anchors.", anchor))?;
         let filter_type = if let Some(et) = edge_type {
-            Some(parse_single_edge_type(et).ok_or_else(|| format!("invalid edge type: {}", et))?)
+            let valid = valid_edge_types().join(", ");
+            Some(parse_single_edge_type(et).ok_or_else(|| format!("invalid edge type: '{}'. Valid: {}", et, valid))?)
         } else {
             None
         };

@@ -187,6 +187,11 @@ pub fn parse_single_edge_type(s: &str) -> Option<aden_core::EdgeType> {
     }
 }
 
+/// Return list of valid edge types for error messages.
+pub fn valid_edge_types() -> Vec<&'static str> {
+    vec!["uses", "implements", "tests", "documents", "constrains", "justifies", "invokes", "requires", "mutates", "calls", "supersedes", "amends", "verifies"]
+}
+
 /// Parse a comma-separated list of edge-type strings.
 pub fn parse_edge_types(input: &str) -> Vec<aden_core::EdgeType> {
     input.split(',').filter_map(parse_single_edge_type).collect()
