@@ -137,6 +137,34 @@ pub fn cmd_audit(
              "strcpy() can overflow; use strncpy or strlcpy",                  "Replace strcpy with strncpy/strlcpy."),
             (Regex::new(r#"(?i)\bstrcat\s*\("#).unwrap(),                         None, "A03", "Buffer Overflow",         OwaspSeverity::High,
              "strcat() can overflow; use strncat",                              "Replace strcat with strncat/strlcat."),
+
+            // A01 - Broken Access Control
+            (Regex::new(r#"(?i)(chmod\s*\(\s*0o777|chmod\s+777)"#).unwrap(),      None, "A01", "Broken Access Control",   OwaspSeverity::High,
+             "World-writable file permission (0o777) detected",                  "Use minimal permissions (0o755 for dirs, 0o644 for files)."),
+            (Regex::new(r#"(?i)\.\.\/|\.\.\\"#).unwrap(),                         None, "A01", "Path Traversal",          OwaspSeverity::High,
+             "Path traversal sequence (..) in user input",                       "Validate and sanitize path inputs; use canonicalize()."),
+            (Regex::new(r#"(?i)(is_admin|isRoot|is_root|has_role|check_permission)\s*\([^)]*\)\s*\{?\s*return\s+true"#).unwrap(), None, "A01", "Broken Access Control", OwaspSeverity::Medium,
+             "Hardcoded admin/root check always returns true",                   "Implement proper authorization checks from trusted sources."),
+            (Regex::new(r#"(?i)(allow_redirect\s*=\s*true|follow_redirects\s*=\s*true)"#).unwrap(), None, "A01", "Open Redirect",          OwaspSeverity::Medium,
+             "HTTP redirect follows any URL without validation",                 "Validate redirect URLs against an allow-list."),
+            (Regex::new(r#"(?i)(permit_all|@PermitAll|@RolesAllowed\s*\(\s*\"\")"#).unwrap(), Some("java"), "A01", "Broken Access Control", OwaspSeverity::Medium,
+             "Missing or empty role-based access control annotation",             "Specify proper roles or use deny-by-default."),
+            (Regex::new(r#"(?i)(authorize\s*\(\s*\)|authorize\s*\(\s*\"\s*\))"#).unwrap(), Some("python"), "A01", "Broken Access Control", OwaspSeverity::Medium,
+             "Empty authorization check",                                         "Require explicit role or permission verification."),
+
+            // A06 - Vulnerable Components (static patterns only)
+            (Regex::new(r#"(?i)(serde\s*=\s*\"0\.(5|6|7|8|9)|0\.(5|6|7|8|9)\".*version"#).unwrap(), Some("rust"), "A06", "Vulnerable Dependency",  OwaspSeverity::High,
+             "Known-vulnerable serde version (pre-0.10) in Cargo.toml",          "Update to serde >= 1.0 for security fixes."),
+            (Regex::new(r#"(?i)(reqwest\s*=\s*\"0\.(8|9|10)|0\.(8|9|10)\".*version"#).unwrap(), Some("rust"), "A06", "Vulnerable Dependency",  OwaspSeverity::Medium,
+             "Older reqwest version may have known issues",                     "Update to latest reqwest version."),
+            (Regex::new(r#"(?i)(actix-web\s*=\s*\"[0-3]\.|4\.[0-5]\."#).unwrap(),   Some("rust"), "A06", "Vulnerable Dependency",  OwaspSeverity::High,
+             "Vulnerable actix-web version (pre-4.6)",                           "Update to actix-web >= 4.6."),
+            (Regex::new(r#"(?i)(crypto\s*=\s*\"1\.[0-9]\"|crypto\s*=\s*\"2\.[0-9]\"|cryptography\s*=\s*\"[0-2]\."#).unwrap(), Some("python"), "A06", "Vulnerable Dependency",  OwaspSeverity::High,
+             "Vulnerable cryptography library version",                          "Update to latest cryptography >= 41.0."),
+            (Regex::new(r#"(?i)(npm\s+install|npm\s+i)\s+[a-z0-9-]+@[0-9]+\.[0-9]+\.[0-9]+"#).unwrap(), Some("ts"), "A06", "Vulnerable Dependency",  OwaspSeverity::Medium,
+             "Direct version pin may be outdated",                              "Audit and update pinned versions regularly."),
+            (Regex::new(r#"(?i)<dependency>\s*<groupId>com\.fasterxml\.jackson\.core</groupId>\s*<version>[0-2]\.[0-9]+"#).unwrap(), Some("java"), "A06", "Vulnerable Dependency",  OwaspSeverity::High,
+             "Vulnerable Jackson version (< 2.15)",                             "Update Jackson to 2.15+ for CVE fixes."),
         ]
     });
 
