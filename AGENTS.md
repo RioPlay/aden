@@ -29,7 +29,7 @@ Run these from the project root.
 ### Before touching existing code
 ```bash
 aden ask --from <anchor> "What breaks if I change X?"
-aden graph --depth 2 <anchor>
+aden query --from <anchor> --depth 2  # Graph neighborhood (replaces deprecated 'graph')
 aden locate <symbol>
 aden query --backlinks <anchor>  # Find what references this anchor
 ```
