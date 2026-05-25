@@ -226,6 +226,44 @@ pub fn cmd_init(target: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let aden_dir = target.join(".aden");
     std::fs::create_dir_all(&aden_dir)?;
 
+    // Bootstrap constitution
+    let constitution = r###":status: active
+:version: 1.0
+:ratified: 2026-05-25
+:precedence: 100
+
+[[aden-constitution]]
+= Aden Constitution
+
+[constitution]
+== Core Directives
+
+[rule="Forbid"]
+- Never expose secrets, keys, or tokens in any contract
+- Never commit `contracts/` or `.aden/` directories
+- Never bypass `aden check` before commit
+
+[rule="Warn"]
+- All code must build before commit
+- All tests must pass before commit
+- No TODO/unimplemented in production
+
+[rule="Suggest"]
+- Use explicit typed edges
+- Include `:source_hash:` in contracts
+- Run `aden heal` before commit
+
+== Agent Hierarchy
+| Human | Highest | Can override all |
+| Constitution | Fixed | Cannot be overridden |
+| Agent | Lowest | Limited overrides |
+
+== Related
+. <<project-context>>
+. <<protocol>>
+"###;
+    std::fs::write(aden_dir.join("constitution.adoc"), constitution)?;
+
     let aden_manifest = r###"[[manifest]]
 = Aden Workspace — Private by Default
 

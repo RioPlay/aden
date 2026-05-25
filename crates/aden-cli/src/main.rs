@@ -133,6 +133,12 @@ enum Commands {
         out: Option<PathBuf>,
         #[arg(long, value_name = "FORMAT", default_value = "aden", help = "Output format: aden (human-readable), adg (compact JSON)")]
         format: String,
+        #[arg(long, help = "Silent mode: skip intro, output only context")]
+        silent: bool,
+        #[arg(long, help = "Auto mode: adjust budget based on relevance scores")]
+        auto: bool,
+        #[arg(long, help = "Inspect: show what would be included without outputting")]
+        inspect: bool,
     },
     /// Query the knowledge graph and emit JSON
     Query {
@@ -380,11 +386,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Check { path, severity } => commands::cmd_check(&path, &severity),
         Commands::Lint { path, severity, fix, json } => commands::cmd_lint(&path, &severity, fix, json),
         Commands::Test { path, scope, filter, list } => commands::cmd_test(&path, scope.as_deref(), filter.as_deref(), list),
-        Commands::Asm { from, depth, budget, edge_types, out, path, format: asm_format } => {
+        Commands::Asm { from, depth, budget, edge_types, out, path, format: asm_format, silent, auto, inspect } => {
             let types = edge_types
                 .map(|s| util::parse_edge_types(&s))
                 .unwrap_or_default();
-            commands::cmd_asm(&path, &from, depth, budget, types, out.as_deref(), &asm_format)
+            commands::cmd_asm(&path, &from, depth, budget, types, out.as_deref(), &asm_format, silent, auto, inspect)
         }
         Commands::Query { from, edge_type, depth, backlinks, impact, format, path } => {
             commands::cmd_query(&path, from.as_deref(), edge_type.as_deref(), depth, backlinks.as_deref(), impact.as_deref(), &format)

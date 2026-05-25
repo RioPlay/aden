@@ -60,6 +60,9 @@ pub fn cmd_asm(
     edge_types: Vec<aden_core::EdgeType>,
     out: Option<&Path>,
     format: &str,
+    silent: bool,
+    auto: bool,
+    inspect: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use aden_asm::traverse::{assemble, assemble_adg, AssemblyOptions};
 
@@ -68,13 +71,47 @@ pub fn cmd_asm(
     }
 
     let graph = aden_graph::cache::build_from_directory_cached(path)?;
+
+    let effective_budget = if auto {
+        budget
+    } else {
+        budget
+    };
+
     let opts = AssemblyOptions {
         start_anchor: from.to_string(),
         max_depth: depth,
-        token_budget: budget,
+        token_budget: effective_budget,
         edge_types,
         block_filter: Vec::new(),
     };
+
+    if inspect {
+        println!("=== Context Assembly Inspection ===");
+        println!("Start: {}", from);
+        println!("Depth: {}", depth);
+        println!("Budget: {} tokens", effective_budget);
+        println!("\n=== Nodes to be included ===");
+
+        let mut visited = std::collections::HashSet::new();
+        let mut queue = std::collections::VecDeque::new();
+        if let Some(start_idx) = graph.get_index(from) {
+            queue.push_back((start_idx, 0usize));
+            while let Some((node, d)) = queue.pop_front() {
+                if visited.contains(&node) || d > depth {
+                    continue;
+                }
+                visited.insert(node);
+                println!("  [{}] {}", d, graph.graph[node].anchor);
+                for neighbor in graph.graph.neighbors_directed(node, Direction::Outgoing) {
+                    if !visited.contains(&neighbor) {
+                        queue.push_back((neighbor, d + 1));
+                    }
+                }
+            }
+        }
+        return Ok(());
+    }
 
     let output = match format {
         "adg" => assemble_adg(&graph, &opts)?,
@@ -86,7 +123,11 @@ pub fn cmd_asm(
         std::fs::write(out_path, output)?;
         println!("Written assembly to {}", out_path.display());
     } else {
-        println!("{output}");
+        if silent {
+            print!("{}", output);
+        } else {
+            println!("{}", output);
+        }
     }
     Ok(())
 }
