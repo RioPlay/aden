@@ -56,7 +56,7 @@ pub fn cmd_graph(path: &Path, from: &str, depth: usize) -> Result<(), Box<dyn st
     }
 
     let graph = aden_graph::cache::build_from_directory_cached(path)?;
-    let start_idx = graph.get_index(from).ok_or_else(|| format!("Anchor '{}' not found", from))?;
+    let start_idx = graph.get_index(from).ok_or_else(|| format!("Anchor '{}' not found. Run 'aden list .' to see available anchors.", from))?;
 
     println!("Graph neighborhood from anchor '{}' (depth <= {})", from, depth);
     println!("| Anchor | Depth | |\n|=== |");
@@ -143,7 +143,7 @@ pub fn cmd_query(
     if let Some(anchor) = from {
         let start_idx = graph
             .get_index(anchor)
-            .ok_or_else(|| format!("Anchor '{}' not found", anchor))?;
+            .ok_or_else(|| format!("Anchor '{}' not found. Run 'aden list .' to see available anchors.", anchor))?;
         let filter_type = if let Some(et) = edge_type {
             Some(parse_single_edge_type(et).ok_or_else(|| format!("invalid edge type: {}", et))?)
         } else {
@@ -178,14 +178,14 @@ pub fn cmd_query(
     } else if let Some(anchor) = backlinks {
         let target_idx = graph
             .get_index(anchor)
-            .ok_or_else(|| format!("Anchor '{}' not found", anchor))?;
+            .ok_or_else(|| format!("Anchor '{}' not found. Run 'aden list .' to see available anchors.", anchor))?;
         for neighbor in graph.graph.neighbors_directed(target_idx, Direction::Incoming) {
             results.push(node_to_json(&graph.graph[neighbor], 1));
         }
     } else if let Some(anchor) = impact {
         let start_idx = graph
             .get_index(anchor)
-            .ok_or_else(|| format!("Anchor '{}' not found", anchor))?;
+            .ok_or_else(|| format!("Anchor '{}' not found. Run 'aden list .' to see available anchors.", anchor))?;
         let impact_types = [aden_core::EdgeType::Uses,
             aden_core::EdgeType::Calls,
             aden_core::EdgeType::Constrains,

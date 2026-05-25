@@ -46,7 +46,7 @@ pub struct AssemblyOptions {
 /// Assemble a flat `.adoc` prompt from a graph neighborhood.
 pub fn assemble(graph: &AdenGraph, opts: &AssemblyOptions) -> Result<String, AssemblyError> {
     let start_idx = graph.get_index(&opts.start_anchor).ok_or_else(|| {
-        AssemblyError::MissingAnchor(opts.start_anchor.clone())
+        AssemblyError::AnchorNotFound(opts.start_anchor.clone())
     })?;
 
     let mut visited = HashSet::new();
@@ -96,7 +96,7 @@ pub fn assemble_adg(graph: &AdenGraph, opts: &AssemblyOptions) -> Result<String,
     use aden_emit::emit_adg;
 
     let start_idx = graph.get_index(&opts.start_anchor).ok_or_else(|| {
-        AssemblyError::MissingAnchor(opts.start_anchor.clone())
+        AssemblyError::AnchorNotFound(opts.start_anchor.clone())
     })?;
 
     let mut visited = HashSet::new();
@@ -143,8 +143,8 @@ pub fn assemble_adg(graph: &AdenGraph, opts: &AssemblyOptions) -> Result<String,
 
 #[derive(Debug, thiserror::Error)]
 pub enum AssemblyError {
-    #[error("missing anchor: {0}")]
-    MissingAnchor(String),
+    #[error("Anchor '{0}' not found. Run 'aden list .' to see available anchors.")]
+    AnchorNotFound(String),
     #[error("graph error: {0}")]
     Graph(String),
 }
