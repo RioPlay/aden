@@ -142,22 +142,12 @@ The CLI includes multi-language linting capabilities:
 
 |===
 |Function |Description
-|<<aden://module/aden-cli/lint.rs#lint_file>>|Main lint entry point for a single file
-|<<aden://module/aden-cli/lint.rs#lint_rust_line>>|Lint a single line of Rust code
-|<<aden://module/aden-cli/lint.rs#lint_python_line>>|Lint a single line of Python code
-|<<aden://module/aden-cli/lint.rs#lint_typescript_line>>|Lint a single line of TypeScript code
-|<<aden://module/aden-cli/lint.rs#lint_go_line>>|Lint a single line of Go code
-|<<aden://module/aden-cli/lint.rs#lint_java_line>>|Lint a single line of Java code
-|<<aden://module/aden-cli/lint.rs#lint_csharp_line>>|Lint a single line of C# code
-|<<aden://module/aden-cli/lint.rs#lint_ruby_line>>|Lint a single line of Ruby code
-|<<aden://module/aden-cli/lint.rs#lint_php_line>>|Lint a single line of PHP code
-|<<aden://module/aden-cli/lint.rs#apply_lint_rules>>|Apply linting rules to discovered issues
-|<<aden://module/aden-cli/lint.rs#discover_source_files>>|Discover source files in a directory
-|<<aden://module/aden-cli/lint.rs#is_excluded>>|Check if a file should be excluded from linting
 |<<aden://module/aden-cli/lint.rs#cmd_lint>>|CLI command for running linter
 |<<aden://module/aden-cli/lint.rs#LintSeverity>>|Severity levels for lint findings
 |<<aden://module/aden-cli/lint.rs#LintResult>>|Result of linting operation
 |===
+
+The linter internally supports: Rust, Python, TypeScript/JavaScript, Go, Java, C#, Ruby, and PHP.
 
 == Related Documents
 
@@ -166,4 +156,3 @@ The CLI includes multi-language linting capabilities:
 . <<getting-started>>
 . <<user-guide>>
 . <<ai-integration>>
-. <<security-audit-2026-05-24>>
