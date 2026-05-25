@@ -20,6 +20,8 @@ User-facing binary for the Aden toolchain. Orchestrates all crates through a uni
 |`aden workflow`|`--from <template> [--out <file>]`|Instantiate templates with substitutions and chain documents
 |`aden gen`|`<PATH> [--out-dir <dir>] [--auto] [--merge] [--propose]`|Parse source file(s) and emit contracts; supports --merge (preserve human blocks) and --propose (dry-run)
 |`aden check`|`<DIR>` (default `.`)|Verify refs, anchors, cycles, orphans, and source_hash integrity
+|`aden lint`|`<PATH> [--severity Suggest|Warn|Error] [--fix] [--json]`|Lint source files using tree-sitter AST analysis
+|`aden test`|`<PATH> [--scope unit|integration|all] [--filter <pattern>] [--list]`|Discover and run tests across all languages
 |`aden asm`|`--from <anchor> --depth <n> --budget <tokens> [--edge-types TYPES] [--out FILE] [--format aden|adg] <DIR>`|Assemble context prompt from graph via BFS
 |`aden query`|`--from <anchor> [--edge-type <type>] --depth <n> <DIR>`|Return JSON array of reachable nodes; `--format table` outputs graph neighborhood
 |`aden query`|`--backlinks <anchor> <DIR>`|Return JSON array of nodes with incoming edges to target
@@ -36,6 +38,7 @@ User-facing binary for the Aden toolchain. Orchestrates all crates through a uni
 |`aden review`|`--since <ref> [--budget <tokens>]`|Semantic review of changes since a Git ref, with token budgeting
 |`aden session`|`--agent-id <id> --task <task> --files <files> --status <status> <DIR>`|Atomic session lock: append entry to `.agent/session.adoc`
 |`aden licenses`|`<DIR> [--out <FILE>]`|Generate third-party attribution report from `Cargo.lock`
+|`aden federation`|add|remove|list|Multi-repository workspace management
 |`aden audit`|`<DIR> [--format text|json|adoc] [--strict]`|OWASP-style security audit: scan source for vulnerability patterns
 |`aden mcp`|install|uninstall|list|MCP integration management
 |`aden suggest`|`<INTENT>`|AI assistant: describe what you want to do, get the right aden command
