@@ -476,7 +476,7 @@ pub fn cmd_query_adq(path: &Path, script: &str) -> Result<(), Box<dyn std::error
     Ok(())
 }
 
-pub fn cmd_search(path: &Path, query: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub fn cmd_search(path: &Path, query: &str, limit: usize) -> Result<(), Box<dyn std::error::Error>> {
     if !path.is_dir() {
         return Err("search requires a directory path".into());
     }
@@ -489,9 +489,11 @@ pub fn cmd_search(path: &Path, query: &str) -> Result<(), Box<dyn std::error::Er
         return Ok(());
     }
 
+    let limited: Vec<_> = results.into_iter().take(limit).collect();
+    
     println!("| Anchor | Score | Snippet |");
     println!("|=== |");
-    for r in &results {
+    for r in &limited {
         let snippet = if r.snippet.len() > 80 {
             format!("{}...", &r.snippet[..80])
         } else {

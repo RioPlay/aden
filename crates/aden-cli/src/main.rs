@@ -154,6 +154,8 @@ enum Commands {
         query: String,
         #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
         path: PathBuf,
+        #[arg(long, value_name = "N", default_value = "50", help = "Limit number of results")]
+        limit: usize,
     },
     /// List all anchors and contracts in the knowledge graph (alias: ls)
     List {
@@ -326,7 +328,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Ask { question, from, budget, model, path } => {
             commands::cmd_ask(&path, &question, from.as_deref(), budget, model.as_deref())
         }
-        Commands::Search { query, path } => commands::cmd_search(&path, &query),
+        Commands::Search { query, path, limit } => commands::cmd_search(&path, &query, limit),
         Commands::List { filter, verbose, limit, unlimited, path } => {
             let effective_limit = if unlimited { usize::MAX } else { limit };
             commands::cmd_list(&path, filter.as_deref(), verbose, effective_limit)
