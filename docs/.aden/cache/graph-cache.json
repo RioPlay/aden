@@ -1,0 +1,4074 @@
+{
+  "nodes": [
+    {
+      "anchor": "project-context",
+      "doc": {
+        "anchor": "project-context",
+        "node_type": "Note",
+        "attributes": {
+          "standard": "rust-2024",
+          "proj": "aden",
+          "org": "aden-project",
+          "lang": "rust"
+        },
+        "blocks": [
+          {
+            "Paragraph": "This file is the canonical shared memory for all agent sessions working on Aden."
+          },
+          {
+            "DescriptionList": [
+              [
+                "Include it at the top of every prompt with `include",
+                "context.adoc[]`."
+              ]
+            ]
+          },
+          {
+            "Paragraph": "- Use Rust Edition 2021/2024, latest stable.\n- `thiserror` for all error enums.\n- `serde` for all data interchange."
+          },
+          {
+            "DescriptionList": [
+              [
+                "- Prefer `std",
+                "collections::HashMap` over `BTreeMap` unless order is required."
+              ]
+            ]
+          },
+          {
+            "Paragraph": "- All public APIs must have `#[derive(Debug)]`.\n- All public API items must have doc comments."
+          },
+          {
+            "DescriptionList": [
+              [
+                "endif",
+                "agent[]"
+              ]
+            ]
+          },
+          {
+            "DescriptionList": [
+              [
+                "Document",
+                "The atomic node in the Aden knowledge graph. Has an anchor, a node type, attributes, and blocks."
+              ]
+            ]
+          },
+          {
+            "DescriptionList": [
+              [
+                "Edge",
+                "Typed relationship between two Documents. Enforced by `aden-graph`."
+              ]
+            ]
+          },
+          {
+            "DescriptionList": [
+              [
+                "Contract",
+                "A table block within a Document describing an API surface or behavioral guarantee."
+              ]
+            ]
+          },
+          {
+            "DescriptionList": [
+              [
+                "Block",
+                "A content unit within a Document: table, paragraph, listing, admonition, or description list."
+              ]
+            ]
+          },
+          {
+            "DescriptionList": [
+              [
+                "Symbol",
+                "A named entity extracted from source code (function, type, trait, module)."
+              ]
+            ]
+          },
+          {
+            "DescriptionList": [
+              [
+                "Anchor",
+                "A globally unique AsciiDoc identifier matching `^[a-z0-9_-]+$`."
+              ]
+            ]
+          },
+          {
+            "DescriptionList": [
+              [
+                "Emitter",
+                "The `aden-emit` crate responsible for serializing `Document` structs into `.adoc` / `.aden` text."
+              ]
+            ]
+          },
+          {
+            "DescriptionList": [
+              [
+                "Extraction",
+                "The process of parsing source code (Rust, Python, PowerShell) into a `Vec<Document>`."
+              ]
+            ]
+          },
+          {
+            "DescriptionList": [
+              [
+                "ContractRegion",
+                "Semantic region of a contract (`Generated`, `Human`, `Agent`, `Security`, `Contract`, `Constitution`, `Override`, `Proposed`). Determines merge behavior."
+              ]
+            ]
+          },
+          {
+            "DescriptionList": [
+              [
+                "ContractState",
+                "Three-way merge state (`ground`/`base`/`working`) for incremental contract generation."
+              ]
+            ]
+          },
+          {
+            "DescriptionList": [
+              [
+                "Constitution",
+                "A `[constitution]` block containing precedence-ranked policy directives. The highest authority in the contract hierarchy."
+              ]
+            ]
+          },
+          {
+            "DescriptionList": [
+              [
+                "Directive",
+                "A policy rule (`Forbid`, `Warn`, `Suggest`, `Allow`) extracted from `[security]` or `[constitution]` blocks."
+              ]
+            ]
+          },
+          {
+            "DescriptionList": [
+              [
+                "Override",
+                "A `[override]` block that bypasses a directive with `:justification:` and `:reviewer:`."
+              ]
+            ]
+          },
+          {
+            "DescriptionList": [
+              [
+                "Staging",
+                "Write-only audit trail in `.aden/staging/` for agent proposals before promotion."
+              ]
+            ]
+          },
+          {
+            "Paragraph": ". Every `.adoc` file must declare an anchor immediately before the title.\n. Every table must have a header row."
+          },
+          {
+            "DescriptionList": [
+              [
+                ". Use `agent-note",
+                "` blocks for temporal annotations and uncertainty."
+              ]
+            ]
+          },
+          {
+            "DescriptionList": [
+              [
+                ". Use `ifdef",
+                "agent[]` to hide human prose from AI context."
+              ]
+            ]
+          },
+          {
+            "Paragraph": ". Never use YAML frontmatter; use AsciiDoc attributes (`:key: value`).\n. Resolve every `<<reference>>` to an existing `[[anchor]]`.\n. Include this file rather than duplicating definitions."
+          },
+          {
+            "Table": {
+              "headers": [
+                "Crate",
+                "Purpose",
+                "Version Policy"
+              ],
+              "rows": [
+                [
+                  "tree-sitter",
+                  "Polyglot parsing",
+                  "Latest stable"
+                ],
+                [
+                  "clap",
+                  "CLI argument parsing",
+                  "Latest stable"
+                ],
+                [
+                  "thiserror",
+                  "Error ergonomics",
+                  "Latest stable"
+                ],
+                [
+                  "serde",
+                  "AST interchange",
+                  "Latest stable"
+                ],
+                [
+                  "serde_json",
+                  "JSON consumer for bridges",
+                  "Latest stable"
+                ],
+                [
+                  "fnv",
+                  "Stable content hashing",
+                  "Latest stable"
+                ],
+                [
+                  "petgraph",
+                  "Graph data structure",
+                  "Latest stable"
+                ],
+                [
+                  "regex",
+                  "Lightweight AsciiDoc parsing",
+                  "Latest stable"
+                ],
+                [
+                  "toml",
+                  "Configuration parsing",
+                  "Latest stable"
+                ]
+              ]
+            }
+          },
+          {
+            "Table": {
+              "headers": [
+                "Crate",
+                "Purpose",
+                "Status"
+              ],
+              "rows": [
+                [
+                  "aden-core",
+                  "Schema, contract kernel, staging",
+                  "Shipped Phase 0"
+                ],
+                [
+                  "aden-parse",
+                  "Language routers and AST extraction",
+                  "Shipped Phase 0"
+                ],
+                [
+                  "aden-emit",
+                  "Deterministic AsciiDoc emitter",
+                  "Shipped Phase 0"
+                ],
+                [
+                  "aden-graph",
+                  "Backlinks, typed edges, integrity checks",
+                  "Shipped Phase 0"
+                ],
+                [
+                  "aden-asm",
+                  "Context assembler (prompt builder)",
+                  "Shipped Phase 0"
+                ],
+                [
+                  "aden-index",
+                  "Inverted-index semantic search",
+                  "Shipped Phase 0"
+                ],
+                [
+                  "aden-heal",
+                  "Drift detection and health scoring",
+                  "Shipped Phase 0"
+                ],
+                [
+                  "aden-propose",
+                  "Patch generation and proposal lifecycle",
+                  "Shipped Phase 0"
+                ],
+                [
+                  "aden-mcp",
+                  "MCP server integration",
+                  "Shipped Phase 0"
+                ],
+                [
+                  "aden-lsp",
+                  "LSP for `.adoc`/`.aden` files",
+                  "Shipped Phase 0"
+                ],
+                [
+                  "aden-policy",
+                  "Constitutional policy engine, directives",
+                  "Shipped Phase 0"
+                ],
+                [
+                  "aden-cli",
+                  "Binary (`aden`) with all commands",
+                  "Shipped Phase 0"
+                ]
+              ]
+            }
+          },
+          {
+            "Table": {
+              "headers": [
+                "Crate",
+                "Purpose",
+                "Status"
+              ],
+              "rows": [
+                [
+                  "aden-graph",
+                  "RocksDB persistence, `.adg` emitter",
+                  "Phase 2"
+                ],
+                [
+                  "aden-retrieval",
+                  "Tier 1-3 search (structural, semantic, lexical)",
+                  "Phase 2"
+                ],
+                [
+                  "aden-mcp",
+                  "Execution-based MCP server",
+                  "Phase 2"
+                ],
+                [
+                  "aden-a2a",
+                  "Google A2A agent bridge",
+                  "Phase 2"
+                ],
+                [
+                  "aden-policy",
+                  "Directive engine, override validation, DbC checker",
+                  "Phase 3"
+                ],
+                [
+                  "aden-attest",
+                  "SPDX, CycloneDX, Ed25519, SLSA, SBOMit",
+                  "Phase 4"
+                ],
+                [
+                  "aden-telemetry",
+                  "OTLP ingestion, proposal engine, cost-report",
+                  "Phase 5"
+                ],
+                [
+                  "aden-simulate",
+                  "Simulation, history diff, fuzz-contract, threat-model",
+                  "Phase 5"
+                ],
+                [
+                  "aden-api",
+                  "REST/gRPC programmatic access",
+                  "Phase 6"
+                ],
+                [
+                  "aden-py",
+                  "PyO3 Python bindings",
+                  "Phase 5"
+                ],
+                [
+                  "Aden PowerShell module",
+                  "`Invoke-AdenAssemble`, `Test-AdenIntegrity`",
+                  "Phase 5"
+                ]
+              ]
+            }
+          },
+          {
+            "DescriptionList": [
+              [
+                "Project",
+                "Aden — A Dense Referential Context Compiler"
+              ]
+            ]
+          },
+          {
+            "DescriptionList": [
+              [
+                "License",
+                "AGPL-3.0-or-later"
+              ]
+            ]
+          },
+          {
+            "DescriptionList": [
+              [
+                "Copyright",
+                "2026 RioPlay <rioplay@rioplay.dev>"
+              ]
+            ]
+          },
+          {
+            "DescriptionList": [
+              [
+                "Public Author",
+                "RioPlay"
+              ]
+            ]
+          },
+          {
+            "DescriptionList": [
+              [
+                "Legal Name",
+                "RioPlay"
+              ]
+            ]
+          },
+          {
+            "DescriptionList": [
+              [
+                "Governance",
+                "BDFL model; DCO required for contributions"
+              ]
+            ]
+          },
+          {
+            "DescriptionList": [
+              [
+                "Maintainers",
+                "See MAINTAINERS.md"
+              ]
+            ]
+          },
+          {
+            "DescriptionList": [
+              [
+                "Contributing",
+                "See CONTRIBUTING.md"
+              ]
+            ]
+          },
+          {
+            "Paragraph": ". Root entry point: `README.adoc` at repository root\n. Phase plans: <<plan-phase0>>, <<plan-phase1>>, <<plan-phase2>>, <<plan-phase3>>, <<plan-phase4>>, <<plan-phase5>>, <<plan-phase6>>, <<plan-governance>>\n. Architecture decisions: <<adr-001>>, <<adr-002>>\n. Background: <<philosophy>>, <<use-cases>>\n. Agent workspace: `.agent/context.adoc` at repository root"
+          }
+        ],
+        "source_span": null
+      },
+      "source_path": "docs/context.adoc"
+    },
+    {
+      "anchor": "plan-phase0",
+      "doc": {
+        "anchor": "plan-phase0",
+        "node_type": "Note",
+        "attributes": {
+          "agent_role": "architect",
+          "phase": "0",
+          "scope": "contract-kernel",
+          "proj": "aden"
+        },
+        "blocks": [
+          {
+            "Paragraph": "Load-bearing foundation for Constitutional Code Governance. The `[constitution]`, three-way merge engine, and region parsing are the substrate on which every subsequent phase depends."
+          },
+          {
+            "Paragraph": "Foundation. If this is wrong, everything collapses."
+          },
+          {
+            "Table": {
+              "headers": [
+                "ID",
+                "Deliverable",
+                "Crate",
+                "Status",
+                "Acceptance Criteria"
+              ],
+              "rows": [
+                [
+                  "0.1",
+                  "`ContractState` with three-way merge (`ground`/`base`/`working`)",
+                  "`aden-core`",
+                  "Shipped",
+                  "Unit test: merge updates `[generated]` while preserving `[human]` and `[agent]` blocks across 100 fixtures"
+                ],
+                [
+                  "0.2",
+                  "`ContractRegion` enum and serialization",
+                  "`aden-core`",
+                  "Shipped",
+                  "All 8 regions (`Generated`, `Human`, `Agent`, `Security`, `Contract`, `Constitution`, `Override`, `Proposed`) round-trip parse and serialize"
+                ],
+                [
+                  "0.3",
+                  "Strict AsciiDoc profile parser (`ParseMode::Strict`)",
+                  "`aden-parse`",
+                  "Shipped",
+                  "Rejects non-profile syntax with line-specific errors; CI-enforced"
+                ],
+                [
+                  "0.4",
+                  "Permissive authoring parser (`ParseMode::Permissive`)",
+                  "`aden-parse`",
+                  "Shipped",
+                  "Allows freeform prose outside blocks; warns but never fails"
+                ],
+                [
+                  "0.5",
+                  "`aden gen --merge` (reads Git staged/unstaged)",
+                  "`aden-cli`",
+                  "Shipped",
+                  "Computes AST diff; applies updates only to `[generated]` blocks"
+                ],
+                [
+                  "0.6",
+                  "`aden gen --propose` (dry-run)",
+                  "`aden-cli`",
+                  "Shipped",
+                  "Outputs per-block `MergeAction`: `UpdateGenerated`, `PreserveHuman`, `Conflict`"
+                ],
+                [
+                  "0.7",
+                  "`[constitution]` block parsing with precedence rules",
+                  "`aden-policy`",
+                  "Shipped",
+                  "`aden check` resolves Agent A vs. Agent B directive conflicts using stated `:precedence:`"
+                ],
+                [
+                  "0.8",
+                  "Subagent staging protocol skeleton",
+                  "`aden-core`",
+                  "Shipped",
+                  "`.aden/staging/{role}-{timestamp}.adoc` written; never read by `aden check`"
+                ]
+              ]
+            }
+          },
+          {
+            "Table": {
+              "headers": [
+                "Gate",
+                "Requirement",
+                "Verification"
+              ],
+              "rows": [
+                [
+                  "Determinism",
+                  "Same source → identical `.aden` and `.adg` bytes",
+                  "CI SHA-256 comparison"
+                ],
+                [
+                  "Preservation",
+                  "`aden gen --merge` never silently deletes `[human]` or `[agent]`",
+                  "100-fixture regression test"
+                ],
+                [
+                  "Authority",
+                  "`aden check` bypass requires committed `[override]` or emergency log",
+                  "Integration test"
+                ]
+              ]
+            }
+          },
+          {
+            "Paragraph": "A developer edits `src/lib.rs`, runs `aden gen --merge`, and the `.aden` file updates `[generated]` without touching their `[human]` architectural notes."
+          },
+          {
+            "Paragraph": "- *2026-05-23*: Initial plan written.\n- *2026-05-24*: Phase 0 delivered. All acceptance criteria satisfied. Workspace compiles warning-free."
+          },
+          {
+            "Paragraph": ". <<project-context>>\n. <<adr-001>>\n. Next: <<plan-phase1>>"
+          }
+        ],
+        "source_span": null
+      },
+      "source_path": "docs/plan-phase0.adoc"
+    },
+    {
+      "anchor": "adr-001",
+      "doc": {
+        "anchor": "adr-001",
+        "node_type": "Note",
+        "attributes": {
+          "proj": "aden",
+          "number": "001",
+          "date": "2026-05-23",
+          "status": "accepted"
+        },
+        "blocks": [
+          {
+            "Paragraph": "Aden is a semantic compression and context assembly toolchain. It must represent code, documentation, plans, and runbooks as a traversable, token-dense knowledge graph. We need to select:\n. A markup language that serves as the native substrate for this knowledge graph.\n. An implementation language for the extraction, emission, and assembly engines."
+          },
+          {
+            "Paragraph": "We will use **AsciiDoc** as the native markup substrate and **Rust** as the implementation language."
+          },
+          {
+            "Table": {
+              "headers": [
+                "Factor",
+                "AsciiDoc",
+                "Markdown"
+              ],
+              "rows": [
+                [
+                  "Anchors",
+                  "Native `[[anchor]]` and `<<reference>>` syntax. OOB.",
+                  "Requires HTML anchors or YAML frontmatter. Fragile."
+                ],
+                [
+                  "Tables",
+                  "First-class block syntax with header rows. Dense for contracts.",
+                  "Limited standard support; relies on extensions."
+                ],
+                [
+                  "Attributes",
+                  "Document-level `:key: value` metadata. No frontmatter.",
+                  "YAML frontmatter or HTML comments. Not spec-native."
+                ],
+                [
+                  "Includes",
+                  "`include::[]` for composable, single-source-of-truth documents.",
+                  "No native include; must use preprocessor or build tool."
+                ],
+                [
+                  "Conditionals",
+                  "`ifdef::[]` for agent/human dual-use. No alternatives.",
+                  "No native conditionals."
+                ],
+                [
+                  "Tooling",
+                  "Slightly less ubiquitous, but structurally superior for agents.",
+                  "Widely supported but semantically impoverished."
+                ]
+              ]
+            }
+          },
+          {
+            "Paragraph": "AsciiDoc is chosen because the project's core constraint is that every token must be load-bearing and every edge must be typed. AsciiDoc's native features map directly to these requirements without requiring non-standard extensions."
+          },
+          {
+            "Table": {
+              "headers": [
+                "Factor",
+                "Rust",
+                "Go",
+                "TypeScript"
+              ],
+              "rows": [
+                [
+                  "Memory safety",
+                  "Compile-time ownership. Zero-cost abstractions.",
+                  "Garbage collected. Simpler but less precise.",
+                  "Garbage collected via V8."
+                ],
+                [
+                  "Tree-sitter integration",
+                  "Native C bindings. Excellent crate ecosystem.",
+                  "Available, but less mature in the ecosystem.",
+                  "Node bindings; slower and heavier."
+                ],
+                [
+                  "Error handling",
+                  "`Result` + `thiserror`. Explicit and composable.",
+                  "Verbose error values. No `?` sugar for custom types.",
+                  "Runtime exceptions or `Result<T,E>` via libraries."
+                ],
+                [
+                  "Binary size",
+                  "Small, statically linked.",
+                  "Moderate.",
+                  "Requires Node runtime."
+                ]
+              ]
+            }
+          },
+          {
+            "Paragraph": "Rust is chosen because the toolchain must parse large codebases with minimal overhead and because tree-sitter integration is most mature in the Rust ecosystem."
+          },
+          {
+            "Paragraph": "- AsciiDoc editor support is weaker than Markdown in some IDEs. Mitigated by the fact that Aden outputs are consumed by agents and renderers, not hand-edited.\n- Rust compile times are slower. Mitigated by the workspace crate decomposition and targeted incremental builds."
+          },
+          {
+            "Paragraph": "- *2026-05-23*: Initial ADR drafted."
+          },
+          {
+            "Paragraph": ". <<plan-phase0>>\n. Complementary decision: <<adr-002>>\n. <<project-context>>"
+          }
+        ],
+        "source_span": null
+      },
+      "source_path": "docs/adr-001.adoc"
+    },
+    {
+      "anchor": "plan-phase2",
+      "doc": {
+        "anchor": "plan-phase2",
+        "node_type": "Note",
+        "attributes": {
+          "agent_role": "platform-engineer",
+          "scope": "agent-native-interface",
+          "proj": "aden",
+          "phase": "2"
+        },
+        "blocks": [
+          {
+            "Paragraph": "Agents consume contracts efficiently; no protocol lock-in."
+          },
+          {
+            "Paragraph": "Execution-based MCP returns compact results, making efficient local and small-context models viable where schema-loading MCP would overflow their windows."
+          },
+          {
+            "Table": {
+              "headers": [
+                "ID",
+                "Deliverable",
+                "Crate",
+                "Status",
+                "Acceptance Criteria"
+              ],
+              "rows": [
+                [
+                  "2.1",
+                  "RocksDB graph persistence",
+                  "`aden-graph`",
+                  "Planned",
+                  "<500ms incremental re-index for 10K-file repo; crash recovery test passes"
+                ],
+                [
+                  "2.2",
+                  "`.adg` deterministic emitter",
+                  "`aden-graph`",
+                  "Planned",
+                  "Same `.aden` → identical `.adg` bytes (SHA-256 match)"
+                ],
+                [
+                  "2.3",
+                  "Tier 1 structural queries (BFS/DFS)",
+                  "`aden-retrieval`",
+                  "Planned",
+                  "15/15 correctness on DKB benchmark suite"
+                ],
+                [
+                  "2.4",
+                  "Tier 2 semantic layer (optional Jina/CodeBERT)",
+                  "`aden-retrieval`",
+                  "Planned",
+                  "Falls back to Tier 1 if embeddings disabled"
+                ],
+                [
+                  "2.5",
+                  "Tier 3 lexical search (tantivy)",
+                  "`aden-retrieval`",
+                  "Planned",
+                  "<50ms symbol name search"
+                ],
+                [
+                  "2.6",
+                  "`.adq` interpreter (Rhai-based, sandboxed)",
+                  "`aden-retrieval`",
+                  "Planned",
+                  "Supports `node()`, `incoming()`, `outgoing()`, `where`; no FS write or network access"
+                ],
+                [
+                  "2.7",
+                  "Execution-based MCP server",
+                  "`aden-mcp`",
+                  "Planned",
+                  "Loads <50ms; exposes `aden_query` tool only; minimal token footprint vs. schema-loading"
+                ],
+                [
+                  "2.8",
+                  "Google A2A agent bridge",
+                  "`aden-a2a`",
+                  "Planned",
+                  "Wraps `.adq` execution as A2A capability descriptor"
+                ],
+                [
+                  "2.9",
+                  "`aden-asm --format=adg`",
+                  "`aden-core`",
+                  "Planned",
+                  "LLM context defaults to compact `.adg`; `--format=aden` for human-rich prose"
+                ]
+              ]
+            }
+          },
+          {
+            "Paragraph": "Cursor queries Aden via MCP with 200-token `.adq` script; receives bounded `.adg` result in <200ms."
+          },
+          {
+            "Paragraph": ". <<plan-phase1>>\n. Next: <<plan-phase3>>"
+          }
+        ],
+        "source_span": null
+      },
+      "source_path": "docs/plan-phase2.adoc"
+    },
+    {
+      "anchor": "plan-phase3",
+      "doc": {
+        "anchor": "plan-phase3",
+        "node_type": "Note",
+        "attributes": {
+          "phase": "3",
+          "agent_role": "security-engineer",
+          "proj": "aden",
+          "scope": "security-governance"
+        },
+        "blocks": [
+          {
+            "Paragraph": "The contract becomes a generative security substrate."
+          },
+          {
+            "Paragraph": "\"Constitutional Graphs\" vs. CodeGraph's \"Observational Graphs.\""
+          },
+          {
+            "Table": {
+              "headers": [
+                "ID",
+                "Deliverable",
+                "Crate",
+                "Status",
+                "Acceptance Criteria"
+              ],
+              "rows": [
+                [
+                  "3.1",
+                  "Directive engine (`Forbid`, `Warn`, `Suggest`, `Allow`)",
+                  "`aden-policy`",
+                  "Planned",
+                  "`aden check` exits non-zero on `Forbid`; passes on `Allow` with valid `[override]`"
+                ],
+                [
+                  "3.2",
+                  "`[override]` validation",
+                  "`aden-policy`",
+                  "Planned",
+                  "Requires `:justification:`, `:reviewer:`; `:expires:` auto-downgrades severity"
+                ],
+                [
+                  "3.3",
+                  "`[security]` block emission",
+                  "`aden-emit`",
+                  "Planned",
+                  "`compile_time` → clippy lint; `runtime` → macro/wrapper; `test_only` → proptest target"
+                ],
+                [
+                  "3.4",
+                  "`[contract]` Design-by-Contract checker",
+                  "`aden-policy`",
+                  "Planned",
+                  "Parses `:pre:`, `:post:`, `:invariant:`; lightweight bounds analysis; Creusot export (experimental)"
+                ],
+                [
+                  "3.5",
+                  "`aden emergency --reason --ttl`",
+                  "`aden-core`",
+                  "Planned",
+                  "Global `Forbid` → `Warn`; append-only signed audit log; auto-expires"
+                ],
+                [
+                  "3.6",
+                  "`aden check --severity=CI`",
+                  "`aden-policy`",
+                  "Planned",
+                  "`Suggest` does not fail CI; `Warn` surfaces in PR comment"
+                ],
+                [
+                  "3.7",
+                  "Subagent consensus evaluation",
+                  "`aden-policy`",
+                  "Planned",
+                  "Staging proposals evaluated against `[constitution]`; outcomes: `Accept`, `Reject`, `RequireQuorum`, `RequireHumanReview`"
+                ],
+                [
+                  "3.8",
+                  "`[agent:role]` namespace and confidence scoring",
+                  "`aden-core`",
+                  "Planned",
+                  "`:confidence:` derived from historical accuracy; threshold gating at 0.70"
+                ]
+              ]
+            }
+          },
+          {
+            "Paragraph": "PR introducing forbidden import blocked by CI unless accompanied by `[override]` with justification and reviewer."
+          },
+          {
+            "Paragraph": "**PUBLIC BETA MILESTONE:** End of Week 8."
+          },
+          {
+            "Paragraph": ". <<plan-phase2>>\n. Next: <<plan-phase4>>"
+          }
+        ],
+        "source_span": null
+      },
+      "source_path": "docs/plan-phase3.adoc"
+    },
+    {
+      "anchor": "plan-phase4",
+      "doc": {
+        "anchor": "plan-phase4",
+        "node_type": "Note",
+        "attributes": {
+          "agent_role": "compliance-engineer",
+          "phase": "4",
+          "scope": "attestation-compliance",
+          "proj": "aden"
+        },
+        "blocks": [
+          {
+            "Paragraph": "Turn contracts into procurement-grade evidence."
+          },
+          {
+            "Paragraph": "Regulatory-grade SBOMs, signing, and provenance."
+          },
+          {
+            "Table": {
+              "headers": [
+                "ID",
+                "Deliverable",
+                "Crate",
+                "Status",
+                "Acceptance Criteria"
+              ],
+              "rows": [
+                [
+                  "4.1",
+                  "SPDX 3.0 export with Aden extensions",
+                  "`aden-attest`",
+                  "Planned",
+                  "Validates against SPDX online validator"
+                ],
+                [
+                  "4.2",
+                  "CycloneDX export",
+                  "`aden-attest`",
+                  "Planned",
+                  "Validates against CycloneDX CLI"
+                ],
+                [
+                  "4.3",
+                  "Ed25519 signing and verification",
+                  "`aden-attest`",
+                  "Planned",
+                  "`aden verify-sbom` confirms signature and key provenance"
+                ],
+                [
+                  "4.4",
+                  "SLSA provenance generation",
+                  "`aden-attest`",
+                  "Planned",
+                  "Contract hash embedded in `buildDefinition`; SLSA Level 3 achievable with existing CI"
+                ],
+                [
+                  "4.5",
+                  "SBOMit attestation format",
+                  "`aden-attest`",
+                  "Planned",
+                  "Claims and evidence per SBOMit v1.2 spec"
+                ],
+                [
+                  "4.6",
+                  "Subagent proposals in attestation",
+                  "`aden-attest`",
+                  "Planned",
+                  "Every promoted `[agent]` block includes proposer identity, reviewer, and confidence score"
+                ]
+              ]
+            }
+          },
+          {
+            "Paragraph": "Release artifact ships with signed SBOM referencing exact `.aden` contract hash used at build."
+          },
+          {
+            "Paragraph": ". <<plan-phase3>>\n. Next: <<plan-phase5>>"
+          }
+        ],
+        "source_span": null
+      },
+      "source_path": "docs/plan-phase4.adoc"
+    },
+    {
+      "anchor": "plan-phase5",
+      "doc": {
+        "anchor": "plan-phase5",
+        "node_type": "Note",
+        "attributes": {
+          "agent_role": "observability-engineer",
+          "proj": "aden",
+          "scope": "production-feedback",
+          "phase": "5"
+        },
+        "blocks": [
+          {
+            "Paragraph": "The constitution learns from runtime reality."
+          },
+          {
+            "Paragraph": "Telemetry-driven contract evolution, simulation, and adversarial testing."
+          },
+          {
+            "Table": {
+              "headers": [
+                "ID",
+                "Deliverable",
+                "Crate",
+                "Status",
+                "Acceptance Criteria"
+              ],
+              "rows": [
+                [
+                  "5.1",
+                  "OTLP trace ingestion",
+                  "`aden-telemetry`",
+                  "Planned",
+                  "Accepts spans from OpenTelemetry collector; maps to contract nodes via `.adg` IDs"
+                ],
+                [
+                  "5.2",
+                  "Telemetry proposal engine",
+                  "`aden-telemetry`",
+                  "Planned",
+                  "Guard firing → proposes `[security]` update; latency spike → proposes `[agent#perf]` directive"
+                ],
+                [
+                  "5.3",
+                  "`aden simulate --diff`",
+                  "`aden-simulate`",
+                  "Planned",
+                  "Shows future contract violations before commit; developer can abort or fix"
+                ],
+                [
+                  "5.4",
+                  "`aden history --evolve`",
+                  "`aden-simulate`",
+                  "Planned",
+                  "Graph diff across Git history; reports edge growth/shrink and override density per module"
+                ],
+                [
+                  "5.5",
+                  "`aden fuzz-contract`",
+                  "`aden-simulate`",
+                  "Planned",
+                  "Generates adversarial code; flags brittle directives (e.g., missing `:transitive:`); suggests hardening"
+                ],
+                [
+                  "5.6",
+                  "`aden cost-report`",
+                  "`aden-telemetry`",
+                  "Planned",
+                  "Token savings vs. schema-loading baseline; exports CSV for CFO dashboards"
+                ],
+                [
+                  "5.7",
+                  "Confidence score updates from telemetry",
+                  "`aden-policy`",
+                  "Planned",
+                  "Historical accuracy of `[agent]` directives updated automatically; low-confidence agents flagged"
+                ]
+              ]
+            }
+          },
+          {
+            "Paragraph": "Security incident automatically correlates with contract state, proposes `[forbid_import]`, and post-mortem includes `aden history` of affected module."
+          },
+          {
+            "Paragraph": ". <<plan-phase4>>\n. Next: <<plan-phase6>>"
+          }
+        ],
+        "source_span": null
+      },
+      "source_path": "docs/plan-phase5.adoc"
+    },
+    {
+      "anchor": "plan-phase6",
+      "doc": {
+        "anchor": "plan-phase6",
+        "node_type": "Note",
+        "attributes": {
+          "agent_role": "enterprise-architect",
+          "scope": "enterprise-scale",
+          "proj": "aden",
+          "phase": "6"
+        },
+        "blocks": [
+          {
+            "Paragraph": "Organizational governance, spec-driven scaffolding, ecosystem integration."
+          },
+          {
+            "Paragraph": "Organizational policy inheritance and federation across repositories."
+          },
+          {
+            "Table": {
+              "headers": [
+                "ID",
+                "Deliverable",
+                "Crate",
+                "Status",
+                "Acceptance Criteria"
+              ],
+              "rows": [
+                [
+                  "6.1",
+                  "Organizational policy inheritance",
+                  "`aden-policy`",
+                  "Planned",
+                  "`aden policy fetch` downloads templates; `aden policy update` suggests diffs; CI enforces inherited directives"
+                ],
+                [
+                  "6.2",
+                  "`aden scaffold` from `[spec]` blocks",
+                  "`aden-emit`",
+                  "Planned",
+                  "Produces module skeleton with pre-wired `[security]`/`[contract]`; lists required `[human]` blocks"
+                ],
+                [
+                  "6.3",
+                  "`aden-api` REST/gRPC",
+                  "`aden-api`",
+                  "Planned",
+                  "Query contract state, submit override proposals, export SBOM programmatically"
+                ],
+                [
+                  "6.4",
+                  "`aden threat-model --report`",
+                  "`aden-simulate`",
+                  "Planned",
+                  "Scans overrides; flags high-risk modules; exports HTML/JSON"
+                ],
+                [
+                  "6.5",
+                  "Multi-repo federation (Phase 1)",
+                  "`aden-graph`",
+                  "Planned",
+                  "Cross-repo edges via registry-published `.adg` artifacts"
+                ],
+                [
+                  "6.6",
+                  "Post-quantum signing research (SPHINCS+)",
+                  "`aden-attest`",
+                  "Planned",
+                  "Experimental; behind feature flag"
+                ],
+                [
+                  "6.7",
+                  "Full A2A interoperability with third-party agents",
+                  "`aden-a2a`",
+                  "Planned",
+                  "Aden-managed agents negotiate with external A2A agents via contract mediation"
+                ]
+              ]
+            }
+          },
+          {
+            "Paragraph": "Enterprise org with 50+ repos runs `aden policy fetch` from central template registry; CI enforces inherited `[constitution]` directives across all repositories."
+          },
+          {
+            "Paragraph": "**ENTERPRISE v1.0 MILESTONE:** End of Week 18."
+          },
+          {
+            "Paragraph": ". <<plan-phase5>>\n. <<plan-governance>>"
+          }
+        ],
+        "source_span": null
+      },
+      "source_path": "docs/plan-phase6.adoc"
+    },
+    {
+      "anchor": "plan-phase1",
+      "doc": {
+        "anchor": "plan-phase1",
+        "node_type": "Note",
+        "attributes": {
+          "phase": "1",
+          "proj": "aden",
+          "agent_role": "ux-engineer",
+          "scope": "human-ergonomics"
+        },
+        "blocks": [
+          {
+            "Paragraph": "AsciiDoc contracts must be as easy to edit as Markdown, but with machine superpowers."
+          },
+          {
+            "Paragraph": "Human-centric tooling. LSP, IDE integration, and bootstrap workflows."
+          },
+          {
+            "Table": {
+              "headers": [
+                "ID",
+                "Deliverable",
+                "Crate",
+                "Status",
+                "Acceptance Criteria"
+              ],
+              "rows": [
+                [
+                  "1.1",
+                  "LSP skeleton + text document sync",
+                  "`aden-lsp`",
+                  "Planned",
+                  "`.aden` files open in VS Code, Zed, Neovim with AsciiDoc syntax highlighting"
+                ],
+                [
+                  "1.2",
+                  "Hover on `<<ref>>`",
+                  "`aden-lsp`",
+                  "Planned",
+                  "Shows target signature + `[human]` note + active `[agent]` directives + applicable `[override]`"
+                ],
+                [
+                  "1.3",
+                  "Inline diagnostics",
+                  "`aden-lsp`",
+                  "Planned",
+                  "Red squiggle when `[human]` claim contradicts `[generated]` AST reality"
+                ],
+                [
+                  "1.4",
+                  "Code action \"Generate `[security]` block\"",
+                  "`aden-lsp`",
+                  "Planned",
+                  "Inserts template from function signature; cursor lands in `:constraint:`"
+                ],
+                [
+                  "1.5",
+                  "Rename refactoring",
+                  "`aden-lsp`",
+                  "Planned",
+                  "Renaming Rust function updates all `<<anchor>>` references across `.aden` files"
+                ],
+                [
+                  "1.6",
+                  "`aden bootstrap --from-markdown`",
+                  "`aden-core`",
+                  "Planned",
+                  "Ingests `ARCHITECTURE.md`, `CONTRIBUTING.md`, `docs/security.md`; produces draft `[human]` blocks via constrained LLM"
+                ],
+                [
+                  "1.7",
+                  "AsciiDoc profile reference docs",
+                  "N/A",
+                  "Planned",
+                  "Single-page dialect spec + 10-minute onboarding guide published"
+                ]
+              ]
+            }
+          },
+          {
+            "Paragraph": "New engineer clones repo, installs LSP extension, edits `.aden` with hover/diagnostics within 10 minutes."
+          },
+          {
+            "Paragraph": ". <<plan-phase0>>\n. <<adr-001>>\n. Next: <<plan-phase2>>"
+          }
+        ],
+        "source_span": null
+      },
+      "source_path": "docs/plan-phase1.adoc"
+    },
+    {
+      "anchor": "plan-governance",
+      "doc": {
+        "anchor": "plan-governance",
+        "node_type": "Note",
+        "attributes": {
+          "proj": "aden",
+          "semantic_review_threshold": "0.85",
+          "impact_review_backlink_count": "10",
+          "phase": "governance",
+          "heal_scan_changed_only": "true",
+          "scope": "ai-alignment-governance",
+          "agent_role": "architect",
+          "compile_gate": "true",
+          "check_gate": "true",
+          "semantic_review_budget_per_session": "10000"
+        },
+        "blocks": [
+          {
+            "Paragraph": "Make structural checks mandatory and cheap; semantic checks sampled and bounded. Prevent parallel agent conflicts via atomic session locking."
+          },
+          {
+            "Table": {
+              "headers": [
+                "Module",
+                "Deliverable",
+                "Acceptance Criteria"
+              ],
+              "rows": [
+                [
+                  "aden-cli",
+                  "Policy parser",
+                  "Reads `.aden/policy.adoc`, configures gate behavior"
+                ],
+                [
+                  "aden-cli",
+                  "`--since` flag",
+                  "Git incremental scanning for heal/review"
+                ],
+                [
+                  "aden-cli",
+                  "`aden review` command",
+                  "Token-capped semantic validation"
+                ],
+                [
+                  "aden-cli",
+                  "Session lock protocol",
+                  "Atomic append to `.agent/session.adoc`"
+                ],
+                [
+                  "CI",
+                  "Three-tier gates",
+                  "compile-and-structure + semantic-review jobs"
+                ]
+              ]
+            }
+          },
+          {
+            "Paragraph": "- `cargo build --workspace`\n- `aden check --strict`\n- Pre-commit hook"
+          },
+          {
+            "Paragraph": "- `aden heal --since HEAD~1`\n- Only changed files scanned\n- Auto-applies confidence >= 0.95"
+          },
+          {
+            "Paragraph": "- Triggered when confidence < 0.85 OR backlink count > 10\n- Budget: 2048 tokens per review\n- Emits `.patch.adoc` for human approval"
+          },
+          {
+            "Paragraph": "- *2026-05-23*: Plan written."
+          },
+          {
+            "Paragraph": ". <<project-context>>\n. <<adr-001>>\n. All phases start at: <<plan-phase0>>"
+          }
+        ],
+        "source_span": null
+      },
+      "source_path": "docs/plan-governance.adoc"
+    },
+    {
+      "anchor": "adr-002",
+      "doc": {
+        "anchor": "adr-002",
+        "node_type": "Note",
+        "attributes": {
+          "proj": "aden",
+          "number": "002",
+          "status": "accepted",
+          "date": "2026-05-23"
+        },
+        "blocks": [
+          {
+            "Paragraph": "Aden is a toolchain for AI agents operating on codebases. As such, it will almost certainly be run as a network service (SaaS, CI pipeline, remote context assembly API)."
+          },
+          {
+            "Paragraph": "We need a license that:\n. Is open-source and copyleft.\n. Prevents cloud capture (proprietary SaaS wrapping without sharing modifications).\n. Maintains OSI legitimacy for enterprise adoption.\n. Preserves the copyright holder's right to offer dual-licensing."
+          },
+          {
+            "Paragraph": "We will use the **GNU Affero General Public License v3.0** (AGPL-3.0-or-later) for all code."
+          },
+          {
+            "Paragraph": "Attribution will be dual:\n- **Public identity**: RioPlay\n- **Legal identity**: RioPlay"
+          },
+          {
+            "Table": {
+              "headers": [
+                "Factor",
+                "AGPL-3.0",
+                "MIT",
+                "Apache-2.0"
+              ],
+              "rows": [
+                [
+                  "Network services covered",
+                  ":icon-check: Yes",
+                  "No",
+                  "No"
+                ],
+                [
+                  "Copyleft",
+                  ":icon-check: Yes",
+                  "No",
+                  "Weak"
+                ],
+                [
+                  "Dual-licensing option",
+                  ":icon-check: Yes",
+                  "Yes",
+                  "Yes"
+                ],
+                [
+                  "Patent grant",
+                  ":icon-check: Yes",
+                  "No",
+                  ":icon-check: Yes"
+                ],
+                [
+                  "Enterprise adoption barrier",
+                  "Higher",
+                  "SaaS capture risk",
+                  "Lower"
+                ]
+              ]
+            }
+          },
+          {
+            "Paragraph": "The AGPL was chosen because Aden's primary use case (network-accessible AI context assembly) is exactly the scenario AGPL was designed to protect."
+          },
+          {
+            "DescriptionList": [
+              [
+                ".Public name",
+                "RioPlay"
+              ]
+            ]
+          },
+          {
+            "DescriptionList": [
+              [
+                ".Legal name",
+                "RioPlay"
+              ]
+            ]
+          },
+          {
+            "DescriptionList": [
+              [
+                ".Copyright holder",
+                "RioPlay"
+              ]
+            ]
+          },
+          {
+            "DescriptionList": [
+              [
+                ".BDFL",
+                "RioPlay"
+              ]
+            ]
+          },
+          {
+            "Paragraph": "All contributions require DCO sign-off under the contributor's legal name.\nDual-licensing is managed by the copyright holder (RioPlay)."
+          },
+          {
+            "Paragraph": "- *2026-05-23*: Initial ADR drafted.\n- *Adoption*: Adopted immediately; all existing code relicensed from MIT OR Apache-2.0."
+          },
+          {
+            "Paragraph": ". <<plan-phase0>>\n. Complementary decision: <<adr-001>>\n. <<project-context>>"
+          }
+        ],
+        "source_span": null
+      },
+      "source_path": "docs/adr-002.adoc"
+    },
+    {
+      "anchor": "philosophy",
+      "doc": {
+        "anchor": "philosophy",
+        "node_type": "Note",
+        "attributes": {
+          "proj": "aden",
+          "author": "RioPlay",
+          "email": "rioplay@rioplay.dev"
+        },
+        "blocks": [
+          {
+            "Paragraph": "The bottleneck in AI-assisted software development is not model intelligence — it is *context*."
+          },
+          {
+            "DescriptionList": [
+              [
+                "Large language models are capable of sophisticated reasoning, but they are constrained by a finite context window. When an AI agent is dropped into a codebase of 100,000+ lines, it faces the same problem a human faces: information overload. The agent does not know which 10 files out of 500 are relevant to the task at hand. It does not know that changing `Database",
+                "connect()` will break `QueueWorker::drain()`. It has no mental map of the system."
+              ]
+            ]
+          },
+          {
+            "Paragraph": "Aden exists to solve this problem by making the *structure of understanding* explicit, machine-readable, and traversable."
+          },
+          {
+            "Paragraph": "Aden is a **referential context compiler**. It takes raw source code, documentation, notes, and plans — in any language — and compiles them into a traversable knowledge graph where every node is an AsciiDoc document with typed edges."
+          },
+          {
+            "Paragraph": "Aden is *not* a documentation generator like Rustdoc or Javadoc. Those tools produce human-readable HTML for browsing. Aden produces *machine-navigable* context for *reasoning* — whether by a human, an AI agent, or a CI pipeline."
+          },
+          {
+            "Paragraph": "Aden is *not* a static analysis tool like clippy or Semgrep. It does not find bugs by analyzing control flow. It finds *semantic relationships* between concepts and ensures they stay synchronized as code evolves."
+          },
+          {
+            "Paragraph": "Aden is *not* a replacement for your IDE. It is a substrate that your IDE, your agent, or your build pipeline can query to understand the system."
+          },
+          {
+            "Paragraph": "We chose AsciiDoc as the native format because it is simultaneously human-readable and fully scriptable:"
+          },
+          {
+            "Paragraph": ". **Human-readable** — a senior engineer can open any `.adoc` or `.aden` file and understand it without tooling.\n. **Machine-parseable** — the grammar is regular enough to be parsed by simple regexes or small state machines, which means build tools can inspect and transform it deterministically.\n. **Rich-structured** — attributes (`:key: value`), anchors (`[[name]]`), cross-references (`<<name>>`), tables, conditionals, and includes map directly to graph nodes and edges without preprocessing hacks.\n. **Version-control-friendly** — unlike binary ASTs or JSON blobs, `.adoc` files diff cleanly in Git. You can review contract changes in pull requests just like code.\n. **Referential by default** — the `<<anchor>>` syntax encourages linking, which is exactly what a knowledge graph needs.\n. **Scriptable and repeatable** — because `.adoc` is plain text with predictable structure, `aden gen` can regenerate contracts deterministically from source, `aden workflow` can instantiate templates with parameter substitution, and `aden check` can validate every reference as a CI gate. This is impossible with Markdown or Word documents."
+          },
+          {
+            "Paragraph": "The name *Aden* — \"A Dense Referential Context Compiler\" — is also the mission statement. Every token in an Aden-compiled document must justify its existence. Fluff is the enemy."
+          },
+          {
+            "Paragraph": "Software is not linear. A codebase is a network:\n- Modules `use` and `require` each other\n- Functions `call` and `invoke` each other\n- ADRs `constrain` and `justify` design choices\n- Tests `verify` and `document` behavior\n- Plans `supersede` and `amend` other plans"
+          },
+          {
+            "Paragraph": "A flat directory tree (the filesystem) cannot express these relationships. A graph can. Aden builds a directed graph where nodes are documents and edges are typed semantic relationships. This lets you ask questions that are impossible with `grep`:"
+          },
+          {
+            "Paragraph": "- \"What depends on this function?\"\n- \"Which contracts are stale relative to the source?\"\n- \"What is the blast radius of changing this module?\"\n- \"What context must I include in a prompt for an agent modifying this file?\""
+          },
+          {
+            "Paragraph": "When an LLM consumes context, every token costs. A verbose 500-comment documentation file might consume 8,000 tokens and bury the signal in noise. Aden's assembly phase (`aden asm`) performs a budgeted graph traversal: starting from any anchor, it walks edges and assembles a context prompt that fits within a token budget while preserving the most critical structural relationships."
+          },
+          {
+            "Paragraph": "This is the difference between dumping an entire codebase into a prompt and *surgically* selecting the precise context an agent needs."
+          },
+          {
+            "Paragraph": "**Problem:** You hire an AI agent (or a human contractor) to work on your codebase. They need to understand the architecture, conventions, and constraints before writing code. Traditional onboarding involves scrolling through READMEs, Slack history, and tribal knowledge."
+          },
+          {
+            "Paragraph": "**Aden Solution:**"
+          },
+          {
+            "Listing": {
+              "language": "bash",
+              "code": "aden init  # Scaffolds .agent/ with constraints, glossary, and protocol\naden asm --from context --depth 3 --budget 8192 --edge-types \"constrains,justifies,documents\""
+            }
+          },
+          {
+            "Paragraph": "The agent receives a token-dense, graph-traversed context prompt that includes exactly the relevant ADRs, constraints, glossary terms, and module contracts — no more, no less."
+          },
+          {
+            "Paragraph": "**Problem:** Documentation rots. A function changes its signature, but the `.md` file describing it is forgotten. Six months later, a new developer reads stale docs and designs the wrong thing."
+          },
+          {
+            "Paragraph": "**Aden Solution:**"
+          },
+          {
+            "Listing": {
+              "language": "bash",
+              "code": "aden gen src/lib.rs  # Generate .aden contract from source\naden heal --scan . --propose  # Detect drift between code and contracts\n# Review proposals in .aden/proposals/\naden heal --apply <proposal-id>"
+            }
+          },
+          {
+            "Paragraph": "The `gen` command extracts a semantic contract directly from source code. The `heal` command continuously monitors for drift — when the source changes, Aden flags the stale contract and proposes a patch. Documentation becomes a living, version-controlled artifact that is tested at CI time, just like unit tests."
+          },
+          {
+            "Paragraph": "**Problem:** You want to rename a core module. You know it will break things, but you do not know *which* things."
+          },
+          {
+            "Paragraph": "**Aden Solution:**"
+          },
+          {
+            "Listing": {
+              "language": "bash",
+              "code": "aden graph --from module-core --depth 3\n# Outputs every document reachable from module-core through Uses, Calls, Implements edges\naden query --backlinks module-core\n# Outputs every document that references module-core as a dependency"
+            }
+          },
+          {
+            "Paragraph": "You see the blast radius *before* you commit the change. The graph reveals implicit dependencies that would otherwise only surface as runtime failures."
+          },
+          {
+            "Paragraph": "**Problem:** A platform team designs an API. Three product teams consume it. One team misreads the spec and writes a client that violates an invariant. Integration tests fail weeks later."
+          },
+          {
+            "DescriptionList": [
+              [
+                "**Aden Solution:** The API contract is an `.aden` document with typed edges: `ApiContract",
+                "Constrains -> ClientModule`. When the API changes, the `heal` engine detects that downstream contracts have stale hashes and proposes updates to all three teams simultaneously. The constraint is explicit, machine-checkable, and versioned."
+              ]
+            ]
+          },
+          {
+            "Paragraph": "**Problem:** Your system must satisfy SOC 2, HIPAA, or GDPR. Auditors ask: \"How do you know this function enforces the data-retention policy?\" You point to a Word document from 2021."
+          },
+          {
+            "DescriptionList": [
+              [
+                "**Aden Solution:** Policies are `.adoc` documents with `edge",
+                "constrains[]` macros linking them to the functions they govern. The `check` command verifies that every policy edge resolves to a live contract. The `heal` engine flags any code change that breaks a policy link. Compliance becomes continuous and testable, not an annual ritual."
+              ]
+            ]
+          },
+          {
+            "Paragraph": "**Problem:** You are a solo founder building a product over two years. You context-switch between frontend, backend, DevOps, and legal. By month 18, you have forgotten why month 3's architectural decision exists."
+          },
+          {
+            "Paragraph": "**Aden Solution:** Every ADR, every plan, every API contract, and every runbook is an `.aden` document in the same graph as your code. When you return to a module after six months, `aden asm --from module-x --depth 2` assembles the context you need: the ADR that justifies its design, the functions it depends on, and the tests that verify its invariants. You never truly \"forget\" your own codebase."
+          },
+          {
+            "Paragraph": "Aden was designed with a specific user in mind: **the autonomous AI agent**."
+          },
+          {
+            "Paragraph": "An agent does not need beautiful HTML. It needs:\n. A guaranteed-accurate map of relationships (the graph)\n. A way to know when the map is stale (`heal`)\n. A way to assemble just enough context to complete a task (`asm`)\n. A way to verify its work before committing (`check`)\n. A way to leave breadcrumbs about what it changed (`session`)"
+          },
+          {
+            "Paragraph": "Aden provides all five. When a human reviews an agent's pull request, they do not read the agent's \"thoughts\" — they read the `.aden` contracts, run `aden check`, and verify that `session.adoc` explains what changed and why."
+          },
+          {
+            "Paragraph": "Because Aden is designed for automated agents that read files and execute commands, security is embedded in its design:"
+          },
+          {
+            "DescriptionList": [
+              [
+                ". **Path Traversal Prevention:** Include directives (`include",
+                "[]`) are canonicalized and bounded to the project directory. An agent cannot accidentally (or maliciously) inline `/etc/passwd`."
+              ]
+            ]
+          },
+          {
+            "Paragraph": ". **Safe Execution:** PowerShell discovery avoids cwd resolution to prevent binary planting attacks. JSON deserialization is bounded and uses `deny_unknown_fields`.\n. **Id & Filename Sanitization:** Proposal IDs are validated against ASCII-safe whitelists before being used as filenames.\n. **No `unsafe` Code:** The project contains zero `unsafe` blocks in application code."
+          },
+          {
+            "Paragraph": "Aden is a bet on a future where software is not written by humans alone, but by **hybrid teams** of humans and agents. In that future, context is the scarcest resource. Aden makes context explicit, dense, traversable, and self-healing — turning an opaque codebase into a navigable knowledge graph that both humans and machines can reason about."
+          },
+          {
+            "Paragraph": "The name is the mission: **A Dense Referential Context Compiler**. Every token is load-bearing. Every edge is typed. Every anchor resolves."
+          }
+        ],
+        "source_span": null
+      },
+      "source_path": "docs/philosophy.adoc"
+    },
+    {
+      "anchor": "use-cases",
+      "doc": {
+        "anchor": "use-cases",
+        "node_type": "Note",
+        "attributes": {
+          "author": "RioPlay",
+          "proj": "aden"
+        },
+        "blocks": [
+          {
+            "Paragraph": "Aden is a **context compiler** — it turns any body of knowledge into a traversable, attributed, token-dense graph. What follows is a non-exhaustive list of domains where this capability unlocks value that traditional documentation, wiki, or note-taking tools cannot provide."
+          },
+          {
+            "Paragraph": "Every use case below follows the same workflow:"
+          },
+          {
+            "Paragraph": ". **Ingest** — Parse raw material (code, interview transcripts, regulations, etc.)\n. **Extract** — Identify entities, relationships, claims, and obligations\n. **Compile** — Turn them into a traversable knowledge graph with typed edges\n. **Query** — Ask natural-language questions; get precise, contextual answers\n. **Drift** — Detect when reality and documentation diverge\n. **Audit** — Verify attribution, accreditation, and provenance"
+          },
+          {
+            "Paragraph": "Already implemented. Aden extracts symbols, call graphs, and API contracts from source code, producing machine-readable documentation that AI agents and humans can query without reading every file."
+          },
+          {
+            "Paragraph": "*Impact:* Eliminates stale documentation, ensures every refactor propagates correctly, makes onboarding instant."
+          },
+          {
+            "Paragraph": "A PhD student ingests 200 papers into aden. Each paper becomes a `Document`. Key claims become typed edges (`Supports`, `Contradicts`, `Extends`, `Replicates`). The student can ask:"
+          },
+          {
+            "Listing": {
+              "language": null,
+              "code": "aden ask \"Which papers contradict the central claim of Smith 2024?\""
+            }
+          },
+          {
+            "Paragraph": "Aden assembles a subgraph of all papers that cite Smith negatively, with pull quotes and confidence flags."
+          },
+          {
+            "Paragraph": "*Differentiator:* Unlike Zotero or Obsidian, aden tracks **contradiction edges** and **confidence degradation** over time. If a replication study later invalidates a claim, aden detects the drift and flags all downstream papers that built on it."
+          },
+          {
+            "Paragraph": "A law firm ingests 5,000 pages of contracts, NDAs, and regulatory filings. Each clause is a node. Obligations flow as edges (`Requires`, `Prohibits`, `Entitles`)."
+          },
+          {
+            "Listing": {
+              "language": null,
+              "code": "aden ask \"What obligations do we have under Section 7.3 that expire in Q2?\""
+            }
+          },
+          {
+            "Paragraph": "Aden locates the clause, traces all dependent clauses, and assembles a digest with source spans."
+          },
+          {
+            "Paragraph": "*Differentiator:* Detects **cross-contract conflicts** (e.g., NDA clause X contradicts Employment Agreement clause Y). Traditional CLM tools cannot do this without manual mapping."
+          },
+          {
+            "Paragraph": "A journalist builds a knowledge graph from leaked documents, interview transcripts, and public records. Entities (people, companies, assets) are nodes. Relationships are edges (`Owns`, `Funnelled-to`, `Obfuscated-by`)."
+          },
+          {
+            "Listing": {
+              "language": null,
+              "code": "aden graph --depth 3 \"shell-company-X\""
+            }
+          },
+          {
+            "Paragraph": "Reveals the full ownership chain in seconds instead of weeks of spreadsheet work."
+          },
+          {
+            "Paragraph": "*Differentiator:* **Source attribution is immutable**. Every claim in the graph carries an audit trail back to the original PDF page or transcript timestamp. Bias and fabrication are structurally harder."
+          },
+          {
+            "Paragraph": "A hospital network encodes clinical protocols as aden contracts. Each drug interaction, contraindication, and dosing rule is a typed edge."
+          },
+          {
+            "Listing": {
+              "language": null,
+              "code": "aden ask \"Patient has condition X and takes drug Y. What is the protocol?\""
+            }
+          },
+          {
+            "Paragraph": "Aden assembles the relevant subgraph, flags outdated protocols (via StaleHash), and requires human sign-off on high-risk conflicts."
+          },
+          {
+            "Paragraph": "*Differentiator:* Detects **protocol drift** — when a new study invalidates an existing guideline but the ward is still operating under the old rule."
+          },
+          {
+            "Paragraph": "Analysts scrape public data (social media, registry filings, satellite imagery metadata). Aden compiles it into a temporal graph."
+          },
+          {
+            "Listing": {
+              "language": null,
+              "code": "aden ask \"What changed about Organization Z's infrastructure between January and March?\""
+            }
+          },
+          {
+            "Paragraph": "Aden diffs the graph states, highlights new edges (new facilities, new personnel), and produces a confidence-graded timeline."
+          },
+          {
+            "Paragraph": "*Differentiator:* Unlike manual spreadsheets, the graph is **self-checking** — if two sources contradict, aden flags it as BrokenReference."
+          },
+          {
+            "Paragraph": "A manufacturer models their supply chain: suppliers, parts, certifications, and compliance requirements. Each part number is a node. Each certification is an edge (`Certified-by`, `Required-for`)."
+          },
+          {
+            "Listing": {
+              "language": null,
+              "code": "aden ask \"If Supplier A stops producing Part B, which products can't ship?\""
+            }
+          },
+          {
+            "Paragraph": "Aden traverses downstream from the part, identifies all finished goods that require it, and estimates revenue impact."
+          },
+          {
+            "Paragraph": "*Differentiator:* **Impact analysis is automatic**. No manual Bill of Materials walkthrough required. When a supplier updates their spec, aden detects the SignatureMismatch and flags affected assemblies."
+          },
+          {
+            "Paragraph": "An investment fund models portfolio companies as nodes. Due diligence findings, board resolutions, and covenant compliance are edges."
+          },
+          {
+            "Listing": {
+              "language": null,
+              "code": "aden ask \"Which portfolio companies are out of compliance with covenant 4.2?\""
+            }
+          },
+          {
+            "Paragraph": "Aden evaluates the current state against the contractual graph, flags drift, and generates a compliance report."
+          },
+          {
+            "Paragraph": "*Differentiator:* Every number in the report is traceable to a source document and line. Regulators can verify without manual document review."
+          },
+          {
+            "Paragraph": "A game studio encodes their lore bible: characters, factions, locations, events. Relationships are edges (`Alliance`, `Betrayed`, `Descended-from`)."
+          },
+          {
+            "Listing": {
+              "language": null,
+              "code": "aden ask \"What are all the unresolved prophecies that mention Location X?\""
+            }
+          },
+          {
+            "Paragraph": "Aden locates prophecies, checks which have been fulfilled (Status:Resolved edges), and returns the open ones with impact analysis on the narrative."
+          },
+          {
+            "Paragraph": "*Differentiator:* Detects **lore contradictions** — when a new writer contradicts an established event, aden flags it before publication."
+          },
+          {
+            "Paragraph": "During an outage, an SRE team encodes the incident: symptoms, affected systems, mitigation steps, root causes. Each is a node with temporal edges (`Preceded-by`, `Caused-by`, `Mitigated-by`)."
+          },
+          {
+            "Listing": {
+              "language": null,
+              "code": "aden ask \"What symptoms preceded the database failure but were not acted on?\""
+            }
+          },
+          {
+            "Paragraph": "Aden reconstructs the causal chain, identifies ignored warning signals, and appends to the post-mortem."
+          },
+          {
+            "Paragraph": "*Differentiator:* Post-mortems are **live graphs**, not static documents. Six months later, when a similar symptom appears, aden locates the prior incident and assembles the context instantly."
+          },
+          {
+            "Paragraph": "A university department models their curriculum: courses, learning outcomes, prerequisites, and assessments. Each course is a node. Each prerequisite is a `Requires` edge."
+          },
+          {
+            "Listing": {
+              "language": null,
+              "code": "aden ask \"If we remove Course X, which degree paths become invalid?\""
+            }
+          },
+          {
+            "Paragraph": "Aden traverses all paths that depend on Course X, identifies affected programs, and estimates student impact."
+          },
+          {
+            "Paragraph": "*Differentiator:* Detects **prerequisite drift** — when a course description changes but degree requirements still reference the old version."
+          },
+          {
+            "Paragraph": "An industry working group encodes a technical standard: sections, requirements, test assertions, and reference implementations. Each requirement is a node. Each test is a `Validates` edge."
+          },
+          {
+            "Listing": {
+              "language": null,
+              "code": "aden ask \"Which requirements lack a test assertion?\""
+            }
+          },
+          {
+            "Paragraph": "Aden identifies orphan nodes (requirements with no incoming `Validates` edges) and generates a coverage report."
+          },
+          {
+            "Paragraph": "*Differentiator:* When the standard updates, aden detects which implementations have StaleHash and need re-certification."
+          },
+          {
+            "Paragraph": "Archivists encode oral histories, photographs, and artifacts as nodes. Provenance chains (`Acquired-from`, `Photographed-by`, `Described-in`) are edges."
+          },
+          {
+            "Listing": {
+              "language": null,
+              "code": "aden ask \"Which artifacts in Collection X have disputed provenance?\""
+            }
+          },
+          {
+            "Paragraph": "Aden finds artifacts where `Acquired-from` edges conflict with `Documentation` edges, flagging them for further research."
+          },
+          {
+            "Paragraph": "*Differentiator:* **Immutable attribution** — every claim about an artifact carries a citation to the archivist, date, and source document. Future scholars can verify without relying on institutional memory."
+          },
+          {
+            "Paragraph": "A researcher maintains a personal knowledge base across decades of reading, experiments, and conversations. Aden compiles it into a single queryable graph."
+          },
+          {
+            "Listing": {
+              "language": null,
+              "code": "aden ask \"What did I believe about Topic Y in 2018, and what do I believe now?\""
+            }
+          },
+          {
+            "Paragraph": "Aden compares two temporal graph slices, highlights changed anchors, and assembles an evolution narrative."
+          },
+          {
+            "Paragraph": "*Differentiator:* Unlike Roam or Obsidian, aden tracks **confidence degradation** — beliefs that were once \"Certain\" that have since been contradicted."
+          },
+          {
+            "Paragraph": "A government agency models regulations, guidance documents, and enforcement actions. Each regulation is a node. Amendments are `Supersedes` edges."
+          },
+          {
+            "Listing": {
+              "language": null,
+              "code": "aden ask \"Which regulations reference the outdated standard Z and need updating?\""
+            }
+          },
+          {
+            "Paragraph": "Aden finds all regulations with DeadLink or BrokenReference to deprecated standards, and generates a regulatory amendment proposal."
+          },
+          {
+            "Paragraph": "*Differentiator:* Detects **regulatory drift** — when guidance contradicts updated law, or when two agencies issue conflicting rules."
+          },
+          {
+            "Paragraph": "Patent attorneys model prior art: patents, publications, inventions. Each patent is a node. Citations are `Cites` edges. Rejections are `Rejected-due-to` edges."
+          },
+          {
+            "Listing": {
+              "language": null,
+              "code": "aden ask \"What prior art invalidates Claim 3 of Patent X?\""
+            }
+          },
+          {
+            "Paragraph": "Aden traverses citation chains, identifies the strongest prior art, and assembles an invalidity argument with source spans."
+          },
+          {
+            "Paragraph": "*Differentiator:* Graph-based prior art search finds **multi-hop citations** that keyword search misses (e.g., Patent A cites Patent B cites Patent C; keyword search finds B but not C)."
+          },
+          {
+            "Paragraph": "Environmental scientists model ecosystems: species, habitats, pollutants, interventions. Each species is a node. Each dependency (`Preys-on`, `Polluted-by`) is an edge."
+          },
+          {
+            "Listing": {
+              "language": null,
+              "code": "aden ask \"If pollutant P is introduced, which species are affected within 3 trophic levels?\""
+            }
+          },
+          {
+            "Paragraph": "Aden performs BFS from the pollutant node, collects all species within 3 hops, and estimates biodiversity impact."
+          },
+          {
+            "Paragraph": "*Differentiator:* Detects **model drift** — when new field data contradicts the existing ecological model, aden flags which impact assessments need revision."
+          },
+          {
+            "Paragraph": "Architects and engineers model a building: systems (HVAC, electrical, structural), components, and requirements. Each system is a node. Dependencies are edges (`Powered-by`, `Requires-clearance`)."
+          },
+          {
+            "Listing": {
+              "language": null,
+              "code": "aden ask \"If we relocate Wall X, which systems require redesign?\""
+            }
+          },
+          {
+            "Paragraph": "Aden traces all edges through Wall X, identifies affected systems, and estimates change orders."
+          },
+          {
+            "Paragraph": "*Differentiator:* Detects **specification drift** — when a contractor installs a different component than specified, aden flags the SignatureMismatch against the contract."
+          },
+          {
+            "Paragraph": "In every domain, the value of aden is the same:"
+          },
+          {
+            "Paragraph": ". **Context assembly** — Ask a question; get precisely the right context, not too much, not too little.\n. **Drift detection** — Know immediately when reality and documentation diverge.\n. **Attribution** — Every claim is traceable to its source. No authority without evidence.\n. **Cross-reference integrity** — Circular references, dead links, and contradictions are caught automatically.\n. **Token density** — Compress knowledge to its essence. Eliminate fluff."
+          },
+          {
+            "Paragraph": "Aden is not a documentation tool. It is a **knowledge integrity system**."
+          }
+        ],
+        "source_span": null
+      },
+      "source_path": "docs/use-cases.adoc"
+    },
+    {
+      "anchor": "mod-aden-asm",
+      "doc": {
+        "anchor": "mod-aden-asm",
+        "node_type": "Note",
+        "attributes": {
+          "lang": "rust",
+          "proj": "aden",
+          "module": "aden-asm",
+          "path": "crates/aden-asm/src/"
+        },
+        "blocks": [
+          {
+            "Paragraph": "Context assembler: transforms a subgraph of `.aden` documents into a single flat AsciiDoc string ready for LLM ingestion."
+          },
+          {
+            "Table": {
+              "headers": [
+                "Function",
+                "Signature",
+                "Description"
+              ],
+              "rows": [
+                [
+                  "`preprocess`",
+                  "`pub fn preprocess(path: &Path, attrs: &HashMap<String, String>, visited: &mut Vec<PathBuf>, level_offset: usize) -> Result<String, PreprocessError>`",
+                  "Resolve includes, conditionals, leveloffset"
+                ],
+                [
+                  "`assemble`",
+                  "`pub fn assemble(graph: &AdenGraph, opts: &AssemblyOptions) -> Result<String, AssemblyError>`",
+                  "BFS traversal with token budgeting"
+                ],
+                [
+                  "`AssemblyOptions`",
+                  "struct",
+                  "start_anchor, max_depth, token_budget, edge_types filter"
+                ]
+              ]
+            }
+          },
+          {
+            "Paragraph": ". `visited` stack prevents recursive include loops.\n. `leveloffset` is clamped to `min(6, max(1, base + offset))`.\n. `ifdef`/`ifndef`/`ifeval` support attribute resolution and numeric comparison only.\n. Assembly order: start anchor first, then BFS neighbors.\n. Token budget is approximate (bytes/4 heuristic).\n. Deduplication: same anchor reached via multiple paths emitted exactly once."
+          },
+          {
+            "DescriptionList": [
+              [
+                "agent-note",
+                "SIMPLIFICATION"
+              ]
+            ]
+          },
+          {
+            "Paragraph": "Preprocessor subset: no inline conditionals, no nested `ifeval` arithmetic, no macro definitions. Sufficient for deterministic agent context assembly."
+          },
+          {
+            "Paragraph": ". <<project-context>>\n. <<adr-001>>"
+          }
+        ],
+        "source_span": null
+      },
+      "source_path": "docs/module-aden-asm.adoc"
+    },
+    {
+      "anchor": "mod-aden-cli",
+      "doc": {
+        "anchor": "mod-aden-cli",
+        "node_type": "Note",
+        "attributes": {
+          "lang": "rust",
+          "proj": "aden",
+          "module": "aden-cli",
+          "path": "crates/aden-cli/src/"
+        },
+        "blocks": [
+          {
+            "Paragraph": "User-facing binary for the Aden toolchain. Orchestrates all crates through a unified CLI."
+          },
+          {
+            "Table": {
+              "headers": [
+                "Command",
+                "Arguments",
+                "Behavior"
+              ],
+              "rows": [
+                [
+                  "`aden init`",
+                  "`[DIR]` (default `.`)",
+                  "Scaffold `.agent/` templates and `.adenignore` in the target directory"
+                ],
+                [
+                  "`aden new`",
+                  "`--lang <lang> --path <dir> <name>`",
+                  "Create a new project from a language template with Aden scaffolding"
+                ],
+                [
+                  "`aden kickoff`",
+                  "`--interactive --name <name>`",
+                  "Create a kickoff document for a new initiative (interactive or from a brief)"
+                ],
+                [
+                  "`aden workflow`",
+                  "`--from <template> [--out <file>]`",
+                  "Instantiate templates with substitutions and chain documents"
+                ],
+                [
+                  "`aden gen`",
+                  "`<PATH> [--out-dir <dir>] [--auto]`",
+                  "Parse source file(s) and emit `.adoc` / `.aden` contracts to stdout or `--out-dir`"
+                ],
+                [
+                  "`aden check`",
+                  "`<DIR>` (default `.`)",
+                  "Verify refs, anchors, cycles, orphans, and source_hash integrity"
+                ],
+                [
+                  "`aden graph`",
+                  "`--from <anchor> --depth <n> <DIR>`",
+                  "Output graph neighborhood as a debug report"
+                ],
+                [
+                  "`aden asm`",
+                  "`--from <anchor> --depth <n> --budget <tokens> [--edge-types TYPES] [--out FILE] <DIR>`",
+                  "Assemble context prompt from graph via BFS"
+                ],
+                [
+                  "`aden query`",
+                  "`--from <anchor> [--edge-type <type>] --depth <n> <DIR>`",
+                  "Return JSON array of reachable nodes"
+                ],
+                [
+                  "`aden query`",
+                  "`--backlinks <anchor> <DIR>`",
+                  "Return JSON array of nodes with incoming edges to target"
+                ],
+                [
+                  "`aden query`",
+                  "`--impact <anchor> <DIR>`",
+                  "Return JSON transitive closure over dependency edges (blast radius)"
+                ],
+                [
+                  "`aden ask`",
+                  "`<QUESTION> [DIR] [--from <anchor>] [--budget <tokens>] [--model <model>]`",
+                  "Natural-language question → search → intent classification → assembled context"
+                ],
+                [
+                  "`aden search`",
+                  "`<QUERY> <DIR>`",
+                  "Full-text inverted-index search. Prints ranked results with snippets"
+                ],
+                [
+                  "`aden locate`",
+                  "`<SYMBOL> <DIR>`",
+                  "Locate a symbol definition or its call sites in the graph"
+                ],
+                [
+                  "`aden watch`",
+                  "`<DIR>`",
+                  "Watch source files and auto-regenerate contracts on change"
+                ],
+                [
+                  "`aden heal`",
+                  "`<DIR>`",
+                  "Self-healing documentation engine: scan for drift, propose patches, apply reviewed changes"
+                ],
+                [
+                  "`aden ci-check`",
+                  "`<DIR>`",
+                  "Run all local CI gates (check, heal, test, secret-scan, audit)"
+                ],
+                [
+                  "`aden doctor`",
+                  "`<DIR>`",
+                  "Diagnose environment: tool versions, repo health, signing keys"
+                ],
+                [
+                  "`aden review`",
+                  "`--since <ref>`",
+                  "Semantic review of changes since a Git ref, with token budgeting"
+                ],
+                [
+                  "`aden session`",
+                  "`--agent-id <id> --task <task> --files <files> --status <status> <DIR>`",
+                  "Atomic session lock: append entry to `.agent/session.adoc`"
+                ],
+                [
+                  "`aden licenses`",
+                  "`<DIR>`",
+                  "Generate third-party attribution report from `Cargo.lock`"
+                ],
+                [
+                  "`aden audit`",
+                  "`<DIR> [--format text",
+                  "json",
+                  "adoc] [--strict]`",
+                  "OWASP-style security audit: scan source for vulnerability patterns"
+                ],
+                [
+                  "`aden mcp`",
+                  "`[DIR]`",
+                  "MCP (Model Context Protocol) integration management"
+                ],
+                [
+                  "`aden --version`",
+                  "none",
+                  "Print version"
+                ],
+                [
+                  "`aden --help`",
+                  "none",
+                  "Print help, including subcommand help"
+                ]
+              ]
+            }
+          },
+          {
+            "Paragraph": "- CLI uses `clap` derive macros with subcommand enums.\n- `init` embeds template files at compile time via `include_str!`."
+          },
+          {
+            "DescriptionList": [
+              [
+                "- `gen` delegates to `aden_parse",
+                "parse_file` and `aden_parse::parse_directory`."
+              ]
+            ]
+          },
+          {
+            "DescriptionList": [
+              [
+                "- `check` aggregates anchors across all `.adoc` / `.aden` files, builds full graph via `aden_graph`, verifies `:source_hash:` via `aden_graph",
+                "integrity::check_hashes`."
+              ]
+            ]
+          },
+          {
+            "Paragraph": "- `graph` performs BFS from `--from` anchor up to `--depth`.\n- `asm` assembles within `--budget` tokens using BFS traversal from `--from`.\n- `query` emits JSON via `serde_json`. Sub-modes: `--from`, `--backlinks`, `--impact`.\n- `ask` is the AI-facing entry point: search → classify intent → assemble → optionally send to LLM via `ollama:<name>` or `openai:<name>`."
+          },
+          {
+            "DescriptionList": [
+              [
+                "- `search` uses `aden_index",
+                "Index` with TF-based scoring."
+              ]
+            ]
+          },
+          {
+            "Paragraph": "- `watch` uses the `notify` crate with recursive watchers.\n- `heal` compares source hashes and signatures; `--propose` generates patches.\n- `ci-check` runs `check`, `heal`, workspace tests, secret scan, and `audit`.\n- `doctor` checks `rustc`, `cargo`, `git`, `aden` versions and verifies `.agent/` health.\n- `audit` performs regex-based SAST for OWASP Top 10 patterns across supported languages.\n- `mcp` starts or configures the Model Context Protocol server."
+          },
+          {
+            "Paragraph": ". <<project-context>>\n. <<adr-001>>\n. <<getting-started>>\n. <<user-guide>>\n. <<ai-integration>>"
+          }
+        ],
+        "source_span": null
+      },
+      "source_path": "docs/module-aden-cli.adoc"
+    },
+    {
+      "anchor": "mod-aden-core",
+      "doc": {
+        "anchor": "mod-aden-core",
+        "node_type": "Note",
+        "attributes": {
+          "module": "aden-core",
+          "path": "crates/aden-core/src/",
+          "lang": "rust",
+          "proj": "aden"
+        },
+        "blocks": [
+          {
+            "Paragraph": "Universal schema for the Aden referential context compiler. This crate is the load-bearing foundation for all other crates and has no dependencies on parsing, I/O, or emission logic."
+          },
+          {
+            "Table": {
+              "headers": [
+                "Type",
+                "Kind",
+                "Description"
+              ],
+              "rows": [
+                [
+                  "`Document`",
+                  "struct",
+                  "Root node in the graph. Has `anchor`, `node_type`, `attributes`, `blocks`."
+                ],
+                [
+                  "`Block`",
+                  "enum",
+                  "Content block: `Table`, `Paragraph`, `Listing`, `Admonition`, `DescriptionList`."
+                ],
+                [
+                  "`Table`",
+                  "struct",
+                  "Rows + columns. Must support header row."
+                ],
+                [
+                  "`Symbol`",
+                  "struct",
+                  "Named entity extracted from source code."
+                ],
+                [
+                  "`FunctionSig`",
+                  "struct",
+                  "Name, parameters, return type, visibility."
+                ],
+                [
+                  "`TypeDef`",
+                  "struct",
+                  "Name, kind, fields, trait bounds."
+                ],
+                [
+                  "`Contract`",
+                  "struct",
+                  "Invariants, side effects, error conditions."
+                ],
+                [
+                  "`Edge`",
+                  "struct",
+                  "`(source_anchor, target_anchor, edge_type)`."
+                ],
+                [
+                  "`EdgeType`",
+                  "enum",
+                  "Strict enumeration: `Uses`, `Implements`, `Tests`, `Documents`, `Constrains`, `Justifies`, `Invokes`, `Requires`, `Mutates`, `Calls`, `Supersedes`, `Amends`, `Verifies`."
+                ],
+                [
+                  "`Error`",
+                  "enum",
+                  "Unified error type via `thiserror`."
+                ],
+                [
+                  "`ContractRegion`",
+                  "enum",
+                  "Semantic region: `Generated`, `Human`, `Agent`, `Security`, `Contract`, `Constitution`, `Override`, `Proposed`."
+                ],
+                [
+                  "`RegionBlock`",
+                  "struct",
+                  "A block inside a `ContractDocument` with region, tag, attributes, and content."
+                ],
+                [
+                  "`ContractDocument`",
+                  "struct",
+                  "Region-aware document with `header_attrs`, `blocks`, and `prose`."
+                ],
+                [
+                  "`ContractState`",
+                  "struct",
+                  "Three-way merge state: `ground`, `base`, `working`."
+                ],
+                [
+                  "`MergeAction`",
+                  "enum",
+                  "`UpdateGenerated`, `PreserveHuman`, `Conflict`, `InsertGenerated`, `DeleteGenerated`."
+                ],
+                [
+                  "`MergeProposal`",
+                  "struct",
+                  "Result of a dry-run merge with counts per action type."
+                ],
+                [
+                  "`ParseMode`",
+                  "enum",
+                  "`Strict` (CI-enforced, line-specific errors) or `Permissive` (authoring-friendly, warns but never fails)."
+                ],
+                [
+                  "`SourceSpan`",
+                  "struct",
+                  "File location: 1-based line range, 0-based byte offsets."
+                ],
+                [
+                  "`ProfileMode`",
+                  "enum",
+                  "`Internal` (full fidelity) or `Public` (redacted fields, hidden private dirs)."
+                ],
+                [
+                  "`AdenConfig`",
+                  "struct",
+                  "Runtime profile loaded from `aden.toml`."
+                ],
+                [
+                  "`LicenseInfo`",
+                  "struct",
+                  "Third-party dependency and license metadata."
+                ],
+                [
+                  "`ThirdPartyNotice`",
+                  "struct",
+                  "Machine-readable notice of all third-party dependencies."
+                ],
+                [
+                  "`StagingEntry`",
+                  "struct",
+                  "Subagent proposal before promotion."
+                ],
+                [
+                  "`StagingManager`",
+                  "struct",
+                  "Handles `.aden/staging/` directory: write, list, load."
+                ]
+              ]
+            }
+          },
+          {
+            "Paragraph": ". Every `Document` must have a globally unique `anchor`.\n. Every `anchor` must match regex `^[a-z0-9_-]+$`.\n. `attributes` must contain at least `:source_hash:` if emitted from code.\n. All public types derive `Debug`, `Clone`, `Serialize`, `Deserialize`.\n. This crate has no dependencies on parsing or I/O."
+          },
+          {
+            "DescriptionList": [
+              [
+                ". `ContractState",
+                "apply()` never modifies human-owned blocks."
+              ]
+            ]
+          },
+          {
+            "DescriptionList": [
+              [
+                "agent-note",
+                "RESOLVED"
+              ]
+            ]
+          },
+          {
+            "Paragraph": "`Edge` types are locked to enum for referential integrity. Open strings rejected in ADR-001."
+          },
+          {
+            "DescriptionList": [
+              [
+                "agent-note",
+                "OPEN QUESTION"
+              ]
+            ]
+          },
+          {
+            "Paragraph": "Should `ContractState` persist `base` to disk (e.g., `.aden/contract-base/`) so that `aden gen --merge` can reconstruct three-way history across cold starts? Currently `base` == on-disk file at generation time."
+          },
+          {
+            "Paragraph": ". <<project-context>>\n. <<adr-001>>\n. <<plan-phase0>>"
+          }
+        ],
+        "source_span": null
+      },
+      "source_path": "docs/module-aden-core.adoc"
+    },
+    {
+      "anchor": "mod-aden-emit",
+      "doc": {
+        "anchor": "mod-aden-emit",
+        "node_type": "Note",
+        "attributes": {
+          "path": "crates/aden-emit/src/",
+          "module": "aden-emit",
+          "proj": "aden",
+          "lang": "rust"
+        },
+        "blocks": [
+          {
+            "Paragraph": "Serialize `Document` structs into AsciiDoc (`.adoc` / `.aden`) text."
+          },
+          {
+            "Table": {
+              "headers": [
+                "Function",
+                "Signature",
+                "Description"
+              ],
+              "rows": [
+                [
+                  "`emit_document`",
+                  "`pub fn emit_document(doc: &Document) -> String`",
+                  "Emit a single Document"
+                ],
+                [
+                  "`emit`",
+                  "`pub fn emit(documents: &[Document]) -> String`",
+                  "Emit multiple Documents joined by page breaks"
+                ],
+                [
+                  "`verify`",
+                  "`pub fn verify(output: &str) -> Result<(), String>`",
+                  "Verify all `<<refs>>` resolve"
+                ],
+                [
+                  "`collect_anchors`",
+                  "`pub fn collect_anchors(output: &str) -> HashSet<String>`",
+                  "Collect all `[[anchor]]` declarations"
+                ],
+                [
+                  "`find_refs`",
+                  "`pub fn find_refs(line: &str) -> Vec<String>`",
+                  "Find all `<<reference>>` patterns"
+                ]
+              ]
+            }
+          },
+          {
+            "Paragraph": ". Every emitted Document must begin with `:attribute:` lines, then `[[anchor]]`, then `= Title`.\n. Tables must always have a header row.\n. Admonitions map directly to AsciiDoc labels (`NOTE`, `WARNING`, etc.).\n. Listings must wrap code in `----` blocks."
+          },
+          {
+            "DescriptionList": [
+              [
+                "agent-note",
+                "OPEN QUESTION"
+              ]
+            ]
+          },
+          {
+            "Paragraph": "Should `emit` produce one file per Document or concatenate? Current behavior concatenates with `<<<` separator."
+          },
+          {
+            "Paragraph": ". <<project-context>>\n. <<adr-001>>"
+          }
+        ],
+        "source_span": null
+      },
+      "source_path": "docs/module-aden-emit.adoc"
+    },
+    {
+      "anchor": "mod-aden-graph",
+      "doc": {
+        "anchor": "mod-aden-graph",
+        "node_type": "Note",
+        "attributes": {
+          "path": "crates/aden-graph/src/",
+          "proj": "aden",
+          "module": "aden-graph",
+          "lang": "rust"
+        },
+        "blocks": [
+          {
+            "DescriptionList": [
+              [
+                "Graph engine for the Aden knowledge graph. Builds `petgraph",
+                "DiGraph` from `.adoc`/`.aden` files, validates references, detects cycles, and injects backlinks."
+              ]
+            ]
+          },
+          {
+            "Table": {
+              "headers": [
+                "Type/Function",
+                "Signature",
+                "Description"
+              ],
+              "rows": [
+                [
+                  "`AdenGraph`",
+                  "struct",
+                  "The Aden knowledge graph wrapping petgraph::DiGraph"
+                ],
+                [
+                  "`DocumentNode`",
+                  "struct",
+                  "Node in graph: anchor, doc, parsed metadata, source_path"
+                ],
+                [
+                  "`build_from_directory`",
+                  "`pub fn build_from_directory(dir: &Path) -> Result<AdenGraph, GraphError>`",
+                  "Parse all `.adoc`/`.aden` files and build graph"
+                ],
+                [
+                  "`unresolved_refs`",
+                  "`pub fn unresolved_refs(&self) -> Vec<(String, String)>`",
+                  "Find all unresolved `<<refs>>`"
+                ],
+                [
+                  "`orphans`",
+                  "`pub fn orphans(&self) -> Vec<String>`",
+                  "Nodes with no edges"
+                ],
+                [
+                  "`get_node`",
+                  "`pub fn get_node(&self, anchor: &str) -> Option<&DocumentNode>`",
+                  "Lookup node by anchor"
+                ],
+                [
+                  "`get_index`",
+                  "`pub fn get_index(&self, anchor: &str) -> Option<NodeIndex>`",
+                  "Lookup node index"
+                ],
+                [
+                  "`find_cycles` (cycles module)",
+                  "`pub fn find_cycles(graph: &AdenGraph) -> Vec<Vec<String>>`",
+                  "DFS cycle detection"
+                ],
+                [
+                  "`inject_backlinks` (backlinks module)",
+                  "`pub fn inject_backlinks(graph: &mut AdenGraph)`",
+                  "Append `== Referenced By` tables"
+                ],
+                [
+                  "`check_hashes` (integrity module)",
+                  "`pub fn check_hashes(graph: &AdenGraph) -> Vec<(String, String)>`",
+                  "Verify `:source_hash:` integrity"
+                ],
+                [
+                  "`parse_file` (parser module)",
+                  "`pub fn parse_file(path: &Path) -> Result<ParsedDocument, ParseError>`",
+                  "Parse AsciiDoc attributes, anchors, refs, includes, conditionals, edge macros"
+                ]
+              ]
+            }
+          },
+          {
+            "Paragraph": ". Anchors must be unique across the graph. Duplicates are a hard error."
+          },
+          {
+            "DescriptionList": [
+              [
+                ". `include",
+                "[]` edges are typed as `Requires`."
+              ]
+            ]
+          },
+          {
+            "Paragraph": ". `<<refs>>` edges are typed as `Uses`."
+          },
+          {
+            "DescriptionList": [
+              [
+                ". Explicit `edge",
+                "` macros override default edge types."
+              ]
+            ]
+          },
+          {
+            "DescriptionList": [
+              [
+                "agent-note",
+                "SIMPLIFICATION"
+              ]
+            ]
+          },
+          {
+            "DescriptionList": [
+              [
+                "Only parses a subset of AsciiDoc: header attributes, block anchors, `<<refs>>`, `include",
+                "[]`, `ifdef`/`ifndef`/`ifeval`, and custom `edge::` macros. Full AsciiDoc parsing is not required."
+              ]
+            ]
+          },
+          {
+            "Paragraph": ". <<project-context>>\n. <<adr-001>>"
+          }
+        ],
+        "source_span": null
+      },
+      "source_path": "docs/module-aden-graph.adoc"
+    },
+    {
+      "anchor": "mod-aden-heal",
+      "doc": {
+        "anchor": "mod-aden-heal",
+        "node_type": "Note",
+        "attributes": {
+          "proj": "aden",
+          "module": "aden-heal",
+          "lang": "rust",
+          "path": "crates/aden-heal/src/"
+        },
+        "blocks": [
+          {
+            "Paragraph": "Self-healing documentation engine. Detects drift between code reality and documented contracts."
+          },
+          {
+            "Table": {
+              "headers": [
+                "Type/Function",
+                "Signature",
+                "Description"
+              ],
+              "rows": [
+                [
+                  "`DriftEvent`",
+                  "enum",
+                  "StaleHash, SignatureMismatch, MissingContract, OrphanAnchor, BrokenReference, DeadLink"
+                ],
+                [
+                  "`DriftSeverity`",
+                  "enum",
+                  "Critical, High, Medium, Low — with weight() for scoring"
+                ],
+                [
+                  "`Scanner`",
+                  "struct",
+                  "Walks repo, compares parsed AST to stored contracts"
+                ],
+                [
+                  "`scan`",
+                  "`pub fn scan(&self) -> Result<Vec<DriftEvent>, HealError>`",
+                  "Full repo drift detection"
+                ],
+                [
+                  "`HealthReport`",
+                  "struct",
+                  "Aggregates events with overall_score (0-1)"
+                ],
+                [
+                  "`generate`",
+                  "`pub fn generate(events: Vec<DriftEvent>, repo_path: &Path) -> HealthReport`",
+                  "Score calculator"
+                ],
+                [
+                  "`suggest_anchor`",
+                  "`pub fn suggest_anchor(query: &str, candidates: &[String]) -> Option<(String, f64)>`",
+                  "Levenshtein recovery >= 0.85 confidence"
+                ]
+              ]
+            }
+          },
+          {
+            "Paragraph": ". Scanner skips files that fail to parse rather than failing the entire scan.\n. Graph building for broken-reference detection is best-effort; duplicate anchors are tolerated.\n. Health score is 1.0 - (weighted_event_count / total_contracts).\n. Fuzzy anchor recovery uses normalized Levenshtein distance.\n. Drift detection never mutates files; read-only by default."
+          },
+          {
+            "DescriptionList": [
+              [
+                "agent-note",
+                "CONFIDENCE HIGH"
+              ]
+            ]
+          },
+          {
+            "Paragraph": "No open questions for Phase 6."
+          },
+          {
+            "Paragraph": ". <<project-context>>\n. <<adr-001>>"
+          }
+        ],
+        "source_span": null
+      },
+      "source_path": "docs/module-aden-heal.adoc"
+    },
+    {
+      "anchor": "mod-aden-index",
+      "doc": {
+        "anchor": "mod-aden-index",
+        "node_type": "Note",
+        "attributes": {
+          "path": "crates/aden-index/src/",
+          "proj": "aden",
+          "module": "aden-index",
+          "lang": "rust"
+        },
+        "blocks": [
+          {
+            "Paragraph": "Semantic and full-text search over the Aden knowledge graph using an in-memory inverted index."
+          },
+          {
+            "Table": {
+              "headers": [
+                "Type/Function",
+                "Signature",
+                "Description"
+              ],
+              "rows": [
+                [
+                  "`SearchResult`",
+                  "struct",
+                  "anchor, source_path, score, snippet"
+                ],
+                [
+                  "`Index`",
+                  "struct",
+                  "In-memory inverted index"
+                ],
+                [
+                  "`from_directory`",
+                  "`pub fn from_directory(dir: &Path) -> Result<Index, io::Error>`",
+                  "Build index from all `.adoc`/`.aden` files under dir"
+                ],
+                [
+                  "`query`",
+                  "`pub fn query(&self, query_str: &str) -> Vec<SearchResult>`",
+                  "Tokenizes query, scores by TF, ranks descending, generates snippet"
+                ],
+                [
+                  "`tokenize`",
+                  "`pub fn tokenize(text: &str) -> Vec<String>`",
+                  "Lowercase, strip punctuation, filter stop words"
+                ]
+              ]
+            }
+          },
+          {
+            "Paragraph": ". Anchors, attribute keys/values, table cells, and description-list terms are all indexed.\n. Stop words are filtered during both indexing and querying.\n. Snippets return the first line containing a query token, truncated to 200 chars.\n. Non-`.adoc`/`.aden` files are silently skipped."
+          },
+          {
+            "DescriptionList": [
+              [
+                "agent-note",
+                "SIMPLIFICATION"
+              ]
+            ]
+          },
+          {
+            "Paragraph": "No BM25, no stemming, no phrase queries. Pure inverted index with term-frequency scoring. Sufficient for agent-scale repos (<10k documents)."
+          },
+          {
+            "Paragraph": ". <<project-context>>\n. <<adr-001>>"
+          }
+        ],
+        "source_span": null
+      },
+      "source_path": "docs/module-aden-index.adoc"
+    },
+    {
+      "anchor": "mod-aden-lsp",
+      "doc": {
+        "anchor": "mod-aden-lsp",
+        "node_type": "Note",
+        "attributes": {
+          "lang": "rust",
+          "proj": "aden",
+          "module": "aden-lsp",
+          "path": "crates/aden-lsp/src/"
+        },
+        "blocks": [
+          {
+            "Paragraph": "Language Server Protocol implementation for `.adoc`/`.aden` files. Provides diagnostics, go-to-definition, and hover using the existing `aden-graph` parser."
+          },
+          {
+            "Table": {
+              "headers": [
+                "Handler",
+                "LSP Method",
+                "Behavior"
+              ],
+              "rows": [
+                [
+                  "`initialize`",
+                  "Initialize",
+                  "Registers textDocumentSync, definitionProvider, hoverProvider"
+                ],
+                [
+                  "`did_open`",
+                  "textDocument/didOpen",
+                  "Stores document text, publishes diagnostics"
+                ],
+                [
+                  "`did_change`",
+                  "textDocument/didChange",
+                  "Updates document text, re-publishes diagnostics"
+                ],
+                [
+                  "`goto_definition`",
+                  "textDocument/definition",
+                  "Resolves `<<anchor>>` to file containing `[[anchor]]`"
+                ],
+                [
+                  "`hover`",
+                  "textDocument/hover",
+                  "Returns `== Signature` table for referenced anchor"
+                ]
+              ]
+            }
+          },
+          {
+            "Paragraph": ". Diagnostics are published on every open and change event.\n. Unresolved `<<refs>>` emit ERROR severity diagnostics."
+          },
+          {
+            "DescriptionList": [
+              [
+                ". Missing `include",
+                "[]` targets emit ERROR severity diagnostics."
+              ]
+            ]
+          },
+          {
+            "DescriptionList": [
+              [
+                ". Go-to-definition uses `AdenGraph",
+                "get_node` to locate the target file path."
+              ]
+            ]
+          },
+          {
+            "Paragraph": ". Hover extracts the first `Table` block with `Property | Value` headers."
+          },
+          {
+            "DescriptionList": [
+              [
+                "agent-note",
+                "SIMPLIFICATION"
+              ]
+            ]
+          },
+          {
+            "Paragraph": "No incremental sync (FULL sync only). No completion or rename. Rebuilds the graph from disk on every diagnostics request rather than maintaining an in-memory incremental index. Acceptable for Phase 5 MVP."
+          },
+          {
+            "Paragraph": ". <<project-context>>\n. <<adr-001>>"
+          }
+        ],
+        "source_span": null
+      },
+      "source_path": "docs/module-aden-lsp.adoc"
+    },
+    {
+      "anchor": "mod-aden-parse",
+      "doc": {
+        "anchor": "mod-aden-parse",
+        "node_type": "Note",
+        "attributes": {
+          "lang": "rust",
+          "path": "crates/aden-parse/src/",
+          "module": "aden-parse",
+          "proj": "aden"
+        },
+        "blocks": [
+          {
+            "Paragraph": "Extraction engine: turns source files into `Vec<Document>`."
+          },
+          {
+            "Table": {
+              "headers": [
+                "Function",
+                "Signature",
+                "Description"
+              ],
+              "rows": [
+                [
+                  "`parse_file`",
+                  "`pub fn parse_file(path: &Path, source: &str) -> Result<Vec<Document>>`",
+                  "Route by extension to language adapter"
+                ],
+                [
+                  "`parse_directory`",
+                  "`pub fn parse_directory(dir: &Path) -> Result<Vec<Document>>`",
+                  "Recursive directory walk"
+                ],
+                [
+                  "`extract_documents (rust)`",
+                  "`pub fn extract_documents(path: &Path, source: &str) -> Result<Vec<Document>>`",
+                  "Tree-sitter Rust adapter"
+                ],
+                [
+                  "`extract_documents (powershell)`",
+                  "`pub fn extract_documents(path: &Path, source: &str) -> Result<Vec<Document>>`",
+                  "PowerShell JSON consumer"
+                ]
+              ]
+            }
+          },
+          {
+            "Paragraph": ". Extension-based routing must be deterministic.\n. Tree-sitter Rust adapter extracts `function_item`, `struct_item`, `enum_item`, `mod_item`, `trait_item`.\n. Doc comments are buffered as preceding-sibling heuristics; confidence is not guaranteed.\n. PowerShell adapter shells out to `pwsh`/`powershell` with a `.ps1` script; arguments are passed via `argv` (no shell injection)."
+          },
+          {
+            "DescriptionList": [
+              [
+                "agent-note",
+                "OPEN QUESTION"
+              ]
+            ]
+          },
+          {
+            "Paragraph": "Should we support nested items (impl blocks, inner fns)? Defer to Phase 2."
+          },
+          {
+            "Paragraph": ". <<project-context>>\n. <<adr-001>>"
+          }
+        ],
+        "source_span": null
+      },
+      "source_path": "docs/module-aden-parse.adoc"
+    },
+    {
+      "anchor": "mod-Aden-PowerShell",
+      "doc": {
+        "anchor": "mod-Aden-PowerShell",
+        "node_type": "Note",
+        "attributes": {
+          "proj": "aden",
+          "module": "Aden-PowerShell",
+          "lang": "powershell",
+          "path": "tools/ps-adapter/"
+        },
+        "blocks": [
+          {
+            "Paragraph": "PowerShell module wrapping the Aden CLI for idiomatic Windows/admin usage."
+          },
+          {
+            "Table": {
+              "headers": [
+                "Cmdlet",
+                "Args",
+                "Behavior"
+              ],
+              "rows": [
+                [
+                  "`Invoke-AdenGenerate`",
+                  "`-Path <str> [-OutDir <str>]`",
+                  "Calls `aden gen` with optional `--out-dir`"
+                ],
+                [
+                  "`Invoke-AdenAssemble`",
+                  "`-From <str> -Path <str> [-Depth <int>] [-Budget <int>]`",
+                  "Calls `aden asm`"
+                ],
+                [
+                  "`Test-AdenIntegrity`",
+                  "`-Path <str>`",
+                  "Calls `aden check`; returns `$true`/`$false`; captures stderr"
+                ]
+              ]
+            }
+          },
+          {
+            "Paragraph": ". All cmdlets validate mandatory parameters.\n. `Test-AdenIntegrity` uses `Start-Process` with redirected stderr to capture errors.\n. `Invoke-AdenAssemble` maps `-Depth` and `-Budget` to `--depth` and `--budget` flags only when present."
+          },
+          {
+            "DescriptionList": [
+              [
+                "agent-note",
+                "CONFIDENCE HIGH"
+              ]
+            ]
+          },
+          {
+            "Paragraph": "Module is a thin wrapper. No open questions."
+          },
+          {
+            "Paragraph": ". <<project-context>>\n. <<adr-001>>"
+          }
+        ],
+        "source_span": null
+      },
+      "source_path": "docs/module-Aden-PowerShell.adoc"
+    },
+    {
+      "anchor": "mod-aden-propose",
+      "doc": {
+        "anchor": "mod-aden-propose",
+        "node_type": "Note",
+        "attributes": {
+          "lang": "rust",
+          "proj": "aden",
+          "module": "aden-propose",
+          "path": "crates/aden-propose/src/"
+        },
+        "blocks": [
+          {
+            "Paragraph": "Patch generation and proposal lifecycle management for drift events."
+          },
+          {
+            "Table": {
+              "headers": [
+                "Type/Function",
+                "Signature",
+                "Description"
+              ],
+              "rows": [
+                [
+                  "`Proposal`",
+                  "struct",
+                  "id, target_path, drift_type, confidence, status, rationale, patch_asciidoc"
+                ],
+                [
+                  "`ProposalStatus`",
+                  "enum",
+                  "PendingReview, Approved, Rejected, Applied"
+                ],
+                [
+                  "`generate_patch`",
+                  "`pub fn generate_patch(target_path: &Path, drift: &DriftEvent, document: &Document) -> Result<String, ProposeError>`",
+                  "AsciiDoc-native patch"
+                ],
+                [
+                  "`generate_stub`",
+                  "`pub fn generate_stub(anchor: &str, title: &str, sig_table: &Table, source_hash: &str) -> String`",
+                  "Minimal stub contract"
+                ],
+                [
+                  "`persist`",
+                  "`pub fn persist(proposal: &Proposal, store_dir: &Path) -> io::Result<PathBuf>`",
+                  "Write to .aden/proposals/{id}.patch.adoc"
+                ],
+                [
+                  "`load`",
+                  "`pub fn load(id: &str, store_dir: &Path) -> io::Result<Proposal>`",
+                  "Read back proposal"
+                ],
+                [
+                  "`list`",
+                  "`pub fn list(store_dir: &Path) -> io::Result<Vec<Proposal>>`",
+                  "List all proposals"
+                ],
+                [
+                  "`apply`",
+                  "`pub fn apply(proposal: &Proposal) -> io::Result<()>`",
+                  "Writes application (propose-only mode)"
+                ]
+              ]
+            }
+          },
+          {
+            "Paragraph": ". Every proposal carries :status: PENDING_REVIEW and :confidence: by default."
+          },
+          {
+            "DescriptionList": [
+              [
+                ". Stub contracts include agent-note",
+                "STUB[Auto-generated by aden-heal. Review before removing this note.]."
+              ]
+            ]
+          },
+          {
+            "Paragraph": ". Patch format is AsciiDoc-native, not unified diff, for human readability.\n. Propose crate never mutates source files directly; only generates patches for review."
+          },
+          {
+            "DescriptionList": [
+              [
+                "agent-note",
+                "CONFIDENCE HIGH"
+              ]
+            ]
+          },
+          {
+            "Paragraph": "No open questions for Phase 6."
+          },
+          {
+            "Paragraph": ". <<project-context>>\n. <<adr-001>>"
+          }
+        ],
+        "source_span": null
+      },
+      "source_path": "docs/module-aden-propose.adoc"
+    },
+    {
+      "anchor": "mod-aden-py",
+      "doc": {
+        "anchor": "mod-aden-py",
+        "node_type": "Note",
+        "attributes": {
+          "path": "crates/aden-py/src/",
+          "lang": "rust",
+          "proj": "aden",
+          "module": "aden-py"
+        },
+        "blocks": [
+          {
+            "Paragraph": "PyO3 bindings exposing Aden core functionality to Python."
+          },
+          {
+            "Table": {
+              "headers": [
+                "Function",
+                "Python Signature",
+                "Description"
+              ],
+              "rows": [
+                [
+                  "`generate`",
+                  "`def generate(path: str) -> list[str]`",
+                  "Parse source file, emit `.adoc` strings for each extracted Document"
+                ],
+                [
+                  "`assemble`",
+                  "`def assemble(from_anchor: str, budget: int) -> str`",
+                  "Placeholder assembly (returns scaffold `.adoc`)"
+                ],
+                [
+                  "`check`",
+                  "`def check(path: str) -> str`",
+                  "Verify AsciiDoc references; return report string"
+                ]
+              ]
+            }
+          },
+          {
+            "DescriptionList": [
+              [
+                ". `generate` delegates to `aden_parse",
+                "parse_file` and `aden_emit::emit_document`."
+              ]
+            ]
+          },
+          {
+            "DescriptionList": [
+              [
+                ". `check` delegates to `aden_emit",
+                "check::verify`."
+              ]
+            ]
+          },
+          {
+            "Paragraph": ". All errors are raised as Python `ValueError` or `IOError`.\n. Crate type is `cdylib`; module name is `aden`."
+          },
+          {
+            "DescriptionList": [
+              [
+                "agent-note",
+                "SIMPLIFICATION"
+              ]
+            ]
+          },
+          {
+            "Paragraph": "`assemble` is a placeholder because full graph construction from Python requires additional infrastructure. Actual graph assembly should be done via the CLI or Rust API for now."
+          },
+          {
+            "Paragraph": ". <<project-context>>\n. <<adr-001>>"
+          }
+        ],
+        "source_span": null
+      },
+      "source_path": "docs/module-aden-py.adoc"
+    },
+    {
+      "anchor": "getting-started",
+      "doc": {
+        "anchor": "getting-started",
+        "node_type": "Note",
+        "attributes": {
+          "proj": "aden",
+          "author": "RioPlay"
+        },
+        "blocks": [
+          {
+            "Paragraph": "This guide takes you from a fresh install to a working knowledge graph in under ten minutes. Every command below is real. Run them as you read."
+          },
+          {
+            "Paragraph": "Aaden treats documentation as a build artifact. Just as `cargo build` turns Rust source into a binary, `aaden gen` turns source code into AsciiDoc contracts. Just as `cargo test` verifies correctness, `aaden check` verifies that every cross-reference resolves. This pipeline is fully repeatable:"
+          },
+          {
+            "Paragraph": "1. Source code changes.\n2. `aaden gen` regenerates contracts deterministically.\n3. `aaden check` validates the graph integrity.\n4. `aaden ask` assembles context from the validated graph."
+          },
+          {
+            "Paragraph": "Because everything is plain text, you can diff contracts in Git, review them in pull requests, and audit them with standard tools."
+          },
+          {
+            "Paragraph": "- Rust toolchain (1.85 or later)\n- A project with source code (any language Aaden supports)"
+          },
+          {
+            "Listing": {
+              "language": "bash",
+              "code": "# From the repository root\ncargo install --path crates/aden-cli\n\n# Verify\naaden --version\n# Expected output: aaden 0.1.0"
+            }
+          },
+          {
+            "Paragraph": "Run this inside any project folder:"
+          },
+          {
+            "Listing": {
+              "language": "bash",
+              "code": "cd /path/to/your-project\naden init"
+            }
+          },
+          {
+            "Paragraph": "You will see:"
+          },
+          {
+            "Listing": {
+              "language": null,
+              "code": "Initialized .agent/ in .\nGenerated .adenignore with security-first defaults.\nGenerated 19 template files."
+            }
+          },
+          {
+            "Paragraph": "What just happened:\n- `.agent/` now contains templates, onboarding docs, constraints, and a session log.\n- `.adenignore` prevents sensitive files and build artifacts from being indexed.\n- The templates are AsciiDoc files you can customize for your team's conventions."
+          },
+          {
+            "Paragraph": "Aaden extracts structure from your code and emits `.adoc` contracts into `./contracts/`."
+          },
+          {
+            "Listing": {
+              "language": "bash",
+              "code": "# Single file\naden gen src/lib.rs\n\n# Entire directory tree\naden gen src/ --auto"
+            }
+          },
+          {
+            "Paragraph": "For Rust projects, you should see files like:"
+          },
+          {
+            "Listing": {
+              "language": null,
+              "code": "contracts/\n  lib.rs.adoc\n  parser.rs.adoc\n  graph.rs.adoc"
+            }
+          },
+          {
+            "Paragraph": "Each contract contains:\n- An anchor (`[[file-name]]`)\n- A title\n- Signature tables (functions, types, traits)\n- A source hash for drift detection"
+          },
+          {
+            "Listing": {
+              "language": "bash",
+              "code": "aden check ."
+            }
+          },
+          {
+            "Paragraph": "If everything is clean:"
+          },
+          {
+            "Listing": {
+              "language": null,
+              "code": "INFO: All cross-references resolve.\nINFO: No include cycles detected.\nINFO: No orphan documents.\nINFO: All source_hash values valid.\nINFO: All typed edges valid."
+            }
+          },
+          {
+            "Paragraph": "If you see errors, fix them before committing:\n- `DuplicateAnchor(\"foo\")` means two files declare `[[foo]]`. Rename one.\n- `UnresolvedReference` means a `<<foo>>` points to a missing `[[foo]]`. Create the target or fix the typo."
+          },
+          {
+            "Paragraph": "Now the fun part. Ask Aaden about your codebase in plain English:"
+          },
+          {
+            "Listing": {
+              "language": "bash",
+              "code": "aden ask \"What does the parser module do?\""
+            }
+          },
+          {
+            "Paragraph": "Aaden performs four steps automatically:\n1. **Searches** the knowledge graph for documents matching your keywords.\n2. **Classifies intent** (Explain, Usage, Refactor, Impact, Debug, or General).\n3. **Selects edge types and depth** appropriate to that intent.\n4. **Assembles** a context prompt via BFS traversal, staying within a token budget."
+          },
+          {
+            "Paragraph": "The output is raw AsciiDoc you can paste into any LLM chat."
+          },
+          {
+            "Paragraph": "If Aden's search picks the wrong document, pin it:"
+          },
+          {
+            "Listing": {
+              "language": "bash",
+              "code": "aden ask --from mod-aden-parse \"How does error handling work?\""
+            }
+          },
+          {
+            "Paragraph": "Before a refactor, understand the blast radius:"
+          },
+          {
+            "Listing": {
+              "language": "bash",
+              "code": "aden graph --from mod-aden-core --depth 2"
+            }
+          },
+          {
+            "Paragraph": "This outputs a debug report of every document reachable from `mod-aden-core` within two hops."
+          },
+          {
+            "Paragraph": "After you change source code, contracts become stale. Aaden notices:"
+          },
+          {
+            "Listing": {
+              "language": "bash",
+              "code": "aden heal ."
+            }
+          },
+          {
+            "Paragraph": "Output shows drift events like `StaleHash`, `SignatureMismatch`, or `MissingContract`. Address them by re-running `aaden gen` on the changed files."
+          },
+          {
+            "Paragraph": "When you edit source files, Aden can preserve your human-written notes while updating only the machine-generated parts."
+          },
+          {
+            "Listing": {
+              "language": "bash",
+              "code": "# Preview what would change\naden gen src/lib.rs --propose\n\n# Actually apply the merge (updates [generated] blocks only)\naden gen src/lib.rs --merge\n\n# Or merge the entire project\naden gen src/ --auto --merge"
+            }
+          },
+          {
+            "Paragraph": "What happens:\n- `aden gen --propose` shows a dry-run of `MergeAction` per block without writing files.\n- `aden gen --merge` applies updates only to `[generated]` blocks.\n- `[human]`, `[agent]`, `[security]`, and `[override]` blocks are preserved.\n- Conflicts are emitted as `[proposed]` blocks for manual review."
+          },
+          {
+            "Paragraph": "- Read <<user-guide>> for daily workflows.\n- Read <<ai-integration>> if you are an AI agent or building agent pipelines.\n- Read <<philosophy>> for the design rationale.\n- Explore <<plan-phase0>> through <<plan-phase6>> for the development roadmap."
+          }
+        ],
+        "source_span": null
+      },
+      "source_path": "docs/getting-started.adoc"
+    },
+    {
+      "anchor": "ai-integration",
+      "doc": {
+        "anchor": "ai-integration",
+        "node_type": "Note",
+        "attributes": {
+          "author": "RioPlay",
+          "proj": "aden",
+          "module": "aden-core"
+        },
+        "blocks": [
+          {
+            "Paragraph": "Aden was built for hybrid teams of humans and AI agents. This guide explains how AI agents should use `aden ask`, `aden asm`, `aden graph`, and `aden query` to stay synchronized with a codebase without reading every file."
+          },
+          {
+            "Paragraph": "An AI agent has a finite context window. A large codebase does not fit. Aden solves this by answering the question: \"What is the smallest set of documents this agent needs to complete its task?\""
+          },
+          {
+            "Paragraph": "The answer is assembled dynamically from the knowledge graph, not hard-coded in a prompt."
+          },
+          {
+            "Paragraph": "`aden ask` is the primary interface for AI agents. It is not a chatbot wrapper around an LLM. It is a **context retrieval engine**."
+          },
+          {
+            "Paragraph": "Invocation:"
+          },
+          {
+            "Listing": {
+              "language": "bash",
+              "code": "den ask \"How does the authentication flow work?\""
+            }
+          },
+          {
+            "Paragraph": "What happens internally:"
+          },
+          {
+            "Paragraph": "1. **Search**: The question is tokenized and searched against the in-memory inverted index built from all `.adoc` / `.aden` contracts.\n2. **Anchor resolution**: The top-ranked document anchor becomes the starting node (or you pin it with `--from`).\n3. **Intent classification**: The question is classified into one of six intents:\n- `Explain` --- \"How does X work?\" → depth 2, edges: Uses, Calls, Implements, Documents\n- `Usage` --- \"How do I use X?\" → depth 2, edges: Uses, Documents, Constrains\n- `Refactor` --- \"What breaks if I change X?\" → depth 4, edges: Uses, Calls, Constrains, Implements\n- `Impact` --- \"What depends on X?\" → depth 3, edges: Uses, Calls, Constrains\n- `Debug` --- \"Why is X failing?\" → depth 3, edges: Uses, Calls, Implements\n- `General` --- fallback → depth 2, edges: Uses, Documents, Constrains\n4. **Graph traversal**: A BFS walk collects neighbors along the selected edge types, stopping at `max_depth`.\n5. **Token budgeting**: Each collected document is estimated (word count × 4/3 heuristic). Documents are included until the cumulative total would exceed `--budget` (default 4096 for `ask`, 8192 for `asm`).\n6. **Assembly**: Documents are concatenated with `<<<` page-break separators. Each document includes its raw AsciiDoc content, attributes, tables, and blocks."
+          },
+          {
+            "Listing": {
+              "language": null,
+              "code": "$ aden ask --from mod-aden-core \"What types are available?\"\n\n\n\nUniversal schema for the Aden referential context compiler.\n\n|===\n|Type |Kind |Description\n|`Document`|struct|Root node in the graph...\n|===\n---\n(related contracts follow)"
+            }
+          },
+          {
+            "Paragraph": "Feed it directly into an LLM prompt, prefixed with a system instruction:"
+          },
+          {
+            "Listing": {
+              "language": null,
+              "code": "You are an expert software engineering assistant.\nThe following context was retrieved from a knowledge graph.\nAnswer based ONLY on the provided context.\nIf the context does not contain enough information, say so explicitly.\n\n---\n\n[context from aden ask goes here]"
+            }
+          },
+          {
+            "Paragraph": "This guarantees the agent reasons from real source structure rather than hallucinating APIs."
+          },
+          {
+            "Paragraph": "`aden ask` is opinionated: it classifies intent and picks edges automatically. `aden asm` gives you full control."
+          },
+          {
+            "Paragraph": "Use `aden asm` when you already know the starting anchor and want exact edge types:"
+          },
+          {
+            "Listing": {
+              "language": "bash",
+              "code": "den asm --from mod-aden-graph --depth 3 --budget 8192 --edge-types \"Uses,Calls\""
+            }
+          },
+          {
+            "Paragraph": "This is useful for:\n- Custom agent pipelines\n- Debugging why `aden ask` returned too much or too little context\n- Building reproducible prompts for regression tasks"
+          },
+          {
+            "Paragraph": "`aden graph --from <anchor> --depth N` prints a debug report. Use it to sanity-check the graph structure before asking."
+          },
+          {
+            "Paragraph": "`aden query` emits JSON, making it ideal for programmatic consumption:"
+          },
+          {
+            "Listing": {
+              "language": "bash",
+              "code": "# Reachable nodes from an anchor\nden query --from mod-aden-core --depth 2 . | jq '.[] | .anchor'\n\n# Everything that references this anchor (backlinks)\nden query --backlinks mod-aden-core . | jq '.[] | .anchor'\n\n# Transitive closure over dependency edges (blast radius)\nden query --impact mod-aden-core . | jq '.[] | .anchor'"
+            }
+          },
+          {
+            "Paragraph": "Stale context is worse than no context. Run these commands as part of your agent loop:"
+          },
+          {
+            "Paragraph": "1. Before starting work: `aden check .` (validate integrity)\n2. After writing code: `aden gen <path>` (update contracts)\n3. Before committing: `aden ci-check .` (check + heal + tests)"
+          },
+          {
+            "Paragraph": "If you are running as a persistent agent, use `aden watch` to auto-regenerate contracts on file changes."
+          },
+          {
+            "Paragraph": "Aden is designed with token scarcity in mind. Follow these rules:"
+          },
+          {
+            "Paragraph": "- **Prefer `aden ask` over dumping the whole repo.** It stays within budget automatically.\n- **Use `--from` to avoid search ambiguity.** One good anchor is worth ten vague keywords.\n- **Lower `--budget` for focused tasks.** 2048 tokens is enough for most refactor questions.\n- **Review the summary footer.** `aden ask` prints node count, bytes consumed, and budget status. If it says \"OVER BUDGET\", raise the limit or reduce depth."
+          },
+          {
+            "Paragraph": "- Aden assumes contracts are build artifacts. Never commit `contracts/` or `.aden/`.\n- `aden init` generates `.adenignore` with security defaults. Do not remove entries that skip `*.env`, `secrets/`, or `target/`.\n- Include directives are bounded to the project root. Path traversal outside the repo is rejected at parse time."
+          },
+          {
+            "Paragraph": "Try more specific keywords from actual anchors. Run `aden search <keyword>` to see what anchors exist."
+          },
+          {
+            "Paragraph": "The graph parser currently stores document body content as raw text. If blocks are empty, it falls back to `raw_content`. If you see only titles, verify the `.adoc` files contain actual prose below the title."
+          },
+          {
+            "Paragraph": "Template files and instantiated files sometimes share anchors. Rename the instantiated file anchors (e.g., `[[agent-context]]` instead of `[[agent-context-template]]`) or delete the template files if they are not needed."
+          },
+          {
+            "Paragraph": ". <<getting-started>> --- Hands-on tutorial from install to first query\n. <<user-guide>> --- Daily workflow reference\n. <<philosophy>> --- Design rationale and token-density principles\n. <<project-context>> --- Crate map, dependencies, glossary"
+          }
+        ],
+        "source_span": null
+      },
+      "source_path": "docs/ai-integration.adoc"
+    },
+    {
+      "anchor": "user-guide",
+      "doc": {
+        "anchor": "user-guide",
+        "node_type": "Note",
+        "attributes": {
+          "proj": "aden",
+          "author": "RioPlay"
+        },
+        "blocks": [
+          {
+            "Paragraph": "This is the practical manual for engineers who use Aaden every day. Each section is a self-contained workflow you can copy and adapt."
+          },
+          {
+            "Paragraph": "You have just cloned a repo and need to understand it fast."
+          },
+          {
+            "Listing": {
+              "language": "bash",
+              "code": "# 1. Initialize Aaden scaffolding\naden init\n\n# 2. Generate contracts for the whole project\naden gen src/ --auto\n\n# 3. Validate the graph\naden check .\n\n# 4. Ask high-level questions\naden ask \"What is the main entry point?\"\naden ask \"Which modules handle authentication?\"\n\n# 5. Drill into a specific module\naden graph --from mod-auth --depth 2"
+            }
+          },
+          {
+            "Paragraph": "- `aaden init` scaffolds `.agent/` with templates and `.adenignore`.\n- `aaden gen` produces `.adoc` contracts in `./contracts/` containing every public function, struct, and trait.\n- `aaden check` guarantees there are no broken references or duplicate anchors.\n- `aaden ask` gives you a token-bounded context prompt. Paste it into ChatGPT, Claude, or your local LLM and ask follow-ups.\n- `aaden graph` prints a dependency map so you can see what calls what."
+          },
+          {
+            "Paragraph": "You want to rename a function. You need to know the blast radius."
+          },
+          {
+            "Listing": {
+              "language": "bash",
+              "code": "# 1. Locate the symbol\naden locate old_function_name\n\n# 2. See what depends on it\naden query --impact old_function_name . | jq '.[] | .anchor'\n\n# 3. Get context for the change\naden ask --from old_function_name \"What breaks if I rename this?\"\n\n# 4. Make your edits\n# ... (your IDE here) ...\n\n# 5. Regenerate affected contracts\naden gen src/core/ --auto\n\n# 6. Validate and detect drift\naden check .\naden heal ."
+            }
+          },
+          {
+            "Paragraph": "- Use `--depth 4` with `aaden ask` when refactoring core modules. The default depth of 2 may miss indirect callers.\n- Use `aaden query --backlinks <anchor>` to find documents that reference a module but do not call it (e.g., ADRs, runbooks).\n- Always run `aaden check .` after `aaden gen`. If you renamed an anchor, every `<<old-anchor>>` will fail validation and point you to exactly what needs updating."
+          },
+          {
+            "Paragraph": "Documentation rots when it is hand-written and forgotten. Aaden makes it self-healing."
+          },
+          {
+            "Listing": {
+              "language": "bash",
+              "code": "# Scheduled in CI or a cron job\naden gen src/ --auto\nif ! aden check .; then\n    echo \"Graph integrity failed. See artifacts.\"\n    exit 1\nfi\naden heal . --propose > drift-report.adoc"
+            }
+          },
+          {
+            "Paragraph": "- `aaden gen` extracts current signatures from source.\n- `aaden check` validates all references.\n- `aaden heal` compares emitted contracts to source hashes. If a function signature changed, it emits a `StaleHash` or `SignatureMismatch` event.\n- Proposals are written to `.aden/proposals/` as AsciiDoc patches. Review them before applying."
+          },
+          {
+            "Paragraph": "Before approving a PR, assemble the relevant context for an AI reviewer."
+          },
+          {
+            "Listing": {
+              "language": "bash",
+              "code": "# From the PR branch\naden gen src/ --auto\n\n# Assemble context from the changed modules\nfor anchor in $(git diff --name-only main | sed 's|src/||;s|/|_|g;s|\\..*$||'); do\n    aden asm --from \"$anchor\" --depth 2 --budget 4096 >> review-context.adoc\ndone\n\n# Feed review-context.adoc to an LLM with the prompt:\n# \"Review the following changes for safety, correctness, and test coverage.\""
+            }
+          },
+          {
+            "Paragraph": "- The context is bounded by `--budget`, so you never exceed the LLM's window.\n- Depth-limited BFS prevents irrelevant modules from polluting the review.\n- Because the assembled context is AsciiDoc, the LLM can read tables, signatures, and cross-references natively."
+          },
+          {
+            "Paragraph": "Starting a greenfield project? Scaffold it with Aaden from day one."
+          },
+          {
+            "Listing": {
+              "language": "bash",
+              "code": "# Create a new Rust project with Aaden scaffolding\naden new my-project --lang rust --path .\ncd my-project\n\n# Generate a kickoff document\naden kickoff --interactive --name my-project\n\n# Generate contracts as you write code\naden gen src/ --auto\n\n# Validate before every commit\naden ci-check ."
+            }
+          },
+          {
+            "Paragraph": "- `Cargo.toml` with workspace structure\n- `.agent/` with templates, constraints, and session log\n- `.adenignore` with security-first defaults\n- `docs/kickoff-my-project.adoc` with project goals and acceptance criteria"
+          },
+          {
+            "Paragraph": "When your contracts contain `[human]` architectural notes, you do not want `aden gen` to overwrite them."
+          },
+          {
+            "Listing": {
+              "language": "bash",
+              "code": "# 1. Edit source code\n# ... (your IDE here) ...\n\n# 2. Preview the merge without writing files\naden gen src/ --auto --propose\n\n# 3. Review the proposal output\n# It shows: UpdateGenerated, PreserveHuman, Conflict, InsertGenerated, DeleteGenerated\n\n# 4. Apply the merge\naden gen src/ --auto --merge"
+            }
+          },
+          {
+            "Paragraph": "- `--propose` → dry-run. Outputs per-block `MergeAction` to stdout. No files written.\n- `--merge` → three-way merge. `ground` = freshly parsed AST; `base` = last generated; `working` = current file with human edits.\n- Both flags can be combined with `--auto` for directory-wide generation."
+          },
+          {
+            "Paragraph": "[IMPORTANT]\n====\nIf a `[human]` block and a `[generated]` block share the same tag, `aden gen --merge` emits a `[proposed]` conflict marker instead of silently overwriting.\n===="
+          },
+          {
+            "Paragraph": "Aaden assembles context within a token budget. The default is 4096 for `ask` and 8192 for `asm`. These are heuristics (bytes / 4), not exact token counts."
+          },
+          {
+            "Table": {
+              "headers": [
+                "Task",
+                "Recommended Budget",
+                "Depth",
+                "Edge Types"
+              ],
+              "rows": [
+                [
+                  "Quick lookup",
+                  "2048",
+                  "1",
+                  "Uses"
+                ],
+                [
+                  "Explain a module",
+                  "4096",
+                  "2",
+                  "Uses, Calls, Documents"
+                ],
+                [
+                  "Refactor planning",
+                  "8192",
+                  "3-4",
+                  "Uses, Calls, Constrains, Implements"
+                ],
+                [
+                  "Full onboarding",
+                  "8192+",
+                  "4",
+                  "All"
+                ]
+              ]
+            }
+          },
+          {
+            "Paragraph": "If `aaden ask` prints `OVER BUDGET` in the summary footer, it stopped early. Either:\n- Raise `--budget`\n- Reduce `--depth`\n- Pin `--from` to a more specific anchor to reduce neighborhood size"
+          },
+          {
+            "Table": {
+              "headers": [
+                "Symptom",
+                "Cause",
+                "Fix"
+              ],
+              "rows": [
+                [
+                  "`DuplicateAnchor`",
+                  "Two files declare the same `[[anchor]]`",
+                  "Rename one anchor"
+                ],
+                [
+                  "`UnresolvedReference`",
+                  "A `<<ref>>` points to a missing anchor",
+                  "Create the target doc or fix the typo"
+                ],
+                [
+                  "`No relevant documents found`",
+                  "Search keywords do not match anchors",
+                  "Use `aaden search` to discover anchor names"
+                ],
+                [
+                  "Empty `aaden ask` output",
+                  "Token budget exhausted on first node",
+                  "Lower depth or raise budget"
+                ],
+                [
+                  "Generated contracts have empty signatures",
+                  "The parser does not recognize the language",
+                  "Add a language adapter or write manual `.adoc`"
+                ]
+              ]
+            }
+          },
+          {
+            "Paragraph": ". <<getting-started>> --- Tutorial from install to first query\n. <<ai-integration>> --- How AI agents consume assembled context\n. <<philosophy>> --- Why Aaden exists and how it was designed\n. <<project-context>> --- Crate map, dependencies, and glossary"
+          }
+        ],
+        "source_span": null
+      },
+      "source_path": "docs/user-guide.adoc"
+    },
+    {
+      "anchor": "mod-aden-policy",
+      "doc": {
+        "anchor": "mod-aden-policy",
+        "node_type": "Note",
+        "attributes": {
+          "path": "crates/aden-policy/src/",
+          "module": "aden-policy",
+          "lang": "rust",
+          "proj": "aden"
+        },
+        "blocks": [
+          {
+            "Paragraph": "Constitutional policy engine: directive precedence, conflict resolution, and `[constitution]` authority. Phase 0.7 of the Aden roadmap — the load-bearing security substrate."
+          },
+          {
+            "Table": {
+              "headers": [
+                "Type",
+                "Kind",
+                "Description"
+              ],
+              "rows": [
+                [
+                  "`DirectiveSeverity`",
+                  "enum",
+                  "`Forbid`, `Warn`, `Suggest`, `Allow`."
+                ],
+                [
+                  "`DirectiveKind`",
+                  "enum",
+                  "`ForbidImport`, `RequirePattern`, `ContractConstraint`, `SelfModificationPolicy`, `Custom`."
+                ],
+                [
+                  "`Directive`",
+                  "struct",
+                  "A single directive with severity, kind, source tag, and attributes."
+                ],
+                [
+                  "`ConstitutionBlock`",
+                  "struct",
+                  "Parsed `[constitution]` block with `directives`, `precedence`, and `author`."
+                ],
+                [
+                  "`PolicyEngine`",
+                  "struct",
+                  "Holds loaded constitutions; resolves conflicts and evaluates actions."
+                ]
+              ]
+            }
+          },
+          {
+            "Paragraph": ". `[constitution]` blocks must declare `:precedence:` or default to lowest priority.\n. `[override]` blocks must contain `:justification:` and `:reviewer:`."
+          },
+          {
+            "DescriptionList": [
+              [
+                ". `PolicyEngine",
+                "evaluate()` returns `Allow` when no constitution governs a subject."
+              ]
+            ]
+          },
+          {
+            "Paragraph": ". `Forbid` directives cannot be bypassed without a valid `[override]`."
+          },
+          {
+            "DescriptionList": [
+              [
+                "agent-note",
+                "IMPLEMENTED"
+              ]
+            ]
+          },
+          {
+            "Paragraph": "Precedence rules use numeric ranking: lower number = higher priority. Tie-breaking falls back to constitution author matching."
+          },
+          {
+            "DescriptionList": [
+              [
+                "agent-note",
+                "OPEN QUESTION"
+              ]
+            ]
+          },
+          {
+            "Paragraph": "Should directive evaluation support temporal scoping (`:effective_from:`, `:expires:`) natively, or is that a Phase 3 enhancement?"
+          },
+          {
+            "Paragraph": ". <<project-context>>\n. <<adr-001>>\n. <<plan-phase0>>\n. <<plan-phase3>>"
+          }
+        ],
+        "source_span": null
+      },
+      "source_path": "docs/module-aden-policy.adoc"
+    }
+  ],
+  "edges": [
+    {
+      "source": "project-context",
+      "target": "plan-phase0",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "project-context",
+      "target": "plan-phase1",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "project-context",
+      "target": "plan-phase2",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "project-context",
+      "target": "plan-phase3",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "project-context",
+      "target": "plan-phase4",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "project-context",
+      "target": "plan-phase5",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "project-context",
+      "target": "plan-phase6",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "project-context",
+      "target": "plan-governance",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "project-context",
+      "target": "adr-001",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "project-context",
+      "target": "adr-002",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "project-context",
+      "target": "philosophy",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "project-context",
+      "target": "use-cases",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "plan-phase0",
+      "target": "project-context",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "plan-phase0",
+      "target": "adr-001",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "plan-phase0",
+      "target": "plan-phase1",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "adr-001",
+      "target": "plan-phase0",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "adr-001",
+      "target": "adr-002",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "adr-001",
+      "target": "project-context",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "plan-phase2",
+      "target": "plan-phase1",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "plan-phase2",
+      "target": "plan-phase3",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "plan-phase3",
+      "target": "plan-phase2",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "plan-phase3",
+      "target": "plan-phase4",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "plan-phase4",
+      "target": "plan-phase3",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "plan-phase4",
+      "target": "plan-phase5",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "plan-phase5",
+      "target": "plan-phase4",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "plan-phase5",
+      "target": "plan-phase6",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "plan-phase6",
+      "target": "plan-phase5",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "plan-phase6",
+      "target": "plan-governance",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "plan-phase1",
+      "target": "plan-phase0",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "plan-phase1",
+      "target": "adr-001",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "plan-phase1",
+      "target": "plan-phase2",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "plan-governance",
+      "target": "project-context",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "plan-governance",
+      "target": "adr-001",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "plan-governance",
+      "target": "plan-phase0",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "adr-002",
+      "target": "plan-phase0",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "adr-002",
+      "target": "adr-001",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "adr-002",
+      "target": "project-context",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "mod-aden-asm",
+      "target": "project-context",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "mod-aden-asm",
+      "target": "adr-001",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "mod-aden-cli",
+      "target": "project-context",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "mod-aden-cli",
+      "target": "adr-001",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "mod-aden-cli",
+      "target": "getting-started",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "mod-aden-cli",
+      "target": "user-guide",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "mod-aden-cli",
+      "target": "ai-integration",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "mod-aden-core",
+      "target": "project-context",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "mod-aden-core",
+      "target": "adr-001",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "mod-aden-core",
+      "target": "plan-phase0",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "mod-aden-emit",
+      "target": "project-context",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "mod-aden-emit",
+      "target": "adr-001",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "mod-aden-graph",
+      "target": "project-context",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "mod-aden-graph",
+      "target": "adr-001",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "mod-aden-heal",
+      "target": "project-context",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "mod-aden-heal",
+      "target": "adr-001",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "mod-aden-index",
+      "target": "project-context",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "mod-aden-index",
+      "target": "adr-001",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "mod-aden-lsp",
+      "target": "project-context",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "mod-aden-lsp",
+      "target": "adr-001",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "mod-aden-parse",
+      "target": "project-context",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "mod-aden-parse",
+      "target": "adr-001",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "mod-Aden-PowerShell",
+      "target": "project-context",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "mod-Aden-PowerShell",
+      "target": "adr-001",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "mod-aden-propose",
+      "target": "project-context",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "mod-aden-propose",
+      "target": "adr-001",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "mod-aden-py",
+      "target": "project-context",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "mod-aden-py",
+      "target": "adr-001",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "getting-started",
+      "target": "user-guide",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "getting-started",
+      "target": "ai-integration",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "getting-started",
+      "target": "philosophy",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "getting-started",
+      "target": "plan-phase0",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "getting-started",
+      "target": "plan-phase6",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "ai-integration",
+      "target": "getting-started",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "ai-integration",
+      "target": "user-guide",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "ai-integration",
+      "target": "philosophy",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "ai-integration",
+      "target": "project-context",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "user-guide",
+      "target": "getting-started",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "user-guide",
+      "target": "ai-integration",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "user-guide",
+      "target": "philosophy",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "user-guide",
+      "target": "project-context",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "mod-aden-policy",
+      "target": "project-context",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "mod-aden-policy",
+      "target": "adr-001",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "mod-aden-policy",
+      "target": "plan-phase0",
+      "edge_type": "Uses"
+    },
+    {
+      "source": "mod-aden-policy",
+      "target": "plan-phase3",
+      "edge_type": "Uses"
+    }
+  ]
+}
