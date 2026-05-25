@@ -117,14 +117,14 @@ fn test_graph_outputs_neighborhood() {
     temp_project::scaffold(&dir);
 
     let output = std::process::Command::new("aden")
-        .args(["graph", "--depth", "2", "readme", &dir.to_string_lossy()])
+        .args(["query", "--from", "readme", "--depth", "2", &dir.to_string_lossy()])
         .output()
         .expect("aden binary must be installed");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         output.status.success(),
-        "aden graph failed: {}",
+        "aden query failed: {}",
         stdout
     );
     assert!(
