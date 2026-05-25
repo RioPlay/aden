@@ -362,20 +362,16 @@ impl AdenGraph {
 fn resolve_include_path(current: &Path, include: &str, root: &Path) -> Result<PathBuf, GraphError> {
     let base = current.parent().unwrap_or(Path::new("."));
     let candidate = base.join(include);
-    if !candidate.exists() {
-        return Ok(candidate); // still return the path for graph edges even if missing
-    }
-    let canon = candidate.canonicalize().map_err(|e| {
-        GraphError::Io(format!("canonicalize failed for '{}': {}", include, e))
-    })?;
+    let canon = candidate.canonicalize().ok();
+    let check_path = canon.as_deref().unwrap_or(&candidate);
     let root_canon = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-    if !canon.starts_with(&root_canon) {
+    if !check_path.starts_with(&root_canon) {
         return Err(GraphError::Io(format!(
             "Include path '{}' escapes root directory. Denied for security.",
             include
         )));
     }
-    Ok(canon)
+    Ok(candidate)
 }
 
 fn parse_edge_type(s: &str) -> EdgeType {
