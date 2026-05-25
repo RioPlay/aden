@@ -87,17 +87,16 @@ impl Scanner {
                 } else {
                     None
                 }
-            }) {
-                if let Ok(doc) = serde_json::from_str::<Document>(&cached_json) {
+            })
+                && let Ok(doc) = serde_json::from_str::<Document>(&cached_json) {
                     new_cache.entries.insert(rel_str.clone(), (current_mtime, cached_json));
                     source_entries.push((path.clone(), doc));
                     continue;
                 }
-            }
 
             // Slow path: read & parse
-            if let Ok(content) = std::fs::read_to_string(path) {
-                if let Ok(docs) = aden_parse::parse_file(path, &content) {
+            if let Ok(content) = std::fs::read_to_string(path)
+                && let Ok(docs) = aden_parse::parse_file(path, &content) {
                     for doc in docs {
                         if let Ok(json) = serde_json::to_string(&doc) {
                             new_cache.entries.insert(rel_str.clone(), (current_mtime, json));
@@ -105,7 +104,6 @@ impl Scanner {
                         source_entries.push((path.clone(), doc));
                     }
                 }
-            }
         }
 
         let mut anchor_to_source_idx: HashMap<String, usize> = HashMap::new();
@@ -131,9 +129,9 @@ impl Scanner {
 
         // c. StaleHash - check source_hash against original source
         for (path, parsed) in &contract_entries {
-            if let Some(expected_hash) = parsed.attributes.get("source_hash") {
-                if let Some(source_path) = self.find_source_for_contract(path, parsed) {
-                    if let Ok(content) = std::fs::read_to_string(&source_path) {
+            if let Some(expected_hash) = parsed.attributes.get("source_hash")
+                && let Some(source_path) = self.find_source_for_contract(path, parsed)
+                    && let Ok(content) = std::fs::read_to_string(&source_path) {
                         let actual_hash = aden_core::stable_hash(content.as_bytes());
                         if actual_hash != *expected_hash {
                             events.push(DriftEvent::StaleHash {
@@ -143,8 +141,6 @@ impl Scanner {
                             });
                         }
                     }
-                }
-            }
         }
 
         // d. SignatureMismatch
@@ -211,14 +207,13 @@ impl Scanner {
         // h. DeadLink
         for (path, parsed) in &contract_entries {
             for inc in &parsed.includes {
-                if let Ok(inc_path) = resolve_include(path, &inc.path) {
-                    if !inc_path.exists() {
+                if let Ok(inc_path) = resolve_include(path, &inc.path)
+                    && !inc_path.exists() {
                         events.push(DriftEvent::DeadLink {
                             contract_path: path.to_string_lossy().to_string(),
                             include_path: inc.path.clone(),
                         });
                     }
-                }
             }
         }
 
@@ -410,27 +405,6 @@ mod tests {
     use crate::drift::DriftEvent;
     use std::io::Write;
 
-    fn create_test_repo() -> tempfile::TempDir {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-
-        // Write a source contract
-        let contract = root.join("test.adoc");
-        let mut file = std::fs::File::create(&contract).unwrap();
-        write!(
-            file,
-            r#":source_hash: abc123
-[[test-anchor]]
-= Test Doc
-
-Hello world.
-"#
-        )
-        .unwrap();
-
-        dir
-    }
-
     #[test]
     fn scanner_scan_empty_dir_returns_no_events() {
         let dir = tempfile::tempdir().unwrap();
@@ -520,7 +494,7 @@ Hello world.
         // OrphanAnchor detection depends on the graph build; BrokenReference is more likely
         if !has_orphan && !has_broken_ref {
             // If no structural issues detected, the scanner at least ran without panicking
-            assert!(true, "Scanner ran successfully; structural checks depend on graph construction details");
+            // Scanner ran successfully; structural checks depend on graph construction details
         }
     }
 

@@ -19,7 +19,9 @@
 //! This crate defines the knowledge graph types used across all other crates.
 //! It has no dependencies on parsing, I/O, or emission logic.
 
+pub mod contract;
 pub mod filter;
+pub mod staging;
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

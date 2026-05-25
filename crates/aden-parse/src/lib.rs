@@ -96,8 +96,8 @@ fn parse_directory_inner(dir: &Path, depth: usize, file_count: &mut usize) -> Re
                 return Ok(docs);
             }
             // Skip files too large to avoid DoS
-            if let Ok(meta) = std::fs::metadata(&path) {
-                if meta.len() > MAX_FILE_SIZE {
+            if let Ok(meta) = std::fs::metadata(&path)
+                && meta.len() > MAX_FILE_SIZE {
                     eprintln!(
                         "[aden] WARNING: Skipping {} ({} bytes > {} MiB limit). Consider using 'aden gen <file>' instead.",
                         path.display(),
@@ -106,7 +106,6 @@ fn parse_directory_inner(dir: &Path, depth: usize, file_count: &mut usize) -> Re
                     );
                     continue;
                 }
-            }
             let source = match std::fs::read_to_string(&path) {
                 Ok(s) => s,
                 Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {

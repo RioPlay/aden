@@ -86,14 +86,13 @@ struct GlobRule {
 
 impl GlobRule {
     fn matches(&self, path: &str) -> bool {
-        let p = if self.is_dir_rule {
+        if self.is_dir_rule {
             // Directory rules match both "foo/" and "foo"
             let trimmed = self.pattern.trim_end_matches('/');
             path == trimmed || path.starts_with(&(trimmed.to_string() + "/"))
         } else {
             match_glob(path, &self.pattern)
-        };
-        p
+        }
     }
 }
 

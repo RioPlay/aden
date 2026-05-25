@@ -23,6 +23,12 @@ use std::path::Path;
 /// Deep C# extractor.
 pub struct CSharpResolver;
 
+impl Default for CSharpResolver {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CSharpResolver {
     pub fn new() -> Self {
         Self
@@ -108,7 +114,7 @@ fn extract_namespace_from_source(source: &str) -> Option<String> {
     for line in source.lines() {
         let trimmed = line.trim();
         if trimmed.starts_with("namespace ") {
-            let ns = trimmed["namespace ".len()..].trim();
+            let ns = trimmed.strip_prefix("namespace ").unwrap().trim();
             // Remove { if present: "namespace Foo {"
             let ns_clean = ns.trim_end_matches('{').trim();
             return Some(ns_clean.to_string());
@@ -422,11 +428,10 @@ fn parse_field<'a>(
 fn find_parent_type_name(node: tree_sitter::Node, source: &str) -> Option<String> {
     let mut current = node;
     while let Some(parent) = current.parent() {
-        if matches!(parent.kind(), "class_declaration" | "interface_declaration" | "struct_declaration" | "record_declaration" | "record_struct_declaration") {
-            if let Some(name_node) = parent.child_by_field_name("name") {
+        if matches!(parent.kind(), "class_declaration" | "interface_declaration" | "struct_declaration" | "record_declaration" | "record_struct_declaration")
+            && let Some(name_node) = parent.child_by_field_name("name") {
                 return Some(node_text(name_node, source).to_string());
             }
-        }
         current = parent;
     }
     None
@@ -472,8 +477,8 @@ fn emit_cs_symbol(
     }));
 
     // Extract call sites
-    if sym.kind == NodeType::Function && sym.name != ".ctor" {
-        if let Some(body) = sym.node.child_by_field_name("body") {
+    if sym.kind == NodeType::Function && sym.name != ".ctor"
+        && let Some(body) = sym.node.child_by_field_name("body") {
             let calls = extract_cs_call_sites(body, source);
             let filtered: Vec<_> = calls.into_iter()
                 .filter(|(c, _)| !is_cs_std_noise(c))
@@ -492,7 +497,6 @@ fn emit_cs_symbol(
                 blocks.push(Block::Listing { language: None, code: edge_code });
             }
         }
-    }
 
     if sym.doc_comment.is_some() {
         blocks.push(Block::Admonition {

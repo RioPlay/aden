@@ -35,8 +35,8 @@ pub fn find_refs(line: &str) -> Vec<String> {
             i += 1;
             continue;
         }
-        if c == b'<' && i + 1 < bytes.len() && bytes[i + 1] == b'<' {
-            if let Some(end) = line[i + 2..].find(">>") {
+        if c == b'<' && i + 1 < bytes.len() && bytes[i + 1] == b'<'
+            && let Some(end) = line[i + 2..].find(">>") {
                 let abs_end = i + 2 + end;
                 let inner = &line[i + 2..abs_end];
                 let anchor_name = inner.split(',').next().unwrap_or(inner).trim();
@@ -46,7 +46,6 @@ pub fn find_refs(line: &str) -> Vec<String> {
                 i = abs_end + 2;
                 continue;
             }
-        }
         i += 1;
     }
     refs

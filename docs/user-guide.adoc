@@ -2,9 +2,9 @@
 :author: RioPlay
 
 [[user-guide]]
-= Aden User Guide: Daily Workflows
+= Aaden User Guide: Daily Workflows
 
-This is the practical manual for engineers who use Aden every day. Each section is a self-contained workflow you can copy and adapt.
+This is the practical manual for engineers who use Aaden every day. Each section is a self-contained workflow you can copy and adapt.
 
 == Workflow 1: Onboard a New Codebase
 
@@ -12,30 +12,30 @@ You have just cloned a repo and need to understand it fast.
 
 [source,bash]
 ----
-# 1. Initialize Aden scaffolding
-den init
+# 1. Initialize Aaden scaffolding
+aden init
 
 # 2. Generate contracts for the whole project
-den gen src/ --auto
+aden gen src/ --auto
 
 # 3. Validate the graph
-den check .
+aden check .
 
 # 4. Ask high-level questions
-den ask "What is the main entry point?"
-den ask "Which modules handle authentication?"
+aden ask "What is the main entry point?"
+aden ask "Which modules handle authentication?"
 
 # 5. Drill into a specific module
-den graph --from mod-auth --depth 2
+aden graph --from mod-auth --depth 2
 ----
 
 === What Each Step Gives You
 
-- `aden init` scaffolds `.agent/` with templates and `.adenignore`.
-- `aden gen` produces `.adoc` contracts in `./contracts/` containing every public function, struct, and trait.
-- `aden check` guarantees there are no broken references or duplicate anchors.
-- `aden ask` gives you a token-bounded context prompt. Paste it into ChatGPT, Claude, or your local LLM and ask follow-ups.
-- `aden graph` prints a dependency map so you can see what calls what.
+- `aaden init` scaffolds `.agent/` with templates and `.adenignore`.
+- `aaden gen` produces `.adoc` contracts in `./contracts/` containing every public function, struct, and trait.
+- `aaden check` guarantees there are no broken references or duplicate anchors.
+- `aaden ask` gives you a token-bounded context prompt. Paste it into ChatGPT, Claude, or your local LLM and ask follow-ups.
+- `aaden graph` prints a dependency map so you can see what calls what.
 
 == Workflow 2: Refactor with Confidence
 
@@ -44,51 +44,51 @@ You want to rename a function. You need to know the blast radius.
 [source,bash]
 ----
 # 1. Locate the symbol
-den locate old_function_name
+aden locate old_function_name
 
 # 2. See what depends on it
-den query --impact old_function_name . | jq '.[] | .anchor'
+aden query --impact old_function_name . | jq '.[] | .anchor'
 
 # 3. Get context for the change
-den ask --from old_function_name "What breaks if I rename this?"
+aden ask --from old_function_name "What breaks if I rename this?"
 
 # 4. Make your edits
 # ... (your IDE here) ...
 
 # 5. Regenerate affected contracts
-den gen src/core/ --auto
+aden gen src/core/ --auto
 
 # 6. Validate and detect drift
-den check .
-den heal .
+aden check .
+aden heal .
 ----
 
 === Tips for Refactoring
 
-- Use `--depth 4` with `aden ask` when refactoring core modules. The default depth of 2 may miss indirect callers.
-- Use `aden query --backlinks <anchor>` to find documents that reference a module but do not call it (e.g., ADRs, runbooks).
-- Always run `aden check .` after `aden gen`. If you renamed an anchor, every `<<old-anchor>>` will fail validation and point you to exactly what needs updating.
+- Use `--depth 4` with `aaden ask` when refactoring core modules. The default depth of 2 may miss indirect callers.
+- Use `aaden query --backlinks <anchor>` to find documents that reference a module but do not call it (e.g., ADRs, runbooks).
+- Always run `aaden check .` after `aaden gen`. If you renamed an anchor, every `<<old-anchor>>` will fail validation and point you to exactly what needs updating.
 
 == Workflow 3: Keep Documentation Alive
 
-Documentation rots when it is hand-written and forgotten. Aden makes it self-healing.
+Documentation rots when it is hand-written and forgotten. Aaden makes it self-healing.
 
 [source,bash]
 ----
 # Scheduled in CI or a cron job
-den gen src/ --auto
-if ! den check .; then
+aden gen src/ --auto
+if ! aden check .; then
     echo "Graph integrity failed. See artifacts."
     exit 1
 fi
-den heal . --propose > drift-report.adoc
+aden heal . --propose > drift-report.adoc
 ----
 
 === What Happens
 
-- `aden gen` extracts current signatures from source.
-- `aden check` validates all references.
-- `aden heal` compares emitted contracts to source hashes. If a function signature changed, it emits a `StaleHash` or `SignatureMismatch` event.
+- `aaden gen` extracts current signatures from source.
+- `aaden check` validates all references.
+- `aaden heal` compares emitted contracts to source hashes. If a function signature changed, it emits a `StaleHash` or `SignatureMismatch` event.
 - Proposals are written to `.aden/proposals/` as AsciiDoc patches. Review them before applying.
 
 == Workflow 4: AI-Assisted Code Review
@@ -98,11 +98,11 @@ Before approving a PR, assemble the relevant context for an AI reviewer.
 [source,bash]
 ----
 # From the PR branch
-den gen src/ --auto
+aden gen src/ --auto
 
 # Assemble context from the changed modules
 for anchor in $(git diff --name-only main | sed 's|src/||;s|/|_|g;s|\..*$||'); do
-    den asm --from "$anchor" --depth 2 --budget 4096 >> review-context.adoc
+    aden asm --from "$anchor" --depth 2 --budget 4096 >> review-context.adoc
 done
 
 # Feed review-context.adoc to an LLM with the prompt:
@@ -115,24 +115,24 @@ done
 - Depth-limited BFS prevents irrelevant modules from polluting the review.
 - Because the assembled context is AsciiDoc, the LLM can read tables, signatures, and cross-references natively.
 
-== Workflow 5: Create a New Project with Aden Built In
+== Workflow 5: Create a New Project with Aaden Built In
 
-Starting a greenfield project? Scaffold it with Aden from day one.
+Starting a greenfield project? Scaffold it with Aaden from day one.
 
 [source,bash]
 ----
-# Create a new Rust project with Aden scaffolding
-den new my-project --lang rust --path .
+# Create a new Rust project with Aaden scaffolding
+aden new my-project --lang rust --path .
 cd my-project
 
 # Generate a kickoff document
-den kickoff --interactive --name my-project
+aden kickoff --interactive --name my-project
 
 # Generate contracts as you write code
-den gen src/ --auto
+aden gen src/ --auto
 
 # Validate before every commit
-den ci-check .
+aden ci-check .
 ----
 
 === What Gets Scaffolded
@@ -142,9 +142,39 @@ den ci-check .
 - `.adenignore` with security-first defaults
 - `docs/kickoff-my-project.adoc` with project goals and acceptance criteria
 
+== Workflow 6: Contract-Based Generation with Merge
+
+When your contracts contain `[human]` architectural notes, you do not want `aden gen` to overwrite them.
+
+[source,bash]
+----
+# 1. Edit source code
+# ... (your IDE here) ...
+
+# 2. Preview the merge without writing files
+aden gen src/ --auto --propose
+
+# 3. Review the proposal output
+# It shows: UpdateGenerated, PreserveHuman, Conflict, InsertGenerated, DeleteGenerated
+
+# 4. Apply the merge
+aden gen src/ --auto --merge
+----
+
+=== What Each Flag Does
+
+- `--propose` → dry-run. Outputs per-block `MergeAction` to stdout. No files written.
+- `--merge` → three-way merge. `ground` = freshly parsed AST; `base` = last generated; `working` = current file with human edits.
+- Both flags can be combined with `--auto` for directory-wide generation.
+
+[IMPORTANT]
+====
+If a `[human]` block and a `[generated]` block share the same tag, `aden gen --merge` emits a `[proposed]` conflict marker instead of silently overwriting.
+====
+
 == Token Budgeting Strategies
 
-Aden assembles context within a token budget. The default is 4096 for `ask` and 8192 for `asm`. These are heuristics (bytes / 4), not exact token counts.
+Aaden assembles context within a token budget. The default is 4096 for `ask` and 8192 for `asm`. These are heuristics (bytes / 4), not exact token counts.
 
 |===
 | Task | Recommended Budget | Depth | Edge Types
@@ -157,7 +187,7 @@ Aden assembles context within a token budget. The default is 4096 for `ask` and 
 
 === Budget Warning
 
-If `aden ask` prints `OVER BUDGET` in the summary footer, it stopped early. Either:
+If `aaden ask` prints `OVER BUDGET` in the summary footer, it stopped early. Either:
 - Raise `--budget`
 - Reduce `--depth`
 - Pin `--from` to a more specific anchor to reduce neighborhood size
@@ -169,8 +199,8 @@ If `aden ask` prints `OVER BUDGET` in the summary footer, it stopped early. Eith
 
 | `DuplicateAnchor` | Two files declare the same `[[anchor]]` | Rename one anchor
 | `UnresolvedReference` | A `<<ref>>` points to a missing anchor | Create the target doc or fix the typo
-| `No relevant documents found` | Search keywords do not match anchors | Use `aden search` to discover anchor names
-| Empty `aden ask` output | Token budget exhausted on first node | Lower depth or raise budget
+| `No relevant documents found` | Search keywords do not match anchors | Use `aaden search` to discover anchor names
+| Empty `aaden ask` output | Token budget exhausted on first node | Lower depth or raise budget
 | Generated contracts have empty signatures | The parser does not recognize the language | Add a language adapter or write manual `.adoc`
 |===
 
@@ -178,5 +208,5 @@ If `aden ask` prints `OVER BUDGET` in the summary footer, it stopped early. Eith
 
 . <<getting-started>> --- Tutorial from install to first query
 . <<ai-integration>> --- How AI agents consume assembled context
-. <<philosophy>> --- Why Aden exists and how it was designed
+. <<philosophy>> --- Why Aaden exists and how it was designed
 . <<project-context>> --- Crate map, dependencies, and glossary

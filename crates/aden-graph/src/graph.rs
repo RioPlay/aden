@@ -52,6 +52,12 @@ pub enum GraphError {
     OrphanDocument(String),
 }
 
+impl Default for AdenGraph {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AdenGraph {
     /// Create an empty graph.
     pub fn new() -> Self {
@@ -160,11 +166,10 @@ impl AdenGraph {
         for entry in std::fs::read_dir(dir).map_err(|e| GraphError::Io(e.to_string()))? {
             let entry = entry.map_err(|e| GraphError::Io(e.to_string()))?;
             let path = entry.path();
-            if let Ok(rel) = path.strip_prefix(root) {
-                if self.filter.should_skip(rel) {
+            if let Ok(rel) = path.strip_prefix(root)
+                && self.filter.should_skip(rel) {
                     continue;
                 }
-            }
             if path.is_dir() {
                 self.collect_files_inner(&path, root, files)?;
             } else if path.is_file() {

@@ -118,6 +118,8 @@ Universal schema for the Aden referential context compiler.
 
 |`aden init` |First time in any repo |`aden init .`
 |`aden gen <path>` |After modifying source files |`aden gen src/lib.rs`, `aden gen src/ --auto`
+|`aden gen --merge` |Preserve human blocks, update generated only |`aden gen src/lib.rs --merge`
+|`aden gen --propose` |Dry-run merge preview |`aden gen src/lib.rs --propose`
 |`aden check <path>` |Before every commit |`aden check .`
 |`aden ask <question>` |You need context fast |`aden ask "What depends on auth_module?"`
 |`aden ask --from <anchor>` |Pin the starting point |`aden ask --from auth_module "What breaks if I rename this?"`
@@ -148,6 +150,7 @@ Aden is a Cargo workspace. Each crate has a single responsibility.
 |`aden-propose` |Patch generation for stale contracts
 |`aden-mcp` |MCP server (Claude, Cursor, Zed, Windsurf)
 |`aden-lsp` |LSP for `.adoc` / `.aden` files
+|`aden-policy` |Constitutional policy engine: directives, precedence, conflict resolution
 |`aden-py` |PyO3 Python bindings
 |`aden-cli` |The `aden` binary with all commands
 |===
@@ -176,7 +179,7 @@ This is the navigation hub for the Aden knowledge graph.
 
 *Architecture decisions:* <<adr-001>>, <<adr-002>>
 
-*Module contracts:* <<mod-aden-core>>, <<mod-aden-parse>>, <<mod-aden-emit>>, <<mod-aden-cli>>, <<mod-aden-graph>>, <<mod-aden-asm>>, <<mod-aden-index>>, <<mod-aden-lsp>>, <<mod-aden-py>>, <<mod-Aden-PowerShell>>, <<mod-aden-heal>>, <<mod-aden-propose>>
+*Module contracts:* <<mod-aden-core>>, <<mod-aden-parse>>, <<mod-aden-emit>>, <<mod-aden-cli>>, <<mod-aden-graph>>, <<mod-aden-asm>>, <<mod-aden-index>>, <<mod-aden-lsp>>, <<mod-aden-py>>, <<mod-Aden-PowerShell>>, <<mod-aden-heal>>, <<mod-aden-propose>>, <<mod-aden-policy>>
 
 *Background:* <<philosophy>>, <<use-cases>>
 

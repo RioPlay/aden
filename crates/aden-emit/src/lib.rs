@@ -14,6 +14,7 @@
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 // GNU Affero General Public License for more details.
 //
+use aden_core::contract::{ContractDocument, RegionBlock};
 use aden_core::{AdmonitionKind, Block, Document, Table};
 use std::fmt::Write;
 
@@ -114,4 +115,57 @@ fn emit_table(out: &mut String, table: &Table) {
         writeln!(out, "{row_str}").unwrap();
     }
     writeln!(out, "|===").unwrap();
+}
+
+/// Emit a ContractDocument (region-aware) as AsciiDoc text.
+///
+/// Each region block is wrapped in its corresponding region marker
+/// and a `----` delimiter block.
+pub fn emit_contract_document(doc: &ContractDocument) -> String {
+    let mut out = String::new();
+
+    // Header attributes
+    for (key, value) in &doc.header_attrs {
+        writeln!(out, ":{key}: {value}").unwrap();
+    }
+    if !doc.header_attrs.is_empty() {
+        writeln!(out).unwrap();
+    }
+
+    // Region blocks
+    for block in &doc.blocks {
+        emit_region_block(&mut out, block);
+        writeln!(out).unwrap();
+    }
+
+    // Prose (permissive mode leftovers)
+    for line in &doc.prose {
+        writeln!(out, "{line}").unwrap();
+    }
+
+    out
+}
+
+fn emit_region_block(out: &mut String, block: &RegionBlock) {
+    let region_tag = match &block.tag {
+        Some(tag) => format!("{}#{}", block.region, tag),
+        None => block.region.to_string(),
+    };
+
+    // Write region header with attributes
+    write!(out, "[{region_tag}]").unwrap();
+    if !block.attributes.is_empty() {
+        let attrs: Vec<String> = block
+            .attributes
+            .iter()
+            .map(|(k, v)| format!(" :{k}: {v}"))
+            .collect();
+        write!(out, "{}", attrs.join("")).unwrap();
+    }
+    writeln!(out).unwrap();
+
+    // Delimited block
+    writeln!(out, "----").unwrap();
+    writeln!(out, "{}", block.content).unwrap();
+    writeln!(out, "----").unwrap();
 }

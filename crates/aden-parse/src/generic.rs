@@ -159,8 +159,8 @@ fn walk_tree(
         None
     };
 
-    if let Some(nt) = node_type {
-        if let Some(name) = extract_node_name(*node, source) {
+    if let Some(nt) = node_type
+        && let Some(name) = extract_node_name(*node, source) {
             let anchor = make_anchor(crate_name, file_name, &name);
             let span = node_to_span(*node, path);
             let attrs = build_code_attributes(source, &format!("{:?}", nt).to_lowercase(), Some(path), Some(&span));
@@ -175,7 +175,6 @@ fn walk_tree(
                 source_span: Some(span),
             });
         }
-    }
 
     // Recurse into children.
     let mut cursor = node.walk();

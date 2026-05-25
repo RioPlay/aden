@@ -391,8 +391,8 @@ pub fn parse_file(path: &Path) -> Result<ParsedDocument, ParseError> {
                         rows: table_rows.clone(),
                     }));
                     state = BlockState::Idle;
-                } else if trimmed.starts_with('|') {
-                    let cells: Vec<String> = trimmed[1..]
+                } else if let Some(after_pipe) = trimmed.strip_prefix('|') {
+                    let cells: Vec<String> = after_pipe
                         .split('|')
                         .map(|s| s.trim().to_string())
                         .filter(|s| !s.is_empty())

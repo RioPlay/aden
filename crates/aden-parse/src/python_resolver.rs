@@ -15,6 +15,12 @@ use std::path::Path;
 /// Deep Python extractor.
 pub struct PythonResolver;
 
+impl Default for PythonResolver {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PythonResolver {
     pub fn new() -> Self {
         Self
@@ -350,15 +356,14 @@ fn resolve_call_sites<'a>(
         calls.extend(resolve_call_sites(child, source, ctx));
     }
 
-    if node.kind() == "call" {
-        if let Some(func) = node.child_by_field_name("function") {
+    if node.kind() == "call"
+        && let Some(func) = node.child_by_field_name("function") {
             let callee = resolve_callee(func, source, ctx);
             if !callee.is_empty() && callee.len() >= 3 && !is_std_noise(&callee) {
                 let line = func.start_position().row + 1;
                 calls.push(CallSite { callee, line });
             }
         }
-    }
     calls
 }
 
@@ -424,20 +429,16 @@ fn is_std_noise(name: &str) -> bool {
 
 fn extract_preceding_docstring<'a>(node: tree_sitter::Node<'a>, source: &str) -> Option<String> {
     // In Python, docstrings are string literals immediately inside a function/class body.
-    if let Some(body) = node.child_by_field_name("body") {
-        let mut cursor = body.walk();
-        for child in body.children(&mut cursor) {
-            if child.kind() == "expression_statement" {
-                let mut inner = child.walk();
-                for inner_child in child.children(&mut inner) {
-                    if inner_child.kind() == "string" {
-                        let text = node_text(inner_child, source).trim();
-                        return Some(text.to_string());
-                    }
-                }
+    let body = node.child_by_field_name("body")?;
+    let mut cursor = body.walk();
+    let child = body.children(&mut cursor).next()?;
+    if child.kind() == "expression_statement" {
+        let mut inner = child.walk();
+        for inner_child in child.children(&mut inner) {
+            if inner_child.kind() == "string" {
+                let text = node_text(inner_child, source).trim();
+                return Some(text.to_string());
             }
-            // Only look at the first statement
-            break;
         }
     }
     None

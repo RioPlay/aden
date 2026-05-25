@@ -32,6 +32,12 @@ pub struct LanguageRouter {
     by_extension: HashMap<&'static str, Arc<dyn LanguageExtractor>>,
 }
 
+impl Default for LanguageRouter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LanguageRouter {
     /// Build a router with all built-in extractors registered.
     pub fn new() -> Self {

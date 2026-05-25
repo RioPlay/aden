@@ -24,6 +24,7 @@ See <<module-helper>>.
         max_depth: 3,
         token_budget: 8192,
         edge_types: vec![],
+        block_filter: Vec::new(),
     };
 
     c.bench_function("assembly", |b| {

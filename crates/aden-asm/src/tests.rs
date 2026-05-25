@@ -1,3 +1,4 @@
+#![allow(clippy::module_inception)]
 // Copyright (c) 2026 RioPlay <rioplay@rioplay.dev>
 // All rights reserved.
 //

@@ -16,6 +16,12 @@ use std::path::Path;
 /// Deep C extractor.
 pub struct CResolver;
 
+impl Default for CResolver {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CResolver {
     pub fn new() -> Self {
         Self
@@ -136,8 +142,8 @@ fn walk_translation_unit<'a>(
         }
         "struct_specifier" | "union_specifier" | "enum_specifier" => {
             // Only extract top-level definitions, not type references in parameters.
-            if node.parent().map(|p| p.kind() == "translation_unit").unwrap_or(false) {
-                if let Some(name) = extract_type_specifier_name(node, source) {
+            if node.parent().map(|p| p.kind() == "translation_unit").unwrap_or(false)
+                && let Some(name) = extract_type_specifier_name(node, source) {
                     let doc = extract_c_doc_comment(node, source);
                     symbols.push(CSymbol {
                         name,
@@ -146,7 +152,6 @@ fn walk_translation_unit<'a>(
                         doc_comment: doc,
                     });
                 }
-            }
         }
         "preproc_include" => {
             extract_include(node, source, includes);
@@ -177,11 +182,10 @@ fn extract_declaration_info(node: tree_sitter::Node, source: &str) -> Option<(St
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         let kind = child.kind();
-        if kind == "function_declarator" || kind == "init_declarator" || kind == "parenthesized_declarator" {
-            if let Some(name) = find_declarator_name(child, source) {
+        if (kind == "function_declarator" || kind == "init_declarator" || kind == "parenthesized_declarator")
+            && let Some(name) = find_declarator_name(child, source) {
                 return Some((name, NodeType::Function));
             }
-        }
     }
     // 2. Struct / union / enum — search declaration subtree recursively
     if let Some(name) = find_type_name(node, source) {
@@ -249,15 +253,13 @@ fn find_declarator_name(node: tree_sitter::Node, source: &str) -> Option<String>
     if node.kind() == "identifier" {
         return Some(node_text(node, source).trim().to_string());
     }
-    if node.kind() == "pointer_declarator"
+    if (node.kind() == "pointer_declarator"
         || node.kind() == "parenthesized_declarator"
         || node.kind() == "array_declarator"
-        || node.kind() == "function_declarator"
-    {
-        if let Some(inner) = node.child_by_field_name("declarator") {
+        || node.kind() == "function_declarator")
+        && let Some(inner) = node.child_by_field_name("declarator") {
             return find_declarator_name(inner, source);
         }
-    }
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         if let Some(name) = find_declarator_name(child, source) {
@@ -392,15 +394,14 @@ fn resolve_c_call_sites<'a>(
         calls.extend(resolve_c_call_sites(child, source, all_symbols));
     }
 
-    if node.kind() == "call_expression" {
-        if let Some(func) = node.child_by_field_name("function") {
+    if node.kind() == "call_expression"
+        && let Some(func) = node.child_by_field_name("function") {
             let callee = resolve_c_callee(func, source, all_symbols);
             if !callee.is_empty() && callee.len() >= 2 && !is_c_std_noise(&callee) {
                 let line = func.start_position().row + 1;
                 calls.push(CCallSite { callee, line });
             }
         }
-    }
     calls
 }
 

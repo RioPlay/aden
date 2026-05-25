@@ -20,6 +20,12 @@ use std::path::Path;
 /// Deep TypeScript / JavaScript extractor.
 pub struct TypeScriptResolver;
 
+impl Default for TypeScriptResolver {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TypeScriptResolver {
     pub fn new() -> Self {
         Self
@@ -319,10 +325,10 @@ fn extract_require_statement(node: tree_sitter::Node, source: &str, imports: &mu
     // expression_statement → call_expression(require) → identifier
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        if child.kind() == "call_expression" {
-            if let Some(func) = child.child_by_field_name("function") {
-                if func.kind() == "identifier" && node_text(func, source) == "require" {
-                    if let Some(args) = child.child_by_field_name("arguments") {
+        if child.kind() == "call_expression"
+            && let Some(func) = child.child_by_field_name("function")
+                && func.kind() == "identifier" && node_text(func, source) == "require"
+                    && let Some(args) = child.child_by_field_name("arguments") {
                         let mut arg_cursor = args.walk();
                         for arg in args.children(&mut arg_cursor) {
                             if arg.kind() == "string" || arg.kind() == "string_fragment" {
@@ -342,9 +348,6 @@ fn extract_require_statement(node: tree_sitter::Node, source: &str, imports: &mu
                             }
                         }
                     }
-                }
-            }
-        }
     }
 }
 
@@ -444,22 +447,21 @@ fn resolve_ts_call_sites<'a>(
         calls.extend(resolve_ts_call_sites(child, source, all_symbols, imports));
     }
 
-    if node.kind() == "call_expression" {
-        if let Some(func) = node.child_by_field_name("function") {
+    if node.kind() == "call_expression"
+        && let Some(func) = node.child_by_field_name("function") {
             let callee = resolve_ts_callee(func, source, all_symbols, imports);
             if !callee.is_empty() && callee.len() >= 2 && !is_ts_std_noise(&callee) {
                 let line = func.start_position().row + 1;
                 calls.push(TsCallSite { callee, line });
             }
         }
-    }
     calls
 }
 
 fn resolve_ts_callee(
     node: tree_sitter::Node,
     source: &str,
-    all_symbols: &[TsSymbol],
+    _all_symbols: &[TsSymbol],
     imports: &[TsImport],
 ) -> String {
     match node.kind() {
@@ -496,7 +498,7 @@ fn resolve_ts_callee(
         "call_expression" => {
             resolve_ts_callee(
                 node.child_by_field_name("function").unwrap_or(node),
-                source, all_symbols, imports,
+                source, _all_symbols, imports,
             )
         }
         _ => node_text(node, source).trim().to_string(),
