@@ -185,3 +185,4 @@ What happens:
 - Read <<ai-integration>> if you are an AI agent or building agent pipelines.
 - Read <<philosophy>> for the design rationale.
 - Explore <<plan-phase0>> through <<plan-phase6>> for the development roadmap.
+- See <<quickstart>> for a quick AI agent onboarding guide.
