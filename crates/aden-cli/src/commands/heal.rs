@@ -135,7 +135,7 @@ pub fn cmd_heal_scan(path: &Path, propose: bool, fix: bool, gc: bool) -> Result<
                                 Some(format!("  Hint: aden search {} to find correct anchor", ref_anchor))
                             }
                             aden_heal::DriftEvent::StaleMarkdown { md_path: _, .. } => {
-                                Some(format!("  Hint: aden gen . --format md --out-dir . to regenerate markdown", ))
+                                Some("  Hint: aden gen . --format md --out-dir . to regenerate markdown".to_string())
                             }
                             _ => None,
                         };

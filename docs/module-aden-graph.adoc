@@ -10,6 +10,9 @@
 == Objective
 Graph engine for the Aden knowledge graph. Builds `petgraph::DiGraph` from `.adoc`/`.aden` files, validates references, detects cycles, and injects backlinks.
 
+== Caching
+The graph module provides caching functionality through `build_from_directory_cached`, `try_load`, and `save` functions for efficient persistence and loading of graph state.
+
 == Signature
 |===
 |Type/Function |Signature |Description

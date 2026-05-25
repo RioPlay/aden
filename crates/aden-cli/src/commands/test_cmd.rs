@@ -117,7 +117,7 @@ fn discover_tests(path: &Path) -> Result<Vec<TestInfo>, Box<dyn std::error::Erro
             continue;
         }
         
-        if is_excluded(&entry_path) {
+        if is_excluded(entry_path) {
             continue;
         }
         
@@ -234,8 +234,8 @@ fn discover_python_test(line: &str, line_num: usize, file: &str) -> Option<TestI
 fn discover_typescript_test(line: &str, line_num: usize, file: &str) -> Option<TestInfo> {
     let trimmed = line.trim();
     
-    if trimmed.contains("test(") || trimmed.contains("it(") || trimmed.contains("describe(") {
-        if !trimmed.starts_with("//") && !trimmed.starts_with("*") {
+    if (trimmed.contains("test(") || trimmed.contains("it(") || trimmed.contains("describe("))
+        && !trimmed.starts_with("//") && !trimmed.starts_with("*") {
             return Some(TestInfo {
                 name: format!("test at line {}", line_num + 1),
                 file: file.to_string(),
@@ -244,7 +244,6 @@ fn discover_typescript_test(line: &str, line_num: usize, file: &str) -> Option<T
                 language: "typescript".to_string(),
             });
         }
-    }
     
     if trimmed.contains("@Test") || trimmed.contains("@test") {
         return Some(TestInfo {

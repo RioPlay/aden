@@ -191,6 +191,26 @@ pub fn cmd_gen(
     let _ = std::fs::remove_file(cache_dir.join("index-cache.json"));
     let _ = std::fs::remove_file(cache_dir.join("cache-index.json"));
 
+    // Report orphan symbols
+    match aden_graph::graph::AdenGraph::build_from_directory(path) {
+        Ok(graph) => {
+            let orphans = graph.orphans();
+            if !orphans.is_empty() {
+                eprintln!("\nWARNING: {} orphan symbol(s) detected:", orphans.len());
+                for orphan in orphans.iter().take(5) {
+                    eprintln!("  - {}", orphan);
+                }
+                if orphans.len() > 5 {
+                    eprintln!("  ... and {} more", orphans.len() - 5);
+                }
+                eprintln!("  Run 'aden heal . --gc' to auto-link or remove orphans");
+            }
+        }
+        Err(e) => {
+            eprintln!("Note: Could not check for orphans: {}", e);
+        }
+    }
+
     Ok(())
 }
 

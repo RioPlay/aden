@@ -16,11 +16,57 @@
 //
 use aden_core::contract::{ContractDocument, RegionBlock};
 use aden_core::{AdmonitionKind, Block, Document, Table};
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::fmt::Write;
 
 pub mod check;
 pub mod templates;
+
+fn infer_module_anchor(source_path: Option<&str>) -> Option<String> {
+    let path_str = source_path?;
+
+    // Try common crate patterns:
+    // - crates/{name}/src/*.rs (workspace)
+    // - src/{name}/*.rs (monorepo)
+    // - lib/{name}/*.rs
+    // - {name}/src/*.rs (language-specific layouts)
+
+    // Pattern 1: crates/crate-name/src/
+    if let Ok(re) = Regex::new(r"(?:^|/)crates/([^/]+)/src/")
+        && let Some(caps) = re.captures(path_str)
+            && let Some(m) = caps.get(1) {
+                return Some(format!("mod-{}", m.as_str()));
+            }
+
+    // Pattern 2: src/module-name/ or src/module_name/
+    if let Ok(re) = Regex::new(r"(?:^|/)src/([^/]+)")
+        && let Some(caps) = re.captures(path_str)
+            && let Some(m) = caps.get(1) {
+                let name = m.as_str();
+                // Skip common non-module directories
+                if !name.eq_ignore_ascii_case("test") && !name.eq_ignore_ascii_case("tests")
+                    && !name.eq_ignore_ascii_case("bin") && !name.eq_ignore_ascii_case("example")
+                    && !name.eq_ignore_ascii_case("examples") && !name.starts_with('.') {
+                    return Some(format!("mod-{}", name));
+                }
+            }
+
+    // Pattern 3: lib/module-name/ (Elixir, Ruby, etc.)
+    if let Ok(re) = Regex::new(r"(?:^|/)lib/([^/]+)")
+        && let Some(caps) = re.captures(path_str)
+            && let Some(m) = caps.get(1) {
+                return Some(format!("mod-{}", m.as_str()));
+            }
+
+    // Pattern 4: Root-level module (e.g., src/lib.rs or src/main.rs -> mod-root)
+    if let Ok(re) = Regex::new(r"(?:^|/)src/(?:lib|main)\.rs$")
+        && re.is_match(path_str) {
+            return Some("mod-root".to_string());
+        }
+
+    None
+}
 
 #[cfg(test)]
 mod tests;
@@ -142,6 +188,12 @@ pub fn emit_contract_document(doc: &ContractDocument) -> String {
     // Prose (permissive mode leftovers)
     for line in &doc.prose {
         writeln!(out, "{line}").unwrap();
+    }
+
+    // Auto-link to module doc for source files
+    if let Some(module_anchor) = infer_module_anchor(doc.header_attrs.get("source_file").map(|s| s.as_str())) {
+        writeln!(out).unwrap();
+        writeln!(out, "See also: <<{}>>", module_anchor).unwrap();
     }
 
     out

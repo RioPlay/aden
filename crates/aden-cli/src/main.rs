@@ -19,6 +19,8 @@ mod types;
 mod util;
 mod commands;
 
+use crate::commands::query::AsmOptions;
+
 use clap::{Parser, Subcommand, ValueHint};
 use std::path::PathBuf;
 
@@ -390,7 +392,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let types = edge_types
                 .map(|s| util::parse_edge_types(&s))
                 .unwrap_or_default();
-            commands::cmd_asm(&path, &from, depth, budget, types, out.as_deref(), &asm_format, silent, auto, inspect)
+            commands::cmd_asm(AsmOptions {
+                path,
+                from,
+                depth,
+                budget,
+                edge_types: types,
+                out,
+                format: asm_format,
+                silent,
+                auto,
+                inspect,
+            })
         }
         Commands::Query { from, edge_type, depth, backlinks, impact, format, path } => {
             commands::cmd_query(&path, from.as_deref(), edge_type.as_deref(), depth, backlinks.as_deref(), impact.as_deref(), &format)

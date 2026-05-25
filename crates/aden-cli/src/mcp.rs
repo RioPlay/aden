@@ -550,7 +550,7 @@ pub fn run_http_server(_project_dir: &Path, port: u16) -> Result<(), Box<dyn std
 
     println!("Aden HTTP Server");
     println!("================");
-    println!("Listening on http://{}", addr);
+    println!("Listening on port {}", addr.split(':').next_back().unwrap_or(&addr));
     println!("Endpoints:");
     println!("  GET  /health          - Health check");
     println!("  POST /api/check      - Run aden check");

@@ -394,15 +394,12 @@ impl Scanner {
             if let Ok(parsed) = aden_graph::parser::parse_file(&path) {
                 let file_name = path.file_name().unwrap_or_default().to_string_lossy();
                 for (contract_path, current) in contract_entries {
-                    if contract_path.file_name().map(|n| n.to_string_lossy()) == Some(file_name.clone()) {
-                        if let (Some(base_hash), Some(current_hash)) =
+                    if contract_path.file_name().map(|n| n.to_string_lossy()) == Some(file_name.clone())
+                        && let (Some(base_hash), Some(current_hash)) =
                             (parsed.attributes.get("source_hash"), current.attributes.get("source_hash"))
-                        {
-                            if base_hash != current_hash {
+                            && base_hash != current_hash {
                                 stale_bases.push(file_name.to_string());
                             }
-                        }
-                    }
                 }
             }
         }

@@ -1,12 +1,59 @@
 use std::collections::{HashSet, VecDeque};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use aden_graph::Direction;
 
-use crate::types::QueryIntent;
+use crate::types::{get_anchor_aliases, AnchorPattern, QueryIntent};
+use aden_index::SearchResult;
 use crate::util::{
     load_or_build_index, node_to_json, parse_single_edge_type, perform_check, sanitize_anchor, sanitize_source_file, valid_edge_types,
 };
+
+fn resolve_anchor_fuzzy(
+    query: &str,
+    results: &[SearchResult],
+) -> String {
+    if results.is_empty() {
+        return "readme".to_string();
+    }
+
+    let query_lower = query.to_lowercase();
+    let aliases = get_anchor_aliases();
+
+    // Step 1: Check alias map - if query contains alias keyword AND mod- target exists in results
+    for (alias, target_anchor) in aliases.iter() {
+        if query_lower.contains(alias) {
+            // Check if any result anchor contains the target (more flexible matching)
+            // Also check starts_with for exact module matches
+            if let Some(matched) = results.iter().find(|r| {
+                r.anchor.starts_with(target_anchor) || r.anchor.contains(target_anchor)
+            }) {
+                return matched.anchor.clone();
+            }
+        }
+    }
+
+    // Step 2: Apply pattern priority (mod-* > adr-* > plan-* > readme)
+    let mut best_result = &results[0];
+    let mut best_priority = AnchorPattern::from_anchor(&best_result.anchor).priority();
+
+    for result in results.iter().skip(1) {
+        let priority = AnchorPattern::from_anchor(&result.anchor).priority();
+        if priority > best_priority {
+            best_result = result;
+            best_priority = priority;
+        }
+    }
+
+    // Step 3: If we have a mod-* result but readme is first, prefer mod-*
+    let first_is_module = results[0].anchor.starts_with("mod-");
+    if !first_is_module
+        && let Some(mod_result) = results.iter().find(|r| r.anchor.starts_with("mod-")) {
+            return mod_result.anchor.clone();
+        }
+
+    best_result.anchor.clone()
+}
 
 pub fn cmd_check(path: &Path, severity: &str) -> Result<(), Box<dyn std::error::Error>> {
     if !path.is_dir() {
@@ -52,53 +99,61 @@ pub fn cmd_check(path: &Path, severity: &str) -> Result<(), Box<dyn std::error::
 
 
 
-pub fn cmd_asm(
-    path: &Path,
-    from: &str,
-    depth: usize,
-    budget: usize,
-    edge_types: Vec<aden_core::EdgeType>,
-    out: Option<&Path>,
-    format: &str,
-    silent: bool,
-    auto: bool,
-    inspect: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+#[derive(Clone)]
+pub struct AsmOptions {
+    pub path: PathBuf,
+    pub from: String,
+    pub depth: usize,
+    pub budget: usize,
+    pub edge_types: Vec<aden_core::EdgeType>,
+    pub out: Option<PathBuf>,
+    pub format: String,
+    pub silent: bool,
+    pub auto: bool,
+    pub inspect: bool,
+}
+
+pub fn cmd_asm(opts: AsmOptions) -> Result<(), Box<dyn std::error::Error>> {
     use aden_asm::traverse::{assemble, assemble_adg, AssemblyOptions};
 
-    if !path.is_dir() {
+    if !opts.path.is_dir() {
         return Err("asm requires a directory path".into());
     }
 
-    let graph = aden_graph::cache::build_from_directory_cached(path)?;
+    let graph = aden_graph::cache::build_from_directory_cached(&opts.path)?;
 
-    let effective_budget = if auto {
-        budget
+    let (resolved_anchor, effective_budget) = if opts.auto {
+        let index = load_or_build_index(&opts.path)?;
+        let results = index.query(&opts.from);
+        let resolved = resolve_anchor_fuzzy(&opts.from, &results);
+        if resolved != opts.from {
+            eprintln!("INFO: Resolved '{}' → '{}'", opts.from, resolved);
+        }
+        let budget = if results.is_empty() {
+            opts.budget
+        } else {
+            let avg_score: f64 = results.iter().map(|r| r.score).sum::<f64>() / results.len() as f64;
+            let boost = (avg_score * 2.0).min(3.0) as usize;
+            (opts.budget * (1 + boost)).min(32000)
+        };
+        (resolved, budget)
     } else {
-        budget
+        (opts.from.clone(), opts.budget)
     };
 
-    let opts = AssemblyOptions {
-        start_anchor: from.to_string(),
-        max_depth: depth,
-        token_budget: effective_budget,
-        edge_types,
-        block_filter: Vec::new(),
-    };
-
-    if inspect {
+    if opts.inspect {
         println!("=== Context Assembly Inspection ===");
-        println!("Start: {}", from);
-        println!("Depth: {}", depth);
-        println!("Budget: {} tokens", effective_budget);
+        println!("Start: {}", resolved_anchor.clone());
+        println!("Depth: {}", opts.depth);
+        println!("Budget: {} tokens (auto={})", effective_budget, opts.auto);
         println!("\n=== Nodes to be included ===");
 
         let mut visited = std::collections::HashSet::new();
         let mut queue = std::collections::VecDeque::new();
-        if let Some(start_idx) = graph.get_index(from) {
+        if let Some(start_idx) = graph.get_index(&resolved_anchor) {
             queue.push_back((start_idx, 0usize));
             while let Some((node, d)) = queue.pop_front() {
-                if visited.contains(&node) || d > depth {
+                if visited.contains(&node) || d > opts.depth {
                     continue;
                 }
                 visited.insert(node);
@@ -113,17 +168,25 @@ pub fn cmd_asm(
         return Ok(());
     }
 
-    let output = match format {
-        "adg" => assemble_adg(&graph, &opts)?,
-        "aden" => assemble(&graph, &opts)?,
-        _ => return Err(format!("Unknown format '{}': use 'aden' or 'adg'", format).into()),
+    let asm_opts = AssemblyOptions {
+        start_anchor: resolved_anchor,
+        max_depth: opts.depth,
+        token_budget: effective_budget,
+        edge_types: opts.edge_types.clone(),
+        block_filter: Vec::new(),
     };
 
-    if let Some(out_path) = out {
+    let output = match opts.format.as_str() {
+        "adg" => assemble_adg(&graph, &asm_opts)?,
+        "aden" => assemble(&graph, &asm_opts)?,
+        _ => return Err(format!("Unknown format '{}': use 'aden' or 'adg'", opts.format).into()),
+    };
+
+    if let Some(out_path) = &opts.out {
         std::fs::write(out_path, output)?;
         println!("Written assembly to {}", out_path.display());
     } else {
-        if silent {
+        if opts.silent {
             print!("{}", output);
         } else {
             println!("{}", output);
@@ -320,7 +383,7 @@ pub fn cmd_ask(
             println!("Tips:\n  - Use more specific keywords from the codebase.\n  - Try `aden search <term>` to see available anchors.\n  - Or pin an anchor with --from <anchor>.");
             return Ok(());
         }
-        results[0].anchor.clone()
+        resolve_anchor_fuzzy(question, &results)
     };
 
     println!("// Aden Ask: '{}' → [[{}]]", question, start_anchor);

@@ -128,7 +128,7 @@ fn discover_source_files(path: &Path) -> Result<Vec<std::path::PathBuf>, Box<dyn
             continue;
         }
         
-        if is_excluded(&entry_path) {
+        if is_excluded(entry_path) {
             continue;
         }
         
@@ -184,7 +184,7 @@ fn apply_lint_rules(path: &Path, line: &str, line_num: usize, ext: &str) -> Vec<
 
 fn lint_rust_line(line: &str, line_num: usize) -> Vec<LintResult> {
     let mut results = Vec::new();
-    
+
     if line.contains("unsafe fn") {
         results.push(LintResult {
             file: String::new(),

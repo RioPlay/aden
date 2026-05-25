@@ -6,12 +6,30 @@
 //! Exposes Aden's knowledge graph as MCP tools for Claude Code, Cursor,
 //! Zed, Windsurf, and any other MCP-compatible AI agent platform.
 //!
+//! This is a thin wrapper that invokes the aden CLI - no business logic here.
+//!
 //! Protocol: JSON-RPC 2.0 over stdio.
 //! Reference: https://modelcontextprotocol.io/specification
 
 use serde::{Deserialize, Serialize};
 use std::io::{self, BufRead, Write};
 use std::path::Path;
+use std::process::Command;
+
+/// Run aden CLI command and return output
+fn run_aden_command(project_dir: &Path, args: &[&str]) -> Result<String, String> {
+    let output = Command::new("aden")
+        .args(args)
+        .current_dir(project_dir)
+        .output()
+        .map_err(|e| format!("failed to run aden: {}", e))?;
+
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).to_string())
+    }
+}
 
 /// MCP JSON-RPC request.
 #[derive(Debug, Deserialize, Serialize)]
@@ -68,17 +86,15 @@ impl JsonRpcResponse {
 
 /// Run the MCP server event loop.
 /// Reads JSON-RPC requests from stdin, writes responses to stdout.
+/// This is a thin wrapper that invokes the aden CLI - no graph pre-loading.
 pub fn serve(project_dir: &Path) -> io::Result<()> {
     let stdin = io::stdin();
     let mut stdout = io::stdout();
     let mut stderr = io::stderr();
 
-    // Pre-load graph if possible (best-effort; failures are logged to stderr).
-    let graph = aden_graph::graph::AdenGraph::build_from_directory(project_dir).ok();
-    let graph_ref = std::sync::Arc::new(std::sync::Mutex::new(graph));
     let project_arc = std::sync::Arc::from(project_dir.to_path_buf());
 
-    writeln!(stderr, "aden-mcp: serving project {}", project_dir.display())?;
+    writeln!(stderr, "aden-mcp: serving project {} (CLI wrapper mode)", project_dir.display())?;
 
     let reader = stdin.lock();
     for line in reader.lines() {
@@ -102,7 +118,7 @@ pub fn serve(project_dir: &Path) -> io::Result<()> {
             }
         };
 
-        let resp = dispatch(&req, &project_arc, &graph_ref);
+        let resp = dispatch(&req, &project_arc);
         if let Err(e) = send_response(&mut stdout, &resp) {
             let _ = writeln!(stderr, "aden-mcp: write error: {}", e);
             break;
@@ -121,12 +137,11 @@ fn send_response(stdout: &mut io::Stdout, resp: &JsonRpcResponse) -> io::Result<
 fn dispatch(
     req: &JsonRpcRequest,
     project_dir: &std::sync::Arc<std::path::PathBuf>,
-    graph: &std::sync::Arc<std::sync::Mutex<Option<aden_graph::graph::AdenGraph>>>,
 ) -> JsonRpcResponse {
     match req.method.as_str() {
         "initialize" => handle_initialize(req),
         "tools/list" => handle_tools_list(req),
-        "tools/call" => handle_tools_call(req, project_dir, graph),
+        "tools/call" => handle_tools_call(req, project_dir),
         _ => JsonRpcResponse::error(req.id.clone(), -32601, &format!("Method not found: {}", req.method)),
     }
 }
@@ -180,6 +195,43 @@ fn handle_tools_list(req: &JsonRpcRequest) -> JsonRpcResponse {
                 },
                 "required": ["anchor"]
             }
+        },
+        {
+            "name": "ask",
+            "description": "Ask a natural-language question about the codebase. Returns token-bounded context assembled from the knowledge graph.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "question": { "type": "string", "description": "Question to ask (e.g., 'How does authentication work?')" },
+                    "budget": { "type": "integer", "description": "Max tokens (default 4096)." },
+                    "from": { "type": "string", "description": "Pin to specific anchor (optional, enables smarter resolution)." }
+                },
+                "required": ["question"]
+            }
+        },
+        {
+            "name": "search",
+            "description": "Full-text search across all contracts. Returns ranked results with snippets.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string", "description": "Search query" }
+                },
+                "required": ["query"]
+            }
+        },
+        {
+            "name": "asm",
+            "description": "Assemble context from a specific anchor with customizable depth and token budget.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "anchor": { "type": "string", "description": "Starting anchor (e.g., 'mod-aden-core')" },
+                    "depth": { "type": "integer", "description": "Traversal depth (default 2)" },
+                    "budget": { "type": "integer", "description": "Token budget (default 4096)" }
+                },
+                "required": ["anchor"]
+            }
         }
     ]);
     JsonRpcResponse::success(req.id.clone(), serde_json::json!({ "tools": tools }))
@@ -188,7 +240,6 @@ fn handle_tools_list(req: &JsonRpcRequest) -> JsonRpcResponse {
 fn handle_tools_call(
     req: &JsonRpcRequest,
     project_dir: &std::sync::Arc<std::path::PathBuf>,
-    graph: &std::sync::Arc<std::sync::Mutex<Option<aden_graph::graph::AdenGraph>>>,
 ) -> JsonRpcResponse {
     let params = match &req.params {
         Some(p) => p.clone(),
@@ -204,8 +255,11 @@ fn handle_tools_call(
 
     let result = match tool_name {
         "list_symbols" => tool_list_symbols(project_dir, &args),
-        "impact_analysis" => tool_impact_analysis(graph, &args),
-        "context_for" => tool_context_for(project_dir, graph, &args),
+        "impact_analysis" => tool_impact_analysis(project_dir, &args),
+        "context_for" => tool_context_for(project_dir, &args),
+        "ask" => tool_ask(project_dir, &args),
+        "search" => tool_search(project_dir, &args),
+        "asm" => tool_asm(project_dir, &args),
         _ => return JsonRpcResponse::error(req.id.clone(), -32602, &format!("Unknown tool: {}", tool_name)),
     };
 
@@ -241,37 +295,19 @@ fn tool_list_symbols(project_dir: &std::sync::Arc<std::path::PathBuf>, args: &se
 }
 
 fn tool_impact_analysis(
-    graph: &std::sync::Arc<std::sync::Mutex<Option<aden_graph::graph::AdenGraph>>>,
+    project_dir: &std::sync::Arc<std::path::PathBuf>,
     args: &serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let anchor = args.get("anchor")
         .and_then(|a| a.as_str())
         .ok_or("Missing 'anchor' argument")?;
 
-    let guard = graph.lock().map_err(|e| e.to_string())?;
-    let g = guard.as_ref().ok_or("Graph not built")?;
-
-    // Find backlinks (incoming edges)
-    let mut callers = Vec::new();
-    if let Some(idx) = g.get_index(anchor) {
-        for neighbor in g.graph.neighbors_directed(idx, aden_graph::Direction::Incoming) {
-            callers.push(serde_json::json!({
-                "anchor": g.graph[neighbor].anchor.clone(),
-                "type": format!("{:?}", g.graph[neighbor].doc.node_type),
-            }));
-        }
-    }
-
-    Ok(serde_json::json!({
-        "target": anchor,
-        "callers": callers,
-        "count": callers.len(),
-    }))
+    let output = run_aden_command(project_dir, &["query", "--backlinks", anchor])?;
+    Ok(serde_json::json!({ "impact": output }))
 }
 
 fn tool_context_for(
-    _project_dir: &Path,
-    graph: &std::sync::Arc<std::sync::Mutex<Option<aden_graph::graph::AdenGraph>>>,
+    project_dir: &std::sync::Arc<std::path::PathBuf>,
     args: &serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let anchor = args.get("anchor")
@@ -280,32 +316,51 @@ fn tool_context_for(
     let budget = args.get("budget").and_then(|b| b.as_u64()).unwrap_or(4096) as usize;
     let depth = args.get("depth").and_then(|d| d.as_u64()).unwrap_or(3) as usize;
 
-    let guard = graph.lock().map_err(|e| e.to_string())?;
-    let g = guard.as_ref().ok_or("Graph not built")?;
+    let output = run_aden_command(project_dir, &[
+        "asm", "--from", anchor, "--budget", &budget.to_string(), "--depth", &depth.to_string()
+    ])?;
+    Ok(serde_json::json!({ "content": output }))
+}
 
-    let opts = aden_asm::traverse::AssemblyOptions {
-        start_anchor: anchor.to_string(),
-        max_depth: depth,
-        token_budget: budget,
-        edge_types: vec![
-            aden_core::EdgeType::Uses,
-            aden_core::EdgeType::Calls,
-            aden_core::EdgeType::Implements,
-            aden_core::EdgeType::Documents,
-        ],
-        block_filter: Vec::new(),
-    };
+fn tool_ask(
+    project_dir: &std::sync::Arc<std::path::PathBuf>,
+    args: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let question = args.get("question")
+        .and_then(|q| q.as_str())
+        .ok_or("Missing 'question' argument")?;
+    let budget = args.get("budget").and_then(|b| b.as_u64()).unwrap_or(4096) as usize;
 
-    let assembled = aden_asm::traverse::assemble(g, &opts)
-        .map_err(|e| format!("assembly error: {}", e))?;
+    let output = run_aden_command(project_dir, &["ask", question, "--budget", &budget.to_string()])?;
+    Ok(serde_json::json!({ "content": output }))
+}
 
-    Ok(serde_json::json!({
-        "anchor": anchor,
-        "budget": budget,
-        "depth": depth,
-        "tokens": assembled.len(),
-        "content": assembled,
-    }))
+fn tool_search(
+    project_dir: &std::sync::Arc<std::path::PathBuf>,
+    args: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let query = args.get("query")
+        .and_then(|q| q.as_str())
+        .ok_or("Missing 'query' argument")?;
+
+    let output = run_aden_command(project_dir, &["search", query])?;
+    Ok(serde_json::json!({ "results": output }))
+}
+
+fn tool_asm(
+    project_dir: &std::sync::Arc<std::path::PathBuf>,
+    args: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let anchor = args.get("anchor")
+        .and_then(|a| a.as_str())
+        .ok_or("Missing 'anchor' argument")?;
+    let budget = args.get("budget").and_then(|b| b.as_u64()).unwrap_or(4096) as usize;
+    let depth = args.get("depth").and_then(|d| d.as_u64()).unwrap_or(2) as usize;
+
+    let output = run_aden_command(project_dir, &[
+        "asm", "--from", anchor, "--budget", &budget.to_string(), "--depth", &depth.to_string()
+    ])?;
+    Ok(serde_json::json!({ "content": output }))
 }
 
 #[cfg(test)]

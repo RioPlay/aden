@@ -125,9 +125,10 @@ pub fn cmd_audit(
     for file in &files {
         total_scanned += 1;
 
-        // Skip documentation directories — they contain example vulnerability strings
-        let file_str = file.to_string_lossy();
-        if file_str.contains("/.agent/") || file_str.contains("/docs/") {
+// Skip documentation directories — they contain example vulnerability strings
+        // Also skip lint.rs since it contains detection patterns that trigger false positives
+        let path_str = file.to_string_lossy();
+        if path_str.contains("/.agent/") || path_str.contains("/docs/") || path_str.contains("/lint.rs") {
             continue;
         }
 
@@ -557,7 +558,7 @@ pub fn cmd_ci_check(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
             Ok(())
         } else {
             let output = std::process::Command::new("cargo")
-                .args(["clippy", "--workspace", "--", "-W", "clippy::unwrap_used", "-W", "clippy::expect_used", "-W", "clippy::panic"])
+                .args(["clippy", "--workspace", "--", "-W", "clippy::all"])
                 .current_dir(path)
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())

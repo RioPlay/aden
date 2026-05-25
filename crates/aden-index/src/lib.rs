@@ -41,7 +41,15 @@ pub struct Index {
     anchor_paths: HashMap<String, PathBuf>,
     /// anchor -> full file text (for snippet generation)
     anchor_text: HashMap<String, String>,
+    /// anchor -> token count (for BM25 scoring)
+    doc_lengths: HashMap<String, usize>,
+    /// Average document length across all documents
+    avg_doc_length: f64,
 }
+
+/// BM25 parameters
+const BM25_K1: f64 = 1.5;
+const BM25_B: f64 = 0.75;
 
 const INDEX_CACHE_FILE: &str = ".aden/cache/index-cache.json";
 
@@ -210,6 +218,8 @@ impl Index {
             if let Some((anchor, source_path, counts)) = parse_adoc(&path, &text) {
                 index.anchor_paths.insert(anchor.clone(), source_path);
                 index.anchor_text.insert(anchor.clone(), text.clone());
+                let doc_len: usize = counts.values().sum();
+                index.doc_lengths.insert(anchor.clone(), doc_len);
                 for (token, count) in counts {
                     index
                         .inverted
@@ -219,6 +229,15 @@ impl Index {
                 }
             }
         }
+
+        // Compute average document length for BM25
+        let total_len: usize = index.doc_lengths.values().sum();
+        let doc_count = index.doc_lengths.len();
+        index.avg_doc_length = if doc_count > 0 {
+            total_len as f64 / doc_count as f64
+        } else {
+            1.0
+        };
 
         Ok(index)
     }
@@ -243,22 +262,58 @@ impl Index {
         Ok(())
     }
 
-    /// Query the index and return ranked search results.
+    /// Query the index and return ranked search results using BM25.
     pub fn query(&self, query_str: &str) -> Vec<SearchResult> {
         let tokens = tokenize(query_str);
         if tokens.is_empty() {
             return Vec::new();
         }
 
+        let n = self.inverted.values().map(|v| v.len()).sum::<usize>() as f64;
+        if n == 0.0 {
+            return Vec::new();
+        }
+
         let mut scores: HashMap<String, f64> = HashMap::new();
 
+        // BM25 scoring
         for token in &tokens {
             if let Some(postings) = self.inverted.get(token) {
-                for (anchor, count) in postings {
-                    // Simple TF-based scoring: each occurrence adds 1.0
-                    *scores.entry(anchor.clone()).or_insert(0.0) += *count as f64;
+                let df = postings.len() as f64;
+                // IDF: log((N - df + 0.5) / (df + 0.5))
+                let idf = ((n - df + 0.5) / (df + 0.5) + 1.0).ln().max(0.0);
+
+                for (anchor, tf) in postings {
+                    let doc_len = self.doc_lengths.get(anchor).copied().unwrap_or(1);
+                    let tf_normalized = (*tf as f64 * (BM25_K1 + 1.0))
+                        / (*tf as f64 + BM25_K1 * (1.0 - BM25_B + BM25_B * doc_len as f64 / self.avg_doc_length));
+                    *scores.entry(anchor.clone()).or_insert(0.0) += idf * tf_normalized;
                 }
             }
+        }
+
+        // Apply title/anchor boosts
+        let query_lower = query_str.to_lowercase();
+        for (anchor, score) in scores.iter_mut() {
+            let anchor_lower = anchor.to_lowercase();
+
+            // Penalize source-file anchors (e.g., aden://module/...#function_name)
+            // These are specific symbols, not module-level docs
+            let is_source_anchor = anchor.contains("://module/") || anchor.contains("/src/");
+            if is_source_anchor {
+                *score *= 0.1; // 90% penalty for source file anchors
+            }
+
+            // 20x boost if query term appears in anchor (mod-*, adr-* patterns)
+            if query_lower.split_whitespace().any(|t| anchor_lower.contains(t)) {
+                *score *= 20.0;
+            }
+            // Additional 10x boost for title match (first line)
+            if let Some(text) = self.anchor_text.get(anchor)
+                && let Some(first_line) = text.lines().next()
+                    && query_lower.split_whitespace().any(|t| first_line.to_lowercase().contains(t)) {
+                        *score *= 10.0;
+                    }
         }
 
         let mut results: Vec<SearchResult> = scores
