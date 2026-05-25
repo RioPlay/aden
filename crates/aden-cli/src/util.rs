@@ -166,9 +166,10 @@ pub fn sanitize_anchor(anchor: &str) -> String {
     }
 }
 
-/// Parse a single edge-type string into the corresponding enum variant.
+/// Parse a single edge-type string into the corresponding enum variant (case-insensitive).
 pub fn parse_single_edge_type(s: &str) -> Option<aden_core::EdgeType> {
-    match s.trim() {
+    let lower = s.trim().to_lowercase();
+    match lower.as_str() {
         "uses" => Some(aden_core::EdgeType::Uses),
         "implements" => Some(aden_core::EdgeType::Implements),
         "tests" => Some(aden_core::EdgeType::Tests),
