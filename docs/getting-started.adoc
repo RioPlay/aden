@@ -8,19 +8,19 @@ This guide takes you from a fresh install to a working knowledge graph in under 
 
 == Why This Works: The Repeatable Doc Pipeline
 
-Aaden treats documentation as a build artifact. Just as `cargo build` turns Rust source into a binary, `aaden gen` turns source code into AsciiDoc contracts. Just as `cargo test` verifies correctness, `aaden check` verifies that every cross-reference resolves. This pipeline is fully repeatable:
+Aden treats documentation as a build artifact. Just as `cargo build` turns Rust source into a binary, `aden gen` turns source code into AsciiDoc contracts. Just as `cargo test` verifies correctness, `aden check` verifies that every cross-reference resolves. This pipeline is fully repeatable:
 
 1. Source code changes.
-2. `aaden gen` regenerates contracts deterministically.
-3. `aaden check` validates the graph integrity.
-4. `aaden ask` assembles context from the validated graph.
+2. `aden gen` regenerates contracts deterministically.
+3. `aden check` validates the graph integrity.
+4. `aden ask` assembles context from the validated graph.
 
 Because everything is plain text, you can diff contracts in Git, review them in pull requests, and audit them with standard tools.
 
 == Prerequisites
 
 - Rust toolchain (1.85 or later)
-- A project with source code (any language Aaden supports)
+- A project with source code (any language Aden supports)
 
 == Step 1: Install Aden
 
@@ -30,8 +30,8 @@ Because everything is plain text, you can diff contracts in Git, review them in 
 cargo install --path crates/aden-cli
 
 # Verify
-aaden --version
-# Expected output: aaden 0.1.0
+aden
+# Expected output: aden 0.1.0
 ----
 
 == Step 2: Initialize Your Repository
@@ -60,7 +60,7 @@ What just happened:
 
 == Step 3: Generate Contracts from Source
 
-Aaden extracts structure from your code and emits `.adoc` contracts into `./contracts/`.
+Aden extracts structure from your code and emits `.adoc` contracts into `./contracts/`.
 
 [source,bash]
 ----
@@ -111,14 +111,14 @@ If you see errors, fix them before committing:
 
 == Step 5: Ask Questions
 
-Now the fun part. Ask Aaden about your codebase in plain English:
+Now the fun part. Ask Aden about your codebase in plain English:
 
 [source,bash]
 ----
 aden ask "What does the parser module do?"
 ----
 
-Aaden performs four steps automatically:
+Aden performs four steps automatically:
 1. **Searches** the knowledge graph for documents matching your keywords.
 2. **Classifies intent** (Explain, Usage, Refactor, Impact, Debug, or General).
 3. **Selects edge types and depth** appropriate to that intent.
@@ -148,14 +148,14 @@ This outputs a debug report of every document reachable from `mod-aden-core` wit
 
 == Step 7: Detect Drift
 
-After you change source code, contracts become stale. Aaden notices:
+After you change source code, contracts become stale. Aden notices:
 
 [source,bash]
 ----
 aden heal .
 ----
 
-Output shows drift events like `StaleHash`, `SignatureMismatch`, or `MissingContract`. Address them by re-running `aaden gen` on the changed files.
+Output shows drift events like `StaleHash`, `SignatureMismatch`, or `MissingContract`. Address them by re-running `aden gen` on the changed files.
 
 == Step 8: Generate Contracts With Three-Way Merge
 

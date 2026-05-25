@@ -38,7 +38,7 @@ User-facing binary for the Aden toolchain. Orchestrates all crates through a uni
 |`aden audit`|`<DIR> [--format text|json|adoc] [--strict]`|OWASP-style security audit: scan source for vulnerability patterns
 |`aden mcp`|`[DIR]`|MCP (Model Context Protocol) integration management
 |`aden --version`|none|Print version
-|`aden --help`|none|Print help, including subcommand help
+|`aden help`|none|Print help, including subcommand help
 |===
 
 == Implementation Notes
