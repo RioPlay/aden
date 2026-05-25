@@ -76,6 +76,7 @@ The agent receives a token-dense, graph-traversed context prompt that includes e
 
 === Use Case 2: Documentation That Stays Alive
 
+[[doc-rot]]
 **Problem:** Documentation rots. A function changes its signature, but the `.md` file describing it is forgotten. Six months later, a new developer reads stale docs and designs the wrong thing.
 
 **Aden Solution:**

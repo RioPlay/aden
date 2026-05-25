@@ -110,4 +110,4 @@ Becomes:
 
 . <<adr-001>> — AsciiDoc as native substrate
 . <<plan-phase1>> — References `aden bootstrap --from-markdown` (inverse direction)
-. <<docs/philosophy.adoc#doc-rot>> — Calls out documentation rot as known problem
+. <<doc-rot>> — Calls out documentation rot as known problem

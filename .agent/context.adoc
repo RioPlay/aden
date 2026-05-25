@@ -3,7 +3,7 @@
 :ai_name: agent
 :standard: unknown
 
-[[agent-context-template-src]]
+[[agent-context]]
 = Shared Context for Agent Sessions
 
 This file is the canonical shared memory for all agent sessions working on `unknown`.

@@ -209,4 +209,4 @@ aden ci-check .
 . <<adr-001>> — AsciiDoc as native substrate
 . <<adr-003>> — Markdown emission and cross-format drift detection
 . <<plan-phase1>> — References `aden bootstrap --from-markdown`
-. <<docs/philosophy.adoc#doc-rot>> — Documents documentation rot problem
+. <<doc-rot>> — Documents documentation rot problem

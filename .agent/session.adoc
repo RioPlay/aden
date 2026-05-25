@@ -1,7 +1,7 @@
 :proj: unknown
 :session: active
 
-[[agent-session-template-src]]
+[[agent-session]]
 = Agent Session Log
 
 This file is the canonical shared memory for parallel agent sessions.
