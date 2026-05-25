@@ -1,4 +1,4 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 
 fn bench_token_density(c: &mut Criterion) {
     let tmp = std::env::temp_dir().join("aden_bench_token_density");

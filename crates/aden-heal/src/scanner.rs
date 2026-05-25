@@ -14,8 +14,8 @@
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 // GNU Affero General Public License for more details.
 //
-use crate::drift::DriftEvent;
 use crate::HealError;
+use crate::drift::DriftEvent;
 use aden_core::{Block, Document};
 use aden_graph::graph::AdenGraph;
 use serde::{Deserialize, Serialize};
@@ -87,23 +87,28 @@ impl Scanner {
                 } else {
                     None
                 }
-            })
-                && let Ok(doc) = serde_json::from_str::<Document>(&cached_json) {
-                    new_cache.entries.insert(rel_str.clone(), (current_mtime, cached_json));
-                    source_entries.push((path.clone(), doc));
-                    continue;
-                }
+            }) && let Ok(doc) = serde_json::from_str::<Document>(&cached_json)
+            {
+                new_cache
+                    .entries
+                    .insert(rel_str.clone(), (current_mtime, cached_json));
+                source_entries.push((path.clone(), doc));
+                continue;
+            }
 
             // Slow path: read & parse
             if let Ok(content) = std::fs::read_to_string(path)
-                && let Ok(docs) = aden_parse::parse_file(path, &content) {
-                    for doc in docs {
-                        if let Ok(json) = serde_json::to_string(&doc) {
-                            new_cache.entries.insert(rel_str.clone(), (current_mtime, json));
-                        }
-                        source_entries.push((path.clone(), doc));
+                && let Ok(docs) = aden_parse::parse_file(path, &content)
+            {
+                for doc in docs {
+                    if let Ok(json) = serde_json::to_string(&doc) {
+                        new_cache
+                            .entries
+                            .insert(rel_str.clone(), (current_mtime, json));
                     }
+                    source_entries.push((path.clone(), doc));
                 }
+            }
         }
 
         let mut anchor_to_source_idx: HashMap<String, usize> = HashMap::new();
@@ -134,16 +139,17 @@ impl Scanner {
         for (path, parsed) in &contract_entries {
             if let Some(expected_hash) = parsed.attributes.get("source_hash")
                 && let Some(source_path) = self.find_source_for_contract(path, parsed)
-                    && let Ok(content) = std::fs::read_to_string(&source_path) {
-                        let actual_hash = aden_core::stable_hash(content.as_bytes());
-                        if actual_hash != *expected_hash {
-                            events.push(DriftEvent::StaleHash {
-                                target_path: path.to_string_lossy().to_string(),
-                                expected_hash: expected_hash.clone(),
-                                actual_hash,
-                            });
-                        }
-                    }
+                && let Ok(content) = std::fs::read_to_string(&source_path)
+            {
+                let actual_hash = aden_core::stable_hash(content.as_bytes());
+                if actual_hash != *expected_hash {
+                    events.push(DriftEvent::StaleHash {
+                        target_path: path.to_string_lossy().to_string(),
+                        expected_hash: expected_hash.clone(),
+                        actual_hash,
+                    });
+                }
+            }
         }
 
         // d. SignatureMismatch
@@ -197,26 +203,27 @@ impl Scanner {
 
         // g. BrokenReference (best-effort; skip if graph has structural issues)
         if let Ok(graph) = AdenGraph::build_from_directory(&self.repo_root) {
-        for (contract_path, ref_anchor) in graph.unresolved_refs() {
-            let line = find_ref_line(&contract_path, &ref_anchor);
-            events.push(DriftEvent::BrokenReference {
-                contract_path,
-                ref_anchor,
-                line,
-            });
-        }
+            for (contract_path, ref_anchor) in graph.unresolved_refs() {
+                let line = find_ref_line(&contract_path, &ref_anchor);
+                events.push(DriftEvent::BrokenReference {
+                    contract_path,
+                    ref_anchor,
+                    line,
+                });
+            }
         }
 
         // h. DeadLink
         for (path, parsed) in &contract_entries {
             for inc in &parsed.includes {
                 if let Ok(inc_path) = resolve_include(path, &inc.path)
-                    && !inc_path.exists() {
-                        events.push(DriftEvent::DeadLink {
-                            contract_path: path.to_string_lossy().to_string(),
-                            include_path: inc.path.clone(),
-                        });
-                    }
+                    && !inc_path.exists()
+                {
+                    events.push(DriftEvent::DeadLink {
+                        contract_path: path.to_string_lossy().to_string(),
+                        include_path: inc.path.clone(),
+                    });
+                }
             }
         }
 
@@ -243,7 +250,13 @@ impl Scanner {
         let mut events = Vec::new();
 
         // Known markdown files that should be kept in sync
-        let known_md_files = ["AGENTS.md", "README.md", "CONTRIBUTING.md", "NOTICE.md", "MAINTAINERS.md"];
+        let known_md_files = [
+            "AGENTS.md",
+            "README.md",
+            "CONTRIBUTING.md",
+            "NOTICE.md",
+            "MAINTAINERS.md",
+        ];
 
         for entry in std::fs::read_dir(&self.repo_root)? {
             let entry = entry?;
@@ -253,9 +266,7 @@ impl Scanner {
                 continue;
             }
 
-            let file_name = path.file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("");
+            let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
             if !known_md_files.contains(&file_name) {
                 continue;
@@ -394,12 +405,16 @@ impl Scanner {
             if let Ok(parsed) = aden_graph::parser::parse_file(&path) {
                 let file_name = path.file_name().unwrap_or_default().to_string_lossy();
                 for (contract_path, current) in contract_entries {
-                    if contract_path.file_name().map(|n| n.to_string_lossy()) == Some(file_name.clone())
-                        && let (Some(base_hash), Some(current_hash)) =
-                            (parsed.attributes.get("source_hash"), current.attributes.get("source_hash"))
-                            && base_hash != current_hash {
-                                stale_bases.push(file_name.to_string());
-                            }
+                    if contract_path.file_name().map(|n| n.to_string_lossy())
+                        == Some(file_name.clone())
+                        && let (Some(base_hash), Some(current_hash)) = (
+                            parsed.attributes.get("source_hash"),
+                            current.attributes.get("source_hash"),
+                        )
+                        && base_hash != current_hash
+                    {
+                        stale_bases.push(file_name.to_string());
+                    }
                 }
             }
         }
@@ -477,15 +492,21 @@ fn find_ref_line(content: &str, ref_anchor: &str) -> usize {
 fn resolve_include(current: &Path, include: &str) -> std::io::Result<PathBuf> {
     let base = current.parent().unwrap_or(Path::new("."));
     let candidate = base.join(include);
-    
+
     // Prevent traversal outside the base directory
-    if candidate.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+    if candidate
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
         return Err(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
-            format!("Include path '{}' contains parent-dir traversal (..). Denied for security.", include)
+            format!(
+                "Include path '{}' contains parent-dir traversal (..). Denied for security.",
+                include
+            ),
         ));
     }
-    
+
     Ok(candidate)
 }
 
@@ -502,7 +523,12 @@ mod tests {
         let events = scanner.scan().unwrap();
         // An empty directory may produce MissingContract events for source files,
         // but if there are no .adoc/.aden files there should be no events
-        assert!(events.is_empty() || events.iter().all(|e| !matches!(e, DriftEvent::StaleHash { .. })));
+        assert!(
+            events.is_empty()
+                || events
+                    .iter()
+                    .all(|e| !matches!(e, DriftEvent::StaleHash { .. }))
+        );
     }
 
     #[test]
@@ -540,8 +566,14 @@ Hello world.
         // First scan: hash matches, no stale events
         let scanner = Scanner::new(root);
         let events = scanner.scan().unwrap();
-        let stale_count = events.iter().filter(|e| matches!(e, DriftEvent::StaleHash { .. })).count();
-        assert_eq!(stale_count, 0, "Fresh contract should not produce StaleHash");
+        let stale_count = events
+            .iter()
+            .filter(|e| matches!(e, DriftEvent::StaleHash { .. }))
+            .count();
+        assert_eq!(
+            stale_count, 0,
+            "Fresh contract should not produce StaleHash"
+        );
 
         // Modify the source file
         let mut file = std::fs::File::create(&source_file).unwrap();
@@ -550,7 +582,10 @@ Hello world.
         // Rescan — should detect stale hash
         let scanner = Scanner::new(root);
         let events = scanner.scan().unwrap();
-        let stale_count = events.iter().filter(|e| matches!(e, DriftEvent::StaleHash { .. })).count();
+        let stale_count = events
+            .iter()
+            .filter(|e| matches!(e, DriftEvent::StaleHash { .. }))
+            .count();
         assert!(
             stale_count > 0,
             "Modified source should produce StaleHash. Events: {:?}",
@@ -578,8 +613,12 @@ Hello world.
 
         let scanner = Scanner::new(root);
         let events = scanner.scan().unwrap();
-        let has_orphan = events.iter().any(|e| matches!(e, DriftEvent::OrphanAnchor { .. }));
-        let has_broken_ref = events.iter().any(|e| matches!(e, DriftEvent::BrokenReference { .. }));
+        let has_orphan = events
+            .iter()
+            .any(|e| matches!(e, DriftEvent::OrphanAnchor { .. }));
+        let has_broken_ref = events
+            .iter()
+            .any(|e| matches!(e, DriftEvent::BrokenReference { .. }));
 
         // OrphanAnchor detection depends on the graph build; BrokenReference is more likely
         if !has_orphan && !has_broken_ref {
@@ -598,16 +637,15 @@ Hello world.
         std::fs::create_dir(&source).unwrap();
         let main_rs = source.join("main.rs");
         let mut file = std::fs::File::create(&main_rs).unwrap();
-        write!(
-            file,
-            r#"fn main() {{ println!("hello"); }}"#
-        )
-        .unwrap();
+        write!(file, r#"fn main() {{ println!("hello"); }}"#).unwrap();
 
         let scanner = Scanner::new(root);
         let events = scanner.scan().unwrap();
         // Should detect MissingContract for main.rs
-        let missing = events.iter().filter(|e| matches!(e, DriftEvent::MissingContract { .. })).count();
+        let missing = events
+            .iter()
+            .filter(|e| matches!(e, DriftEvent::MissingContract { .. }))
+            .count();
         assert!(
             missing > 0 || events.is_empty(),
             "Scanner should either detect MissingContract or produce no events"

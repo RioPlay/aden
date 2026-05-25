@@ -1,6 +1,6 @@
-use std::path::Path;
-use serde::{Deserialize, Serialize};
 use crate::FederationAction;
+use serde::{Deserialize, Serialize};
+use std::path::Path;
 
 const WORKSPACE_FILE: &str = ".aden/workspace.yaml";
 
@@ -95,12 +95,15 @@ fn load_workspace_config(path: &Path) -> Result<WorkspaceConfig, Box<dyn std::er
     }
 
     let content = std::fs::read_to_string(path)?;
-    let config: WorkspaceConfig = serde_yaml::from_str(&content)
-        .map_err(|e| format!("Invalid workspace config: {}", e))?;
+    let config: WorkspaceConfig =
+        serde_yaml::from_str(&content).map_err(|e| format!("Invalid workspace config: {}", e))?;
     Ok(config)
 }
 
-fn save_workspace_config(path: &Path, config: &WorkspaceConfig) -> Result<(), Box<dyn std::error::Error>> {
+fn save_workspace_config(
+    path: &Path,
+    config: &WorkspaceConfig,
+) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }

@@ -36,7 +36,13 @@ pub fn cmd_kickoff(
 
         let resolved = kickoff_template
             .replace("{project}", name)
-            .replace("{date}", aden_core::rfc3339_now().split('T').next().unwrap_or("2026-01-01"))
+            .replace(
+                "{date}",
+                aden_core::rfc3339_now()
+                    .split('T')
+                    .next()
+                    .unwrap_or("2026-01-01"),
+            )
             .replace("{author}", &owner)
             .replace("{idea}", &name.to_lowercase().replace(" ", "-"));
 
@@ -49,7 +55,10 @@ pub fn cmd_kickoff(
         );
         output = output.replace(
             ". What do they do today without your solution?\n",
-            &format!(". What do they do today without your solution?\n  *Answer:* {}\n", problem),
+            &format!(
+                ". What do they do today without your solution?\n  *Answer:* {}\n",
+                problem
+            ),
         );
 
         std::fs::write(&out_path, output)?;
@@ -59,7 +68,13 @@ pub fn cmd_kickoff(
         // Non-interactive: just fill placeholders from template
         let resolved = kickoff_template
             .replace("{project}", name)
-            .replace("{date}", aden_core::rfc3339_now().split('T').next().unwrap_or("2026-01-01"))
+            .replace(
+                "{date}",
+                aden_core::rfc3339_now()
+                    .split('T')
+                    .next()
+                    .unwrap_or("2026-01-01"),
+            )
             .replace("{author}", "<author>")
             .replace("{idea}", &name.to_lowercase().replace(" ", "-"));
         std::fs::write(&out_path, resolved)?;
@@ -79,17 +94,47 @@ pub fn cmd_workflow(
     repo: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let templates: std::collections::HashMap<&str, &str> = [
-        ("design", include_str!("../../../../.agent/templates/design.adoc")),
-        ("spec", include_str!("../../../../.agent/templates/spec.adoc")),
-        ("task", include_str!("../../../../.agent/templates/task.adoc")),
+        (
+            "design",
+            include_str!("../../../../.agent/templates/design.adoc"),
+        ),
+        (
+            "spec",
+            include_str!("../../../../.agent/templates/spec.adoc"),
+        ),
+        (
+            "task",
+            include_str!("../../../../.agent/templates/task.adoc"),
+        ),
         ("adr", include_str!("../../../../.agent/templates/adr.adoc")),
-        ("kickoff", include_str!("../../../../.agent/templates/kickoff.adoc")),
-        ("plan", include_str!("../../../../.agent/templates/plan.adoc")),
-        ("context", include_str!("../../../../.agent/templates/context.adoc")),
-        ("module", include_str!("../../../../.agent/templates/module.adoc")),
-        ("runbook", include_str!("../../../../.agent/templates/runbook.adoc")),
-        ("glossary", include_str!("../../../../.agent/templates/glossary.adoc")),
-        ("constraints", include_str!("../../../../.agent/templates/constraints.adoc")),
+        (
+            "kickoff",
+            include_str!("../../../../.agent/templates/kickoff.adoc"),
+        ),
+        (
+            "plan",
+            include_str!("../../../../.agent/templates/plan.adoc"),
+        ),
+        (
+            "context",
+            include_str!("../../../../.agent/templates/context.adoc"),
+        ),
+        (
+            "module",
+            include_str!("../../../../.agent/templates/module.adoc"),
+        ),
+        (
+            "runbook",
+            include_str!("../../../../.agent/templates/runbook.adoc"),
+        ),
+        (
+            "glossary",
+            include_str!("../../../../.agent/templates/glossary.adoc"),
+        ),
+        (
+            "constraints",
+            include_str!("../../../../.agent/templates/constraints.adoc"),
+        ),
     ]
     .into_iter()
     .collect();
@@ -111,12 +156,14 @@ pub fn cmd_workflow(
             let src_text = std::fs::read_to_string(&src_path)?;
             // Extract key-value pairs from AsciiDoc attributes
             for line in src_text.lines() {
-                if line.starts_with(':') && line.contains(": ")
-                    && let Some((key, value)) = line.trim().split_once(": ") {
-                        let key = key.trim_start_matches(':');
-                        let placeholder = format!("{{{key}}}");
-                        resolved = resolved.replace(&placeholder, value.trim());
-                    }
+                if line.starts_with(':')
+                    && line.contains(": ")
+                    && let Some((key, value)) = line.trim().split_once(": ")
+                {
+                    let key = key.trim_start_matches(':');
+                    let placeholder = format!("{{{key}}}");
+                    resolved = resolved.replace(&placeholder, value.trim());
+                }
             }
             // Extract anchor as {feature}/{idea} if present
             if let Some(anchor) = src_text.lines().find(|l| l.starts_with("[[")) {
@@ -129,11 +176,25 @@ pub fn cmd_workflow(
     }
 
     // Default values for any remaining placeholders
-    let now = aden_core::rfc3339_now().split('T').next().unwrap_or("2026-01-01").to_string();
+    let now = aden_core::rfc3339_now()
+        .split('T')
+        .next()
+        .unwrap_or("2026-01-01")
+        .to_string();
     resolved = resolved.replace("{date}", &now);
     resolved = resolved.replace("{author}", "<author>");
-    resolved = resolved.replace("{project_name}", repo.file_name().and_then(|n| n.to_str()).unwrap_or("unknown"));
-    resolved = resolved.replace("{project}", repo.file_name().and_then(|n| n.to_str()).unwrap_or("unknown"));
+    resolved = resolved.replace(
+        "{project_name}",
+        repo.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown"),
+    );
+    resolved = resolved.replace(
+        "{project}",
+        repo.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown"),
+    );
     resolved = resolved.replace("{feature}", "feature-name");
     resolved = resolved.replace("{idea}", "idea-name");
     resolved = resolved.replace("{number}", "001");
@@ -187,7 +248,8 @@ pub fn cmd_session(
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Validate inputs against injection and length attacks
     const MAX_FIELD_LEN: usize = 500;
-    if agent_id.len() > MAX_FIELD_LEN || task.len() > MAX_FIELD_LEN || status.len() > MAX_FIELD_LEN {
+    if agent_id.len() > MAX_FIELD_LEN || task.len() > MAX_FIELD_LEN || status.len() > MAX_FIELD_LEN
+    {
         return Err("Input field exceeds maximum length (500 chars)".into());
     }
     if files.map(|f| f.len() > MAX_FIELD_LEN).unwrap_or(false) {
@@ -195,9 +257,13 @@ pub fn cmd_session(
     }
 
     let session_path = repo_path.join(".agent").join("session.adoc");
-    
+
     if !session_path.exists() {
-        return Err(format!("Session file not found: {}. Run 'aden init' first.", session_path.display()).into());
+        return Err(format!(
+            "Session file not found: {}. Run 'aden init' first.",
+            session_path.display()
+        )
+        .into());
     }
 
     // Enforce session file size limit to prevent DoS via log growth
@@ -209,7 +275,8 @@ pub fn cmd_session(
 
     let timestamp = aden_core::rfc3339_now();
     let files_str = files.unwrap_or("-");
-    let entry = format!("|{} |{} |{} |{} |{}\n",
+    let entry = format!(
+        "|{} |{} |{} |{} |{}\n",
         escape_adoc_cell(&timestamp),
         escape_adoc_cell(agent_id),
         escape_adoc_cell(task),
@@ -237,6 +304,10 @@ pub fn cmd_session(
     std::fs::write(&temp_path, &content)?;
     std::fs::rename(&temp_path, &session_path)?;
 
-    println!("Session entry logged for agent '{}': {}", agent_id, session_path.display());
+    println!(
+        "Session entry logged for agent '{}': {}",
+        agent_id,
+        session_path.display()
+    );
     Ok(())
 }

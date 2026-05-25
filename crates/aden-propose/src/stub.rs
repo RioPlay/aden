@@ -14,13 +14,13 @@
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 // GNU Affero General Public License for more details.
 //
+use aden_core::Table;
 use std::fmt::Write;
 use std::fs::File;
 use std::io;
 use std::io::Write as _;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
-use aden_core::Table;
 
 pub fn generate_stub(anchor: &str, title: &str, sig_table: &Table, source_hash: &str) -> String {
     let timestamp = SystemTime::now()

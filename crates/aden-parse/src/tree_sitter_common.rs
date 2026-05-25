@@ -65,7 +65,12 @@ pub fn extract_doc_comments(node: tree_sitter::Node, source: &str) -> Vec<String
 /// Infer crate / project name from path (fallback for languages without crates).
 pub fn infer_project_name(path: &Path) -> String {
     path.ancestors()
-        .find(|p| p.join("Cargo.toml").exists() || p.join("package.json").exists() || p.join("pyproject.toml").exists() || p.join("setup.py").exists())
+        .find(|p| {
+            p.join("Cargo.toml").exists()
+                || p.join("package.json").exists()
+                || p.join("pyproject.toml").exists()
+                || p.join("setup.py").exists()
+        })
         .and_then(|p| p.file_name())
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "unknown".to_string())

@@ -14,18 +14,24 @@
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 // GNU Affero General Public License for more details.
 //
+use crate::{Proposal, ProposalStatus};
 use std::fs::{self, File};
 use std::io::{self, Read, Write as _};
 use std::path::{Path, PathBuf};
-use crate::{Proposal, ProposalStatus};
 
 fn is_safe_id(id: &str) -> bool {
-    !id.is_empty() && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.')
+    !id.is_empty()
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.')
 }
 
 pub fn persist(proposal: &Proposal, store_dir: &Path) -> io::Result<PathBuf> {
     if !is_safe_id(&proposal.id) {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid proposal id"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid proposal id",
+        ));
     }
     let proposals_dir = store_dir.join(".aden").join("proposals");
     fs::create_dir_all(&proposals_dir)?;
@@ -37,7 +43,10 @@ pub fn persist(proposal: &Proposal, store_dir: &Path) -> io::Result<PathBuf> {
 
 pub fn load(id: &str, store_dir: &Path) -> io::Result<Proposal> {
     if !is_safe_id(id) {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid proposal id"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid proposal id",
+        ));
     }
     let proposals_dir = store_dir.join(".aden").join("proposals");
     let path = proposals_dir.join(format!("{}.patch.adoc", id));
@@ -57,21 +66,25 @@ pub fn list(store_dir: &Path) -> io::Result<Vec<Proposal>> {
         let entry = entry?;
         let path = entry.path();
         if let Some(ext) = path.extension()
-            && ext == "adoc" {
-                let mut file = File::open(&path)?;
-                let mut contents = String::new();
-                file.read_to_string(&mut contents)?;
-                if let Ok(proposal) = parse_proposal(&contents, &path) {
-                    proposals.push(proposal);
-                }
+            && ext == "adoc"
+        {
+            let mut file = File::open(&path)?;
+            let mut contents = String::new();
+            file.read_to_string(&mut contents)?;
+            if let Ok(proposal) = parse_proposal(&contents, &path) {
+                proposals.push(proposal);
             }
+        }
     }
     Ok(proposals)
 }
 
 pub fn apply(proposal: &Proposal) -> io::Result<()> {
     if !is_safe_id(&proposal.id) {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid proposal id"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid proposal id",
+        ));
     }
 
     // For MissingContract, create the new contract file

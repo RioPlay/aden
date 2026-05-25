@@ -38,10 +38,10 @@ pub enum OwaspSeverity {
 impl std::fmt::Display for OwaspSeverity {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            OwaspSeverity::Info    => write!(f, "INFO"),
-            OwaspSeverity::Low     => write!(f, "LOW"),
-            OwaspSeverity::Medium  => write!(f, "MED"),
-            OwaspSeverity::High    => write!(f, "HIGH"),
+            OwaspSeverity::Info => write!(f, "INFO"),
+            OwaspSeverity::Low => write!(f, "LOW"),
+            OwaspSeverity::Medium => write!(f, "MED"),
+            OwaspSeverity::High => write!(f, "HIGH"),
             OwaspSeverity::Critical => write!(f, "CRIT"),
         }
     }
@@ -63,13 +63,13 @@ pub struct OwaspFinding {
 /// Higher values = higher priority when selecting from search results.
 #[derive(Clone, Copy, Debug)]
 pub enum AnchorPattern {
-    Module,     // mod-* = 100
-    Adr,        // adr-* = 90
-    Plan,       // plan-* = 80
-    UseCase,    // use-case-* = 70
-    Agent,      // agent-* = 60
-    Readme,     // readme = 10
-    Generic,    // default = 50
+    Module,  // mod-* = 100
+    Adr,     // adr-* = 90
+    Plan,    // plan-* = 80
+    UseCase, // use-case-* = 70
+    Agent,   // agent-* = 60
+    Readme,  // readme = 10
+    Generic, // default = 50
 }
 
 impl AnchorPattern {

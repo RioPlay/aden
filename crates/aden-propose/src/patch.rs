@@ -14,10 +14,10 @@
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 // GNU Affero General Public License for more details.
 //
+use crate::ProposeError;
+use aden_core::{Document, Table};
 use std::fmt::Write;
 use std::path::Path;
-use aden_core::{Document, Table};
-use crate::ProposeError;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum DriftEvent {

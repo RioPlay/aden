@@ -67,9 +67,11 @@ pub fn extract_documents(path: &Path, _source: &str) -> Result<Vec<Document>> {
         .ok()
         .and_then(|exe| exe.parent().map(|p| p.join("Export-AST.ps1")))
         .filter(|p| p.is_file())
-        .ok_or_else(|| Error::Io(
-            "Export-AST.ps1 not found next to aden binary. Install aden properly.".to_string()
-        ))?;
+        .ok_or_else(|| {
+            Error::Io(
+                "Export-AST.ps1 not found next to aden binary. Install aden properly.".to_string(),
+            )
+        })?;
 
     let shell = discover_powershell().ok_or_else(|| {
         Error::Io("PowerShell not available (tried pwsh and powershell)".to_string())
@@ -111,10 +113,16 @@ pub fn extract_documents(path: &Path, _source: &str) -> Result<Vec<Document>> {
     for func in parsed.functions {
         let anchor = crate::make_anchor(&crate_name, &file_name, &func.name);
         let mut attrs = HashMap::new();
-        attrs.insert("source_hash".to_string(), aden_core::stable_hash(func.text.as_bytes()));
+        attrs.insert(
+            "source_hash".to_string(),
+            aden_core::stable_hash(func.text.as_bytes()),
+        );
         attrs.insert("last-verified".to_string(), aden_core::rfc3339_now());
         attrs.insert("node-type".to_string(), "function".to_string());
-        attrs.insert("source_file".to_string(), path.to_string_lossy().to_string());
+        attrs.insert(
+            "source_file".to_string(),
+            path.to_string_lossy().to_string(),
+        );
         let mut blocks = Vec::new();
         let params: Vec<Parameter> = func
             .parameters
@@ -127,7 +135,10 @@ pub fn extract_documents(path: &Path, _source: &str) -> Result<Vec<Document>> {
             .collect();
         let mut rows = vec![vec!["Name".to_string(), func.name.clone()]];
         for p in &params {
-            rows.push(vec![format!("param {}", p.name), format!("{}: {}", p.name, p.ty)]);
+            rows.push(vec![
+                format!("param {}", p.name),
+                format!("{}: {}", p.name, p.ty),
+            ]);
         }
         blocks.push(Block::Table(aden_core::Table {
             headers: vec!["Property".to_string(), "Value".to_string()],
@@ -145,10 +156,16 @@ pub fn extract_documents(path: &Path, _source: &str) -> Result<Vec<Document>> {
     for ty in parsed.types {
         let anchor = crate::make_anchor(&crate_name, &file_name, &ty.name);
         let mut attrs = HashMap::new();
-        attrs.insert("source_hash".to_string(), aden_core::stable_hash(ty.text.as_bytes()));
+        attrs.insert(
+            "source_hash".to_string(),
+            aden_core::stable_hash(ty.text.as_bytes()),
+        );
         attrs.insert("last-verified".to_string(), aden_core::rfc3339_now());
         attrs.insert("node-type".to_string(), "type".to_string());
-        attrs.insert("source_file".to_string(), path.to_string_lossy().to_string());
+        attrs.insert(
+            "source_file".to_string(),
+            path.to_string_lossy().to_string(),
+        );
         let mut blocks = Vec::new();
         let mut rows = vec![vec!["Kind".to_string(), ty.ty.clone()]];
         for m in &ty.members {

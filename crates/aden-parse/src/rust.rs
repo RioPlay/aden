@@ -14,10 +14,8 @@
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 // GNU Affero General Public License for more details.
 //
-use crate::extractor::{build_code_attributes, make_anchor, LanguageExtractor};
-use aden_core::{
-    Block, Document, NodeType, Parameter, Result, Visibility, FieldDef,
-};
+use crate::extractor::{LanguageExtractor, build_code_attributes, make_anchor};
+use aden_core::{Block, Document, FieldDef, NodeType, Parameter, Result, Visibility};
 use std::path::Path;
 
 /// Deep Rust extractor — implements `LanguageExtractor` for fully-resolved
@@ -86,31 +84,66 @@ pub fn extract_documents_inner(path: &Path, source: &str) -> Result<Vec<Document
                 }
             }
             "function_item" | "function_signature_item" => {
-                if let Some(doc) = extract_function(child, source, path, &crate_name, &file_name, &buffered_comments) {
+                if let Some(doc) = extract_function(
+                    child,
+                    source,
+                    path,
+                    &crate_name,
+                    &file_name,
+                    &buffered_comments,
+                ) {
                     docs.push(doc);
                 }
                 buffered_comments.clear();
             }
             "struct_item" => {
-                if let Some(doc) = extract_struct(child, source, path, &crate_name, &file_name, &buffered_comments) {
+                if let Some(doc) = extract_struct(
+                    child,
+                    source,
+                    path,
+                    &crate_name,
+                    &file_name,
+                    &buffered_comments,
+                ) {
                     docs.push(doc);
                 }
                 buffered_comments.clear();
             }
             "enum_item" => {
-                if let Some(doc) = extract_enum(child, source, path, &crate_name, &file_name, &buffered_comments) {
+                if let Some(doc) = extract_enum(
+                    child,
+                    source,
+                    path,
+                    &crate_name,
+                    &file_name,
+                    &buffered_comments,
+                ) {
                     docs.push(doc);
                 }
                 buffered_comments.clear();
             }
             "mod_item" => {
-                if let Some(doc) = extract_module(child, source, path, &crate_name, &file_name, &buffered_comments) {
+                if let Some(doc) = extract_module(
+                    child,
+                    source,
+                    path,
+                    &crate_name,
+                    &file_name,
+                    &buffered_comments,
+                ) {
                     docs.push(doc);
                 }
                 buffered_comments.clear();
             }
             "trait_item" => {
-                if let Some(doc) = extract_trait(child, source, path, &crate_name, &file_name, &buffered_comments) {
+                if let Some(doc) = extract_trait(
+                    child,
+                    source,
+                    path,
+                    &crate_name,
+                    &file_name,
+                    &buffered_comments,
+                ) {
                     docs.push(doc);
                 }
                 buffered_comments.clear();
@@ -125,10 +158,12 @@ fn infer_crate_name(path: &Path) -> String {
     let components: Vec<_> = path.components().collect();
     for (i, component) in components.iter().enumerate() {
         if let std::path::Component::Normal(name) = component
-            && **name == *std::ffi::OsStr::new("crates") && i + 1 < components.len()
-                && let std::path::Component::Normal(crate_name) = &components[i + 1] {
-                    return crate_name.to_string_lossy().to_string();
-                }
+            && **name == *std::ffi::OsStr::new("crates")
+            && i + 1 < components.len()
+            && let std::path::Component::Normal(crate_name) = &components[i + 1]
+        {
+            return crate_name.to_string_lossy().to_string();
+        }
     }
     path.parent()
         .and_then(|p| p.file_name())
@@ -157,9 +192,13 @@ fn get_visibility_with_source(node: tree_sitter::Node, source: &str) -> Visibili
     if let Some(vis) = node.child_by_field_name("visibility_modifier") {
         let text = node_text(vis, source);
         if text.starts_with("pub(") {
-            if text.contains("crate") { Visibility::Crate }
-            else if text.contains("super") { Visibility::Super }
-            else { Visibility::Public }
+            if text.contains("crate") {
+                Visibility::Crate
+            } else if text.contains("super") {
+                Visibility::Super
+            } else {
+                Visibility::Public
+            }
         } else {
             Visibility::Public
         }
@@ -180,9 +219,15 @@ fn process_line_comment(node: tree_sitter::Node, source: &str) -> Option<String>
 fn process_block_comment(node: tree_sitter::Node, source: &str) -> Option<String> {
     let text = node_text(node, source);
     if text.starts_with("/**") && text.ends_with("*/") {
-        let inner = &text[3..text.len()-2];
-        let lines: Vec<String> = inner.lines()
-            .map(|l| l.trim_start().trim_start_matches('*').trim_start().to_string())
+        let inner = &text[3..text.len() - 2];
+        let lines: Vec<String> = inner
+            .lines()
+            .map(|l| {
+                l.trim_start()
+                    .trim_start_matches('*')
+                    .trim_start()
+                    .to_string()
+            })
             .filter(|l| !l.is_empty())
             .collect();
         Some(lines.join("\n"))
@@ -206,8 +251,12 @@ fn extract_function(
     let mut is_unsafe = false;
     if let Some(modifiers) = node.child_by_field_name("function_modifiers") {
         let mod_text = node_text(modifiers, source);
-        if mod_text.contains("async") { is_async = true; }
-        if mod_text.contains("unsafe") { is_unsafe = true; }
+        if mod_text.contains("async") {
+            is_async = true;
+        }
+        if mod_text.contains("unsafe") {
+            is_unsafe = true;
+        }
     }
     let mut params = Vec::new();
     if let Some(params_node) = node.child_by_field_name("parameters") {
@@ -272,11 +321,13 @@ fn extract_function(
     // Extract call sites from function body
     if let Some(body) = node.child_by_field_name("body") {
         let calls = extract_call_sites(body, source);
-        let filtered: Vec<_> = calls.into_iter()
+        let filtered: Vec<_> = calls
+            .into_iter()
             .filter(|(c, _)| !is_std_noise(c))
             .collect();
         if !filtered.is_empty() {
-            let call_rows: Vec<Vec<String>> = filtered.iter()
+            let call_rows: Vec<Vec<String>> = filtered
+                .iter()
                 .map(|(callee, line)| vec![callee.clone(), line.to_string()])
                 .collect();
             blocks.push(Block::Table(aden_core::Table {
@@ -284,7 +335,8 @@ fn extract_function(
                 rows: call_rows,
             }));
             // Emit typed edge macros as a listing block for graph ingestion
-            let edge_code: String = filtered.iter()
+            let edge_code: String = filtered
+                .iter()
                 .map(|(callee, _)| format!("edge::calls[{}]", callee))
                 .collect::<Vec<_>>()
                 .join("\n");
@@ -298,7 +350,8 @@ fn extract_function(
     if !buffered_comments.is_empty() {
         blocks.push(Block::Admonition {
             kind: aden_core::AdmonitionKind::Note,
-            text: "Extracted from source code via tree-sitter. Confidence is heuristic.".to_string(),
+            text: "Extracted from source code via tree-sitter. Confidence is heuristic."
+                .to_string(),
         });
     }
     Some(Document {
@@ -313,21 +366,96 @@ fn extract_function(
 /// Standard-library and common utility functions to exclude from call-graph extraction.
 /// These generate noise (to_string, push, unwrap, etc.) without meaningful cross-module edges.
 const SKIP_CALLEES: &[&str] = &[
-    "to_string", "to_string_lossy", "to_str", "to_path_buf", "to_owned",
-    "clone", "copy", "eq", "ne", "partial_cmp", "cmp",
-    "push", "pop", "insert", "remove", "clear", "extend", "append",
-    "map", "filter", "fold", "collect", "join", "split", "iter", "into_iter",
-    "contains", "is_empty", "len", "get", "get_mut", "entry",
-    "unwrap", "unwrap_or", "unwrap_or_else", "expect", "ok", "err", "map_err",
-    "new", "default", "from", "into", "try_from", "try_into",
-    "parse", "format", "write", "writeln", "print", "println", "eprintln",
-    "walk", "children", "goto_first_child", "goto_next_sibling", "goto_parent",
-    "kind", "utf8_text", "start_position", "end_position", "start_byte", "end_byte",
-    "is_named", "is_ok", "is_err", "is_some", "is_none",
-    "as_ref", "as_mut", "as_str", "as_bytes", "as_path",
-    "chars", "lines", "bytes", "trim", "trim_start", "trim_end",
-    "read_to_string", "read_dir", "read", "write_all", "create_dir_all",
-    "canonicalize", "join", "parent", "extension", "file_name", "file_stem",
+    "to_string",
+    "to_string_lossy",
+    "to_str",
+    "to_path_buf",
+    "to_owned",
+    "clone",
+    "copy",
+    "eq",
+    "ne",
+    "partial_cmp",
+    "cmp",
+    "push",
+    "pop",
+    "insert",
+    "remove",
+    "clear",
+    "extend",
+    "append",
+    "map",
+    "filter",
+    "fold",
+    "collect",
+    "join",
+    "split",
+    "iter",
+    "into_iter",
+    "contains",
+    "is_empty",
+    "len",
+    "get",
+    "get_mut",
+    "entry",
+    "unwrap",
+    "unwrap_or",
+    "unwrap_or_else",
+    "expect",
+    "ok",
+    "err",
+    "map_err",
+    "new",
+    "default",
+    "from",
+    "into",
+    "try_from",
+    "try_into",
+    "parse",
+    "format",
+    "write",
+    "writeln",
+    "print",
+    "println",
+    "eprintln",
+    "walk",
+    "children",
+    "goto_first_child",
+    "goto_next_sibling",
+    "goto_parent",
+    "kind",
+    "utf8_text",
+    "start_position",
+    "end_position",
+    "start_byte",
+    "end_byte",
+    "is_named",
+    "is_ok",
+    "is_err",
+    "is_some",
+    "is_none",
+    "as_ref",
+    "as_mut",
+    "as_str",
+    "as_bytes",
+    "as_path",
+    "chars",
+    "lines",
+    "bytes",
+    "trim",
+    "trim_start",
+    "trim_end",
+    "read_to_string",
+    "read_dir",
+    "read",
+    "write_all",
+    "create_dir_all",
+    "canonicalize",
+    "join",
+    "parent",
+    "extension",
+    "file_name",
+    "file_stem",
 ];
 
 fn is_std_noise(name: &str) -> bool {
@@ -344,16 +472,14 @@ fn extract_call_sites(node: tree_sitter::Node, source: &str) -> Vec<(String, usi
         calls.extend(extract_call_sites(child, source));
     }
     if node.kind() == "call_expression"
-        && let Some(func) = node.child_by_field_name("function") {
-            let callee = resolve_callee_name(func, source);
-            if !callee.is_empty()
-                && callee.len() >= 3
-                && !SKIP_CALLEES.contains(&callee.as_str())
-            {
-                let line = func.start_position().row + 1;
-                calls.push((callee, line));
-            }
+        && let Some(func) = node.child_by_field_name("function")
+    {
+        let callee = resolve_callee_name(func, source);
+        if !callee.is_empty() && callee.len() >= 3 && !SKIP_CALLEES.contains(&callee.as_str()) {
+            let line = func.start_position().row + 1;
+            calls.push((callee, line));
         }
+    }
     calls
 }
 
@@ -376,7 +502,11 @@ fn resolve_callee_name(node: tree_sitter::Node, source: &str) -> String {
                 }
             }
             if name_parts.len() >= 2 {
-                format!("{}::{}", name_parts[name_parts.len() - 2], name_parts[name_parts.len() - 1])
+                format!(
+                    "{}::{}",
+                    name_parts[name_parts.len() - 2],
+                    name_parts[name_parts.len() - 1]
+                )
             } else if !name_parts.is_empty() {
                 name_parts.last().unwrap().to_string()
             } else {
@@ -404,17 +534,22 @@ fn extract_struct(
         for child in body.children(&mut bc) {
             if child.kind() == "field_declaration"
                 && let Some(fname) = child.child_by_field_name("name")
-                    && let Some(fty) = child.child_by_field_name("type") {
-                        let f_vis = get_visibility_with_source(child, source);
-                        fields.push(FieldDef {
-                            name: node_text(fname, source).to_string(),
-                            ty: node_text(fty, source).to_string(),
-                            visibility: f_vis,
-                        });
-                    }
+                && let Some(fty) = child.child_by_field_name("type")
+            {
+                let f_vis = get_visibility_with_source(child, source);
+                fields.push(FieldDef {
+                    name: node_text(fname, source).to_string(),
+                    ty: node_text(fty, source).to_string(),
+                    visibility: f_vis,
+                });
+            }
         }
     }
-    let doc_comment = if buffered_comments.is_empty() { None } else { Some(buffered_comments.join("\n")) };
+    let doc_comment = if buffered_comments.is_empty() {
+        None
+    } else {
+        Some(buffered_comments.join("\n"))
+    };
     let anchor = make_anchor(crate_name, file_name, name);
     let span = node_to_span(node, path);
     let attrs = build_code_attributes(source, "type", Some(path), Some(&span));
@@ -436,7 +571,8 @@ fn extract_struct(
     if !buffered_comments.is_empty() {
         blocks.push(Block::Admonition {
             kind: aden_core::AdmonitionKind::Note,
-            text: "Extracted from source code via tree-sitter. Confidence is heuristic.".to_string(),
+            text: "Extracted from source code via tree-sitter. Confidence is heuristic."
+                .to_string(),
         });
     }
     Some(Document {
@@ -464,16 +600,21 @@ fn extract_enum(
         let mut bc = body.walk();
         for child in body.children(&mut bc) {
             if child.kind() == "enum_variant"
-                && let Some(vname) = child.child_by_field_name("name") {
-                    variants.push(FieldDef {
-                        name: node_text(vname, source).to_string(),
-                        ty: String::new(),
-                        visibility: vis.clone(),
-                    });
-                }
+                && let Some(vname) = child.child_by_field_name("name")
+            {
+                variants.push(FieldDef {
+                    name: node_text(vname, source).to_string(),
+                    ty: String::new(),
+                    visibility: vis.clone(),
+                });
+            }
         }
     }
-    let doc_comment = if buffered_comments.is_empty() { None } else { Some(buffered_comments.join("\n")) };
+    let doc_comment = if buffered_comments.is_empty() {
+        None
+    } else {
+        Some(buffered_comments.join("\n"))
+    };
     let anchor = make_anchor(crate_name, file_name, name);
     let span = node_to_span(node, path);
     let attrs = build_code_attributes(source, "type", Some(path), Some(&span));
@@ -492,7 +633,8 @@ fn extract_enum(
     if !buffered_comments.is_empty() {
         blocks.push(Block::Admonition {
             kind: aden_core::AdmonitionKind::Note,
-            text: "Extracted from source code via tree-sitter. Confidence is heuristic.".to_string(),
+            text: "Extracted from source code via tree-sitter. Confidence is heuristic."
+                .to_string(),
         });
     }
     Some(Document {

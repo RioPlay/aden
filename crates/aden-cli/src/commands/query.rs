@@ -3,16 +3,14 @@ use std::path::{Path, PathBuf};
 
 use aden_graph::Direction;
 
-use crate::types::{get_anchor_aliases, AnchorPattern, QueryIntent};
-use aden_index::SearchResult;
+use crate::types::{AnchorPattern, QueryIntent, get_anchor_aliases};
 use crate::util::{
-    load_or_build_index, node_to_json, parse_single_edge_type, perform_check, sanitize_anchor, sanitize_source_file, valid_edge_types,
+    load_or_build_index, node_to_json, parse_single_edge_type, perform_check, sanitize_anchor,
+    sanitize_source_file, valid_edge_types,
 };
+use aden_index::SearchResult;
 
-fn resolve_anchor_fuzzy(
-    query: &str,
-    results: &[SearchResult],
-) -> String {
+fn resolve_anchor_fuzzy(query: &str, results: &[SearchResult]) -> String {
     if results.is_empty() {
         return "readme".to_string();
     }
@@ -25,9 +23,10 @@ fn resolve_anchor_fuzzy(
         if query_lower.contains(alias) {
             // Check if any result anchor contains the target (more flexible matching)
             // Also check starts_with for exact module matches
-            if let Some(matched) = results.iter().find(|r| {
-                r.anchor.starts_with(target_anchor) || r.anchor.contains(target_anchor)
-            }) {
+            if let Some(matched) = results
+                .iter()
+                .find(|r| r.anchor.starts_with(target_anchor) || r.anchor.contains(target_anchor))
+            {
                 return matched.anchor.clone();
             }
         }
@@ -48,9 +47,10 @@ fn resolve_anchor_fuzzy(
     // Step 3: If we have a mod-* result but readme is first, prefer mod-*
     let first_is_module = results[0].anchor.starts_with("mod-");
     if !first_is_module
-        && let Some(mod_result) = results.iter().find(|r| r.anchor.starts_with("mod-")) {
-            return mod_result.anchor.clone();
-        }
+        && let Some(mod_result) = results.iter().find(|r| r.anchor.starts_with("mod-"))
+    {
+        return mod_result.anchor.clone();
+    }
 
     best_result.anchor.clone()
 }
@@ -64,7 +64,13 @@ pub fn cmd_check(path: &Path, severity: &str) -> Result<(), Box<dyn std::error::
         "suggest" => 0,
         "warn" => 1,
         "forbid" => 2,
-        _ => return Err(format!("Invalid severity '{}': use Suggest, Warn, or Forbid", severity).into()),
+        _ => {
+            return Err(format!(
+                "Invalid severity '{}': use Suggest, Warn, or Forbid",
+                severity
+            )
+            .into());
+        }
     };
 
     let messages = perform_check(path)?;
@@ -97,8 +103,6 @@ pub fn cmd_check(path: &Path, severity: &str) -> Result<(), Box<dyn std::error::
     Ok(())
 }
 
-
-
 #[derive(Clone)]
 pub struct AsmOptions {
     pub path: PathBuf,
@@ -114,7 +118,7 @@ pub struct AsmOptions {
 }
 
 pub fn cmd_asm(opts: AsmOptions) -> Result<(), Box<dyn std::error::Error>> {
-    use aden_asm::traverse::{assemble, assemble_adg, AssemblyOptions};
+    use aden_asm::traverse::{AssemblyOptions, assemble, assemble_adg};
 
     if !opts.path.is_dir() {
         return Err("asm requires a directory path".into());
@@ -132,7 +136,8 @@ pub fn cmd_asm(opts: AsmOptions) -> Result<(), Box<dyn std::error::Error>> {
         let budget = if results.is_empty() {
             opts.budget
         } else {
-            let avg_score: f64 = results.iter().map(|r| r.score).sum::<f64>() / results.len() as f64;
+            let avg_score: f64 =
+                results.iter().map(|r| r.score).sum::<f64>() / results.len() as f64;
             let boost = (avg_score * 2.0).min(3.0) as usize;
             (opts.budget * (1 + boost)).min(32000)
         };
@@ -218,12 +223,18 @@ pub fn cmd_query(
     let mut results = Vec::new();
 
     if let Some(anchor) = from {
-        let start_idx = graph
-            .get_index(anchor)
-            .ok_or_else(|| format!("Anchor '{}' not found. Run 'aden list .' to see available anchors.", anchor))?;
+        let start_idx = graph.get_index(anchor).ok_or_else(|| {
+            format!(
+                "Anchor '{}' not found. Run 'aden list .' to see available anchors.",
+                anchor
+            )
+        })?;
         let filter_type = if let Some(et) = edge_type {
             let valid = valid_edge_types().join(", ");
-            Some(parse_single_edge_type(et).ok_or_else(|| format!("invalid edge type: '{}'. Valid: {}", et, valid))?)
+            Some(
+                parse_single_edge_type(et)
+                    .ok_or_else(|| format!("invalid edge type: '{}'. Valid: {}", et, valid))?,
+            )
         } else {
             None
         };
@@ -239,14 +250,17 @@ pub fn cmd_query(
                 continue;
             }
             for neighbor in graph.graph.neighbors_directed(node, Direction::Outgoing) {
-                let weight = graph.graph.find_edge(node, neighbor)
+                let weight = graph
+                    .graph
+                    .find_edge(node, neighbor)
                     .and_then(|e| graph.graph.edge_weight(e))
                     .copied()
                     .unwrap_or(aden_core::EdgeType::Uses);
                 if let Some(ft) = filter_type
-                    && weight != ft {
-                        continue;
-                    }
+                    && weight != ft
+                {
+                    continue;
+                }
                 if visited.insert(neighbor) {
                     results.push(node_to_json(&graph.graph[neighbor], d + 1));
                     queue.push_back((neighbor, d + 1));
@@ -254,20 +268,31 @@ pub fn cmd_query(
             }
         }
     } else if let Some(anchor) = backlinks {
-        let target_idx = graph
-            .get_index(anchor)
-            .ok_or_else(|| format!("Anchor '{}' not found. Run 'aden list .' to see available anchors.", anchor))?;
-        for neighbor in graph.graph.neighbors_directed(target_idx, Direction::Incoming) {
+        let target_idx = graph.get_index(anchor).ok_or_else(|| {
+            format!(
+                "Anchor '{}' not found. Run 'aden list .' to see available anchors.",
+                anchor
+            )
+        })?;
+        for neighbor in graph
+            .graph
+            .neighbors_directed(target_idx, Direction::Incoming)
+        {
             results.push(node_to_json(&graph.graph[neighbor], 1));
         }
     } else if let Some(anchor) = impact {
-        let start_idx = graph
-            .get_index(anchor)
-            .ok_or_else(|| format!("Anchor '{}' not found. Run 'aden list .' to see available anchors.", anchor))?;
-        let impact_types = [aden_core::EdgeType::Uses,
+        let start_idx = graph.get_index(anchor).ok_or_else(|| {
+            format!(
+                "Anchor '{}' not found. Run 'aden list .' to see available anchors.",
+                anchor
+            )
+        })?;
+        let impact_types = [
+            aden_core::EdgeType::Uses,
             aden_core::EdgeType::Calls,
             aden_core::EdgeType::Constrains,
-            aden_core::EdgeType::Invokes];
+            aden_core::EdgeType::Invokes,
+        ];
 
         let mut visited = HashSet::new();
         let mut queue = VecDeque::new();
@@ -277,7 +302,9 @@ pub fn cmd_query(
 
         while let Some((node, d)) = queue.pop_front() {
             for neighbor in graph.graph.neighbors_directed(node, Direction::Outgoing) {
-                let weight = graph.graph.find_edge(node, neighbor)
+                let weight = graph
+                    .graph
+                    .find_edge(node, neighbor)
                     .and_then(|e| graph.graph.edge_weight(e))
                     .copied()
                     .unwrap_or(aden_core::EdgeType::Uses);
@@ -309,15 +336,32 @@ pub fn cmd_query(
 /// Intent classification helpers.
 pub fn classify_intent(question: &str) -> QueryIntent {
     let q = question.to_lowercase();
-    if q.contains("fail") || q.contains("error") || q.contains("panic") || q.contains("crash") || q.contains("broken") {
+    if q.contains("fail")
+        || q.contains("error")
+        || q.contains("panic")
+        || q.contains("crash")
+        || q.contains("broken")
+    {
         QueryIntent::Debug
-    } else if q.contains("how do i") || q.contains("how to") || q.contains("usage") || q.contains("example") {
+    } else if q.contains("how do i")
+        || q.contains("how to")
+        || q.contains("usage")
+        || q.contains("example")
+    {
         QueryIntent::Usage
     } else if q.contains("refactor") || q.contains("rewrite") || q.contains("rename") {
         QueryIntent::Refactor
-    } else if q.contains("depend") || q.contains("blast radius") || q.contains("what uses") || q.contains("who calls") {
+    } else if q.contains("depend")
+        || q.contains("blast radius")
+        || q.contains("what uses")
+        || q.contains("who calls")
+    {
         QueryIntent::Impact
-    } else if q.contains("what is") || q.contains("what does") || q.contains("explain") || q.contains("how does") {
+    } else if q.contains("what is")
+        || q.contains("what does")
+        || q.contains("explain")
+        || q.contains("how does")
+    {
         QueryIntent::Explain
     } else {
         QueryIntent::General
@@ -366,7 +410,7 @@ pub fn cmd_ask(
     budget: usize,
     model: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use aden_asm::traverse::{assemble, AssemblyOptions};
+    use aden_asm::traverse::{AssemblyOptions, assemble};
 
     if !path.is_dir() {
         return Err("ask requires a directory path".into());
@@ -380,7 +424,9 @@ pub fn cmd_ask(
         let results = idx.query(question);
         if results.is_empty() {
             println!("No relevant documents found for: {}", question);
-            println!("Tips:\n  - Use more specific keywords from the codebase.\n  - Try `aden search <term>` to see available anchors.\n  - Or pin an anchor with --from <anchor>.");
+            println!(
+                "Tips:\n  - Use more specific keywords from the codebase.\n  - Try `aden search <term>` to see available anchors.\n  - Or pin an anchor with --from <anchor>."
+            );
             return Ok(());
         }
         resolve_anchor_fuzzy(question, &results)
@@ -397,8 +443,16 @@ pub fn cmd_ask(
     let edge_types = edge_types_for_intent(&intent);
     let depth = depth_for_intent(&intent);
 
-    println!("// Strategy: {:?} | Depth: {} | Edges: {:?}", intent, depth,
-             edge_types.iter().map(|e| format!("{:?}", e)).collect::<Vec<_>>().join(", "));
+    println!(
+        "// Strategy: {:?} | Depth: {} | Edges: {:?}",
+        intent,
+        depth,
+        edge_types
+            .iter()
+            .map(|e| format!("{:?}", e))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
     println!();
 
     // Step 3: Build graph and assemble context
@@ -406,13 +460,18 @@ pub fn cmd_ask(
 
     // Verify anchor exists, fallback if not found
     if !graph.anchor_to_index.contains_key(&start_anchor) {
-        println!("WARNING: Anchor '{}' not found. Falling back to 'readme'.", start_anchor);
+        println!(
+            "WARNING: Anchor '{}' not found. Falling back to 'readme'.",
+            start_anchor
+        );
         println!("         Use 'aden list .' to see available anchors.\n");
         let fallback = "readme";
         if graph.anchor_to_index.contains_key(fallback) {
             start_anchor = fallback.to_string();
         } else {
-            return Err("No valid anchors found. Run 'aden list .' to see available anchors.".into());
+            return Err(
+                "No valid anchors found. Run 'aden list .' to see available anchors.".into(),
+            );
         }
     }
 
@@ -431,7 +490,11 @@ pub fn cmd_ask(
         query_llm(model_spec, question, &assembled, &start_anchor)?;
     } else {
         let consumed = assembled.len();
-        let budget_label = if consumed > budget { "OVER BUDGET" } else { "on budget" };
+        let budget_label = if consumed > budget {
+            "OVER BUDGET"
+        } else {
+            "on budget"
+        };
         let page_breaks = assembled.matches("\n<<<\n").count();
         let node_count = page_breaks + 1;
 
@@ -442,7 +505,10 @@ pub fn cmd_ask(
         println!("//   Question: {}", question);
         println!("//   Anchor  : [[{}]]", start_anchor);
         println!("//   Strategy: {:?} | Depth: {}", intent, depth);
-        println!("//   Nodes   : {} | Bytes: {} / {} ({})", node_count, consumed, budget, budget_label);
+        println!(
+            "//   Nodes   : {} | Bytes: {} / {} ({})",
+            node_count, consumed, budget, budget_label
+        );
         println!("// ────────────────────────────────────────────────");
     }
 
@@ -472,10 +538,17 @@ Context begins below (--- separates different documents):
         (&model_spec[..pos], &model_spec[pos + 1..])
     } else {
         // Auto-detect: try ollama first
-        if std::process::Command::new("ollama").arg("list").output().is_ok() {
+        if std::process::Command::new("ollama")
+            .arg("list")
+            .output()
+            .is_ok()
+        {
             ("ollama", model_spec)
         } else {
-            return Err("No LLM provider prefix given (e.g., ollama:llama3) and ollama is not available".into());
+            return Err(
+                "No LLM provider prefix given (e.g., ollama:llama3) and ollama is not available"
+                    .into(),
+            );
         }
     };
 
@@ -521,10 +594,14 @@ Context begins below (--- separates different documents):
 
             let output = std::process::Command::new("curl")
                 .args([
-                    "-sS", "https://api.openai.com/v1/chat/completions",
-                    "-H", &format!("Authorization: Bearer {}", api_key),
-                    "-H", "Content-Type: application/json",
-                    "-d", &payload.to_string(),
+                    "-sS",
+                    "https://api.openai.com/v1/chat/completions",
+                    "-H",
+                    &format!("Authorization: Bearer {}", api_key),
+                    "-H",
+                    "Content-Type: application/json",
+                    "-d",
+                    &payload.to_string(),
                 ])
                 .output()?;
 
@@ -533,7 +610,10 @@ Context begins below (--- separates different documents):
                 if let Some(content) = json["choices"][0]["message"]["content"].as_str() {
                     println!("\n=== LLM Response ===\n{}", content);
                 } else {
-                    println!("Unexpected OpenAI response: {}", String::from_utf8_lossy(&output.stdout));
+                    println!(
+                        "Unexpected OpenAI response: {}",
+                        String::from_utf8_lossy(&output.stdout)
+                    );
                 }
             } else {
                 let stderr = String::from_utf8_lossy(&output.stderr);
@@ -559,12 +639,16 @@ pub fn cmd_query_adq(path: &Path, script: &str) -> Result<(), Box<dyn std::error
 
     let graph = aden_graph::cache::build_from_directory_cached(path)?;
     let result = aden_graph::query::execute_adq(&graph, script)?;
-    
+
     println!("{}", serde_json::to_string_pretty(&result)?);
     Ok(())
 }
 
-pub fn cmd_search(path: &Path, query: &str, limit: usize) -> Result<(), Box<dyn std::error::Error>> {
+pub fn cmd_search(
+    path: &Path,
+    query: &str,
+    limit: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
     if !path.is_dir() {
         return Err("search requires a directory path".into());
     }
@@ -578,7 +662,7 @@ pub fn cmd_search(path: &Path, query: &str, limit: usize) -> Result<(), Box<dyn 
     }
 
     let limited: Vec<_> = results.into_iter().take(limit).collect();
-    
+
     println!("| Anchor | Score | Snippet |");
     println!("|=== |");
     for r in &limited {
@@ -603,9 +687,11 @@ pub fn cmd_list(
     }
 
     let graph = aden_graph::cache::build_from_directory_cached(path)?;
-    let anchors: Vec<_> = graph.graph.node_indices().filter_map(|idx| {
-        graph.graph.node_weight(idx).map(|n| n.anchor.clone())
-    }).collect();
+    let anchors: Vec<_> = graph
+        .graph
+        .node_indices()
+        .filter_map(|idx| graph.graph.node_weight(idx).map(|n| n.anchor.clone()))
+        .collect();
 
     let filtered: Vec<_> = match filter {
         Some(f) => anchors.iter().filter(|a| a.contains(f)).cloned().collect(),
@@ -615,7 +701,11 @@ pub fn cmd_list(
 
     let limited: Vec<_> = filtered.into_iter().take(limit).collect();
 
-    println!("Anchors in {} (showing {}/total)", path.display(), limited.len());
+    println!(
+        "Anchors in {} (showing {}/total)",
+        path.display(),
+        limited.len()
+    );
     println!();
 
     if verbose {
@@ -623,8 +713,14 @@ pub fn cmd_list(
         println!("|=== |");
         for anchor in &limited {
             if let Some(idx) = graph.anchor_to_index.get(anchor)
-                && let Some(n) = graph.graph.node_weight(*idx) {
-                let node_type = n.doc.attributes.get("node-type").cloned().unwrap_or_else(|| "unknown".to_string());
+                && let Some(n) = graph.graph.node_weight(*idx)
+            {
+                let node_type = n
+                    .doc
+                    .attributes
+                    .get("node-type")
+                    .cloned()
+                    .unwrap_or_else(|| "unknown".to_string());
                 let source = n.source_path.to_string_lossy().to_string();
                 println!("| {} | {} | {} |", anchor, node_type, source);
             }
@@ -638,7 +734,10 @@ pub fn cmd_list(
     }
 
     if limited.len() == limit && filtered_count > limit {
-        println!("\n... {} more (use --limit to see more)", filtered_count - limit);
+        println!(
+            "\n... {} more (use --limit to see more)",
+            filtered_count - limit
+        );
     }
 
     Ok(())
@@ -646,7 +745,10 @@ pub fn cmd_list(
 
 fn print_locate_results(hits: &[serde_json::Value], format: &str) {
     if format == "json" {
-        println!("{}", serde_json::to_string_pretty(&hits).unwrap_or_default());
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&hits).unwrap_or_default()
+        );
         return;
     }
     // Token-efficient output: compact format
@@ -721,12 +823,17 @@ pub fn cmd_locate(
             for node in graph.graph.node_indices() {
                 let anchor = &graph.graph[node].anchor;
                 let anchor_lower = anchor.to_lowercase();
-                if anchor_lower.contains(&search_term) || anchor_lower.split('#').any(|p| p.contains(&search_term)) {
+                if anchor_lower.contains(&search_term)
+                    || anchor_lower.split('#').any(|p| p.contains(&search_term))
+                {
                     let attrs = &graph.graph[node].doc.attributes;
                     let file = attrs.get("source_file").cloned().unwrap_or_default();
                     let start_line = attrs.get("start_line").cloned().unwrap_or_default();
                     let end_line = attrs.get("end_line").cloned().unwrap_or_default();
-                    let node_type = attrs.get("node-type").cloned().unwrap_or_else(|| format!("{:?}", graph.graph[node].doc.node_type));
+                    let node_type = attrs
+                        .get("node-type")
+                        .cloned()
+                        .unwrap_or_else(|| format!("{:?}", graph.graph[node].doc.node_type));
                     fuzzy_hits.push(json!({
                         "anchor": anchor,
                         "node_type": node_type,
@@ -741,9 +848,13 @@ pub fn cmd_locate(
                 // Fall back to full-text search index
                 let index = load_or_build_index(path)?;
                 let search_results = index.query(sym);
-                
+
                 if !search_results.is_empty() {
-                    println!("Found {} match(es) in full-text index for '{}':", search_results.len(), sym);
+                    println!(
+                        "Found {} match(es) in full-text index for '{}':",
+                        search_results.len(),
+                        sym
+                    );
                     println!("| Anchor | Score | Snippet |");
                     println!("|=== |");
                     for r in search_results.iter().take(limit) {
@@ -756,9 +867,12 @@ pub fn cmd_locate(
                     }
                     return Ok(());
                 }
-                
+
                 println!("No symbol found matching '{}'", sym);
-                println!("Hint: Try 'aden search \"{}\"' to find related anchors", sym);
+                println!(
+                    "Hint: Try 'aden search \"{}\"' to find related anchors",
+                    sym
+                );
                 return Ok(());
             }
             println!("Found {} fuzzy match(es) for '{}':", fuzzy_hits.len(), sym);
@@ -807,15 +921,53 @@ pub fn cmd_watch(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     )?;
 
     watcher.watch(path, RecursiveMode::Recursive)?;
-    println!("Watching {} for changes... Press Ctrl+C to stop.", path.display());
+    println!(
+        "Watching {} for changes... Press Ctrl+C to stop.",
+        path.display()
+    );
 
     // Supported source extensions that parse_file can handle
     let source_exts = [
-        "rs", "py", "js", "ts", "tsx", "jsx", "mjs", "cjs", "go",
-        "java", "c", "cpp", "cc", "cxx", "h", "hpp", "rb", "cs",
-        "swift", "kt", "scala", "zig", "lua", "hs", "ml", "php",
-        "ex", "exs", "erl", "gleam", "sh", "bash", "dockerfile",
-        "html", "css", "scss", "vue", "svelte", "proto", "tf",
+        "rs",
+        "py",
+        "js",
+        "ts",
+        "tsx",
+        "jsx",
+        "mjs",
+        "cjs",
+        "go",
+        "java",
+        "c",
+        "cpp",
+        "cc",
+        "cxx",
+        "h",
+        "hpp",
+        "rb",
+        "cs",
+        "swift",
+        "kt",
+        "scala",
+        "zig",
+        "lua",
+        "hs",
+        "ml",
+        "php",
+        "ex",
+        "exs",
+        "erl",
+        "gleam",
+        "sh",
+        "bash",
+        "dockerfile",
+        "html",
+        "css",
+        "scss",
+        "vue",
+        "svelte",
+        "proto",
+        "tf",
         "cmake",
     ];
 
@@ -835,9 +987,16 @@ pub fn cmd_watch(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
                                 for doc in &mut docs {
                                     sanitize_source_file(doc);
                                     let safe_anchor = sanitize_anchor(&doc.anchor);
-                                    let out_path = contracts_dir.join(format!("{}.adoc", safe_anchor));
-                                    if let Err(e) = std::fs::write(&out_path, aden_emit::emit_document(doc)) {
-                                        eprintln!("ERROR: Failed to write {}: {}", out_path.display(), e);
+                                    let out_path =
+                                        contracts_dir.join(format!("{}.adoc", safe_anchor));
+                                    if let Err(e) =
+                                        std::fs::write(&out_path, aden_emit::emit_document(doc))
+                                    {
+                                        eprintln!(
+                                            "ERROR: Failed to write {}: {}",
+                                            out_path.display(),
+                                            e
+                                        );
                                     } else {
                                         println!("INFO: Regenerated {}", out_path.display());
                                     }

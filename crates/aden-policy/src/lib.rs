@@ -58,11 +58,17 @@ pub enum DirectiveKind {
     /// Require a specific coding pattern.
     RequirePattern { pattern: String },
     /// Constraint on function contracts.
-    ContractConstraint { pre: Option<String>, post: Option<String> },
+    ContractConstraint {
+        pre: Option<String>,
+        post: Option<String>,
+    },
     /// Agent self-modification policy.
     SelfModificationPolicy { action: String },
     /// Custom directive parsed from block attributes.
-    Custom { name: String, params: HashMap<String, String> },
+    Custom {
+        name: String,
+        params: HashMap<String, String>,
+    },
 }
 
 /// A single directive extracted from a `[security]` or `[constitution]` block.
@@ -133,7 +139,7 @@ impl PolicyEngine {
     /// Load the bootstrap constitution from `.aden/constitution.adoc`.
     /// This is the root-of-trust for all policy evaluation.
     pub fn load_bootstrap(repo_path: &std::path::Path) -> Result<Self, Box<dyn std::error::Error>> {
-        use aden_core::contract::{parse_contract, ParseMode};
+        use aden_core::contract::{ParseMode, parse_contract};
         use std::path::Path;
 
         let constitution_path: &Path = &repo_path.join(".aden/constitution.adoc");
@@ -153,9 +159,10 @@ impl PolicyEngine {
     pub fn load_from_document(&mut self, doc: &ContractDocument) {
         for block in &doc.blocks {
             if block.region == ContractRegion::Constitution
-                && let Ok(c) = ConstitutionBlock::from_region(block) {
-                    self.constitutions.push(c);
-                }
+                && let Ok(c) = ConstitutionBlock::from_region(block)
+            {
+                self.constitutions.push(c);
+            }
             if block.region == ContractRegion::Override {
                 let key = block.tag.clone().unwrap_or_default();
                 self.overrides.entry(key).or_default().push(block.clone());
@@ -178,11 +185,7 @@ impl PolicyEngine {
         let applicable: Vec<_> = self
             .constitutions
             .iter()
-            .filter(|c| {
-                c.directives.iter().any(|d| {
-                    matches_subject(d, subject)
-                })
-            })
+            .filter(|c| c.directives.iter().any(|d| matches_subject(d, subject)))
             .collect();
 
         if applicable.is_empty() {
@@ -226,8 +229,13 @@ impl PolicyEngine {
 
         let reason = format!(
             "Resolved by severity ranking: {} (score {}) vs {} (score {})",
-            chosen.severity, chosen.severity as u32,
-            if a_score < b_score { agent_b.severity } else { agent_a.severity },
+            chosen.severity,
+            chosen.severity as u32,
+            if a_score < b_score {
+                agent_b.severity
+            } else {
+                agent_a.severity
+            },
             if a_score < b_score { b_score } else { a_score }
         );
 
@@ -237,11 +245,7 @@ impl PolicyEngine {
     /// Evaluate whether a given action is permitted under current policy.
     ///
     /// Returns the effective severity after considering overrides.
-    pub fn evaluate(
-        &self,
-        action: &DirectiveKind,
-        _subject: &str,
-    ) -> DirectiveSeverity {
+    pub fn evaluate(&self, action: &DirectiveKind, _subject: &str) -> DirectiveSeverity {
         // Collect all matching directives
         let mut matches = Vec::new();
         for c in &self.constitutions {
@@ -349,16 +353,10 @@ fn parse_directives_from_content(content: &str) -> Vec<Directive> {
 
 fn matches_subject(directive: &Directive, subject: &str) -> bool {
     match &directive.kind {
-        DirectiveKind::ForbidImport { pattern } => {
-            glob_match(subject, pattern)
-        }
-        DirectiveKind::RequirePattern { pattern } => {
-            glob_match(subject, pattern)
-        }
+        DirectiveKind::ForbidImport { pattern } => glob_match(subject, pattern),
+        DirectiveKind::RequirePattern { pattern } => glob_match(subject, pattern),
         DirectiveKind::ContractConstraint { .. } => true,
-        DirectiveKind::SelfModificationPolicy { action } => {
-            subject.contains(action)
-        }
+        DirectiveKind::SelfModificationPolicy { action } => subject.contains(action),
         DirectiveKind::Custom { .. } => true,
     }
 }
@@ -428,10 +426,7 @@ mod tests {
 
     #[test]
     fn test_conflict_resolution_by_severity() {
-        let block = make_constitution_block(
-            ":forbid_import: unsafe::*\n",
-            "5",
-        );
+        let block = make_constitution_block(":forbid_import: unsafe::*\n", "5");
         let mut engine = PolicyEngine::default();
         let doc = ContractDocument {
             header_attrs: HashMap::new(),
@@ -457,7 +452,9 @@ mod tests {
             attributes: HashMap::new(),
         };
 
-        let (winner, reason) = engine.resolve_conflict(&agent_a, &agent_b, "unsafe::foo").unwrap();
+        let (winner, reason) = engine
+            .resolve_conflict(&agent_a, &agent_b, "unsafe::foo")
+            .unwrap();
         assert_eq!(winner.severity, DirectiveSeverity::Forbid);
         assert!(!reason.is_empty());
     }
@@ -470,7 +467,10 @@ mod tests {
             tag: Some("forbid_import".to_string()),
             attributes: {
                 let mut m = HashMap::new();
-                m.insert("justification".to_string(), "Needed for test harness".to_string());
+                m.insert(
+                    "justification".to_string(),
+                    "Needed for test harness".to_string(),
+                );
                 m.insert("reviewer".to_string(), "alice".to_string());
                 m
             },
@@ -539,7 +539,8 @@ pub fn check_contract_constraints(block: &RegionBlock) -> Vec<ContractViolation>
             violations.push(ContractViolation {
                 block_tag: block.tag.clone(),
                 constraint_type: "empty".to_string(),
-                message: "Contract block has no :pre:, :post:, or :invariant: constraints".to_string(),
+                message: "Contract block has no :pre:, :post:, or :invariant: constraints"
+                    .to_string(),
                 line: block.start_line,
             });
         }
@@ -612,29 +613,29 @@ pub const DEFAULT_CONFIDENCE_THRESHOLD: f64 = 0.70;
 
 pub fn parse_agent_role_from_block(block: &RegionBlock) -> Option<AgentRole> {
     let tag = block.tag.as_ref()?;
-    
+
     if let Some(colon) = tag.find(':') {
         let namespace = tag[..colon].to_string();
         let role = tag[colon + 1..].to_string();
-        
+
         let confidence = block
             .attributes
             .get("confidence")
             .and_then(|s| s.parse().ok())
             .unwrap_or(0.5);
-        
+
         let directives_count = block
             .attributes
             .get("directives")
             .and_then(|s| s.parse().ok())
             .unwrap_or(0);
-        
+
         let successful_directives = block
             .attributes
             .get("successful")
             .and_then(|s| s.parse().ok())
             .unwrap_or(0);
-        
+
         let mut agent = AgentRole {
             namespace,
             role,
@@ -643,7 +644,7 @@ pub fn parse_agent_role_from_block(block: &RegionBlock) -> Option<AgentRole> {
             successful_directives,
         };
         agent.update_confidence();
-        
+
         Some(agent)
     } else {
         None

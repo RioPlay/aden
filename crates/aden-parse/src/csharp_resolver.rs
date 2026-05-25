@@ -16,7 +16,7 @@
 //!   • `partial` class aggregation
 //!   • Generic constraint tracking
 
-use crate::extractor::{build_code_attributes, make_anchor, LanguageExtractor};
+use crate::extractor::{LanguageExtractor, build_code_attributes, make_anchor};
 use aden_core::{Block, Document, NodeType, Parameter, Result};
 use std::path::Path;
 
@@ -60,11 +60,20 @@ impl LanguageExtractor for CSharpResolver {
 
         let mut usings: Vec<CsUsing> = Vec::new();
         let mut symbols: Vec<CsSymbol> = Vec::new();
-        walk_compilation_unit(tree.root_node(), source, &namespace, &file_name, &mut usings, &mut symbols);
+        walk_compilation_unit(
+            tree.root_node(),
+            source,
+            &namespace,
+            &file_name,
+            &mut usings,
+            &mut symbols,
+        );
 
         let mut docs = Vec::new();
         for sym in &symbols {
-            if let Some(doc) = emit_cs_symbol(sym, source, path, &symbols, &usings, &namespace, &file_name) {
+            if let Some(doc) =
+                emit_cs_symbol(sym, source, path, &symbols, &usings, &namespace, &file_name)
+            {
                 docs.push(doc);
             }
         }
@@ -153,14 +162,27 @@ fn extract_doc_comment(node: tree_sitter::Node, source: &str) -> Option<String> 
             break;
         }
     }
-    if comments.is_empty() { None } else { Some(comments.into_iter().rev().collect::<Vec<_>>().join("\n")) }
+    if comments.is_empty() {
+        None
+    } else {
+        Some(comments.into_iter().rev().collect::<Vec<_>>().join("\n"))
+    }
 }
 
 fn extract_visibility(node: tree_sitter::Node, source: &str) -> String {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         let text = node_text(child, source);
-        if matches!(text.trim(), "public" | "private" | "protected" | "internal" | "file" | "protected internal" | "private protected") {
+        if matches!(
+            text.trim(),
+            "public"
+                | "private"
+                | "protected"
+                | "internal"
+                | "file"
+                | "protected internal"
+                | "private protected"
+        ) {
             return text.trim().to_string();
         }
     }
@@ -196,7 +218,9 @@ fn walk_compilation_unit<'a>(
     usings: &mut Vec<CsUsing>,
     symbols: &mut Vec<CsSymbol<'a>>,
 ) {
-    if !node.is_named() { return; }
+    if !node.is_named() {
+        return;
+    }
 
     match node.kind() {
         "using_directive" => {
@@ -204,8 +228,12 @@ fn walk_compilation_unit<'a>(
                 usings.push(u);
             }
         }
-        "class_declaration" | "interface_declaration" | "enum_declaration"
-        | "struct_declaration" | "record_declaration" | "record_struct_declaration" => {
+        "class_declaration"
+        | "interface_declaration"
+        | "enum_declaration"
+        | "struct_declaration"
+        | "record_declaration"
+        | "record_struct_declaration" => {
             parse_type_declaration(node, source, namespace, file_name, symbols);
         }
         "method_declaration" | "local_function_statement" => {
@@ -220,9 +248,15 @@ fn walk_compilation_unit<'a>(
         "field_declaration" => {
             parse_field(node, source, namespace, file_name, symbols);
         }
-        "compilation_unit" | "namespace_declaration" | "namespace_block"
-        | "class_body" | "interface_body" | "struct_body"
-        | "statement" | "block" | "declaration_list" => {
+        "compilation_unit"
+        | "namespace_declaration"
+        | "namespace_block"
+        | "class_body"
+        | "interface_body"
+        | "struct_body"
+        | "statement"
+        | "block"
+        | "declaration_list" => {
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
                 walk_compilation_unit(child, source, namespace, file_name, usings, symbols);
@@ -257,7 +291,8 @@ fn parse_using(node: tree_sitter::Node, source: &str) -> Option<CsUsing> {
         }
     }
 
-    let ns = text.trim_start_matches("using static ")
+    let ns = text
+        .trim_start_matches("using static ")
         .trim_start_matches("using ")
         .trim_end_matches(';')
         .trim();
@@ -296,11 +331,25 @@ fn parse_type_declaration<'a>(
         // Walk body
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
-            if matches!(child.kind(), "class_body" | "interface_body" | "struct_body" | "enum_body" | "record_declaration_body") {
+            if matches!(
+                child.kind(),
+                "class_body"
+                    | "interface_body"
+                    | "struct_body"
+                    | "enum_body"
+                    | "record_declaration_body"
+            ) {
                 let mut cc = child.walk();
                 for grandchild in child.children(&mut cc) {
                     if grandchild.is_named() {
-                        walk_compilation_unit(grandchild, source, namespace, file_name, &mut Vec::new(), symbols);
+                        walk_compilation_unit(
+                            grandchild,
+                            source,
+                            namespace,
+                            file_name,
+                            &mut Vec::new(),
+                            symbols,
+                        );
                     }
                 }
             }
@@ -325,10 +374,12 @@ fn parse_method<'a>(
             let mut pc = params_node.walk();
             for param in params_node.children(&mut pc) {
                 if param.kind() == "parameter" {
-                    let param_type = param.child_by_field_name("type")
+                    let param_type = param
+                        .child_by_field_name("type")
                         .map(|n| node_text(n, source).to_string())
                         .unwrap_or_default();
-                    let param_name = param.child_by_field_name("name")
+                    let param_name = param
+                        .child_by_field_name("name")
                         .map(|n| node_text(n, source).to_string())
                         .unwrap_or_default();
                     params.push(Parameter {
@@ -375,10 +426,12 @@ fn parse_constructor<'a>(
         let mut pc = params_node.walk();
         for param in params_node.children(&mut pc) {
             if param.kind() == "parameter" {
-                let param_type = param.child_by_field_name("type")
+                let param_type = param
+                    .child_by_field_name("type")
                     .map(|n| node_text(n, source).to_string())
                     .unwrap_or_default();
-                let param_name = param.child_by_field_name("name")
+                let param_name = param
+                    .child_by_field_name("name")
                     .map(|n| node_text(n, source).to_string())
                     .unwrap_or_default();
                 params.push(Parameter {
@@ -428,10 +481,17 @@ fn parse_field<'a>(
 fn find_parent_type_name(node: tree_sitter::Node, source: &str) -> Option<String> {
     let mut current = node;
     while let Some(parent) = current.parent() {
-        if matches!(parent.kind(), "class_declaration" | "interface_declaration" | "struct_declaration" | "record_declaration" | "record_struct_declaration")
-            && let Some(name_node) = parent.child_by_field_name("name") {
-                return Some(node_text(name_node, source).to_string());
-            }
+        if matches!(
+            parent.kind(),
+            "class_declaration"
+                | "interface_declaration"
+                | "struct_declaration"
+                | "record_declaration"
+                | "record_struct_declaration"
+        ) && let Some(name_node) = parent.child_by_field_name("name")
+        {
+            return Some(node_text(name_node, source).to_string());
+        }
         current = parent;
     }
     None
@@ -448,7 +508,12 @@ fn emit_cs_symbol(
 ) -> Option<Document> {
     let anchor = make_anchor(namespace, file_name, &sym.name);
     let span = node_to_span(sym.node, path);
-    let attrs = build_code_attributes(source, &format!("{:?}", sym.kind).to_lowercase(), Some(path), Some(&span));
+    let attrs = build_code_attributes(
+        source,
+        &format!("{:?}", sym.kind).to_lowercase(),
+        Some(path),
+        Some(&span),
+    );
     let mut blocks = Vec::new();
 
     if let Some(ref doc) = sym.doc_comment {
@@ -477,31 +542,41 @@ fn emit_cs_symbol(
     }));
 
     // Extract call sites
-    if sym.kind == NodeType::Function && sym.name != ".ctor"
-        && let Some(body) = sym.node.child_by_field_name("body") {
-            let calls = extract_cs_call_sites(body, source);
-            let filtered: Vec<_> = calls.into_iter()
-                .filter(|(c, _)| !is_cs_std_noise(c))
+    if sym.kind == NodeType::Function
+        && sym.name != ".ctor"
+        && let Some(body) = sym.node.child_by_field_name("body")
+    {
+        let calls = extract_cs_call_sites(body, source);
+        let filtered: Vec<_> = calls
+            .into_iter()
+            .filter(|(c, _)| !is_cs_std_noise(c))
+            .collect();
+        if !filtered.is_empty() {
+            let call_rows: Vec<Vec<String>> = filtered
+                .iter()
+                .map(|(callee, line)| vec![callee.clone(), line.to_string()])
                 .collect();
-            if !filtered.is_empty() {
-                let call_rows: Vec<Vec<String>> = filtered.iter()
-                    .map(|(callee, line)| vec![callee.clone(), line.to_string()])
-                    .collect();
-                blocks.push(Block::Table(aden_core::Table {
-                    headers: vec!["Callee".to_string(), "Line".to_string()],
-                    rows: call_rows,
-                }));
-                let edge_code: String = filtered.iter()
-                    .map(|(callee, _)| format!("edge::calls[{}]", callee))
-                    .collect::<Vec<_>>().join("\n");
-                blocks.push(Block::Listing { language: None, code: edge_code });
-            }
+            blocks.push(Block::Table(aden_core::Table {
+                headers: vec!["Callee".to_string(), "Line".to_string()],
+                rows: call_rows,
+            }));
+            let edge_code: String = filtered
+                .iter()
+                .map(|(callee, _)| format!("edge::calls[{}]", callee))
+                .collect::<Vec<_>>()
+                .join("\n");
+            blocks.push(Block::Listing {
+                language: None,
+                code: edge_code,
+            });
         }
+    }
 
     if sym.doc_comment.is_some() {
         blocks.push(Block::Admonition {
             kind: aden_core::AdmonitionKind::Note,
-            text: "Extracted from source code via tree-sitter. Confidence is heuristic.".to_string(),
+            text: "Extracted from source code via tree-sitter. Confidence is heuristic."
+                .to_string(),
         });
     }
 
@@ -515,28 +590,90 @@ fn emit_cs_symbol(
 }
 
 const CS_SKIP_CALLEES: &[&str] = &[
-    "ToString", "Equals", "GetHashCode", "Clone", "CompareTo",
-    "GetType", "GetTypeCode",
-    "Length", "Count", "Capacity",
-    "ToList", "ToArray", "ToDictionary",
-    "Select", "Where", "OrderBy", "ThenBy", "GroupBy", "Aggregate",
-    "First", "FirstOrDefault", "Single", "SingleOrDefault", "Last", "LastOrDefault",
-    "Any", "All", "Contains", "Exists", "Find", "FindAll",
-    "Add", "Remove", "Clear", "Insert", "RemoveAt", "AddRange",
-    "WriteLine", "Write", "ReadLine", "Read", "Flush",
-    "Debug", "Trace", "Log", "Information", "Warning", "Error",
-    "GetService", "GetRequiredService", "AddSingleton", "AddScoped", "AddTransient",
-    "Configure", "Use", "Map", "MapControllers", "MapGet", "MapPost",
-    "BuildServiceProvider", "CreateScope",
-    "Parse", "TryParse", "Format", "Stringify",
-    "Serialize", "Deserialize",
-    "AsSpan", "AsMemory", "ToImmutable", "ToFrozen",
-    "GetValue", "SetValue", "GetProperty", "SetProperty",
-    "Invoke", "BeginInvoke", "EndInvoke",
+    "ToString",
+    "Equals",
+    "GetHashCode",
+    "Clone",
+    "CompareTo",
+    "GetType",
+    "GetTypeCode",
+    "Length",
+    "Count",
+    "Capacity",
+    "ToList",
+    "ToArray",
+    "ToDictionary",
+    "Select",
+    "Where",
+    "OrderBy",
+    "ThenBy",
+    "GroupBy",
+    "Aggregate",
+    "First",
+    "FirstOrDefault",
+    "Single",
+    "SingleOrDefault",
+    "Last",
+    "LastOrDefault",
+    "Any",
+    "All",
+    "Contains",
+    "Exists",
+    "Find",
+    "FindAll",
+    "Add",
+    "Remove",
+    "Clear",
+    "Insert",
+    "RemoveAt",
+    "AddRange",
+    "WriteLine",
+    "Write",
+    "ReadLine",
+    "Read",
+    "Flush",
+    "Debug",
+    "Trace",
+    "Log",
+    "Information",
+    "Warning",
+    "Error",
+    "GetService",
+    "GetRequiredService",
+    "AddSingleton",
+    "AddScoped",
+    "AddTransient",
+    "Configure",
+    "Use",
+    "Map",
+    "MapControllers",
+    "MapGet",
+    "MapPost",
+    "BuildServiceProvider",
+    "CreateScope",
+    "Parse",
+    "TryParse",
+    "Format",
+    "Stringify",
+    "Serialize",
+    "Deserialize",
+    "AsSpan",
+    "AsMemory",
+    "ToImmutable",
+    "ToFrozen",
+    "GetValue",
+    "SetValue",
+    "GetProperty",
+    "SetProperty",
+    "Invoke",
+    "BeginInvoke",
+    "EndInvoke",
 ];
 
 fn is_cs_std_noise(name: &str) -> bool {
-    CS_SKIP_CALLEES.contains(&name) || (name.starts_with("Get") && name.len() <= 7) || (name.starts_with("Set") && name.len() <= 7)
+    CS_SKIP_CALLEES.contains(&name)
+        || (name.starts_with("Get") && name.len() <= 7)
+        || (name.starts_with("Set") && name.len() <= 7)
 }
 
 fn extract_cs_call_sites(node: tree_sitter::Node, source: &str) -> Vec<(String, usize)> {
@@ -585,7 +722,11 @@ fn resolve_cs_callee_name(node: tree_sitter::Node, source: &str) -> String {
                         last = node_text(child, source).to_string();
                     }
                 }
-                if !last.is_empty() { last } else { node_text(node, source).to_string() }
+                if !last.is_empty() {
+                    last
+                } else {
+                    node_text(node, source).to_string()
+                }
             }
         }
         "generic_name" => {

@@ -20,10 +20,19 @@ pub fn cmd_audit(
 
     // Extensions mapped to language IDs
     let lang_exts: Vec<(&str, &str)> = vec![
-        ("rs", "rust"), ("py", "python"), ("go", "go"),
-        ("js", "ts"), ("ts", "ts"), ("jsx", "ts"), ("tsx", "ts"),
-        ("php", "php"), ("java", "java"), ("cpp", "cpp"), ("c", "c"),
-        ("h", "c"), ("hpp", "cpp"),
+        ("rs", "rust"),
+        ("py", "python"),
+        ("go", "go"),
+        ("js", "ts"),
+        ("ts", "ts"),
+        ("jsx", "ts"),
+        ("tsx", "ts"),
+        ("php", "php"),
+        ("java", "java"),
+        ("cpp", "cpp"),
+        ("c", "c"),
+        ("h", "c"),
+        ("hpp", "cpp"),
     ];
 
     // Collect source files
@@ -37,16 +46,27 @@ pub fn cmd_audit(
             .filter_map(|e| e.ok())
         {
             let p = entry.path();
-            if !p.is_file() { continue; }
+            if !p.is_file() {
+                continue;
+            }
             if let Some(ext) = p.extension().and_then(|e| e.to_str())
                 && let Some(l) = lang_exts.iter().find(|(e, _)| *e == ext.to_lowercase())
-                    && (scan_all || want_lang.as_deref() == Some(l.1)) {
-                        files.push(p.to_path_buf());
-                    }
+                && (scan_all || want_lang.as_deref() == Some(l.1))
+            {
+                files.push(p.to_path_buf());
+            }
         }
     }
 
-    type OwaspPattern = (Regex, Option<&'static str>, &'static str, &'static str, OwaspSeverity, &'static str, &'static str);
+    type OwaspPattern = (
+        Regex,
+        Option<&'static str>,
+        &'static str,
+        &'static str,
+        OwaspSeverity,
+        &'static str,
+        &'static str,
+    );
 
     // Build pattern table
     static OWASP_PATTERNS: OnceLock<Vec<OwaspPattern>> = OnceLock::new();
@@ -125,10 +145,13 @@ pub fn cmd_audit(
     for file in &files {
         total_scanned += 1;
 
-// Skip documentation directories — they contain example vulnerability strings
+        // Skip documentation directories — they contain example vulnerability strings
         // Also skip lint.rs since it contains detection patterns that trigger false positives
         let path_str = file.to_string_lossy();
-        if path_str.contains("/.agent/") || path_str.contains("/docs/") || path_str.contains("/lint.rs") {
+        if path_str.contains("/.agent/")
+            || path_str.contains("/docs/")
+            || path_str.contains("/lint.rs")
+        {
             continue;
         }
 
@@ -136,32 +159,52 @@ pub fn cmd_audit(
             Ok(t) => t,
             Err(_) => continue,
         };
-        let ext = file.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+        let ext = file
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_lowercase();
         let lang = lang_exts.iter().find(|(e, _)| *e == ext).map(|(_, l)| *l);
 
         for (line_no, line) in text.lines().enumerate() {
             let trimmed = line.trim();
 
             // Skip comment lines and string literals that contain patterns
-            if trimmed.starts_with("//") || trimmed.starts_with("/*") || trimmed.starts_with("*")
-                || trimmed.starts_with("##") || trimmed.starts_with("#") {
+            if trimmed.starts_with("//")
+                || trimmed.starts_with("/*")
+                || trimmed.starts_with("*")
+                || trimmed.starts_with("##")
+                || trimmed.starts_with("#")
+            {
                 continue;
             }
 
             // Skip lines that define regex patterns or are clearly string literals
-            if trimmed.starts_with('"') || trimmed.starts_with('\'') || trimmed.contains("Regex::new") {
+            if trimmed.starts_with('"')
+                || trimmed.starts_with('\'')
+                || trimmed.contains("Regex::new")
+            {
                 continue;
             }
             // Skip debug output statements (println!, eprintln!, log::*, format!) - not actual SQL
-            if (trimmed.contains("println!") || trimmed.contains("eprintln!") || trimmed.contains("format!"))
-                && (trimmed.contains("SELECT") || trimmed.contains("INSERT") || trimmed.contains("UPDATE")
-                    || trimmed.contains("DELETE") || trimmed.contains("DROP")) {
-                    continue; // These are debug strings, not SQL queries
-                }
+            if (trimmed.contains("println!")
+                || trimmed.contains("eprintln!")
+                || trimmed.contains("format!"))
+                && (trimmed.contains("SELECT")
+                    || trimmed.contains("INSERT")
+                    || trimmed.contains("UPDATE")
+                    || trimmed.contains("DELETE")
+                    || trimmed.contains("DROP"))
+            {
+                continue; // These are debug strings, not SQL queries
+            }
 
             for (re, pat_lang, owasp_id, category, severity, desc, fix) in patterns.iter() {
                 if let Some(pl) = pat_lang
-                    && Some(*pl) != lang { continue; }
+                    && Some(*pl) != lang
+                {
+                    continue;
+                }
                 if re.is_match(line) {
                     findings.push(OwaspFinding {
                         owasp_id,
@@ -184,9 +227,14 @@ pub fn cmd_audit(
 
     if findings.is_empty() {
         if is_json {
-            println!("{{\"findings\": [], \"summary\": {{\"total\": 0, \"critical\": 0, \"high\": 0, \"medium\": 0, \"low\": 0, \"info\": 0, \"scanned\": {total_scanned}}}}}");
+            println!(
+                "{{\"findings\": [], \"summary\": {{\"total\": 0, \"critical\": 0, \"high\": 0, \"medium\": 0, \"low\": 0, \"info\": 0, \"scanned\": {total_scanned}}}}}"
+            );
         } else if is_adoc {
-            println!("= OWASP Security Audit\n:date: {}\n\n== Summary\n\n| Severity | Count\n| Critical | 0\n| High     | 0\n| Medium   | 0\n| Low      | 0\n| Info     | 0\n\n_{total_scanned} files scanned. No findings._\n", aden_core::rfc3339_now().split('T').next().unwrap_or(""));
+            println!(
+                "= OWASP Security Audit\n:date: {}\n\n== Summary\n\n| Severity | Count\n| Critical | 0\n| High     | 0\n| Medium   | 0\n| Low      | 0\n| Info     | 0\n\n_{total_scanned} files scanned. No findings._\n",
+                aden_core::rfc3339_now().split('T').next().unwrap_or("")
+            );
         } else {
             println!("  No OWASP coding vulnerabilities found in {total_scanned} file(s).");
         }
@@ -199,8 +247,8 @@ pub fn cmd_audit(
     let counts = |sev: OwaspSeverity| findings.iter().filter(|f| f.severity == sev).count();
     let crit = counts(OwaspSeverity::Critical);
     let high = counts(OwaspSeverity::High);
-    let med  = counts(OwaspSeverity::Medium);
-    let low  = counts(OwaspSeverity::Low);
+    let med = counts(OwaspSeverity::Medium);
+    let low = counts(OwaspSeverity::Low);
     let info = counts(OwaspSeverity::Info);
 
     if is_json {
@@ -209,41 +257,83 @@ pub fn cmd_audit(
         for (i, f) in findings.iter().enumerate() {
             let comma = if i + 1 < findings.len() { "," } else { "" };
             println!("    {{");
-            println!("      \"owasp_id\": \"{}\"," , f.owasp_id);
-            println!("      \"category\": \"{}\"," , f.category);
-            println!("      \"severity\": \"{}\"," , f.severity);
-            println!("      \"file\": \"{}\"," , f.file.display());
-            println!("      \"line\": {}," , f.line);
-            println!("      \"snippet\": \"{}\"," , f.snippet.replace('"', "\\\""));
-            println!("      \"description\": \"{}\"," , f.description.replace('"', "\\\""));
-            println!("      \"remediation\": \"{}\"" , f.remediation.replace('"', "\\\""));
+            println!("      \"owasp_id\": \"{}\",", f.owasp_id);
+            println!("      \"category\": \"{}\",", f.category);
+            println!("      \"severity\": \"{}\",", f.severity);
+            println!("      \"file\": \"{}\",", f.file.display());
+            println!("      \"line\": {},", f.line);
+            println!("      \"snippet\": \"{}\",", f.snippet.replace('"', "\\\""));
+            println!(
+                "      \"description\": \"{}\",",
+                f.description.replace('"', "\\\"")
+            );
+            println!(
+                "      \"remediation\": \"{}\"",
+                f.remediation.replace('"', "\\\"")
+            );
             println!("    }}{comma}");
         }
         println!("  ],");
         println!("  \"summary\": {{");
-        println!("    \"total\": {}, \"critical\": {}, \"high\": {}, \"medium\": {}, \"low\": {}, \"info\": {}, \"scanned\": {}",
-            findings.len(), crit, high, med, low, info, total_scanned);
+        println!(
+            "    \"total\": {}, \"critical\": {}, \"high\": {}, \"medium\": {}, \"low\": {}, \"info\": {}, \"scanned\": {}",
+            findings.len(),
+            crit,
+            high,
+            med,
+            low,
+            info,
+            total_scanned
+        );
         println!("  }}");
         println!("}}");
     } else if is_adoc {
-        let header = format!("= OWASP Security Audit Report\n:date: {}\n:toc: auto\n\n== Summary\n\n| Severity | Count\n| Critical | {crit}\n| High     | {high}\n| Medium   | {med}\n| Low      | {low}\n| Info     | {info}\n\n_{total_scanned} files scanned._\n\n== Findings\n",
-            aden_core::rfc3339_now().split('T').next().unwrap_or(""));
+        let header = format!(
+            "= OWASP Security Audit Report\n:date: {}\n:toc: auto\n\n== Summary\n\n| Severity | Count\n| Critical | {crit}\n| High     | {high}\n| Medium   | {med}\n| Low      | {low}\n| Info     | {info}\n\n_{total_scanned} files scanned._\n\n== Findings\n",
+            aden_core::rfc3339_now().split('T').next().unwrap_or("")
+        );
         print!("{header}");
         for f in &findings {
-            println!("=== [{} {}] {}:{}\n\n`{}`\n\n*Description:* {}\n\n*Remediation:* {}\n", f.severity, f.owasp_id, f.file.display(), f.line, f.snippet, f.description, f.remediation);
+            println!(
+                "=== [{} {}] {}:{}\n\n`{}`\n\n*Description:* {}\n\n*Remediation:* {}\n",
+                f.severity,
+                f.owasp_id,
+                f.file.display(),
+                f.line,
+                f.snippet,
+                f.description,
+                f.remediation
+            );
         }
     } else {
         println!("  === OWASP Security Audit Findings ===");
-        println!("  {} file(s) scanned | {} total finding(s)", total_scanned, findings.len());
+        println!(
+            "  {} file(s) scanned | {} total finding(s)",
+            total_scanned,
+            findings.len()
+        );
         println!("  Severity counts: CRIT={crit} HIGH={high} MED={med} LOW={low} INFO={info}");
         println!();
         for f in &findings {
-            println!("  [{}] {} | {}:{}\n    Code: {}\n    {}\n    Fix: {}\n", f.severity, f.owasp_id, f.file.display(), f.line, f.snippet, f.description, f.remediation);
+            println!(
+                "  [{}] {} | {}:{}\n    Code: {}\n    {}\n    Fix: {}\n",
+                f.severity,
+                f.owasp_id,
+                f.file.display(),
+                f.line,
+                f.snippet,
+                f.description,
+                f.remediation
+            );
         }
     }
 
     if strict && (crit > 0 || high > 0) {
-        return Err(format!("{} critical/high OWASP finding(s) detected (strict mode)", crit + high).into());
+        return Err(format!(
+            "{} critical/high OWASP finding(s) detected (strict mode)",
+            crit + high
+        )
+        .into());
     }
     Ok(())
 }
@@ -262,7 +352,11 @@ pub fn run_project_tests(path: &Path) -> Result<(), Box<dyn std::error::Error>> 
             .current_dir(path)
             .output()?;
         if !output.status.success() {
-            return Err(format!("cargo test failed:\n{}", String::from_utf8_lossy(&output.stderr)).into());
+            return Err(format!(
+                "cargo test failed:\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            )
+            .into());
         }
         return Ok(());
     }
@@ -273,17 +367,33 @@ pub fn run_project_tests(path: &Path) -> Result<(), Box<dyn std::error::Error>> 
             .current_dir(path)
             .output()?;
         if !output.status.success() {
-            return Err(format!("go test failed:\n{}", String::from_utf8_lossy(&output.stderr)).into());
+            return Err(format!(
+                "go test failed:\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            )
+            .into());
         }
         return Ok(());
     }
 
     if has_pkg_json {
-        let runner = if std::process::Command::new("npm").arg("--version").output().is_ok() {
+        let runner = if std::process::Command::new("npm")
+            .arg("--version")
+            .output()
+            .is_ok()
+        {
             "npm"
-        } else if std::process::Command::new("yarn").arg("--version").output().is_ok() {
+        } else if std::process::Command::new("yarn")
+            .arg("--version")
+            .output()
+            .is_ok()
+        {
             "yarn"
-        } else if std::process::Command::new("pnpm").arg("--version").output().is_ok() {
+        } else if std::process::Command::new("pnpm")
+            .arg("--version")
+            .output()
+            .is_ok()
+        {
             "pnpm"
         } else {
             return Err("No JS package manager found (npm/yarn/pnpm)".into());
@@ -293,7 +403,12 @@ pub fn run_project_tests(path: &Path) -> Result<(), Box<dyn std::error::Error>> 
             .current_dir(path)
             .output()?;
         if !output.status.success() {
-            return Err(format!("{} test failed:\n{}", runner, String::from_utf8_lossy(&output.stderr)).into());
+            return Err(format!(
+                "{} test failed:\n{}",
+                runner,
+                String::from_utf8_lossy(&output.stderr)
+            )
+            .into());
         }
         return Ok(());
     }
@@ -313,7 +428,9 @@ pub fn run_project_tests(path: &Path) -> Result<(), Box<dyn std::error::Error>> 
         if output.status.success() {
             return Ok(());
         }
-        return Err("Python tests failed or no test runner found (tried pytest, python -m pytest)".into());
+        return Err(
+            "Python tests failed or no test runner found (tried pytest, python -m pytest)".into(),
+        );
     }
 
     Err("No recognized test framework found (checked Cargo.toml, go.mod, package.json, pyproject.toml, setup.py, requirements.txt)".into())
@@ -355,8 +472,11 @@ pub fn cmd_ci_check(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
 
     // ── BLOCKING GATES ────────────────────────────────────
     gate!("aden check", {
-        if !path.is_dir() { Err("not a directory".into()) }
-        else { crate::util::perform_check(path).map(|_| ()) }
+        if !path.is_dir() {
+            Err("not a directory".into())
+        } else {
+            crate::util::perform_check(path).map(|_| ())
+        }
     });
 
     gate!("constitutional firewall", {
@@ -368,13 +488,13 @@ pub fn cmd_ci_check(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
             // Validate constitution can be parsed
             aden_policy::PolicyEngine::load_bootstrap(path)
                 .map(|_| ())
-                .map_err(|e| -> Box<dyn std::error::Error> { format!("Invalid bootstrap constitution: {}", e).into() })
+                .map_err(|e| -> Box<dyn std::error::Error> {
+                    format!("Invalid bootstrap constitution: {}", e).into()
+                })
         }
     });
 
-    gate!("tests", {
-        run_project_tests(path)
-    });
+    gate!("tests", { run_project_tests(path) });
 
     gate!("aden lint", {
         crate::commands::cmd_lint(path, "Error", false, false)
@@ -388,21 +508,57 @@ pub fn cmd_ci_check(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         static SECRET_PATTERNS: OnceLock<Vec<(Regex, &'static str)>> = OnceLock::new();
         let patterns = SECRET_PATTERNS.get_or_init(|| {
             vec![
-                (Regex::new(r"-----BEGIN (RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----").unwrap(), "private key"),
+                (
+                    Regex::new(r"-----BEGIN (RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----").unwrap(),
+                    "private key",
+                ),
                 (Regex::new(r"AKIA[0-9A-Z]{16}").unwrap(), "AWS access key"),
                 (Regex::new(r"ghp_[a-zA-Z0-9]{36}").unwrap(), "GitHub token"),
                 (Regex::new(r"gho_[a-zA-Z0-9]{36}").unwrap(), "GitHub OAuth"),
-                (Regex::new(r"\b[0-9a-zA-Z]{32,64}\b").unwrap(), "long hex secret (possible API key)"),
-                (Regex::new(r#"api[_-]?key\s*=\s*['\"][^'\"]{8,}['\"]"#).unwrap(), "API key assignment"),
-                (Regex::new(r#"password\s*=\s*['\"][^'\"]{4,}['\"]"#).unwrap(), "hardcoded password"),
-                (Regex::new(r#"secret\s*=\s*['\"][^'\"]{8,}['\"]"#).unwrap(), "hardcoded secret"),
-                (Regex::new(r#"token\s*=\s*['\"][^'\"]{8,}['\"]"#).unwrap(), "hardcoded token"),
-                (Regex::new(r"eyJ[a-zA-Z0-9_-]*\.eyJ[a-zA-Z0-9_-]*\.[a-zA-Z0-9_-]*").unwrap(), "JWT token"),
-                (Regex::new(r"bearer\s+[a-zA-Z0-9_\-\.]{20,}").unwrap(), "Bearer token"),
-                (Regex::new(r"mongodb(\+srv)?://[^:]+:[^@]+@").unwrap(), "MongoDB connection string"),
-                (Regex::new(r"postgres(ql)?://[^:]+:[^@]+@").unwrap(), "PostgreSQL connection string"),
-                (Regex::new(r"mysql://[^:]+:[^@]+@").unwrap(), "MySQL connection string"),
-                (Regex::new(r"redis://:[^@]+@").unwrap(), "Redis connection string"),
+                (
+                    Regex::new(r"\b[0-9a-zA-Z]{32,64}\b").unwrap(),
+                    "long hex secret (possible API key)",
+                ),
+                (
+                    Regex::new(r#"api[_-]?key\s*=\s*['\"][^'\"]{8,}['\"]"#).unwrap(),
+                    "API key assignment",
+                ),
+                (
+                    Regex::new(r#"password\s*=\s*['\"][^'\"]{4,}['\"]"#).unwrap(),
+                    "hardcoded password",
+                ),
+                (
+                    Regex::new(r#"secret\s*=\s*['\"][^'\"]{8,}['\"]"#).unwrap(),
+                    "hardcoded secret",
+                ),
+                (
+                    Regex::new(r#"token\s*=\s*['\"][^'\"]{8,}['\"]"#).unwrap(),
+                    "hardcoded token",
+                ),
+                (
+                    Regex::new(r"eyJ[a-zA-Z0-9_-]*\.eyJ[a-zA-Z0-9_-]*\.[a-zA-Z0-9_-]*").unwrap(),
+                    "JWT token",
+                ),
+                (
+                    Regex::new(r"bearer\s+[a-zA-Z0-9_\-\.]{20,}").unwrap(),
+                    "Bearer token",
+                ),
+                (
+                    Regex::new(r"mongodb(\+srv)?://[^:]+:[^@]+@").unwrap(),
+                    "MongoDB connection string",
+                ),
+                (
+                    Regex::new(r"postgres(ql)?://[^:]+:[^@]+@").unwrap(),
+                    "PostgreSQL connection string",
+                ),
+                (
+                    Regex::new(r"mysql://[^:]+:[^@]+@").unwrap(),
+                    "MySQL connection string",
+                ),
+                (
+                    Regex::new(r"redis://:[^@]+@").unwrap(),
+                    "Redis connection string",
+                ),
                 (Regex::new(r"\.env\.[a-zA-Z]+\s*\n").unwrap(), "env file"),
                 (Regex::new(r"DATABASE_URL\s*=\s*").unwrap(), "DATABASE_URL"),
                 (Regex::new(r"sk-[a-zA-Z0-9]{48,}").unwrap(), "OpenAI/sk key"),
@@ -410,12 +566,14 @@ pub fn cmd_ci_check(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         });
 
         let non_text_exts: std::collections::HashSet<&str> = [
-            "png", "jpg", "jpeg", "gif", "svg", "ico", "bmp",
-            "pdf", "zip", "tar", "gz", "bz2", "xz", "7z", "rar",
-            "mp3", "mp4", "avi", "mov", "mkv", "wav", "flac",
-            "wasm", "so", "dll", "dylib", "exe", "bin", "o", "a",
-            "ttf", "otf", "woff", "woff2", "eot", "jpg", "mp3", "mp4",
-        ].iter().copied().collect();
+            "png", "jpg", "jpeg", "gif", "svg", "ico", "bmp", "pdf", "zip", "tar", "gz", "bz2",
+            "xz", "7z", "rar", "mp3", "mp4", "avi", "mov", "mkv", "wav", "flac", "wasm", "so",
+            "dll", "dylib", "exe", "bin", "o", "a", "ttf", "otf", "woff", "woff2", "eot", "jpg",
+            "mp3", "mp4",
+        ]
+        .iter()
+        .copied()
+        .collect();
 
         const MAX_SCAN_SIZE: u64 = 1024 * 1024;
         let mut found = 0;
@@ -427,36 +585,74 @@ pub fn cmd_ci_check(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
             .filter_map(|e| e.ok())
         {
             let p = entry.path();
-            if !p.is_file() { continue; }
+            if !p.is_file() {
+                continue;
+            }
             if let Ok(rel) = p.strip_prefix(path)
-                && filter.should_skip(rel) { continue; }
+                && filter.should_skip(rel)
+            {
+                continue;
+            }
             // Exclude cache and generated files from secret scan
             let rel_path = p.strip_prefix(path).unwrap_or(p.as_ref());
-            if rel_path.starts_with(".aden/cache") { continue; }
-            if rel_path.file_name().is_some_and(|n| n == "Cargo.lock") { continue; }
-            if rel_path.file_name().is_some_and(|n| n == "cache-index.json") { continue; }
+            if rel_path.starts_with(".aden/cache") {
+                continue;
+            }
+            if rel_path.file_name().is_some_and(|n| n == "Cargo.lock") {
+                continue;
+            }
+            if rel_path
+                .file_name()
+                .is_some_and(|n| n == "cache-index.json")
+            {
+                continue;
+            }
             if let Some(ext) = p.extension().and_then(|e| e.to_str())
-                && non_text_exts.contains(ext.to_lowercase().as_str()) { continue; }
+                && non_text_exts.contains(ext.to_lowercase().as_str())
+            {
+                continue;
+            }
             if let Ok(meta) = std::fs::metadata(p)
-                && meta.len() > MAX_SCAN_SIZE { continue; }
+                && meta.len() > MAX_SCAN_SIZE
+            {
+                continue;
+            }
             if let Ok(text) = std::fs::read_to_string(p) {
                 for (re, name) in patterns {
                     for cap in re.find_iter(&text) {
-                        let line_start = text[..cap.start()].rfind('\n').map(|i| i + 1).unwrap_or(0);
-                        let line_end = text[cap.end()..].find('\n').map(|i| cap.end() + i).unwrap_or(text.len());
+                        let line_start =
+                            text[..cap.start()].rfind('\n').map(|i| i + 1).unwrap_or(0);
+                        let line_end = text[cap.end()..]
+                            .find('\n')
+                            .map(|i| cap.end() + i)
+                            .unwrap_or(text.len());
                         let line = &text[line_start..line_end];
                         // Skip pattern definitions and test files
-                        if line.contains("Regex::new") { continue; }
-                        if rel_path.starts_with("tools/") { continue; }
-                        if rel_path.to_string_lossy().contains("/tests/") { continue; }
+                        if line.contains("Regex::new") {
+                            continue;
+                        }
+                        if rel_path.starts_with("tools/") {
+                            continue;
+                        }
+                        if rel_path.to_string_lossy().contains("/tests/") {
+                            continue;
+                        }
                         if *name == "env file" {
                             let trimmed = line.trim();
                             if trimmed.starts_with(".env") || trimmed.starts_with("*.env") {
                                 continue;
                             }
                         }
-                        let snippet = &text[cap.start().saturating_sub(20)..(cap.end() + 20).min(text.len())];
-                        println!("  {}Secret ({}) in {}: ...{}...{}", red, name, p.display(), snippet.replace('\n', " "), reset);
+                        let snippet =
+                            &text[cap.start().saturating_sub(20)..(cap.end() + 20).min(text.len())];
+                        println!(
+                            "  {}Secret ({}) in {}: ...{}...{}",
+                            red,
+                            name,
+                            p.display(),
+                            snippet.replace('\n', " "),
+                            reset
+                        );
                         found += 1;
                     }
                 }
@@ -464,7 +660,10 @@ pub fn cmd_ci_check(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         }
 
         if found > 0 {
-            Err(Box::<dyn std::error::Error>::from(format!("{} secret pattern(s) detected", found)))
+            Err(Box::<dyn std::error::Error>::from(format!(
+                "{} secret pattern(s) detected",
+                found
+            )))
         } else {
             Ok(())
         }
@@ -472,15 +671,15 @@ pub fn cmd_ci_check(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
 
     gate!("accreditation check", {
         if path.join("Cargo.lock").exists() && !path.join("NOTICE.md").exists() {
-            Err(Box::<dyn std::error::Error>::from("NOTICE.md missing. Run 'aden licenses --out NOTICE.md'.".to_string()))
+            Err(Box::<dyn std::error::Error>::from(
+                "NOTICE.md missing. Run 'aden licenses --out NOTICE.md'.".to_string(),
+            ))
         } else {
             Ok(())
         }
     });
 
-    gate!("owasp audit", {
-        cmd_audit(path, None, "text", true)
-    });
+    gate!("owasp audit", { cmd_audit(path, None, "text", true) });
 
     gate!("merge conflict markers", {
         use aden_core::filter::AdenFilter;
@@ -492,21 +691,38 @@ pub fn cmd_ci_check(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
             .filter_map(|e| e.ok())
         {
             let p = entry.path();
-            if !p.is_file() { continue; }
+            if !p.is_file() {
+                continue;
+            }
             if let Ok(rel) = p.strip_prefix(path)
-                && filter.should_skip(rel) { continue; }
+                && filter.should_skip(rel)
+            {
+                continue;
+            }
             if let Ok(text) = std::fs::read_to_string(p) {
                 for line in text.lines() {
                     let trimmed = line.trim();
-                    if trimmed.starts_with("<<<<<<< ") || trimmed.starts_with(">>>>>>> ") || trimmed == "=======" {
-                        println!("  {}Merge conflict marker in {}: {}{}", red, p.display(), trimmed, reset);
+                    if trimmed.starts_with("<<<<<<< ")
+                        || trimmed.starts_with(">>>>>>> ")
+                        || trimmed == "======="
+                    {
+                        println!(
+                            "  {}Merge conflict marker in {}: {}{}",
+                            red,
+                            p.display(),
+                            trimmed,
+                            reset
+                        );
                         found += 1;
                     }
                 }
             }
         }
         if found > 0 {
-            Err(Box::<dyn std::error::Error>::from(format!("{} merge conflict marker(s) detected", found)))
+            Err(Box::<dyn std::error::Error>::from(format!(
+                "{} merge conflict marker(s) detected",
+                found
+            )))
         } else {
             Ok(())
         }
@@ -516,7 +732,11 @@ pub fn cmd_ci_check(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         use aden_core::filter::AdenFilter;
         let mut found = 0;
         let insecure_re = Regex::new(r"(?i)http://\S+").unwrap();
-        let skip_exts: std::collections::HashSet<&str> = ["lock", "adoc", "md", "txt", "svg", "html", "xml"].iter().copied().collect();
+        let skip_exts: std::collections::HashSet<&str> =
+            ["lock", "adoc", "md", "txt", "svg", "html", "xml"]
+                .iter()
+                .copied()
+                .collect();
         let filter = AdenFilter::from_directory(path);
         for entry in walkdir::WalkDir::new(path)
             .follow_links(false)
@@ -524,29 +744,49 @@ pub fn cmd_ci_check(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
             .filter_map(|e| e.ok())
         {
             let p = entry.path();
-            if !p.is_file() { continue; }
+            if !p.is_file() {
+                continue;
+            }
             if let Ok(rel) = p.strip_prefix(path)
-                && filter.should_skip(rel) { continue; }
+                && filter.should_skip(rel)
+            {
+                continue;
+            }
             if let Some(ext) = p.extension().and_then(|e| e.to_str())
-                && skip_exts.contains(ext) { continue; }
+                && skip_exts.contains(ext)
+            {
+                continue;
+            }
             if let Ok(text) = std::fs::read_to_string(p) {
                 for line in text.lines() {
                     let trimmed = line.trim();
-                    if trimmed.starts_with("//") || trimmed.starts_with("#") || trimmed.starts_with("<!--") {
+                    if trimmed.starts_with("//")
+                        || trimmed.starts_with("#")
+                        || trimmed.starts_with("<!--")
+                    {
                         continue;
                     }
                     if line.contains("Regex::new") || line.contains("xmlns=") {
                         continue;
                     }
                     if insecure_re.is_match(line) {
-                        println!("  {}Insecure http:// URL in {}: {}{}", red, p.display(), line.trim(), reset);
+                        println!(
+                            "  {}Insecure http:// URL in {}: {}{}",
+                            red,
+                            p.display(),
+                            line.trim(),
+                            reset
+                        );
                         found += 1;
                     }
                 }
             }
         }
         if found > 0 {
-            Err(Box::<dyn std::error::Error>::from(format!("{} insecure http:// URL(s) detected", found)))
+            Err(Box::<dyn std::error::Error>::from(format!(
+                "{} insecure http:// URL(s) detected",
+                found
+            )))
         } else {
             Ok(())
         }
@@ -566,9 +806,10 @@ pub fn cmd_ci_check(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
             if output.status.success() {
                 Ok(())
             } else {
-                Err(Box::<dyn std::error::Error>::from(
-                    format!("cargo clippy found issues:\n{}", String::from_utf8_lossy(&output.stderr))
-                ))
+                Err(Box::<dyn std::error::Error>::from(format!(
+                    "cargo clippy found issues:\n{}",
+                    String::from_utf8_lossy(&output.stderr)
+                )))
             }
         }
     });
@@ -588,11 +829,15 @@ pub fn cmd_ci_check(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 if stderr.contains("not found") || stderr.contains("No such file") {
-                    Err(Box::<dyn std::error::Error>::from("cargo audit not installed. Install with: cargo install cargo-audit".to_string()))
-                } else {
                     Err(Box::<dyn std::error::Error>::from(
-                        format!("cargo audit found vulnerabilities:\n{}", stderr)
+                        "cargo audit not installed. Install with: cargo install cargo-audit"
+                            .to_string(),
                     ))
+                } else {
+                    Err(Box::<dyn std::error::Error>::from(format!(
+                        "cargo audit found vulnerabilities:\n{}",
+                        stderr
+                    )))
                 }
             }
         }
@@ -603,15 +848,27 @@ pub fn cmd_ci_check(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         let scanner = Scanner::new(path);
         let events = scanner.scan()?;
         let report = generate(events.clone(), path);
-        let critical_count = events.iter().filter(|e| {
-            matches!(e, aden_heal::DriftEvent::BrokenReference { .. }
-                | aden_heal::DriftEvent::OrphanAnchor { .. }
-                | aden_heal::DriftEvent::SignatureMismatch { .. })
-        }).count();
+        let critical_count = events
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e,
+                    aden_heal::DriftEvent::BrokenReference { .. }
+                        | aden_heal::DriftEvent::OrphanAnchor { .. }
+                        | aden_heal::DriftEvent::SignatureMismatch { .. }
+                )
+            })
+            .count();
         if critical_count > 0 {
-            Err(Box::<dyn std::error::Error>::from(format!("{} critical drift events (broken refs, orphans, signature mismatch)", critical_count)))
+            Err(Box::<dyn std::error::Error>::from(format!(
+                "{} critical drift events (broken refs, orphans, signature mismatch)",
+                critical_count
+            )))
         } else if report.overall_score < 0.99 {
-            Err(Box::<dyn std::error::Error>::from(format!("Health score: {:.2} — contracts need regeneration (run 'aden gen' on modified files)", report.overall_score)))
+            Err(Box::<dyn std::error::Error>::from(format!(
+                "Health score: {:.2} — contracts need regeneration (run 'aden gen' on modified files)",
+                report.overall_score
+            )))
         } else {
             Ok(())
         }
@@ -627,10 +884,16 @@ pub fn cmd_ci_check(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if exit_code != 0 {
-        println!("\n{}[CI] GATES BLOCKED — Fix errors above before committing.{}", red, reset);
+        println!(
+            "\n{}[CI] GATES BLOCKED — Fix errors above before committing.{}",
+            red, reset
+        );
         std::process::exit(exit_code);
     }
-    println!("\n{}[CI] ALL GATES PASSED — Ready to commit.{}", green, reset);
+    println!(
+        "\n{}[CI] ALL GATES PASSED — Ready to commit.{}",
+        green, reset
+    );
     Ok(())
 }
 
@@ -642,7 +905,11 @@ pub fn cmd_doctor(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
 
     // Tool availability
     for tool in &["rustc", "cargo", "git"] {
-        if std::process::Command::new(tool).arg("--version").output().is_ok() {
+        if std::process::Command::new(tool)
+            .arg("--version")
+            .output()
+            .is_ok()
+        {
             println!("✓ {} found", tool);
         } else {
             println!("✗ {} NOT FOUND", tool);
@@ -651,7 +918,11 @@ pub fn cmd_doctor(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Aden binary
-    if std::process::Command::new("aden").arg("--version").output().is_ok() {
+    if std::process::Command::new("aden")
+        .arg("--version")
+        .output()
+        .is_ok()
+    {
         println!("✓ aden CLI found in PATH");
     } else {
         println!("✗ aden CLI NOT in PATH (build or install: cargo install --path crates/aden-cli)");
@@ -659,9 +930,15 @@ pub fn cmd_doctor(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Signing keys
-    let key_dir = dirs::home_dir().unwrap_or_default().join(".aden").join("keys");
+    let key_dir = dirs::home_dir()
+        .unwrap_or_default()
+        .join(".aden")
+        .join("keys");
     if key_dir.join("aden-sign.pub").exists() {
-        println!("✓ Signing public key: {}", key_dir.join("aden-sign.pub").display());
+        println!(
+            "✓ Signing public key: {}",
+            key_dir.join("aden-sign.pub").display()
+        );
     } else {
         println!("⚠ No signing key found. Generate with:");
         println!("    mkdir -p ~/.aden/keys && cd ~/.aden/keys");
@@ -698,7 +975,10 @@ pub fn cmd_doctor(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         if (1.0 - score).abs() < EPSILON {
             println!("✓ Health Score: {:.2}/1.00", score);
         } else {
-            println!("⚠ Health Score: {:.2}/1.00 (run 'aden heal .' to see drift)", score);
+            println!(
+                "⚠ Health Score: {:.2}/1.00 (run 'aden heal .' to see drift)",
+                score
+            );
             issues.push(format!("Health score {:.2} (target 1.00)", score));
         }
     }
@@ -706,7 +986,10 @@ pub fn cmd_doctor(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     // Self-documenting docs check
     println!("\n— Self-Documenting Docs —");
     let self_docs = [
-        ("docs/module-aden-cli.adoc", "CLI reference + troubleshooting"),
+        (
+            "docs/module-aden-cli.adoc",
+            "CLI reference + troubleshooting",
+        ),
         ("docs/getting-started.adoc", "Quick start guide"),
         (".agent/onboarding.adoc", "Agent onboarding"),
     ];
@@ -752,44 +1035,69 @@ pub fn cmd_review(path: &Path, budget: usize) -> Result<(), Box<dyn std::error::
     }
 
     let proposals = list(path)?;
-    let low_confidence: Vec<_> = proposals.iter()
-        .filter(|p| p.confidence < 0.85)
-        .collect();
+    let low_confidence: Vec<_> = proposals.iter().filter(|p| p.confidence < 0.85).collect();
 
     if low_confidence.is_empty() {
         println!("No low-confidence proposals found. All drift detected is auto-applyable.");
         return Ok(());
     }
 
-    println!("Reviewing {} low-confidence proposals...\n", low_confidence.len());
+    println!(
+        "Reviewing {} low-confidence proposals...\n",
+        low_confidence.len()
+    );
 
     let estimated_tokens = low_confidence.len() * 100;
-    println!("Estimated review cost: ~{} tokens (budget: {})", estimated_tokens, budget);
+    println!(
+        "Estimated review cost: ~{} tokens (budget: {})",
+        estimated_tokens, budget
+    );
 
     if estimated_tokens > budget {
-        println!("WARNING: Review exceeds budget. Showing first {} proposals.", budget / 100);
+        println!(
+            "WARNING: Review exceeds budget. Showing first {} proposals.",
+            budget / 100
+        );
     }
 
     let show_count = (budget / 100).min(low_confidence.len());
     for (i, proposal) in low_confidence.iter().take(show_count).enumerate() {
-        println!("\n{}. Proposal {} (confidence: {:.2})", i + 1, proposal.id, proposal.confidence);
+        println!(
+            "\n{}. Proposal {} (confidence: {:.2})",
+            i + 1,
+            proposal.id,
+            proposal.confidence
+        );
         println!("   Target: {}", proposal.target_path.display());
         println!("   Drift Type: {}", proposal.drift_type);
-        println!("   Rationale: {}", proposal.rationale.lines().next().unwrap_or("(none)"));
+        println!(
+            "   Rationale: {}",
+            proposal.rationale.lines().next().unwrap_or("(none)")
+        );
     }
 
     if show_count < low_confidence.len() {
-        println!("\n... and {} more proposals (increase --budget to see all)", low_confidence.len() - show_count);
+        println!(
+            "\n... and {} more proposals (increase --budget to see all)",
+            low_confidence.len() - show_count
+        );
     }
 
     println!("\nReview each proposal file in .aden/proposals/ before applying.");
     Ok(())
 }
 
-pub fn cmd_review_since(path: &Path, budget: usize, since: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub fn cmd_review_since(
+    path: &Path,
+    budget: usize,
+    since: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
     use aden_heal::Scanner;
 
-    println!("Reviewing changes since '{}' with budget {} tokens", since, budget);
+    println!(
+        "Reviewing changes since '{}' with budget {} tokens",
+        since, budget
+    );
 
     let output = std::process::Command::new("git")
         .args(["diff", "--name-only", "--", since])
@@ -813,7 +1121,8 @@ pub fn cmd_review_since(path: &Path, budget: usize, since: &str) -> Result<(), B
     let scanner = Scanner::new(path);
     let all_events = scanner.scan()?;
 
-    let relevant_events: Vec<_> = all_events.into_iter()
+    let relevant_events: Vec<_> = all_events
+        .into_iter()
         .filter(|e| {
             let target = match e {
                 aden_heal::DriftEvent::StaleHash { target_path, .. } => target_path,
@@ -835,14 +1144,20 @@ pub fn cmd_review_since(path: &Path, budget: usize, since: &str) -> Result<(), B
         return Ok(());
     }
 
-    println!("Found {} drift events in changed files.", relevant_events.len());
+    println!(
+        "Found {} drift events in changed files.",
+        relevant_events.len()
+    );
 
     let show_count = (budget / 100).min(relevant_events.len());
     for (i, event) in relevant_events.iter().take(show_count).enumerate() {
         println!("  {}. {:?}", i + 1, event);
     }
     if show_count < relevant_events.len() {
-        println!("  ... and {} more (increase --budget)", relevant_events.len() - show_count);
+        println!(
+            "  ... and {} more (increase --budget)",
+            relevant_events.len() - show_count
+        );
     }
 
     Ok(())
@@ -880,14 +1195,16 @@ pub fn cmd_licenses(
                 is_aden_crate = false;
             }
             current_name = Some(name);
-        } else if trimmed.starts_with("version = ") && !is_aden_crate
-            && let Some(name) = current_name.clone() {
-                let version = trimmed
-                    .trim_start_matches("version = ")
-                    .trim_matches('"')
-                    .to_string();
-                packages.push((name, version));
-            }
+        } else if trimmed.starts_with("version = ")
+            && !is_aden_crate
+            && let Some(name) = current_name.clone()
+        {
+            let version = trimmed
+                .trim_start_matches("version = ")
+                .trim_matches('"')
+                .to_string();
+            packages.push((name, version));
+        }
     }
 
     packages.sort_by(|a, b| a.0.cmp(&b.0));
@@ -897,7 +1214,9 @@ pub fn cmd_licenses(
     markdown.push_str("# Third-Party Dependencies\n\n");
     markdown.push_str("This project uses the following open-source packages.\n");
     markdown.push_str("Generated by `aden licenses`.\n");
-    markdown.push_str("For full license texts, see the respective package repositories or `Cargo.lock`.\n\n");
+    markdown.push_str(
+        "For full license texts, see the respective package repositories or `Cargo.lock`.\n\n",
+    );
     markdown.push_str("| Package | Version |\n");
     markdown.push_str("|---------|---------|\n");
     for (name, version) in &packages {
@@ -905,7 +1224,9 @@ pub fn cmd_licenses(
     }
     markdown.push('\n');
     markdown.push_str("## Attribution\n\n");
-    markdown.push_str("All third-party packages are used in accordance with their respective licenses.\n");
+    markdown.push_str(
+        "All third-party packages are used in accordance with their respective licenses.\n",
+    );
     markdown.push_str("No proprietary code is bundled or modified without explicit permission.\n");
     markdown.push_str("\n---\nGenerated by Aden.\n");
 
@@ -980,22 +1301,88 @@ pub fn cmd_suggest(intent: &str) -> Result<(), Box<dyn std::error::Error>> {
     let intent_lower = intent.to_lowercase();
 
     let suggestions = vec![
-        (vec!["generate", "doc", "contract", "parse", "extract"], "gen", "aden gen . --auto", "Generate contracts from source code"),
-        (vec!["search", "find", "look"], "search", "aden search '<query>'", "Search for text in contracts"),
-        (vec!["list", "show", "all", "anchors", "contracts"], "list", "aden list .", "List all anchors in the graph"),
-        (vec!["ask", "question", "explain", "how", "what"], "ask", "aden ask '<question>'", "Ask a natural language question"),
-        (vec!["fix", "heal", "drift", "stale", "update"], "heal", "aden heal . --fix", "Auto-fix stale contracts"),
-        (vec!["check", "validate", "reference", "link"], "check", "aden check .", "Validate all cross-references"),
-        (vec!["graph", "depend", "neighbor", "related"], "graph", "aden graph --from <anchor> --depth 2", "Show graph neighborhood"),
-        (vec!["assemble", "context", "prompt", "token"], "asm", "aden asm --from <anchor> --budget 4096", "Assemble context within token budget"),
-        (vec!["locate", "symbol", "function", "where"], "locate", "aden locate --symbol <name> .", "Find symbol definition"),
-        (vec!["init", "scaffold", "setup"], "init", "aden init", "Scaffold .agent/ templates"),
-        (vec!["watch", "auto", "regenerate"], "watch", "aden watch .", "Watch for changes and auto-regenerate"),
-        (vec!["clean", "gc", "garbage", "orphan"], "gc", "aden heal . --gc", "Garbage collect orphaned contracts"),
-        (vec!["doctor", "diagnose", "health", "check environment"], "doctor", "aden doctor .", "Check environment health"),
+        (
+            vec!["generate", "doc", "contract", "parse", "extract"],
+            "gen",
+            "aden gen . --auto",
+            "Generate contracts from source code",
+        ),
+        (
+            vec!["search", "find", "look"],
+            "search",
+            "aden search '<query>'",
+            "Search for text in contracts",
+        ),
+        (
+            vec!["list", "show", "all", "anchors", "contracts"],
+            "list",
+            "aden list .",
+            "List all anchors in the graph",
+        ),
+        (
+            vec!["ask", "question", "explain", "how", "what"],
+            "ask",
+            "aden ask '<question>'",
+            "Ask a natural language question",
+        ),
+        (
+            vec!["fix", "heal", "drift", "stale", "update"],
+            "heal",
+            "aden heal . --fix",
+            "Auto-fix stale contracts",
+        ),
+        (
+            vec!["check", "validate", "reference", "link"],
+            "check",
+            "aden check .",
+            "Validate all cross-references",
+        ),
+        (
+            vec!["graph", "depend", "neighbor", "related"],
+            "graph",
+            "aden graph --from <anchor> --depth 2",
+            "Show graph neighborhood",
+        ),
+        (
+            vec!["assemble", "context", "prompt", "token"],
+            "asm",
+            "aden asm --from <anchor> --budget 4096",
+            "Assemble context within token budget",
+        ),
+        (
+            vec!["locate", "symbol", "function", "where"],
+            "locate",
+            "aden locate --symbol <name> .",
+            "Find symbol definition",
+        ),
+        (
+            vec!["init", "scaffold", "setup"],
+            "init",
+            "aden init",
+            "Scaffold .agent/ templates",
+        ),
+        (
+            vec!["watch", "auto", "regenerate"],
+            "watch",
+            "aden watch .",
+            "Watch for changes and auto-regenerate",
+        ),
+        (
+            vec!["clean", "gc", "garbage", "orphan"],
+            "gc",
+            "aden heal . --gc",
+            "Garbage collect orphaned contracts",
+        ),
+        (
+            vec!["doctor", "diagnose", "health", "check environment"],
+            "doctor",
+            "aden doctor .",
+            "Check environment health",
+        ),
     ];
 
-    let mut matches: Vec<_> = suggestions.iter()
+    let mut matches: Vec<_> = suggestions
+        .iter()
         .filter(|(keywords, _, _, _)| keywords.iter().any(|k| intent_lower.contains(k)))
         .collect();
 

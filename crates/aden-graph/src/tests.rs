@@ -17,7 +17,7 @@
 //
 #[cfg(test)]
 mod tests {
-    use crate::{cycles, parser, AdenGraph, DocumentNode};
+    use crate::{AdenGraph, DocumentNode, cycles, parser};
     use aden_core::{Document, EdgeType, NodeType};
     use std::collections::HashMap;
     use std::io::Write;
@@ -48,7 +48,9 @@ mod tests {
     fn test_graph_build_from_directory() {
         let dir = tempfile::tempdir().unwrap();
         let mut file1 = std::fs::File::create(dir.path().join("a.adoc")).unwrap();
-        file1.write_all(b"[[anchor-a]]\n= A\n\n<<anchor-b>>").unwrap();
+        file1
+            .write_all(b"[[anchor-a]]\n= A\n\n<<anchor-b>>")
+            .unwrap();
         let mut file2 = std::fs::File::create(dir.path().join("b.adoc")).unwrap();
         file2.write_all(b"[[anchor-b]]\n= B\n").unwrap();
 
@@ -213,7 +215,10 @@ agent-note::DEPRECATED[2024-03-01] Use new_module instead
         graph.graph.add_edge(idx1, idx2, EdgeType::Calls);
 
         let errors = graph.validate_typed_edges();
-        assert!(!errors.is_empty(), "Expected validation errors for invalid Calls edge between documents");
+        assert!(
+            !errors.is_empty(),
+            "Expected validation errors for invalid Calls edge between documents"
+        );
     }
 
     // ── Structured Block Parsing Tests ───────────────────────────
@@ -232,10 +237,14 @@ agent-note::DEPRECATED[2024-03-01] Use new_module instead
 "#;
         let tmp = create_test_file(content);
         let parsed = parser::parse_file(tmp.path()).unwrap();
-        let tables: Vec<_> = parsed.blocks.iter().filter_map(|b| match b {
-            aden_core::Block::Table(t) => Some(t),
-            _ => None,
-        }).collect();
+        let tables: Vec<_> = parsed
+            .blocks
+            .iter()
+            .filter_map(|b| match b {
+                aden_core::Block::Table(t) => Some(t),
+                _ => None,
+            })
+            .collect();
         assert_eq!(tables.len(), 1, "Expected one table block");
         assert_eq!(tables[0].headers, vec!["Name", "Type"]);
         assert_eq!(tables[0].rows.len(), 2);
@@ -258,10 +267,16 @@ fn main() {
 "#;
         let tmp = create_test_file(content);
         let parsed = parser::parse_file(tmp.path()).unwrap();
-        let listings: Vec<_> = parsed.blocks.iter().filter_map(|b| match b {
-            aden_core::Block::Listing { language, code } => Some((language.clone(), code.clone())),
-            _ => None,
-        }).collect();
+        let listings: Vec<_> = parsed
+            .blocks
+            .iter()
+            .filter_map(|b| match b {
+                aden_core::Block::Listing { language, code } => {
+                    Some((language.clone(), code.clone()))
+                }
+                _ => None,
+            })
+            .collect();
         assert_eq!(listings.len(), 1, "Expected one listing block");
         assert_eq!(listings[0].0, Some("rust".to_string()));
         assert!(listings[0].1.contains("fn main()"));
@@ -277,10 +292,14 @@ WARNING: Do not commit secrets.
 "#;
         let tmp = create_test_file(content);
         let parsed = parser::parse_file(tmp.path()).unwrap();
-        let admonitions: Vec<_> = parsed.blocks.iter().filter_map(|b| match b {
-            aden_core::Block::Admonition { kind, text } => Some((kind.clone(), text.clone())),
-            _ => None,
-        }).collect();
+        let admonitions: Vec<_> = parsed
+            .blocks
+            .iter()
+            .filter_map(|b| match b {
+                aden_core::Block::Admonition { kind, text } => Some((kind.clone(), text.clone())),
+                _ => None,
+            })
+            .collect();
         assert_eq!(admonitions.len(), 1);
         assert_eq!(admonitions[0].0, aden_core::AdmonitionKind::Warning);
         assert_eq!(admonitions[0].1, "Do not commit secrets.");
@@ -297,10 +316,14 @@ bar:: The bar module.
 "#;
         let tmp = create_test_file(content);
         let parsed = parser::parse_file(tmp.path()).unwrap();
-        let desc_lists: Vec<_> = parsed.blocks.iter().filter_map(|b| match b {
-            aden_core::Block::DescriptionList(items) => Some(items.clone()),
-            _ => None,
-        }).collect();
+        let desc_lists: Vec<_> = parsed
+            .blocks
+            .iter()
+            .filter_map(|b| match b {
+                aden_core::Block::DescriptionList(items) => Some(items.clone()),
+                _ => None,
+            })
+            .collect();
         assert_eq!(desc_lists.len(), 2, "Expected two description list blocks");
         assert_eq!(desc_lists[0][0].0, "foo");
         assert_eq!(desc_lists[0][0].1, "The foo module.");
@@ -321,10 +344,14 @@ Second paragraph.
 "#;
         let tmp = create_test_file(content);
         let parsed = parser::parse_file(tmp.path()).unwrap();
-        let paragraphs: Vec<_> = parsed.blocks.iter().filter_map(|b| match b {
-            aden_core::Block::Paragraph(t) => Some(t.clone()),
-            _ => None,
-        }).collect();
+        let paragraphs: Vec<_> = parsed
+            .blocks
+            .iter()
+            .filter_map(|b| match b {
+                aden_core::Block::Paragraph(t) => Some(t.clone()),
+                _ => None,
+            })
+            .collect();
         assert_eq!(paragraphs.len(), 2, "Expected two paragraph blocks");
         assert!(paragraphs[0].contains("First paragraph."));
         assert!(paragraphs[0].contains("Still first paragraph."));
@@ -364,21 +391,23 @@ Closing paragraph.
         for block in &parsed.blocks {
             match block {
                 aden_core::Block::Paragraph(t)
-                    if (t.contains("Intro") || t.contains("Closing")) => {
-                        found_paragraph = true;
-                    }
-                aden_core::Block::Table(t)
-                    if t.headers == vec!["A", "B"] => {
-                        found_table = true;
-                    }
+                    if (t.contains("Intro") || t.contains("Closing")) =>
+                {
+                    found_paragraph = true;
+                }
+                aden_core::Block::Table(t) if t.headers == vec!["A", "B"] => {
+                    found_table = true;
+                }
                 aden_core::Block::Admonition { kind, .. }
-                    if *kind == aden_core::AdmonitionKind::Important => {
-                        found_admonition = true;
-                    }
+                    if *kind == aden_core::AdmonitionKind::Important =>
+                {
+                    found_admonition = true;
+                }
                 aden_core::Block::Listing { language, .. }
-                    if language.as_deref() == Some("bash") => {
-                        found_listing = true;
-                    }
+                    if language.as_deref() == Some("bash") =>
+                {
+                    found_listing = true;
+                }
                 _ => {}
             }
         }

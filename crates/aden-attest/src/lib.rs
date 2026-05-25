@@ -76,10 +76,7 @@ mod tests {
 
     #[test]
     fn test_provenance_creation() {
-        let provenance = create_provenance(
-            "abc123",
-            &["def456".to_string(), "ghi789".to_string()],
-        );
+        let provenance = create_provenance("abc123", &["def456".to_string(), "ghi789".to_string()]);
         assert_eq!(provenance.contract_hash, "abc123");
         assert_eq!(provenance.source_hashes.len(), 2);
     }

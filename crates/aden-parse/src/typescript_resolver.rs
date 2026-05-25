@@ -13,7 +13,7 @@
 //!   • Path aliases from `tsconfig.json` / `jsconfig.json`
 //!   • Dynamic imports `import('./path')`
 
-use crate::extractor::{build_code_attributes, make_anchor, LanguageExtractor};
+use crate::extractor::{LanguageExtractor, build_code_attributes, make_anchor};
 use aden_core::{Block, Document, NodeType, Parameter, Result};
 use std::path::Path;
 
@@ -64,7 +64,9 @@ impl LanguageExtractor for TypeScriptResolver {
 
         let mut docs = Vec::new();
         for sym in &symbols {
-            if let Some(doc) = emit_ts_symbol(sym, source, path, &symbols, &imports, &proj_name, &file_name) {
+            if let Some(doc) = emit_ts_symbol(
+                sym, source, path, &symbols, &imports, &proj_name, &file_name,
+            ) {
                 docs.push(doc);
             }
         }
@@ -150,10 +152,15 @@ fn walk_program<'a>(
     }
 }
 
-fn extract_function_symbol<'a>(node: tree_sitter::Node<'a>, source: &str, exported: bool) -> Option<TsSymbol<'a>> {
+fn extract_function_symbol<'a>(
+    node: tree_sitter::Node<'a>,
+    source: &str,
+    exported: bool,
+) -> Option<TsSymbol<'a>> {
     let name_node = node.child_by_field_name("name")?;
     let name = node_text(name_node, source).to_string();
-    let is_async = node.kind() == "function_declaration" || node_text(node, source).contains("async");
+    let is_async =
+        node.kind() == "function_declaration" || node_text(node, source).contains("async");
     let params = extract_ts_params(node, source);
     let doc = extract_ts_doc_comment(node, source);
 
@@ -168,7 +175,10 @@ fn extract_function_symbol<'a>(node: tree_sitter::Node<'a>, source: &str, export
     })
 }
 
-fn extract_arrow_function_symbol<'a>(node: tree_sitter::Node<'a>, source: &str) -> Option<TsSymbol<'a>> {
+fn extract_arrow_function_symbol<'a>(
+    node: tree_sitter::Node<'a>,
+    source: &str,
+) -> Option<TsSymbol<'a>> {
     // Look for a parent variable_declarator to get the name.
     let mut current = node.parent()?;
     while let Some(parent) = current.parent() {
@@ -219,10 +229,13 @@ fn extract_method_symbol<'a>(node: tree_sitter::Node<'a>, source: &str) -> Optio
     let doc = extract_ts_doc_comment(node, source);
 
     // Qualify with class name if inside a class
-    let class_name = node.parent()
+    let class_name = node
+        .parent()
         .and_then(|p| p.child_by_field_name("name"))
         .map(|n| node_text(n, source).to_string());
-    let qualified = class_name.map(|c| format!("{}.{}", c, name)).unwrap_or(name);
+    let qualified = class_name
+        .map(|c| format!("{}.{}", c, name))
+        .unwrap_or(name);
 
     Some(TsSymbol {
         name: qualified,
@@ -268,7 +281,12 @@ fn extract_ts_params(node: tree_sitter::Node, source: &str) -> Vec<Parameter> {
 fn extract_import_statement(node: tree_sitter::Node, source: &str, imports: &mut Vec<TsImport>) {
     let source_node = node.child_by_field_name("source");
     let source_path = source_node
-        .map(|n| node_text(n, source).trim_matches('"').trim_matches('\'').to_string())
+        .map(|n| {
+            node_text(n, source)
+                .trim_matches('"')
+                .trim_matches('\'')
+                .to_string()
+        })
         .unwrap_or_default();
     if source_path.is_empty() {
         return;
@@ -285,10 +303,12 @@ fn extract_import_statement(node: tree_sitter::Node, source: &str, imports: &mut
                     let mut named_cursor = inner_child.walk();
                     for spec in inner_child.children(&mut named_cursor) {
                         if spec.kind() == "import_specifier" {
-                            let local = spec.child_by_field_name("name")
+                            let local = spec
+                                .child_by_field_name("name")
                                 .map(|n| node_text(n, source).to_string())
                                 .unwrap_or_default();
-                            let original = spec.child_by_field_name("alias")
+                            let original = spec
+                                .child_by_field_name("alias")
                                 .map(|n| node_text(n, source).to_string());
                             imports.push(TsImport {
                                 local_name: local.clone(),
@@ -327,27 +347,30 @@ fn extract_require_statement(node: tree_sitter::Node, source: &str, imports: &mu
     for child in node.children(&mut cursor) {
         if child.kind() == "call_expression"
             && let Some(func) = child.child_by_field_name("function")
-                && func.kind() == "identifier" && node_text(func, source) == "require"
-                    && let Some(args) = child.child_by_field_name("arguments") {
-                        let mut arg_cursor = args.walk();
-                        for arg in args.children(&mut arg_cursor) {
-                            if arg.kind() == "string" || arg.kind() == "string_fragment" {
-                                let raw = node_text(arg, source);
-                                let path = raw.trim_matches('"').trim_matches('\'').to_string();
-                                // Try to find the variable name from parent variable_declarator
-                                let local = node.parent()
-                                    .and_then(|p| p.parent())
-                                    .and_then(|gp| gp.child_by_field_name("name"))
-                                    .map(|n| node_text(n, source).to_string())
-                                    .unwrap_or_else(|| "require".to_string());
-                                imports.push(TsImport {
-                                    local_name: local,
-                                    source_path: path,
-                                    original_name: None,
-                                });
-                            }
-                        }
-                    }
+            && func.kind() == "identifier"
+            && node_text(func, source) == "require"
+            && let Some(args) = child.child_by_field_name("arguments")
+        {
+            let mut arg_cursor = args.walk();
+            for arg in args.children(&mut arg_cursor) {
+                if arg.kind() == "string" || arg.kind() == "string_fragment" {
+                    let raw = node_text(arg, source);
+                    let path = raw.trim_matches('"').trim_matches('\'').to_string();
+                    // Try to find the variable name from parent variable_declarator
+                    let local = node
+                        .parent()
+                        .and_then(|p| p.parent())
+                        .and_then(|gp| gp.child_by_field_name("name"))
+                        .map(|n| node_text(n, source).to_string())
+                        .unwrap_or_else(|| "require".to_string());
+                    imports.push(TsImport {
+                        local_name: local,
+                        source_path: path,
+                        original_name: None,
+                    });
+                }
+            }
+        }
     }
 }
 
@@ -378,7 +401,12 @@ fn emit_ts_symbol<'a>(
 ) -> Option<Document> {
     let anchor = make_anchor(proj_name, file_name, &sym.name);
     let span = node_to_span(sym.node, path);
-    let attrs = build_code_attributes(source, &format!("{:?}", sym.kind).to_lowercase(), Some(path), Some(&span));
+    let attrs = build_code_attributes(
+        source,
+        &format!("{:?}", sym.kind).to_lowercase(),
+        Some(path),
+        Some(&span),
+    );
     let mut blocks = Vec::new();
 
     if sym.is_export {
@@ -407,18 +435,23 @@ fn emit_ts_symbol<'a>(
     // Resolve call sites
     let calls = resolve_ts_call_sites(sym.node, source, all_symbols, imports);
     if !calls.is_empty() {
-        let call_rows: Vec<Vec<String>> = calls.iter()
+        let call_rows: Vec<Vec<String>> = calls
+            .iter()
             .map(|c| vec![c.callee.clone(), c.line.to_string()])
             .collect();
         blocks.push(Block::Table(aden_core::Table {
             headers: vec!["Callee".to_string(), "Line".to_string()],
             rows: call_rows,
         }));
-        let edge_code = calls.iter()
+        let edge_code = calls
+            .iter()
             .map(|c| format!("edge::calls[{}]", c.callee))
             .collect::<Vec<_>>()
             .join("\n");
-        blocks.push(Block::Listing { language: None, code: edge_code });
+        blocks.push(Block::Listing {
+            language: None,
+            code: edge_code,
+        });
     }
 
     Some(Document {
@@ -448,13 +481,14 @@ fn resolve_ts_call_sites<'a>(
     }
 
     if node.kind() == "call_expression"
-        && let Some(func) = node.child_by_field_name("function") {
-            let callee = resolve_ts_callee(func, source, all_symbols, imports);
-            if !callee.is_empty() && callee.len() >= 2 && !is_ts_std_noise(&callee) {
-                let line = func.start_position().row + 1;
-                calls.push(TsCallSite { callee, line });
-            }
+        && let Some(func) = node.child_by_field_name("function")
+    {
+        let callee = resolve_ts_callee(func, source, all_symbols, imports);
+        if !callee.is_empty() && callee.len() >= 2 && !is_ts_std_noise(&callee) {
+            let line = func.start_position().row + 1;
+            calls.push(TsCallSite { callee, line });
         }
+    }
     calls
 }
 
@@ -470,15 +504,21 @@ fn resolve_ts_callee(
             // Try import resolution
             for imp in imports {
                 if imp.local_name == name {
-                    return format!("{}.{}", imp.source_path, imp.original_name.as_ref().unwrap_or(&name));
+                    return format!(
+                        "{}.{}",
+                        imp.source_path,
+                        imp.original_name.as_ref().unwrap_or(&name)
+                    );
                 }
             }
             name
         }
         "member_expression" => {
-            let obj = node.child_by_field_name("object")
+            let obj = node
+                .child_by_field_name("object")
                 .map(|n| node_text(n, source).trim().to_string());
-            let prop = node.child_by_field_name("property")
+            let prop = node
+                .child_by_field_name("property")
                 .map(|n| node_text(n, source).trim().to_string());
             match (obj, prop) {
                 (Some(o), Some(p)) => {
@@ -495,33 +535,67 @@ fn resolve_ts_callee(
                 _ => node_text(node, source).trim().to_string(),
             }
         }
-        "call_expression" => {
-            resolve_ts_callee(
-                node.child_by_field_name("function").unwrap_or(node),
-                source, _all_symbols, imports,
-            )
-        }
+        "call_expression" => resolve_ts_callee(
+            node.child_by_field_name("function").unwrap_or(node),
+            source,
+            _all_symbols,
+            imports,
+        ),
         _ => node_text(node, source).trim().to_string(),
     }
 }
 
 fn is_ts_std_noise(name: &str) -> bool {
     const SKIP: &[&str] = &[
-        "console.log", "console.error", "console.warn", "console.info",
-        "console.debug", "console.assert", "console.trace",
-        "Math.abs", "Math.floor", "Math.ceil", "Math.round", "Math.random",
-        "Math.max", "Math.min", "Math.pow", "Math.sqrt",
-        "Array.from", "Array.isArray", "Array.of",
-        "Object.keys", "Object.values", "Object.entries", "Object.assign",
-        "JSON.parse", "JSON.stringify",
-        "setTimeout", "setInterval", "clearTimeout", "clearInterval",
-        "parseInt", "parseFloat", "isNaN", "isFinite",
-        "String.prototype.trim", "String.prototype.split", "String.prototype.slice",
-        "toString", "valueOf", "hasOwnProperty",
-        "require", "module.exports", "exports",
-        "process.exit", "process.nextTick",
-        "Buffer.from", "Buffer.alloc", "Buffer.allocUnsafe",
-        "Date.now", "Date.parse",
+        "console.log",
+        "console.error",
+        "console.warn",
+        "console.info",
+        "console.debug",
+        "console.assert",
+        "console.trace",
+        "Math.abs",
+        "Math.floor",
+        "Math.ceil",
+        "Math.round",
+        "Math.random",
+        "Math.max",
+        "Math.min",
+        "Math.pow",
+        "Math.sqrt",
+        "Array.from",
+        "Array.isArray",
+        "Array.of",
+        "Object.keys",
+        "Object.values",
+        "Object.entries",
+        "Object.assign",
+        "JSON.parse",
+        "JSON.stringify",
+        "setTimeout",
+        "setInterval",
+        "clearTimeout",
+        "clearInterval",
+        "parseInt",
+        "parseFloat",
+        "isNaN",
+        "isFinite",
+        "String.prototype.trim",
+        "String.prototype.split",
+        "String.prototype.slice",
+        "toString",
+        "valueOf",
+        "hasOwnProperty",
+        "require",
+        "module.exports",
+        "exports",
+        "process.exit",
+        "process.nextTick",
+        "Buffer.from",
+        "Buffer.alloc",
+        "Buffer.allocUnsafe",
+        "Date.now",
+        "Date.parse",
     ];
     SKIP.contains(&name)
 }

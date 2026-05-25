@@ -9,7 +9,7 @@
 //!   • No cyclic imports
 //!   • `tree-sitter-go` grammar is simple and stable
 
-use crate::extractor::{build_code_attributes, make_anchor, LanguageExtractor};
+use crate::extractor::{LanguageExtractor, build_code_attributes, make_anchor};
 use aden_core::{Block, Document, NodeType, Result};
 use std::path::Path;
 
@@ -54,12 +54,27 @@ impl LanguageExtractor for GoResolver {
         // Collect symbols and imports from the file.
         let mut symbols: Vec<GoSymbol> = Vec::new();
         let mut imports: Vec<GoImport> = Vec::new();
-        walk_package_decl(tree.root_node(), source, &module_path, &file_name, &mut symbols, &mut imports);
+        walk_package_decl(
+            tree.root_node(),
+            source,
+            &module_path,
+            &file_name,
+            &mut symbols,
+            &mut imports,
+        );
 
         // Emit Documents with call-site resolution.
         let mut docs = Vec::new();
         for sym in &symbols {
-            if let Some(doc) = emit_go_symbol(sym, source, path, &symbols, &imports, &module_path, &file_name) {
+            if let Some(doc) = emit_go_symbol(
+                sym,
+                source,
+                path,
+                &symbols,
+                &imports,
+                &module_path,
+                &file_name,
+            ) {
                 docs.push(doc);
             }
         }
@@ -85,8 +100,8 @@ fn find_go_module(path: &Path) -> String {
 
 #[derive(Debug)]
 struct GoImport {
-    alias: Option<String>,     // local alias (e.g. "fmt" or "http")
-    path: String,              // full import path (e.g. "fmt" or "net/http")
+    alias: Option<String>, // local alias (e.g. "fmt" or "http")
+    path: String,          // full import path (e.g. "fmt" or "net/http")
 }
 
 #[derive(Debug)]
@@ -95,7 +110,7 @@ struct GoSymbol<'a> {
     name: String,
     kind: NodeType,
     node: tree_sitter::Node<'a>,
-    receiver: Option<String>,  // e.g. "Point" for `func (p Point) Distance()`
+    receiver: Option<String>, // e.g. "Point" for `func (p Point) Distance()`
     doc_comment: Option<String>,
 }
 
@@ -130,7 +145,10 @@ fn walk_package_decl<'a>(
             if let Some(name_node) = node.child_by_field_name("name") {
                 let name = node_text(name_node, source).to_string();
                 let receiver = extract_receiver_type(node, source);
-                let qualified = receiver.as_ref().map(|r| format!("{}.{}", r, name)).unwrap_or_else(|| name.clone());
+                let qualified = receiver
+                    .as_ref()
+                    .map(|r| format!("{}.{}", r, name))
+                    .unwrap_or_else(|| name.clone());
                 let doc = extract_go_doc_comment(node, source);
                 symbols.push(GoSymbol {
                     name: qualified,
@@ -146,17 +164,18 @@ fn walk_package_decl<'a>(
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
                 if child.kind() == "type_spec"
-                    && let Some(name_node) = child.child_by_field_name("name") {
-                        let name = node_text(name_node, source).to_string();
-                        let doc = extract_go_doc_comment(node, source);
-                        symbols.push(GoSymbol {
-                            name,
-                            kind: NodeType::Type,
-                            node,
-                            receiver: None,
-                            doc_comment: doc,
-                        });
-                    }
+                    && let Some(name_node) = child.child_by_field_name("name")
+                {
+                    let name = node_text(name_node, source).to_string();
+                    let doc = extract_go_doc_comment(node, source);
+                    symbols.push(GoSymbol {
+                        name,
+                        kind: NodeType::Type,
+                        node,
+                        receiver: None,
+                        doc_comment: doc,
+                    });
+                }
             }
         }
         "import_declaration" | "import_spec" => {
@@ -202,11 +221,16 @@ fn extract_import(node: tree_sitter::Node, source: &str, imports: &mut Vec<GoImp
             }
         }
         "import_spec" => {
-            let alias = node.child_by_field_name("name").map(|n| node_text(n, source).to_string());
-            let path = node.child_by_field_name("path").map(|n| {
-                let raw = node_text(n, source);
-                raw.trim_matches('"').to_string()
-            }).unwrap_or_default();
+            let alias = node
+                .child_by_field_name("name")
+                .map(|n| node_text(n, source).to_string());
+            let path = node
+                .child_by_field_name("path")
+                .map(|n| {
+                    let raw = node_text(n, source);
+                    raw.trim_matches('"').to_string()
+                })
+                .unwrap_or_default();
             if !path.is_empty() {
                 imports.push(GoImport { alias, path });
             }
@@ -248,31 +272,45 @@ fn emit_go_symbol<'a>(
 ) -> Option<Document> {
     let anchor = make_anchor(module, file_name, &sym.name);
     let span = node_to_span(sym.node, path);
-    let attrs = build_code_attributes(source, &format!("{:?}", sym.kind).to_lowercase(), Some(path), Some(&span));
+    let attrs = build_code_attributes(
+        source,
+        &format!("{:?}", sym.kind).to_lowercase(),
+        Some(path),
+        Some(&span),
+    );
     let mut blocks = Vec::new();
 
     if let Some(ref doc) = sym.doc_comment {
         blocks.push(Block::Paragraph(doc.clone()));
     }
 
-    blocks.push(Block::Paragraph(format!("Go {} from module `{}`.", format!("{:?}", sym.kind).to_lowercase(), module)));
+    blocks.push(Block::Paragraph(format!(
+        "Go {} from module `{}`.",
+        format!("{:?}", sym.kind).to_lowercase(),
+        module
+    )));
 
     // Resolve call sites inside the function body
     if let Some(body) = sym.node.child_by_field_name("body") {
         let calls = resolve_go_call_sites(body, source, all_symbols, imports);
         if !calls.is_empty() {
-            let call_rows: Vec<Vec<String>> = calls.iter()
+            let call_rows: Vec<Vec<String>> = calls
+                .iter()
                 .map(|c| vec![c.callee.clone(), c.line.to_string()])
                 .collect();
             blocks.push(Block::Table(aden_core::Table {
                 headers: vec!["Callee".to_string(), "Line".to_string()],
                 rows: call_rows,
             }));
-            let edge_code = calls.iter()
+            let edge_code = calls
+                .iter()
                 .map(|c| format!("edge::calls[{}]", c.callee))
                 .collect::<Vec<_>>()
                 .join("\n");
-            blocks.push(Block::Listing { language: None, code: edge_code });
+            blocks.push(Block::Listing {
+                language: None,
+                code: edge_code,
+            });
         }
     }
 
@@ -303,13 +341,14 @@ fn resolve_go_call_sites<'a>(
     }
 
     if node.kind() == "call_expression"
-        && let Some(func) = node.child_by_field_name("function") {
-            let callee = resolve_go_callee(func, source, all_symbols, imports);
-            if !callee.is_empty() && callee.len() >= 2 && !is_go_std_noise(&callee) {
-                let line = func.start_position().row + 1;
-                calls.push(GoCallSite { callee, line });
-            }
+        && let Some(func) = node.child_by_field_name("function")
+    {
+        let callee = resolve_go_callee(func, source, all_symbols, imports);
+        if !callee.is_empty() && callee.len() >= 2 && !is_go_std_noise(&callee) {
+            let line = func.start_position().row + 1;
+            calls.push(GoCallSite { callee, line });
         }
+    }
     calls
 }
 
@@ -331,9 +370,11 @@ fn resolve_go_callee(
         }
         "selector_expression" => {
             // e.g. `fmt.Println`, `http.Get`, `p.Distance`
-            let obj = node.child_by_field_name("operand")
+            let obj = node
+                .child_by_field_name("operand")
                 .map(|n| node_text(n, source).trim().to_string());
-            let sel = node.child_by_field_name("field")
+            let sel = node
+                .child_by_field_name("field")
                 .map(|n| node_text(n, source).trim().to_string());
             match (obj, sel) {
                 (Some(o), Some(s)) => {
@@ -351,30 +392,63 @@ fn resolve_go_callee(
                 _ => node_text(node, source).trim().to_string(),
             }
         }
-        "call_expression" => {
-            resolve_go_callee(
-                node.child_by_field_name("function").unwrap_or(node),
-                source, all_symbols, imports,
-            )
-        }
+        "call_expression" => resolve_go_callee(
+            node.child_by_field_name("function").unwrap_or(node),
+            source,
+            all_symbols,
+            imports,
+        ),
         _ => node_text(node, source).trim().to_string(),
     }
 }
 
 fn is_go_std_noise(name: &str) -> bool {
     const SKIP: &[&str] = &[
-        "len", "cap", "make", "new", "append", "copy", "delete",
-        "close", "panic", "recover", "print", "println",
-        "string", "int", "float64", "bool", "error",
-        "range", "map", "chan", "select", "defer",
-        "fmt.Sprintf", "fmt.Printf", "fmt.Println", "fmt.Print",
-        "fmt.Fprintf", "fmt.Sprintf", "fmt.Errorf",
-        "strings.Join", "strings.Split", "strings.Trim",
-        "strconv.Itoa", "strconv.Atoi",
-        "time.Now", "time.Sleep",
-        "os.Open", "os.Create", "os.Exit",
-        "io.Copy", "io.ReadAll", "io.WriteString",
-        "bytes.Buffer", "bytes.NewBuffer", "bytes.NewBufferString",
+        "len",
+        "cap",
+        "make",
+        "new",
+        "append",
+        "copy",
+        "delete",
+        "close",
+        "panic",
+        "recover",
+        "print",
+        "println",
+        "string",
+        "int",
+        "float64",
+        "bool",
+        "error",
+        "range",
+        "map",
+        "chan",
+        "select",
+        "defer",
+        "fmt.Sprintf",
+        "fmt.Printf",
+        "fmt.Println",
+        "fmt.Print",
+        "fmt.Fprintf",
+        "fmt.Sprintf",
+        "fmt.Errorf",
+        "strings.Join",
+        "strings.Split",
+        "strings.Trim",
+        "strconv.Itoa",
+        "strconv.Atoi",
+        "time.Now",
+        "time.Sleep",
+        "os.Open",
+        "os.Create",
+        "os.Exit",
+        "io.Copy",
+        "io.ReadAll",
+        "io.WriteString",
+        "bytes.Buffer",
+        "bytes.NewBuffer",
+        "bytes.NewBufferString",
     ];
     SKIP.contains(&name)
 }

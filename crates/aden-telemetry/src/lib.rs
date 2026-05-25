@@ -69,7 +69,11 @@ pub struct TokenSavingsReport {
 
 pub fn emit_guard_telemetry(guard_name: &str, fired: bool) -> TelemetryEvent {
     TelemetryEvent {
-        event_type: if fired { EventType::GuardFired } else { EventType::GuardBlocked },
+        event_type: if fired {
+            EventType::GuardFired
+        } else {
+            EventType::GuardBlocked
+        },
         timestamp: rfc3339_now(),
         contract_id: None,
         guard_name: Some(guard_name.to_string()),
@@ -104,21 +108,14 @@ pub fn compute_token_savings(baseline: usize, aden_tokens: usize) -> TokenSaving
     }
 }
 
-pub fn propose_security_directive(
-    guard_name: &str,
-    reason: &str,
-) -> String {
+pub fn propose_security_directive(guard_name: &str, reason: &str) -> String {
     format!(
         "[security#{}]\n----\n:forbid_import: {}\n{}\n----\n",
         guard_name, guard_name, reason
     )
 }
 
-pub fn propose_agent_directive(
-    agent_id: &str,
-    directive: &str,
-    reason: &str,
-) -> String {
+pub fn propose_agent_directive(agent_id: &str, directive: &str, reason: &str) -> String {
     format!(
         "[agent#{}]\n----\n{}\nReason: {}\n----\n",
         agent_id, directive, reason

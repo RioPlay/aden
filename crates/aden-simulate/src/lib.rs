@@ -60,10 +60,7 @@ pub struct AdversarialTest {
     pub passed: bool,
 }
 
-pub fn simulate_diff(
-    current: &[(String, String)],
-    proposed: &[(String, String)],
-) -> ContractDiff {
+pub fn simulate_diff(current: &[(String, String)], proposed: &[(String, String)]) -> ContractDiff {
     let current_map: HashMap<_, _> = current.iter().cloned().collect();
     let proposed_map: HashMap<_, _> = proposed.iter().cloned().collect();
 
@@ -96,37 +93,35 @@ pub fn simulate_diff(
 
 pub fn analyze_history(entries: &[HistoryEntry]) -> HashMap<String, i32> {
     let mut edge_growth: HashMap<String, i32> = HashMap::new();
-    
+
     for entry in entries {
         *edge_growth.entry(entry.timestamp.clone()).or_insert(0) += entry.edge_growth;
     }
-    
+
     edge_growth
 }
 
-pub fn detect_brittle_directives(
-    overrides: &[(String, String)],
-) -> Vec<(String, String)> {
+pub fn detect_brittle_directives(overrides: &[(String, String)]) -> Vec<(String, String)> {
     let mut brittle = Vec::new();
-    
+
     for (tag, _justification) in overrides {
         if tag.contains("transitive") || tag.contains("recursive") {
             brittle.push((tag.clone(), "Missing :transitive: attribute".to_string()));
         }
     }
-    
+
     brittle
 }
 
 pub fn detect_brittle_in_tags(tags: &[String]) -> Vec<(String, String)> {
     let mut brittle = Vec::new();
-    
+
     for tag in tags {
         if tag.contains("transitive") || tag.contains("recursive") {
             brittle.push((tag.clone(), "Missing :transitive: attribute".to_string()));
         }
     }
-    
+
     brittle
 }
 

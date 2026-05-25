@@ -44,10 +44,7 @@ pub fn check_hashes(graph: &AdenGraph) -> Vec<(String, String)> {
                     }
                 }
                 Err(_) => {
-                    issues.push((
-                        doc.anchor.clone(),
-                        "ERROR: source file missing".to_string(),
-                    ));
+                    issues.push((doc.anchor.clone(), "ERROR: source file missing".to_string()));
                 }
             }
         }

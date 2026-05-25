@@ -9,7 +9,7 @@
 //! classes, structs, and modules, but does **not** resolve cross-file
 //! call sites.  That is the job of deep language resolvers (Phase 2).
 
-use crate::extractor::{build_code_attributes, make_anchor, LanguageExtractor};
+use crate::extractor::{LanguageExtractor, build_code_attributes, make_anchor};
 use aden_core::{Block, Document, NodeType, Result};
 use std::path::Path;
 
@@ -111,7 +111,14 @@ impl LanguageExtractor for GenericExtractor {
         let mut docs = Vec::new();
 
         // Walk the AST and collect symbols.
-        walk_tree(&tree.root_node(), source, path, &crate_name, &file_name, &mut docs);
+        walk_tree(
+            &tree.root_node(),
+            source,
+            path,
+            &crate_name,
+            &file_name,
+            &mut docs,
+        );
 
         Ok(docs)
     }
@@ -160,21 +167,28 @@ fn walk_tree(
     };
 
     if let Some(nt) = node_type
-        && let Some(name) = extract_node_name(*node, source) {
-            let anchor = make_anchor(crate_name, file_name, &name);
-            let span = node_to_span(*node, path);
-            let attrs = build_code_attributes(source, &format!("{:?}", nt).to_lowercase(), Some(path), Some(&span));
-            let blocks = vec![
-                Block::Paragraph(format!("Extracted from {} source via generic AST walker.", crate_name)),
-            ];
-            docs.push(Document {
-                anchor,
-                node_type: nt,
-                attributes: attrs,
-                blocks,
-                source_span: Some(span),
-            });
-        }
+        && let Some(name) = extract_node_name(*node, source)
+    {
+        let anchor = make_anchor(crate_name, file_name, &name);
+        let span = node_to_span(*node, path);
+        let attrs = build_code_attributes(
+            source,
+            &format!("{:?}", nt).to_lowercase(),
+            Some(path),
+            Some(&span),
+        );
+        let blocks = vec![Block::Paragraph(format!(
+            "Extracted from {} source via generic AST walker.",
+            crate_name
+        ))];
+        docs.push(Document {
+            anchor,
+            node_type: nt,
+            attributes: attrs,
+            blocks,
+            source_span: Some(span),
+        });
+    }
 
     // Recurse into children.
     let mut cursor = node.walk();

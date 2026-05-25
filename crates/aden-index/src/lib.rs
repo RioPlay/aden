@@ -76,15 +76,14 @@ pub fn save(index: &Index, dir: &std::path::Path) -> Result<(), Box<dyn std::err
 
 /// Set of common English stop words ignored during indexing and querying.
 const STOP_WORDS: &[&str] = &[
-    "a", "an", "the", "and", "or", "but", "is", "are", "was", "were", "be", "been",
-    "being", "have", "has", "had", "do", "does", "did", "will", "would", "could",
-    "should", "may", "might", "must", "shall", "can", "need", "dare", "ought", "used",
-    "to", "of", "in", "for", "on", "with", "at", "by", "from", "as", "into", "through",
-    "during", "before", "after", "above", "below", "between", "under", "again", "further",
-    "then", "once", "it", "its", "it's", "this", "that", "these", "those", "i", "you",
-    "he", "she", "we", "they", "me", "him", "her", "us", "them", "my", "your", "his",
-    "our", "their", "what", "which", "who", "when", "where", "why", "how", "all",
-    "each", "few", "more", "most", "other", "some", "such", "no", "nor", "not", "only",
+    "a", "an", "the", "and", "or", "but", "is", "are", "was", "were", "be", "been", "being",
+    "have", "has", "had", "do", "does", "did", "will", "would", "could", "should", "may", "might",
+    "must", "shall", "can", "need", "dare", "ought", "used", "to", "of", "in", "for", "on", "with",
+    "at", "by", "from", "as", "into", "through", "during", "before", "after", "above", "below",
+    "between", "under", "again", "further", "then", "once", "it", "its", "it's", "this", "that",
+    "these", "those", "i", "you", "he", "she", "we", "they", "me", "him", "her", "us", "them",
+    "my", "your", "his", "our", "their", "what", "which", "who", "when", "where", "why", "how",
+    "all", "each", "few", "more", "most", "other", "some", "such", "no", "nor", "not", "only",
     "own", "same", "so", "than", "too", "very", "just", "now",
 ];
 
@@ -203,7 +202,11 @@ fn build_snippet(text: &str, query_tokens: &[String]) -> String {
         }
     }
     // Fallback: first non-empty line or empty string.
-    text.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim().to_string()
+    text.lines()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("")
+        .trim()
+        .to_string()
 }
 
 impl Index {
@@ -286,7 +289,9 @@ impl Index {
                 for (anchor, tf) in postings {
                     let doc_len = self.doc_lengths.get(anchor).copied().unwrap_or(1);
                     let tf_normalized = (*tf as f64 * (BM25_K1 + 1.0))
-                        / (*tf as f64 + BM25_K1 * (1.0 - BM25_B + BM25_B * doc_len as f64 / self.avg_doc_length));
+                        / (*tf as f64
+                            + BM25_K1
+                                * (1.0 - BM25_B + BM25_B * doc_len as f64 / self.avg_doc_length));
                     *scores.entry(anchor.clone()).or_insert(0.0) += idf * tf_normalized;
                 }
             }
@@ -305,15 +310,21 @@ impl Index {
             }
 
             // 20x boost if query term appears in anchor (mod-*, adr-* patterns)
-            if query_lower.split_whitespace().any(|t| anchor_lower.contains(t)) {
+            if query_lower
+                .split_whitespace()
+                .any(|t| anchor_lower.contains(t))
+            {
                 *score *= 20.0;
             }
             // Additional 10x boost for title match (first line)
             if let Some(text) = self.anchor_text.get(anchor)
                 && let Some(first_line) = text.lines().next()
-                    && query_lower.split_whitespace().any(|t| first_line.to_lowercase().contains(t)) {
-                        *score *= 10.0;
-                    }
+                && query_lower
+                    .split_whitespace()
+                    .any(|t| first_line.to_lowercase().contains(t))
+            {
+                *score *= 10.0;
+            }
         }
 
         let mut results: Vec<SearchResult> = scores

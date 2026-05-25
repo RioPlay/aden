@@ -94,7 +94,11 @@ pub fn serve(project_dir: &Path) -> io::Result<()> {
 
     let project_arc = std::sync::Arc::from(project_dir.to_path_buf());
 
-    writeln!(stderr, "aden-mcp: serving project {} (CLI wrapper mode)", project_dir.display())?;
+    writeln!(
+        stderr,
+        "aden-mcp: serving project {} (CLI wrapper mode)",
+        project_dir.display()
+    )?;
 
     let reader = stdin.lock();
     for line in reader.lines() {
@@ -142,7 +146,11 @@ fn dispatch(
         "initialize" => handle_initialize(req),
         "tools/list" => handle_tools_list(req),
         "tools/call" => handle_tools_call(req, project_dir),
-        _ => JsonRpcResponse::error(req.id.clone(), -32601, &format!("Method not found: {}", req.method)),
+        _ => JsonRpcResponse::error(
+            req.id.clone(),
+            -32601,
+            &format!("Method not found: {}", req.method),
+        ),
     }
 }
 
@@ -251,7 +259,10 @@ fn handle_tools_call(
         None => return JsonRpcResponse::error(req.id.clone(), -32602, "Missing tool name"),
     };
 
-    let args = params.get("arguments").cloned().unwrap_or(serde_json::Value::Object(Default::default()));
+    let args = params
+        .get("arguments")
+        .cloned()
+        .unwrap_or(serde_json::Value::Object(Default::default()));
 
     let result = match tool_name {
         "list_symbols" => tool_list_symbols(project_dir, &args),
@@ -260,7 +271,13 @@ fn handle_tools_call(
         "ask" => tool_ask(project_dir, &args),
         "search" => tool_search(project_dir, &args),
         "asm" => tool_asm(project_dir, &args),
-        _ => return JsonRpcResponse::error(req.id.clone(), -32602, &format!("Unknown tool: {}", tool_name)),
+        _ => {
+            return JsonRpcResponse::error(
+                req.id.clone(),
+                -32602,
+                &format!("Unknown tool: {}", tool_name),
+            );
+        }
     };
 
     match result {
@@ -271,12 +288,15 @@ fn handle_tools_call(
 
 // ── Tool implementations ────────────────────────────────────
 
-fn tool_list_symbols(project_dir: &std::sync::Arc<std::path::PathBuf>, args: &serde_json::Value) -> Result<serde_json::Value, String> {
+fn tool_list_symbols(
+    project_dir: &std::sync::Arc<std::path::PathBuf>,
+    args: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
     let query = args.get("query").and_then(|q| q.as_str()).unwrap_or("");
 
     // Walk and parse
-    let docs = aden_parse::parse_directory(project_dir)
-        .map_err(|e| format!("parse error: {}", e))?;
+    let docs =
+        aden_parse::parse_directory(project_dir).map_err(|e| format!("parse error: {}", e))?;
 
     let mut symbols = Vec::new();
     for doc in docs {
@@ -298,7 +318,8 @@ fn tool_impact_analysis(
     project_dir: &std::sync::Arc<std::path::PathBuf>,
     args: &serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    let anchor = args.get("anchor")
+    let anchor = args
+        .get("anchor")
         .and_then(|a| a.as_str())
         .ok_or("Missing 'anchor' argument")?;
 
@@ -310,15 +331,25 @@ fn tool_context_for(
     project_dir: &std::sync::Arc<std::path::PathBuf>,
     args: &serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    let anchor = args.get("anchor")
+    let anchor = args
+        .get("anchor")
         .and_then(|a| a.as_str())
         .ok_or("Missing 'anchor' argument")?;
     let budget = args.get("budget").and_then(|b| b.as_u64()).unwrap_or(4096) as usize;
     let depth = args.get("depth").and_then(|d| d.as_u64()).unwrap_or(3) as usize;
 
-    let output = run_aden_command(project_dir, &[
-        "asm", "--from", anchor, "--budget", &budget.to_string(), "--depth", &depth.to_string()
-    ])?;
+    let output = run_aden_command(
+        project_dir,
+        &[
+            "asm",
+            "--from",
+            anchor,
+            "--budget",
+            &budget.to_string(),
+            "--depth",
+            &depth.to_string(),
+        ],
+    )?;
     Ok(serde_json::json!({ "content": output }))
 }
 
@@ -326,12 +357,16 @@ fn tool_ask(
     project_dir: &std::sync::Arc<std::path::PathBuf>,
     args: &serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    let question = args.get("question")
+    let question = args
+        .get("question")
         .and_then(|q| q.as_str())
         .ok_or("Missing 'question' argument")?;
     let budget = args.get("budget").and_then(|b| b.as_u64()).unwrap_or(4096) as usize;
 
-    let output = run_aden_command(project_dir, &["ask", question, "--budget", &budget.to_string()])?;
+    let output = run_aden_command(
+        project_dir,
+        &["ask", question, "--budget", &budget.to_string()],
+    )?;
     Ok(serde_json::json!({ "content": output }))
 }
 
@@ -339,7 +374,8 @@ fn tool_search(
     project_dir: &std::sync::Arc<std::path::PathBuf>,
     args: &serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    let query = args.get("query")
+    let query = args
+        .get("query")
         .and_then(|q| q.as_str())
         .ok_or("Missing 'query' argument")?;
 
@@ -351,15 +387,25 @@ fn tool_asm(
     project_dir: &std::sync::Arc<std::path::PathBuf>,
     args: &serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    let anchor = args.get("anchor")
+    let anchor = args
+        .get("anchor")
         .and_then(|a| a.as_str())
         .ok_or("Missing 'anchor' argument")?;
     let budget = args.get("budget").and_then(|b| b.as_u64()).unwrap_or(4096) as usize;
     let depth = args.get("depth").and_then(|d| d.as_u64()).unwrap_or(2) as usize;
 
-    let output = run_aden_command(project_dir, &[
-        "asm", "--from", anchor, "--budget", &budget.to_string(), "--depth", &depth.to_string()
-    ])?;
+    let output = run_aden_command(
+        project_dir,
+        &[
+            "asm",
+            "--from",
+            anchor,
+            "--budget",
+            &budget.to_string(),
+            "--depth",
+            &depth.to_string(),
+        ],
+    )?;
     Ok(serde_json::json!({ "content": output }))
 }
 

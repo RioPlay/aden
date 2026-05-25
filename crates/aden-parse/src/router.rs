@@ -8,19 +8,19 @@
 //! falls back to a `GenericExtractor` when `tree-sitter-language-pack`
 //! advertises support for the language.
 
+use crate::c_resolver::CResolver;
+use crate::csharp_resolver::CSharpResolver;
 use crate::extractor::LanguageExtractor;
 #[cfg(feature = "generic")]
 use crate::generic::GenericExtractor;
-#[cfg(feature = "rust-deep")]
-use crate::rust::RustExtractor;
-use crate::c_resolver::CResolver;
-use crate::csharp_resolver::CSharpResolver;
 use crate::go_resolver::GoResolver;
 use crate::java_resolver::JavaResolver;
 use crate::kotlin_resolver::KotlinResolver;
 use crate::php_resolver::PhpResolver;
 use crate::python_resolver::PythonResolver;
 use crate::ruby_resolver::RubyResolver;
+#[cfg(feature = "rust-deep")]
+use crate::rust::RustExtractor;
 use crate::typescript_resolver::TypeScriptResolver;
 use aden_core::{Document, Error, Result};
 use std::collections::HashMap;
@@ -116,10 +116,7 @@ impl LanguageRouter {
     /// Extract `Document`s from a single source file.
     pub fn parse_file(&self, path: &Path, source: &str) -> Result<Vec<Document>> {
         let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        let mut ext = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("");
+        let mut ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
 
         // Extensionless file detection (e.g., Makefile, Dockerfile, CMakeLists.txt).
         if ext.is_empty() {

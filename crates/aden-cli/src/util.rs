@@ -22,11 +22,7 @@ pub fn validate_name(name: &str) -> Result<(), Box<dyn std::error::Error>> {
 /// Reject paths containing parent-directory references.
 pub fn safe_relative(path_str: &str) -> Result<(), Box<dyn std::error::Error>> {
     if path_str.contains("..") {
-        return Err(format!(
-            "Path traversal blocked: '{}' contains '..'",
-            path_str
-        )
-        .into());
+        return Err(format!("Path traversal blocked: '{}' contains '..'", path_str).into());
     }
     Ok(())
 }
@@ -79,9 +75,10 @@ pub fn walk_src_files(
             walk_src_files(&p, exts, out, skip_patterns)?;
         } else if entry.file_type()?.is_file()
             && let Some(ext) = p.extension().and_then(|e| e.to_str())
-                && exts.contains(&ext) {
-                    out.push(p);
-                }
+            && exts.contains(&ext)
+        {
+            out.push(p);
+        }
     }
     Ok(())
 }
@@ -120,9 +117,19 @@ pub fn discover_source_files(root: &Path) -> Result<Vec<PathBuf>, Box<dyn std::e
     } else if root.join("go.mod").exists() {
         walk_src_files(root, &["go"], &mut files, &["/vendor/", " /.git/"])?;
     } else if root.join("package.json").exists() {
-        walk_src_files(root, &["ts", "tsx", "js", "jsx", "mjs", "cjs"], &mut files, &["/node_modules/", " /.git/"])?;
+        walk_src_files(
+            root,
+            &["ts", "tsx", "js", "jsx", "mjs", "cjs"],
+            &mut files,
+            &["/node_modules/", " /.git/"],
+        )?;
     } else {
-        walk_src_files(root, &["rs", "py", "js", "ts", "go", "c", "cpp", "h"], &mut files, &["/.git/", "/target/"])?;
+        walk_src_files(
+            root,
+            &["rs", "py", "js", "ts", "go", "c", "cpp", "h"],
+            &mut files,
+            &["/.git/", "/target/"],
+        )?;
     }
 
     Ok(files)
@@ -135,12 +142,11 @@ pub fn sanitize_source_file(doc: &mut aden_core::Document) {
     if let Some(source_file) = doc.attributes.get("source_file") {
         let p = std::path::Path::new(source_file);
         if p.is_absolute()
-            && let Ok(rel) = p.strip_prefix(&cwd) {
-                doc.attributes.insert(
-                    "source_file".to_string(),
-                    rel.to_string_lossy().to_string(),
-                );
-            }
+            && let Ok(rel) = p.strip_prefix(&cwd)
+        {
+            doc.attributes
+                .insert("source_file".to_string(), rel.to_string_lossy().to_string());
+        }
     }
 }
 
@@ -189,12 +195,29 @@ pub fn parse_single_edge_type(s: &str) -> Option<aden_core::EdgeType> {
 
 /// Return list of valid edge types for error messages.
 pub fn valid_edge_types() -> Vec<&'static str> {
-    vec!["uses", "implements", "tests", "documents", "constrains", "justifies", "invokes", "requires", "mutates", "calls", "supersedes", "amends", "verifies"]
+    vec![
+        "uses",
+        "implements",
+        "tests",
+        "documents",
+        "constrains",
+        "justifies",
+        "invokes",
+        "requires",
+        "mutates",
+        "calls",
+        "supersedes",
+        "amends",
+        "verifies",
+    ]
 }
 
 /// Parse a comma-separated list of edge-type strings.
 pub fn parse_edge_types(input: &str) -> Vec<aden_core::EdgeType> {
-    input.split(',').filter_map(parse_single_edge_type).collect()
+    input
+        .split(',')
+        .filter_map(parse_single_edge_type)
+        .collect()
 }
 
 /// Emit documents to files or stdout.
@@ -269,10 +292,7 @@ pub fn node_to_json(node: &aden_graph::DocumentNode, depth: usize) -> serde_json
         "node_type".to_string(),
         serde_json::Value::String(resolve_node_type(node)),
     );
-    map.insert(
-        "depth".to_string(),
-        serde_json::Value::from(depth as u64),
-    );
+    map.insert("depth".to_string(), serde_json::Value::from(depth as u64));
     serde_json::Value::Object(map)
 }
 
@@ -393,10 +413,10 @@ pub fn load_or_build_index(path: &Path) -> Result<aden_index::Index, Box<dyn std
 /// Compute a quick health score from drift events (consistent with heal report).
 pub fn quick_health_score(path: &Path) -> Result<f64, Box<dyn std::error::Error>> {
     use aden_heal::{Scanner, generate};
-    
+
     let scanner = Scanner::new(path);
     let events = scanner.scan()?;
-    
+
     // Use same weighting as heal report: severity-weighted events / total contracts
     let report = generate(events, path);
     Ok(report.overall_score)
@@ -405,8 +425,7 @@ pub fn quick_health_score(path: &Path) -> Result<f64, Box<dyn std::error::Error>
 /// Escape text for safe insertion into an AsciiDoc table cell.
 /// Prevents injection of directives, includes, block terminators, and formatting.
 pub fn escape_adoc_cell(text: &str) -> String {
-    let mut out = text.replace('|', "{vbar}")
-        .replace(['\n', '\r'], " ");
+    let mut out = text.replace('|', "{vbar}").replace(['\n', '\r'], " ");
     // Neutralize AsciiDoc directives and block terminators
     out = out.replace("include::", "[include blocked]");
     out = out.replace("ifdef::", "[ifdef blocked]");
@@ -423,9 +442,8 @@ pub fn is_safe_id(id: &str) -> bool {
     if id.len() < 3 || id.len() > 128 {
         return false;
     }
-    id.bytes().all(|b| {
-        b.is_ascii_alphanumeric() || b == b'-' || b == b'_'
-    })
+    id.bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
 /// Generate a unique proposal ID from PID and nanosecond timestamp.

@@ -14,7 +14,7 @@
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 // GNU Affero General Public License for more details.
 //
-use crate::parser::{parse_file, ParsedDocument};
+use crate::parser::{ParsedDocument, parse_file};
 use aden_core::{Document, EdgeType, NodeType};
 use petgraph::graph::{DiGraph, NodeIndex};
 use std::collections::HashMap;
@@ -84,9 +84,12 @@ impl AdenGraph {
         // First pass: add all nodes
         for path in &files {
             let parsed = parse_file(path).map_err(|e| GraphError::Parse(e.to_string()))?;
-            let primary_anchor = parsed.anchors.first()
-                .cloned()
-                .unwrap_or_else(|| path.file_stem().unwrap_or_default().to_string_lossy().to_string());
+            let primary_anchor = parsed.anchors.first().cloned().unwrap_or_else(|| {
+                path.file_stem()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string()
+            });
 
             let doc = Document {
                 anchor: primary_anchor.clone(),
@@ -122,16 +125,18 @@ impl AdenGraph {
                 // Include edges → Requires
                 for inc in &parsed.includes {
                     if let Ok(inc_path) = resolve_include_path(path, &inc.path, dir)
-                        && let Some(&target_idx) = graph.path_to_index.get(&inc_path) {
-                            graph.graph.add_edge(idx, target_idx, EdgeType::Requires);
-                        }
+                        && let Some(&target_idx) = graph.path_to_index.get(&inc_path)
+                    {
+                        graph.graph.add_edge(idx, target_idx, EdgeType::Requires);
+                    }
                 }
                 // Reference edges → Uses (default for refs)
                 for r in &parsed.refs {
                     if let Some(&target_idx) = graph.anchor_to_index.get(r)
-                        && !graph.graph.contains_edge(idx, target_idx) {
-                            graph.graph.add_edge(idx, target_idx, EdgeType::Uses);
-                        }
+                        && !graph.graph.contains_edge(idx, target_idx)
+                    {
+                        graph.graph.add_edge(idx, target_idx, EdgeType::Uses);
+                    }
                 }
                 // Explicit edge macros
                 for e in &parsed.edges {
@@ -158,7 +163,10 @@ impl AdenGraph {
     fn find_root(&self, start: &Path) -> PathBuf {
         let mut current = start.to_path_buf();
         loop {
-            if current.join("Cargo.toml").exists() || current.join("aden.toml").exists() || current.join(".adenignore").exists() {
+            if current.join("Cargo.toml").exists()
+                || current.join("aden.toml").exists()
+                || current.join(".adenignore").exists()
+            {
                 return current;
             }
             if let Some(parent) = current.parent() {
@@ -169,14 +177,20 @@ impl AdenGraph {
         }
     }
 
-    fn collect_files_inner(&self, dir: &Path, root: &Path, files: &mut Vec<PathBuf>) -> Result<(), GraphError> {
+    fn collect_files_inner(
+        &self,
+        dir: &Path,
+        root: &Path,
+        files: &mut Vec<PathBuf>,
+    ) -> Result<(), GraphError> {
         for entry in std::fs::read_dir(dir).map_err(|e| GraphError::Io(e.to_string()))? {
             let entry = entry.map_err(|e| GraphError::Io(e.to_string()))?;
             let path = entry.path();
             if let Ok(rel) = path.strip_prefix(root)
-                && self.filter.should_skip(rel) {
-                    continue;
-                }
+                && self.filter.should_skip(rel)
+            {
+                continue;
+            }
             if path.is_dir() {
                 self.collect_files_inner(&path, root, files)?;
             } else if path.is_file() {
@@ -207,8 +221,14 @@ impl AdenGraph {
     pub fn orphans(&self) -> Vec<String> {
         let mut orphans = Vec::new();
         for node in self.graph.node_indices() {
-            let in_count = self.graph.neighbors_directed(node, petgraph::Direction::Incoming).count();
-            let out_count = self.graph.neighbors_directed(node, petgraph::Direction::Outgoing).count();
+            let in_count = self
+                .graph
+                .neighbors_directed(node, petgraph::Direction::Incoming)
+                .count();
+            let out_count = self
+                .graph
+                .neighbors_directed(node, petgraph::Direction::Outgoing)
+                .count();
             if in_count == 0 && out_count == 0 {
                 orphans.push(self.graph[node].anchor.clone());
             }
@@ -218,7 +238,9 @@ impl AdenGraph {
 
     /// Get a node by anchor.
     pub fn get_node(&self, anchor: &str) -> Option<&DocumentNode> {
-        self.anchor_to_index.get(anchor).map(|&idx| &self.graph[idx])
+        self.anchor_to_index
+            .get(anchor)
+            .map(|&idx| &self.graph[idx])
     }
 
     /// Get node index by anchor.
@@ -269,7 +291,9 @@ impl AdenGraph {
     pub fn validate_typed_edges(&self) -> Vec<String> {
         let mut errors = Vec::new();
         for edge_idx in self.graph.edge_indices() {
-            let (source_idx, target_idx) = self.graph.edge_endpoints(edge_idx)
+            let (source_idx, target_idx) = self
+                .graph
+                .edge_endpoints(edge_idx)
                 .expect("edge_endpoints called with valid index from edge_indices iterator");
             let source = &self.graph[source_idx];
             let target = &self.graph[target_idx];
@@ -279,39 +303,36 @@ impl AdenGraph {
                 EdgeType::Uses => {
                     let source_is_doc = matches!(
                         source.doc.node_type,
-                        NodeType::Note | NodeType::Adr | NodeType::Plan | NodeType::Spec | NodeType::Context | NodeType::Manifest | NodeType::Runbook
+                        NodeType::Note
+                            | NodeType::Adr
+                            | NodeType::Plan
+                            | NodeType::Spec
+                            | NodeType::Context
+                            | NodeType::Manifest
+                            | NodeType::Runbook
                     );
-                    source_is_doc || (
-                        matches!(
+                    source_is_doc
+                        || (matches!(
                             source.doc.node_type,
                             NodeType::Module | NodeType::Function | NodeType::Script
                         ) && matches!(
                             target.doc.node_type,
                             NodeType::Module | NodeType::Function
-                        )
-                    )
+                        ))
                 }
                 EdgeType::Calls => {
                     matches!(
                         source.doc.node_type,
                         NodeType::Module | NodeType::Function | NodeType::Script
-                    ) && matches!(
-                        target.doc.node_type,
-                        NodeType::Module | NodeType::Function
-                    )
+                    ) && matches!(target.doc.node_type, NodeType::Module | NodeType::Function)
                 }
                 EdgeType::Implements => {
                     matches!(source.doc.node_type, NodeType::Function | NodeType::Type)
                         && matches!(target.doc.node_type, NodeType::Type)
                 }
                 EdgeType::Tests | EdgeType::Verifies => {
-                    matches!(
-                        source.doc.node_type,
-                        NodeType::Module | NodeType::Function
-                    ) && matches!(
-                        target.doc.node_type,
-                        NodeType::Module | NodeType::Function
-                    )
+                    matches!(source.doc.node_type, NodeType::Module | NodeType::Function)
+                        && matches!(target.doc.node_type, NodeType::Module | NodeType::Function)
                 }
                 EdgeType::Documents | EdgeType::Constrains | EdgeType::Justifies => {
                     matches!(
@@ -324,10 +345,7 @@ impl AdenGraph {
                 }
                 EdgeType::Invokes => {
                     matches!(source.doc.node_type, NodeType::Runbook | NodeType::Script)
-                        && matches!(
-                            target.doc.node_type,
-                            NodeType::Script | NodeType::Function
-                        )
+                        && matches!(target.doc.node_type, NodeType::Script | NodeType::Function)
                 }
                 // Requires edges from include::[] are structural; skip type validation.
                 EdgeType::Requires => true,
@@ -349,7 +367,11 @@ impl AdenGraph {
             if !valid {
                 errors.push(format!(
                     "Invalid edge {:?} from {} ({:?}) to {} ({:?})",
-                    edge_type, source.anchor, source.doc.node_type, target.anchor, target.doc.node_type
+                    edge_type,
+                    source.anchor,
+                    source.doc.node_type,
+                    target.anchor,
+                    target.doc.node_type
                 ));
             }
         }

@@ -21,51 +21,39 @@ use std::io::Read;
 use std::path::Path;
 use std::sync::LazyLock;
 
-static ATTR_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^:\s*([^:\s]+)\s*:\s*(.*)$").expect("static regex")
-});
-static ANCHOR_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^\[\[([^\]]+)\]\]\s*$").expect("static regex")
-});
-static REF_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"<<([^>,]+)(?:,[^>]*)?>>").expect("static regex")
-});
-static INCLUDE_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^include::([^\[]+)\[(.*)\]\s*$").expect("static regex")
-});
-static IFDEF_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^ifdef::([^\[]+)\[\]\s*$").expect("static regex")
-});
-static IFNDEF_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^ifndef::([^\[]+)\[\]\s*$").expect("static regex")
-});
-static IFEVAL_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^ifeval::\[([^\]]+)\]\s*$").expect("static regex")
-});
-static ENDIF_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^endif::\[\]\s*$").expect("static regex")
-});
+static ATTR_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^:\s*([^:\s]+)\s*:\s*(.*)$").expect("static regex"));
+static ANCHOR_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\[\[([^\]]+)\]\]\s*$").expect("static regex"));
+static REF_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"<<([^>,]+)(?:,[^>]*)?>>").expect("static regex"));
+static INCLUDE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^include::([^\[]+)\[(.*)\]\s*$").expect("static regex"));
+static IFDEF_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^ifdef::([^\[]+)\[\]\s*$").expect("static regex"));
+static IFNDEF_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^ifndef::([^\[]+)\[\]\s*$").expect("static regex"));
+static IFEVAL_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^ifeval::\[([^\]]+)\]\s*$").expect("static regex"));
+static ENDIF_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^endif::\[\]\s*$").expect("static regex"));
 static SEMANTIC_DIFF_CHANGED_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^agent-note::CHANGED\[([^\]]+)\]\s*(.*)$").expect("static regex")
 });
 static SEMANTIC_DIFF_DEPRECATED_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^agent-note::DEPRECATED\[([^\]]+)\]\s*(.*)$").expect("static regex")
 });
-static SEMANTIC_DIFF_ADDED_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^agent-note::ADDED\[([^\]]+)\]\s*$").expect("static regex")
-});
-static TITLE_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^=+\s+.*$").expect("static regex")
-});
-static SOURCE_BLOCK_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^\[source(?:,\s*([^\]]+))?\]$").expect("static regex")
-});
+static SEMANTIC_DIFF_ADDED_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^agent-note::ADDED\[([^\]]+)\]\s*$").expect("static regex"));
+static TITLE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^=+\s+.*$").expect("static regex"));
+static SOURCE_BLOCK_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\[source(?:,\s*([^\]]+))?\]$").expect("static regex"));
 static ADMONITION_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^(NOTE|TIP|WARNING|IMPORTANT|CAUTION):\s*(.*)$").expect("static regex")
 });
-static DESC_LIST_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^(.+?)::\s*(.*)$").expect("static regex")
-});
+static DESC_LIST_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^(.+?)::\s*(.*)$").expect("static regex"));
 
 /// A document parsed from an AsciiDoc source.
 #[derive(Debug, Clone)]
@@ -102,9 +90,17 @@ pub struct EdgeMacro {
 /// A semantic diff entry parsed from agent-note macros.
 #[derive(Debug, Clone)]
 pub enum SemanticDiff {
-    Changed { date: String, description: String },
-    Deprecated { date: String, replacement: Option<String> },
-    Added { date: String },
+    Changed {
+        date: String,
+        description: String,
+    },
+    Deprecated {
+        date: String,
+        replacement: Option<String>,
+    },
+    Added {
+        date: String,
+    },
 }
 
 /// A conditional block.
@@ -133,8 +129,7 @@ enum BlockState {
 
 /// Parse an AsciiDoc file into a `ParsedDocument`.
 pub fn parse_file(path: &Path) -> Result<ParsedDocument, ParseError> {
-    let mut file = std::fs::File::open(path)
-        .map_err(|e| ParseError::Io(e.to_string()))?;
+    let mut file = std::fs::File::open(path).map_err(|e| ParseError::Io(e.to_string()))?;
     let mut raw = String::new();
     file.read_to_string(&mut raw)
         .map_err(|e| ParseError::Io(e.to_string()))?;
@@ -173,17 +168,18 @@ pub fn parse_file(path: &Path) -> Result<ParsedDocument, ParseError> {
 
         // Attributes
         if (in_header || trimmed.starts_with(':'))
-            && let Some(cap) = ATTR_RE.captures(trimmed) {
-                let key = cap[1].to_string();
-                let value = cap[2].to_string();
-                attrs.insert(key, value);
-                // Attributes aren't body content
-                if state == BlockState::InParagraph {
-                    flush_paragraph(&mut paragraph_text, &mut blocks);
-                    state = BlockState::Idle;
-                }
-                continue;
+            && let Some(cap) = ATTR_RE.captures(trimmed)
+        {
+            let key = cap[1].to_string();
+            let value = cap[2].to_string();
+            attrs.insert(key, value);
+            // Attributes aren't body content
+            if state == BlockState::InParagraph {
+                flush_paragraph(&mut paragraph_text, &mut blocks);
+                state = BlockState::Idle;
             }
+            continue;
+        }
 
         // Anchors
         if let Some(cap) = ANCHOR_RE.captures(trimmed) {
@@ -220,9 +216,10 @@ pub fn parse_file(path: &Path) -> Result<ParsedDocument, ParseError> {
                 } else if let Some(val) = part.strip_prefix("lines=") {
                     lines_spec = Some(val.trim_matches('"').to_string());
                 } else if let Some(val) = part.strip_prefix("leveloffset=")
-                    && let Ok(v) = val.trim_matches('"').parse::<i32>() {
-                        leveloff = Some(v);
-                    }
+                    && let Ok(v) = val.trim_matches('"').parse::<i32>()
+                {
+                    leveloff = Some(v);
+                }
             }
             includes.push(Include {
                 path,
@@ -310,14 +307,15 @@ pub fn parse_file(path: &Path) -> Result<ParsedDocument, ParseError> {
 
         // edge:: macros
         if trimmed.starts_with("edge::")
-            && let Some(end) = trimmed.find('[') {
-                let edge_type = trimmed[6..end].to_string();
-                let rest = &trimmed[end + 1..];
-                if let Some(close) = rest.rfind(']') {
-                    let target = rest[..close].to_string();
-                    edges.push(EdgeMacro { edge_type, target });
-                }
+            && let Some(end) = trimmed.find('[')
+        {
+            let edge_type = trimmed[6..end].to_string();
+            let rest = &trimmed[end + 1..];
+            if let Some(close) = rest.rfind(']') {
+                let target = rest[..close].to_string();
+                edges.push(EdgeMacro { edge_type, target });
             }
+        }
 
         // Semantic diffs
         if let Some(cap) = SEMANTIC_DIFF_CHANGED_RE.captures(trimmed) {
@@ -327,7 +325,11 @@ pub fn parse_file(path: &Path) -> Result<ParsedDocument, ParseError> {
         } else if let Some(cap) = SEMANTIC_DIFF_DEPRECATED_RE.captures(trimmed) {
             let date = cap[1].to_string();
             let replacement = cap[2].to_string();
-            let replacement = if replacement.is_empty() { None } else { Some(replacement) };
+            let replacement = if replacement.is_empty() {
+                None
+            } else {
+                Some(replacement)
+            };
             semantic_diffs.push(SemanticDiff::Deprecated { date, replacement });
         } else if let Some(cap) = SEMANTIC_DIFF_ADDED_RE.captures(trimmed) {
             let date = cap[1].to_string();
@@ -492,9 +494,10 @@ pub fn parse_file(path: &Path) -> Result<ParsedDocument, ParseError> {
 
     // If no anchors found, generate one from filename
     if anchors.is_empty()
-        && let Some(stem) = path.file_stem() {
-            anchors.push(stem.to_string_lossy().to_string());
-        }
+        && let Some(stem) = path.file_stem()
+    {
+        anchors.push(stem.to_string_lossy().to_string());
+    }
 
     Ok(ParsedDocument {
         source_path: path.to_string_lossy().to_string(),

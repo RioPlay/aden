@@ -109,20 +109,21 @@ impl LanguageServer for AdenLspBackend {
             let anchor = anchor.to_string();
             if let Some(root) = self.workspace_root.lock().await.clone()
                 && let Ok(graph) = AdenGraph::build_from_directory(&root)
-                    && let Some(node) = graph.get_node(&anchor) {
-                        // SECURITY: Only allow navigation inside the workspace root.
-                        if !Self::is_in_workspace(&node.source_path, &root) {
-                            continue;
-                        }
-                        let target_uri = Url::from_file_path(&node.source_path).ok();
-                        if let Some(turi) = target_uri {
-                            let loc = Location {
-                                uri: turi,
-                                range: Range::new(Position::new(0, 0), Position::new(0, 0)),
-                            };
-                            return Ok(Some(GotoDefinitionResponse::Scalar(loc)));
-                        }
-                    }
+                && let Some(node) = graph.get_node(&anchor)
+            {
+                // SECURITY: Only allow navigation inside the workspace root.
+                if !Self::is_in_workspace(&node.source_path, &root) {
+                    continue;
+                }
+                let target_uri = Url::from_file_path(&node.source_path).ok();
+                if let Some(turi) = target_uri {
+                    let loc = Location {
+                        uri: turi,
+                        range: Range::new(Position::new(0, 0), Position::new(0, 0)),
+                    };
+                    return Ok(Some(GotoDefinitionResponse::Scalar(loc)));
+                }
+            }
         }
         Ok(None)
     }
@@ -140,32 +141,38 @@ impl LanguageServer for AdenLspBackend {
             let anchor = anchor.to_string();
             if let Some(root) = self.workspace_root.lock().await.clone()
                 && let Ok(graph) = AdenGraph::build_from_directory(&root)
-                    && let Some(node) = graph.get_node(&anchor) {
-                        // SECURITY: Only return signatures for nodes inside workspace.
-                        if !Self::is_in_workspace(&node.source_path, &root) {
-                            continue;
-                        }
-                        // Look for a Signature table in the document
-                        let mut sig = String::new();
-                        for block in &node.doc.blocks {
-                            if let aden_core::Block::Table(table) = block
-                                && table.headers == vec!["Property".to_string(), "Value".to_string()] {
-                                    sig.push_str(&format!("**{}**\n", anchor));
-                                    for row in &table.rows {
-                                        sig.push_str(&format!("- {}: {}\n", row[0], row.get(1).unwrap_or(&"?".to_string())));
-                                    }
-                                }
-                        }
-                        if !sig.is_empty() {
-                            return Ok(Some(Hover {
-                                contents: HoverContents::Markup(MarkupContent {
-                                    kind: MarkupKind::Markdown,
-                                    value: sig,
-                                }),
-                                range: None,
-                            }));
+                && let Some(node) = graph.get_node(&anchor)
+            {
+                // SECURITY: Only return signatures for nodes inside workspace.
+                if !Self::is_in_workspace(&node.source_path, &root) {
+                    continue;
+                }
+                // Look for a Signature table in the document
+                let mut sig = String::new();
+                for block in &node.doc.blocks {
+                    if let aden_core::Block::Table(table) = block
+                        && table.headers == vec!["Property".to_string(), "Value".to_string()]
+                    {
+                        sig.push_str(&format!("**{}**\n", anchor));
+                        for row in &table.rows {
+                            sig.push_str(&format!(
+                                "- {}: {}\n",
+                                row[0],
+                                row.get(1).unwrap_or(&"?".to_string())
+                            ));
                         }
                     }
+                }
+                if !sig.is_empty() {
+                    return Ok(Some(Hover {
+                        contents: HoverContents::Markup(MarkupContent {
+                            kind: MarkupKind::Markdown,
+                            value: sig,
+                        }),
+                        range: None,
+                    }));
+                }
+            }
         }
         Ok(None)
     }
@@ -175,9 +182,9 @@ impl AdenLspBackend {
     /// Validate that `candidate` is inside `root` to prevent goto-definition
     /// from jumping outside the workspace (e.g., via absolute paths in contracts).
     fn is_in_workspace(candidate: &std::path::Path, root: &std::path::Path) -> bool {
-        candidate.canonicalize().is_ok_and(|c| {
-            root.canonicalize().is_ok_and(|r| c.starts_with(&r))
-        })
+        candidate
+            .canonicalize()
+            .is_ok_and(|c| root.canonicalize().is_ok_and(|r| c.starts_with(&r)))
     }
 
     async fn publish_diagnostics(&self, uri: &Url, text: &str) {
@@ -211,90 +218,98 @@ impl AdenLspBackend {
                     parsed
                 }
                 Err(e) => {
-                    eprintln!("aden-lsp: failed to create temp file {}: {}", tmp.display(), e);
+                    eprintln!(
+                        "aden-lsp: failed to create temp file {}: {}",
+                        tmp.display(),
+                        e
+                    );
                     return;
                 }
             }
         };
 
         if let Ok(parsed) = parsed
-            && let Some(root) = self.workspace_root.lock().await.clone() {
-                // SECURITY: Resolve include paths within workspace root only.
-                // Prevent directory traversal via `../../etc/passwd` in include directives.
-                let root_canon = root.canonicalize().unwrap_or_else(|_| root.clone());
+            && let Some(root) = self.workspace_root.lock().await.clone()
+        {
+            // SECURITY: Resolve include paths within workspace root only.
+            // Prevent directory traversal via `../../etc/passwd` in include directives.
+            let root_canon = root.canonicalize().unwrap_or_else(|_| root.clone());
 
-                for r in &parsed.refs {
-                    // Cache graph once per diagnostics pass to avoid rebuilding 3×.
-                    // NOTE: This is still expensive; a persistent graph cache would be better.
-                    if let Ok(graph) = AdenGraph::build_from_directory(&root)
-                        && !graph.anchor_to_index.contains_key(r) {
-                            for (i, line) in text.lines().enumerate() {
-                                if line.contains(&format!("<<{r}>>")) {
-                                    diagnostics.push(Diagnostic {
-                                        range: Range::new(
-                                            Position::new(i as u32, 0),
-                                            Position::new(i as u32, line.len() as u32),
-                                        ),
-                                        severity: Some(DiagnosticSeverity::ERROR),
-                                        code: None,
-                                        code_description: None,
-                                        source: Some("aden-lsp".to_string()),
-                                        message: format!("Unresolved reference: <<{r}>>"),
-                                        related_information: None,
-                                        tags: None,
-                                        data: None,
-                                    });
-                                }
-                            }
-                        }
-                }
-
-                for inc in &parsed.includes {
-                    let inc_path = root.join(&inc.path);
-                    let safe = inc_path.canonicalize().is_ok_and(|c| c.starts_with(&root_canon));
-                    if !safe {
-                        for (i, line) in text.lines().enumerate() {
-                            if line.contains(&format!("include::{}[", inc.path)) {
-                                diagnostics.push(Diagnostic {
-                                    range: Range::new(
-                                        Position::new(i as u32, 0),
-                                        Position::new(i as u32, line.len() as u32),
-                                    ),
-                                    severity: Some(DiagnosticSeverity::ERROR),
-                                    code: None,
-                                    code_description: None,
-                                    source: Some("aden-lsp".to_string()),
-                                    message: format!("Include path escapes workspace: {}", inc.path),
-                                    related_information: None,
-                                    tags: None,
-                                    data: None,
-                                });
-                            }
-                        }
-                        continue;
-                    }
-                    if !inc_path.exists() {
-                        for (i, line) in text.lines().enumerate() {
-                            if line.contains(&format!("include::{}[", inc.path)) {
-                                diagnostics.push(Diagnostic {
-                                    range: Range::new(
-                                        Position::new(i as u32, 0),
-                                        Position::new(i as u32, line.len() as u32),
-                                    ),
-                                    severity: Some(DiagnosticSeverity::ERROR),
-                                    code: None,
-                                    code_description: None,
-                                    source: Some("aden-lsp".to_string()),
-                                    message: format!("Missing include: {}", inc.path),
-                                    related_information: None,
-                                    tags: None,
-                                    data: None,
-                                });
-                            }
+            for r in &parsed.refs {
+                // Cache graph once per diagnostics pass to avoid rebuilding 3×.
+                // NOTE: This is still expensive; a persistent graph cache would be better.
+                if let Ok(graph) = AdenGraph::build_from_directory(&root)
+                    && !graph.anchor_to_index.contains_key(r)
+                {
+                    for (i, line) in text.lines().enumerate() {
+                        if line.contains(&format!("<<{r}>>")) {
+                            diagnostics.push(Diagnostic {
+                                range: Range::new(
+                                    Position::new(i as u32, 0),
+                                    Position::new(i as u32, line.len() as u32),
+                                ),
+                                severity: Some(DiagnosticSeverity::ERROR),
+                                code: None,
+                                code_description: None,
+                                source: Some("aden-lsp".to_string()),
+                                message: format!("Unresolved reference: <<{r}>>"),
+                                related_information: None,
+                                tags: None,
+                                data: None,
+                            });
                         }
                     }
                 }
             }
+
+            for inc in &parsed.includes {
+                let inc_path = root.join(&inc.path);
+                let safe = inc_path
+                    .canonicalize()
+                    .is_ok_and(|c| c.starts_with(&root_canon));
+                if !safe {
+                    for (i, line) in text.lines().enumerate() {
+                        if line.contains(&format!("include::{}[", inc.path)) {
+                            diagnostics.push(Diagnostic {
+                                range: Range::new(
+                                    Position::new(i as u32, 0),
+                                    Position::new(i as u32, line.len() as u32),
+                                ),
+                                severity: Some(DiagnosticSeverity::ERROR),
+                                code: None,
+                                code_description: None,
+                                source: Some("aden-lsp".to_string()),
+                                message: format!("Include path escapes workspace: {}", inc.path),
+                                related_information: None,
+                                tags: None,
+                                data: None,
+                            });
+                        }
+                    }
+                    continue;
+                }
+                if !inc_path.exists() {
+                    for (i, line) in text.lines().enumerate() {
+                        if line.contains(&format!("include::{}[", inc.path)) {
+                            diagnostics.push(Diagnostic {
+                                range: Range::new(
+                                    Position::new(i as u32, 0),
+                                    Position::new(i as u32, line.len() as u32),
+                                ),
+                                severity: Some(DiagnosticSeverity::ERROR),
+                                code: None,
+                                code_description: None,
+                                source: Some("aden-lsp".to_string()),
+                                message: format!("Missing include: {}", inc.path),
+                                related_information: None,
+                                tags: None,
+                                data: None,
+                            });
+                        }
+                    }
+                }
+            }
+        }
         self.client
             .publish_diagnostics(uri.clone(), diagnostics, Some(1))
             .await;
@@ -308,7 +323,11 @@ fn extract_xrefs(line: &str) -> Vec<&str> {
         let absolute = start + pos + 2;
         if let Some(end) = line[absolute..].find(">>") {
             let inner = &line[absolute..absolute + end];
-            let anchor = inner.split_once(',').map(|(a, _)| a).unwrap_or(inner).trim();
+            let anchor = inner
+                .split_once(',')
+                .map(|(a, _)| a)
+                .unwrap_or(inner)
+                .trim();
             if !anchor.is_empty() {
                 results.push(anchor);
             }

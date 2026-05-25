@@ -19,7 +19,7 @@ pub mod proposal;
 pub mod store;
 pub mod stub;
 
-pub use patch::{generate_patch, DriftEvent as PatchDriftEvent};
+pub use patch::{DriftEvent as PatchDriftEvent, generate_patch};
 pub use proposal::{Proposal, ProposalStatus};
 pub use store::{apply, list, load, persist};
 pub use stub::{generate_stub, write_stub};

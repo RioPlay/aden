@@ -61,7 +61,10 @@ impl std::str::FromStr for ContractRegion {
             "constitution" => Ok(ContractRegion::Constitution),
             "override" => Ok(ContractRegion::Override),
             "proposed" => Ok(ContractRegion::Proposed),
-            _ => Err(format!("Unknown contract region: {} (expected one of: generated, human, agent, security, contract, constitution, override, proposed)", s)),
+            _ => Err(format!(
+                "Unknown contract region: {} (expected one of: generated, human, agent, security, contract, constitution, override, proposed)",
+                s
+            )),
         }
     }
 }
@@ -153,8 +156,16 @@ pub struct MergeProposal {
 
 impl ContractState {
     /// Create a new ContractState from three document snapshots.
-    pub fn new(ground: ContractDocument, base: ContractDocument, working: ContractDocument) -> Self {
-        Self { ground, base, working }
+    pub fn new(
+        ground: ContractDocument,
+        base: ContractDocument,
+        working: ContractDocument,
+    ) -> Self {
+        Self {
+            ground,
+            base,
+            working,
+        }
     }
 
     /// Compute the three-way merge, returning per-block actions.
@@ -178,11 +189,13 @@ impl ContractState {
         let mut deleted = 0usize;
 
         // Index working blocks by (region, tag) for quick lookup
-        let working_index: HashMap<(ContractRegion, Option<String>), Vec<usize>> =
-            self.working.blocks.iter().enumerate().fold(HashMap::new(), |mut acc, (i, b)| {
-                acc.entry((b.region, b.tag.clone()))
-                    .or_default()
-                    .push(i);
+        let working_index: HashMap<(ContractRegion, Option<String>), Vec<usize>> = self
+            .working
+            .blocks
+            .iter()
+            .enumerate()
+            .fold(HashMap::new(), |mut acc, (i, b)| {
+                acc.entry((b.region, b.tag.clone())).or_default().push(i);
                 acc
             });
 
@@ -190,17 +203,20 @@ impl ContractState {
         for (bi, base_block) in self.base.blocks.iter().enumerate() {
             if base_block.is_generated() {
                 // Try to find matching generated block in ground by tag
-                let ground_match = self.ground.blocks.iter().position(|g| {
-                    g.region == ContractRegion::Generated && g.tag == base_block.tag
-                });
+                let ground_match =
+                    self.ground.blocks.iter().position(|g| {
+                        g.region == ContractRegion::Generated && g.tag == base_block.tag
+                    });
 
                 if let Some(gi) = ground_match {
                     let ground_block = &self.ground.blocks[gi];
                     if ground_block.content != base_block.content {
                         // AST changed → update, but check for human block with same tag
-                        let human_conflict = self.working.blocks.iter().any(|w| {
-                            w.is_human_owned() && w.tag == base_block.tag
-                        });
+                        let human_conflict = self
+                            .working
+                            .blocks
+                            .iter()
+                            .any(|w| w.is_human_owned() && w.tag == base_block.tag);
 
                         if human_conflict {
                             actions.push(MergeAction::Conflict {
@@ -243,9 +259,10 @@ impl ContractState {
         // Find new generated blocks in ground that are not in base
         for ground_block in &self.ground.blocks {
             if ground_block.is_generated() {
-                let exists_in_base = self.base.blocks.iter().any(|b| {
-                    b.region == ContractRegion::Generated && b.tag == ground_block.tag
-                });
+                let exists_in_base =
+                    self.base.blocks.iter().any(|b| {
+                        b.region == ContractRegion::Generated && b.tag == ground_block.tag
+                    });
                 if !exists_in_base {
                     // Determine insertion point: after the last generated block
                     // with a lower tag order, or at end.
@@ -324,7 +341,10 @@ impl ContractState {
                     let insert_at = (*index + 1).min(result.blocks.len());
                     result.blocks.insert(insert_at, conflict_block);
                 }
-                MergeAction::InsertGenerated { after_index, content } => {
+                MergeAction::InsertGenerated {
+                    after_index,
+                    content,
+                } => {
                     let new_block = RegionBlock {
                         region: ContractRegion::Generated,
                         tag: None, // Tag should be extracted from content if available
@@ -337,7 +357,12 @@ impl ContractState {
                     result.blocks.insert(insert_at, new_block);
                 }
                 MergeAction::DeleteGenerated { index, .. } => {
-                    if result.blocks.get(*index).map(|b| b.is_generated()).unwrap_or(false) {
+                    if result
+                        .blocks
+                        .get(*index)
+                        .map(|b| b.is_generated())
+                        .unwrap_or(false)
+                    {
                         result.blocks.remove(*index);
                     }
                 }
@@ -541,7 +566,9 @@ pub fn parse_contract(text: &str, mode: ParseMode) -> crate::Result<ContractDocu
         if current_block.is_some() {
             if !in_delimited {
                 if trimmed.len() >= 4
-                    && trimmed.chars().all(|c| c == '-' || c == '=' || c == '+' || c == '*')
+                    && trimmed
+                        .chars()
+                        .all(|c| c == '-' || c == '=' || c == '+' || c == '*')
                 {
                     in_delimited = true;
                     delimiter = Some(trimmed.to_string());
@@ -625,9 +652,7 @@ mod tests {
             gen_block(Some("foo"), "fn foo() {}"),
             human_block(Some("note"), "TODO: refactor"),
         ]);
-        let ground = make_doc(vec![
-            gen_block(Some("foo"), "fn foo() -> i32 {}"),
-        ]);
+        let ground = make_doc(vec![gen_block(Some("foo"), "fn foo() -> i32 {}")]);
         let working = make_doc(vec![
             gen_block(Some("foo"), "fn foo() {}"),
             human_block(Some("note"), "TODO: refactor"),

@@ -1,5 +1,5 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use aden_graph::graph::AdenGraph;
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 
 fn bench_graph_construction(c: &mut Criterion) {
     let tmp = std::env::temp_dir().join("aden_bench_graph");

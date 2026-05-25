@@ -19,7 +19,7 @@
 //!   • Closure binding analysis
 //!   • Trait conflict resolution
 
-use crate::extractor::{build_code_attributes, make_anchor, LanguageExtractor};
+use crate::extractor::{LanguageExtractor, build_code_attributes, make_anchor};
 use aden_core::{Block, Document, NodeType, Parameter, Result};
 use std::path::Path;
 
@@ -63,11 +63,20 @@ impl LanguageExtractor for PhpResolver {
 
         let mut imports: Vec<PhpImport> = Vec::new();
         let mut symbols: Vec<PhpSymbol> = Vec::new();
-        walk_program(tree.root_node(), source, &namespace, &file_name, &mut imports, &mut symbols);
+        walk_program(
+            tree.root_node(),
+            source,
+            &namespace,
+            &file_name,
+            &mut imports,
+            &mut symbols,
+        );
 
         let mut docs = Vec::new();
         for sym in &symbols {
-            if let Some(doc) = emit_php_symbol(sym, source, path, &symbols, &imports, &namespace, &file_name) {
+            if let Some(doc) = emit_php_symbol(
+                sym, source, path, &symbols, &imports, &namespace, &file_name,
+            ) {
                 docs.push(doc);
             }
         }
@@ -124,7 +133,11 @@ fn extract_namespace_from_source(source: &str) -> Option<String> {
     for line in source.lines() {
         let trimmed = line.trim();
         if trimmed.starts_with("namespace ") {
-            let ns = trimmed.strip_prefix("namespace ").unwrap().trim_end_matches(';').trim();
+            let ns = trimmed
+                .strip_prefix("namespace ")
+                .unwrap()
+                .trim_end_matches(';')
+                .trim();
             return Some(ns.to_string());
         }
     }
@@ -155,9 +168,15 @@ fn extract_doc_comment(node: tree_sitter::Node, source: &str) -> Option<String> 
     for line in &lines {
         let trimmed = line.trim();
         if trimmed.starts_with("/**") && trimmed.ends_with("*/") {
-            let inner = &trimmed[3..trimmed.len()-2];
-            let lines: Vec<String> = inner.lines()
-                .map(|l| l.trim_start().trim_start_matches('*').trim_start().to_string())
+            let inner = &trimmed[3..trimmed.len() - 2];
+            let lines: Vec<String> = inner
+                .lines()
+                .map(|l| {
+                    l.trim_start()
+                        .trim_start_matches('*')
+                        .trim_start()
+                        .to_string()
+                })
                 .filter(|l| !l.is_empty())
                 .collect();
             if !lines.is_empty() {
@@ -170,7 +189,11 @@ fn extract_doc_comment(node: tree_sitter::Node, source: &str) -> Option<String> 
             break;
         }
     }
-    if comments.is_empty() { None } else { Some(comments.into_iter().rev().collect::<Vec<_>>().join("\n")) }
+    if comments.is_empty() {
+        None
+    } else {
+        Some(comments.into_iter().rev().collect::<Vec<_>>().join("\n"))
+    }
 }
 
 fn extract_visibility(node: tree_sitter::Node, source: &str) -> String {
@@ -203,7 +226,9 @@ fn walk_program<'a>(
     imports: &mut Vec<PhpImport>,
     symbols: &mut Vec<PhpSymbol<'a>>,
 ) {
-    if !node.is_named() { return; }
+    if !node.is_named() {
+        return;
+    }
 
     match node.kind() {
         "namespace_definition" => {
@@ -218,7 +243,10 @@ fn walk_program<'a>(
                 imports.push(imp);
             }
         }
-        "class_declaration" | "interface_declaration" | "trait_declaration" | "enum_declaration"
+        "class_declaration"
+        | "interface_declaration"
+        | "trait_declaration"
+        | "enum_declaration"
         | "enum_case" => {
             parse_type_declaration(node, source, namespace, file_name, symbols);
         }
@@ -231,12 +259,22 @@ fn walk_program<'a>(
         "property_declaration" => {
             parse_property(node, source, namespace, file_name, symbols);
         }
-        "require_statement" | "require_once_statement" | "include_statement" | "include_once_statement" => {
+        "require_statement"
+        | "require_once_statement"
+        | "include_statement"
+        | "include_once_statement" => {
             parse_require(node, source, imports);
         }
-        "program" | "declaration_list" | "class_interface_clause" | "class_body"
-        | "trait_body" | "interface_body" | "enum_body" | "compound_statement"
-        | "statement" | "block" => {
+        "program"
+        | "declaration_list"
+        | "class_interface_clause"
+        | "class_body"
+        | "trait_body"
+        | "interface_body"
+        | "enum_body"
+        | "compound_statement"
+        | "statement"
+        | "block" => {
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
                 walk_program(child, source, namespace, file_name, imports, symbols);
@@ -272,13 +310,17 @@ fn parse_use(node: tree_sitter::Node, source: &str) -> Option<PhpImport> {
     };
 
     // Extract name - use last path segment
-    let text_clean = text.trim_start_matches("use ")
+    let text_clean = text
+        .trim_start_matches("use ")
         .trim_start_matches("function ")
         .trim_start_matches("const ")
         .trim_end_matches(';');
 
     let (main, alias) = if let Some(idx) = text_clean.rfind(" as ") {
-        (&text_clean[..idx], Some(text_clean[idx + 4..].trim().to_string()))
+        (
+            &text_clean[..idx],
+            Some(text_clean[idx + 4..].trim().to_string()),
+        )
     } else {
         (text_clean, None)
     };
@@ -299,13 +341,22 @@ fn parse_require(node: tree_sitter::Node, source: &str, imports: &mut Vec<PhpImp
     if let Some(start) = text.find('\'') {
         if let Some(end) = text[start + 1..].find('\'') {
             let path = &text[start + 1..start + 1 + end];
-            imports.push(PhpImport { kind: ImportKind::Class, name: path.to_string(), alias: None });
+            imports.push(PhpImport {
+                kind: ImportKind::Class,
+                name: path.to_string(),
+                alias: None,
+            });
         }
     } else if let Some(start) = text.find('"')
-        && let Some(end) = text[start + 1..].find('"') {
-            let path = &text[start + 1..start + 1 + end];
-            imports.push(PhpImport { kind: ImportKind::Class, name: path.to_string(), alias: None });
-        }
+        && let Some(end) = text[start + 1..].find('"')
+    {
+        let path = &text[start + 1..start + 1 + end];
+        imports.push(PhpImport {
+            kind: ImportKind::Class,
+            name: path.to_string(),
+            alias: None,
+        });
+    }
 }
 
 fn parse_type_declaration<'a>(
@@ -356,11 +407,21 @@ fn parse_type_declaration<'a>(
     // Walk body for nested declarations
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        if matches!(child.kind(), "class_body" | "trait_body" | "interface_body" | "enum_body" | "declaration_list") {
+        if matches!(
+            child.kind(),
+            "class_body" | "trait_body" | "interface_body" | "enum_body" | "declaration_list"
+        ) {
             let mut cc = child.walk();
             for grandchild in child.children(&mut cc) {
                 if grandchild.is_named() {
-                    walk_program(grandchild, source, namespace, file_name, &mut Vec::new(), symbols);
+                    walk_program(
+                        grandchild,
+                        source,
+                        namespace,
+                        file_name,
+                        &mut Vec::new(),
+                        symbols,
+                    );
                 }
             }
         }
@@ -383,10 +444,12 @@ fn parse_function<'a>(
             let mut pc = params_node.walk();
             for param in params_node.children(&mut pc) {
                 if param.kind() == "formal_parameter" || param.kind() == "parameter" {
-                    let param_type = param.child_by_field_name("type")
+                    let param_type = param
+                        .child_by_field_name("type")
                         .map(|n| node_text(n, source).to_string())
                         .unwrap_or_default();
-                    let param_name = param.child_by_field_name("name")
+                    let param_name = param
+                        .child_by_field_name("name")
                         .map(|n| node_text(n, source).to_string())
                         .unwrap_or_default();
                     params.push(Parameter {
@@ -429,10 +492,12 @@ fn parse_method<'a>(
             let mut pc = params_node.walk();
             for param in params_node.children(&mut pc) {
                 if matches!(param.kind(), "formal_parameter" | "parameter") {
-                    let param_type = param.child_by_field_name("type")
+                    let param_type = param
+                        .child_by_field_name("type")
                         .map(|n| node_text(n, source).to_string())
                         .unwrap_or_default();
-                    let param_name = param.child_by_field_name("name")
+                    let param_name = param
+                        .child_by_field_name("name")
                         .map(|n| node_text(n, source).to_string())
                         .unwrap_or_default();
                     params.push(Parameter {
@@ -478,10 +543,16 @@ fn parse_property<'a>(
 fn find_parent_type_name(node: tree_sitter::Node, source: &str) -> Option<String> {
     let mut current = node;
     while let Some(parent) = current.parent() {
-        if matches!(parent.kind(), "class_declaration" | "interface_declaration" | "trait_declaration" | "enum_declaration")
-            && let Some(name_node) = parent.child_by_field_name("name") {
-                return Some(node_text(name_node, source).to_string());
-            }
+        if matches!(
+            parent.kind(),
+            "class_declaration"
+                | "interface_declaration"
+                | "trait_declaration"
+                | "enum_declaration"
+        ) && let Some(name_node) = parent.child_by_field_name("name")
+        {
+            return Some(node_text(name_node, source).to_string());
+        }
         current = parent;
     }
     None
@@ -498,7 +569,12 @@ fn emit_php_symbol(
 ) -> Option<Document> {
     let anchor = make_anchor(namespace, file_name, &sym.name);
     let span = node_to_span(sym.node, path);
-    let attrs = build_code_attributes(source, &format!("{:?}", sym.kind).to_lowercase(), Some(path), Some(&span));
+    let attrs = build_code_attributes(
+        source,
+        &format!("{:?}", sym.kind).to_lowercase(),
+        Some(path),
+        Some(&span),
+    );
     let mut blocks = Vec::new();
 
     if let Some(ref doc) = sym.doc_comment {
@@ -528,30 +604,39 @@ fn emit_php_symbol(
 
     // Extract call sites
     if sym.kind == NodeType::Function
-        && let Some(body) = sym.node.child_by_field_name("body") {
-            let calls = extract_php_call_sites(body, source);
-            let filtered: Vec<_> = calls.into_iter()
-                .filter(|(c, _)| !is_php_std_noise(c))
+        && let Some(body) = sym.node.child_by_field_name("body")
+    {
+        let calls = extract_php_call_sites(body, source);
+        let filtered: Vec<_> = calls
+            .into_iter()
+            .filter(|(c, _)| !is_php_std_noise(c))
+            .collect();
+        if !filtered.is_empty() {
+            let call_rows: Vec<Vec<String>> = filtered
+                .iter()
+                .map(|(callee, line)| vec![callee.clone(), line.to_string()])
                 .collect();
-            if !filtered.is_empty() {
-                let call_rows: Vec<Vec<String>> = filtered.iter()
-                    .map(|(callee, line)| vec![callee.clone(), line.to_string()])
-                    .collect();
-                blocks.push(Block::Table(aden_core::Table {
-                    headers: vec!["Callee".to_string(), "Line".to_string()],
-                    rows: call_rows,
-                }));
-                let edge_code: String = filtered.iter()
-                    .map(|(callee, _)| format!("edge::calls[{}]", callee))
-                    .collect::<Vec<_>>().join("\n");
-                blocks.push(Block::Listing { language: None, code: edge_code });
-            }
+            blocks.push(Block::Table(aden_core::Table {
+                headers: vec!["Callee".to_string(), "Line".to_string()],
+                rows: call_rows,
+            }));
+            let edge_code: String = filtered
+                .iter()
+                .map(|(callee, _)| format!("edge::calls[{}]", callee))
+                .collect::<Vec<_>>()
+                .join("\n");
+            blocks.push(Block::Listing {
+                language: None,
+                code: edge_code,
+            });
         }
+    }
 
     if sym.doc_comment.is_some() {
         blocks.push(Block::Admonition {
             kind: aden_core::AdmonitionKind::Note,
-            text: "Extracted from source code via tree-sitter. Confidence is heuristic.".to_string(),
+            text: "Extracted from source code via tree-sitter. Confidence is heuristic."
+                .to_string(),
         });
     }
 
@@ -565,19 +650,92 @@ fn emit_php_symbol(
 }
 
 const PHP_SKIP_CALLEES: &[&str] = &[
-    "echo", "print", "die", "exit", "isset", "unset", "empty", "eval", "include", "require",
-    "strlen", "count", "sizeof", "array_merge", "array_filter", "array_map", "array_reduce",
-    "explode", "implode", "substr", "strpos", "str_replace", "preg_match", "preg_replace",
-    "trim", "ltrim", "rtrim", "strtolower", "strtoupper", "ucfirst", "lcfirst",
-    "date", "time", "strtotime", "microtime", "gmdate",
-    "json_encode", "json_decode", "serialize", "unserialize",
-    "file_get_contents", "file_put_contents", "fopen", "fclose", "fread", "fwrite",
-    "header", "http_response_code", "setcookie", "session_start", "session_destroy",
-    "mysql_connect", "mysql_query", "mysqli_query", "PDO", "prepare", "execute", "fetch", "fetchAll",
-    "var_dump", "print_r", "debug_backtrace", "debug_print_backtrace",
-    "class_exists", "method_exists", "property_exists", "is_array", "is_string", "is_int", "is_numeric",
-    "array_push", "array_pop", "array_shift", "array_unshift", "array_key_exists", "in_array",
-    "new", "clone", "__construct", "__destruct", "__toString", "__invoke", "__get", "__set", "__call", "__callStatic",
+    "echo",
+    "print",
+    "die",
+    "exit",
+    "isset",
+    "unset",
+    "empty",
+    "eval",
+    "include",
+    "require",
+    "strlen",
+    "count",
+    "sizeof",
+    "array_merge",
+    "array_filter",
+    "array_map",
+    "array_reduce",
+    "explode",
+    "implode",
+    "substr",
+    "strpos",
+    "str_replace",
+    "preg_match",
+    "preg_replace",
+    "trim",
+    "ltrim",
+    "rtrim",
+    "strtolower",
+    "strtoupper",
+    "ucfirst",
+    "lcfirst",
+    "date",
+    "time",
+    "strtotime",
+    "microtime",
+    "gmdate",
+    "json_encode",
+    "json_decode",
+    "serialize",
+    "unserialize",
+    "file_get_contents",
+    "file_put_contents",
+    "fopen",
+    "fclose",
+    "fread",
+    "fwrite",
+    "header",
+    "http_response_code",
+    "setcookie",
+    "session_start",
+    "session_destroy",
+    "mysql_connect",
+    "mysql_query",
+    "mysqli_query",
+    "PDO",
+    "prepare",
+    "execute",
+    "fetch",
+    "fetchAll",
+    "var_dump",
+    "print_r",
+    "debug_backtrace",
+    "debug_print_backtrace",
+    "class_exists",
+    "method_exists",
+    "property_exists",
+    "is_array",
+    "is_string",
+    "is_int",
+    "is_numeric",
+    "array_push",
+    "array_pop",
+    "array_shift",
+    "array_unshift",
+    "array_key_exists",
+    "in_array",
+    "new",
+    "clone",
+    "__construct",
+    "__destruct",
+    "__toString",
+    "__invoke",
+    "__get",
+    "__set",
+    "__call",
+    "__callStatic",
 ];
 
 fn is_php_std_noise(name: &str) -> bool {
@@ -629,9 +787,7 @@ fn resolve_php_callee_name(node: tree_sitter::Node, source: &str) -> String {
         "name" | "identifier" | "variable_name" | "variable" => {
             node_text(node, source).trim_start_matches('$').to_string()
         }
-        "qualified_name" | "namespace_name" => {
-            node_text(node, source).to_string()
-        }
+        "qualified_name" | "namespace_name" => node_text(node, source).to_string(),
         "member_access_expression" => {
             if let Some(name) = node.child_by_field_name("name") {
                 node_text(name, source).to_string()

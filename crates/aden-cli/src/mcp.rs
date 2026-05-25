@@ -64,9 +64,7 @@ impl Platform {
                 home.join(".config/opencode/opencode.json"),
                 home.join(".config/opencode/opencode.jsonc"),
             ],
-            Platform::ClaudeCode => vec![
-                home.join(".claude/settings.json"),
-            ],
+            Platform::ClaudeCode => vec![home.join(".claude/settings.json")],
             Platform::Cursor => vec![
                 PathBuf::from(".cursor/mcp.json"),
                 home.join(".cursor/mcp.json"),
@@ -159,12 +157,13 @@ pub fn find_aden_mcp_binary(extra_paths: &[PathBuf]) -> Result<PathBuf, String> 
         if let Ok(output) = std::process::Command::new("sh")
             .args(["-c", "command -v aden-mcp"])
             .output()
-            && output.status.success() {
-                let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                if !path.is_empty() {
-                    return Ok(PathBuf::from(path));
-                }
+            && output.status.success()
+        {
+            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !path.is_empty() {
+                return Ok(PathBuf::from(path));
             }
+        }
     }
     #[cfg(windows)]
     {
@@ -187,14 +186,12 @@ pub fn find_aden_mcp_binary(extra_paths: &[PathBuf]) -> Result<PathBuf, String> 
         return Ok(cargo_bin);
     }
 
-    Err(
-        "Could not find aden-mcp binary.\n\
+    Err("Could not find aden-mcp binary.\n\
          Suggestions:\n\
          1. Build it: cargo build --release -p aden-mcp\n\
          2. Install it: cargo install --path crates/aden-mcp\n\
          3. Or pass --binary /path/to/aden-mcp"
-            .to_string(),
-    )
+        .to_string())
 }
 
 /// Make a path absolute without requiring it to exist.
@@ -216,10 +213,15 @@ fn read_config(path: &Path) -> Result<Value, String> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
 
-    serde_json::from_str(&text)
-        .map_err(|e| format!("Invalid JSON in {}: {}\n\
+    serde_json::from_str(&text).map_err(|e| {
+        format!(
+            "Invalid JSON in {}: {}\n\
             Note: JSONC files (with comments) are not supported. \
-            Please convert to plain JSON or edit manually.", path.display(), e))
+            Please convert to plain JSON or edit manually.",
+            path.display(),
+            e
+        )
+    })
 }
 
 /// Write a JSON config file atomically (temp + rename).
@@ -236,8 +238,14 @@ fn write_config(path: &Path, value: &Value) -> Result<(), String> {
     std::fs::write(&tmp, json + "\n")
         .map_err(|e| format!("Failed to write temp file {}: {}", tmp.display(), e))?;
 
-    std::fs::rename(&tmp, path)
-        .map_err(|e| format!("Failed to rename {} to {}: {}", tmp.display(), path.display(), e))?;
+    std::fs::rename(&tmp, path).map_err(|e| {
+        format!(
+            "Failed to rename {} to {}: {}",
+            tmp.display(),
+            path.display(),
+            e
+        )
+    })?;
 
     Ok(())
 }
@@ -282,10 +290,8 @@ fn install_platform(
 
     // Merge or create the aden entry
     if let Some(Value::Object(servers)) = cfg.get_mut(key) {
-        let aden_value = platform.aden_config(
-            &binary.to_string_lossy(),
-            &project.to_string_lossy(),
-        );
+        let aden_value =
+            platform.aden_config(&binary.to_string_lossy(), &project.to_string_lossy());
         servers.insert("aden".to_string(), aden_value);
     }
 
@@ -372,7 +378,11 @@ pub fn run_install(
         println!("No platforms detected. Use --all to install for all supported platforms.");
         println!("Supported platforms:");
         for p in Platform::all() {
-            println!("  - {} (config: {})", p.display_name(), p.config_paths()[0].display());
+            println!(
+                "  - {} (config: {})",
+                p.display_name(),
+                p.config_paths()[0].display()
+            );
         }
         return Ok(());
     }
@@ -443,7 +453,9 @@ pub fn run_uninstall(
                 .filter(|p| p.is_detected())
                 .collect();
             if detected.is_empty() {
-                println!("No platforms detected. Use --all to uninstall from all supported platforms.");
+                println!(
+                    "No platforms detected. Use --all to uninstall from all supported platforms."
+                );
                 return Ok(());
             }
             detected
@@ -550,7 +562,10 @@ pub fn run_http_server(_project_dir: &Path, port: u16) -> Result<(), Box<dyn std
 
     println!("Aden HTTP Server");
     println!("================");
-    println!("Listening on port {}", addr.split(':').next_back().unwrap_or(&addr));
+    println!(
+        "Listening on port {}",
+        addr.split(':').next_back().unwrap_or(&addr)
+    );
     println!("Endpoints:");
     println!("  GET  /health          - Health check");
     println!("  POST /api/check      - Run aden check");
@@ -572,7 +587,9 @@ pub fn run_http_server(_project_dir: &Path, port: u16) -> Result<(), Box<dyn std
 
             let response = match (method, path) {
                 ("GET", "/health") => r#"{"status":"ok","service":"aden"}"#,
-                ("GET", "/") | ("GET", "/api") => r#"{"service":"aden","version":"0.1.0","endpoints":["/health","/api/check","/api/heal","/api/asm","/api/query"]}"#,
+                ("GET", "/") | ("GET", "/api") => {
+                    r#"{"service":"aden","version":"0.1.0","endpoints":["/health","/api/check","/api/heal","/api/asm","/api/query"]}"#
+                }
                 _ => r#"{"error":"not found}"#,
             };
 

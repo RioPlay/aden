@@ -49,7 +49,10 @@ fn rfc3339_from_secs(secs: u64) -> String {
     let minute = (seconds_in_day % 3600) / 60;
     let second = seconds_in_day % 60;
     let (year, month, day) = days_to_ymd(secs / 86400);
-    format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z", year, month, day, hour, minute, second)
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+        year, month, day, hour, minute, second
+    )
 }
 
 fn days_to_ymd(mut days: u64) -> (u32, u32, u32) {
@@ -57,7 +60,8 @@ fn days_to_ymd(mut days: u64) -> (u32, u32, u32) {
     days += 719468; // shift epoch from 1970-01-01 to 0000-03-01
     let era = days / 146097;
     let day_of_era = days % 146097;
-    let year_of_era = (day_of_era - day_of_era / 1460 + day_of_era / 36524 - day_of_era / 146096) / 365;
+    let year_of_era =
+        (day_of_era - day_of_era / 1460 + day_of_era / 36524 - day_of_era / 146096) / 365;
     let mut y = (year_of_era + era * 400) as i64;
     let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
     let mp = (5 * day_of_year + 2) / 153;
@@ -121,8 +125,14 @@ impl SourceSpan {
         let file = attrs.get("source_file")?.clone();
         let start_line = attrs.get("start_line")?.parse().ok()?;
         let end_line = attrs.get("end_line")?.parse().ok()?;
-        let start_byte = attrs.get("start_byte").and_then(|s| s.parse().ok()).unwrap_or(0);
-        let end_byte = attrs.get("end_byte").and_then(|s| s.parse().ok()).unwrap_or(0);
+        let start_byte = attrs
+            .get("start_byte")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        let end_byte = attrs
+            .get("end_byte")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
         Some(Self {
             file,
             start_line,
@@ -174,7 +184,8 @@ impl Document {
         }
         for key in &config.profile.redact_fields {
             if self.attributes.contains_key(key) {
-                self.attributes.insert(key.clone(), "[REDACTED]".to_string());
+                self.attributes
+                    .insert(key.clone(), "[REDACTED]".to_string());
             }
         }
     }
@@ -196,7 +207,10 @@ impl std::str::FromStr for ProfileMode {
         match s.to_lowercase().as_str() {
             "internal" | "dev" | "developer" => Ok(ProfileMode::Internal),
             "public" | "open" | "external" => Ok(ProfileMode::Public),
-            _ => Err(format!("Unknown profile mode: {} (expected: internal, public)", s)),
+            _ => Err(format!(
+                "Unknown profile mode: {} (expected: internal, public)",
+                s
+            )),
         }
     }
 }
@@ -258,7 +272,10 @@ impl AdenConfig {
             return false;
         }
         let path_str = path.to_string_lossy();
-        self.profile.private_dirs.iter().any(|d| path_str.contains(d))
+        self.profile
+            .private_dirs
+            .iter()
+            .any(|d| path_str.contains(d))
     }
 }
 
@@ -283,8 +300,14 @@ pub enum NodeType {
 pub enum Block {
     Table(Table),
     Paragraph(String),
-    Listing { language: Option<String>, code: String },
-    Admonition { kind: AdmonitionKind, text: String },
+    Listing {
+        language: Option<String>,
+        code: String,
+    },
+    Admonition {
+        kind: AdmonitionKind,
+        text: String,
+    },
     DescriptionList(Vec<(String, String)>),
 }
 

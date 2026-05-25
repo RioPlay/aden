@@ -106,7 +106,10 @@ fn compile_rules(lines: &[String]) -> Vec<GlobRule> {
                 return None;
             }
             let is_dir = trimmed.ends_with('/');
-            let pat = trimmed.trim_end_matches('/').trim_start_matches('/').to_string();
+            let pat = trimmed
+                .trim_end_matches('/')
+                .trim_start_matches('/')
+                .to_string();
             Some(GlobRule {
                 pattern: pat,
                 is_dir_rule: is_dir,
@@ -124,7 +127,9 @@ fn match_glob(path: &str, pattern: &str) -> bool {
     if parts.len() == 2 {
         let prefix = parts[0];
         let suffix = parts[1];
-        return path.starts_with(prefix) && path.ends_with(suffix) && path.len() >= prefix.len() + suffix.len();
+        return path.starts_with(prefix)
+            && path.ends_with(suffix)
+            && path.len() >= prefix.len() + suffix.len();
     }
     // Fallback: exact match on base name for simple patterns
     if let Some(name) = Path::new(path).file_name().and_then(|n| n.to_str()) {

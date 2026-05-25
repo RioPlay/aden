@@ -23,24 +23,20 @@ use std::sync::LazyLock;
 static INCLUDE_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^include::([^\[]+)\[(.*)\]\s*$").expect("static regex should compile")
 });
-static IFDEF_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^ifdef::([^\[]+)\[\]\s*$").expect("static regex should compile")
-});
+static IFDEF_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^ifdef::([^\[]+)\[\]\s*$").expect("static regex should compile"));
 static IFNDEF_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^ifndef::([^\[]+)\[\]\s*$").expect("static regex should compile")
 });
 static IFEVAL_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^ifeval::\[([^\]]+)\]\s*$").expect("static regex should compile")
 });
-static ENDIF_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^endif::\[\]\s*$").expect("static regex should compile")
-});
-static HEADING_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^(=+)\s+(.+)$").expect("static regex should compile")
-});
-static INLINE_ATTR_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\{([^}]+)\}").expect("static regex should compile")
-});
+static ENDIF_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^endif::\[\]\s*$").expect("static regex should compile"));
+static HEADING_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^(=+)\s+(.+)$").expect("static regex should compile"));
+static INLINE_ATTR_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\{([^}]+)\}").expect("static regex should compile"));
 
 #[derive(Debug, thiserror::Error)]
 pub enum PreprocessError {
@@ -80,10 +76,11 @@ pub fn preprocess(
         message: e.to_string(),
     })?;
     let mut raw = String::new();
-    file.read_to_string(&mut raw).map_err(|e| PreprocessError::Io {
-        path: path.display().to_string(),
-        message: e.to_string(),
-    })?;
+    file.read_to_string(&mut raw)
+        .map_err(|e| PreprocessError::Io {
+            path: path.display().to_string(),
+            message: e.to_string(),
+        })?;
 
     // Establish a security boundary: includes may not escape the directory
     // containing the *original* document being preprocessed.
@@ -155,9 +152,10 @@ fn process_text(
         }
         if ENDIF_RE.is_match(trimmed) {
             if let Some(was_skipping) = skip_stack.pop()
-                && was_skipping {
-                    skip_depth = skip_depth.saturating_sub(1);
-                }
+                && was_skipping
+            {
+                skip_depth = skip_depth.saturating_sub(1);
+            }
             continue;
         }
 
@@ -199,15 +197,17 @@ fn process_text(
                 } else if let Some(v) = part.strip_prefix("lines=") {
                     lines_spec = Some(v.trim_matches('"').to_string());
                 } else if let Some(v) = part.strip_prefix("leveloffset=")
-                    && let Ok(n) = v.trim_matches('"').parse::<i32>() {
-                        new_leveloff = n;
-                    }
+                    && let Ok(n) = v.trim_matches('"').parse::<i32>()
+                {
+                    new_leveloff = n;
+                }
             }
 
-            let mut inc_text = std::fs::read_to_string(&inc_canon).map_err(|e| PreprocessError::Io {
-                path: inc_canon.display().to_string(),
-                message: e.to_string(),
-            })?;
+            let mut inc_text =
+                std::fs::read_to_string(&inc_canon).map_err(|e| PreprocessError::Io {
+                    path: inc_canon.display().to_string(),
+                    message: e.to_string(),
+                })?;
 
             // Apply lines filter
             if let Some(spec) = lines_spec {
@@ -299,11 +299,20 @@ fn filter_lines(text: &str, spec: &str) -> Result<String, PreprocessError> {
         if let Some(pos) = range_str.find("..") {
             let start_str = range_str[..pos].trim();
             let end_str = range_str[pos + 2..].trim();
-            let start: usize = start_str.parse().map_err(|_| PreprocessError::InvalidLineRange { spec: spec.to_string() })?;
+            let start: usize =
+                start_str
+                    .parse()
+                    .map_err(|_| PreprocessError::InvalidLineRange {
+                        spec: spec.to_string(),
+                    })?;
             let end: usize = if end_str.is_empty() {
                 lines.len()
             } else {
-                end_str.parse().map_err(|_| PreprocessError::InvalidLineRange { spec: spec.to_string() })?
+                end_str
+                    .parse()
+                    .map_err(|_| PreprocessError::InvalidLineRange {
+                        spec: spec.to_string(),
+                    })?
             };
             let start_idx = start.saturating_sub(1);
             let end_idx = end.min(lines.len());
@@ -311,7 +320,11 @@ fn filter_lines(text: &str, spec: &str) -> Result<String, PreprocessError> {
                 result.push(line.to_string());
             }
         } else {
-            let n: usize = range_str.parse().map_err(|_| PreprocessError::InvalidLineRange { spec: spec.to_string() })?;
+            let n: usize = range_str
+                .parse()
+                .map_err(|_| PreprocessError::InvalidLineRange {
+                    spec: spec.to_string(),
+                })?;
             if n > 0 && n <= lines.len() {
                 result.push(lines[n - 1].to_string());
             }

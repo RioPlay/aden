@@ -98,12 +98,18 @@ pub fn submit_override(proposal: OverrideProposal) -> ApiResponse<String> {
 
     ApiResponse {
         success: true,
-        data: Some(format!("Override proposal {} submitted for review", proposal.directive_tag)),
+        data: Some(format!(
+            "Override proposal {} submitted for review",
+            proposal.directive_tag
+        )),
         error: None,
     }
 }
 
-pub fn fetch_policy_template(_config: &FederationConfig, template_id: &str) -> ApiResponse<PolicyTemplate> {
+pub fn fetch_policy_template(
+    _config: &FederationConfig,
+    template_id: &str,
+) -> ApiResponse<PolicyTemplate> {
     ApiResponse {
         success: true,
         data: Some(PolicyTemplate {
@@ -183,15 +189,13 @@ mod tests {
 
     #[test]
     fn test_cross_repo_edges() {
-        let edges = vec![
-            CrossRepoEdge {
-                source_repo: "repo-a".to_string(),
-                source_anchor: "anchor1".to_string(),
-                target_repo: "repo-b".to_string(),
-                target_anchor: "anchor2".to_string(),
-                edge_type: "uses".to_string(),
-            },
-        ];
+        let edges = vec![CrossRepoEdge {
+            source_repo: "repo-a".to_string(),
+            source_anchor: "anchor1".to_string(),
+            target_repo: "repo-b".to_string(),
+            target_anchor: "anchor2".to_string(),
+            edge_type: "uses".to_string(),
+        }];
         let resolved = resolve_cross_repo_edges(&edges);
         assert_eq!(resolved.len(), 1);
     }

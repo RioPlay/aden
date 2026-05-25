@@ -29,7 +29,14 @@ pub fn find_cycles(graph: &AdenGraph) -> Vec<Vec<String>> {
     for node in graph.graph.node_indices() {
         if !visited.contains(&node) {
             let mut path = Vec::new();
-            dfs_cycle(graph, node, &mut visited, &mut rec_stack, &mut path, &mut cycles);
+            dfs_cycle(
+                graph,
+                node,
+                &mut visited,
+                &mut rec_stack,
+                &mut path,
+                &mut cycles,
+            );
         }
     }
 
@@ -48,7 +55,10 @@ fn dfs_cycle(
     rec_stack.insert(node);
     path.push(graph.graph[node].anchor.clone());
 
-    for edge in graph.graph.edges_directed(node, petgraph::Direction::Outgoing) {
+    for edge in graph
+        .graph
+        .edges_directed(node, petgraph::Direction::Outgoing)
+    {
         if *edge.weight() != aden_core::EdgeType::Requires {
             continue;
         }

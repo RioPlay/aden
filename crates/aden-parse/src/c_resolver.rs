@@ -9,7 +9,7 @@
 //!   • `#include` resolution (local `"..."` and system `<...>`)
 //!   • Intra-file call-graph edges via `edge::calls[]` macros
 
-use crate::extractor::{build_code_attributes, make_anchor, LanguageExtractor};
+use crate::extractor::{LanguageExtractor, build_code_attributes, make_anchor};
 use aden_core::{Block, Document, NodeType, Result};
 use std::path::Path;
 
@@ -57,7 +57,15 @@ impl LanguageExtractor for CResolver {
 
         let mut docs = Vec::new();
         for sym in &symbols {
-            if let Some(doc) = emit_c_symbol(sym, source, path, &symbols, &includes, &module_name, &file_name) {
+            if let Some(doc) = emit_c_symbol(
+                sym,
+                source,
+                path,
+                &symbols,
+                &includes,
+                &module_name,
+                &file_name,
+            ) {
                 docs.push(doc);
             }
         }
@@ -142,16 +150,20 @@ fn walk_translation_unit<'a>(
         }
         "struct_specifier" | "union_specifier" | "enum_specifier" => {
             // Only extract top-level definitions, not type references in parameters.
-            if node.parent().map(|p| p.kind() == "translation_unit").unwrap_or(false)
-                && let Some(name) = extract_type_specifier_name(node, source) {
-                    let doc = extract_c_doc_comment(node, source);
-                    symbols.push(CSymbol {
-                        name,
-                        kind: NodeType::Type,
-                        node,
-                        doc_comment: doc,
-                    });
-                }
+            if node
+                .parent()
+                .map(|p| p.kind() == "translation_unit")
+                .unwrap_or(false)
+                && let Some(name) = extract_type_specifier_name(node, source)
+            {
+                let doc = extract_c_doc_comment(node, source);
+                symbols.push(CSymbol {
+                    name,
+                    kind: NodeType::Type,
+                    node,
+                    doc_comment: doc,
+                });
+            }
         }
         "preproc_include" => {
             extract_include(node, source, includes);
@@ -182,10 +194,13 @@ fn extract_declaration_info(node: tree_sitter::Node, source: &str) -> Option<(St
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         let kind = child.kind();
-        if (kind == "function_declarator" || kind == "init_declarator" || kind == "parenthesized_declarator")
-            && let Some(name) = find_declarator_name(child, source) {
-                return Some((name, NodeType::Function));
-            }
+        if (kind == "function_declarator"
+            || kind == "init_declarator"
+            || kind == "parenthesized_declarator")
+            && let Some(name) = find_declarator_name(child, source)
+        {
+            return Some((name, NodeType::Function));
+        }
     }
     // 2. Struct / union / enum — search declaration subtree recursively
     if let Some(name) = find_type_name(node, source) {
@@ -196,8 +211,12 @@ fn extract_declaration_info(node: tree_sitter::Node, source: &str) -> Option<(St
 
 /// Recursively search for struct/union/enum or typedef name inside a declaration.
 fn find_type_name(node: tree_sitter::Node, source: &str) -> Option<String> {
-    if node.kind() == "struct_specifier" || node.kind() == "union_specifier" || node.kind() == "enum_specifier" {
-        return node.child_by_field_name("name")
+    if node.kind() == "struct_specifier"
+        || node.kind() == "union_specifier"
+        || node.kind() == "enum_specifier"
+    {
+        return node
+            .child_by_field_name("name")
             .map(|n| node_text(n, source).trim().to_string())
             .or_else(|| {
                 let mut c = node.walk();
@@ -257,9 +276,10 @@ fn find_declarator_name(node: tree_sitter::Node, source: &str) -> Option<String>
         || node.kind() == "parenthesized_declarator"
         || node.kind() == "array_declarator"
         || node.kind() == "function_declarator")
-        && let Some(inner) = node.child_by_field_name("declarator") {
-            return find_declarator_name(inner, source);
-        }
+        && let Some(inner) = node.child_by_field_name("declarator")
+    {
+        return find_declarator_name(inner, source);
+    }
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         if let Some(name) = find_declarator_name(child, source) {
@@ -323,7 +343,12 @@ fn emit_c_symbol<'a>(
 ) -> Option<Document> {
     let anchor = make_anchor(module, file_name, &sym.name);
     let span = node_to_span(sym.node, path);
-    let attrs = build_code_attributes(source, &format!("{:?}", sym.kind).to_lowercase(), Some(path), Some(&span));
+    let attrs = build_code_attributes(
+        source,
+        &format!("{:?}", sym.kind).to_lowercase(),
+        Some(path),
+        Some(&span),
+    );
     let mut blocks = Vec::new();
 
     if let Some(ref doc) = sym.doc_comment {
@@ -340,7 +365,16 @@ fn emit_c_symbol<'a>(
     if !includes.is_empty() {
         let inc_rows: Vec<Vec<String>> = includes
             .iter()
-            .map(|i| vec![i.path.clone(), if i.is_system { "system".to_string() } else { "local".to_string() }])
+            .map(|i| {
+                vec![
+                    i.path.clone(),
+                    if i.is_system {
+                        "system".to_string()
+                    } else {
+                        "local".to_string()
+                    },
+                ]
+            })
             .collect();
         blocks.push(Block::Table(aden_core::Table {
             headers: vec!["Include".to_string(), "Kind".to_string()],
@@ -365,7 +399,10 @@ fn emit_c_symbol<'a>(
                 .map(|c| format!("edge::calls[{}]", c.callee))
                 .collect::<Vec<_>>()
                 .join("\n");
-            blocks.push(Block::Listing { language: None, code: edge_code });
+            blocks.push(Block::Listing {
+                language: None,
+                code: edge_code,
+            });
         }
     }
 
@@ -395,21 +432,18 @@ fn resolve_c_call_sites<'a>(
     }
 
     if node.kind() == "call_expression"
-        && let Some(func) = node.child_by_field_name("function") {
-            let callee = resolve_c_callee(func, source, all_symbols);
-            if !callee.is_empty() && callee.len() >= 2 && !is_c_std_noise(&callee) {
-                let line = func.start_position().row + 1;
-                calls.push(CCallSite { callee, line });
-            }
+        && let Some(func) = node.child_by_field_name("function")
+    {
+        let callee = resolve_c_callee(func, source, all_symbols);
+        if !callee.is_empty() && callee.len() >= 2 && !is_c_std_noise(&callee) {
+            let line = func.start_position().row + 1;
+            calls.push(CCallSite { callee, line });
         }
+    }
     calls
 }
 
-fn resolve_c_callee(
-    node: tree_sitter::Node,
-    source: &str,
-    all_symbols: &[CSymbol],
-) -> String {
+fn resolve_c_callee(node: tree_sitter::Node, source: &str, all_symbols: &[CSymbol]) -> String {
     match node.kind() {
         "identifier" => {
             let name = node_text(node, source).trim().to_string();
@@ -443,19 +477,12 @@ fn resolve_c_callee(
 
 fn is_c_std_noise(name: &str) -> bool {
     const SKIP: &[&str] = &[
-        "printf", "fprintf", "sprintf", "snprintf",
-        "malloc", "calloc", "realloc", "free",
-        "memcpy", "memmove", "memset", "memcmp",
-        "strcpy", "strncpy", "strcat", "strncat",
-        "strcmp", "strncmp", "strlen", "strchr",
-        "fopen", "fclose", "fread", "fwrite",
-        "scanf", "sscanf", "fscanf",
-        "getchar", "putchar", "puts", "gets",
-        "assert", "exit", "abort", "qsort",
-        "abs", "labs", "rand", "srand", "time",
-        "sin", "cos", "tan", "sqrt", "pow", "log", "exp",
-        "ceil", "floor", "round", "fabs",
-        "sizeof", "offsetof",
+        "printf", "fprintf", "sprintf", "snprintf", "malloc", "calloc", "realloc", "free",
+        "memcpy", "memmove", "memset", "memcmp", "strcpy", "strncpy", "strcat", "strncat",
+        "strcmp", "strncmp", "strlen", "strchr", "fopen", "fclose", "fread", "fwrite", "scanf",
+        "sscanf", "fscanf", "getchar", "putchar", "puts", "gets", "assert", "exit", "abort",
+        "qsort", "abs", "labs", "rand", "srand", "time", "sin", "cos", "tan", "sqrt", "pow", "log",
+        "exp", "ceil", "floor", "round", "fabs", "sizeof", "offsetof",
     ];
     SKIP.contains(&name)
 }

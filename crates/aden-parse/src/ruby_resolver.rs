@@ -17,7 +17,7 @@
 //!   • Rails DSL awareness (`has_many`, `before_action`, etc.)
 //!   • Dynamic method dispatch (`send`, `method_missing`)
 
-use crate::extractor::{build_code_attributes, make_anchor, LanguageExtractor};
+use crate::extractor::{LanguageExtractor, build_code_attributes, make_anchor};
 use aden_core::{Block, Document, NodeType, Parameter, Result};
 use std::path::Path;
 
@@ -61,11 +61,26 @@ impl LanguageExtractor for RubyResolver {
 
         let mut requires: Vec<RubyRequire> = Vec::new();
         let mut symbols: Vec<RubySymbol> = Vec::new();
-        walk_program(tree.root_node(), source, &module_name, &file_name, &mut requires, &mut symbols);
+        walk_program(
+            tree.root_node(),
+            source,
+            &module_name,
+            &file_name,
+            &mut requires,
+            &mut symbols,
+        );
 
         let mut docs = Vec::new();
         for sym in &symbols {
-            if let Some(doc) = emit_ruby_symbol(sym, source, path, &symbols, &requires, &module_name, &file_name) {
+            if let Some(doc) = emit_ruby_symbol(
+                sym,
+                source,
+                path,
+                &symbols,
+                &requires,
+                &module_name,
+                &file_name,
+            ) {
                 docs.push(doc);
             }
         }
@@ -99,7 +114,7 @@ struct RubySymbol<'a> {
     node: tree_sitter::Node<'a>,
     params: Vec<Parameter>,
     doc_comment: Option<String>,
-    is_singleton: bool,     // true for singleton methods (def self.foo)
+    is_singleton: bool,           // true for singleton methods (def self.foo)
     parent_class: Option<String>, // for class declarations
 }
 
@@ -153,7 +168,11 @@ fn extract_doc_comment(node: tree_sitter::Node, source: &str) -> Option<String> 
             break;
         }
     }
-    if comments.is_empty() { None } else { Some(comments.into_iter().rev().collect::<Vec<_>>().join("\n")) }
+    if comments.is_empty() {
+        None
+    } else {
+        Some(comments.into_iter().rev().collect::<Vec<_>>().join("\n"))
+    }
 }
 
 fn walk_program<'a>(
@@ -164,7 +183,9 @@ fn walk_program<'a>(
     requires: &mut Vec<RubyRequire>,
     symbols: &mut Vec<RubySymbol<'a>>,
 ) {
-    if !node.is_named() { return; }
+    if !node.is_named() {
+        return;
+    }
 
     match node.kind() {
         "call" | "method_call" | "command_call" => {
@@ -181,8 +202,15 @@ fn walk_program<'a>(
         "method" | "singleton_method" | "accessor" | "setter" => {
             parse_method(node, source, module, file_name, symbols);
         }
-        "program" | "body_statement" | "do_block" | "block" | "class_body_statement"
-        | "module_body_statement" | "then" | "else" | "elsif" => {
+        "program"
+        | "body_statement"
+        | "do_block"
+        | "block"
+        | "class_body_statement"
+        | "module_body_statement"
+        | "then"
+        | "else"
+        | "elsif" => {
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
                 walk_program(child, source, module, file_name, requires, symbols);
@@ -202,7 +230,11 @@ fn walk_program<'a>(
 fn parse_require(node: tree_sitter::Node, source: &str) -> Option<RubyRequire> {
     // In tree-sitter ruby, method calls are often 'call' with receiver/method fields
     let text = node_text(node, source).trim();
-    let kind = if text.starts_with("require '") || text.starts_with("require(") || text.starts_with("require_relative ") || text.starts_with("require_relative(") {
+    let kind = if text.starts_with("require '")
+        || text.starts_with("require(")
+        || text.starts_with("require_relative ")
+        || text.starts_with("require_relative(")
+    {
         // Extract method name from the call
         if text.starts_with("require_relative") {
             RequireKind::RequireRelative
@@ -257,7 +289,8 @@ fn parse_class<'a>(
         "singleton_class".to_string()
     };
 
-    let parent_class = node.child_by_field_name("superclass")
+    let parent_class = node
+        .child_by_field_name("superclass")
         .map(|n| node_text(n, source).to_string());
 
     let qname = format!("{}.{}", module, name);
@@ -279,7 +312,14 @@ fn parse_class<'a>(
             let mut cc = child.walk();
             for grandchild in child.children(&mut cc) {
                 if grandchild.is_named() {
-                    walk_program(grandchild, source, &format!("{}.{}", module, name), file_name, &mut Vec::new(), symbols);
+                    walk_program(
+                        grandchild,
+                        source,
+                        &format!("{}.{}", module, name),
+                        file_name,
+                        &mut Vec::new(),
+                        symbols,
+                    );
                 }
             }
         }
@@ -317,7 +357,14 @@ fn parse_module<'a>(
             let mut cc = child.walk();
             for grandchild in child.children(&mut cc) {
                 if grandchild.is_named() {
-                    walk_program(grandchild, source, &format!("{}.{}", module, name), file_name, &mut Vec::new(), symbols);
+                    walk_program(
+                        grandchild,
+                        source,
+                        &format!("{}.{}", module, name),
+                        file_name,
+                        &mut Vec::new(),
+                        symbols,
+                    );
                 }
             }
         }
@@ -333,13 +380,20 @@ fn parse_method<'a>(
 ) {
     let (name, is_singleton) = if let Some(name_node) = node.child_by_field_name("name") {
         let n = node_text(name_node, source).to_string();
-        (n.clone(), node.kind() == "singleton_method" || n.starts_with("self."))
+        (
+            n.clone(),
+            node.kind() == "singleton_method" || n.starts_with("self."),
+        )
     } else if node.kind() == "accessor" {
         // attr_reader, attr_writer, attr_accessor
         let text = node_text(node, source);
-        let n = if text.contains("attr_reader") { "attr_reader" }
-            else if text.contains("attr_writer") { "attr_writer" }
-            else { "attr_accessor" };
+        let n = if text.contains("attr_reader") {
+            "attr_reader"
+        } else if text.contains("attr_writer") {
+            "attr_writer"
+        } else {
+            "attr_accessor"
+        };
         (n.to_string(), false)
     } else {
         return;
@@ -349,15 +403,26 @@ fn parse_method<'a>(
     if let Some(params_node) = node.child_by_field_name("parameters") {
         let mut pc = params_node.walk();
         for param in params_node.children(&mut pc) {
-            if matches!(param.kind(), "identifier" | "parameter" | "block_parameter" | "optional_parameter" | "keyword_parameter") {
+            if matches!(
+                param.kind(),
+                "identifier"
+                    | "parameter"
+                    | "block_parameter"
+                    | "optional_parameter"
+                    | "keyword_parameter"
+            ) {
                 let param_name = node_text(param, source).to_string();
                 let mut default = None;
                 if param.kind() == "optional_parameter" {
-                    default = param.child_by_field_name("value")
+                    default = param
+                        .child_by_field_name("value")
                         .map(|v| node_text(v, source).to_string());
                 }
                 params.push(Parameter {
-                    name: param_name.trim_start_matches('&').trim_start_matches('*').to_string(),
+                    name: param_name
+                        .trim_start_matches('&')
+                        .trim_start_matches('*')
+                        .to_string(),
                     ty: String::new(),
                     default_value: default,
                 });
@@ -394,9 +459,10 @@ fn find_parent_type_name(node: tree_sitter::Node, source: &str) -> Option<String
     let mut current = node;
     while let Some(parent) = current.parent() {
         if matches!(parent.kind(), "class" | "module" | "singleton_class")
-            && let Some(name_node) = parent.child_by_field_name("name") {
-                return Some(node_text(name_node, source).to_string());
-            }
+            && let Some(name_node) = parent.child_by_field_name("name")
+        {
+            return Some(node_text(name_node, source).to_string());
+        }
         current = parent;
     }
     None
@@ -413,16 +479,19 @@ fn emit_ruby_symbol(
 ) -> Option<Document> {
     let anchor = make_anchor(module, file_name, &sym.name);
     let span = node_to_span(sym.node, path);
-    let attrs = build_code_attributes(source, &format!("{:?}", sym.kind).to_lowercase(), Some(path), Some(&span));
+    let attrs = build_code_attributes(
+        source,
+        &format!("{:?}", sym.kind).to_lowercase(),
+        Some(path),
+        Some(&span),
+    );
     let mut blocks = Vec::new();
 
     if let Some(ref doc) = sym.doc_comment {
         blocks.push(Block::Paragraph(doc.clone()));
     }
 
-    let mut rows: Vec<Vec<String>> = vec![
-        vec!["Kind".to_string(), format!("{:?}", sym.kind)],
-    ];
+    let mut rows: Vec<Vec<String>> = vec![vec!["Kind".to_string(), format!("{:?}", sym.kind)]];
     if sym.is_singleton {
         rows.push(vec!["Singleton".to_string(), "true".to_string()]);
     }
@@ -446,30 +515,39 @@ fn emit_ruby_symbol(
 
     // Extract call sites from method body
     if sym.kind == NodeType::Function
-        && let Some(body) = sym.node.child_by_field_name("body") {
-            let calls = extract_ruby_call_sites(body, source);
-            let filtered: Vec<_> = calls.into_iter()
-                .filter(|(c, _)| !is_ruby_std_noise(c))
+        && let Some(body) = sym.node.child_by_field_name("body")
+    {
+        let calls = extract_ruby_call_sites(body, source);
+        let filtered: Vec<_> = calls
+            .into_iter()
+            .filter(|(c, _)| !is_ruby_std_noise(c))
+            .collect();
+        if !filtered.is_empty() {
+            let call_rows: Vec<Vec<String>> = filtered
+                .iter()
+                .map(|(callee, line)| vec![callee.clone(), line.to_string()])
                 .collect();
-            if !filtered.is_empty() {
-                let call_rows: Vec<Vec<String>> = filtered.iter()
-                    .map(|(callee, line)| vec![callee.clone(), line.to_string()])
-                    .collect();
-                blocks.push(Block::Table(aden_core::Table {
-                    headers: vec!["Callee".to_string(), "Line".to_string()],
-                    rows: call_rows,
-                }));
-                let edge_code: String = filtered.iter()
-                    .map(|(callee, _)| format!("edge::calls[{}]", callee))
-                    .collect::<Vec<_>>().join("\n");
-                blocks.push(Block::Listing { language: None, code: edge_code });
-            }
+            blocks.push(Block::Table(aden_core::Table {
+                headers: vec!["Callee".to_string(), "Line".to_string()],
+                rows: call_rows,
+            }));
+            let edge_code: String = filtered
+                .iter()
+                .map(|(callee, _)| format!("edge::calls[{}]", callee))
+                .collect::<Vec<_>>()
+                .join("\n");
+            blocks.push(Block::Listing {
+                language: None,
+                code: edge_code,
+            });
         }
+    }
 
     if sym.doc_comment.is_some() {
         blocks.push(Block::Admonition {
             kind: aden_core::AdmonitionKind::Note,
-            text: "Extracted from source code via tree-sitter. Confidence is heuristic.".to_string(),
+            text: "Extracted from source code via tree-sitter. Confidence is heuristic."
+                .to_string(),
         });
     }
 
@@ -483,27 +561,101 @@ fn emit_ruby_symbol(
 }
 
 const RUBY_SKIP_CALLEES: &[&str] = &[
-    "puts", "print", "p", "pp",
-    "to_s", "to_i", "to_f", "to_sym", "to_a", "to_h", "to_json",
-    "map", "select", "filter", "reject", "find", "detect", "each", "each_with_index",
-    "reduce", "inject", "fold", "collect", "flat_map", "compact", "uniq",
-    "length", "size", "count", "empty?", "blank?", "present?",
-    "gsub", "sub", "split", "join", "strip", "chomp", "downcase", "upcase",
-    "new", "initialize", "allocate",
-    "include?", "include", "extend", "prepend",
-    "freeze", "dup", "clone", "taint", "untaint",
-    "require", "require_relative", "load", "autoload",
-    "attr_reader", "attr_writer", "attr_accessor", "attr",
-    "raise", "fail", "throw", "catch",
-    "loop", "times", "upto", "downto", "step",
-    "open", "read", "write", "close", "flush", "rewind",
-    "send", "__send__", "method_missing", "respond_to?", "is_a?", "kind_of?", "instance_of?",
-    "nil?", "nil", "true", "false",
-    "tap", "then", "yield_self",
+    "puts",
+    "print",
+    "p",
+    "pp",
+    "to_s",
+    "to_i",
+    "to_f",
+    "to_sym",
+    "to_a",
+    "to_h",
+    "to_json",
+    "map",
+    "select",
+    "filter",
+    "reject",
+    "find",
+    "detect",
+    "each",
+    "each_with_index",
+    "reduce",
+    "inject",
+    "fold",
+    "collect",
+    "flat_map",
+    "compact",
+    "uniq",
+    "length",
+    "size",
+    "count",
+    "empty?",
+    "blank?",
+    "present?",
+    "gsub",
+    "sub",
+    "split",
+    "join",
+    "strip",
+    "chomp",
+    "downcase",
+    "upcase",
+    "new",
+    "initialize",
+    "allocate",
+    "include?",
+    "include",
+    "extend",
+    "prepend",
+    "freeze",
+    "dup",
+    "clone",
+    "taint",
+    "untaint",
+    "require",
+    "require_relative",
+    "load",
+    "autoload",
+    "attr_reader",
+    "attr_writer",
+    "attr_accessor",
+    "attr",
+    "raise",
+    "fail",
+    "throw",
+    "catch",
+    "loop",
+    "times",
+    "upto",
+    "downto",
+    "step",
+    "open",
+    "read",
+    "write",
+    "close",
+    "flush",
+    "rewind",
+    "send",
+    "__send__",
+    "method_missing",
+    "respond_to?",
+    "is_a?",
+    "kind_of?",
+    "instance_of?",
+    "nil?",
+    "nil",
+    "true",
+    "false",
+    "tap",
+    "then",
+    "yield_self",
 ];
 
 fn is_ruby_std_noise(name: &str) -> bool {
-    RUBY_SKIP_CALLEES.contains(&name) || name.starts_with("to_") || name.ends_with("?") && name.len() <= 8
+    RUBY_SKIP_CALLEES.contains(&name)
+        || name.starts_with("to_")
+        || name.ends_with("?") && name.len() <= 8
 }
 
 fn extract_ruby_call_sites(node: tree_sitter::Node, source: &str) -> Vec<(String, usize)> {
@@ -558,7 +710,11 @@ fn resolve_ruby_callee_name(node: tree_sitter::Node, source: &str) -> String {
                     last = node_text(child, source).to_string();
                 }
             }
-            if !last.is_empty() { last } else { node_text(node, source).to_string() }
+            if !last.is_empty() {
+                last
+            } else {
+                node_text(node, source).to_string()
+            }
         }
     }
 }

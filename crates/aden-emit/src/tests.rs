@@ -26,7 +26,11 @@ mod tests {
         let doc = templates::module_contract(
             "mod-foo",
             "module::foo",
-            vec![vec!["Foo".to_string(), "struct".to_string(), "A foo".to_string()]],
+            vec![vec![
+                "Foo".to_string(),
+                "struct".to_string(),
+                "A foo".to_string(),
+            ]],
             vec!["Invariant 1".to_string()],
             vec!["Error 1".to_string()],
             vec!["Side effect 1".to_string()],

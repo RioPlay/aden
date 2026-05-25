@@ -45,11 +45,17 @@ pub(crate) fn build_code_attributes(
     } else {
         source.to_string()
     };
-    attrs.insert("source_hash".to_string(), aden_core::stable_hash(hash_source.as_bytes()));
+    attrs.insert(
+        "source_hash".to_string(),
+        aden_core::stable_hash(hash_source.as_bytes()),
+    );
     attrs.insert("last-verified".to_string(), aden_core::rfc3339_now());
     attrs.insert("node-type".to_string(), node_type.to_string());
     if let Some(path) = source_file {
-        attrs.insert("source_file".to_string(), path.to_string_lossy().to_string());
+        attrs.insert(
+            "source_file".to_string(),
+            path.to_string_lossy().to_string(),
+        );
     }
     if let Some(s) = span {
         attrs.insert("start_line".to_string(), s.start_line.to_string());

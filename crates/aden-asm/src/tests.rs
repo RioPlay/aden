@@ -23,7 +23,11 @@ mod tests {
     #[test]
     fn test_preprocess_simple_file() {
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        std::fs::write(tmp.path(), ":key: value\n\n[[anchor]]\n= Title\n\nHello world").unwrap();
+        std::fs::write(
+            tmp.path(),
+            ":key: value\n\n[[anchor]]\n= Title\n\nHello world",
+        )
+        .unwrap();
         let mut visited = Vec::new();
         let out = preprocess::preprocess(tmp.path(), &HashMap::new(), &mut visited, 0).unwrap();
         assert!(out.contains("[[anchor]]"));

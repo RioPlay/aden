@@ -31,10 +31,7 @@ pub fn inject_backlinks(graph: &mut AdenGraph) {
                 .and_then(|e| graph.graph.edge_weight(e))
                 .map(|t| format!("{:?}", t))
                 .unwrap_or_else(|| "Unknown".to_string());
-            rows.push(vec![
-                graph.graph[neighbor].anchor.clone(),
-                edge_type,
-            ]);
+            rows.push(vec![graph.graph[neighbor].anchor.clone(), edge_type]);
         }
         if !rows.is_empty() {
             backlink_tables.push((node, rows));
@@ -52,7 +49,9 @@ pub fn inject_backlinks(graph: &mut AdenGraph) {
             }
         });
         // Add new backlink table
-        doc.doc.blocks.push(Block::Paragraph("== Referenced By".to_string()));
+        doc.doc
+            .blocks
+            .push(Block::Paragraph("== Referenced By".to_string()));
         doc.doc.blocks.push(Block::Table(Table {
             headers: vec!["Anchor".to_string(), "Edge Type".to_string()],
             rows,

@@ -19,9 +19,7 @@
 /// Each builder constructs an `aden_core::Document` with the canonical
 /// block structure for its template type. Callers populate rows and
 /// paragraphs before passing the Document to the emitter.
-use aden_core::{
-    Block, Document, NodeType, Table,
-};
+use aden_core::{Block, Document, NodeType, Table};
 use std::collections::HashMap;
 
 /// Build a `module.adoc` contract Document.
@@ -38,7 +36,11 @@ pub fn module_contract(
     if !signatures.is_empty() {
         blocks.push(Block::Paragraph("== Signature".to_string()));
         blocks.push(Block::Table(Table {
-            headers: vec!["Type".to_string(), "Kind".to_string(), "Description".to_string()],
+            headers: vec![
+                "Type".to_string(),
+                "Kind".to_string(),
+                "Description".to_string(),
+            ],
             rows: signatures,
         }));
     }
@@ -211,7 +213,11 @@ pub fn plan(
     if !contracts.is_empty() {
         blocks.push(Block::Paragraph("== Contracts".to_string()));
         blocks.push(Block::Table(Table {
-            headers: vec!["Module".to_string(), "Deliverable".to_string(), "Acceptance Criteria".to_string()],
+            headers: vec![
+                "Module".to_string(),
+                "Deliverable".to_string(),
+                "Acceptance Criteria".to_string(),
+            ],
             rows: contracts,
         }));
     }

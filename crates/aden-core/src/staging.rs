@@ -67,9 +67,11 @@ impl StagingManager {
         let final_path = if path.exists() {
             let mut counter = 1u32;
             loop {
-                let candidate = self
-                    .root
-                    .join(format!("{}-{timestamp}-{counter}.adoc", sanitized_role, timestamp = entry.timestamp));
+                let candidate = self.root.join(format!(
+                    "{}-{timestamp}-{counter}.adoc",
+                    sanitized_role,
+                    timestamp = entry.timestamp
+                ));
                 if !candidate.exists() {
                     break candidate;
                 }
@@ -139,7 +141,10 @@ fn format_staging_entry(entry: &StagingEntry) -> String {
         role = entry.role,
         ts = entry.timestamp
     ));
-    out.push_str(&format!("= Staging Proposal: {role}\n\n", role = entry.role));
+    out.push_str(&format!(
+        "= Staging Proposal: {role}\n\n",
+        role = entry.role
+    ));
 
     out.push_str("|===\n");
     out.push_str("|Field|Value\n");

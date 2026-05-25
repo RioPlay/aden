@@ -25,7 +25,9 @@ pub struct AdqInterpreter<'a> {
 
 #[derive(Debug, thiserror::Error)]
 pub enum QueryError {
-    #[error("unknown ADQ function: '{0}'. Valid: node(anchor), incoming(anchor), outgoing(anchor), nodes, edges")]
+    #[error(
+        "unknown ADQ function: '{0}'. Valid: node(anchor), incoming(anchor), outgoing(anchor), nodes, edges"
+    )]
     UnknownFunction(String),
     #[error("invalid anchor: {0}")]
     InvalidAnchor(String),
@@ -40,13 +42,13 @@ impl<'a> AdqInterpreter<'a> {
 
     pub fn execute(&self, adq_script: &str) -> Result<QueryResult, QueryError> {
         let script = adq_script.trim();
-        
+
         // Parse function calls: node(anchor), incoming(anchor), outgoing(anchor)
         // Also support: node anchor, incoming anchor
         if let Some(paren_pos) = script.find('(') {
             let func_name = script[..paren_pos].trim();
             let arg = script[paren_pos + 1..].trim_end_matches(')').trim();
-            
+
             match func_name {
                 "node" => self.exec_node(&[arg]),
                 "incoming" => self.exec_incoming(&[arg]),
@@ -64,13 +66,15 @@ impl<'a> AdqInterpreter<'a> {
     }
 
     fn exec_node(&self, args: &[&str]) -> Result<QueryResult, QueryError> {
-        let anchor = args.first().ok_or_else(|| QueryError::Parse("node() requires anchor".to_string()))?;
+        let anchor = args
+            .first()
+            .ok_or_else(|| QueryError::Parse("node() requires anchor".to_string()))?;
         let anchor = anchor.trim_matches(|c| c == '(' || c == ')' || c == ';');
-        
+
         if self.graph.get_index(anchor).is_none() {
             return Err(QueryError::InvalidAnchor(anchor.to_string()));
         }
-        
+
         Ok(QueryResult {
             nodes: vec![anchor.to_string()],
             total: 1,
@@ -78,35 +82,53 @@ impl<'a> AdqInterpreter<'a> {
     }
 
     fn exec_incoming(&self, args: &[&str]) -> Result<QueryResult, QueryError> {
-        let anchor = args.first().ok_or_else(|| QueryError::Parse("incoming() requires anchor".to_string()))?;
+        let anchor = args
+            .first()
+            .ok_or_else(|| QueryError::Parse("incoming() requires anchor".to_string()))?;
         let anchor = anchor.trim_matches(|c| c == '(' || c == ')' || c == ';');
-        
-        let idx = self.graph.get_index(anchor).ok_or_else(|| QueryError::InvalidAnchor(anchor.to_string()))?;
-        
+
+        let idx = self
+            .graph
+            .get_index(anchor)
+            .ok_or_else(|| QueryError::InvalidAnchor(anchor.to_string()))?;
+
         let mut nodes = Vec::new();
-        for neighbor in self.graph.graph.neighbors_directed(idx, Direction::Incoming) {
+        for neighbor in self
+            .graph
+            .graph
+            .neighbors_directed(idx, Direction::Incoming)
+        {
             if let Some(node) = self.graph.graph.node_weight(neighbor) {
                 nodes.push(node.anchor.clone());
             }
         }
-        
+
         let total = nodes.len();
         Ok(QueryResult { nodes, total })
     }
 
     fn exec_outgoing(&self, args: &[&str]) -> Result<QueryResult, QueryError> {
-        let anchor = args.first().ok_or_else(|| QueryError::Parse("outgoing() requires anchor".to_string()))?;
+        let anchor = args
+            .first()
+            .ok_or_else(|| QueryError::Parse("outgoing() requires anchor".to_string()))?;
         let anchor = anchor.trim_matches(|c| c == '(' || c == ')' || c == ';');
-        
-        let idx = self.graph.get_index(anchor).ok_or_else(|| QueryError::InvalidAnchor(anchor.to_string()))?;
-        
+
+        let idx = self
+            .graph
+            .get_index(anchor)
+            .ok_or_else(|| QueryError::InvalidAnchor(anchor.to_string()))?;
+
         let mut nodes = Vec::new();
-        for neighbor in self.graph.graph.neighbors_directed(idx, Direction::Outgoing) {
+        for neighbor in self
+            .graph
+            .graph
+            .neighbors_directed(idx, Direction::Outgoing)
+        {
             if let Some(node) = self.graph.graph.node_weight(neighbor) {
                 nodes.push(node.anchor.clone());
             }
         }
-        
+
         let total = nodes.len();
         Ok(QueryResult { nodes, total })
     }
@@ -115,14 +137,17 @@ impl<'a> AdqInterpreter<'a> {
     fn exec_where(&self, args: &[&str]) -> Result<QueryResult, QueryError> {
         // Simple where: anchor contains "term" or type = "Note"
         let mut nodes = Vec::new();
-        
+
         for idx in self.graph.graph.node_indices() {
             if let Some(node) = self.graph.graph.node_weight(idx) {
                 let mut matches = true;
                 for arg in args {
                     let arg = arg.trim_matches(|c| c == '(' || c == ')' || c == ';');
                     if arg.starts_with("anchor:") || arg.starts_with("anchor=") {
-                        let term = arg.split(':').nth(1).unwrap_or(arg.split('=').nth(1).unwrap_or(""));
+                        let term = arg
+                            .split(':')
+                            .nth(1)
+                            .unwrap_or(arg.split('=').nth(1).unwrap_or(""));
                         if !node.anchor.contains(term) {
                             matches = false;
                         }
@@ -133,7 +158,7 @@ impl<'a> AdqInterpreter<'a> {
                 }
             }
         }
-        
+
         let total = nodes.len();
         Ok(QueryResult { nodes, total })
     }

@@ -75,17 +75,23 @@ fn test_asm_assembles_nonempty_output() {
     temp_project::scaffold(&dir);
 
     let output = std::process::Command::new("aden")
-        .args(["asm", "--from", "readme", "--depth", "2", &dir.to_string_lossy()])
+        .args([
+            "asm",
+            "--from",
+            "readme",
+            "--depth",
+            "2",
+            &dir.to_string_lossy(),
+        ])
         .output()
         .expect("aden binary must be installed");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "aden asm failed: {}", stdout);
     assert!(
-        output.status.success(),
-        "aden asm failed: {}",
-        stdout
+        stdout.contains("[[readme]]"),
+        "Should contain the readme anchor"
     );
-    assert!(stdout.contains("[[readme]]"), "Should contain the readme anchor");
 }
 
 #[test]
@@ -99,11 +105,7 @@ fn test_ask_returns_context() {
         .expect("aden binary must be installed");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        output.status.success(),
-        "aden ask failed: {}",
-        stdout
-    );
+    assert!(output.status.success(), "aden ask failed: {}", stdout);
     assert!(
         stdout.contains("[[module-a]]"),
         "Should mention module-a anchor. stdout:\n{}",
@@ -117,16 +119,19 @@ fn test_graph_outputs_neighborhood() {
     temp_project::scaffold(&dir);
 
     let output = std::process::Command::new("aden")
-        .args(["query", "--from", "readme", "--depth", "2", &dir.to_string_lossy()])
+        .args([
+            "query",
+            "--from",
+            "readme",
+            "--depth",
+            "2",
+            &dir.to_string_lossy(),
+        ])
         .output()
         .expect("aden binary must be installed");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        output.status.success(),
-        "aden query failed: {}",
-        stdout
-    );
+    assert!(output.status.success(), "aden query failed: {}", stdout);
     assert!(
         stdout.contains("module-a"),
         "Should show module-a in graph. stdout:\n{}",
@@ -144,15 +149,8 @@ fn test_init_scaffolds_agent_dir() {
         .expect("aden binary must be installed");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        output.status.success(),
-        "aden init failed: {}",
-        stdout
-    );
-    assert!(
-        dir.join(".agent").is_dir(),
-        ".agent/ should be created"
-    );
+    assert!(output.status.success(), "aden init failed: {}", stdout);
+    assert!(dir.join(".agent").is_dir(), ".agent/ should be created");
     assert!(
         dir.join(".adenignore").exists(),
         ".adenignore should be created"
@@ -170,11 +168,7 @@ fn test_search_finds_results() {
         .expect("aden binary must be installed");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        output.status.success(),
-        "aden search failed: {}",
-        stdout
-    );
+    assert!(output.status.success(), "aden search failed: {}", stdout);
     assert!(
         stdout.contains("module-a"),
         "Should find module-a. stdout:\n{}",
@@ -200,10 +194,6 @@ fn test_query_from_returns_json() {
         .expect("aden binary must be installed");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        output.status.success(),
-        "aden query failed: {}",
-        stdout
-    );
+    assert!(output.status.success(), "aden query failed: {}", stdout);
     // JSON output should start with [ or { depending on implementation
 }

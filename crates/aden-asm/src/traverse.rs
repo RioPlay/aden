@@ -45,9 +45,9 @@ pub struct AssemblyOptions {
 
 /// Assemble a flat `.adoc` prompt from a graph neighborhood.
 pub fn assemble(graph: &AdenGraph, opts: &AssemblyOptions) -> Result<String, AssemblyError> {
-    let start_idx = graph.get_index(&opts.start_anchor).ok_or_else(|| {
-        AssemblyError::AnchorNotFound(opts.start_anchor.clone())
-    })?;
+    let start_idx = graph
+        .get_index(&opts.start_anchor)
+        .ok_or_else(|| AssemblyError::AnchorNotFound(opts.start_anchor.clone()))?;
 
     let mut visited = HashSet::new();
     let mut queue = VecDeque::new();
@@ -95,9 +95,9 @@ pub fn assemble(graph: &AdenGraph, opts: &AssemblyOptions) -> Result<String, Ass
 pub fn assemble_adg(graph: &AdenGraph, opts: &AssemblyOptions) -> Result<String, AssemblyError> {
     use aden_emit::emit_adg;
 
-    let start_idx = graph.get_index(&opts.start_anchor).ok_or_else(|| {
-        AssemblyError::AnchorNotFound(opts.start_anchor.clone())
-    })?;
+    let start_idx = graph
+        .get_index(&opts.start_anchor)
+        .ok_or_else(|| AssemblyError::AnchorNotFound(opts.start_anchor.clone()))?;
 
     let mut visited = HashSet::new();
     let mut queue = VecDeque::new();
@@ -152,7 +152,9 @@ pub enum AssemblyError {
 fn document_to_text(doc: &DocumentNode, block_filter: &[BlockKind]) -> String {
     let has_filter = !block_filter.is_empty();
     let should_include = |b: &Block| -> bool {
-        if !has_filter { return true; }
+        if !has_filter {
+            return true;
+        }
         let kind = match b {
             Block::Table(_) => BlockKind::Table,
             Block::Paragraph(_) => BlockKind::Paragraph,
@@ -176,11 +178,17 @@ fn document_to_text(doc: &DocumentNode, block_filter: &[BlockKind]) -> String {
         out.push('\n');
         // Anchor + Title
         out.push_str(&format!("[[{}]]\n", doc.anchor));
-        let title = doc.anchor.rfind('#').map(|p| &doc.anchor[p+1..]).unwrap_or(&doc.anchor);
+        let title = doc
+            .anchor
+            .rfind('#')
+            .map(|p| &doc.anchor[p + 1..])
+            .unwrap_or(&doc.anchor);
         out.push_str(&format!("= {title}\n\n"));
         // Blocks
         for block in &doc.doc.blocks {
-            if !should_include(block) { continue; }
+            if !should_include(block) {
+                continue;
+            }
             match block {
                 Block::Paragraph(t) => {
                     out.push_str(t);
@@ -188,7 +196,11 @@ fn document_to_text(doc: &DocumentNode, block_filter: &[BlockKind]) -> String {
                 }
                 Block::Table(table) => {
                     out.push_str("|===\n");
-                    let header = table.headers.iter().map(|h| format!("|{h}")).collect::<String>();
+                    let header = table
+                        .headers
+                        .iter()
+                        .map(|h| format!("|{h}"))
+                        .collect::<String>();
                     out.push_str(&header);
                     out.push('\n');
                     for row in &table.rows {

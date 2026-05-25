@@ -35,35 +35,43 @@ fn infer_module_anchor(source_path: Option<&str>) -> Option<String> {
     // Pattern 1: crates/crate-name/src/
     if let Ok(re) = Regex::new(r"(?:^|/)crates/([^/]+)/src/")
         && let Some(caps) = re.captures(path_str)
-            && let Some(m) = caps.get(1) {
-                return Some(format!("mod-{}", m.as_str()));
-            }
+        && let Some(m) = caps.get(1)
+    {
+        return Some(format!("mod-{}", m.as_str()));
+    }
 
     // Pattern 2: src/module-name/ or src/module_name/
     if let Ok(re) = Regex::new(r"(?:^|/)src/([^/]+)")
         && let Some(caps) = re.captures(path_str)
-            && let Some(m) = caps.get(1) {
-                let name = m.as_str();
-                // Skip common non-module directories
-                if !name.eq_ignore_ascii_case("test") && !name.eq_ignore_ascii_case("tests")
-                    && !name.eq_ignore_ascii_case("bin") && !name.eq_ignore_ascii_case("example")
-                    && !name.eq_ignore_ascii_case("examples") && !name.starts_with('.') {
-                    return Some(format!("mod-{}", name));
-                }
-            }
+        && let Some(m) = caps.get(1)
+    {
+        let name = m.as_str();
+        // Skip common non-module directories
+        if !name.eq_ignore_ascii_case("test")
+            && !name.eq_ignore_ascii_case("tests")
+            && !name.eq_ignore_ascii_case("bin")
+            && !name.eq_ignore_ascii_case("example")
+            && !name.eq_ignore_ascii_case("examples")
+            && !name.starts_with('.')
+        {
+            return Some(format!("mod-{}", name));
+        }
+    }
 
     // Pattern 3: lib/module-name/ (Elixir, Ruby, etc.)
     if let Ok(re) = Regex::new(r"(?:^|/)lib/([^/]+)")
         && let Some(caps) = re.captures(path_str)
-            && let Some(m) = caps.get(1) {
-                return Some(format!("mod-{}", m.as_str()));
-            }
+        && let Some(m) = caps.get(1)
+    {
+        return Some(format!("mod-{}", m.as_str()));
+    }
 
     // Pattern 4: Root-level module (e.g., src/lib.rs or src/main.rs -> mod-root)
     if let Ok(re) = Regex::new(r"(?:^|/)src/(?:lib|main)\.rs$")
-        && re.is_match(path_str) {
-            return Some("mod-root".to_string());
-        }
+        && re.is_match(path_str)
+    {
+        return Some("mod-root".to_string());
+    }
 
     None
 }
@@ -191,7 +199,9 @@ pub fn emit_contract_document(doc: &ContractDocument) -> String {
     }
 
     // Auto-link to module doc for source files
-    if let Some(module_anchor) = infer_module_anchor(doc.header_attrs.get("source_file").map(|s| s.as_str())) {
+    if let Some(module_anchor) =
+        infer_module_anchor(doc.header_attrs.get("source_file").map(|s| s.as_str()))
+    {
         writeln!(out).unwrap();
         writeln!(out, "See also: <<{}>>", module_anchor).unwrap();
     }
@@ -252,38 +262,59 @@ struct AdgDocument {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type")]
 enum AdgBlock {
-    Paragraph { text: String },
-    Table { headers: Vec<String>, row_count: usize },
-    Listing { language: Option<String>, lines: usize },
-    Admonition { kind: String, text: String },
-    DescriptionList { item_count: usize },
+    Paragraph {
+        text: String,
+    },
+    Table {
+        headers: Vec<String>,
+        row_count: usize,
+    },
+    Listing {
+        language: Option<String>,
+        lines: usize,
+    },
+    Admonition {
+        kind: String,
+        text: String,
+    },
+    DescriptionList {
+        item_count: usize,
+    },
 }
 
 /// Emit a Document in deterministic ADG format (canonical JSON).
 /// Use this for CI SHA-256 comparison and compact LLM context.
 pub fn emit_adg(doc: &Document) -> Result<String, serde_json::Error> {
-    let blocks: Vec<AdgBlock> = doc.blocks.iter().map(|b| match b {
-        Block::Paragraph(text) => AdgBlock::Paragraph { text: text.clone() },
-        Block::Table(t) => AdgBlock::Table {
-            headers: t.headers.clone(),
-            row_count: t.rows.len(),
-        },
-        Block::Listing { language, code } => AdgBlock::Listing {
-            language: language.clone(),
-            lines: code.lines().count(),
-        },
-        Block::Admonition { kind, text } => AdgBlock::Admonition {
-            kind: format!("{:?}", kind),
-            text: text.clone(),
-        },
-        Block::DescriptionList(items) => AdgBlock::DescriptionList {
-            item_count: items.len(),
-        },
-    }).collect();
+    let blocks: Vec<AdgBlock> = doc
+        .blocks
+        .iter()
+        .map(|b| match b {
+            Block::Paragraph(text) => AdgBlock::Paragraph { text: text.clone() },
+            Block::Table(t) => AdgBlock::Table {
+                headers: t.headers.clone(),
+                row_count: t.rows.len(),
+            },
+            Block::Listing { language, code } => AdgBlock::Listing {
+                language: language.clone(),
+                lines: code.lines().count(),
+            },
+            Block::Admonition { kind, text } => AdgBlock::Admonition {
+                kind: format!("{:?}", kind),
+                text: text.clone(),
+            },
+            Block::DescriptionList(items) => AdgBlock::DescriptionList {
+                item_count: items.len(),
+            },
+        })
+        .collect();
 
     let adoc = AdgDocument {
         anchor: doc.anchor.clone(),
-        title: doc.attributes.get("title").cloned().unwrap_or_else(|| doc.anchor.clone()),
+        title: doc
+            .attributes
+            .get("title")
+            .cloned()
+            .unwrap_or_else(|| doc.anchor.clone()),
         blocks,
     };
 
@@ -533,10 +564,7 @@ fn emit_region_block_md(out: &mut String, block: &RegionBlock) {
 
 /// Template variable expansion for generated content.
 /// Replaces variables like ${crates}, ${commands} with auto-generated content.
-pub fn expand_template_variables(
-    template: &str,
-    vars: &TemplateVars,
-) -> String {
+pub fn expand_template_variables(template: &str, vars: &TemplateVars) -> String {
     let mut result = template.to_string();
 
     // Expand ${crates}
@@ -589,24 +617,72 @@ impl Default for TemplateVars {
     fn default() -> Self {
         Self {
             crates: vec![
-                CrateInfo { name: "aden-core".to_string(), responsibility: "Schema: Document, Block, Edge, Symbol".to_string() },
-                CrateInfo { name: "aden-parse".to_string(), responsibility: "Language routers and AST extraction".to_string() },
-                CrateInfo { name: "aden-emit".to_string(), responsibility: "Deterministic AsciiDoc emitter".to_string() },
-                CrateInfo { name: "aden-graph".to_string(), responsibility: "Referential integrity: DiGraph, cycle detection".to_string() },
-                CrateInfo { name: "aden-asm".to_string(), responsibility: "Context assembly: BFS traversal, token budgeting".to_string() },
-                CrateInfo { name: "aden-heal".to_string(), responsibility: "Drift detection and health scoring".to_string() },
-                CrateInfo { name: "aden-propose".to_string(), responsibility: "Patch generation and proposal lifecycle".to_string() },
-                CrateInfo { name: "aden-cli".to_string(), responsibility: "Binary (aden) with all commands".to_string() },
+                CrateInfo {
+                    name: "aden-core".to_string(),
+                    responsibility: "Schema: Document, Block, Edge, Symbol".to_string(),
+                },
+                CrateInfo {
+                    name: "aden-parse".to_string(),
+                    responsibility: "Language routers and AST extraction".to_string(),
+                },
+                CrateInfo {
+                    name: "aden-emit".to_string(),
+                    responsibility: "Deterministic AsciiDoc emitter".to_string(),
+                },
+                CrateInfo {
+                    name: "aden-graph".to_string(),
+                    responsibility: "Referential integrity: DiGraph, cycle detection".to_string(),
+                },
+                CrateInfo {
+                    name: "aden-asm".to_string(),
+                    responsibility: "Context assembly: BFS traversal, token budgeting".to_string(),
+                },
+                CrateInfo {
+                    name: "aden-heal".to_string(),
+                    responsibility: "Drift detection and health scoring".to_string(),
+                },
+                CrateInfo {
+                    name: "aden-propose".to_string(),
+                    responsibility: "Patch generation and proposal lifecycle".to_string(),
+                },
+                CrateInfo {
+                    name: "aden-cli".to_string(),
+                    responsibility: "Binary (aden) with all commands".to_string(),
+                },
             ],
             commands: vec![
-                CommandInfo { name: "aden gen".to_string(), description: "Parse source and emit contracts".to_string() },
-                CommandInfo { name: "aden check".to_string(), description: "Verify all references resolve".to_string() },
-                CommandInfo { name: "aden heal".to_string(), description: "Scan for drift and propose fixes".to_string() },
-                CommandInfo { name: "aden asm".to_string(), description: "Assemble context prompt".to_string() },
-                CommandInfo { name: "aden query".to_string(), description: "Query the knowledge graph".to_string() },
-                CommandInfo { name: "aden ask".to_string(), description: "Natural language question to graph".to_string() },
-                CommandInfo { name: "aden search".to_string(), description: "Full-text search in contracts".to_string() },
-                CommandInfo { name: "aden ci-check".to_string(), description: "Run all local CI gates".to_string() },
+                CommandInfo {
+                    name: "aden gen".to_string(),
+                    description: "Parse source and emit contracts".to_string(),
+                },
+                CommandInfo {
+                    name: "aden check".to_string(),
+                    description: "Verify all references resolve".to_string(),
+                },
+                CommandInfo {
+                    name: "aden heal".to_string(),
+                    description: "Scan for drift and propose fixes".to_string(),
+                },
+                CommandInfo {
+                    name: "aden asm".to_string(),
+                    description: "Assemble context prompt".to_string(),
+                },
+                CommandInfo {
+                    name: "aden query".to_string(),
+                    description: "Query the knowledge graph".to_string(),
+                },
+                CommandInfo {
+                    name: "aden ask".to_string(),
+                    description: "Natural language question to graph".to_string(),
+                },
+                CommandInfo {
+                    name: "aden search".to_string(),
+                    description: "Full-text search in contracts".to_string(),
+                },
+                CommandInfo {
+                    name: "aden ci-check".to_string(),
+                    description: "Run all local CI gates".to_string(),
+                },
             ],
             modules: vec![],
         }
@@ -618,7 +694,11 @@ impl TemplateVars {
         let mut out = String::new();
         out.push_str("| Crate | Responsibility\n");
         out.push_str("|===]\n");
-        for CrateInfo { name, responsibility } in &self.crates {
+        for CrateInfo {
+            name,
+            responsibility,
+        } in &self.crates
+        {
             out.push_str(&format!("| `{}` | {}\n", name, responsibility));
         }
         out.push_str("|===\n");

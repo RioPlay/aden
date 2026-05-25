@@ -17,7 +17,13 @@ pub fn cmd_new(name: &str, lang: &str, parent: &Path) -> Result<(), Box<dyn std:
         "rust" | "rs" => scaffold_rust(&project_dir, name)?,
         "go" | "golang" => scaffold_go(&project_dir, name)?,
         "ts" | "typescript" | "js" | "javascript" => scaffold_js(&project_dir, name)?,
-        _ => return Err(format!("Language '{}' not yet supported. Try: rust, go, typescript", lang).into()),
+        _ => {
+            return Err(format!(
+                "Language '{}' not yet supported. Try: rust, go, typescript",
+                lang
+            )
+            .into());
+        }
     }
 
     // Run aden init in the new project
@@ -28,7 +34,8 @@ pub fn cmd_new(name: &str, lang: &str, parent: &Path) -> Result<(), Box<dyn std:
     std::fs::create_dir_all(&docs_dir)?;
 
     // Create README with project identity
-    let readme = format!(r###"= {name}
+    let readme = format!(
+        r###"= {name}
 :proj: {name}
 :lang: {lang}
 
@@ -82,7 +89,8 @@ aden ci-check .
 }
 
 fn scaffold_rust(dir: &Path, name: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let cargo_toml = format!(r####"[package]
+    let cargo_toml = format!(
+        r####"[package]
 name = "{name}"
 version = "0.1.0"
 edition = "2024"
@@ -98,7 +106,9 @@ serde = {{ version = "2", features = ["derive"] }}
 [[bin]]
 name = "{name}"
 path = "src/main.rs"
-"####, name = name);
+"####,
+        name = name
+    );
     std::fs::write(dir.join("Cargo.toml"), cargo_toml)?;
 
     let src_dir = dir.join("src");
@@ -113,7 +123,10 @@ path = "src/main.rs"
 }
 
 fn scaffold_go(dir: &Path, _name: &str) -> Result<(), Box<dyn std::error::Error>> {
-    std::fs::write(dir.join("go.mod"), "module example.com/project\n\ngo 1.24\n")?;
+    std::fs::write(
+        dir.join("go.mod"),
+        "module example.com/project\n\ngo 1.24\n",
+    )?;
     let main_go = r##"package main
 
 import "fmt"
@@ -129,7 +142,8 @@ func main() {
 }
 
 fn scaffold_js(dir: &Path, name: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let pkg = format!(r###"{{
+    let pkg = format!(
+        r###"{{
   "name": "{name}",
   "version": "0.1.0",
   "description": "",
@@ -141,10 +155,15 @@ fn scaffold_js(dir: &Path, name: &str) -> Result<(), Box<dyn std::error::Error>>
   "devDependencies": {{
     "typescript": "^5.8"
   }}
-}}"###, name = name);
+}}"###,
+        name = name
+    );
     std::fs::write(dir.join("package.json"), pkg)?;
     std::fs::create_dir_all(dir.join("src"))?;
-    std::fs::write(dir.join("src").join("index.ts"), "console.log('Hello, World!');\n")?;
+    std::fs::write(
+        dir.join("src").join("index.ts"),
+        "console.log('Hello, World!');\n",
+    )?;
     std::fs::write(dir.join("tsconfig.json"), "\n")?;
     std::fs::write(dir.join(".gitignore"), "node_modules/\ndist/\n*.log\n")?;
     Ok(())
@@ -166,23 +185,74 @@ pub fn cmd_init(target: &Path) -> Result<(), Box<dyn std::error::Error>> {
     // Reference templates (user-editable starting points — do NOT put live
     // files like context.adoc / session.adoc here; they are generated below).
     for (name, content) in [
-        ("plan.adoc", include_str!("../../../../.agent/templates/plan.adoc")),
-        ("module.adoc", include_str!("../../../../.agent/templates/module.adoc")),
-        ("aden-guide.adoc", include_str!("../../../../.agent/templates/aden-guide.adoc")),
-        ("style-guide.adoc", include_str!("../../../../.agent/templates/style-guide.adoc")),
-        ("research.adoc", include_str!("../../../../.agent/templates/research.adoc")),
-        ("constraints.adoc", include_str!("../../../../.agent/templates/constraints.adoc")),
-        ("onboarding.adoc", include_str!("../../../../.agent/templates/onboarding.adoc")),
-        ("protocol.adoc", include_str!("../../../../.agent/templates/protocol.adoc")),
-        ("glossary.adoc", include_str!("../../../../.agent/templates/glossary.adoc")),
-        ("policy.adoc", include_str!("../../../../.agent/templates/policy.adoc")),
-        ("kickoff.adoc", include_str!("../../../../.agent/templates/kickoff.adoc")),
-        ("design.adoc", include_str!("../../../../.agent/templates/design.adoc")),
-        ("spec.adoc", include_str!("../../../../.agent/templates/spec.adoc")),
-        ("task.adoc", include_str!("../../../../.agent/templates/task.adoc")),
-        ("adr.adoc", include_str!("../../../../.agent/templates/adr.adoc")),
-        ("runbook.adoc", include_str!("../../../../.agent/templates/runbook.adoc")),
-        ("retrospective.adoc", include_str!("../../../../.agent/templates/retrospective.adoc")),
+        (
+            "plan.adoc",
+            include_str!("../../../../.agent/templates/plan.adoc"),
+        ),
+        (
+            "module.adoc",
+            include_str!("../../../../.agent/templates/module.adoc"),
+        ),
+        (
+            "aden-guide.adoc",
+            include_str!("../../../../.agent/templates/aden-guide.adoc"),
+        ),
+        (
+            "style-guide.adoc",
+            include_str!("../../../../.agent/templates/style-guide.adoc"),
+        ),
+        (
+            "research.adoc",
+            include_str!("../../../../.agent/templates/research.adoc"),
+        ),
+        (
+            "constraints.adoc",
+            include_str!("../../../../.agent/templates/constraints.adoc"),
+        ),
+        (
+            "onboarding.adoc",
+            include_str!("../../../../.agent/templates/onboarding.adoc"),
+        ),
+        (
+            "protocol.adoc",
+            include_str!("../../../../.agent/templates/protocol.adoc"),
+        ),
+        (
+            "glossary.adoc",
+            include_str!("../../../../.agent/templates/glossary.adoc"),
+        ),
+        (
+            "policy.adoc",
+            include_str!("../../../../.agent/templates/policy.adoc"),
+        ),
+        (
+            "kickoff.adoc",
+            include_str!("../../../../.agent/templates/kickoff.adoc"),
+        ),
+        (
+            "design.adoc",
+            include_str!("../../../../.agent/templates/design.adoc"),
+        ),
+        (
+            "spec.adoc",
+            include_str!("../../../../.agent/templates/spec.adoc"),
+        ),
+        (
+            "task.adoc",
+            include_str!("../../../../.agent/templates/task.adoc"),
+        ),
+        (
+            "adr.adoc",
+            include_str!("../../../../.agent/templates/adr.adoc"),
+        ),
+        (
+            "runbook.adoc",
+            include_str!("../../../../.agent/templates/runbook.adoc"),
+        ),
+        (
+            "retrospective.adoc",
+            include_str!("../../../../.agent/templates/retrospective.adoc"),
+        ),
     ] {
         std::fs::write(templates_dir.join(name), content)?;
     }
@@ -193,7 +263,8 @@ pub fn cmd_init(target: &Path) -> Result<(), Box<dyn std::error::Error>> {
     )?;
 
     // Generate live context.adoc and session.adoc from templates
-    let project_name = target.file_name()
+    let project_name = target
+        .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("unknown");
 
@@ -336,7 +407,10 @@ Always verify that third-party licenses are compatible with your project's licen
 
     println!("Initialized .agent/ in {}", target.display());
     println!("Generated .adenignore with security-first defaults.");
-    println!("Generated {} template files.", templates_dir.read_dir()?.count());
+    println!(
+        "Generated {} template files.",
+        templates_dir.read_dir()?.count()
+    );
     println!("Next: AI agents should read .agent/onboarding.adoc before starting work.");
     Ok(())
 }

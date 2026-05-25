@@ -122,17 +122,25 @@ fn compute_content_hash(dir: &Path) -> Result<String, std::io::Error> {
                 }
             }
         } else if path.is_dir()
-            && let Ok(sub) = walk_adoc_files(&path) {
-                paths.extend(sub);
+            && let Ok(sub) = walk_adoc_files(&path)
+        {
+            paths.extend(sub);
         }
     }
     paths.sort();
     for p in &paths {
         hasher.update(p.to_string_lossy().as_bytes());
         if let Ok(meta) = std::fs::metadata(p)
-            && let Ok(mtime) = meta.modified() {
-                hasher.update(&mtime.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos().to_le_bytes());
-            }
+            && let Ok(mtime) = meta.modified()
+        {
+            hasher.update(
+                &mtime
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos()
+                    .to_le_bytes(),
+            );
+        }
     }
     Ok(hasher.finalize().to_hex().to_string())
 }
@@ -145,9 +153,10 @@ fn walk_adoc_files(dir: &Path) -> Result<Vec<PathBuf>, std::io::Error> {
         if path.is_dir() {
             paths.extend(walk_adoc_files(&path)?);
         } else if let Some(ext) = path.extension().and_then(|e| e.to_str())
-            && (ext == "adoc" || ext == "aden") {
-                paths.push(path);
-            }
+            && (ext == "adoc" || ext == "aden")
+        {
+            paths.push(path);
+        }
     }
     Ok(paths)
 }
@@ -170,7 +179,8 @@ pub fn try_load_at_ref(path: &Path, git_ref: &str) -> Option<AdenGraph> {
         return None;
     }
 
-    let indexed: IndexedGraph = serde_json::from_str(&std::fs::read_to_string(&ref_cache).ok()?).ok()?;
+    let indexed: IndexedGraph =
+        serde_json::from_str(&std::fs::read_to_string(&ref_cache).ok()?).ok()?;
     Some(build_graph_from_indexed(indexed))
 }
 
@@ -192,7 +202,8 @@ pub fn try_load(path: &Path) -> Option<AdenGraph> {
         return None;
     }
 
-    let indexed: IndexedGraph = serde_json::from_str(&std::fs::read_to_string(&graph_path).ok()?).ok()?;
+    let indexed: IndexedGraph =
+        serde_json::from_str(&std::fs::read_to_string(&graph_path).ok()?).ok()?;
     Some(build_graph_from_indexed(indexed))
 }
 
@@ -211,11 +222,14 @@ pub fn save(graph: &AdenGraph, path: &Path) -> Result<(), Box<dyn std::error::Er
     for node_idx in graph.graph.node_indices() {
         let node = &graph.graph[node_idx];
         anchor_count += 1;
-        anchors.insert(node.anchor.clone(), AnchorEntry {
-            anchor: node.anchor.clone(),
-            doc: node.doc.clone(),
-            source_path: node.source_path.clone(),
-        });
+        anchors.insert(
+            node.anchor.clone(),
+            AnchorEntry {
+                anchor: node.anchor.clone(),
+                doc: node.doc.clone(),
+                source_path: node.source_path.clone(),
+            },
+        );
     }
 
     for edge_idx in graph.graph.edge_indices() {
@@ -293,17 +307,19 @@ fn build_graph_from_indexed(indexed: IndexedGraph) -> AdenGraph {
         let node = DocumentNode {
             anchor: entry.anchor.clone(),
             doc: entry.doc,
-            parsed: parse_file(&entry.source_path).unwrap_or_else(|_| crate::parser::ParsedDocument {
-                source_path: entry.source_path.to_string_lossy().to_string(),
-                attributes: HashMap::new(),
-                anchors: vec![entry.anchor.clone()],
-                refs: Vec::new(),
-                includes: Vec::new(),
-                edges: Vec::new(),
-                conditional_stack: Vec::new(),
-                raw_content: String::new(),
-                semantic_diffs: Vec::new(),
-                blocks: Vec::new(),
+            parsed: parse_file(&entry.source_path).unwrap_or_else(|_| {
+                crate::parser::ParsedDocument {
+                    source_path: entry.source_path.to_string_lossy().to_string(),
+                    attributes: HashMap::new(),
+                    anchors: vec![entry.anchor.clone()],
+                    refs: Vec::new(),
+                    includes: Vec::new(),
+                    edges: Vec::new(),
+                    conditional_stack: Vec::new(),
+                    raw_content: String::new(),
+                    semantic_diffs: Vec::new(),
+                    blocks: Vec::new(),
+                }
             }),
             source_path: entry.source_path.clone(),
         };
@@ -314,7 +330,10 @@ fn build_graph_from_indexed(indexed: IndexedGraph) -> AdenGraph {
 
     // Second pass: insert edges
     for ce in indexed.edges {
-        if let (Some(&src), Some(&tgt)) = (anchor_to_index.get(&ce.source), anchor_to_index.get(&ce.target)) {
+        if let (Some(&src), Some(&tgt)) = (
+            anchor_to_index.get(&ce.source),
+            anchor_to_index.get(&ce.target),
+        ) {
             graph.add_edge(src, tgt, ce.edge_type);
         }
     }

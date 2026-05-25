@@ -12,20 +12,20 @@
 //! `tree-sitter-language-pack` to cover 305+ languages with symbol
 //! extraction only (no call resolution).
 
-mod extractor;
 pub mod c_resolver;
 pub mod csharp_resolver;
+mod extractor;
 pub mod generic;
 pub mod go_resolver;
 pub mod java_resolver;
 pub mod kotlin_resolver;
-mod powershell;
 pub mod php_resolver;
+mod powershell;
 pub mod python_resolver;
+pub mod router;
+pub mod ruby_resolver;
 #[cfg(feature = "rust-deep")]
 pub mod rust;
-pub mod ruby_resolver;
-pub mod router;
 pub mod tree_sitter_common;
 pub mod typescript_resolver;
 
@@ -49,10 +49,7 @@ fn get_router() -> &'static LanguageRouter {
 
 /// Detect language from file extension and parse into Documents.
 pub fn parse_file(path: &Path, source: &str) -> Result<Vec<Document>> {
-    let ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("");
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
 
     // PowerShell stays on the JSON bridge for now.
     if matches!(ext, "ps1" | "psm1" | "psd1") {
@@ -72,7 +69,11 @@ const MAX_SCAN_DEPTH: usize = 20;
 const MAX_FILES_SCANNED: usize = 5_000;
 const MAX_FILE_SIZE: u64 = 1024 * 1024; // 1 MB
 
-fn parse_directory_inner(dir: &Path, depth: usize, file_count: &mut usize) -> Result<Vec<Document>> {
+fn parse_directory_inner(
+    dir: &Path,
+    depth: usize,
+    file_count: &mut usize,
+) -> Result<Vec<Document>> {
     if depth > MAX_SCAN_DEPTH {
         return Ok(Vec::new());
     }
@@ -97,15 +98,16 @@ fn parse_directory_inner(dir: &Path, depth: usize, file_count: &mut usize) -> Re
             }
             // Skip files too large to avoid DoS
             if let Ok(meta) = std::fs::metadata(&path)
-                && meta.len() > MAX_FILE_SIZE {
-                    eprintln!(
-                        "[aden] WARNING: Skipping {} ({} bytes > {} MiB limit). Consider using 'aden gen <file>' instead.",
-                        path.display(),
-                        meta.len(),
-                        MAX_FILE_SIZE / (1024 * 1024)
-                    );
-                    continue;
-                }
+                && meta.len() > MAX_FILE_SIZE
+            {
+                eprintln!(
+                    "[aden] WARNING: Skipping {} ({} bytes > {} MiB limit). Consider using 'aden gen <file>' instead.",
+                    path.display(),
+                    meta.len(),
+                    MAX_FILE_SIZE / (1024 * 1024)
+                );
+                continue;
+            }
             let source = match std::fs::read_to_string(&path) {
                 Ok(s) => s,
                 Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {

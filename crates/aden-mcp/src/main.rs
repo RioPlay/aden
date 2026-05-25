@@ -13,7 +13,8 @@ use std::path::PathBuf;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    let project_dir = args.get(1)
+    let project_dir = args
+        .get(1)
         .map(PathBuf::from)
         .unwrap_or_else(|| env::current_dir().expect("cannot get current directory"));
 
