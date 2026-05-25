@@ -39,7 +39,13 @@ pub(crate) fn build_code_attributes(
     span: Option<&aden_core::SourceSpan>,
 ) -> std::collections::HashMap<String, String> {
     let mut attrs = std::collections::HashMap::new();
-    attrs.insert("source_hash".to_string(), aden_core::stable_hash(source.as_bytes()));
+
+    let hash_source = if let Some(path) = source_file {
+        std::fs::read_to_string(path).unwrap_or_else(|_| source.to_string())
+    } else {
+        source.to_string()
+    };
+    attrs.insert("source_hash".to_string(), aden_core::stable_hash(hash_source.as_bytes()));
     attrs.insert("last-verified".to_string(), aden_core::rfc3339_now());
     attrs.insert("node-type".to_string(), node_type.to_string());
     if let Some(path) = source_file {

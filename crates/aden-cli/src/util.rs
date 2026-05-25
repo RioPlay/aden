@@ -202,6 +202,7 @@ pub fn emit_docs(
     mut docs: Vec<aden_core::Document>,
     out_dir: Option<&Path>,
     _source: &Path,
+    format: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if docs.is_empty() {
         return Ok(());
@@ -211,14 +212,25 @@ pub fn emit_docs(
         sanitize_source_file(doc);
     }
 
-    let output = aden_emit::emit(&docs);
+    let is_markdown = format.eq_ignore_ascii_case("md");
+    let output = if is_markdown {
+        aden_emit::emit_md(&docs)
+    } else {
+        aden_emit::emit(&docs)
+    };
 
     if let Some(out) = out_dir {
         std::fs::create_dir_all(out)?;
         for doc in &docs {
-            let file_name = format!("{}.adoc", sanitize_anchor(&doc.anchor));
+            let ext = if is_markdown { "md" } else { "adoc" };
+            let file_name = format!("{}.{}", sanitize_anchor(&doc.anchor), ext);
             let file_path = out.join(&file_name);
-            std::fs::write(&file_path, aden_emit::emit_document(doc))?;
+            let content = if is_markdown {
+                aden_emit::emit_document_md(doc)
+            } else {
+                aden_emit::emit_document(doc)
+            };
+            std::fs::write(&file_path, content)?;
             println!("Emitted {}", file_path.display());
         }
     } else {

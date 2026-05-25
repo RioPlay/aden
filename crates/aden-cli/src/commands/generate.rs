@@ -36,6 +36,7 @@ pub fn cmd_gen(
     auto: bool,
     merge: bool,
     propose: bool,
+    format: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if path.is_file() {
         let source = std::fs::read_to_string(path)?;
@@ -50,7 +51,7 @@ pub fn cmd_gen(
         if merge || propose {
             return cmd_gen_contract(path, &source, docs, Some(&effective_out), propose);
         }
-        return emit_docs(docs, Some(&effective_out), path);
+        return emit_docs(docs, Some(&effective_out), path, format);
     }
 
     if !path.is_dir() {
@@ -181,7 +182,7 @@ pub fn cmd_gen(
     } else {
         // ── LEGACY MODE: flat parse_directory output ────────────────────────
         let docs = aden_parse::parse_directory(path)?;
-        return emit_docs(docs, out_dir, path);
+        return emit_docs(docs, out_dir, path, format);
     }
 
     // Invalidate caches after generating contracts so next query rebuilds

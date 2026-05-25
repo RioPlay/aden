@@ -1,7 +1,7 @@
 :proj: unknown
 :session: active
 
-[[agent-session]]
+[[agent-session-template-src]]
 = Agent Session Log
 
 This file is the canonical shared memory for parallel agent sessions.
@@ -33,7 +33,3 @@ Confidence: High (>0.9), Medium (0.7–0.9), Low (<0.7 — include blocker in ta
 
 . <<agent-context>>
 . <<agent-onboarding>>
-
-|2026-05-25T16:41:04Z |test-agent |test task |- |started
-
-|2026-05-25T16:41:19Z |test2 |another task |src/test.rs |completed

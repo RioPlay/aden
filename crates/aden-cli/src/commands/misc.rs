@@ -375,6 +375,10 @@ pub fn cmd_ci_check(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         run_project_tests(path)
     });
 
+    gate!("aden lint", {
+        crate::commands::cmd_lint(path, "Error", false, false)
+    });
+
     gate!("secret scan", {
         use aden_core::filter::AdenFilter;
         use regex::Regex;
@@ -816,6 +820,9 @@ pub fn cmd_review_since(path: &Path, budget: usize, since: &str) -> Result<(), B
                 aden_heal::DriftEvent::OrphanAnchor { contract_path, .. } => contract_path,
                 aden_heal::DriftEvent::BrokenReference { contract_path, .. } => contract_path,
                 aden_heal::DriftEvent::DeadLink { contract_path, .. } => contract_path,
+                aden_heal::DriftEvent::MarkdownDrift { md_path, .. } => md_path,
+                aden_heal::DriftEvent::StaleMarkdown { md_path, .. } => md_path,
+                aden_heal::DriftEvent::MissingMarkdownTemplate { md_path, .. } => md_path,
             };
             files.iter().any(|f| target.contains(f))
         })

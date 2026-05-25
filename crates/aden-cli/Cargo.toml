@@ -27,6 +27,7 @@ regex = "1.11"
 dirs = "6"
 walkdir = "2"
 chrono = "0.4"
+serde_yaml = "0.9"
 
 [features]
 default = ["watch"]

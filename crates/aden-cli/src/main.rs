@@ -25,6 +25,12 @@ use std::path::PathBuf;
 #[derive(Parser)]
 #[command(name = "aden", version = "0.1.0", about = "Aden — A Dense Referential Context Compiler")]
 struct Cli {
+    #[arg(long, global = true, help = "Remove all limits (show full results)")]
+    unlimited: bool,
+    #[arg(short, long, global = true, help = "Output JSON where supported")]
+    json: bool,
+    #[arg(short, long, global = true, help = "Verbose output")]
+    verbose: bool,
     #[command(subcommand)]
     command: Commands,
 }
@@ -68,7 +74,7 @@ enum Commands {
     /// Parse source file(s) and emit .aden / .adoc contracts
     Gen {
         #[arg(value_name = "PATH", value_hint = ValueHint::AnyPath)]
-        path: PathBuf,
+        paths: Vec<PathBuf>,
         #[arg(long, value_name = "DIR", value_hint = ValueHint::DirPath, help = "Output directory (default: ./contracts/)")]
         out_dir: Option<PathBuf>,
         #[arg(long, help = "Auto-detect existing contract structure (contracts/crates/<name>/src/)")]
@@ -79,6 +85,8 @@ enum Commands {
         merge: bool,
         #[arg(long, help = "Dry-run: output MergeActions without writing files")]
         propose: bool,
+        #[arg(long, value_name = "FORMAT", default_value = "adoc", help = "Output format: adoc (AsciiDoc), md (Markdown)")]
+        format: String,
     },
     /// Verify all <<refs>> resolve to existing [[anchors]]
     Check {
@@ -87,14 +95,27 @@ enum Commands {
         #[arg(long, value_name = "SEVERITY", default_value = "Warn", help = "Minimum severity to fail: Suggest, Warn, Forbid")]
         severity: String,
     },
-    /// Output the local graph neighborhood as a debug report
-    Graph {
-        #[arg(value_name = "ANCHOR")]
-        from: String,
-        #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
+    /// Lint source files using tree-sitter AST analysis
+    Lint {
+        #[arg(value_name = "PATH", default_value = ".", value_hint = ValueHint::AnyPath)]
         path: PathBuf,
-        #[arg(long, value_name = "N", default_value = "3")]
-        depth: usize,
+        #[arg(long, value_name = "SEVERITY", default_value = "Warn", help = "Minimum severity to report: Suggest, Warn, Error")]
+        severity: String,
+        #[arg(long, help = "Fix issues where possible")]
+        fix: bool,
+        #[arg(long, help = "Output JSON format")]
+        json: bool,
+    },
+    /// Discover and run tests across all languages
+    Test {
+        #[arg(value_name = "PATH", default_value = ".", value_hint = ValueHint::AnyPath)]
+        path: PathBuf,
+        #[arg(long, value_name = "SCOPE", help = "Test scope: unit, integration, all")]
+        scope: Option<String>,
+        #[arg(long, help = "Run only these tests (filter)")]
+        filter: Option<String>,
+        #[arg(long, help = "Don't run tests, only list them")]
+        list: bool,
     },
     /// Assemble a context prompt from the knowledge graph
     Asm {
@@ -127,6 +148,8 @@ enum Commands {
         backlinks: Option<String>,
         #[arg(long, value_name = "ANCHOR")]
         impact: Option<String>,
+        #[arg(long, value_name = "FORMAT", default_value = "json", help = "Output format: json, table")]
+        format: String,
     },
     /// Execute an Aden Query (.adq) script
     QueryAdq {
@@ -246,6 +269,11 @@ enum Commands {
         #[arg(long, value_name = "FILE", help = "Write output to file instead of stdout")]
         out: Option<PathBuf>,
     },
+    /// Multi-repository workspace management
+    Federation {
+        #[command(subcommand)]
+        action: FederationAction,
+    },
     /// OWASP-style security audit: scan source for vulnerabilities
     Audit {
         #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
@@ -304,25 +332,62 @@ enum McpAction {
     },
     /// List supported platforms and their status
     List,
+    /// Start HTTP server for CI/agent integration
+    Serve {
+        #[arg(long, value_name = "PORT", default_value = "3030")]
+        port: u16,
+        #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
+        path: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
+enum FederationAction {
+    /// List repositories in the workspace
+    List,
+    /// Add a repository to the workspace
+    Add {
+        #[arg(value_name = "PATH")]
+        path: PathBuf,
+        #[arg(long, value_name = "NAME", help = "Friendly name for the repository")]
+        name: Option<String>,
+    },
+    /// Remove a repository from the workspace
+    Remove {
+        #[arg(value_name = "NAME")]
+        name: String,
+    },
+    /// Show workspace configuration
+    Config,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
+    let _verbose = cli.verbose;
+    let _unlimited = cli.unlimited;
+    let _global_json = cli.json;
+
     match cli.command {
         Commands::Init { path } => commands::cmd_init(&path),
-        Commands::Gen { path, out_dir, detect_out_dir, auto, merge, propose } => {
-            commands::cmd_gen(&path, out_dir.as_deref(), detect_out_dir, auto, merge, propose)
+        Commands::Gen { paths, out_dir, detect_out_dir, auto, merge, propose, format } => {
+            let effective_path = if paths.is_empty() {
+                std::path::PathBuf::from(".")
+            } else {
+                paths[0].clone()
+            };
+            commands::cmd_gen(&effective_path, out_dir.as_deref(), detect_out_dir, auto, merge, propose, &format)
         }
         Commands::Check { path, severity } => commands::cmd_check(&path, &severity),
-        Commands::Graph { from, depth, path } => commands::cmd_graph(&path, &from, depth),
+        Commands::Lint { path, severity, fix, json } => commands::cmd_lint(&path, &severity, fix, json),
+        Commands::Test { path, scope, filter, list } => commands::cmd_test(&path, scope.as_deref(), filter.as_deref(), list),
         Commands::Asm { from, depth, budget, edge_types, out, path, format: asm_format } => {
             let types = edge_types
                 .map(|s| util::parse_edge_types(&s))
                 .unwrap_or_default();
             commands::cmd_asm(&path, &from, depth, budget, types, out.as_deref(), &asm_format)
         }
-        Commands::Query { from, edge_type, depth, backlinks, impact, path } => {
-            commands::cmd_query(&path, from.as_deref(), edge_type.as_deref(), depth, backlinks.as_deref(), impact.as_deref())
+        Commands::Query { from, edge_type, depth, backlinks, impact, format, path } => {
+            commands::cmd_query(&path, from.as_deref(), edge_type.as_deref(), depth, backlinks.as_deref(), impact.as_deref(), &format)
         }
         Commands::QueryAdq { script, path } => {
             commands::cmd_query_adq(&path, &script)
@@ -330,13 +395,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Ask { question, from, budget, model, path } => {
             commands::cmd_ask(&path, &question, from.as_deref(), budget, model.as_deref())
         }
-        Commands::Search { query, path, limit } => commands::cmd_search(&path, &query, limit),
+        Commands::Search { query, path, limit } => {
+            let effective_limit = if cli.unlimited { usize::MAX } else { limit };
+            commands::cmd_search(&path, &query, effective_limit)
+        }
         Commands::List { filter, verbose, limit, unlimited, path } => {
-            let effective_limit = if unlimited { usize::MAX } else { limit };
+            let effective_limit = if unlimited || cli.unlimited { usize::MAX } else { limit };
             commands::cmd_list(&path, filter.as_deref(), verbose, effective_limit)
         }
         Commands::Locate { symbol, caller_of, format, path, limit } => {
-            commands::cmd_locate(&path, symbol.as_deref(), caller_of.as_deref(), &format, limit)
+            let effective_limit = if cli.unlimited { usize::MAX } else { limit };
+            commands::cmd_locate(&path, symbol.as_deref(), caller_of.as_deref(), &format, effective_limit)
         }
         #[cfg(feature = "watch")]
         Commands::Watch { path } => commands::cmd_watch(&path),
@@ -367,6 +436,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             commands::cmd_session(&path, &agent_id, &task, files.as_deref(), status.as_deref().unwrap_or("in_progress"))
         }
         Commands::Licenses { path, out } => commands::cmd_licenses(&path, out.as_deref()),
+        Commands::Federation { action } => commands::cmd_federation(&action),
         Commands::Audit { path, lang, format, strict } => {
             commands::cmd_audit(&path, lang.as_deref(), &format, strict)
         }
@@ -385,6 +455,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 mcp::run_uninstall(&platforms, all, dry_run)
             }
             McpAction::List => mcp::run_list(),
+            McpAction::Serve { port, path } => mcp::run_http_server(&path, port),
         },
         Commands::Emergency { reason, ttl, path } => {
             commands::cmd_emergency(&path, &reason, &ttl)

@@ -31,17 +31,40 @@ Run these from the project root.
 aden ask --from <anchor> "What breaks if I change X?"
 aden graph --depth 2 <anchor>
 aden locate <symbol>
+aden query --backlinks <anchor>  # Find what references this anchor
 ```
 
 ### After writing or modifying code
 ```bash
 aden gen <file>          # Generate/update contract for modified source
+aden gen <file> --format md    # Generate Markdown instead of AsciiDoc
 aden check .             # Validate all <<refs>> resolve
+```
+
+### Linting and Testing
+```bash
+aden lint .              # Universal linter (Rust, Python, Go, TS, Java, etc.)
+aden lint . --severity error  # Errors only
+aden lint . --json      # JSON output for CI
+aden test .             # Discover and run tests across all languages
+aden test . --list      # List tests without running
+```
+
+### Multi-repository Management
+```bash
+aden federation list     # List repositories in workspace
+aden federation add <path>  # Add repository to workspace
+aden federation remove <name>  # Remove repository
+```
+
+### HTTP Server (for CI/agents)
+```bash
+aden mcp serve --port 3030  # Start HTTP server for CI integration
 ```
 
 ### Before every commit
 ```bash
-aden ci-check .          # Run all local gates (check, heal, tests)
+aden ci-check .          # Run all local gates (check, heal, lint, tests, audit)
 ```
 
 ## Working with `.adoc` Files

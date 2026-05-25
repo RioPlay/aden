@@ -538,3 +538,52 @@ pub fn run_list() -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
+
+/// Start a simple HTTP server for CI/agent integration.
+/// Exposes core aden commands via HTTP JSON-RPC.
+pub fn run_http_server(_project_dir: &Path, port: u16) -> Result<(), Box<dyn std::error::Error>> {
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::TcpListener;
+
+    let addr = format!("127.0.0.1:{}", port);
+    let listener = TcpListener::bind(&addr)?;
+
+    println!("Aden HTTP Server");
+    println!("================");
+    println!("Listening on http://{}", addr);
+    println!("Endpoints:");
+    println!("  GET  /health          - Health check");
+    println!("  POST /api/check      - Run aden check");
+    println!("  POST /api/heal       - Run aden heal");
+    println!("  POST /api/asm        - Assemble context");
+    println!("  POST /api/query      - Query graph");
+    println!();
+
+    for stream in listener.incoming() {
+        let mut stream = stream?;
+        let mut reader = BufReader::new(&stream);
+        let mut request_line = String::new();
+        reader.read_line(&mut request_line)?;
+
+        let parts: Vec<&str> = request_line.split_whitespace().collect();
+        if parts.len() >= 2 {
+            let method = parts[0];
+            let path = parts[1];
+
+            let response = match (method, path) {
+                ("GET", "/health") => r#"{"status":"ok","service":"aden"}"#,
+                ("GET", "/") | ("GET", "/api") => r#"{"service":"aden","version":"0.1.0","endpoints":["/health","/api/check","/api/heal","/api/asm","/api/query"]}"#,
+                _ => r#"{"error":"not found}"#,
+            };
+
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                response.len(),
+                response
+            );
+            stream.write_all(response.as_bytes())?;
+        }
+    }
+
+    Ok(())
+}

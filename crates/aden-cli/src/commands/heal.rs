@@ -40,6 +40,9 @@ pub fn cmd_heal_scan_since(path: &Path, propose: bool, since: &str) -> Result<()
                 aden_heal::DriftEvent::OrphanAnchor { contract_path, .. } => contract_path,
                 aden_heal::DriftEvent::BrokenReference { contract_path, .. } => contract_path,
                 aden_heal::DriftEvent::DeadLink { contract_path, .. } => contract_path,
+                aden_heal::DriftEvent::MarkdownDrift { md_path, .. } => md_path,
+                aden_heal::DriftEvent::StaleMarkdown { md_path, .. } => md_path,
+                aden_heal::DriftEvent::MissingMarkdownTemplate { md_path, .. } => md_path,
             };
             files.iter().any(|f| target.contains(f))
         })
@@ -131,6 +134,9 @@ pub fn cmd_heal_scan(path: &Path, propose: bool, fix: bool, gc: bool) -> Result<
                             aden_heal::DriftEvent::BrokenReference { contract_path: _, ref_anchor, .. } => {
                                 Some(format!("  Hint: aden search {} to find correct anchor", ref_anchor))
                             }
+                            aden_heal::DriftEvent::StaleMarkdown { md_path: _, .. } => {
+                                Some(format!("  Hint: aden gen . --format md --out-dir . to regenerate markdown", ))
+                            }
                             _ => None,
                         };
 
@@ -156,6 +162,8 @@ pub fn cmd_heal_scan(path: &Path, propose: bool, fix: bool, gc: bool) -> Result<
                         aden_heal::DriftEvent::StaleHash { .. } => 0.99,
                         aden_heal::DriftEvent::MissingContract { .. } => 0.85,
                         aden_heal::DriftEvent::SignatureMismatch { .. } => 0.90,
+                        aden_heal::DriftEvent::StaleMarkdown { .. } => 0.80,
+                        aden_heal::DriftEvent::MarkdownDrift { .. } => 0.75,
                         _ => 0.0,
                     };
 
@@ -458,6 +466,29 @@ pub fn generate_proposal(
                 id,
                 target_path: target,
                 drift_type: "BrokenReference".to_string(),
+                confidence,
+                status: ProposalStatus::PendingReview,
+                rationale,
+                patch_asciidoc: patch,
+            })
+        }
+        aden_heal::DriftEvent::StaleMarkdown { md_path, source_files_changed } => {
+            confidence = 0.80;
+            writeln!(rationale, "Stale markdown file detected.").unwrap();
+            writeln!(rationale, "Markdown: {}", md_path).unwrap();
+            writeln!(rationale, "Source files changed since markdown was updated:").unwrap();
+            for f in source_files_changed {
+                writeln!(rationale, "  - {}", f).unwrap();
+            }
+            writeln!(rationale, "Run 'aden gen . --format md' to regenerate.",).unwrap();
+
+            target = PathBuf::from(md_path);
+            writeln!(patch, "# Regenerate with: aden gen . --format md").unwrap();
+
+            Ok(Proposal {
+                id,
+                target_path: target,
+                drift_type: "StaleMarkdown".to_string(),
                 confidence,
                 status: ProposalStatus::PendingReview,
                 rationale,

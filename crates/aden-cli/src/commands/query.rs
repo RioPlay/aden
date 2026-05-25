@@ -50,35 +50,7 @@ pub fn cmd_check(path: &Path, severity: &str) -> Result<(), Box<dyn std::error::
     Ok(())
 }
 
-pub fn cmd_graph(path: &Path, from: &str, depth: usize) -> Result<(), Box<dyn std::error::Error>> {
-    if !path.is_dir() {
-        return Err("graph requires a directory path".into());
-    }
 
-    let graph = aden_graph::cache::build_from_directory_cached(path)?;
-    let start_idx = graph.get_index(from).ok_or_else(|| format!("Anchor '{}' not found. Run 'aden list .' to see available anchors.", from))?;
-
-    println!("Graph neighborhood from anchor '{}' (depth <= {})", from, depth);
-    println!("| Anchor | Depth | |\n|=== |");
-
-    let mut visited = std::collections::HashSet::new();
-    let mut queue = std::collections::VecDeque::new();
-    queue.push_back((start_idx, 0usize));
-
-    while let Some((node, d)) = queue.pop_front() {
-        if visited.contains(&node) || d > depth {
-            continue;
-        }
-        visited.insert(node);
-        println!("| {} | {} |", graph.graph[node].anchor, d);
-        for neighbor in graph.graph.neighbors_directed(node, Direction::Outgoing) {
-            if !visited.contains(&neighbor) {
-                queue.push_back((neighbor, d + 1));
-            }
-        }
-    }
-    Ok(())
-}
 
 pub fn cmd_asm(
     path: &Path,
@@ -126,6 +98,7 @@ pub fn cmd_query(
     depth: usize,
     backlinks: Option<&str>,
     impact: Option<&str>,
+    format: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if !path.is_dir() {
         return Err("query requires a directory path".into());
@@ -215,7 +188,17 @@ pub fn cmd_query(
         }
     }
 
-    println!("{}", serde_json::to_string_pretty(&results)?);
+    match format {
+        "table" => {
+            println!("| Anchor | Depth | Node Type |\n|=== |");
+            for r in results {
+                println!("| {} | {} | {} |", r["anchor"], r["depth"], r["node_type"]);
+            }
+        }
+        _ => {
+            println!("{}", serde_json::to_string_pretty(&results)?);
+        }
+    }
     Ok(())
 }
 

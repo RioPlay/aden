@@ -127,6 +127,9 @@ impl Scanner {
             .flat_map(|(_, pd)| pd.anchors.iter().cloned())
             .collect();
 
+        // Check for stale cache guard - warn if contract-base hashes don't match current contracts
+        self.validate_cache_integrity(&contract_entries);
+
         // c. StaleHash - check source_hash against original source
         for (path, parsed) in &contract_entries {
             if let Some(expected_hash) = parsed.attributes.get("source_hash")
@@ -217,6 +220,9 @@ impl Scanner {
             }
         }
 
+        // i. Markdown Drift - scan for stale .md files
+        events.extend(self.scan_markdown_drift()?);
+
         // Persist cache for next incremental scan
         if let Ok(json) = serde_json::to_string_pretty(&new_cache) {
             let _ = std::fs::create_dir_all(self.cache_path.parent().unwrap_or(Path::new(".")));
@@ -231,6 +237,52 @@ impl Scanner {
             .and_then(|n| n.to_str())
             .map(|n| matches!(n, "target" | ".git" | "node_modules" | ".cargo" | ".rustup"))
             .unwrap_or(false)
+    }
+
+    fn scan_markdown_drift(&self) -> Result<Vec<DriftEvent>, HealError> {
+        let mut events = Vec::new();
+
+        // Known markdown files that should be kept in sync
+        let known_md_files = ["AGENTS.md", "README.md", "CONTRIBUTING.md", "NOTICE.md", "MAINTAINERS.md"];
+
+        for entry in std::fs::read_dir(&self.repo_root)? {
+            let entry = entry?;
+            let path = entry.path();
+
+            if !path.is_file() {
+                continue;
+            }
+
+            let file_name = path.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("");
+
+            if !known_md_files.contains(&file_name) {
+                continue;
+            }
+
+            // Check if source files have been modified since markdown was last modified
+            let md_mtime = Self::mtime(&path);
+
+            // Collect source files modified after markdown
+            let mut changed_sources = Vec::new();
+            self.collect_source_files(&self.repo_root, &mut changed_sources)?;
+
+            let stale_sources: Vec<String> = changed_sources
+                .iter()
+                .filter(|s| Self::mtime(s) > md_mtime)
+                .map(|s| s.to_string_lossy().to_string())
+                .collect();
+
+            if !stale_sources.is_empty() {
+                events.push(DriftEvent::StaleMarkdown {
+                    md_path: path.to_string_lossy().to_string(),
+                    source_files_changed: stale_sources,
+                });
+            }
+        }
+
+        Ok(events)
     }
 
     fn collect_source_files(&self, dir: &Path, files: &mut Vec<PathBuf>) -> Result<(), HealError> {
@@ -321,6 +373,47 @@ impl Scanner {
         }
 
         None
+    }
+
+    fn validate_cache_integrity(
+        &self,
+        contract_entries: &[(PathBuf, aden_graph::parser::ParsedDocument)],
+    ) {
+        let base_dir = self.repo_root.join(".aden").join("contract-base");
+        if !base_dir.exists() {
+            return;
+        }
+
+        let mut stale_bases = Vec::new();
+        for entry in std::fs::read_dir(&base_dir).into_iter().flatten() {
+            let Ok(entry) = entry else { continue };
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("adoc") {
+                continue;
+            }
+            if let Ok(parsed) = aden_graph::parser::parse_file(&path) {
+                let file_name = path.file_name().unwrap_or_default().to_string_lossy();
+                for (contract_path, current) in contract_entries {
+                    if contract_path.file_name().map(|n| n.to_string_lossy()) == Some(file_name.clone()) {
+                        if let (Some(base_hash), Some(current_hash)) =
+                            (parsed.attributes.get("source_hash"), current.attributes.get("source_hash"))
+                        {
+                            if base_hash != current_hash {
+                                stale_bases.push(file_name.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if !stale_bases.is_empty() {
+            eprintln!("WARNING: Stale base contracts detected in .aden/contract-base/");
+            eprintln!("  Run: rm -rf .aden/contract-base to clear stale bases");
+            for name in &stale_bases {
+                eprintln!("    - {}", name);
+            }
+        }
     }
 }
 

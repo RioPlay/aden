@@ -1,0 +1,212 @@
+:proj: aden
+:number: 004
+:status: proposed
+:date: 2026-05-25
+
+[[adr-004]]
+= ADR-004: Universal Polyglot Developer Toolchain
+
+== Context
+Developers today juggle multiple tools for a single project:
+
+| Task | Tool | Language-Specific |
+|------|------|-------------------|
+| Generate contracts | `aden gen` | Aden |
+| Check references | `aden check` | Aden |
+| Detect drift | `aden heal` | Aden |
+| Build | `cargo build` / `npm run build` / `go build` | Each ecosystem |
+| Test | `cargo test` / `npm test` / `go test` | Each ecosystem |
+| Lint | `clippy` / `eslint` / `golint` | Each ecosystem |
+| Format | `cargo fmt` / `prettier` / `gofmt` | Each ecosystem |
+| Run | `cargo run` / `node` / `go run` | Each ecosystem |
+
+This fragmentation creates friction:
+- AI agents must invoke multiple tools with different interfaces
+- CI pipelines are complex orchestrations
+- Developer context-switching between tool ecosystems
+
+Aden already has tree-sitter integration across 10+ languages with 305+ via generic extractor. This infrastructure can power universal tooling.
+
+== Decision
+Aden will evolve from a documentation toolchain into a **universal polyglot developer toolchain** that wraps all languages through tree-sitter. The source of truth remains AsciiDoc contracts, but aden becomes the single entry point for all development tasks.
+
+=== Core Principles
+
+. **Single entry point**: `aden <verb>` — not `cargo <verb>`, `npm <verb>`, `go <verb>`
+. **Language-agnostic**: Same commands work across Rust, Python, Go, TypeScript, Java, C#, PHP, Ruby, C/C++, Kotlin
+. **Source of truth preserved**: AsciiDoc contracts remain primary; tooling is derived
+. **Incremental adoption**: Can use aden alongside existing tools; no forced migration
+
+=== Implementation Phases
+
+==== Phase 1: Documentation Parity (ADR-003 scope)
+- Markdown emitter (`emit_document_md()`)
+- Cross-format drift detection for `.md` files
+- Template variable expansion
+
+==== Phase 2: Universal Linting
+[source,rust]
+----
+// aden-parse already has tree-sitter AST access
+// Extend to lint rules via AST pattern matching
+
+pub trait LintRule {
+    fn name(&self) -> &str;
+    fn severity(&self) -> LintSeverity;
+    fn languages(&self) -> &[&str];
+    fn check(&self, node: &TreeNode, ctx: &LintContext) -> Vec<LintFinding>;
+}
+
+// Built-in rules (extensible):
+// - Unused variable
+// - Unreachable code  
+// - Implicit return
+// - Security: same as OWASP audit patterns
+// - Style: basic formatting consistency
+----
+
+Commands:
+```bash
+aden lint .                    # Lint all source files
+aden lint src/main.rs          # Lint single file
+aden lint --severity error .   # Errors only
+aden lint --fix .              # Auto-fix where possible
+```
+
+==== Phase 3: Universal Test Discovery & Execution
+[source,rust]
+----
+pub struct TestDiscovery {
+    // Detect test files/functions via tree-sitter
+    // Rust: #[test], #[cfg(test)]
+    // Python: def test_*(), class Test*
+    // Go: func Test*
+    // TypeScript: describe/it/test, @Test
+    // Java: @Test, @ParameterizedTest
+}
+
+pub struct TestRunner {
+    // Execute tests with unified interface
+    // Report results in common format
+}
+----
+
+Commands:
+```bash
+aden test .                    # Discover and run all tests
+aden test --scope unit .       # Unit tests only
+aden test --scope integration . # Integration tests only  
+aden test src/lib.rs           # Tests in specific file
+```
+
+==== Phase 4: Universal Build Detection
+[source,rust]
+----
+pub enum BuildSystem {
+    Cargo { manifest: Manifest },
+    Npm { package: PackageJson },
+    Go { go.mod: GoMod },
+    Maven { pom.xml: Pom },
+    Gradle { build.gradle: Gradle },
+    CMake { CMakeLists.txt },
+    // ... extensible
+}
+
+pub fn detect_build_system(path: &Path) -> Option<BuildSystem>;
+pub fn build(project: &BuildSystem) -> Result<BuildOutput>;
+----
+
+Commands:
+```bash
+aden build .                  # Detect build system, build project
+aden build --release .       # Release build
+aden build --target x86_64-unknown-linux-gnu .
+```
+
+==== Phase 5: Universal Format & Run
+[source,rust]
+----
+pub enum Executable {
+    Binary { path: PathBuf, args: Vec<String> },
+    Script { interpreter: PathBuf, path: PathBuf, args: Vec<String> },
+    Test { path: PathBuf },
+}
+
+pub fn find_entry_points(root: &Path) -> Vec<Executable>;
+----
+
+Commands:
+```bash
+aden fmt .                    # Format all source files (via tree-sitter reprint or external)
+aden fmt --check .           # Check without modifying
+aden run                     # Run default binary
+aden run --bin mybin          # Run specific binary
+aden run src/main.rs          # Run script directly
+```
+
+==== Phase 6: Unified CI
+```bash
+# Replaces multiple commands with single aden ci-check
+aden ci-check .              
+# Now includes: check + heal + lint + test + build + audit + fmt
+# Outputs unified report
+# Exit code reflects any failure
+```
+
+=== Architecture
+
+.Conceptual architecture layers
+[cols="3,7",frame=topbot,options="header"]
+|===
+| Layer | Components
+
+| CLI Commands
+| `gen`, `check`, `heal`, `ci-check`, `lint`, `test`, `build`, `fmt`, `run`
+
+| Emit
+| `emit_adoc` + `emit_md` (NEW)
+
+| Heal
+| Drift detection for `.adoc`, `.md`, test status, build artifacts
+
+| Parse (tree-sitter)
+| Deep extractors: Rust, Python, Go, TS/JS, Java, C#, Ruby, PHP, C, Kotlin +
+  Generic: 305+ via tree-sitter-language-pack
+
+.3+|Engines (powered by Parse)
+| Lint Engine — AST pattern matching
+| Test Discovery — finds test functions across languages
+| Build Detector — Cargo, npm, go.mod, Maven, Gradle, CMake
+|===
+
+== Consequences
+
+|===
+|Factor |Impact
+
+|AI agent experience|Single tool: `aden ci-check .` instead of cargo + npm + go orchestration
+|Onboarding|One tool to learn, not five different build systems
+|Multi-language projects|No context-switch; `aden test .` finds tests in Rust AND Python AND Go
+|Plugin ecosystem|Third parties can add lint rules via `aden lint --register <rule>`
+|Learning curve|Unified interface: `aden <verb>` works identically across languages
+|===
+
+== Risks
+
+. **Scope creep**: Building full toolchain risks never finishing.
+  - *Mitigation*: Phased delivery; each phase ships independently
+. **Quality vs breadth**: Tree-sitter AST less deep than language-specific tools.
+  - *Mitigation*: Use external tools where aden gaps exist; wrap not replace
+. **Maintenance burden**: Supporting 10+ languages requires ongoing grammar updates.
+  - *Mitigation*: Leverage tree-sitter-language-pack; community upstream maintenance
+
+== Trace
+
+- *2026-05-25*: ADR drafted to consolidate markdown emission + universal tooling visions
+
+== Related Documents
+
+. <<adr-001>> — AsciiDoc as native substrate
+. <<adr-003>> — Markdown emission and cross-format drift detection
+. <<plan-phase1>> — References `aden bootstrap --from-markdown`
+. <<docs/philosophy.adoc#doc-rot>> — Documents documentation rot problem
