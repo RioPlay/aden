@@ -317,9 +317,7 @@ pub fn cmd_ask(
     let graph = aden_graph::cache::build_from_directory_cached(path)?;
 
     // Verify anchor exists, fallback if not found
-    eprintln!("DEBUG: Checking anchor '{}' in graph...", start_anchor);
     if !graph.anchor_to_index.contains_key(&start_anchor) {
-        eprintln!("DEBUG: NOT FOUND, will fallback");
         println!("WARNING: Anchor '{}' not found. Falling back to 'readme'.", start_anchor);
         println!("         Use 'aden list .' to see available anchors.\n");
         let fallback = "readme";
@@ -555,6 +553,29 @@ pub fn cmd_list(
     Ok(())
 }
 
+fn print_locate_results(hits: &[serde_json::Value], format: &str) {
+    if format == "json" {
+        println!("{}", serde_json::to_string_pretty(&hits).unwrap_or_default());
+        return;
+    }
+    // Token-efficient output: compact format
+    for h in hits {
+        let file = h["file"].as_str().unwrap_or("");
+        let start = h["start_line"].as_str().unwrap_or("");
+        let anchor = h["anchor"].as_str().unwrap_or("");
+        let nt = h["node_type"].as_str().unwrap_or("");
+
+        // Extract symbol name from anchor for brevity
+        let symbol = anchor.split('#').last().unwrap_or(anchor);
+
+        if file.is_empty() || start.is_empty() {
+            println!("{} {} [{}]", symbol, nt, anchor);
+        } else {
+            println!("{} {} {}:{}", symbol, nt, file, start);
+        }
+    }
+}
+
 pub fn cmd_locate(
     path: &Path,
     symbol: Option<&str>,
@@ -571,11 +592,18 @@ pub fn cmd_locate(
 
     // If --symbol is given, find the definition.
     if let Some(sym) = symbol {
+        let sym_lower = sym.to_lowercase();
         let mut hits = Vec::new();
+
         for node in graph.graph.node_indices() {
             let anchor = &graph.graph[node].anchor;
-            // Match by exact anchor suffix or partial anchor string
-            if anchor.ends_with(sym) || anchor.contains(sym) {
+            let anchor_lower = anchor.to_lowercase();
+
+            // Case-insensitive match: exact suffix, #suffix, or partial
+            if anchor_lower.ends_with(&sym_lower)
+                || anchor_lower.contains(&format!("#{}", &sym_lower))
+                || anchor_lower.contains(&sym_lower)
+            {
                 let attrs = &graph.graph[node].doc.attributes;
                 let file = attrs.get("source_file").cloned().unwrap_or_default();
                 let start_line = attrs.get("start_line").cloned().unwrap_or_default();
@@ -595,27 +623,43 @@ pub fn cmd_locate(
         }
 
         if hits.is_empty() {
-            println!("No symbol found matching '{}'", sym);
+            // Try fuzzy search - match any part of the anchor
+            let mut fuzzy_hits = Vec::new();
+            let search_term = sym.to_lowercase();
+            for node in graph.graph.node_indices() {
+                let anchor = &graph.graph[node].anchor;
+                let anchor_lower = anchor.to_lowercase();
+                if anchor_lower.contains(&search_term) || anchor_lower.split('#').any(|p| p.contains(&search_term)) {
+                    let attrs = &graph.graph[node].doc.attributes;
+                    let file = attrs.get("source_file").cloned().unwrap_or_default();
+                    let start_line = attrs.get("start_line").cloned().unwrap_or_default();
+                    let end_line = attrs.get("end_line").cloned().unwrap_or_default();
+                    let node_type = attrs.get("node-type").cloned().unwrap_or_else(|| format!("{:?}", graph.graph[node].doc.node_type));
+                    fuzzy_hits.push(json!({
+                        "anchor": anchor,
+                        "node_type": node_type,
+                        "file": file,
+                        "start_line": start_line,
+                        "end_line": end_line,
+                    }));
+                }
+            }
+
+            if fuzzy_hits.is_empty() {
+                println!("No symbol found matching '{}'", sym);
+                println!("Hint: Try 'aden search \"{}\"' to find related anchors", sym);
+                return Ok(());
+            }
+            println!("Found {} fuzzy match(es) for '{}':", fuzzy_hits.len(), sym);
+            print_locate_results(&fuzzy_hits, format);
             return Ok(());
         }
 
+        println!("Found {} match(es) for '{}':", hits.len(), sym);
         if format == "json" {
             println!("{}", serde_json::to_string_pretty(&hits)?);
         } else {
-            for h in &hits {
-                let file = h["file"].as_str().unwrap_or("");
-                let start = h["start_line"].as_str().unwrap_or("");
-                let end = h["end_line"].as_str().unwrap_or("");
-                let anchor = h["anchor"].as_str().unwrap_or("");
-                let nt = h["node_type"].as_str().unwrap_or("");
-                if file.is_empty() || start.is_empty() {
-                    println!("{} ({})", anchor, nt);
-                } else if start == end {
-                    println!("{} {}:{}", anchor, file, start);
-                } else {
-                    println!("{} {}:{}–{}", anchor, file, start, end);
-                }
-            }
+            print_locate_results(&hits, format);
         }
         return Ok(());
     }
