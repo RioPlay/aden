@@ -3,7 +3,7 @@
 :ai_name: {ai_name}
 :standard: {standard}
 
-[[agent-context-template]]
+[[agent-context-template-src]]
 = Shared Context for Agent Sessions
 
 This file is the canonical shared memory for all agent sessions working on `{project}`.

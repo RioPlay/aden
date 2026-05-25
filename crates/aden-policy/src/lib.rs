@@ -130,6 +130,25 @@ pub struct PolicyEngine {
 }
 
 impl PolicyEngine {
+    /// Load the bootstrap constitution from `.aden/constitution.adoc`.
+    /// This is the root-of-trust for all policy evaluation.
+    pub fn load_bootstrap(repo_path: &std::path::Path) -> Result<Self, Box<dyn std::error::Error>> {
+        use aden_core::contract::{parse_contract, ParseMode};
+        use std::path::Path;
+
+        let constitution_path: &Path = &repo_path.join(".aden/constitution.adoc");
+        if !constitution_path.exists() {
+            // No bootstrap constitution — return empty engine (backward compatible)
+            return Ok(Self::default());
+        }
+
+        let content = std::fs::read_to_string(constitution_path)?;
+        let doc = parse_contract(&content, ParseMode::Permissive)?;
+        let mut engine = Self::default();
+        engine.load_from_document(&doc);
+        Ok(engine)
+    }
+
     /// Load constitutions from a parsed contract document.
     pub fn load_from_document(&mut self, doc: &ContractDocument) {
         for block in &doc.blocks {
@@ -479,5 +498,154 @@ mod tests {
         assert!(glob_match("foo::bar::baz", "*::baz"));
         assert!(glob_match("foo::bar::baz", "foo::*::baz"));
         assert!(!glob_match("foo::bar", "bar::foo"));
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ContractConstraint {
+    pub pre: Option<String>,
+    pub post: Option<String>,
+    pub invariant: Option<String>,
+}
+
+impl ContractConstraint {
+    pub fn from_block(block: &RegionBlock) -> Result<Self, String> {
+        if block.region != ContractRegion::Contract {
+            return Err("Not a contract block".to_string());
+        }
+        Ok(Self {
+            pre: block.attributes.get("pre").cloned(),
+            post: block.attributes.get("post").cloned(),
+            invariant: block.attributes.get("invariant").cloned(),
+        })
+    }
+}
+
+#[derive(Debug)]
+pub struct ContractViolation {
+    pub block_tag: Option<String>,
+    pub constraint_type: String,
+    pub message: String,
+    pub line: usize,
+}
+
+pub fn check_contract_constraints(block: &RegionBlock) -> Vec<ContractViolation> {
+    let mut violations = Vec::new();
+    if block.region != ContractRegion::Contract {
+        return violations;
+    }
+    if let Ok(constraint) = ContractConstraint::from_block(block) {
+        if constraint.pre.is_none() && constraint.post.is_none() && constraint.invariant.is_none() {
+            violations.push(ContractViolation {
+                block_tag: block.tag.clone(),
+                constraint_type: "empty".to_string(),
+                message: "Contract block has no :pre:, :post:, or :invariant: constraints".to_string(),
+                line: block.start_line,
+            });
+        }
+        if let Some(pre) = &constraint.pre
+            && pre.trim().is_empty()
+        {
+            violations.push(ContractViolation {
+                block_tag: block.tag.clone(),
+                constraint_type: "pre".to_string(),
+                message: ":pre: constraint is empty".to_string(),
+                line: block.start_line,
+            });
+        }
+        if let Some(post) = &constraint.post
+            && post.trim().is_empty()
+        {
+            violations.push(ContractViolation {
+                block_tag: block.tag.clone(),
+                constraint_type: "post".to_string(),
+                message: ":post: constraint is empty".to_string(),
+                line: block.start_line,
+            });
+        }
+        if let Some(inv) = &constraint.invariant
+            && inv.trim().is_empty()
+        {
+            violations.push(ContractViolation {
+                block_tag: block.tag.clone(),
+                constraint_type: "invariant".to_string(),
+                message: ":invariant: constraint is empty".to_string(),
+                line: block.start_line,
+            });
+        }
+    }
+    violations
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AgentRole {
+    pub namespace: String,
+    pub role: String,
+    pub confidence: f64,
+    pub directives_count: usize,
+    pub successful_directives: usize,
+}
+
+impl AgentRole {
+    pub fn new(namespace: &str, role: &str) -> Self {
+        Self {
+            namespace: namespace.to_string(),
+            role: role.to_string(),
+            confidence: 0.5,
+            directives_count: 0,
+            successful_directives: 0,
+        }
+    }
+
+    pub fn update_confidence(&mut self) {
+        if self.directives_count > 0 {
+            self.confidence = self.successful_directives as f64 / self.directives_count as f64;
+        }
+    }
+
+    pub fn is_trusted(&self, threshold: f64) -> bool {
+        self.confidence >= threshold
+    }
+}
+
+pub const DEFAULT_CONFIDENCE_THRESHOLD: f64 = 0.70;
+
+pub fn parse_agent_role_from_block(block: &RegionBlock) -> Option<AgentRole> {
+    let tag = block.tag.as_ref()?;
+    
+    if let Some(colon) = tag.find(':') {
+        let namespace = tag[..colon].to_string();
+        let role = tag[colon + 1..].to_string();
+        
+        let confidence = block
+            .attributes
+            .get("confidence")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0.5);
+        
+        let directives_count = block
+            .attributes
+            .get("directives")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        
+        let successful_directives = block
+            .attributes
+            .get("successful")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        
+        let mut agent = AgentRole {
+            namespace,
+            role,
+            confidence,
+            directives_count,
+            successful_directives,
+        };
+        agent.update_confidence();
+        
+        Some(agent)
+    } else {
+        None
     }
 }

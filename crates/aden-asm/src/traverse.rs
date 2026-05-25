@@ -91,6 +91,56 @@ pub fn assemble(graph: &AdenGraph, opts: &AssemblyOptions) -> Result<String, Ass
     Ok(result.join("\n<<<\n"))
 }
 
+/// Assemble documents in ADG (compact JSON) format for token-efficient LLM context.
+pub fn assemble_adg(graph: &AdenGraph, opts: &AssemblyOptions) -> Result<String, AssemblyError> {
+    use aden_emit::emit_adg;
+
+    let start_idx = graph.get_index(&opts.start_anchor).ok_or_else(|| {
+        AssemblyError::MissingAnchor(opts.start_anchor.clone())
+    })?;
+
+    let mut visited = HashSet::new();
+    let mut queue = VecDeque::new();
+    let mut results = Vec::new();
+    let mut total_tokens = 0usize;
+
+    queue.push_back((start_idx, 0usize));
+
+    const MAX_VISITED_NODES: usize = 10_000;
+    while let Some((node, depth)) = queue.pop_front() {
+        if visited.len() >= MAX_VISITED_NODES {
+            break;
+        }
+        if visited.contains(&node) {
+            continue;
+        }
+        if depth > opts.max_depth {
+            continue;
+        }
+        let doc = &graph.graph[node];
+        let adg_json = emit_adg(&doc.doc).map_err(|e| AssemblyError::Graph(e.to_string()))?;
+        let tokens = adg_json.len() / 4; // rough token estimate
+        if total_tokens + tokens > opts.token_budget {
+            break;
+        }
+        total_tokens += tokens;
+        visited.insert(node);
+        results.push(adg_json);
+
+        for neighbor in graph.graph.neighbors_directed(node, Direction::Outgoing) {
+            if let Some(edge) = graph.graph.find_edge(node, neighbor) {
+                let edge_type = *graph.graph.edge_weight(edge).unwrap_or(&EdgeType::Uses);
+                if opts.edge_types.is_empty() || opts.edge_types.contains(&edge_type) {
+                    queue.push_back((neighbor, depth + 1));
+                }
+            }
+        }
+    }
+
+    let output = format!("[\n{}\n]", results.join(",\n"));
+    Ok(output)
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum AssemblyError {
     #[error("missing anchor: {0}")]

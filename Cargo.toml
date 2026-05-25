@@ -27,6 +27,10 @@ members = [
     "crates/aden-propose",
     "crates/aden-mcp",
     "crates/aden-policy",
+    "crates/aden-attest",
+    "crates/aden-telemetry",
+    "crates/aden-simulate",
+    "crates/aden-api",
 ]
 
 # NOTE: aden-py is NOT in the default workspace build because it requires

@@ -19,13 +19,13 @@ The contract becomes a generative security substrate.
 |===
 |ID |Deliverable |Crate |Status |Acceptance Criteria
 
-|3.1 |Directive engine (`Forbid`, `Warn`, `Suggest`, `Allow`) |`aden-policy` |Planned |`aden check` exits non-zero on `Forbid`; passes on `Allow` with valid `[override]`
-|3.2 |`[override]` validation |`aden-policy` |Planned |Requires `:justification:`, `:reviewer:`; `:expires:` auto-downgrades severity
+|3.1 |Directive engine (`Forbid`, `Warn`, `Suggest`, `Allow`) |`aden-policy` |Shipped |`aden check` exits non-zero on `Forbid`; passes on `Allow` with valid `[override]`
+|3.2 |`[override]` validation |`aden-policy` |Shipped |Requires `:justification:`, `:reviewer:`; `:expires:` auto-downgrades severity
 |3.3 |`[security]` block emission |`aden-emit` |Planned |`compile_time` → clippy lint; `runtime` → macro/wrapper; `test_only` → proptest target
-|3.4 |`[contract]` Design-by-Contract checker |`aden-policy` |Planned |Parses `:pre:`, `:post:`, `:invariant:`; lightweight bounds analysis; Creusot export (experimental)
-|3.5 |`aden emergency --reason --ttl` |`aden-core` |Planned |Global `Forbid` → `Warn`; append-only signed audit log; auto-expires
+|3.4 |`[contract]` Design-by-Contract checker |`aden-policy` |Shipped |Parses `:pre:`, `:post:`, `:invariant:`; lightweight bounds analysis; Creusot export (experimental)
+|3.5 |`aden emergency --reason --ttl` |`aden-cli` |Shipped |Global `Forbid` → `Warn`; append-only signed audit log; auto-expires
 |3.6 |`aden check --severity=CI` |`aden-policy` |Planned |`Suggest` does not fail CI; `Warn` surfaces in PR comment
-|3.7 |Subagent consensus evaluation |`aden-policy` |Planned |Staging proposals evaluated against `[constitution]`; outcomes: `Accept`, `Reject`, `RequireQuorum`, `RequireHumanReview`
+|3.7 |Subagent consensus evaluation |`aden-policy` |Shipped |Staging proposals evaluated against `[constitution]`; outcomes: `Accept`, `Reject`, `RequireQuorum`, `RequireHumanReview`
 |3.8 |`[agent:role]` namespace and confidence scoring |`aden-core` |Planned |`:confidence:` derived from historical accuracy; threshold gating at 0.70
 |===
 

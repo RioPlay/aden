@@ -16,6 +16,7 @@
 //
 use aden_core::contract::{ContractDocument, RegionBlock};
 use aden_core::{AdmonitionKind, Block, Document, Table};
+use serde::{Deserialize, Serialize};
 use std::fmt::Write;
 
 pub mod check;
@@ -168,4 +169,117 @@ fn emit_region_block(out: &mut String, block: &RegionBlock) {
     writeln!(out, "----").unwrap();
     writeln!(out, "{}", block.content).unwrap();
     writeln!(out, "----").unwrap();
+}
+
+/// Deterministic Aden Graph (ADG) format for CI comparison and compact storage.
+/// Same source produces identical bytes (SHA-256 match).
+#[derive(Debug, Serialize, Deserialize)]
+#[allow(dead_code)]
+struct AdgNode {
+    anchor: String,
+    title: String,
+    block_count: usize,
+    content_hash: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[allow(dead_code)]
+struct AdgEdge {
+    source: String,
+    target: String,
+    edge_type: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct AdgDocument {
+    anchor: String,
+    title: String,
+    blocks: Vec<AdgBlock>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "type")]
+enum AdgBlock {
+    Paragraph { text: String },
+    Table { headers: Vec<String>, row_count: usize },
+    Listing { language: Option<String>, lines: usize },
+    Admonition { kind: String, text: String },
+    DescriptionList { item_count: usize },
+}
+
+/// Emit a Document in deterministic ADG format (canonical JSON).
+/// Use this for CI SHA-256 comparison and compact LLM context.
+pub fn emit_adg(doc: &Document) -> Result<String, serde_json::Error> {
+    let blocks: Vec<AdgBlock> = doc.blocks.iter().map(|b| match b {
+        Block::Paragraph(text) => AdgBlock::Paragraph { text: text.clone() },
+        Block::Table(t) => AdgBlock::Table {
+            headers: t.headers.clone(),
+            row_count: t.rows.len(),
+        },
+        Block::Listing { language, code } => AdgBlock::Listing {
+            language: language.clone(),
+            lines: code.lines().count(),
+        },
+        Block::Admonition { kind, text } => AdgBlock::Admonition {
+            kind: format!("{:?}", kind),
+            text: text.clone(),
+        },
+        Block::DescriptionList(items) => AdgBlock::DescriptionList {
+            item_count: items.len(),
+        },
+    }).collect();
+
+    let adoc = AdgDocument {
+        anchor: doc.anchor.clone(),
+        title: doc.attributes.get("title").cloned().unwrap_or_else(|| doc.anchor.clone()),
+        blocks,
+    };
+
+    serde_json::to_string(&adoc)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SecurityConstraint {
+    CompileTime,
+    Runtime,
+    TestOnly,
+}
+
+impl SecurityConstraint {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SecurityConstraint::CompileTime => "compile_time",
+            SecurityConstraint::Runtime => "runtime",
+            SecurityConstraint::TestOnly => "test_only",
+        }
+    }
+}
+
+pub fn emit_security_block(
+    tag: &str,
+    constraint: SecurityConstraint,
+    pattern: &str,
+    description: &str,
+) -> String {
+    let mut out = String::new();
+    writeln!(out, "[[security#{tag}]]").unwrap();
+    writeln!(out, "[security#{tag} :constraint: {}]", constraint.as_str()).unwrap();
+    writeln!(out, "----").unwrap();
+    writeln!(out, ":forbid_import: {}", pattern).unwrap();
+    writeln!(out).unwrap();
+    writeln!(out, "{}", description).unwrap();
+    writeln!(out, "----").unwrap();
+    out
+}
+
+pub fn emit_security_compile_time(tag: &str, pattern: &str, description: &str) -> String {
+    emit_security_block(tag, SecurityConstraint::CompileTime, pattern, description)
+}
+
+pub fn emit_security_runtime(tag: &str, pattern: &str, description: &str) -> String {
+    emit_security_block(tag, SecurityConstraint::Runtime, pattern, description)
+}
+
+pub fn emit_security_test_only(tag: &str, pattern: &str, description: &str) -> String {
+    emit_security_block(tag, SecurityConstraint::TestOnly, pattern, description)
 }

@@ -1,22 +1,21 @@
-:proj: aden
-:lang: rust
+:proj: unknown
+:lang: unknown
 :ai_name: agent
-:standard: cargo
+:standard: unknown
 
 [[agent-context]]
 = Shared Context for Agent Sessions
 
-This file is the canonical shared memory for all agent sessions working on `aden`.
+This file is the canonical shared memory for all agent sessions working on `unknown`.
 Include it at the top of every prompt with `include::.agent/context.adoc[]`.
 
 == Project Identity
 
 [cols="1,2"]
 |===
-|Name |aden
-|Language |rust
+|Name |unknown
+|Language |unknown
 |AI Name |agent
-|Standard |cargo workspace
 |===
 
 == Hard Constraints (Never Violate)
@@ -54,7 +53,3 @@ endif::agent[]
 
 . <<agent-onboarding>>
 . <<agent-session>>
-. <<security-audit-2026-05-24>>
-. <<getting-started>>
-. <<user-guide>>
-. <<ai-integration>>

@@ -13,14 +13,6 @@ target/
 .env.local
 .env.*
 
-# Auto-generated configs
-.gitignore
-.adenignore
-Cargo.lock
-
-# Dev tooling
-tools/git-hooks/
-
 # Editor debris
 *.swp
 *.swo
@@ -31,7 +23,6 @@ tools/git-hooks/
 node_modules/
 dist/
 build/
-Cargo.lock
 
 # OS files
 .DS_Store

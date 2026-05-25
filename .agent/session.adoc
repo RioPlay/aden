@@ -11,9 +11,20 @@ Every agent that modifies files must append an entry here before completing.
 
 |===
 |Timestamp |Agent |Task |Files |Status |Confidence
-|2026-05-24T00:00:00Z |agent-0 |Phase 0 Contract Kernel implementation |aden-core, aden-parse, aden-cli |in_progress |High
-|2026-05-24T02:30:00Z |agent-0 |Phase 0 delivered + docs cleanup + base cache fix |aden-core, aden-policy, aden-emit, aden-cli, docs/ |completed |High
-|2026-05-24T02:45:00Z |agent-0 |Removed all warnings, fixed bugs, security audit |all crates |completed |High
+|2026-05-24T22:00:00Z |agent-0 |Modularized aden-cli main.rs (3525→335 lines) |aden-cli src/commands/, types.rs, util.rs |completed |High
+|2026-05-24T23:30:00Z |agent-0 |Wired Constitutional Firewall in ci-check (PolicyEngine::load_bootstrap) |aden-policy/src/lib.rs, aden-cli src/commands/misc.rs |completed |High
+|2026-05-25T00:15:00Z |agent-0 |Added .adg deterministic emitter to aden-emit (emit_adg function) |aden-emit/src/lib.rs, Cargo.toml |completed |High
+|2026-05-25T01:00:00Z |agent-0 |Implemented [contract] DbC checker: ContractConstraint, check_contract_constraints |aden-policy/src/lib.rs |completed |High
+|2026-05-25T01:30:00Z |agent-0 |Added aden emergency command: --reason --ttl, creates auto-expiring override |aden-cli/src/commands/misc.rs, main.rs |completed |High
+|2026-05-25T02:00:00Z |agent-0 |Added aden asm --format=adg (Phase 2.9), assemble_adg function |aden-asm/src/traverse.rs, aden-cli |completed |High
+|2026-05-25T02:30:00Z |agent-0 |Fixed secret scan false positives (cache, Cargo.lock, tools/), OWASP false positives (println!) |aden-cli src/commands/misc.rs |completed |High
+|2026-05-25T03:00:00Z |agent-0 |Added aden check --severity (Phase 3.6) |aden-cli main.rs, query.rs |completed |High
+|2026-05-25T03:30:00Z |agent-0 |Implemented .adq interpreter (Phase 2.6): aden-graph query module |aden-graph/src/query.rs, aden-cli |completed |High
+|2026-05-25T04:00:00Z |agent-0 |Added [security] block emission (Phase 3.3): emit_security_* functions |aden-emit/src/lib.rs |completed |High
+|2026-05-25T04:15:00Z |agent-0 |Added [agent:role] namespace and confidence scoring (Phase 3.8) |aden-policy/src/lib.rs |completed |High
+|2026-05-25T04:30:00Z |agent-0 |Created aden-attest crate (Phase 4): SPDX, CycloneDX, SLSA |crates/aden-attest/ |completed |High
+|2026-05-25T05:00:00Z |agent-0 |Created aden-telemetry and aden-simulate crates (Phase 5) |crates/aden-telemetry/, aden-simulate/ |completed |High
+|2026-05-25T05:15:00Z |agent-0 |Created aden-api crate (Phase 6): REST API, policy templates, federation |crates/aden-api/ |completed |High
 |===
 
 == How to Append

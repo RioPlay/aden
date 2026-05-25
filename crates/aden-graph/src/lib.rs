@@ -25,6 +25,7 @@ pub mod cycles;
 pub mod graph;
 pub mod integrity;
 pub mod parser;
+pub mod query;
 
 pub use graph::{AdenGraph, DocumentNode};
 pub use petgraph::Direction;

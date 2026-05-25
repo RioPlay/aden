@@ -1,5 +1,5 @@
 [package]
-name = "aden-emit"
+name = "aden-api"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -7,5 +7,6 @@ license.workspace = true
 
 [dependencies]
 aden-core = { path = "../aden-core" }
+aden-graph = { path = "../aden-graph" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
