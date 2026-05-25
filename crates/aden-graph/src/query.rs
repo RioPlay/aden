@@ -25,7 +25,7 @@ pub struct AdqInterpreter<'a> {
 
 #[derive(Debug, thiserror::Error)]
 pub enum QueryError {
-    #[error("unknown function: {0}")]
+    #[error("unknown ADQ function: '{0}'. Valid: node(anchor), incoming(anchor), outgoing(anchor), nodes, edges")]
     UnknownFunction(String),
     #[error("invalid anchor: {0}")]
     InvalidAnchor(String),
