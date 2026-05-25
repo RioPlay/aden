@@ -18,25 +18,29 @@ User-facing binary for the Aden toolchain. Orchestrates all crates through a uni
 |`aden new`|`--lang <lang> --path <dir> <name>`|Create a new project from a language template with Aden scaffolding
 |`aden kickoff`|`--interactive --name <name>`|Create a kickoff document for a new initiative (interactive or from a brief)
 |`aden workflow`|`--from <template> [--out <file>]`|Instantiate templates with substitutions and chain documents
-|`aden gen`|`<PATH> [--out-dir <dir>] [--auto]`|Parse source file(s) and emit `.adoc` / `.aden` contracts to stdout or `--out-dir`
+|`aden gen`|`<PATH> [--out-dir <dir>] [--auto] [--merge] [--propose]`|Parse source file(s) and emit contracts; supports --merge (preserve human blocks) and --propose (dry-run)
 |`aden check`|`<DIR>` (default `.`)|Verify refs, anchors, cycles, orphans, and source_hash integrity
-|`aden graph`|`--from <anchor> --depth <n> <DIR>`|Output graph neighborhood as a debug report
-|`aden asm`|`--from <anchor> --depth <n> --budget <tokens> [--edge-types TYPES] [--out FILE] <DIR>`|Assemble context prompt from graph via BFS
+|`aden graph`|`<ANCHOR> [--depth <n>] <DIR>`|Output graph neighborhood as a debug report
+|`aden asm`|`--from <anchor> --depth <n> --budget <tokens> [--edge-types TYPES] [--out FILE] [--format aden|adg] <DIR>`|Assemble context prompt from graph via BFS
 |`aden query`|`--from <anchor> [--edge-type <type>] --depth <n> <DIR>`|Return JSON array of reachable nodes
 |`aden query`|`--backlinks <anchor> <DIR>`|Return JSON array of nodes with incoming edges to target
 |`aden query`|`--impact <anchor> <DIR>`|Return JSON transitive closure over dependency edges (blast radius)
+|`aden query-adq`|<SCRIPT> <DIR>|Execute Aden Query script (node(), incoming(), outgoing(), nodes, edges)
 |`aden ask`|`<QUESTION> [DIR] [--from <anchor>] [--budget <tokens>] [--model <model>]`|Natural-language question → search → intent classification → assembled context
-|`aden search`|`<QUERY> <DIR>`|Full-text inverted-index search. Prints ranked results with snippets
-|`aden locate`|`<SYMBOL> <DIR>`|Locate a symbol definition or its call sites in the graph
+|`aden search`|`<QUERY> <DIR> [--limit <n>]`|Full-text search. Prints ranked results with snippets
+|`aden list`|`<DIR> [--filter <pattern>] [--verbose] [--limit <n>] [--unlimited]`|List all anchors and contracts in the knowledge graph
+|`aden locate`|`<SYMBOL> <DIR> [--limit <n>] [--format plain|json]`|Locate a symbol definition or its call sites
 |`aden watch`|`<DIR>`|Watch source files and auto-regenerate contracts on change
-|`aden heal`|`<DIR>`|Self-healing documentation engine: scan for drift, propose patches, apply reviewed changes
+|`aden heal`|`<DIR> [--propose] [--fix] [--gc] [--since <ref>] [--apply <id>]`|Self-healing: scan drift, propose patches, auto-fix, garbage collect
 |`aden ci-check`|`<DIR>`|Run all local CI gates (check, heal, test, secret-scan, audit)
 |`aden doctor`|`<DIR>`|Diagnose environment: tool versions, repo health, signing keys
-|`aden review`|`--since <ref>`|Semantic review of changes since a Git ref, with token budgeting
+|`aden review`|`--since <ref> [--budget <tokens>]`|Semantic review of changes since a Git ref, with token budgeting
 |`aden session`|`--agent-id <id> --task <task> --files <files> --status <status> <DIR>`|Atomic session lock: append entry to `.agent/session.adoc`
-|`aden licenses`|`<DIR>`|Generate third-party attribution report from `Cargo.lock`
+|`aden licenses`|`<DIR> [--out <FILE>]`|Generate third-party attribution report from `Cargo.lock`
 |`aden audit`|`<DIR> [--format text|json|adoc] [--strict]`|OWASP-style security audit: scan source for vulnerability patterns
-|`aden mcp`|`[DIR]`|MCP (Model Context Protocol) integration management
+|`aden mcp`|install|uninstall|list|MCP integration management
+|`aden suggest`|`<INTENT>`|AI assistant: describe what you want to do, get the right aden command
+|`aden emergency`|`--reason <reason> [--ttl 1h|24h|7d] <DIR>`|Emergency override: downgrade Forbid to Warn, auto-expires
 |`aden --version`|none|Print version
 |`aden help`|none|Print help, including subcommand help
 |===

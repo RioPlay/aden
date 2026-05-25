@@ -116,6 +116,47 @@ den query --backlinks mod-aden-core . | jq '.[] | .anchor'
 den query --impact mod-aden-core . | jq '.[] | .anchor'
 ----
 
+== Finding Symbols with `aden locate` and `aden search`
+
+`aden locate --symbol <name>` finds symbol definitions (functions, types, modules). Falls back to full-text search if graph search finds nothing.
+
+[source,bash]
+----
+# Find a function definition
+aden locate --symbol assemble .
+
+# Find with limit
+aden locate --symbol "Error" . --limit 5
+----
+
+`aden search <query>` performs full-text search across all contracts:
+
+[source,bash]
+----
+aden search "authentication" . --limit 10
+----
+
+== Getting Command Help with `aden suggest`
+
+Not sure which command to use? Ask `aden suggest`:
+
+[source,bash]
+----
+aden suggest "find all tests in the project"
+# Suggests: aden search "test" or aden locate "test"
+----
+
+== Quick Reference: Agent Workflow
+
+| Task | Command |
+|------|---------|
+| Explore structure | `aden ask "what is X"` |
+| Find symbol | `aden locate --symbol X .` |
+| Search docs | `aden search "query" .` |
+| Get context | `aden asm --from <anchor> --depth N .` |
+| Check health | `aden check .` && `aden heal .` |
+| Validate | `aden ci-check .` |
+
 == Keeping the Graph Fresh
 
 Stale context is worse than no context. Run these commands as part of your agent loop:
