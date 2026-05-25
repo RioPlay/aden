@@ -73,6 +73,24 @@ aden lint --severity error .   # Errors only
 aden lint --fix .              # Auto-fix where possible
 ```
 
+The lint module provides the following contracts:
+
+* <<aden://module/aden-cli/lint.rs#cmd_lint>> — Main lint command
+* <<aden://module/aden-cli/lint.rs#LintResult>> — Lint result structure
+* <<aden://module/aden-cli/lint.rs#LintSeverity>> — Severity levels
+* <<aden://module/aden-cli/lint.rs#discover_source_files>> — Source file discovery
+* <<aden://module/aden-cli/lint.rs#lint_file>> — Per-file linting
+* <<aden://module/aden-cli/lint.rs#apply_lint_rules>> — Rule application
+* <<aden://module/aden-cli/lint.rs#lint_rust_line>> — Rust lint rules
+* <<aden://module/aden-cli/lint.rs#lint_python_line>> — Python lint rules
+* <<aden://module/aden-cli/lint.rs#lint_go_line>> — Go lint rules
+* <<aden://module/aden-cli/lint.rs#lint_java_line>> — Java lint rules
+* <<aden://module/aden-cli/lint.rs#lint_csharp_line>> — C# lint rules
+* <<aden://module/aden-cli/lint.rs#lint_ruby_line>> — Ruby lint rules
+* <<aden://module/aden-cli/lint.rs#lint_php_line>> — PHP lint rules
+* <<aden://module/aden-cli/lint.rs#lint_typescript_line>> — TypeScript lint rules
+* <<aden://module/aden-cli/lint.rs#is_excluded>> — File exclusion logic
+
 ==== Phase 3: Universal Test Discovery & Execution
 [source,rust]
 ----
@@ -205,6 +223,8 @@ aden ci-check .
 - *2026-05-25*: ADR drafted to consolidate markdown emission + universal tooling visions
 
 == Related Documents
+
+include::philosophy.adoc[]
 
 . <<adr-001>> — AsciiDoc as native substrate
 . <<adr-003>> — Markdown emission and cross-format drift detection

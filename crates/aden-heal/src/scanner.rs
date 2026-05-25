@@ -138,7 +138,7 @@ impl Scanner {
                         let actual_hash = aden_core::stable_hash(content.as_bytes());
                         if actual_hash != *expected_hash {
                             events.push(DriftEvent::StaleHash {
-                                target_path: source_path.to_string_lossy().to_string(),
+                                target_path: path.to_string_lossy().to_string(),
                                 expected_hash: expected_hash.clone(),
                                 actual_hash,
                             });

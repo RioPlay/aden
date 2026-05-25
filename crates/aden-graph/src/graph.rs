@@ -96,6 +96,7 @@ impl AdenGraph {
                 source_span: None,
             };
 
+            let anchors = parsed.anchors.clone();
             let node = DocumentNode {
                 anchor: primary_anchor.clone(),
                 doc,
@@ -104,10 +105,13 @@ impl AdenGraph {
             };
 
             let idx = graph.graph.add_node(node);
-            if graph.anchor_to_index.contains_key(&primary_anchor) {
-                return Err(GraphError::DuplicateAnchor(primary_anchor));
+            // Register ALL anchors in the file, not just the primary one
+            // Skip duplicates silently - first anchor wins (maintains backward compatibility)
+            for anchor in &anchors {
+                if !graph.anchor_to_index.contains_key(anchor) {
+                    graph.anchor_to_index.insert(anchor.clone(), idx);
+                }
             }
-            graph.anchor_to_index.insert(primary_anchor, idx);
             graph.path_to_index.insert(path.clone(), idx);
         }
 
