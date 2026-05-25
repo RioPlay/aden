@@ -372,12 +372,16 @@ pub fn load_or_build_index(path: &Path) -> Result<aden_index::Index, Box<dyn std
     Ok(index)
 }
 
-/// Compute a quick health score from drift events.
+/// Compute a quick health score from drift events (consistent with heal report).
 pub fn quick_health_score(path: &Path) -> Result<f64, Box<dyn std::error::Error>> {
-    let scanner = aden_heal::Scanner::new(path);
+    use aden_heal::{Scanner, generate};
+    
+    let scanner = Scanner::new(path);
     let events = scanner.scan()?;
-    let total = events.len().max(1) as f64;
-    Ok(1.0 - (events.len() as f64 / (total + 5.0)).min(1.0))
+    
+    // Use same weighting as heal report: severity-weighted events / total contracts
+    let report = generate(events, path);
+    Ok(report.overall_score)
 }
 
 /// Escape text for safe insertion into an AsciiDoc table cell.
