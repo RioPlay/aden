@@ -566,7 +566,7 @@ fn print_locate_results(hits: &[serde_json::Value], format: &str) {
         let nt = h["node_type"].as_str().unwrap_or("");
 
         // Extract symbol name from anchor for brevity
-        let symbol = anchor.split('#').last().unwrap_or(anchor);
+        let symbol = anchor.split('#').next_back().unwrap_or(anchor);
 
         if file.is_empty() || start.is_empty() {
             println!("{} {} [{}]", symbol, nt, anchor);
