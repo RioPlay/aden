@@ -57,10 +57,10 @@ cargo install --git https://github.com/RioPlay/aden
 [source,bash]
 ----
 cd your-project
-den init        # Scaffolds .agent/ templates and .adenignore
-den gen src/ --auto  # Generates .adoc contracts from all source files
-den check .          # Validates every reference resolves
-den ask "How does the error handling work?"
+aden init        # Scaffolds .agent/ templates and .adenignore
+aden gen src/ --auto  # Generates .adoc contracts from all source files
+aden check .          # Validates every reference resolves
+aden ask "How does the error handling work?"
 ----
 
 After `aden gen`, look in `./contracts/` (auto-ignored by Git) for the generated contracts. After `aden check`, you know your graph is internally consistent.
@@ -95,7 +95,7 @@ Universal schema for the Aden referential context compiler.
 (related documents follow, joined by page breaks)
 ----
 
-`aden graph --from mod-aden-core --depth 2` outputs a debug report of the local graph neighborhood, useful for understanding dependencies before a refactor.
+`aden query --from mod-aden-core --depth 2 --format table` outputs the local graph neighborhood, useful for understanding dependencies before a refactor.
 
 == Supported Languages
 
@@ -123,7 +123,7 @@ Universal schema for the Aden referential context compiler.
 |`aden check <path>` |Before every commit |`aden check .`
 |`aden ask <question>` |You need context fast |`aden ask "What depends on auth_module?"`
 |`aden ask --from <anchor>` |Pin the starting point |`aden ask --from auth_module "What breaks if I rename this?"`
-|`aden graph --depth N <anchor>` |Visualize dependencies |`aden graph --depth 3 mod-aden-core`
+|`aden query --from <anchor> --depth N --format table` |Visualize dependencies |`aden query --from mod-aden-core --depth 3 --format table`
 |`aden asm --from <anchor>` |Build a custom LLM prompt |`aden asm --from plan-phase2 --depth 2 --budget 4096`
 |`aden query --backlinks <anchor>` |Find everything that references X |`aden query --backlinks mod-aden-core .`
 |`aden query --impact <anchor>` |See blast radius |`aden query --impact Database .`
