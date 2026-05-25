@@ -178,6 +178,8 @@ enum Commands {
         caller_of: Option<String>,
         #[arg(long, value_name = "FORMAT", default_value = "plain")]
         format: String,
+        #[arg(long, value_name = "N", default_value = "50", help = "Limit number of results")]
+        limit: usize,
         #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
         path: PathBuf,
     },
@@ -333,8 +335,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let effective_limit = if unlimited { usize::MAX } else { limit };
             commands::cmd_list(&path, filter.as_deref(), verbose, effective_limit)
         }
-        Commands::Locate { symbol, caller_of, format, path } => {
-            commands::cmd_locate(&path, symbol.as_deref(), caller_of.as_deref(), &format)
+        Commands::Locate { symbol, caller_of, format, path, limit } => {
+            commands::cmd_locate(&path, symbol.as_deref(), caller_of.as_deref(), &format, limit)
         }
         #[cfg(feature = "watch")]
         Commands::Watch { path } => commands::cmd_watch(&path),

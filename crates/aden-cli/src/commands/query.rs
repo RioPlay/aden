@@ -584,6 +584,7 @@ pub fn cmd_locate(
     symbol: Option<&str>,
     caller_of: Option<&str>,
     format: &str,
+    limit: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use serde_json::json;
 
@@ -657,7 +658,7 @@ pub fn cmd_locate(
                     println!("Found {} match(es) in full-text index for '{}':", search_results.len(), sym);
                     println!("| Anchor | Score | Snippet |");
                     println!("|=== |");
-                    for r in &search_results {
+                    for r in search_results.iter().take(limit) {
                         let snippet = if r.snippet.len() > 60 {
                             format!("{}...", &r.snippet[..60])
                         } else {
@@ -673,15 +674,17 @@ pub fn cmd_locate(
                 return Ok(());
             }
             println!("Found {} fuzzy match(es) for '{}':", fuzzy_hits.len(), sym);
-            print_locate_results(&fuzzy_hits, format);
+            let fuzzy_limited: Vec<_> = fuzzy_hits.iter().take(limit).cloned().collect();
+            print_locate_results(&fuzzy_limited, format);
             return Ok(());
         }
 
         println!("Found {} match(es) for '{}':", hits.len(), sym);
+        let hits_limited: Vec<_> = hits.iter().take(limit).cloned().collect();
         if format == "json" {
-            println!("{}", serde_json::to_string_pretty(&hits)?);
+            println!("{}", serde_json::to_string_pretty(&hits_limited)?);
         } else {
-            print_locate_results(&hits, format);
+            print_locate_results(&hits_limited, format);
         }
         return Ok(());
     }
