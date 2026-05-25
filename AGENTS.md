@@ -12,6 +12,7 @@ as structured AsciiDoc so they can cross-reference each other via `[[anchors]]` 
 
 ## Agent Onboarding (Read in Order)
 
+0. **`.agent/agent.md`** — Quick reference card (start here for fast orientation)
 1. **`.agent/onboarding.adoc`** — How to safely begin work (session locking, impact analysis,
    validation protocol). This is your canonical quick-start.
 2. **`.agent/constraints.adoc`** — Hard negative constraints: never-commit rules, security posture,
