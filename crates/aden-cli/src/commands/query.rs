@@ -646,6 +646,25 @@ pub fn cmd_locate(
             }
 
             if fuzzy_hits.is_empty() {
+                // Fall back to full-text search index
+                let index = load_or_build_index(path)?;
+                let search_results = index.query(sym);
+                
+                if !search_results.is_empty() {
+                    println!("Found {} match(es) in full-text index for '{}':", search_results.len(), sym);
+                    println!("| Anchor | Score | Snippet |");
+                    println!("|=== |");
+                    for r in &search_results {
+                        let snippet = if r.snippet.len() > 60 {
+                            format!("{}...", &r.snippet[..60])
+                        } else {
+                            r.snippet.clone()
+                        };
+                        println!("| {} | {:.1} | {} |", r.anchor, r.score, snippet);
+                    }
+                    return Ok(());
+                }
+                
                 println!("No symbol found matching '{}'", sym);
                 println!("Hint: Try 'aden search \"{}\"' to find related anchors", sym);
                 return Ok(());
