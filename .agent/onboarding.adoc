@@ -1,6 +1,6 @@
-:proj: {project}
+:proj: unknown
 
-[[agent-onboarding-template]]
+[[agent-onboarding]]
 = Agent Onboarding Protocol
 
 [IMPORTANT]

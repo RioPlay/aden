@@ -204,13 +204,23 @@ pub fn cmd_init(target: &Path) -> Result<(), Box<dyn std::error::Error>> {
         .replace("{ai_name}", "agent")
         .replace("{standard}", "unknown")
         .replace("{edition}", "2024")
-        .replace("{dependencies}", "| | |");
+        .replace("{dependencies}", "| | |")
+        .replace("agent-context-template", "agent-context");
     std::fs::write(agent_dir.join("context.adoc"), context_content)?;
 
     let session_tpl = include_str!("../../../../.agent/templates/session.adoc");
     let session_content = session_tpl
-        .replace("{project}", project_name);
+        .replace("{project}", project_name)
+        .replace("agent-session-template", "agent-session");
     std::fs::write(agent_dir.join("session.adoc"), session_content)?;
+
+    let onboarding_tpl = include_str!("../../../../.agent/templates/onboarding.adoc");
+    let onboarding_content = onboarding_tpl
+        .replace("{project}", project_name)
+        .replace("agent-onboarding-template", "agent-onboarding")
+        .replace("agent-context-template", "agent-context")
+        .replace("agent-session-template", "agent-session");
+    std::fs::write(agent_dir.join("onboarding.adoc"), onboarding_content)?;
 
     // Security-first scaffolding: contracts are build artifacts
     let aden_dir = target.join(".aden");

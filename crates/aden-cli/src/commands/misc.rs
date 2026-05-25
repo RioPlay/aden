@@ -693,7 +693,8 @@ pub fn cmd_doctor(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     // Quick heal score
     println!("\n— Quick Scan —");
     if let Ok(score) = quick_health_score(path) {
-        if score >= 1.0 {
+        const EPSILON: f64 = 0.01;
+        if (1.0 - score).abs() < EPSILON {
             println!("✓ Health Score: {:.2}/1.00", score);
         } else {
             println!("⚠ Health Score: {:.2}/1.00 (run 'aden heal .' to see drift)", score);
