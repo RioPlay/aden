@@ -116,5 +116,5 @@ Contributing:: See CONTRIBUTING.md
 . Architecture decisions: <<adr-001>>, <<adr-002>>
 . Background: <<philosophy>>, <<use-cases>>
 . Agent workspace: `.agent/context.adoc` at repository root
-. Security: <<security-audit-2026-05-24>> (latest security audit)
+. Security: run `aden audit .` for security scanning
 . Quick start: <<quickstart>> (AI agent onboarding)
