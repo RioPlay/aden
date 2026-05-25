@@ -71,7 +71,9 @@ enum Commands {
         path: PathBuf,
         #[arg(long, value_name = "DIR", value_hint = ValueHint::DirPath, help = "Output directory (default: ./contracts/)")]
         out_dir: Option<PathBuf>,
-        #[arg(long, help = "Auto-discover source files and generate contracts for the whole project")]
+        #[arg(long, help = "Auto-detect existing contract structure (contracts/crates/<name>/src/)")]
+        detect_out_dir: bool,
+        #[arg(long, help = "Auto-discover source files and generate contracts for the whole project (default when PATH is directory)")]
         auto: bool,
         #[arg(long, help = "Three-way merge: update only [generated] blocks while preserving [human]/[agent] blocks")]
         merge: bool,
@@ -153,6 +155,19 @@ enum Commands {
         #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
         path: PathBuf,
     },
+    /// List all anchors and contracts in the knowledge graph (alias: ls)
+    List {
+        #[arg(long, value_name = "PATTERN", help = "Filter by pattern (e.g., 'mod-aden-*')")]
+        filter: Option<String>,
+        #[arg(long, help = "Show detailed information for each anchor")]
+        verbose: bool,
+        #[arg(long, value_name = "N", default_value = "50", help = "Limit number of results")]
+        limit: usize,
+        #[arg(long, help = "Show all results (no limit)")]
+        unlimited: bool,
+        #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
+        path: PathBuf,
+    },
     /// Locate a symbol definition or its call sites in the knowledge graph
     Locate {
         #[arg(long, value_name = "SYMBOL", help = "Find definition of this symbol")]
@@ -176,6 +191,10 @@ enum Commands {
         path: PathBuf,
         #[arg(long, help = "Generate patch proposals for review")]
         propose: bool,
+        #[arg(long, help = "Auto-fix StaleHash and MissingContract drift (high confidence only)")]
+        fix: bool,
+        #[arg(long, help = "Garbage collect orphaned contracts (contracts without matching source)")]
+        gc: bool,
         #[arg(long, value_name = "REF", help = "Limit scan to files changed since git ref")]
         since: Option<String>,
         #[arg(long, value_name = "ID", help = "Apply a specific proposal by ID")]
@@ -248,6 +267,11 @@ enum Commands {
         #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
         path: PathBuf,
     },
+    /// AI assistant: describe what you want to do, get the right aden command
+    Suggest {
+        #[arg(value_name = "INTENT", help = "What you want to do (e.g., 'generate docs for my code', 'find how X works')")]
+        intent: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -282,8 +306,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     match cli.command {
         Commands::Init { path } => commands::cmd_init(&path),
-        Commands::Gen { path, out_dir, auto, merge, propose } => {
-            commands::cmd_gen(&path, out_dir.as_deref(), auto, merge, propose)
+        Commands::Gen { path, out_dir, detect_out_dir, auto, merge, propose } => {
+            commands::cmd_gen(&path, out_dir.as_deref(), detect_out_dir, auto, merge, propose)
         }
         Commands::Check { path, severity } => commands::cmd_check(&path, &severity),
         Commands::Graph { from, depth, path } => commands::cmd_graph(&path, &from, depth),
@@ -303,12 +327,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             commands::cmd_ask(&path, &question, from.as_deref(), budget, model.as_deref())
         }
         Commands::Search { query, path } => commands::cmd_search(&path, &query),
+        Commands::List { filter, verbose, limit, unlimited, path } => {
+            let effective_limit = if unlimited { usize::MAX } else { limit };
+            commands::cmd_list(&path, filter.as_deref(), verbose, effective_limit)
+        }
         Commands::Locate { symbol, caller_of, format, path } => {
             commands::cmd_locate(&path, symbol.as_deref(), caller_of.as_deref(), &format)
         }
         #[cfg(feature = "watch")]
         Commands::Watch { path } => commands::cmd_watch(&path),
-        Commands::Heal { path, propose, since, apply, watch } => {
+        Commands::Heal { path, propose, fix, gc, since, apply, watch } => {
             if let Some(id) = apply {
                 commands::cmd_heal_apply(&path, &id)
             } else if let Some(watch_path) = watch {
@@ -319,7 +347,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             } else if let Some(ref git_ref) = since {
                 commands::cmd_heal_scan_since(&path, propose, git_ref)
             } else {
-                commands::cmd_heal_scan(&path, propose)
+                commands::cmd_heal_scan(&path, propose, fix, gc)
             }
         }
         Commands::CiCheck { path } => commands::cmd_ci_check(&path),
@@ -356,6 +384,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
         Commands::Emergency { reason, ttl, path } => {
             commands::cmd_emergency(&path, &reason, &ttl)
+        }
+        Commands::Suggest { intent } => {
+            commands::cmd_suggest(&intent)
         }
     }
 }

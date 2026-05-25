@@ -6,24 +6,51 @@ use crate::util::{
     sanitize_anchor, sanitize_source_file, save_gen_cache,
 };
 
+/// Detect existing contract structure and return matching output directory
+fn detect_contract_structure(path: &Path, source_path: &Path) -> Option<std::path::PathBuf> {
+    let root = find_project_root(path);
+    let rel = source_path.strip_prefix(&root).ok()?;
+
+    let components: Vec<_> = rel.components().collect();
+    if components.len() >= 3 {
+        let first = components[0].as_os_str().to_str()?;
+        let second = components[1].as_os_str().to_str()?;
+
+        if first == "crates" {
+            let contract_dir = root.join("contracts").join("crates").join(second).join("src");
+            if contract_dir.exists() && contract_dir.is_dir() {
+                return Some(contract_dir);
+            }
+        }
+    }
+
+    None
+}
+
 /// Auto-document a codebase: discover source files, skip unchanged,
 /// emit structured contracts, and generate an index.
 pub fn cmd_gen(
     path: &Path,
     out_dir: Option<&Path>,
+    detect_out_dir: bool,
     auto: bool,
     merge: bool,
     propose: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if path.is_file() {
-        // Single-file mode: backward compatible
         let source = std::fs::read_to_string(path)?;
         let docs = aden_parse::parse_file(path, &source)?;
 
+        let effective_out = if detect_out_dir {
+            detect_contract_structure(path, path).unwrap_or_else(|| Path::new("contracts").to_path_buf())
+        } else {
+            out_dir.unwrap_or_else(|| Path::new("contracts")).to_path_buf()
+        };
+
         if merge || propose {
-            return cmd_gen_contract(path, &source, docs, out_dir, propose);
+            return cmd_gen_contract(path, &source, docs, Some(&effective_out), propose);
         }
-        return emit_docs(docs, out_dir, path);
+        return emit_docs(docs, Some(&effective_out), path);
     }
 
     if !path.is_dir() {
@@ -33,11 +60,28 @@ pub fn cmd_gen(
     let root = find_project_root(path);
     let effective_out = out_dir.unwrap_or_else(|| Path::new("contracts"));
 
+    if detect_out_dir && out_dir.is_none() {
+        let mut auto_detected = false;
+        if root.join("contracts").join("crates").exists() {
+            let contracts_crates = root.join("contracts").join("crates");
+            if contracts_crates.is_dir() {
+                println!("INFO: Detected contracts/crates/ structure. Using --detect-out-dir.");
+                println!("      Contracts will be placed in contracts/crates/<crate>/src/");
+                auto_detected = true;
+            }
+        }
+        if !auto_detected {
+            println!("INFO: No existing contract structure detected. Using default ./contracts/");
+        }
+    }
+
     if merge || propose {
         return cmd_gen_merge(&root, effective_out, propose);
     }
 
-    if auto {
+    // Default to auto mode for directories (backward compatible with single files)
+    let auto_by_default = path.is_dir();
+    if auto || auto_by_default {
         // ── AUTO MODE: workspace-aware incremental generation ────────────────
         let sources = discover_source_files(&root)?;
         if sources.is_empty() {

@@ -153,10 +153,11 @@ impl<'a> AdqInterpreter<'a> {
         let mut nodes = Vec::new();
         for edge in self.graph.graph.edge_indices() {
             let (src, dst) = self.graph.graph.edge_endpoints(edge).unwrap();
-            if let Some(src_node) = self.graph.graph.node_weight(src) {
-                if let Some(dst_node) = self.graph.graph.node_weight(dst) {
-                    nodes.push(format!("{} -> {}", src_node.anchor, dst_node.anchor));
-                }
+            if let (Some(src_node), Some(dst_node)) = (
+                self.graph.graph.node_weight(src),
+                self.graph.graph.node_weight(dst),
+            ) {
+                nodes.push(format!("{} -> {}", src_node.anchor, dst_node.anchor));
             }
         }
         let total = nodes.len();

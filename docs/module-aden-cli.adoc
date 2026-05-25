@@ -59,6 +59,79 @@ User-facing binary for the Aden toolchain. Orchestrates all crates through a uni
 - `audit` performs regex-based SAST for OWASP Top 10 patterns across supported languages.
 - `mcp` starts or configures the Model Context Protocol server.
 
+== Troubleshooting
+
+=== Stale Hash Errors
+
+When `aden heal` reports `StaleHash`, the source file changed but contract wasn't regenerated.
+
+**Diagnosis:**
+[source]
+----
+aden heal .
+----
+
+**Output shows:**
+----
+StaleHash { target_path: "./crates/aden-graph/src/query.rs",
+           expected_hash: "708c8c789edfbebe",
+           actual_hash: "93a74f723c2ed242" }
+----
+
+**Recovery:**
+
+Contracts live in `contracts/crates/<crate>/src/`, mirroring the `crates/` structure.
+[source]
+----
+# Regenerate with correct output path
+aden gen crates/aden-graph/src/query.rs --out-dir contracts/crates/aden-graph/src/
+----
+
+**Prevention:**
+[source]
+----
+# Use --auto to regenerate all source files at once
+aden gen --auto .
+----
+
+=== Understanding Contract Paths
+
+- `aden gen` default output: `./contracts/` (root level)
+- Existing contracts: `contracts/crates/<crate>/src/`
+- Always specify `--out-dir` to match existing structure
+
+=== Cache Management
+
+Aden caches scan results in `.aden/`. To force fresh scan:
+[source]
+----
+rm .aden/gen-cache.json
+aden heal .
+----
+
+=== MissingAnchor Errors
+
+Cause: Reference points to non-existent anchor.
+
+Fix: Check contract file for correct anchor name. Ensure contract was generated.
+
+=== Orphan Document Warnings
+
+Cause: Document has no incoming edges.
+
+Fix: Add manual cross-references in your `.adoc` files using `<<anchor>>`.
+
+=== aden gen vs --out-dir
+
+[cols="1,2"]
+|===
+|Scenario|Command
+
+|Generate new contract|`aden gen src/foo.rs`
+|Update existing contract|`aden gen src/foo.rs --out-dir contracts/crates/aden-core/src/`
+|Regenerate all|`aden gen --auto .`
+|===
+
 == Related Documents
 
 . <<project-context>>

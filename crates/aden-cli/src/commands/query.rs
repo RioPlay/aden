@@ -285,7 +285,7 @@ pub fn cmd_ask(
     }
 
     // Step 1: Resolve question to an anchor via search, or use override
-    let start_anchor = if let Some(anchor) = from_override {
+    let mut start_anchor = if let Some(anchor) = from_override {
         anchor.to_string()
     } else {
         let idx = load_or_build_index(path)?;
@@ -315,6 +315,21 @@ pub fn cmd_ask(
 
     // Step 3: Build graph and assemble context
     let graph = aden_graph::cache::build_from_directory_cached(path)?;
+
+    // Verify anchor exists, fallback if not found
+    eprintln!("DEBUG: Checking anchor '{}' in graph...", start_anchor);
+    if !graph.anchor_to_index.contains_key(&start_anchor) {
+        eprintln!("DEBUG: NOT FOUND, will fallback");
+        println!("WARNING: Anchor '{}' not found. Falling back to 'readme'.", start_anchor);
+        println!("         Use 'aden list .' to see available anchors.\n");
+        let fallback = "readme";
+        if graph.anchor_to_index.contains_key(fallback) {
+            start_anchor = fallback.to_string();
+        } else {
+            return Err("No valid anchors found. Run 'aden list .' to see available anchors.".into());
+        }
+    }
+
     let block_filter = block_filter_for_intent(&intent);
     let opts = AssemblyOptions {
         start_anchor: start_anchor.clone(),
@@ -486,6 +501,57 @@ pub fn cmd_search(path: &Path, query: &str) -> Result<(), Box<dyn std::error::Er
         };
         println!("| {} | {:.1} | {} |", r.anchor, r.score, snippet);
     }
+    Ok(())
+}
+
+pub fn cmd_list(
+    path: &Path,
+    filter: Option<&str>,
+    verbose: bool,
+    limit: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if !path.is_dir() {
+        return Err("list requires a directory path".into());
+    }
+
+    let graph = aden_graph::cache::build_from_directory_cached(path)?;
+    let anchors: Vec<_> = graph.graph.node_indices().filter_map(|idx| {
+        graph.graph.node_weight(idx).map(|n| n.anchor.clone())
+    }).collect();
+
+    let filtered: Vec<_> = match filter {
+        Some(f) => anchors.iter().filter(|a| a.contains(f)).cloned().collect(),
+        None => anchors,
+    };
+
+    let limited: Vec<_> = filtered.into_iter().take(limit).collect();
+
+    println!("Anchors in {} (showing {}/total)", path.display(), limited.len());
+    println!();
+
+    if verbose {
+        println!("| Anchor | Type | Source File |");
+        println!("|=== |");
+        for anchor in &limited {
+            if let Some(idx) = graph.anchor_to_index.get(anchor)
+                && let Some(n) = graph.graph.node_weight(*idx) {
+                let node_type = n.doc.attributes.get("node-type").cloned().unwrap_or_else(|| "unknown".to_string());
+                let source = n.source_path.to_string_lossy().to_string();
+                println!("| {} | {} | {} |", anchor, node_type, source);
+            }
+        }
+    } else {
+        println!("| Anchor |");
+        println!("|=== |");
+        for anchor in &limited {
+            println!("| {} |", anchor);
+        }
+    }
+
+    if limited.len() >= limit {
+        println!("\n... {} more (use --limit to see more)", limited.len() - limit);
+    }
+
     Ok(())
 }
 

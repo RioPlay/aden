@@ -692,9 +692,34 @@ pub fn cmd_doctor(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         if score >= 1.0 {
             println!("✓ Health Score: {:.2}/1.00", score);
         } else {
-            println!("⚠ Health Score: {:.2}/1.00 (run 'aden heal --scan .' to see drift)", score);
+            println!("⚠ Health Score: {:.2}/1.00 (run 'aden heal .' to see drift)", score);
             issues.push(format!("Health score {:.2} (target 1.00)", score));
         }
+    }
+
+    // Self-documenting docs check
+    println!("\n— Self-Documenting Docs —");
+    let self_docs = [
+        ("docs/module-aden-cli.adoc", "CLI reference + troubleshooting"),
+        ("docs/getting-started.adoc", "Quick start guide"),
+        (".agent/onboarding.adoc", "Agent onboarding"),
+    ];
+
+    let mut found_self_docs = 0;
+    for (doc_path, desc) in &self_docs {
+        if path.join(doc_path).exists() {
+            println!("✓ {} ({})", doc_path, desc);
+            found_self_docs += 1;
+        } else {
+            println!("✗ {} MISSING ({})", doc_path, desc);
+            issues.push(format!("Missing: {}", doc_path));
+        }
+    }
+
+    if found_self_docs >= 2 {
+        println!("✓ Sufficient self-documenting docs for AI agents");
+    } else {
+        println!("⚠ Run 'aden init' to scaffold self-documenting docs");
     }
 
     println!("\n═══════════════════════════════════════");
@@ -938,6 +963,53 @@ pub fn cmd_emergency(
     println!("  Expires: {}", expires_at.to_rfc3339());
     println!("  File: {}", emergency_path.display());
     println!("  Audit: {}", audit_log_path.display());
+
+    Ok(())
+}
+
+pub fn cmd_suggest(intent: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let intent_lower = intent.to_lowercase();
+
+    let suggestions = vec![
+        (vec!["generate", "doc", "contract", "parse", "extract"], "gen", "aden gen . --auto", "Generate contracts from source code"),
+        (vec!["search", "find", "look"], "search", "aden search '<query>'", "Search for text in contracts"),
+        (vec!["list", "show", "all", "anchors", "contracts"], "list", "aden list .", "List all anchors in the graph"),
+        (vec!["ask", "question", "explain", "how", "what"], "ask", "aden ask '<question>'", "Ask a natural language question"),
+        (vec!["fix", "heal", "drift", "stale", "update"], "heal", "aden heal . --fix", "Auto-fix stale contracts"),
+        (vec!["check", "validate", "reference", "link"], "check", "aden check .", "Validate all cross-references"),
+        (vec!["graph", "depend", "neighbor", "related"], "graph", "aden graph --from <anchor> --depth 2", "Show graph neighborhood"),
+        (vec!["assemble", "context", "prompt", "token"], "asm", "aden asm --from <anchor> --budget 4096", "Assemble context within token budget"),
+        (vec!["locate", "symbol", "function", "where"], "locate", "aden locate --symbol <name> .", "Find symbol definition"),
+        (vec!["init", "scaffold", "setup"], "init", "aden init", "Scaffold .agent/ templates"),
+        (vec!["watch", "auto", "regenerate"], "watch", "aden watch .", "Watch for changes and auto-regenerate"),
+        (vec!["clean", "gc", "garbage", "orphan"], "gc", "aden heal . --gc", "Garbage collect orphaned contracts"),
+        (vec!["doctor", "diagnose", "health", "check environment"], "doctor", "aden doctor .", "Check environment health"),
+    ];
+
+    let mut matches: Vec<_> = suggestions.iter()
+        .filter(|(keywords, _, _, _)| keywords.iter().any(|k| intent_lower.contains(k)))
+        .collect();
+
+    matches.sort_by_key(|a| std::cmp::Reverse(a.0.len()));
+
+    println!("Aden Suggestion for: \"{}\"", intent);
+    println!("====================");
+    println!();
+
+    if matches.is_empty() {
+        println!("No exact match found. Try:");
+        println!("  aden gen . --auto         # Generate contracts");
+        println!("  aden search '<query>'    # Search contracts");
+        println!("  aden ask '<question>'    # Ask a question");
+        println!("  aden list .              # List all anchors");
+        println!("  aden heal . --fix         # Fix drift");
+    } else {
+        println!("Try one of these commands:\n");
+        for (_, cmd, example, desc) in &matches {
+            println!("  {}: {}", cmd, desc);
+            println!("    Example: {}\n", example);
+        }
+    }
 
     Ok(())
 }

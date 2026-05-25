@@ -1,6 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+use std::path::Path;
 
-use crate::util::{generate_proposal_id, is_safe_id};
+use crate::util::{generate_proposal_id, is_safe_id, find_project_root};
 
 pub fn cmd_heal_scan_since(path: &Path, propose: bool, since: &str) -> Result<(), Box<dyn std::error::Error>> {
     use aden_heal::{Scanner, generate};
@@ -62,8 +63,12 @@ pub fn cmd_heal_scan_since(path: &Path, propose: bool, since: &str) -> Result<()
     Ok(())
 }
 
-pub fn cmd_heal_scan(path: &Path, propose: bool) -> Result<(), Box<dyn std::error::Error>> {
+pub fn cmd_heal_scan(path: &Path, propose: bool, fix: bool, gc: bool) -> Result<(), Box<dyn std::error::Error>> {
     use aden_heal::{Scanner, generate};
+
+    if gc {
+        return cmd_heal_gc(path);
+    }
 
     println!("Aden Self-Healing Documentation Engine");
     println!("========================================");
@@ -99,19 +104,130 @@ pub fn cmd_heal_scan(path: &Path, propose: bool) -> Result<(), Box<dyn std::erro
                 }
             }
 
-            let print_group = |name: &str, events: &Vec<&aden_heal::DriftEvent>| {
+            let print_group = |name: &str, events: &Vec<&aden_heal::DriftEvent>, _path: &Path| {
                 if !events.is_empty() {
                     println!("\n=== {} ({} events) ===", name, events.len());
                     for (i, event) in events.iter().enumerate() {
                         println!("  {}. {:?}", i + 1, event);
+
+                        let fix_hint = match event {
+                            aden_heal::DriftEvent::StaleHash { target_path, .. } => {
+                                let rel = PathBuf::from(target_path.strip_prefix("./").unwrap_or(target_path));
+                                if rel.starts_with("crates/") {
+                                    let parts: Vec<_> = rel.iter().map(|s| s.to_string_lossy()).collect();
+                                    if parts.len() >= 3 && parts[0] == "crates" {
+                                        let crate_name = &parts[1];
+                                        Some(format!("  Hint: aden gen {} --out-dir contracts/crates/{}/src/", target_path, crate_name))
+                                    } else {
+                                        None
+                                    }
+                                } else {
+                                    Some(format!("  Hint: aden gen {} --out-dir contracts/", target_path))
+                                }
+                            }
+                            aden_heal::DriftEvent::MissingContract { source_path, .. } => {
+                                Some(format!("  Hint: aden gen {} --auto .", source_path))
+                            }
+                            aden_heal::DriftEvent::BrokenReference { contract_path: _, ref_anchor, .. } => {
+                                Some(format!("  Hint: aden search {} to find correct anchor", ref_anchor))
+                            }
+                            _ => None,
+                        };
+
+                        if let Some(hint) = fix_hint {
+                            println!("{}", hint);
+                        }
                     }
                 }
             };
 
-            print_group("CRITICAL", &critical);
-            print_group("HIGH", &high);
-            print_group("MEDIUM", &medium);
-            print_group("LOW", &low);
+            print_group("CRITICAL", &critical, path);
+            print_group("HIGH", &high, path);
+            print_group("MEDIUM", &medium, path);
+            print_group("LOW", &low, path);
+
+            if fix {
+                println!("\n--fix flag set. Attempting auto-fix...");
+                let mut fixed_count = 0;
+                let mut failed_count = 0;
+
+                for event in &report.events {
+                    let confidence = match event {
+                        aden_heal::DriftEvent::StaleHash { .. } => 0.99,
+                        aden_heal::DriftEvent::MissingContract { .. } => 0.85,
+                        aden_heal::DriftEvent::SignatureMismatch { .. } => 0.90,
+                        _ => 0.0,
+                    };
+
+                    if confidence < 0.8 {
+                        println!("  Skipping {:?}: low confidence ({:.2})", event, confidence);
+                        failed_count += 1;
+                        continue;
+                    }
+
+                    match event {
+                        aden_heal::DriftEvent::StaleHash { target_path, actual_hash, .. } => {
+                            let target = PathBuf::from(target_path);
+                            if target.exists() {
+                                let content = std::fs::read_to_string(&target)?;
+                                let updated = content
+                                    .lines()
+                                    .map(|line| {
+                                        if line.trim_start().starts_with(":source_hash:") {
+                                            format!(":source_hash: {}", actual_hash)
+                                        } else {
+                                            line.to_string()
+                                        }
+                                    })
+                                    .collect::<Vec<_>>()
+                                    .join("\n");
+                                std::fs::write(&target, updated)?;
+                                println!("  Fixed: {} (updated hash)", target.display());
+                                fixed_count += 1;
+                            }
+                        }
+                        aden_heal::DriftEvent::MissingContract { source_path, anchor, symbol_name, .. } => {
+                            let contract_path = PathBuf::from(source_path).with_extension("adoc");
+                            if let Some(parent) = contract_path.parent() {
+                                let _ = std::fs::create_dir_all(parent);
+                            }
+                            let content = format!("[[{}]]\n= {}\n\nagent-note::STUB[Auto-generated by aden-heal]\n", anchor, symbol_name);
+                            std::fs::write(&contract_path, content)?;
+                            println!("  Fixed: {} (created stub contract)", contract_path.display());
+                            fixed_count += 1;
+                        }
+                        aden_heal::DriftEvent::SignatureMismatch { contract_path, expected_sig: _, actual_sig, .. } => {
+                            let sig_str = actual_sig.join(",");
+                            let content = std::fs::read_to_string(contract_path)?;
+                            let updated = content
+                                .lines()
+                                .map(|line| {
+                                    if line.trim_start().starts_with(":source_sig:") {
+                                        format!(":source_sig: {}", sig_str)
+                                    } else {
+                                        line.to_string()
+                                    }
+                                })
+                                .collect::<Vec<_>>()
+                                .join("\n");
+                            std::fs::write(contract_path, updated)?;
+                            println!("  Fixed: {} (updated signature)", contract_path);
+                            fixed_count += 1;
+                        }
+                        _ => {
+                            println!("  Skipping {:?}: cannot auto-fix", event);
+                            failed_count += 1;
+                        }
+                    }
+                }
+
+                println!("\nFixed: {} events", fixed_count);
+                if failed_count > 0 {
+                    println!("Skipped: {} events (require manual review)", failed_count);
+                }
+
+                return Ok(());
+            }
 
             if propose {
                 println!("\n--propose flag set. Generating patches...");
@@ -127,6 +243,7 @@ pub fn cmd_heal_scan(path: &Path, propose: bool) -> Result<(), Box<dyn std::erro
                 println!("Apply with: aden heal --apply <proposal-id>");
             } else {
                 println!("\nRun with --propose to generate patch files for review.");
+                println!("Or use --fix to auto-fix StaleHash and MissingContract events.");
             }
 
             Ok(())
@@ -362,4 +479,61 @@ pub fn generate_proposal(
             })
         }
     }
+}
+
+pub fn cmd_heal_gc(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::util::discover_source_files;
+
+    println!("Aden Garbage Collector");
+    println!("======================\n");
+
+    let root = find_project_root(path);
+    let sources = discover_source_files(&root)?;
+
+    let source_set: std::collections::HashSet<String> = sources.iter()
+        .map(|s| {
+            let rel = s.strip_prefix(&root).unwrap_or(s);
+            rel.file_stem().unwrap_or_default().to_string_lossy().to_string()
+        })
+        .collect();
+
+    let contracts_dir = path.join("contracts");
+    if !contracts_dir.exists() {
+        println!("No contracts/ directory found. Nothing to GC.");
+        return Ok(());
+    }
+
+    let mut removed = 0;
+    let mut kept = 0;
+
+    fn walk_contracts(dir: &Path, source_set: &std::collections::HashSet<String>, removed: &mut usize, kept: &mut usize) -> std::io::Result<()> {
+        for entry in std::fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+
+            if path.is_dir() {
+                walk_contracts(&path, source_set, removed, kept)?;
+            } else if path.extension().map(|e| e == "adoc").unwrap_or(false) {
+                let file_stem = path.file_stem().unwrap_or_default().to_string_lossy();
+
+                let is_orphan = !source_set.iter().any(|s| {
+                    file_stem.contains(s) || file_stem.starts_with("module-")
+                });
+
+                if is_orphan {
+                    println!("  Removing orphaned: {}", path.display());
+                    std::fs::remove_file(&path)?;
+                    *removed += 1;
+                } else {
+                    *kept += 1;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    walk_contracts(&contracts_dir, &source_set, &mut removed, &mut kept)?;
+
+    println!("\nGC complete: {} contracts removed, {} kept", removed, kept);
+    Ok(())
 }
