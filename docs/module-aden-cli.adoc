@@ -7,42 +7,139 @@
 = module::aden-cli
 
 == Objective
-User-facing binary for the Aden toolchain.
+User-facing binary for the Aden toolchain. Orchestrates all crates through a unified CLI.
 
-== Signature
+== Commands (Implemented)
+
 |===
-|Command |Args |Behavior
+|Command |Arguments |Behavior
 
-|`aden init`|`--path <dir>`|Scaffold `.agent/` templates
-|`aden gen`|`<path> [--out-dir <dir>]`|Parse source and emit `.adoc` to stdout or `--out-dir`
-|`aden check`|`<path>`|Verify refs, anchors, cycles, orphans, source_hash integrity
-|`aden graph`|`--from <anchor> --depth <n> <path>`|Output graph neighborhood debug report
-|`aden asm`|`--from <anchor> --depth <n> --budget <tokens> [--edge-types TYPES] [--out FILE] <path>`|Assemble context prompt from graph
-|`aden query`|`--from <anchor> [--edge-type <type>] --depth <n> <path>`|Return JSON array of reachable nodes
-|`aden query`|`--backlinks <anchor> <path>`|Return JSON array of nodes referencing target anchor (incoming edges)
-|`aden query`|`--impact <anchor> <path>`|Return JSON transitive closure following uses, calls, constrains, invokes edges
-|`aden search`|`<query> <path>`|Search index and print ranked results with snippets
-|`aden watch`|`<path>`|Watch source files and auto-regenerate contracts on change
+|`aden init`|`[DIR]` (default `.`)|Scaffold `.agent/` templates and `.adenignore` in the target directory
+|`aden new`|`--lang <lang> --path <dir> <name>`|Create a new project from a language template with Aden scaffolding
+|`aden kickoff`|`--interactive --name <name>`|Create a kickoff document for a new initiative (interactive or from a brief)
+|`aden workflow`|`--from <template> [--out <file>]`|Instantiate templates with substitutions and chain documents
+|`aden gen`|`<PATH> [--out-dir <dir>] [--auto] [--merge] [--propose]`|Parse source file(s) and emit contracts; supports --merge (preserve human blocks) and --propose (dry-run)
+|`aden check`|`<DIR>` (default `.`)|Verify refs, anchors, cycles, orphans, and source_hash integrity
+|`aden graph`|`<ANCHOR> [--depth <n>] <DIR>`|Output graph neighborhood as a debug report
+|`aden asm`|`--from <anchor> --depth <n> --budget <tokens> [--edge-types TYPES] [--out FILE] [--format aden|adg] <DIR>`|Assemble context prompt from graph via BFS
+|`aden query`|`--from <anchor> [--edge-type <type>] --depth <n> <DIR>`|Return JSON array of reachable nodes
+|`aden query`|`--backlinks <anchor> <DIR>`|Return JSON array of nodes with incoming edges to target
+|`aden query`|`--impact <anchor> <DIR>`|Return JSON transitive closure over dependency edges (blast radius)
+|`aden query-adq`|<SCRIPT> <DIR>|Execute Aden Query script (node(), incoming(), outgoing(), nodes, edges)
+|`aden ask`|`<QUESTION> [DIR] [--from <anchor>] [--budget <tokens>] [--model <model>]`|Natural-language question → search → intent classification → assembled context
+|`aden search`|`<QUERY> <DIR> [--limit <n>]`|Full-text search. Prints ranked results with snippets
+|`aden list`|`<DIR> [--filter <pattern>] [--verbose] [--limit <n>] [--unlimited]`|List all anchors and contracts in the knowledge graph
+|`aden locate`|`<SYMBOL> <DIR> [--limit <n>] [--format plain|json]`|Locate a symbol definition or its call sites
+|`aden watch`|`<DIR>`|Watch source files and auto-regenerate contracts on change
+|`aden heal`|`<DIR> [--propose] [--fix] [--gc] [--since <ref>] [--apply <id>]`|Self-healing: scan drift, propose patches, auto-fix, garbage collect
+|`aden ci-check`|`<DIR>`|Run all local CI gates (check, heal, test, secret-scan, audit)
+|`aden doctor`|`<DIR>`|Diagnose environment: tool versions, repo health, signing keys
+|`aden review`|`--since <ref> [--budget <tokens>]`|Semantic review of changes since a Git ref, with token budgeting
+|`aden session`|`--agent-id <id> --task <task> --files <files> --status <status> <DIR>`|Atomic session lock: append entry to `.agent/session.adoc`
+|`aden licenses`|`<DIR> [--out <FILE>]`|Generate third-party attribution report from `Cargo.lock`
+|`aden audit`|`<DIR> [--format text|json|adoc] [--strict]`|OWASP-style security audit: scan source for vulnerability patterns
+|`aden mcp`|install|uninstall|list|MCP integration management
+|`aden suggest`|`<INTENT>`|AI assistant: describe what you want to do, get the right aden command
+|`aden emergency`|`--reason <reason> [--ttl 1h|24h|7d] <DIR>`|Emergency override: downgrade Forbid to Warn, auto-expires
 |`aden --version`|none|Print version
-|`aden --help`|none|Print help
+|`aden help`|none|Print help, including subcommand help
 |===
 
-== Invariants
-. `gen` on a file delegates to `aden_parse::parse_file`.
-. `gen` on a directory walks recursively via `aden_parse::parse_directory`.
-. `check` aggregates anchors across all `.adoc` / `.aden` files.
-. `check` builds full graph to detect cycles and orphans.
-. `check` verifies `:source_hash:` integrity via `aden_graph::integrity::check_hashes`.
-. `graph` performs BFS from `--from` anchor up to `--depth`.
-. `asm` assembles within `--budget` tokens using BFS traversal.
-. `query` emits JSON via `serde_json`.
-. `query --from` filters by optional `--edge-type` and respects `--depth`.
-. `query --backlinks` returns incoming neighbors as a flat JSON array.
-. `query --impact` computes transitive closure over Uses, Calls, Constrains, Invokes edges.
-. `search` builds an in-memory inverted index from all `.adoc`/`.aden` files and ranks by term frequency.
-. `watch` uses `notify` crate recursive watcher; regenerates `.aden` on source changes and validates on contract changes.
-. `init` includes template files embedded at compile time via `include_str!`.
+== Implementation Notes
 
-== Agent Notes
-agent-note::CONFIDENCE HIGH
-CLI uses `clap` derive macros. No open questions for Phase 2-3.
+- CLI uses `clap` derive macros with subcommand enums.
+- `init` embeds template files at compile time via `include_str!`.
+- `gen` delegates to `aden_parse::parse_file` and `aden_parse::parse_directory`.
+- `check` aggregates anchors across all `.adoc` / `.aden` files, builds full graph via `aden_graph`, verifies `:source_hash:` via `aden_graph::integrity::check_hashes`.
+- `graph` performs BFS from `--from` anchor up to `--depth`.
+- `asm` assembles within `--budget` tokens using BFS traversal from `--from`.
+- `query` emits JSON via `serde_json`. Sub-modes: `--from`, `--backlinks`, `--impact`.
+- `ask` is the AI-facing entry point: search → classify intent → assemble → optionally send to LLM via `ollama:<name>` or `openai:<name>`.
+- `search` uses `aden_index::Index` with TF-based scoring.
+- `watch` uses the `notify` crate with recursive watchers.
+- `heal` compares source hashes and signatures; `--propose` generates patches.
+- `ci-check` runs `check`, `heal`, workspace tests, secret scan, and `audit`.
+- `doctor` checks `rustc`, `cargo`, `git`, `aden` versions and verifies `.agent/` health.
+- `audit` performs regex-based SAST for OWASP Top 10 patterns across supported languages.
+- `mcp` starts or configures the Model Context Protocol server.
+
+== Troubleshooting
+
+=== Stale Hash Errors
+
+When `aden heal` reports `StaleHash`, the source file changed but contract wasn't regenerated.
+
+**Diagnosis:**
+[source]
+----
+aden heal .
+----
+
+**Output shows:**
+----
+StaleHash { target_path: "./crates/aden-graph/src/query.rs",
+           expected_hash: "708c8c789edfbebe",
+           actual_hash: "93a74f723c2ed242" }
+----
+
+**Recovery:**
+
+Contracts live in `contracts/crates/<crate>/src/`, mirroring the `crates/` structure.
+[source]
+----
+# Regenerate with correct output path
+aden gen crates/aden-graph/src/query.rs --out-dir contracts/crates/aden-graph/src/
+----
+
+**Prevention:**
+[source]
+----
+# Use --auto to regenerate all source files at once
+aden gen --auto .
+----
+
+=== Understanding Contract Paths
+
+- `aden gen` default output: `./contracts/` (root level)
+- Existing contracts: `contracts/crates/<crate>/src/`
+- Always specify `--out-dir` to match existing structure
+
+=== Cache Management
+
+Aden caches scan results in `.aden/`. To force fresh scan:
+[source]
+----
+rm .aden/gen-cache.json
+aden heal .
+----
+
+=== MissingAnchor Errors
+
+Cause: Reference points to non-existent anchor.
+
+Fix: Check contract file for correct anchor name. Ensure contract was generated.
+
+=== Orphan Document Warnings
+
+Cause: Document has no incoming edges.
+
+Fix: Add manual cross-references in your `.adoc` files using `<<anchor>>`.
+
+=== aden gen vs --out-dir
+
+[cols="1,2"]
+|===
+|Scenario|Command
+
+|Generate new contract|`aden gen src/foo.rs`
+|Update existing contract|`aden gen src/foo.rs --out-dir contracts/crates/aden-core/src/`
+|Regenerate all|`aden gen --auto .`
+|===
+
+== Related Documents
+
+. <<project-context>>
+. <<adr-001>>
+. <<getting-started>>
+. <<user-guide>>
+. <<ai-integration>>

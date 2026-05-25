@@ -3,6 +3,7 @@
 :path: crates/aden-lsp/src/
 :lang: rust
 
+
 [[mod-aden-lsp]]
 = module::aden-lsp
 
@@ -30,3 +31,8 @@ Language Server Protocol implementation for `.adoc`/`.aden` files. Provides diag
 == Agent Notes
 agent-note::SIMPLIFICATION
 No incremental sync (FULL sync only). No completion or rename. Rebuilds the graph from disk on every diagnostics request rather than maintaining an in-memory incremental index. Acceptable for Phase 5 MVP.
+
+== Related Documents
+
+. <<project-context>>
+. <<adr-001>>

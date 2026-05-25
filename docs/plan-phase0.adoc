@@ -1,39 +1,55 @@
 :proj: aden
 :phase: 0
 :agent_role: architect
-:scope: spec-lock + scaffold
+:scope: contract-kernel
 
 [[plan-phase0]]
-= Phase 0: Spec & Scaffold
+= Phase 0: The Contract Kernel (Weeks 1–2)
 
 == Objective
-Lock the AsciiDoc schema and bootstrap the Cargo workspace for the Aden referential context compiler.
 
-== Constraints
-:idempotent: true
-:rollback: true
+Load-bearing foundation for Constitutional Code Governance. The `[constitution]`, three-way merge engine, and region parsing are the substrate on which every subsequent phase depends.
+
+== Theme
+
+Foundation. If this is wrong, everything collapses.
 
 == Deliverables
-|===
-|Crate |Module |Acceptance Criteria
 
-|aden-core |Schema types |Compiles. Exports `Document`, `Block`, `Table`, `Symbol`, `FunctionSig`, `TypeDef`, `Contract`, `Edge`, `EdgeType`, `Error`.
-|aden-core |Error handling |Uses `thiserror`. Single unified `Error` enum with clear variants.
-|aden-cli |CLI skeleton |`aden --version` and `aden --help` work.
-|docs |context.adoc |Exists. Defines at least 3 glossary terms.
-|docs |plan-phase0.adoc |Exists. Validates against schema.
-|docs |adr-001.adoc |Exists. Justifies AsciiDoc over Markdown and Rust over alternatives.
+|===
+|ID |Deliverable |Crate |Status |Acceptance Criteria
+
+|0.1 |`ContractState` with three-way merge (`ground`/`base`/`working`) |`aden-core` |Shipped |Unit test: merge updates `[generated]` while preserving `[human]` and `[agent]` blocks across 100 fixtures
+|0.2 |`ContractRegion` enum and serialization |`aden-core` |Shipped |All 8 regions (`Generated`, `Human`, `Agent`, `Security`, `Contract`, `Constitution`, `Override`, `Proposed`) round-trip parse and serialize
+|0.3 |Strict AsciiDoc profile parser (`ParseMode::Strict`) |`aden-parse` |Shipped |Rejects non-profile syntax with line-specific errors; CI-enforced
+|0.4 |Permissive authoring parser (`ParseMode::Permissive`) |`aden-parse` |Shipped |Allows freeform prose outside blocks; warns but never fails
+|0.5 |`aden gen --merge` (reads Git staged/unstaged) |`aden-cli` |Shipped |Computes AST diff; applies updates only to `[generated]` blocks
+|0.6 |`aden gen --propose` (dry-run) |`aden-cli` |Shipped |Outputs per-block `MergeAction`: `UpdateGenerated`, `PreserveHuman`, `Conflict`
+|0.7 |`[constitution]` block parsing with precedence rules |`aden-policy` |Shipped |`aden check` resolves Agent A vs. Agent B directive conflicts using stated `:precedence:`
+|0.8 |Subagent staging protocol skeleton |`aden-core` |Shipped |`.aden/staging/{role}-{timestamp}.adoc` written; never read by `aden check`
 |===
 
-== Dependencies
-- `tree-sitter` crate (polyglot parsing)
-- `clap` (CLI)
-- `thiserror` (error handling)
-- `serde` + `serde_json` (AST interchange)
-- `blake3` (content hashing)
+== Security & Quality Gates
+
+|===
+|Gate |Requirement |Verification
+
+|Determinism |Same source → identical `.aden` and `.adg` bytes |CI SHA-256 comparison
+|Preservation |`aden gen --merge` never silently deletes `[human]` or `[agent]` |100-fixture regression test
+|Authority |`aden check` bypass requires committed `[override]` or emergency log |Integration test
+|===
+
+== Exit Gate
+
+A developer edits `src/lib.rs`, runs `aden gen --merge`, and the `.aden` file updates `[generated]` without touching their `[human]` architectural notes.
 
 == Trace
-- *2026-05-23*: Initial plan written.
 
-== Included Context
-include::context.adoc[]
+- *2026-05-23*: Initial plan written.
+- *2026-05-24*: Phase 0 delivered. All acceptance criteria satisfied. Workspace compiles warning-free.
+
+== Related Documents
+
+. <<project-context>>
+. <<adr-001>>
+. Next: <<plan-phase1>>

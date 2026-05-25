@@ -1,44 +1,41 @@
 :proj: aden
 :phase: 3
-:agent_role: architect
-:scope: context-assembler
+:agent_role: security-engineer
+:scope: security-governance
 
 [[plan-phase3]]
-= Phase 3: Context Assembler
+= Phase 3: Security & Governance (Weeks 7–8)
 
 == Objective
-Build the prompt compiler: transform a subgraph of `.aden` documents into a single flat AsciiDoc string for LLM ingestion.
 
-== Constraints
-:idempotent: true
-:rollback: true
+The contract becomes a generative security substrate.
+
+== Theme
+
+"Constitutional Graphs" vs. CodeGraph's "Observational Graphs."
 
 == Deliverables
+
 |===
-|Module |Deliverable |Acceptance Criteria
+|ID |Deliverable |Crate |Status |Acceptance Criteria
 
-|aden-asm |Preprocessor engine |Resolves `include::[]` with `tags=` and `lines=`; evaluates `ifdef`/`ifndef`/`ifeval`; handles `leveloffset`; deduplicates anchors
-|aden-asm |Graph traversal |BFS/DFS from `--from` anchor up to `--depth` hops
-|aden-asm |Edge filtering |Respect `--edge-types`; default follows all
-|aden-asm |Token budgeting |Estimates token cost; stops when `--budget` exceeded; prefers closer hops
-|aden-asm |Assembly order |Starting anchor first, then dependencies in traversal order
-|aden-cli |`asm` command |`--from <anchor> --depth <n> --budget <tokens> --out prompt.adoc`
+|3.1 |Directive engine (`Forbid`, `Warn`, `Suggest`, `Allow`) |`aden-policy` |Shipped |`aden check` exits non-zero on `Forbid`; passes on `Allow` with valid `[override]`
+|3.2 |`[override]` validation |`aden-policy` |Shipped |Requires `:justification:`, `:reviewer:`; `:expires:` auto-downgrades severity
+|3.3 |`[security]` block emission |`aden-emit` |Planned |`compile_time` → clippy lint; `runtime` → macro/wrapper; `test_only` → proptest target
+|3.4 |`[contract]` Design-by-Contract checker |`aden-policy` |Shipped |Parses `:pre:`, `:post:`, `:invariant:`; lightweight bounds analysis; Creusot export (experimental)
+|3.5 |`aden emergency --reason --ttl` |`aden-cli` |Shipped |Global `Forbid` → `Warn`; append-only signed audit log; auto-expires
+|3.6 |`aden check --severity=CI` |`aden-policy` |Planned |`Suggest` does not fail CI; `Warn` surfaces in PR comment
+|3.7 |Subagent consensus evaluation |`aden-policy` |Shipped |Staging proposals evaluated against `[constitution]`; outcomes: `Accept`, `Reject`, `RequireQuorum`, `RequireHumanReview`
+|3.8 |`[agent:role]` namespace and confidence scoring |`aden-core` |Planned |`:confidence:` derived from historical accuracy; threshold gating at 0.70
 |===
 
-== Supported Preprocessor Subset (Strict)
-- `include::path[tags=...]` — extract lines between `// tag::name[]` and `// end::name[]`
-- `include::path[lines=...]` — extract line ranges (`1..5`, `10..`)
-- `ifdef::attr[]` / `ifndef::attr[]` — attribute presence checks
-- `ifeval::[expr]` — equality and numeric comparison only (`==`, `!=`, `<`, `>`, `<=`, `>=`)
-- `leveloffset` — adjust heading levels (no negative offsets)
-- `endif::[]` — closes conditional
+== Exit Gate
 
-agent-note::SIMPLIFICATION
-No inline conditionals. No nested `ifeval` arithmetic beyond simple comparisons. No macro definitions. This is a deterministic subset sufficient for agent context assembly.
+PR introducing forbidden import blocked by CI unless accompanied by `[override]` with justification and reviewer.
 
-== Dependencies
-- `aden-core`, `aden-graph`
-- `petgraph` (for BFS traversal)
+**PUBLIC BETA MILESTONE:** End of Week 8.
 
-== Trace
-- *2026-05-23*: Plan written.
+== Related Documents
+
+. <<plan-phase2>>
+. Next: <<plan-phase4>>

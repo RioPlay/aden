@@ -1,6 +1,6 @@
 /target
-/contracts
-/.aden
+**/contracts/
+**/.aden/
 Cargo.lock
 *.bak
 *.swp
@@ -10,6 +10,9 @@ Cargo.lock
 .DS_Store
 .vscode/
 .idea/
+
+# IDE / Editor runtime files
+.opencode/
 
 # Secrets — NEVER commit these
 *.pem

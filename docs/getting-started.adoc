@@ -1,0 +1,188 @@
+:proj: aden
+:author: RioPlay
+
+[[getting-started]]
+= Getting Started with Aden
+
+This guide takes you from a fresh install to a working knowledge graph in under ten minutes. Every command below is real. Run them as you read.
+
+== Why This Works: The Repeatable Doc Pipeline
+
+Aden treats documentation as a build artifact. Just as `cargo build` turns Rust source into a binary, `aden gen` turns source code into AsciiDoc contracts. Just as `cargo test` verifies correctness, `aden check` verifies that every cross-reference resolves. This pipeline is fully repeatable:
+
+1. Source code changes.
+2. `aden gen` regenerates contracts deterministically.
+3. `aden check` validates the graph integrity.
+4. `aden ask` assembles context from the validated graph.
+
+Because everything is plain text, you can diff contracts in Git, review them in pull requests, and audit them with standard tools.
+
+== Prerequisites
+
+- Rust toolchain (1.85 or later)
+- A project with source code (any language Aden supports)
+
+== Step 1: Install Aden
+
+[source,bash]
+----
+# From the repository root
+cargo install --path crates/aden-cli
+
+# Verify
+aden
+# Expected output: aden 0.1.0
+----
+
+== Step 2: Initialize Your Repository
+
+Run this inside any project folder:
+
+[source,bash]
+----
+cd /path/to/your-project
+aden init
+----
+
+You will see:
+
+[source]
+----
+Initialized .agent/ in .
+Generated .adenignore with security-first defaults.
+Generated 19 template files.
+----
+
+What just happened:
+- `.agent/` now contains templates, onboarding docs, constraints, and a session log.
+- `.adenignore` prevents sensitive files and build artifacts from being indexed.
+- The templates are AsciiDoc files you can customize for your team's conventions.
+
+== Step 3: Generate Contracts from Source
+
+Aden extracts structure from your code and emits `.adoc` contracts into `./contracts/`.
+
+[source,bash]
+----
+# Single file
+aden gen src/lib.rs
+
+# Entire directory tree
+aden gen src/ --auto
+----
+
+For Rust projects, you should see files like:
+
+[source]
+----
+contracts/
+  lib.rs.adoc
+  parser.rs.adoc
+  graph.rs.adoc
+----
+
+Each contract contains:
+- An anchor (`[[file-name]]`)
+- A title
+- Signature tables (functions, types, traits)
+- A source hash for drift detection
+
+== Step 4: Validate the Graph
+
+[source,bash]
+----
+aden check .
+----
+
+If everything is clean:
+
+[source]
+----
+INFO: All cross-references resolve.
+INFO: No include cycles detected.
+INFO: No orphan documents.
+INFO: All source_hash values valid.
+INFO: All typed edges valid.
+----
+
+If you see errors, fix them before committing:
+- `DuplicateAnchor("foo")` means two files declare `[[foo]]`. Rename one.
+- `UnresolvedReference` means a `<<foo>>` points to a missing `[[foo]]`. Create the target or fix the typo.
+
+== Step 5: Ask Questions
+
+Now the fun part. Ask Aden about your codebase in plain English:
+
+[source,bash]
+----
+aden ask "What does the parser module do?"
+----
+
+Aden performs four steps automatically:
+1. **Searches** the knowledge graph for documents matching your keywords.
+2. **Classifies intent** (Explain, Usage, Refactor, Impact, Debug, or General).
+3. **Selects edge types and depth** appropriate to that intent.
+4. **Assembles** a context prompt via BFS traversal, staying within a token budget.
+
+The output is raw AsciiDoc you can paste into any LLM chat.
+
+=== Pinning a Starting Anchor
+
+If Aden's search picks the wrong document, pin it:
+
+[source,bash]
+----
+aden ask --from mod-aden-parse "How does error handling work?"
+----
+
+== Step 6: Explore Dependencies
+
+Before a refactor, understand the blast radius:
+
+[source,bash]
+----
+aden graph --from mod-aden-core --depth 2
+----
+
+This outputs a debug report of every document reachable from `mod-aden-core` within two hops.
+
+== Step 7: Detect Drift
+
+After you change source code, contracts become stale. Aden notices:
+
+[source,bash]
+----
+aden heal .
+----
+
+Output shows drift events like `StaleHash`, `SignatureMismatch`, or `MissingContract`. Address them by re-running `aden gen` on the changed files.
+
+== Step 8: Generate Contracts With Three-Way Merge
+
+When you edit source files, Aden can preserve your human-written notes while updating only the machine-generated parts.
+
+[source,bash]
+----
+# Preview what would change
+aden gen src/lib.rs --propose
+
+# Actually apply the merge (updates [generated] blocks only)
+aden gen src/lib.rs --merge
+
+# Or merge the entire project
+aden gen src/ --auto --merge
+----
+
+What happens:
+- `aden gen --propose` shows a dry-run of `MergeAction` per block without writing files.
+- `aden gen --merge` applies updates only to `[generated]` blocks.
+- `[human]`, `[agent]`, `[security]`, and `[override]` blocks are preserved.
+- Conflicts are emitted as `[proposed]` blocks for manual review.
+
+== What Is Next?
+
+- Read <<user-guide>> for daily workflows.
+- Read <<ai-integration>> if you are an AI agent or building agent pipelines.
+- Read <<philosophy>> for the design rationale.
+- Explore <<plan-phase0>> through <<plan-phase6>> for the development roadmap.
+- See <<quickstart>> for a quick AI agent onboarding guide.

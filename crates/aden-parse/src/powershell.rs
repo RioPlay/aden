@@ -61,10 +61,15 @@ struct PsType {
 }
 
 pub fn extract_documents(path: &Path, _source: &str) -> Result<Vec<Document>> {
+    // SECURITY: Resolve script only from the binary's directory to avoid
+    // cwd-borne attacks. Never fall back to a relative path.
     let script_path = std::env::current_exe()
         .ok()
         .and_then(|exe| exe.parent().map(|p| p.join("Export-AST.ps1")))
-        .unwrap_or_else(|| Path::new("tools/ps-adapter/Export-AST.ps1").to_path_buf());
+        .filter(|p| p.is_file())
+        .ok_or_else(|| Error::Io(
+            "Export-AST.ps1 not found next to aden binary. Install aden properly.".to_string()
+        ))?;
 
     let shell = discover_powershell().ok_or_else(|| {
         Error::Io("PowerShell not available (tried pwsh and powershell)".to_string())

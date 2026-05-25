@@ -3,6 +3,7 @@
 :path: crates/aden-propose/src/
 :lang: rust
 
+
 [[mod-aden-propose]]
 = module::aden-propose
 
@@ -32,3 +33,8 @@ Patch generation and proposal lifecycle management for drift events.
 == Agent Notes
 agent-note::CONFIDENCE HIGH
 No open questions for Phase 6.
+
+== Related Documents
+
+. <<project-context>>
+. <<adr-001>>

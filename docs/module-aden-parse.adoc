@@ -3,6 +3,7 @@
 :path: crates/aden-parse/src/
 :lang: rust
 
+
 [[mod-aden-parse]]
 = module::aden-parse
 
@@ -28,3 +29,8 @@ Extraction engine: turns source files into `Vec<Document>`.
 == Agent Notes
 agent-note::OPEN QUESTION
 Should we support nested items (impl blocks, inner fns)? Defer to Phase 2.
+
+== Related Documents
+
+. <<project-context>>
+. <<adr-001>>

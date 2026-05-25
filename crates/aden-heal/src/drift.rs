@@ -47,6 +47,19 @@ pub enum DriftEvent {
         contract_path: String,
         include_path: String,
     },
+    MarkdownDrift {
+        md_path: String,
+        expected_content: String,
+        actual_content: String,
+    },
+    StaleMarkdown {
+        md_path: String,
+        source_files_changed: Vec<String>,
+    },
+    MissingMarkdownTemplate {
+        md_path: String,
+        template_source: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -77,6 +90,9 @@ impl DriftEvent {
             DriftEvent::OrphanAnchor { .. } => DriftSeverity::Medium,
             DriftEvent::BrokenReference { .. } => DriftSeverity::Critical,
             DriftEvent::DeadLink { .. } => DriftSeverity::Low,
+            DriftEvent::MarkdownDrift { .. } => DriftSeverity::High,
+            DriftEvent::StaleMarkdown { .. } => DriftSeverity::Medium,
+            DriftEvent::MissingMarkdownTemplate { .. } => DriftSeverity::Medium,
         }
     }
 }

@@ -22,11 +22,20 @@ members = [
     "crates/aden-graph",
     "crates/aden-index",
     "crates/aden-cli",
-    "crates/aden-py",
     "crates/aden-lsp",
     "crates/aden-heal",
     "crates/aden-propose",
+    "crates/aden-mcp",
+    "crates/aden-policy",
+    "crates/aden-attest",
+    "crates/aden-telemetry",
+    "crates/aden-simulate",
+    "crates/aden-api",
 ]
+
+# NOTE: aden-py is NOT in the default workspace build because it requires
+# Python development headers (libpython). Build it separately with:
+#   cd crates/aden-py && cargo build
 resolver = "3"
 
 [workspace.package]

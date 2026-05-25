@@ -14,10 +14,20 @@
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 // GNU Affero General Public License for more details.
 //
-use aden_core::EdgeType;
+use aden_core::{Block, EdgeType};
 use aden_graph::{AdenGraph, graph::DocumentNode};
 use petgraph::Direction;
 use std::collections::{HashSet, VecDeque};
+
+/// Which block types to include when assembling a document.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BlockKind {
+    Table,
+    Paragraph,
+    Listing,
+    Admonition,
+    DescriptionList,
+}
 
 /// Options for assembling a context prompt.
 #[derive(Debug, Clone)]
@@ -28,12 +38,15 @@ pub struct AssemblyOptions {
     pub token_budget: usize,
     /// Edge types to follow. If empty, follow all.
     pub edge_types: Vec<EdgeType>,
+    /// Block types to include when emitting documents.
+    /// If empty, include all blocks.
+    pub block_filter: Vec<BlockKind>,
 }
 
 /// Assemble a flat `.adoc` prompt from a graph neighborhood.
 pub fn assemble(graph: &AdenGraph, opts: &AssemblyOptions) -> Result<String, AssemblyError> {
     let start_idx = graph.get_index(&opts.start_anchor).ok_or_else(|| {
-        AssemblyError::MissingAnchor(opts.start_anchor.clone())
+        AssemblyError::AnchorNotFound(opts.start_anchor.clone())
     })?;
 
     let mut visited = HashSet::new();
@@ -55,7 +68,7 @@ pub fn assemble(graph: &AdenGraph, opts: &AssemblyOptions) -> Result<String, Ass
             continue;
         }
         let doc = &graph.graph[node];
-        let text = document_to_text(doc);
+        let text = document_to_text(doc, &opts.block_filter);
         let tokens = estimate_tokens(&text);
         if total_tokens + tokens > opts.token_budget {
             break;
@@ -78,76 +91,152 @@ pub fn assemble(graph: &AdenGraph, opts: &AssemblyOptions) -> Result<String, Ass
     Ok(result.join("\n<<<\n"))
 }
 
-#[derive(Debug, thiserror::Error)]
-pub enum AssemblyError {
-    #[error("missing anchor: {0}")]
-    MissingAnchor(String),
-    #[error("graph error: {0}")]
-    Graph(String),
-}
+/// Assemble documents in ADG (compact JSON) format for token-efficient LLM context.
+pub fn assemble_adg(graph: &AdenGraph, opts: &AssemblyOptions) -> Result<String, AssemblyError> {
+    use aden_emit::emit_adg;
 
-fn document_to_text(doc: &DocumentNode) -> String {
-    use aden_core::{Block, AdmonitionKind};
-    let mut out = String::new();
-    // Attributes
-    for (key, value) in &doc.doc.attributes {
-        out.push_str(&format!(":{key}: {value}\n"));
-    }
-    out.push('\n');
-    // Anchor + Title
-    out.push_str(&format!("[[{}]]\n", doc.anchor));
-    let title = doc.anchor.rfind('#').map(|p| &doc.anchor[p+1..]).unwrap_or(&doc.anchor);
-    out.push_str(&format!("= {title}\n\n"));
-    // Blocks
-    for block in &doc.doc.blocks {
-        match block {
-            Block::Paragraph(t) => {
-                out.push_str(t);
-                out.push('\n');
-            }
-            Block::Table(table) => {
-                out.push_str("|===\n");
-                let header = table.headers.iter().map(|h| format!("|{h}")).collect::<String>();
-                out.push_str(&header);
-                out.push('\n');
-                for row in &table.rows {
-                    let row_str = row.iter().map(|c| format!("|{c}")).collect::<String>();
-                    out.push_str(&row_str);
-                    out.push('\n');
-                }
-                out.push_str("|===\n");
-            }
-            Block::Listing { language, code } => {
-                if let Some(lang) = language {
-                    out.push_str(&format!("[source,{lang}]\n"));
-                } else {
-                    out.push_str("[listing]\n");
-                }
-                out.push_str("----\n");
-                out.push_str(code);
-                out.push_str("\n----\n");
-            }
-            Block::Admonition { kind, text } => {
-                let label = match kind {
-                    AdmonitionKind::Note => "NOTE",
-                    AdmonitionKind::Tip => "TIP",
-                    AdmonitionKind::Warning => "WARNING",
-                    AdmonitionKind::Important => "IMPORTANT",
-                    AdmonitionKind::Caution => "CAUTION",
-                };
-                out.push_str(&format!("{label}: {text}\n"));
-            }
-            Block::DescriptionList(items) => {
-                for (term, def) in items {
-                    out.push_str(&format!("{term}:: {def}\n"));
+    let start_idx = graph.get_index(&opts.start_anchor).ok_or_else(|| {
+        AssemblyError::AnchorNotFound(opts.start_anchor.clone())
+    })?;
+
+    let mut visited = HashSet::new();
+    let mut queue = VecDeque::new();
+    let mut results = Vec::new();
+    let mut total_tokens = 0usize;
+
+    queue.push_back((start_idx, 0usize));
+
+    const MAX_VISITED_NODES: usize = 10_000;
+    while let Some((node, depth)) = queue.pop_front() {
+        if visited.len() >= MAX_VISITED_NODES {
+            break;
+        }
+        if visited.contains(&node) {
+            continue;
+        }
+        if depth > opts.max_depth {
+            continue;
+        }
+        let doc = &graph.graph[node];
+        let adg_json = emit_adg(&doc.doc).map_err(|e| AssemblyError::Graph(e.to_string()))?;
+        let tokens = adg_json.len() / 4; // rough token estimate
+        if total_tokens + tokens > opts.token_budget {
+            break;
+        }
+        total_tokens += tokens;
+        visited.insert(node);
+        results.push(adg_json);
+
+        for neighbor in graph.graph.neighbors_directed(node, Direction::Outgoing) {
+            if let Some(edge) = graph.graph.find_edge(node, neighbor) {
+                let edge_type = *graph.graph.edge_weight(edge).unwrap_or(&EdgeType::Uses);
+                if opts.edge_types.is_empty() || opts.edge_types.contains(&edge_type) {
+                    queue.push_back((neighbor, depth + 1));
                 }
             }
         }
     }
-    out
+
+    let output = format!("[\n{}\n]", results.join(",\n"));
+    Ok(output)
 }
 
-/// Simple token estimation: roughly 1 token per 4 bytes (text) or 1 token per 3 bytes (code).
+#[derive(Debug, thiserror::Error)]
+pub enum AssemblyError {
+    #[error("Anchor '{0}' not found. Run 'aden list .' to see available anchors.")]
+    AnchorNotFound(String),
+    #[error("graph error: {0}")]
+    Graph(String),
+}
+
+fn document_to_text(doc: &DocumentNode, block_filter: &[BlockKind]) -> String {
+    let has_filter = !block_filter.is_empty();
+    let should_include = |b: &Block| -> bool {
+        if !has_filter { return true; }
+        let kind = match b {
+            Block::Table(_) => BlockKind::Table,
+            Block::Paragraph(_) => BlockKind::Paragraph,
+            Block::Listing { .. } => BlockKind::Listing,
+            Block::Admonition { .. } => BlockKind::Admonition,
+            Block::DescriptionList(_) => BlockKind::DescriptionList,
+        };
+        block_filter.contains(&kind)
+    };
+
+    // If blocks were populated during parsing, emit structured content.
+    // Otherwise fall back to the original raw source so the assembled
+    // context is never empty.
+    if !doc.doc.blocks.is_empty() {
+        use aden_core::AdmonitionKind;
+        let mut out = String::new();
+        // Attributes
+        for (key, value) in &doc.doc.attributes {
+            out.push_str(&format!(":{key}: {value}\n"));
+        }
+        out.push('\n');
+        // Anchor + Title
+        out.push_str(&format!("[[{}]]\n", doc.anchor));
+        let title = doc.anchor.rfind('#').map(|p| &doc.anchor[p+1..]).unwrap_or(&doc.anchor);
+        out.push_str(&format!("= {title}\n\n"));
+        // Blocks
+        for block in &doc.doc.blocks {
+            if !should_include(block) { continue; }
+            match block {
+                Block::Paragraph(t) => {
+                    out.push_str(t);
+                    out.push('\n');
+                }
+                Block::Table(table) => {
+                    out.push_str("|===\n");
+                    let header = table.headers.iter().map(|h| format!("|{h}")).collect::<String>();
+                    out.push_str(&header);
+                    out.push('\n');
+                    for row in &table.rows {
+                        let row_str = row.iter().map(|c| format!("|{c}")).collect::<String>();
+                        out.push_str(&row_str);
+                        out.push('\n');
+                    }
+                    out.push_str("|===\n");
+                }
+                Block::Listing { language, code } => {
+                    if let Some(lang) = language {
+                        out.push_str(&format!("[source,{lang}]\n"));
+                    } else {
+                        out.push_str("[listing]\n");
+                    }
+                    out.push_str("----\n");
+                    out.push_str(code);
+                    out.push_str("\n----\n");
+                }
+                Block::Admonition { kind, text } => {
+                    let label = match kind {
+                        AdmonitionKind::Note => "NOTE",
+                        AdmonitionKind::Tip => "TIP",
+                        AdmonitionKind::Warning => "WARNING",
+                        AdmonitionKind::Important => "IMPORTANT",
+                        AdmonitionKind::Caution => "CAUTION",
+                    };
+                    out.push_str(&format!("{label}: {text}\n"));
+                }
+                Block::DescriptionList(items) => {
+                    for (term, def) in items {
+                        out.push_str(&format!("{term}:: {def}\n"));
+                    }
+                }
+            }
+        }
+        out
+    } else {
+        doc.parsed.raw_content.trim().to_string()
+    }
+}
+
+/// Improved token estimation using a word-based heuristic.
+/// Typical LLM tokenization yields roughly 0.75 words per token.
 fn estimate_tokens(text: &str) -> usize {
-    text.len() / 4 + 1
+    let word_count = text
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
+        .filter(|s| !s.is_empty())
+        .count();
+    (word_count * 4 / 3).max(1)
 }

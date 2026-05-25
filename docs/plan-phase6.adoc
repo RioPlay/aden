@@ -1,47 +1,40 @@
 :proj: aden
 :phase: 6
-:agent_role: architect
-:scope: self-healing-documentation-engine
+:agent_role: enterprise-architect
+:scope: enterprise-scale
 
 [[plan-phase6]]
-= Phase 6: Self-Healing Documentation Engine
+= Phase 6: Enterprise Scale (Weeks 15–18)
 
 == Objective
-Detect drift between code reality and documented contracts. Never mutate unilaterally. Propose, explain, and await approval.
 
-== Constraints
-:idempotent: true
-:rollback: true
-:mode: propose-only by default
-:mutation_requires: --apply flag explicitly
+Organizational governance, spec-driven scaffolding, ecosystem integration.
+
+== Theme
+
+Organizational policy inheritance and federation across repositories.
 
 == Deliverables
-|===
-|Module |Deliverable |Acceptance Criteria
 
-|aden-heal |Drift scanner |Walks repo, compares parsed AST to stored contracts, emits DriftEvent
-|aden-heal |Health report |Aggregates events into HealthReport with overall_score (0-1)
-|aden-heal |Fuzzy anchor recovery |Levenshtein distance over anchor namespace, suggests matches >= 0.85
-|aden-propose |Patch generation |AsciiDoc-native patches showing exact line changes
-|aden-propose |Stub generator |Emits minimal .aden with agent-note::STUB and valid :source_hash:
-|aden-propose |Proposal persistence |Writes .patch.adoc to .aden/proposals/ with :status:, :confidence:, :target:
-|aden-cli |heal --scan |Read-only health check; safe for CI
-|aden-cli |heal --scan --propose |Generates .patch.adoc files but does not mutate
-|aden-cli |heal --apply <id> |Applies single reviewed proposal
-|tools/git-hooks |Pre-commit hook |Fails commit if CRITICAL drift detected
+|===
+|ID |Deliverable |Crate |Status |Acceptance Criteria
+
+|6.1 |Organizational policy inheritance |`aden-policy` |Planned |`aden policy fetch` downloads templates; `aden policy update` suggests diffs; CI enforces inherited directives
+|6.2 |`aden scaffold` from `[spec]` blocks |`aden-emit` |Planned |Produces module skeleton with pre-wired `[security]`/`[contract]`; lists required `[human]` blocks
+|6.3 |`aden-api` REST/gRPC |`aden-api` |Planned |Query contract state, submit override proposals, export SBOM programmatically
+|6.4 |`aden threat-model --report` |`aden-simulate` |Planned |Scans overrides; flags high-risk modules; exports HTML/JSON
+|6.5 |Multi-repo federation (Phase 1) |`aden-graph` |Planned |Cross-repo edges via registry-published `.adg` artifacts
+|6.6 |Post-quantum signing research (SPHINCS+) |`aden-attest` |Planned |Experimental; behind feature flag
+|6.7 |Full A2A interoperability with third-party agents |`aden-a2a` |Planned |Aden-managed agents negotiate with external A2A agents via contract mediation
 |===
 
-== Drift Types
-|===
-|Drift |Detection |Action
+== Exit Gate
 
-|Stale Hash|:source_hash: mismatch|Regenerate contract from AST
-|Signature Mismatch|Function signature changed in AST|Update == Signature table
-|Missing Contract|Public symbol has no .aden file|Emit stub with agent-note::STUB
-|Orphan Anchor|Anchor exists in .aden but no source symbol|Flag for archival
-|Broken Reference|`<<ref>>` points to deleted node|Fuzzy-match replacement
-|Dead Link|include::[] target removed|Suggest removal
-|===
+Enterprise org with 50+ repos runs `aden policy fetch` from central template registry; CI enforces inherited `[constitution]` directives across all repositories.
 
-== Trace
-- *2026-05-23*: Plan written.
+**ENTERPRISE v1.0 MILESTONE:** End of Week 18.
+
+== Related Documents
+
+. <<plan-phase5>>
+. <<plan-governance>>

@@ -1,9 +1,9 @@
 # Aden Ignore — Security-first defaults
 # Contracts are build artifacts; never commit them.
-/contracts/
-/.aden/
-/target/
-/.git/
+contracts/
+.aden/
+target/
+.git/
 
 # Secrets (never process)
 *.pem

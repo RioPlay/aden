@@ -1,3 +1,4 @@
+#![allow(clippy::module_inception)]
 // Copyright (c) 2026 RioPlay <rioplay@rioplay.dev>
 // All rights reserved.
 //
@@ -125,6 +126,7 @@ agent-note::DEPRECATED[2024-03-01] Use new_module instead
             conditional_stack: Vec::new(),
             raw_content: String::new(),
             semantic_diffs: Vec::new(),
+            blocks: Vec::new(),
         };
         let doc1 = Document {
             anchor: "mod-a".to_string(),
@@ -175,6 +177,7 @@ agent-note::DEPRECATED[2024-03-01] Use new_module instead
             conditional_stack: Vec::new(),
             raw_content: String::new(),
             semantic_diffs: Vec::new(),
+            blocks: Vec::new(),
         };
         let doc1 = Document {
             anchor: "note-a".to_string(),
@@ -206,9 +209,182 @@ agent-note::DEPRECATED[2024-03-01] Use new_module instead
         let idx2 = graph.graph.add_node(node2);
         graph.anchor_to_index.insert("note-a".to_string(), idx1);
         graph.anchor_to_index.insert("adr-b".to_string(), idx2);
-        graph.graph.add_edge(idx1, idx2, EdgeType::Uses);
+        // Calls between two document nodes is invalid
+        graph.graph.add_edge(idx1, idx2, EdgeType::Calls);
 
         let errors = graph.validate_typed_edges();
-        assert!(!errors.is_empty(), "Expected validation errors for invalid edge");
+        assert!(!errors.is_empty(), "Expected validation errors for invalid Calls edge between documents");
+    }
+
+    // ── Structured Block Parsing Tests ───────────────────────────
+
+    #[test]
+    fn test_parse_table_blocks() {
+        let content = r#":proj: test
+[[test-anchor]]
+= Title
+
+|===
+|Name |Type
+|foo |bar
+|baz |qux
+|===
+"#;
+        let tmp = create_test_file(content);
+        let parsed = parser::parse_file(tmp.path()).unwrap();
+        let tables: Vec<_> = parsed.blocks.iter().filter_map(|b| match b {
+            aden_core::Block::Table(t) => Some(t),
+            _ => None,
+        }).collect();
+        assert_eq!(tables.len(), 1, "Expected one table block");
+        assert_eq!(tables[0].headers, vec!["Name", "Type"]);
+        assert_eq!(tables[0].rows.len(), 2);
+        assert_eq!(tables[0].rows[0], vec!["foo", "bar"]);
+        assert_eq!(tables[0].rows[1], vec!["baz", "qux"]);
+    }
+
+    #[test]
+    fn test_parse_listing_block() {
+        let content = r#":proj: test
+[[test-anchor]]
+= Title
+
+[source,rust]
+----
+fn main() {
+    println!("hello");
+}
+----
+"#;
+        let tmp = create_test_file(content);
+        let parsed = parser::parse_file(tmp.path()).unwrap();
+        let listings: Vec<_> = parsed.blocks.iter().filter_map(|b| match b {
+            aden_core::Block::Listing { language, code } => Some((language.clone(), code.clone())),
+            _ => None,
+        }).collect();
+        assert_eq!(listings.len(), 1, "Expected one listing block");
+        assert_eq!(listings[0].0, Some("rust".to_string()));
+        assert!(listings[0].1.contains("fn main()"));
+    }
+
+    #[test]
+    fn test_parse_admonition_block() {
+        let content = r#":proj: test
+[[test-anchor]]
+= Title
+
+WARNING: Do not commit secrets.
+"#;
+        let tmp = create_test_file(content);
+        let parsed = parser::parse_file(tmp.path()).unwrap();
+        let admonitions: Vec<_> = parsed.blocks.iter().filter_map(|b| match b {
+            aden_core::Block::Admonition { kind, text } => Some((kind.clone(), text.clone())),
+            _ => None,
+        }).collect();
+        assert_eq!(admonitions.len(), 1);
+        assert_eq!(admonitions[0].0, aden_core::AdmonitionKind::Warning);
+        assert_eq!(admonitions[0].1, "Do not commit secrets.");
+    }
+
+    #[test]
+    fn test_parse_description_list_block() {
+        let content = r#":proj: test
+[[test-anchor]]
+= Title
+
+foo:: The foo module.
+bar:: The bar module.
+"#;
+        let tmp = create_test_file(content);
+        let parsed = parser::parse_file(tmp.path()).unwrap();
+        let desc_lists: Vec<_> = parsed.blocks.iter().filter_map(|b| match b {
+            aden_core::Block::DescriptionList(items) => Some(items.clone()),
+            _ => None,
+        }).collect();
+        assert_eq!(desc_lists.len(), 2, "Expected two description list blocks");
+        assert_eq!(desc_lists[0][0].0, "foo");
+        assert_eq!(desc_lists[0][0].1, "The foo module.");
+        assert_eq!(desc_lists[1][0].0, "bar");
+        assert_eq!(desc_lists[1][0].1, "The bar module.");
+    }
+
+    #[test]
+    fn test_parse_paragraph_blocks() {
+        let content = r#":proj: test
+[[test-anchor]]
+= Title
+
+First paragraph.
+Still first paragraph.
+
+Second paragraph.
+"#;
+        let tmp = create_test_file(content);
+        let parsed = parser::parse_file(tmp.path()).unwrap();
+        let paragraphs: Vec<_> = parsed.blocks.iter().filter_map(|b| match b {
+            aden_core::Block::Paragraph(t) => Some(t.clone()),
+            _ => None,
+        }).collect();
+        assert_eq!(paragraphs.len(), 2, "Expected two paragraph blocks");
+        assert!(paragraphs[0].contains("First paragraph."));
+        assert!(paragraphs[0].contains("Still first paragraph."));
+        assert!(paragraphs[1].contains("Second paragraph."));
+    }
+
+    #[test]
+    fn test_parse_mixed_blocks() {
+        let content = r#":proj: test
+[[test-anchor]]
+= Title
+
+Intro paragraph.
+
+|===
+|A |B
+|1 |2
+|===
+
+IMPORTANT: Check this.
+
+[source,bash]
+----
+echo hi
+----
+
+Closing paragraph.
+"#;
+        let tmp = create_test_file(content);
+        let parsed = parser::parse_file(tmp.path()).unwrap();
+
+        let mut found_paragraph = false;
+        let mut found_table = false;
+        let mut found_admonition = false;
+        let mut found_listing = false;
+
+        for block in &parsed.blocks {
+            match block {
+                aden_core::Block::Paragraph(t)
+                    if (t.contains("Intro") || t.contains("Closing")) => {
+                        found_paragraph = true;
+                    }
+                aden_core::Block::Table(t)
+                    if t.headers == vec!["A", "B"] => {
+                        found_table = true;
+                    }
+                aden_core::Block::Admonition { kind, .. }
+                    if *kind == aden_core::AdmonitionKind::Important => {
+                        found_admonition = true;
+                    }
+                aden_core::Block::Listing { language, .. }
+                    if language.as_deref() == Some("bash") => {
+                        found_listing = true;
+                    }
+                _ => {}
+            }
+        }
+        assert!(found_paragraph, "Should find paragraph blocks");
+        assert!(found_table, "Should find table block");
+        assert!(found_admonition, "Should find admonition block");
+        assert!(found_listing, "Should find listing block");
     }
 }

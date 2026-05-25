@@ -1,3 +1,4 @@
+#![allow(clippy::module_inception)]
 // Copyright (c) 2026 RioPlay <rioplay@rioplay.dev>
 // All rights reserved.
 //
@@ -45,6 +46,7 @@ mod tests {
             max_depth: 3,
             token_budget: 1000,
             edge_types: vec![],
+            block_filter: vec![],
         };
         assert_eq!(opts.start_anchor, "start");
         assert_eq!(opts.max_depth, 3);

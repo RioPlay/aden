@@ -86,3 +86,8 @@ If deployment fails:
 * xref:kickoff.adoc[Kickoff]
 * xref:design.adoc[Design]
 * xref:task.adoc[Tasks]
+
+== Related Documents
+
+. <<adr-{number}>>
+. <<design-{feature}>>

@@ -1,29 +1,37 @@
 :proj: aden
 :phase: 4
-:agent_role: architect
-:scope: integrity-ci-oracle
+:agent_role: compliance-engineer
+:scope: attestation-compliance
 
 [[plan-phase4]]
-= Phase 4: Integrity & CI Oracle
+= Phase 4: Attestation & Compliance (Weeks 9–10)
 
 == Objective
-Make the graph structurally unassailable. Every contract must be traceable to source. Every edge must be semantically valid. Every change must be time-stamped.
 
-== Constraints
-:idempotent: true
-:rollback: true
-:strict: true
+Turn contracts into procurement-grade evidence.
+
+== Theme
+
+Regulatory-grade SBOMs, signing, and provenance.
 
 == Deliverables
-|===
-|Module |Deliverable |Acceptance Criteria
 
-|aden-graph |Merkle hash checking |`check_hashes` recomputes Blake3 and fails CI on mismatch
-|aden-graph |Completeness enforcement |Orphan symbols, unresolved refs, cycles detected; missing error contracts flagged
-|aden-graph |Typed edge validation |Edges checked against node type matrix; invalid edges fail
-|aden-graph |Semantic diff indexing |`agent-note::CHANGED[]`, `::DEPRECATED[]`, `::ADDED[]` parsed and stored
-|aden-cli |`aden query` |`--from`, `--backlinks`, `--impact` return JSON
+|===
+|ID |Deliverable |Crate |Status |Acceptance Criteria
+
+|4.1 |SPDX 3.0 export with Aden extensions |`aden-attest` |Planned |Validates against SPDX online validator
+|4.2 |CycloneDX export |`aden-attest` |Planned |Validates against CycloneDX CLI
+|4.3 |Ed25519 signing and verification |`aden-attest` |Planned |`aden verify-sbom` confirms signature and key provenance
+|4.4 |SLSA provenance generation |`aden-attest` |Planned |Contract hash embedded in `buildDefinition`; SLSA Level 3 achievable with existing CI
+|4.5 |SBOMit attestation format |`aden-attest` |Planned |Claims and evidence per SBOMit v1.2 spec
+|4.6 |Subagent proposals in attestation |`aden-attest` |Planned |Every promoted `[agent]` block includes proposer identity, reviewer, and confidence score
 |===
 
-== Trace
-- *2026-05-23*: Plan written.
+== Exit Gate
+
+Release artifact ships with signed SBOM referencing exact `.aden` contract hash used at build.
+
+== Related Documents
+
+. <<plan-phase3>>
+. Next: <<plan-phase5>>

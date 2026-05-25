@@ -97,3 +97,7 @@ What does this system do? What does it depend on? Who depends on it?
 * xref:monitoring-dashboard[]
 * xref:architecture-diagram[]
 * xref:adr-{number}.adoc[Design Decisions]
+
+== Related Documents
+
+. <<adr-{number}>>

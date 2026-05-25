@@ -48,3 +48,9 @@ Rust is chosen because the toolchain must parse large codebases with minimal ove
 
 == Trace
 - *2026-05-23*: Initial ADR drafted.
+
+== Related Documents
+
+. <<plan-phase0>>
+. Complementary decision: <<adr-002>>
+. <<project-context>>

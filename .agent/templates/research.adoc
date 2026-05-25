@@ -128,3 +128,7 @@ Patterns that suggest bias, misinformation, or low-quality sourcing.
 * xref:research-{related}.adoc[Research: {related}]
 * xref:glossary.adoc[Project Glossary]
 * xref:style-guide.adoc[Style Guide]
+
+== Related Documents
+
+. <<adr-{number}>>

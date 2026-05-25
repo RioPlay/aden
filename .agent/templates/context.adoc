@@ -1,48 +1,55 @@
 :proj: {project}
-:standard: {standard}
 :lang: {lang}
 :ai_name: {ai_name}
+:standard: {standard}
 
-[[context]]
+[[agent-context-template]]
 = Shared Context for Agent Sessions
 
-== Project Identity
-:project_name: {project_name}
-:repository: {repository}
-:primary_language: {primary_lang}
-:framework: {framework}
+This file is the canonical shared memory for all agent sessions working on `{project}`.
+Include it at the top of every prompt with `include::.agent/context.adoc[]`.
 
-This file is the canonical shared memory for all agent sessions working on `{project_name}`. Include it at the top of every prompt with `include::context.adoc[]`.
+== Project Identity
+
+[cols="1,2"]
+|===
+|Name |{project}
+|Language |{lang}
+|AI Name |{ai_name}
+|===
 
 == Hard Constraints (Never Violate)
 ifdef::agent[]
-These are non-negotiable. Violating any of these is a critical failure.
 
-. **Never commit without `aden check` passing.** Run `aden check` on `docs/` and your changes before declaring done.
-. **Never modify `.adoc` contracts without updating `[[anchor]]` references.** Broken `<<refs>>` break the knowledge graph.
-. **Never delete `agent-note::` blocks without impunity review.** They contain temporal uncertainty markers.
-. **Never duplicate definitions.** If a term exists in `glossary.adoc`, reference it with `<<glossary.adoc#term>>`; do not redefine.
-. **Never use unsafe code** without an explicit `agent-note::UNSAFE` block with justification.
-. **Never emit files to paths outside the working directory** without user confirmation.
-. **Never ignore test failures.** If the test suite fails, fix before proceeding.
+. **Never commit without `aden check` passing.**
+. **Never edit contracts by hand — always regenerate with `aden gen`.**
+. **Never emit files outside the working directory** without confirmation.
+. **Never ignore test failures.**
+. **Never commit `contracts/` or `.aden/`** (they are build artifacts).
+
 endif::agent[]
 
 == Language Defaults
 ifdef::agent[]
-- Edition: `{lang}` {edition}
-- Error handling: `thiserror` for all error enums
-- Serialization: `serde` for all data interchange
-- Collections: Prefer `HashMap` over `BTreeMap` unless order matters
-- All public APIs must derive `Debug`
-- All public items must have doc comments
+- Primary language: `{lang}`
+- Edition / version: {edition}
+- Standard framework / runtime: {standard}
 endif::agent[]
-
-== Project Glossary
-{glossary}
 
 == Dependencies
 |===
-|Crate |Purpose |Version Policy
+|Name |Purpose |Version Policy
 
 {dependencies}
 |===
+
+== Next Steps
+
+. Read `.agent/onboarding.adoc` before your first session.
+. Read `.agent/constraints.adoc` to know what not to do.
+. Append your session entry to `.agent/session.adoc` before starting work.
+
+== Related Documents
+
+. <<agent-onboarding>>
+. <<agent-session>>

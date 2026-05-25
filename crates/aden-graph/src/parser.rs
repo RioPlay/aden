@@ -14,6 +14,7 @@
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 // GNU Affero General Public License for more details.
 //
+use aden_core::{AdmonitionKind, Block, Table};
 use regex::Regex;
 use std::collections::HashMap;
 use std::io::Read;
@@ -53,6 +54,18 @@ static SEMANTIC_DIFF_DEPRECATED_RE: LazyLock<Regex> = LazyLock::new(|| {
 static SEMANTIC_DIFF_ADDED_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^agent-note::ADDED\[([^\]]+)\]\s*$").expect("static regex")
 });
+static TITLE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^=+\s+.*$").expect("static regex")
+});
+static SOURCE_BLOCK_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\[source(?:,\s*([^\]]+))?\]$").expect("static regex")
+});
+static ADMONITION_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^(NOTE|TIP|WARNING|IMPORTANT|CAUTION):\s*(.*)$").expect("static regex")
+});
+static DESC_LIST_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^(.+?)::\s*(.*)$").expect("static regex")
+});
 
 /// A document parsed from an AsciiDoc source.
 #[derive(Debug, Clone)]
@@ -66,6 +79,8 @@ pub struct ParsedDocument {
     pub conditional_stack: Vec<Conditional>,
     pub raw_content: String,
     pub semantic_diffs: Vec<SemanticDiff>,
+    /// Structured content blocks extracted from the AsciiDoc body.
+    pub blocks: Vec<Block>,
 }
 
 /// An `include::path[attributes]` directive.
@@ -107,6 +122,15 @@ pub enum ParseError {
     Io(String),
 }
 
+/// Structured block parser state.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum BlockState {
+    Idle,
+    InTable,
+    InListing,
+    InParagraph,
+}
+
 /// Parse an AsciiDoc file into a `ParsedDocument`.
 pub fn parse_file(path: &Path) -> Result<ParsedDocument, ParseError> {
     let mut file = std::fs::File::open(path)
@@ -122,21 +146,30 @@ pub fn parse_file(path: &Path) -> Result<ParsedDocument, ParseError> {
     let mut edges = Vec::new();
     let mut conditional_stack = Vec::new();
     let mut semantic_diffs = Vec::new();
+    let mut blocks: Vec<Block> = Vec::new();
 
+    let mut state = BlockState::Idle;
+    let mut table_headers: Vec<String> = Vec::new();
+    let mut table_rows: Vec<Vec<String>> = Vec::new();
+    let mut listing_code = String::new();
+    let mut listing_lang: Option<String> = None;
+    let mut paragraph_text = String::new();
+    let mut saw_table_delim = false; // true after first |=== encountered inside table
     let mut in_header = true;
+    let mut last_line_was_source_directive = false;
 
     for line in raw.lines() {
         let trimmed = line.trim();
 
         // Skip comments (but not doc comments)
-        if trimmed.starts_with("//") && !trimmed.starts_with("///") {
-            continue;
-        }
+        let is_comment = trimmed.starts_with("//") && !trimmed.starts_with("///");
 
         // End of header block when we hit a blank line after attributes
         if in_header && trimmed.is_empty() && !attrs.is_empty() {
             in_header = false;
         }
+
+        // ── Metadata extraction (always run in parallel) ──────────────────
 
         // Attributes
         if (in_header || trimmed.starts_with(':'))
@@ -144,12 +177,32 @@ pub fn parse_file(path: &Path) -> Result<ParsedDocument, ParseError> {
                 let key = cap[1].to_string();
                 let value = cap[2].to_string();
                 attrs.insert(key, value);
+                // Attributes aren't body content
+                if state == BlockState::InParagraph {
+                    flush_paragraph(&mut paragraph_text, &mut blocks);
+                    state = BlockState::Idle;
+                }
                 continue;
             }
 
         // Anchors
         if let Some(cap) = ANCHOR_RE.captures(trimmed) {
             anchors.push(cap[1].to_string());
+            if state == BlockState::InParagraph {
+                flush_paragraph(&mut paragraph_text, &mut blocks);
+                state = BlockState::Idle;
+            }
+            continue;
+        }
+
+        // Source directive
+        if let Some(cap) = SOURCE_BLOCK_RE.captures(trimmed) {
+            listing_lang = cap.get(1).map(|m| m.as_str().trim().to_string());
+            last_line_was_source_directive = true;
+            if state == BlockState::InParagraph {
+                flush_paragraph(&mut paragraph_text, &mut blocks);
+                state = BlockState::Idle;
+            }
             continue;
         }
 
@@ -177,6 +230,11 @@ pub fn parse_file(path: &Path) -> Result<ParsedDocument, ParseError> {
                 lines: lines_spec,
                 leveloffset: leveloff,
             });
+            if state == BlockState::InParagraph {
+                flush_paragraph(&mut paragraph_text, &mut blocks);
+                state = BlockState::Idle;
+            }
+            last_line_was_source_directive = false;
             continue;
         }
 
@@ -185,22 +243,52 @@ pub fn parse_file(path: &Path) -> Result<ParsedDocument, ParseError> {
             let attr = cap[1].to_string();
             let active = attrs.contains_key(&attr);
             conditional_stack.push(Conditional::Ifdef { attr, active });
+            if state == BlockState::InParagraph {
+                flush_paragraph(&mut paragraph_text, &mut blocks);
+                state = BlockState::Idle;
+            }
+            last_line_was_source_directive = false;
             continue;
         }
         if let Some(cap) = IFNDEF_RE.captures(trimmed) {
             let attr = cap[1].to_string();
             let active = !attrs.contains_key(&attr);
             conditional_stack.push(Conditional::Ifndef { attr, active });
+            if state == BlockState::InParagraph {
+                flush_paragraph(&mut paragraph_text, &mut blocks);
+                state = BlockState::Idle;
+            }
+            last_line_was_source_directive = false;
             continue;
         }
         if let Some(cap) = IFEVAL_RE.captures(trimmed) {
             let expr = cap[1].to_string();
             let active = eval_ifeval(&expr, &attrs);
             conditional_stack.push(Conditional::Ifeval { expr, active });
+            if state == BlockState::InParagraph {
+                flush_paragraph(&mut paragraph_text, &mut blocks);
+                state = BlockState::Idle;
+            }
+            last_line_was_source_directive = false;
             continue;
         }
         if ENDIF_RE.is_match(trimmed) {
             conditional_stack.pop();
+            if state == BlockState::InParagraph {
+                flush_paragraph(&mut paragraph_text, &mut blocks);
+                state = BlockState::Idle;
+            }
+            last_line_was_source_directive = false;
+            continue;
+        }
+
+        // Title lines are structural, not body content
+        if TITLE_RE.is_match(trimmed) {
+            if state == BlockState::InParagraph {
+                flush_paragraph(&mut paragraph_text, &mut blocks);
+                state = BlockState::Idle;
+            }
+            last_line_was_source_directive = false;
             continue;
         }
 
@@ -245,6 +333,161 @@ pub fn parse_file(path: &Path) -> Result<ParsedDocument, ParseError> {
             let date = cap[1].to_string();
             semantic_diffs.push(SemanticDiff::Added { date });
         }
+
+        // Skip pure comment lines for body content
+        if is_comment {
+            if state == BlockState::InParagraph {
+                flush_paragraph(&mut paragraph_text, &mut blocks);
+                state = BlockState::Idle;
+            }
+            last_line_was_source_directive = false;
+            continue;
+        }
+
+        // ── Block-level body content parsing ──────────────────────────────
+
+        match state {
+            BlockState::Idle => {
+                if trimmed == "|===" {
+                    state = BlockState::InTable;
+                    table_headers.clear();
+                    table_rows.clear();
+                    saw_table_delim = false;
+                } else if trimmed == "----" {
+                    state = BlockState::InListing;
+                    listing_code.clear();
+                    if !last_line_was_source_directive {
+                        listing_lang = None;
+                    }
+                } else if let Some(cap) = ADMONITION_RE.captures(trimmed) {
+                    let kind = match &cap[1] {
+                        "NOTE" => AdmonitionKind::Note,
+                        "TIP" => AdmonitionKind::Tip,
+                        "WARNING" => AdmonitionKind::Warning,
+                        "IMPORTANT" => AdmonitionKind::Important,
+                        "CAUTION" => AdmonitionKind::Caution,
+                        _ => AdmonitionKind::Note,
+                    };
+                    let text = cap[2].to_string();
+                    blocks.push(Block::Admonition { kind, text });
+                } else if let Some(cap) = DESC_LIST_RE.captures(trimmed) {
+                    let term = cap[1].trim().to_string();
+                    let def = cap[2].trim().to_string();
+                    blocks.push(Block::DescriptionList(vec![(term, def)]));
+                } else if !trimmed.is_empty() {
+                    // Start a paragraph
+                    paragraph_text.clear();
+                    paragraph_text.push_str(trimmed);
+                    state = BlockState::InParagraph;
+                }
+                last_line_was_source_directive = false;
+            }
+
+            BlockState::InTable => {
+                if trimmed == "|===" {
+                    // End table
+                    blocks.push(Block::Table(Table {
+                        headers: table_headers.clone(),
+                        rows: table_rows.clone(),
+                    }));
+                    state = BlockState::Idle;
+                } else if let Some(after_pipe) = trimmed.strip_prefix('|') {
+                    let cells: Vec<String> = after_pipe
+                        .split('|')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect();
+                    if !cells.is_empty() {
+                        if !saw_table_delim {
+                            // First row after opening delim is headers
+                            table_headers = cells;
+                            saw_table_delim = true;
+                        } else {
+                            table_rows.push(cells);
+                        }
+                    }
+                }
+                // Skip empty lines inside table
+                last_line_was_source_directive = false;
+            }
+
+            BlockState::InListing => {
+                if trimmed == "----" {
+                    blocks.push(Block::Listing {
+                        language: listing_lang.clone(),
+                        code: listing_code.trim_end_matches('\n').to_string(),
+                    });
+                    state = BlockState::Idle;
+                    listing_lang = None;
+                } else {
+                    listing_code.push_str(line);
+                    listing_code.push('\n');
+                }
+                last_line_was_source_directive = false;
+            }
+
+            BlockState::InParagraph => {
+                if trimmed.is_empty() {
+                    flush_paragraph(&mut paragraph_text, &mut blocks);
+                    state = BlockState::Idle;
+                } else if trimmed == "|===" {
+                    // Table starts, flush paragraph first
+                    flush_paragraph(&mut paragraph_text, &mut blocks);
+                    state = BlockState::InTable;
+                    table_headers.clear();
+                    table_rows.clear();
+                    saw_table_delim = false;
+                } else if trimmed == "----" {
+                    flush_paragraph(&mut paragraph_text, &mut blocks);
+                    state = BlockState::InListing;
+                    listing_code.clear();
+                    if !last_line_was_source_directive {
+                        listing_lang = None;
+                    }
+                } else if let Some(cap) = ADMONITION_RE.captures(trimmed) {
+                    flush_paragraph(&mut paragraph_text, &mut blocks);
+                    let kind = match &cap[1] {
+                        "NOTE" => AdmonitionKind::Note,
+                        "TIP" => AdmonitionKind::Tip,
+                        "WARNING" => AdmonitionKind::Warning,
+                        "IMPORTANT" => AdmonitionKind::Important,
+                        "CAUTION" => AdmonitionKind::Caution,
+                        _ => AdmonitionKind::Note,
+                    };
+                    let text = cap[2].to_string();
+                    blocks.push(Block::Admonition { kind, text });
+                    state = BlockState::Idle;
+                } else if let Some(cap) = DESC_LIST_RE.captures(trimmed) {
+                    flush_paragraph(&mut paragraph_text, &mut blocks);
+                    let term = cap[1].trim().to_string();
+                    let def = cap[2].trim().to_string();
+                    blocks.push(Block::DescriptionList(vec![(term, def)]));
+                    state = BlockState::Idle;
+                } else {
+                    paragraph_text.push('\n');
+                    paragraph_text.push_str(trimmed);
+                }
+                last_line_was_source_directive = false;
+            }
+        }
+    }
+
+    // Flush any trailing block
+    match state {
+        BlockState::InParagraph => flush_paragraph(&mut paragraph_text, &mut blocks),
+        BlockState::InTable => {
+            blocks.push(Block::Table(Table {
+                headers: table_headers,
+                rows: table_rows,
+            }));
+        }
+        BlockState::InListing => {
+            blocks.push(Block::Listing {
+                language: listing_lang,
+                code: listing_code.trim_end_matches('\n').to_string(),
+            });
+        }
+        BlockState::Idle => {}
     }
 
     // If no anchors found, generate one from filename
@@ -263,7 +506,17 @@ pub fn parse_file(path: &Path) -> Result<ParsedDocument, ParseError> {
         conditional_stack,
         raw_content: raw,
         semantic_diffs,
+        blocks,
     })
+}
+
+/// Flush accumulated paragraph text into a Block::Paragraph.
+fn flush_paragraph(text: &mut String, blocks: &mut Vec<Block>) {
+    let trimmed = text.trim();
+    if !trimmed.is_empty() {
+        blocks.push(Block::Paragraph(trimmed.to_string()));
+    }
+    text.clear();
 }
 
 /// Evaluate an `ifeval` expression.

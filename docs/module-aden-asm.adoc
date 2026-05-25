@@ -3,6 +3,7 @@
 :path: crates/aden-asm/src/
 :lang: rust
 
+
 [[mod-aden-asm]]
 = module::aden-asm
 
@@ -29,3 +30,8 @@ Context assembler: transforms a subgraph of `.aden` documents into a single flat
 == Agent Notes
 agent-note::SIMPLIFICATION
 Preprocessor subset: no inline conditionals, no nested `ifeval` arithmetic, no macro definitions. Sufficient for deterministic agent context assembly.
+
+== Related Documents
+
+. <<project-context>>
+. <<adr-001>>

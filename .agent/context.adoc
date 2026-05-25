@@ -1,6 +1,7 @@
 :proj: unknown
-:standard: unknown
 :lang: unknown
+:ai_name: agent
+:standard: unknown
 
 [[agent-context]]
 = Shared Context for Agent Sessions
@@ -8,27 +9,47 @@
 This file is the canonical shared memory for all agent sessions working on `unknown`.
 Include it at the top of every prompt with `include::.agent/context.adoc[]`.
 
+== Project Identity
+
+[cols="1,2"]
+|===
+|Name |unknown
+|Language |unknown
+|AI Name |agent
+|===
+
 == Hard Constraints (Never Violate)
 ifdef::agent[]
-. **Never commit without `aden check` passing.** Run `aden check` on docs/ and your changes before declaring done.
-. **Never commit contracts or `.aden/` workspace.** Contracts are build artifacts. They contain signatures and paths that could be weaponized if leaked. Use `.gitignore` to enforce this; never bypass it.
-. **Never modify `.adoc` contracts without updating `[[anchor]]` references.** Broken `<<refs>>` break the knowledge graph.
-. **Never delete `agent-note::` blocks without justification.** They contain temporal uncertainty markers.
-. **Never duplicate definitions.** If a term exists in glossary, reference it with `<<glossary.adoc#term>>`; do not redefine.
-. **Never emit files outside the working directory** without user confirmation.
-. **Never ignore test failures.** If tests fail, fix before proceeding.
+
+. **Never commit without `aden check` passing.**
+. **Never edit contracts by hand — always regenerate with `aden gen`.**
+. **Never emit files outside the working directory** without confirmation.
+. **Never ignore test failures.**
+. **Never commit `contracts/` or `.aden/`** (they are build artifacts).
+
 endif::agent[]
 
-== Agent Conventions
-. Every `.adoc` file must declare an anchor immediately before the title.
-. Every table must have a header row.
-. Use `agent-note::` blocks for temporal annotations and uncertainty.
-. Use `ifdef::agent[]` to hide human prose from AI context.
-. Never use YAML frontmatter; use AsciiDoc attributes (`:key: value`).
-. Resolve every `<<reference>>` to an existing `[[anchor]]`.
+== Language Defaults
+ifdef::agent[]
+- Primary language: `unknown`
+- Edition / version: 2024
+- Standard framework / runtime: unknown
+endif::agent[]
+
+== Dependencies
+|===
+|Name |Purpose |Version Policy
+
+| | |
+|===
 
 == Next Steps
-. Run `aden init` in this repository (already done if you're reading this).
+
 . Read `.agent/onboarding.adoc` before your first session.
 . Read `.agent/constraints.adoc` to know what not to do.
 . Append your session entry to `.agent/session.adoc` before starting work.
+
+== Related Documents
+
+. <<agent-onboarding>>
+. <<agent-session>>

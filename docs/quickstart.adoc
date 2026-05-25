@@ -1,0 +1,73 @@
+:node-type: guide
+
+[[quickstart]]
+= Quickstart: Using Aden as an AI Agent
+
+This document helps AI agents understand how to use Aden effectively.
+
+== How Aden Works
+
+Aden transforms your codebase into a navigable knowledge graph. Each function, module, and decision becomes a node. Relationships (imports, calls, constraints) become typed edges.
+
+== Essential Commands for AI Agents
+
+|===
+|Goal|Command
+
+|Generate contracts|`aden gen --auto .`
+|Find anchors|`aden list . --limit 20`
+|Ask a question|`aden ask "<question>"`
+|Find symbol|`aden locate --symbol <name> .`
+|Full-text search|`aden search "<query>" .`
+|Get context|`aden asm --from <anchor> --depth 2 .`
+|Fix drift|`aden heal . --fix`
+|Cleanup orphans|`aden heal . --gc`
+|Validate|`aden ci-check .`
+|Get help|`aden suggest "<what I want to do>"`
+|===
+
+== Example Workflow
+
+[source]
+----
+# 1. Discover what's available
+aden list . --limit 10
+
+# 2. Ask a question
+aden ask "how does auth work?" .
+
+# 3. Find a specific function
+aden locate --symbol "assemble" .
+
+# 4. Search documentation
+aden search "authentication" .
+
+# 5. Get focused context
+aden asm --from mod-aden-cli --depth 2 --budget 4096 .
+
+# 6. Validate everything
+aden ci-check .
+----
+
+== Anchor Patterns
+
+- `mod-<crate>` - Module overview (e.g., `mod-aden-cli`)
+- `aden://module/<path>#<symbol>` - Specific function/type
+- `plan-*` - Project plans
+- `adr-*` - Architecture decisions
+
+== Troubleshooting
+
+|===
+|Error|Solution
+
+|MissingAnchor|Run `aden list .` to find valid anchors
+|StaleHash|Run `aden heal . --fix`
+|No results|Try `aden search "<keyword>"`
+|===
+
+== For More Help
+
+- `aden doctor .` - Check environment
+- `aden suggest "<intent>"` - Get command suggestions
+- `aden check .` - Validate references

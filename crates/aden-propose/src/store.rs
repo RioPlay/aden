@@ -56,8 +56,8 @@ pub fn list(store_dir: &Path) -> io::Result<Vec<Proposal>> {
     for entry in fs::read_dir(&proposals_dir)? {
         let entry = entry?;
         let path = entry.path();
-        if let Some(ext) = path.extension() {
-            if ext == "adoc" {
+        if let Some(ext) = path.extension()
+            && ext == "adoc" {
                 let mut file = File::open(&path)?;
                 let mut contents = String::new();
                 file.read_to_string(&mut contents)?;
@@ -65,7 +65,6 @@ pub fn list(store_dir: &Path) -> io::Result<Vec<Proposal>> {
                     proposals.push(proposal);
                 }
             }
-        }
     }
     Ok(proposals)
 }
@@ -74,9 +73,26 @@ pub fn apply(proposal: &Proposal) -> io::Result<()> {
     if !is_safe_id(&proposal.id) {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid proposal id"));
     }
-    let out_path = format!("{}.patch.adoc", proposal.id);
-    let mut file = File::create(&out_path)?;
-    file.write_all(proposal.patch_asciidoc.as_bytes())?;
+
+    // For MissingContract, create the new contract file
+    match proposal.drift_type.as_str() {
+        "MissingContract" => {
+            if let Some(parent) = proposal.target_path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(&proposal.target_path, &proposal.patch_asciidoc)?;
+        }
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "Drift type '{}' requires manual review before application",
+                    proposal.drift_type
+                ),
+            ));
+        }
+    }
+
     Ok(())
 }
 

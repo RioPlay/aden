@@ -1,0 +1,204 @@
+:proj: aden
+:author: RioPlay
+
+[[ai-integration]]
+= AI Integration Guide: Keeping Agents in the Know
+
+Aden was built for hybrid teams of humans and AI agents. This guide explains how AI agents should use `aden ask`, `aden asm`, `aden graph`, and `aden query` to stay synchronized with a codebase without reading every file.
+
+== The Core Idea
+
+An AI agent has a finite context window. A large codebase does not fit. Aden solves this by answering the question: "What is the smallest set of documents this agent needs to complete its task?"
+
+The answer is assembled dynamically from the knowledge graph, not hard-coded in a prompt.
+
+== How `aden ask` Works
+
+`aden ask` is the primary interface for AI agents. It is not a chatbot wrapper around an LLM. It is a **context retrieval engine**.
+
+Invocation:
+
+[source,bash]
+----
+den ask "How does the authentication flow work?"
+----
+
+What happens internally:
+
+1. **Search**: The question is tokenized and searched against the in-memory inverted index built from all `.adoc` / `.aden` contracts.
+2. **Anchor resolution**: The top-ranked document anchor becomes the starting node (or you pin it with `--from`).
+3. **Intent classification**: The question is classified into one of six intents:
+   - `Explain` --- "How does X work?" → depth 2, edges: Uses, Calls, Implements, Documents
+   - `Usage` --- "How do I use X?" → depth 2, edges: Uses, Documents, Constrains
+   - `Refactor` --- "What breaks if I change X?" → depth 4, edges: Uses, Calls, Constrains, Implements
+   - `Impact` --- "What depends on X?" → depth 3, edges: Uses, Calls, Constrains
+   - `Debug` --- "Why is X failing?" → depth 3, edges: Uses, Calls, Implements
+   - `General` --- fallback → depth 2, edges: Uses, Documents, Constrains
+4. **Graph traversal**: A BFS walk collects neighbors along the selected edge types, stopping at `max_depth`.
+5. **Token budgeting**: Each collected document is estimated (word count × 4/3 heuristic). Documents are included until the cumulative total would exceed `--budget` (default 4096 for `ask`, 8192 for `asm`).
+6. **Assembly**: Documents are concatenated with `<<<` page-break separators. Each document includes its raw AsciiDoc content, attributes, tables, and blocks.
+
+=== Example Output
+
+[source]
+----
+$ aden ask --from mod-aden-core "What types are available?"
+// Aden Ask: 'What types are available?' → [[mod-aden-core]]
+// Strategy: Explain | Depth: 2 | Edges: "Uses, Calls, Implements, Documents"
+
+:proj: aden
+:module: aden-core
+
+[[mod-aden-core]]
+= module::aden-core
+
+== Objective
+Universal schema for the Aden referential context compiler.
+
+== Signature
+|===
+|Type |Kind |Description
+|`Document`|struct|Root node in the graph...
+|===
+---
+(related contracts follow)
+----
+
+== What to Do with the Output
+
+Feed it directly into an LLM prompt, prefixed with a system instruction:
+
+[source]
+----
+You are an expert software engineering assistant.
+The following context was retrieved from a knowledge graph.
+Answer based ONLY on the provided context.
+If the context does not contain enough information, say so explicitly.
+
+---
+
+[context from aden ask goes here]
+----
+
+This guarantees the agent reasons from real source structure rather than hallucinating APIs.
+
+== When to Use `aden asm` Instead
+
+`aden ask` is opinionated: it classifies intent and picks edges automatically. `aden asm` gives you full control.
+
+Use `aden asm` when you already know the starting anchor and want exact edge types:
+
+[source,bash]
+----
+den asm --from mod-aden-graph --depth 3 --budget 8192 --edge-types "Uses,Calls"
+----
+
+This is useful for:
+- Custom agent pipelines
+- Debugging why `aden ask` returned too much or too little context
+- Building reproducible prompts for regression tasks
+
+== When to Use `aden graph` and `aden query`
+
+`aden graph --from <anchor> --depth N` prints a debug report. Use it to sanity-check the graph structure before asking.
+
+`aden query` emits JSON, making it ideal for programmatic consumption:
+
+[source,bash]
+----
+# Reachable nodes from an anchor
+den query --from mod-aden-core --depth 2 . | jq '.[] | .anchor'
+
+# Everything that references this anchor (backlinks)
+den query --backlinks mod-aden-core . | jq '.[] | .anchor'
+
+# Transitive closure over dependency edges (blast radius)
+den query --impact mod-aden-core . | jq '.[] | .anchor'
+----
+
+== Finding Symbols with `aden locate` and `aden search`
+
+`aden locate --symbol <name>` finds symbol definitions (functions, types, modules). Falls back to full-text search if graph search finds nothing.
+
+[source,bash]
+----
+# Find a function definition
+aden locate --symbol assemble .
+
+# Find with limit
+aden locate --symbol "Error" . --limit 5
+----
+
+`aden search <query>` performs full-text search across all contracts:
+
+[source,bash]
+----
+aden search "authentication" . --limit 10
+----
+
+== Getting Command Help with `aden suggest`
+
+Not sure which command to use? Ask `aden suggest`:
+
+[source,bash]
+----
+aden suggest "find all tests in the project"
+# Suggests: aden search "test" or aden locate "test"
+----
+
+== Quick Reference: Agent Workflow
+
+| Task | Command |
+|------|---------|
+| Explore structure | `aden ask "what is X"` |
+| Find symbol | `aden locate --symbol X .` |
+| Search docs | `aden search "query" .` |
+| Get context | `aden asm --from <anchor> --depth N .` |
+| Check health | `aden check .` && `aden heal .` |
+| Validate | `aden ci-check .` |
+
+== Keeping the Graph Fresh
+
+Stale context is worse than no context. Run these commands as part of your agent loop:
+
+1. Before starting work: `aden check .` (validate integrity)
+2. After writing code: `aden gen <path>` (update contracts)
+3. Before committing: `aden ci-check .` (check + heal + tests)
+
+If you are running as a persistent agent, use `aden watch` to auto-regenerate contracts on file changes.
+
+== Token Economy Rules
+
+Aden is designed with token scarcity in mind. Follow these rules:
+
+- **Prefer `aden ask` over dumping the whole repo.** It stays within budget automatically.
+- **Use `--from` to avoid search ambiguity.** One good anchor is worth ten vague keywords.
+- **Lower `--budget` for focused tasks.** 2048 tokens is enough for most refactor questions.
+- **Review the summary footer.** `aden ask` prints node count, bytes consumed, and budget status. If it says "OVER BUDGET", raise the limit or reduce depth.
+
+== Security Notes for Agents
+
+- Aden assumes contracts are build artifacts. Never commit `contracts/` or `.aden/`.
+- `aden init` generates `.adenignore` with security defaults. Do not remove entries that skip `*.env`, `secrets/`, or `target/`.
+- Include directives are bounded to the project root. Path traversal outside the repo is rejected at parse time.
+
+== Troubleshooting
+
+=== `aden ask` returns "No relevant documents found"
+
+Try more specific keywords from actual anchors. Run `aden search <keyword>` to see what anchors exist.
+
+=== Output is too short
+
+The graph parser currently stores document body content as raw text. If blocks are empty, it falls back to `raw_content`. If you see only titles, verify the `.adoc` files contain actual prose below the title.
+
+=== DuplicateAnchor errors after `aden init`
+
+Template files and instantiated files sometimes share anchors. Rename the instantiated file anchors (e.g., `[[agent-context]]` instead of `[[agent-context-template]]`) or delete the template files if they are not needed.
+
+== Related Documents
+
+. <<getting-started>> --- Hands-on tutorial from install to first query
+. <<user-guide>> --- Daily workflow reference
+. <<philosophy>> --- Design rationale and token-density principles
+. <<project-context>> --- Crate map, dependencies, glossary

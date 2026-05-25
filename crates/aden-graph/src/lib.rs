@@ -20,10 +20,12 @@
 //! validates references, detects cycles, and injects backlinks.
 
 pub mod backlinks;
+pub mod cache;
 pub mod cycles;
 pub mod graph;
 pub mod integrity;
 pub mod parser;
+pub mod query;
 
 pub use graph::{AdenGraph, DocumentNode};
 pub use petgraph::Direction;

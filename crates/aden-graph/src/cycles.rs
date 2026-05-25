@@ -16,6 +16,7 @@
 //
 use crate::graph::AdenGraph;
 use petgraph::graph::NodeIndex;
+use petgraph::visit::EdgeRef;
 use std::collections::HashSet;
 
 /// Detect cycles in the graph using DFS.
@@ -47,7 +48,11 @@ fn dfs_cycle(
     rec_stack.insert(node);
     path.push(graph.graph[node].anchor.clone());
 
-    for neighbor in graph.graph.neighbors_directed(node, petgraph::Direction::Outgoing) {
+    for edge in graph.graph.edges_directed(node, petgraph::Direction::Outgoing) {
+        if *edge.weight() != aden_core::EdgeType::Requires {
+            continue;
+        }
+        let neighbor = edge.target();
         if !visited.contains(&neighbor) {
             dfs_cycle(graph, neighbor, visited, rec_stack, path, cycles);
         } else if rec_stack.contains(&neighbor) {

@@ -71,3 +71,7 @@ Every action item must be one of:
 
 * xref:runbook.adoc[Runbook]
 * xref:adr-{number}.adoc[Design Decisions]
+
+== Related Documents
+
+. <<runbook-{system}>>

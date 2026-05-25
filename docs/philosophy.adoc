@@ -27,13 +27,14 @@ Aden is *not* a replacement for your IDE. It is a substrate that your IDE, your 
 
 === Why AsciiDoc?
 
-We chose AsciiDoc as the native format because it is simultaneously:
+We chose AsciiDoc as the native format because it is simultaneously human-readable and fully scriptable:
 
 . **Human-readable** — a senior engineer can open any `.adoc` or `.aden` file and understand it without tooling.
-. **Machine-parseable** — the grammar is regular enough to be parsed by simple regexes or small state machines.
-. **Rich-structured** — it supports attributes (`:key: value`), anchors (`[[name]]`), cross-references (`<<name>>`), tables, conditionals, and includes. These map naturally to graph nodes and edges.
-. **Version-control-friendly** — unlike binary ASTs or JSON blobs, `.adoc` files diff cleanly in Git.
+. **Machine-parseable** — the grammar is regular enough to be parsed by simple regexes or small state machines, which means build tools can inspect and transform it deterministically.
+. **Rich-structured** — attributes (`:key: value`), anchors (`[[name]]`), cross-references (`<<name>>`), tables, conditionals, and includes map directly to graph nodes and edges without preprocessing hacks.
+. **Version-control-friendly** — unlike binary ASTs or JSON blobs, `.adoc` files diff cleanly in Git. You can review contract changes in pull requests just like code.
 . **Referential by default** — the `<<anchor>>` syntax encourages linking, which is exactly what a knowledge graph needs.
+. **Scriptable and repeatable** — because `.adoc` is plain text with predictable structure, `aden gen` can regenerate contracts deterministically from source, `aden workflow` can instantiate templates with parameter substitution, and `aden check` can validate every reference as a CI gate. This is impossible with Markdown or Word documents.
 
 The name *Aden* — "A Dense Referential Context Compiler" — is also the mission statement. Every token in an Aden-compiled document must justify its existence. Fluff is the enemy.
 
@@ -75,15 +76,16 @@ The agent receives a token-dense, graph-traversed context prompt that includes e
 
 === Use Case 2: Documentation That Stays Alive
 
+[[doc-rot]]
 **Problem:** Documentation rots. A function changes its signature, but the `.md` file describing it is forgotten. Six months later, a new developer reads stale docs and designs the wrong thing.
 
 **Aden Solution:**
 [source,bash]
 ----
-aden gen src/lib.rs  # Generate .aden contract from source
-aden heal --scan . --propose  # Detect drift between code and contracts
+aden gen src/lib.rs --auto  # Generate .aden contract from source
+aden heal . --propose      # Detect drift between code and contracts
 # Review proposals in .aden/proposals/
-aden heal --apply <proposal-id>
+aden heal . --apply <proposal-id>
 ----
 The `gen` command extracts a semantic contract directly from source code. The `heal` command continuously monitors for drift — when the source changes, Aden flags the stale contract and proposes a patch. Documentation becomes a living, version-controlled artifact that is tested at CI time, just like unit tests.
 

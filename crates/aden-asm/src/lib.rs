@@ -21,7 +21,7 @@ pub mod preprocess;
 pub mod traverse;
 
 pub use preprocess::{preprocess, PreprocessError};
-pub use traverse::{assemble, AssemblyOptions};
+pub use traverse::{assemble, assemble_adg, AssemblyOptions};
 
 #[cfg(test)]
 mod tests;

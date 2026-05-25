@@ -45,3 +45,9 @@ Make structural checks mandatory and cheap; semantic checks sampled and bounded.
 
 == Trace
 - *2026-05-23*: Plan written.
+
+== Related Documents
+
+. <<project-context>>
+. <<adr-001>>
+. All phases start at: <<plan-phase0>>

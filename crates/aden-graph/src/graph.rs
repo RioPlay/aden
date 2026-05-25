@@ -35,7 +35,9 @@ pub struct AdenGraph {
     pub graph: DiGraph<DocumentNode, EdgeType>,
     pub anchor_to_index: HashMap<String, NodeIndex>,
     pub path_to_index: HashMap<PathBuf, NodeIndex>,
-    filter: aden_core::filter::AdenFilter,
+    pub filter: aden_core::filter::AdenFilter,
+    #[doc(hidden)]
+    pub(crate) backlinks_cache: Option<HashMap<String, Vec<String>>>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -52,6 +54,12 @@ pub enum GraphError {
     OrphanDocument(String),
 }
 
+impl Default for AdenGraph {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AdenGraph {
     /// Create an empty graph.
     pub fn new() -> Self {
@@ -61,6 +69,7 @@ impl AdenGraph {
             anchor_to_index: HashMap::new(),
             path_to_index: HashMap::new(),
             filter: AdenFilter::from_directory(Path::new(".")),
+            backlinks_cache: None,
         }
     }
 
@@ -83,10 +92,11 @@ impl AdenGraph {
                 anchor: primary_anchor.clone(),
                 node_type: aden_core::NodeType::Note, // will be refined by attribute
                 attributes: parsed.attributes.clone(),
-                blocks: Vec::new(),
+                blocks: parsed.blocks.clone(),
                 source_span: None,
             };
 
+            let anchors = parsed.anchors.clone();
             let node = DocumentNode {
                 anchor: primary_anchor.clone(),
                 doc,
@@ -95,10 +105,13 @@ impl AdenGraph {
             };
 
             let idx = graph.graph.add_node(node);
-            if graph.anchor_to_index.contains_key(&primary_anchor) {
-                return Err(GraphError::DuplicateAnchor(primary_anchor));
+            // Register ALL anchors in the file, not just the primary one
+            // Skip duplicates silently - first anchor wins (maintains backward compatibility)
+            for anchor in &anchors {
+                if !graph.anchor_to_index.contains_key(anchor) {
+                    graph.anchor_to_index.insert(anchor.clone(), idx);
+                }
             }
-            graph.anchor_to_index.insert(primary_anchor, idx);
             graph.path_to_index.insert(path.clone(), idx);
         }
 
@@ -160,11 +173,10 @@ impl AdenGraph {
         for entry in std::fs::read_dir(dir).map_err(|e| GraphError::Io(e.to_string()))? {
             let entry = entry.map_err(|e| GraphError::Io(e.to_string()))?;
             let path = entry.path();
-            if let Ok(rel) = path.strip_prefix(root) {
-                if self.filter.should_skip(rel) {
+            if let Ok(rel) = path.strip_prefix(root)
+                && self.filter.should_skip(rel) {
                     continue;
                 }
-            }
             if path.is_dir() {
                 self.collect_files_inner(&path, root, files)?;
             } else if path.is_file() {
@@ -214,6 +226,45 @@ impl AdenGraph {
         self.anchor_to_index.get(anchor).copied()
     }
 
+    /// Get all anchors that reference this anchor (backlinks).
+    /// Uses cached computation for O(1) lookup after first call.
+    pub fn get_backlinks(&mut self, anchor: &str) -> Vec<String> {
+        // Compute backlinks cache on first call
+        if self.backlinks_cache.is_none() {
+            self.compute_backlinks_cache();
+        }
+
+        self.backlinks_cache
+            .as_ref()
+            .and_then(|cache| cache.get(anchor).cloned())
+            .unwrap_or_default()
+    }
+
+    /// Compute backlinks cache for fast reverse lookups.
+    /// This is an O(n) operation that enables O(1) reverse lookups thereafter.
+    fn compute_backlinks_cache(&mut self) {
+        let mut cache: HashMap<String, Vec<String>> = HashMap::new();
+
+        // Initialize all anchors in the cache
+        for anchor in self.anchor_to_index.keys() {
+            cache.insert(anchor.clone(), Vec::new());
+        }
+
+        // Build reverse edges
+        for edge_idx in self.graph.edge_indices() {
+            if let Some((src, tgt)) = self.graph.edge_endpoints(edge_idx) {
+                let src_anchor = &self.graph[src].anchor;
+                let tgt_anchor = &self.graph[tgt].anchor;
+
+                if let Some(targets) = cache.get_mut(tgt_anchor) {
+                    targets.push(src_anchor.clone());
+                }
+            }
+        }
+
+        self.backlinks_cache = Some(cache);
+    }
+
     /// Validate that every edge satisfies the node-type compatibility matrix.
     pub fn validate_typed_edges(&self) -> Vec<String> {
         let mut errors = Vec::new();
@@ -225,7 +276,22 @@ impl AdenGraph {
             let edge_type = self.graph[edge_idx];
 
             let valid = match edge_type {
-                EdgeType::Uses | EdgeType::Calls => {
+                EdgeType::Uses => {
+                    let source_is_doc = matches!(
+                        source.doc.node_type,
+                        NodeType::Note | NodeType::Adr | NodeType::Plan | NodeType::Spec | NodeType::Context | NodeType::Manifest | NodeType::Runbook
+                    );
+                    source_is_doc || (
+                        matches!(
+                            source.doc.node_type,
+                            NodeType::Module | NodeType::Function | NodeType::Script
+                        ) && matches!(
+                            target.doc.node_type,
+                            NodeType::Module | NodeType::Function
+                        )
+                    )
+                }
+                EdgeType::Calls => {
                     matches!(
                         source.doc.node_type,
                         NodeType::Module | NodeType::Function | NodeType::Script
