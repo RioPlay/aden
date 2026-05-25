@@ -111,6 +111,7 @@ impl<'a> AdqInterpreter<'a> {
         Ok(QueryResult { nodes, total })
     }
 
+    #[allow(dead_code)]
     fn exec_where(&self, args: &[&str]) -> Result<QueryResult, QueryError> {
         // Simple where: anchor contains "term" or type = "Note"
         let mut nodes = Vec::new();
