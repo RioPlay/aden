@@ -159,14 +159,12 @@ pub fn find_aden_mcp_binary(extra_paths: &[PathBuf]) -> Result<PathBuf, String> 
         if let Ok(output) = std::process::Command::new("sh")
             .args(["-c", "command -v aden-mcp"])
             .output()
-        {
-            if output.status.success() {
+            && output.status.success() {
                 let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
                 if !path.is_empty() {
                     return Ok(PathBuf::from(path));
                 }
             }
-        }
     }
     #[cfg(windows)]
     {
@@ -499,8 +497,8 @@ pub fn run_list() -> Result<(), Box<dyn std::error::Error>> {
     println!("Supported MCP Platforms");
     println!("══════════════════════════════════════════════════════════════════");
     println!(
-        "{:<18} {:<10} {:<12} {}",
-        "Platform", "Detected", "Configured", "Config Path"
+        "{:<18} {:<10} {:<12} Config Path",
+        "Platform", "Detected", "Configured"
     );
     println!("──────────────────────────────────────────────────────────────────");
 

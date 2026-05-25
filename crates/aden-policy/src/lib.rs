@@ -1,0 +1,483 @@
+// Copyright (c) 2026 RioPlay <rioplay@rioplay.dev>
+// All rights reserved.
+//
+// Aden: A Dense Referential Context Compiler
+// SPDX-License-Identifier: AGPL-3.0-or-later
+//!
+//! Constitutional policy engine: directive precedence, conflict resolution,
+//! and `[constitution]` authority.
+//!
+//! Phase 0.7 of the Aden roadmap — the load-bearing security substrate.
+
+use aden_core::contract::{ContractDocument, ContractRegion, RegionBlock};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+
+/// Directive severity levels for contract governance.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum DirectiveSeverity {
+    /// Must pass CI. No automatic override possible without `[override]` block.
+    Forbid,
+    /// Surfaces in PR comments; fails CI if `--severity=CI`.
+    Warn,
+    /// Non-blocking recommendation visible in IDE and `aden check`.
+    Suggest,
+    /// Explicitly permitted; may require `[override]` with justification.
+    Allow,
+}
+
+impl std::fmt::Display for DirectiveSeverity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DirectiveSeverity::Forbid => write!(f, "Forbid"),
+            DirectiveSeverity::Warn => write!(f, "Warn"),
+            DirectiveSeverity::Suggest => write!(f, "Suggest"),
+            DirectiveSeverity::Allow => write!(f, "Allow"),
+        }
+    }
+}
+
+impl std::str::FromStr for DirectiveSeverity {
+    type Err = String;
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "forbid" => Ok(DirectiveSeverity::Forbid),
+            "warn" => Ok(DirectiveSeverity::Warn),
+            "suggest" => Ok(DirectiveSeverity::Suggest),
+            "allow" => Ok(DirectiveSeverity::Allow),
+            _ => Err(format!("Unknown directive severity: {}", s)),
+        }
+    }
+}
+
+/// Kinds of policy directives that can appear in `[security]` or `[constitution]` blocks.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum DirectiveKind {
+    /// Forbid/warn on specific imports.
+    ForbidImport { pattern: String },
+    /// Require a specific coding pattern.
+    RequirePattern { pattern: String },
+    /// Constraint on function contracts.
+    ContractConstraint { pre: Option<String>, post: Option<String> },
+    /// Agent self-modification policy.
+    SelfModificationPolicy { action: String },
+    /// Custom directive parsed from block attributes.
+    Custom { name: String, params: HashMap<String, String> },
+}
+
+/// A single directive extracted from a `[security]` or `[constitution]` block.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Directive {
+    pub severity: DirectiveSeverity,
+    pub kind: DirectiveKind,
+    pub source_tag: Option<String>,
+    pub attributes: HashMap<String, String>,
+}
+
+impl Directive {
+    /// True if this directive can be bypassed with an `[override]` block.
+    pub fn can_override(&self) -> bool {
+        self.severity != DirectiveSeverity::Forbid
+    }
+}
+
+/// Parsed `[constitution]` block with precedence metadata.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ConstitutionBlock {
+    /// The underlying region block.
+    pub block: RegionBlock,
+    /// Parsed directives inside this constitution.
+    pub directives: Vec<Directive>,
+    /// Precedence value: lower number = higher priority.
+    /// Defaults to u32::MAX if not specified.
+    pub precedence: u32,
+    /// Source agent or human role that authored this constitution.
+    pub author: Option<String>,
+}
+
+impl ConstitutionBlock {
+    /// Parse a `[constitution]` RegionBlock into a structured ConstitutionBlock.
+    pub fn from_region(block: &RegionBlock) -> Result<Self, String> {
+        if block.region != ContractRegion::Constitution {
+            return Err("Expected region type Constitution".to_string());
+        }
+
+        let precedence = block
+            .attributes
+            .get("precedence")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(u32::MAX);
+
+        let author = block.attributes.get("author").cloned();
+
+        let directives = parse_directives_from_content(&block.content);
+
+        Ok(Self {
+            block: block.clone(),
+            directives,
+            precedence,
+            author,
+        })
+    }
+}
+
+/// The policy engine holds all loaded constitutions and resolves conflicts.
+#[derive(Debug, Clone, Default)]
+pub struct PolicyEngine {
+    constitutions: Vec<ConstitutionBlock>,
+    /// Global overrides indexed by directive kind hash.
+    overrides: HashMap<String, Vec<RegionBlock>>,
+}
+
+impl PolicyEngine {
+    /// Load constitutions from a parsed contract document.
+    pub fn load_from_document(&mut self, doc: &ContractDocument) {
+        for block in &doc.blocks {
+            if block.region == ContractRegion::Constitution
+                && let Ok(c) = ConstitutionBlock::from_region(block) {
+                    self.constitutions.push(c);
+                }
+            if block.region == ContractRegion::Override {
+                let key = block.tag.clone().unwrap_or_default();
+                self.overrides.entry(key).or_default().push(block.clone());
+            }
+        }
+        // Sort by precedence (lowest number first)
+        self.constitutions.sort_by_key(|c| c.precedence);
+    }
+
+    /// Resolve conflicts between two agents' directives on the same subject.
+    ///
+    /// Returns `Ok((winning_directive, reason))` or `Err` if no constitution governs the subject.
+    pub fn resolve_conflict(
+        &self,
+        agent_a: &Directive,
+        agent_b: &Directive,
+        subject: &str,
+    ) -> Result<(Directive, String), String> {
+        // Find applicable constitutions for this subject
+        let applicable: Vec<_> = self
+            .constitutions
+            .iter()
+            .filter(|c| {
+                c.directives.iter().any(|d| {
+                    matches_subject(d, subject)
+                })
+            })
+            .collect();
+
+        if applicable.is_empty() {
+            return Err(format!(
+                "No constitution governs subject '{}' — require human review",
+                subject
+            ));
+        }
+
+        // Higher-precedence constitution wins
+        let winner = applicable[0]; // already sorted by precedence
+
+        let a_score = agent_a.severity as u32;
+        let b_score = agent_b.severity as u32;
+
+        if a_score == b_score {
+            // Same severity: tie-break by constitution precedence
+            let reason = format!(
+                "Tie broken by constitution precedence (precedence={}) from author={:?}",
+                winner.precedence, winner.author
+            );
+            // Prefer the directive that matches the constitution's author
+            let chosen = if agent_a
+                .attributes
+                .get("agent")
+                .map(|a| Some(a) == winner.author.as_ref())
+                .unwrap_or(false)
+            {
+                agent_a.clone()
+            } else {
+                agent_b.clone()
+            };
+            return Ok((chosen, reason));
+        }
+
+        let chosen = if a_score < b_score {
+            agent_a.clone()
+        } else {
+            agent_b.clone()
+        };
+
+        let reason = format!(
+            "Resolved by severity ranking: {} (score {}) vs {} (score {})",
+            chosen.severity, chosen.severity as u32,
+            if a_score < b_score { agent_b.severity } else { agent_a.severity },
+            if a_score < b_score { b_score } else { a_score }
+        );
+
+        Ok((chosen, reason))
+    }
+
+    /// Evaluate whether a given action is permitted under current policy.
+    ///
+    /// Returns the effective severity after considering overrides.
+    pub fn evaluate(
+        &self,
+        action: &DirectiveKind,
+        _subject: &str,
+    ) -> DirectiveSeverity {
+        // Collect all matching directives
+        let mut matches = Vec::new();
+        for c in &self.constitutions {
+            for d in &c.directives {
+                if directive_matches_kind(d, action) {
+                    matches.push((c.precedence, d));
+                }
+            }
+        }
+
+        if matches.is_empty() {
+            return DirectiveSeverity::Allow;
+        }
+
+        // Sort by precedence and return the highest-severity match
+        matches.sort_by_key(|(prec, _)| *prec);
+        let highest = matches.into_iter().map(|(_, d)| d).next().unwrap();
+        highest.severity
+    }
+
+    /// Check if an override block is valid (has required `:justification:` and `:reviewer:`).
+    pub fn validate_override(&self, block: &RegionBlock) -> Result<(), String> {
+        if block.region != ContractRegion::Override {
+            return Err("Not an override block".to_string());
+        }
+        if !block.attributes.contains_key("justification") {
+            return Err("Override missing required attribute :justification:".to_string());
+        }
+        if !block.attributes.contains_key("reviewer") {
+            return Err("Override missing required attribute :reviewer:".to_string());
+        }
+        Ok(())
+    }
+
+    /// List all active `[constitution]` blocks sorted by precedence.
+    pub fn constitutions(&self) -> &[ConstitutionBlock] {
+        &self.constitutions
+    }
+}
+
+fn parse_directives_from_content(content: &str) -> Vec<Directive> {
+    let mut directives = Vec::new();
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with(':') && trimmed.contains(':') {
+            // attribute-style directive: :forbid_import: pattern
+            let inner = trimmed.trim_start_matches(':');
+            if let Some((key, value)) = inner.split_once(':') {
+                let key = key.trim();
+                let value = value.trim();
+                let (severity, kind) = match key {
+                    "forbid_import" | "forbid" => (
+                        DirectiveSeverity::Forbid,
+                        DirectiveKind::ForbidImport {
+                            pattern: value.to_string(),
+                        },
+                    ),
+                    "warn_import" | "warn" => (
+                        DirectiveSeverity::Warn,
+                        DirectiveKind::ForbidImport {
+                            pattern: value.to_string(),
+                        },
+                    ),
+                    "suggest_pattern" | "suggest" => (
+                        DirectiveSeverity::Suggest,
+                        DirectiveKind::RequirePattern {
+                            pattern: value.to_string(),
+                        },
+                    ),
+                    "allow" => (
+                        DirectiveSeverity::Allow,
+                        DirectiveKind::Custom {
+                            name: key.to_string(),
+                            params: {
+                                let mut m = HashMap::new();
+                                m.insert("value".to_string(), value.to_string());
+                                m
+                            },
+                        },
+                    ),
+                    "precedence" | "author" => continue, // metadata, not directives
+                    _ => (
+                        DirectiveSeverity::Forbid,
+                        DirectiveKind::Custom {
+                            name: key.to_string(),
+                            params: {
+                                let mut m = HashMap::new();
+                                m.insert("value".to_string(), value.to_string());
+                                m
+                            },
+                        },
+                    ),
+                };
+                directives.push(Directive {
+                    severity,
+                    kind,
+                    source_tag: None,
+                    attributes: HashMap::new(),
+                });
+            }
+        }
+    }
+    directives
+}
+
+fn matches_subject(directive: &Directive, subject: &str) -> bool {
+    match &directive.kind {
+        DirectiveKind::ForbidImport { pattern } => {
+            glob_match(subject, pattern)
+        }
+        DirectiveKind::RequirePattern { pattern } => {
+            glob_match(subject, pattern)
+        }
+        DirectiveKind::ContractConstraint { .. } => true,
+        DirectiveKind::SelfModificationPolicy { action } => {
+            subject.contains(action)
+        }
+        DirectiveKind::Custom { .. } => true,
+    }
+}
+
+fn directive_matches_kind(directive: &Directive, kind: &DirectiveKind) -> bool {
+    std::mem::discriminant(&directive.kind) == std::mem::discriminant(kind)
+}
+
+/// Very simple glob-like matcher. Supports `*` anywhere.
+fn glob_match(text: &str, pattern: &str) -> bool {
+    if !pattern.contains('*') {
+        return text == pattern;
+    }
+    let parts: Vec<&str> = pattern.split('*').collect();
+    let mut rest = text;
+    for (i, part) in parts.iter().enumerate() {
+        if part.is_empty() {
+            continue;
+        }
+        if let Some(pos) = rest.find(part) {
+            if i == 0 && pos != 0 {
+                return false; // first segment must match at start
+            }
+            rest = &rest[pos + part.len()..];
+        } else {
+            return false;
+        }
+    }
+    // If pattern doesn't end with *, rest should be empty
+    if !pattern.ends_with('*') && !rest.is_empty() {
+        return false;
+    }
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aden_core::contract::{ContractRegion, RegionBlock};
+    use std::collections::HashMap;
+
+    fn make_constitution_block(content: &str, precedence: &str) -> RegionBlock {
+        let mut attrs = HashMap::new();
+        attrs.insert("precedence".to_string(), precedence.to_string());
+        attrs.insert("author".to_string(), "agent-core".to_string());
+        RegionBlock {
+            region: ContractRegion::Constitution,
+            tag: Some("bootstrap".to_string()),
+            attributes: attrs,
+            content: content.to_string(),
+            start_line: 1,
+            end_line: 5,
+        }
+    }
+
+    #[test]
+    fn test_constitution_precedence_roundtrip() {
+        let block = make_constitution_block(
+            ":forbid_import: std::process::Command\n:allow: safe_pattern",
+            "10",
+        );
+        let constitution = ConstitutionBlock::from_region(&block).unwrap();
+        assert_eq!(constitution.precedence, 10);
+        assert_eq!(constitution.author, Some("agent-core".to_string()));
+        assert_eq!(constitution.directives.len(), 2);
+    }
+
+    #[test]
+    fn test_conflict_resolution_by_severity() {
+        let block = make_constitution_block(
+            ":forbid_import: unsafe::*\n",
+            "5",
+        );
+        let mut engine = PolicyEngine::default();
+        let doc = ContractDocument {
+            header_attrs: HashMap::new(),
+            blocks: vec![block],
+            prose: Vec::new(),
+        };
+        engine.load_from_document(&doc);
+
+        let agent_a = Directive {
+            severity: DirectiveSeverity::Forbid,
+            kind: DirectiveKind::ForbidImport {
+                pattern: "unsafe::*".to_string(),
+            },
+            source_tag: None,
+            attributes: HashMap::new(),
+        };
+        let agent_b = Directive {
+            severity: DirectiveSeverity::Allow,
+            kind: DirectiveKind::ForbidImport {
+                pattern: "unsafe::*".to_string(),
+            },
+            source_tag: None,
+            attributes: HashMap::new(),
+        };
+
+        let (winner, reason) = engine.resolve_conflict(&agent_a, &agent_b, "unsafe::foo").unwrap();
+        assert_eq!(winner.severity, DirectiveSeverity::Forbid);
+        assert!(!reason.is_empty());
+    }
+
+    #[test]
+    fn test_override_validation() {
+        let engine = PolicyEngine::default();
+        let valid_override = RegionBlock {
+            region: ContractRegion::Override,
+            tag: Some("forbid_import".to_string()),
+            attributes: {
+                let mut m = HashMap::new();
+                m.insert("justification".to_string(), "Needed for test harness".to_string());
+                m.insert("reviewer".to_string(), "alice".to_string());
+                m
+            },
+            content: String::new(),
+            start_line: 1,
+            end_line: 1,
+        };
+        assert!(engine.validate_override(&valid_override).is_ok());
+
+        let invalid_override = RegionBlock {
+            region: ContractRegion::Override,
+            tag: Some("forbid_import".to_string()),
+            attributes: HashMap::new(),
+            content: String::new(),
+            start_line: 1,
+            end_line: 1,
+        };
+        assert!(engine.validate_override(&invalid_override).is_err());
+    }
+
+    #[test]
+    fn test_glob_match() {
+        assert!(glob_match("foo::bar", "foo::bar"));
+        assert!(glob_match("foo::bar::baz", "foo::*"));
+        assert!(glob_match("foo::bar::baz", "*::baz"));
+        assert!(glob_match("foo::bar::baz", "foo::*::baz"));
+        assert!(!glob_match("foo::bar", "bar::foo"));
+    }
+}

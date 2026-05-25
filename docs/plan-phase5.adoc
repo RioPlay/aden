@@ -1,38 +1,38 @@
 :proj: aden
 :phase: 5
-:agent_role: architect
-:scope: ecosystem-distribution
+:agent_role: observability-engineer
+:scope: production-feedback
 
 [[plan-phase5]]
-= Phase 5: Ecosystem & Distribution
+= Phase 5: Production Feedback Loop (Weeks 11–14)
 
 == Objective
-Turn Aden from a CLI into a multi-tool platform: semantic search, IDE integration, language bindings, file watchers, benchmarks, and publish-ready packaging.
 
-== Constraints
-:idempotent: true
-:rollback: false
+The constitution learns from runtime reality.
+
+== Theme
+
+Telemetry-driven contract evolution, simulation, and adversarial testing.
 
 == Deliverables
-|===
-|Module |Deliverable |Acceptance Criteria
 
-|aden-index |Semantic search |`aden search "<query>"` returns ranked anchors with snippets
-|aden-lsp |LSP server |Diagnostics + go-to-definition for `.adoc`/`.aden`
-|editors/vscode |Extension skeleton |Launches LSP, provides outline
-|aden-py |PyO3 bindings |`import aden; aden.generate(path)` works
-|tools/ps-adapter |PowerShell module |`Invoke-AdenAssemble`, `Test-AdenIntegrity`
-|aden-cli |`aden watch` |`notify`-based file monitoring + auto-regeneration
-|benches/ |Benchmark suite |Token density, graph construction, assembly timing
-|repo |Distribution prep |README, CI, crates.io metadata
+|===
+|ID |Deliverable |Crate |Status |Acceptance Criteria
+
+|5.1 |OTLP trace ingestion |`aden-telemetry` |Planned |Accepts spans from OpenTelemetry collector; maps to contract nodes via `.adg` IDs
+|5.2 |Telemetry proposal engine |`aden-telemetry` |Planned |Guard firing → proposes `[security]` update; latency spike → proposes `[agent#perf]` directive
+|5.3 |`aden simulate --diff` |`aden-simulate` |Planned |Shows future contract violations before commit; developer can abort or fix
+|5.4 |`aden history --evolve` |`aden-simulate` |Planned |Graph diff across Git history; reports edge growth/shrink and override density per module
+|5.5 |`aden fuzz-contract` |`aden-simulate` |Planned |Generates adversarial code; flags brittle directives (e.g., missing `:transitive:`); suggests hardening
+|5.6 |`aden cost-report` |`aden-telemetry` |Planned |Token savings vs. schema-loading baseline; exports CSV for CFO dashboards
+|5.7 |Confidence score updates from telemetry |`aden-policy` |Planned |Historical accuracy of `[agent]` directives updated automatically; low-confidence agents flagged
 |===
 
-== Trace
-- *2026-05-23*: Plan written.
+== Exit Gate
+
+Security incident automatically correlates with contract state, proposes `[forbid_import]`, and post-mortem includes `aden history` of affected module.
 
 == Related Documents
 
-. <<project-context>>
-. <<adr-001>>
-. Previous: <<plan-phase4>>
+. <<plan-phase4>>
 . Next: <<plan-phase6>>

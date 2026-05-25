@@ -68,20 +68,18 @@ fn compute_cache_key(dir: &Path) -> Result<String, std::io::Error> {
                     paths.extend(sub);
                 }
             }
-        } else if path.is_dir() {
-            if let Ok(sub) = walk_adoc_files(&path) {
+        } else if path.is_dir()
+            && let Ok(sub) = walk_adoc_files(&path) {
                 paths.extend(sub);
             }
-        }
     }
     paths.sort();
     for p in &paths {
         hasher.update(p.to_string_lossy().as_bytes());
-        if let Ok(meta) = std::fs::metadata(p) {
-            if let Ok(mtime) = meta.modified() {
+        if let Ok(meta) = std::fs::metadata(p)
+            && let Ok(mtime) = meta.modified() {
                 hasher.update(&mtime.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos().to_le_bytes());
             }
-        }
     }
     Ok(hasher.finalize().to_hex().to_string())
 }
@@ -93,11 +91,10 @@ fn walk_adoc_files(dir: &Path) -> Result<Vec<PathBuf>, std::io::Error> {
         let path = entry.path();
         if path.is_dir() {
             paths.extend(walk_adoc_files(&path)?);
-        } else if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-            if ext == "adoc" || ext == "aden" {
+        } else if let Some(ext) = path.extension().and_then(|e| e.to_str())
+            && (ext == "adoc" || ext == "aden") {
                 paths.push(path);
             }
-        }
     }
     Ok(paths)
 }

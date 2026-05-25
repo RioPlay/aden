@@ -1,3 +1,4 @@
+#![allow(clippy::module_inception)]
 // Copyright (c) 2026 RioPlay <rioplay@rioplay.dev>
 // All rights reserved.
 //
@@ -362,26 +363,22 @@ Closing paragraph.
 
         for block in &parsed.blocks {
             match block {
-                aden_core::Block::Paragraph(t) => {
-                    if t.contains("Intro") || t.contains("Closing") {
+                aden_core::Block::Paragraph(t)
+                    if (t.contains("Intro") || t.contains("Closing")) => {
                         found_paragraph = true;
                     }
-                }
-                aden_core::Block::Table(t) => {
-                    if t.headers == vec!["A", "B"] {
+                aden_core::Block::Table(t)
+                    if t.headers == vec!["A", "B"] => {
                         found_table = true;
                     }
-                }
-                aden_core::Block::Admonition { kind, .. } => {
-                    if *kind == aden_core::AdmonitionKind::Important {
+                aden_core::Block::Admonition { kind, .. }
+                    if *kind == aden_core::AdmonitionKind::Important => {
                         found_admonition = true;
                     }
-                }
-                aden_core::Block::Listing { language, .. } => {
-                    if language.as_deref() == Some("bash") {
+                aden_core::Block::Listing { language, .. }
+                    if language.as_deref() == Some("bash") => {
                         found_listing = true;
                     }
-                }
                 _ => {}
             }
         }

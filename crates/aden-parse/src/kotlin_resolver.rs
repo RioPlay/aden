@@ -23,6 +23,12 @@ use std::path::Path;
 /// Deep Kotlin extractor.
 pub struct KotlinResolver;
 
+impl Default for KotlinResolver {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl KotlinResolver {
     pub fn new() -> Self {
         Self
@@ -109,7 +115,7 @@ fn extract_package_from_source(source: &str) -> Option<String> {
     for line in source.lines() {
         let trimmed = line.trim();
         if trimmed.starts_with("package ") {
-            return Some(trimmed["package ".len()..].trim().to_string());
+            return Some(trimmed.strip_prefix("package ").unwrap().trim().to_string());
         }
     }
     None
@@ -381,11 +387,10 @@ fn parse_property<'a>(
 fn find_parent_type_name(node: tree_sitter::Node, source: &str) -> Option<String> {
     let mut current = node;
     while let Some(parent) = current.parent() {
-        if matches!(parent.kind(), "class_declaration" | "object_declaration" | "interface_declaration" | "enum_class_declaration") {
-            if let Some(name_node) = parent.child_by_field_name("name") {
+        if matches!(parent.kind(), "class_declaration" | "object_declaration" | "interface_declaration" | "enum_class_declaration")
+            && let Some(name_node) = parent.child_by_field_name("name") {
                 return Some(node_text(name_node, source).to_string());
             }
-        }
         current = parent;
     }
     None
@@ -413,11 +418,10 @@ fn emit_kotlin_symbol(
         vec!["Kind".to_string(), format!("{:?}", sym.kind)],
         vec!["Visibility".to_string(), sym.visibility.clone()],
     ];
-    if sym.is_extension {
-        if let Some(ref recv) = sym.receiver_type {
+    if sym.is_extension
+        && let Some(ref recv) = sym.receiver_type {
             rows.push(vec!["Extension".to_string(), format!("{}.{}", recv, sym.name)]);
         }
-    }
     for p in &sym.params {
         rows.push(vec![
             format!("param {}", p.name),
@@ -433,8 +437,8 @@ fn emit_kotlin_symbol(
     }));
 
     // Extract call sites
-    if sym.kind == NodeType::Function {
-        if let Some(body) = sym.node.child_by_field_name("body") {
+    if sym.kind == NodeType::Function
+        && let Some(body) = sym.node.child_by_field_name("body") {
             let calls = extract_kotlin_call_sites(body, source);
             let filtered: Vec<_> = calls.into_iter()
                 .filter(|(c, _)| !is_kotlin_std_noise(c))
@@ -453,7 +457,6 @@ fn emit_kotlin_symbol(
                 blocks.push(Block::Listing { language: None, code: edge_code });
             }
         }
-    }
 
     if sym.doc_comment.is_some() {
         blocks.push(Block::Admonition {

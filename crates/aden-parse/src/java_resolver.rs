@@ -22,6 +22,12 @@ use std::path::Path;
 /// Deep Java extractor.
 pub struct JavaResolver;
 
+impl Default for JavaResolver {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl JavaResolver {
     pub fn new() -> Self {
         Self
@@ -116,7 +122,7 @@ fn extract_package_from_source(source: &str) -> Option<String> {
     for line in source.lines() {
         let trimmed = line.trim();
         if trimmed.starts_with("package ") {
-            let pkg = trimmed["package ".len()..].trim_end_matches(';').trim();
+            let pkg = trimmed.strip_prefix("package ").unwrap().trim_end_matches(';').trim();
             return Some(pkg.to_string());
         }
     }
@@ -284,10 +290,10 @@ fn parse_import(node: tree_sitter::Node, source: &str) -> Option<JavaImport> {
 
     // Try to parse from the raw text if tree-sitter structure is unclear
     let clean = text.trim().trim_end_matches(';');
-    let without_static = if clean.starts_with("import static ") {
-        &clean["import static ".len()..]
-    } else if clean.starts_with("import ") {
-        &clean["import ".len()..]
+    let without_static = if let Some(rest) = clean.strip_prefix("import static ") {
+        rest
+    } else if let Some(rest) = clean.strip_prefix("import ") {
+        rest
     } else {
         clean
     };
@@ -297,9 +303,8 @@ fn parse_import(node: tree_sitter::Node, source: &str) -> Option<JavaImport> {
         return None;
     }
 
-    if without_static.ends_with(".*") {
-        let pkg = without_static[..without_static.len() - 2].to_string();
-        return Some(JavaImport { package: pkg.clone(), name: "*".to_string(), is_static, is_wildcard: true });
+    if let Some(pkg) = without_static.strip_suffix(".*") {
+        return Some(JavaImport { package: pkg.to_string(), name: "*".to_string(), is_static, is_wildcard: true });
     }
 
     let class_name = parts.last()?.to_string();
@@ -327,13 +332,7 @@ fn parse_type_declaration<'a>(
     if let Some(name_node) = node.child_by_field_name("name") {
         let name = node_text(name_node, source).to_string();
         let kind = match node.kind() {
-            "class_declaration" => {
-                if has_modifier(node, source, "interface") {
-                    NodeType::Type
-                } else {
-                    NodeType::Type
-                }
-            }
+            "class_declaration" => NodeType::Type,
             "interface_declaration" => NodeType::Type,
             "enum_declaration" => NodeType::Type,
             _ => NodeType::Type,
@@ -489,11 +488,10 @@ fn parse_field<'a>(
 fn find_parent_type_name(node: tree_sitter::Node, source: &str) -> Option<String> {
     let mut current = node;
     while let Some(parent) = current.parent() {
-        if matches!(parent.kind(), "class_declaration" | "interface_declaration" | "enum_declaration") {
-            if let Some(name_node) = parent.child_by_field_name("name") {
+        if matches!(parent.kind(), "class_declaration" | "interface_declaration" | "enum_declaration")
+            && let Some(name_node) = parent.child_by_field_name("name") {
                 return Some(node_text(name_node, source).to_string());
             }
-        }
         current = parent;
     }
     None
@@ -539,8 +537,8 @@ fn emit_java_symbol(
     }));
 
     // Extract call sites from method body
-    if sym.kind == NodeType::Function {
-        if let Some(body) = sym.node.child_by_field_name("body") {
+    if sym.kind == NodeType::Function
+        && let Some(body) = sym.node.child_by_field_name("body") {
             let calls = extract_java_call_sites(body, source);
             let filtered: Vec<_> = calls.into_iter()
                 .filter(|(c, _)| !is_java_std_noise(c))
@@ -559,7 +557,6 @@ fn emit_java_symbol(
                 blocks.push(Block::Listing { language: None, code: edge_code });
             }
         }
-    }
 
     if sym.doc_comment.is_some() {
         blocks.push(Block::Admonition {

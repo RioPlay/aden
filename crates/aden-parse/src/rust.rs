@@ -24,6 +24,12 @@ use std::path::Path;
 /// call-site analysis, visibility, doc comments, and edge macros.
 pub struct RustExtractor;
 
+impl Default for RustExtractor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RustExtractor {
     pub fn new() -> Self {
         Self
@@ -118,13 +124,11 @@ pub fn extract_documents_inner(path: &Path, source: &str) -> Result<Vec<Document
 fn infer_crate_name(path: &Path) -> String {
     let components: Vec<_> = path.components().collect();
     for (i, component) in components.iter().enumerate() {
-        if let std::path::Component::Normal(name) = component {
-            if **name == *std::ffi::OsStr::new("crates") && i + 1 < components.len() {
-                if let std::path::Component::Normal(crate_name) = &components[i + 1] {
+        if let std::path::Component::Normal(name) = component
+            && **name == *std::ffi::OsStr::new("crates") && i + 1 < components.len()
+                && let std::path::Component::Normal(crate_name) = &components[i + 1] {
                     return crate_name.to_string_lossy().to_string();
                 }
-            }
-        }
     }
     path.parent()
         .and_then(|p| p.file_name())
@@ -339,8 +343,8 @@ fn extract_call_sites(node: tree_sitter::Node, source: &str) -> Vec<(String, usi
     for child in node.children(&mut cursor) {
         calls.extend(extract_call_sites(child, source));
     }
-    if node.kind() == "call_expression" {
-        if let Some(func) = node.child_by_field_name("function") {
+    if node.kind() == "call_expression"
+        && let Some(func) = node.child_by_field_name("function") {
             let callee = resolve_callee_name(func, source);
             if !callee.is_empty()
                 && callee.len() >= 3
@@ -350,7 +354,6 @@ fn extract_call_sites(node: tree_sitter::Node, source: &str) -> Vec<(String, usi
                 calls.push((callee, line));
             }
         }
-    }
     calls
 }
 
@@ -399,9 +402,9 @@ fn extract_struct(
     if let Some(body) = node.child_by_field_name("body") {
         let mut bc = body.walk();
         for child in body.children(&mut bc) {
-            if child.kind() == "field_declaration" {
-                if let Some(fname) = child.child_by_field_name("name") {
-                    if let Some(fty) = child.child_by_field_name("type") {
+            if child.kind() == "field_declaration"
+                && let Some(fname) = child.child_by_field_name("name")
+                    && let Some(fty) = child.child_by_field_name("type") {
                         let f_vis = get_visibility_with_source(child, source);
                         fields.push(FieldDef {
                             name: node_text(fname, source).to_string(),
@@ -409,8 +412,6 @@ fn extract_struct(
                             visibility: f_vis,
                         });
                     }
-                }
-            }
         }
     }
     let doc_comment = if buffered_comments.is_empty() { None } else { Some(buffered_comments.join("\n")) };
@@ -462,15 +463,14 @@ fn extract_enum(
     if let Some(body) = node.child_by_field_name("body") {
         let mut bc = body.walk();
         for child in body.children(&mut bc) {
-            if child.kind() == "enum_variant" {
-                if let Some(vname) = child.child_by_field_name("name") {
+            if child.kind() == "enum_variant"
+                && let Some(vname) = child.child_by_field_name("name") {
                     variants.push(FieldDef {
                         name: node_text(vname, source).to_string(),
                         ty: String::new(),
                         visibility: vis.clone(),
                     });
                 }
-            }
         }
     }
     let doc_comment = if buffered_comments.is_empty() { None } else { Some(buffered_comments.join("\n")) };

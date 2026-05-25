@@ -16,6 +16,12 @@ use std::path::Path;
 /// Deep Go extractor.
 pub struct GoResolver;
 
+impl Default for GoResolver {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl GoResolver {
     pub fn new() -> Self {
         Self
@@ -68,8 +74,8 @@ fn find_go_module(path: &Path) -> String {
         let go_mod = ancestor.join("go.mod");
         if let Ok(content) = std::fs::read_to_string(go_mod) {
             for line in content.lines() {
-                if line.starts_with("module ") {
-                    return line["module ".len()..].trim().to_string();
+                if let Some(rest) = line.strip_prefix("module ") {
+                    return rest.trim().to_string();
                 }
             }
         }
@@ -97,8 +103,8 @@ struct GoSymbol<'a> {
 fn walk_package_decl<'a>(
     node: tree_sitter::Node<'a>,
     source: &str,
-    module: &str,
-    file_name: &str,
+    _module: &str,
+    _file_name: &str,
     symbols: &mut Vec<GoSymbol<'a>>,
     imports: &mut Vec<GoImport>,
 ) {
@@ -139,8 +145,8 @@ fn walk_package_decl<'a>(
             // type Point struct { ... }
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
-                if child.kind() == "type_spec" {
-                    if let Some(name_node) = child.child_by_field_name("name") {
+                if child.kind() == "type_spec"
+                    && let Some(name_node) = child.child_by_field_name("name") {
                         let name = node_text(name_node, source).to_string();
                         let doc = extract_go_doc_comment(node, source);
                         symbols.push(GoSymbol {
@@ -151,7 +157,6 @@ fn walk_package_decl<'a>(
                             doc_comment: doc,
                         });
                     }
-                }
             }
         }
         "import_declaration" | "import_spec" => {
@@ -162,7 +167,7 @@ fn walk_package_decl<'a>(
 
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        walk_package_decl(child, source, module, file_name, symbols, imports);
+        walk_package_decl(child, source, _module, _file_name, symbols, imports);
     }
 }
 
@@ -297,15 +302,14 @@ fn resolve_go_call_sites<'a>(
         calls.extend(resolve_go_call_sites(child, source, all_symbols, imports));
     }
 
-    if node.kind() == "call_expression" {
-        if let Some(func) = node.child_by_field_name("function") {
+    if node.kind() == "call_expression"
+        && let Some(func) = node.child_by_field_name("function") {
             let callee = resolve_go_callee(func, source, all_symbols, imports);
             if !callee.is_empty() && callee.len() >= 2 && !is_go_std_noise(&callee) {
                 let line = func.start_position().row + 1;
                 calls.push(GoCallSite { callee, line });
             }
         }
-    }
     calls
 }
 

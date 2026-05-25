@@ -175,8 +175,8 @@ impl AdenLspBackend {
     /// Validate that `candidate` is inside `root` to prevent goto-definition
     /// from jumping outside the workspace (e.g., via absolute paths in contracts).
     fn is_in_workspace(candidate: &std::path::Path, root: &std::path::Path) -> bool {
-        candidate.canonicalize().map_or(false, |c| {
-            root.canonicalize().map_or(false, |r| c.starts_with(&r))
+        candidate.canonicalize().is_ok_and(|c| {
+            root.canonicalize().is_ok_and(|r| c.starts_with(&r))
         })
     }
 
@@ -217,8 +217,8 @@ impl AdenLspBackend {
             }
         };
 
-        if let Ok(parsed) = parsed {
-            if let Some(root) = self.workspace_root.lock().await.clone() {
+        if let Ok(parsed) = parsed
+            && let Some(root) = self.workspace_root.lock().await.clone() {
                 // SECURITY: Resolve include paths within workspace root only.
                 // Prevent directory traversal via `../../etc/passwd` in include directives.
                 let root_canon = root.canonicalize().unwrap_or_else(|_| root.clone());
@@ -251,7 +251,7 @@ impl AdenLspBackend {
 
                 for inc in &parsed.includes {
                     let inc_path = root.join(&inc.path);
-                    let safe = inc_path.canonicalize().map_or(false, |c| c.starts_with(&root_canon));
+                    let safe = inc_path.canonicalize().is_ok_and(|c| c.starts_with(&root_canon));
                     if !safe {
                         for (i, line) in text.lines().enumerate() {
                             if line.contains(&format!("include::{}[", inc.path)) {
@@ -295,7 +295,6 @@ impl AdenLspBackend {
                     }
                 }
             }
-        }
         self.client
             .publish_diagnostics(uri.clone(), diagnostics, Some(1))
             .await;

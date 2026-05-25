@@ -56,8 +56,8 @@ pub fn list(store_dir: &Path) -> io::Result<Vec<Proposal>> {
     for entry in fs::read_dir(&proposals_dir)? {
         let entry = entry?;
         let path = entry.path();
-        if let Some(ext) = path.extension() {
-            if ext == "adoc" {
+        if let Some(ext) = path.extension()
+            && ext == "adoc" {
                 let mut file = File::open(&path)?;
                 let mut contents = String::new();
                 file.read_to_string(&mut contents)?;
@@ -65,7 +65,6 @@ pub fn list(store_dir: &Path) -> io::Result<Vec<Proposal>> {
                     proposals.push(proposal);
                 }
             }
-        }
     }
     Ok(proposals)
 }

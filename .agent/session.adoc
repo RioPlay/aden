@@ -11,6 +11,9 @@ Every agent that modifies files must append an entry here before completing.
 
 |===
 |Timestamp |Agent |Task |Files |Status |Confidence
+|2026-05-24T00:00:00Z |agent-0 |Phase 0 Contract Kernel implementation |aden-core, aden-parse, aden-cli |in_progress |High
+|2026-05-24T02:30:00Z |agent-0 |Phase 0 delivered + docs cleanup + base cache fix |aden-core, aden-policy, aden-emit, aden-cli, docs/ |completed |High
+|2026-05-24T02:45:00Z |agent-0 |Removed all warnings, fixed bugs, security audit |all crates |completed |High
 |===
 
 == How to Append

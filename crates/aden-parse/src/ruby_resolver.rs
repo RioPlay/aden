@@ -24,6 +24,12 @@ use std::path::Path;
 /// Deep Ruby extractor.
 pub struct RubyResolver;
 
+impl Default for RubyResolver {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RubyResolver {
     pub fn new() -> Self {
         Self
@@ -387,11 +393,10 @@ fn parse_method<'a>(
 fn find_parent_type_name(node: tree_sitter::Node, source: &str) -> Option<String> {
     let mut current = node;
     while let Some(parent) = current.parent() {
-        if matches!(parent.kind(), "class" | "module" | "singleton_class") {
-            if let Some(name_node) = parent.child_by_field_name("name") {
+        if matches!(parent.kind(), "class" | "module" | "singleton_class")
+            && let Some(name_node) = parent.child_by_field_name("name") {
                 return Some(node_text(name_node, source).to_string());
             }
-        }
         current = parent;
     }
     None
@@ -440,8 +445,8 @@ fn emit_ruby_symbol(
     }));
 
     // Extract call sites from method body
-    if sym.kind == NodeType::Function {
-        if let Some(body) = sym.node.child_by_field_name("body") {
+    if sym.kind == NodeType::Function
+        && let Some(body) = sym.node.child_by_field_name("body") {
             let calls = extract_ruby_call_sites(body, source);
             let filtered: Vec<_> = calls.into_iter()
                 .filter(|(c, _)| !is_ruby_std_noise(c))
@@ -460,7 +465,6 @@ fn emit_ruby_symbol(
                 blocks.push(Block::Listing { language: None, code: edge_code });
             }
         }
-    }
 
     if sym.doc_comment.is_some() {
         blocks.push(Block::Admonition {

@@ -113,7 +113,7 @@ pub fn serve(project_dir: &Path) -> io::Result<()> {
 }
 
 fn send_response(stdout: &mut io::Stdout, resp: &JsonRpcResponse) -> io::Result<()> {
-    let json = serde_json::to_string(resp).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    let json = serde_json::to_string(resp).map_err(io::Error::other)?;
     writeln!(stdout, "{}", json)?;
     stdout.flush()
 }
@@ -226,7 +226,7 @@ fn tool_list_symbols(project_dir: &std::sync::Arc<std::path::PathBuf>, args: &se
 
     let mut symbols = Vec::new();
     for doc in docs {
-        let name = doc.anchor.split('#').last().unwrap_or(&doc.anchor);
+        let name = doc.anchor.split('#').next_back().unwrap_or(&doc.anchor);
         if query.is_empty() || name.to_lowercase().contains(&query.to_lowercase()) {
             symbols.push(serde_json::json!({
                 "anchor": doc.anchor,

@@ -108,7 +108,7 @@ fn process_text(
     current_path: &Path,
     base_dir: &Path,
     attrs: &HashMap<String, String>,
-    visited: &mut Vec<PathBuf>,
+    _visited: &mut Vec<PathBuf>,
     level_offset: usize,
 ) -> Result<String, PreprocessError> {
     let local_attrs = attrs.clone();
@@ -154,11 +154,10 @@ fn process_text(
             continue;
         }
         if ENDIF_RE.is_match(trimmed) {
-            if let Some(was_skipping) = skip_stack.pop() {
-                if was_skipping {
+            if let Some(was_skipping) = skip_stack.pop()
+                && was_skipping {
                     skip_depth = skip_depth.saturating_sub(1);
                 }
-            }
             continue;
         }
 
@@ -199,11 +198,10 @@ fn process_text(
                     tag = Some(v.trim_matches('"').to_string());
                 } else if let Some(v) = part.strip_prefix("lines=") {
                     lines_spec = Some(v.trim_matches('"').to_string());
-                } else if let Some(v) = part.strip_prefix("leveloffset=") {
-                    if let Ok(n) = v.trim_matches('"').parse::<i32>() {
+                } else if let Some(v) = part.strip_prefix("leveloffset=")
+                    && let Ok(n) = v.trim_matches('"').parse::<i32>() {
                         new_leveloff = n;
                     }
-                }
             }
 
             let mut inc_text = std::fs::read_to_string(&inc_canon).map_err(|e| PreprocessError::Io {
@@ -227,7 +225,7 @@ fn process_text(
                 &inc_canon,
                 base_dir,
                 &local_attrs,
-                visited,
+                _visited,
                 (level_offset as i32 + new_leveloff).max(0) as usize,
             )?;
 
@@ -307,8 +305,10 @@ fn filter_lines(text: &str, spec: &str) -> Result<String, PreprocessError> {
             } else {
                 end_str.parse().map_err(|_| PreprocessError::InvalidLineRange { spec: spec.to_string() })?
             };
-            for i in (start.saturating_sub(1))..end.min(lines.len()) {
-                result.push(lines[i].to_string());
+            let start_idx = start.saturating_sub(1);
+            let end_idx = end.min(lines.len());
+            for line in &lines[start_idx..end_idx] {
+                result.push(line.to_string());
             }
         } else {
             let n: usize = range_str.parse().map_err(|_| PreprocessError::InvalidLineRange { spec: spec.to_string() })?;
@@ -327,11 +327,11 @@ fn filter_tags(text: &str, tag_name: &str) -> Result<String, PreprocessError> {
     let mut in_tag = false;
     for line in text.lines() {
         let trimmed = line.trim();
-        if trimmed == &start_tag {
+        if trimmed == start_tag {
             in_tag = true;
             continue;
         }
-        if trimmed == &end_tag {
+        if trimmed == end_tag {
             in_tag = false;
             continue;
         }
@@ -348,7 +348,7 @@ fn adjust_headings(text: &str, offset: i32) -> String {
             let trimmed = line.trim();
             if let Some(cap) = HEADING_RE.captures(trimmed) {
                 let level = cap[1].len();
-                let new_level = ((level as i32 + offset).max(1)).min(6) as usize;
+                let new_level = (level as i32 + offset).clamp(1, 6) as usize;
                 let title = &cap[2];
                 format!("{} {}", "=".repeat(new_level), title)
             } else {

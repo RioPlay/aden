@@ -74,6 +74,10 @@ enum Commands {
         out_dir: Option<PathBuf>,
         #[arg(long, help = "Auto-discover source files and generate contracts for the whole project")]
         auto: bool,
+        #[arg(long, help = "Three-way merge: update only [generated] blocks while preserving [human]/[agent] blocks")]
+        merge: bool,
+        #[arg(long, help = "Dry-run: output MergeActions without writing files")]
+        propose: bool,
     },
     /// Verify all <<refs>> resolve to existing [[anchors]]
     Check {
@@ -269,7 +273,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     match cli.command {
         Commands::Init { path } => cmd_init(&path),
-        Commands::Gen { path, out_dir, auto } => cmd_gen(&path, out_dir.as_deref(), auto),
+        Commands::Gen { path, out_dir, auto, merge, propose } => cmd_gen(&path, out_dir.as_deref(), auto, merge, propose),
         Commands::Check { path } => cmd_check(&path),
         Commands::Graph { from, depth, path } => cmd_graph(&path, &from, depth),
         Commands::Asm { from, depth, budget, edge_types, out, path } => {
@@ -538,12 +542,12 @@ fn cmd_kickoff(
 
         let resolved = kickoff_template
             .replace("{project}", name)
-            .replace("{date}", &aden_core::rfc3339_now().split('T').next().unwrap_or("2026-01-01").to_string())
+            .replace("{date}", aden_core::rfc3339_now().split('T').next().unwrap_or("2026-01-01"))
             .replace("{author}", &owner)
             .replace("{idea}", &name.to_lowercase().replace(" ", "-"));
 
         // Replace template placeholders with guided content
-        let mut output = String::from(resolved);
+        let mut output = resolved;
         // Replace first blank line in Problem section
         output = output.replace(
             ". Who has this problem?\n. ",
@@ -561,7 +565,7 @@ fn cmd_kickoff(
         // Non-interactive: just fill placeholders from template
         let resolved = kickoff_template
             .replace("{project}", name)
-            .replace("{date}", &aden_core::rfc3339_now().split('T').next().unwrap_or("2026-01-01").to_string())
+            .replace("{date}", aden_core::rfc3339_now().split('T').next().unwrap_or("2026-01-01"))
             .replace("{author}", "<author>")
             .replace("{idea}", &name.to_lowercase().replace(" ", "-"));
         std::fs::write(&out_path, resolved)?;
@@ -625,13 +629,12 @@ fn cmd_workflow(
             let src_text = std::fs::read_to_string(&src_path)?;
             // Extract key-value pairs from AsciiDoc attributes
             for line in src_text.lines() {
-                if line.starts_with(':') && line.contains(": ") {
-                    if let Some((key, value)) = line.trim().split_once(": ") {
+                if line.starts_with(':') && line.contains(": ")
+                    && let Some((key, value)) = line.trim().split_once(": ") {
                         let key = key.trim_start_matches(':');
                         let placeholder = format!("{{{key}}}");
                         resolved = resolved.replace(&placeholder, value.trim());
                     }
-                }
             }
             // Extract anchor as {feature}/{idea} if present
             if let Some(anchor) = src_text.lines().find(|l| l.starts_with("[[")) {
@@ -837,11 +840,21 @@ Always verify that third-party licenses are compatible with your project's licen
 
 /// Auto-document a codebase: discover source files, skip unchanged,
 /// emit structured contracts, and generate an index.
-fn cmd_gen(path: &Path, out_dir: Option<&Path>, auto: bool) -> Result<(), Box<dyn std::error::Error>> {
+fn cmd_gen(
+    path: &Path,
+    out_dir: Option<&Path>,
+    auto: bool,
+    merge: bool,
+    propose: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     if path.is_file() {
         // Single-file mode: backward compatible
         let source = std::fs::read_to_string(path)?;
         let docs = aden_parse::parse_file(path, &source)?;
+
+        if merge || propose {
+            return cmd_gen_contract(path, &source, docs, out_dir, propose);
+        }
         return emit_docs(docs, out_dir, path);
     }
 
@@ -851,6 +864,10 @@ fn cmd_gen(path: &Path, out_dir: Option<&Path>, auto: bool) -> Result<(), Box<dy
 
     let root = find_project_root(path);
     let effective_out = out_dir.unwrap_or_else(|| Path::new("contracts"));
+
+    if merge || propose {
+        return cmd_gen_merge(&root, effective_out, propose);
+    }
 
     if auto {
         // ── AUTO MODE: workspace-aware incremental generation ────────────────
@@ -882,14 +899,13 @@ fn cmd_gen(path: &Path, out_dir: Option<&Path>, auto: bool) -> Result<(), Box<dy
                 .and_then(|m| m.modified())
                 .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
             let entry = cache.entries.get(contract_path.to_string_lossy().as_ref());
-            if let Some(e) = entry {
-                if e.source_mtime == src_mtime.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs()
+            if let Some(e) = entry
+                && e.source_mtime == src_mtime.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs()
                     && contract_path.exists()
                 {
                     skipped += 1;
                     continue;
                 }
-            }
 
             let source = match std::fs::read_to_string(src_path) {
                 Ok(s) => s,
@@ -961,6 +977,218 @@ fn cmd_gen(path: &Path, out_dir: Option<&Path>, auto: bool) -> Result<(), Box<dy
     let _ = std::fs::remove_file(cache_dir.join("graph-cache.json"));
     let _ = std::fs::remove_file(cache_dir.join("index-cache.json"));
     let _ = std::fs::remove_file(cache_dir.join("cache-index.json"));
+
+    Ok(())
+}
+
+/// Walk up from `start` looking for a directory containing `.aden/`.
+fn find_aden_root(start: &Path) -> Option<PathBuf> {
+    let mut current = start.canonicalize().unwrap_or_else(|_| start.to_path_buf());
+    loop {
+        if current.join(".aden").is_dir() {
+            return Some(current);
+        }
+        if let Some(parent) = current.parent() {
+            current = parent.to_path_buf();
+        } else {
+            return None;
+        }
+    }
+}
+
+/// Compute the base-cache path for a given contract output path.
+fn base_cache_path(contract_path: &Path) -> Option<PathBuf> {
+    let file_name = contract_path.file_name()?.to_str()?;
+    // If the contract path is absolute, find .aden from its parent;
+    // otherwise assume CWD is the project root.
+    let root = if contract_path.is_absolute() {
+        find_aden_root(contract_path.parent()?)?
+    } else {
+        find_aden_root(std::env::current_dir().ok()?.as_path())?
+    };
+    Some(root.join(".aden").join("contract-base").join(file_name))
+}
+
+/// Single-file contract generation with three-way merge support.
+fn cmd_gen_contract(
+    _path: &Path,
+    _source: &str,
+    docs: Vec<aden_core::Document>,
+    out_dir: Option<&Path>,
+    propose: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use aden_core::contract::{parse_contract, ContractDocument, ContractState, MergeAction, ParseMode};
+
+    if docs.is_empty() {
+        return Ok(());
+    }
+
+    let effective_out = out_dir.unwrap_or_else(|| Path::new("contracts"));
+    std::fs::create_dir_all(effective_out)?;
+
+    let contract_path = effective_out.join(format!("{}.adoc", sanitize_anchor(&docs[0].anchor)));
+
+    // Ground: freshly generated contract from AST
+    let ground_doc = ContractDocument::from_document(&docs[0]);
+
+    // Base: last pure generated content (from .aden/contract-base/)
+    let base_doc = if let Some(base_path) = base_cache_path(&contract_path) {
+        if base_path.exists() {
+            let existing = std::fs::read_to_string(&base_path)?;
+            parse_contract(&existing, ParseMode::Permissive).unwrap_or_else(|_| ground_doc.clone())
+        } else {
+            ground_doc.clone()
+        }
+    } else {
+        ground_doc.clone()
+    };
+
+    // Working: current contract file on disk (with possible human edits)
+    let working_doc = if contract_path.exists() {
+        let existing = std::fs::read_to_string(&contract_path)?;
+        parse_contract(&existing, ParseMode::Permissive).unwrap_or_else(|e| {
+            eprintln!(
+                "WARN: Failed to parse existing contract {}: {}. Treating as fresh.",
+                contract_path.display(), e
+            );
+            ground_doc.clone()
+        })
+    } else {
+        ground_doc.clone()
+    };
+
+    let state = ContractState::new(ground_doc.clone(), base_doc, working_doc);
+    let proposal = state.propose()?;
+
+    if propose {
+        println!("// Merge Proposal for {}", contract_path.display());
+        println!("//   Preserved: {} | Updated: {} | Conflicts: {} | Inserted: {} | Deleted: {}",
+                 proposal.preserved_count, proposal.updated_count, proposal.conflict_count,
+                 proposal.inserted_count, proposal.deleted_count);
+        for action in &proposal.actions {
+            match action {
+                MergeAction::UpdateGenerated { index, .. } => {
+                    println!("  UPDATE [generated] @ block {}", index);
+                }
+                MergeAction::PreserveHuman { index } => {
+                    println!("  PRESERVE human/agent block @ {}", index);
+                }
+                MergeAction::Conflict { index, reason } => {
+                    println!("  CONFLICT @ block {}: {}", index, reason);
+                }
+                MergeAction::InsertGenerated { after_index, .. } => {
+                    println!("  INSERT [generated] after block {}", after_index);
+                }
+                MergeAction::DeleteGenerated { index, reason } => {
+                    println!("  DELETE [generated] @ block {}: {}", index, reason);
+                }
+            }
+        }
+        return Ok(());
+    }
+
+    // Merge mode: apply and write
+    let merged = state.apply(&proposal)?;
+    let output = aden_emit::emit_contract_document(&merged);
+    std::fs::write(&contract_path, output)?;
+    println!("Merged contract: {}", contract_path.display());
+
+    // Update base cache so next run has clean generated snapshot
+    if let Some(base_path) = base_cache_path(&contract_path) {
+        if let Some(parent) = base_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&base_path, aden_emit::emit_contract_document(&ground_doc))?;
+    }
+
+    Ok(())
+}
+
+/// Directory-mode contract generation with merge support.
+fn cmd_gen_merge(
+    root: &Path,
+    effective_out: &Path,
+    propose: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use aden_core::contract::{parse_contract, ContractDocument, ContractState, ParseMode};
+
+    let sources = discover_source_files(root)?;
+    if sources.is_empty() {
+        eprintln!("No source files discovered in {}.", root.display());
+        return Ok(());
+    }
+
+    std::fs::create_dir_all(effective_out)?;
+
+    for src_path in &sources {
+        let source = match std::fs::read_to_string(src_path) {
+            Ok(s) => s,
+            Err(e) if e.kind() == std::io::ErrorKind::InvalidData => continue,
+            Err(e) => {
+                eprintln!("WARN: Failed to read {}: {}", src_path.display(), e);
+                continue;
+            }
+        };
+
+        let docs = match aden_parse::parse_file(src_path, &source) {
+            Ok(d) => d,
+            Err(aden_core::Error::UnsupportedLanguage(_)) => continue,
+            Err(e) => {
+                eprintln!("WARN: Parse failed for {}: {}", src_path.display(), e);
+                continue;
+            }
+        };
+
+        for doc in &docs {
+            let file_name = format!("{}.adoc", sanitize_anchor(&doc.anchor));
+            let contract_path = effective_out.join(&file_name);
+
+            let ground_doc = ContractDocument::from_document(doc);
+
+            // Base: last pure generated content
+            let base_doc = if let Some(base_path) = base_cache_path(&contract_path) {
+                if base_path.exists() {
+                    let existing = std::fs::read_to_string(&base_path)?;
+                    parse_contract(&existing, ParseMode::Permissive).unwrap_or_else(|_| ground_doc.clone())
+                } else {
+                    ground_doc.clone()
+                }
+            } else {
+                ground_doc.clone()
+            };
+
+            // Working: current contract file on disk
+            let working_doc = if contract_path.exists() {
+                let existing = std::fs::read_to_string(&contract_path)?;
+                parse_contract(&existing, ParseMode::Permissive).unwrap_or_else(|_| ground_doc.clone())
+            } else {
+                ground_doc.clone()
+            };
+
+            let state = ContractState::new(ground_doc.clone(), base_doc, working_doc);
+            let proposal = state.propose()?;
+
+            if propose {
+                println!("// Proposal: {}", contract_path.display());
+                println!("//   Preserved: {} | Updated: {} | Conflicts: {} | Inserted: {} | Deleted: {}",
+                         proposal.preserved_count, proposal.updated_count, proposal.conflict_count,
+                         proposal.inserted_count, proposal.deleted_count);
+            } else {
+                let merged = state.apply(&proposal)?;
+                let output = aden_emit::emit_contract_document(&merged);
+                std::fs::write(&contract_path, output)?;
+                println!("Merged contract: {}", contract_path.display());
+
+                // Update base cache
+                if let Some(base_path) = base_cache_path(&contract_path) {
+                    if let Some(parent) = base_path.parent() {
+                        std::fs::create_dir_all(parent)?;
+                    }
+                    std::fs::write(&base_path, aden_emit::emit_contract_document(&ground_doc))?;
+                }
+            }
+        }
+    }
 
     Ok(())
 }
@@ -1038,7 +1266,7 @@ fn walk_src_files(
     for entry in std::fs::read_dir(dir).map_err(|e| format!("read_dir: {}", e))? {
         let entry = entry.map_err(|e| format!("entry: {}", e))?;
         let p = entry.path();
-        let p_str = p.to_string_lossy();
+        let p_str = normalize_sep(&p);
         if skip_patterns.iter().any(|pat| p_str.contains(pat)) {
             continue;
         }
@@ -1047,13 +1275,11 @@ fn walk_src_files(
         }
         if entry.file_type()?.is_dir() {
             walk_src_files(&p, exts, out, skip_patterns)?;
-        } else if entry.file_type()?.is_file() {
-            if let Some(ext) = p.extension().and_then(|e| e.to_str()) {
-                if exts.contains(&ext) {
+        } else if entry.file_type()?.is_file()
+            && let Some(ext) = p.extension().and_then(|e| e.to_str())
+                && exts.contains(&ext) {
                     out.push(p);
                 }
-            }
-        }
     }
     Ok(())
 }
@@ -1084,8 +1310,8 @@ fn discover_source_files(root: &Path) -> Result<Vec<PathBuf>, Box<dyn std::error
         // Rust: walk all .rs files, prioritizing src/ directories
         walk_src_files(root, &["rs"], &mut files, &["/.git/", "/target/"])?;
         files.sort_by(|a, b| {
-            let a_is_src = a.to_string_lossy().contains("/src/");
-            let b_is_src = b.to_string_lossy().contains("/src/");
+            let a_is_src = normalize_sep(a).contains("/src/");
+            let b_is_src = normalize_sep(b).contains("/src/");
             b_is_src.cmp(&a_is_src)
         });
     } else if root.join("go.mod").exists() {
@@ -1221,20 +1447,25 @@ fn sanitize_source_file(doc: &mut aden_core::Document) {
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     if let Some(source_file) = doc.attributes.get("source_file") {
         let p = std::path::Path::new(source_file);
-        if p.is_absolute() {
-            if let Ok(rel) = p.strip_prefix(&cwd) {
+        if p.is_absolute()
+            && let Ok(rel) = p.strip_prefix(&cwd) {
                 doc.attributes.insert(
                     "source_file".to_string(),
                     rel.to_string_lossy().to_string(),
                 );
             }
-        }
     }
+}
+
+/// Normalize path separators for cross-platform skip-pattern matching.
+/// On Windows, `to_string_lossy()` yields backslashes; we unify to `/`.
+fn normalize_sep(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
 }
 
 fn sanitize_anchor(anchor: &str) -> String {
     let s = anchor
-        .replace(['/', '#'], "-")
+        .replace(['/', '#', '\\'], "-")
         .replace(":", "-")
         .replace(" ", "-");
     // Truncate to 128 characters to stay well under POSIX max-filename
@@ -1997,15 +2228,14 @@ fn cmd_licenses(
                 is_aden_crate = false;
             }
             current_name = Some(name);
-        } else if trimmed.starts_with("version = ") && !is_aden_crate {
-            if let Some(name) = current_name.clone() {
+        } else if trimmed.starts_with("version = ") && !is_aden_crate
+            && let Some(name) = current_name.clone() {
                 let version = trimmed
                     .trim_start_matches("version = ")
                     .trim_matches('"')
                     .to_string();
                 packages.push((name, version));
             }
-        }
     }
 
     // Sort and dedup
@@ -2494,18 +2724,18 @@ fn cmd_audit(
         {
             let p = entry.path();
             if !p.is_file() { continue; }
-            if let Some(ext) = p.extension().and_then(|e| e.to_str()) {
-                if let Some(l) = lang_exts.iter().find(|(e, _)| *e == ext.to_lowercase()) {
-                    if scan_all || want_lang.as_deref() == Some(l.1) {
+            if let Some(ext) = p.extension().and_then(|e| e.to_str())
+                && let Some(l) = lang_exts.iter().find(|(e, _)| *e == ext.to_lowercase())
+                    && (scan_all || want_lang.as_deref() == Some(l.1)) {
                         files.push(p.to_path_buf());
                     }
-                }
-            }
         }
     }
 
-    // Build pattern table: (regex, lang_opt, owasp_id, category, severity, description, remediation)
-    static OWASP_PATTERNS: OnceLock<Vec<(Regex, Option<&'static str>, &'static str, &'static str, OwaspSeverity, &'static str, &'static str)>> = OnceLock::new();
+    type OwaspPattern = (Regex, Option<&'static str>, &'static str, &'static str, OwaspSeverity, &'static str, &'static str);
+
+    // Build pattern table
+    static OWASP_PATTERNS: OnceLock<Vec<OwaspPattern>> = OnceLock::new();
     let patterns = OWASP_PATTERNS.get_or_init(|| {
         vec![
             // A03 - Injection: eval / exec / Function (JavaScript / Python / Ruby)
@@ -2609,9 +2839,8 @@ fn cmd_audit(
             }
 
             for (re, pat_lang, owasp_id, category, severity, desc, fix) in patterns.iter() {
-                if let Some(pl) = pat_lang {
-                    if Some(*pl) != lang { continue; }
-                }
+                if let Some(pl) = pat_lang
+                    && Some(*pl) != lang { continue; }
                 if re.is_match(line) {
                     findings.push(OwaspFinding {
                         owasp_id,
@@ -2644,7 +2873,7 @@ fn cmd_audit(
     }
 
     // Sort by severity descending
-    findings.sort_by(|a, b| b.severity.cmp(&a.severity));
+    findings.sort_by_key(|b| std::cmp::Reverse(b.severity));
 
     let counts = |sev: OwaspSeverity| findings.iter().filter(|f| f.severity == sev).count();
     let crit = counts(OwaspSeverity::Critical);
@@ -2865,16 +3094,13 @@ fn cmd_ci_check(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         {
             let p = entry.path();
             if !p.is_file() { continue; }
-            if let Ok(rel) = p.strip_prefix(path) {
-                if filter.should_skip(rel) { continue; }
-            }
-            if let Some(ext) = p.extension().and_then(|e| e.to_str()) {
-                if non_text_exts.contains(ext.to_lowercase().as_str()) { continue; }
-            }
-            if let Ok(meta) = std::fs::metadata(&p) {
-                if meta.len() > MAX_SCAN_SIZE { continue; }
-            }
-            if let Ok(text) = std::fs::read_to_string(&p) {
+            if let Ok(rel) = p.strip_prefix(path)
+                && filter.should_skip(rel) { continue; }
+            if let Some(ext) = p.extension().and_then(|e| e.to_str())
+                && non_text_exts.contains(ext.to_lowercase().as_str()) { continue; }
+            if let Ok(meta) = std::fs::metadata(p)
+                && meta.len() > MAX_SCAN_SIZE { continue; }
+            if let Ok(text) = std::fs::read_to_string(p) {
                 for (re, name) in patterns {
                     for cap in re.find_iter(&text) {
                         let line_start = text[..cap.start()].rfind('\n').map(|i| i + 1).unwrap_or(0);
@@ -2904,12 +3130,10 @@ fn cmd_ci_check(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     });
 
     gate!("accreditation check", {
-        if !path.join("Cargo.lock").exists() {
-            Ok(())
-        } else if path.join("NOTICE.md").exists() {
-            Ok(())
-        } else {
+        if path.join("Cargo.lock").exists() && !path.join("NOTICE.md").exists() {
             Err(Box::<dyn std::error::Error>::from("NOTICE.md missing. Run 'aden licenses --out NOTICE.md'.".to_string()))
+        } else {
+            Ok(())
         }
     });
 
@@ -2928,10 +3152,9 @@ fn cmd_ci_check(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         {
             let p = entry.path();
             if !p.is_file() { continue; }
-            if let Ok(rel) = p.strip_prefix(path) {
-                if filter.should_skip(rel) { continue; }
-            }
-            if let Ok(text) = std::fs::read_to_string(&p) {
+            if let Ok(rel) = p.strip_prefix(path)
+                && filter.should_skip(rel) { continue; }
+            if let Ok(text) = std::fs::read_to_string(p) {
                 for line in text.lines() {
                     let trimmed = line.trim();
                     if trimmed.starts_with("<<<<<<< ") || trimmed.starts_with(">>>>>>> ") || trimmed == "=======" {
@@ -2961,13 +3184,11 @@ fn cmd_ci_check(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         {
             let p = entry.path();
             if !p.is_file() { continue; }
-            if let Ok(rel) = p.strip_prefix(path) {
-                if filter.should_skip(rel) { continue; }
-            }
-            if let Some(ext) = p.extension().and_then(|e| e.to_str()) {
-                if skip_exts.contains(ext) { continue; }
-            }
-            if let Ok(text) = std::fs::read_to_string(&p) {
+            if let Ok(rel) = p.strip_prefix(path)
+                && filter.should_skip(rel) { continue; }
+            if let Some(ext) = p.extension().and_then(|e| e.to_str())
+                && skip_exts.contains(ext) { continue; }
+            if let Ok(text) = std::fs::read_to_string(p) {
                 for line in text.lines() {
                     let trimmed = line.trim();
                     if trimmed.starts_with("//") || trimmed.starts_with("#") || trimmed.starts_with("<!--") {

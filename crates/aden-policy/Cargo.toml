@@ -1,15 +1,11 @@
 [package]
-name = "aden-core"
+name = "aden-policy"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
 
 [dependencies]
+aden-core = { path = "../aden-core" }
 serde = { version = "1.0", features = ["derive"] }
 thiserror = "2.0"
-fnv = "1"
-toml = "0.8"
-
-[dev-dependencies]
-serde_json = "1.0"

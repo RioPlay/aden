@@ -1,6 +1,6 @@
 /target
-/contracts
-/.aden
+**/contracts/
+**/.aden/
 Cargo.lock
 *.bak
 *.swp

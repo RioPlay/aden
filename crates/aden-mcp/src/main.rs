@@ -26,7 +26,7 @@ fn main() {
         }
     });
 
-    if let Err(_) = result {
+    if result.is_err() {
         eprintln!("aden-mcp: panic caught. Exiting gracefully.");
         std::process::exit(1);
     }

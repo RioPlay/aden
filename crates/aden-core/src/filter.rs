@@ -66,7 +66,8 @@ impl AdenFilter {
 
     /// Determine if a path relative to the project root should be skipped.
     pub fn should_skip(&self, relative: &Path) -> bool {
-        let rel_str = relative.to_string_lossy();
+        // Normalize separators so Windows backslash paths match slash patterns.
+        let rel_str = relative.to_string_lossy().replace('\\', "/");
         let matched_ignore = self.ignore_patterns.iter().any(|r| r.matches(&rel_str));
         if !matched_ignore {
             return false;
@@ -86,14 +87,13 @@ struct GlobRule {
 
 impl GlobRule {
     fn matches(&self, path: &str) -> bool {
-        let p = if self.is_dir_rule {
+        if self.is_dir_rule {
             // Directory rules match both "foo/" and "foo"
             let trimmed = self.pattern.trim_end_matches('/');
             path == trimmed || path.starts_with(&(trimmed.to_string() + "/"))
         } else {
             match_glob(path, &self.pattern)
-        };
-        p
+        }
     }
 }
 
