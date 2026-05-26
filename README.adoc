@@ -167,23 +167,35 @@ Aden is a Cargo workspace. Each crate has a single responsibility.
 [[documentation-index]]
 This is the navigation hub for the Aden knowledge graph.
 
-*Project context:* <<project-context>>
+|===
+|Document |Description
 
-*Getting started:* <<getting-started>>
+|<<getting-started>> |Step-by-step tutorial: install, initialize, generate contracts, ask questions
 
-*AI integration:* <<ai-integration>>
+|<<user-guide>> |Daily workflows: onboarding, refactoring, self-healing, code review
 
-*User guide:* <<user-guide>>
+|<<ai-integration>> |How AI agents use `aden ask`, `aden asm`, `aden query` for context assembly
 
-*Plans:* <<plan-phase0>>
+|<<philosophy>> |Design rationale: why AsciiDoc, token economy, graph-native approach
 
-*Architecture decisions:* <<adr-001>>, <<adr-002>>
+|<<plan-phase0>> |Foundation phase: contract kernel, three-way merge, constitutional blocks
 
-*Module contracts:* Run `aden gen --auto .` to generate contracts for all crates.
+|<<adr-001>> |Architecture decision: AsciiDoc as native substrate
 
-*Background:* <<philosophy>>, <<use-cases>>
+|<<adr-002>> |Architecture decision: strict edge types for referential integrity
+
+|<<adr-003>> |Architecture decision: tagged includes for conditional content
+
+|<<adr-004>> |Architecture decision: checklist blocks for progress tracking
+
+|<<use-cases>> |Real-world scenarios: greenfield projects, legacy onboarding, AI code review
+
+|<<project-context>> |Crate map, dependencies, and terminology glossary
+|===
 
 *Agent workspace:* <<agent-readme>>, <<agent-context>>, <<agent-session>>
+
+*Module contracts:* Run `aden gen --auto .` to generate contracts for all crates.
 
 == Contributing
 
