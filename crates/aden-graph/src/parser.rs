@@ -312,7 +312,7 @@ pub fn parse_file(path: &Path) -> Result<ParsedDocument, ParseError> {
         if let Some(cap) = IFEVAL_RE.captures(trimmed) {
             let expr = cap[1].to_string();
             let active = eval_ifeval(&expr, &attrs);
-            conditional_stack.push(Conditional::Ifeval { expr, active: active.clone() });
+            conditional_stack.push(Conditional::Ifeval { expr, active });
             // For ifeval, we don't track content the same way
             if state == BlockState::InParagraph {
                 flush_paragraph(&mut paragraph_text, &mut blocks);
@@ -366,8 +366,9 @@ pub fn parse_file(path: &Path) -> Result<ParsedDocument, ParseError> {
         }
         if let Some(cap) = TAG_END_RE.captures(trimmed) {
             let tag_name = cap[1].to_string();
-            if let Some(active_tag) = active_tags.last() {
-                if active_tag == &tag_name {
+            if let Some(active_tag) = active_tags.last()
+                && active_tag == &tag_name
+            {
                     let content = current_tag_content.join("\n");
                     tagged_regions.push(TaggedRegion {
                         tag_name: tag_name.clone(),
@@ -377,7 +378,6 @@ pub fn parse_file(path: &Path) -> Result<ParsedDocument, ParseError> {
                     });
                     active_tags.pop();
                     current_tag_content.clear();
-                }
             }
             continue;
         }

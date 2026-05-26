@@ -25,9 +25,9 @@ fn run_aden_command(project_dir: &Path, args: &[&str]) -> Result<String, String>
         .map_err(|e| format!("failed to run aden: {}", e))?;
 
     if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+        Ok(String::from_utf8_lossy(&output.stdout).into())
     } else {
-        Err(String::from_utf8_lossy(&output.stderr).to_string())
+        Err(String::from_utf8_lossy(&output.stderr).into())
     }
 }
 
