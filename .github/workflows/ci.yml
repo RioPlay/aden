@@ -38,7 +38,7 @@ jobs:
         run: cargo test --workspace
 
       - name: Self-check docs
-        run: cargo run -p aden-cli -- check .
+        run: cargo run -p aden-cli -- check . --severity Forbid
         if: runner.os != 'Windows'
 
       - name: Verify install script (Unix)
