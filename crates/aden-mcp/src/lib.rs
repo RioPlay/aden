@@ -171,74 +171,196 @@ fn handle_initialize(req: &JsonRpcRequest) -> JsonRpcResponse {
 fn handle_tools_list(req: &JsonRpcRequest) -> JsonRpcResponse {
     let tools = serde_json::json!([
         {
-            "name": "list_symbols",
-            "description": "List all symbols (functions, types, modules) in the current project with their anchors.",
+            "name": "init",
+            "description": "Scaffold .agent/ templates in target repository",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "query": { "type": "string", "description": "Optional filter by name substring." }
+                    "path": { "type": "string", "description": "Target directory (default .)" }
                 }
             }
         },
         {
-            "name": "impact_analysis",
-            "description": "Show what depends on a given symbol (reverse call graph / backlinks).",
+            "name": "gen",
+            "description": "Parse source file(s) and emit .aden / .adoc contracts",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "anchor": { "type": "string", "description": "The symbol anchor (e.g. 'aden://module/requests/sessions.py#Session')." }
+                    "path": { "type": "string", "description": "Source file or directory path" },
+                    "auto": { "type": "boolean", "description": "Generate contracts for all source files in directory" },
+                    "merge": { "type": "boolean", "description": "Preserve human blocks, update generated only" },
+                    "propose": { "type": "boolean", "description": "Dry-run merge preview" },
+                    "format": { "type": "string", "enum": ["adoc", "md", "adg"], "description": "Output format" }
+                }
+            }
+        },
+        {
+            "name": "check",
+            "description": "Verify all <<refs>> resolve to existing [[anchors]]",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Directory to check (default .)" }
+                }
+            }
+        },
+        {
+            "name": "lint",
+            "description": "Lint source files using tree-sitter AST analysis",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Path to lint (default .)" },
+                    "severity": { "type": "string", "enum": ["Suggest", "Warn", "Error"], "description": "Minimum severity level" },
+                    "fix": { "type": "boolean", "description": "Auto-fix issues" },
+                    "json": { "type": "boolean", "description": "Output JSON" }
+                }
+            }
+        },
+        {
+            "name": "test",
+            "description": "Discover and run tests across all languages",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Path to test (default .)" },
+                    "scope": { "type": "string", "enum": ["unit", "integration", "all"], "description": "Test scope" },
+                    "filter": { "type": "string", "description": "Filter tests by pattern" },
+                    "list": { "type": "boolean", "description": "List tests without running" }
+                }
+            }
+        },
+        {
+            "name": "asm",
+            "description": "Assemble a context prompt from the knowledge graph",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "anchor": { "type": "string", "description": "Starting anchor" },
+                    "depth": { "type": "integer", "description": "Traversal depth (default 2)" },
+                    "budget": { "type": "integer", "description": "Token budget (default 4096)" },
+                    "edge_types": { "type": "string", "description": "Comma-separated edge types" },
+                    "format": { "type": "string", "enum": ["aden", "adg"], "description": "Output format" }
                 },
                 "required": ["anchor"]
             }
         },
         {
-            "name": "context_for",
-            "description": "Assemble a token-budgeted AsciiDoc context artifact for a symbol.",
+            "name": "query",
+            "description": "Query the knowledge graph and emit JSON",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "anchor": { "type": "string", "description": "The symbol anchor." },
-                    "budget": { "type": "integer", "description": "Max tokens (default 4096)." },
-                    "depth": { "type": "integer", "description": "Graph traversal depth (default 3)." }
-                },
-                "required": ["anchor"]
+                    "anchor": { "type": "string", "description": "Starting anchor" },
+                    "depth": { "type": "integer", "description": "Traversal depth (default 2)" },
+                    "backlinks": { "type": "boolean", "description": "Find incoming edges" },
+                    "impact": { "type": "boolean", "description": "Transitive closure" },
+                    "format": { "type": "string", "enum": ["table", "json"], "description": "Output format" }
+                }
             }
         },
         {
             "name": "ask",
-            "description": "Ask a natural-language question about the codebase. Returns token-bounded context assembled from the knowledge graph.",
+            "description": "Ask a natural-language question; Aden resolves it to a subgraph and assembles context.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "question": { "type": "string", "description": "Question to ask (e.g., 'How does authentication work?')" },
-                    "budget": { "type": "integer", "description": "Max tokens (default 4096)." },
-                    "from": { "type": "string", "description": "Pin to specific anchor (optional, enables smarter resolution)." }
+                    "question": { "type": "string", "description": "Question to ask" },
+                    "budget": { "type": "integer", "description": "Max tokens (default 4096)" },
+                    "from": { "type": "string", "description": "Pin to specific anchor" }
                 },
                 "required": ["question"]
             }
         },
         {
             "name": "search",
-            "description": "Full-text search across all contracts. Returns ranked results with snippets.",
+            "description": "Search the knowledge graph for documents matching a query",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "query": { "type": "string", "description": "Search query" }
+                    "query": { "type": "string", "description": "Search query" },
+                    "limit": { "type": "integer", "description": "Max results (default 10)" }
                 },
                 "required": ["query"]
             }
         },
         {
-            "name": "asm",
-            "description": "Assemble context from a specific anchor with customizable depth and token budget.",
+            "name": "list",
+            "description": "List all anchors and contracts in the knowledge graph",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "anchor": { "type": "string", "description": "Starting anchor (e.g., 'mod-aden-core')" },
-                    "depth": { "type": "integer", "description": "Traversal depth (default 2)" },
-                    "budget": { "type": "integer", "description": "Token budget (default 4096)" }
+                    "filter": { "type": "string", "description": "Filter by pattern" },
+                    "verbose": { "type": "boolean", "description": "Verbose output" },
+                    "limit": { "type": "integer", "description": "Max results (default 20)" }
+                }
+            }
+        },
+        {
+            "name": "locate",
+            "description": "Locate a symbol definition or its call sites in the knowledge graph",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "symbol": { "type": "string", "description": "Symbol name to find" },
+                    "limit": { "type": "integer", "description": "Max results" }
                 },
-                "required": ["anchor"]
+                "required": ["symbol"]
+            }
+        },
+        {
+            "name": "heal",
+            "description": "Self-healing documentation engine: scan for drift, propose patches, apply reviewed changes",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Directory to heal (default .)" },
+                    "fix": { "type": "boolean", "description": "Auto-fix drift" },
+                    "gc": { "type": "boolean", "description": "Garbage collect orphans" },
+                    "propose": { "type": "boolean", "description": "Propose patches without applying" }
+                }
+            }
+        },
+        {
+            "name": "ci_check",
+            "description": "Run all local CI gates before committing (check, heal, test, secret-scan)",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Directory to check (default .)" }
+                }
+            }
+        },
+        {
+            "name": "doctor",
+            "description": "Diagnose the environment: tool versions, repo health, signing keys",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Directory to check (default .)" }
+                }
+            }
+        },
+        {
+            "name": "audit",
+            "description": "OWASP-style security audit: scan source for vulnerabilities",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Directory to audit (default .)" },
+                    "strict": { "type": "boolean", "description": "Fail on any finding" }
+                }
+            }
+        },
+        {
+            "name": "suggest",
+            "description": "AI assistant: describe what you want to do, get the right aden command",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "intent": { "type": "string", "description": "What you want to do" }
+                },
+                "required": ["intent"]
             }
         }
     ]);
@@ -265,12 +387,22 @@ fn handle_tools_call(
         .unwrap_or(serde_json::Value::Object(Default::default()));
 
     let result = match tool_name {
-        "list_symbols" => tool_list_symbols(project_dir, &args),
-        "impact_analysis" => tool_impact_analysis(project_dir, &args),
-        "context_for" => tool_context_for(project_dir, &args),
+        "init" => tool_generic(project_dir, &["init"]),
+        "gen" => tool_gen(project_dir, &args),
+        "check" => tool_generic(project_dir, &["check"]),
+        "lint" => tool_lint(project_dir, &args),
+        "test" => tool_test(project_dir, &args),
+        "asm" => tool_asm(project_dir, &args),
+        "query" => tool_query(project_dir, &args),
         "ask" => tool_ask(project_dir, &args),
         "search" => tool_search(project_dir, &args),
-        "asm" => tool_asm(project_dir, &args),
+        "list" => tool_list(project_dir, &args),
+        "locate" => tool_locate(project_dir, &args),
+        "heal" => tool_heal(project_dir, &args),
+        "ci_check" => tool_generic(project_dir, &["ci-check"]),
+        "doctor" => tool_generic(project_dir, &["doctor"]),
+        "audit" => tool_generic(project_dir, &["audit"]),
+        "suggest" => tool_suggest(project_dir, &args),
         _ => {
             return JsonRpcResponse::error(
                 req.id.clone(),
@@ -288,46 +420,85 @@ fn handle_tools_call(
 
 // ── Tool implementations ────────────────────────────────────
 
-fn tool_list_symbols(
+fn tool_generic(
+    project_dir: &std::sync::Arc<std::path::PathBuf>,
+    base_args: &[&str],
+) -> Result<serde_json::Value, String> {
+    let output = run_aden_command(project_dir, base_args)?;
+    Ok(serde_json::json!({ "output": output }))
+}
+
+fn tool_gen(
     project_dir: &std::sync::Arc<std::path::PathBuf>,
     args: &serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    let query = args.get("query").and_then(|q| q.as_str()).unwrap_or("");
-
-    // Walk and parse
-    let docs =
-        aden_parse::parse_directory(project_dir).map_err(|e| format!("parse error: {}", e))?;
-
-    let mut symbols = Vec::new();
-    for doc in docs {
-        let name = doc.anchor.split('#').next_back().unwrap_or(&doc.anchor);
-        if query.is_empty() || name.to_lowercase().contains(&query.to_lowercase()) {
-            symbols.push(serde_json::json!({
-                "anchor": doc.anchor,
-                "type": format!("{:?}", doc.node_type),
-                "file": doc.attributes.get("source_file"),
-                "line": doc.attributes.get("start_line"),
-            }));
-        }
+    let mut cmd = vec!["gen".to_string()];
+    if let Some(path) = args.get("path").and_then(|p| p.as_str()) {
+        cmd.push(path.to_string());
     }
-
-    Ok(serde_json::json!(symbols))
+    if args.get("auto").and_then(|a| a.as_bool()).unwrap_or(false) {
+        cmd.push("--auto".to_string());
+    }
+    if args.get("merge").and_then(|m| m.as_bool()).unwrap_or(false) {
+        cmd.push("--merge".to_string());
+    }
+    if args.get("propose").and_then(|p| p.as_bool()).unwrap_or(false) {
+        cmd.push("--propose".to_string());
+    }
+    if let Some(format) = args.get("format").and_then(|f| f.as_str()) {
+        cmd.push("--format".to_string());
+        cmd.push(format.to_string());
+    }
+    let output = run_aden_command(project_dir, &cmd.iter().map(|s| s.as_str()).collect::<Vec<_>>())?;
+    Ok(serde_json::json!({ "output": output }))
 }
 
-fn tool_impact_analysis(
+fn tool_lint(
     project_dir: &std::sync::Arc<std::path::PathBuf>,
     args: &serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    let anchor = args
-        .get("anchor")
-        .and_then(|a| a.as_str())
-        .ok_or("Missing 'anchor' argument")?;
-
-    let output = run_aden_command(project_dir, &["query", "--backlinks", anchor])?;
-    Ok(serde_json::json!({ "impact": output }))
+    let mut cmd = vec!["lint".to_string()];
+    if let Some(path) = args.get("path").and_then(|p| p.as_str()) {
+        cmd.push(path.to_string());
+    }
+    if let Some(severity) = args.get("severity").and_then(|s| s.as_str()) {
+        cmd.push("--severity".to_string());
+        cmd.push(severity.to_string());
+    }
+    if args.get("fix").and_then(|f| f.as_bool()).unwrap_or(false) {
+        cmd.push("--fix".to_string());
+    }
+    if args.get("json").and_then(|j| j.as_bool()).unwrap_or(false) {
+        cmd.push("--json".to_string());
+    }
+    let output = run_aden_command(project_dir, &cmd.iter().map(|s| s.as_str()).collect::<Vec<_>>())?;
+    Ok(serde_json::json!({ "output": output }))
 }
 
-fn tool_context_for(
+fn tool_test(
+    project_dir: &std::sync::Arc<std::path::PathBuf>,
+    args: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let mut cmd = vec!["test".to_string()];
+    if let Some(path) = args.get("path").and_then(|p| p.as_str()) {
+        cmd.push(path.to_string());
+    }
+    if let Some(scope) = args.get("scope").and_then(|s| s.as_str()) {
+        cmd.push("--scope".to_string());
+        cmd.push(scope.to_string());
+    }
+    if let Some(filter) = args.get("filter").and_then(|f| f.as_str()) {
+        cmd.push("--filter".to_string());
+        cmd.push(filter.to_string());
+    }
+    if args.get("list").and_then(|l| l.as_bool()).unwrap_or(false) {
+        cmd.push("--list".to_string());
+    }
+    let output = run_aden_command(project_dir, &cmd.iter().map(|s| s.as_str()).collect::<Vec<_>>())?;
+    Ok(serde_json::json!({ "output": output }))
+}
+
+fn tool_asm(
     project_dir: &std::sync::Arc<std::path::PathBuf>,
     args: &serde_json::Value,
 ) -> Result<serde_json::Value, String> {
@@ -336,21 +507,44 @@ fn tool_context_for(
         .and_then(|a| a.as_str())
         .ok_or("Missing 'anchor' argument")?;
     let budget = args.get("budget").and_then(|b| b.as_u64()).unwrap_or(4096) as usize;
-    let depth = args.get("depth").and_then(|d| d.as_u64()).unwrap_or(3) as usize;
+    let depth = args.get("depth").and_then(|d| d.as_u64()).unwrap_or(2) as usize;
 
     let output = run_aden_command(
         project_dir,
         &[
-            "asm",
-            "--from",
-            anchor,
-            "--budget",
-            &budget.to_string(),
-            "--depth",
-            &depth.to_string(),
+            "asm", "--from", anchor, "--budget", &budget.to_string(), "--depth", &depth.to_string(),
         ],
     )?;
     Ok(serde_json::json!({ "content": output }))
+}
+
+fn tool_query(
+    project_dir: &std::sync::Arc<std::path::PathBuf>,
+    args: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let mut cmd = vec!["query".to_string()];
+
+    if let Some(anchor) = args.get("anchor").and_then(|a| a.as_str()) {
+        cmd.push("--from".to_string());
+        cmd.push(anchor.to_string());
+    }
+    if let Some(depth) = args.get("depth").and_then(|d| d.as_u64()) {
+        cmd.push("--depth".to_string());
+        cmd.push(depth.to_string());
+    }
+    if args.get("backlinks").and_then(|b| b.as_bool()).unwrap_or(false) {
+        cmd.push("--backlinks".to_string());
+    }
+    if args.get("impact").and_then(|i| i.as_bool()).unwrap_or(false) {
+        cmd.push("--impact".to_string());
+    }
+    if let Some(format) = args.get("format").and_then(|f| f.as_str()) {
+        cmd.push("--format".to_string());
+        cmd.push(format.to_string());
+    }
+
+    let output = run_aden_command(project_dir, &cmd.iter().map(|s| s.as_str()).collect::<Vec<_>>())?;
+    Ok(serde_json::json!({ "results": output }))
 }
 
 fn tool_ask(
@@ -379,34 +573,91 @@ fn tool_search(
         .and_then(|q| q.as_str())
         .ok_or("Missing 'query' argument")?;
 
-    let output = run_aden_command(project_dir, &["search", query])?;
+    let mut cmd = vec!["search".to_string(), query.to_string()];
+    if let Some(limit) = args.get("limit").and_then(|l| l.as_u64()) {
+        cmd.push("--limit".to_string());
+        cmd.push(limit.to_string());
+    }
+
+    let output = run_aden_command(project_dir, &cmd.iter().map(|s| s.as_str()).collect::<Vec<_>>())?;
     Ok(serde_json::json!({ "results": output }))
 }
 
-fn tool_asm(
+fn tool_list(
     project_dir: &std::sync::Arc<std::path::PathBuf>,
     args: &serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    let anchor = args
-        .get("anchor")
-        .and_then(|a| a.as_str())
-        .ok_or("Missing 'anchor' argument")?;
-    let budget = args.get("budget").and_then(|b| b.as_u64()).unwrap_or(4096) as usize;
-    let depth = args.get("depth").and_then(|d| d.as_u64()).unwrap_or(2) as usize;
+    let mut cmd = vec!["list".to_string()];
 
-    let output = run_aden_command(
-        project_dir,
-        &[
-            "asm",
-            "--from",
-            anchor,
-            "--budget",
-            &budget.to_string(),
-            "--depth",
-            &depth.to_string(),
-        ],
-    )?;
-    Ok(serde_json::json!({ "content": output }))
+    if let Some(filter) = args.get("filter").and_then(|f| f.as_str()) {
+        cmd.push("--filter".to_string());
+        cmd.push(filter.to_string());
+    }
+    if args.get("verbose").and_then(|v| v.as_bool()).unwrap_or(false) {
+        cmd.push("--verbose".to_string());
+    }
+    if let Some(limit) = args.get("limit").and_then(|l| l.as_u64()) {
+        cmd.push("--limit".to_string());
+        cmd.push(limit.to_string());
+    }
+
+    let output = run_aden_command(project_dir, &cmd.iter().map(|s| s.as_str()).collect::<Vec<_>>())?;
+    Ok(serde_json::json!({ "output": output }))
+}
+
+fn tool_locate(
+    project_dir: &std::sync::Arc<std::path::PathBuf>,
+    args: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let symbol = args
+        .get("symbol")
+        .and_then(|s| s.as_str())
+        .ok_or("Missing 'symbol' argument")?;
+
+    let mut cmd = vec!["locate".to_string(), "--symbol".to_string(), symbol.to_string()];
+    if let Some(limit) = args.get("limit").and_then(|l| l.as_u64()) {
+        cmd.push("--limit".to_string());
+        cmd.push(limit.to_string());
+    }
+
+    let output = run_aden_command(project_dir, &cmd.iter().map(|s| s.as_str()).collect::<Vec<_>>())?;
+    Ok(serde_json::json!({ "output": output }))
+}
+
+fn tool_heal(
+    project_dir: &std::sync::Arc<std::path::PathBuf>,
+    args: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let mut cmd = vec!["heal".to_string()];
+
+    if let Some(path) = args.get("path").and_then(|p| p.as_str()) {
+        cmd.push(path.to_string());
+    }
+    if args.get("fix").and_then(|f| f.as_bool()).unwrap_or(false) {
+        cmd.push("--fix".to_string());
+    }
+    if args.get("gc").and_then(|g| g.as_bool()).unwrap_or(false) {
+        cmd.push("--gc".to_string());
+    }
+    if args.get("propose").and_then(|p| p.as_bool()).unwrap_or(false) {
+        cmd.push("--propose".to_string());
+    }
+
+    let output = run_aden_command(project_dir, &cmd.iter().map(|s| s.as_str()).collect::<Vec<_>>())?;
+    Ok(serde_json::json!({ "output": output }))
+}
+
+fn tool_suggest(
+    project_dir: &std::sync::Arc<std::path::PathBuf>,
+    args: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let intent = args
+        .get("intent")
+        .and_then(|i| i.as_str())
+        .ok_or("Missing 'intent' argument")?;
+
+    let output = run_aden_command(project_dir, &["suggest", intent])?;
+    Ok(serde_json::json!({ "suggestion": output }))
 }
 
 #[cfg(test)]
