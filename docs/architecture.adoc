@@ -1,0 +1,352 @@
+:proj: aden
+:author: RioPlay
+:email: rioplay@rioplay.dev
+:lang: rust
+:toc: left
+:toclevels: 2
+
+[[architecture]]
+= Aden Architecture
+
+== The Big Picture
+
+Aden is a **referential context compiler** — it transforms codebases into traversable knowledge graphs. The goal is making the *structure of understanding* explicit, machine-readable, and queryable by both humans and AI agents.
+
+[source]
+----
+┌─────────────┐    ┌─────────────┐    ┌─────────────┐
+│   Source    │───▶│   Aden      │───▶│  Knowledge  │
+│   Code      │    │   Pipeline  │    │   Graph     │
+└─────────────┘    └─────────────┘    └─────────────┘
+                          │                   │
+                          ▼                   ▼
+                    ┌─────────────┐    ┌─────────────┐
+                    │  .adoc      │    │ aden ask   │
+                    │  Contracts  │    │ aden asm   │
+                    └─────────────┘    └─────────────┘
+----
+
+== Core Concepts
+
+=== The Graph
+
+Every document, function, module, and decision becomes a **node**. Every relationship — imports, calls, constraints, justifications — becomes a **typed edge**.
+
+[source]
+----
+[[auth-module]]
+= auth module
+
+== Functions
+
+* login() -- calls --> validate()
+* validate() -- uses --> crypto()
+* logout() -- calls --> session::clear()
+----
+
+Typed edges enforce referential integrity. Open strings are rejected.
+
+=== The Contract
+
+A contract is an AsciiDoc (`.adoc`) or Aden (`.aden`) file that describes a piece of the system. Contracts are **deterministically generated** from source code — the same source always produces the same contract.
+
+[source]
+----
+[[module-aden-core]]
+= module::aden-core
+
+|===
+|Type |Kind |Description
+|Document |struct |Root node in the graph
+|Block |enum |Content block types
+|===
+----
+
+=== Region Semantics
+
+Contracts support regions that determine how content is handled during regeneration:
+
+|===
+|Region |Purpose |Preserved on Regen?
+
+|[generated] |Auto-extracted from source |No — overwritten
+
+|[human] |Architectural notes, decisions |Yes
+
+|[agent] |AI agent observations |Yes
+
+|[security] |Security requirements |Yes
+
+|[constitution] |Governance directives |Yes
+
+|[override] |CI override authority |Yes
+|===
+
+=== Token Budgeting
+
+AI agents have finite context windows. Aden budgets tokens by:
+
+1. **BFS traversal** — walk the graph from a starting node
+2. **Depth limiting** — stop at depth N (default: 2)
+3. **Token estimation** — ~4/3 bytes per token heuristic
+4. **Assembly** — concatenate documents until budget exhausted
+
+== Pipeline Stages
+
+[source]
+----
+1. parse     → 2. graph     → 3. validate  → 4. assemble
+source code   .adoc files   refs resolve    context prompt
+                  │              │
+                  ▼              ▼
+            ┌──────────┐   ┌──────────┐
+            │aden gen  │   │aden check│
+            └──────────┘   └──────────┘
+----
+
+=== 1. Parse (aden-parse)
+
+Extracts symbols, signatures, and relationships from source code using tree-sitter.
+
+|===
+|Language |Depth |Analysis
+
+|Rust |Deep |Full AST, trait bounds, lifetimes
+
+|Python |Deep |Import-aware, decorators
+
+|Go |Deep |Full AST, interfaces
+
+|TypeScript/JS |Deep |Full AST, generics
+
+|305+ others |Shallow |Generic AST fallback
+|===
+
+=== 2. Graph Build (aden-graph)
+
+Builds a directed graph (`DiGraph`) from all contracts + documentation + ADRs + plans.
+
+- Nodes: anchors (`[[name]]`)
+- Edges: typed relationships (`Uses`, `Calls`, `Constrains`, `Documents`, etc.)
+- Validation: cycle detection, orphan detection, reference resolution
+
+=== 3. Validate (aden check)
+
+Ensures referential integrity:
+
+- Every `<<anchor>>` resolves to a real `[[anchor]]`
+- No duplicate anchors
+- No include cycles
+- Source hash integrity
+
+=== 4. Assemble (aden-asm / aden-ask)
+
+Given a starting anchor and token budget:
+
+1. BFS traversal from anchor
+2. Collect documents along selected edge types
+3. Estimate token count per document
+4. Stop when budget exhausted
+5. Concatenate with `<<<` page breaks
+
+== Crate Architecture
+
+Aden is a Cargo workspace. Each crate has a single responsibility.
+
+|===
+|Crate |Responsibility |Key Types
+
+|<<mod-aden-core, aden-core>> |Schema: Document, Block, Edge, Symbol, three-way merge, regions |`Document`, `Block`, `Edge`, `ContractState`, `MergeAction`
+
+|<<mod-aden-parse, aden-parse>> |Language routers + AST extraction |`parse_file()`, language routers for Rust/Python/Go/TS/305+
+
+|<<mod-aden-emit, aden-emit>> |Deterministic AsciiDoc emitter |`emit_document()`, templates
+
+|<<mod-aden-graph, aden-graph>> |Graph engine: DiGraph, cycles, typed edges |`Graph`, `Edge`, `EdgeType`
+
+|<<mod-aden-asm, aden-asm>> |Context assembler: BFS + token budgeting |`assemble()`, `AssemblyOptions`
+
+|<<mod-aden-index, aden-index>> |Full-text search with fuzzy matching |`Index`, `Query`, `Snippet`
+
+|<<mod-aden-heal, aden-heal>> |Drift detection: stale hashes, missing contracts |`Scanner`, `DriftEvent`, `HealthScore`
+
+|<<mod-aden-propose, aden-propose>> |Patch generation for stale contracts |`Patch`, `Proposal`
+
+|<<mod-aden-policy, aden-policy>> |Constitutional policy: directives, precedence |`Directive`, `Constitution`, `ConflictResolver`
+
+|<<mod-aden-mcp, aden-mcp>> |MCP server (Claude, Cursor, Zed, Windsurf) |`serve()`, JSON-RPC
+
+|<<mod-aden-lsp, aden-lsp>> |LSP for .adoc/.aden files |`Server`, `Handlers`
+
+|<<mod-aden-py, aden-py>> |PyO3 Python bindings |Python module
+
+|<<mod-aden-cli, aden-cli>> |The `aden` binary |All commands
+|===
+
+=== Data Flow
+
+[source]
+----
+CLI (aden-cli)
+    │
+    ├─▶ aden-gen ──▶ aden-parse ──▶ aden-emit ──▶ .adoc files
+    │                      │
+    │                      └─▶ aden-graph ──▶ DiGraph
+    │
+    ├─▶ aden-check ──▶ aden-graph ──▶ validation
+    │
+    ├─▶ aden-ask ──▶ aden-index ──▶ aden-asm ──▶ context prompt
+    │
+    └─▶ aden-heal ──▶ aden-heal ──▶ aden-propose ──▶ patches
+----
+
+== Key Features
+
+=== Self-Healing Contracts
+
+When source code changes, contracts become stale. `aden heal` detects drift:
+
+|===
+|Event |Meaning |Fix
+
+|StaleHash |Source changed, contract not regenerated |`aden gen --merge`
+
+|MissingContract |No contract for source file |`aden gen`
+
+|SignatureMismatch |Function signature changed |`aden heal --fix`
+
+|OrphanAnchor |Contract has no incoming edges |Add `<<ref>>` or delete
+|===
+
+=== Three-Way Merge
+
+`aden gen --merge` performs a three-way merge:
+
+- **ground**: freshly parsed AST
+- **base**: last generated contract
+- **working**: current file with human edits
+
+Output: per-block `MergeAction`:
+
+- `UpdateGenerated` — overwrite with new AST
+- `PreserveHuman` — keep human blocks intact
+- `Conflict` — cannot auto-merge, needs review
+- `InsertGenerated` — new symbols detected
+- `DeleteGenerated` — symbols removed from source
+
+=== Constitutional Governance
+
+The `[constitution]` block declares governance rules:
+
+[source]
+----
+[constitution]
+.agents = [claude, cursor]
+.precedence = ai-overrides
+
+[role=security]
+===
+The security agent has final authority on any code
+touching authentication or authorization.
+===
+----
+
+`aden check` resolves conflicts using stated precedence.
+
+=== Tagged Includes
+
+Conditional content via AsciiDoc tags:
+
+[source]
+----
+// tag::main[]
+pub fn main() {
+    setup();
+    run();
+}
+// end::main[]
+
+// tag::admin[]
+pub fn admin_panel() { ... }
+// end::admin[]
+----
+
+Filter at build time:
+```bash
+aden asm --include-tag main
+aden asm --exclude-tag admin
+```
+
+=== Checklist Tracking
+
+Progress tracked in contracts:
+
+[source]
+----
+[checklist]
+* [x] Phase 0 complete
+* [ ] Phase 1 in progress
+* [ ] Phase 2 planned
+----
+
+=== Rich Metadata
+
+Document-level metadata:
+
+[source]
+----
+:author: RioPlay
+:version: 1.0.0
+:date: 2026-05-25
+:license: AGPL-3.0
+----
+
+Extracted and indexed for search.
+
+== Security Posture
+
+- `contracts/` and `.aden/` are build artifacts — auto-ignored in `.gitignore`
+- Include directives bounded to project root — no path traversal
+- No `unsafe` blocks in application code
+- AGPL-3.0-or-later license prevents cloud capture without sharing modifications
+
+== Command Reference
+
+|===
+|Command |Purpose |Example
+
+|<<cmd-init, aden init>> |Scaffold .agent/ templates |`aden init .`
+
+|<<cmd-gen, aden gen>> |Generate contracts |`aden gen src/lib.rs`, `aden gen --auto .`
+
+|<<cmd-gen, aden gen --merge>> |Preserve human blocks |`aden gen src/ --auto --merge`
+
+|<<cmd-gen, aden gen --propose>> |Dry-run merge |`aden gen src/ --propose`
+
+|<<cmd-check, aden check>> |Validate references |`aden check .`
+
+|<<cmd-ask, aden ask>> |Ask a question |`aden ask "How does auth work?"`
+
+|<<cmd-asm, aden asm>> |Assemble context |`aden asm --from mod-aden-core --depth 2`
+
+|<<cmd-query, aden query>> |Graph queries |`aden query --from mod-aden-core --depth 2`
+
+|<<cmd-search, aden search>> |Full-text search |`aden search "token budget"`
+
+|<<cmd-heal, aden heal>> |Detect drift |`aden heal .`
+
+|<<cmd-ci-check, aden ci-check>> |Run all gates |`aden ci-check .`
+
+|<<cmd-lint, aden lint>> |Lint source files |`aden lint .`
+
+|<<cmd-test, aden test>> |Run tests |`aden test .`
+|===
+
+== Related Documents
+
+. <<philosophy>> — Design rationale and core thesis
+. <<adr-001>> — AsciiDoc as native substrate
+. <<adr-002>> — Strict edge types for referential integrity
+. <<plan-phase0>> — Foundation phase (contract kernel)
+. <<ai-integration>> — How AI agents use Aden
+. <<user-guide>> — Daily workflows
