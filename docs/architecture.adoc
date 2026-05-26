@@ -12,18 +12,32 @@
 
 Aden is a **referential context compiler** — it transforms codebases into traversable knowledge graphs. The goal is making the *structure of understanding* explicit, machine-readable, and queryable by both humans and AI agents.
 
-[source]
+[ditaa, aden-pipeline, png]
 ----
-┌─────────────┐    ┌─────────────┐    ┌─────────────┐
-│   Source    │───▶│   Aden      │───▶│  Knowledge  │
-│   Code      │    │   Pipeline  │    │   Graph     │
-└─────────────┘    └─────────────┘    └─────────────┘
-                          │                   │
-                          ▼                   ▼
-                    ┌─────────────┐    ┌─────────────┐
-                    │  .adoc      │    │ aden ask   │
-                    │  Contracts  │    │ aden asm   │
-                    └─────────────┘    └─────────────┘
+    +-----------+    +-----------+    +-----------+
+    |   Source  |    |   Aden    |    | Knowledge |
+    |   Code    |--> | Pipeline  |--> |   Graph   |
+    +-----------+    +-----------+    +-----------+
+                            |                |
+                            v                v
+                      +-----------+    +-----------+
+                      |  .adoc    |    | aden ask  |
+                      | Contracts |    | aden asm  |
+                      +-----------+    +-----------+
+----
+
+Or as a flowchart:
+
+[mermaid, aden-flowchart, svg]
+----
+flowchart TD
+    A[Source Code] --> B[aden-parse]
+    B --> C[aden-emit]
+    C --> D[.adoc Contracts]
+    D --> E[aden-graph]
+    E --> F[Knowledge Graph]
+    F --> G[aden ask]
+    G --> H[Context for AI]
 ----
 
 == Core Concepts
@@ -93,15 +107,29 @@ AI agents have finite context windows. Aden budgets tokens by:
 
 == Pipeline Stages
 
-[source]
+[mermaid, pipeline-stages, svg]
 ----
-1. parse     → 2. graph     → 3. validate  → 4. assemble
-source code   .adoc files   refs resolve    context prompt
-                  │              │
-                  ▼              ▼
-            ┌──────────┐   ┌──────────┐
-            │aden gen  │   │aden check│
-            └──────────┘   └──────────┘
+flowchart LR
+    subgraph Stage1[1. Parse]
+        S1[Source Code]
+    end
+
+    subgraph Stage2[2. Graph Build]
+        S2[.adoc Files]
+    end
+
+    subgraph Stage3[3. Validate]
+        S3[Refs Resolve]
+    end
+
+    subgraph Stage4[4. Assemble]
+        S4[Context Prompt]
+    end
+
+    S1 --> S2 --> S3 --> S4
+
+    S2 -.->|aden gen| G1[contracts/]
+    S3 -.->|aden check| G2[Validation]
 ----
 
 === 1. Parse (aden-parse)
@@ -153,51 +181,92 @@ Given a starting anchor and token budget:
 
 Aden is a Cargo workspace. Each crate has a single responsibility.
 
-|===
-|Crate |Responsibility |Key Types
+[mermaid, crate-arch, svg]
+----
+flowchart TB
+    subgraph core[Core]
+        C[aden-core<br/>Schema]
+    end
 
-|<<mod-aden-core, aden-core>> |Schema: Document, Block, Edge, Symbol, three-way merge, regions |`Document`, `Block`, `Edge`, `ContractState`, `MergeAction`
+    subgraph parse[Parsing]
+        P[aden-parse<br/>AST Extraction]
+    end
 
-|<<mod-aden-parse, aden-parse>> |Language routers + AST extraction |`parse_file()`, language routers for Rust/Python/Go/TS/305+
+    subgraph emit[Emission]
+        E[aden-emit<br/>AsciiDoc Emit]
+    end
 
-|<<mod-aden-emit, aden-emit>> |Deterministic AsciiDoc emitter |`emit_document()`, templates
+    subgraph graph[Graph]
+        G[aden-graph<br/>DiGraph]
+    end
 
-|<<mod-aden-graph, aden-graph>> |Graph engine: DiGraph, cycles, typed edges |`Graph`, `Edge`, `EdgeType`
+    subgraph asm[Assembly]
+        A[aden-asm<br/>Context]
+    end
 
-|<<mod-aden-asm, aden-asm>> |Context assembler: BFS + token budgeting |`assemble()`, `AssemblyOptions`
+    subgraph index[Search]
+        I[aden-index<br/>Full-text]
+    end
 
-|<<mod-aden-index, aden-index>> |Full-text search with fuzzy matching |`Index`, `Query`, `Snippet`
+    subgraph heal[Healing]
+        H[aden-heal<br/>Drift Detect]
+    end
 
-|<<mod-aden-heal, aden-heal>> |Drift detection: stale hashes, missing contracts |`Scanner`, `DriftEvent`, `HealthScore`
+    subgraph propose[Propose]
+        PR[aden-propose<br/>Patches]
+    end
 
-|<<mod-aden-propose, aden-propose>> |Patch generation for stale contracts |`Patch`, `Proposal`
+    subgraph policy[Policy]
+        PO[aden-policy<br/>Governance]
+    end
 
-|<<mod-aden-policy, aden-policy>> |Constitutional policy: directives, precedence |`Directive`, `Constitution`, `ConflictResolver`
+    subgraph integration[Integration]
+        MCP[aden-mcp<br/>MCP]
+        LSP[aden-lsp<br/>LSP]
+        PY[aden-py<br/>Python]
+    end
 
-|<<mod-aden-mcp, aden-mcp>> |MCP server (Claude, Cursor, Zed, Windsurf) |`serve()`, JSON-RPC
+    CLI[aden-cli<br/>CLI] --> core
+    CLI --> parse
+    CLI --> graph
+    CLI --> asm
+    CLI --> heal
 
-|<<mod-aden-lsp, aden-lsp>> |LSP for .adoc/.aden files |`Server`, `Handlers`
-
-|<<mod-aden-py, aden-py>> |PyO3 Python bindings |Python module
-
-|<<mod-aden-cli, aden-cli>> |The `aden` binary |All commands
-|===
+    parse --> emit
+    parse --> graph
+    graph --> asm
+    asm --> index
+    heal --> propose
+----
 
 === Data Flow
 
-[source]
+[mermaid, data-flow, svg]
 ----
-CLI (aden-cli)
-    │
-    ├─▶ aden-gen ──▶ aden-parse ──▶ aden-emit ──▶ .adoc files
-    │                      │
-    │                      └─▶ aden-graph ──▶ DiGraph
-    │
-    ├─▶ aden-check ──▶ aden-graph ──▶ validation
-    │
-    ├─▶ aden-ask ──▶ aden-index ──▶ aden-asm ──▶ context prompt
-    │
-    └─▶ aden-heal ──▶ aden-heal ──▶ aden-propose ──▶ patches
+flowchart TD
+    CLI[CLI<br/>aden-cli]
+
+    subgraph gen[aden gen]
+        P1[aden-parse] --> E[aden-emit] --> F[.adoc files]
+        P1 --> G[aden-graph] --> DG[DiGraph]
+    end
+
+    subgraph check[aden check]
+        G2[aden-graph] --> V[Validation]
+    end
+
+    subgraph ask[aden ask]
+        I[aden-index] --> A[aden-asm] --> CP[Context Prompt]
+    end
+
+    subgraph heal[aden heal]
+        H[aden-heal] --> PR[aden-propose] --> P[atches]
+    end
+
+    CLI --> gen
+    CLI --> check
+    CLI --> ask
+    CLI --> heal
 ----
 
 == Key Features
