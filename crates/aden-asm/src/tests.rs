@@ -51,6 +51,9 @@ mod tests {
             token_budget: 1000,
             edge_types: vec![],
             block_filter: vec![],
+            include_tags: vec![],
+            exclude_tags: vec![],
+            attributes: vec![],
         };
         assert_eq!(opts.start_anchor, "start");
         assert_eq!(opts.max_depth, 3);

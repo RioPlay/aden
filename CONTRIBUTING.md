@@ -21,10 +21,56 @@ Contributions are received under the AGPL license. The BDFL (RioPlay) retains th
 ## Process
 
 1. Read `.agent/onboarding.adoc` before starting work.
-2. Run `aden check` before submitting.
-3. Ensure all `<<refs>>` resolve to existing `[[anchors]]`.
-4. Include a `Signed-off-by` line on every commit.
-5. Open a pull request with a clear description of changes.
+2. Run `aden check .` before submitting.
+3. Run `cargo clippy --workspace` to catch style issues.
+4. Ensure all `<<refs>>` resolve to existing `[[anchors]]`.
+5. Include a `Signed-off-by` line on every commit.
+6. Open a pull request with a clear description of changes.
+
+## Before Every Commit
+
+Run the full CI check locally:
+
+```bash
+aden ci-check .
+```
+
+This runs: `aden check`, `aden heal`, `aden lint`, `cargo test`, and `cargo clippy`.
+
+### Automatic Pre-Commit Hooks (Recommended)
+
+Aden ships with sample hooks. Install them for automatic validation:
+
+```bash
+# Install pre-commit hook
+cp .aden/hooks/pre-commit .git/hooks/
+
+# Install pre-push hook (optional, more thorough)
+cp .aden/hooks/pre-push .git/hooks/
+```
+
+Now `git commit` automatically runs `aden ci-check .` and `git push` runs full validation.
+
+### Manual Workflow
+
+If you prefer manual control:
+
+```bash
+# 1. Generate fresh contracts
+aden gen src/ --auto
+
+# 2. Validate graph
+aden check .
+
+# 3. Detect drift (optional: --propose to preview first)
+aden heal . --fix
+
+# 4. Run tests
+cargo test --workspace
+
+# 5. Run linter
+cargo clippy --workspace
+```
 
 ## Developer Ritual
 

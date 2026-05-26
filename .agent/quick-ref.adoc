@@ -1,0 +1,95 @@
+:proj: aden
+
+[[quick-ref]]
+= Aden Quick Reference
+
+== The Safe Path (Recommended for Humans)
+
+[cols="1,2", options="header"]
+|===
+|Task |Command
+
+|Active development |`aden watch .` (auto-regenerates contracts on save)
+|Before commit |`aden ci-check .` (runs all gates)
+|Review changes before fixing |`aden heal . --propose`
+|Apply fixes (if confident) |`aden heal . --fix`
+|Regenerate contracts |`aden gen src/ --auto`
+|Three-way merge (preserves human blocks) |`aden gen src/ --auto --merge`
+|===
+
+== Common Workflows
+
+[source,bash]
+----
+# === NEW PROJECT ===
+aden init
+aden gen src/ --auto
+aden check .
+
+# === DAILY DEVELOPMENT ===
+aden watch .                    # Terminal 1: auto-regenerate
+# ... make edits ...
+
+# === BEFORE COMMIT ===
+aden ci-check .                # Validates everything
+
+# === IF DRIFT DETECTED ===
+aden heal . --propose > fix-review.adoc  # Review first
+# ... review the output ...
+aden heal . --fix              # Apply fixes
+
+# === PUSH ===
+aden gen src/ --auto           # Fresh contracts
+aden ci-check .                # Final validation
+git push
+----
+
+== Command by Use Case
+
+|===
+|Use Case |Command
+
+|Generate contracts |`aden gen src/ --auto`
+|Generate single file |`aden gen src/lib.rs`
+|Merge preserve human |`aden gen src/ --auto --merge`
+|Preview merge |`aden gen src/ --auto --propose`
+
+|Validate graph |`aden check .`
+|Fix drift |`aden heal . --fix`
+|Review fix first |`aden heal . --propose`
+|Garbage collect |`aden heal . --gc`
+
+|Ask question |`aden ask "how does X work?"`
+|Get context |`aden asm --from mod-x --depth 2`
+|Find symbol |`aden locate --symbol foo`
+|Search docs |`aden search "query"`
+
+|Auto-regenerate |`aden watch .`
+|Full validation |`aden ci-check .`
+|===
+
+== Severity Levels
+
+|===
+|Command |What It Does |When
+
+|`--propose` |Preview only, no files written |Review before applying
+|`--fix` |Auto-apply changes |Confident in the fix
+|`--merge` |Three-way merge, preserves [human] blocks |Updating contracts
+|===
+
+== When to Use What
+
+- **Use `ci-check`** before every commit (set up hooks!)
+- **Use `watch`** during active development
+- **Use `gen --merge`** to update contracts without losing notes
+- **Use `heal --propose`** to review drift before fixing
+- **Use `heal --fix`** only when you trust the output
+
+== Emergency
+
+Bypass safety checks in an emergency:
+[source,bash]
+----
+aden emergency --reason "fast fix for production" --ttl 1h .
+----

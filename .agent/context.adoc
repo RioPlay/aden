@@ -53,3 +53,4 @@ endif::agent[]
 
 . <<agent-onboarding>>
 . <<agent-session>>
+. <<quick-ref>>

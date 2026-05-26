@@ -187,6 +187,7 @@ fn walk_tree(
             attributes: attrs,
             blocks,
             source_span: Some(span),
+        metadata: None,
         });
     }
 

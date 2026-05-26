@@ -41,6 +41,10 @@ pub struct AdenFilter {
 }
 
 impl AdenFilter {
+    pub fn pattern_count(&self) -> usize {
+        self.ignore_patterns.len()
+    }
+
     /// Load filter from project root. If `.adenignore` does not exist, use built-in defaults.
     pub fn from_directory(dir: &Path) -> Self {
         let ignore_file = dir.join(".adenignore");
@@ -88,9 +92,16 @@ struct GlobRule {
 impl GlobRule {
     fn matches(&self, path: &str) -> bool {
         if self.is_dir_rule {
-            // Directory rules match both "foo/" and "foo"
             let trimmed = self.pattern.trim_end_matches('/');
-            path == trimmed || path.starts_with(&(trimmed.to_string() + "/"))
+            let matches_dir = path == trimmed || path.starts_with(&(trimmed.to_string() + "/"));
+            if matches_dir {
+                return true;
+            }
+            if let Some(without_dot) = trimmed.strip_prefix('.') {
+                path == without_dot || path.starts_with(&(without_dot.to_string() + "/"))
+            } else {
+                false
+            }
         } else {
             match_glob(path, &self.pattern)
         }
@@ -154,7 +165,19 @@ mod tests {
         assert!(filter.should_skip(Path::new(".git/hooks/pre-commit")));
         assert!(filter.should_skip(Path::new("node_modules/lodash")));
         assert!(!filter.should_skip(Path::new("src/lib.rs")));
-        assert!(!filter.should_skip(Path::new("docs/context.adoc")));
+        assert!(filter.should_skip(Path::new("agent/file.adoc")));
+        assert!(filter.should_skip(Path::new(".agent/file.adoc")));
+    }
+
+    #[test]
+    fn test_dotfile_pattern_from_ignore() {
+        let filter = AdenFilter {
+            ignore_patterns: compile_rules(&[".agent/".to_string()]),
+            allow_patterns: Vec::new(),
+        };
+        assert!(filter.should_skip(Path::new("agent/file.adoc")), "Should match agent/");
+        assert!(filter.should_skip(Path::new("agent/templates/foo.adoc")), "Should match agent/templates/");
+        assert!(!filter.should_skip(Path::new("src/main.rs")));
     }
 
     #[test]

@@ -15,8 +15,9 @@ Universal schema for the Aden referential context compiler. This crate is the lo
 |===
 |Type |Kind |Description
 
-|`Document`|struct|Root node in the graph. Has `anchor`, `node_type`, `attributes`, `blocks`.
-|`Block`|enum|Content block: `Table`, `Paragraph`, `Listing`, `Admonition`, `DescriptionList`.
+|`Document`|struct|Root node in the graph. Has `anchor`, `node_type`, `attributes`, `blocks`, `metadata`.
+|`Block`|enum|Content block: `Table`, `Paragraph`, `Listing`, `Admonition`, `DescriptionList`, `Checklist`.
+|`ChecklistItem`|struct|Checkbox item with `checked` bool and `text` string.
 |`Table`|struct|Rows + columns. Must support header row.
 |`Symbol`|struct|Named entity extracted from source code.
 |`FunctionSig`|struct|Name, parameters, return type, visibility.
@@ -33,6 +34,7 @@ Universal schema for the Aden referential context compiler. This crate is the lo
 |`MergeProposal`|struct|Result of a dry-run merge with counts per action type.
 |`ParseMode`|enum|`Strict` (CI-enforced, line-specific errors) or `Permissive` (authoring-friendly, warns but never fails).
 |`SourceSpan`|struct|File location: 1-based line range, 0-based byte offsets.
+|`DocumentMetadata`|struct|Document-level metadata: `author`, `email`, `revision`, `version`, `date`, `copyright`, `license`.
 |`ProfileMode`|enum|`Internal` (full fidelity) or `Public` (redacted fields, hidden private dirs).
 |`AdenConfig`|struct|Runtime profile loaded from `aden.toml`.
 |`LicenseInfo`|struct|Third-party dependency and license metadata.

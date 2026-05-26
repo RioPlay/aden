@@ -365,6 +365,7 @@ fn emit_symbol_document<'a>(
         attributes: attrs,
         blocks,
         source_span: Some(span),
+        metadata: None,
     })
 }
 

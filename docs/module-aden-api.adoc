@@ -1,0 +1,50 @@
+:proj: aden
+:module: aden-api
+:path: crates/aden-api/src/
+:lang: rust
+
+[[mod-aden-api]]
+= module::aden-api
+
+== Objective
+
+REST/gRPC API types for contract queries, overrides, and SBOM export. Phase 6 of the Aden roadmap. Currently defines types; runtime server not yet implemented.
+
+== Signature
+
+|===
+|Type |Kind |Description
+
+|`ApiResponse<T>`|struct|Wrapper for API responses: `success`, `data`, `error`.
+|`ContractStateRequest`|struct|Request to query contract state by anchor.
+|`OverrideProposal`|struct|Proposed override with tag, justification, reviewer, expiration.
+|`SbomExportRequest`|struct|Request for SBOM export with format and dependency flags.
+|`SbomFormat`|enum|Supported formats: SPDX, CycloneDX, SLSA.
+|`FederationConfig`|struct|Multi-repo config: registry URL, API key, repositories.
+|`PolicyTemplate`|struct|Policy template with ID, name, directives, version.
+|`CrossRepoEdge`|struct|Edge spanning repositories: source_repo, source_anchor, target_repo, target_anchor, edge_type.
+|===
+
+== Functions
+
+|===
+|Function |Description
+
+|`query_contract_state`|Query contract state by anchor. Returns status.
+|`submit_override`|Submit override proposal with validation (justification + reviewer required).
+|`fetch_policy_template`|Fetch policy template by ID from federation config.
+|`resolve_cross_repo_edges`|Resolve edges across repositories.
+|===
+
+== Status
+
+*Phase 6 - Planned*: Types defined but no HTTP/gRPC server runtime yet.
+
+== Invariants
+
+. All types derive `Debug`, `Clone`, `Serialize`, `Deserialize`.
+. `submit_override` requires non-empty justification and reviewer.
+
+== Related Documents
+
+. <<plan-phase6>>

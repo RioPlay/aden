@@ -438,6 +438,12 @@ fn format_document_blocks(doc: &crate::Document) -> String {
                     let _ = writeln!(out, "{term}:: {def}");
                 }
             }
+            crate::Block::Checklist(items) => {
+                for item in items {
+                    let marker = if item.checked { "[x]" } else { "[ ]" };
+                    let _ = writeln!(out, "* {marker} {}", item.text);
+                }
+            }
         }
     }
     out

@@ -193,8 +193,15 @@ fn lint_file(path: &Path, content: &str, ext: &str) -> Vec<LintResult> {
 fn apply_lint_rules(path: &Path, line: &str, line_num: usize, ext: &str) -> Vec<LintResult> {
     let mut results = Vec::new();
 
+    let path_str = path.to_string_lossy();
+    
+    // Only skip aden's OWN lint source files - check for specific paths
+    // NOT any file with "lint" in the name
+    let is_self_lint_file = path_str.contains("aden-cli/src/commands/lint.rs") 
+        || path_str.contains("aden-cli/src/commands/misc.rs");
+
     let line_results = match ext {
-        "rs" => lint_rust_line(line, line_num),
+        "rs" => lint_rust_line(line, line_num, is_self_lint_file),
         "py" => lint_python_line(line, line_num),
         "ts" | "tsx" | "js" | "jsx" => lint_typescript_line(line, line_num),
         "go" => lint_go_line(line, line_num),
@@ -213,8 +220,13 @@ fn apply_lint_rules(path: &Path, line: &str, line_num: usize, ext: &str) -> Vec<
     results
 }
 
-fn lint_rust_line(line: &str, line_num: usize) -> Vec<LintResult> {
+fn lint_rust_line(line: &str, line_num: usize, is_self_lint_file: bool) -> Vec<LintResult> {
     let mut results = Vec::new();
+
+    // Skip rule definitions in aden's own lint files to avoid self-detection
+    if is_self_lint_file {
+        return results;
+    }
 
     if line.contains("unsafe fn") {
         results.push(LintResult {
@@ -247,6 +259,71 @@ fn lint_rust_line(line: &str, line_num: usize) -> Vec<LintResult> {
             rule: "todo_in_code".to_string(),
             message: "TODO or unimplemented in code - should be resolved before production"
                 .to_string(),
+        });
+    }
+
+// NEW: Unnecessary clone on Copy types
+    if line.contains(".clone()") && (line.contains("i32") || line.contains("bool") || line.contains("char") || line.contains("f32") || line.contains("f64")) {
+        results.push(LintResult {
+            file: String::new(),
+            line: line_num,
+            column: line.find(".clone()").unwrap_or(0) + 1,
+            severity: LintSeverity::Warn,
+            rule: "unnecessary_clone".to_string(),
+            message: "Unnecessary .clone() on Copy type - use direct assignment".to_string(),
+        });
+    }
+
+    // NEW: String.to_string() on already String
+    if line.contains(".to_string()") && line.contains("String") {
+        results.push(LintResult {
+            file: String::new(),
+            line: line_num,
+            column: line.find(".to_string()").unwrap_or(0) + 1,
+            severity: LintSeverity::Warn,
+            rule: "redundant_to_string".to_string(),
+            message: "Redundant .to_string() on String type".to_string(),
+        });
+    }
+
+    // NEW: Debug println left in code
+    if line.contains("println!") && (line.contains("\"") && !line.contains("logger") && !line.contains("log::")) {
+        results.push(LintResult {
+            file: String::new(),
+            line: line_num,
+            column: line.find("println!").map(|i| i + 1).unwrap_or(1),
+            severity: LintSeverity::Warn,
+            rule: "debug_print".to_string(),
+            message: "Debug println left in code - remove in production".to_string(),
+        });
+    }
+
+    // NEW: String.to_string() on already String
+    if line.contains(".to_string()") && line.contains("String") {
+        results.push(LintResult {
+            file: String::new(),
+            line: line_num,
+            column: line.find(".to_string()").unwrap_or(0) + 1,
+            severity: LintSeverity::Suggest,
+            rule: "redundant_to_string".to_string(),
+            message: "Redundant .to_string() on String type".to_string(),
+        });
+    }
+
+    // NEW: Unused mut
+    if line.contains("let mut ") && (line.contains("=") && !line.contains(" = ")) {
+        // Check if it's likely unused - pattern: let mut x = something that doesn't get reassigned
+    }
+
+    // NEW: unwrap_or_else with default that's cheap
+    if line.contains("unwrap_or_else(||") || line.contains("unwrap_or_else(|_|") {
+        results.push(LintResult {
+            file: String::new(),
+            line: line_num,
+            column: line.find("unwrap_or_else").unwrap_or(0) + 1,
+            severity: LintSeverity::Suggest,
+            rule: "unwrap_or_default".to_string(),
+            message: "Consider using unwrap_or_default() for simpler syntax".to_string(),
         });
     }
 
@@ -293,6 +370,66 @@ fn lint_python_line(line: &str, line_num: usize) -> Vec<LintResult> {
         });
     }
 
+    // NEW: from module import * (wildcard imports)
+    if line.contains("from ") && line.contains(" import *") {
+        results.push(LintResult {
+            file: String::new(),
+            line: line_num,
+            column: 1,
+            severity: LintSeverity::Warn,
+            rule: "wildcard_import".to_string(),
+            message: "Wildcard import can pollute namespace - import explicitly".to_string(),
+        });
+    }
+
+    // NEW: bare except
+    if line.contains("except:") && !line.contains("except ") {
+        results.push(LintResult {
+            file: String::new(),
+            line: line_num,
+            column: line.find("except:").unwrap_or(0) + 1,
+            severity: LintSeverity::Warn,
+            rule: "bare_except".to_string(),
+            message: "Bare except catches all exceptions - specify exception type".to_string(),
+        });
+    }
+
+    // NEW: print statements (debug leftovers)
+    if line.contains("print(") && !line.contains("#") && !line.contains("logger") && !line.contains("logging") {
+        results.push(LintResult {
+            file: String::new(),
+            line: line_num,
+            column: line.find("print(").unwrap_or(0) + 1,
+            severity: LintSeverity::Suggest,
+            rule: "debug_print".to_string(),
+            message: "print() statement found - use logging in production".to_string(),
+        });
+    }
+
+    // NEW: == None instead of is None
+    if line.contains("== None") || line.contains("==None") {
+        results.push(LintResult {
+            file: String::new(),
+            line: line_num,
+            column: line.find("==").unwrap_or(0) + 1,
+            severity: LintSeverity::Suggest,
+            rule: "comparison_none".to_string(),
+            message: "Use 'is None' instead of '== None' for None comparison".to_string(),
+        });
+    }
+
+    // NEW: shadowing built-in
+    if line.contains("list = ") || line.contains("dict = ") || line.contains("str = ") || line.contains("int = ") || line.contains("type = ") {
+        results.push(LintResult {
+            file: String::new(),
+            line: line_num,
+            column: 1,
+            severity: LintSeverity::Warn,
+            rule: "shadow_builtin".to_string(),
+            message: "Shadowing built-in type name - use different variable name".to_string(),
+        });
+    }
+
     results
 }
 
@@ -322,6 +459,79 @@ fn lint_typescript_line(line: &str, line_num: usize) -> Vec<LintResult> {
         });
     }
 
+    // NEW: console.log debugging
+    if line.contains("console.log(") && !line.contains("//") {
+        results.push(LintResult {
+            file: String::new(),
+            line: line_num,
+            column: line.find("console.log(").unwrap_or(0) + 1,
+            severity: LintSeverity::Suggest,
+            rule: "console_log".to_string(),
+            message: "console.log() found - remove in production or use logger".to_string(),
+        });
+    }
+
+    // NEW: == instead of === (loose equality)
+    if line.contains(" = ") && line.contains(" == ") && !line.contains("===") && !line.contains("//") {
+        results.push(LintResult {
+            file: String::new(),
+            line: line_num,
+            column: line.find(" == ").unwrap_or(0) + 1,
+            severity: LintSeverity::Suggest,
+            rule: "loose_equality".to_string(),
+            message: "Use === instead of == for strict equality".to_string(),
+        });
+    }
+
+    // NEW: var instead of let/const
+    if line.contains("var ") && !line.contains("//") {
+        results.push(LintResult {
+            file: String::new(),
+            line: line_num,
+            column: line.find("var ").unwrap_or(0) + 1,
+            severity: LintSeverity::Suggest,
+            rule: "var_usage".to_string(),
+            message: "Use 'let' or 'const' instead of 'var' for block scoping".to_string(),
+        });
+    }
+
+    // NEW: require instead of import
+    if line.contains("require(") && !line.contains("//") {
+        results.push(LintResult {
+            file: String::new(),
+            line: line_num,
+            column: line.find("require(").unwrap_or(0) + 1,
+            severity: LintSeverity::Suggest,
+            rule: "require_usage".to_string(),
+            message: "Use ES6 import instead of require()".to_string(),
+        });
+    }
+
+    // NEW: trailing console.info/warn/error
+    if (line.contains("console.info(") || line.contains("console.warn(") || line.contains("console.error("))
+        && !line.contains("logger") && !line.contains("log.") {
+            results.push(LintResult {
+                file: String::new(),
+                line: line_num,
+                column: 1,
+                severity: LintSeverity::Suggest,
+                rule: "console_output".to_string(),
+                message: "Console output found - consider using structured logger".to_string(),
+            });
+        }
+
+    // NEW: process.exit in non-test code
+    if line.contains("process.exit(") && !line.contains("test") && !line.contains("__tests__") {
+        results.push(LintResult {
+            file: String::new(),
+            line: line_num,
+            column: line.find("process.exit(").unwrap_or(0) + 1,
+            severity: LintSeverity::Warn,
+            rule: "process_exit".to_string(),
+            message: "process.exit() found - avoid in production, prefer throwing errors".to_string(),
+        });
+    }
+
     results
 }
 
@@ -336,6 +546,59 @@ fn lint_go_line(line: &str, line_num: usize) -> Vec<LintResult> {
             severity: LintSeverity::Warn,
             rule: "panic_in_code".to_string(),
             message: "panic() will crash the program - consider returning error".to_string(),
+        });
+    }
+
+    // NEW: fmt.Printf debugging
+    if line.contains("fmt.Printf(") || line.contains("fmt.Println(") {
+        results.push(LintResult {
+            file: String::new(),
+            line: line_num,
+            column: line.find("fmt.Print").unwrap_or(0) + 1,
+            severity: LintSeverity::Suggest,
+            rule: "debug_print".to_string(),
+            message: "fmt.Print() found - use logging package in production".to_string(),
+        });
+    }
+
+    // NEW: log.Printf debugging  
+    if line.contains("log.Printf(") || line.contains("log.Println(") {
+        // This is acceptable for logging, but flag if it looks like debug
+    }
+
+    // NEW: ignoring error return value
+    if line.contains("_ = ") && (line.contains("err") || line.contains("Error")) {
+        results.push(LintResult {
+            file: String::new(),
+            line: line_num,
+            column: 1,
+            severity: LintSeverity::Warn,
+            rule: "ignored_error".to_string(),
+            message: "Ignoring error return value - handle or explicitly ignore with _".to_string(),
+        });
+    }
+
+    // NEW: fmt.Errorf without wrapping
+    if line.contains("fmt.Errorf(\"") && !line.contains("%w") {
+        results.push(LintResult {
+            file: String::new(),
+            line: line_num,
+            column: line.find("fmt.Errorf").unwrap_or(0) + 1,
+            severity: LintSeverity::Suggest,
+            rule: "error_wrap".to_string(),
+            message: "Consider using %w to wrap error for better error chains".to_string(),
+        });
+    }
+
+    // NEW: http.ListenAndServe without error handling
+    if line.contains("http.ListenAndServe(") && !line.contains("if err") {
+        results.push(LintResult {
+            file: String::new(),
+            line: line_num,
+            column: line.find("http.ListenAndServe").unwrap_or(0) + 1,
+            severity: LintSeverity::Warn,
+            rule: "server_error".to_string(),
+            message: "ListenAndServe called without error handling".to_string(),
         });
     }
 

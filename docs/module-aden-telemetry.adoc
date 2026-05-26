@@ -1,0 +1,33 @@
+:proj: aden
+:module: aden-telemetry
+:path: crates/aden-telemetry/src/
+:lang: rust
+
+[[mod-aden-telemetry]]
+= module::aden-telemetry
+
+== Objective
+
+Guard firing telemetry. Tracks when constitutional policy guards fire, enforcement actions, and override requests. Enables audit trails and policy effectiveness analysis.
+
+== Status
+
+*Planned*: Not yet implemented.
+
+== Intended Features
+
+|===
+|Feature |Description
+
+|`GuardEvent`|Record of guard firing: timestamp, rule, action, context.
+|`TelemetryCollector`|Aggregate guard events for analysis.
+|`aden audit`|OWASP-style security audit with guard telemetry.
+|===
+
+== Integration
+
+Will integrate with `aden-policy` to track directive enforcement.
+
+== Related Documents
+
+. <<plan-phase5>>, <<mod-aden-policy>>

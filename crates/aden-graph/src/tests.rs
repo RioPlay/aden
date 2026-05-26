@@ -129,6 +129,9 @@ agent-note::DEPRECATED[2024-03-01] Use new_module instead
             raw_content: String::new(),
             semantic_diffs: Vec::new(),
             blocks: Vec::new(),
+            tagged_regions: Vec::new(),
+            conditional_regions: Vec::new(),
+            metadata: None,
         };
         let doc1 = Document {
             anchor: "mod-a".to_string(),
@@ -136,6 +139,7 @@ agent-note::DEPRECATED[2024-03-01] Use new_module instead
             attributes: HashMap::new(),
             blocks: Vec::new(),
             source_span: None,
+            metadata: None,
         };
         let doc2 = Document {
             anchor: "func-b".to_string(),
@@ -143,6 +147,7 @@ agent-note::DEPRECATED[2024-03-01] Use new_module instead
             attributes: HashMap::new(),
             blocks: Vec::new(),
             source_span: None,
+            metadata: None,
         };
         let node1 = DocumentNode {
             anchor: "mod-a".to_string(),
@@ -180,6 +185,9 @@ agent-note::DEPRECATED[2024-03-01] Use new_module instead
             raw_content: String::new(),
             semantic_diffs: Vec::new(),
             blocks: Vec::new(),
+            tagged_regions: Vec::new(),
+            conditional_regions: Vec::new(),
+            metadata: None,
         };
         let doc1 = Document {
             anchor: "note-a".to_string(),
@@ -187,6 +195,7 @@ agent-note::DEPRECATED[2024-03-01] Use new_module instead
             attributes: HashMap::new(),
             blocks: Vec::new(),
             source_span: None,
+            metadata: None,
         };
         let doc2 = Document {
             anchor: "adr-b".to_string(),
@@ -194,6 +203,7 @@ agent-note::DEPRECATED[2024-03-01] Use new_module instead
             attributes: HashMap::new(),
             blocks: Vec::new(),
             source_span: None,
+            metadata: None,
         };
         let node1 = DocumentNode {
             anchor: "note-a".to_string(),

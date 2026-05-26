@@ -557,6 +557,7 @@ fn emit_ruby_symbol(
         attributes: attrs,
         blocks,
         source_span: Some(span),
+        metadata: None,
     })
 }
 

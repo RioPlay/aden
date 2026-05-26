@@ -179,8 +179,16 @@ enum Commands {
         silent: bool,
         #[arg(long, help = "Auto mode: adjust budget based on relevance scores")]
         auto: bool,
+        #[arg(long, help = "Strict mode: never exceed budget (disable auto-boost)")]
+        strict: bool,
         #[arg(long, help = "Inspect: show what would be included without outputting")]
         inspect: bool,
+        #[arg(long, value_name = "TAG", help = "Include only content with this tag (can repeat)")]
+        include_tag: Vec<String>,
+        #[arg(long, value_name = "TAG", help = "Exclude content with this tag (can repeat)")]
+        exclude_tag: Vec<String>,
+        #[arg(long, value_name = "ATTR", help = "Set attribute for conditional processing (can repeat)")]
+        set_attr: Vec<String>,
     },
     /// Query the knowledge graph and emit JSON
     Query {
@@ -244,6 +252,19 @@ enum Commands {
             help = "Limit number of results"
         )]
         limit: usize,
+        #[arg(
+            long,
+            value_name = "N",
+            default_value = "0",
+            help = "Offset for pagination"
+        )]
+        offset: usize,
+        #[arg(
+            long,
+            value_name = "TYPE",
+            help = "Filter by document type: module, adr, plan, use-case"
+        )]
+        doc_type: Option<String>,
     },
     /// List all anchors and contracts in the knowledge graph (alias: ls)
     List {
@@ -262,6 +283,13 @@ enum Commands {
             help = "Limit number of results"
         )]
         limit: usize,
+        #[arg(
+            long,
+            value_name = "N",
+            default_value = "0",
+            help = "Offset for pagination"
+        )]
+        offset: usize,
         #[arg(long, help = "Show all results (no limit)")]
         unlimited: bool,
         #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
@@ -542,7 +570,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             format: asm_format,
             silent,
             auto,
+            strict,
             inspect,
+            include_tag,
+            exclude_tag,
+            set_attr,
         } => {
             let types = edge_types
                 .map(|s| util::parse_edge_types(&s))
@@ -557,7 +589,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 format: asm_format,
                 silent,
                 auto,
+                strict,
                 inspect,
+                include_tags: include_tag,
+                exclude_tags: exclude_tag,
+                attributes: set_attr,
             })
         }
         Commands::Query {
@@ -585,14 +621,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             model,
             path,
         } => commands::cmd_ask(&path, &question, from.as_deref(), budget, model.as_deref()),
-        Commands::Search { query, path, limit } => {
+        Commands::Search { query, path, limit, offset, doc_type } => {
             let effective_limit = if cli.unlimited { usize::MAX } else { limit };
-            commands::cmd_search(&path, &query, effective_limit)
+            commands::cmd_search(&path, &query, effective_limit, offset, doc_type.as_deref())
         }
         Commands::List {
             filter,
             verbose,
             limit,
+            offset,
             unlimited,
             path,
         } => {
@@ -601,7 +638,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 limit
             };
-            commands::cmd_list(&path, filter.as_deref(), verbose, effective_limit)
+            commands::cmd_list(&path, filter.as_deref(), verbose, effective_limit, offset)
         }
         Commands::Locate {
             symbol,

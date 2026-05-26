@@ -101,18 +101,23 @@ aden ci-check .          # Run all local gates (check, heal, lint, tests, audit)
 
 | Crate | Responsibility |
 | --- | --- |
-| `aden-core` | Schema: `Document`, `Block`, `Edge`, `Symbol`, etc. |
+| `aden-core` | Schema: `Document`, `Block`, `Edge`, `Symbol`, three-way merge, contract regions |
 | `aden-parse` | Language routers & AST extraction (Rust, Python, Go, TS/JS, C#, Java, Kotlin, PHP, Ruby + 305+ generic) |
 | `aden-emit` | Deterministic AsciiDoc emitter |
-| `aden-graph` | Referential integrity: DiGraph, cycle detection, typed edges |
+| `aden-graph` | Referential integrity: DiGraph, cycle detection, typed edges, integrity checks |
 | `aden-asm` | Context assembly: BFS traversal, token budgeting |
-| `aden-index` | Semantic full-text search |
+| `aden-index` | Semantic full-text search with fuzzy matching |
 | `aden-heal` | Drift detection & health scoring |
 | `aden-propose` | Patch generation & proposal lifecycle |
-| `aden-mcp` | MCP server (Claude, Cursor, Zed, Windsurf) |
+| `aden-mcp` | MCP server (Claude, Cursor, Zed, Windsurf) - CLI wrapper mode |
 | `aden-lsp` | LSP for `.adoc`/`.aden` files |
 | `aden-py` | PyO3 Python bindings |
 | `aden-cli` | Binary (`aden`) with all commands |
+| `aden-policy` | Constitutional policy engine: directives, precedence, conflict resolution |
+| `aden-api` | REST/gRPC types for contract queries, overrides, SBOM export (Phase 6) |
+| `aden-attest` | Attestation and signing primitives |
+| `aden-simulate` | Graph history and evolution tracking (planned) |
+| `aden-telemetry` | Guard firing telemetry (planned) |
 
 ---
 

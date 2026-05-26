@@ -644,6 +644,7 @@ fn emit_java_symbol(
         attributes: attrs,
         blocks,
         source_span: Some(span),
+        metadata: None,
     })
 }
 

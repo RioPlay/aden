@@ -412,6 +412,7 @@ fn emit_c_symbol<'a>(
         attributes: attrs,
         blocks,
         source_span: Some(span),
+        metadata: None,
     })
 }
 

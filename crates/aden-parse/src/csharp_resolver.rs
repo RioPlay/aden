@@ -586,6 +586,7 @@ fn emit_cs_symbol(
         attributes: attrs,
         blocks,
         source_span: Some(span),
+        metadata: None,
     })
 }
 

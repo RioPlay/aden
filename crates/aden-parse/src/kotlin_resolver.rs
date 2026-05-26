@@ -552,6 +552,7 @@ fn emit_kotlin_symbol(
         attributes: attrs,
         blocks,
         source_span: Some(span),
+        metadata: None,
     })
 }
 

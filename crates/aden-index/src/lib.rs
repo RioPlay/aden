@@ -23,6 +23,8 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use aden_core::filter::AdenFilter;
+
 /// A single search result.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SearchResult {
@@ -100,6 +102,45 @@ pub fn tokenize(text: &str) -> Vec<String> {
         })
         .filter(|w| !w.is_empty() && !is_stop_word(w))
         .collect()
+}
+
+fn levenshtein_distance(s1: &str, s2: &str) -> usize {
+    let len1 = s1.len();
+    let len2 = s2.len();
+
+    if len1 == 0 {
+        return len2;
+    }
+    if len2 == 0 {
+        return len1;
+    }
+
+    let mut matrix = vec![vec![0usize; len2 + 1]; len1 + 1];
+
+    // Initializing first column - classic DP pattern
+    #[allow(clippy::needless_range_loop)]
+    for i in 0..=len1 {
+        matrix[i][0] = i;
+    }
+    // Initializing first row - clippy suggestion doesn't apply here
+    #[allow(clippy::needless_range_loop)]
+    for j in 0..=len2 {
+        matrix[0][j] = j;
+    }
+
+    let s1_bytes = s1.as_bytes();
+    let s2_bytes = s2.as_bytes();
+
+    for i in 1..=len1 {
+        for j in 1..=len2 {
+            let cost = if s1_bytes[i - 1] == s2_bytes[j - 1] { 0 } else { 1 };
+            matrix[i][j] = (matrix[i - 1][j] + 1)
+                .min(matrix[i][j - 1] + 1)
+                .min(matrix[i - 1][j - 1] + cost);
+        }
+    }
+
+    matrix[len1][len2]
 }
 
 /// Parse an `.adoc` / `.aden` file and return the anchor, the source path,
@@ -214,7 +255,8 @@ impl Index {
     pub fn from_directory(dir: &Path) -> Result<Self, std::io::Error> {
         let mut index = Index::default();
         let mut files = Vec::new();
-        Self::collect_files(dir, &mut files)?;
+        let filter = AdenFilter::from_directory(dir);
+        Self::collect_files(dir, &filter, &mut files)?;
 
         for path in files {
             let text = std::fs::read_to_string(&path)?;
@@ -245,17 +287,33 @@ impl Index {
         Ok(index)
     }
 
-    fn collect_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), std::io::Error> {
+    fn collect_files(dir: &Path, filter: &AdenFilter, out: &mut Vec<PathBuf>) -> Result<(), std::io::Error> {
+        Self::collect_files_inner(dir, dir, filter, out)
+    }
+
+    fn collect_files_inner(
+        dir: &Path,
+        root: &Path,
+        filter: &AdenFilter,
+        out: &mut Vec<PathBuf>,
+    ) -> Result<(), std::io::Error> {
         for entry in std::fs::read_dir(dir)? {
             let entry = entry?;
             let path = entry.path();
-            // SECURITY: Skip symlinks to prevent traversal outside the repo.
             if entry.file_type().map(|ft| ft.is_symlink()).unwrap_or(false) {
                 continue;
             }
             if path.is_dir() {
-                Self::collect_files(&path, out)?;
+                if let Ok(rel) = path.strip_prefix(root)
+                    && filter.should_skip(rel) {
+                        continue;
+                    }
+                Self::collect_files_inner(&path, root, filter, out)?;
             } else if path.is_file() {
+                if let Ok(rel) = path.strip_prefix(root)
+                    && filter.should_skip(rel) {
+                        continue;
+                    }
                 let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
                 if ext == "adoc" || ext == "aden" {
                     out.push(path);
@@ -301,12 +359,21 @@ impl Index {
         let query_lower = query_str.to_lowercase();
         for (anchor, score) in scores.iter_mut() {
             let anchor_lower = anchor.to_lowercase();
+            let source_path = self.anchor_paths.get(anchor);
 
             // Penalize source-file anchors (e.g., aden://module/...#function_name)
             // These are specific symbols, not module-level docs
             let is_source_anchor = anchor.contains("://module/") || anchor.contains("/src/");
             if is_source_anchor {
                 *score *= 0.1; // 90% penalty for source file anchors
+            }
+
+            // Penalize .agent/ templates - they're for AI agents, not human-facing docs
+            if let Some(path) = source_path {
+                let path_str = path.to_string_lossy().to_lowercase();
+                if path_str.contains(".agent/") || path_str.contains(".agent\\") {
+                    *score *= 0.01; // 99% penalty - almost exclude from search results
+                }
             }
 
             // 20x boost if query term appears in anchor (mod-*, adr-* patterns)
@@ -349,7 +416,54 @@ impl Index {
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
 
+        // If no results or weak results (score < 1.0), try fuzzy search
+        if results.is_empty() || results.first().map(|r| r.score < 1.0).unwrap_or(true) {
+            let fuzzy = self.fuzzy_query(&tokens);
+            if !fuzzy.is_empty() {
+                if results.is_empty() {
+                    return fuzzy;
+                }
+                // Append fuzzy results to main results
+                results.extend(fuzzy);
+            }
+        }
+
         results
+    }
+
+    fn fuzzy_query(&self, tokens: &[String]) -> Vec<SearchResult> {
+        if tokens.is_empty() {
+            return Vec::new();
+        }
+
+        let mut fuzzy_matches: Vec<(String, f64)> = Vec::new();
+        let query_term = &tokens[0].to_lowercase();
+
+        for anchor in self.anchor_paths.keys() {
+            let anchor_lower = anchor.to_lowercase();
+            let dist = levenshtein_distance(query_term, &anchor_lower);
+            let all_chars_match = query_term.chars().all(|c| anchor_lower.contains(c));
+            if dist <= 2 || (query_term.len() >= 2 && all_chars_match) {
+                fuzzy_matches.push((anchor.clone(), 1.0));
+            }
+        }
+
+        fuzzy_matches.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+        fuzzy_matches
+            .into_iter()
+            .filter_map(|(anchor, score)| {
+                let source_path = self.anchor_paths.get(&anchor)?.clone();
+                let doc_text = self.anchor_text.get(&anchor)?.clone();
+                let snippet = build_snippet(&doc_text, tokens);
+                Some(SearchResult {
+                    anchor,
+                    source_path,
+                    score,
+                    snippet,
+                })
+            })
+            .collect()
     }
 }
 
@@ -573,5 +687,57 @@ hello.
         let results = index.query("hello");
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].anchor, "adoc");
+    }
+
+    #[test]
+    fn index_excludes_agent_templates() {
+        let dir = temp_dir_with_files(&[
+            (
+                "docs/main.adoc",
+                r#"[[main-doc]]
+= Main
+
+This is the main documentation.
+"#,
+            ),
+            (
+                ".agent/templates/onboarding.adoc",
+                r#"[[agent-onboarding-template]]
+= Onboarding
+
+Welcome to the project.
+"#,
+            ),
+            (
+                ".agent/templates/style-guide.adoc",
+                r#"[[style-guide]]
+= Style Guide
+
+Follow these rules.
+"#,
+            ),
+            (
+                ".agent/context.adoc",
+                r#"[[agent-context]]
+= Agent Context
+
+Project context.
+"#,
+            ),
+        ]);
+
+        let index = Index::from_directory(dir.path()).unwrap();
+        let results = index.query("onboarding");
+        assert!(results.is_empty(), "Should not find .agent/templates/ files");
+
+        let results = index.query("style guide");
+        assert!(results.is_empty(), "Should not find .agent/templates/ files");
+
+        let results = index.query("agent context");
+        assert!(results.is_empty(), "Should not find .agent/ files");
+
+        let results = index.query("main");
+        assert_eq!(results.len(), 1, "Should find docs/main.adoc");
+        assert_eq!(results[0].anchor, "main-doc");
     }
 }

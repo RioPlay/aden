@@ -150,6 +150,7 @@ pub fn extract_documents(path: &Path, _source: &str) -> Result<Vec<Document>> {
             attributes: attrs,
             blocks,
             source_span: None,
+        metadata: None,
         });
     }
 
@@ -181,6 +182,7 @@ pub fn extract_documents(path: &Path, _source: &str) -> Result<Vec<Document>> {
             attributes: attrs,
             blocks,
             source_span: None,
+        metadata: None,
         });
     }
 

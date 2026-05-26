@@ -151,6 +151,12 @@ fn emit_block(out: &mut String, block: &Block) {
                 writeln!(out, "{term}:: {def}").unwrap();
             }
         }
+        Block::Checklist(items) => {
+            for item in items {
+                let marker = if item.checked { "[x]" } else { "[ ]" };
+                writeln!(out, "* {marker} {}", item.text).unwrap();
+            }
+        }
     }
 }
 
@@ -280,6 +286,9 @@ enum AdgBlock {
     DescriptionList {
         item_count: usize,
     },
+    Checklist {
+        item_count: usize,
+    },
 }
 
 /// Emit a Document in deterministic ADG format (canonical JSON).
@@ -303,6 +312,9 @@ pub fn emit_adg(doc: &Document) -> Result<String, serde_json::Error> {
                 text: text.clone(),
             },
             Block::DescriptionList(items) => AdgBlock::DescriptionList {
+                item_count: items.len(),
+            },
+            Block::Checklist(items) => AdgBlock::Checklist {
                 item_count: items.len(),
             },
         })
@@ -434,6 +446,12 @@ fn emit_block_md(out: &mut String, block: &Block) {
         Block::DescriptionList(items) => {
             for (term, def) in items {
                 writeln!(out, "**{term}**: {def}").unwrap();
+            }
+        }
+        Block::Checklist(items) => {
+            for item in items {
+                let checkbox = if item.checked { "[x]" } else { "[ ]" };
+                writeln!(out, "- {checkbox} {}", item.text).unwrap();
             }
         }
     }

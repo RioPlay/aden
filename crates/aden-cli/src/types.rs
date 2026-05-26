@@ -22,6 +22,9 @@ pub enum QueryIntent {
     Explain,  // "What does X do?"
     Refactor, // "Refactor X"
     Impact,   // "What depends on X?"
+    List,     // "list all modules", "show me all functions"
+    Compare,  // "compare X and Y"
+    Count,    // "how many tests", "count the functions"
     General,  // default
 }
 
@@ -333,6 +336,33 @@ pub fn get_anchor_aliases() -> HashMap<&'static str, &'static str> {
     m.insert("monitoring", "mod-aden-telemetry");
     m.insert("alert", "mod-aden-telemetry");
     m.insert("alerts", "mod-aden-telemetry");
+
+    // Documentation & Contracts
+    m.insert("doc", "mod-aden-emit");
+    m.insert("docs", "mod-aden-emit");
+    m.insert("documentation", "mod-aden-emit");
+    m.insert("contract", "mod-aden-core");
+    m.insert("contracts", "mod-aden-core");
+    m.insert("readme", "mod-aden-core");
+    m.insert("guide", "mod-aden-core");
+    m.insert("tutorial", "mod-aden-core");
+    m.insert("example", "mod-aden-core");
+    m.insert("examples", "mod-aden-core");
+
+    // AI & LLM
+    m.insert("ai", "mod-aden-asm");
+    m.insert("llm", "mod-aden-asm");
+    m.insert("gpt", "mod-aden-asm");
+    m.insert("model", "mod-aden-asm");
+    m.insert("completion", "mod-aden-asm");
+    m.insert("embedding", "mod-aden-index");
+
+    // Federation & Multi-repo
+    m.insert("federation", "mod-aden-cli");
+    m.insert("multi-repo", "mod-aden-cli");
+    m.insert("monorepo", "mod-aden-cli");
+    m.insert("repository", "mod-aden-cli");
+    m.insert("repo", "mod-aden-cli");
 
     m
 }

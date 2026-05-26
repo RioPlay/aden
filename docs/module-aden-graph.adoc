@@ -27,7 +27,9 @@ The graph module provides caching functionality through `build_from_directory_ca
 |`find_cycles` (cycles module)|`pub fn find_cycles(graph: &AdenGraph) -> Vec<Vec<String>>`|DFS cycle detection
 |`inject_backlinks` (backlinks module)|`pub fn inject_backlinks(graph: &mut AdenGraph)`|Append `== Referenced By` tables
 |`check_hashes` (integrity module)|`pub fn check_hashes(graph: &AdenGraph) -> Vec<(String, String)>`|Verify `:source_hash:` integrity
-|`parse_file` (parser module)|`pub fn parse_file(path: &Path) -> Result<ParsedDocument, ParseError>`|Parse AsciiDoc attributes, anchors, refs, includes, conditionals, edge macros
+|`parse_file` (parser module)|`pub fn parse_file(path: &Path) -> Result<ParsedDocument, ParseError>`|Parse AsciiDoc attributes, anchors, refs, includes, conditionals, edge macros, tagged regions
+|`TaggedRegion`|struct|Region for selective include: `tag_name`, `content`, `line_start`, `line_end`
+|`ConditionalRegion`|struct|Conditional block: `attribute`, `content`, `is_active`, `line_start`, `line_end`
 |===
 
 == Invariants

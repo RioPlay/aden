@@ -97,6 +97,7 @@ impl AdenGraph {
                 attributes: parsed.attributes.clone(),
                 blocks: parsed.blocks.clone(),
                 source_span: None,
+                metadata: parsed.metadata.clone(),
             };
 
             let anchors = parsed.anchors.clone();

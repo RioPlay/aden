@@ -114,7 +114,11 @@ pub struct AsmOptions {
     pub format: String,
     pub silent: bool,
     pub auto: bool,
+    pub strict: bool,
     pub inspect: bool,
+    pub include_tags: Vec<String>,
+    pub exclude_tags: Vec<String>,
+    pub attributes: Vec<String>,
 }
 
 pub fn cmd_asm(opts: AsmOptions) -> Result<(), Box<dyn std::error::Error>> {
@@ -124,9 +128,9 @@ pub fn cmd_asm(opts: AsmOptions) -> Result<(), Box<dyn std::error::Error>> {
         return Err("asm requires a directory path".into());
     }
 
-    let graph = aden_graph::cache::build_from_directory_cached(&opts.path)?;
+let graph = aden_graph::cache::build_from_directory_cached(&opts.path)?;
 
-    let (resolved_anchor, effective_budget) = if opts.auto {
+    let (mut resolved_anchor, effective_budget) = if opts.auto && !opts.strict {
         let index = load_or_build_index(&opts.path)?;
         let results = index.query(&opts.from);
         let resolved = resolve_anchor_fuzzy(&opts.from, &results);
@@ -146,11 +150,49 @@ pub fn cmd_asm(opts: AsmOptions) -> Result<(), Box<dyn std::error::Error>> {
         (opts.from.clone(), opts.budget)
     };
 
+    // Verify anchor exists, fallback if not found
+    if !graph.anchor_to_index.contains_key(&resolved_anchor) {
+        let anchor_lower = resolved_anchor.to_lowercase();
+        let suggestions: Vec<String> = graph.anchor_to_index.keys()
+            .filter(|a| {
+                let lower = a.to_lowercase();
+                lower.contains(&anchor_lower) || anchor_lower.len() >= 3 && 
+                anchor_lower.chars().all(|c| lower.contains(c))
+            })
+            .take(5)
+            .cloned()
+            .collect();
+
+        let mut final_suggestions = suggestions.clone();
+        if final_suggestions.is_empty() {
+            for fallback in &["readme", "getting-started", "use-cases", "documentation-index"] {
+                if graph.anchor_to_index.contains_key(*fallback) {
+                    final_suggestions.push(fallback.to_string());
+                    break;
+                }
+            }
+        }
+
+        if !final_suggestions.is_empty() {
+            println!(
+                "WARNING: Anchor '{}' not found. Did you mean: {}?",
+                resolved_anchor,
+                final_suggestions.join(", ")
+            );
+            println!("         Use 'aden list .' to see available anchors.\n");
+            resolved_anchor = final_suggestions[0].clone();
+        } else {
+            return Err(
+                "No valid anchors found. Run 'aden list .' to see available anchors.".into(),
+            );
+        }
+    }
+
     if opts.inspect {
         println!("=== Context Assembly Inspection ===");
         println!("Start: {}", resolved_anchor.clone());
         println!("Depth: {}", opts.depth);
-        println!("Budget: {} tokens (auto={})", effective_budget, opts.auto);
+        println!("Budget: {} tokens (auto={}, strict={})", effective_budget, opts.auto, opts.strict);
         println!("\n=== Nodes to be included ===");
 
         let mut visited = std::collections::HashSet::new();
@@ -179,6 +221,9 @@ pub fn cmd_asm(opts: AsmOptions) -> Result<(), Box<dyn std::error::Error>> {
         token_budget: effective_budget,
         edge_types: opts.edge_types.clone(),
         block_filter: Vec::new(),
+        include_tags: opts.include_tags.clone(),
+        exclude_tags: opts.exclude_tags.clone(),
+        attributes: opts.attributes.clone(),
     };
 
     let output = match opts.format.as_str() {
@@ -363,6 +408,24 @@ pub fn classify_intent(question: &str) -> QueryIntent {
         || q.contains("how does")
     {
         QueryIntent::Explain
+    } else if q.contains("list")
+        || q.contains("show me all")
+        || q.contains("give me a list")
+        || q.contains("what are all")
+    {
+        QueryIntent::List
+    } else if q.contains("compare")
+        || q.contains("difference between")
+        || q.contains("versus")
+        || q.contains("vs ")
+    {
+        QueryIntent::Compare
+    } else if q.contains("how many")
+        || q.contains("count ")
+        || q.contains("number of")
+        || q.contains("total ")
+    {
+        QueryIntent::Count
     } else {
         QueryIntent::General
     }
@@ -376,6 +439,9 @@ pub fn edge_types_for_intent(intent: &QueryIntent) -> Vec<aden_core::EdgeType> {
         QueryIntent::Explain => vec![Uses, Calls, Implements, Documents],
         QueryIntent::Refactor => vec![Calls, Uses, Mutates, Supersedes, Amends],
         QueryIntent::Impact => vec![Uses, Calls, Constrains],
+        QueryIntent::List => vec![Uses, Documents],
+        QueryIntent::Compare => vec![Uses, Documents, Constrains],
+        QueryIntent::Count => vec![Documents, Uses],
         QueryIntent::General => vec![Uses, Documents, Constrains],
     }
 }
@@ -387,6 +453,9 @@ pub fn depth_for_intent(intent: &QueryIntent) -> usize {
         QueryIntent::Explain => 2,
         QueryIntent::Refactor => 4,
         QueryIntent::Impact => 3,
+        QueryIntent::List => 1,
+        QueryIntent::Compare => 2,
+        QueryIntent::Count => 1,
         QueryIntent::General => 2,
     }
 }
@@ -399,6 +468,9 @@ pub fn block_filter_for_intent(intent: &QueryIntent) -> Vec<aden_asm::traverse::
         QueryIntent::Explain => vec![Paragraph, Table, Listing],
         QueryIntent::Refactor => vec![Table, Admonition, Paragraph],
         QueryIntent::Impact => vec![Table, Listing],
+        QueryIntent::List => vec![Table, Listing, DescriptionList],
+        QueryIntent::Compare => vec![Paragraph, Table],
+        QueryIntent::Count => vec![Table, Listing],
         QueryIntent::General => vec![Paragraph, Table, Listing, Admonition, DescriptionList],
     }
 }
@@ -460,14 +532,37 @@ pub fn cmd_ask(
 
     // Verify anchor exists, fallback if not found
     if !graph.anchor_to_index.contains_key(&start_anchor) {
-        println!(
-            "WARNING: Anchor '{}' not found. Falling back to 'readme'.",
-            start_anchor
-        );
-        println!("         Use 'aden list .' to see available anchors.\n");
-        let fallback = "readme";
-        if graph.anchor_to_index.contains_key(fallback) {
-            start_anchor = fallback.to_string();
+        // Try fuzzy matching to find similar anchor
+        let anchor_lower = start_anchor.to_lowercase();
+        let suggestions: Vec<String> = graph.anchor_to_index.keys()
+            .filter(|a| {
+                let lower = a.to_lowercase();
+                lower.contains(&anchor_lower) || anchor_lower.len() >= 3 && 
+                anchor_lower.chars().all(|c| lower.contains(c))
+            })
+            .take(5)
+            .cloned()
+            .collect();
+
+        let mut final_suggestions = suggestions.clone();
+        if final_suggestions.is_empty() {
+            // Try common fallbacks
+            for fallback in &["readme", "getting-started", "use-cases", "documentation-index"] {
+                if graph.anchor_to_index.contains_key(*fallback) {
+                    final_suggestions.push(fallback.to_string());
+                    break;
+                }
+            }
+        }
+
+        if !final_suggestions.is_empty() {
+            println!(
+                "WARNING: Anchor '{}' not found. Did you mean: {}?",
+                start_anchor,
+                final_suggestions.join(", ")
+            );
+            println!("         Use 'aden list .' to see available anchors.\n");
+            start_anchor = final_suggestions[0].clone();
         } else {
             return Err(
                 "No valid anchors found. Run 'aden list .' to see available anchors.".into(),
@@ -482,6 +577,9 @@ pub fn cmd_ask(
         token_budget: budget,
         edge_types,
         block_filter,
+        include_tags: Vec::new(),
+        exclude_tags: Vec::new(),
+        attributes: Vec::new(),
     };
     let assembled = assemble(&graph, &opts)?;
 
@@ -648,21 +746,41 @@ pub fn cmd_search(
     path: &Path,
     query: &str,
     limit: usize,
+    offset: usize,
+    doc_type: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if !path.is_dir() {
         return Err("search requires a directory path".into());
     }
 
     let index = load_or_build_index(path)?;
-    let results = index.query(query);
+    let mut results = index.query(query);
+
+    // Filter by document type if specified
+    if let Some(dt) = doc_type {
+        let dt_pattern = match dt.to_lowercase().as_str() {
+            "module" | "mod" => "mod-",
+            "adr" => "adr-",
+            "plan" => "plan-",
+            "use-case" | "usecase" => "use-case-",
+            "agent" => "agent-",
+            _ => {
+                eprintln!("Warning: Unknown doc type '{}'. Valid: module, adr, plan, use-case, agent", dt);
+                return Err(format!("Invalid --type '{}'. Use: module, adr, plan, use-case, agent", dt).into());
+            }
+        };
+        results.retain(|r| r.anchor.starts_with(dt_pattern));
+    }
 
     if results.is_empty() {
         println!("No results for '{}'", query);
         return Ok(());
     }
 
-    let limited: Vec<_> = results.into_iter().take(limit).collect();
+    let total = results.len();
+    let limited: Vec<_> = results.into_iter().skip(offset).take(limit).collect();
 
+    println!("Showing {}/{} results (offset={})", limited.len(), total, offset);
     println!("| Anchor | Score | Snippet |");
     println!("|=== |");
     for r in &limited {
@@ -681,6 +799,7 @@ pub fn cmd_list(
     filter: Option<&str>,
     verbose: bool,
     limit: usize,
+    offset: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if !path.is_dir() {
         return Err("list requires a directory path".into());
@@ -697,14 +816,20 @@ pub fn cmd_list(
         Some(f) => anchors.iter().filter(|a| a.contains(f)).cloned().collect(),
         None => anchors,
     };
-    let filtered_count = filtered.len();
+    let total_count = filtered.len();
+    let limited: Vec<_> = filtered.into_iter().skip(offset).take(limit).collect();
 
-    let limited: Vec<_> = filtered.into_iter().take(limit).collect();
-
+    let offset_info = if offset > 0 {
+        format!(" (offset={})", offset)
+    } else {
+        String::new()
+    };
     println!(
-        "Anchors in {} (showing {}/total)",
+        "Anchors in {}{} (showing {}/total {})",
         path.display(),
-        limited.len()
+        offset_info,
+        limited.len(),
+        total_count
     );
     println!();
 
@@ -733,10 +858,10 @@ pub fn cmd_list(
         }
     }
 
-    if limited.len() == limit && filtered_count > limit {
+    if limited.len() == limit && total_count > limit {
         println!(
-            "\n... {} more (use --limit to see more)",
-            filtered_count - limit
+            "\n... {} more (use --limit or --offset to see more)",
+            total_count - limit
         );
     }
 

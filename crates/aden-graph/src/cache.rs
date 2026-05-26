@@ -319,6 +319,9 @@ fn build_graph_from_indexed(indexed: IndexedGraph) -> AdenGraph {
                     raw_content: String::new(),
                     semantic_diffs: Vec::new(),
                     blocks: Vec::new(),
+                    tagged_regions: Vec::new(),
+                    conditional_regions: Vec::new(),
+                    metadata: None,
                 }
             }),
             source_path: entry.source_path.clone(),

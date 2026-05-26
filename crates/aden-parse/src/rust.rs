@@ -360,6 +360,7 @@ fn extract_function(
         attributes: attrs,
         blocks,
         source_span: None,
+        metadata: None,
     })
 }
 
@@ -581,6 +582,7 @@ fn extract_struct(
         attributes: attrs,
         blocks,
         source_span: None,
+        metadata: None,
     })
 }
 
@@ -643,6 +645,7 @@ fn extract_enum(
         attributes: attrs,
         blocks,
         source_span: None,
+        metadata: None,
     })
 }
 
@@ -670,6 +673,7 @@ fn extract_module(
         attributes: attrs,
         blocks,
         source_span: None,
+        metadata: None,
     })
 }
 
@@ -697,5 +701,6 @@ fn extract_trait(
         attributes: attrs,
         blocks,
         source_span: None,
+        metadata: None,
     })
 }

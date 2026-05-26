@@ -390,6 +390,28 @@ Thumbs.db
 "###;
     std::fs::write(target.join(".adenignore"), adenignore)?;
 
+    // Scaffold hooks directory with samples
+    let hooks_dir = aden_dir.join("hooks");
+    std::fs::create_dir_all(&hooks_dir)?;
+
+    let pre_commit = r#"#!/bin/sh
+# Aden Pre-Commit Hook
+# Run: cp .aden/hooks/pre-commit .git/hooks/
+set -e
+aden ci-check .
+"#;
+    std::fs::write(hooks_dir.join("pre-commit"), pre_commit)?;
+
+    let pre_push = r#"#!/bin/sh
+# Aden Pre-Push Hook
+# Run: cp .aden/hooks/pre-push .git/hooks/
+set -e
+aden gen src/ --auto
+aden ci-check .
+cargo clippy --workspace -- -D warnings
+"#;
+    std::fs::write(hooks_dir.join("pre-push"), pre_push)?;
+
     // Scaffold a starter NOTICE.md for accreditation
     let notice = r###"# Third-Party Dependencies
 
@@ -411,6 +433,7 @@ Always verify that third-party licenses are compatible with your project's licen
         "Generated {} template files.",
         templates_dir.read_dir()?.count()
     );
+    println!("Sample hooks: .aden/hooks/pre-commit, .aden/hooks/pre-push");
     println!("Next: AI agents should read .agent/onboarding.adoc before starting work.");
     Ok(())
 }

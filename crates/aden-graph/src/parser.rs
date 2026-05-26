@@ -37,6 +37,12 @@ static IFEVAL_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^ifeval::\[([^\]]+)\]\s*$").expect("static regex"));
 static ENDIF_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^endif::\[\]\s*$").expect("static regex"));
+static TAG_START_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^//\s*tag=(\w+)$").expect("static regex"));
+static TAG_END_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^//\s*end::(\w+)$").expect("static regex"));
+static INLINE_TAG_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"//\s*tag\[(\w+)\]$").expect("static regex"));
 static SEMANTIC_DIFF_CHANGED_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^agent-note::CHANGED\[([^\]]+)\]\s*(.*)$").expect("static regex")
 });
@@ -54,6 +60,12 @@ static ADMONITION_RE: LazyLock<Regex> = LazyLock::new(|| {
 });
 static DESC_LIST_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^(.+?)::\s*(.*)$").expect("static regex"));
+static CHECKLIST_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\*\s*\[([ xX])\]\s*(.*)$").expect("static regex"));
+static CHECKLIST_UNCHECKED_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\[\s*\]\s*(.*)$").expect("static regex"));
+static CHECKLIST_CHECKED_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\[[ xX]\]\s*(.*)$").expect("static regex"));
 
 /// A document parsed from an AsciiDoc source.
 #[derive(Debug, Clone)]
@@ -69,6 +81,12 @@ pub struct ParsedDocument {
     pub semantic_diffs: Vec<SemanticDiff>,
     /// Structured content blocks extracted from the AsciiDoc body.
     pub blocks: Vec<Block>,
+    /// Tagged regions for selective include (// tag=name ... // end::name)
+    pub tagged_regions: Vec<TaggedRegion>,
+    /// Conditional regions (ifdef/ifndef content)
+    pub conditional_regions: Vec<ConditionalRegion>,
+    /// Document-level metadata.
+    pub metadata: Option<aden_core::DocumentMetadata>,
 }
 
 /// An `include::path[attributes]` directive.
@@ -111,6 +129,25 @@ pub enum Conditional {
     Ifeval { expr: String, active: bool },
 }
 
+/// A conditional region with content (ifdef/ifndef blocks)
+#[derive(Debug, Clone)]
+pub struct ConditionalRegion {
+    pub attribute: String,
+    pub content: String,
+    pub is_active: bool,
+    pub line_start: usize,
+    pub line_end: usize,
+}
+
+/// A tagged region for selective include (// tag=name ... // end::name)
+#[derive(Debug, Clone)]
+pub struct TaggedRegion {
+    pub tag_name: String,
+    pub content: String,
+    pub line_start: usize,
+    pub line_end: usize,
+}
+
 /// Errors during AsciiDoc parsing.
 #[derive(Debug, thiserror::Error)]
 pub enum ParseError {
@@ -142,6 +179,14 @@ pub fn parse_file(path: &Path) -> Result<ParsedDocument, ParseError> {
     let mut conditional_stack = Vec::new();
     let mut semantic_diffs = Vec::new();
     let mut blocks: Vec<Block> = Vec::new();
+    let mut tagged_regions: Vec<TaggedRegion> = Vec::new();
+    let mut active_tags: Vec<String> = Vec::new();
+    let mut current_tag_content: Vec<String> = Vec::new();
+    let mut tag_start_line: usize = 0;
+    let mut conditional_regions: Vec<ConditionalRegion> = Vec::new();
+    let mut active_conditional_attrs: Vec<String> = Vec::new();
+    let mut current_conditional_content: Vec<String> = Vec::new();
+    let mut conditional_start_line: usize = 0;
 
     let mut state = BlockState::Idle;
     let mut table_headers: Vec<String> = Vec::new();
@@ -152,8 +197,10 @@ pub fn parse_file(path: &Path) -> Result<ParsedDocument, ParseError> {
     let mut saw_table_delim = false; // true after first |=== encountered inside table
     let mut in_header = true;
     let mut last_line_was_source_directive = false;
+    let mut line_number: usize = 0;
 
     for line in raw.lines() {
+        line_number += 1;
         let trimmed = line.trim();
 
         // Skip comments (but not doc comments)
@@ -239,7 +286,10 @@ pub fn parse_file(path: &Path) -> Result<ParsedDocument, ParseError> {
         if let Some(cap) = IFDEF_RE.captures(trimmed) {
             let attr = cap[1].to_string();
             let active = attrs.contains_key(&attr);
-            conditional_stack.push(Conditional::Ifdef { attr, active });
+            conditional_stack.push(Conditional::Ifdef { attr: attr.clone(), active });
+            active_conditional_attrs.push(attr);
+            current_conditional_content.clear();
+            conditional_start_line = line_number;
             if state == BlockState::InParagraph {
                 flush_paragraph(&mut paragraph_text, &mut blocks);
                 state = BlockState::Idle;
@@ -250,7 +300,10 @@ pub fn parse_file(path: &Path) -> Result<ParsedDocument, ParseError> {
         if let Some(cap) = IFNDEF_RE.captures(trimmed) {
             let attr = cap[1].to_string();
             let active = !attrs.contains_key(&attr);
-            conditional_stack.push(Conditional::Ifndef { attr, active });
+            conditional_stack.push(Conditional::Ifndef { attr: attr.clone(), active });
+            active_conditional_attrs.push(attr);
+            current_conditional_content.clear();
+            conditional_start_line = line_number;
             if state == BlockState::InParagraph {
                 flush_paragraph(&mut paragraph_text, &mut blocks);
                 state = BlockState::Idle;
@@ -261,7 +314,8 @@ pub fn parse_file(path: &Path) -> Result<ParsedDocument, ParseError> {
         if let Some(cap) = IFEVAL_RE.captures(trimmed) {
             let expr = cap[1].to_string();
             let active = eval_ifeval(&expr, &attrs);
-            conditional_stack.push(Conditional::Ifeval { expr, active });
+            conditional_stack.push(Conditional::Ifeval { expr, active: active.clone() });
+            // For ifeval, we don't track content the same way
             if state == BlockState::InParagraph {
                 flush_paragraph(&mut paragraph_text, &mut blocks);
                 state = BlockState::Idle;
@@ -270,6 +324,26 @@ pub fn parse_file(path: &Path) -> Result<ParsedDocument, ParseError> {
             continue;
         }
         if ENDIF_RE.is_match(trimmed) {
+            if !active_conditional_attrs.is_empty() {
+                let attr = active_conditional_attrs.pop();
+                let is_active = conditional_stack.iter().last()
+                    .map(|c| match c {
+                        Conditional::Ifdef { active, .. } => *active,
+                        Conditional::Ifndef { active, .. } => *active,
+                        Conditional::Ifeval { active, .. } => *active,
+                    })
+                    .unwrap_or(false);
+                if !current_conditional_content.is_empty() {
+                    conditional_regions.push(ConditionalRegion {
+                        attribute: attr.unwrap_or_default(),
+                        content: current_conditional_content.join("\n"),
+                        is_active,
+                        line_start: conditional_start_line,
+                        line_end: line_number,
+                    });
+                    current_conditional_content.clear();
+                }
+            }
             conditional_stack.pop();
             if state == BlockState::InParagraph {
                 flush_paragraph(&mut paragraph_text, &mut blocks);
@@ -277,6 +351,41 @@ pub fn parse_file(path: &Path) -> Result<ParsedDocument, ParseError> {
             }
             last_line_was_source_directive = false;
             continue;
+        }
+
+        // Track content inside active conditionals
+        if !active_conditional_attrs.is_empty() && !trimmed.is_empty() {
+            current_conditional_content.push(line.to_string());
+        }
+
+        // Tagged regions (// tag=name and // end::name)
+        if let Some(cap) = TAG_START_RE.captures(trimmed) {
+            let tag_name = cap[1].to_string();
+            active_tags.push(tag_name.clone());
+            current_tag_content.clear();
+            tag_start_line = line_number;
+            continue;
+        }
+        if let Some(cap) = TAG_END_RE.captures(trimmed) {
+            let tag_name = cap[1].to_string();
+            if let Some(active_tag) = active_tags.last() {
+                if active_tag == &tag_name {
+                    let content = current_tag_content.join("\n");
+                    tagged_regions.push(TaggedRegion {
+                        tag_name: tag_name.clone(),
+                        content,
+                        line_start: tag_start_line,
+                        line_end: line_number,
+                    });
+                    active_tags.pop();
+                    current_tag_content.clear();
+                }
+            }
+            continue;
+        }
+        // Track content inside tags
+        if !active_tags.is_empty() && !is_comment && !trimmed.is_empty() {
+            current_tag_content.push(line.to_string());
         }
 
         // Title lines are structural, not body content
@@ -376,6 +485,16 @@ pub fn parse_file(path: &Path) -> Result<ParsedDocument, ParseError> {
                     let term = cap[1].trim().to_string();
                     let def = cap[2].trim().to_string();
                     blocks.push(Block::DescriptionList(vec![(term, def)]));
+                } else if let Some(cap) = CHECKLIST_RE.captures(trimmed) {
+                    let checked = !cap[1].trim().is_empty();
+                    let text = cap[2].trim().to_string();
+                    blocks.push(Block::Checklist(vec![aden_core::ChecklistItem { checked, text }]));
+                } else if let Some(cap) = CHECKLIST_CHECKED_RE.captures(trimmed) {
+                    let text = cap[1].trim().to_string();
+                    blocks.push(Block::Checklist(vec![aden_core::ChecklistItem { checked: true, text }]));
+                } else if let Some(cap) = CHECKLIST_UNCHECKED_RE.captures(trimmed) {
+                    let text = cap[1].trim().to_string();
+                    blocks.push(Block::Checklist(vec![aden_core::ChecklistItem { checked: false, text }]));
                 } else if !trimmed.is_empty() {
                     // Start a paragraph
                     paragraph_text.clear();
@@ -499,6 +618,7 @@ pub fn parse_file(path: &Path) -> Result<ParsedDocument, ParseError> {
         anchors.push(stem.to_string_lossy().to_string());
     }
 
+    let metadata = extract_metadata(&attrs);
     Ok(ParsedDocument {
         source_path: path.to_string_lossy().to_string(),
         attributes: attrs,
@@ -510,7 +630,35 @@ pub fn parse_file(path: &Path) -> Result<ParsedDocument, ParseError> {
         raw_content: raw,
         semantic_diffs,
         blocks,
+        tagged_regions,
+        conditional_regions,
+        metadata,
     })
+}
+
+/// Extract document metadata from attributes.
+fn extract_metadata(attrs: &HashMap<String, String>) -> Option<aden_core::DocumentMetadata> {
+    let has_metadata = attrs.contains_key("author")
+        || attrs.contains_key("email")
+        || attrs.contains_key("revision")
+        || attrs.contains_key("version")
+        || attrs.contains_key("date")
+        || attrs.contains_key("copyright")
+        || attrs.contains_key("license");
+
+    if has_metadata {
+        Some(aden_core::DocumentMetadata {
+            author: attrs.get("author").cloned(),
+            email: attrs.get("email").cloned(),
+            revision: attrs.get("revision").cloned(),
+            version: attrs.get("version").cloned(),
+            date: attrs.get("date").cloned(),
+            copyright: attrs.get("copyright").cloned(),
+            license: attrs.get("license").cloned(),
+        })
+    } else {
+        None
+    }
 }
 
 /// Flush accumulated paragraph text into a Block::Paragraph.

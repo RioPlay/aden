@@ -27,6 +27,7 @@ pub enum BlockKind {
     Listing,
     Admonition,
     DescriptionList,
+    Checklist,
 }
 
 /// Options for assembling a context prompt.
@@ -41,6 +42,14 @@ pub struct AssemblyOptions {
     /// Block types to include when emitting documents.
     /// If empty, include all blocks.
     pub block_filter: Vec<BlockKind>,
+    /// Tags to include. Only content in these tagged regions will be included.
+    /// If empty, all content is included (unless exclude_tags is set).
+    pub include_tags: Vec<String>,
+    /// Tags to exclude. Content in these tagged regions will be excluded.
+    pub exclude_tags: Vec<String>,
+    /// Attributes to set for conditional processing.
+    /// If set, ifdef/ifndef blocks will be filtered accordingly.
+    pub attributes: Vec<String>,
 }
 
 /// Assemble a flat `.adoc` prompt from a graph neighborhood.
@@ -68,7 +77,13 @@ pub fn assemble(graph: &AdenGraph, opts: &AssemblyOptions) -> Result<String, Ass
             continue;
         }
         let doc = &graph.graph[node];
-        let text = document_to_text(doc, &opts.block_filter);
+        let text = document_to_text(
+            doc,
+            &opts.block_filter,
+            &opts.include_tags,
+            &opts.exclude_tags,
+            &opts.attributes,
+        );
         let tokens = estimate_tokens(&text);
         if total_tokens + tokens > opts.token_budget {
             break;
@@ -149,7 +164,13 @@ pub enum AssemblyError {
     Graph(String),
 }
 
-fn document_to_text(doc: &DocumentNode, block_filter: &[BlockKind]) -> String {
+fn document_to_text(
+    doc: &DocumentNode,
+    block_filter: &[BlockKind],
+    include_tags: &[String],
+    exclude_tags: &[String],
+    attributes: &[String],
+) -> String {
     let has_filter = !block_filter.is_empty();
     let should_include = |b: &Block| -> bool {
         if !has_filter {
@@ -161,9 +182,14 @@ fn document_to_text(doc: &DocumentNode, block_filter: &[BlockKind]) -> String {
             Block::Listing { .. } => BlockKind::Listing,
             Block::Admonition { .. } => BlockKind::Admonition,
             Block::DescriptionList(_) => BlockKind::DescriptionList,
+            Block::Checklist(_) => BlockKind::Checklist,
         };
         block_filter.contains(&kind)
     };
+
+    // Check if we should filter by tags
+    let has_tag_filter = !include_tags.is_empty() || !exclude_tags.is_empty();
+    let use_tagged_regions = has_tag_filter && !doc.parsed.tagged_regions.is_empty();
 
     // If blocks were populated during parsing, emit structured content.
     // Otherwise fall back to the original raw source so the assembled
@@ -235,8 +261,93 @@ fn document_to_text(doc: &DocumentNode, block_filter: &[BlockKind]) -> String {
                         out.push_str(&format!("{term}:: {def}\n"));
                     }
                 }
+                Block::Checklist(items) => {
+                    for item in items {
+                        let marker = if item.checked { "[x]" } else { "[ ]" };
+                        out.push_str(&format!("* {marker} {}\n", item.text));
+                    }
+                }
             }
         }
+
+// If tag filtering is enabled and we have tagged regions, filter content
+        if use_tagged_regions {
+            let mut filtered_out = String::new();
+            let relevant_tags: Vec<_> = doc
+                .parsed
+                .tagged_regions
+                .iter()
+                .filter(|t| {
+                    let tag_matches = include_tags.is_empty()
+                        || include_tags.iter().any(|i| i == &t.tag_name);
+                    let not_excluded =
+                        exclude_tags.is_empty() || !exclude_tags.iter().any(|e| e == &t.tag_name);
+                    tag_matches && not_excluded
+                })
+                .collect();
+
+            if !relevant_tags.is_empty() {
+                // Add header
+                for (key, value) in &doc.doc.attributes {
+                    filtered_out.push_str(&format!("{key}: {value}\n"));
+                }
+                filtered_out.push('\n');
+                filtered_out.push_str(&format!("[[{}]]\n", doc.anchor));
+                let title = doc
+                    .anchor
+                    .rfind('#')
+                    .map(|p| &doc.anchor[p + 1..])
+                    .unwrap_or(&doc.anchor);
+                filtered_out.push_str(&format!("= {title}\n\n"));
+
+                // Add tagged regions
+                for region in relevant_tags {
+                    filtered_out.push_str(&region.content);
+                    filtered_out.push_str("\n\n");
+                }
+                return filtered_out;
+            }
+        }
+
+        // If attributes are set, filter by conditional regions
+        let has_attrs = !attributes.is_empty();
+        let has_conditionals = !doc.parsed.conditional_regions.is_empty();
+        if has_attrs && has_conditionals {
+            let attr_set: HashSet<_> = attributes.iter().collect();
+            let relevant_conditionals: Vec<_> = doc
+                .parsed
+                .conditional_regions
+                .iter()
+                .filter(|c| {
+                    // Include if the attribute is set (active) OR if it's not in our attr set
+                    // For ifdef: include if attr is set
+                    // For ifndef: include if attr is NOT set (but we track via is_active)
+                    c.is_active || !attr_set.contains(&c.attribute)
+                })
+                .collect();
+
+            if !relevant_conditionals.is_empty() {
+                let mut filtered_out = String::new();
+                for (key, value) in &doc.doc.attributes {
+                    filtered_out.push_str(&format!("{key}: {value}\n"));
+                }
+                filtered_out.push('\n');
+                filtered_out.push_str(&format!("[[{}]]\n", doc.anchor));
+                let title = doc
+                    .anchor
+                    .rfind('#')
+                    .map(|p| &doc.anchor[p + 1..])
+                    .unwrap_or(&doc.anchor);
+                filtered_out.push_str(&format!("= {title}\n\n"));
+
+                for region in relevant_conditionals {
+                    filtered_out.push_str(&region.content);
+                    filtered_out.push_str("\n\n");
+                }
+                return filtered_out;
+            }
+        }
+
         out
     } else {
         doc.parsed.raw_content.trim().to_string()

@@ -153,7 +153,7 @@ impl SourceSpan {
 }
 
 /// A node in the Aden knowledge graph.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct Document {
     /// Globally unique anchor. Must match `^[a-z0-9_-]+$`.
     pub anchor: String,
@@ -165,6 +165,20 @@ pub struct Document {
     pub blocks: Vec<Block>,
     /// Optional precise source location for this document.
     pub source_span: Option<SourceSpan>,
+    /// Document-level metadata.
+    pub metadata: Option<DocumentMetadata>,
+}
+
+/// Document-level metadata.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct DocumentMetadata {
+    pub author: Option<String>,
+    pub email: Option<String>,
+    pub revision: Option<String>,
+    pub version: Option<String>,
+    pub date: Option<String>,
+    pub copyright: Option<String>,
+    pub license: Option<String>,
 }
 
 impl Document {
@@ -280,8 +294,9 @@ impl AdenConfig {
 }
 
 /// The kind of node a Document represents.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub enum NodeType {
+    #[default]
     Module,
     Function,
     Type,
@@ -309,6 +324,14 @@ pub enum Block {
         text: String,
     },
     DescriptionList(Vec<(String, String)>),
+    Checklist(Vec<ChecklistItem>),
+}
+
+/// A checklist item.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ChecklistItem {
+    pub checked: bool,
+    pub text: String,
 }
 
 /// Kinds of admonition blocks.
