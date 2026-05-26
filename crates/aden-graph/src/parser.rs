@@ -41,8 +41,6 @@ static TAG_START_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^//\s*tag=(\w+)$").expect("static regex"));
 static TAG_END_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^//\s*end::(\w+)$").expect("static regex"));
-static INLINE_TAG_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"//\s*tag\[(\w+)\]$").expect("static regex"));
 static SEMANTIC_DIFF_CHANGED_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^agent-note::CHANGED\[([^\]]+)\]\s*(.*)$").expect("static regex")
 });
