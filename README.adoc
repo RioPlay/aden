@@ -124,7 +124,7 @@ Universal schema for the Aden referential context compiler.
 |`aden ask <question>` |You need context fast |`aden ask "What depends on auth_module?"`
 |`aden ask --from <anchor>` |Pin the starting point |`aden ask --from auth_module "What breaks if I rename this?"`
 |`aden query --from <anchor> --depth N --format table` |Visualize dependencies |`aden query --from mod-aden-core --depth 3 --format table`
-|`aden asm --from <anchor>` |Build a custom LLM prompt |`aden asm --from plan-phase2 --depth 2 --budget 4096`
+|`aden asm --from <anchor>` |Build a custom LLM prompt |`aden asm --from plan-phase0 --depth 2 --budget 4096`
 |`aden query --backlinks <anchor>` |Find everything that references X |`aden query --backlinks mod-aden-core .`
 |`aden query --impact <anchor>` |See blast radius |`aden query --impact Database .`
 |`aden search <query>` |Full-text search |`aden search "token budget" .`
@@ -175,11 +175,11 @@ This is the navigation hub for the Aden knowledge graph.
 
 *User guide:* <<user-guide>>
 
-*Plans:* <<plan-phase0>>, <<plan-phase1>>, <<plan-phase2>>, <<plan-phase3>>, <<plan-phase4>>, <<plan-phase5>>, <<plan-phase6>>, <<plan-governance>>
+*Plans:* <<plan-phase0>>
 
 *Architecture decisions:* <<adr-001>>, <<adr-002>>
 
-*Module contracts:* <<mod-aden-core>>, <<mod-aden-parse>>, <<mod-aden-emit>>, <<mod-aden-cli>>, <<mod-aden-graph>>, <<mod-aden-asm>>, <<mod-aden-index>>, <<mod-aden-lsp>>, <<mod-aden-py>>, <<mod-Aden-PowerShell>>, <<mod-aden-heal>>, <<mod-aden-propose>>, <<mod-aden-policy>>
+*Module contracts:* Run `aden gen --auto .` to generate contracts for all crates.
 
 *Background:* <<philosophy>>, <<use-cases>>
 
