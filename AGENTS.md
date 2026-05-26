@@ -2,122 +2,80 @@
 
 > **For AI agents** (Claude, Codex, Cursor, OpenCode, etc.) working on this repository.
 
-## Stop. Read This First.
+## Quick Start
 
-This repository uses **AsciiDoc** (`.adoc`) as its native knowledge format — *not Markdown*.
-All contracts, plans, templates, agent instructions, and architecture decisions are stored
-as structured AsciiDoc so they can cross-reference each other via `[[anchors]]` and `<<refs>>`.
+1. **Read `.agent/onboarding.adoc`** first
+2. Check `.agent/session.adoc` for active sessions
+3. Review `.agent/constraints.adoc` for hard rules
 
-**Do not flatten this into Markdown. Use the AsciiDoc files directly.**
+## Important: AsciiDoc Format
 
-## Agent Onboarding (Read in Order)
+This repository uses **AsciiDoc** (`.adoc`), not Markdown.
+- Files declare `[[anchors]]` before titles
+- References use `<<anchor>>` (resolvable cross-references)
+- Run `aden check . --severity Forbid` after editing `.adoc` files
 
-0. **`.agent/agent.md`** — Quick reference card (start here for fast orientation)
-1. **`.agent/onboarding.adoc`** — How to safely begin work (session locking, impact analysis,
-   validation protocol). This is your canonical quick-start.
-2. **`.agent/constraints.adoc`** — Hard negative constraints: never-commit rules, security posture,
-   file-system boundaries, and workflow invariants.
-3. **`.agent/templates/aden-guide.adoc`** — Full Aden command reference, token economy rules,
-   common failure modes, and reference integrity rules.
-4. **`.agent/context.adoc`** — Project identity, dependencies, and codebase-specific security
-   patterns extracted from prior audits.
-5. **`.agent/session.adoc`** — Current active sessions. **Always check this before starting work.**
+## Essential Commands
 
-## Essential Aden CLI Commands
-
-Run these from the project root.
-
-### Before touching existing code
+### Before Changing Code
 ```bash
 aden ask --from <anchor> "What breaks if I change X?"
-aden query --from <anchor> --depth 2  # Graph neighborhood (replaces deprecated 'graph')
+aden query --from <anchor> --depth 2
 aden locate <symbol>
-aden query --backlinks <anchor>  # Find what references this anchor
 ```
 
-### After writing or modifying code
+### After Writing Code
 ```bash
-aden gen <file>          # Generate/update contract for modified source
-aden gen <file> --format md    # Generate Markdown instead of AsciiDoc
-aden check .             # Validate all <<refs>> resolve
+aden gen <file>           # Generate contract
+aden check . --severity Forbid  # Validate refs (fails only on critical)
 ```
 
-### Linting and Testing
+### Testing & Linting
 ```bash
-aden lint .              # Universal linter (Rust, Python, Go, TS, Java, etc.)
-aden lint . --severity error  # Errors only
-aden lint . --json      # JSON output for CI
-aden test .             # Discover and run tests across all languages
-aden test . --list      # List tests without running
+aden lint .               # Lint all languages
+aden test .               # Run tests
+aden ci-check .           # Full CI gates before commit
 ```
-
-### Multi-repository Management
-```bash
-aden federation list     # List repositories in workspace
-aden federation add <path>  # Add repository to workspace
-aden federation remove <name>  # Remove repository
-```
-
-### HTTP Server (for CI/agents)
-```bash
-aden mcp serve --port 3030  # Start HTTP server for CI integration
-```
-
-### Before every commit
-```bash
-aden ci-check .          # Run all local gates (check, heal, lint, tests, audit)
-```
-
-## Working with `.adoc` Files
-
-- Every file declares a `[[unique-anchor]]` immediately before its title.
-- Tables use `|===` with header rows.
-- `<<anchor>>` creates typed, resolvable references.
-- `include::path[]` composes documents into single-source-of-truth assemblies.
-- **Always run `aden check .` after editing any `.adoc` file.**
 
 ## Conventions
 
-- **Never edit `.adoc` contracts by hand** — regenerate with `aden gen`.
-- **Never commit `contracts/` or `.aden/`** — they are build artifacts containing
-  source paths and signatures. They are already in `.gitignore`.
-- **Never ignore test failures.** If `cargo test --workspace` fails, fix before proceeding.
-- **Append your session** to `.agent/session.adoc` before declaring work complete.
-- **Never suppress warnings** without a `// SAFETY:` or `// REVIEW:` comment.
-
-## Documentation Index
-
-| Document | Purpose |
-| --- | --- |
-| `README.adoc` | Human-facing project overview |
-| `docs/context.adoc` | Project glossary, conventions |
-| `docs/plan-phase0.adoc` | Foundation phase roadmap |
-| `docs/adr-001.adoc`, `adr-002.adoc` | Architecture decisions |
-| `docs/use-cases.adoc` | Non-software use cases |
-| `CONTRIBUTING.md` | DCO sign-off requirements |
+- **Never edit `.adoc` contracts by hand** — regenerate with `aden gen`
+- **Never commit `contracts/` or `.aden/`** — build artifacts (in `.gitignore`)
+- **Never ignore test failures**
+- **Append your session** to `.agent/session.adoc` before finishing
+- **Never suppress warnings** without `// SAFETY:` or `// REVIEW:`
 
 ## Architecture
 
 | Crate | Responsibility |
 | --- | --- |
-| `aden-core` | Schema: `Document`, `Block`, `Edge`, `Symbol`, three-way merge, contract regions |
-| `aden-parse` | Language routers & AST extraction (Rust, Python, Go, TS/JS, C#, Java, Kotlin, PHP, Ruby + 305+ generic) |
+| `aden-core` | Schema: Document, Block, Edge, Symbol, three-way merge |
+| `aden-parse` | Language routers & AST extraction (Rust, Python, Go, TS/JS, C#, Java, Kotlin, PHP, Ruby, +305 generic) |
 | `aden-emit` | Deterministic AsciiDoc emitter |
-| `aden-graph` | Referential integrity: DiGraph, cycle detection, typed edges, integrity checks |
+| `aden-graph` | DiGraph, cycle detection, typed edges, integrity |
 | `aden-asm` | Context assembly: BFS traversal, token budgeting |
-| `aden-index` | Semantic full-text search with fuzzy matching |
+| `aden-index` | Full-text search with fuzzy matching |
 | `aden-heal` | Drift detection & health scoring |
-| `aden-propose` | Patch generation & proposal lifecycle |
-| `aden-mcp` | MCP server (Claude, Cursor, Zed, Windsurf) - CLI wrapper mode |
-| `aden-lsp` | LSP for `.adoc`/`.aden` files |
+| `aden-propose` | Patch generation & proposals |
+| `aden-mcp` | MCP server (OpenCode, Claude, Cursor, Zed, Windsurf) |
+| `aden-cli` | Binary (`aden`) |
+| `aden-policy` | Constitutional directives, precedence |
+| `aden-api` | REST/gRPC types |
+| `aden-attest` | Attestation primitives |
 | `aden-py` | PyO3 Python bindings |
-| `aden-cli` | Binary (`aden`) with all commands |
-| `aden-policy` | Constitutional policy engine: directives, precedence, conflict resolution |
-| `aden-api` | REST/gRPC types for contract queries, overrides, SBOM export (Phase 6) |
-| `aden-attest` | Attestation and signing primitives |
-| `aden-simulate` | Graph history and evolution tracking (planned) |
-| `aden-telemetry` | Guard firing telemetry (planned) |
+
+## Documentation
+
+| Document | Purpose |
+| --- | --- |
+| `docs/module-aden-cli.adoc` | CLI reference |
+| `docs/getting-started.adoc` | Quick start guide |
+| `docs/architecture.adoc` | System architecture |
+| `docs/context.adoc` | Glossary, conventions |
+| `docs/plan-phase0.adoc` | Foundation roadmap |
+| `docs/adr-*.adoc` | Architecture decisions |
+| `docs/use-cases.adoc` | Non-software use cases |
 
 ---
 
-*If you are an AI agent reading this, your next step is `.agent/onboarding.adoc`.*
+*Your next step: `.agent/onboarding.adoc`*
