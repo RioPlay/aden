@@ -91,9 +91,8 @@ aden ci-check .          # Run all local gates (check, heal, lint, tests, audit)
 | --- | --- |
 | `README.adoc` | Human-facing project overview |
 | `docs/context.adoc` | Project glossary, conventions |
-| `docs/plan-phase0.adoc` … `plan-phase6.adoc` | Phased roadmap |
+| `docs/plan-phase0.adoc` | Foundation phase roadmap |
 | `docs/adr-001.adoc`, `adr-002.adoc` | Architecture decisions |
-| `docs/module-*.adoc` | Per-crate contract summaries |
 | `docs/use-cases.adoc` | Non-software use cases |
 | `CONTRIBUTING.md` | DCO sign-off requirements |
 
