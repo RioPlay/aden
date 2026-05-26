@@ -28,6 +28,7 @@ dirs = "6"
 walkdir = "2"
 chrono = "0.4"
 serde_yaml = "0.9"
+ureq = "2"
 
 [features]
 default = ["watch"]

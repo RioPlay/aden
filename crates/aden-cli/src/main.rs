@@ -397,6 +397,8 @@ enum Commands {
             help = "Write output to file instead of stdout"
         )]
         out: Option<PathBuf>,
+        #[arg(long, help = "Fetch license info from crates.io and group by license")]
+        full: bool,
     },
     /// Multi-repository workspace management
     Federation {
@@ -710,7 +712,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             files.as_deref(),
             status.as_deref().unwrap_or("in_progress"),
         ),
-        Commands::Licenses { path, out } => commands::cmd_licenses(&path, out.as_deref()),
+        Commands::Licenses { path, out, full } => commands::cmd_licenses(&path, out.as_deref(), full, false),
         Commands::Federation { action } => commands::cmd_federation(&action),
         Commands::Audit {
             path,
