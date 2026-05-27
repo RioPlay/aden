@@ -12,7 +12,7 @@ Contract:: A `.adoc` or `.aden` file describing an API surface, behavior, or arc
 Dependency Graph:: A directed graph of symbols and their `Edge` relationships. Built by `aden graph`.
 Drift:: Divergence between source code reality and generated contracts. Detected by `aden heal`.
 Edge:: Typed relationship between two Documents (e.g., `calls`, `depends`, `includes`, `backlinks`).
-Emitter:: The `aden-emit` crate that serializes Documents into AsciiDoc text.
+Emitter:: The component that serializes Documents into AsciiDoc text (in aden this is the `aden-emit` crate; in your project, the equivalent output layer).
 Extraction:: Parsing source code into a `Vec<Document>`.
 Filter:: Rules that determine which files are scanned or excluded. Supports `.adenignore` and `.adenallow`.
 Health Score:: Float from 0.0 to 1.0 computed by `aden heal`. 1.0 means zero drift.

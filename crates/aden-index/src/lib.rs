@@ -434,29 +434,42 @@ impl Index {
             let anchor_lower = anchor.to_lowercase();
             let source_path = self.anchor_paths.get(anchor);
 
-            // Penalize source-file anchors (e.g., aden://module/...#function_name)
-            // These are specific symbols, not module-level docs
-            let is_source_anchor = anchor.contains("://module/") || anchor.contains("/src/");
-            if is_source_anchor {
-                *score *= 0.1; // 90% penalty for source file anchors
-            }
-
             // Penalize .agent/ templates - they're for AI agents, not human-facing docs
             if let Some(path) = source_path {
                 let path_str = path.to_string_lossy().to_lowercase();
                 if path_str.contains(".agent/") || path_str.contains(".agent\\") {
-                    *score *= 0.01; // 99% penalty - almost exclude from search results
+                    *score *= 0.01; // 99% penalty — almost exclude from search results
                 }
             }
 
-            // 20x boost if query term appears in anchor (mod-*, adr-* patterns)
-            if query_lower
-                .split_whitespace()
-                .any(|t| anchor_lower.contains(t))
-            {
-                *score *= 20.0;
+            // Symbol anchors (any anchor containing '#') are concrete function/struct/enum
+            // definitions. They are the highest-value result for specific questions.
+            // Previously these were penalised by 90% which made them nearly invisible.
+            // Now: no penalty. They compete on raw BM25 score, and the query router's
+            // explicit symbol-name detection in resolve_anchor_fuzzy() handles routing.
+            let is_symbol = anchor.contains('#');
+
+            // Boost: query term appears literally in the anchor string itself.
+            // For symbol anchors only boost on the fragment (#name) part so
+            // "aden://module/foo/bar.rs#assemble" boosts when query contains "assemble".
+            // For non-symbol anchors boost on the full anchor slug.
+            let anchor_match = if is_symbol {
+                // Match on the symbol name fragment only
+                if let Some(fragment) = anchor.rsplit('#').next() {
+                    query_lower.split_whitespace().any(|t| fragment.to_lowercase().contains(t))
+                } else {
+                    false
+                }
+            } else {
+                query_lower.split_whitespace().any(|t| anchor_lower.contains(t))
+            };
+
+            if anchor_match {
+                // Larger boost for symbol anchors on exact fragment hit — they earned it
+                *score *= if is_symbol { 30.0 } else { 20.0 };
             }
-            // Additional 10x boost for title match (first line)
+
+            // Additional 10x boost for title match (first line of document text)
             if let Some(text) = self.anchor_text.get(anchor)
                 && let Some(first_line) = text.lines().next()
                 && query_lower
@@ -1544,8 +1557,7 @@ impl SemanticNormalizer {
     pub fn generate_determinism_contracts() -> String {
         let mut doc = String::new();
 
-        doc.push_str(r#":proj: aden
-:determinism-version: 1.0
+        doc.push_str(r#":determinism-version: 1.0
 :determinism-count: 
 
 [[determinisms]]

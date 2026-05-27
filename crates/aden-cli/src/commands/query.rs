@@ -4,62 +4,140 @@ use std::path::{Path, PathBuf};
 use aden_core::AdenConfig;
 use aden_graph::Direction;
 
-use crate::types::{AnchorPattern, QueryIntent, get_anchor_aliases};
+use crate::types::{AnchorPattern, QueryIntent};
 use crate::util::{
     load_or_build_index, node_to_json, parse_single_edge_type, perform_check, sanitize_anchor,
     sanitize_source_file, valid_edge_types,
 };
 use aden_index::SearchResult;
 
+/// Words too common in natural-language questions to be treated as symbol names.
+/// "include", "output", "context", "decide" would match struct/function names
+/// spuriously in many codebases.
+const SYMBOL_STOP_WORDS: &[&str] = &[
+    // question words
+    "how", "what", "why", "when", "where", "which", "does", "do", "did",
+    "is", "are", "was", "were", "will", "would", "can", "could", "should",
+    // connectives
+    "the", "an", "in", "to", "of", "and", "or", "not", "that", "this",
+    "with", "for", "from", "into", "on", "by", "at", "its", "it", "a",
+    // common verbs that collide with symbol names in many codebases
+    "include", "output", "input", "get", "set", "new", "add", "find",
+    "build", "make", "run", "use", "put", "take", "call", "handle",
+    "process", "check", "update", "create", "delete", "remove", "read",
+    "write", "send", "receive", "parse", "emit", "render", "load", "save",
+    "open", "close", "start", "stop", "init", "reset", "fetch", "log",
+    "print", "format", "encode", "decode", "next", "map", "list", "count",
+    // generic nouns that are often symbol names *and* common English words
+    "context", "result", "error", "data", "value", "node", "graph", "block",
+    "item", "type", "name", "path", "file", "line", "text", "token", "key",
+    "time", "index", "state", "kind", "source", "target", "mode", "level",
+];
+
+/// Extract explicit `func()` or `Type::method()` references from a query.
+/// These are unambiguous intent signals — the user told us exactly what they
+/// want to know about.
+fn extract_explicit_symbols(query: &str) -> Vec<String> {
+    let mut symbols = Vec::new();
+    // Match word characters immediately followed by `(`
+    let mut chars = query.char_indices().peekable();
+    while let Some((i, c)) = chars.next() {
+        if c == '(' {
+            // Walk backwards to collect the symbol name
+            let before = &query[..i];
+            let sym: String = before
+                .chars()
+                .rev()
+                .take_while(|ch| ch.is_alphanumeric() || *ch == '_')
+                .collect::<String>()
+                .chars()
+                .rev()
+                .collect();
+            if sym.len() >= 2 {
+                symbols.push(sym.to_lowercase());
+            }
+        }
+    }
+    symbols
+}
+
+/// Resolve a natural-language query to the best matching anchor.
+///
+/// Strategy (in order):
+///
+/// 1. **Explicit call syntax** — `func()` or `Type::method()` in the query
+///    is an unambiguous signal.  Match against `#symbol` anchors first.
+///
+/// 2. **Qualified symbol token match** — query tokens that are ≥3 chars,
+///    not in the stop-word list, and exactly match a `#symbol` name in the
+///    top results.  Requires the match to appear in a top-20 result.
+///
+/// 3. **Score-driven selection with tiebreaker** — pick the highest-scoring
+///    result.  Within a 5-point noise band, prefer by `AnchorPattern`
+///    (Symbol > Adr > Plan > Module > …).
+///
+/// No hardcoded word→module mappings.  The search index is the source of
+/// truth; this function only applies generic structural preferences on top.
 fn resolve_anchor_fuzzy(query: &str, results: &[SearchResult]) -> String {
     if results.is_empty() {
         return "readme".to_string();
     }
 
-    let query_lower = query.to_lowercase();
-    let aliases = get_anchor_aliases();
-
-    // Step 1: Check alias map - if query contains alias keyword AND mod- target exists in results
-    for (alias, target_anchor) in aliases.iter() {
-        if query_lower.contains(alias) {
-            // Check if any result anchor contains the target (more flexible matching)
-            // Also check starts_with for exact module matches
-            // Handle both "mod-aden-index" and "aden://module/aden-index" formats
-            if let Some(matched) = results
-                .iter()
-                .find(|r| {
-                    r.anchor.starts_with(target_anchor) 
-                        || r.anchor.contains(target_anchor)
-                        || r.anchor.contains(target_anchor.trim_start_matches("mod-"))
-                        || target_anchor.contains(r.anchor.split('/').last().unwrap_or(""))
-                })
-            {
-                return matched.anchor.clone();
+    // Step 1: explicit `func()` syntax — highest confidence.
+    let explicit = extract_explicit_symbols(query);
+    if !explicit.is_empty() {
+        // Search all results (not just top-10) for an exact symbol name match.
+        for sym in &explicit {
+            if let Some(hit) = results.iter().find(|r| {
+                r.anchor
+                    .rsplit('#')
+                    .next()
+                    .map(|s| s.to_lowercase() == *sym)
+                    .unwrap_or(false)
+            }) {
+                return hit.anchor.clone();
             }
         }
     }
 
-    // Step 2: Apply pattern priority (mod-* > adr-* > plan-* > readme)
-    let mut best_result = &results[0];
-    let mut best_priority = AnchorPattern::from_anchor(&best_result.anchor).priority();
+    // Step 2: qualified token match — tokens that are specific enough to be
+    // symbol names (≥3 chars, not a stop word, not a single common letter).
+    let query_tokens: Vec<String> = query
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
+        .filter(|s| {
+            s.len() >= 3
+                && !SYMBOL_STOP_WORDS.contains(&s.to_lowercase().as_str())
+        })
+        .map(|s| s.to_lowercase())
+        .collect();
 
-    for result in results.iter().skip(1) {
-        let priority = AnchorPattern::from_anchor(&result.anchor).priority();
-        if priority > best_priority {
-            best_result = result;
-            best_priority = priority;
+    for result in results.iter().take(20) {
+        if let Some(sym) = result.anchor.rsplit('#').next() {
+            if sym.len() < 3 {
+                continue;
+            }
+            let sym_lower = sym.to_lowercase();
+            if SYMBOL_STOP_WORDS.contains(&sym_lower.as_str()) {
+                continue;
+            }
+            if query_tokens.iter().any(|t| *t == sym_lower) {
+                return result.anchor.clone();
+            }
         }
     }
 
-    // Step 3: If we have a mod-* result but readme is first, prefer mod-*
-    let first_is_module = results[0].anchor.starts_with("mod-");
-    if !first_is_module
-        && let Some(mod_result) = results.iter().find(|r| r.anchor.starts_with("mod-"))
-    {
-        return mod_result.anchor.clone();
-    }
+    // Step 3: score-driven selection with structural tiebreaker.
+    // Within a 5-point noise band of the top score, prefer Symbol over Module.
+    let top_score = results[0].score;
+    let noise_band = 5.0_f64;
 
-    best_result.anchor.clone()
+    let best = results
+        .iter()
+        .filter(|r| (top_score - r.score) <= noise_band)
+        .max_by_key(|r| AnchorPattern::from_anchor(&r.anchor).tiebreak())
+        .unwrap_or(&results[0]);
+
+    best.anchor.clone()
 }
 
 pub fn cmd_check(path: &Path, severity: &str) -> Result<(), Box<dyn std::error::Error>> {
@@ -172,7 +250,7 @@ let graph = aden_graph::cache::build_from_directory_cached(&opts.path)?;
 
         let mut final_suggestions = suggestions.clone();
         if final_suggestions.is_empty() {
-            for fallback in &["readme", "getting-started", "use-cases", "documentation-index"] {
+            for fallback in &["readme", "index", "overview", "readme.md"] {
                 if graph.anchor_to_index.contains_key(*fallback) {
                     final_suggestions.push(fallback.to_string());
                     break;
@@ -558,7 +636,7 @@ pub fn cmd_ask(
         let mut final_suggestions = suggestions.clone();
         if final_suggestions.is_empty() {
             // Try common fallbacks
-            for fallback in &["readme", "getting-started", "use-cases", "documentation-index"] {
+            for fallback in &["readme", "index", "overview", "readme.md"] {
                 if graph.anchor_to_index.contains_key(*fallback) {
                     final_suggestions.push(fallback.to_string());
                     break;
@@ -807,7 +885,7 @@ pub fn cmd_search(
     let mut semantic_results: Vec<(String, String)> = Vec::new();
     if include_semantics {
         if let Ok(graph) = aden_graph::cache::build_from_directory_cached(path) {
-            let query_lower = query.to_lowercase();
+    let query_lower = query.to_lowercase();
             for edge_idx in graph.graph.edge_indices() {
                 let (src, tgt) = graph.graph.edge_endpoints(edge_idx).expect("valid edge");
                 let edge_type = &graph.graph[edge_idx];

@@ -193,15 +193,10 @@ fn lint_file(path: &Path, content: &str, ext: &str) -> Vec<LintResult> {
 fn apply_lint_rules(path: &Path, line: &str, line_num: usize, ext: &str) -> Vec<LintResult> {
     let mut results = Vec::new();
 
-    let path_str = path.to_string_lossy();
-    
-    // Only skip aden's OWN lint source files - check for specific paths
-    // NOT any file with "lint" in the name
-    let is_self_lint_file = path_str.contains("aden-cli/src/commands/lint.rs") 
-        || path_str.contains("aden-cli/src/commands/misc.rs");
+    let _path_str = path.to_string_lossy();
 
     let line_results = match ext {
-        "rs" => lint_rust_line(line, line_num, is_self_lint_file),
+        "rs" => lint_rust_line(line, line_num),
         "py" => lint_python_line(line, line_num),
         "ts" | "tsx" | "js" | "jsx" => lint_typescript_line(line, line_num),
         "go" => lint_go_line(line, line_num),
@@ -221,15 +216,19 @@ fn apply_lint_rules(path: &Path, line: &str, line_num: usize, ext: &str) -> Vec<
     results
 }
 
-fn lint_rust_line(line: &str, line_num: usize, is_self_lint_file: bool) -> Vec<LintResult> {
+fn lint_rust_line(line: &str, line_num: usize) -> Vec<LintResult> {
     let mut results = Vec::new();
 
-    // Skip rule definitions in aden's own lint files to avoid self-detection
-    if is_self_lint_file {
-        return results;
-    }
+    // Skip lines that are comments or string-literal definitions — the pattern
+    // may appear as documentation or as a value being matched, not as real usage.
+    let trimmed = line.trim();
+    let is_string_literal_line = trimmed.starts_with("//")
+        || trimmed.starts_with("///")
+        || trimmed.starts_with('"')
+        || trimmed.starts_with("r\"")
+        || trimmed.starts_with("r#");
 
-    if line.contains("unsafe fn") {
+    if line.contains("unsafe fn") && !is_string_literal_line {
         results.push(LintResult {
             file: String::new(),
             line: line_num,
@@ -240,7 +239,7 @@ fn lint_rust_line(line: &str, line_num: usize, is_self_lint_file: bool) -> Vec<L
         });
     }
 
-    if line.contains("unwrap()") {
+    if line.contains("unwrap()") && !is_string_literal_line {
         results.push(LintResult {
             file: String::new(),
             line: line_num,
@@ -251,7 +250,7 @@ fn lint_rust_line(line: &str, line_num: usize, is_self_lint_file: bool) -> Vec<L
         });
     }
 
-    if line.contains("todo!()") || line.contains("unimplemented!()") {
+    if (line.contains("todo!()") || line.contains("unimplemented!()")) && !is_string_literal_line {
         results.push(LintResult {
             file: String::new(),
             line: line_num,

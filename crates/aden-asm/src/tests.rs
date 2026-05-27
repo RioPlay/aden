@@ -105,7 +105,41 @@ mod tests {
         let input = "|===\n| Col1 | Col2\n|===";
         let out = strip_asciidoc_markup(input);
         assert!(!out.contains("|==="), "table delimiter must be removed");
-        assert!(out.contains("| Col1 | Col2"));
+        // Generic table rows are compacted: pipes stripped, cells space-separated.
+        // Data values must still be present.
+        assert!(out.contains("Col1"), "cell data Col1 must be preserved");
+        assert!(out.contains("Col2"), "cell data Col2 must be preserved");
+    }
+
+    #[test]
+    fn test_strip_compacts_property_table() {
+        let input = "|===\n|Property|Value\n|Name|assemble\n|Visibility|Public\n|Returns|String\n|===";
+        let out = strip_asciidoc_markup(input);
+        assert!(!out.contains("|==="), "table delimiter must be removed");
+        assert!(!out.contains("|Property|Value"), "header row must be removed");
+        assert!(out.contains("name: assemble"), "property must be compacted to key: value");
+        assert!(out.contains("visibility: Public"), "property must be compacted");
+        assert!(out.contains("returns: String"), "property must be compacted");
+    }
+
+    #[test]
+    fn test_strip_compacts_callee_table() {
+        let input = "|===\n|Callee|Line\n|foo|12\n|bar|34\n|===";
+        let out = strip_asciidoc_markup(input);
+        assert!(!out.contains("|==="), "table delimiter must be removed");
+        assert!(!out.contains("|Callee|Line"), "callee header must be removed");
+        assert!(out.contains("calls:"), "callee table must produce calls: line");
+        assert!(out.contains("foo(12)"), "callee with line number must be compacted");
+        assert!(out.contains("bar(34)"), "callee with line number must be compacted");
+    }
+
+    #[test]
+    fn test_strip_removes_edge_calls_lines() {
+        let input = "Some text.\nedge::calls[Vec::new]\nedge::calls[foo]\nMore text.";
+        let out = strip_asciidoc_markup(input);
+        assert!(!out.contains("edge::calls"), "edge::calls lines must be removed");
+        assert!(out.contains("Some text."), "surrounding text must be preserved");
+        assert!(out.contains("More text."), "surrounding text must be preserved");
     }
 
     #[test]

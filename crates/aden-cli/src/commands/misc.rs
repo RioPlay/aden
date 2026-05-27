@@ -1027,18 +1027,24 @@ pub fn cmd_doctor(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         issues.push("aden CLI not in PATH".to_string());
     }
 
-    // Signing keys (optional — only report, never block)
+    // Signing keys (optional — probe both the canonical name and any .pub file present)
     let key_dir = dirs::home_dir()
         .unwrap_or_default()
         .join(".aden")
         .join("keys");
-    if key_dir.join("aden-sign.pub").exists() {
-        println!(
-            "✓ Signing public key: {}",
-            key_dir.join("aden-sign.pub").display()
-        );
+    let signing_key = key_dir
+        .read_dir()
+        .ok()
+        .and_then(|mut d| d.find_map(|e| {
+            let e = e.ok()?;
+            let name = e.file_name();
+            let s = name.to_string_lossy();
+            if s.ends_with(".pub") { Some(e.path()) } else { None }
+        }));
+    if let Some(key_path) = signing_key {
+        println!("✓ Signing public key: {}", key_path.display());
     } else {
-        println!("⚠ No signing key at ~/.aden/keys/aden-sign.pub (optional)");
+        println!("  No signing key in ~/.aden/keys/ (optional — used for contract attestation)");
     }
 
     // Repo health — generic checks, not aden-project-specific

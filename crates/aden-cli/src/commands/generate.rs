@@ -72,10 +72,14 @@ fn generate_module_contracts(root: &Path, out_dir: &Path) -> Result<(), Box<dyn 
         
         let out_path = out_dir.join(&contract_file);
 
-        // Skip if already exists and valid
+        // Skip if already exists, valid, and not carrying stale boilerplate.
+        // We re-generate if the file contains the old "Core module for aden X"
+        // description that leaked from an earlier version of the generator.
         if out_path.exists() {
             if let Ok(existing) = std::fs::read_to_string(&out_path) {
-                if existing.contains(&format!("[[{}]]", module_anchor)) {
+                let has_anchor = existing.contains(&format!("[[{}]]", module_anchor));
+                let is_stale = existing.contains("Core module for aden ");
+                if has_anchor && !is_stale {
                     continue;
                 }
             }

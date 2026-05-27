@@ -21,7 +21,7 @@ Multiple AI agents operating in parallel can:
 === Entry Format
 ```
 |Timestamp |Agent |Task |Files |Status
-|2026-05-23T12:00:00 |agent-42 |Fix bug in parser.rs |crates/aden-parse/src/ |in_progress
+|2026-05-23T12:00:00 |agent-42 |Fix bug in parser.rs |src/parser/ |in_progress
 ```
 
 === Conflict Detection

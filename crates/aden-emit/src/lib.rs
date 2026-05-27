@@ -659,76 +659,14 @@ pub struct ModuleInfo {
 }
 
 impl Default for TemplateVars {
+    /// Returns an empty TemplateVars. Callers must populate `crates`,
+    /// `commands`, and `modules` from the actual project being indexed.
+    /// Previously this returned aden's own crate/command roster, which
+    /// contaminated generated output for every non-aden project.
     fn default() -> Self {
         Self {
-            crates: vec![
-                CrateInfo {
-                    name: "aden-core".to_string(),
-                    responsibility: "Schema: Document, Block, Edge, Symbol".to_string(),
-                },
-                CrateInfo {
-                    name: "aden-parse".to_string(),
-                    responsibility: "Language routers and AST extraction".to_string(),
-                },
-                CrateInfo {
-                    name: "aden-emit".to_string(),
-                    responsibility: "Deterministic AsciiDoc emitter".to_string(),
-                },
-                CrateInfo {
-                    name: "aden-graph".to_string(),
-                    responsibility: "Referential integrity: DiGraph, cycle detection".to_string(),
-                },
-                CrateInfo {
-                    name: "aden-asm".to_string(),
-                    responsibility: "Context assembly: BFS traversal, token budgeting".to_string(),
-                },
-                CrateInfo {
-                    name: "aden-heal".to_string(),
-                    responsibility: "Drift detection and health scoring".to_string(),
-                },
-                CrateInfo {
-                    name: "aden-propose".to_string(),
-                    responsibility: "Patch generation and proposal lifecycle".to_string(),
-                },
-                CrateInfo {
-                    name: "aden-cli".to_string(),
-                    responsibility: "Binary (aden) with all commands".to_string(),
-                },
-            ],
-            commands: vec![
-                CommandInfo {
-                    name: "aden gen".to_string(),
-                    description: "Parse source and emit contracts".to_string(),
-                },
-                CommandInfo {
-                    name: "aden check".to_string(),
-                    description: "Verify all references resolve".to_string(),
-                },
-                CommandInfo {
-                    name: "aden heal".to_string(),
-                    description: "Scan for drift and propose fixes".to_string(),
-                },
-                CommandInfo {
-                    name: "aden asm".to_string(),
-                    description: "Assemble context prompt".to_string(),
-                },
-                CommandInfo {
-                    name: "aden query".to_string(),
-                    description: "Query the knowledge graph".to_string(),
-                },
-                CommandInfo {
-                    name: "aden ask".to_string(),
-                    description: "Natural language question to graph".to_string(),
-                },
-                CommandInfo {
-                    name: "aden search".to_string(),
-                    description: "Full-text search in contracts".to_string(),
-                },
-                CommandInfo {
-                    name: "aden ci-check".to_string(),
-                    description: "Run all local CI gates".to_string(),
-                },
-            ],
+            crates: vec![],
+            commands: vec![],
             modules: vec![],
         }
     }

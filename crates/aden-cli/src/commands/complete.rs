@@ -89,7 +89,8 @@ Please provide:
 
 ## Relationships  
 [Add <<refs>> to related symbols. Format: <<anchor,display text>>
-If this is part of a module, add: <<mod-CRATE_NAME,module CRATE_NAME>>]
+If this symbol belongs to a larger module or package, cross-reference it
+using the module's anchor (e.g. <<mod-mypackage,mypackage>>).]
 "#,
             anchor,
             anchor,
@@ -117,10 +118,18 @@ fn find_incomplete_contracts(path: &Path) -> Result<Vec<(std::path::PathBuf, Str
                 if let Ok(mut file) = std::fs::File::open(&p) {
                     let _ = file.read_to_string(&mut text);
                     if text.contains("[must-complete]") {
-                        let anchor = p.file_stem()
+                        // Reverse the filesystem-safe encoding used by aden-gen:
+                        // "aden---module-foo-bar.rs-MyStruct" → "aden://module/foo/bar.rs#MyStruct"
+                        // For anchors in other schemes, use the stem as-is.
+                        let stem = p.file_stem()
                             .and_then(|s| s.to_str())
-                            .unwrap_or("unknown")
-                            .replace("aden---module-", "aden://module/");
+                            .unwrap_or("unknown");
+                        let anchor = if stem.contains("---module-") {
+                            stem.replacen("---module-", "://module/", 1)
+                                .replacen("---", "/", 1)
+                        } else {
+                            stem.to_string()
+                        };
                         incomplete.push((p, anchor));
                     }
                 }

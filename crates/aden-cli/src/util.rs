@@ -7,20 +7,46 @@ use std::path::{Path, PathBuf};
 
 use crate::types::GenCache;
 
+/// Infer the parent module anchor from a source file path.
+///
+/// Supports all common monorepo workspace layouts:
+///   - `crates/<name>/src/...`   (Cargo workspaces)
+///   - `packages/<name>/src/...` (npm/pnpm workspaces, some Cargo)
+///   - `modules/<name>/src/...`  (Go, generic)
+///   - `libs/<name>/src/...`     (Nx, Bazel)
+///   - `services/<name>/src/...` (microservice repos)
+///   - `apps/<name>/src/...`     (monorepo apps)
+///   - `src/<name>/...`          (flat layout — returns mod-<name>)
+///
+/// Returns `None` for single-package repos (no subdirectory workspace).
 fn infer_parent_module_from_source(source_path: &std::path::Path) -> Option<String> {
     let path_str = source_path.to_string_lossy();
-    // Handle both absolute and relative paths containing /crates/
-    if let Some(start) = path_str.find("/crates/") {
-        let after_crates = &path_str[start + 8..];
-        if let Some(end) = after_crates.find('/') {
-            let crate_name = &after_crates[..end];
-            return Some(format!("mod-{}", crate_name));
-        }
-    } else if let Some(start) = path_str.find("crates/") {
-        let after_crates = &path_str[start + 7..];
-        if let Some(end) = after_crates.find('/') {
-            let crate_name = &after_crates[..end];
-            return Some(format!("mod-{}", crate_name));
+    // Ordered by specificity: longer segment names first to avoid false matches
+    const WORKSPACE_DIRS: &[(&str, usize)] = &[
+        ("/crates/",   8),
+        ("/packages/", 10),
+        ("/modules/",  9),
+        ("/libs/",     6),
+        ("/services/", 10),
+        ("/apps/",     6),
+        ("crates/",    7),
+        ("packages/",  9),
+        ("modules/",   8),
+        ("libs/",      5),
+        ("services/",  9),
+        ("apps/",      5),
+        ("/src/",      5), // flat layout: /src/<name>/...
+        ("src/",       4),
+    ];
+    for (segment, skip) in WORKSPACE_DIRS {
+        if let Some(start) = path_str.find(segment) {
+            let after = &path_str[start + skip..];
+            if let Some(end) = after.find('/') {
+                let name = &after[..end];
+                if !name.is_empty() && name != "src" && name != "lib" && name != "main" {
+                    return Some(format!("mod-{}", name));
+                }
+            }
         }
     }
     None
