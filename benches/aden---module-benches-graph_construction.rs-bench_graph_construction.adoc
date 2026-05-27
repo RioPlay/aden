@@ -1,0 +1,41 @@
+:node-type: function
+:source_file: benches/graph_construction.rs
+:end_line: 26
+:start_line: 4
+:end_byte: 736
+:start_byte: 107
+:source_hash: dbda1434b8dbc704
+:last-verified: 2026-05-27T00:55:48Z
+
+[[aden://module/benches/graph_construction.rs#bench_graph_construction]]
+= bench_graph_construction
+
+== Signature
+
+|===
+|Property|Value
+
+|Name|bench_graph_construction
+|Visibility|Private
+|param c|c: &mut Criterion
+|===
+
+|===
+|Callee|Line
+
+|temp_dir|5
+|black_box|22
+|AdenGraph::build_from_directory|22
+|black_box|23
+|bench_function|20
+|===
+
+[listing]
+----
+edge::calls[temp_dir]
+edge::calls[black_box]
+edge::calls[AdenGraph::build_from_directory]
+edge::calls[black_box]
+edge::calls[bench_function]
+----
+

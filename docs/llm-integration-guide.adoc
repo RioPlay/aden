@@ -223,4 +223,4 @@ If you're missing information:
 ---
 
 *For human users*: See <<user-guide>> for complete workflows.
-*For MCP setup*: See <<mcp-integration>> for installation.
+*For MCP setup*: See the MCP section in <<architecture>> or run `aden mcp install`.

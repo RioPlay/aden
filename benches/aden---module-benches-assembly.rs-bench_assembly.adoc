@@ -1,0 +1,47 @@
+:end_byte: 1037
+:source_hash: a108f4c8efe2b494
+:start_byte: 160
+:end_line: 36
+:start_line: 5
+:last-verified: 2026-05-27T00:55:48Z
+:node-type: function
+:source_file: benches/assembly.rs
+
+[[aden://module/benches/assembly.rs#bench_assembly]]
+= bench_assembly
+
+== Signature
+
+|===
+|Property|Value
+
+|Name|bench_assembly
+|Visibility|Private
+|param c|c: &mut Criterion
+|===
+
+|===
+|Callee|Line
+
+|temp_dir|6
+|AdenGraph::build_from_directory|21
+|Vec::new|27
+|black_box|32
+|black_box|32
+|assemble|32
+|black_box|33
+|bench_function|30
+|===
+
+[listing]
+----
+edge::calls[temp_dir]
+edge::calls[AdenGraph::build_from_directory]
+edge::calls[Vec::new]
+edge::calls[black_box]
+edge::calls[black_box]
+edge::calls[assemble]
+edge::calls[black_box]
+edge::calls[bench_function]
+----
+
