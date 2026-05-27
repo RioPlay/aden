@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 authors = ["RioPlay <rioplay@rioplay.dev>"]
 license = "AGPL-3.0"
+description = "STANDALONE: Python bindings via PyO3 (build separately)"
 
 [lib]
 name = "aden"
@@ -21,3 +22,8 @@ aden-index = { path = "../aden-index" }
 pyo3 = { version = "0.24", features = ["extension-module", "abi3-py310"] }
 serde_json = "1.0"
 petgraph = "0.8"
+
+[package.metadata.aden]
+status = "standalone"
+integrated = false
+notes = "Python bindings via PyO3. Excluded from workspace (requires Python dev headers). Build with: cd crates/aden-py && cargo build"

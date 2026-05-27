@@ -138,22 +138,28 @@ Universal schema for the Aden referential context compiler.
 Aden is a Cargo workspace. Each crate has a single responsibility.
 
 |===
-|Crate |What It Does
+|Crate |What It Does |Status
 
-|`aden-core` |Schema: `Document`, `Block`, `Edge`, `Symbol`, etc.
-|`aden-parse` |Language routers and AST extraction (Rust, Python, Go, TS/JS, and 305+ generic)
-|`aden-emit` |Deterministic AsciiDoc emitter
-|`aden-graph` |Graph engine: `DiGraph`, cycle detection, typed edges, integrity checks
-|`aden-asm` |Context assembler: BFS traversal + token budgeting
-|`aden-index` |In-memory inverted index for full-text search
-|`aden-heal` |Drift detection and health scoring
-|`aden-propose` |Patch generation for stale contracts
-|`aden-mcp` |MCP server (Claude, Cursor, Zed, Windsurf)
-|`aden-lsp` |LSP for `.adoc` / `.aden` files
-|`aden-policy` |Constitutional policy engine: directives, precedence, conflict resolution
-|`aden-py` |PyO3 Python bindings
-|`aden-cli` |The `aden` binary with all commands
+|`aden-core` |Schema: `Document`, `Block`, `Edge`, `Symbol`, etc. |Core
+|`aden-parse` |Language routers and AST extraction (Rust, Python, Go, TS/JS, and 305+ generic) |Core
+|`aden-emit` |Deterministic AsciiDoc emitter |Core
+|`aden-graph` |Graph engine: `DiGraph`, cycle detection, typed edges, integrity checks |Core
+|`aden-asm` |Context assembler: BFS traversal + token budgeting |Core
+|`aden-index` |In-memory inverted index for full-text search |Core
+|`aden-heal` |Drift detection and health scoring |Core
+|`aden-propose` |Patch generation for stale contracts |Core
+|`aden-mcp` |MCP server (Claude, Cursor, Zed, Windsurf) |Core
+|`aden-policy` |Constitutional policy engine: directives, precedence, conflict resolution |Core
+|`aden-cli` |The `aden` binary with all commands |Core
+|`aden-lsp` |LSP for `.adoc` / `.aden` files |Standalone
+|`aden-py` |PyO3 Python bindings |Standalone
+|`aden-api` |REST/gRPC types |Experimental
+|`aden-attest` |Cryptographic attestation |Experimental
+|`aden-simulate` |Threat modeling |Experimental
+|`aden-telemetry` |Performance telemetry |Experimental
 |===
+
+See <<experimental-crates>> for details on experimental and standalone crates.
 
 == Security Posture
 
@@ -177,6 +183,8 @@ This is the navigation hub for the Aden knowledge graph.
 |<<ai-integration>> |How AI agents use `aden ask`, `aden asm`, `aden query` for context assembly
 
 |<<philosophy>> |Design rationale: why AsciiDoc, token economy, graph-native approach
+
+|<<experimental-crates>> |Tracking document for experimental/standalone crates
 
 |<<plan-phase0>> |Foundation phase: contract kernel, three-way merge, constitutional blocks
 

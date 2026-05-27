@@ -1,0 +1,140 @@
+:proj: aden
+
+[[experimental-crates]]
+= Experimental and Standalone Crates
+
+This document tracks crates in the aden workspace that are **not yet fully integrated** into the core functionality.
+
+== Status Legend
+
+|===
+|Status |Meaning |Action
+
+|`core` |Fully integrated, actively used |No action needed
+|`experimental` |Implemented but not integrated |Consider integration or removal
+|`standalone` |Separate tool/binding |Consider external repo
+|===
+
+== Experimental Crates (Not Integrated)
+
+These crates are included in the workspace but **not used** by `aden-cli` or `aden-mcp`.
+
+=== aden-api
+*Path:* `crates/aden-api/` +
+*Size:* ~5.5KB +
+*Status:* EXPERIMENTAL +
+*Purpose:* REST/gRPC API types for server mode +
+*Why not integrated:* Server mode not yet implemented +
+*Decision needed:* 
+- Integrate into CLI as `aden serve` command?
+- Keep as library for future use?
+- Remove if no plans for server mode?
+
+=== aden-attest
+*Path:* `crates/aden-attest/` +
+*Size:* ~2.5KB +
+*Status:* EXPERIMENTAL +
+*Purpose:* Cryptographic attestation and provenance tracking +
+*Why not integrated:* Supply chain security features not yet prioritized +
+*Decision needed:*
+- Integrate into `aden audit` or `aden ci-check`?
+- Keep for future SBOM/signing features?
+- Remove if out of scope?
+
+=== aden-simulate
+*Path:* `crates/aden-simulate/` +
+*Size:* ~5.8KB +
+*Status:* EXPERIMENTAL +
+*Purpose:* Contract diff simulation and threat modeling +
+*Why not integrated:* Adversarial testing features not yet prioritized +
+*Decision needed:*
+- Integrate into `aden review` command?
+- Keep for security research features?
+- Remove if out of scope?
+
+=== aden-telemetry
+*Path:* `crates/aden-telemetry/` +
+*Size:* ~4.7KB +
+*Status:* EXPERIMENTAL +
+*Purpose:* Token usage tracking, latency monitoring, performance telemetry +
+*Why not integrated:* Performance monitoring not yet prioritized +
+*Decision needed:*
+- Integrate into all commands with `--profile` flag?
+- Keep for future analytics dashboard?
+- Remove in favor of external observability tools?
+
+== Standalone Crates (Separate Distribution)
+
+These crates build as separate binaries/bindings and are **intentionally not integrated**.
+
+=== aden-lsp
+*Path:* `crates/aden-lsp/` +
+*Size:* ~8KB +
+*Status:* STANDALONE +
+*Purpose:* Language Server Protocol implementation for IDE integration +
+*Distribution:* Separate binary `aden-lsp` +
+*Decision needed:*
+- Keep in workspace for convenience?
+- Move to external repo (e.g., `aden-lsp`) for cleaner separation?
+- Deprecate in favor of MCP-based IDE integration?
+
+=== aden-py
+*Path:* `crates/aden-py/` +
+*Size:* ~10KB +
+*Status:* STANDALONE +
+*Purpose:* Python bindings via PyO3 +
+*Distribution:* Python package (`pip install aden`) +
+*Build:* Excluded from workspace (requires Python dev headers) +
+*Decision needed:*
+- Keep in workspace?
+- Move to external repo for independent release cycle?
+- Enhance with more Python API surface?
+
+== Core Crates (Fully Integrated)
+
+These crates are **actively used** and form the core aden functionality:
+
+- `aden-core` - Schema and types
+- `aden-parse` - Language parsers
+- `aden-emit` - Contract emission
+- `aden-graph` - Knowledge graph
+- `aden-index` - Full-text search
+- `aden-asm` - Context assembly
+- `aden-cli` - Main binary
+- `aden-mcp` - MCP server
+- `aden-heal` - Self-healing
+- `aden-propose` - Patch generation (used by heal)
+- `aden-policy` - Constitutional directives
+
+== Cleanup Recommendations
+
+=== Phase 1: Document (Done)
+- [x] Add status metadata to all experimental crate Cargo.toml files
+- [x] Create this tracking document
+
+=== Phase 2: Decide (Next)
+- [ ] Review each experimental crate
+- [ ] Decide: integrate, keep as-is, or remove
+- [ ] Set timeline for decisions (e.g., 3 months)
+
+=== Phase 3: Act
+Based on decisions:
+- *Integrate:* Add to CLI/MCP, write tests, document
+- *Keep:* Move to `experimental/` subdirectory, reduce workspace priority
+- *Remove:* Archive code, update documentation
+
+== Governance
+
+New crates should start as:
+1. Features in existing crates (preferred)
+2. Experimental crates with clear integration path
+3. Standalone crates only with strong justification
+
+Experimental crates older than 12 months without integration plans should be:
+- Archived to separate repos, or
+- Removed from the codebase
+
+---
+
+*Last updated:* 2026-05-27 +
+*Next review:* 2026-08-27
