@@ -71,11 +71,11 @@ Rust, Python, Go, TypeScript/JavaScript, Java, C#, C, Ruby, PHP, Kotlin, PowerSh
 
 ## Documentation
 
-- <<docs/getting-started.adoc,Getting Started>> — 10-minute intro
-- <<docs/philosophy.adoc,Philosophy>> — Why Aden exists and what it solves
-- <<docs/architecture.adoc,Architecture>> — Technical deep-dive
-- <<docs/ai-integration.adoc,AI Integration>> — Using Aden with AI agents
-- <<docs/user-guide.adoc,User Guide>> — Daily workflow reference
+- [Getting Started](docs/getting-started.adoc) — 10-minute intro
+- [Philosophy](docs/philosophy.adoc) — Why Aden exists and what it solves
+- [Architecture](docs/architecture.adoc) — Technical deep-dive
+- [AI Integration](docs/ai-integration.adoc) — Using Aden with AI agents
+- [User Guide](docs/user-guide.adoc) — Daily workflow reference
 
 ## The Name
 
