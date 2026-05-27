@@ -187,10 +187,30 @@ What happens:
 |Find anchors|`aden list . --limit 20`
 |Ask a question|`aden ask "<question>"`
 |Find symbol|`aden locate --symbol <name> .`
+|Find with context|`aden locate --symbol <name> --context 3 .`
 |Full-text search|`aden search "<query>" .`
 |Get context|`aden asm --from <anchor> --depth 2 .`
+|LLM-friendly context|`aden asm --from <anchor> --llm .`
+|Check health|`aden status .`
 |Fix drift|`aden heal . --fix`
+|Full sync|`aden sync .`
 |Validate|`aden ci-check .`
+|Watch for changes|`aden watch . --sync`
+|===
+
+=== Newer Commands (v0.1.0+)
+
+|===
+|Goal|Command
+|Project health score|`aden status .`
+|gen + check + heal|`aden sync .`
+|Complete missing docs|`aden complete . --model ollama:llama3`
+|Multi-repo management|`aden federation list`
+|Session logging|`aden session --agent-id <id> --task "<task>" --status completed`
+|Environment diagnostics|`aden doctor .`
+|Security audit|`aden audit .`
+|License report|`aden licenses .`
+|Semantic review|`aden review . --since HEAD~5`
 |===
 
 == Example AI Agent Workflow

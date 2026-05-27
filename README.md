@@ -1,0 +1,86 @@
+# Aden: A Dense Referential Context Compiler
+
+**Aden** transforms codebases into traversable knowledge graphs, making the structure of understanding explicit, machine-readable, and queryable by both humans and AI agents.
+
+## The Problem
+
+Large language models are capable of sophisticated reasoning, but they are constrained by a finite context window. When an AI agent is dropped into a codebase of 100,000+ lines, it faces the same problem a human faces: **information overload**. The agent does not know which 10 files out of 500 are relevant to the task at hand. It does not know that changing `Database::connect()` will break `QueueWorker::drain()`. It has no mental map of the system.
+
+## What Aden Does
+
+Aden compiles source code, documentation, notes, and plans into a **knowledge graph** where:
+
+- Every function, module, and decision becomes a **node**
+- Every relationship (imports, calls, constraints, justifications) becomes a **typed edge**
+- You can ask questions like "what depends on this function?" or "what is the blast radius of changing this module?"
+
+```
+Source Code → Aden Pipeline → Knowledge Graph → Context for AI
+```
+
+## What Aden Replaces
+
+| Replaces | Why |
+|----------|-----|
+| Static analysis tools (clippy, Semgrep) | Aden finds *semantic relationships*, not bugs |
+| Documentation generators (Rustdoc, Javadoc) | Aden produces *machine-navigable* context, not HTML |
+|grep + manual file hunting | Aden lets you query by intent, not keywords |
+| Scrolling through READMEs | Aden assembles exactly the context you need |
+
+## Quick Start
+
+```bash
+# Install
+cargo install --path crates/aden-cli
+
+# Initialize your project
+cd your-project
+aden init
+
+# Generate contracts from source
+aden gen --auto .
+
+# Ask questions about your codebase
+aden ask "How does authentication work?"
+
+# Find the blast radius before refactoring
+aden asm --from mod-auth --depth 2
+```
+
+## Core Commands
+
+| Command | Purpose |
+|---------|---------|
+| `aden gen` | Generate `.adoc` contracts from source code |
+| `aden ask` | Ask natural language questions, get graph-traversed context |
+| `aden asm` | Assemble context within a token budget |
+| `aden check` | Validate referential integrity |
+| `aden heal` | Detect and fix drift between code and contracts |
+| `aden locate` | Find symbol definitions with exact line numbers |
+
+## Why AsciiDoc?
+
+- **Human-readable** — open any `.adoc` file and understand it
+- **Machine-parseable** — regular grammar, no complex toolchains
+- **Version-control-friendly** — diffs cleanly in Git
+- **Referential by default** — the `<<anchor>>` syntax builds the graph naturally
+
+## Supported Languages
+
+Rust, Python, Go, TypeScript/JavaScript, Java, C#, C, Ruby, PHP, Kotlin, PowerShell — plus 305+ generic language extractors.
+
+## Documentation
+
+- <<docs/getting-started.adoc,Getting Started>> — 10-minute intro
+- <<docs/philosophy.adoc,Philosophy>> — Why Aden exists and what it solves
+- <<docs/architecture.adoc,Architecture>> — Technical deep-dive
+- <<docs/ai-integration.adoc,AI Integration>> — Using Aden with AI agents
+- <<docs/user-guide.adoc,User Guide>> — Daily workflow reference
+
+## The Name
+
+**A Dense Referential Context Compiler** — Every token is load-bearing. Every edge is typed. Every anchor resolves.
+
+---
+
+*Aden is designed for the future of software development: hybrid teams of humans and AI agents working together.*

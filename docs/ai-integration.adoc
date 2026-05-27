@@ -152,20 +152,76 @@ aden suggest "find all tests in the project"
 |------|---------|
 | Explore structure | `aden ask "what is X"` |
 | Find symbol | `aden locate --symbol X .` |
+| Find with context | `aden locate --symbol X --context 5 .` |
 | Search docs | `aden search "query" .` |
 | Get context | `aden asm --from <anchor> --depth N .` |
-| Check health | `aden check .` && `aden heal .` |
+| LLM context (compact) | `aden asm --from <anchor> --llm .` |
+| Check health | `aden status .` |
+| Full sync | `aden sync .` |
+| Check + heal | `aden check . && aden heal .` |
 | Validate | `aden ci-check .` |
+| Watch mode | `aden watch . --sync` |
+
+== MCP Tools (for AI Platforms)
+
+When using Aden via MCP (OpenCode, Claude Code, Cursor, etc.), these tools are available:
+
+|===
+|Tool|Purpose|Key Arguments
+|ask|Natural language Q&A|question, budget, from
+|search|Full-text search|query, limit, semantics
+|asm|Graph-traversed context|anchor, depth, budget, format (adg for LLMs)
+|query|Structured JSON|anchor, depth, backlinks, impact
+|locate|Symbol definitions|symbol, limit
+|list|Anchors in graph|filter, limit, semantics
+|heal|Drift detection|fix, gc, propose
+|status|Health score|path
+|sync|gen + check + heal|path
+|gen|Generate contracts|auto, merge
+|lint|Lint source|path
+|test|Run tests|path
+|===
+
+=== MCP Quick Start
+
+[source,bash]
+----
+# Install MCP for your platform
+aden mcp install --platform opencode
+
+# Or for all supported platforms
+aden mcp install --all
+
+# List configured platforms
+aden mcp list
+----
 
 == Keeping the Graph Fresh
 
 Stale context is worse than no context. Run these commands as part of your agent loop:
 
-1. Before starting work: `aden check .` (validate integrity)
+1. Before starting work: `aden status .` (quick health check) or `aden check .` (validate integrity)
 2. After writing code: `aden gen <path>` (update contracts)
 3. Before committing: `aden ci-check .` (check + heal + tests)
+4. Or use `aden sync .` for a single command that does gen + check + heal
 
 If you are running as a persistent agent, use `aden watch` to auto-regenerate contracts on file changes.
+
+== Understanding Drift Types
+
+When `aden heal` runs, it detects these drift event types:
+
+|===
+|Type|Description|Fixable?
+|StaleHash|Source changed, contract has old hash|Yes (--fix)
+|MissingContract|New symbol has no contract|No (run gen)
+|SignatureMismatch|Function signature changed in source|Yes (--fix)
+|BrokenReference|Document ссылается на missing anchor|No (manual fix)
+|OrphanContract|Contract exists but no matching source|Yes (--gc)
+|StaleMarkdown|Manual .md file is out of date|No (manual)
+|===
+
+Use `aden heal . --fix` for auto-fixing high-confidence issues.
 
 == Token Economy Rules
 

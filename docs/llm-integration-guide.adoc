@@ -16,13 +16,19 @@ You have access to Aden, a knowledge graph compiler for codebases.
 
 ## Aden Tools Available:
 - `ask(question)`: Ask natural language questions about the codebase
-- `search(query)`: Full-text search with semantic understanding
+- `search(query)`: Full-text search with semantic understanding, --semantics flag for graph edges
 - `asm(anchor, depth)`: Assemble context from a starting point
 - `query(anchor, depth)`: Get structured graph neighborhood as JSON
-- `locate(symbol)`: Find symbol definitions and call sites
-- `list()`: List all available anchors
-- `heal()`: Check documentation health
+- `locate(symbol)`: Find symbol definitions and call sites, --context N for surrounding code
+- `list()`: List all available anchors, --semantics for semantic nodes
+- `heal()`: Check documentation health, --fix for auto-fix, --gc for orphan cleanup
+- `status()`: Get health score (100/100 = healthy)
+- `sync()`: Run gen + check + heal in sequence
+- `gen()`: Generate contracts, --auto for whole project, --merge for three-way merge
 - `check()`: Validate all references
+- `lint()`: Lint source files
+- `test()`: Run tests
+- `complete()`: Fill incomplete contracts via LLM
 
 ## Best Practices:
 
@@ -57,6 +63,31 @@ Aden returns context in AsciiDoc format:
 - `|===` = Table boundaries
 
 Focus on the CONTENT, not the formatting.
+
+== LLM-Specific Flags
+
+Aden provides flags optimized for LLM usage:
+
+=== --llm flag (asm)
+Compact output using `adg` format (JSON), auto-boosts budget to 8192:
+[source]
+----
+aden asm --from mod-aden-core --llm .
+----
+
+=== --context flag (locate)
+Show N lines of surrounding code for precise edits:
+[source]
+----
+aden locate --symbol my_function --context 5 .
+----
+
+=== --semantics flag (search, list)
+Include semantic graph relationships in results:
+[source]
+----
+aden search "authentication" . --semantics
+----
 
 ## When Context is Incomplete:
 
