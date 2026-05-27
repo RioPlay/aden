@@ -409,6 +409,26 @@ fn handle_tools_list(req: &JsonRpcRequest) -> JsonRpcResponse {
                     "budget": { "type": "integer", "description": "Token budget (default 4096)" }
                 }
             }
+        },
+        {
+            "name": "status",
+            "description": "Show project health at a glance. Returns health score and orphan count. BEST FOR: quickly checking if docs are up to date before making changes.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Project root (default .)" }
+                }
+            }
+        },
+        {
+            "name": "sync",
+            "description": "Run gen + check + heal in sequence. BEST FOR: fixing documentation issues, refreshing all contracts after code changes.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Project root (default .)" }
+                }
+            }
         }
     ]);
     JsonRpcResponse::success(req.id.clone(), serde_json::json!({ "tools": tools }))
@@ -454,6 +474,8 @@ fn handle_tools_call(
         "kickoff" => tool_kickoff(project_dir, &args),
         "licenses" => tool_licenses(project_dir, &args),
         "review" => tool_review(project_dir, &args),
+        "status" => tool_status(project_dir, &args),
+        "sync" => tool_sync(project_dir, &args),
         _ => {
             return JsonRpcResponse::error(
                 req.id.clone(),
@@ -797,6 +819,24 @@ fn tool_review(
     let cmd_refs: Vec<&str> = cmd_args.iter().map(|s| s.as_str()).collect();
     let output = run_aden_command(project_dir, &cmd_refs)?;
     Ok(serde_json::json!({ "review": output }))
+}
+
+fn tool_status(
+    project_dir: &std::sync::Arc<std::path::PathBuf>,
+    _args: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let cmd_args: Vec<&str> = vec!["status".as_ref()];
+    let output = run_aden_command(project_dir, &cmd_args)?;
+    Ok(serde_json::json!({ "status": output }))
+}
+
+fn tool_sync(
+    project_dir: &std::sync::Arc<std::path::PathBuf>,
+    _args: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let cmd_args: Vec<&str> = vec!["sync".as_ref()];
+    let output = run_aden_command(project_dir, &cmd_args)?;
+    Ok(serde_json::json!({ "sync": output }))
 }
 
 #[cfg(test)]

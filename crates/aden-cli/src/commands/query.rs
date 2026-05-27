@@ -299,7 +299,7 @@ pub fn cmd_query(
         results.push(node_to_json(&graph.graph[start_idx], 0));
 
         while let Some((node, d)) = queue.pop_front() {
-            if d >= depth {
+            if d > depth {
                 continue;
             }
             for neighbor in graph.graph.neighbors_directed(node, Direction::Outgoing) {
@@ -441,16 +441,18 @@ pub fn classify_intent(question: &str) -> QueryIntent {
 
 pub fn edge_types_for_intent(intent: &QueryIntent) -> Vec<aden_core::EdgeType> {
     use aden_core::EdgeType::*;
+    // Include both code edges AND semantic edges for all intents
+    let semantic = vec![IsA, PartOf, RelatesTo, SimilarTo, AssociatedWith, Explains];
     match intent {
-        QueryIntent::Debug => vec![Constrains, Documents, Calls, Invokes, Requires],
-        QueryIntent::Usage => vec![Uses, Invokes, Requires, Documents],
-        QueryIntent::Explain => vec![Uses, Calls, Implements, Documents],
-        QueryIntent::Refactor => vec![Calls, Uses, Mutates, Supersedes, Amends],
-        QueryIntent::Impact => vec![Uses, Calls, Constrains],
-        QueryIntent::List => vec![Uses, Documents],
-        QueryIntent::Compare => vec![Uses, Documents, Constrains],
-        QueryIntent::Count => vec![Documents, Uses],
-        QueryIntent::General => vec![Uses, Documents, Constrains],
+        QueryIntent::Debug => vec![Constrains, Documents, Calls, Invokes, Requires].into_iter().chain(semantic.clone()).collect(),
+        QueryIntent::Usage => vec![Uses, Invokes, Requires, Documents].into_iter().chain(semantic.clone()).collect(),
+        QueryIntent::Explain => vec![Uses, Calls, Implements, Documents].into_iter().chain(semantic.clone()).collect(),
+        QueryIntent::Refactor => vec![Calls, Uses, Mutates, Supersedes, Amends].into_iter().chain(semantic.clone()).collect(),
+        QueryIntent::Impact => vec![Uses, Calls, Constrains].into_iter().chain(semantic.clone()).collect(),
+        QueryIntent::List => vec![Uses, Documents].into_iter().chain(semantic.clone()).collect(),
+        QueryIntent::Compare => vec![Uses, Documents, Constrains].into_iter().chain(semantic.clone()).collect(),
+        QueryIntent::Count => vec![Documents, Uses].into_iter().chain(semantic.clone()).collect(),
+        QueryIntent::General => vec![Uses, Documents, Constrains].into_iter().chain(semantic).collect(),
     }
 }
 
@@ -765,6 +767,7 @@ pub fn cmd_search(
     limit: usize,
     offset: usize,
     doc_type: Option<&str>,
+    include_semantics: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if !path.is_dir() {
         return Err("search requires a directory path".into());
@@ -798,7 +801,29 @@ pub fn cmd_search(
         results.retain(|r| r.anchor.starts_with(dt_pattern));
     }
 
-    if results.is_empty() {
+    // If --semantics, also search the graph for semantic relationships
+    let mut semantic_results: Vec<(String, String)> = Vec::new();
+    if include_semantics {
+        if let Ok(graph) = aden_graph::cache::build_from_directory_cached(path) {
+            let query_lower = query.to_lowercase();
+            for edge_idx in graph.graph.edge_indices() {
+                let (src, tgt) = graph.graph.edge_endpoints(edge_idx).expect("valid edge");
+                let edge_type = &graph.graph[edge_idx];
+                if edge_type.is_semantic() {
+                    let src_anchor = graph.graph[src].anchor.to_lowercase();
+                    let tgt_anchor = graph.graph[tgt].anchor.to_lowercase();
+                    if src_anchor.contains(&query_lower) || tgt_anchor.contains(&query_lower) {
+                        semantic_results.push((
+                            graph.graph[tgt].anchor.clone(),
+                            format!("{:?} via {:?}", edge_type, graph.graph[src].anchor),
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    if results.is_empty() && semantic_results.is_empty() {
         println!("No results for '{}'", query);
         return Ok(());
     }
@@ -817,6 +842,17 @@ pub fn cmd_search(
         };
         println!("| {} | {:.1} | {} |", r.anchor, r.score, snippet);
     }
+
+    // Print semantic results if any
+    if !semantic_results.is_empty() {
+        println!();
+        println!("Semantic relationships (--semantics):");
+        println!("| Anchor | Relationship |");
+        println!("|=== |");
+        for (anchor, rel) in &semantic_results {
+            println!("| {} | {} |", anchor, rel);
+        }
+    }
     Ok(())
 }
 
@@ -826,17 +862,33 @@ pub fn cmd_list(
     verbose: bool,
     limit: usize,
     offset: usize,
+    semantics_only: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if !path.is_dir() {
         return Err("list requires a directory path".into());
     }
 
     let graph = aden_graph::cache::build_from_directory_cached(path)?;
-    let anchors: Vec<_> = graph
-        .graph
-        .node_indices()
-        .filter_map(|idx| graph.graph.node_weight(idx).map(|n| n.anchor.clone()))
-        .collect();
+
+    // If semantics_only, collect only nodes that are part of semantic relationships
+    let anchors: Vec<String> = if semantics_only {
+        let mut semantic_anchors: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for edge_idx in graph.graph.edge_indices() {
+            let edge_type = &graph.graph[edge_idx];
+            if edge_type.is_semantic() {
+                let (src, tgt) = graph.graph.edge_endpoints(edge_idx).expect("valid edge");
+                semantic_anchors.insert(graph.graph[src].anchor.clone());
+                semantic_anchors.insert(graph.graph[tgt].anchor.clone());
+            }
+        }
+        semantic_anchors.into_iter().collect()
+    } else {
+        graph
+            .graph
+            .node_indices()
+            .filter_map(|idx| graph.graph.node_weight(idx).map(|n| n.anchor.clone()))
+            .collect()
+    };
 
     let filtered: Vec<_> = match filter {
         Some(f) => anchors.iter().filter(|a| a.contains(f)).cloned().collect(),
@@ -894,7 +946,7 @@ pub fn cmd_list(
     Ok(())
 }
 
-fn print_locate_results(hits: &[serde_json::Value], format: &str) {
+fn print_locate_results(hits: &[serde_json::Value], format: &str, context: Option<usize>) {
     if format == "json" {
         println!(
             "{}",
@@ -902,10 +954,11 @@ fn print_locate_results(hits: &[serde_json::Value], format: &str) {
         );
         return;
     }
-    // Token-efficient output: compact format
+    let ctx = context.unwrap_or(0);
     for h in hits {
         let file = h["file"].as_str().unwrap_or("");
         let start = h["start_line"].as_str().unwrap_or("");
+        let end = h["end_line"].as_str().unwrap_or("");
         let anchor = h["anchor"].as_str().unwrap_or("");
         let nt = h["node_type"].as_str().unwrap_or("");
 
@@ -917,6 +970,25 @@ fn print_locate_results(hits: &[serde_json::Value], format: &str) {
         } else {
             println!("{} {} {}:{}", symbol, nt, file, start);
         }
+
+        // Show context if requested
+        if ctx > 0 && !file.is_empty() {
+            if let Ok(lines) = std::fs::read_to_string(file) {
+                let start_num: usize = start.parse().unwrap_or(1);
+                let end_num: usize = end.parse().unwrap_or(start_num);
+                let before = start_num.saturating_sub(ctx);
+                let after = end_num + ctx;
+                let all_lines: Vec<&str> = lines.lines().collect();
+                if before < all_lines.len() && before < after {
+                    println!("  Context (lines {}-{}):", before + 1, after.min(all_lines.len()));
+                    for (i, line) in all_lines.iter().enumerate().take(after).skip(before) {
+                        let line_num = i + 1;
+                        let marker = if line_num >= start_num && line_num <= end_num { ">" } else { " " };
+                        println!("{}{:4}: {}", marker, line_num, line);
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -926,6 +998,7 @@ pub fn cmd_locate(
     caller_of: Option<&str>,
     format: &str,
     limit: usize,
+    context: Option<usize>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use serde_json::json;
 
@@ -1028,7 +1101,7 @@ pub fn cmd_locate(
             }
             println!("Found {} fuzzy match(es) for '{}':", fuzzy_hits.len(), sym);
             let fuzzy_limited: Vec<_> = fuzzy_hits.iter().take(limit).cloned().collect();
-            print_locate_results(&fuzzy_limited, format);
+            print_locate_results(&fuzzy_limited, format, context);
             return Ok(());
         }
 
@@ -1037,7 +1110,7 @@ pub fn cmd_locate(
         if format == "json" {
             println!("{}", serde_json::to_string_pretty(&hits_limited)?);
         } else {
-            print_locate_results(&hits_limited, format);
+            print_locate_results(&hits_limited, format, context);
         }
         return Ok(());
     }
@@ -1057,6 +1130,7 @@ pub fn cmd_watch(
     path: &Path,
     graph_sync: bool,
     restore: bool,
+    sync_all: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
     use std::sync::mpsc::channel;
@@ -1237,6 +1311,35 @@ pub fn cmd_watch(
                 if graph_sync {
                     // For now, just rebuild graph (incremental coming soon)
                     // TODO: Implement incremental graph update
+                }
+            }
+
+            // Unified sync mode: run gen + check + heal
+            if sync_all && !paths_to_process.is_empty() {
+                println!("INFO: Running unified sync...");
+                
+                // Run check
+                if let Err(e) = crate::util::perform_check(path) {
+                    let has_errors = format!("{:?}", e).contains("ERROR:");
+                    if has_errors {
+                        eprintln!("CHECK: {}", e);
+                    }
+                } else {
+                    println!("CHECK: All references valid");
+                }
+
+                // Run heal scan (summary only)
+                #[cfg(feature = "watch")]
+                {
+                    use aden_heal::{Scanner, generate};
+                    let scanner = Scanner::new(path);
+                    if let Ok(events) = scanner.scan() {
+                        let report = generate(events.clone(), path);
+                        println!("HEAL: Health score = {:.2}", report.overall_score);
+                        if !events.is_empty() {
+                            println!("HEAL: {} drift event(s) detected", events.len());
+                        }
+                    }
                 }
             }
         }

@@ -19,7 +19,9 @@ mod mcp;
 mod types;
 mod util;
 
+use crate::commands::complete::cmd_complete;
 use crate::commands::query::AsmOptions;
+use crate::util::find_project_root;
 
 use clap::{Parser, Subcommand, ValueHint};
 use std::path::PathBuf;
@@ -81,6 +83,11 @@ enum Commands {
         path: PathBuf,
     },
     /// Parse source file(s) and emit .aden / .adoc contracts
+    /// Regenerate all contracts from source files (alias: aden gen .)
+    Regen {
+        #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
+        path: PathBuf,
+    },
     Gen {
         #[arg(value_name = "PATH", value_hint = ValueHint::AnyPath)]
         paths: Vec<PathBuf>,
@@ -122,6 +129,15 @@ enum Commands {
             help = "Minimum severity to fail: Suggest, Warn, Forbid"
         )]
         severity: String,
+    },
+    /// Complete incomplete contracts by filling in required documentation
+    Complete {
+        #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::AnyPath)]
+        path: PathBuf,
+        #[arg(long, help = "Dry-run mode (don't actually complete)", default_value = "false")]
+        dry_run: bool,
+        #[arg(long, value_name = "MODEL", help = "LLM model to use (e.g., ollama:llama3)")]
+        model: Option<String>,
     },
     /// Lint source files using tree-sitter AST analysis
     Lint {
@@ -171,12 +187,14 @@ enum Commands {
         #[arg(
             long,
             value_name = "FORMAT",
-            default_value = "aden",
-            help = "Output format: aden (human-readable), adg (compact JSON)"
+            default_value = "adg",
+            help = "Output format: adg (compact JSON for LLMs), aden (human-readable)"
         )]
         format: String,
         #[arg(long, help = "Silent mode: skip intro, output only context")]
         silent: bool,
+        #[arg(long, help = "LLM mode: compact output (adg), auto budget boost")]
+        llm: bool,
         #[arg(long, help = "Auto mode: adjust budget based on relevance scores")]
         auto: bool,
         #[arg(long, help = "Strict mode: never exceed budget (disable auto-boost)")]
@@ -265,6 +283,8 @@ enum Commands {
             help = "Filter by document type: module, adr, plan, use-case"
         )]
         doc_type: Option<String>,
+        #[arg(long, help = "Also include semantic relationship results")]
+        semantics: bool,
     },
     /// List all anchors and contracts in the knowledge graph (alias: ls)
     List {
@@ -276,6 +296,8 @@ enum Commands {
         filter: Option<String>,
         #[arg(long, help = "Show detailed information for each anchor")]
         verbose: bool,
+        #[arg(long, help = "Show only semantic concept nodes")]
+        semantics: bool,
         #[arg(
             long,
             value_name = "N",
@@ -303,6 +325,8 @@ enum Commands {
         caller_of: Option<String>,
         #[arg(long, value_name = "FORMAT", default_value = "plain")]
         format: String,
+        #[arg(long, value_name = "N", help = "Include N lines of context around symbol")]
+        show_context: Option<usize>,
         #[arg(
             long,
             value_name = "N",
@@ -310,6 +334,16 @@ enum Commands {
             help = "Limit number of results"
         )]
         limit: usize,
+        #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
+        path: PathBuf,
+    },
+    /// Show project health status at a glance
+    Status {
+        #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
+        path: PathBuf,
+    },
+    /// Run gen + check + heal in sequence to sync everything
+    Sync {
         #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
         path: PathBuf,
     },
@@ -322,6 +356,8 @@ enum Commands {
         graph_sync: bool,
         #[arg(long, help = "Restore graph from cache on startup for faster sync")]
         restore: bool,
+        #[arg(long, help = "Unified sync: run gen + check + heal on each change")]
+        sync: bool,
     },
     /// Self-healing documentation engine: scan for drift, propose patches, apply reviewed changes
     Heal {
@@ -529,6 +565,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match cli.command {
         Commands::Init { path } => commands::cmd_init(&path),
+        Commands::Regen { path } => {
+            let root = find_project_root(&path);
+            let gen_cache = root.join(".aden").join("gen-cache.json");
+            if gen_cache.exists() {
+                let _ = std::fs::remove_file(&gen_cache);
+            }
+            let graph_cache = root.join(".aden").join("cache");
+            if graph_cache.exists() {
+                let _ = std::fs::remove_dir_all(&graph_cache);
+            }
+            commands::cmd_gen(&path, None, false, true, false, false, "adoc")
+        }
         Commands::Gen {
             paths,
             out_dir,
@@ -554,6 +602,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             )
         }
         Commands::Check { path, severity } => commands::cmd_check(&path, &severity),
+        Commands::Complete { path, dry_run, model } => {
+            cmd_complete(&path, dry_run, model.as_deref())
+        }
         Commands::Lint {
             path,
             severity,
@@ -575,6 +626,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             path,
             format: asm_format,
             silent,
+            llm,
             auto,
             strict,
             inspect,
@@ -585,16 +637,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let types = edge_types
                 .map(|s| util::parse_edge_types(&s))
                 .unwrap_or_default();
+            // LLM mode: compact format, auto budget boost
+            let (effective_format, effective_budget, effective_auto) = if llm {
+                ("adg".to_string(), budget.max(8192), true)
+            } else {
+                (asm_format, budget, auto)
+            };
             commands::cmd_asm(AsmOptions {
                 path,
                 from,
                 depth,
-                budget,
+                budget: effective_budget,
                 edge_types: types,
                 out,
-                format: asm_format,
+                format: effective_format,
                 silent,
-                auto,
+                auto: effective_auto,
                 strict,
                 inspect,
                 include_tags: include_tag,
@@ -627,13 +685,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             model,
             path,
         } => commands::cmd_ask(&path, &question, from.as_deref(), budget, model.as_deref()),
-        Commands::Search { query, path, limit, offset, doc_type } => {
+        Commands::Search { query, path, limit, offset, doc_type, semantics } => {
             let effective_limit = if cli.unlimited { usize::MAX } else { limit };
-            commands::cmd_search(&path, &query, effective_limit, offset, doc_type.as_deref())
+            commands::cmd_search(&path, &query, effective_limit, offset, doc_type.as_deref(), semantics)
         }
         Commands::List {
             filter,
             verbose,
+            semantics,
             limit,
             offset,
             unlimited,
@@ -644,12 +703,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 limit
             };
-            commands::cmd_list(&path, filter.as_deref(), verbose, effective_limit, offset)
+            commands::cmd_list(&path, filter.as_deref(), verbose, effective_limit, offset, semantics)
         }
         Commands::Locate {
             symbol,
             caller_of,
             format,
+            show_context,
             path,
             limit,
         } => {
@@ -660,10 +720,62 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 caller_of.as_deref(),
                 &format,
                 effective_limit,
+                show_context,
             )
         }
         #[cfg(feature = "watch")]
-        Commands::Watch { path, graph_sync, restore } => commands::cmd_watch(&path, graph_sync, restore),
+        Commands::Status { path } => {
+            use crate::util::quick_health_score;
+            
+            println!("Aden Status: {}", path.display());
+            
+            let health = quick_health_score(&path).unwrap_or(0.0);
+            let health_pct = (health * 100.0).round() as i32;
+            
+            let emoji = if health >= 0.95 { "✅" } else if health >= 0.8 { "⚠️" } else { "❌" };
+            println!("{} Health: {}/100", emoji, health_pct);
+            
+            // Quick orphan check
+            let graph = aden_graph::cache::build_from_directory_cached(&path).ok();
+            if let Some(g) = graph {
+                let orphans = g.orphans();
+                if orphans.is_empty() {
+                    println!("✅ No orphan documents");
+                } else {
+                    println!("⚠️ {} orphan document(s)", orphans.len());
+                }
+            }
+            
+            Ok(())
+        }
+        Commands::Sync { path } => {
+            println!("Running aden sync on {}...", path.display());
+            
+            // 1. Generate contracts
+            println!("\n[1/3] Generating contracts...");
+            if let Err(e) = commands::cmd_gen(&path, None, false, true, false, false, "adoc") {
+                eprintln!("Gen error: {}", e);
+            }
+            
+            // 2. Check references
+            println!("\n[2/3] Checking references...");
+            if let Err(e) = commands::cmd_check(&path, "Warn") {
+                let msg = format!("{}", e);
+                if !msg.contains("ERROR") {
+                    println!("Check OK");
+                }
+            }
+            
+            // 3. Heal scan
+            println!("\n[3/3] Scanning for drift...");
+            if let Err(e) = commands::cmd_heal_scan(&path, false, false, false) {
+                eprintln!("Heal error: {}", e);
+            }
+            
+            println!("\nSync complete!");
+            Ok(())
+        }
+        Commands::Watch { path, graph_sync, restore, sync } => commands::cmd_watch(&path, graph_sync, restore, sync),
         Commands::Heal {
             path,
             propose,
