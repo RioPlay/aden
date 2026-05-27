@@ -52,4 +52,4 @@ A developer edits `src/lib.rs`, runs `aden gen --merge`, and the `.aden` file up
 
 . <<project-context>>
 . <<adr-001>>
-. Next: <<plan-phase1>>
+. Next: phase 1 TBD

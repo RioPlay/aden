@@ -37,7 +37,7 @@ fn infer_module_anchor(source_path: Option<&str>) -> Option<String> {
         && let Some(caps) = re.captures(path_str)
         && let Some(m) = caps.get(1)
     {
-        return Some(format!("mod-{}", m.as_str()));
+        return Some(format!("module-{}", m.as_str()));
     }
 
     // Pattern 2: src/module-name/ or src/module_name/
@@ -54,7 +54,7 @@ fn infer_module_anchor(source_path: Option<&str>) -> Option<String> {
             && !name.eq_ignore_ascii_case("examples")
             && !name.starts_with('.')
         {
-            return Some(format!("mod-{}", name));
+            return Some(format!("module-{}", name));
         }
     }
 
@@ -63,14 +63,14 @@ fn infer_module_anchor(source_path: Option<&str>) -> Option<String> {
         && let Some(caps) = re.captures(path_str)
         && let Some(m) = caps.get(1)
     {
-        return Some(format!("mod-{}", m.as_str()));
+        return Some(format!("module-{}", m.as_str()));
     }
 
     // Pattern 4: Root-level module (e.g., src/lib.rs or src/main.rs -> mod-root)
     if let Ok(re) = Regex::new(r"(?:^|/)src/(?:lib|main)\.rs$")
         && re.is_match(path_str)
     {
-        return Some("mod-root".to_string());
+        return Some("module-root".to_string());
     }
 
     None
@@ -492,7 +492,7 @@ fn emit_table_md(out: &mut String, table: &Table) {
     }
 }
 
-/// Convert AsciiDoc <<ref>> cross-references to Markdown [ref](#ref) links.
+/// Convert AsciiDoc cross-references to Markdown links.
 fn convert_xref_to_md_links(text: &str) -> String {
     let mut result = String::new();
     let mut remaining = text;

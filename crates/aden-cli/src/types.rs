@@ -160,6 +160,30 @@ pub fn get_anchor_aliases() -> HashMap<&'static str, &'static str> {
     m.insert("trace", "mod-aden-telemetry");
     m.insert("metrics", "mod-aden-telemetry");
 
+    // === DETERMINISMS & SEMANTIC ===
+    m.insert("determinism", "determinisms");
+    m.insert("determinisms", "determinisms");
+    m.insert("semantic", "determinisms");
+    m.insert("boolean", "determinisms");
+    m.insert("true", "determinisms");
+    m.insert("false", "determinisms");
+    m.insert("time", "determinisms");
+    m.insert("midnight", "determinisms");
+    m.insert("noon", "determinisms");
+    m.insert("number", "determinisms");
+    m.insert("numbers", "determinisms");
+    m.insert("month", "determinisms");
+    m.insert("months", "determinisms");
+    m.insert("may", "determinisms");
+    m.insert("january", "determinisms");
+
+    // === MODULE ALIASES (exact module names) ===
+    m.insert("module-aden-index", "aden://module/aden-index/lib.rs#tokenize");
+    m.insert("module-aden-graph", "aden://module/aden-graph/lib.rs#graph");
+    m.insert("module-aden-core", "aden://module/aden-core/lib.rs#Document");
+    m.insert("module-aden-parse", "aden://module/aden-parse/lib.rs#parse_file");
+    m.insert("module-aden-cli", "aden://module/aden-cli/main.rs#main");
+
     // === ADEN ACTIONS ===
     m.insert("lint", "mod-aden-cli");
     m.insert("linting", "mod-aden-cli");

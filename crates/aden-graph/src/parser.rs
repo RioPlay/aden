@@ -65,6 +65,14 @@ static CHECKLIST_UNCHECKED_RE: LazyLock<Regex> =
 static CHECKLIST_CHECKED_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^\[[ xX]\]\s*(.*)$").expect("static regex"));
 
+/// A semantic relation from [semantics] blocks.
+#[derive(Debug, Clone)]
+pub struct SemanticRelation {
+    pub source: String,
+    pub relation: String,
+    pub target: String,
+}
+
 /// A document parsed from an AsciiDoc source.
 #[derive(Debug, Clone)]
 pub struct ParsedDocument {
@@ -85,6 +93,8 @@ pub struct ParsedDocument {
     pub conditional_regions: Vec<ConditionalRegion>,
     /// Document-level metadata.
     pub metadata: Option<aden_core::DocumentMetadata>,
+    /// Semantic relations from [semantics] blocks (brain-like networks).
+    pub semantic_relations: Vec<SemanticRelation>,
 }
 
 /// An `include::path[attributes]` directive.
@@ -160,6 +170,7 @@ enum BlockState {
     InTable,
     InListing,
     InParagraph,
+    InSemantics,
 }
 
 /// Parse an AsciiDoc file into a `ParsedDocument`.
@@ -176,6 +187,7 @@ pub fn parse_file(path: &Path) -> Result<ParsedDocument, ParseError> {
     let mut edges = Vec::new();
     let mut conditional_stack = Vec::new();
     let mut semantic_diffs = Vec::new();
+    let mut semantic_relations: Vec<SemanticRelation> = Vec::new();
     let mut blocks: Vec<Block> = Vec::new();
     let mut tagged_regions: Vec<TaggedRegion> = Vec::new();
     let mut active_tags: Vec<String> = Vec::new();
@@ -479,6 +491,9 @@ pub fn parse_file(path: &Path) -> Result<ParsedDocument, ParseError> {
                     };
                     let text = cap[2].to_string();
                     blocks.push(Block::Admonition { kind, text });
+                } else if trimmed == "[semantics]" {
+                    // Start a semantics block - parse relation lines
+                    state = BlockState::InSemantics;
                 } else if let Some(cap) = DESC_LIST_RE.captures(trimmed) {
                     let term = cap[1].trim().to_string();
                     let def = cap[2].trim().to_string();
@@ -588,6 +603,27 @@ pub fn parse_file(path: &Path) -> Result<ParsedDocument, ParseError> {
                 }
                 last_line_was_source_directive = false;
             }
+
+            BlockState::InSemantics => {
+                // End semantics block on ---- or =====
+                if trimmed == "----" || trimmed.starts_with("====") {
+                    state = BlockState::Idle;
+                } else if !trimmed.is_empty() && !trimmed.starts_with("//") {
+                    // Parse relation line: "Source Relation Target"
+                    // e.g., "Noun IsA PartOfSpeech"
+                    let parts: Vec<&str> = trimmed.split_whitespace().collect();
+                    if parts.len() >= 3 {
+                        let source = parts[0].to_string();
+                        let relation = parts[1].to_string();
+                        let target = parts[2..].join(" ");
+                        semantic_relations.push(SemanticRelation {
+                            source,
+                            relation,
+                            target,
+                        });
+                    }
+                }
+            }
         }
     }
 
@@ -605,6 +641,9 @@ pub fn parse_file(path: &Path) -> Result<ParsedDocument, ParseError> {
                 language: listing_lang,
                 code: listing_code.trim_end_matches('\n').to_string(),
             });
+        }
+        BlockState::InSemantics => {
+            // Flush any remaining relations (block ended by EOF)
         }
         BlockState::Idle => {}
     }
@@ -631,6 +670,7 @@ pub fn parse_file(path: &Path) -> Result<ParsedDocument, ParseError> {
         tagged_regions,
         conditional_regions,
         metadata,
+        semantic_relations,
     })
 }
 

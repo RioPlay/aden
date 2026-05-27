@@ -111,5 +111,5 @@ Becomes:
 include::philosophy.adoc[]
 
 . <<adr-001>> — AsciiDoc as native substrate
-. <<plan-phase1>> — References `aden bootstrap --from-markdown` (inverse direction)
+. <<plan-phase0>> — Bootstrap phase (phase 1 TBD)
 . <<doc-rot>> — Documents documentation rot problem

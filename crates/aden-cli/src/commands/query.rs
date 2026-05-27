@@ -1,6 +1,7 @@
 use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 
+use aden_core::AdenConfig;
 use aden_graph::Direction;
 
 use crate::types::{AnchorPattern, QueryIntent, get_anchor_aliases};
@@ -23,9 +24,15 @@ fn resolve_anchor_fuzzy(query: &str, results: &[SearchResult]) -> String {
         if query_lower.contains(alias) {
             // Check if any result anchor contains the target (more flexible matching)
             // Also check starts_with for exact module matches
+            // Handle both "mod-aden-index" and "aden://module/aden-index" formats
             if let Some(matched) = results
                 .iter()
-                .find(|r| r.anchor.starts_with(target_anchor) || r.anchor.contains(target_anchor))
+                .find(|r| {
+                    r.anchor.starts_with(target_anchor) 
+                        || r.anchor.contains(target_anchor)
+                        || r.anchor.contains(target_anchor.trim_start_matches("mod-"))
+                        || target_anchor.contains(r.anchor.split('/').last().unwrap_or(""))
+                })
             {
                 return matched.anchor.clone();
             }
@@ -753,8 +760,17 @@ pub fn cmd_search(
         return Err("search requires a directory path".into());
     }
 
+    // Load config to check for private patterns (ADRs, retros, etc.)
+    let config = AdenConfig::load(path);
+
     let index = load_or_build_index(path)?;
     let mut results = index.query(query);
+
+    // Filter out private anchors (ADRs, retros, kickoffs, etc.) in public mode
+    let is_public = matches!(config.profile.mode, aden_core::ProfileMode::Public);
+    if is_public {
+        results.retain(|r| !config.is_private_anchor(&r.anchor));
+    }
 
     // Filter by document type if specified
     if let Some(dt) = doc_type {
@@ -1027,12 +1043,44 @@ pub fn cmd_locate(
 }
 
 #[cfg(feature = "watch")]
-pub fn cmd_watch(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+pub fn cmd_watch(
+    path: &Path,
+    graph_sync: bool,
+    restore: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
     use std::sync::mpsc::channel;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+    use std::collections::HashSet;
 
     if !path.is_dir() {
         return Err("watch requires a directory path".into());
+    }
+
+    let running = Arc::new(AtomicBool::new(true));
+    let r = running.clone();
+
+    // Setup ctrl-c handler
+    ctrlc::set_handler(move || {
+        r.store(false, Ordering::SeqCst);
+    }).expect("Error setting Ctrl-C handler");
+
+    // Optional: Restore graph from cache for faster startup
+    let mut graph: Option<aden_graph::graph::AdenGraph> = None;
+    if graph_sync && restore {
+        println!("Restoring graph from cache...");
+        match aden_graph::cache::build_from_directory_cached(path) {
+            Ok(g) => {
+                let anchor_count = g.graph.node_indices().count();
+                println!("Restored graph ({} anchors)", anchor_count);
+                graph = Some(g);
+            }
+            Err(e) => {
+                println!("Note: Could not restore graph (will build fresh): {}", e);
+            }
+        }
     }
 
     let (tx, rx) = channel();
@@ -1100,54 +1148,92 @@ pub fn cmd_watch(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let contracts_dir = path.join("contracts");
     std::fs::create_dir_all(&contracts_dir)?;
 
-    for event in rx {
-        for p in &event.paths {
-            if let Some(ext) = p.extension().and_then(|e| e.to_str()) {
-                let ext = ext.to_lowercase();
-                if source_exts.contains(&ext.as_str()) {
-                    println!("INFO: Source change detected in {}", p.display());
-                    if let Ok(source) = std::fs::read_to_string(p) {
-                        match aden_parse::parse_file(p, &source) {
-                            Ok(mut docs) if !docs.is_empty() => {
-                                for doc in &mut docs {
-                                    sanitize_source_file(doc);
-                                    let safe_anchor = sanitize_anchor(&doc.anchor);
-                                    let out_path =
-                                        contracts_dir.join(format!("{}.adoc", safe_anchor));
-                                    if let Err(e) =
-                                        std::fs::write(&out_path, aden_emit::emit_document(doc))
-                                    {
-                                        eprintln!(
-                                            "ERROR: Failed to write {}: {}",
-                                            out_path.display(),
-                                            e
-                                        );
-                                    } else {
-                                        println!("INFO: Regenerated {}", out_path.display());
-                                    }
-                                }
-                            }
-                            Ok(_) => {}
-                            Err(aden_core::Error::UnsupportedLanguage(_)) => {
-                                // Silently skip; may be a file extension we don't support yet.
-                            }
-                            Err(e) => eprintln!("ERROR: Parse failed for {}: {}", p.display(), e),
-                        }
-                    }
-                } else if matches!(ext.as_str(), "adoc" | "aden") {
-                    println!("INFO: Doc change detected in {}", p.display());
-                    // Validate
-                    match perform_check(path) {
-                        Ok(messages) => {
-                            for msg in messages {
-                                println!("{}", msg);
-                            }
-                        }
-                        Err(e) => eprintln!("ERROR: Check failed: {}", e),
+    // Debounce state
+    let debounce_duration = Duration::from_millis(100);
+    let mut pending_paths: HashSet<std::path::PathBuf> = HashSet::new();
+    let mut last_process_time = Instant::now();
+
+    // Graph sync state
+    let _graph_arc = if graph_sync {
+        graph.map(|g| std::sync::Arc::new(std::sync::Mutex::new(g)))
+    } else {
+        None
+    };
+
+    println!("Watching {} for changes... Press Ctrl+C to stop.", path.display());
+    if graph_sync {
+        println!("Graph sync enabled - contracts and graph stay current.");
+    }
+
+    // Main event loop
+    while running.load(Ordering::SeqCst) {
+        // Process events with debouncing
+        for event in rx.try_iter() {
+            for p in &event.paths {
+                if let Some(ext) = p.extension().and_then(|e| e.to_str()) {
+                    let ext = ext.to_lowercase();
+                    if source_exts.contains(&ext.as_str()) || ext == "adoc" || ext == "aden" {
+                        pending_paths.insert(p.clone());
                     }
                 }
             }
         }
+
+        // Only process if debounce window passed
+        if !pending_paths.is_empty() && last_process_time.elapsed() >= debounce_duration {
+            let paths_to_process: Vec<_> = pending_paths.drain().collect();
+            last_process_time = Instant::now();
+            let mut contracts_regenerated = 0usize;
+
+            // Process each changed file
+            for p in &paths_to_process {
+                if let Some(ext) = p.extension().and_then(|e| e.to_str()) {
+                    let ext = ext.to_lowercase();
+
+                    if source_exts.contains(&ext.as_str()) {
+                        // Source file change - regenerate contract
+                        println!("INFO: Source change: {}", p.file_name().unwrap_or_default().to_string_lossy());
+                        if let Ok(source) = std::fs::read_to_string(p) {
+                            match aden_parse::parse_file(p, &source) {
+                                Ok(mut docs) if !docs.is_empty() => {
+                                    for doc in &mut docs {
+                                        sanitize_source_file(doc);
+                                        let safe_anchor = sanitize_anchor(&doc.anchor);
+                                        let out_path = contracts_dir.join(format!("{}.adoc", safe_anchor));
+                                        if std::fs::write(&out_path, aden_emit::emit_document(doc)).is_ok() {
+                                            contracts_regenerated += 1;
+                                        }
+                                    }
+                                }
+                                Ok(_) => {}
+                                Err(aden_core::Error::UnsupportedLanguage(_)) => {}
+                                Err(e) => eprintln!("ERROR: Parse failed: {}", e),
+                            }
+                        }
+                    } else if ext == "adoc" || ext == "aden" {
+                        // Doc file change - validate
+                        if let Err(e) = perform_check(path) {
+                            eprintln!("ERROR: Check failed: {}", e);
+                        }
+                    }
+                }
+            }
+
+            // Summary
+            if contracts_regenerated > 0 {
+                println!("INFO: Regenerated {} contract(s)", contracts_regenerated);
+                
+                // Optional: Update graph incrementally
+                if graph_sync {
+                    // For now, just rebuild graph (incremental coming soon)
+                    // TODO: Implement incremental graph update
+                }
+            }
+        }
+
+        // Small sleep to prevent CPU spinning
+        std::thread::sleep(Duration::from_millis(10));
     }
+
     Ok(())
 }

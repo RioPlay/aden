@@ -384,31 +384,31 @@ Extracted and indexed for search.
 |===
 |Command |Purpose |Example
 
-|<<cmd-init, aden init>> |Scaffold .agent/ templates |`aden init .`
+|`aden init` |Scaffold .agent/ templates |`aden init .`
 
-|<<cmd-gen, aden gen>> |Generate contracts |`aden gen src/lib.rs`, `aden gen --auto .`
+|`aden gen` |Generate contracts |`aden gen src/lib.rs`, `aden gen --auto .`
 
-|<<cmd-gen, aden gen --merge>> |Preserve human blocks |`aden gen src/ --auto --merge`
+|`aden gen --merge` |Preserve human blocks |`aden gen src/ --auto --merge`
 
-|<<cmd-gen, aden gen --propose>> |Dry-run merge |`aden gen src/ --propose`
+|`aden gen --propose` |Dry-run merge |`aden gen src/ --propose`
 
-|<<cmd-check, aden check>> |Validate references |`aden check .`
+|`aden check` |Validate references |`aden check .`
 
-|<<cmd-ask, aden ask>> |Ask a question |`aden ask "How does auth work?"`
+|`aden ask` |Ask a question |`aden ask "How does auth work?"`
 
-|<<cmd-asm, aden asm>> |Assemble context |`aden asm --from mod-aden-core --depth 2`
+|`aden asm` |Assemble context |`aden asm --from mod-aden-core --depth 2`
 
-|<<cmd-query, aden query>> |Graph queries |`aden query --from mod-aden-core --depth 2`
+|`aden query` |Graph queries |`aden query --from mod-aden-core --depth 2`
 
-|<<cmd-search, aden search>> |Full-text search |`aden search "token budget"`
+|`aden search` |Full-text search |`aden search "token budget"`
 
-|<<cmd-heal, aden heal>> |Detect drift |`aden heal .`
+|`aden heal` |Detect drift |`aden heal .`
 
-|<<cmd-ci-check, aden ci-check>> |Run all gates |`aden ci-check .`
+|`aden ci-check` |Run all gates |`aden ci-check .`
 
-|<<cmd-lint, aden lint>> |Lint source files |`aden lint .`
+|`aden lint` |Lint source files |`aden lint .`
 
-|<<cmd-test, aden test>> |Run tests |`aden test .`
+|`aden test` |Run tests |`aden test .`
 |===
 
 == Related Documents

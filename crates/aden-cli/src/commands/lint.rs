@@ -209,6 +209,7 @@ fn apply_lint_rules(path: &Path, line: &str, line_num: usize, ext: &str) -> Vec<
         "cs" => lint_csharp_line(line, line_num),
         "rb" => lint_ruby_line(line, line_num),
         "php" => lint_php_line(line, line_num),
+        "adoc" | "aden" => lint_adoc_line(line, line_num),
         _ => vec![],
     };
 
@@ -655,6 +656,51 @@ fn lint_php_line(line: &str, line_num: usize) -> Vec<LintResult> {
             severity: LintSeverity::Error,
             rule: "eval_usage".to_string(),
             message: "eval() is a severe security risk".to_string(),
+        });
+    }
+
+    results
+}
+
+fn lint_adoc_line(line: &str, line_num: usize) -> Vec<LintResult> {
+    let mut results = Vec::new();
+
+    // Rule: No ASCII art graphs - must use Mermaid
+    // Box-drawing characters that indicate ASCII graphs
+    let ascii_graph_chars = ['│', '├', '└', '┌', '┐', '┘', '┼', '╭', '╮', '╯', '╰', '═'];
+    let has_ascii_graph = ascii_graph_chars.iter().any(|c| line.contains(*c));
+
+    // But allow if it's inside a mermaid block
+    // This is a simple heuristic - would need more sophisticated parsing for full correctness
+    let is_in_mermaid = line.starts_with("----")
+        || line.contains("[mermaid")
+        || line.starts_with("flowchart")
+        || line.starts_with("graph")
+        || line.starts_with("pie")
+        || line.starts_with("sequenceDiagram")
+        || line.starts_with("classDiagram")
+        || line.starts_with("stateDiagram");
+
+    if has_ascii_graph && !is_in_mermaid && line.len() > 10 {
+        results.push(LintResult {
+            file: String::new(),
+            line: line_num,
+            column: 1,
+            severity: LintSeverity::Error,
+            rule: "ascii_graph".to_string(),
+            message: "ASCII graph detected. Use Mermaid diagrams in [mermaid] code blocks instead.".to_string(),
+        });
+    }
+
+    // Rule: References must use <<anchor>> format
+    if line.contains("link:") && !line.contains("<<") {
+        results.push(LintResult {
+            file: String::new(),
+            line: line_num,
+            column: line.find("link:").unwrap_or(0) + 1,
+            severity: LintSeverity::Suggest,
+            rule: "adoc_ref_style".to_string(),
+            message: "Use <<anchor>> references instead of link: URLs".to_string(),
         });
     }
 

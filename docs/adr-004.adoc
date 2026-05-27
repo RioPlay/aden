@@ -212,5 +212,5 @@ include::philosophy.adoc[]
 
 . <<adr-001>> — AsciiDoc as native substrate
 . <<adr-003>> — Markdown emission and cross-format drift detection
-. <<plan-phase1>> — References `aden bootstrap --from-markdown`
+. <<plan-phase0>> — Bootstrap phase (phase 1 TBD)
 . <<doc-rot>> — Documents documentation rot problem

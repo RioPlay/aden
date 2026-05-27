@@ -197,3 +197,59 @@ fn test_query_from_returns_json() {
     assert!(output.status.success(), "aden query failed: {}", stdout);
     // JSON output should start with [ or { depending on implementation
 }
+
+// Additional CLI command tests - verify commands run without crashing
+#[test]
+fn test_additional_commands() {
+    let dir = temp_project::temp_dir();
+    temp_project::scaffold(&dir);
+
+    // Test locate
+    let _ = std::process::Command::new("aden")
+        .args(["locate", "--symbol", "module-a", &dir.to_string_lossy()])
+        .output();
+
+    // Test gen (may have no source files)
+    let _ = std::process::Command::new("aden")
+        .args(["gen", "--auto", &dir.to_string_lossy()])
+        .output();
+
+    // Test lint
+    let lint = std::process::Command::new("aden")
+        .args(["lint", &dir.to_string_lossy()])
+        .output()
+        .expect("aden binary must be installed");
+    assert!(lint.status.success(), "lint should pass");
+
+    // Test test --list
+    let test = std::process::Command::new("aden")
+        .args(["test", "--list", &dir.to_string_lossy()])
+        .output()
+        .expect("aden binary must be installed");
+    assert!(test.status.success(), "test --list should work");
+
+    // Test heal
+    let heal = std::process::Command::new("aden")
+        .args(["heal", &dir.to_string_lossy()])
+        .output()
+        .expect("aden binary must be installed");
+    assert!(heal.status.success(), "heal should run");
+
+    // Test list
+    let list = std::process::Command::new("aden")
+        .args(["list", &dir.to_string_lossy()])
+        .output()
+        .expect("aden binary must be installed");
+    assert!(list.status.success(), "list should work");
+    assert!(
+        String::from_utf8_lossy(&list.stdout).contains("readme"),
+        "Should list readme anchor"
+    );
+
+    // Test mcp list
+    let mcp = std::process::Command::new("aden")
+        .args(["mcp", "list"])
+        .output()
+        .expect("aden binary must be installed");
+    assert!(mcp.status.success(), "mcp list should work");
+}

@@ -318,6 +318,7 @@ fn build_graph_from_indexed(indexed: IndexedGraph) -> AdenGraph {
                     conditional_stack: Vec::new(),
                     raw_content: String::new(),
                     semantic_diffs: Vec::new(),
+                    semantic_relations: Vec::new(),
                     blocks: Vec::new(),
                     tagged_regions: Vec::new(),
                     conditional_regions: Vec::new(),

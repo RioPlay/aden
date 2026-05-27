@@ -112,9 +112,9 @@ Contributing:: See CONTRIBUTING.md
 == Related Documents
 
 . Root entry point: `README.adoc` at repository root
-. Phase plans: <<plan-phase0>>, <<plan-phase1>>, <<plan-phase2>>, <<plan-phase3>>, <<plan-phase4>>, <<plan-phase5>>, <<plan-phase6>>, <<plan-governance>>
+. Phase plans: <<plan-phase0>> (phase 1-6 TBD)
 . Architecture decisions: <<adr-001>>, <<adr-002>>
 . Background: <<philosophy>>, <<use-cases>>
 . Agent workspace: `.agent/context.adoc` at repository root
 . Security: run `aden audit .` for security scanning
-. Quick start: <<quickstart>> (AI agent onboarding)
+. Quick start: see getting-started.adoc (AI agent onboarding)

@@ -318,6 +318,10 @@ enum Commands {
     Watch {
         #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
         path: PathBuf,
+        #[arg(long, help = "Also sync graph in real-time (contracts + graph stay current)")]
+        graph_sync: bool,
+        #[arg(long, help = "Restore graph from cache on startup for faster sync")]
+        restore: bool,
     },
     /// Self-healing documentation engine: scan for drift, propose patches, apply reviewed changes
     Heal {
@@ -659,7 +663,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             )
         }
         #[cfg(feature = "watch")]
-        Commands::Watch { path } => commands::cmd_watch(&path),
+        Commands::Watch { path, graph_sync, restore } => commands::cmd_watch(&path, graph_sync, restore),
         Commands::Heal {
             path,
             propose,

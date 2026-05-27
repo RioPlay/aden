@@ -246,6 +246,20 @@ pub struct ProfileConfig {
     /// Directories that are only visible in Internal mode.
     #[serde(default = "default_private_dirs")]
     pub private_dirs: Vec<String>,
+    /// Document anchor patterns that are private (proposals, not implementation).
+    /// ADRs, retrospectives, kickoffs, research notes are proposals - not reality.
+    #[serde(default = "default_private_patterns")]
+    pub private_patterns: Vec<String>,
+}
+
+fn default_private_patterns() -> Vec<String> {
+    vec![
+        "adr-*".to_string(),      // Architecture Decision Records
+        "retro-*".to_string(),    // Incident retrospectives
+        "kickoff-*".to_string(),  // Project kickoffs
+        "research-*".to_string(), // Research notes
+        "design-*".to_string(),   // Pre-implementation designs
+    ]
 }
 
 fn default_redact_fields() -> Vec<String> {
@@ -271,13 +285,13 @@ impl AdenConfig {
     pub fn load(dir: &std::path::Path) -> Self {
         let path = dir.join("aden.toml");
         if path.exists() {
-            std::fs::read_to_string(&path)
-                .ok()
-                .and_then(|s| toml::from_str(&s).ok())
-                .unwrap_or_default()
-        } else {
-            Self::default()
+            if let Ok(text) = std::fs::read_to_string(&path) {
+                if let Ok(config) = toml::from_str::<AdenConfig>(&text) {
+                    return config;
+                }
+            }
         }
+        Self::default()
     }
 
     /// Is the given path inside a private directory?
@@ -286,10 +300,42 @@ impl AdenConfig {
             return false;
         }
         let path_str = path.to_string_lossy();
-        self.profile
-            .private_dirs
-            .iter()
-            .any(|d| path_str.contains(d))
+        // Check private directories
+        if self.profile.private_dirs.iter().any(|d| path_str.contains(d)) {
+            return true;
+        }
+        // Check private patterns (ADRs, retros, kickoffs, etc.)
+        // These are proposals, not implementation - don't leak to public
+        for pattern in &self.profile.private_patterns {
+            if glob_match(&path_str, pattern) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Is this anchor a private pattern (ADR, retro, etc.)?
+    pub fn is_private_anchor(&self, anchor: &str) -> bool {
+        if self.profile.mode == ProfileMode::Internal {
+            return false;
+        }
+        for pattern in &self.profile.private_patterns {
+            if glob_match(anchor, pattern) {
+                return true;
+            }
+        }
+        false
+    }
+}
+
+fn glob_match(text: &str, pattern: &str) -> bool {
+    // Simple glob matching: adr-* matches adr-001, adr-005, etc.
+    if let Some(star_pos) = pattern.find('*') {
+        let prefix = &pattern[..star_pos];
+        let suffix = &pattern[star_pos + 1..];
+        text.starts_with(prefix) && (suffix.is_empty() || text.ends_with(suffix))
+    } else {
+        text == pattern
     }
 }
 
@@ -448,8 +494,11 @@ pub struct Edge {
 }
 
 /// Strict enumeration of edge types.
+/// Code edges: structural relationships in source code.
+/// Semantic edges: conceptual relationships (brain-like networks).
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 pub enum EdgeType {
+    // === Code Edges (structural) ===
     Uses,
     Implements,
     Tests,
@@ -463,6 +512,89 @@ pub enum EdgeType {
     Supersedes,
     Amends,
     Verifies,
+    // === Semantic Edges (conceptual/brain-like) ===
+    /// Inheritance/subsumption (dog IS-A animal)
+    IsA,
+    /// Structural composition (wheel PART-OF car)
+    PartOf,
+    /// General relatedness (bidirectional feel)
+    RelatesTo,
+    /// Analogical relationship (similarTo)
+    SimilarTo,
+    /// Direct causation (cause EFFECT)
+    Causes,
+    /// Logical entailment (premise IMPLIES conclusion)
+    Implies,
+    /// Alternate naming (synonym)
+    SynonymOf,
+    /// Opposite concept (antonym)
+    AntonymOf,
+    /// Hebbian co-activation (frequently co-occur)
+    AssociatedWith,
+    /// Learning sequence (must-know before)
+    PrerequisiteFor,
+    /// Provides explanation for
+    Explains,
+    /// Deterministic equivalence (May IS-EQUIVALENT-TO 5, midnight IS-EQUIVALENT-TO 00:00)
+    IsEquivalentTo,
+}
+
+impl EdgeType {
+    /// Returns true if this is a semantic (conceptual) edge type.
+    pub fn is_semantic(&self) -> bool {
+        matches!(
+            self,
+            EdgeType::IsA
+                | EdgeType::PartOf
+                | EdgeType::RelatesTo
+                | EdgeType::SimilarTo
+                | EdgeType::Causes
+                | EdgeType::Implies
+                | EdgeType::SynonymOf
+                | EdgeType::AntonymOf
+                | EdgeType::AssociatedWith
+                | EdgeType::PrerequisiteFor
+                | EdgeType::Explains
+                | EdgeType::IsEquivalentTo
+        )
+    }
+
+    /// Returns true if this is a code (structural) edge type.
+    pub fn is_code(&self) -> bool {
+        !self.is_semantic()
+    }
+
+    /// Weight for spreading activation (0.0-1.0).
+    pub fn activation_weight(&self) -> f64 {
+        match self {
+            EdgeType::IsA => 1.0,
+            EdgeType::PartOf => 0.9,
+            EdgeType::Causes => 0.9,
+            EdgeType::SimilarTo => 0.7,
+            EdgeType::PrerequisiteFor => 0.7,
+            EdgeType::Implies => 0.7,
+            EdgeType::RelatesTo => 0.5,
+            EdgeType::AssociatedWith => 0.5,
+            EdgeType::Explains => 0.5,
+            EdgeType::IsEquivalentTo => 0.95,
+            EdgeType::SynonymOf => 0.8,
+            EdgeType::AntonymOf => 0.4,
+            // Code edges get medium weight in semantic context
+            EdgeType::Uses => 0.8,
+            EdgeType::Calls => 0.8,
+            EdgeType::Implements => 0.8,
+            EdgeType::Tests => 0.6,
+            EdgeType::Verifies => 0.6,
+            EdgeType::Documents => 0.5,
+            EdgeType::Constrains => 0.7,
+            EdgeType::Justifies => 0.5,
+            EdgeType::Invokes => 0.7,
+            EdgeType::Requires => 0.6,
+            EdgeType::Mutates => 0.6,
+            EdgeType::Supersedes => 0.5,
+            EdgeType::Amends => 0.5,
+        }
+    }
 }
 
 // ── Accreditation ────────────────────────────────────────

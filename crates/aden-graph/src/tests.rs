@@ -19,6 +19,7 @@
 mod tests {
     use crate::{AdenGraph, DocumentNode, cycles, parser};
     use aden_core::{Document, EdgeType, NodeType};
+    use petgraph::visit::EdgeRef;
     use std::collections::HashMap;
     use std::io::Write;
     use tempfile::NamedTempFile;
@@ -128,6 +129,7 @@ agent-note::DEPRECATED[2024-03-01] Use new_module instead
             conditional_stack: Vec::new(),
             raw_content: String::new(),
             semantic_diffs: Vec::new(),
+            semantic_relations: Vec::new(),
             blocks: Vec::new(),
             tagged_regions: Vec::new(),
             conditional_regions: Vec::new(),
@@ -184,6 +186,7 @@ agent-note::DEPRECATED[2024-03-01] Use new_module instead
             conditional_stack: Vec::new(),
             raw_content: String::new(),
             semantic_diffs: Vec::new(),
+            semantic_relations: Vec::new(),
             blocks: Vec::new(),
             tagged_regions: Vec::new(),
             conditional_regions: Vec::new(),
@@ -425,5 +428,130 @@ Closing paragraph.
         assert!(found_table, "Should find table block");
         assert!(found_admonition, "Should find admonition block");
         assert!(found_listing, "Should find listing block");
+    }
+
+    #[test]
+    fn test_graph_operations() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.adoc"), "[[a]]\n= A\n\ninclude::b.adoc[]").unwrap();
+        std::fs::write(dir.path().join("b.adoc"), "[[b]]\n= B\n").unwrap();
+        std::fs::write(dir.path().join("c.adoc"), "[[c]]\n= C\n\ninclude::b.adoc[]").unwrap();
+
+        let mut graph = AdenGraph::build_from_directory(dir.path()).unwrap();
+        crate::backlinks::inject_backlinks(&mut graph);
+
+        // Test get_node
+        let node = graph.get_node("b").expect("b should exist");
+        assert_eq!(node.anchor, "b");
+
+        // Test backlinks
+        let backlinks = graph.get_backlinks("b");
+        assert!(backlinks.contains(&"a".to_string()));
+        assert!(backlinks.contains(&"c".to_string()));
+
+        // Test edge traversal
+        let a_idx = graph.anchor_to_index["a"];
+        let outgoing: Vec<_> = graph
+            .graph
+            .edges(a_idx)
+            .map(|e| graph.graph[e.target()].anchor.clone())
+            .collect();
+        assert!(outgoing.contains(&"b".to_string()));
+        assert_eq!(outgoing.len(), 1, "a should have 1 outgoing edge");
+
+        // Test statistics
+        assert_eq!(graph.graph.node_count(), 3);
+        assert!(graph.graph.edge_count() >= 1);
+
+        // Test anchor_to_index consistency
+        for node in graph.graph.node_weights() {
+            assert!(graph.anchor_to_index.contains_key(&node.anchor));
+        }
+    }
+
+    #[test]
+    fn test_semantic_edge_types() {
+        use aden_core::EdgeType;
+
+        let mut graph = AdenGraph::new();
+
+        let parsed = parser::ParsedDocument {
+            source_path: "/tmp/test.adoc".to_string(),
+            attributes: HashMap::new(),
+            anchors: vec!["concept-a".to_string()],
+            refs: Vec::new(),
+            includes: Vec::new(),
+            edges: Vec::new(),
+            conditional_stack: Vec::new(),
+            raw_content: String::new(),
+            semantic_diffs: Vec::new(),
+            semantic_relations: Vec::new(),
+            blocks: Vec::new(),
+            tagged_regions: Vec::new(),
+            conditional_regions: Vec::new(),
+            metadata: None,
+        };
+
+        let doc1 = Document {
+            anchor: "concept-a".to_string(),
+            node_type: NodeType::Note,
+            attributes: HashMap::new(),
+            blocks: Vec::new(),
+            source_span: None,
+            metadata: None,
+        };
+        let doc2 = Document {
+            anchor: "concept-b".to_string(),
+            node_type: NodeType::Note,
+            attributes: HashMap::new(),
+            blocks: Vec::new(),
+            source_span: None,
+            metadata: None,
+        };
+
+        let node1 = DocumentNode {
+            anchor: "concept-a".to_string(),
+            doc: doc1,
+            parsed: parsed.clone(),
+            source_path: std::path::PathBuf::from("/tmp/test.adoc"),
+        };
+        let node2 = DocumentNode {
+            anchor: "concept-b".to_string(),
+            doc: doc2,
+            parsed,
+            source_path: std::path::PathBuf::from("/tmp/test2.adoc"),
+        };
+
+        let idx1 = graph.graph.add_node(node1);
+        let idx2 = graph.graph.add_node(node2);
+        graph.anchor_to_index.insert("concept-a".to_string(), idx1);
+        graph.anchor_to_index.insert("concept-b".to_string(), idx2);
+
+        // Test semantic edge types
+        let semantic_edges = vec![
+            EdgeType::IsA,
+            EdgeType::PartOf,
+            EdgeType::RelatesTo,
+            EdgeType::SimilarTo,
+            EdgeType::Causes,
+            EdgeType::Implies,
+            EdgeType::SynonymOf,
+            EdgeType::AntonymOf,
+            EdgeType::AssociatedWith,
+            EdgeType::PrerequisiteFor,
+            EdgeType::Explains,
+            EdgeType::IsEquivalentTo,
+        ];
+
+        for edge_type in semantic_edges {
+            graph.graph.add_edge(idx1, idx2, edge_type.clone());
+            let errors = graph.validate_typed_edges();
+            assert!(
+                errors.is_empty(),
+                "Semantic edge {:?} should be valid, got errors: {:?}",
+                edge_type,
+                errors
+            );
+        }
     }
 }

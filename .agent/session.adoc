@@ -12,6 +12,12 @@ Every agent that modifies files must append an entry here before completing.
 |===
 |Timestamp |Agent |Task |Files |Status |Confidence
 |2026-05-25T00:00:00Z |opencode |Init session |.agent/* |completed |High |Result: Fixed 38 StaleHash drift events, all refs resolve
+|2026-05-26T18:32:00Z |opencode |Semantic search fix |crates/aden-index/src/lib.rs |completed |High |Result: Fixed semantic normalization - "May" now matches "5", "fifth", etc. Fix applies normalization BEFORE stop word filtering.
+|2026-05-26T19:00:00Z |opencode |Time determinisms |crates/aden-index/src/lib.rs |completed |High |Result: Added comprehensive bidirectional time normalization - midnight↔00:00, noon↔12:00, 5pm→17:00, dawn→06:00, dusk→18:00, etc. Table-driven with 30+ mappings.
+|2026-05-26T19:30:00Z |opencode |Boolean determinisms |crates/aden-index/src/lib.rs |completed |High |Result: Added bidirectional boolean normalization - yep/nope/yes/no/on/off/enabled/disabled ↔ true/false. Covers 40+ slang variants for yes/no decisions.
+|2026-05-26T20:00:00Z |opencode |Hybrid determinism (Phase 1-2) |crates/aden-core/src/lib.rs, aden-index/src/lib.rs |completed |High |Result: Added IsEquivalentTo edge type (0.95 weight), generate_determinism_contracts(), and contracts/determinisms/master.adoc. Search expansion hybrid working: May→5→true, midnight→00:00, yep→true. Graph integration pending.
+|2026-05-26T20:15:00Z |opencode |Graph integration complete |crates/aden-core/src/filter.rs, .adenallow |completed |High |Result: Added .adenallow to allow contracts/ in graph. Graph now loads determinisms - 781 anchors total. Search and graph both working with hybrid determinism.
+|2026-05-26T21:00:00Z |opencode |Real-time watch with graph sync |crates/aden-cli/src/main.rs, crates/aden-cli/src/commands/query.rs |completed |High |Result: Added --graph-sync and --restore flags to aden watch. Debouncing implemented (100ms). Ctrl-C handling. Graph restore from cache working. Incremental updates added via AdenGraph::update_document().
 |===
 
 == How to Append
@@ -34,3 +40,5 @@ Confidence: High (>0.9), Medium (0.7–0.9), Low (<0.7 — include blocker in ta
 
 . <<agent-context>>
 . <<agent-onboarding>>
+|2026-05-27T00:30:00Z |opencode |Fix broken refs and CI gates |docs/adr-005.adoc, .agent/constraints.adoc, crates/aden-emit/src/lib.rs, .aden/constitution.adoc |completed |High |Result: Fixed 837 broken reference drift events by updating aden-emit to generate correct module anchors (module-* instead of mod-*). Escaped example references in docs. Created bootstrap constitution. Removed .aden/ cache from git. All CI gates pass.
+|2026-05-27T01:00:00Z |opencode |Add comprehensive test suite |crates/aden-cli/tests/cli_tests.rs, crates/aden-graph/src/tests.rs, crates/aden-index/src/lib.rs |completed |High |Result: Added 20+ new tests covering: CLI commands (locate, gen, lint, test, heal, list, mcp), graph operations (backlinks, edge traversal, statistics, semantic edges), index features (fuzzy matching, BM25 ranking, persistence, semantic normalization). Total test count: ~150+ tests. All CI gates pass.

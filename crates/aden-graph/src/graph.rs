@@ -363,6 +363,19 @@ impl AdenGraph {
                         NodeType::Adr | NodeType::Plan | NodeType::Spec | NodeType::Note
                     )
                 }
+                // Semantic edges always valid (conceptual relationships)
+                EdgeType::IsA 
+                | EdgeType::PartOf 
+                | EdgeType::RelatesTo 
+                | EdgeType::SimilarTo 
+                | EdgeType::Causes 
+                | EdgeType::Implies 
+                | EdgeType::SynonymOf 
+                | EdgeType::AntonymOf 
+                | EdgeType::AssociatedWith 
+                | EdgeType::PrerequisiteFor 
+                | EdgeType::Explains
+                | EdgeType::IsEquivalentTo => true,
             };
 
             if !valid {
@@ -413,5 +426,58 @@ fn parse_edge_type(s: &str) -> EdgeType {
         "amends" => EdgeType::Amends,
         "verifies" => EdgeType::Verifies,
         _ => EdgeType::Uses,
+    }
+}
+
+/// Incrementally update a single document in the graph.
+/// Returns true if the node was changed or added, false if unchanged.
+impl AdenGraph {
+    pub fn update_document(&mut self, doc: aden_core::Document, source_path: PathBuf) -> bool {
+        let anchor = doc.anchor.clone();
+        
+        // Check if anchor already exists
+        if let Some(existing_idx) = self.anchor_to_index.get(&anchor) {
+            let existing_hash = self.graph[*existing_idx].doc.attributes.get("source_hash").cloned();
+            let new_hash = doc.attributes.get("source_hash").cloned();
+            
+            // Only update if hash changed
+            if existing_hash != new_hash {
+                let node = &mut self.graph[*existing_idx];
+                node.doc = doc;
+                node.source_path = source_path;
+                self.backlinks_cache = None; // Invalidate backlinks cache
+                return true;
+            }
+            return false;
+        }
+        
+        // New node - add it
+        let parsed = crate::parser::ParsedDocument {
+            source_path: source_path.to_string_lossy().to_string(),
+            attributes: HashMap::new(),
+            anchors: vec![anchor.clone()],
+            refs: Vec::new(),
+            includes: Vec::new(),
+            edges: Vec::new(),
+            conditional_stack: Vec::new(),
+            raw_content: String::new(),
+            semantic_diffs: Vec::new(),
+            semantic_relations: Vec::new(),
+            blocks: Vec::new(),
+            tagged_regions: Vec::new(),
+            conditional_regions: Vec::new(),
+            metadata: None,
+        };
+        let node = DocumentNode {
+            anchor: anchor.clone(),
+            doc,
+            parsed,
+            source_path,
+        };
+        
+        let idx = self.graph.add_node(node);
+        self.anchor_to_index.insert(anchor, idx);
+        self.backlinks_cache = None;
+        true
     }
 }
