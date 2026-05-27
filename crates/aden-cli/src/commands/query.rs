@@ -236,7 +236,8 @@ let graph = aden_graph::cache::build_from_directory_cached(&opts.path)?;
     let output = match opts.format.as_str() {
         "adg" => assemble_adg(&graph, &asm_opts)?,
         "aden" => assemble(&graph, &asm_opts)?,
-        _ => return Err(format!("Unknown format '{}': use 'aden' or 'adg'", opts.format).into()),
+        "llm" => assemble(&graph, &asm_opts)?, // Same content, different presentation in cmd_ask
+        _ => return Err(format!("Unknown format '{}': use 'aden', 'adg', or 'llm'", opts.format).into()),
     };
 
     if let Some(out_path) = &opts.out {
@@ -578,6 +579,7 @@ pub fn cmd_ask(
     }
 
     let block_filter = block_filter_for_intent(&intent);
+    let edge_types_str = edge_types.iter().map(|e| format!("{:?}", e)).collect::<Vec<_>>().join(", ");
     let opts = AssemblyOptions {
         start_anchor: start_anchor.clone(),
         max_depth: depth,
@@ -594,6 +596,14 @@ pub fn cmd_ask(
     if let Some(model_spec) = model {
         query_llm(model_spec, question, &assembled, &start_anchor)?;
     } else {
+        // Show context with metadata for LLMs
+        println!("<!-- ADEN CONTEXT ASSEMBLY -->");
+        println!("<!-- Question: {} -->", question);
+        println!("<!-- Anchor: {} | Depth: {} | Budget: {} -->", start_anchor, depth, budget);
+        println!("<!-- Strategy: {:?} -->", intent);
+        println!("<!-- Edge Types: {} -->", edge_types_str);
+        println!();
+        
         let consumed = assembled.len();
         let budget_label = if consumed > budget {
             "OVER BUDGET"

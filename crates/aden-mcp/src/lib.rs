@@ -232,54 +232,54 @@ fn handle_tools_list(req: &JsonRpcRequest) -> JsonRpcResponse {
         },
         {
             "name": "asm",
-            "description": "Assemble a context prompt from the knowledge graph",
+            "description": "Assemble context from a starting anchor using graph traversal. BEST FOR: deep understanding of a specific topic. Returns AsciiDoc context. Use depth=1 for focused, depth=2-3 for broader.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "anchor": { "type": "string", "description": "Starting anchor" },
-                    "depth": { "type": "integer", "description": "Traversal depth (default 2)" },
+                    "anchor": { "type": "string", "description": "Starting anchor (use search() or list() to find anchors)" },
+                    "depth": { "type": "integer", "description": "Graph traversal depth. 1=focused, 2=moderate, 3=broad. Default: 2" },
                     "budget": { "type": "integer", "description": "Token budget (default 4096)" },
-                    "edge_types": { "type": "string", "description": "Comma-separated edge types" },
-                    "format": { "type": "string", "enum": ["aden", "adg"], "description": "Output format" }
+                    "edge_types": { "type": "string", "description": "Filter by edge types (e.g., 'Uses,Calls')" },
+                    "format": { "type": "string", "enum": ["aden", "adg"], "description": "Output: 'aden'=AsciiDoc (default), 'adg'=compact JSON" }
                 },
                 "required": ["anchor"]
             }
         },
         {
             "name": "query",
-            "description": "Query the knowledge graph and emit JSON",
+            "description": "Get graph neighborhood as JSON. BEST FOR: understanding dependencies, what-calls-what. Returns structured data, not prose.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "anchor": { "type": "string", "description": "Starting anchor" },
-                    "depth": { "type": "integer", "description": "Traversal depth (default 2)" },
-                    "backlinks": { "type": "boolean", "description": "Find incoming edges" },
-                    "impact": { "type": "boolean", "description": "Transitive closure" },
-                    "format": { "type": "string", "enum": ["table", "json"], "description": "Output format" }
+                    "depth": { "type": "integer", "description": "Traversal depth (default 2). Keep ≤3 for performance." },
+                    "backlinks": { "type": "boolean", "description": "Include incoming edges (what references this)? Default: false" },
+                    "impact": { "type": "boolean", "description": "Transitive closure (all indirect deps)? Default: false" },
+                    "format": { "type": "string", "enum": ["table", "json"], "description": "Output format. Default: json" }
                 }
             }
         },
         {
             "name": "ask",
-            "description": "Ask a natural-language question; Aden resolves it to a subgraph and assembles context.",
+            "description": "Ask about the codebase. Aden searches for relevant docs, assembles context, and returns it. BEST FOR: exploratory questions, understanding concepts. Example: 'How does authentication work?'",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "question": { "type": "string", "description": "Question to ask" },
-                    "budget": { "type": "integer", "description": "Max tokens (default 4096)" },
-                    "from": { "type": "string", "description": "Pin to specific anchor" }
+                    "question": { "type": "string", "description": "Natural language question (e.g., 'What is the main entry point?', 'How does auth work?')" },
+                    "budget": { "type": "integer", "description": "Max tokens (default 4096). Use 2048 for focused, 8192 for broad." },
+                    "from": { "type": "string", "description": "Optional: pin to specific anchor if you know it" }
                 },
                 "required": ["question"]
             }
         },
         {
             "name": "search",
-            "description": "Search the knowledge graph for documents matching a query",
+            "description": "Full-text search. Returns matching anchors with relevance scores. BEST FOR: finding docs when you know keywords. Tip: Use code terms, not natural language.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "query": { "type": "string", "description": "Search query" },
-                    "limit": { "type": "integer", "description": "Max results (default 10)" }
+                    "query": { "type": "string", "description": "Keywords (e.g., 'token budget', 'AdenGraph', not 'show me docs about tokens')" },
+                    "limit": { "type": "integer", "description": "Max results (default 10). Use 5 for focused, 20 for broad search." }
                 },
                 "required": ["query"]
             }
@@ -298,12 +298,12 @@ fn handle_tools_list(req: &JsonRpcRequest) -> JsonRpcResponse {
         },
         {
             "name": "locate",
-            "description": "Locate a symbol definition or its call sites in the knowledge graph",
+            "description": "Find symbol definitions and call sites. BEST FOR: code navigation, understanding where functions are defined/used.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "symbol": { "type": "string", "description": "Symbol name to find" },
-                    "limit": { "type": "integer", "description": "Max results" }
+                    "symbol": { "type": "string", "description": "Symbol name (e.g., 'main', 'authenticate', 'AdenGraph')" },
+                    "limit": { "type": "integer", "description": "Max results (default 10)" }
                 },
                 "required": ["symbol"]
             }

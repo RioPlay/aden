@@ -1,0 +1,42 @@
+graph TB
+    subgraph Words
+        N[Noun<br/>person, thing]
+        V[Verb<br/>action, state]
+        ADJ[Adjective<br/>describes noun]
+        ADV[Adverb<br/>describes verb/adj]
+        PRO[Pronoun<br/>replaces noun]
+        PRE[Preposition<br/>shows relationship]
+        CONJ[Conjunction<br/>connects]
+        ART[Article<br/>specifies noun]
+        INT[Interjection<br/>emotion]
+    end
+
+    subgraph "Sentence Structure"
+        SUB[Subject]
+        OBJ[Object]
+        PRED[Predicate]
+        MOD[Modifier]
+        PHRASE[Phrase]
+    end
+
+    N -->|"can be"| SUB
+    N -->|"can be"| OBJ
+    PRO -->|"replaces"| N
+    V -->|"forms"| PRED
+    ADJ -->|"modifies"| MOD
+    ADV -->|"modifies"| MOD
+    N -->|"starts"| PHRASE
+    PRE -->|"forms"| PHRASE
+    CONJ -->|"links"| PHRASE
+    ART -->|"specifies"| N
+
+    N --- ADJ
+    V --- ADV
+    SUB --- V --- OBJ
+
+    classDef primary fill:#e1f5fe,stroke:#01579b,stroke-width:2px;
+    classDef secondary fill:#f3e5f5,stroke:#4a148c,stroke-width:2px;
+    classDef tertiary fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px;
+
+    class N,V,ADJ,ADV,PRO,PRE,CONJ,ART,INT primary;
+    class SUB,OBJ,PRED,MOD,PHRASE secondary;

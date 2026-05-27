@@ -1,0 +1,226 @@
+:proj: aden
+:llm-system-prompt: true
+
+[[llm-integration-guide]]
+= LLM Integration Guide
+
+This guide teaches AI assistants (Claude, GPT-4, etc.) how to effectively use aden tools.
+
+== System Prompt for LLMs
+
+When an aden MCP tool is available, include this in your system context:
+
+[source]
+----
+You have access to Aden, a knowledge graph compiler for codebases.
+
+## Aden Tools Available:
+- `ask(question)`: Ask natural language questions about the codebase
+- `search(query)`: Full-text search with semantic understanding
+- `asm(anchor, depth)`: Assemble context from a starting point
+- `query(anchor, depth)`: Get structured graph neighborhood as JSON
+- `locate(symbol)`: Find symbol definitions and call sites
+- `list()`: List all available anchors
+- `heal()`: Check documentation health
+- `check()`: Validate all references
+
+## Best Practices:
+
+1. START WITH `ask()` for exploratory questions
+   - Good: "How does authentication work?"
+   - Good: "What is the main entry point?"
+   - Bad: "Show me everything" (too vague)
+
+2. USE `search()` when you know specific terms
+   - Good: `search("token budget")`
+   - Good: `search("AdenGraph struct")`
+
+3. USE `asm()` or `query()` when you have an anchor
+   - Good: `asm("module-aden-core", depth=2)`
+   - Good: `query("auth-module", depth=1)`
+
+4. USE `locate()` for symbols
+   - Good: `locate("main")`
+   - Good: `locate("authenticate_user")`
+
+5. CITE YOUR SOURCES
+   - Always mention which documents informed your answer
+   - Use the anchor names as citations
+
+## Understanding Aden Output:
+
+Aden returns context in AsciiDoc format:
+- `[[anchor]]` = Section identifier
+- `= Title` = Heading
+- `<<ref>>` = Cross-reference
+- `:key: value` = Metadata
+- `|===` = Table boundaries
+
+Focus on the CONTENT, not the formatting.
+
+## When Context is Incomplete:
+
+If you're missing information:
+1. Ask: "What other documents should I look at?"
+2. Use `query()` to see the graph neighborhood
+3. Use `search()` with different keywords
+
+## Token Efficiency:
+
+- Aden respects token budgets (default 4096)
+- Use `depth=1` for focused context
+- Use `depth=2-3` for broader understanding
+- Depth >3 usually wastes tokens
+----
+
+== Common Patterns
+
+=== Pattern 1: Understanding a New Codebase
+[source]
+----
+1. ask("What is this project about?")
+2. ask("What are the main components?")
+3. list()  # See available anchors
+4. asm("architecture", depth=2)  # Get architecture context
+----
+
+=== Pattern 2: Finding How Something Works
+[source]
+----
+1. search("authentication")  # Find relevant docs
+2. locate("authenticate")  # Find the function
+3. asm("auth-function", depth=2)  # Get full context
+----
+
+=== Pattern 3: Making Changes Safely
+[source]
+----
+1. locate("function_to_change")
+2. query("function_to_change", depth=2)  # See what depends on it
+3. ask("What breaks if I change X?")
+4. check()  # Validate no broken refs
+----
+
+== MCP Tool Specifications
+
+=== ask
+*Purpose*: Natural language Q&A
+*Input*: `{ question: string }`
+*Output*: Context + answer
+*Best for*: Exploration, understanding
+
+=== search  
+*Purpose*: Find documents by keyword
+*Input*: `{ query: string, limit?: number }`
+*Output*: List of matching anchors with scores
+*Best for*: Known-item search
+
+=== asm
+*Purpose*: Assemble context from graph
+*Input*: `{ anchor: string, depth?: number, budget?: number }`
+*Output*: AsciiDoc context document
+*Best for*: Deep understanding of a topic
+
+=== query
+*Purpose*: Get graph structure as JSON
+*Input*: `{ anchor: string, depth?: number }`
+*Output*: JSON array of nodes
+*Best for*: Understanding dependencies
+
+=== locate
+*Purpose*: Find symbol definitions
+*Input*: `{ symbol: string }`
+*Output*: Symbol location and references
+*Best for*: Code navigation
+
+== Troubleshooting
+
+=== "No relevant documents found"
+- Try different keywords
+- Use `list()` to see available anchors
+- The codebase may not have contracts generated yet → run `aden gen`
+
+=== "Anchor not found"
+- Anchors are case-sensitive
+- Use `list()` to find exact anchor names
+- Try `search()` to find related anchors
+
+=== Context too large/small
+- Adjust `depth` parameter (1-3 recommended)
+- Adjust `budget` parameter (default 4096)
+- Use more specific starting anchor
+
+== Examples
+
+=== Example 1: Understanding Authentication
+[source,json]
+----
+// User asks: "How does auth work?"
+{
+  "tool": "ask",
+  "arguments": {
+    "question": "How does authentication work?"
+  }
+}
+
+// Aden returns context from auth-related docs
+// LLM responds with explanation + citations
+----
+
+=== Example 2: Finding Callers
+[source,json]
+----
+// User asks: "What calls the login function?"
+{
+  "tool": "locate", 
+  "arguments": {
+    "symbol": "login"
+  }
+}
+// Then:
+{
+  "tool": "query",
+  "arguments": {
+    "anchor": "login-function",
+    "depth": 2
+  }
+}
+----
+
+=== Example 3: Safe Refactoring
+[source,json]
+----
+// User asks: "Can I rename this function?"
+{
+  "tool": "locate",
+  "arguments": {
+    "symbol": "old_function_name"
+  }
+}
+// Review results, then:
+{
+  "tool": "ask",
+  "arguments": {
+    "question": "What depends on old_function_name?"
+  }
+}
+----
+
+== Anti-Patterns
+
+❌ Don't: Call `asm()` with depth=5 (wastes tokens)
+✅ Do: Start with depth=2, go deeper if needed
+
+❌ Don't: Use vague questions like "tell me about the code"
+✅ Do: Ask specific questions like "what is the entry point?"
+
+❌ Don't: Ignore citations in aden output
+✅ Do: Reference specific documents in your answers
+
+❌ Don't: Assume aden knows everything
+✅ Do: Use `check()` to validate, `heal()` to find gaps
+
+---
+
+*For human users*: See <<user-guide>> for complete workflows.
+*For MCP setup*: See <<mcp-integration>> for installation.
