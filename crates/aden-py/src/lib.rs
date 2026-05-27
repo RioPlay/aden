@@ -83,6 +83,10 @@ fn assemble(
         token_budget: budget,
         edge_types: Vec::new(),
         block_filter: Vec::new(),
+        include_tags: Vec::new(),
+        exclude_tags: Vec::new(),
+        attributes: Vec::new(),
+        llm_mode: false,
     };
 
     let output = aden_asm::traverse::assemble(&graph, &asm_opts)

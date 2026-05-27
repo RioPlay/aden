@@ -172,7 +172,7 @@ fn handle_tools_list(req: &JsonRpcRequest) -> JsonRpcResponse {
     let tools = serde_json::json!([
         {
             "name": "init",
-            "description": "Scaffold .agent/ templates in target repository",
+            "description": "Scaffold context templates and agent workspace files in a project directory. Creates .agent/ with onboarding, session, and constraint documents.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -182,21 +182,21 @@ fn handle_tools_list(req: &JsonRpcRequest) -> JsonRpcResponse {
         },
         {
             "name": "gen",
-            "description": "Parse source file(s) and emit .aden / .adoc contracts",
+            "description": "Parse source files (any language) and generate knowledge graph contracts. Supports three-way merge to preserve human-written notes alongside generated content.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "path": { "type": "string", "description": "Source file or directory path" },
                     "auto": { "type": "boolean", "description": "Generate contracts for all source files in directory" },
-                    "merge": { "type": "boolean", "description": "Preserve human blocks, update generated only" },
-                    "propose": { "type": "boolean", "description": "Dry-run merge preview" },
-                    "format": { "type": "string", "enum": ["adoc", "md", "adg"], "description": "Output format" }
+                    "merge": { "type": "boolean", "description": "Preserve human-written blocks, update generated sections only" },
+                    "propose": { "type": "boolean", "description": "Dry-run: preview what would change without writing files" },
+                    "format": { "type": "string", "enum": ["adoc", "md", "adg"], "description": "Output format: adoc (default), md (Markdown), adg (compact JSON)" }
                 }
             }
         },
         {
             "name": "check",
-            "description": "Verify all <<refs>> resolve to existing [[anchors]]",
+            "description": "Validate that all cross-references in the knowledge graph resolve to real nodes. Catches broken links, duplicate identifiers, and include cycles.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -206,103 +206,103 @@ fn handle_tools_list(req: &JsonRpcRequest) -> JsonRpcResponse {
         },
         {
             "name": "lint",
-            "description": "Lint source files using tree-sitter AST analysis",
+            "description": "Lint source files using tree-sitter AST analysis across multiple languages. Reports style, safety, and structural issues.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "path": { "type": "string", "description": "Path to lint (default .)" },
-                    "severity": { "type": "string", "enum": ["Suggest", "Warn", "Error"], "description": "Minimum severity level" },
-                    "fix": { "type": "boolean", "description": "Auto-fix issues" },
-                    "json": { "type": "boolean", "description": "Output JSON" }
+                    "severity": { "type": "string", "enum": ["Suggest", "Warn", "Error"], "description": "Minimum severity level to report" },
+                    "fix": { "type": "boolean", "description": "Auto-fix issues where possible" },
+                    "json": { "type": "boolean", "description": "Output results as JSON" }
                 }
             }
         },
         {
             "name": "test",
-            "description": "Discover and run tests across all languages",
+            "description": "Discover and run tests across all languages. Supports Rust, Python, Go, TypeScript, Java, Ruby, PHP, C#, and more.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "path": { "type": "string", "description": "Path to test (default .)" },
                     "scope": { "type": "string", "enum": ["unit", "integration", "all"], "description": "Test scope" },
-                    "filter": { "type": "string", "description": "Filter tests by pattern" },
-                    "list": { "type": "boolean", "description": "List tests without running" }
+                    "filter": { "type": "string", "description": "Filter tests by name pattern" },
+                    "list": { "type": "boolean", "description": "List available tests without running them" }
                 }
             }
         },
         {
             "name": "asm",
-            "description": "Assemble context from a starting anchor using graph traversal. BEST FOR: deep understanding of a specific topic. Returns AsciiDoc context. Use depth=1 for focused, depth=2-3 for broader.",
+            "description": "Assemble focused context from a graph node using BFS traversal. Returns dense, LLM-ready context within a token budget. BEST FOR: deep understanding of a specific topic. Use depth=1 for focused, depth=2-3 for broader.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "anchor": { "type": "string", "description": "Starting anchor (use search() or list() to find anchors)" },
+                    "anchor": { "type": "string", "description": "Starting node identifier (use search or list to find identifiers)" },
                     "depth": { "type": "integer", "description": "Graph traversal depth. 1=focused, 2=moderate, 3=broad. Default: 2" },
                     "budget": { "type": "integer", "description": "Token budget (default 4096)" },
-                    "edge_types": { "type": "string", "description": "Filter by edge types (e.g., 'Uses,Calls')" },
-                    "format": { "type": "string", "enum": ["aden", "adg"], "description": "Output: 'aden'=AsciiDoc (default), 'adg'=compact JSON" }
+                    "edge_types": { "type": "string", "description": "Comma-separated edge types to follow (e.g. 'Uses,Calls'). Empty = follow all." },
+                    "format": { "type": "string", "enum": ["aden", "adg"], "description": "Output format: aden=structured text (default), adg=compact JSON" }
                 },
                 "required": ["anchor"]
             }
         },
         {
             "name": "query",
-            "description": "Get graph neighborhood as JSON. BEST FOR: understanding dependencies, what-calls-what. Returns structured data, not prose.",
+            "description": "Get graph neighborhood as structured JSON. Shows what a node depends on, what depends on it, and transitive relationships. BEST FOR: understanding dependencies and call graphs.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "anchor": { "type": "string", "description": "Starting anchor" },
-                    "depth": { "type": "integer", "description": "Traversal depth (default 2). Keep ≤3 for performance." },
-                    "backlinks": { "type": "boolean", "description": "Include incoming edges (what references this)? Default: false" },
-                    "impact": { "type": "boolean", "description": "Transitive closure (all indirect deps)? Default: false" },
+                    "anchor": { "type": "string", "description": "Starting node identifier" },
+                    "depth": { "type": "integer", "description": "Traversal depth (default 2). Keep at 3 or less for performance." },
+                    "backlinks": { "type": "boolean", "description": "Include incoming edges (what references this node)? Default: false" },
+                    "impact": { "type": "boolean", "description": "Compute full transitive closure (all indirect dependents)? Default: false" },
                     "format": { "type": "string", "enum": ["table", "json"], "description": "Output format. Default: json" }
                 }
             }
         },
         {
             "name": "ask",
-            "description": "Ask about the codebase. Aden searches for relevant docs, assembles context, and returns it. BEST FOR: exploratory questions, understanding concepts. Example: 'How does authentication work?'",
+            "description": "Ask a natural language question about the indexed codebase. Searches the knowledge graph, classifies intent, selects relevant nodes, and assembles a focused answer within a token budget. BEST FOR: exploratory questions and conceptual understanding.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "question": { "type": "string", "description": "Natural language question (e.g., 'What is the main entry point?', 'How does auth work?')" },
+                    "question": { "type": "string", "description": "Natural language question about the codebase" },
                     "budget": { "type": "integer", "description": "Max tokens (default 4096). Use 2048 for focused, 8192 for broad." },
-                    "from": { "type": "string", "description": "Optional: pin to specific anchor if you know it" }
+                    "from": { "type": "string", "description": "Optional: pin traversal to a specific starting node" }
                 },
                 "required": ["question"]
             }
         },
         {
             "name": "search",
-            "description": "Full-text search. Returns matching anchors with relevance scores. BEST FOR: finding docs when you know keywords. Tip: Use code terms, not natural language.",
+            "description": "Full-text search across all indexed nodes. Returns matching nodes with relevance scores. BEST FOR: finding nodes when you know specific keywords or symbol names.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "query": { "type": "string", "description": "Keywords (e.g., 'token budget', 'AdenGraph', not 'show me docs about tokens')" },
-                    "limit": { "type": "integer", "description": "Max results (default 10). Use 5 for focused, 20 for broad search." }
+                    "query": { "type": "string", "description": "Search keywords or symbol names" },
+                    "limit": { "type": "integer", "description": "Max results (default 10). Use 5 for focused, 20 for broad." }
                 },
                 "required": ["query"]
             }
         },
         {
             "name": "list",
-            "description": "List all anchors and contracts in the knowledge graph",
+            "description": "List all indexed nodes in the knowledge graph with their types and anchors.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "filter": { "type": "string", "description": "Filter by pattern" },
-                    "verbose": { "type": "boolean", "description": "Verbose output" },
+                    "filter": { "type": "string", "description": "Filter results by pattern" },
+                    "verbose": { "type": "boolean", "description": "Include additional metadata per node" },
                     "limit": { "type": "integer", "description": "Max results (default 20)" }
                 }
             }
         },
         {
             "name": "locate",
-            "description": "Find symbol definitions and call sites. BEST FOR: code navigation, understanding where functions are defined/used.",
+            "description": "Find where a named symbol is defined and where it is called or referenced. Works across all languages. BEST FOR: code navigation.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "symbol": { "type": "string", "description": "Symbol name (e.g., 'main', 'authenticate', 'AdenGraph')" },
+                    "symbol": { "type": "string", "description": "Symbol name to locate (function, type, class, variable, etc.)" },
                     "limit": { "type": "integer", "description": "Max results (default 10)" }
                 },
                 "required": ["symbol"]
@@ -310,20 +310,20 @@ fn handle_tools_list(req: &JsonRpcRequest) -> JsonRpcResponse {
         },
         {
             "name": "heal",
-            "description": "Self-healing documentation engine: scan for drift, propose patches, apply reviewed changes",
+            "description": "Detect and repair drift between source code and knowledge graph contracts. Identifies stale, missing, or orphaned nodes and proposes or applies fixes.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "path": { "type": "string", "description": "Directory to heal (default .)" },
-                    "fix": { "type": "boolean", "description": "Auto-fix drift" },
-                    "gc": { "type": "boolean", "description": "Garbage collect orphans" },
-                    "propose": { "type": "boolean", "description": "Propose patches without applying" }
+                    "path": { "type": "string", "description": "Directory to scan (default .)" },
+                    "fix": { "type": "boolean", "description": "Auto-apply fixes for detected drift" },
+                    "gc": { "type": "boolean", "description": "Remove orphaned contract nodes with no source" },
+                    "propose": { "type": "boolean", "description": "Generate fix proposals without applying them" }
                 }
             }
         },
         {
             "name": "ci_check",
-            "description": "Run all local CI gates before committing (check, heal, test, secret-scan)",
+            "description": "Run a full pre-commit validation suite: graph integrity check, project tests, linting, and secret scanning. Language-agnostic.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -333,7 +333,7 @@ fn handle_tools_list(req: &JsonRpcRequest) -> JsonRpcResponse {
         },
         {
             "name": "doctor",
-            "description": "Diagnose the environment: tool versions, repo health, signing keys",
+            "description": "Diagnose the environment: detects installed tools based on the project's language, checks aden availability, and reports knowledge graph health.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -343,34 +343,34 @@ fn handle_tools_list(req: &JsonRpcRequest) -> JsonRpcResponse {
         },
         {
             "name": "audit",
-            "description": "OWASP-style security audit: scan source for vulnerabilities",
+            "description": "Security audit: scan source files for common vulnerabilities (OWASP patterns, hardcoded secrets, unsafe patterns) across all supported languages.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "path": { "type": "string", "description": "Directory to audit (default .)" },
-                    "strict": { "type": "boolean", "description": "Fail on any finding" }
+                    "strict": { "type": "boolean", "description": "Fail on any finding, even informational" }
                 }
             }
         },
         {
             "name": "suggest",
-            "description": "AI assistant: describe what you want to do, get the right aden command",
+            "description": "Describe what you want to accomplish and get a recommended aden command with an example.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "intent": { "type": "string", "description": "What you want to do" }
+                    "intent": { "type": "string", "description": "What you want to do (e.g. 'find all callers of authenticate', 'fix stale docs')" }
                 },
                 "required": ["intent"]
             }
         },
         {
             "name": "new",
-            "description": "Create a new project from a language template with aden scaffolding",
+            "description": "Create a new project from a language starter template with aden context scaffolding pre-configured.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "name": { "type": "string", "description": "Project name" },
-                    "lang": { "type": "string", "enum": ["rust", "go", "js", "python"], "description": "Language template" },
+                    "lang": { "type": "string", "enum": ["rust", "go", "js", "python"], "description": "Language template to use" },
                     "path": { "type": "string", "description": "Target directory" }
                 },
                 "required": ["name"]
@@ -378,41 +378,41 @@ fn handle_tools_list(req: &JsonRpcRequest) -> JsonRpcResponse {
         },
         {
             "name": "kickoff",
-            "description": "Create a kickoff document for a new initiative",
+            "description": "Create a structured kickoff document for a new initiative or feature. Captures goals, success criteria, risks, and next steps.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "brief": { "type": "string", "description": "Initiative brief" },
+                    "brief": { "type": "string", "description": "Initiative brief or description" },
                     "path": { "type": "string", "description": "Output directory (default .)" }
                 }
             }
         },
         {
             "name": "licenses",
-            "description": "Generate third-party accreditation report from Cargo.lock",
+            "description": "Generate a third-party dependency attribution report. Reads from Cargo.lock (Rust projects). Update NOTICE.md with the output.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "path": { "type": "string", "description": "Project root (default .)" },
-                    "full": { "type": "boolean", "description": "Fetch full license info from crates.io" }
+                    "full": { "type": "boolean", "description": "Fetch full license text and metadata from the registry" }
                 }
             }
         },
         {
             "name": "review",
-            "description": "Semantic review: validate low-confidence proposals with token budgeting",
+            "description": "Semantic review of pending proposals: validates low-confidence changes against the knowledge graph within a token budget.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "path": { "type": "string", "description": "Directory to review (default .)" },
-                    "since": { "type": "string", "description": "Review changes since date (ISO 8601)" },
-                    "budget": { "type": "integer", "description": "Token budget (default 4096)" }
+                    "since": { "type": "string", "description": "Review changes since this date (ISO 8601 format)" },
+                    "budget": { "type": "integer", "description": "Token budget for context assembly (default 4096)" }
                 }
             }
         },
         {
             "name": "status",
-            "description": "Show project health at a glance. Returns health score and orphan count. BEST FOR: quickly checking if docs are up to date before making changes.",
+            "description": "Show knowledge graph health at a glance: health score, orphan count, and drift summary. BEST FOR: quick pre-change health check.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -422,7 +422,7 @@ fn handle_tools_list(req: &JsonRpcRequest) -> JsonRpcResponse {
         },
         {
             "name": "sync",
-            "description": "Run gen + check + heal in sequence. BEST FOR: fixing documentation issues, refreshing all contracts after code changes.",
+            "description": "Full graph refresh: generate contracts, validate cross-references, and detect drift in one pass. BEST FOR: resynchronising after large code changes.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

@@ -222,6 +222,7 @@ let graph = aden_graph::cache::build_from_directory_cached(&opts.path)?;
         return Ok(());
     }
 
+    let is_llm = opts.format == "llm";
     let asm_opts = AssemblyOptions {
         start_anchor: resolved_anchor,
         max_depth: opts.depth,
@@ -231,12 +232,12 @@ let graph = aden_graph::cache::build_from_directory_cached(&opts.path)?;
         include_tags: opts.include_tags.clone(),
         exclude_tags: opts.exclude_tags.clone(),
         attributes: opts.attributes.clone(),
+        llm_mode: is_llm,
     };
 
     let output = match opts.format.as_str() {
         "adg" => assemble_adg(&graph, &asm_opts)?,
-        "aden" => assemble(&graph, &asm_opts)?,
-        "llm" => assemble(&graph, &asm_opts)?, // Same content, different presentation in cmd_ask
+        "aden" | "llm" => assemble(&graph, &asm_opts)?,
         _ => return Err(format!("Unknown format '{}': use 'aden', 'adg', or 'llm'", opts.format).into()),
     };
 
@@ -591,6 +592,7 @@ pub fn cmd_ask(
         include_tags: Vec::new(),
         exclude_tags: Vec::new(),
         attributes: Vec::new(),
+        llm_mode: true, // aden ask always targets an LLM — emit clean prose
     };
     let assembled = assemble(&graph, &opts)?;
 

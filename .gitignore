@@ -1,6 +1,13 @@
 /target
 **/contracts/
 **/.aden/
+
+# Generated contract artifacts — NEVER commit these
+# aden gen emits .adoc files into contracts/ (gitignored above), but if
+# generation runs in-tree, block them at the source level too.
+crates/**/*.adoc
+benches/**/*.adoc
+src/**/*.adoc
 Cargo.lock
 *.bak
 *.swp

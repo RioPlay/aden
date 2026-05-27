@@ -310,7 +310,30 @@ impl Scanner {
                 }
             } else if path.is_file() {
                 let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-                if matches!(ext, "rs" | "ps1" | "psm1") {
+                // All languages supported by aden-parse — language-agnostic drift tracking
+                if matches!(
+                    ext,
+                    // Systems
+                    "rs" | "c" | "h" | "cpp" | "cc" | "cxx" | "hpp"
+                    // Scripting / shell
+                    | "py" | "rb" | "pl" | "lua" | "sh" | "bash"
+                    // JVM
+                    | "java" | "kt" | "kts" | "scala" | "groovy"
+                    // .NET
+                    | "cs" | "fs" | "vb"
+                    // Web
+                    | "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs"
+                    // Go / Zig / Swift / D
+                    | "go" | "zig" | "swift" | "d"
+                    // PHP / Ruby / Elixir / Erlang / Clojure
+                    | "php" | "ex" | "exs" | "erl" | "hrl" | "clj" | "cljs"
+                    // PowerShell
+                    | "ps1" | "psm1" | "psd1"
+                    // Data / config (structured, can carry semantics)
+                    | "sql" | "graphql" | "gql" | "proto"
+                    // Docs that are source of truth
+                    | "adoc" | "aden" | "md" | "rst"
+                ) {
                     files.push(path);
                 }
             }

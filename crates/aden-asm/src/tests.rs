@@ -54,6 +54,7 @@ mod tests {
             include_tags: vec![],
             exclude_tags: vec![],
             attributes: vec![],
+            llm_mode: false,
         };
         assert_eq!(opts.start_anchor, "start");
         assert_eq!(opts.max_depth, 3);

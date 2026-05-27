@@ -60,6 +60,7 @@ pub fn cmd_complete(
             include_tags: Vec::new(),
             exclude_tags: Vec::new(),
             attributes: Vec::new(),
+            llm_mode: true, // complete targets an LLM — emit clean prose
         };
 
         let context = match assemble(&graph, &asm_opts) {

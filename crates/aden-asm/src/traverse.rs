@@ -50,9 +50,19 @@ pub struct AssemblyOptions {
     /// Attributes to set for conditional processing.
     /// If set, ifdef/ifndef blocks will be filtered accordingly.
     pub attributes: Vec<String>,
+    /// Strip AsciiDoc markup syntax and emit clean prose for LLM consumption.
+    /// When true: removes [[anchors]], <<refs>>, :attributes:, block delimiters.
+    /// Also enables partial inclusion: large documents are truncated to fit the
+    /// remaining budget rather than skipped entirely.
+    pub llm_mode: bool,
 }
 
-/// Assemble a flat `.adoc` prompt from a graph neighborhood.
+/// Assemble a context prompt from a graph neighborhood.
+///
+/// In `llm_mode` the output is stripped of AsciiDoc markup (anchors, refs,
+/// attribute lines, block delimiters) so every token carries signal rather
+/// than format noise. Large documents that would exceed the remaining budget
+/// are truncated at a word boundary rather than skipped entirely.
 pub fn assemble(graph: &AdenGraph, opts: &AssemblyOptions) -> Result<String, AssemblyError> {
     let start_idx = graph
         .get_index(&opts.start_anchor)
@@ -77,20 +87,38 @@ pub fn assemble(graph: &AdenGraph, opts: &AssemblyOptions) -> Result<String, Ass
             continue;
         }
         let doc = &graph.graph[node];
-        let text = document_to_text(
+        let raw_text = document_to_text(
             doc,
             &opts.block_filter,
             &opts.include_tags,
             &opts.exclude_tags,
             &opts.attributes,
         );
+
+        // In LLM mode, strip AsciiDoc markup so every token is signal.
+        let text = if opts.llm_mode {
+            strip_asciidoc_markup(&raw_text)
+        } else {
+            raw_text
+        };
+
         let tokens = estimate_tokens(&text);
-        if total_tokens + tokens > opts.token_budget {
-            break;
+        let remaining = opts.token_budget.saturating_sub(total_tokens);
+
+        if tokens <= remaining {
+            // Document fits entirely — include it.
+            total_tokens += tokens;
+            visited.insert(node);
+            result.push(text);
+        } else if opts.llm_mode && remaining > 32 {
+            // LLM mode: partial inclusion — truncate to fit remaining budget.
+            let truncated = truncate_to_tokens(&text, remaining);
+            visited.insert(node);
+            result.push(truncated);
+            break; // Budget exhausted after partial doc
+        } else {
+            break; // Not in LLM mode or nothing meaningful fits
         }
-        total_tokens += tokens;
-        visited.insert(node);
-        result.push(text);
 
         // Add neighbors
         for neighbor in graph.graph.neighbors_directed(node, Direction::Outgoing) {
@@ -103,7 +131,8 @@ pub fn assemble(graph: &AdenGraph, opts: &AssemblyOptions) -> Result<String, Ass
         }
     }
 
-    Ok(result.join("\n<<<\n"))
+    let separator = if opts.llm_mode { "\n\n---\n\n" } else { "\n<<<\n" };
+    Ok(result.join(separator))
 }
 
 /// Assemble documents in ADG (compact JSON) format for token-efficient LLM context.
@@ -363,6 +392,146 @@ fn document_to_text(
     } else {
         doc.parsed.raw_content.trim().to_string()
     }
+}
+
+/// Strip AsciiDoc markup from text to produce clean prose for LLM consumption.
+///
+/// Removes format-specific syntax that wastes tokens without carrying
+/// semantic signal: anchors, cross-references, attribute lines, block
+/// delimiters, role annotations, and AsciiDoc-specific markers.
+pub fn strip_asciidoc_markup(text: &str) -> String {
+    let mut out = Vec::new();
+    let mut prev_blank = false;
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+
+        // Skip [[anchor]] lines — internal graph IDs, meaningless to LLMs
+        if trimmed.starts_with("[[") && trimmed.ends_with("]]") {
+            continue;
+        }
+
+        // Skip :key: value document attribute lines
+        if trimmed.starts_with(':') && trimmed.ends_with(':')
+            || (trimmed.starts_with(':')
+                && trimmed[1..].contains(':')
+                && !trimmed.contains(' '))
+        {
+            // e.g. ":source_file: foo.rs" — skip
+            if let Some(rest) = trimmed.strip_prefix(':') {
+                if let Some(colon) = rest.find(':') {
+                    let key = &rest[..colon];
+                    if !key.contains(' ') {
+                        continue;
+                    }
+                }
+            }
+        }
+
+        // Skip AsciiDoc block delimiters
+        if matches!(trimmed, "----" | "====" | "****" | "____" | "--" | "'''" | "<<<") {
+            continue;
+        }
+
+        // Skip role/block annotations like [source,rust], [listing], [NOTE], [must-complete]
+        if trimmed.starts_with('[') && trimmed.ends_with(']') && !trimmed.contains(' ') {
+            continue;
+        }
+
+        // Skip table delimiters
+        if trimmed == "|===" {
+            continue;
+        }
+
+        // Convert heading markers to plain text (keep the title, drop the ='s prefix)
+        let processed = if let Some(rest) = trimmed.strip_prefix("= ") {
+            format!("{}", rest) // top-level title — keep as plain line
+        } else if trimmed.starts_with("== ") || trimmed.starts_with("=== ") || trimmed.starts_with("==== ") {
+            // Section headings — keep as plain text
+            let stripped = trimmed.trim_start_matches('=').trim();
+            format!("{}:", stripped)
+        } else {
+            // Inline cleanup: convert <<ref,text>> → text, <<ref>> → ref
+            let line_owned = line.to_string();
+            let line_clean = replace_xrefs(&line_owned);
+            line_clean
+        };
+
+        // Collapse multiple blank lines to one
+        let is_blank = processed.trim().is_empty();
+        if is_blank {
+            if !prev_blank {
+                out.push(String::new());
+            }
+            prev_blank = true;
+            continue;
+        }
+        prev_blank = false;
+        out.push(processed);
+    }
+
+    // Trim leading/trailing blank lines
+    let result = out.join("\n");
+    result.trim().to_string()
+}
+
+/// Replace AsciiDoc cross-reference macros with their display text or target.
+/// `<<anchor,display text>>` → `display text`
+/// `<<anchor>>` → `anchor`
+fn replace_xrefs(line: &str) -> String {
+    let mut result = String::with_capacity(line.len());
+    let mut remaining = line;
+
+    while let Some(start) = remaining.find("<<") {
+        result.push_str(&remaining[..start]);
+        let after = &remaining[start + 2..];
+        if let Some(end) = after.find(">>") {
+            let inner = &after[..end];
+            if let Some(comma) = inner.find(',') {
+                // <<anchor,display text>> → display text
+                result.push_str(inner[comma + 1..].trim());
+            } else {
+                // <<anchor>> → anchor (strip internal ID prefixes like aden://)
+                let anchor = inner.trim();
+                let display = anchor
+                    .rsplit('#')
+                    .next()
+                    .unwrap_or(anchor)
+                    .replace('-', " ");
+                result.push_str(&display);
+            }
+            remaining = &after[end + 2..];
+        } else {
+            result.push_str("<<");
+            remaining = after;
+        }
+    }
+    result.push_str(remaining);
+    result
+}
+
+/// Truncate text to approximately `max_tokens` tokens at a word boundary.
+fn truncate_to_tokens(text: &str, max_tokens: usize) -> String {
+    // Each word ≈ 4/3 tokens, so max words ≈ max_tokens * 3/4
+    let max_words = (max_tokens * 3 / 4).max(1);
+    let mut word_count = 0;
+    let mut last_boundary = text.len();
+
+    for (i, c) in text.char_indices() {
+        if c.is_whitespace() {
+            word_count += 1;
+            if word_count >= max_words {
+                last_boundary = i;
+                break;
+            }
+        }
+    }
+
+    let mut truncated = text[..last_boundary].trim_end().to_string();
+    if last_boundary < text.len() {
+        truncated.push_str(" …");
+    }
+    truncated
 }
 
 /// Improved token estimation using a word-based heuristic.

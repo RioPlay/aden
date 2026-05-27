@@ -4,44 +4,54 @@
 :standard: {standard}
 
 [[agent-context-template]]
-= Shared Context for Agent Sessions
+= Shared Context — {project}
 
-This file is the canonical shared memory for all agent sessions working on `{project}`.
-Include it at the top of every prompt with `include::.agent/context.adoc[]`.
+This file is the canonical shared memory for all agent sessions on `{project}`.
 
 == Project Identity
 
 [cols="1,2"]
 |===
 |Name |{project}
-|Language |{lang}
-|AI Name |{ai_name}
+|Primary Language |{lang}
+|Runtime / Framework |{standard}
 |===
 
-== Hard Constraints (Never Violate)
-ifdef::agent[]
+== Hard Constraints
 
-. **Never commit without `aden check` passing.**
-. **Never edit contracts by hand — always regenerate with `aden gen`.**
-. **Never emit files outside the working directory** without confirmation.
-. **Never ignore test failures.**
-. **Never commit `contracts/` or `.aden/`** (they are build artifacts).
+. **Never commit secrets**, credentials, or private keys.
+. **Never emit files outside the working directory** without explicit confirmation.
+. **Never ignore test failures** — a failing test is a signal, not noise.
+. **Never commit generated build artifacts** (e.g. contracts/, .aden/, target/, node_modules/).
+. **Always read existing code** before writing new code in the same area.
 
-endif::agent[]
+== Language and Style Defaults
 
-== Language Defaults
-ifdef::agent[]
 - Primary language: `{lang}`
-- Edition / version: {edition}
-- Standard framework / runtime: {standard}
-endif::agent[]
+- Standard / runtime: `{standard}`
+- Conventions: see `.agent/constraints.adoc` for project-specific rules.
 
 == Dependencies
+
 |===
 |Name |Purpose |Version Policy
 
 {dependencies}
 |===
+
+== Context Tools
+
+If aden is installed, it can assemble focused context from the knowledge graph:
+
+[source,bash]
+----
+aden ask "<question>"               # natural language query
+aden asm --from <anchor> --depth 2  # focused context assembly
+aden locate --symbol <name> .       # find a symbol
+----
+
+Aden is supplemental. The authoritative source of truth is always the source
+code and tests in this repository.
 
 == Next Steps
 

@@ -529,20 +529,22 @@ pub fn cmd_ci_check(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    gate!("constitutional firewall", {
-        // Verify bootstrap constitution exists and is valid
+    // Constitutional firewall: soft warning only — projects that have not opted
+    // into aden governance are not penalised. Only validate if the file exists.
+    {
         let constitution_path = path.join(".aden/constitution.adoc");
-        if !constitution_path.exists() {
-            Err("Missing .aden/constitution.adoc — run 'aden init' or create bootstrap constitution".into())
+        if constitution_path.exists() {
+            warn!("constitutional firewall", {
+                aden_policy::PolicyEngine::load_bootstrap(path)
+                    .map(|_| ())
+                    .map_err(|e| -> Box<dyn std::error::Error> {
+                        format!("Invalid bootstrap constitution: {}", e).into()
+                    })
+            });
         } else {
-            // Validate constitution can be parsed
-            aden_policy::PolicyEngine::load_bootstrap(path)
-                .map(|_| ())
-                .map_err(|e| -> Box<dyn std::error::Error> {
-                    format!("Invalid bootstrap constitution: {}", e).into()
-                })
+            println!("[CI] SKIP: constitutional firewall — no .aden/constitution.adoc (optional)");
         }
-    });
+    }
 
     gate!("tests", { run_project_tests(path) });
 
@@ -955,21 +957,65 @@ pub fn cmd_doctor(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
 
     let mut issues = Vec::new();
 
-    // Tool availability
-    for tool in &["rustc", "cargo", "git"] {
-        if std::process::Command::new(tool)
-            .arg("--version")
-            .output()
-            .is_ok()
-        {
-            println!("✓ {} found", tool);
-        } else {
-            println!("✗ {} NOT FOUND", tool);
-            issues.push(format!("{} not in PATH", tool));
+    // git is universal; language toolchains are detected from project manifests
+    println!("— Version Control —");
+    if std::process::Command::new("git")
+        .arg("--version")
+        .output()
+        .is_ok()
+    {
+        println!("✓ git found");
+    } else {
+        println!("✗ git NOT FOUND");
+        issues.push("git not in PATH".to_string());
+    }
+
+    // Detect project language from manifest files and check relevant toolchain
+    println!("\n— Project Language Toolchain —");
+    let is_rust = path.join("Cargo.toml").exists();
+    let is_node = path.join("package.json").exists();
+    let is_python = path.join("pyproject.toml").exists() || path.join("setup.py").exists();
+    let is_go = path.join("go.mod").exists();
+
+    if is_rust {
+        for tool in &["rustc", "cargo"] {
+            if std::process::Command::new(tool).arg("--version").output().is_ok() {
+                println!("✓ {} found (Rust project)", tool);
+            } else {
+                println!("✗ {} NOT FOUND (Rust project detected)", tool);
+                issues.push(format!("{} not in PATH", tool));
+            }
         }
+    }
+    if is_node {
+        for tool in &["node", "npm"] {
+            if std::process::Command::new(tool).arg("--version").output().is_ok() {
+                println!("✓ {} found (Node project)", tool);
+            } else {
+                println!("⚠ {} not found (package.json detected)", tool);
+            }
+        }
+    }
+    if is_python {
+        if std::process::Command::new("python3").arg("--version").output().is_ok() {
+            println!("✓ python3 found (Python project)");
+        } else {
+            println!("⚠ python3 not found (pyproject.toml/setup.py detected)");
+        }
+    }
+    if is_go {
+        if std::process::Command::new("go").arg("version").output().is_ok() {
+            println!("✓ go found (Go project)");
+        } else {
+            println!("⚠ go not found (go.mod detected)");
+        }
+    }
+    if !is_rust && !is_node && !is_python && !is_go {
+        println!("  (no recognised project manifest — skipping toolchain check)");
     }
 
     // Aden binary
+    println!("\n— Aden —");
     if std::process::Command::new("aden")
         .arg("--version")
         .output()
@@ -977,11 +1023,11 @@ pub fn cmd_doctor(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     {
         println!("✓ aden CLI found in PATH");
     } else {
-        println!("✗ aden CLI NOT in PATH (build or install: cargo install --path crates/aden-cli)");
+        println!("✗ aden CLI NOT in PATH");
         issues.push("aden CLI not in PATH".to_string());
     }
 
-    // Signing keys
+    // Signing keys (optional — only report, never block)
     let key_dir = dirs::home_dir()
         .unwrap_or_default()
         .join(".aden")
@@ -992,36 +1038,42 @@ pub fn cmd_doctor(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
             key_dir.join("aden-sign.pub").display()
         );
     } else {
-        println!("⚠ No signing key found. Generate with:");
-        println!("    mkdir -p ~/.aden/keys && cd ~/.aden/keys");
-        println!("    ssh-keygen -t ed25519 -C 'aden-sign' -N '' -f aden-sign");
-        issues.push("No ~/.aden/keys/aden-sign.pub".to_string());
+        println!("⚠ No signing key at ~/.aden/keys/aden-sign.pub (optional)");
     }
 
-    // Repo health
+    // Repo health — generic checks, not aden-project-specific
     println!("\n— Repo Health —");
     if path.join(".agent").is_dir() {
-        println!("✓ .agent/ directory present");
+        println!("✓ .agent/ directory present (aden context scaffold)");
     } else {
-        println!("✗ .agent/ MISSING — run 'aden init' in this repo");
-        issues.push("No .agent/ directory".to_string());
+        println!("  .agent/ not present — run 'aden init' to scaffold context templates");
     }
 
     if path.join(".adenignore").exists() {
         println!("✓ .adenignore present");
     } else {
-        println!("⚠ .adenignore missing — using built-in defaults");
+        println!("  .adenignore not present — built-in defaults will be used");
     }
 
-    if path.join("NOTICE.md").exists() {
-        println!("✓ NOTICE.md present — accreditation is tracked");
+    // Generic documentation check — any docs dir or README is fine
+    println!("\n— Documentation —");
+    let has_docs = path.join("docs").is_dir()
+        || path.join("doc").is_dir()
+        || path.join("documentation").is_dir()
+        || path.join("README.md").exists()
+        || path.join("README.adoc").exists()
+        || path.join("README.rst").exists()
+        || path.join(".agent").is_dir();
+
+    if has_docs {
+        println!("✓ Documentation present");
     } else {
-        println!("⚠ NOTICE.md missing — run 'aden licenses --out NOTICE.md'");
-        issues.push("No NOTICE.md — third-party attribution not tracked".to_string());
+        println!("⚠ No documentation directory or README found");
+        issues.push("No documentation found".to_string());
     }
 
     // Quick heal score
-    println!("\n— Quick Scan —");
+    println!("\n— Knowledge Graph Health —");
     if let Ok(score) = quick_health_score(path) {
         const EPSILON: f64 = 0.01;
         if (1.0 - score).abs() < EPSILON {
@@ -1033,34 +1085,6 @@ pub fn cmd_doctor(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
             );
             issues.push(format!("Health score {:.2} (target 1.00)", score));
         }
-    }
-
-    // Self-documenting docs check
-    println!("\n— Self-Documenting Docs —");
-    let self_docs = [
-        (
-            "docs/module-aden-cli.adoc",
-            "CLI reference + troubleshooting",
-        ),
-        ("docs/getting-started.adoc", "Quick start guide"),
-        (".agent/onboarding.adoc", "Agent onboarding"),
-    ];
-
-    let mut found_self_docs = 0;
-    for (doc_path, desc) in &self_docs {
-        if path.join(doc_path).exists() {
-            println!("✓ {} ({})", doc_path, desc);
-            found_self_docs += 1;
-        } else {
-            println!("✗ {} MISSING ({})", doc_path, desc);
-            issues.push(format!("Missing: {}", doc_path));
-        }
-    }
-
-    if found_self_docs >= 2 {
-        println!("✓ Sufficient self-documenting docs for AI agents");
-    } else {
-        println!("⚠ Run 'aden init' to scaffold self-documenting docs");
     }
 
     println!("\n═══════════════════════════════════════");

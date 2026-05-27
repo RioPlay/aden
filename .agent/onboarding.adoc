@@ -1,190 +1,95 @@
-:proj: unknown
+:proj: aden
 
 [[agent-onboarding]]
-= Agent Onboarding Protocol
+= Agent Onboarding — Aden
 
 [IMPORTANT]
 ====
-This document has **two paths**:
-
-* **Quick Start** — Read this section (~2 min), then begin work.
-* **Full Protocol** — Complete reference for edge-case situations.
-
-Most sessions only need the Quick Start.
+Read this document before starting any work in this repository.
 ====
 
-== Quick Start: 5 Steps to Working (60 Seconds)
+== Quick Start
 
 [source,bash]
 ----
-# 1. Read shared memory
-cat .agent/session.adoc   # Who else is working?
-cat .agent/context.adoc   # What are constraints?
+# 1. Read shared context
+cat .agent/context.adoc    # Project constraints and conventions
+cat .agent/session.adoc    # Who else is working and on what?
 
-# 2. Lock your session
-echo "|$(date -u +%Y-%m-%dT%H:%M:%SZ) |$(hostname) |<task> |<files> |in_progress |High" >> .agent/session.adoc
+# 2. Understand the codebase
+#    Aden is available as a context tool on its own source:
+aden ask "What does <module> do?"
+aden asm --from <anchor> --depth 2
+aden locate --symbol <name> .
 
-# 3. Understand impact before changing code
-aden locate <symbol>          # Find the symbol
-aden graph --depth 2 <symbol> # Who calls this?
+# 3. Make your change, run tests
+cargo test --workspace
 
-# 4. Write code, generate contracts
-aden gen <file>         # Generate contract
-aden check              # Verify refs resolve
-
-# 5. Close session
-aden ci-check           # Run gates
-# Update .agent/session.adoc: change Status to completed
+# 4. Log your session
+echo "| $(date -u +%Y-%m-%dT%H:%M:%SZ) | <your-id> | <task> | <files> | completed |" >> .agent/session.adoc
 ----
 
-== When to Read the Full Protocol
+== Context Tools
 
-Read sections below if:
+Aden builds a traversable knowledge graph from source code and documentation,
+enabling focused context assembly for any codebase it's run against.
 
-* This is your **first time** on this project
-* You are performing **impact analysis** on a heavily-used symbol (>10 backlinks)
-* You encountered a **WARNING admonition** with confidence < 0.7
-* You need to **handle an emergency** (broken graph, session conflict, etc.)
+[cols="1,2"]
+|===
+|Goal |Command
 
----
+|Ask a natural language question
+|`aden ask "<question>"`
 
-== Full Protocol — Reference
+|Assemble focused context for an anchor
+|`aden asm --from <anchor> --depth 2`
 
-=== Path A: Starting a New Project
+|Find a symbol definition
+|`aden locate --symbol <name> .`
 
-Use this when there is no code yet, only an idea.
+|Full-text search
+|`aden search "<term>" .`
 
-==== Step 1: Validate the Idea
+|Explore graph dependencies
+|`aden query --from <anchor> --depth 2`
 
-Before touching code:
+|List all indexed anchors
+|`aden list .`
 
-. Write xref:kickoff.adoc[]. Fill every section. If you cannot, the idea is not ready.
-. Kickoff defines success criteria. Without them, you cannot know when you are done.
+|Check drift between source and graph
+|`aden heal .`
 
-==== Step 2: Design Before Building
+|Check knowledge graph health
+|`aden status .`
+|===
 
-. Write xref:design.adoc[] for the core architecture.
-. Write xref:adr-{number}.adoc[] for every non-obvious decision.
+== Session Protocol
 
-==== Step 3: Specify What You Will Build
+Before you start:
 
-. Write xref:spec.adoc[] with acceptance criteria.
-. Break the spec into xref:task.adoc[] entries.
+. Append a row to `.agent/session.adoc` with your task and status `in_progress`.
 
-==== Step 4: Build with Checks
+When you finish:
 
-. Write code.
-. Generate contracts: `aden gen <file>`
-. Run tests.
-. Run `aden check`
-. Run `aden ci-check`
-. Only then commit.
-
-=== Path B: Joining an Existing Project
-
-Use this when the project already has code and contracts.
-
-==== Pre-Flight Checklist
-
-. Read xref:agent-context.adoc[.agent/context.adoc] — shared memory
-. Read xref:constraints.adoc[.agent/constraints.adoc] — negative rules
-. Read xref:agent-session.adoc[.agent/session.adoc] — who is active right now
-. Read xref:glossary.adoc[.agent/glossary.adoc] — terminology
-
-==== Phase 1: Assess Baseline Health (Before Code)
-
-[source,bash]
-----
-aden check                # All refs resolve? Health = 1.0?
-aden doctor               # Environment OK?
-----
-
-[IMPORTANT]
-====
-If `aden check` returns errors, STOP.
-Ask for human clarification or fix drift first.
-====
-
-==== Phase 2: Lock Your Session
-
-Mandatory atomic protocol: read → append → write → verify.
-
-[source,bash]
-----
-# 1. Read session.adoc into memory
-cat .agent/session.adoc
-
-# 2. Append your entry
-# |2026-05-23T14:30:00Z |agent-7 |Refactor parser |src/parser.rs |in_progress |High
-
-# 3. Overwrite atomically; re-read to confirm
-cat .agent/session.adoc
-----
-
-==== Phase 3: Impact Analysis (Before Editing)
-
-Before modifying any existing symbol:
-
-[source,bash]
-----
-aden locate <symbol>
-aden graph --depth 2 <symbol>
-aden ask --from <symbol> "What depends on this?" --model auto
-----
-
-If over 10 backlinks exist, include `aden asm --from <symbol>` in your analysis.
-
-==== Phase 4: Implement + Generate
-
-. Write code.
-. Immediately generate its contract: `aden gen <file>`.
-. Review the generated contract — does it accurately describe your change?
-. If you changed a public API, update or create the module-level contract too.
-
-==== Phase 5: Validation
-
-[source,bash]
-----
-<your-test-command>
-aden check
-aden heal
-aden ci-check
-----
-
-If any step fails, do not declare completion. Fix and re-run.
-
-==== Phase 6: Close Session
-
-. Update your entry in xref:agent-session.adoc[.agent/session.adoc]:
-** Change `Status` to `completed` or `cancelled`
-** Add `Result:` field summarizing outcome
-. Run `aden check` one final time.
-. If contracts changed, they are in `contracts/` — do NOT stage them.
+. Update your row to `completed` and note what changed.
 
 == Emergency Procedures
 
 [cols="1,2"]
 |===
-|Situation |Immediate Action
-
-|Circular include detected by `aden check`
-|Run `aden graph` to find cycle. Remove redundant include.
+|Situation |Action
 
 |Broken `<<refs>>` after rename
-|Use `aden search "old_name"` to find references, update them.
+|`aden search "old_name"` to find references, update them.
 
-|Another agent modified your file (session conflict)
-|Stop. Re-read their entry, resolve manually.
+|Another agent modified the same file
+|Stop. Re-read their session entry, resolve manually.
 
-|Drift score < 1.0 after your changes
-|Run `aden heal` to identify drift.
-
-|Low confidence (<0.7) on implementation
-|Add WARNING admonition explaining risk. Do NOT auto-apply.
-
+|Drift detected after your changes
+|`aden heal .` to identify stale contracts.
 |===
 
 == Related Documents
 
 . <<agent-context>>
-. <<aden-guide>>
+. <<agent-session>>

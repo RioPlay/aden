@@ -297,41 +297,43 @@ pub fn cmd_init(target: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let aden_dir = target.join(".aden");
     std::fs::create_dir_all(&aden_dir)?;
 
-    // Bootstrap constitution
-    let constitution = r###":status: active
+    // Bootstrap constitution — intentionally minimal and project-neutral.
+    // Teams fill in their own CI tools, rules, and precedence. Aden is listed
+    // as an available tool, not a mandatory gate.
+    let constitution = r###":status: draft
 :version: 1.0
-:ratified: 2026-05-25
 :precedence: 100
 
-[[aden-constitution]]
-= Aden Constitution
+[[project-constitution]]
+= Project Constitution
 
 [constitution]
 == Core Directives
 
 [rule="Forbid"]
-- Never expose secrets, keys, or tokens in any contract
-- Never commit `contracts/` or `.aden/` directories
-- Never bypass `aden check` before commit
+- Never expose secrets, keys, or tokens in committed files
+- Never commit generated build artifacts (contracts/, .aden/, node_modules/, target/)
 
 [rule="Warn"]
 - All code must build before commit
 - All tests must pass before commit
-- No TODO/unimplemented in production
+- No TODO/unimplemented stubs in production paths
 
 [rule="Suggest"]
-- Use explicit typed edges
-- Include `:source_hash:` in contracts
-- Run `aden heal` before commit
+- Run your project's test suite before committing
+- Use aden to explore and validate context before large refactors
 
 == Agent Hierarchy
 | Human | Highest | Can override all |
-| Constitution | Fixed | Cannot be overridden |
-| Agent | Lowest | Limited overrides |
+| Constitution | Fixed | Defines project norms |
+| Agent | Lowest | Limited scope |
+
+== Tools Available
+Aden is installed and available for context assembly and graph queries.
+It is not a required CI gate unless this project explicitly adds it.
 
 == Related
 . <<project-context>>
-. <<protocol>>
 "###;
     std::fs::write(aden_dir.join("constitution.adoc"), constitution)?;
 
@@ -394,36 +396,47 @@ Thumbs.db
     let hooks_dir = aden_dir.join("hooks");
     std::fs::create_dir_all(&hooks_dir)?;
 
+    // Hooks are sample templates — commented out so they do not run automatically.
+    // Copy to .git/hooks/ and uncomment the commands that fit your project.
     let pre_commit = r#"#!/bin/sh
-# Aden Pre-Commit Hook
-# Run: cp .aden/hooks/pre-commit .git/hooks/
-set -e
-aden ci-check .
+# Sample Pre-Commit Hook
+# Copy to .git/hooks/pre-commit and make executable: chmod +x .git/hooks/pre-commit
+# Uncomment and adapt the commands that apply to your project.
+#
+# set -e
+# <your-test-command>          # e.g. cargo test / npm test / pytest
+# aden check .                 # validate knowledge graph refs (if using aden)
 "#;
     std::fs::write(hooks_dir.join("pre-commit"), pre_commit)?;
 
     let pre_push = r#"#!/bin/sh
-# Aden Pre-Push Hook
-# Run: cp .aden/hooks/pre-push .git/hooks/
-set -e
-aden gen src/ --auto
-aden ci-check .
-cargo clippy --workspace -- -D warnings
+# Sample Pre-Push Hook
+# Copy to .git/hooks/pre-push and make executable: chmod +x .git/hooks/pre-push
+# Uncomment and adapt the commands that apply to your project.
+#
+# set -e
+# <your-build-command>         # e.g. cargo build / npm run build
+# <your-lint-command>          # e.g. cargo clippy / eslint / flake8
+# aden gen src/ --auto         # regenerate knowledge graph contracts (if using aden)
 "#;
     std::fs::write(hooks_dir.join("pre-push"), pre_push)?;
 
-    // Scaffold a starter NOTICE.md for accreditation
+    // Scaffold a starter NOTICE.md for accreditation — language-agnostic
     let notice = r###"# Third-Party Dependencies
 
-This project uses open-source packages.
-Run `aden licenses` to generate the canonical attribution table from `Cargo.lock`.
-Update this file whenever dependencies change.
+This project uses open-source packages. Keep this file current whenever
+dependencies change so consumers can verify license compatibility.
 
-[IMPORTANT]
-====
-Accreditation is a first-class concern.
+## Generating Attribution
+
+Depending on your project's language/package manager:
+
+- **Rust/Cargo:**   `aden licenses --out NOTICE.md` (reads Cargo.lock)
+- **Node/npm:**     `npx license-checker --out NOTICE.md`
+- **Python:**       `pip-licenses --format=markdown > NOTICE.md`
+- **Go:**           `go-licenses save ./... --save_path=NOTICE.md`
+
 Always verify that third-party licenses are compatible with your project's license.
-====
 "###;
     std::fs::write(target.join("NOTICE.md"), notice)?;
 

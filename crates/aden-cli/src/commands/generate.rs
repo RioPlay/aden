@@ -89,8 +89,6 @@ fn generate_module_contracts(root: &Path, out_dir: &Path) -> Result<(), Box<dyn 
 [[{anchor}]]
 = {name}
 
-Core module for aden {name}.
-
 Part of: <<mod-project>>
 "#,
             src = src_path.display(),
@@ -133,7 +131,8 @@ Root module for the project. All submodules reference this.
     Ok(())
 }
 
-/// Detect existing contract structure and return matching output directory
+/// Detect existing contract structure and return matching output directory.
+/// Supports any workspace layout: crates/, packages/, modules/, or flat src/.
 fn detect_contract_structure(path: &Path, source_path: &Path) -> Option<std::path::PathBuf> {
     let root = find_project_root(path);
     let rel = source_path.strip_prefix(&root).ok()?;
@@ -143,14 +142,17 @@ fn detect_contract_structure(path: &Path, source_path: &Path) -> Option<std::pat
         let first = components[0].as_os_str().to_str()?;
         let second = components[1].as_os_str().to_str()?;
 
-        if first == "crates" {
-            let contract_dir = root
-                .join("contracts")
-                .join("crates")
-                .join(second)
-                .join("src");
-            if contract_dir.exists() && contract_dir.is_dir() {
-                return Some(contract_dir);
+        // Support any named workspace directory, not just "crates"
+        for workspace_dir in &["crates", "packages", "modules"] {
+            if first == *workspace_dir {
+                let contract_dir = root
+                    .join("contracts")
+                    .join(workspace_dir)
+                    .join(second)
+                    .join("src");
+                if contract_dir.exists() && contract_dir.is_dir() {
+                    return Some(contract_dir);
+                }
             }
         }
     }
@@ -159,20 +161,34 @@ fn detect_contract_structure(path: &Path, source_path: &Path) -> Option<std::pat
 }
 
 /// Infer parent module anchor from source file path.
-/// E.g., crates/aden-foo/src/bar.rs → mod-aden-foo
+/// Works with any directory layout: looks for the first named sub-directory
+/// under known workspace roots (crates/, packages/, modules/, src/), or
+/// falls back to the immediate parent directory of the source file.
 fn infer_parent_module_from_source(source_path: &Path) -> Option<String> {
     let path_str = source_path.to_string_lossy();
-    
-    // Try to find crates/<name>/ pattern
-    if let Some(start) = path_str.find("/crates/") {
-        let after_crates = &path_str[start + 8..]; // Skip "/crates/"
-        if let Some(end) = after_crates.find('/') {
-            let crate_name = &after_crates[..end];
-            let module_name = format!("mod-{}", crate_name);
-            return Some(module_name);
+
+    // Check for common workspace sub-directory patterns
+    for workspace_dir in &["/crates/", "/packages/", "/modules/"] {
+        if let Some(start) = path_str.find(workspace_dir) {
+            let after = &path_str[start + workspace_dir.len()..];
+            if let Some(end) = after.find('/') {
+                let mod_name = &after[..end];
+                if !mod_name.is_empty() {
+                    return Some(format!("mod-{}", mod_name));
+                }
+            }
         }
     }
-    
+
+    // Flat src/ layout: use the immediate parent directory name
+    if let Some(parent) = source_path.parent() {
+        if let Some(name) = parent.file_name().and_then(|n| n.to_str()) {
+            if !name.is_empty() && name != "." && name != "src" {
+                return Some(format!("mod-{}", name));
+            }
+        }
+    }
+
     None
 }
 
@@ -315,14 +331,7 @@ pub fn cmd_gen(
                 if let Some(ref pm) = parent_module {
                     doc_clone.blocks.push(aden_core::Block::Paragraph("== Relationships".to_string()));
                     doc_clone.blocks.push(aden_core::Block::DescriptionList(vec![
-                        (format!("<<{},module>>", pm), 
-                         "This symbol is part of the parent module.".to_string())
-                    ]));
-                }
-                if let Some(ref pm) = parent_module {
-                    doc_clone.blocks.push(aden_core::Block::Paragraph("== Relationships".to_string()));
-                    doc_clone.blocks.push(aden_core::Block::DescriptionList(vec![
-                        (format!("<<{},module>>", pm), 
+                        (format!("<<{},module>>", pm),
                          "This symbol is part of the parent module.".to_string())
                     ]));
                 }
