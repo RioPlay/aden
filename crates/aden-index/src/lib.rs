@@ -1361,7 +1361,9 @@ impl SemanticNormalizer {
         ("yesterday", "yesterday"),
     ];
 
-    /// Reverse lookup: canonical → keywords (for bidirectional search)
+    // Reverse lookup: canonical → keywords (for bidirectional search)
+    // Currently unused but kept for future bidirectional search implementation
+    #[allow(dead_code)]
     const TIME_CANONICAL_TO_KEYWORDS: &[(&str, &[&str])] = &[
         ("00:00", &["midnight", "00:00", "0:00", "twelve am", "12am"]),
         ("12:00", &["noon", "midday", "12:00", "twelve pm", "12pm"]),
@@ -1605,7 +1607,7 @@ edges in the knowledge graph via `edge::is_equivalent_to`.
         doc.push_str("|===\n\n");
         
         // Add edge declarations for time
-        for (kw, canon) in &key_times {
+        for (_kw, canon) in &key_times {
             doc.push_str(&format!("edge::is_equivalent_to[{}]\n", canon));
         }
         doc.push('\n');
@@ -1812,7 +1814,7 @@ impl ScalableInference {
 
     /// Query with full inference - the "magic" that makes it scale
     pub fn query_with_inference(&self, index: &Index, query: &str) -> Vec<SearchResult> {
-        let search = SemanticSearch::default();
+        let _search = SemanticSearch::default();
         let mut all_results: Vec<(SearchResult, f64)> = Vec::new();
 
         // 1. Direct match
