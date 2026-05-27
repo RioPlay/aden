@@ -362,6 +362,53 @@ fn handle_tools_list(req: &JsonRpcRequest) -> JsonRpcResponse {
                 },
                 "required": ["intent"]
             }
+        },
+        {
+            "name": "new",
+            "description": "Create a new project from a language template with aden scaffolding",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "Project name" },
+                    "lang": { "type": "string", "enum": ["rust", "go", "js", "python"], "description": "Language template" },
+                    "path": { "type": "string", "description": "Target directory" }
+                },
+                "required": ["name"]
+            }
+        },
+        {
+            "name": "kickoff",
+            "description": "Create a kickoff document for a new initiative",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "brief": { "type": "string", "description": "Initiative brief" },
+                    "path": { "type": "string", "description": "Output directory (default .)" }
+                }
+            }
+        },
+        {
+            "name": "licenses",
+            "description": "Generate third-party accreditation report from Cargo.lock",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Project root (default .)" },
+                    "full": { "type": "boolean", "description": "Fetch full license info from crates.io" }
+                }
+            }
+        },
+        {
+            "name": "review",
+            "description": "Semantic review: validate low-confidence proposals with token budgeting",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Directory to review (default .)" },
+                    "since": { "type": "string", "description": "Review changes since date (ISO 8601)" },
+                    "budget": { "type": "integer", "description": "Token budget (default 4096)" }
+                }
+            }
         }
     ]);
     JsonRpcResponse::success(req.id.clone(), serde_json::json!({ "tools": tools }))
@@ -403,6 +450,10 @@ fn handle_tools_call(
         "doctor" => tool_generic(project_dir, &["doctor"]),
         "audit" => tool_generic(project_dir, &["audit"]),
         "suggest" => tool_suggest(project_dir, &args),
+        "new" => tool_new(project_dir, &args),
+        "kickoff" => tool_kickoff(project_dir, &args),
+        "licenses" => tool_licenses(project_dir, &args),
+        "review" => tool_review(project_dir, &args),
         _ => {
             return JsonRpcResponse::error(
                 req.id.clone(),
@@ -658,6 +709,94 @@ fn tool_suggest(
 
     let output = run_aden_command(project_dir, &["suggest", intent])?;
     Ok(serde_json::json!({ "suggestion": output }))
+}
+
+fn tool_new(
+    project_dir: &std::sync::Arc<std::path::PathBuf>,
+    args: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let name = args
+        .get("name")
+        .and_then(|n| n.as_str())
+        .ok_or("Missing 'name' argument")?;
+    
+    let mut cmd_args = vec!["new", name];
+    if let Some(lang) = args.get("lang").and_then(|l| l.as_str()) {
+        cmd_args.push("--lang");
+        cmd_args.push(lang);
+    }
+    if let Some(path) = args.get("path").and_then(|p| p.as_str()) {
+        cmd_args.push(path);
+    }
+
+    let output = run_aden_command(project_dir, &cmd_args)?;
+    Ok(serde_json::json!({ "result": output }))
+}
+
+fn tool_kickoff(
+    project_dir: &std::sync::Arc<std::path::PathBuf>,
+    args: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let mut cmd_args = vec!["kickoff"];
+    
+    if let Some(brief) = args.get("brief").and_then(|b| b.as_str()) {
+        cmd_args.push("--brief");
+        cmd_args.push(brief);
+    }
+    if let Some(path) = args.get("path").and_then(|p| p.as_str()) {
+        cmd_args.push(path);
+    } else {
+        cmd_args.push(".");
+    }
+
+    let output = run_aden_command(project_dir, &cmd_args)?;
+    Ok(serde_json::json!({ "result": output }))
+}
+
+fn tool_licenses(
+    project_dir: &std::sync::Arc<std::path::PathBuf>,
+    args: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let mut cmd_args = vec!["licenses"];
+    
+    if let Some(full) = args.get("full").and_then(|f| f.as_bool()) {
+        if full {
+            cmd_args.push("--full");
+        }
+    }
+    if let Some(path) = args.get("path").and_then(|p| p.as_str()) {
+        cmd_args.push(path);
+    } else {
+        cmd_args.push(".");
+    }
+
+    let output = run_aden_command(project_dir, &cmd_args)?;
+    Ok(serde_json::json!({ "report": output }))
+}
+
+fn tool_review(
+    project_dir: &std::sync::Arc<std::path::PathBuf>,
+    args: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let mut cmd_args = vec!["review".to_string()];
+    
+    if let Some(since) = args.get("since").and_then(|s| s.as_str()) {
+        cmd_args.push("--since".to_string());
+        cmd_args.push(since.to_string());
+    }
+    if let Some(budget) = args.get("budget").and_then(|b| b.as_u64()) {
+        cmd_args.push("--budget".to_string());
+        cmd_args.push(budget.to_string());
+    }
+    if let Some(path) = args.get("path").and_then(|p| p.as_str()) {
+        cmd_args.push(path.to_string());
+    } else {
+        cmd_args.push(".".to_string());
+    }
+
+    let cmd_refs: Vec<&str> = cmd_args.iter().map(|s| s.as_str()).collect();
+    let output = run_aden_command(project_dir, &cmd_refs)?;
+    Ok(serde_json::json!({ "review": output }))
 }
 
 #[cfg(test)]
