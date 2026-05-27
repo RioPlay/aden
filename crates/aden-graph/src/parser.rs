@@ -170,6 +170,7 @@ enum BlockState {
     InTable,
     InListing,
     InParagraph,
+    #[allow(dead_code)]
     InSemantics,
 }
 
@@ -474,6 +475,8 @@ pub fn parse_file(path: &Path) -> Result<ParsedDocument, ParseError> {
                     table_headers.clear();
                     table_rows.clear();
                     saw_table_delim = false;
+                } else if trimmed == "[semantics]" {
+                    state = BlockState::InSemantics;
                 } else if trimmed == "----" {
                     state = BlockState::InListing;
                     listing_code.clear();
@@ -491,9 +494,6 @@ pub fn parse_file(path: &Path) -> Result<ParsedDocument, ParseError> {
                     };
                     let text = cap[2].to_string();
                     blocks.push(Block::Admonition { kind, text });
-                } else if trimmed == "[semantics]" {
-                    // Start a semantics block - parse relation lines
-                    state = BlockState::InSemantics;
                 } else if let Some(cap) = DESC_LIST_RE.captures(trimmed) {
                     let term = cap[1].trim().to_string();
                     let def = cap[2].trim().to_string();
@@ -606,8 +606,11 @@ pub fn parse_file(path: &Path) -> Result<ParsedDocument, ParseError> {
 
             BlockState::InSemantics => {
                 // End semantics block on ---- or =====
-                if trimmed == "----" || trimmed.starts_with("====") {
+                // But skip the first ---- (opening delimiter) and only exit on the second
+                if (trimmed == "----" || trimmed.starts_with("====")) && !semantic_relations.is_empty() {
                     state = BlockState::Idle;
+                } else if trimmed == "----" || trimmed.starts_with("====") {
+                    // Skip opening delimiter, continue collecting relations
                 } else if !trimmed.is_empty() && !trimmed.starts_with("//") {
                     // Parse relation line: "Source Relation Target"
                     // e.g., "Noun IsA PartOfSpeech"

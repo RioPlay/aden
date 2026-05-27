@@ -338,17 +338,67 @@ fn build_graph_from_indexed(indexed: IndexedGraph) -> AdenGraph {
             anchor_to_index.get(&ce.source),
             anchor_to_index.get(&ce.target),
         ) {
-            graph.add_edge(src, tgt, ce.edge_type);
+            graph.add_edge(src, tgt, ce.edge_type.clone());
         }
     }
 
-    AdenGraph {
+    let mut result = AdenGraph {
         graph,
         anchor_to_index,
         path_to_index,
         filter: aden_core::filter::AdenFilter::from_directory(Path::new(".")),
         backlinks_cache: None,
+    };
+
+    // Reconstruct semantic relations from semantic edges
+    // This is needed because semantic nodes have fake paths (semantic:Noun)
+    // that can't be re-parsed from disk when loading from cache
+    let semantic_edge_types = [
+        aden_core::EdgeType::IsA,
+        aden_core::EdgeType::PartOf,
+        aden_core::EdgeType::RelatesTo,
+        aden_core::EdgeType::SimilarTo,
+        aden_core::EdgeType::Causes,
+        aden_core::EdgeType::Implies,
+        aden_core::EdgeType::SynonymOf,
+        aden_core::EdgeType::AntonymOf,
+        aden_core::EdgeType::AssociatedWith,
+        aden_core::EdgeType::PrerequisiteFor,
+        aden_core::EdgeType::Explains,
+        aden_core::EdgeType::IsEquivalentTo,
+    ];
+
+    for edge_idx in result.graph.edge_indices() {
+        let (src_idx, tgt_idx) = result.graph.edge_endpoints(edge_idx).expect("valid edge");
+        let edge_type = &result.graph[edge_idx];
+        if semantic_edge_types.contains(edge_type) {
+            let src_anchor = result.graph[src_idx].anchor.clone();
+            let tgt_anchor = result.graph[tgt_idx].anchor.clone();
+            let relation = match edge_type {
+                aden_core::EdgeType::IsA => "IsA",
+                aden_core::EdgeType::PartOf => "PartOf",
+                aden_core::EdgeType::RelatesTo => "RelatesTo",
+                aden_core::EdgeType::SimilarTo => "SimilarTo",
+                aden_core::EdgeType::Causes => "Causes",
+                aden_core::EdgeType::Implies => "Implies",
+                aden_core::EdgeType::SynonymOf => "SynonymOf",
+                aden_core::EdgeType::AntonymOf => "AntonymOf",
+                aden_core::EdgeType::AssociatedWith => "AssociatedWith",
+                aden_core::EdgeType::PrerequisiteFor => "PrerequisiteFor",
+                aden_core::EdgeType::Explains => "Explains",
+                aden_core::EdgeType::IsEquivalentTo => "IsEquivalentTo",
+                _ => continue,
+            };
+            let source_node = &mut result.graph[src_idx];
+            source_node.parsed.semantic_relations.push(crate::parser::SemanticRelation {
+                source: src_anchor,
+                relation: relation.to_string(),
+                target: tgt_anchor,
+            });
+        }
     }
+
+    result
 }
 
 /// Build a graph, using the on-disk cache when possible.

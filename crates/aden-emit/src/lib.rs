@@ -157,6 +157,17 @@ fn emit_block(out: &mut String, block: &Block) {
                 writeln!(out, "* {marker} {}", item.text).unwrap();
             }
         }
+        Block::Incomplete { required_fields, hint } => {
+            writeln!(out, "[must-complete]").unwrap();
+            writeln!(out, "====").unwrap();
+            writeln!(out, "Required fields:").unwrap();
+            for field in required_fields {
+                writeln!(out, "* {field}").unwrap();
+            }
+            writeln!(out).unwrap();
+            writeln!(out, "Hint: {hint}").unwrap();
+            writeln!(out, "====").unwrap();
+        }
     }
 }
 
@@ -289,6 +300,10 @@ enum AdgBlock {
     Checklist {
         item_count: usize,
     },
+    Incomplete {
+        field_count: usize,
+        hint: String,
+    },
 }
 
 /// Emit a Document in deterministic ADG format (canonical JSON).
@@ -316,6 +331,10 @@ pub fn emit_adg(doc: &Document) -> Result<String, serde_json::Error> {
             },
             Block::Checklist(items) => AdgBlock::Checklist {
                 item_count: items.len(),
+            },
+            Block::Incomplete { required_fields, hint } => AdgBlock::Incomplete {
+                field_count: required_fields.len(),
+                hint: hint.clone(),
             },
         })
         .collect();
@@ -453,6 +472,14 @@ fn emit_block_md(out: &mut String, block: &Block) {
                 let checkbox = if item.checked { "[x]" } else { "[ ]" };
                 writeln!(out, "- {checkbox} {}", item.text).unwrap();
             }
+        }
+        Block::Incomplete { required_fields, hint } => {
+            writeln!(out, "**Required fields:**").unwrap();
+            for field in required_fields {
+                writeln!(out, "- {field}").unwrap();
+            }
+            writeln!(out).unwrap();
+            writeln!(out, "**Hint:** {hint}").unwrap();
         }
     }
 }

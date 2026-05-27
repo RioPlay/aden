@@ -214,3 +214,6 @@ include::philosophy.adoc[]
 . <<adr-003>> — Markdown emission and cross-format drift detection
 . <<plan-phase0>> — Bootstrap phase (phase 1 TBD)
 . <<doc-rot>> — Documents documentation rot problem
+== Related Modules
+
+See: <<mod-aden-core>>, <<mod-aden-cli>>

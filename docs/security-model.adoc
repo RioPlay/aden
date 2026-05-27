@@ -1,0 +1,65 @@
+:proj: aden
+:author: Security Team
+
+[[security-model]]
+= Security & Permissions Model
+
+This document describes the authorization model for the aden system.
+
+[semantics]
+----
+Principal IsA Actor
+Role IsA Principal
+User IsA Principal
+ServiceAccount IsA Principal
+AdminRole IsA Role
+EditorRole IsA Role
+ViewerRole IsA Role
+SuperAdmin IsA AdminRole
+Permission IsA Entity
+read_action IsA Permission
+write_action IsA Permission
+delete_action IsA Permission
+AdminRole CanPerform delete_action
+AdminRole CanPerform write_action
+AdminRole CanPerform read_action
+EditorRole CanPerform write_action
+EditorRole CanPerform read_action
+ViewerRole CanPerform read_action
+SuperAdmin CanPerform delete_action
+----
+
+[[security-principal]]
+= Security Principal
+
+A security principal is an entity that can be authenticated and authorized.
+
+[[role]]
+= Role
+
+A role is a collection of permissions that can be assigned to principals.
+
+[[permission-action]]
+= Permission Action
+
+An action that can be performed on resources.
+
+[[user]]
+= User
+
+A human user of the system.
+
+[[service-account]]
+= Service Account
+
+A non-human principal used for automated operations.
+
+[[admin-role]]
+= Admin Role
+
+Has full permissions including user management.
+
+[[viewer-role]]
+= Viewer Role
+
+Read-only access to resources.

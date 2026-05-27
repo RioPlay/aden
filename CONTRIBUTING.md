@@ -97,3 +97,7 @@ aden-stable ci-check .
 ### Why This Matters
 
 If you skip step 3, the `.agent/` workspace on disk will contain stale templates that don't match the binary's embedded versions. This causes silent drift that breaks downstream projects and wastes debugging time.
+
+== Modules
+
+See: <<mod-aden-core>>, <<mod-aden-cli>>, <<mod-aden-graph>>

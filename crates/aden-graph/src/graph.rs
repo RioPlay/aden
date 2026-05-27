@@ -148,6 +148,90 @@ impl AdenGraph {
                         }
                     }
                 }
+                // Semantic relations from [semantics] blocks
+                for sr in &parsed.semantic_relations {
+                    // Create or get source node (concept)
+                    let source_idx = if let Some(&si) = graph.anchor_to_index.get(&sr.source) {
+                        si
+                    } else {
+                        let source_anchor = sr.source.clone();
+                        let parsed = crate::parser::ParsedDocument {
+                            source_path: format!("semantic:{}", source_anchor),
+                            attributes: HashMap::new(),
+                            anchors: vec![source_anchor.clone()],
+                            refs: Vec::new(),
+                            includes: Vec::new(),
+                            edges: Vec::new(),
+                            conditional_stack: Vec::new(),
+                            raw_content: String::new(),
+                            semantic_diffs: Vec::new(),
+                            semantic_relations: Vec::new(),
+                            blocks: Vec::new(),
+                            tagged_regions: Vec::new(),
+                            conditional_regions: Vec::new(),
+                            metadata: None,
+                        };
+                        let node = DocumentNode {
+                            anchor: source_anchor.clone(),
+                            doc: aden_core::Document {
+                                anchor: source_anchor.clone(),
+                                node_type: aden_core::NodeType::Context,
+                                attributes: HashMap::new(),
+                                blocks: Vec::new(),
+                                source_span: None,
+                                metadata: None,
+                            },
+                            parsed,
+                            source_path: PathBuf::from(format!("semantic:{}", source_anchor)),
+                        };
+                        let new_idx = graph.graph.add_node(node);
+                        graph.anchor_to_index.insert(source_anchor, new_idx);
+                        new_idx
+                    };
+                    // Create or get target node (concept)
+                    let target_idx = if let Some(&ti) = graph.anchor_to_index.get(&sr.target) {
+                        ti
+                    } else {
+                        let target_anchor = sr.target.clone();
+                        let parsed = crate::parser::ParsedDocument {
+                            source_path: format!("semantic:{}", target_anchor),
+                            attributes: HashMap::new(),
+                            anchors: vec![target_anchor.clone()],
+                            refs: Vec::new(),
+                            includes: Vec::new(),
+                            edges: Vec::new(),
+                            conditional_stack: Vec::new(),
+                            raw_content: String::new(),
+                            semantic_diffs: Vec::new(),
+                            semantic_relations: Vec::new(),
+                            blocks: Vec::new(),
+                            tagged_regions: Vec::new(),
+                            conditional_regions: Vec::new(),
+                            metadata: None,
+                        };
+                        let node = DocumentNode {
+                            anchor: target_anchor.clone(),
+                            doc: aden_core::Document {
+                                anchor: target_anchor.clone(),
+                                node_type: aden_core::NodeType::Context,
+                                attributes: HashMap::new(),
+                                blocks: Vec::new(),
+                                source_span: None,
+                                metadata: None,
+                            },
+                            parsed,
+                            source_path: PathBuf::from(format!("semantic:{}", target_anchor)),
+                        };
+                        let new_idx = graph.graph.add_node(node);
+                        graph.anchor_to_index.insert(target_anchor, new_idx);
+                        new_idx
+                    };
+                    // Add semantic edge (source -> target with semantic relation type)
+                    let edge_type = parse_edge_type(&sr.relation);
+                    if !graph.graph.contains_edge(source_idx, target_idx) {
+                        graph.graph.add_edge(source_idx, target_idx, edge_type);
+                    }
+                }
             }
         }
 
@@ -411,7 +495,8 @@ fn resolve_include_path(current: &Path, include: &str, root: &Path) -> Result<Pa
 }
 
 fn parse_edge_type(s: &str) -> EdgeType {
-    match s {
+    let lower = s.to_lowercase();
+    match lower.as_str() {
         "uses" => EdgeType::Uses,
         "implements" => EdgeType::Implements,
         "tests" => EdgeType::Tests,
@@ -425,6 +510,19 @@ fn parse_edge_type(s: &str) -> EdgeType {
         "supersedes" => EdgeType::Supersedes,
         "amends" => EdgeType::Amends,
         "verifies" => EdgeType::Verifies,
+        "isa" | "is-a" => EdgeType::IsA,
+        "partof" | "part-of" => EdgeType::PartOf,
+        "relatesto" | "relates-to" => EdgeType::RelatesTo,
+        "similar" | "similar-to" => EdgeType::SimilarTo,
+        "causes" => EdgeType::Causes,
+        "implies" => EdgeType::Implies,
+        "synonym" | "synonym-of" => EdgeType::SynonymOf,
+        "antonym" | "antonym-of" => EdgeType::AntonymOf,
+        "associated" | "associated-with" => EdgeType::AssociatedWith,
+        "prereq" | "prerequisite-for" => EdgeType::PrerequisiteFor,
+        "explains" => EdgeType::Explains,
+        "equivalent" | "is-equivalent-to" => EdgeType::IsEquivalentTo,
+        "canperform" | "can-perform" => EdgeType::RelatesTo,
         _ => EdgeType::Uses,
     }
 }

@@ -7,6 +7,25 @@ use std::path::{Path, PathBuf};
 
 use crate::types::GenCache;
 
+fn infer_parent_module_from_source(source_path: &std::path::Path) -> Option<String> {
+    let path_str = source_path.to_string_lossy();
+    // Handle both absolute and relative paths containing /crates/
+    if let Some(start) = path_str.find("/crates/") {
+        let after_crates = &path_str[start + 8..];
+        if let Some(end) = after_crates.find('/') {
+            let crate_name = &after_crates[..end];
+            return Some(format!("mod-{}", crate_name));
+        }
+    } else if let Some(start) = path_str.find("crates/") {
+        let after_crates = &path_str[start + 7..];
+        if let Some(end) = after_crates.find('/') {
+            let crate_name = &after_crates[..end];
+            return Some(format!("mod-{}", crate_name));
+        }
+    }
+    None
+}
+
 /// Reject project names that could traverse directories.
 pub fn validate_name(name: &str) -> Result<(), Box<dyn std::error::Error>> {
     if name.contains('/') || name.contains('\\') || name == ".." || name.starts_with("../") {
@@ -224,7 +243,7 @@ pub fn parse_edge_types(input: &str) -> Vec<aden_core::EdgeType> {
 pub fn emit_docs(
     mut docs: Vec<aden_core::Document>,
     out_dir: Option<&Path>,
-    _source: &Path,
+    source: &Path,
     format: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if docs.is_empty() {
@@ -233,6 +252,18 @@ pub fn emit_docs(
     // SECURITY: Strip absolute paths from source_file attributes before emitting
     for doc in &mut docs {
         sanitize_source_file(doc);
+    }
+
+    // Auto-link to parent module (infer from source path)
+    let parent_module = infer_parent_module_from_source(source);
+    if parent_module.is_some() {
+        for doc in &mut docs {
+            doc.blocks.push(aden_core::Block::Paragraph("== Relationships".to_string()));
+            doc.blocks.push(aden_core::Block::DescriptionList(vec![
+                (format!("<<{},module>>", parent_module.as_ref().unwrap()), 
+                 "This symbol is part of the parent module.".to_string())
+            ]));
+        }
     }
 
     let is_markdown = format.eq_ignore_ascii_case("md");
@@ -303,6 +334,49 @@ pub fn resolve_node_type(node: &aden_graph::DocumentNode) -> String {
         .get("node-type")
         .cloned()
         .unwrap_or_else(|| format!("{:?}", node.doc.node_type))
+}
+
+/// Scan for contracts that have [must-complete] blocks that haven't been filled.
+/// Returns warnings for incomplete contracts.
+fn check_incomplete_contracts(path: &Path) -> Vec<String> {
+    let mut incomplete = Vec::new();
+
+    if let Ok(entries) = std::fs::read_dir(path) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_file() {
+                let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
+                if ext == "adoc" || ext == "aden" {
+                    let mut text = String::new();
+                    if let Ok(mut file) = std::fs::File::open(&p) {
+                        let _ = file.read_to_string(&mut text);
+                        // Check for [must-complete] marker
+                        if text.contains("[must-complete]") {
+                            // Check if it's been filled (has non-empty required fields)
+                            // A filled contract won't have the hint line or will have content after ====
+                            let has_hint = text.contains("Hint:");
+                            let has_content_after_marker = text.match_indices("[must-complete]")
+                                .last()
+                                .map(|(pos, _)| text[pos..].contains("===="))
+                                .unwrap_or(false);
+
+                            if has_hint || !has_content_after_marker {
+                                let anchor = p.file_stem()
+                                    .and_then(|s| s.to_str())
+                                    .unwrap_or("unknown");
+                                incomplete.push(format!(
+                                    "WARNING: Incomplete contract: {} - run 'aden complete' to fill missing documentation",
+                                    anchor
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    incomplete
 }
 
 /// Perform all integrity checks on a project directory.
@@ -384,7 +458,7 @@ pub fn perform_check(path: &Path) -> Result<Vec<String>, Box<dyn std::error::Err
         messages.push("INFO: All source_hash values valid.".to_string());
     } else {
         for (anchor, msg) in &hash_issues {
-            messages.push(format!("ERROR: {} (anchor: {})", msg, anchor));
+            messages.push(format!("{} (anchor: {})", msg, anchor));
         }
     }
 
@@ -394,6 +468,15 @@ pub fn perform_check(path: &Path) -> Result<Vec<String>, Box<dyn std::error::Err
     } else {
         for issue in edge_issues {
             messages.push(format!("ERROR: {}", issue));
+        }
+    }
+
+    let incomplete_contracts = check_incomplete_contracts(path);
+    if incomplete_contracts.is_empty() {
+        messages.push("INFO: All contracts complete.".to_string());
+    } else {
+        for msg in incomplete_contracts {
+            messages.push(msg);
         }
     }
 

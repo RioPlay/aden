@@ -1,10 +1,137 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::types::GenCacheEntry;
 use crate::util::{
     base_cache_path, discover_source_files, emit_docs, find_project_root, load_gen_cache,
     sanitize_anchor, sanitize_source_file, save_gen_cache,
 };
+
+/// Automatically generate module contracts for directories in the workspace.
+/// This ensures deterministic module anchors exist before symbol contracts.
+/// Language-agnostic: works for any project with src/ directories.
+fn generate_module_contracts(root: &Path, out_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    // Common source directory names across languages
+    let src_dirs = ["src", "lib", "app", "modules", "source"];
+    
+    // Find all directories that could be modules (contain source files)
+    let mut modules: Vec<(String, PathBuf)> = Vec::new();
+    
+    // Check for common workspace structures
+    let workspace_dirs = [
+        root.join("crates"),
+        root.join("packages"),
+        root.join("modules"),
+        root.join("src"),
+    ];
+    
+    for ws_dir in workspace_dirs.iter() {
+        if !ws_dir.is_dir() {
+            continue;
+        }
+        
+        for entry in std::fs::read_dir(ws_dir)? {
+            let entry = entry?;
+            let mod_path = entry.path();
+            if !mod_path.is_dir() {
+                continue;
+            }
+            
+            // Check if this module has source files
+            for src_name in &src_dirs {
+                let src_path = mod_path.join(src_name);
+                if src_path.is_dir() {
+                    let mod_name = mod_path.file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("");
+                    if !mod_name.is_empty() && !mod_name.starts_with('.') {
+                        modules.push((mod_name.to_string(), src_path));
+                    }
+                    break;
+                }
+            }
+        }
+    }
+    
+    // Also check root src/ directly
+    for src_name in &src_dirs {
+        let src_path = root.join(src_name);
+        if src_path.is_dir() {
+            let mod_name = root.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("project")
+                .to_string();
+            modules.push((mod_name, src_path));
+            break;
+        }
+    }
+    
+    // Generate module contracts
+    for (mod_name, src_path) in modules {
+        let module_anchor = format!("mod-{}", mod_name);
+        let contract_file = format!("{}.adoc", module_anchor);
+        
+        let out_path = out_dir.join(&contract_file);
+
+        // Skip if already exists and valid
+        if out_path.exists() {
+            if let Ok(existing) = std::fs::read_to_string(&out_path) {
+                if existing.contains(&format!("[[{}]]", module_anchor)) {
+                    continue;
+                }
+            }
+        }
+
+        let content = format!(
+            r#":source_file: {src}
+:node-type: module
+:last-verified: {date}T00:00:00Z
+
+[[{anchor}]]
+= {name}
+
+Core module for aden {name}.
+
+Part of: <<mod-project>>
+"#,
+            src = src_path.display(),
+            date = chrono::Utc::now().format("%Y-%m-%d"),
+            anchor = module_anchor,
+            name = mod_name
+        );
+
+        // Also create the root project module if it doesn't exist
+        let project_anchor = "mod-project";
+        let project_file = format!("{}.adoc", project_anchor);
+        let project_path = out_dir.join(&project_file);
+        if !project_path.exists() {
+            let project_content = format!(
+                r#":source_file: .
+:node-type: module
+:last-verified: {}T00:00:00Z
+
+[[mod-project]]
+= Project Root
+
+Root module for the project. All submodules reference this.
+
+== Modules
+
+"#,
+                chrono::Utc::now().format("%Y-%m-%d")
+            );
+            std::fs::write(&project_path, &project_content)?;
+            println!("Generated: {}", project_path.display());
+        }
+
+        if let Some(parent) = out_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&out_path, &content)?;
+        println!("Generated module: {} ({})", out_path.display(), src_path.display());
+    }
+
+    Ok(())
+}
 
 /// Detect existing contract structure and return matching output directory
 fn detect_contract_structure(path: &Path, source_path: &Path) -> Option<std::path::PathBuf> {
@@ -28,6 +155,24 @@ fn detect_contract_structure(path: &Path, source_path: &Path) -> Option<std::pat
         }
     }
 
+    None
+}
+
+/// Infer parent module anchor from source file path.
+/// E.g., crates/aden-foo/src/bar.rs → mod-aden-foo
+fn infer_parent_module_from_source(source_path: &Path) -> Option<String> {
+    let path_str = source_path.to_string_lossy();
+    
+    // Try to find crates/<name>/ pattern
+    if let Some(start) = path_str.find("/crates/") {
+        let after_crates = &path_str[start + 8..]; // Skip "/crates/"
+        if let Some(end) = after_crates.find('/') {
+            let crate_name = &after_crates[..end];
+            let module_name = format!("mod-{}", crate_name);
+            return Some(module_name);
+        }
+    }
+    
     None
 }
 
@@ -67,6 +212,9 @@ pub fn cmd_gen(
 
     let root = find_project_root(path);
     let effective_out = out_dir.unwrap_or_else(|| Path::new("contracts"));
+
+    // Auto-generate module contracts for each crate (deterministic)
+    generate_module_contracts(&root, effective_out)?;
 
     if detect_out_dir && out_dir.is_none() {
         let mut auto_detected = false;
@@ -161,6 +309,24 @@ pub fn cmd_gen(
                     .join(&file_name);
                 let mut doc_clone = doc.clone();
                 sanitize_source_file(&mut doc_clone);
+                
+// Auto-link to parent module (infer from source path, not contract path)
+                let parent_module = infer_parent_module_from_source(src_path);
+                if let Some(ref pm) = parent_module {
+                    doc_clone.blocks.push(aden_core::Block::Paragraph("== Relationships".to_string()));
+                    doc_clone.blocks.push(aden_core::Block::DescriptionList(vec![
+                        (format!("<<{},module>>", pm), 
+                         "This symbol is part of the parent module.".to_string())
+                    ]));
+                }
+                if let Some(ref pm) = parent_module {
+                    doc_clone.blocks.push(aden_core::Block::Paragraph("== Relationships".to_string()));
+                    doc_clone.blocks.push(aden_core::Block::DescriptionList(vec![
+                        (format!("<<{},module>>", pm), 
+                         "This symbol is part of the parent module.".to_string())
+                    ]));
+                }
+                
                 std::fs::write(&file_path, aden_emit::emit_document(&doc_clone))?;
                 generated.push(file_name.clone());
                 println!("Emitted {}", file_path.display());
@@ -215,9 +381,10 @@ pub fn cmd_gen(
 
     // Invalidate caches after generating contracts so next query rebuilds
     let cache_dir = path.join(".aden/cache");
-    let _ = std::fs::remove_file(cache_dir.join("graph-cache.json"));
-    let _ = std::fs::remove_file(cache_dir.join("index-cache.json"));
-    let _ = std::fs::remove_file(cache_dir.join("cache-index.json"));
+    if cache_dir.exists() {
+        let _ = std::fs::remove_dir_all(&cache_dir);
+        let _ = std::fs::create_dir_all(&cache_dir);
+    }
 
     // Report orphan symbols
     match aden_graph::graph::AdenGraph::build_from_directory(path) {

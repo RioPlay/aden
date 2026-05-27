@@ -28,6 +28,6 @@ Run `aden init` to scaffold these templates into any repository.
 
 == Navigation
 
-. <<readme>>
+. <<agent-readme>>
 . <<agent-context>>
 . <<agent-session>>

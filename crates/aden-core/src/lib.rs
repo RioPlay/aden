@@ -371,6 +371,13 @@ pub enum Block {
     },
     DescriptionList(Vec<(String, String)>),
     Checklist(Vec<ChecklistItem>),
+    /// A block that requires human/AI completion before the contract is valid.
+    /// The required_fields indicate what needs to be filled in.
+    /// When this block has empty content, it signals the contract needs completion.
+    Incomplete {
+        required_fields: Vec<String>,
+        hint: String,
+    },
 }
 
 /// A checklist item.

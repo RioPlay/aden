@@ -54,3 +54,7 @@ Dual-licensing is managed by the copyright holder (RioPlay).
 . <<plan-phase0>>
 . Complementary decision: <<adr-001>>
 . <<project-context>>
+
+== Related Modules
+
+See: <<mod-aden-core>>, <<mod-aden-cli>>

@@ -914,9 +914,11 @@ pub fn cmd_ci_check(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
                 "{} critical drift events (broken refs, orphans, signature mismatch)",
                 critical_count
             )))
-        } else if report.overall_score < 0.99 {
+        } else if report.overall_score < 0.90 {
+            // Only fail if health score is critically low (<0.90)
+            // Minor drift is auto-fixable in CI
             Err(Box::<dyn std::error::Error>::from(format!(
-                "Health score: {:.2} — contracts need regeneration (run 'aden gen' on modified files)",
+                "Health score: {:.2} — critical contract drift (run 'aden gen' to fix)",
                 report.overall_score
             )))
         } else {

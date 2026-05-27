@@ -444,6 +444,17 @@ fn format_document_blocks(doc: &crate::Document) -> String {
                     let _ = writeln!(out, "* {marker} {}", item.text);
                 }
             }
+            crate::Block::Incomplete { required_fields, hint } => {
+                let _ = writeln!(out, "[must-complete]");
+                let _ = writeln!(out, "====");
+                let _ = writeln!(out, "Required fields:");
+                for field in required_fields {
+                    let _ = writeln!(out, "* {field}");
+                }
+                let _ = writeln!(out);
+                let _ = writeln!(out, "Hint: {hint}");
+                let _ = writeln!(out, "====");
+            }
         }
     }
     out

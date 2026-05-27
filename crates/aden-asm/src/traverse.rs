@@ -183,6 +183,7 @@ fn document_to_text(
             Block::Admonition { .. } => BlockKind::Admonition,
             Block::DescriptionList(_) => BlockKind::DescriptionList,
             Block::Checklist(_) => BlockKind::Checklist,
+            Block::Incomplete { .. } => BlockKind::Checklist, // Treat as checklist for filtering
         };
         block_filter.contains(&kind)
     };
@@ -266,6 +267,16 @@ fn document_to_text(
                         let marker = if item.checked { "[x]" } else { "[ ]" };
                         out.push_str(&format!("* {marker} {}\n", item.text));
                     }
+                }
+                Block::Incomplete { required_fields, hint } => {
+                    out.push_str("[must-complete]\n");
+                    out.push_str("====\n");
+                    out.push_str("Required fields:\n");
+                    for field in required_fields {
+                        out.push_str(&format!("* {field}\n"));
+                    }
+                    out.push_str(&format!("\nHint: {hint}\n"));
+                    out.push_str("====\n");
                 }
             }
         }

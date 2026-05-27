@@ -554,4 +554,52 @@ Closing paragraph.
             );
         }
     }
+
+#[test]
+#[ignore = "semantics feature disabled pending fix for spurious edges"]
+fn test_semantic_relations_create_edges() {
+        let dir = tempfile::tempdir().unwrap();
+        let content = r#"[[english-grammar]]
+= English Grammar
+
+[semantics]
+----
+Noun IsA PartOfSpeech
+Verb IsA PartOfSpeech
+Adjective IsA PartOfSpeech
+----
+"#;
+        std::fs::write(dir.path().join("grammar.adoc"), content).unwrap();
+
+        // Verify the parser extracts semantic relations
+        let parsed = parser::parse_file(&dir.path().join("grammar.adoc")).unwrap();
+        assert!(!parsed.semantic_relations.is_empty(), "Parser should extract semantic relations");
+        assert_eq!(parsed.semantic_relations.len(), 3);
+
+        // Build graph and verify semantic edges are created
+        let graph = AdenGraph::build_from_directory(dir.path()).unwrap();
+
+        // Debug: print all anchors in the index
+        let all_anchors: Vec<_> = graph.anchor_to_index.keys().cloned().collect();
+        println!("DEBUG: All anchors in graph: {:?}", all_anchors);
+
+        // Verify source document exists
+        assert!(graph.get_node("english-grammar").is_some());
+
+        // Verify semantic concept nodes were created
+        assert!(graph.get_node("Noun").is_some(), "Noun concept node should be created");
+        assert!(graph.get_node("Verb").is_some(), "Verb concept node should be created");
+        assert!(graph.get_node("Adjective").is_some(), "Adjective concept node should be created");
+        assert!(graph.get_node("PartOfSpeech").is_some(), "PartOfSpeech concept node should be created");
+
+        // Verify semantic edges exist
+        let noun_idx = graph.anchor_to_index.get("Noun").unwrap();
+        let pos_idx = graph.anchor_to_index.get("PartOfSpeech").unwrap();
+        assert!(graph.graph.contains_edge(*noun_idx, *pos_idx), "IsA edge should exist from Noun to PartOfSpeech");
+
+        // Debug: verify traversal from english-grammar
+        let eng_idx = graph.anchor_to_index.get("english-grammar").unwrap();
+        let neighbors: Vec<_> = graph.graph.neighbors_directed(*eng_idx, petgraph::Direction::Outgoing).collect();
+        println!("DEBUG: Neighbors of english-grammar: {:?}", neighbors);
+    }
 }

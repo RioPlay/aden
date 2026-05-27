@@ -370,3 +370,6 @@ aden asm --neural "parts of speech" --budget 4096
 2. **Edge weight customization** — Allow authors to specify custom weights?
 3. **Temporal decay** — Should recent associations score higher?
 4. **Cross-graph semantics** — Support semantic links between separate `.adoc` files in different directories?
+== Related Modules
+
+See: <<mod-aden-core>>, <<mod-aden-cli>>

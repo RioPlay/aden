@@ -1,3 +1,4 @@
+pub mod complete;
 pub mod federation;
 pub mod generate;
 pub mod heal;

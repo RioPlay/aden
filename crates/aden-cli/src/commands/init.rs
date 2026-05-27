@@ -434,6 +434,27 @@ Always verify that third-party licenses are compatible with your project's licen
         templates_dir.read_dir()?.count()
     );
     println!("Sample hooks: .aden/hooks/pre-commit, .aden/hooks/pre-push");
-    println!("Next: AI agents should read .agent/onboarding.adoc before starting work.");
+    
+    // Auto-generate contracts for the project
+    println!("\nGenerating contracts...");
+    match crate::commands::generate::cmd_gen(
+        target,
+        None,
+        false,
+        true,
+        false,
+        false,
+        "adoc",
+    ) {
+        Ok(_) => {
+            println!("✅ Contracts generated successfully.");
+            println!("✅ Project is ready. Run 'aden status' to check health.");
+        }
+        Err(e) => {
+            eprintln!("Note: Could not auto-generate contracts: {}", e);
+            println!("You can run 'aden gen --auto' later to generate them.");
+        }
+    }
+    
     Ok(())
 }

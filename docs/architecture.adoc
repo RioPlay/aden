@@ -152,7 +152,7 @@ Extracts symbols, signatures, and relationships from source code using tree-sitt
 
 === 2. Graph Build (aden-graph)
 
-Builds a directed graph (`DiGraph`) from all contracts + documentation + ADRs + plans.
+Builds a directed graph (`DiGraph`) from all contracts + documentation + <<adr-001>>, <<adr-002>>, <<adr-003>>, <<adr-004>>, <<adr-005>> + <<plan-phase0>> + <<context>>.
 
 - Nodes: anchors (`[[name]]`)
 - Edges: typed relationships (`Uses`, `Calls`, `Constrains`, `Documents`, etc.)
@@ -419,3 +419,22 @@ Extracted and indexed for search.
 . <<plan-phase0>> — Foundation phase (contract kernel)
 . <<ai-integration>> — How AI agents use Aden
 . <<user-guide>> — Daily workflows
+== Module Overview
+
+See also:
+- <<mod-aden-core>>
+- <<mod-aden-cli>>
+- <<mod-aden-parse>>
+- <<mod-aden-emit>>
+- <<mod-aden-asm>>
+- <<mod-aden-graph>>
+- <<mod-aden-heal>>
+- <<mod-aden-propose>>
+- <<mod-aden-policy>>
+- <<mod-aden-index>>
+- <<mod-aden-api>>
+- <<mod-aden-attest>>
+- <<mod-aden-telemetry>>
+- <<mod-aden-simulate>>
+- <<mod-aden-lsp>>
+- <<mod-aden-mcp>>

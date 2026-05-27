@@ -37,6 +37,10 @@ jobs:
       - name: Test workspace
         run: cargo test --workspace
 
+      - name: Regenerate contracts
+        run: cargo run -p aden-cli -- gen .
+        if: runner.os != 'Windows'
+
       - name: Self-check docs
         run: cargo run -p aden-cli -- check . --severity Forbid
         if: runner.os != 'Windows'

@@ -1,0 +1,47 @@
+:proj: aden
+:author: Aden Team
+
+[[aden-core-types]]
+= Aden Core Type Hierarchy
+
+Core schema types for the Aden knowledge graph.
+
+[semantics]
+----
+Document IsA GraphNode
+Block IsA GraphNode
+Edge IsA GraphRelation
+Anchor IsA GraphNode
+SourceSpan IsA GraphNode
+NodeType IsA GraphNode
+EdgeType IsA GraphRelation
+Document Contains Block
+GraphNode Has Anchor
+GraphRelation Connects GraphNode
+GraphNode Has SourceSpan
+----
+
+[[graph-node]]
+= GraphNode
+
+A node in the Aden knowledge graph - either a Document, Block, or Anchor.
+
+[[graph-relation]]
+= GraphRelation
+
+A typed edge connecting two GraphNodes.
+
+[[document]]
+= Document
+
+A document node in the knowledge graph with metadata and blocks.
+
+[[block]]
+= Block
+
+A content block within a document (paragraph, table, listing, etc.).
+
+[[edge]]
+= Edge
+
+A typed relationship between two nodes.

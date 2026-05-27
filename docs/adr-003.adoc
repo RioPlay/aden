@@ -113,3 +113,6 @@ include::philosophy.adoc[]
 . <<adr-001>> — AsciiDoc as native substrate
 . <<plan-phase0>> — Bootstrap phase (phase 1 TBD)
 . <<doc-rot>> — Documents documentation rot problem
+== Related Modules
+
+See: <<mod-aden-core>>, <<mod-aden-cli>>

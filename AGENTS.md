@@ -79,3 +79,6 @@ aden ci-check .           # Full CI gates before commit
 ---
 
 *Your next step: `.agent/onboarding.adoc`*
+== Modules
+
+See: <<mod-aden-core>>, <<mod-aden-cli>>, <<mod-aden-graph>>
