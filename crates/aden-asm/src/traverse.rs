@@ -411,17 +411,16 @@ pub fn strip_asciidoc_markup(text: &str) -> String {
             continue;
         }
 
-        // Skip :key: value document attribute lines
-        if trimmed.starts_with(':') && trimmed.ends_with(':')
-            || (trimmed.starts_with(':')
-                && trimmed[1..].contains(':')
-                && !trimmed.contains(' '))
-        {
-            // e.g. ":source_file: foo.rs" — skip
+        // Skip :key: value document attribute lines (AsciiDoc header attributes).
+        // Pattern: starts with ':', has a second ':' with no space in the key name.
+        // Matches: ":source_file: foo.rs", ":author: Alice", ":toc:", ":!numbered:"
+        if trimmed.starts_with(':') {
             if let Some(rest) = trimmed.strip_prefix(':') {
+                // Strip leading '!' for unset-attribute syntax (":!foo:")
+                let rest = rest.strip_prefix('!').unwrap_or(rest);
                 if let Some(colon) = rest.find(':') {
                     let key = &rest[..colon];
-                    if !key.contains(' ') {
+                    if !key.is_empty() && !key.contains(' ') {
                         continue;
                     }
                 }

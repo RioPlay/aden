@@ -18,6 +18,7 @@
 #[cfg(test)]
 mod tests {
     use crate::{preprocess, traverse};
+    use crate::traverse::strip_asciidoc_markup;
     use std::collections::HashMap;
 
     #[test]
@@ -58,5 +59,112 @@ mod tests {
         };
         assert_eq!(opts.start_anchor, "start");
         assert_eq!(opts.max_depth, 3);
+    }
+
+    // --- strip_asciidoc_markup tests ---
+
+    #[test]
+    fn test_strip_removes_anchor_lines() {
+        let input = "[[my-anchor]]\n= Title\n\nSome content.";
+        let out = strip_asciidoc_markup(input);
+        assert!(!out.contains("[[my-anchor]]"), "anchor line must be removed");
+        assert!(out.contains("Title"));
+        assert!(out.contains("Some content."));
+    }
+
+    #[test]
+    fn test_strip_removes_attribute_lines() {
+        let input = ":source_file: foo.rs\n:author: Alice\n\nActual prose.";
+        let out = strip_asciidoc_markup(input);
+        assert!(!out.contains(":source_file:"), "attribute line must be removed");
+        assert!(!out.contains(":author:"), "attribute line must be removed");
+        assert!(out.contains("Actual prose."));
+    }
+
+    #[test]
+    fn test_strip_removes_block_delimiters() {
+        let input = "----\nsome code\n----\nAfter block.";
+        let out = strip_asciidoc_markup(input);
+        assert!(!out.contains("----"), "block delimiters must be removed");
+        assert!(out.contains("some code"));
+        assert!(out.contains("After block."));
+    }
+
+    #[test]
+    fn test_strip_removes_role_annotations() {
+        let input = "[source,rust]\nlet x = 1;\n[NOTE]\nBe careful.";
+        let out = strip_asciidoc_markup(input);
+        assert!(!out.contains("[source,rust]"), "role annotation must be removed");
+        assert!(!out.contains("[NOTE]"), "role annotation must be removed");
+        assert!(out.contains("let x = 1;"));
+        assert!(out.contains("Be careful."));
+    }
+
+    #[test]
+    fn test_strip_removes_table_delimiter() {
+        let input = "|===\n| Col1 | Col2\n|===";
+        let out = strip_asciidoc_markup(input);
+        assert!(!out.contains("|==="), "table delimiter must be removed");
+        assert!(out.contains("| Col1 | Col2"));
+    }
+
+    #[test]
+    fn test_strip_converts_headings_to_plain_text() {
+        let input = "= Top Title\n== Section One\n=== Subsection\n==== Deep";
+        let out = strip_asciidoc_markup(input);
+        assert!(out.contains("Top Title"), "top-level title must be kept");
+        assert!(out.contains("Section One:"), "section heading must get colon suffix");
+        assert!(out.contains("Subsection:"), "subsection must get colon suffix");
+        assert!(out.contains("Deep:"), "deep heading must get colon suffix");
+        // No leading '=' characters should remain in heading lines
+        for line in out.lines() {
+            assert!(
+                !line.starts_with('='),
+                "no line should start with '=' after stripping: {line:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_strip_replaces_xrefs_with_display_text() {
+        let input = "See <<mod-aden-core,Core Module>> for details.";
+        let out = strip_asciidoc_markup(input);
+        assert!(out.contains("Core Module"), "display text must be kept");
+        assert!(!out.contains("<<"), "xref syntax must be removed");
+    }
+
+    #[test]
+    fn test_strip_replaces_bare_xrefs_with_anchor_name() {
+        let input = "Defined in <<aden-graph>>.";
+        let out = strip_asciidoc_markup(input);
+        assert!(!out.contains("<<"), "xref syntax must be removed");
+        // bare anchor becomes display text with dashes replaced by spaces
+        assert!(out.contains("aden graph"), "dashes in bare xref should become spaces");
+    }
+
+    #[test]
+    fn test_strip_collapses_multiple_blank_lines() {
+        let input = "First.\n\n\n\nSecond.";
+        let out = strip_asciidoc_markup(input);
+        // Should have at most one blank line between paragraphs
+        assert!(!out.contains("\n\n\n"), "multiple blanks must be collapsed to one");
+        assert!(out.contains("First."));
+        assert!(out.contains("Second."));
+    }
+
+    #[test]
+    fn test_strip_trims_leading_and_trailing_blanks() {
+        let input = "\n\n[[anchor]]\n\nContent here.\n\n";
+        let out = strip_asciidoc_markup(input);
+        assert!(!out.starts_with('\n'), "leading blank must be trimmed");
+        assert!(!out.ends_with('\n'), "trailing blank must be trimmed");
+        assert!(out.contains("Content here."));
+    }
+
+    #[test]
+    fn test_strip_plain_prose_is_unchanged() {
+        let input = "This is plain prose with no markup at all.";
+        let out = strip_asciidoc_markup(input);
+        assert_eq!(out, input);
     }
 }
