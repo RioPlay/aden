@@ -559,7 +559,8 @@ enum FederationAction {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
-    let _verbose = cli.verbose;
+    let quiet = !cli.verbose;
+    crate::util::quiet::set_quiet(quiet);
     let _unlimited = cli.unlimited;
     let _global_json = cli.json;
 
@@ -575,7 +576,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if graph_cache.exists() {
                 let _ = std::fs::remove_dir_all(&graph_cache);
             }
-            commands::cmd_gen(&path, None, false, true, false, false, "adoc", true)
+commands::cmd_gen(&path, None, false, quiet, false, false, "adoc", true)
         }
         Commands::Gen {
             paths,

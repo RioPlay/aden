@@ -330,7 +330,7 @@ pub fn cmd_gen(
                 Ok(s) => s,
                 Err(e) if e.kind() == std::io::ErrorKind::InvalidData => continue,
                 Err(e) => {
-                    eprintln!("WARN: Failed to read {}: {}", src_path.display(), e);
+if !quiet { eprintln!("WARN: Failed to read {}: {}", src_path.display(), e); }
                     continue;
                 }
             };

@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use crate::util::quiet;
 use crate::util::validate_name;
 
 /// Create a new project from a language template.
@@ -78,7 +79,7 @@ aden ci-check .
     );
     std::fs::write(docs_dir.join("README.adoc"), readme)?;
 
-    println!("✓ Created project {} in {}", name, project_dir.display());
+    if !quiet::is_quiet() { println!("✓ Created project {} in {}", name, project_dir.display()); }
     println!("✓ Language: {}", lang_lower);
     println!("✓ Scaffolding: aden init, docs/, build system");
     println!("  Next steps:");
