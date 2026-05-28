@@ -147,6 +147,25 @@ impl ServerHandler for AdenMcpServer {
         // Build CLI args: `aden <name> [positional] [--flag|--key value] ...`
         let mut cmd_args: Vec<String> = vec![tool_name.to_string()];
 
+        /// Returns true if the arg should be passed positionally (no -- prefix).
+        fn is_positional(tool: &str, arg: &str) -> bool {
+            match (tool, arg) {
+                // path is positional for every command
+                (_, "path") => true,
+                // ask:   aden ask <QUESTION> [DIR]
+                ("ask", "question") => true,
+                // search: aden search <QUERY> [DIR]
+                ("search", "query") => true,
+                // suggest: aden suggest <INTENT>
+                ("suggest", "intent") => true,
+                // new:   aden new <NAME> <LANG> [DIR]
+                ("new", "name" | "lang") => true,
+                // kickoff: aden kickoff <BRIEF> [DIR]
+                ("kickoff", "brief") => true,
+                _ => false,
+            }
+        }
+
         for &(arg_name, arg_type) in spec.args {
             let val = match args.get(arg_name) {
                 Some(v) => v,
@@ -165,8 +184,7 @@ impl ServerHandler for AdenMcpServer {
                         _ => val.as_str().map(|s| s.to_string()),
                     };
                     if let Some(s) = s {
-                        if arg_name == "path" && tool_name != "new" && tool_name != "kickoff" {
-                            // "path" for most tools is positional → no --path prefix
+                        if is_positional(tool_name, arg_name) {
                             cmd_args.push(s);
                         } else {
                             cmd_args.push(format!("--{}", arg_name));
