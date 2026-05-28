@@ -400,12 +400,17 @@ impl AdenGraph<DocumentNode, AdenEdge> {
 
             // Build edges from refs: <<target>>
             for ref_anchor in &parsed.refs {
-                let edge_type = if source_anchor.starts_with("adr-") {
+                // Skip template placeholders like <<adr-{number}>>
+                if ref_anchor.contains('{') {
+                    continue;
+                }
+                let target_is_adr = ref_anchor.starts_with("adr-");
+                let edge_type = if source_anchor.starts_with("adr-") || target_is_adr {
                     EdgeType::RelatesTo
                 } else {
                     EdgeType::Uses
                 };
-                let backlink_type = if source_anchor.starts_with("adr-") {
+                let backlink_type = if source_anchor.starts_with("adr-") || target_is_adr {
                     EdgeType::RelatesTo
                 } else {
                     EdgeType::UsedBy
@@ -552,7 +557,7 @@ fn detect_node_type(anchor: &str, file_path: &Path) -> NodeType {
     let path_str = file_path.to_string_lossy().to_lowercase();
     let anchor_lower = anchor.to_lowercase();
 
-    if path_str.contains("adr") || anchor_lower.starts_with("adr-") {
+    if path_str.ends_with(".adoc") && (path_str.contains("/adr/") || anchor_lower.starts_with("adr-")) {
         return NodeType::Adr;
     }
     if path_str.contains("runbook") || anchor_lower.starts_with("runbook") {
