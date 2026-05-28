@@ -384,6 +384,42 @@ pub fn cmd_gen(
 
         save_gen_cache(&cache_path, &cache)?;
 
+        // ── PRUNE: remove contracts that no longer have a source file ────────
+        let expected_contracts: std::collections::HashSet<PathBuf> = sources
+            .iter()
+            .filter_map(|src| {
+                src.strip_prefix(&root)
+                    .ok()
+                    .map(|rel| effective_out.join(rel.with_extension("adoc")))
+            })
+            .collect();
+
+        let mut pruned = 0usize;
+        if effective_out.is_dir() {
+            for entry in walkdir::WalkDir::new(effective_out)
+                .into_iter()
+                .filter_map(|e| e.ok())
+                .filter(|e| e.file_type().is_file())
+                .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("adoc"))
+            {
+                let p = entry.path();
+                // Skip module contracts and INDEX (not derived from source files)
+                let name = p.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+                if name == "INDEX" || name.starts_with("mod-") {
+                    continue;
+                }
+                if !expected_contracts.contains(p) {
+                    let _ = std::fs::remove_file(p);
+                    cache.entries.remove(p.to_string_lossy().as_ref());
+                    pruned += 1;
+                }
+            }
+        }
+        if pruned > 0 {
+            save_gen_cache(&cache_path, &cache)?;
+            progress!(quiet, "Pruned {} stale contract(s).", pruned);
+        }
+
         // Generate index
         if !generated.is_empty() {
             let index_path = effective_out.join("INDEX.adoc");
