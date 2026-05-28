@@ -51,10 +51,25 @@ pub struct AssemblyOptions {
     /// If set, ifdef/ifndef blocks will be filtered accordingly.
     pub attributes: Vec<String>,
     /// Strip AsciiDoc markup syntax and emit clean prose for LLM consumption.
-    /// When true: removes [[anchors]], <<refs>>, :attributes:, block delimiters.
-    /// Also enables partial inclusion: large documents are truncated to fit the
-    /// remaining budget rather than skipped entirely.
+    /// Default: true — LLM-dense output is the baseline. Pass false only when
+    /// raw AsciiDoc is explicitly needed (e.g. IDE rendering, --format aden).
     pub llm_mode: bool,
+}
+
+impl Default for AssemblyOptions {
+    fn default() -> Self {
+        Self {
+            start_anchor: String::new(),
+            max_depth: 2,
+            token_budget: 4096,
+            edge_types: Vec::new(),
+            block_filter: Vec::new(),
+            include_tags: Vec::new(),
+            exclude_tags: Vec::new(),
+            attributes: Vec::new(),
+            llm_mode: true, // LLM-dense by default everywhere
+        }
+    }
 }
 
 /// Assemble a context prompt from a graph neighborhood.

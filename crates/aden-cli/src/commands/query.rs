@@ -323,7 +323,8 @@ let graph = aden_graph::cache::build_from_directory_cached(&opts.path)?;
         return Ok(());
     }
 
-    let is_llm = opts.format == "llm";
+    // llm_mode=true is the default. Only raw AsciiDoc (--format aden) disables it.
+    let llm_mode = opts.format != "aden";
     let asm_opts = AssemblyOptions {
         start_anchor: resolved_anchor,
         max_depth: opts.depth,
@@ -333,13 +334,13 @@ let graph = aden_graph::cache::build_from_directory_cached(&opts.path)?;
         include_tags: opts.include_tags.clone(),
         exclude_tags: opts.exclude_tags.clone(),
         attributes: opts.attributes.clone(),
-        llm_mode: is_llm,
+        llm_mode,
     };
 
     let output = match opts.format.as_str() {
         "adg" => assemble_adg(&graph, &asm_opts)?,
         "aden" | "llm" => assemble(&graph, &asm_opts)?,
-        _ => return Err(format!("Unknown format '{}': use 'aden', 'adg', or 'llm'", opts.format).into()),
+        _ => return Err(format!("Unknown format: '{}'. Use 'llm' (default), 'adg', or 'aden' (raw AsciiDoc).", opts.format).into()),
     };
 
     if let Some(out_path) = &opts.out {

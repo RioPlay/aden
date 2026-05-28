@@ -458,6 +458,7 @@ Always verify that third-party licenses are compatible with your project's licen
         false,
         false,
         "adoc",
+        false,
     ) {
         Ok(_) => {
             println!("✅ Contracts generated successfully.");

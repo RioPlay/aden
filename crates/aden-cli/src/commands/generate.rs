@@ -6,10 +6,17 @@ use crate::util::{
     sanitize_anchor, sanitize_source_file, save_gen_cache,
 };
 
+/// Emit a progress line unless quiet mode is on.
+macro_rules! progress {
+    ($quiet:expr, $($arg:tt)*) => {
+        if !$quiet { println!($($arg)*); }
+    };
+}
+
 /// Automatically generate module contracts for directories in the workspace.
 /// This ensures deterministic module anchors exist before symbol contracts.
 /// Language-agnostic: works for any project with src/ directories.
-fn generate_module_contracts(root: &Path, out_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
+fn generate_module_contracts(root: &Path, out_dir: &Path, quiet: bool) -> Result<(), Box<dyn std::error::Error>> {
     // Ensure the output directory exists before writing any contracts.
     std::fs::create_dir_all(out_dir)?;
 
@@ -125,14 +132,14 @@ Root module for the project. All submodules reference this.
                 chrono::Utc::now().format("%Y-%m-%d")
             );
             std::fs::write(&project_path, &project_content)?;
-            println!("Generated: {}", project_path.display());
+            progress!(quiet, "Generated: {}", project_path.display());
         }
 
         if let Some(parent) = out_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
         std::fs::write(&out_path, &content)?;
-        println!("Generated module: {} ({})", out_path.display(), src_path.display());
+        progress!(quiet, "Generated module: {} ({})", out_path.display(), src_path.display());
     }
 
     Ok(())
@@ -209,6 +216,7 @@ pub fn cmd_gen(
     merge: bool,
     propose: bool,
     format: &str,
+    quiet: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if path.is_file() {
         let source = std::fs::read_to_string(path)?;
@@ -249,20 +257,20 @@ pub fn cmd_gen(
     };
 
     // Auto-generate module contracts for each crate (deterministic)
-    generate_module_contracts(&root, effective_out)?;
+    generate_module_contracts(&root, effective_out, quiet)?;
 
     if detect_out_dir && out_dir.is_none() {
         let mut auto_detected = false;
         if root.join("contracts").join("crates").exists() {
             let contracts_crates = root.join("contracts").join("crates");
             if contracts_crates.is_dir() {
-                println!("INFO: Detected contracts/crates/ structure. Using --detect-out-dir.");
-                println!("      Contracts will be placed in contracts/crates/<crate>/src/");
+                progress!(quiet, "INFO: Detected contracts/crates/ structure. Using --detect-out-dir.");
+                progress!(quiet, "      Contracts will be placed in contracts/crates/<crate>/src/");
                 auto_detected = true;
             }
         }
         if !auto_detected {
-            println!("INFO: No existing contract structure detected. Using default ./contracts/");
+            progress!(quiet, "INFO: No existing contract structure detected. Using default ./contracts/");
         }
     }
 
@@ -357,7 +365,7 @@ pub fn cmd_gen(
                 
                 std::fs::write(&file_path, aden_emit::emit_document(&doc_clone))?;
                 generated.push(file_name.clone());
-                println!("Emitted {}", file_path.display());
+                progress!(quiet, "Emitted {}", file_path.display());
 
                 // Update cache
                 let mtime_secs = src_mtime
@@ -393,14 +401,10 @@ pub fn cmd_gen(
             }
             index.push_str("|===\n");
             std::fs::write(&index_path, index)?;
-            println!("Generated index: {}", index_path.display());
+            progress!(quiet, "Generated index: {}", index_path.display());
         }
 
-        println!(
-            "\nGenerated {} contracts. Skipped {} unchanged files.",
-            generated.len(),
-            skipped
-        );
+        progress!(quiet, "\nGenerated {} contracts. Skipped {} unchanged files.", generated.len(), skipped);
     } else {
         // ── LEGACY MODE: flat parse_directory output ────────────────────────
         let docs = aden_parse::parse_directory(path)?;

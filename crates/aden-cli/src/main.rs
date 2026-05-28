@@ -117,6 +117,8 @@ enum Commands {
             help = "Output format: adoc (AsciiDoc), md (Markdown)"
         )]
         format: String,
+        #[arg(long, help = "Suppress per-file emit lines (summary only)")]
+        quiet: bool,
     },
     /// Verify all <<refs>> resolve to existing [[anchors]]
     Check {
@@ -187,14 +189,12 @@ enum Commands {
         #[arg(
             long,
             value_name = "FORMAT",
-            default_value = "adg",
-            help = "Output format: adg (compact JSON for LLMs), aden (human-readable)"
+            default_value = "llm",
+            help = "Output format: llm (default, stripped prose for LLMs), adg (compact JSON), aden (raw AsciiDoc)"
         )]
         format: String,
         #[arg(long, help = "Silent mode: skip intro, output only context")]
         silent: bool,
-        #[arg(long, help = "LLM mode: compact output (adg), auto budget boost")]
-        llm: bool,
         #[arg(long, help = "Auto mode: adjust budget based on relevance scores")]
         auto: bool,
         #[arg(long, help = "Strict mode: never exceed budget (disable auto-boost)")]
@@ -575,7 +575,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if graph_cache.exists() {
                 let _ = std::fs::remove_dir_all(&graph_cache);
             }
-            commands::cmd_gen(&path, None, false, true, false, false, "adoc")
+            commands::cmd_gen(&path, None, false, true, false, false, "adoc", true)
         }
         Commands::Gen {
             paths,
@@ -585,6 +585,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             merge,
             propose,
             format,
+            quiet,
         } => {
             let effective_path = if paths.is_empty() {
                 std::path::PathBuf::from(".")
@@ -599,6 +600,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 merge,
                 propose,
                 &format,
+                quiet,
             )
         }
         Commands::Check { path, severity } => commands::cmd_check(&path, &severity),
@@ -626,7 +628,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             path,
             format: asm_format,
             silent,
-            llm,
             auto,
             strict,
             inspect,
@@ -637,12 +638,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let types = edge_types
                 .map(|s| util::parse_edge_types(&s))
                 .unwrap_or_default();
-            // LLM mode: compact format, auto budget boost
-            let (effective_format, effective_budget, effective_auto) = if llm {
-                ("adg".to_string(), budget.max(8192), true)
-            } else {
-                (asm_format, budget, auto)
-            };
+            let (effective_format, effective_budget, effective_auto) = (asm_format, budget, auto);
             commands::cmd_asm(AsmOptions {
                 path,
                 from,
@@ -753,7 +749,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             
             // 1. Generate contracts
             println!("\n[1/3] Generating contracts...");
-            if let Err(e) = commands::cmd_gen(&path, None, false, true, false, false, "adoc") {
+            if let Err(e) = commands::cmd_gen(&path, None, false, true, false, false, "adoc", true) {
                 eprintln!("Gen error: {}", e);
             }
             

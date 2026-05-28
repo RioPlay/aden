@@ -25,9 +25,25 @@ fn run_aden_command(project_dir: &Path, args: &[&str]) -> Result<String, String>
         .map_err(|e| format!("failed to run aden: {}", e))?;
 
     if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).into())
+        let raw = String::from_utf8_lossy(&output.stdout).into_owned();
+        // Strip progress / noise lines that leak through from gen --auto.
+        let clean: String = raw
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("INFO:"))
+            .filter(|l| !l.trim_start().starts_with("Generated"))
+            .filter(|l| !l.trim_start().starts_with("Emitted"))
+            .filter(|l| !l.trim_start().starts_with("WARNING:"))
+            .filter(|l| !l.trim_start().starts_with("Run 'aden heal"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        Ok(clean)
     } else {
-        Err(String::from_utf8_lossy(&output.stderr).into())
+        let mut err = String::from_utf8_lossy(&output.stderr).into_owned();
+        let out = String::from_utf8_lossy(&output.stdout);
+        if !out.trim().is_empty() {
+            err.push_str(&format!("\n(stdout): {}", out));
+        }
+        Err(err)
     }
 }
 
