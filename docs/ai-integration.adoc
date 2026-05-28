@@ -36,7 +36,7 @@ What happens internally:
    - `General` --- fallback → depth 2, edges: Uses, Documents, Constrains
 4. **Graph traversal**: A BFS walk collects neighbors along the selected edge types, stopping at `max_depth`.
 5. **Token budgeting**: Each collected document is estimated (word count × 4/3 heuristic). Documents are included until the cumulative total would exceed `--budget` (default 4096 for `ask`, 8192 for `asm`).
-6. **Assembly**: Documents are concatenated with `<<<` page-break separators. Each document includes its raw AsciiDoc content, attributes, tables, and blocks.
+6. **Assembly**: Documents are concatenated with `\n\n---\n\n` separators. Output is stripped of AsciiDoc markup (anchors, refs, attribute lines, block delimiters) so every token carries signal.
 
 === Example Output
 
@@ -46,27 +46,22 @@ $ aden ask --from mod-aden-core "What types are available?"
 // Aden Ask: 'What types are available?' → [[mod-aden-core]]
 // Strategy: Explain | Depth: 2 | Edges: "Uses, Calls, Implements, Documents"
 
-:proj: aden
-:module: aden-core
+mod-aden-core
 
-[[mod-aden-core]]
-= module::aden-core
+Module: aden-core.
 
 == Objective
 Universal schema for the Aden referential context compiler.
 
 == Signature
-|===
-|Type |Kind |Description
-|`Document`|struct|Root node in the graph...
-|===
+Type: Document | struct | Root node in the graph...
 ---
 (related contracts follow)
 ----
 
 == What to Do with the Output
 
-Feed it directly into an LLM prompt, prefixed with a system instruction:
+Feed it directly into an LLM prompt. No preprocessing needed — the output is already token-dense:
 
 [source]
 ----
@@ -154,8 +149,8 @@ aden suggest "find all tests in the project"
 | Find symbol | `aden locate --symbol X .` |
 | Find with context | `aden locate --symbol X --context 5 .` |
 | Search docs | `aden search "query" .` |
-| Get context | `aden asm --from <anchor> --depth N .` |
-| LLM context (compact) | `aden asm --from <anchor> --llm .` |
+| Get LLM-dense context (default) | `aden asm --from <anchor> --depth N .` |
+| Raw AsciiDoc context | `aden asm --from <anchor> --format aden --depth N .` |
 | Check health | `aden status .` |
 | Full sync | `aden sync .` |
 | Check + heal | `aden check . && aden heal .` |

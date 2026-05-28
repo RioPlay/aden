@@ -55,25 +55,34 @@ You have access to Aden, a knowledge graph compiler for codebases.
 
 ## Understanding Aden Output:
 
-Aden returns context in AsciiDoc format:
-- `[[anchor]]` = Section identifier
-- `= Title` = Heading
-- `<<ref>>` = Cross-reference
-- `:key: value` = Metadata
-- `|===` = Table boundaries
+Aden returns **LLM-dense prose by default** — stripped of AsciiDoc markup noise:
+- No `[[anchor]]` lines (anchors are in the header comment only)
+- No `|===` table syntax (tables rendered as key: value pairs)
+- No `:key: value` attribute lines
+- No block delimiters (`----`, `====`, etc.)
+- Headings converted to plain text
 
-Focus on the CONTENT, not the formatting.
+**Every token carries signal.**
+
+If you need raw AsciiDoc (e.g. for an IDE renderer), opt in explicitly:
+
+[source]
+----
+aden asm --from mod-aden-core --format aden .
+----
 
 == LLM-Specific Flags
 
-Aden provides flags optimized for LLM usage:
+Aden's defaults are already optimized for LLMs. These flags tune behavior further:
 
-=== --llm flag (asm)
-Compact output using `adg` format (JSON), auto-boosts budget to 8192:
+=== Default asm (LLM-dense)
+Stripped prose, no markup noise, partial inclusion for large documents:
 [source]
 ----
-aden asm --from mod-aden-core --llm .
+aden asm --from mod-aden-core .
 ----
+
+This is the recommended invocation — no flags needed.
 
 === --context flag (locate)
 Show N lines of surrounding code for precise edits:

@@ -1,0 +1,153 @@
+:proj: aden
+
+[[troubleshooting]]
+= Aden Troubleshooting Guide
+
+== Routing Issues
+
+=== "aden ask" routes to the wrong anchor
+
+**Symptom:** Asking about `assemble()` returns a module overview instead of the function contract.
+
+**Cause:** The search index may be stale, or the query is ambiguous (too many stop words).
+
+**Fix:**
+
+[source,bash]
+----
+# Force index rebuild
+rm -f .aden/cache/index-cache.json
+aden ask "How does assemble() work?"
+
+# Or pin the anchor explicitly
+aden ask --from "aden://module/aden-asm/traverse.rs#assemble" "How does it work?"
+
+# For unambiguous intent, use func() syntax
+aden ask "How does assemble() work?"
+aden ask "What does AdenGraph store?"        # struct name, no parens
+----
+
+**Prevention:** Run `aden sync .` (gen + check + heal) after large refactors.
+
+=== "assemble" matches module docs instead of the function
+
+**Cause:** Stop-word filter did not catch the symbol. The BM25 scorer may boost module docs.
+
+**Fix:** Use explicit function syntax or add the crate/module prefix:
+
+[source,bash]
+----
+aden ask "How does aden_asm::traverse::assemble work?"
+----
+
+== Stale Contracts
+
+=== Ghost contracts after deleting source files
+
+**Symptom:** `aden status` shows orphan documents for files you deleted weeks ago.
+
+**Cause:** `aden gen --auto` used to leave stale contracts behind. Fixed in recent builds.
+
+**Fix:**
+
+[source,bash]
+----
+# Prune stale contracts
+aden heal . --gc
+
+# Or regenerate from scratch
+rm -rf contracts/ && aden gen . --auto
+----
+
+**Prevention:** The pre-commit hook now runs `aden gen . --quiet`, which auto-prunes deleted source contracts. Ensure your `.git/hooks/pre-commit` is up to date.
+
+=== "StaleHash" drift events everywhere
+
+**Symptom:** `aden heal .` reports every contract has `StaleHash`.
+
+**Cause:** You modified source files but did not regenerate contracts.
+
+**Fix:**
+
+[source,bash]
+----
+aden gen . --auto
+----
+
+== Index Sync
+
+=== `aden search` returns no symbol results
+
+**Symptom:** Searching for a known function returns only module documents.
+
+**Cause:** The index was built before symbol contracts existed, or the index cache is corrupt.
+
+**Fix:**
+
+[source,bash]
+----
+# Clear all caches and rebuild
+rm -rf .aden/cache/
+aden sync .
+----
+
+=== Orphan documents in status
+
+**Symptom:** `aden status` shows "orphan document(s)" even after `aden heal .`.
+
+**Cause:** Some documents (module stubs, ADR headers, architectures) intentionally have no edges. They are metadata, not bugs.
+
+**Fix:** Check if the orphans are metadata documents:
+
+[source,bash]
+----
+aden status . --verbose
+----
+
+If the orphans are `adr-*`, `security-model`, `experimental-crates`, etc., they are expected.
+
+== Performance
+
+=== `aden gen --auto` takes too long
+
+**Cause:** Generating contracts for a large project (500+ files) is I/O bound.
+
+**Fix:** Use `--quiet` to suppress per-file output, which reduces terminal rendering overhead:
+
+[source,bash]
+----
+aden gen . --auto --quiet
+----
+
+Or parallelize by crate:
+
+[source,bash]
+----
+for crate in crates/*; do
+    aden gen "$crate" --auto --quiet &
+done
+wait
+----
+
+== LLM Output Issues
+
+=== "aden asm" outputs raw AsciiDoc instead of stripped prose
+
+**Cause:** You passed `--format aden` or the default was changed. (As of v0.1.0, default is LLM-stripped.)
+
+**Fix:**
+
+[source,bash]
+----
+# Default: stripped prose
+aden asm --from readme --depth 2 .
+
+# Explicit opt-in to raw AsciiDoc
+aden asm --from readme --format aden --depth 2 .
+----
+
+=== MCP returns INFO/Generated noise lines
+
+**Cause:** MCP tool responses include progress output from `aden gen`.
+
+**Fix:** The MCP server (`aden-mcp`) now strips `INFO:`, `Generated:`, `Emitted:`, and `WARNING:` lines from stdout before returning JSON. If you see noise, upgrade `aden-mcp`.
