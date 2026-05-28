@@ -130,6 +130,7 @@ dependencies = [
  "aden-emit",
  "aden-graph",
  "aden-parse",
+ "aden-store",
  "rayon",
  "serde",
  "serde_json",

@@ -10,6 +10,7 @@ aden-core = { path = "../aden-core" }
 aden-parse = { path = "../aden-parse" }
 aden-graph = { path = "../aden-graph" }
 aden-emit = { path = "../aden-emit" }
+aden-store = { path = "../aden-store" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "2.0"

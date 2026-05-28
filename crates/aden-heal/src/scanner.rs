@@ -19,6 +19,7 @@ use crate::drift::DriftEvent;
 use aden_core::{Block, Document};
 use aden_graph::cache::try_load;
 use aden_graph::graph::AdenGraph;
+use aden_store::{GraphStorage, SledStorage};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -133,57 +134,71 @@ impl Scanner {
             anchor_to_source_idx.insert(doc.anchor.clone(), i);
         }
 
-        // b. Find all contract files
-        let mut contract_paths = Vec::new();
-        self.collect_contract_files(&self.repo_root, &mut contract_paths)?;
+        // b. Load contracts from store, fall back to disk .adoc files if store is empty
+        let store_path = self.repo_root.join(".aden").join("store");
+        let mut aden_anchors: HashSet<String> = HashSet::new();
+        let mut contract_docs: Vec<(String, Document)> = Vec::new();
 
-        let mut contract_entries: Vec<(PathBuf, aden_graph::parser::ParsedDocument)> = Vec::new();
-        for path in &contract_paths {
-            let parsed = aden_graph::parser::parse_file(path)?;
-            contract_entries.push((path.clone(), parsed));
+        if store_path.exists() {
+            if let Ok(storage) = SledStorage::new(store_path.to_str().unwrap_or(".aden/store")) {
+                if let Ok(all_docs) = storage.get_all_documents() {
+                    if !all_docs.is_empty() {
+                        for (anchor, doc) in all_docs {
+                            aden_anchors.insert(anchor.clone());
+                            contract_docs.push((anchor.clone(), doc));
+                        }
+                    }
+                }
+            }
         }
 
-        // Build sets for quick lookups
-        let aden_anchors: HashSet<String> = contract_entries
-            .iter()
-            .flat_map(|(_, pd)| pd.anchors.iter().cloned())
-            .collect();
-
-        // Check for stale cache guard - warn if contract-base hashes don't match current contracts
-        self.validate_cache_integrity(&contract_entries);
+        // Fallback: if store has no docs, parse .adoc files from disk
+        if contract_docs.is_empty() {
+            let mut contract_paths = Vec::new();
+            self.collect_contract_files(&self.repo_root, &mut contract_paths)?;
+            for path in &contract_paths {
+                if let Ok(parsed) = aden_graph::parser::parse_file(path) {
+                    for anchor in &parsed.anchors {
+                        let doc = parsed_to_doc(&parsed, anchor, path);
+                        aden_anchors.insert(anchor.clone());
+                        contract_docs.push((anchor.clone(), doc));
+                    }
+                }
+            }
+        }
 
         // c. StaleHash - check source_hash against original source
-        for (path, parsed) in &contract_entries {
-            if let Some(expected_hash) = parsed.attributes.get("source_hash")
-                && let Some(source_path) = self.find_source_for_contract(path, parsed)
-                && let Ok(content) = std::fs::read_to_string(&source_path)
-            {
-                let actual_hash = aden_core::stable_hash(content.as_bytes());
-                if actual_hash != *expected_hash {
-                    events.push(DriftEvent::StaleHash {
-                        target_path: path.to_string_lossy().to_string(),
-                        expected_hash: expected_hash.clone(),
-                        actual_hash,
-                    });
+        for (anchor, doc) in &contract_docs {
+            if let Some(expected_hash) = doc.attributes.get("source_hash") {
+                let source_path = self.find_source_for_doc(doc);
+                if let Some(source_path) = source_path {
+                    if let Ok(content) = std::fs::read_to_string(&source_path) {
+                        let actual_hash = aden_core::stable_hash(content.as_bytes());
+                        if actual_hash != *expected_hash {
+                            events.push(DriftEvent::StaleHash {
+                                target_path: format!(".aden/store:{}", anchor),
+                                expected_hash: expected_hash.clone(),
+                                actual_hash,
+                            });
+                        }
+                    }
                 }
             }
         }
 
         // d. SignatureMismatch
-        for (path, parsed) in &contract_entries {
-            for anchor in &parsed.anchors {
-                if let Some(&idx) = anchor_to_source_idx.get(anchor) {
-                    let (_, source_doc) = &source_entries[idx];
-                    let current_sig = extract_sig_from_doc(source_doc);
-                    let contract_sig = extract_sig_from_contract(&parsed.raw_content);
-                    if contract_sig != current_sig {
-                        events.push(DriftEvent::SignatureMismatch {
-                            anchor: anchor.clone(),
-                            contract_path: path.to_string_lossy().to_string(),
-                            expected_sig: contract_sig,
-                            actual_sig: current_sig,
-                        });
-                    }
+        for (anchor, doc) in &contract_docs {
+            if let Some(&idx) = anchor_to_source_idx.get(anchor) {
+                let (_, source_doc) = &source_entries[idx];
+                let current_sig = extract_sig_from_doc(source_doc);
+                let contract_sig = extract_sig_from_doc(doc);
+                if contract_sig != current_sig {
+                    events.push(DriftEvent::SignatureMismatch {
+        anchor: anchor.to_string(),
+                        contract_path: format!(".aden/store:{}", anchor),
+                        expected_sig: contract_sig,
+                        actual_sig: current_sig,
+                    });
                 }
             }
         }
@@ -204,17 +219,13 @@ impl Scanner {
             }
         }
 
-        // f. OrphanAnchor - .aden anchors without corresponding source symbol
-        for (path, parsed) in &contract_entries {
-            if path.extension().and_then(|e| e.to_str()) == Some("aden") {
-                for anchor in &parsed.anchors {
-                    if !anchor_to_source_idx.contains_key(anchor) {
-                        events.push(DriftEvent::OrphanAnchor {
-                            anchor: anchor.clone(),
-                            contract_path: path.to_string_lossy().to_string(),
-                        });
-                    }
-                }
+        // f. OrphanAnchor - store anchors without corresponding source symbol
+        for (anchor, _doc) in &contract_docs {
+            if !anchor_to_source_idx.contains_key(anchor) {
+                events.push(DriftEvent::OrphanAnchor {
+                    anchor: anchor.clone(),
+                    contract_path: format!(".aden/store:{}", anchor),
+                });
             }
         }
 
@@ -222,34 +233,38 @@ impl Scanner {
         // Use store-first graph loading for broken reference detection
         if let Some(graph) = try_load(&self.repo_root) {
             for (contract_path, ref_anchor) in graph.unresolved_refs() {
-                let line = find_ref_line(&contract_path, &ref_anchor);
+                let _line = find_ref_line(&contract_path, &ref_anchor);
                 events.push(DriftEvent::BrokenReference {
                     contract_path,
                     ref_anchor,
-                    line,
+                    line: 0,
                 });
             }
         } else if let Ok(graph) = AdenGraph::build_from_directory(&self.repo_root) {
             for (contract_path, ref_anchor) in graph.unresolved_refs() {
-                let line = find_ref_line(&contract_path, &ref_anchor);
+                let _line = find_ref_line(&contract_path, &ref_anchor);
                 events.push(DriftEvent::BrokenReference {
                     contract_path,
                     ref_anchor,
-                    line,
+                    line: 0,
                 });
             }
         }
 
-        // h. DeadLink
-        for (path, parsed) in &contract_entries {
-            for inc in &parsed.includes {
-                if let Ok(inc_path) = resolve_include(path, &inc.path)
-                    && !inc_path.exists()
-                {
-                    events.push(DriftEvent::DeadLink {
-                        contract_path: path.to_string_lossy().to_string(),
-                        include_path: inc.path.clone(),
-                    });
+        // h. DeadLink - check includes on disk (includes reference other files)
+        for (anchor, doc) in &contract_docs {
+            if let Some(includes) = doc.attributes.get("includes") {
+                let inc_paths: Vec<&str> = includes.split(',').collect();
+                for inc_path in inc_paths {
+                    let inc_path = inc_path.trim();
+                    if let Ok(inc_path_buf) = resolve_include_from_anchor(anchor, inc_path, &self.repo_root) {
+                        if !inc_path_buf.exists() {
+                            events.push(DriftEvent::DeadLink {
+                                contract_path: format!(".aden/store:{}", anchor),
+                                include_path: inc_path.to_string(),
+                            });
+                        }
+                    }
                 }
             }
         }
@@ -368,6 +383,43 @@ impl Scanner {
         Ok(())
     }
 
+    fn find_source_for_doc(&self, doc: &Document) -> Option<PathBuf> {
+        // Try explicit :source_file: attribute
+        if let Some(source_file) = doc.attributes.get("source_file") {
+            let candidate = self.repo_root.join(source_file);
+            if candidate.exists() {
+                return Some(candidate);
+            }
+        }
+
+        // Infer from anchor pattern: aden://module/{crate}/{file}#{symbol}
+        let anchor = &doc.anchor;
+        if let Some(hash_pos) = anchor.rfind('#') {
+            let prefix = &anchor[..hash_pos];
+            if let Some(rest) = prefix.strip_prefix("aden://module/") {
+                let parts: Vec<&str> = rest.splitn(2, '/').collect();
+                if parts.len() == 2 {
+                    let crate_name = parts[0];
+                    let file_name = parts[1];
+                    let candidates = [
+                        format!("crates/{}/src/{}", crate_name, file_name),
+                        format!("crates/{}/{}", crate_name, file_name),
+                        format!("{}/src/{}", crate_name, file_name),
+                        format!("{}/{}", crate_name, file_name),
+                    ];
+                    for candidate in &candidates {
+                        let path = self.repo_root.join(candidate);
+                        if path.exists() {
+                            return Some(path);
+                        }
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
     fn collect_contract_files(
         &self,
         dir: &Path,
@@ -393,89 +445,17 @@ impl Scanner {
         }
         Ok(())
     }
+}
 
-    fn find_source_for_contract(
-        &self,
-        _contract_path: &Path,
-        parsed: &aden_graph::parser::ParsedDocument,
-    ) -> Option<PathBuf> {
-        // Try explicit :source_file: attribute
-        if let Some(source_file) = parsed.attributes.get("source_file") {
-            let candidate = self.repo_root.join(source_file);
-            if candidate.exists() {
-                return Some(candidate);
-            }
-        }
-
-        // Infer from anchor pattern: aden://module/{crate}/{file}#{symbol}
-        for anchor in &parsed.anchors {
-            if let Some(hash_pos) = anchor.rfind('#') {
-                let prefix = &anchor[..hash_pos];
-                if let Some(rest) = prefix.strip_prefix("aden://module/") {
-                    let parts: Vec<&str> = rest.splitn(2, '/').collect();
-                    if parts.len() == 2 {
-                        let crate_name = parts[0];
-                        let file_name = parts[1];
-                        let candidates = [
-                            format!("crates/{}/src/{}", crate_name, file_name),
-                            format!("crates/{}/{}", crate_name, file_name),
-                            format!("{}/src/{}", crate_name, file_name),
-                            format!("{}/{}", crate_name, file_name),
-                        ];
-                        for candidate in &candidates {
-                            let path = self.repo_root.join(candidate);
-                            if path.exists() {
-                                return Some(path);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        None
-    }
-
-    fn validate_cache_integrity(
-        &self,
-        contract_entries: &[(PathBuf, aden_graph::parser::ParsedDocument)],
-    ) {
-        let base_dir = self.repo_root.join(".aden").join("contract-base");
-        if !base_dir.exists() {
-            return;
-        }
-
-        let mut stale_bases = Vec::new();
-        for entry in std::fs::read_dir(&base_dir).into_iter().flatten() {
-            let Ok(entry) = entry else { continue };
-            let path = entry.path();
-            if path.extension().and_then(|s| s.to_str()) != Some("adoc") {
-                continue;
-            }
-            if let Ok(parsed) = aden_graph::parser::parse_file(&path) {
-                let file_name = path.file_name().unwrap_or_default().to_string_lossy();
-                for (contract_path, current) in contract_entries {
-                    if contract_path.file_name().map(|n| n.to_string_lossy())
-                        == Some(file_name.clone())
-                        && let (Some(base_hash), Some(current_hash)) = (
-                            parsed.attributes.get("source_hash"),
-                            current.attributes.get("source_hash"),
-                        )
-                        && base_hash != current_hash
-                    {
-                        stale_bases.push(file_name.to_string());
-                    }
-                }
-            }
-        }
-
-        if !stale_bases.is_empty() {
-            eprintln!("WARNING: Stale base contracts detected in .aden/contract-base/");
-            eprintln!("  Run: rm -rf .aden/contract-base to clear stale bases");
-            for name in &stale_bases {
-                eprintln!("    - {}", name);
-            }
-        }
+fn parsed_to_doc(parsed: &aden_graph::parser::ParsedDocument, anchor: &str, _file_path: &Path) -> Document {
+    use aden_core::Document;
+    Document {
+        anchor: anchor.to_string(),
+        node_type: aden_core::NodeType::Note,
+        attributes: parsed.attributes.clone(),
+        blocks: vec![],
+        source_span: None,
+        metadata: None,
     }
 }
 
@@ -490,28 +470,6 @@ fn extract_sig_from_doc(doc: &Document) -> Vec<String> {
             }
         }
     }
-    sig
-}
-
-fn extract_sig_from_contract(content: &str) -> Vec<String> {
-    let mut sig = Vec::new();
-    let mut in_table = false;
-
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if trimmed == "|===" {
-            in_table = !in_table;
-            continue;
-        }
-        if in_table && trimmed.starts_with("|param ") {
-            let after_prefix = &trimmed[1..]; // remove leading |
-            let cells: Vec<&str> = after_prefix.split('|').collect();
-            if cells.len() >= 2 {
-                sig.push(cells[1].trim().to_string());
-            }
-        }
-    }
-
     sig
 }
 
@@ -538,10 +496,9 @@ fn find_ref_line(content: &str, ref_anchor: &str) -> usize {
     0
 }
 
-/// Resolve an include path, preventing directory traversal attacks.
-fn resolve_include(current: &Path, include: &str) -> std::io::Result<PathBuf> {
-    let base = current.parent().unwrap_or(Path::new("."));
-    let candidate = base.join(include);
+/// Resolve an include path from an anchor, preventing directory traversal attacks.
+fn resolve_include_from_anchor(_anchor: &str, include: &str, repo_root: &Path) -> std::io::Result<PathBuf> {
+    let candidate = repo_root.join(include);
 
     // Prevent traversal outside the base directory
     if candidate

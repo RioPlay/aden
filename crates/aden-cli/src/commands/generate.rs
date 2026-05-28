@@ -12,7 +12,7 @@ use crate::util::{
 /// Work item returned from parallel file processing.
 enum WorkItem {
     Skip,
-    Emitted(Vec<(String, PathBuf, aden_core::Document, (String, GenCacheEntry))>),
+    Emitted(Vec<(String, (String, GenCacheEntry))>),
 }
 
 /// Emit a progress line unless quiet mode is on.
@@ -321,16 +321,10 @@ pub fn cmd_gen(
         let mut generated = Vec::new();
         let mut skipped = 0usize;
 
-        // Phase 1: Parallel file processing — read, parse, emit each source file
+        // Phase 1: Parallel file processing — read, parse, write to store
         let work_items: Vec<_> = sources
             .par_iter()
             .filter_map(|src_path| {
-                let contract_rel = src_path
-                    .strip_prefix(&root)
-                    .unwrap_or(src_path)
-                    .with_extension("adoc");
-                let contract_path = effective_out.join(&contract_rel);
-
                 let src_mtime = src_path
                     .metadata()
                     .ok()
@@ -342,8 +336,10 @@ pub fn cmd_gen(
                     .as_secs();
 
                 // Check mtime cache — if match, return Skip
-                if let Some(e) = cache.entries.get(contract_path.to_string_lossy().as_ref()) {
-                    if e.source_mtime == mtime_secs && contract_path.exists() {
+                let src_rel = src_path.strip_prefix(&root).unwrap_or(src_path);
+                let cache_key = src_rel.to_string_lossy().to_string();
+                if let Some(e) = cache.entries.get(&cache_key) {
+                    if e.source_mtime == mtime_secs {
                         return Some(WorkItem::Skip);
                     }
                 }
@@ -370,7 +366,7 @@ pub fn cmd_gen(
                     }
                 };
 
-                // Emit each document from this source file
+                // Write each document to store
                 let mut emitted = Vec::new();
                 for doc in docs {
                     let mut doc_clone = doc.clone();
@@ -387,41 +383,21 @@ pub fn cmd_gen(
                         )]));
                     }
 
-                    // Write to store
                     if let Err(e) = storage.put_document(&doc_clone) {
                         eprintln!("WARN: Failed to store {}: {}", doc_clone.anchor, e);
                         continue;
                     }
 
-                    // Also write to disk if out_dir specified
-                    let file_name = format!("{}.adoc", sanitize_anchor(&doc_clone.anchor));
-                    let file_path = contract_path
-                        .parent()
-                        .unwrap_or(effective_out)
-                        .join(&file_name);
-
-                    if let Err(e) = std::fs::write(&file_path, aden_emit::emit_document(&doc_clone)) {
-                        eprintln!("WARN: Failed to write {}: {}", file_path.display(), e);
-                        continue;
-                    }
-
                     if !quiet {
-                        progress!(quiet, "Emitted {}", file_path.display());
+                        progress!(quiet, "Stored {}", doc_clone.anchor);
                     }
 
-                    // Collect cache entry to merge after parallel phase
-                    let cache_key = file_path.to_string_lossy().to_string();
                     let cache_val = GenCacheEntry {
                         source_mtime: mtime_secs,
                         source_path: src_path.to_string_lossy().to_string(),
                     };
-                    let rel_path = file_path
-                        .strip_prefix(&effective_out)
-                        .unwrap_or(Path::new(&file_name))
-                        .to_string_lossy()
-                        .to_string();
 
-                    emitted.push((rel_path, file_path, doc_clone, (cache_key, cache_val)));
+                    emitted.push((doc_clone.anchor.clone(), (cache_key.clone(), cache_val)));
                 }
 
                 if emitted.is_empty() {
@@ -437,8 +413,8 @@ pub fn cmd_gen(
             match item {
                 WorkItem::Skip => skipped += 1,
                 WorkItem::Emitted(emitted) => {
-                    for (rel_path, _file_path, _doc, (cache_key, cache_val)) in emitted {
-                        generated.push(rel_path);
+                    for (anchor, (cache_key, cache_val)) in emitted {
+                        generated.push(anchor);
                         cache.entries.insert(cache_key, cache_val);
                     }
                 }
@@ -450,62 +426,7 @@ pub fn cmd_gen(
 
         save_gen_cache(&cache_path, &cache)?;
 
-        // Prune stale contracts: any .adoc file under effective_out that was NOT
-        // emitted this run (and is not a module root or index) no longer has a
-        // source file so it is a ghost contract.
-        let emitted_set: std::collections::HashSet<_> = generated.iter().cloned().collect();
-        if auto && !sources.is_empty() && effective_out.is_dir() {
-            let mut pruned = 0usize;
-            for entry in walkdir::WalkDir::new(effective_out)
-                .into_iter()
-                .filter_map(|e| e.ok())
-            {
-                let p = entry.path();
-                if !p.is_file() || p.extension().and_then(|s| s.to_str()) != Some("adoc") {
-                    continue;
-                }
-                let rel = p.strip_prefix(&effective_out).unwrap_or(p);
-                let name = p.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-
-                // Never prune module root contracts or the INDEX
-                if name.starts_with("mod-") || name == "INDEX" || name == "README" {
-                    continue;
-                }
-
-                // If not emitted this run, source is gone → remove contract
-                if !emitted_set.contains(&rel.to_string_lossy().to_string()) {
-                    let _ = std::fs::remove_file(p);
-                    cache.entries.remove(p.to_string_lossy().as_ref());
-                    pruned += 1;
-                }
-            }
-            if pruned > 0 {
-                save_gen_cache(&cache_path, &cache)?;
-                progress!(quiet, "Pruned {} stale contract(s).", pruned);
-            }
-        }
-
-        // Generate index
-        if !generated.is_empty() {
-            let index_path = effective_out.join("INDEX.adoc");
-            let mut index = String::new();
-            index.push_str("= Contracts Index\n\n");
-            index.push_str("Auto-generated by `aden gen --auto .`\n\n");
-            index.push_str("|===\n|Symbol |File |Anchor\n");
-            for name in &generated {
-                index.push_str(&format!(
-                    "|{} |{} |[[{}]]\n",
-                    name,
-                    name,
-                    name.trim_end_matches(".adoc")
-                ));
-            }
-            index.push_str("|===\n");
-            std::fs::write(&index_path, index)?;
-            progress!(quiet, "Generated index: {}", index_path.display());
-        }
-
-        progress!(quiet, "\nGenerated {} contracts. Skipped {} unchanged files.", generated.len(), skipped);
+        progress!(quiet, "\nStored {} contracts. Skipped {} unchanged files.", generated.len(), skipped);
         if skipped == 0 && generated.len() == sources.len() {
             progress!(quiet, "(All files were skipped — nothing changed since last run)");
         }
