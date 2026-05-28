@@ -75,9 +75,4 @@ Most projects fail because they solve the wrong problem. Describe the problem in
 
 == Next Step
 
-Create xref:design.adoc[] from this kickoff.
-
-== Related Documents
-
-. <<design-{feature}>>
-. <<spec-{feature}>>
+Write a design document from this kickoff.

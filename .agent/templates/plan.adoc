@@ -16,7 +16,7 @@ In one sentence: What does success look like for this phase?
 
 == How We Got Here
 
-Reference the xref:kickoff.adoc[Kickoff] or xref:spec.adoc[Specification] that spawned this plan.
+Reference the kickoff or specification that spawned this plan.
 Summarize why this phase exists in the larger roadmap.
 
 == Constraints
@@ -37,9 +37,9 @@ Summarize why this phase exists in the larger roadmap.
 === Definition of Done for This Phase
 
 . All acceptance criteria pass
-. xref:adr-{number}.adoc[ADRs] are accepted
-. xref:runbook.adoc[Runbook] is updated
-. No xref:constraints.adoc[constraints] violated
+. ADRs are accepted
+. Runbook is updated
+. No constraints violated
 
 == Dependencies
 
@@ -64,11 +64,6 @@ How do we know if the risk is materializing?
 
 == Related
 
-* xref:kickoff.adoc[Kickoff]
-* xref:spec.adoc[Specification]
-* xref:task.adoc[Tasks]
-
-== Related Documents
-
-. <<adr-{number}>>
-. <<spec-{feature}>>
+* Kickoff
+* Specification
+* Tasks

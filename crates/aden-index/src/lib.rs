@@ -24,6 +24,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use aden_core::filter::AdenFilter;
+use rayon::prelude::*;
 
 /// A single search result.
 #[derive(Debug, Clone, PartialEq)]
@@ -328,21 +329,45 @@ impl Index {
         let filter = AdenFilter::from_directory(dir);
         Self::collect_files(dir, &filter, &mut files)?;
 
-        for path in files {
-            let text = std::fs::read_to_string(&path)?;
-            if let Some((anchor, source_path, counts)) = parse_adoc(&path, &text) {
-                index.anchor_paths.insert(anchor.clone(), source_path);
-                index.anchor_text.insert(anchor.clone(), text.clone());
-                let doc_len: usize = counts.values().sum();
-                index.doc_lengths.insert(anchor.clone(), doc_len);
-                for (token, count) in counts {
-                    index
-                        .inverted
-                        .entry(token)
-                        .or_default()
-                        .push((anchor.clone(), count));
-                }
+        // Parallel: read and parse all files
+        let parsed_docs: Vec<_> = files
+            .par_iter()
+            .map(|path| {
+                let text = std::fs::read_to_string(path);
+                text.ok().and_then(|text| parse_adoc(path, &text))
+            })
+            .flatten()
+            .collect();
+
+        // Merge results into index
+        for (anchor, source_path, counts) in &parsed_docs {
+            index.anchor_paths.insert(anchor.clone(), source_path.clone());
+            let doc_len: usize = counts.values().sum();
+            index.doc_lengths.insert(anchor.clone(), doc_len);
+            for (token, count) in counts {
+                index
+                    .inverted
+                    .entry(token.clone())
+                    .or_default()
+                    .push((anchor.clone(), *count));
             }
+        }
+
+        // Parallel: read text for snippet generation
+        let text_docs: Vec<_> = files
+            .par_iter()
+            .filter_map(|path| {
+                let text = std::fs::read_to_string(path).ok()?;
+                let anchor = parsed_docs
+                    .iter()
+                    .find(|(_, sp, _)| *sp == *path)
+                    .map(|(a, _, _)| a.clone());
+                anchor.map(|a| (a, text))
+            })
+            .collect();
+
+        for (anchor, text) in text_docs {
+            index.anchor_text.insert(anchor, text);
         }
 
         // Compute average document length for BM25

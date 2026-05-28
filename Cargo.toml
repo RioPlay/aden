@@ -48,6 +48,9 @@ repository = "https://github.com/RioPlay/aden"
 homepage = "https://aden.rioplay.dev"
 documentation = "https://docs.rs/aden"
 
+[workspace.dependencies]
+rayon = "1.10"
+
 [dev-dependencies]
 criterion = "0.5"
 

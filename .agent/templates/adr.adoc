@@ -49,7 +49,7 @@ We will ____________.
 
 == Related Decisions
 
-. xref:adr-XXX.adoc[] — Supersedes or dependency
+. ADR-{number} — Supersedes or dependency
 
 == Status
 
@@ -65,8 +65,3 @@ We will ____________.
 |===
 
 An ADR is accepted when a reviewer acknowledges it. No code should implement a decision before its ADR is accepted.
-
-== Related Documents
-
-. <<plan-phase{phase}>>
-. <<adr-{number}>>

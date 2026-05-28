@@ -125,10 +125,6 @@ Patterns that suggest bias, misinformation, or low-quality sourcing.
 
 == Related
 
-* xref:research-{related}.adoc[Research: {related}]
-* xref:glossary.adoc[Project Glossary]
-* xref:style-guide.adoc[Style Guide]
-
-== Related Documents
-
-. <<adr-{number}>>
+* Related research
+* Project Glossary
+* Style Guide

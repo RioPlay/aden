@@ -18,6 +18,7 @@ use crate::HealError;
 use crate::drift::DriftEvent;
 use aden_core::{Block, Document};
 use aden_graph::graph::AdenGraph;
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -73,41 +74,56 @@ impl Scanner {
         let mut source_paths = Vec::new();
         self.collect_source_files(&self.repo_root, &mut source_paths)?;
 
+        // Parallel source file processing
         let mut source_entries: Vec<(PathBuf, Document)> = Vec::new();
-        for path in &source_paths {
-            let rel = path.strip_prefix(&self.repo_root).unwrap_or(path);
-            let rel_str = rel.to_string_lossy().to_string();
-            let current_mtime = Self::mtime(path);
+        let source_work: Vec<_> = source_paths
+            .par_iter()
+            .map(|path| {
+                let rel = path.strip_prefix(&self.repo_root).unwrap_or(path);
+                let rel_str = rel.to_string_lossy().to_string();
+                let current_mtime = Self::mtime(path);
 
-            // Try cache fast-path: mtime matches and we have a serialized doc
-            if let Some(cached_json) = self.cache.as_ref().and_then(|c| {
-                let (mt, json) = c.entries.get(&rel_str)?;
-                if *mt == current_mtime {
-                    Some(json.clone())
-                } else {
-                    None
-                }
-            }) && let Ok(doc) = serde_json::from_str::<Document>(&cached_json)
-            {
-                new_cache
-                    .entries
-                    .insert(rel_str.clone(), (current_mtime, cached_json));
-                source_entries.push((path.clone(), doc));
-                continue;
-            }
-
-            // Slow path: read & parse
-            if let Ok(content) = std::fs::read_to_string(path)
-                && let Ok(docs) = aden_parse::parse_file(path, &content)
-            {
-                for doc in docs {
-                    if let Ok(json) = serde_json::to_string(&doc) {
-                        new_cache
-                            .entries
-                            .insert(rel_str.clone(), (current_mtime, json));
+                // Try cache fast-path: mtime matches and we have a serialized doc
+                if let Some(cached_json) = self.cache.as_ref().and_then(|c| {
+                    let (mt, json) = c.entries.get(&rel_str)?;
+                    if *mt == current_mtime {
+                        Some(json.clone())
+                    } else {
+                        None
                     }
-                    source_entries.push((path.clone(), doc));
+                }) && let Ok(doc) = serde_json::from_str::<Document>(&cached_json)
+                {
+                    return Some((
+                        vec![(rel_str.clone(), (current_mtime, cached_json.clone()))],
+                        vec![(path.clone(), doc)],
+                    ));
                 }
+
+                // Slow path: read & parse
+                if let Ok(content) = std::fs::read_to_string(path) {
+                    if let Ok(docs) = aden_parse::parse_file(path, &content) {
+                        let mut cache_updates = Vec::new();
+                        let mut entries = Vec::new();
+                        for doc in docs {
+                            if let Ok(json) = serde_json::to_string(&doc) {
+                                cache_updates.push((rel_str.clone(), (current_mtime, json)));
+                            }
+                            entries.push((path.clone(), doc));
+                        }
+                        return Some((cache_updates, entries));
+                    }
+                }
+                None::<(Vec<(String, (u64, String))>, Vec<(PathBuf, Document)>)>
+            })
+            .collect();
+
+        // Merge parallel results
+        for work in source_work {
+            if let Some((cache_updates, entries)) = work {
+                for (rel_str, entry) in cache_updates {
+                    new_cache.entries.insert(rel_str, entry);
+                }
+                source_entries.extend(entries);
             }
         }
 

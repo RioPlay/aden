@@ -63,6 +63,7 @@ dependencies = [
  "ctrlc",
  "dirs",
  "notify",
+ "rayon",
  "regex",
  "serde",
  "serde_json",
@@ -112,6 +113,7 @@ dependencies = [
  "aden-store",
  "blake3",
  "petgraph",
+ "rayon",
  "regex",
  "serde",
  "serde_json",
@@ -127,6 +129,7 @@ dependencies = [
  "aden-emit",
  "aden-graph",
  "aden-parse",
+ "rayon",
  "serde",
  "serde_json",
  "tempfile",
@@ -138,6 +141,7 @@ name = "aden-index"
 version = "0.1.0"
 dependencies = [
  "aden-core",
+ "rayon",
  "regex",
  "serde",
  "serde_json",
@@ -171,6 +175,7 @@ version = "0.1.0"
 dependencies = [
  "aden-core",
  "fnv",
+ "rayon",
  "serde",
  "serde_json",
  "tree-sitter",

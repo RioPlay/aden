@@ -9,7 +9,7 @@
 [IMPORTANT]
 ====
 A task without acceptance criteria is not ready to execute.
-Every task must link back to a criterion in xref:spec.adoc[].
+Every task must link back to a criterion in the specification.
 ====
 
 == Ready to Execute
@@ -55,7 +55,7 @@ TASK-1 → TASK-2 → TASK-4
        → TASK-3 → TASK-5
 ----
 
-If a task blocks another, mark it RED in session.adoc.
+If a task blocks another, mark it in the session log.
 
 == Risk Register
 
@@ -68,11 +68,6 @@ If a task blocks another, mark it RED in session.adoc.
 
 == Related
 
-* xref:spec.adoc[Specification]
-* xref:design.adoc[Design]
-* xref:session.adoc[Session Log]
-
-== Related Documents
-
-. <<spec-{feature}>>
-. <<design-{feature}>>
+* Specification
+* Design
+* Session Log

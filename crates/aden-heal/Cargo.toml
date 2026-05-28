@@ -13,6 +13,7 @@ aden-emit = { path = "../aden-emit" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "2.0"
+rayon.workspace = true
 
 [dev-dependencies]
 tempfile = "3.27.0"

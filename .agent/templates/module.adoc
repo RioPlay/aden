@@ -21,8 +21,3 @@
 == Agent Notes
 agent-note::{status}
 {notes}
-
-== Related Documents
-
-. <<adr-{number}>>
-. <<plan-phase{phase}>>

@@ -1,3 +1,4 @@
+use rayon::prelude::*;
 use std::path::{Path, PathBuf};
 
 use crate::types::GenCacheEntry;
@@ -5,6 +6,12 @@ use crate::util::{
     base_cache_path, discover_source_files, emit_docs, find_project_root, load_gen_cache,
     sanitize_anchor, sanitize_source_file, save_gen_cache,
 };
+
+/// Work item returned from parallel file processing.
+enum WorkItem {
+    Skip,
+    Emitted(Vec<(String, PathBuf, aden_core::Document, (String, GenCacheEntry))>),
+}
 
 /// Emit a progress line unless quiet mode is on.
 macro_rules! progress {
@@ -310,92 +317,122 @@ pub fn cmd_gen(
         let mut generated = Vec::new();
         let mut skipped = 0usize;
 
-        for src_path in &sources {
-            let rel = src_path.strip_prefix(&root).unwrap_or(src_path);
-            let contract_rel = rel.with_extension("adoc");
-            let contract_path = effective_out.join(&contract_rel);
+        // Phase 1: Parallel file processing — read, parse, emit each source file
+        let work_items: Vec<_> = sources
+            .par_iter()
+            .filter_map(|src_path| {
+                let contract_rel = src_path
+                    .strip_prefix(&root)
+                    .unwrap_or(src_path)
+                    .with_extension("adoc");
+                let contract_path = effective_out.join(&contract_rel);
 
-            // Ensure parent dirs exist
-            if let Some(parent) = contract_path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-
-            // Check mtime cache
-            let src_mtime = src_path
-                .metadata()
-                .and_then(|m| m.modified())
-                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-            let entry = cache.entries.get(contract_path.to_string_lossy().as_ref());
-            if let Some(e) = entry
-                && e.source_mtime
-                    == src_mtime
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs()
-                && contract_path.exists()
-            {
-                skipped += 1;
-                continue;
-            }
-
-            let source = match std::fs::read_to_string(src_path) {
-                Ok(s) => s,
-                Err(e) if e.kind() == std::io::ErrorKind::InvalidData => continue,
-                Err(e) => {
-if !quiet { eprintln!("WARN: Failed to read {}: {}", src_path.display(), e); }
-                    continue;
-                }
-            };
-
-            let docs = match aden_parse::parse_file(src_path, &source) {
-                Ok(d) => d,
-                Err(aden_core::Error::UnsupportedLanguage(_)) => continue,
-                Err(e) => {
-                    eprintln!("WARN: Parse failed for {}: {}", src_path.display(), e);
-                    continue;
-                }
-            };
-
-            for doc in &docs {
-                let file_name = format!("{}.adoc", sanitize_anchor(&doc.anchor));
-                let file_path = contract_path
-                    .parent()
-                    .unwrap_or(effective_out)
-                    .join(&file_name);
-                let mut doc_clone = doc.clone();
-                sanitize_source_file(&mut doc_clone);
-                
-// Auto-link to parent module (infer from source path, not contract path)
-                let parent_module = infer_parent_module_from_source(src_path);
-                if let Some(ref pm) = parent_module {
-                    doc_clone.blocks.push(aden_core::Block::Paragraph("== Relationships".to_string()));
-                    doc_clone.blocks.push(aden_core::Block::DescriptionList(vec![
-                        (format!("<<{},module>>", pm),
-                         "This symbol is part of the parent module.".to_string())
-                    ]));
-                }
-                
-                std::fs::write(&file_path, aden_emit::emit_document(&doc_clone))?;
-                // Store path relative to effective_out so prune can match sub-dirs
-                let rel_path = file_path.strip_prefix(&effective_out)
-                    .unwrap_or(Path::new(&file_name))
-                    .to_string_lossy()
-                    .to_string();
-                generated.push(rel_path);
-                progress!(quiet, "Emitted {}", file_path.display());
-
-                // Update cache
+                let src_mtime = src_path
+                    .metadata()
+                    .ok()
+                    .and_then(|m| m.modified().ok())
+                    .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
                 let mtime_secs = src_mtime
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_secs();
-                cache.entries.insert(
-                    file_path.to_string_lossy().to_string(),
-                    GenCacheEntry {
+
+                // Check mtime cache — if match, return Skip
+                if let Some(e) = cache.entries.get(contract_path.to_string_lossy().as_ref()) {
+                    if e.source_mtime == mtime_secs && contract_path.exists() {
+                        return Some(WorkItem::Skip);
+                    }
+                }
+
+                // Read source
+                let source = match std::fs::read_to_string(src_path) {
+                    Ok(s) => s,
+                    Err(e) if e.kind() == std::io::ErrorKind::InvalidData => return None,
+                    Err(e) => {
+                        if !quiet {
+                            eprintln!("WARN: Failed to read {}: {}", src_path.display(), e);
+                        }
+                        return None;
+                    }
+                };
+
+                // Parse
+                let docs = match aden_parse::parse_file(src_path, &source) {
+                    Ok(d) => d,
+                    Err(aden_core::Error::UnsupportedLanguage(_)) => return None,
+                    Err(e) => {
+                        eprintln!("WARN: Parse failed for {}: {}", src_path.display(), e);
+                        return None;
+                    }
+                };
+
+                // Emit each document from this source file
+                let mut emitted = Vec::new();
+                for doc in docs {
+                    let file_name = format!("{}.adoc", sanitize_anchor(&doc.anchor));
+                    let file_path = contract_path
+                        .parent()
+                        .unwrap_or(effective_out)
+                        .join(&file_name);
+
+                    let mut doc_clone = doc.clone();
+                    sanitize_source_file(&mut doc_clone);
+
+                    let parent_module = infer_parent_module_from_source(src_path);
+                    if let Some(ref pm) = parent_module {
+                        doc_clone.blocks.push(aden_core::Block::Paragraph(
+                            "== Relationships".to_string(),
+                        ));
+                        doc_clone.blocks.push(aden_core::Block::DescriptionList(vec![(
+                            format!("<<{},module>>", pm),
+                            "This symbol is part of the parent module.".to_string(),
+                        )]));
+                    }
+
+                    if let Err(e) = std::fs::write(&file_path, aden_emit::emit_document(&doc_clone))
+                    {
+                        eprintln!("WARN: Failed to write {}: {}", file_path.display(), e);
+                        continue;
+                    }
+
+                    if !quiet {
+                        progress!(quiet, "Emitted {}", file_path.display());
+                    }
+
+                    // Collect cache entry to merge after parallel phase
+                    let cache_key = file_path.to_string_lossy().to_string();
+                    let cache_val = GenCacheEntry {
                         source_mtime: mtime_secs,
                         source_path: src_path.to_string_lossy().to_string(),
-                    },
-                );
+                    };
+                    let rel_path = file_path
+                        .strip_prefix(&effective_out)
+                        .unwrap_or(Path::new(&file_name))
+                        .to_string_lossy()
+                        .to_string();
+
+                    emitted.push((rel_path, file_path, doc, (cache_key, cache_val)));
+                }
+
+                if emitted.is_empty() {
+                    Some(WorkItem::Skip)
+                } else {
+                    Some(WorkItem::Emitted(emitted))
+                }
+            })
+            .collect();
+
+        // Phase 2: Merge parallel results into shared state
+        for item in work_items {
+            match item {
+                WorkItem::Skip => skipped += 1,
+                WorkItem::Emitted(emitted) => {
+                    for (rel_path, _file_path, doc, (cache_key, cache_val)) in emitted {
+                        generated.push(rel_path);
+                        cache.entries.insert(cache_key, cache_val);
+                        let _ = doc; // suppress unused warning
+                    }
+                }
             }
         }
 
@@ -457,6 +494,9 @@ if !quiet { eprintln!("WARN: Failed to read {}: {}", src_path.display(), e); }
         }
 
         progress!(quiet, "\nGenerated {} contracts. Skipped {} unchanged files.", generated.len(), skipped);
+        if skipped == 0 && generated.len() == sources.len() {
+            progress!(quiet, "(All files were skipped — nothing changed since last run)");
+        }
     } else {
         // ── LEGACY MODE: flat parse_directory output ────────────────────────
         let docs = aden_parse::parse_directory(path)?;

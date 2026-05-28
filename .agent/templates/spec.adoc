@@ -15,7 +15,7 @@ If you cannot write acceptance criteria, you do not understand the feature well 
 == Context
 
 Why are we building this? What user pain does it address?
-Reference xref:kickoff.adoc[] if this feature originated from a kickoff.
+Reference the kickoff document if this feature originated from a kickoff.
 
 == In Scope
 
@@ -83,11 +83,6 @@ If deployment fails:
 
 == Related
 
-* xref:kickoff.adoc[Kickoff]
-* xref:design.adoc[Design]
-* xref:task.adoc[Tasks]
-
-== Related Documents
-
-. <<adr-{number}>>
-. <<design-{feature}>>
+* Kickoff
+* Design
+* Tasks

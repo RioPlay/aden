@@ -59,7 +59,7 @@ Every action item must be one of:
 * **Prevent** — Make the failure impossible next time
 * **Detect** — Catch the failure earlier, when it is cheaper
 * **Mitigate** — Reduce blast radius when it happens again
-* **Document** — Update runbooks, playbooks, or adr
+* **Document** — Update runbooks, playbooks, or decisions
 
 == Prevent Recurrence
 
@@ -69,9 +69,5 @@ Every action item must be one of:
 
 == Related Documents
 
-* xref:runbook.adoc[Runbook]
-* xref:adr-{number}.adoc[Design Decisions]
-
-== Related Documents
-
-. <<runbook-{system}>>
+* Runbook
+* Design Decisions

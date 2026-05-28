@@ -1,113 +1,53 @@
 :proj: {project}
 
 [[style-guide]]
-= AsciiDoc Style Guide for AI-Generated Contracts
+= Style Guide for {project}
 
 == Core Principle
-Never use ASCII art, fake diagrams, or visual gimmicks. AsciiDoc has native semantic constructs for every communication need. Use them.
+
+{core_principle}
 
 == Patterns
 
 === Admonitions (Use These)
+
 [cols="1,2"]
 |===
 |Situation |Block
 
 |Urgent security concern
 |[IMPORTANT]
+
 |Factual asides
 |[NOTE]
+
 |Performance or best-practice
 |[TIP]
+
 |Warn about a trap or pitfall
 |[CAUTION]
+
 |Risk of data loss or breakage
 |[WARNING]
+
 |===
 
-BAD:
-```
-⚠️ WARNING: This API is unstable.
-```
+=== Code Style
 
-GOOD:
-```
-[WARNING]
-====
-This API is marked `#[unstable]`.
-Do not depend on its signature in production code.
-====
-```
-
-=== Tables (Use For Attribute Lists)
-BAD: hand-aligned ASCII columns.
-
-GOOD:
-```
-[cols="1,2"]
-|===
-|Attribute |Value
-
-|Visibility
-|Public
-
-|Stability
-|Stable since 1.0
-|===
-```
-
-=== Source Listings
-Always specify language and title:
-```
-.Rust implementation of the filter predicate
-[source,rust]
-----
-pub fn is_match(&self, path: &Path) -> bool {
-    self.rules.iter().any(|r| r.matches(path)) // <1>
-}
-----
-<1> Short-circuit on first match
-```
+{code_style_example}
 
 === Cross-References
-BAD:
-```
-See the docs in glossary.adoc.
-```
 
-GOOD:
-```
-See xref:glossary.adoc#glossary[Project Glossary] for terminology.
-```
+{cross_ref_example}
 
-=== Description Lists
-Use for key-value definitions, not tables with two columns:
-```
-Health Score::
-  Float from 0.0 to 1.0. 1.0 means zero drift detected.
-Drift Event::
-  A record of divergence between source code and its contract.
-```
+=== Tables
 
-=== Sidebars for Key Concepts
-```
-.Aden Security Model
-[sidebar]
-****
-Contracts are *build artifacts*, not documentation.
-They contain source paths and signatures that could be weaponized if leaked.
-Never commit `contracts/` or `.aden/`.
-****
-```
+Use for structured data.
 
-=== No ASCII Diagrams
-If a flowchart is needed, describe it in prose or generate a Mermaid diagram via an external tool, then include it as an image:
-```
-.Aden data flow
-image::aden-flow.svg[Diagram of Aden extraction pipeline]
-```
-Never draw boxes with `+---+` or `│ ┌─┐` characters.
+=== Lists
+
+Use for key-value definitions, not tables with two columns.
 
 == Related Documents
 
-. <<glossary>>
+. {related}

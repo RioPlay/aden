@@ -8,7 +8,7 @@
 
 [TIP]
 ====
-Design answers: "How will we build it?" Not "What will we build?" — that belongs in xref:spec.adoc[].
+Design answers: "How will we build it?" Not "What will we build?" — that belongs in the specification.
 ====
 
 == Overview
@@ -46,8 +46,8 @@ Describe each arrow:
 
 Every non-obvious choice must have an ADR. List them here:
 
-. xref:adr-XXX.adoc[] — Why we chose X over Y
-. xref:adr-YYY.adoc[] — Why we chose Z over W
+. ADR-{number} — Why we chose X over Y
+. ADR-{number} — Why we chose Z over W
 
 == Failure Modes
 
@@ -79,11 +79,6 @@ Every non-obvious choice must have an ADR. List them here:
 
 == Related
 
-* xref:kickoff.adoc[Kickoff]
-* xref:spec.adoc[Specification]
-* xref:task.adoc[Tasks]
-
-== Related Documents
-
-. <<spec-{feature}>>
-. <<adr-{number}>>
+* Kickoff
+* Specification
+* Tasks

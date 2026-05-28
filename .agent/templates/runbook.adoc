@@ -80,7 +80,7 @@ What does this system do? What does it depend on? Who depends on it?
 . Isolate: Is it local or dependency failure?
 . Mitigate: What is the fastest way to restore service?
 . Fix: What is the root cause?
-. Post-mortem: Write xref:retrospective.adoc[]
+. Post-mortem: Write a retrospective
 
 == Contact Information
 
@@ -94,10 +94,6 @@ What does this system do? What does it depend on? Who depends on it?
 
 == Related
 
-* xref:monitoring-dashboard[]
-* xref:architecture-diagram[]
-* xref:adr-{number}.adoc[Design Decisions]
-
-== Related Documents
-
-. <<adr-{number}>>
+* Monitoring dashboard
+* Architecture diagram
+* Design Decisions

@@ -38,6 +38,7 @@ use crate::nodes::{DocumentNode, AdenEdge, GraphEdge, GraphNode};
 use crate::parser::{parse_file, ParsedDocument};
 use aden_core::{Document, EdgeType, NodeType};
 use petgraph::graph::{DiGraph, NodeIndex};
+use rayon::prelude::*;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -348,45 +349,60 @@ impl AdenGraph<DocumentNode, AdenEdge> {
         let files = collect_files(dir)?;
         let mut graph = Self::new();
 
-        // First pass: parse all files and create nodes
-        let mut parsed_docs: Vec<(PathBuf, ParsedDocument)> = Vec::new();
-        for file_path in &files {
-            let parsed = parse_file(file_path).map_err(|e| GraphError::Parse(e.to_string()))?;
-            parsed_docs.push((file_path.clone(), parsed));
-        }
+        // Parallel first pass: parse all files
+        let parsed_docs: Vec<(PathBuf, ParsedDocument)> = files
+            .par_iter()
+            .map(|file_path| {
+                let parsed = parse_file(file_path).map_err(|e| GraphError::Parse(e.to_string()))?;
+                Ok((file_path.clone(), parsed))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
 
-        // Create nodes from parsed documents
-        for (file_path, parsed) in &parsed_docs {
-            let anchors = &parsed.anchors;
-            if anchors.is_empty() {
-                // Generate anchor from filename stem
-                let anchor = file_path
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("unknown")
-                    .to_string();
-                let doc = parsed_to_document(&parsed, &anchor, file_path);
-                let node = DocumentNode {
-                    doc,
-                    source_path: file_path.clone(),
-                    parsed: Some(parsed.clone()),
-                };
-                graph.add_node(node);
-            } else {
-                // One node per anchor
-                for anchor in anchors {
-                    let doc = parsed_to_document(&parsed, anchor, file_path);
-                    let node = DocumentNode {
-                        doc,
-                        source_path: file_path.clone(),
-                        parsed: Some(parsed.clone()),
-                    };
-                    graph.add_node(node);
+        // Parallel second pass: create nodes
+        let node_work: Vec<_> = parsed_docs
+            .par_iter()
+            .flat_map(|(file_path, parsed)| {
+                let anchors = &parsed.anchors;
+                if anchors.is_empty() {
+                    let anchor = file_path
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("unknown")
+                        .to_string();
+                    let doc = parsed_to_document(&parsed, &anchor, file_path);
+                    vec![(
+                        doc.anchor.clone(),
+                        DocumentNode {
+                            doc,
+                            source_path: file_path.clone(),
+                            parsed: Some(parsed.clone()),
+                        },
+                    )]
+                } else {
+                    anchors
+                        .iter()
+                        .map(|anchor| {
+                            let doc = parsed_to_document(&parsed, anchor, file_path);
+                            (
+                                doc.anchor.clone(),
+                                DocumentNode {
+                                    doc,
+                                    source_path: file_path.clone(),
+                                    parsed: Some(parsed.clone()),
+                                },
+                            )
+                        })
+                        .collect()
                 }
-            }
+            })
+            .collect();
+
+        // Add all nodes (thread-safe: petgraph DiGraph is Send+Sync)
+        for (_anchor, node) in node_work {
+            graph.add_node(node);
         }
 
-        // Second pass: build edges from refs and edge macros
+        // Sequential edge building (depends on all nodes existing)
         for (_file_path, parsed) in &parsed_docs {
             let source_anchor = if let Some(a) = parsed.anchors.first() {
                 a.clone()
@@ -400,7 +416,6 @@ impl AdenGraph<DocumentNode, AdenEdge> {
 
             // Build edges from refs: <<target>>
             for ref_anchor in &parsed.refs {
-                // Skip template placeholders like <<adr-{number}>>
                 if ref_anchor.contains('{') {
                     continue;
                 }
@@ -417,15 +432,10 @@ impl AdenGraph<DocumentNode, AdenEdge> {
                 };
                 if let Err(_) = graph.add_edge_by_anchor(&source_anchor, ref_anchor, AdenEdge {
                     edge_type,
-                }) {
-                    // Unresolved reference — leave as orphan edge
-                }
-                // Automatic backlink: every reference creates a reverse edge
+                }) {}
                 if let Err(_) = graph.add_edge_by_anchor(ref_anchor, &source_anchor, AdenEdge {
                     edge_type: backlink_type,
-                }) {
-                    // Target node doesn't exist yet, skip
-                }
+                }) {}
             }
 
             // Build edges from includes: include::target
@@ -435,12 +445,9 @@ impl AdenGraph<DocumentNode, AdenEdge> {
                     .file_stem()
                     .and_then(|s| s.to_str())
                     .unwrap_or("unknown");
-                // Try to resolve the target anchor (include path -> anchor)
                 let target_anchor = if inc.path.starts_with("[[") {
-                    // Explicit anchor: include::target.adoc[]
                     inc_file_stem.to_string()
                 } else {
-                    // File-based include: use filename stem as anchor
                     inc_file_stem.to_string()
                 };
                 let edge_type = if source_anchor.starts_with("adr-") {
@@ -450,9 +457,7 @@ impl AdenGraph<DocumentNode, AdenEdge> {
                 };
                 if let Err(_) = graph.add_edge_by_anchor(&source_anchor, &target_anchor, AdenEdge {
                     edge_type,
-                }) {
-                    // Unresolved include — skip
-                }
+                }) {}
             }
 
             // Build edges from edge:: macros
@@ -484,13 +489,11 @@ impl AdenGraph<DocumentNode, AdenEdge> {
                     "prerequisite" | "prerequisite-for" => EdgeType::PrerequisiteFor,
                     "explains" => EdgeType::Explains,
                     "isequivalent" | "is-equivalent-to" => EdgeType::IsEquivalentTo,
-                    _ => EdgeType::RelatesTo, // fallback
+                    _ => EdgeType::RelatesTo,
                 };
                 if let Err(_) = graph.add_edge_by_anchor(&source_anchor, &edge_macro.target, AdenEdge {
                     edge_type,
-                }) {
-                    // Unresolved reference
-                }
+                }) {}
             }
         }
 

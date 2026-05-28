@@ -1,3 +1,4 @@
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -49,21 +50,28 @@ pub fn cmd_lint(
     println!("Scanning: {}", path.display());
     println!();
 
-    let mut results: Vec<LintResult> = Vec::new();
+    let _results: Vec<LintResult> = Vec::new();
 
     let sources = discover_source_files(path)?;
 
-    for src_path in &sources {
-        let content = match std::fs::read_to_string(src_path) {
-            Ok(c) => c,
-            Err(_) => continue,
-        };
+    // Parallel: lint all source files
+    let all_results: Vec<_> = sources
+        .par_iter()
+        .filter_map(|src_path| {
+            let content = std::fs::read_to_string(src_path).ok()?;
+            let ext = src_path.extension().and_then(|e| e.to_str()).unwrap_or("");
+            let file_results = lint_file(src_path, &content, ext);
+            if file_results.is_empty() {
+                None
+            } else {
+                Some(file_results)
+            }
+        })
+        .flatten()
+        .collect();
 
-        let ext = src_path.extension().and_then(|e| e.to_str()).unwrap_or("");
-
-        let file_results = lint_file(src_path, &content, ext);
-        results.extend(file_results);
-    }
+    let mut results = all_results;
+    results.sort_by_key(|r| r.file.clone());
 
     let filtered: Vec<_> = results
         .into_iter()
