@@ -37,6 +37,7 @@
 use crate::nodes::{DocumentNode, AdenEdge, GraphEdge, GraphNode};
 use crate::parser::{parse_file, ParsedDocument};
 use aden_core::{Document, EdgeType, NodeType};
+use aden_store::GraphStorage;
 use petgraph::graph::{DiGraph, NodeIndex};
 use rayon::prelude::*;
 use std::collections::HashMap;
@@ -493,6 +494,69 @@ impl AdenGraph<DocumentNode, AdenEdge> {
                 };
                 if let Err(_) = graph.add_edge_by_anchor(&source_anchor, &edge_macro.target, AdenEdge {
                     edge_type,
+                }) {}
+            }
+        }
+
+        Ok(graph)
+    }
+
+    /// Build a graph from a storage backend instead of files.
+    ///
+    /// Loads all documents and edges from the storage layer and constructs
+    /// an in-memory `AdenGraph`. This is the store-first path — no file
+    /// parsing, no `contracts/` directory needed.
+    pub fn build_from_storage<S: GraphStorage>(storage: &S) -> Result<Self, GraphError> {
+        let mut graph = Self::new();
+
+        // Load all documents from storage
+        let docs = storage.get_all_documents().map_err(|e| GraphError::Io(e.to_string()))?;
+
+        // Create nodes from documents
+        for (_anchor, doc) in docs {
+            let node = DocumentNode {
+                doc,
+                source_path: PathBuf::new(), // storage doesn't track paths
+                parsed: None, // no parsed doc from storage
+            };
+            graph.add_node(node);
+        }
+
+        // Load all edges from storage and rebuild them
+        let edge_types = vec![
+            EdgeType::Uses,
+            EdgeType::UsedBy,
+            EdgeType::Implements,
+            EdgeType::Tests,
+            EdgeType::Documents,
+            EdgeType::Constrains,
+            EdgeType::Justifies,
+            EdgeType::Invokes,
+            EdgeType::Requires,
+            EdgeType::Mutates,
+            EdgeType::Calls,
+            EdgeType::Supersedes,
+            EdgeType::Amends,
+            EdgeType::Verifies,
+            EdgeType::IsA,
+            EdgeType::PartOf,
+            EdgeType::RelatesTo,
+            EdgeType::SimilarTo,
+            EdgeType::Causes,
+            EdgeType::Implies,
+            EdgeType::SynonymOf,
+            EdgeType::AntonymOf,
+            EdgeType::AssociatedWith,
+            EdgeType::PrerequisiteFor,
+            EdgeType::Explains,
+            EdgeType::IsEquivalentTo,
+        ];
+
+        for edge_type in &edge_types {
+            let typed_edges = storage.get_edges_by_type(edge_type).map_err(|e| GraphError::Io(e.to_string()))?;
+            for (src, dst) in typed_edges {
+                if let Err(_) = graph.add_edge_by_anchor(&src, &dst, AdenEdge {
+                    edge_type: edge_type.clone(),
                 }) {}
             }
         }

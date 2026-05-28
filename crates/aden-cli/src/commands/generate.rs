@@ -1,3 +1,5 @@
+use aden_graph::graph::AdenGraph;
+use aden_store::{GraphStorage, SledStorage};
 use rayon::prelude::*;
 use std::path::{Path, PathBuf};
 
@@ -226,7 +228,7 @@ fn infer_parent_module_from_source(source_path: &Path) -> Option<String> {
 }
 
 /// Auto-document a codebase: discover source files, skip unchanged,
-/// emit structured contracts, and generate an index.
+/// emit structured contracts to store, and optionally to disk.
 pub fn cmd_gen(
     path: &Path,
     out_dir: Option<&Path>,
@@ -245,11 +247,11 @@ pub fn cmd_gen(
         let file_root = path.parent().unwrap_or(path);
         let effective_out = if detect_out_dir {
             detect_contract_structure(path, path)
-                .unwrap_or_else(|| file_root.join("contracts"))
+                .unwrap_or_else(|| file_root.join(".aden/contracts"))
         } else {
             out_dir
                 .map(|d| d.to_path_buf())
-                .unwrap_or_else(|| file_root.join("contracts"))
+                .unwrap_or_else(|| file_root.join(".aden/contracts"))
         };
 
         if merge || propose {
@@ -263,9 +265,8 @@ pub fn cmd_gen(
     }
 
     let root = find_project_root(path);
-    // Default output dir is <target>/contracts — always relative to the
-    // project being indexed, never to the current working directory.
-    let default_out = root.join("contracts");
+    // Default output dir is <target>/.aden/contracts — inside .aden, never pollutes project
+    let default_out = root.join(".aden").join("contracts");
     let effective_out_buf;
     let effective_out = match out_dir {
         Some(d) => d,
@@ -280,16 +281,16 @@ pub fn cmd_gen(
 
     if detect_out_dir && out_dir.is_none() {
         let mut auto_detected = false;
-        if root.join("contracts").join("crates").exists() {
-            let contracts_crates = root.join("contracts").join("crates");
+        if root.join(".aden").join("contracts").join("crates").exists() {
+            let contracts_crates = root.join(".aden").join("contracts").join("crates");
             if contracts_crates.is_dir() {
-                progress!(quiet, "INFO: Detected contracts/crates/ structure. Using --detect-out-dir.");
-                progress!(quiet, "      Contracts will be placed in contracts/crates/<crate>/src/");
+                progress!(quiet, "INFO: Detected .aden/contracts/crates/ structure. Using --detect-out-dir.");
+                progress!(quiet, "      Contracts will be placed in .aden/contracts/crates/<crate>/src/");
                 auto_detected = true;
             }
         }
         if !auto_detected {
-            progress!(quiet, "INFO: No existing contract structure detected. Using default ./contracts/");
+            progress!(quiet, "INFO: No existing contract structure detected. Using default .aden/contracts/");
         }
     }
 
@@ -310,7 +311,10 @@ pub fn cmd_gen(
             return Ok(());
         }
 
-        std::fs::create_dir_all(effective_out)?;
+        // Open store for writing contracts
+        let store_path = root.join(".aden").join("store");
+        let storage = SledStorage::new(store_path.to_str().unwrap_or(".aden/store"))
+            .map_err(|e| format!("Failed to open store: {}", e))?;
 
         let cache_path = root.join(".aden").join("gen-cache.json");
         let mut cache = load_gen_cache(&cache_path);
@@ -369,12 +373,6 @@ pub fn cmd_gen(
                 // Emit each document from this source file
                 let mut emitted = Vec::new();
                 for doc in docs {
-                    let file_name = format!("{}.adoc", sanitize_anchor(&doc.anchor));
-                    let file_path = contract_path
-                        .parent()
-                        .unwrap_or(effective_out)
-                        .join(&file_name);
-
                     let mut doc_clone = doc.clone();
                     sanitize_source_file(&mut doc_clone);
 
@@ -389,8 +387,20 @@ pub fn cmd_gen(
                         )]));
                     }
 
-                    if let Err(e) = std::fs::write(&file_path, aden_emit::emit_document(&doc_clone))
-                    {
+                    // Write to store
+                    if let Err(e) = storage.put_document(&doc_clone) {
+                        eprintln!("WARN: Failed to store {}: {}", doc_clone.anchor, e);
+                        continue;
+                    }
+
+                    // Also write to disk if out_dir specified
+                    let file_name = format!("{}.adoc", sanitize_anchor(&doc_clone.anchor));
+                    let file_path = contract_path
+                        .parent()
+                        .unwrap_or(effective_out)
+                        .join(&file_name);
+
+                    if let Err(e) = std::fs::write(&file_path, aden_emit::emit_document(&doc_clone)) {
                         eprintln!("WARN: Failed to write {}: {}", file_path.display(), e);
                         continue;
                     }
@@ -411,7 +421,7 @@ pub fn cmd_gen(
                         .to_string_lossy()
                         .to_string();
 
-                    emitted.push((rel_path, file_path, doc, (cache_key, cache_val)));
+                    emitted.push((rel_path, file_path, doc_clone, (cache_key, cache_val)));
                 }
 
                 if emitted.is_empty() {
@@ -427,14 +437,16 @@ pub fn cmd_gen(
             match item {
                 WorkItem::Skip => skipped += 1,
                 WorkItem::Emitted(emitted) => {
-                    for (rel_path, _file_path, doc, (cache_key, cache_val)) in emitted {
+                    for (rel_path, _file_path, _doc, (cache_key, cache_val)) in emitted {
                         generated.push(rel_path);
                         cache.entries.insert(cache_key, cache_val);
-                        let _ = doc; // suppress unused warning
                     }
                 }
             }
         }
+
+        // Flush store to persist all documents
+        storage.flush().map_err(|e| format!("Store flush failed: {}", e))?;
 
         save_gen_cache(&cache_path, &cache)?;
 
@@ -497,6 +509,26 @@ pub fn cmd_gen(
         if skipped == 0 && generated.len() == sources.len() {
             progress!(quiet, "(All files were skipped — nothing changed since last run)");
         }
+
+        // Report orphan symbols using store-first graph build
+        match AdenGraph::build_from_storage(&storage) {
+            Ok(graph) => {
+                let orphans = graph.orphans();
+                if !orphans.is_empty() {
+                    eprintln!("\nWARNING: {} orphan symbol(s) detected:", orphans.len());
+                    for orphan in orphans.iter().take(5) {
+                        eprintln!("  - {}", orphan);
+                    }
+                    if orphans.len() > 5 {
+                        eprintln!("  ... and {} more", orphans.len() - 5);
+                    }
+                    eprintln!("  Run 'aden heal . --gc' to auto-link or remove orphans");
+                }
+            }
+            Err(e) => {
+                eprintln!("Note: Could not check for orphans: {}", e);
+            }
+        }
     } else {
         // ── LEGACY MODE: flat parse_directory output ────────────────────────
         let docs = aden_parse::parse_directory(path)?;
@@ -508,26 +540,6 @@ pub fn cmd_gen(
     if cache_dir.exists() {
         let _ = std::fs::remove_dir_all(&cache_dir);
         let _ = std::fs::create_dir_all(&cache_dir);
-    }
-
-    // Report orphan symbols
-    match aden_graph::graph::AdenGraph::build_from_directory(path) {
-        Ok(graph) => {
-            let orphans = graph.orphans();
-            if !orphans.is_empty() {
-                eprintln!("\nWARNING: {} orphan symbol(s) detected:", orphans.len());
-                for orphan in orphans.iter().take(5) {
-                    eprintln!("  - {}", orphan);
-                }
-                if orphans.len() > 5 {
-                    eprintln!("  ... and {} more", orphans.len() - 5);
-                }
-                eprintln!("  Run 'aden heal . --gc' to auto-link or remove orphans");
-            }
-        }
-        Err(e) => {
-            eprintln!("Note: Could not check for orphans: {}", e);
-        }
     }
 
     Ok(())

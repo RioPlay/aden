@@ -58,6 +58,7 @@ dependencies = [
  "aden-parse",
  "aden-policy",
  "aden-propose",
+ "aden-store",
  "chrono",
  "clap",
  "ctrlc",
