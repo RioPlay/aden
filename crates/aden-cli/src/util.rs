@@ -1,7 +1,7 @@
 pub mod quiet;
 
 use aden_emit::check::{collect_anchors, find_refs};
-use aden_graph::{cycles::find_cycles, integrity::check_hashes};
+use aden_graph::{cycles::find_cycles, integrity::check_hashes, GraphNode};
 use serde_json::Map;
 use std::collections::HashSet;
 use std::io::Read;
@@ -410,11 +410,22 @@ fn check_incomplete_contracts(path: &Path) -> Vec<String> {
 /// Returns a list of human-readable messages ("INFO: ...", "ERROR: ...", "WARNING: ...").
 pub fn perform_check(path: &Path) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let mut messages = Vec::new();
-    let mut all_anchors: HashSet<String> = HashSet::new();
 
     let graph = aden_graph::cache::build_from_directory_cached(path)?;
 
-    // Collect local anchors
+    // Collect all anchors from the graph (store-first)
+    let mut all_anchors: HashSet<String> = HashSet::new();
+    for node_idx in graph.graph.node_indices() {
+        let node = &graph.graph[node_idx];
+        all_anchors.insert(node.anchor().to_string());
+        if let Some(parsed) = &node.parsed {
+            for anchor in &parsed.anchors {
+                all_anchors.insert(anchor.clone());
+            }
+        }
+    }
+
+    // Also check on-disk .adoc/.aden files for anchors not yet in store
     for entry in std::fs::read_dir(path)? {
         let entry = entry?;
         let p = entry.path();
@@ -428,14 +439,7 @@ pub fn perform_check(path: &Path) -> Result<Vec<String>, Box<dyn std::error::Err
         }
     }
 
-    for node in graph.graph.node_indices() {
-        if let Some(parsed) = &graph.graph[node].parsed {
-            for anchor in &parsed.anchors {
-                all_anchors.insert(anchor.clone());
-            }
-        }
-    }
-
+    // Check for unresolved refs in on-disk files
     let mut unresolved = Vec::new();
     for entry in std::fs::read_dir(path)? {
         let entry = entry?;

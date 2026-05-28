@@ -17,6 +17,7 @@
 use crate::HealError;
 use crate::drift::DriftEvent;
 use aden_core::{Block, Document};
+use aden_graph::cache::try_load;
 use aden_graph::graph::AdenGraph;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -218,7 +219,17 @@ impl Scanner {
         }
 
         // g. BrokenReference (best-effort; skip if graph has structural issues)
-        if let Ok(graph) = AdenGraph::build_from_directory(&self.repo_root) {
+        // Use store-first graph loading for broken reference detection
+        if let Some(graph) = try_load(&self.repo_root) {
+            for (contract_path, ref_anchor) in graph.unresolved_refs() {
+                let line = find_ref_line(&contract_path, &ref_anchor);
+                events.push(DriftEvent::BrokenReference {
+                    contract_path,
+                    ref_anchor,
+                    line,
+                });
+            }
+        } else if let Ok(graph) = AdenGraph::build_from_directory(&self.repo_root) {
             for (contract_path, ref_anchor) in graph.unresolved_refs() {
                 let line = find_ref_line(&contract_path, &ref_anchor);
                 events.push(DriftEvent::BrokenReference {
