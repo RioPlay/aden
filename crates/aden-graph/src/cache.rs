@@ -128,7 +128,21 @@ fn sled_db_path(path: &Path) -> PathBuf {
 }
 
 /// Try loading a cached graph from Sled.
+/// Checks in order: 1) contracts store (.aden/store), 2) legacy cache (.aden/cache/sled)
 pub fn try_load(path: &Path) -> Option<AdenGraph<DocumentNode, AdenEdge>> {
+    // 1. Try contracts store first (store-first architecture)
+    let store_path = path.join(".aden").join("store");
+    if store_path.exists() {
+        if let Ok(storage) = SledStorage::new(store_path.to_str()?) {
+            if let Ok((docs, edges)) = GraphBridge::load_from_storage(&storage) {
+                if !docs.is_empty() {
+                    return Some(build_graph_from_docs_and_edges(docs, edges));
+                }
+            }
+        }
+    }
+
+    // 2. Fall back to legacy cache
     let sled_path = sled_db_path(path);
     if !sled_path.exists() {
         return None;
