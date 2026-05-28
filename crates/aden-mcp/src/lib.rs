@@ -7,50 +7,32 @@
 //! Each MCP tool maps 1:1 to an `aden` CLI subcommand.
 //! When called, we convert JSON args to CLI flags and run the binary.
 //!
-//! Protocol: JSON-RPC 2.0 over stdio.
+//! Built on the official `rmcp` Rust SDK.
 
-use serde::{Deserialize, Serialize};
-use std::io::{self, BufRead, Write};
-use std::path::Path;
-use std::process::Command;
+use rmcp::{
+    model::*,
+    service::{RequestContext, RoleServer},
+    transport::stdio,
+    ErrorData as McpError,
+    ServerHandler, ServiceExt,
+};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
-// ── JSON-RPC types ──────────────────────────────────────────
+// ── Server struct ───────────────────────────────────────────
 
-#[derive(Debug, Deserialize, Serialize)]
-struct JsonRpcRequest {
-    jsonrpc: String,
-    id: Option<serde_json::Value>,
-    method: String,
-    #[serde(default)]
-    params: Option<serde_json::Value>,
+#[derive(Clone)]
+pub struct AdenMcpServer {
+    project_dir: PathBuf,
 }
 
-#[derive(Debug, Serialize)]
-struct JsonRpcResponse {
-    jsonrpc: String,
-    id: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    result: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<JsonRpcError>,
-}
-
-#[derive(Debug, Serialize)]
-struct JsonRpcError {
-    code: i32,
-    message: String,
-}
-
-impl JsonRpcResponse {
-    fn success(id: Option<serde_json::Value>, result: serde_json::Value) -> Self {
-        Self { jsonrpc: "2.0".to_string(), id, result: Some(result), error: None }
-    }
-    fn error(id: Option<serde_json::Value>, code: i32, message: &str) -> Self {
-        Self { jsonrpc: "2.0".to_string(), id, result: None, error: Some(JsonRpcError { code, message: message.to_string() }) }
+impl AdenMcpServer {
+    pub fn new(project_dir: PathBuf) -> Self {
+        Self { project_dir }
     }
 }
 
-// ── Tool declaration ────────────────────────────────────────
+// ── Tool declaration ──────────────────────────────────────────
 
 /// A tool the LLM can invoke.  Zero code per tool — just metadata.
 struct ToolSpec {
@@ -93,176 +75,206 @@ static TOOLS: &[ToolSpec] = &[
     ToolSpec { name: "review",     description: "Semantic review of pending proposals.",                                                                        args: &[("path", "string"), ("since", "string"), ("budget", "integer")] },
 ];
 
-// ── Serve loop ──────────────────────────────────────────────
+// ── ServerHandler impl ────────────────────────────────────────
 
-pub fn serve(project_dir: &Path) -> io::Result<()> {
-    let stdin = io::stdin();
-    let mut stdout = io::stdout();
-    let mut stderr = io::stderr();
-    let project_arc = std::sync::Arc::from(project_dir.to_path_buf());
+impl ServerHandler for AdenMcpServer {
+    fn get_info(&self) -> ServerInfo {
+        InitializeResult::new(
+            ServerCapabilities::builder()
+                .enable_tools()
+                .build(),
+        )
+        .with_server_info(Implementation::new(
+            "aden-mcp",
+            env!("CARGO_PKG_VERSION"),
+        ))
+    }
 
-    writeln!(stderr, "aden-mcp: serving {}", project_dir.display())?;
-
-    for line in stdin.lock().lines() {
-        let line = match line { Ok(l) => l, Err(_) => break };
-        if line.trim().is_empty() { continue; }
-
-        let req: JsonRpcRequest = match serde_json::from_str(&line) {
-            Ok(r) => r,
-            Err(e) => {
-                let _ = send(&mut stdout, &JsonRpcResponse::error(None, -32700, &format!("parse error: {}", e)));
-                continue;
+    fn get_tool(&self, name: &str) -> Option<Tool> {
+        TOOLS.iter().find(|t| t.name == name).map(|t| {
+            let mut props = serde_json::Map::new();
+            for &(arg_name, ty) in t.args {
+                let mut p = serde_json::Map::new();
+                p.insert("type".to_string(), serde_json::json!(ty));
+                props.insert(arg_name.to_string(), serde_json::Value::Object(p));
             }
-        };
-
-        let resp = dispatch(&req, &project_arc);
-        if send(&mut stdout, &resp).is_err() { break; }
-    }
-    Ok(())
-}
-
-fn send(stdout: &mut io::Stdout, resp: &JsonRpcResponse) -> io::Result<()> {
-    writeln!(stdout, "{}", serde_json::to_string(resp).map_err(io::Error::other)?)?;
-    stdout.flush()
-}
-
-fn dispatch(req: &JsonRpcRequest, project_dir: &std::sync::Arc<std::path::PathBuf>) -> JsonRpcResponse {
-    match req.method.as_str() {
-        "initialize" => handle_initialize(req),
-        "tools/list" => handle_tools_list(req),
-        "tools/call" => handle_tools_call(req, project_dir),
-        _ => JsonRpcResponse::error(req.id.clone(), -32601, &format!("method not found: {}", req.method)),
-    }
-}
-
-fn handle_initialize(req: &JsonRpcRequest) -> JsonRpcResponse {
-    JsonRpcResponse::success(req.id.clone(), serde_json::json!({
-        "protocolVersion": "2024-11-05",
-        "capabilities": { "tools": {} },
-        "serverInfo": { "name": "aden-mcp", "version": env!("CARGO_PKG_VERSION") }
-    }))
-}
-
-/// Build MCP tool schemas from the declarative TOOLS table.
-fn handle_tools_list(req: &JsonRpcRequest) -> JsonRpcResponse {
-    let tools: Vec<serde_json::Value> = TOOLS.iter().map(|t| {
-        let mut props = serde_json::Map::new();
-        for &(name, ty) in t.args {
-            let mut p = serde_json::Map::new();
-            p.insert("type".to_string(), serde_json::json!(ty));
-            props.insert(name.to_string(), serde_json::Value::Object(p));
-        }
-        serde_json::json!({
-            "name": t.name,
-            "description": t.description,
-            "inputSchema": { "type": "object", "properties": props }
+            let mut schema = JsonObject::new();
+            schema.insert("type".to_string(), serde_json::json!("object"));
+            schema.insert("properties".to_string(), serde_json::Value::Object(props));
+            Tool::new(t.name, t.description, Arc::new(schema))
         })
-    }).collect();
-    JsonRpcResponse::success(req.id.clone(), serde_json::json!({ "tools": tools }))
-}
+    }
 
-/// Generic dispatch: JSON args → CLI flags → `aden <tool> <...>` → return stdout.
-fn handle_tools_call(req: &JsonRpcRequest, project_dir: &std::sync::Arc<std::path::PathBuf>) -> JsonRpcResponse {
-    let params = match &req.params {
-        Some(p) => p.clone(),
-        None => return JsonRpcResponse::error(req.id.clone(), -32602, "missing params"),
-    };
+    async fn list_tools(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListToolsResult, McpError> {
+        let tools: Vec<Tool> = TOOLS
+            .iter()
+            .map(|t| {
+                let mut props = serde_json::Map::new();
+                for &(arg_name, ty) in t.args {
+                    let mut p = serde_json::Map::new();
+                    p.insert("type".to_string(), serde_json::json!(ty));
+                    props.insert(arg_name.to_string(), serde_json::Value::Object(p));
+                }
+                let mut schema = JsonObject::new();
+                schema.insert("type".to_string(), serde_json::json!("object"));
+                schema.insert("properties".to_string(), serde_json::Value::Object(props));
+                Tool::new(t.name, t.description, Arc::new(schema))
+            })
+            .collect();
+        Ok(ListToolsResult::with_all_items(tools))
+    }
 
-    let tool_name = match params.get("name").and_then(|n| n.as_str()) {
-        Some(n) => n,
-        None => return JsonRpcResponse::error(req.id.clone(), -32602, "missing tool name"),
-    };
+    async fn call_tool(
+        &self,
+        request: CallToolRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let tool_name = request.name.as_ref();
+        let args = request.arguments.unwrap_or_default();
 
-    let args = params.get("arguments")
-        .cloned()
-        .unwrap_or(serde_json::Value::Object(Default::default()));
+        // Validate tool exists
+        let spec = TOOLS
+            .iter()
+            .find(|t| t.name == tool_name)
+            .ok_or_else(|| {
+                McpError::invalid_params(format!("unknown tool: {}", tool_name), None)
+            })?;
 
-    // Find the tool spec to know argument types
-    let spec = match TOOLS.iter().find(|t| t.name == tool_name) {
-        Some(s) => s,
-        None => return JsonRpcResponse::error(req.id.clone(), -32602, &format!("unknown tool: {}", tool_name)),
-    };
+        // Build CLI args: `aden <name> [positional] [--flag|--key value] ...`
+        let mut cmd_args: Vec<String> = vec![tool_name.to_string()];
 
-    // Build CLI args: `aden <name> [positional] [--flag|--key value] ...`
-    let mut cmd_args: Vec<String> = vec![tool_name.to_string()];
-
-    for &(arg_name, arg_type) in spec.args {
-        let val = match args.get(arg_name) {
-            Some(v) => v,
-            None => continue,
-        };
-        match arg_type {
-            "boolean" => {
-                if val.as_bool().unwrap_or(false) {
+        for &(arg_name, arg_type) in spec.args {
+            let val = match args.get(arg_name) {
+                Some(v) => v,
+                None => continue,
+            };
+            match arg_type {
+                "boolean" if val.as_bool().unwrap_or(false) => {
                     cmd_args.push(format!("--{}", arg_name));
                 }
-            }
-            "string" | "integer" => {
-                let s = match arg_type {
-                    "integer" => val.as_u64().map(|n| n.to_string()).or_else(|| val.as_i64().map(|n| n.to_string())),
-                    _ => val.as_str().map(|s| s.to_string()),
-                };
-                if let Some(s) = s {
-                    if arg_name == "path" && tool_name != "new" && tool_name != "kickoff" {
-                        // "path" for most tools is positional → no --path prefix
-                        cmd_args.push(s);
-                    } else {
-                        cmd_args.push(format!("--{}", arg_name));
-                        cmd_args.push(s);
+                "string" | "integer" => {
+                    let s = match arg_type {
+                        "integer" => val
+                            .as_u64()
+                            .map(|n| n.to_string())
+                            .or_else(|| val.as_i64().map(|n| n.to_string())),
+                        _ => val.as_str().map(|s| s.to_string()),
+                    };
+                    if let Some(s) = s {
+                        if arg_name == "path" && tool_name != "new" && tool_name != "kickoff" {
+                            // "path" for most tools is positional → no --path prefix
+                            cmd_args.push(s);
+                        } else {
+                            cmd_args.push(format!("--{}", arg_name));
+                            cmd_args.push(s);
+                        }
                     }
                 }
+                _ => {}
             }
-            _ => {}
         }
-    }
 
-    // Run
-    let output = run_aden_command(project_dir, &cmd_args.iter().map(|s| s.as_str()).collect::<Vec<_>>());
-    match output {
-        Ok(clean) => JsonRpcResponse::success(req.id.clone(), serde_json::json!({ "output": clean })),
-        Err(e) => JsonRpcResponse::error(req.id.clone(), -32603, &e),
+        // Run
+        let output = run_aden_command(
+            &self.project_dir,
+            &cmd_args.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+        )
+        .await;
+
+        match output {
+            Ok(clean) => Ok(CallToolResult::success(vec![Content::text(clean)])),
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(e)])),
+        }
     }
 }
 
 // ── CLI bridge ──────────────────────────────────────────────
 
-fn run_aden_command(project_dir: &Path, args: &[&str]) -> Result<String, String> {
-    let output = Command::new("aden").args(args).current_dir(project_dir).output()
+async fn run_aden_command(project_dir: &Path, args: &[&str]) -> Result<String, String> {
+    let output = tokio::process::Command::new("aden")
+        .args(args)
+        .current_dir(project_dir)
+        .output()
+        .await
         .map_err(|e| format!("failed to run aden: {}", e))?;
 
     if output.status.success() {
         let raw = String::from_utf8_lossy(&output.stdout).into_owned();
-        Ok(raw.lines()
+        Ok(raw
+            .lines()
             .filter(|l| !l.trim_start().starts_with("INFO:"))
             .filter(|l| !l.trim_start().starts_with("Generated"))
             .filter(|l| !l.trim_start().starts_with("Emitted"))
-            .collect::<Vec<_>>().join("\n"))
+            .collect::<Vec<_>>()
+            .join("\n"))
     } else {
         let mut err = String::from_utf8_lossy(&output.stderr).into_owned();
         let out = String::from_utf8_lossy(&output.stdout);
-        if !out.trim().is_empty() { err.push_str(&format!("\n(stdout): {}", out)); }
+        if !out.trim().is_empty() {
+            err.push_str(&format!("\n(stdout): {}", out));
+        }
         Err(err)
     }
 }
+
+// ── Public serve ────────────────────────────────────────────
+
+pub async fn serve(project_dir: PathBuf) -> anyhow::Result<()> {
+    let server = AdenMcpServer::new(project_dir);
+    let service = server.serve(stdio()).await?;
+    service.waiting().await?;
+    Ok(())
+}
+
+// ── Tests ───────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn test_json_rpc_parse() {
-        let line = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#;
-        let req: JsonRpcRequest = serde_json::from_str(line).unwrap();
-        assert_eq!(req.method, "initialize");
+    fn test_tools_table_is_non_empty() {
+        assert!(!TOOLS.is_empty(), "TOOLS table should not be empty");
     }
 
     #[test]
-    fn test_tools_list_generates_schema() {
-        let req = JsonRpcRequest { jsonrpc: "2.0".to_string(), id: None, method: "tools/list".to_string(), params: None };
-        let resp = handle_tools_list(&req);
-        assert!(resp.error.is_none());
-        let result = resp.result.unwrap();
-        let tools = result.get("tools").unwrap().as_array().unwrap();
-        assert!(!tools.is_empty(), "tools/list should return non-empty list");
+    fn test_get_tool_finds_all_known_tools() {
+        let server = AdenMcpServer::new(PathBuf::from("."));
+        for spec in TOOLS.iter() {
+            let tool = server.get_tool(spec.name);
+            assert!(
+                tool.is_some(),
+                "get_tool should return Some for known tool: {}",
+                spec.name
+            );
+            let tool = tool.unwrap();
+            assert_eq!(tool.name.as_ref(), spec.name);
+            assert_eq!(
+                tool.description.as_ref().map(|c| c.as_ref()),
+                Some(spec.description)
+            );
+        }
+    }
+
+    #[test]
+    fn test_get_tool_returns_none_for_unknown() {
+        let server = AdenMcpServer::new(PathBuf::from("."));
+        assert!(server.get_tool("nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_tool_schema_has_properties() {
+        let server = AdenMcpServer::new(PathBuf::from("."));
+        let tool = server.get_tool("gen").unwrap();
+        let schema = tool.input_schema.as_ref();
+        assert!(schema.contains_key("type"));
+        assert!(schema.contains_key("properties"));
+        let props = schema.get("properties").unwrap().as_object().unwrap();
+        assert!(props.contains_key("path"));
+        assert!(props.contains_key("auto"));
     }
 }
