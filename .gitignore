@@ -8,7 +8,8 @@
 crates/**/*.adoc
 benches/**/*.adoc
 src/**/*.adoc
-Cargo.lock
+# Cargo.lock is committed at workspace root for CI reproducibility
+# Per-crate locks are ignored (none used)
 *.bak
 *.swp
 *.swo
