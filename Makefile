@@ -1,5 +1,4 @@
-INSTALL_DIR := $(HOME)/.local/bin
-BINARY      := aden
+INSTALL_SCRIPT := ./install.sh
 
 .PHONY: build test install dev release ci
 
@@ -7,15 +6,13 @@ BINARY      := aden
 dev:
 	cargo build -p aden-cli
 	@cargo test --workspace --quiet 2>&1 | tail -5
-	cp target/debug/$(BINARY) $(INSTALL_DIR)/$(BINARY)
-	@echo "Installed $(INSTALL_DIR)/$(BINARY) (debug)"
+	$(INSTALL_SCRIPT)
+	@echo "Installed (debug)"
 
 # Release build + install. Use before sharing or benchmarking.
 release:
-	cargo build -p aden-cli --release
-	@cargo test --workspace --quiet 2>&1 | tail -5
-	cp target/release/$(BINARY) $(INSTALL_DIR)/$(BINARY)
-	@echo "Installed $(INSTALL_DIR)/$(BINARY) (release)"
+	INSTALL_WAS_DONE=1 $(INSTALL_SCRIPT)
+	@echo "Installed (release)"
 
 # Run tests only (no install).
 test:

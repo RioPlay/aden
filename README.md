@@ -30,8 +30,8 @@ Source Code → Aden Pipeline → Knowledge Graph → Context for AI
 ## Quick Start
 
 ```bash
-# Install
-cargo install --path crates/aden-cli
+# Install (builds release, copies to ~/.local/bin, adds to PATH)
+./install.sh
 
 # Initialize your project
 cd your-project

@@ -27,7 +27,7 @@ Because everything is plain text, you can diff contracts in Git, review them in 
 [source,bash]
 ----
 # From the repository root
-cargo install --path crates/aden-cli
+../install.sh
 
 # Verify
 aden
