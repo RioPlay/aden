@@ -166,15 +166,48 @@ fn parse_adoc(path: &Path, text: &str) -> Option<(String, PathBuf, HashMap<Strin
         }
     }
 
+    let mut in_listing = false;
+    // Tracks whether the current table is a callee/implementation-metadata table.
+    // Callee tables (|Callee|Line, |Property|Value for signatures) contain
+    // function call sites and parameter types — useful for display but not for
+    // semantic search. Indexing them causes false positive matches (e.g. the
+    // word "output" as a callee name matching queries about output).
+    let mut in_metadata_table = false;
+
     for line in text.lines() {
         let trimmed = line.trim();
+
+        // Track listing block delimiters (----). Content inside is code, not prose.
+        // We skip indexing it to avoid polluting the search index with implementation
+        // details like `edge::calls[output]` that would cause false positives.
+        if trimmed == "----" {
+            in_listing = !in_listing;
+            continue;
+        }
+        if in_listing {
+            continue;
+        }
+
+        // Skip edge::calls[] lines even outside listing blocks (belt-and-suspenders).
+        if trimmed.starts_with("edge::") {
+            continue;
+        }
 
         // Anchor: [[...]]
         if trimmed.starts_with("[[") && trimmed.ends_with("]]") {
             let a = trimmed[2..trimmed.len() - 2].trim().to_string();
             if !a.is_empty() {
                 anchor = Some(a.clone());
-                for token in tokenize(&a) {
+                // For symbol anchors (aden://module/...#symbol), only tokenize the
+                // fragment after '#'. The full URI path would otherwise inject
+                // path-component tokens like "get", "cache", "core" into the index,
+                // causing false positive scores on unrelated queries.
+                let index_str = if a.contains('#') {
+                    a.rsplit('#').next().unwrap_or(&a).to_string()
+                } else {
+                    a.clone()
+                };
+                for token in tokenize(&index_str) {
                     *counts.entry(token).or_insert(0) += 1;
                 }
             }
@@ -199,12 +232,29 @@ fn parse_adoc(path: &Path, text: &str) -> Option<(String, PathBuf, HashMap<Strin
 
         // Table boundaries
         if trimmed == "|===" {
+            if in_table {
+                // Leaving a table — reset metadata flag.
+                in_metadata_table = false;
+            }
             in_table = !in_table;
             continue;
         }
 
         // Table cell text
         if in_table && trimmed.starts_with('|') {
+            // Detect callee table header: |Callee|Line
+            // This table lists call sites (function names + line numbers) which are
+            // implementation detail. Indexing them causes false positives — e.g.
+            // a callee named "output" boosting `get_current_git_ref` for queries
+            // about output. The Signature table (|Property|Value) is kept because
+            // it contains meaningful tokens (param names, return types).
+            if trimmed.starts_with("|Callee") {
+                in_metadata_table = true;
+            }
+            // Skip indexing cells from metadata tables.
+            if in_metadata_table {
+                continue;
+            }
             let cell_text = trimmed[1..].trim();
             for token in tokenize(cell_text) {
                 *counts.entry(token).or_insert(0) += 1;
@@ -453,15 +503,24 @@ impl Index {
             // For symbol anchors only boost on the fragment (#name) part so
             // "aden://module/foo/bar.rs#assemble" boosts when query contains "assemble".
             // For non-symbol anchors boost on the full anchor slug.
+            // Only non-stop-word query tokens may trigger the anchor-match boost.
+            // Without this guard, a query like "How does output get written?" boosts
+            // `get_current_git_ref` 30x because the fragment contains "get".
+            let significant_query_tokens: Vec<&str> = query_lower
+                .split_whitespace()
+                .filter(|t| !is_stop_word(t))
+                .collect();
+
             let anchor_match = if is_symbol {
-                // Match on the symbol name fragment only
+                // Match on the symbol name fragment only, with significant tokens only.
                 if let Some(fragment) = anchor.rsplit('#').next() {
-                    query_lower.split_whitespace().any(|t| fragment.to_lowercase().contains(t))
+                    let frag_lower = fragment.to_lowercase();
+                    significant_query_tokens.iter().any(|t| frag_lower.contains(*t))
                 } else {
                     false
                 }
             } else {
-                query_lower.split_whitespace().any(|t| anchor_lower.contains(t))
+                significant_query_tokens.iter().any(|t| anchor_lower.contains(*t))
             };
 
             if anchor_match {

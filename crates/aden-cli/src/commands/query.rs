@@ -128,14 +128,37 @@ fn resolve_anchor_fuzzy(query: &str, results: &[SearchResult]) -> String {
 
     // Step 3: score-driven selection with structural tiebreaker.
     // Within a 5-point noise band of the top score, prefer Symbol over Module.
+    // Exception: do NOT select a symbol anchor whose bare name is a stop word
+    // (e.g. the query "How does error handling work?" must not route to `#Error`
+    // just because BM25 ranked it highest — "error" is a stop word and the user
+    // was asking a general question, not asking about a specific Error type).
     let top_score = results[0].score;
     let noise_band = 5.0_f64;
 
+    // Helper: true if anchor is a symbol whose bare name is a stop word.
+    let is_stopword_symbol = |anchor: &str| -> bool {
+        if let Some(sym) = anchor.rsplit('#').next() {
+            if anchor.contains('#') {
+                return SYMBOL_STOP_WORDS.contains(&sym.to_lowercase().as_str());
+            }
+        }
+        false
+    };
+
+    // First pass: pick best within noise band, excluding stop-word symbols.
     let best = results
         .iter()
         .filter(|r| (top_score - r.score) <= noise_band)
-        .max_by_key(|r| AnchorPattern::from_anchor(&r.anchor).tiebreak())
-        .unwrap_or(&results[0]);
+        .filter(|r| !is_stopword_symbol(&r.anchor))
+        .max_by_key(|r| AnchorPattern::from_anchor(&r.anchor).tiebreak());
+
+    // Fallback: if every candidate was a stop-word symbol, relax and take top score.
+    let best = best.unwrap_or_else(|| {
+        results
+            .iter()
+            .max_by_key(|r| AnchorPattern::from_anchor(&r.anchor).tiebreak())
+            .unwrap_or(&results[0])
+    });
 
     best.anchor.clone()
 }

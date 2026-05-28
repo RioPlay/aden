@@ -78,18 +78,6 @@ These crates build as separate binaries/bindings and are **intentionally not int
 - Move to external repo (e.g., `aden-lsp`) for cleaner separation?
 - Deprecate in favor of MCP-based IDE integration?
 
-=== aden-py
-*Path:* `crates/aden-py/` +
-*Size:* ~10KB +
-*Status:* STANDALONE +
-*Purpose:* Python bindings via PyO3 +
-*Distribution:* Python package (`pip install aden`) +
-*Build:* Excluded from workspace (requires Python dev headers) +
-*Decision needed:*
-- Keep in workspace?
-- Move to external repo for independent release cycle?
-- Enhance with more Python API surface?
-
 == Core Crates (Fully Integrated)
 
 These crates are **actively used** and form the core aden functionality:

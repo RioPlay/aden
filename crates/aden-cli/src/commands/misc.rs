@@ -1275,7 +1275,7 @@ pub fn cmd_licenses(
                 .trim_start_matches("name = ")
                 .trim_matches('"')
                 .to_string();
-            if !name.starts_with("aden") && name != "aden_py" {
+            if !name.starts_with("aden") {
                 is_aden_crate = false;
             }
             current_name = Some(name);

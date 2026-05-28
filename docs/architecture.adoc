@@ -223,7 +223,6 @@ flowchart TB
     subgraph integration[Integration]
         MCP[aden-mcp<br/>MCP]
         LSP[aden-lsp<br/>LSP]
-        PY[aden-py<br/>Python]
     end
 
     CLI[aden-cli<br/>CLI] --> core

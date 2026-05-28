@@ -94,7 +94,6 @@ Staging:: Write-only audit trail in `.aden/staging/` for agent proposals before 
 |aden-telemetry |OTLP ingestion, proposal engine, cost-report |Phase 5
 |aden-simulate |Simulation, history diff, fuzz-contract, threat-model |Phase 5
 |aden-api |REST/gRPC programmatic access |Phase 6
-|aden-py |PyO3 Python bindings |Phase 5
 |Aden PowerShell module |`Invoke-AdenAssemble`, `Test-AdenIntegrity` |Phase 5
 |===
 
