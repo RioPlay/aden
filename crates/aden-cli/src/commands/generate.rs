@@ -364,7 +364,12 @@ pub fn cmd_gen(
                 }
                 
                 std::fs::write(&file_path, aden_emit::emit_document(&doc_clone))?;
-                generated.push(file_name.clone());
+                // Store path relative to effective_out so prune can match sub-dirs
+                let rel_path = file_path.strip_prefix(&effective_out)
+                    .unwrap_or(Path::new(&file_name))
+                    .to_string_lossy()
+                    .to_string();
+                generated.push(rel_path);
                 progress!(quiet, "Emitted {}", file_path.display());
 
                 // Update cache
@@ -384,40 +389,39 @@ pub fn cmd_gen(
 
         save_gen_cache(&cache_path, &cache)?;
 
-        // ── PRUNE: remove contracts that no longer have a source file ────────
-        let expected_contracts: std::collections::HashSet<PathBuf> = sources
-            .iter()
-            .filter_map(|src| {
-                src.strip_prefix(&root)
-                    .ok()
-                    .map(|rel| effective_out.join(rel.with_extension("adoc")))
-            })
-            .collect();
-
-        let mut pruned = 0usize;
-        if effective_out.is_dir() {
+        // Prune stale contracts: any .adoc file under effective_out that was NOT
+        // emitted this run (and is not a module root or index) no longer has a
+        // source file so it is a ghost contract.
+        let emitted_set: std::collections::HashSet<_> = generated.iter().cloned().collect();
+        if auto && !sources.is_empty() && effective_out.is_dir() {
+            let mut pruned = 0usize;
             for entry in walkdir::WalkDir::new(effective_out)
                 .into_iter()
                 .filter_map(|e| e.ok())
-                .filter(|e| e.file_type().is_file())
-                .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("adoc"))
             {
                 let p = entry.path();
-                // Skip module contracts and INDEX (not derived from source files)
-                let name = p.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-                if name == "INDEX" || name.starts_with("mod-") {
+                if !p.is_file() || p.extension().and_then(|s| s.to_str()) != Some("adoc") {
                     continue;
                 }
-                if !expected_contracts.contains(p) {
+                let rel = p.strip_prefix(&effective_out).unwrap_or(p);
+                let name = p.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+
+                // Never prune module root contracts or the INDEX
+                if name.starts_with("mod-") || name == "INDEX" || name == "README" {
+                    continue;
+                }
+
+                // If not emitted this run, source is gone → remove contract
+                if !emitted_set.contains(&rel.to_string_lossy().to_string()) {
                     let _ = std::fs::remove_file(p);
                     cache.entries.remove(p.to_string_lossy().as_ref());
                     pruned += 1;
                 }
             }
-        }
-        if pruned > 0 {
-            save_gen_cache(&cache_path, &cache)?;
-            progress!(quiet, "Pruned {} stale contract(s).", pruned);
+            if pruned > 0 {
+                save_gen_cache(&cache_path, &cache)?;
+                progress!(quiet, "Pruned {} stale contract(s).", pruned);
+            }
         }
 
         // Generate index
