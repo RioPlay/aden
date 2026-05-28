@@ -503,10 +503,12 @@ pub struct Edge {
 /// Strict enumeration of edge types.
 /// Code edges: structural relationships in source code.
 /// Semantic edges: conceptual relationships (brain-like networks).
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum EdgeType {
     // === Code Edges (structural) ===
     Uses,
+    /// Inverse of Uses: target is pointed to by source.
+    UsedBy,
     Implements,
     Tests,
     Documents,
@@ -588,6 +590,7 @@ impl EdgeType {
             EdgeType::AntonymOf => 0.4,
             // Code edges get medium weight in semantic context
             EdgeType::Uses => 0.8,
+            EdgeType::UsedBy => 0.8,
             EdgeType::Calls => 0.8,
             EdgeType::Implements => 0.8,
             EdgeType::Tests => 0.6,

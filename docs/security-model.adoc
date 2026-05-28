@@ -1,10 +1,51 @@
 :proj: aden
-:author: Security Team
+:author: RioPlay
 
 [[security-model]]
 = Security & Permissions Model
 
-This document describes the authorization model for the aden system.
+Aden embeds security as a first-class concern because it is designed for automated agents that read files and execute commands.
+
+== Threat Model
+
+Aden assumes the following threats:
+
+|===
+|Threat |Mitigation |Status
+
+|Path traversal via `include::[]` |Canonicalize paths, reject anything outside project root |Implemented
+|Binary planting via PowerShell discovery |Avoid cwd resolution |Implemented
+|Hardcoded secrets in source |Secret scan in `ci-check` |Implemented
+|Unsafe Rust code |Zero `unsafe` blocks in application code |Enforced
+|Stale context leading to wrong decisions |`heal` detects drift, `check` validates integrity |Implemented
+|Excessive token budget leaking context |Token budgeting with 4/3 heuristic, hard cap |Implemented
+|Malicious contract injection |Contracts are build artifacts, gitignored |Enforced
+|===
+
+== Include Directive Security
+
+Include directives (`include::path[]`) are bounded to the project root:
+
+1. The path is canonicalized (no `..` traversal)
+2. The resolved path must be under the project root
+3. If the path resolves outside, the include is rejected with an error
+
+This prevents an agent from accidentally (or maliciously) inlining `/etc/passwd` or other sensitive files.
+
+== Secret Scanning
+
+`aden ci-check` includes a secret scan that checks for:
+
+- Hardcoded passwords (regex patterns for `password`, `passwd`, `pwd`)
+- API keys (AWS, GCP, Azure patterns)
+- Private keys (PEM, SSH key patterns)
+- Content hashes in `.aden/cache/` are excluded (false positive suppression)
+
+Secrets are flagged as `Forbid` severity — CI fails on any detection.
+
+== Permissions Model
+
+Aden's internal permissions model uses principals, roles, and actions:
 
 [semantics]
 ----
@@ -63,3 +104,32 @@ Has full permissions including user management.
 = Viewer Role
 
 Read-only access to resources.
+
+== Constitutional Directives
+
+The `[constitution]` block declares governance rules with precedence-ranked directives:
+
+|===
+|Directive |Behavior
+
+|`Forbid` |Hard block — CI fails
+|`Warn` |Surfaces in output, CI passes
+|`Suggest` |Non-blocking recommendation
+|`Allow` |Explicitly permits an otherwise forbidden pattern
+|===
+
+Overrides require `:justification:` and `:reviewer:` attributes.
+
+== Safe Execution
+
+Aden takes several steps to ensure safe execution of agent commands:
+
+1. **Id & Filename Sanitization** — Proposal IDs are validated against ASCII-safe whitelists before being used as filenames
+2. **JSON Deserialization** — Bounded and uses `deny_unknown_fields` to prevent injection
+3. **No `unsafe` Code** — The project contains zero `unsafe` blocks in application code
+4. **PowerShell Discovery** — Avoids cwd resolution to prevent binary planting attacks
+
+== Related Documents
+
+. <<philosophy>> --- Security as a first-class concern in design rationale
+. <<troubleshooting>> --- Common security-related issues

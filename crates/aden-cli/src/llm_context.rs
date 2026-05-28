@@ -39,26 +39,3 @@ pub fn format_for_llm(
     
     output
 }
-
-/// Convert AsciiDoc to Markdown for LLM compatibility
-pub fn adoc_to_md(adoc: &str) -> String {
-    let mut md = adoc.to_string();
-    
-    // Convert AsciiDoc headers to Markdown
-    // This is a simple conversion - full implementation would be more robust
-    for i in 1..=6 {
-        let pattern = format!("{} ", "=".repeat(i));
-        let replacement = format!("{} ", "#".repeat(i));
-        md = md.replace(&pattern, &replacement);
-    }
-    
-    // Convert AsciiDoc links to Markdown
-    // <<anchor,text>> -> [text](#anchor)
-    // This is simplified - real implementation needs proper parsing
-    
-    // Convert AsciiDoc code blocks
-    md = md.replace("----", "```");
-    md = md.replace("====", "```");
-    
-    md
-}

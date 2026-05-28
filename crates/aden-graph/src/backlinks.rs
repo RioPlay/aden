@@ -15,12 +15,13 @@
 // GNU Affero General Public License for more details.
 //
 use crate::graph::AdenGraph;
+use crate::nodes::{DocumentNode, AdenEdge, GraphNode};
 use aden_core::{Block, Table};
 use petgraph::Direction;
 
 /// For every node in the graph, append (or update) a `== Referenced By` table
 /// listing all incoming edges.
-pub fn inject_backlinks(graph: &mut AdenGraph) {
+pub fn inject_backlinks(graph: &mut AdenGraph<DocumentNode, AdenEdge>) {
     let mut backlink_tables: Vec<(petgraph::graph::NodeIndex, Vec<Vec<String>>)> = Vec::new();
 
     for node in graph.graph.node_indices() {
@@ -29,9 +30,9 @@ pub fn inject_backlinks(graph: &mut AdenGraph) {
             let edge = graph.graph.find_edge(neighbor, node);
             let edge_type = edge
                 .and_then(|e| graph.graph.edge_weight(e))
-                .map(|t| format!("{:?}", t))
+                .map(|t| format!("{:?}", t.edge_type))
                 .unwrap_or_else(|| "Unknown".to_string());
-            rows.push(vec![graph.graph[neighbor].anchor.clone(), edge_type]);
+            rows.push(vec![graph.graph[neighbor].anchor().to_string(), edge_type]);
         }
         if !rows.is_empty() {
             backlink_tables.push((node, rows));

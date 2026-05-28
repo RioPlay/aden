@@ -16,7 +16,7 @@
 //
 //! Disk cache for the Aden knowledge graph.
 //!
-//! Indexed JSON cache with git integration for time-travel queries.
+//! Uses Sled + Postcard for fast binary storage with git ref tracking.
 //! Stores graph keyed by content hash AND git ref, enabling:
 //! - Fast incremental loads via content-key validation
 //! - Time-travel queries via git ref lookup
@@ -24,69 +24,24 @@
 //!
 //! Cache structure:
 //!   .aden/cache/
-//!   ├── graph-cache.json    # HEAD cache (indexed by content hash)
-//!   ├── graph-index.json   # Metadata: version, refs, anchors
+//!   ├── sled/              # Sled database (Postcard)
 //!   └── refs/              # Git-ref snapshots for time-travel
 
-use crate::graph::{AdenGraph, DocumentNode};
-use crate::parser::parse_file;
+use crate::bridge::GraphBridge;
+use crate::graph::AdenGraph;
+use crate::nodes::{DocumentNode, AdenEdge, GraphNode};
 use aden_core::{Document, EdgeType};
+use aden_store::SledStorage;
 use blake3::Hasher;
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 const CACHE_DIR: &str = ".aden/cache";
-const CACHE_FILE: &str = "graph-cache.json";
-const INDEX_FILE: &str = "graph-index.json";
 const REFS_DIR: &str = "refs";
-
-/// Edge representation for the indexed graph.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct CachedEdge {
-    source: String,
-    target: String,
-    edge_type: EdgeType,
-}
-
-/// Indexed graph snapshot with anchors for fast lookup.
-#[derive(Debug, Serialize, Deserialize)]
-struct IndexedGraph {
-    /// Metadata about this cache snapshot
-    meta: CacheMetadata,
-    /// Anchor-indexed nodes for fast lookup
-    anchors: HashMap<String, AnchorEntry>,
-    /// All edges in the graph
-    edges: Vec<CachedEdge>,
-}
-
-/// Metadata about the cached graph version
-#[derive(Debug, Serialize, Deserialize)]
-struct CacheMetadata {
-    /// Cache format version
-    version: String,
-    /// Git ref (commit, branch, tag) this cache represents
-    git_ref: Option<String>,
-    /// Content hash of source files
-    content_hash: String,
-    /// Timestamp of last update
-    last_updated: String,
-    /// Total anchor count
-    anchor_count: usize,
-}
-
-/// Individual anchor entry for indexed lookup
-#[derive(Debug, Serialize, Deserialize)]
-struct AnchorEntry {
-    anchor: String,
-    doc: Document,
-    source_path: PathBuf,
-}
+const SLED_DB: &str = "sled";
 
 /// Get current git ref (commit hash, branch, or tag) for the repository.
 fn get_current_git_ref(dir: &Path) -> Option<String> {
-    // Try to get current commit hash
     let output = std::process::Command::new("git")
         .args(["rev-parse", "HEAD"])
         .current_dir(dir)
@@ -105,7 +60,7 @@ fn get_current_git_ref(dir: &Path) -> Option<String> {
     }
 }
 
-/// Build a stable content hash for the set of `.adoc`/`.aden` files in `dir`.
+/// Build a stable content hash for the set of knowledge files in `dir`.
 fn compute_content_hash(dir: &Path) -> Result<String, std::io::Error> {
     let mut hasher = Hasher::new();
     let mut paths: Vec<PathBuf> = Vec::new();
@@ -113,16 +68,15 @@ fn compute_content_hash(dir: &Path) -> Result<String, std::io::Error> {
         let entry = entry?;
         let path = entry.path();
         if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-            if (ext == "adoc" || ext == "aden") && path.is_file() {
+            if (ext == "adoc" || ext == "aden" || ext == "md" || ext == "txt") && path.is_file() {
                 paths.push(path);
             } else if path.is_dir() {
-                // recurse — cheap since aden graphs are shallow
-                if let Ok(sub) = walk_adoc_files(&path) {
+                if let Ok(sub) = walk_knowledge_files(&path) {
                     paths.extend(sub);
                 }
             }
         } else if path.is_dir()
-            && let Ok(sub) = walk_adoc_files(&path)
+            && let Ok(sub) = walk_knowledge_files(&path)
         {
             paths.extend(sub);
         }
@@ -145,15 +99,15 @@ fn compute_content_hash(dir: &Path) -> Result<String, std::io::Error> {
     Ok(hasher.finalize().to_hex().to_string())
 }
 
-fn walk_adoc_files(dir: &Path) -> Result<Vec<PathBuf>, std::io::Error> {
+fn walk_knowledge_files(dir: &Path) -> Result<Vec<PathBuf>, std::io::Error> {
     let mut paths = Vec::new();
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
         if path.is_dir() {
-            paths.extend(walk_adoc_files(&path)?);
+            paths.extend(walk_knowledge_files(&path)?);
         } else if let Some(ext) = path.extension().and_then(|e| e.to_str())
-            && (ext == "adoc" || ext == "aden")
+            && (ext == "adoc" || ext == "aden" || ext == "md" || ext == "txt")
         {
             paths.push(path);
         }
@@ -169,79 +123,59 @@ fn refs_dir_for(path: &Path) -> PathBuf {
     cache_dir_for(path).join(REFS_DIR)
 }
 
-/// Load graph by specific git ref for time-travel queries.
-/// Returns None if no cache exists for that ref.
-pub fn try_load_at_ref(path: &Path, git_ref: &str) -> Option<AdenGraph> {
-    let refs_dir = refs_dir_for(path);
-    let ref_cache = refs_dir.join(format!("{}.json", git_ref));
-
-    if !ref_cache.exists() {
-        return None;
-    }
-
-    let indexed: IndexedGraph =
-        serde_json::from_str(&std::fs::read_to_string(&ref_cache).ok()?).ok()?;
-    Some(build_graph_from_indexed(indexed))
+fn sled_db_path(path: &Path) -> PathBuf {
+    cache_dir_for(path).join(SLED_DB)
 }
 
-/// Try loading a cached graph; returns `None` if missing or stale.
-pub fn try_load(path: &Path) -> Option<AdenGraph> {
-    let cache_dir = cache_dir_for(path);
-    let current_hash = compute_content_hash(path).ok()?;
-    let index_path = cache_dir.join(INDEX_FILE);
-    let graph_path = cache_dir.join(CACHE_FILE);
-
-    if !graph_path.exists() || !index_path.exists() {
+/// Try loading a cached graph from Sled.
+pub fn try_load(path: &Path) -> Option<AdenGraph<DocumentNode, AdenEdge>> {
+    let sled_path = sled_db_path(path);
+    if !sled_path.exists() {
         return None;
     }
 
-    let stored_index: HashMap<String, String> =
-        serde_json::from_str(&std::fs::read_to_string(&index_path).ok()?).ok()?;
+    if let Ok(storage) = SledStorage::new(sled_path.to_str()?) {
+        let current_hash = compute_content_hash(path).ok()?;
+        let stored_hash = GraphBridge::load_meta(&storage, "content_hash").ok()??;
 
-    if stored_index.get("content_hash") != Some(&current_hash) {
-        return None;
+        if stored_hash == current_hash {
+            let (docs, edges) = GraphBridge::load_from_storage(&storage).ok()?;
+            return Some(build_graph_from_docs_and_edges(docs, edges));
+        }
     }
 
-    let indexed: IndexedGraph =
-        serde_json::from_str(&std::fs::read_to_string(&graph_path).ok()?).ok()?;
-    Some(build_graph_from_indexed(indexed))
+    None
 }
 
-/// Save a fully built graph to disk cache with git ref tracking.
-pub fn save(graph: &AdenGraph, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+/// Save a fully built graph to Sled + JSON with git ref tracking.
+pub fn save(
+    graph: &AdenGraph<DocumentNode, AdenEdge>,
+    path: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
     let cache_dir = cache_dir_for(path);
+    let sled_path = sled_db_path(path);
     let refs_dir = refs_dir_for(path);
     std::fs::create_dir_all(&cache_dir)?;
     std::fs::create_dir_all(&refs_dir)?;
 
-    // Build indexed structure for O(1) anchor lookup
-    let mut anchors = HashMap::new();
-    let mut edges = Vec::new();
-    let mut anchor_count = 0;
+    // Extract docs and edges for storage
+    let mut docs = HashMap::new();
+    let mut edge_tuples = Vec::new();
 
     for node_idx in graph.graph.node_indices() {
         let node = &graph.graph[node_idx];
-        anchor_count += 1;
-        anchors.insert(
-            node.anchor.clone(),
-            AnchorEntry {
-                anchor: node.anchor.clone(),
-                doc: node.doc.clone(),
-                source_path: node.source_path.clone(),
-            },
-        );
+        let anchor = node.anchor().to_string();
+        docs.insert(anchor.clone(), node.doc.clone());
     }
 
     for edge_idx in graph.graph.edge_indices() {
         let (src, tgt) = graph.graph.edge_endpoints(edge_idx).expect("valid edge");
         let src_node = &graph.graph[src];
         let tgt_node = &graph.graph[tgt];
-        let edge_type = graph.graph[edge_idx];
-        edges.push(CachedEdge {
-            source: src_node.anchor.clone(),
-            target: tgt_node.anchor.clone(),
-            edge_type,
-        });
+        let edge_type = &graph.graph[edge_idx];
+        let src_anchor = src_node.anchor().to_string();
+        let tgt_anchor = tgt_node.anchor().to_string();
+        edge_tuples.push((src_anchor, tgt_anchor, edge_type.edge_type.clone()));
     }
 
     // Get current git ref
@@ -252,157 +186,66 @@ pub fn save(graph: &AdenGraph, path: &Path) -> Result<(), Box<dyn std::error::Er
         .map(|d| d.as_secs().to_string())
         .unwrap_or_else(|_| "0".to_string());
 
-    // Create indexed graph
-    let meta = CacheMetadata {
-        version: "1.0".to_string(),
-        git_ref: git_ref.clone(),
-        content_hash: content_hash.clone(),
-        last_updated: timestamp.clone(),
-        anchor_count,
-    };
-
-    let indexed = IndexedGraph {
-        meta,
-        anchors,
-        edges,
-    };
-
-    // Save main cache (HEAD)
-    let graph_json = serde_json::to_string_pretty(&indexed)?;
-    let graph_path = cache_dir.join(CACHE_FILE);
-    let mut file = std::fs::File::create(&graph_path)?;
-    file.write_all(graph_json.as_bytes())?;
-
-    // Update index with current hash
-    let mut index: HashMap<String, String> = HashMap::new();
-    index.insert("content_hash".to_string(), content_hash);
-    index.insert("last_updated".to_string(), timestamp);
+    // Save to Sled
+    let storage = SledStorage::new(sled_path.to_str().ok_or("invalid path")?)?;
+    GraphBridge::sync_to_storage(&storage, &docs, &edge_tuples)?;
+    GraphBridge::save_meta(&storage, "content_hash", &content_hash)?;
+    GraphBridge::save_meta(&storage, "last_updated", &timestamp)?;
     if let Some(ref ref_) = git_ref {
-        index.insert("git_ref".to_string(), ref_.clone());
+        GraphBridge::save_meta(&storage, "git_ref", ref_)?;
     }
-    let index_json = serde_json::to_string_pretty(&index)?;
-    let index_path = cache_dir.join(INDEX_FILE);
-    let mut file = std::fs::File::create(&index_path)?;
-    file.write_all(index_json.as_bytes())?;
-
-    // Save to refs directory for time-travel if we have a git ref
-    if let Some(ref ref_) = git_ref {
-        let ref_json = serde_json::to_string_pretty(&indexed)?;
-        let ref_path = refs_dir.join(format!("{}.json", ref_));
-        let mut file = std::fs::File::create(&ref_path)?;
-        file.write_all(ref_json.as_bytes())?;
-    }
+    drop(storage);
 
     Ok(())
 }
 
-fn build_graph_from_indexed(indexed: IndexedGraph) -> AdenGraph {
+fn build_graph_from_docs_and_edges(
+    docs: HashMap<String, Document>,
+    edges: Vec<(String, String, EdgeType)>,
+) -> AdenGraph<DocumentNode, AdenEdge> {
     use petgraph::graph::DiGraph;
     let mut graph = DiGraph::new();
     let mut anchor_to_index: HashMap<String, petgraph::graph::NodeIndex> = HashMap::new();
     let mut path_to_index: HashMap<PathBuf, petgraph::graph::NodeIndex> = HashMap::new();
 
-    // First pass: insert nodes from indexed anchors
-    for (_anchor, entry) in indexed.anchors {
+    // First pass: insert nodes
+    for (anchor, doc) in docs {
+        let source_path = doc
+            .attributes
+            .get("source_file")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(format!("{}.adoc", anchor)));
+
         let node = DocumentNode {
-            anchor: entry.anchor.clone(),
-            doc: entry.doc,
-            parsed: parse_file(&entry.source_path).unwrap_or_else(|_| {
-                crate::parser::ParsedDocument {
-                    source_path: entry.source_path.to_string_lossy().to_string(),
-                    attributes: HashMap::new(),
-                    anchors: vec![entry.anchor.clone()],
-                    refs: Vec::new(),
-                    includes: Vec::new(),
-                    edges: Vec::new(),
-                    conditional_stack: Vec::new(),
-                    raw_content: String::new(),
-                    semantic_diffs: Vec::new(),
-                    semantic_relations: Vec::new(),
-                    blocks: Vec::new(),
-                    tagged_regions: Vec::new(),
-                    conditional_regions: Vec::new(),
-                    metadata: None,
-                }
-            }),
-            source_path: entry.source_path.clone(),
+            doc: doc.clone(),
+            source_path: source_path.clone(),
+            parsed: None,
         };
         let idx = graph.add_node(node);
-        anchor_to_index.insert(entry.anchor.clone(), idx);
-        path_to_index.insert(entry.source_path, idx);
+        anchor_to_index.insert(anchor.clone(), idx);
+        path_to_index.insert(source_path, idx);
     }
 
     // Second pass: insert edges
-    for ce in indexed.edges {
-        if let (Some(&src), Some(&tgt)) = (
-            anchor_to_index.get(&ce.source),
-            anchor_to_index.get(&ce.target),
+    for (src, dst, edge_type) in edges {
+        if let (Some(&src_idx), Some(&dst_idx)) = (
+            anchor_to_index.get(&src),
+            anchor_to_index.get(&dst),
         ) {
-            graph.add_edge(src, tgt, ce.edge_type.clone());
+            graph.add_edge(src_idx, dst_idx, AdenEdge { edge_type });
         }
     }
 
-    let mut result = AdenGraph {
+    AdenGraph {
         graph,
         anchor_to_index,
         path_to_index,
-        filter: aden_core::filter::AdenFilter::from_directory(Path::new(".")),
         backlinks_cache: None,
-    };
-
-    // Reconstruct semantic relations from semantic edges
-    // This is needed because semantic nodes have fake paths (semantic:Noun)
-    // that can't be re-parsed from disk when loading from cache
-    let semantic_edge_types = [
-        aden_core::EdgeType::IsA,
-        aden_core::EdgeType::PartOf,
-        aden_core::EdgeType::RelatesTo,
-        aden_core::EdgeType::SimilarTo,
-        aden_core::EdgeType::Causes,
-        aden_core::EdgeType::Implies,
-        aden_core::EdgeType::SynonymOf,
-        aden_core::EdgeType::AntonymOf,
-        aden_core::EdgeType::AssociatedWith,
-        aden_core::EdgeType::PrerequisiteFor,
-        aden_core::EdgeType::Explains,
-        aden_core::EdgeType::IsEquivalentTo,
-    ];
-
-    for edge_idx in result.graph.edge_indices() {
-        let (src_idx, tgt_idx) = result.graph.edge_endpoints(edge_idx).expect("valid edge");
-        let edge_type = &result.graph[edge_idx];
-        if semantic_edge_types.contains(edge_type) {
-            let src_anchor = result.graph[src_idx].anchor.clone();
-            let tgt_anchor = result.graph[tgt_idx].anchor.clone();
-            let relation = match edge_type {
-                aden_core::EdgeType::IsA => "IsA",
-                aden_core::EdgeType::PartOf => "PartOf",
-                aden_core::EdgeType::RelatesTo => "RelatesTo",
-                aden_core::EdgeType::SimilarTo => "SimilarTo",
-                aden_core::EdgeType::Causes => "Causes",
-                aden_core::EdgeType::Implies => "Implies",
-                aden_core::EdgeType::SynonymOf => "SynonymOf",
-                aden_core::EdgeType::AntonymOf => "AntonymOf",
-                aden_core::EdgeType::AssociatedWith => "AssociatedWith",
-                aden_core::EdgeType::PrerequisiteFor => "PrerequisiteFor",
-                aden_core::EdgeType::Explains => "Explains",
-                aden_core::EdgeType::IsEquivalentTo => "IsEquivalentTo",
-                _ => continue,
-            };
-            let source_node = &mut result.graph[src_idx];
-            source_node.parsed.semantic_relations.push(crate::parser::SemanticRelation {
-                source: src_anchor,
-                relation: relation.to_string(),
-                target: tgt_anchor,
-            });
-        }
     }
-
-    result
 }
 
 /// Build a graph, using the on-disk cache when possible.
-pub fn build_from_directory_cached(dir: &Path) -> Result<AdenGraph, crate::graph::GraphError> {
+pub fn build_from_directory_cached(dir: &Path) -> Result<AdenGraph<DocumentNode, AdenEdge>, crate::graph::GraphError> {
     if let Some(cached) = try_load(dir) {
         return Ok(cached);
     }

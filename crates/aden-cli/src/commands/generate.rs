@@ -75,16 +75,52 @@ fn generate_module_contracts(root: &Path, out_dir: &Path, quiet: bool) -> Result
         }
     }
     
-    // Generate module contracts
+    // ── Generate root mod-project (once, before individual modules) ───────
+    let project_anchor = "mod-project";
+    let project_path = out_dir.join(format!("{}.adoc", project_anchor));
+    if !project_path.exists() {
+        let mut module_lines = Vec::new();
+        for (mod_name, _) in &modules {
+            module_lines.push(format!(
+                "| <<mod-{name}>> | {name}",
+                name = mod_name
+            ));
+        }
+        let modules_table = if module_lines.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "\n|===\n| Module | Description\n\n{}\n|===",
+                module_lines.join("\n")
+            )
+        };
+        let project_content = format!(
+            r#":source_file: .
+:node-type: module
+:last-verified: {date}T00:00:00Z
+
+[[mod-project]]
+= Project Root
+
+Root module for the project. All submodules reference this.
+
+== Modules
+{modules_table}
+"#,
+            date = chrono::Utc::now().format("%Y-%m-%d"),
+            modules_table = modules_table
+        );
+        std::fs::write(&project_path, &project_content)?;
+        progress!(quiet, "Generated: {}", project_path.display());
+    }
+
+    // ── Generate individual module contracts ──────────────────────────────
     for (mod_name, src_path) in modules {
         let module_anchor = format!("mod-{}", mod_name);
         let contract_file = format!("{}.adoc", module_anchor);
-        
         let out_path = out_dir.join(&contract_file);
 
-        // Skip if already exists, valid, and not carrying stale boilerplate.
-        // We re-generate if the file contains the old "Core module for aden X"
-        // description that leaked from an earlier version of the generator.
+        // Skip if already exists and valid (no stale boilerplate).
         if out_path.exists() {
             if let Ok(existing) = std::fs::read_to_string(&out_path) {
                 let has_anchor = existing.contains(&format!("[[{}]]", module_anchor));
@@ -110,30 +146,6 @@ Part of: <<mod-project>>
             anchor = module_anchor,
             name = mod_name
         );
-
-        // Also create the root project module if it doesn't exist
-        let project_anchor = "mod-project";
-        let project_file = format!("{}.adoc", project_anchor);
-        let project_path = out_dir.join(&project_file);
-        if !project_path.exists() {
-            let project_content = format!(
-                r#":source_file: .
-:node-type: module
-:last-verified: {}T00:00:00Z
-
-[[mod-project]]
-= Project Root
-
-Root module for the project. All submodules reference this.
-
-== Modules
-
-"#,
-                chrono::Utc::now().format("%Y-%m-%d")
-            );
-            std::fs::write(&project_path, &project_content)?;
-            progress!(quiet, "Generated: {}", project_path.display());
-        }
 
         if let Some(parent) = out_path.parent() {
             std::fs::create_dir_all(parent)?;

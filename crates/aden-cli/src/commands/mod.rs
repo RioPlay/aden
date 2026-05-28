@@ -1,4 +1,5 @@
 pub mod complete;
+pub mod diagnose;
 pub mod federation;
 pub mod generate;
 pub mod heal;
@@ -10,6 +11,7 @@ pub mod session;
 pub mod test_cmd;
 
 // Re-export all command functions so main.rs can use `commands::cmd_init(...)` etc.
+pub use diagnose::cmd_diagnose;
 pub use federation::cmd_federation;
 pub use generate::cmd_gen;
 #[cfg(feature = "watch")]

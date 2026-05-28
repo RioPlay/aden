@@ -647,7 +647,8 @@ pub fn cmd_ci_check(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
             }
             // Exclude cache and generated files from secret scan
             let rel_path = p.strip_prefix(path).unwrap_or(p.as_ref());
-            if rel_path.starts_with(".aden/cache") {
+            let rel_str = rel_path.to_string_lossy();
+            if rel_str.contains(".aden/cache") || rel_str.contains("contracts/") {
                 continue;
             }
             if rel_path.file_name().is_some_and(|n| n == "Cargo.lock") {

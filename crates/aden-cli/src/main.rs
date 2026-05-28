@@ -496,6 +496,24 @@ enum Commands {
         )]
         intent: String,
     },
+    /// Deterministic diagnostic scanner for knowledge graphs
+    Diagnose {
+        #[arg(
+            long,
+            value_name = "DIR",
+            default_value = ".",
+            value_hint = ValueHint::DirPath,
+            help = "Directory to scan"
+        )]
+        path: PathBuf,
+        #[arg(
+            long,
+            value_name = "FORMAT",
+            default_value = "text",
+            help = "Output format: text, json"
+        )]
+        format: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -875,5 +893,6 @@ commands::cmd_gen(&path, None, false, quiet, false, false, "adoc", true)
         },
         Commands::Emergency { reason, ttl, path } => commands::cmd_emergency(&path, &reason, &ttl),
         Commands::Suggest { intent } => commands::cmd_suggest(&intent),
+        Commands::Diagnose { path, format } => commands::cmd_diagnose(&path, &format),
     }
 }

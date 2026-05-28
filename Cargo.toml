@@ -31,6 +31,8 @@ members = [
     "crates/aden-telemetry",
     "crates/aden-simulate",
     "crates/aden-api",
+    "crates/aden-store",
+    "crates/aden-diagnose",
 ]
 
 resolver = "3"

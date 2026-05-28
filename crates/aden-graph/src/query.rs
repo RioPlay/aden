@@ -9,6 +9,7 @@
 //! Supports: node(), incoming(), outgoing(), where, limit, order_by
 
 use crate::graph::AdenGraph;
+use crate::nodes::{DocumentNode, AdenEdge, GraphNode};
 use petgraph::Direction;
 use serde::{Deserialize, Serialize};
 
@@ -18,9 +19,14 @@ pub struct QueryResult {
     pub total: usize,
 }
 
-#[derive(Debug)]
 pub struct AdqInterpreter<'a> {
-    graph: &'a AdenGraph,
+    graph: &'a AdenGraph<DocumentNode, AdenEdge>,
+}
+
+impl std::fmt::Debug for AdqInterpreter<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AdqInterpreter").field("graph", &"AdenGraph").finish()
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -36,7 +42,7 @@ pub enum QueryError {
 }
 
 impl<'a> AdqInterpreter<'a> {
-    pub fn new(graph: &'a AdenGraph) -> Self {
+    pub fn new(graph: &'a AdenGraph<DocumentNode, AdenEdge>) -> Self {
         Self { graph }
     }
 
@@ -99,7 +105,7 @@ impl<'a> AdqInterpreter<'a> {
             .neighbors_directed(idx, Direction::Incoming)
         {
             if let Some(node) = self.graph.graph.node_weight(neighbor) {
-                nodes.push(node.anchor.clone());
+                nodes.push(node.anchor().to_string());
             }
         }
 
@@ -125,7 +131,7 @@ impl<'a> AdqInterpreter<'a> {
             .neighbors_directed(idx, Direction::Outgoing)
         {
             if let Some(node) = self.graph.graph.node_weight(neighbor) {
-                nodes.push(node.anchor.clone());
+                nodes.push(node.anchor().to_string());
             }
         }
 
@@ -148,13 +154,13 @@ impl<'a> AdqInterpreter<'a> {
                             .split(':')
                             .nth(1)
                             .unwrap_or(arg.split('=').nth(1).unwrap_or(""));
-                        if !node.anchor.contains(term) {
+                        if !node.anchor().contains(term) {
                             matches = false;
                         }
                     }
                 }
                 if matches {
-                    nodes.push(node.anchor.clone());
+                    nodes.push(node.anchor().to_string());
                 }
             }
         }
@@ -167,7 +173,7 @@ impl<'a> AdqInterpreter<'a> {
         let mut nodes = Vec::new();
         for idx in self.graph.graph.node_indices() {
             if let Some(node) = self.graph.graph.node_weight(idx) {
-                nodes.push(node.anchor.clone());
+                nodes.push(node.anchor().to_string());
             }
         }
         let total = nodes.len();
@@ -182,7 +188,7 @@ impl<'a> AdqInterpreter<'a> {
                 self.graph.graph.node_weight(src),
                 self.graph.graph.node_weight(dst),
             ) {
-                nodes.push(format!("{} -> {}", src_node.anchor, dst_node.anchor));
+                nodes.push(format!("{} -> {}", src_node.anchor(), dst_node.anchor()));
             }
         }
         let total = nodes.len();
@@ -190,7 +196,10 @@ impl<'a> AdqInterpreter<'a> {
     }
 }
 
-pub fn execute_adq(graph: &AdenGraph, script: &str) -> Result<QueryResult, QueryError> {
+pub fn execute_adq(
+    graph: &AdenGraph<DocumentNode, AdenEdge>,
+    script: &str,
+) -> Result<QueryResult, QueryError> {
     let interpreter = AdqInterpreter::new(graph);
     interpreter.execute(script)
 }

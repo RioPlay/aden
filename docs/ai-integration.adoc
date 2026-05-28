@@ -233,6 +233,117 @@ Aden is designed with token scarcity in mind. Follow these rules:
 - `aden init` generates `.adenignore` with security defaults. Do not remove entries that skip `*.env`, `secrets/`, or `target/`.
 - Include directives are bounded to the project root. Path traversal outside the repo is rejected at parse time.
 
+== LLM System Prompt
+
+When an aden MCP tool is available, include this in your system context:
+
+[source]
+----
+You have access to Aden, a knowledge graph compiler for codebases.
+
+## Aden Tools Available:
+- `ask(question)`: Ask natural language questions about the codebase
+- `search(query)`: Full-text search with semantic understanding, --semantics flag for graph edges
+- `asm(anchor, depth)`: Assemble context from a starting point
+- `query(anchor, depth)`: Get structured graph neighborhood as JSON
+- `locate(symbol)`: Find symbol definitions and call sites, --context N for surrounding code
+- `list()`: List all available anchors, --semantics for semantic nodes
+- `heal()`: Check documentation health, --fix for auto-fix, --gc for orphan cleanup
+- `status()`: Get health score (100/100 = healthy)
+- `sync()`: Run gen + check + heal in sequence
+- `gen()`: Generate contracts, --auto for whole project, --merge for three-way merge
+- `check()`: Validate all references
+- `lint()`: Lint source files
+- `test()`: Run tests
+- `complete()`: Fill incomplete contracts via LLM
+
+## Best Practices:
+
+1. START WITH `ask()` for exploratory questions
+   - Good: "How does authentication work?"
+   - Good: "What is the main entry point?"
+   - Bad: "Show me everything" (too vague)
+
+2. USE `search()` when you know specific terms
+   - Good: `search("token budget")`
+   - Good: `search("AdenGraph struct")`
+
+3. USE `asm()` or `query()` when you have an anchor
+   - Good: `asm("module-aden-core", depth=2)`
+   - Good: `query("auth-module", depth=1)`
+
+4. USE `locate()` for symbols
+   - Good: `locate("main")`
+   - Good: `locate("authenticate_user")`
+
+5. CITE YOUR SOURCES
+   - Always mention which documents informed your answer
+   - Use the anchor names as citations
+
+## Understanding Aden Output:
+
+Aden returns **LLM-dense prose by default** — stripped of AsciiDoc markup noise:
+- No `[[anchor]]` lines (anchors are in the header comment only)
+- No `|===` table syntax (tables rendered as key: value pairs)
+- No `:key: value` attribute lines
+- No block delimiters (`----`, `====`, etc.)
+- Headings converted to plain text
+
+**Every token carries signal.**
+
+If you need raw AsciiDoc (e.g. for an IDE renderer), opt in explicitly:
+
+[source]
+----
+aden asm --from mod-aden-core --format aden .
+----
+----
+
+== Common Patterns
+
+=== Pattern 1: Understanding a New Codebase
+
+[source]
+----
+1. ask("What is this project about?")
+2. ask("What are the main components?")
+3. list()  # See available anchors
+4. asm("architecture", depth=2)  # Get architecture context
+----
+
+=== Pattern 2: Finding How Something Works
+
+[source]
+----
+1. search("authentication")  # Find relevant docs
+2. locate("authenticate")  # Find the function
+3. asm("auth-function", depth=2)  # Get full context
+----
+
+=== Pattern 3: Making Changes Safely
+
+[source]
+----
+1. locate("function_to_change")
+2. query("function_to_change", depth=2)  # See what depends on it
+3. ask("What breaks if I change X?")
+4. check()  # Validate no broken refs
+----
+
+== Anti-Patterns
+
+- **Don't** call `asm()` with depth=5 (wastes tokens)
+- **Do** start with depth=2, go deeper if needed
+
+- **Don't** use vague questions like "tell me about the code"
+- **Do** ask specific questions like "what is the entry point?"
+
+- **Don't** ignore citations in aden output
+- **Do** reference specific documents in your answers
+
+- **Don't** assume aden knows everything
+- **Do** use `check()` to validate, `heal()` to find gaps
+
 == Troubleshooting
 
 === `aden ask` returns "No relevant documents found"

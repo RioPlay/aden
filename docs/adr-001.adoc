@@ -1,20 +1,23 @@
 :proj: aden
-:number: 001
-:status: accepted
-:date: 2026-05-23
+:author: RioPlay
+:toc: left
+:toclevels: 3
 
 [[adr-001]]
-= ADR-001: AsciiDoc as the Native Substrate and Rust as the Implementation Language
+= Architecture Decisions
 
-== Context
-Aden is a semantic compression and context assembly toolchain. It must represent code, documentation, plans, and runbooks as a traversable, token-dense knowledge graph. We need to select:
-. A markup language that serves as the native substrate for this knowledge graph.
-. An implementation language for the extraction, emission, and assembly engines.
+This document consolidates all architecture decisions for Aden. Each decision is a numbered section.
 
-== Decision
-We will use **AsciiDoc** as the native markup substrate and **Rust** as the implementation language.
+[[adr-001-1]]
+== ADR-001: AsciiDoc as the Native Substrate and Rust as the Implementation Language
 
-== Consequences — AsciiDoc
+*Decision:* Use **AsciiDoc** as the native markup substrate and **Rust** as the implementation language.
+
+=== Context
+
+Aden is a semantic compression and context assembly toolchain. It must represent code, documentation, plans, and runbooks as a traversable, token-dense knowledge graph.
+
+=== Consequences — AsciiDoc
 
 |===
 |Factor |AsciiDoc |Markdown
@@ -24,37 +27,291 @@ We will use **AsciiDoc** as the native markup substrate and **Rust** as the impl
 |Attributes|Document-level `:key: value` metadata. No frontmatter.|YAML frontmatter or HTML comments. Not spec-native.
 |Includes|`include::[]` for composable, single-source-of-truth documents.|No native include; must use preprocessor or build tool.
 |Conditionals|`ifdef::[]` for agent/human dual-use. No alternatives.|No native conditionals.
-|Tooling|Slightly less ubiquitous, but structurally superior for agents.|Widely supported but semantically impoverished.
 |===
 
-AsciiDoc is chosen because the project's core constraint is that every token must be load-bearing and every edge must be typed. AsciiDoc's native features map directly to these requirements without requiring non-standard extensions.
+AsciiDoc is chosen because every token must be load-bearing and every edge must be typed. Its native features map directly to these requirements.
 
-== Consequences — Rust
+=== Consequences — Rust
 
 |===
 |Factor |Rust |Go |TypeScript
 
 |Memory safety|Compile-time ownership. Zero-cost abstractions.|Garbage collected. Simpler but less precise.|Garbage collected via V8.
-|Tree-sitter integration|Native C bindings. Excellent crate ecosystem.|Available, but less mature in the ecosystem.|Node bindings; slower and heavier.
-|Error handling|`Result` + `thiserror`. Explicit and composable.|Verbose error values. No `?` sugar for custom types.|Runtime exceptions or `Result<T,E>` via libraries.
+|Tree-sitter integration|Native C bindings. Excellent crate ecosystem.|Available, but less mature.|Node bindings; slower and heavier.
+|Error handling|`Result` + `thiserror`. Explicit and composable.|Verbose error values. No `?` sugar.|Runtime exceptions.
 |Binary size|Small, statically linked.|Moderate.|Requires Node runtime.
 |===
 
-Rust is chosen because the toolchain must parse large codebases with minimal overhead and because tree-sitter integration is most mature in the Rust ecosystem.
+Rust is chosen because the toolchain must parse large codebases with minimal overhead and tree-sitter integration is most mature in Rust.
 
-== Risks
-- AsciiDoc editor support is weaker than Markdown in some IDEs. Mitigated by the fact that Aden outputs are consumed by agents and renderers, not hand-edited.
-- Rust compile times are slower. Mitigated by the workspace crate decomposition and targeted incremental builds.
+=== Risks
 
-== Trace
+- AsciiDoc editor support is weaker than Markdown. Mitigated by the fact that Aden outputs are consumed by agents and renderers, not hand-edited.
+- Rust compile times are slower. Mitigated by workspace crate decomposition and targeted incremental builds.
+
+=== Trace
+
 - *2026-05-23*: Initial ADR drafted.
+
+[[adr-001-2]]
+== ADR-002: AGPL-3.0 and Public Attribution
+
+*Decision:* Use the **GNU Affero General Public License v3.0** (AGPL-3.0-or-later) for all code and consistently attribute the project's original work to RioPlay <rioplay@rioplay.dev>.
+
+=== Context
+
+Aden is a toolchain for AI agents operating on codebases. It will almost certainly be run as a network service (SaaS, CI pipeline, remote context assembly API).
+
+The license must:
+. Be open-source and copyleft.
+. Prevent cloud capture (proprietary SaaS wrapping without sharing modifications).
+. Maintain OSI legitimacy for enterprise adoption.
+. Preserve the copyright holder's right to offer dual-licensing.
+
+=== Consequences
+
+|===
+|Factor |AGPL-3.0 |MIT |Apache-2.0
+
+|Network services covered|Yes|No|No
+|Copyleft|Yes|No|Weak
+|Dual-licensing option|Yes|Yes|Yes
+|Patent grant|Yes|No|Yes
+|Enterprise adoption barrier|Higher|SaaS capture risk|Lower
+|===
+
+The AGPL was chosen because Aden's primary use case (network-accessible AI context assembly) is exactly the scenario AGPL was designed to protect.
+
+=== Attribution Model
+
+- Public author and copyright holder: RioPlay <rioplay@rioplay.dev>
+- BDFL: RioPlay
+- All contributions require DCO sign-off under the contributor's legal name.
+
+=== Trace
+
+- *2026-05-23*: Initial ADR drafted.
+- *Adoption*: Adopted immediately; all existing code relicensed from MIT OR Apache-2.0.
+
+[[adr-001-3]]
+== ADR-003: Markdown Emission and Cross-Format Drift Detection
+
+*Decision:* Extend aden to support Markdown as a derived format while preserving AsciiDoc as the source of truth.
+
+=== Context
+
+Aden's core strength is AsciiDoc as the native substrate (per <<adr-001-1>>), but real-world projects have legacy Markdown files (`AGENTS.md`, `CONTRIBUTING.md`, `README.md`, `NOTICE.md`) that AI agents and CI systems depend on. These files are invisible to aden:
+
+. No emission path: Aden generates `.adoc` contracts but cannot emit equivalent `.md`.
+. No drift detection: `aden heal` only checks `.adoc` contracts against source, not `.md` files.
+. Template gaps: Files like `AGENTS.md` require manual updates when code changes.
+
+Result: Code health can be 100% while docs are stale.
+
+=== Core Principles
+
+. AsciiDoc remains primary: All contracts, templates, and knowledge are authored in `.adoc`.
+. Markdown is derived: Aden emits `.md` from `.adoc` source, never the reverse.
+. Unified drift detection: Both `.adoc` and `.md` files are checked for staleness against source.
+
+=== Implementation
+
+| Component | Change |
+|-----------|--------|
+| `aden-emit` | Add `emit_document_md()` parallel to existing AsciiDoc emitter |
+| `aden-gen` | Add `--format markdown` flag; support `--merge` three-way merge |
+| `aden-heal` | Add `MarkdownDrift` and `StaleMarkdown` event types |
+| Templates | Add template variable expansion: `${crates}`, `${commands}`, `${modules}` |
+
+=== Risks
+
+. Confusion: Users may edit `.md` directly, not realizing it will be overwritten. Mitigation: Document the derived nature; use `[generated]` markers in markdown comments.
+. Feature creep: Markdown support could dilute AsciiDoc primacy. Mitigation: This ADR explicitly preserves AsciiDoc as primary; markdown is emit-only.
+. Drift complexity: Detecting markdown drift requires template/expected-content tracking. Mitigation: Store `.md` templates in `.aden/templates/` with hash validation.
+
+=== Trace
+
+- *2026-05-25*: ADR drafted in response to documentation staleness concerns.
+
+[[adr-001-4]]
+== ADR-004: Universal Polyglot Developer Toolchain
+
+*Decision:* Aden will evolve from a documentation toolchain into a **universal polyglot developer toolchain** that wraps all languages through tree-sitter.
+
+=== Context
+
+Developers today juggle multiple tools for a single project:
+
+| Task | Tool | Language-Specific |
+|------|------|-------------------|
+| Generate contracts | `aden gen` | Aden |
+| Check references | `aden check` | Aden |
+| Detect drift | `aden heal` | Aden |
+| Build | `cargo build` / `npm run build` / `go build` | Each ecosystem |
+| Test | `cargo test` / `npm test` / `go test` | Each ecosystem |
+| Lint | `clippy` / `eslint` / `golint` | Each ecosystem |
+| Format | `cargo fmt` / `prettier` / `gofmt` | Each ecosystem |
+| Run | `cargo run` / `node` / `go run` | Each ecosystem |
+
+This fragmentation creates friction: AI agents must invoke multiple tools with different interfaces, CI pipelines are complex orchestrations, and developers context-switch between tool ecosystems.
+
+=== Core Principles
+
+. Single entry point: `aden <verb>` — not `cargo <verb>`, `npm <verb>`, `go <verb>`.
+. Language-agnostic: Same commands work across Rust, Python, Go, TypeScript, Java, C#, PHP, Ruby, C/C++, Kotlin.
+. Source of truth preserved: AsciiDoc contracts remain primary; tooling is derived.
+. Incremental adoption: Can use aden alongside existing tools; no forced migration.
+
+=== Implementation Phases
+
+==== Phase 1: Documentation Parity
+
+- Markdown emitter (`emit_document_md()`)
+- Cross-format drift detection for `.md` files
+- Template variable expansion
+
+==== Phase 2: Universal Linting
+
+- Built-in rules: unused variable, unreachable code, implicit return, security patterns, style consistency
+- Commands: `aden lint .`, `aden lint --severity error .`, `aden lint --fix .`
+
+==== Phase 3: Universal Test Discovery & Execution
+
+- Detect test files/functions via tree-sitter across Rust, Python, Go, TypeScript, Java
+- Commands: `aden test .`, `aden test --scope unit .`, `aden test src/lib.rs`
+
+==== Phase 4: Universal Build Detection
+
+- Detect Cargo, npm, go.mod, Maven, Gradle, CMake
+- Commands: `aden build .`, `aden build --release .`
+
+==== Phase 5: Universal Format & Run
+
+- Commands: `aden fmt .`, `aden run`, `aden run --bin mybin`
+
+==== Phase 6: Unified CI
+
+- `aden ci-check .` replaces multiple commands: check + heal + lint + test + build + audit + fmt
+
+=== Risks
+
+. Scope creep: Building full toolchain risks never finishing. Mitigation: Phased delivery; each phase ships independently.
+. Quality vs breadth: Tree-sitter AST less deep than language-specific tools. Mitigation: Use external tools where aden gaps exist; wrap not replace.
+. Maintenance burden: Supporting 10+ languages requires ongoing grammar updates. Mitigation: Leverage tree-sitter-language-pack; community upstream maintenance.
+
+=== Trace
+
+- *2026-05-25*: ADR drafted to consolidate markdown emission + universal tooling visions.
+
+[[adr-001-5]]
+== ADR-005: Brain-Like Semantic Networks in Aden
+
+*Decision:* Extend Aden with semantic edge types, spreading activation search, concept declaration syntax, and neural token budgeting.
+
+=== Context
+
+Aden's current graph model captures code relationships (Uses, Implements, Tests, Calls, etc.) but lacks:
+
+1. Semantic association types — no way to express "related to", "is a", "part of".
+2. Spreading activation — queries are exact-match or BM25 keyword-based, not associative.
+3. Conceptual hierarchy — no inheritance/subsumption for knowledge organization.
+4. Plain-text concept linking — no standard way for humans to define relationships in `.adoc` files.
+
+=== Decision
+
+We will extend Aden with:
+
+==== 1. Semantic Edge Types
+
+| Edge Type | Brain Analog | Description |
+|-----------|--------------|-------------|
+| `RelatesTo` | Synaptic association | General relatedness (bidirectional feel) |
+| `IsA` | Category membership | Inheritance/subsumption |
+| `PartOf` | Structural composition | Component relationship |
+| `SimilarTo` | Pattern matching | Analogical relationship |
+| `Causes` | Causal chain | Direct causation |
+| `Implies` | Logical entailment | Inference relationship |
+| `SynonymOf` | Lexical redundancy | Alternate naming |
+| `AntonymOf` | Contrast activation | Opposite concepts |
+| `AssociatedWith` | Hebbian co-activation | Frequently co-occur concepts |
+| `PrerequisiteFor` | Learning sequence | Must-know before |
+| `Explains` | Explanatory hierarchy | Provides explanation for |
+
+==== 2. Spreading Activation Algorithm
+
+Implement semantic search modeled on neural spreading activation:
+
+1. Phase 1 — Seed: activate nodes matching query terms.
+2. Phase 2 — Spread: iteratively propagate activation to neighbors, weighted by edge type.
+3. Phase 3 — Collect: return nodes above activation threshold.
+
+Edge weights: `IsA` (1.0), `PartOf` (0.9), `Causes` (0.9), `SimilarTo` (0.7), `PrerequisiteFor` (0.7), `Implies` (0.7), `RelatesTo` (0.5), `AssociatedWith` (0.5), `Explains` (0.5), `Code edges` (0.8).
+
+==== 3. Concept Declaration Syntax
+
+Standard AsciiDoc macros for defining semantic relationships in `.adoc` files:
+
+[source,adoc]
+----
+[semantics]
+----
+Noun IsA PartOfSpeech
+Verb IsA PartOfSpeech
+Pronoun RelatedTo Noun
+Noun PrerequisiteFor Verb
+----
+----
+
+Parser extracts these into semantic edges.
+
+==== 4. Neural Token Budgeting
+
+Extend `aden-asm` to assemble context based on semantic proximity: split budget between direct hits and semantic spread.
+
+=== Consequences
+
+==== Positive
+
+1. Semantic search — discover related concepts without exact keyword matches.
+2. Knowledge organization — explicit hierarchical relationships enable better categorization.
+3. Learning paths — prerequisite relationships enable intelligent curriculum generation.
+4. Analogical reasoning — similarity edges enable cross-domain knowledge transfer.
+5. Human-authored semantics — architects can encode domain expertise as explicit relationships.
+
+==== Negative
+
+1. Graph complexity — more edge types means more validation complexity.
+2. Performance — spreading activation is O(n * depth) vs O(1) for indexed lookup.
+3. Maintenance burden — semantic relationships must be kept in sync with code.
+4. Ambiguity — human-defined semantics may be subjective.
+
+=== Implementation Plan
+
+. Phase 1: Core Types — Add semantic edge types to `aden-core`, basic parsing in `aden-graph`.
+. Phase 2: Search Enhancement — Add `SpreadingActivationSearch` to `aden-index`, `--semantic` flag.
+. Phase 3: Neural Assembly — Add `NeuralBudget` to `aden-asm`, `--neural` flag.
+. Phase 4: Human Authoring — Document `[semantics]` block format, `aden validate` for semantic integrity.
+
+=== Open Questions
+
+1. Should `A RelatesTo B` automatically create `B RelatesTo A`?
+2. Should authors be able to specify custom edge weights?
+3. Should recent associations score higher (temporal decay)?
+4. Should cross-graph semantics be supported?
+
+=== Trace
+
+- *2026-05-26*: ADR drafted by OpenCode agent.
+
+== References
+
+* https://en.wikipedia.org/wiki/Spreading_activation[Spreading Activation - Wikipedia]
+* https://www.sciencedirect.com/science/article/pii/0740811088900167[Semantic Networks in Artificial Intelligence]
+* https://psycnet.apa.org/doi/10.1037/0033-2909.115.1.109[Associative Network Theory]
 
 == Related Documents
 
-. <<plan-phase0>>
-. Complementary decision: <<adr-002>>
-. <<project-context>>
-
-== Related Modules
-
-See: <<mod-aden-core>>, <<mod-aden-cli>>
+. <<philosophy>> — Design rationale
+. <<project-context>> — Crate map, dependencies, glossary
+. <<architecture>> — System architecture overview
+. <<commands>> — CLI reference

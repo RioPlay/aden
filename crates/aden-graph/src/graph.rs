@@ -14,288 +14,184 @@
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 // GNU Affero General Public License for more details.
 //
-use crate::parser::{ParsedDocument, parse_file};
+//! Generic graph engine for the Aden knowledge graph.
+//!
+//! `AdenGraph<N, E>` is parameterized over node type `N` and edge type `E`.
+//! Any types implementing `GraphNode` and `GraphEdge` can be used.
+//!
+//! ## Example: Using with custom types
+//!
+//! ```ignore
+//! use aden_graph::nodes::{GraphNode, GraphEdge};
+//! use aden_graph::graph::AdenGraph;
+//!
+//! struct MyNode { /* ... */ }
+//! impl GraphNode for MyNode { /* ... */ }
+//!
+//! struct MyEdge { /* ... */ }
+//! impl GraphEdge for MyEdge { /* ... */ }
+//!
+//! let graph: AdenGraph<MyNode, MyEdge> = AdenGraph::new();
+//! ```
+
+use crate::nodes::{DocumentNode, AdenEdge, GraphEdge, GraphNode};
+use crate::parser::{parse_file, ParsedDocument};
 use aden_core::{Document, EdgeType, NodeType};
 use petgraph::graph::{DiGraph, NodeIndex};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-/// A node in the Aden graph.
-#[derive(Debug, Clone)]
-pub struct DocumentNode {
-    pub anchor: String,
-    pub doc: Document,
-    pub parsed: ParsedDocument,
-    pub source_path: PathBuf,
-}
-
-/// The Aden knowledge graph.
-#[derive(Debug)]
-pub struct AdenGraph {
-    pub graph: DiGraph<DocumentNode, EdgeType>,
+/// The generic knowledge graph.
+///
+/// Parameterized over node type `N` and edge type `E`.
+/// Any types implementing `GraphNode` and `GraphEdge` can be used.
+pub struct AdenGraph<N: GraphNode, E: GraphEdge> {
+    pub graph: DiGraph<N, E>,
     pub anchor_to_index: HashMap<String, NodeIndex>,
     pub path_to_index: HashMap<PathBuf, NodeIndex>,
-    pub filter: aden_core::filter::AdenFilter,
     #[doc(hidden)]
     pub(crate) backlinks_cache: Option<HashMap<String, Vec<String>>>,
 }
 
+/// Errors that can occur during graph operations.
 #[derive(Debug, thiserror::Error)]
 pub enum GraphError {
     #[error("duplicate anchor: {0}")]
     DuplicateAnchor(String),
+
     #[error("parse error: {0}")]
     Parse(String),
+
     #[error("IO error: {0}")]
     Io(String),
-    #[error("unresolved reference: {0}")]
-    UnresolvedReference(String),
-    #[error("orphan document: {0}")]
-    OrphanDocument(String),
+
+    #[error("unresolved reference: {0} -> {1}")]
+    UnresolvedReference(String, String),
+
+    #[error("orphan node: {0}")]
+    OrphanNode(String),
 }
 
-impl Default for AdenGraph {
+impl<N: GraphNode, E: GraphEdge> Default for AdenGraph<N, E> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl AdenGraph {
+impl<N: GraphNode, E: GraphEdge> AdenGraph<N, E> {
     /// Create an empty graph.
     pub fn new() -> Self {
-        use aden_core::filter::AdenFilter;
         Self {
             graph: DiGraph::new(),
             anchor_to_index: HashMap::new(),
             path_to_index: HashMap::new(),
-            filter: AdenFilter::from_directory(Path::new(".")),
             backlinks_cache: None,
         }
     }
 
-    /// Parse all `.adoc` / `.aden` files in a directory and build the graph.
-    pub fn build_from_directory(dir: &Path) -> Result<Self, GraphError> {
-        use aden_core::filter::AdenFilter;
-        let mut graph = Self::new();
-        graph.filter = AdenFilter::from_directory(dir);
-        let mut files = Vec::new();
-        graph.collect_files(dir, &mut files)?;
-
-        // First pass: add all nodes
-        for path in &files {
-            let parsed = parse_file(path).map_err(|e| GraphError::Parse(e.to_string()))?;
-            let primary_anchor = parsed.anchors.first().cloned().unwrap_or_else(|| {
-                path.file_stem()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .to_string()
-            });
-
-            let doc = Document {
-                anchor: primary_anchor.clone(),
-                node_type: aden_core::NodeType::Note, // will be refined by attribute
-                attributes: parsed.attributes.clone(),
-                blocks: parsed.blocks.clone(),
-                source_span: None,
-                metadata: parsed.metadata.clone(),
-            };
-
-            let anchors = parsed.anchors.clone();
-            let node = DocumentNode {
-                anchor: primary_anchor.clone(),
-                doc,
-                parsed,
-                source_path: path.clone(),
-            };
-
-            let idx = graph.graph.add_node(node);
-            // Register ALL anchors in the file, not just the primary one
-            // Skip duplicates silently - first anchor wins (maintains backward compatibility)
-            for anchor in &anchors {
-                if !graph.anchor_to_index.contains_key(anchor) {
-                    graph.anchor_to_index.insert(anchor.clone(), idx);
-                }
-            }
-            graph.path_to_index.insert(path.clone(), idx);
-        }
-
-        // Second pass: add edges (refs + includes + explicit edge macros)
-        for path in &files {
-            if let Some(&idx) = graph.path_to_index.get(path) {
-                let parsed = &graph.graph[idx].parsed.clone();
-                // Include edges → Requires
-                for inc in &parsed.includes {
-                    if let Ok(inc_path) = resolve_include_path(path, &inc.path, dir)
-                        && let Some(&target_idx) = graph.path_to_index.get(&inc_path)
-                    {
-                        graph.graph.add_edge(idx, target_idx, EdgeType::Requires);
-                    }
-                }
-                // Reference edges → Uses (default for refs)
-                for r in &parsed.refs {
-                    if let Some(&target_idx) = graph.anchor_to_index.get(r)
-                        && !graph.graph.contains_edge(idx, target_idx)
-                    {
-                        graph.graph.add_edge(idx, target_idx, EdgeType::Uses);
-                    }
-                }
-                // Explicit edge macros
-                for e in &parsed.edges {
-                    if let Some(&target_idx) = graph.anchor_to_index.get(&e.target) {
-                        let edge_type = parse_edge_type(&e.edge_type);
-                        if !graph.graph.contains_edge(idx, target_idx) {
-                            graph.graph.add_edge(idx, target_idx, edge_type);
-                        }
-                    }
-                }
-                // Semantic relations from [semantics] blocks
-                for sr in &parsed.semantic_relations {
-                    // Create or get source node (concept)
-                    let source_idx = if let Some(&si) = graph.anchor_to_index.get(&sr.source) {
-                        si
-                    } else {
-                        let source_anchor = sr.source.clone();
-                        let parsed = crate::parser::ParsedDocument {
-                            source_path: format!("semantic:{}", source_anchor),
-                            attributes: HashMap::new(),
-                            anchors: vec![source_anchor.clone()],
-                            refs: Vec::new(),
-                            includes: Vec::new(),
-                            edges: Vec::new(),
-                            conditional_stack: Vec::new(),
-                            raw_content: String::new(),
-                            semantic_diffs: Vec::new(),
-                            semantic_relations: Vec::new(),
-                            blocks: Vec::new(),
-                            tagged_regions: Vec::new(),
-                            conditional_regions: Vec::new(),
-                            metadata: None,
-                        };
-                        let node = DocumentNode {
-                            anchor: source_anchor.clone(),
-                            doc: aden_core::Document {
-                                anchor: source_anchor.clone(),
-                                node_type: aden_core::NodeType::Context,
-                                attributes: HashMap::new(),
-                                blocks: Vec::new(),
-                                source_span: None,
-                                metadata: None,
-                            },
-                            parsed,
-                            source_path: PathBuf::from(format!("semantic:{}", source_anchor)),
-                        };
-                        let new_idx = graph.graph.add_node(node);
-                        graph.anchor_to_index.insert(source_anchor, new_idx);
-                        new_idx
-                    };
-                    // Create or get target node (concept)
-                    let target_idx = if let Some(&ti) = graph.anchor_to_index.get(&sr.target) {
-                        ti
-                    } else {
-                        let target_anchor = sr.target.clone();
-                        let parsed = crate::parser::ParsedDocument {
-                            source_path: format!("semantic:{}", target_anchor),
-                            attributes: HashMap::new(),
-                            anchors: vec![target_anchor.clone()],
-                            refs: Vec::new(),
-                            includes: Vec::new(),
-                            edges: Vec::new(),
-                            conditional_stack: Vec::new(),
-                            raw_content: String::new(),
-                            semantic_diffs: Vec::new(),
-                            semantic_relations: Vec::new(),
-                            blocks: Vec::new(),
-                            tagged_regions: Vec::new(),
-                            conditional_regions: Vec::new(),
-                            metadata: None,
-                        };
-                        let node = DocumentNode {
-                            anchor: target_anchor.clone(),
-                            doc: aden_core::Document {
-                                anchor: target_anchor.clone(),
-                                node_type: aden_core::NodeType::Context,
-                                attributes: HashMap::new(),
-                                blocks: Vec::new(),
-                                source_span: None,
-                                metadata: None,
-                            },
-                            parsed,
-                            source_path: PathBuf::from(format!("semantic:{}", target_anchor)),
-                        };
-                        let new_idx = graph.graph.add_node(node);
-                        graph.anchor_to_index.insert(target_anchor, new_idx);
-                        new_idx
-                    };
-                    // Add semantic edge (source -> target with semantic relation type)
-                    let edge_type = parse_edge_type(&sr.relation);
-                    if !graph.graph.contains_edge(source_idx, target_idx) {
-                        graph.graph.add_edge(source_idx, target_idx, edge_type);
-                    }
-                }
-            }
-        }
-
-        Ok(graph)
+    /// Add a node to the graph.
+    pub fn add_node(&mut self, node: N) -> NodeIndex {
+        let anchor = node.anchor().to_string();
+        let source_path = node.source_path().clone();
+        let idx = self.graph.add_node(node);
+        self.anchor_to_index.insert(anchor, idx);
+        self.path_to_index.insert(source_path, idx);
+        idx
     }
 
-    fn collect_files(&self, dir: &Path, files: &mut Vec<PathBuf>) -> Result<(), GraphError> {
-        // Attempt to find project root for relative-path filtering
-        let root = self.find_root(dir);
-        self.collect_files_inner(dir, &root, files)?;
-        Ok(())
-    }
-
-    fn find_root(&self, start: &Path) -> PathBuf {
-        let mut current = start.to_path_buf();
-        loop {
-            if current.join("Cargo.toml").exists()
-                || current.join("aden.toml").exists()
-                || current.join(".adenignore").exists()
-            {
-                return current;
-            }
-            if let Some(parent) = current.parent() {
-                current = parent.to_path_buf();
-            } else {
-                return start.to_path_buf();
-            }
-        }
-    }
-
-    fn collect_files_inner(
-        &self,
-        dir: &Path,
-        root: &Path,
-        files: &mut Vec<PathBuf>,
+    /// Add an edge between two nodes by anchor.
+    pub fn add_edge_by_anchor(
+        &mut self,
+        src_anchor: &str,
+        tgt_anchor: &str,
+        edge: E,
     ) -> Result<(), GraphError> {
-        for entry in std::fs::read_dir(dir).map_err(|e| GraphError::Io(e.to_string()))? {
-            let entry = entry.map_err(|e| GraphError::Io(e.to_string()))?;
-            let path = entry.path();
-            if let Ok(rel) = path.strip_prefix(root)
-                && self.filter.should_skip(rel)
-            {
-                continue;
-            }
-            if path.is_dir() {
-                self.collect_files_inner(&path, root, files)?;
-            } else if path.is_file() {
-                let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-                if ext == "adoc" || ext == "aden" {
-                    files.push(path);
+        let src_idx = self
+            .anchor_to_index
+            .get(src_anchor)
+            .copied()
+            .ok_or_else(|| GraphError::UnresolvedReference(src_anchor.to_string(), "not found".to_string()))?;
+        let tgt_idx = self
+            .anchor_to_index
+            .get(tgt_anchor)
+            .copied()
+            .ok_or_else(|| GraphError::UnresolvedReference(tgt_anchor.to_string(), "not found".to_string()))?;
+
+        if !self.graph.contains_edge(src_idx, tgt_idx) {
+            self.graph.add_edge(src_idx, tgt_idx, edge);
+        }
+        Ok(())
+    }
+
+    /// Add an edge between two nodes by index.
+    pub fn add_edge(&mut self, src: NodeIndex, tgt: NodeIndex, edge: E) {
+        if !self.graph.contains_edge(src, tgt) {
+            self.graph.add_edge(src, tgt, edge);
+        }
+    }
+
+    /// Get a node by anchor.
+    pub fn get_node(&self, anchor: &str) -> Option<&N> {
+        self.anchor_to_index
+            .get(anchor)
+            .map(|&idx| &self.graph[idx])
+    }
+
+    /// Get node index by anchor.
+    pub fn get_index(&self, anchor: &str) -> Option<NodeIndex> {
+        self.anchor_to_index.get(anchor).copied()
+    }
+
+    /// Get all anchors that reference this anchor (backlinks).
+    /// Uses cached computation for O(1) lookup after first call.
+    pub fn get_backlinks(&mut self, anchor: &str) -> Vec<String> {
+        if self.backlinks_cache.is_none() {
+            self.compute_backlinks_cache();
+        }
+
+        self.backlinks_cache
+            .as_ref()
+            .and_then(|cache| cache.get(anchor).cloned())
+            .unwrap_or_default()
+    }
+
+    /// Compute backlinks cache for fast reverse lookups.
+    fn compute_backlinks_cache(&mut self) {
+        let mut cache: HashMap<String, Vec<String>> = HashMap::new();
+
+        for anchor in self.anchor_to_index.keys() {
+            cache.insert(anchor.clone(), Vec::new());
+        }
+
+        for edge_idx in self.graph.edge_indices() {
+            if let Some((src, tgt)) = self.graph.edge_endpoints(edge_idx) {
+                let src_anchor = self.graph[src].anchor();
+                let tgt_anchor = self.graph[tgt].anchor();
+
+                if let Some(targets) = cache.get_mut(tgt_anchor) {
+                    targets.push(src_anchor.to_string());
                 }
             }
         }
-        Ok(())
+
+        self.backlinks_cache = Some(cache);
     }
 
     /// Find all unresolved references in the graph.
     pub fn unresolved_refs(&self) -> Vec<(String, String)> {
         let mut issues = Vec::new();
         for node in self.graph.node_indices() {
-            let parsed = &self.graph[node].parsed;
-            for r in &parsed.refs {
-                if !self.anchor_to_index.contains_key(r) {
-                    issues.push((parsed.source_path.clone(), r.clone()));
+            let attrs = self.graph[node].attributes();
+            // Check for refs in attributes (format: "refs: anchor1,anchor2")
+            if let Some(refs) = attrs.get("refs") {
+                for ref_anchor in refs.split(',') {
+                    let ref_anchor = ref_anchor.trim();
+                    if !ref_anchor.is_empty() && !self.anchor_to_index.contains_key(ref_anchor) {
+                        issues.push((
+                            self.graph[node].source_path().to_string_lossy().to_string(),
+                            ref_anchor.to_string(),
+                        ));
+                    }
                 }
             }
         }
@@ -315,267 +211,367 @@ impl AdenGraph {
                 .neighbors_directed(node, petgraph::Direction::Outgoing)
                 .count();
             if in_count == 0 && out_count == 0 {
-                orphans.push(self.graph[node].anchor.clone());
+                orphans.push(self.graph[node].anchor().to_string());
             }
         }
         orphans
     }
 
-    /// Get a node by anchor.
-    pub fn get_node(&self, anchor: &str) -> Option<&DocumentNode> {
-        self.anchor_to_index
-            .get(anchor)
-            .map(|&idx| &self.graph[idx])
-    }
-
-    /// Get node index by anchor.
-    pub fn get_index(&self, anchor: &str) -> Option<NodeIndex> {
-        self.anchor_to_index.get(anchor).copied()
-    }
-
-    /// Get all anchors that reference this anchor (backlinks).
-    /// Uses cached computation for O(1) lookup after first call.
-    pub fn get_backlinks(&mut self, anchor: &str) -> Vec<String> {
-        // Compute backlinks cache on first call
-        if self.backlinks_cache.is_none() {
-            self.compute_backlinks_cache();
-        }
-
-        self.backlinks_cache
-            .as_ref()
-            .and_then(|cache| cache.get(anchor).cloned())
-            .unwrap_or_default()
-    }
-
-    /// Compute backlinks cache for fast reverse lookups.
-    /// This is an O(n) operation that enables O(1) reverse lookups thereafter.
-    fn compute_backlinks_cache(&mut self) {
-        let mut cache: HashMap<String, Vec<String>> = HashMap::new();
-
-        // Initialize all anchors in the cache
-        for anchor in self.anchor_to_index.keys() {
-            cache.insert(anchor.clone(), Vec::new());
-        }
-
-        // Build reverse edges
+    /// Get all edge endpoints as (src_anchor, tgt_anchor, edge).
+    pub fn all_edges(&self) -> Vec<(String, String, E)> {
+        let mut edges = Vec::new();
         for edge_idx in self.graph.edge_indices() {
             if let Some((src, tgt)) = self.graph.edge_endpoints(edge_idx) {
-                let src_anchor = &self.graph[src].anchor;
-                let tgt_anchor = &self.graph[tgt].anchor;
+                let src_anchor = self.graph[src].anchor().to_string();
+                let tgt_anchor = self.graph[tgt].anchor().to_string();
+                let edge = self.graph[edge_idx].clone();
+                edges.push((src_anchor, tgt_anchor, edge));
+            }
+        }
+        edges
+    }
 
-                if let Some(targets) = cache.get_mut(tgt_anchor) {
-                    targets.push(src_anchor.clone());
+    /// Get all nodes as (anchor, node).
+    pub fn all_nodes(&self) -> Vec<(String, N)> {
+        let mut nodes = Vec::new();
+        for node_idx in self.graph.node_indices() {
+            let node = self.graph[node_idx].clone();
+            let anchor = node.anchor().to_string();
+            nodes.push((anchor, node));
+        }
+        nodes
+    }
+
+    /// Count all nodes.
+    pub fn node_count(&self) -> usize {
+        self.graph.node_count()
+    }
+
+    /// Count all edges.
+    pub fn edge_count(&self) -> usize {
+        self.graph.edge_count()
+    }
+
+    /// Run BFS traversal from an anchor.
+    pub fn bfs(&self, start: &str, max_depth: usize) -> Vec<(String, String)> {
+        let mut visited = std::collections::HashSet::new();
+        let mut queue = vec![(start.to_string(), 0usize)];
+        let mut results = Vec::new();
+
+        if let Some(_start_idx) = self.anchor_to_index.get(start) {
+            visited.insert(start.to_string());
+
+            while let Some((current, d)) = queue.pop() {
+                if d >= max_depth {
+                    break;
+                }
+
+                if let Some(&current_idx) = self.anchor_to_index.get(&current) {
+                    for neighbor in self.graph.neighbors(current_idx) {
+                        let neighbor_anchor = self.graph[neighbor].anchor().to_string();
+                        if visited.insert(neighbor_anchor.clone()) {
+                            results.push((current.clone(), neighbor_anchor.clone()));
+                            queue.push((neighbor_anchor, d + 1));
+                        }
+                    }
                 }
             }
         }
 
-        self.backlinks_cache = Some(cache);
+        results
     }
 
-    /// Validate that every edge satisfies the node-type compatibility matrix.
-    pub fn validate_typed_edges(&self) -> Vec<String> {
-        let mut errors = Vec::new();
-        for edge_idx in self.graph.edge_indices() {
-            let (source_idx, target_idx) = self
-                .graph
-                .edge_endpoints(edge_idx)
-                .expect("edge_endpoints called with valid index from edge_indices iterator");
-            let source = &self.graph[source_idx];
-            let target = &self.graph[target_idx];
-            let edge_type = self.graph[edge_idx];
+    /// Get neighborhood of an anchor at a given depth.
+    pub fn neighborhood(&self, anchor: &str, depth: usize) -> HashMap<String, Vec<String>> {
+        let mut visited = std::collections::HashSet::new();
+        let mut queue = vec![(anchor.to_string(), 0usize)];
+        let mut result = HashMap::new();
 
-            let valid = match edge_type {
-                EdgeType::Uses => {
-                    let source_is_doc = matches!(
-                        source.doc.node_type,
-                        NodeType::Note
-                            | NodeType::Adr
-                            | NodeType::Plan
-                            | NodeType::Spec
-                            | NodeType::Context
-                            | NodeType::Manifest
-                            | NodeType::Runbook
-                    );
-                    source_is_doc
-                        || (matches!(
-                            source.doc.node_type,
-                            NodeType::Module | NodeType::Function | NodeType::Script
-                        ) && matches!(
-                            target.doc.node_type,
-                            NodeType::Module | NodeType::Function
-                        ))
+        visited.insert(anchor.to_string());
+
+        while let Some((current, d)) = queue.pop() {
+            if d >= depth {
+                break;
+            }
+
+            if let Some(&current_idx) = self.anchor_to_index.get(&current) {
+                let mut neighbors = Vec::new();
+                for neighbor in self.graph.neighbors(current_idx) {
+                    let neighbor_anchor = self.graph[neighbor].anchor().to_string();
+                    if visited.insert(neighbor_anchor.clone()) {
+                        neighbors.push(neighbor_anchor.clone());
+                        queue.push((neighbor_anchor, d + 1));
+                    }
                 }
-                EdgeType::Calls => {
-                    matches!(
-                        source.doc.node_type,
-                        NodeType::Module | NodeType::Function | NodeType::Script
-                    ) && matches!(target.doc.node_type, NodeType::Module | NodeType::Function)
+                if !neighbors.is_empty() {
+                    result.insert(current, neighbors);
                 }
-                EdgeType::Implements => {
-                    matches!(source.doc.node_type, NodeType::Function | NodeType::Type)
-                        && matches!(target.doc.node_type, NodeType::Type)
+            }
+        }
+
+        result
+    }
+}
+
+/// Supported knowledge file extensions.
+const SUPPORTED_EXTENSIONS: &[&str] = &["adoc", "aden", "md", "txt"];
+
+/// Recursively collect knowledge files from a directory.
+fn collect_files(dir: &Path) -> Result<Vec<PathBuf>, GraphError> {
+    let mut files = Vec::new();
+    let entries = std::fs::read_dir(dir).map_err(|e| GraphError::Io(e.to_string()))?;
+    for entry in entries {
+        let entry = entry.map_err(|e| GraphError::Io(e.to_string()))?;
+        let path = entry.path();
+        if path.is_dir() {
+            files.extend(collect_files(&path)?);
+        } else if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+            if SUPPORTED_EXTENSIONS.contains(&ext) {
+                files.push(path);
+            }
+        }
+    }
+    files.sort();
+    Ok(files)
+}
+
+/// Build a graph by parsing all knowledge files in a directory.
+///
+/// Steps:
+/// 1. Recursively collect `.adoc`, `.aden`, `.md`, `.txt` files
+/// 2. Parse each file into a `ParsedDocument`
+/// 3. Create `DocumentNode` instances (one per anchor, or one per file if no anchors)
+/// 4. Build edges from `refs` and `edge::` macros in the parsed docs
+impl AdenGraph<DocumentNode, AdenEdge> {
+    /// Parse all knowledge files in `dir` and build a graph.
+    pub fn build_from_directory(dir: &Path) -> Result<Self, GraphError> {
+        let files = collect_files(dir)?;
+        let mut graph = Self::new();
+
+        // First pass: parse all files and create nodes
+        let mut parsed_docs: Vec<(PathBuf, ParsedDocument)> = Vec::new();
+        for file_path in &files {
+            let parsed = parse_file(file_path).map_err(|e| GraphError::Parse(e.to_string()))?;
+            parsed_docs.push((file_path.clone(), parsed));
+        }
+
+        // Create nodes from parsed documents
+        for (file_path, parsed) in &parsed_docs {
+            let anchors = &parsed.anchors;
+            if anchors.is_empty() {
+                // Generate anchor from filename stem
+                let anchor = file_path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+                let doc = parsed_to_document(&parsed, &anchor, file_path);
+                let node = DocumentNode {
+                    doc,
+                    source_path: file_path.clone(),
+                    parsed: Some(parsed.clone()),
+                };
+                graph.add_node(node);
+            } else {
+                // One node per anchor
+                for anchor in anchors {
+                    let doc = parsed_to_document(&parsed, anchor, file_path);
+                    let node = DocumentNode {
+                        doc,
+                        source_path: file_path.clone(),
+                        parsed: Some(parsed.clone()),
+                    };
+                    graph.add_node(node);
                 }
-                EdgeType::Tests | EdgeType::Verifies => {
-                    matches!(source.doc.node_type, NodeType::Module | NodeType::Function)
-                        && matches!(target.doc.node_type, NodeType::Module | NodeType::Function)
-                }
-                EdgeType::Documents | EdgeType::Constrains | EdgeType::Justifies => {
-                    matches!(
-                        source.doc.node_type,
-                        NodeType::Adr | NodeType::Plan | NodeType::Spec | NodeType::Note
-                    ) && matches!(
-                        target.doc.node_type,
-                        NodeType::Module | NodeType::Function | NodeType::Script
-                    )
-                }
-                EdgeType::Invokes => {
-                    matches!(source.doc.node_type, NodeType::Runbook | NodeType::Script)
-                        && matches!(target.doc.node_type, NodeType::Script | NodeType::Function)
-                }
-                // Requires edges from include::[] are structural; skip type validation.
-                EdgeType::Requires => true,
-                EdgeType::Mutates => {
-                    matches!(source.doc.node_type, NodeType::Function)
-                        && matches!(target.doc.node_type, NodeType::Module | NodeType::Manifest)
-                }
-                EdgeType::Supersedes | EdgeType::Amends => {
-                    matches!(
-                        source.doc.node_type,
-                        NodeType::Adr | NodeType::Plan | NodeType::Spec | NodeType::Note
-                    ) && matches!(
-                        target.doc.node_type,
-                        NodeType::Adr | NodeType::Plan | NodeType::Spec | NodeType::Note
-                    )
-                }
-                // Semantic edges always valid (conceptual relationships)
-                EdgeType::IsA 
-                | EdgeType::PartOf 
-                | EdgeType::RelatesTo 
-                | EdgeType::SimilarTo 
-                | EdgeType::Causes 
-                | EdgeType::Implies 
-                | EdgeType::SynonymOf 
-                | EdgeType::AntonymOf 
-                | EdgeType::AssociatedWith 
-                | EdgeType::PrerequisiteFor 
-                | EdgeType::Explains
-                | EdgeType::IsEquivalentTo => true,
+            }
+        }
+
+        // Second pass: build edges from refs and edge macros
+        for (_file_path, parsed) in &parsed_docs {
+            let source_anchor = if let Some(a) = parsed.anchors.first() {
+                a.clone()
+            } else {
+                PathBuf::from(&parsed.source_path)
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("unknown")
+                    .to_string()
             };
 
-            if !valid {
-                errors.push(format!(
-                    "Invalid edge {:?} from {} ({:?}) to {} ({:?})",
+            // Build edges from refs: <<target>>
+            for ref_anchor in &parsed.refs {
+                let edge_type = if source_anchor.starts_with("adr-") {
+                    EdgeType::RelatesTo
+                } else {
+                    EdgeType::Uses
+                };
+                let backlink_type = if source_anchor.starts_with("adr-") {
+                    EdgeType::RelatesTo
+                } else {
+                    EdgeType::UsedBy
+                };
+                if let Err(_) = graph.add_edge_by_anchor(&source_anchor, ref_anchor, AdenEdge {
                     edge_type,
-                    source.anchor,
-                    source.doc.node_type,
-                    target.anchor,
-                    target.doc.node_type
-                ));
+                }) {
+                    // Unresolved reference — leave as orphan edge
+                }
+                // Automatic backlink: every reference creates a reverse edge
+                if let Err(_) = graph.add_edge_by_anchor(ref_anchor, &source_anchor, AdenEdge {
+                    edge_type: backlink_type,
+                }) {
+                    // Target node doesn't exist yet, skip
+                }
+            }
+
+            // Build edges from includes: include::target
+            for inc in &parsed.includes {
+                let inc_path = PathBuf::from(&inc.path);
+                let inc_file_stem = inc_path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("unknown");
+                // Try to resolve the target anchor (include path -> anchor)
+                let target_anchor = if inc.path.starts_with("[[") {
+                    // Explicit anchor: include::target.adoc[]
+                    inc_file_stem.to_string()
+                } else {
+                    // File-based include: use filename stem as anchor
+                    inc_file_stem.to_string()
+                };
+                let edge_type = if source_anchor.starts_with("adr-") {
+                    EdgeType::RelatesTo
+                } else {
+                    EdgeType::Requires
+                };
+                if let Err(_) = graph.add_edge_by_anchor(&source_anchor, &target_anchor, AdenEdge {
+                    edge_type,
+                }) {
+                    // Unresolved include — skip
+                }
+            }
+
+            // Build edges from edge:: macros
+            for edge_macro in &parsed.edges {
+                let edge_type = match edge_macro.edge_type.to_lowercase().as_str() {
+                    "uses" => EdgeType::Uses,
+                    "usedby" | "used_by" => EdgeType::UsedBy,
+                    "implements" => EdgeType::Implements,
+                    "tests" => EdgeType::Tests,
+                    "documents" => EdgeType::Documents,
+                    "constrains" => EdgeType::Constrains,
+                    "justifies" => EdgeType::Justifies,
+                    "invokes" => EdgeType::Invokes,
+                    "requires" => EdgeType::Requires,
+                    "mutates" => EdgeType::Mutates,
+                    "calls" => EdgeType::Calls,
+                    "supersedes" => EdgeType::Supersedes,
+                    "amends" => EdgeType::Amends,
+                    "verifies" => EdgeType::Verifies,
+                    "isa" | "is-a" => EdgeType::IsA,
+                    "partof" | "part-of" => EdgeType::PartOf,
+                    "relatesto" | "relates-to" => EdgeType::RelatesTo,
+                    "similar" | "similar-to" => EdgeType::SimilarTo,
+                    "causes" => EdgeType::Causes,
+                    "implies" => EdgeType::Implies,
+                    "synonym" | "synonym-of" => EdgeType::SynonymOf,
+                    "antonym" | "antonym-of" => EdgeType::AntonymOf,
+                    "associated" | "associated-with" => EdgeType::AssociatedWith,
+                    "prerequisite" | "prerequisite-for" => EdgeType::PrerequisiteFor,
+                    "explains" => EdgeType::Explains,
+                    "isequivalent" | "is-equivalent-to" => EdgeType::IsEquivalentTo,
+                    _ => EdgeType::RelatesTo, // fallback
+                };
+                if let Err(_) = graph.add_edge_by_anchor(&source_anchor, &edge_macro.target, AdenEdge {
+                    edge_type,
+                }) {
+                    // Unresolved reference
+                }
+            }
+        }
+
+        Ok(graph)
+    }
+
+    /// Check that code edges (Uses, Implements, etc.) only connect to code nodes
+    /// and semantic edges (IsA, PartOf, etc.) only connect to semantic nodes.
+    pub fn validate_typed_edges(&self) -> Vec<String> {
+        let mut errors = Vec::new();
+        let code_types = [
+            EdgeType::Uses, EdgeType::UsedBy, EdgeType::Implements,
+            EdgeType::Tests, EdgeType::Documents, EdgeType::Constrains,
+            EdgeType::Justifies, EdgeType::Invokes, EdgeType::Requires,
+            EdgeType::Mutates, EdgeType::Calls, EdgeType::Supersedes,
+            EdgeType::Amends, EdgeType::Verifies,
+        ];
+        let semantic_types = [
+            EdgeType::IsA, EdgeType::PartOf, EdgeType::RelatesTo,
+            EdgeType::SimilarTo, EdgeType::Causes, EdgeType::Implies,
+            EdgeType::SynonymOf, EdgeType::AntonymOf, EdgeType::AssociatedWith,
+            EdgeType::PrerequisiteFor, EdgeType::Explains, EdgeType::IsEquivalentTo,
+        ];
+
+        for edge_idx in self.graph.edge_indices() {
+            let (src, tgt) = self.graph.edge_endpoints(edge_idx).expect("valid edge");
+            let edge = &self.graph[edge_idx];
+            let src_anchor = self.graph[src].anchor().to_string();
+            let tgt_anchor = self.graph[tgt].anchor().to_string();
+            let src_type = &self.graph[src].doc.node_type;
+            let tgt_type = &self.graph[tgt].doc.node_type;
+
+            if code_types.contains(&edge.edge_type) {
+                if *src_type == NodeType::Adr || *tgt_type == NodeType::Adr {
+                    errors.push(format!(
+                        "Code edge {:?} from {} to {} is invalid (ADR nodes cannot use code edges)",
+                        edge.edge_type, src_anchor, tgt_anchor
+                    ));
+                }
+            } else if semantic_types.contains(&edge.edge_type) {
+                // Semantic edges are valid between any nodes
             }
         }
         errors
     }
 }
 
-/// Resolve an include path, preventing directory traversal attacks.
-/// Returns an error if the resolved path escapes `root`.
-fn resolve_include_path(current: &Path, include: &str, root: &Path) -> Result<PathBuf, GraphError> {
-    let base = current.parent().unwrap_or(Path::new("."));
-    let candidate = base.join(include);
-    let canon = candidate.canonicalize().ok();
-    let check_path = canon.as_deref().unwrap_or(&candidate);
-    let root_canon = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-    if !check_path.starts_with(&root_canon) {
-        return Err(GraphError::Io(format!(
-            "Include path '{}' escapes root directory. Denied for security.",
-            include
-        )));
-    }
-    Ok(candidate)
-}
-
-fn parse_edge_type(s: &str) -> EdgeType {
-    let lower = s.to_lowercase();
-    match lower.as_str() {
-        "uses" => EdgeType::Uses,
-        "implements" => EdgeType::Implements,
-        "tests" => EdgeType::Tests,
-        "documents" => EdgeType::Documents,
-        "constrains" => EdgeType::Constrains,
-        "justifies" => EdgeType::Justifies,
-        "invokes" => EdgeType::Invokes,
-        "requires" => EdgeType::Requires,
-        "mutates" => EdgeType::Mutates,
-        "calls" => EdgeType::Calls,
-        "supersedes" => EdgeType::Supersedes,
-        "amends" => EdgeType::Amends,
-        "verifies" => EdgeType::Verifies,
-        "isa" | "is-a" => EdgeType::IsA,
-        "partof" | "part-of" => EdgeType::PartOf,
-        "relatesto" | "relates-to" => EdgeType::RelatesTo,
-        "similar" | "similar-to" => EdgeType::SimilarTo,
-        "causes" => EdgeType::Causes,
-        "implies" => EdgeType::Implies,
-        "synonym" | "synonym-of" => EdgeType::SynonymOf,
-        "antonym" | "antonym-of" => EdgeType::AntonymOf,
-        "associated" | "associated-with" => EdgeType::AssociatedWith,
-        "prereq" | "prerequisite-for" => EdgeType::PrerequisiteFor,
-        "explains" => EdgeType::Explains,
-        "equivalent" | "is-equivalent-to" => EdgeType::IsEquivalentTo,
-        "canperform" | "can-perform" => EdgeType::RelatesTo,
-        _ => EdgeType::Uses,
+/// Convert a `ParsedDocument` into a `Document` with the given anchor.
+fn parsed_to_document(parsed: &ParsedDocument, anchor: &str, file_path: &Path) -> Document {
+    let mut attributes = parsed.attributes.clone();
+    attributes.insert("source_file".to_string(), file_path.to_string_lossy().to_string());
+    Document {
+        anchor: anchor.to_string(),
+        node_type: detect_node_type(anchor, file_path),
+        attributes,
+        blocks: parsed.blocks.clone(),
+        source_span: None,
+        metadata: parsed.metadata.clone(),
     }
 }
 
-/// Incrementally update a single document in the graph.
-/// Returns true if the node was changed or added, false if unchanged.
-impl AdenGraph {
-    pub fn update_document(&mut self, doc: aden_core::Document, source_path: PathBuf) -> bool {
-        let anchor = doc.anchor.clone();
-        
-        // Check if anchor already exists
-        if let Some(existing_idx) = self.anchor_to_index.get(&anchor) {
-            let existing_hash = self.graph[*existing_idx].doc.attributes.get("source_hash").cloned();
-            let new_hash = doc.attributes.get("source_hash").cloned();
-            
-            // Only update if hash changed
-            if existing_hash != new_hash {
-                let node = &mut self.graph[*existing_idx];
-                node.doc = doc;
-                node.source_path = source_path;
-                self.backlinks_cache = None; // Invalidate backlinks cache
-                return true;
-            }
-            return false;
-        }
-        
-        // New node - add it
-        let parsed = crate::parser::ParsedDocument {
-            source_path: source_path.to_string_lossy().to_string(),
-            attributes: HashMap::new(),
-            anchors: vec![anchor.clone()],
-            refs: Vec::new(),
-            includes: Vec::new(),
-            edges: Vec::new(),
-            conditional_stack: Vec::new(),
-            raw_content: String::new(),
-            semantic_diffs: Vec::new(),
-            semantic_relations: Vec::new(),
-            blocks: Vec::new(),
-            tagged_regions: Vec::new(),
-            conditional_regions: Vec::new(),
-            metadata: None,
-        };
-        let node = DocumentNode {
-            anchor: anchor.clone(),
-            doc,
-            parsed,
-            source_path,
-        };
-        
-        let idx = self.graph.add_node(node);
-        self.anchor_to_index.insert(anchor, idx);
-        self.backlinks_cache = None;
-        true
+/// Heuristically detect node type from anchor and file path.
+fn detect_node_type(anchor: &str, file_path: &Path) -> NodeType {
+    let path_str = file_path.to_string_lossy().to_lowercase();
+    let anchor_lower = anchor.to_lowercase();
+
+    if path_str.contains("adr") || anchor_lower.starts_with("adr-") {
+        return NodeType::Adr;
     }
+    if path_str.contains("runbook") || anchor_lower.starts_with("runbook") {
+        return NodeType::Runbook;
+    }
+    if path_str.contains("plan") || anchor_lower.starts_with("plan") {
+        return NodeType::Plan;
+    }
+    if path_str.contains("manifest") || anchor_lower.starts_with("manifest") {
+        return NodeType::Manifest;
+    }
+    if path_str.contains("spec") || anchor_lower.starts_with("spec") {
+        return NodeType::Spec;
+    }
+    if path_str.contains("note") || anchor_lower.starts_with("note") {
+        return NodeType::Note;
+    }
+    if path_str.contains("context") || anchor_lower.starts_with("context") {
+        return NodeType::Context;
+    }
+    NodeType::Module
 }

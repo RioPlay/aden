@@ -125,75 +125,6 @@ impl Platform {
     }
 }
 
-/// Find the `aden-mcp` binary on the system.
-pub fn find_aden_mcp_binary(extra_paths: &[PathBuf]) -> Result<PathBuf, String> {
-    // 1. Environment override
-    if let Ok(env_path) = std::env::var("ADEN_MCP_PATH") {
-        let p = PathBuf::from(env_path);
-        if p.is_file() {
-            return Ok(p);
-        }
-    }
-
-    // 2. Extra paths passed by user (--binary)
-    for p in extra_paths {
-        if p.is_file() {
-            return Ok(p.clone());
-        }
-    }
-
-    // 3. Local build artifacts
-    let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
-    for rel in &["target/release/aden-mcp", "target/debug/aden-mcp"] {
-        let candidate = cwd.join(rel);
-        if candidate.is_file() {
-            return Ok(candidate);
-        }
-    }
-
-    // 4. PATH search
-    #[cfg(unix)]
-    {
-        if let Ok(output) = std::process::Command::new("sh")
-            .args(["-c", "command -v aden-mcp"])
-            .output()
-            && output.status.success()
-        {
-            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !path.is_empty() {
-                return Ok(PathBuf::from(path));
-            }
-        }
-    }
-    #[cfg(windows)]
-    {
-        if let Ok(output) = std::process::Command::new("where").arg("aden-mcp").output() {
-            if output.status.success() {
-                if let Some(line) = String::from_utf8_lossy(&output.stdout).lines().next() {
-                    let path = line.trim();
-                    if !path.is_empty() {
-                        return Ok(PathBuf::from(path));
-                    }
-                }
-            }
-        }
-    }
-
-    // 5. Cargo bin directory
-    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"));
-    let cargo_bin = home.join(".cargo/bin/aden-mcp");
-    if cargo_bin.is_file() {
-        return Ok(cargo_bin);
-    }
-
-    Err("Could not find aden-mcp binary.\n\
-         Suggestions:\n\
-         1. Build it: cargo build --release -p aden-mcp\n\
-         2. Install it: cargo install --path crates/aden-mcp\n\
-         3. Or pass --binary /path/to/aden-mcp"
-        .to_string())
-}
-
 /// Make a path absolute without requiring it to exist.
 fn absolute_path(path: &Path) -> Result<PathBuf, String> {
     if path.is_absolute() {
@@ -391,7 +322,7 @@ pub fn run_install(
     let binary = if let Some(b) = binary_override {
         b.to_path_buf()
     } else {
-        find_aden_mcp_binary(&[])?
+        std::env::current_exe().map_err(|e| e.to_string())?
     };
     let binary = absolute_path(&binary)?;
 

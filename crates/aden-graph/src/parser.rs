@@ -41,14 +41,6 @@ static TAG_START_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^//\s*tag=(\w+)$").expect("static regex"));
 static TAG_END_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^//\s*end::(\w+)$").expect("static regex"));
-static SEMANTIC_DIFF_CHANGED_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^agent-note::CHANGED\[([^\]]+)\]\s*(.*)$").expect("static regex")
-});
-static SEMANTIC_DIFF_DEPRECATED_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^agent-note::DEPRECATED\[([^\]]+)\]\s*(.*)$").expect("static regex")
-});
-static SEMANTIC_DIFF_ADDED_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^agent-note::ADDED\[([^\]]+)\]\s*$").expect("static regex"));
 static TITLE_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^=+\s+.*$").expect("static regex"));
 static SOURCE_BLOCK_RE: LazyLock<Regex> =
@@ -64,14 +56,10 @@ static CHECKLIST_UNCHECKED_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^\[\s*\]\s*(.*)$").expect("static regex"));
 static CHECKLIST_CHECKED_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^\[[ xX]\]\s*(.*)$").expect("static regex"));
-
-/// A semantic relation from [semantics] blocks.
-#[derive(Debug, Clone)]
-pub struct SemanticRelation {
-    pub source: String,
-    pub relation: String,
-    pub target: String,
-}
+/// Hashtag pattern for brain-like keyword linking across any document type.
+/// Matches `#keyword` where keyword starts with a letter and can contain alphanumerics.
+static HASHTAG_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"#([a-zA-Z][a-zA-Z0-9_-]*)").expect("static regex"));
 
 /// A document parsed from an AsciiDoc source.
 #[derive(Debug, Clone)]
@@ -84,7 +72,6 @@ pub struct ParsedDocument {
     pub edges: Vec<EdgeMacro>,
     pub conditional_stack: Vec<Conditional>,
     pub raw_content: String,
-    pub semantic_diffs: Vec<SemanticDiff>,
     /// Structured content blocks extracted from the AsciiDoc body.
     pub blocks: Vec<Block>,
     /// Tagged regions for selective include (// tag=name ... // end::name)
@@ -93,8 +80,6 @@ pub struct ParsedDocument {
     pub conditional_regions: Vec<ConditionalRegion>,
     /// Document-level metadata.
     pub metadata: Option<aden_core::DocumentMetadata>,
-    /// Semantic relations from [semantics] blocks (brain-like networks).
-    pub semantic_relations: Vec<SemanticRelation>,
 }
 
 /// An `include::path[attributes]` directive.
@@ -111,22 +96,6 @@ pub struct Include {
 pub struct EdgeMacro {
     pub edge_type: String,
     pub target: String,
-}
-
-/// A semantic diff entry parsed from agent-note macros.
-#[derive(Debug, Clone)]
-pub enum SemanticDiff {
-    Changed {
-        date: String,
-        description: String,
-    },
-    Deprecated {
-        date: String,
-        replacement: Option<String>,
-    },
-    Added {
-        date: String,
-    },
 }
 
 /// A conditional block.
@@ -170,8 +139,6 @@ enum BlockState {
     InTable,
     InListing,
     InParagraph,
-    #[allow(dead_code)]
-    InSemantics,
 }
 
 /// Parse an AsciiDoc file into a `ParsedDocument`.
@@ -182,13 +149,20 @@ pub fn parse_file(path: &Path) -> Result<ParsedDocument, ParseError> {
         .map_err(|e| ParseError::Io(e.to_string()))?;
 
     let mut attrs = HashMap::new();
+    // ── Extract hashtags (brain-like keyword linking) from raw text ───────────
+    let mut hashtags = std::collections::HashSet::new();
+    for cap in HASHTAG_RE.captures_iter(&raw) {
+        hashtags.insert(cap[1].to_string());
+    }
+    if !hashtags.is_empty() {
+        let keywords = hashtags.into_iter().collect::<Vec<_>>().join(", ");
+        attrs.insert("keywords".to_string(), keywords);
+    }
     let mut anchors = Vec::new();
     let mut refs = Vec::new();
     let mut includes = Vec::new();
     let mut edges = Vec::new();
     let mut conditional_stack = Vec::new();
-    let mut semantic_diffs = Vec::new();
-    let mut semantic_relations: Vec<SemanticRelation> = Vec::new();
     let mut blocks: Vec<Block> = Vec::new();
     let mut tagged_regions: Vec<TaggedRegion> = Vec::new();
     let mut active_tags: Vec<String> = Vec::new();
@@ -437,25 +411,6 @@ pub fn parse_file(path: &Path) -> Result<ParsedDocument, ParseError> {
             }
         }
 
-        // Semantic diffs
-        if let Some(cap) = SEMANTIC_DIFF_CHANGED_RE.captures(trimmed) {
-            let date = cap[1].to_string();
-            let description = cap[2].to_string();
-            semantic_diffs.push(SemanticDiff::Changed { date, description });
-        } else if let Some(cap) = SEMANTIC_DIFF_DEPRECATED_RE.captures(trimmed) {
-            let date = cap[1].to_string();
-            let replacement = cap[2].to_string();
-            let replacement = if replacement.is_empty() {
-                None
-            } else {
-                Some(replacement)
-            };
-            semantic_diffs.push(SemanticDiff::Deprecated { date, replacement });
-        } else if let Some(cap) = SEMANTIC_DIFF_ADDED_RE.captures(trimmed) {
-            let date = cap[1].to_string();
-            semantic_diffs.push(SemanticDiff::Added { date });
-        }
-
         // Skip pure comment lines for body content
         if is_comment {
             if state == BlockState::InParagraph {
@@ -475,8 +430,6 @@ pub fn parse_file(path: &Path) -> Result<ParsedDocument, ParseError> {
                     table_headers.clear();
                     table_rows.clear();
                     saw_table_delim = false;
-                } else if trimmed == "[semantics]" {
-                    state = BlockState::InSemantics;
                 } else if trimmed == "----" {
                     state = BlockState::InListing;
                     listing_code.clear();
@@ -603,30 +556,6 @@ pub fn parse_file(path: &Path) -> Result<ParsedDocument, ParseError> {
                 }
                 last_line_was_source_directive = false;
             }
-
-            BlockState::InSemantics => {
-                // End semantics block on ---- or =====
-                // But skip the first ---- (opening delimiter) and only exit on the second
-                if (trimmed == "----" || trimmed.starts_with("====")) && !semantic_relations.is_empty() {
-                    state = BlockState::Idle;
-                } else if trimmed == "----" || trimmed.starts_with("====") {
-                    // Skip opening delimiter, continue collecting relations
-                } else if !trimmed.is_empty() && !trimmed.starts_with("//") {
-                    // Parse relation line: "Source Relation Target"
-                    // e.g., "Noun IsA PartOfSpeech"
-                    let parts: Vec<&str> = trimmed.split_whitespace().collect();
-                    if parts.len() >= 3 {
-                        let source = parts[0].to_string();
-                        let relation = parts[1].to_string();
-                        let target = parts[2..].join(" ");
-                        semantic_relations.push(SemanticRelation {
-                            source,
-                            relation,
-                            target,
-                        });
-                    }
-                }
-            }
         }
     }
 
@@ -644,9 +573,6 @@ pub fn parse_file(path: &Path) -> Result<ParsedDocument, ParseError> {
                 language: listing_lang,
                 code: listing_code.trim_end_matches('\n').to_string(),
             });
-        }
-        BlockState::InSemantics => {
-            // Flush any remaining relations (block ended by EOF)
         }
         BlockState::Idle => {}
     }
@@ -668,12 +594,10 @@ pub fn parse_file(path: &Path) -> Result<ParsedDocument, ParseError> {
         edges,
         conditional_stack,
         raw_content: raw,
-        semantic_diffs,
         blocks,
         tagged_regions,
         conditional_regions,
         metadata,
-        semantic_relations,
     })
 }
 

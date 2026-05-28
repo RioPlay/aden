@@ -15,13 +15,14 @@
 // GNU Affero General Public License for more details.
 //
 use crate::graph::AdenGraph;
+use crate::nodes::{DocumentNode, AdenEdge, GraphNode};
 use petgraph::graph::NodeIndex;
 use petgraph::visit::EdgeRef;
 use std::collections::HashSet;
 
 /// Detect cycles in the graph using DFS.
 /// Returns a list of anchor names that form cycles (first node of each cycle).
-pub fn find_cycles(graph: &AdenGraph) -> Vec<Vec<String>> {
+pub fn find_cycles(graph: &AdenGraph<DocumentNode, AdenEdge>) -> Vec<Vec<String>> {
     let mut visited = HashSet::new();
     let mut rec_stack = HashSet::new();
     let mut cycles = Vec::new();
@@ -44,7 +45,7 @@ pub fn find_cycles(graph: &AdenGraph) -> Vec<Vec<String>> {
 }
 
 fn dfs_cycle(
-    graph: &AdenGraph,
+    graph: &AdenGraph<DocumentNode, AdenEdge>,
     node: NodeIndex,
     visited: &mut HashSet<NodeIndex>,
     rec_stack: &mut HashSet<NodeIndex>,
@@ -53,13 +54,13 @@ fn dfs_cycle(
 ) {
     visited.insert(node);
     rec_stack.insert(node);
-    path.push(graph.graph[node].anchor.clone());
+    path.push(graph.graph[node].anchor().to_string());
 
     for edge in graph
         .graph
         .edges_directed(node, petgraph::Direction::Outgoing)
     {
-        if *edge.weight() != aden_core::EdgeType::Requires {
+        if edge.weight().edge_type != aden_core::EdgeType::Requires {
             continue;
         }
         let neighbor = edge.target();
@@ -67,7 +68,7 @@ fn dfs_cycle(
             dfs_cycle(graph, neighbor, visited, rec_stack, path, cycles);
         } else if rec_stack.contains(&neighbor) {
             // Found a cycle — extract the cycle from path
-            if let Some(pos) = path.iter().position(|a| *a == graph.graph[neighbor].anchor) {
+            if let Some(pos) = path.iter().position(|a| *a == graph.graph[neighbor].anchor()) {
                 let cycle = path[pos..].to_vec();
                 cycles.push(cycle);
             }
@@ -79,6 +80,6 @@ fn dfs_cycle(
 }
 
 /// Check if the graph contains any include-based cycles.
-pub fn has_cycles(graph: &AdenGraph) -> bool {
+pub fn has_cycles(graph: &AdenGraph<DocumentNode, AdenEdge>) -> bool {
     !find_cycles(graph).is_empty()
 }

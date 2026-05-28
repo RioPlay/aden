@@ -15,7 +15,7 @@
 // GNU Affero General Public License for more details.
 //
 use aden_core::{Block, EdgeType};
-use aden_graph::{AdenGraph, graph::DocumentNode};
+use aden_graph::{AdenGraph, DocumentNode, AdenEdge};
 use petgraph::Direction;
 use std::collections::{HashSet, VecDeque};
 
@@ -78,7 +78,7 @@ impl Default for AssemblyOptions {
 /// attribute lines, block delimiters) so every token carries signal rather
 /// than format noise. Large documents that would exceed the remaining budget
 /// are truncated at a word boundary rather than skipped entirely.
-pub fn assemble(graph: &AdenGraph, opts: &AssemblyOptions) -> Result<String, AssemblyError> {
+pub fn assemble(graph: &AdenGraph<DocumentNode, AdenEdge>, opts: &AssemblyOptions) -> Result<String, AssemblyError> {
     let start_idx = graph
         .get_index(&opts.start_anchor)
         .ok_or_else(|| AssemblyError::AnchorNotFound(opts.start_anchor.clone()))?;
@@ -138,8 +138,8 @@ pub fn assemble(graph: &AdenGraph, opts: &AssemblyOptions) -> Result<String, Ass
         // Add neighbors
         for neighbor in graph.graph.neighbors_directed(node, Direction::Outgoing) {
             if let Some(edge) = graph.graph.find_edge(node, neighbor) {
-                let edge_type = *graph.graph.edge_weight(edge).unwrap_or(&EdgeType::Uses);
-                if opts.edge_types.is_empty() || opts.edge_types.contains(&edge_type) {
+                let edge_type = graph.graph.edge_weight(edge).map(|e| &e.edge_type).unwrap_or(&EdgeType::Uses);
+                if opts.edge_types.is_empty() || opts.edge_types.contains(edge_type) {
                     queue.push_back((neighbor, depth + 1));
                 }
             }
@@ -151,7 +151,7 @@ pub fn assemble(graph: &AdenGraph, opts: &AssemblyOptions) -> Result<String, Ass
 }
 
 /// Assemble documents in ADG (compact JSON) format for token-efficient LLM context.
-pub fn assemble_adg(graph: &AdenGraph, opts: &AssemblyOptions) -> Result<String, AssemblyError> {
+pub fn assemble_adg(graph: &AdenGraph<DocumentNode, AdenEdge>, opts: &AssemblyOptions) -> Result<String, AssemblyError> {
     use aden_emit::emit_adg;
 
     let start_idx = graph
@@ -188,8 +188,8 @@ pub fn assemble_adg(graph: &AdenGraph, opts: &AssemblyOptions) -> Result<String,
 
         for neighbor in graph.graph.neighbors_directed(node, Direction::Outgoing) {
             if let Some(edge) = graph.graph.find_edge(node, neighbor) {
-                let edge_type = *graph.graph.edge_weight(edge).unwrap_or(&EdgeType::Uses);
-                if opts.edge_types.is_empty() || opts.edge_types.contains(&edge_type) {
+                let edge_type = graph.graph.edge_weight(edge).map(|e| &e.edge_type).unwrap_or(&EdgeType::Uses);
+                if opts.edge_types.is_empty() || opts.edge_types.contains(edge_type) {
                     queue.push_back((neighbor, depth + 1));
                 }
             }
@@ -234,7 +234,7 @@ fn document_to_text(
 
     // Check if we should filter by tags
     let has_tag_filter = !include_tags.is_empty() || !exclude_tags.is_empty();
-    let use_tagged_regions = has_tag_filter && !doc.parsed.tagged_regions.is_empty();
+    let use_tagged_regions = has_tag_filter && doc.parsed.as_ref().map(|p| !p.tagged_regions.is_empty()).unwrap_or(false);
 
     // If blocks were populated during parsing, emit structured content.
     // Otherwise fall back to the original raw source so the assembled
@@ -248,12 +248,12 @@ fn document_to_text(
         }
         out.push('\n');
         // Anchor + Title
-        out.push_str(&format!("[[{}]]\n", doc.anchor));
+        out.push_str(&format!("[[{}]]\n", doc.doc.anchor));
         let title = doc
-            .anchor
+            .doc.anchor
             .rfind('#')
-            .map(|p| &doc.anchor[p + 1..])
-            .unwrap_or(&doc.anchor);
+            .map(|p| &doc.doc.anchor[p + 1..])
+            .unwrap_or(&doc.doc.anchor);
         out.push_str(&format!("= {title}\n\n"));
         // Blocks
         for block in &doc.doc.blocks {
@@ -330,7 +330,9 @@ fn document_to_text(
             let mut filtered_out = String::new();
             let relevant_tags: Vec<_> = doc
                 .parsed
-                .tagged_regions
+                .as_ref()
+                .map(|p| &p.tagged_regions)
+                .map_or(&[] as &[_], |v| v)
                 .iter()
                 .filter(|t| {
                     let tag_matches = include_tags.is_empty()
@@ -347,12 +349,12 @@ fn document_to_text(
                     filtered_out.push_str(&format!("{key}: {value}\n"));
                 }
                 filtered_out.push('\n');
-                filtered_out.push_str(&format!("[[{}]]\n", doc.anchor));
+                filtered_out.push_str(&format!("[[{}]]\n", doc.doc.anchor));
                 let title = doc
-                    .anchor
+                    .doc.anchor
                     .rfind('#')
-                    .map(|p| &doc.anchor[p + 1..])
-                    .unwrap_or(&doc.anchor);
+                    .map(|p| &doc.doc.anchor[p + 1..])
+                    .unwrap_or(&doc.doc.anchor);
                 filtered_out.push_str(&format!("= {title}\n\n"));
 
                 // Add tagged regions
@@ -366,12 +368,14 @@ fn document_to_text(
 
         // If attributes are set, filter by conditional regions
         let has_attrs = !attributes.is_empty();
-        let has_conditionals = !doc.parsed.conditional_regions.is_empty();
+        let has_conditionals = doc.parsed.as_ref().map(|p| !p.conditional_regions.is_empty()).unwrap_or(false);
         if has_attrs && has_conditionals {
             let attr_set: HashSet<_> = attributes.iter().collect();
             let relevant_conditionals: Vec<_> = doc
                 .parsed
-                .conditional_regions
+                .as_ref()
+                .map(|p| &p.conditional_regions)
+                .map_or(&[] as &[_], |v| v)
                 .iter()
                 .filter(|c| {
                     // Include if the attribute is set (active) OR if it's not in our attr set
@@ -387,12 +391,12 @@ fn document_to_text(
                     filtered_out.push_str(&format!("{key}: {value}\n"));
                 }
                 filtered_out.push('\n');
-                filtered_out.push_str(&format!("[[{}]]\n", doc.anchor));
+                filtered_out.push_str(&format!("[[{}]]\n", doc.doc.anchor));
                 let title = doc
-                    .anchor
+                    .doc.anchor
                     .rfind('#')
-                    .map(|p| &doc.anchor[p + 1..])
-                    .unwrap_or(&doc.anchor);
+                    .map(|p| &doc.doc.anchor[p + 1..])
+                    .unwrap_or(&doc.doc.anchor);
                 filtered_out.push_str(&format!("= {title}\n\n"));
 
                 for region in relevant_conditionals {
@@ -405,7 +409,7 @@ fn document_to_text(
 
         out
     } else {
-        doc.parsed.raw_content.trim().to_string()
+        doc.parsed.as_ref().map(|p| p.raw_content.trim().to_string()).unwrap_or_default()
     }
 }
 

@@ -312,7 +312,7 @@ let graph = aden_graph::cache::build_from_directory_cached(&opts.path)?;
                     continue;
                 }
                 visited.insert(node);
-                println!("  [{}] {}", d, graph.graph[node].anchor);
+                println!("  [{}] {}", d, graph.graph[node].doc.anchor);
                 for neighbor in graph.graph.neighbors_directed(node, Direction::Outgoing) {
                     if !visited.contains(&neighbor) {
                         queue.push_back((neighbor, d + 1));
@@ -410,6 +410,7 @@ pub fn cmd_query(
                     .graph
                     .find_edge(node, neighbor)
                     .and_then(|e| graph.graph.edge_weight(e))
+                    .map(|e| &e.edge_type)
                     .copied()
                     .unwrap_or(aden_core::EdgeType::Uses);
                 if let Some(ft) = filter_type
@@ -462,6 +463,7 @@ pub fn cmd_query(
                     .graph
                     .find_edge(node, neighbor)
                     .and_then(|e| graph.graph.edge_weight(e))
+                    .map(|e| &e.edge_type)
                     .copied()
                     .unwrap_or(aden_core::EdgeType::Uses);
                 if !impact_types.contains(&weight) {
@@ -913,13 +915,27 @@ pub fn cmd_search(
             for edge_idx in graph.graph.edge_indices() {
                 let (src, tgt) = graph.graph.edge_endpoints(edge_idx).expect("valid edge");
                 let edge_type = &graph.graph[edge_idx];
-                if edge_type.is_semantic() {
-                    let src_anchor = graph.graph[src].anchor.to_lowercase();
-                    let tgt_anchor = graph.graph[tgt].anchor.to_lowercase();
+                let semantic_types = [
+                    aden_core::EdgeType::IsA,
+                    aden_core::EdgeType::PartOf,
+                    aden_core::EdgeType::RelatesTo,
+                    aden_core::EdgeType::SimilarTo,
+                    aden_core::EdgeType::Causes,
+                    aden_core::EdgeType::Implies,
+                    aden_core::EdgeType::SynonymOf,
+                    aden_core::EdgeType::AntonymOf,
+                    aden_core::EdgeType::AssociatedWith,
+                    aden_core::EdgeType::PrerequisiteFor,
+                    aden_core::EdgeType::Explains,
+                    aden_core::EdgeType::IsEquivalentTo,
+                ];
+                if semantic_types.contains(&edge_type.edge_type) {
+                    let src_anchor = graph.graph[src].doc.anchor.to_lowercase();
+                    let tgt_anchor = graph.graph[tgt].doc.anchor.to_lowercase();
                     if src_anchor.contains(&query_lower) || tgt_anchor.contains(&query_lower) {
                         semantic_results.push((
-                            graph.graph[tgt].anchor.clone(),
-                            format!("{:?} via {:?}", edge_type, graph.graph[src].anchor),
+                            graph.graph[tgt].doc.anchor.clone(),
+                            format!("{:?} via {:?}", edge_type, graph.graph[src].doc.anchor),
                         ));
                     }
                 }
@@ -979,10 +995,24 @@ pub fn cmd_list(
         let mut semantic_anchors: std::collections::HashSet<String> = std::collections::HashSet::new();
         for edge_idx in graph.graph.edge_indices() {
             let edge_type = &graph.graph[edge_idx];
-            if edge_type.is_semantic() {
+            let semantic_types = [
+                aden_core::EdgeType::IsA,
+                aden_core::EdgeType::PartOf,
+                aden_core::EdgeType::RelatesTo,
+                aden_core::EdgeType::SimilarTo,
+                aden_core::EdgeType::Causes,
+                aden_core::EdgeType::Implies,
+                aden_core::EdgeType::SynonymOf,
+                aden_core::EdgeType::AntonymOf,
+                aden_core::EdgeType::AssociatedWith,
+                aden_core::EdgeType::PrerequisiteFor,
+                aden_core::EdgeType::Explains,
+                aden_core::EdgeType::IsEquivalentTo,
+            ];
+            if semantic_types.contains(&edge_type.edge_type) {
                 let (src, tgt) = graph.graph.edge_endpoints(edge_idx).expect("valid edge");
-                semantic_anchors.insert(graph.graph[src].anchor.clone());
-                semantic_anchors.insert(graph.graph[tgt].anchor.clone());
+                semantic_anchors.insert(graph.graph[src].doc.anchor.clone());
+                semantic_anchors.insert(graph.graph[tgt].doc.anchor.clone());
             }
         }
         semantic_anchors.into_iter().collect()
@@ -990,7 +1020,7 @@ pub fn cmd_list(
         graph
             .graph
             .node_indices()
-            .filter_map(|idx| graph.graph.node_weight(idx).map(|n| n.anchor.clone()))
+            .filter_map(|idx| graph.graph.node_weight(idx).map(|n| n.doc.anchor.clone()))
             .collect()
     };
 
@@ -1118,7 +1148,7 @@ pub fn cmd_locate(
         let mut hits = Vec::new();
 
         for node in graph.graph.node_indices() {
-            let anchor = &graph.graph[node].anchor;
+            let anchor = &graph.graph[node].doc.anchor;
             let anchor_lower = anchor.to_lowercase();
 
             // Case-insensitive match: exact suffix, #suffix, or partial
@@ -1149,7 +1179,7 @@ pub fn cmd_locate(
             let mut fuzzy_hits = Vec::new();
             let search_term = sym.to_lowercase();
             for node in graph.graph.node_indices() {
-                let anchor = &graph.graph[node].anchor;
+            let anchor = &graph.graph[node].doc.anchor;
                 let anchor_lower = anchor.to_lowercase();
                 if anchor_lower.contains(&search_term)
                     || anchor_lower.split('#').any(|p| p.contains(&search_term))
@@ -1256,7 +1286,7 @@ pub fn cmd_watch(
     }).expect("Error setting Ctrl-C handler");
 
     // Optional: Restore graph from cache for faster startup
-    let mut graph: Option<aden_graph::graph::AdenGraph> = None;
+    let mut graph: Option<aden_graph::AdenGraph<aden_graph::DocumentNode, aden_graph::AdenEdge>> = None;
     if graph_sync && restore {
         println!("Restoring graph from cache...");
         match aden_graph::cache::build_from_directory_cached(path) {

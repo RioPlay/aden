@@ -15,6 +15,7 @@
 // GNU Affero General Public License for more details.
 //
 use crate::graph::AdenGraph;
+use crate::nodes::{DocumentNode, AdenEdge, GraphNode};
 
 /// Verify `:source_hash:` for all nodes that have one.
 /// Returns a list of (anchor, warning_message) for stale or mismatched hashes.
@@ -22,7 +23,7 @@ use crate::graph::AdenGraph;
 /// NOTE: Hash validation is intentionally lenient since `aden regen` in CI
 /// ensures contracts are always fresh. This check warns only about missing
 /// source files, not stale hashes.
-pub fn check_hashes(graph: &AdenGraph) -> Vec<(String, String)> {
+pub fn check_hashes(graph: &AdenGraph<DocumentNode, AdenEdge>) -> Vec<(String, String)> {
     let mut issues = Vec::new();
     for node in graph.graph.node_indices() {
         let doc = &graph.graph[node];
@@ -35,7 +36,7 @@ pub fn check_hashes(graph: &AdenGraph) -> Vec<(String, String)> {
             let target_path = std::path::PathBuf::from(source_file);
             if !target_path.exists() {
                 issues.push((
-                    doc.anchor.clone(),
+                    doc.anchor().to_string(),
                     "WARNING: source file missing".to_string(),
                 ));
             }

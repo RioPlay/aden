@@ -14,20 +14,46 @@
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 // GNU Affero General Public License for more details.
 //
-//! Graph engine for the Aden knowledge graph.
+//! Generic graph engine for the Aden knowledge graph.
 //!
-//! Parses `.adoc` / `.aden` files, builds a directed graph of Documents,
-//! validates references, detects cycles, and injects backlinks.
+//! `.adoc` files are the structural harness — the canonical format for
+//! defining nodes, edges, and references. But the engine itself is
+//! language-agnostic: any knowledge type can be indexed.
+//!
+//! ## Architecture
+//!
+//! ```text
+//! .adoc files (human-readable, git-tracked)
+//!     -> parse
+//! DocumentNode (implements GraphNode trait)
+//!     ->
+//! AdenGraph<N, E> (generic graph engine)
+//!     -> persist
+//! aden-store (Sled + Postcard, or RocksDB/TiKV later)
+//! ```
+//!
+//! ## Key modules
+//!
+//! - `nodes` — `GraphNode` and `GraphEdge` traits (language-agnostic)
+//! - `nodes::aden` — `DocumentNode` and `AdenEdge` (aden-specific impl)
+//! - `graph` — `AdenGraph<N, E>` generic graph engine
+//! - `parser` — `.adoc` → `DocumentNode`
+//! - `cache` — persistence layer (Sled/Postcard + JSON fallback)
+//! - `bridge` — sync between in-memory graph and storage
 
 pub mod backlinks;
+pub mod bridge;
 pub mod cache;
 pub mod cycles;
 pub mod graph;
 pub mod integrity;
+pub mod nodes;
 pub mod parser;
 pub mod query;
 
-pub use graph::{AdenGraph, DocumentNode};
+pub use graph::AdenGraph;
+pub use nodes::{GraphNode, GraphEdge};
+pub use nodes::aden::{DocumentNode, AdenEdge};
 pub use petgraph::Direction;
 
 #[cfg(test)]

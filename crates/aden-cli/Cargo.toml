@@ -30,6 +30,7 @@ walkdir = "2"
 chrono = "0.4"
 serde_yaml = "0.9"
 ureq = "2"
+aden-diagnose = { path = "../aden-diagnose" }
 
 [features]
 default = ["watch"]

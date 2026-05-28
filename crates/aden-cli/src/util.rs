@@ -345,7 +345,7 @@ pub fn node_to_json(node: &aden_graph::DocumentNode, depth: usize) -> serde_json
     let mut map = Map::new();
     map.insert(
         "anchor".to_string(),
-        serde_json::Value::String(node.anchor.clone()),
+        serde_json::Value::String(node.doc.anchor.clone()),
     );
     map.insert(
         "node_type".to_string(),
@@ -358,9 +358,8 @@ pub fn node_to_json(node: &aden_graph::DocumentNode, depth: usize) -> serde_json
 /// Resolve the human-readable type label for a graph node.
 pub fn resolve_node_type(node: &aden_graph::DocumentNode) -> String {
     node.parsed
-        .attributes
-        .get("node-type")
-        .cloned()
+        .as_ref()
+        .and_then(|p| p.attributes.get("node-type").cloned())
         .unwrap_or_else(|| format!("{:?}", node.doc.node_type))
 }
 
@@ -430,8 +429,10 @@ pub fn perform_check(path: &Path) -> Result<Vec<String>, Box<dyn std::error::Err
     }
 
     for node in graph.graph.node_indices() {
-        for anchor in &graph.graph[node].parsed.anchors {
-            all_anchors.insert(anchor.clone());
+        if let Some(parsed) = &graph.graph[node].parsed {
+            for anchor in &parsed.anchors {
+                all_anchors.insert(anchor.clone());
+            }
         }
     }
 

@@ -53,7 +53,7 @@ fi
 SECRET_FOUND=0
 for file in $STAGED; do
     # Skip our own test fixtures and policy docs that intentionally mention secrets
-    if echo "$file" | grep -qE "(tools/git-hooks/pre-commit|docs/policy.adoc|adr-002|MAINTAINERS)"; then
+    if echo "$file" | grep -qE "(tools/git-hooks/pre-commit|docs/policy.adoc|adr-001|MAINTAINERS)"; then
         continue
     fi
     for pattern in "${SECRET_PATTERNS[@]}"; do

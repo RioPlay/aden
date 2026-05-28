@@ -1,0 +1,726 @@
+:proj: aden
+:author: RioPlay
+:lang: rust
+:toc: left
+:toclevels: 3
+
+[[commands]]
+= Aden CLI Reference
+
+Complete reference for every aden command, flag, and option.
+
+== Global Options
+
+|===
+|Flag |Description |Example
+
+|--unlimited |Remove all result limits |`aden list --unlimited`
+|--json |Output JSON where supported |`aden query --json`
+|--verbose |Verbose output |`aden --verbose ask "..."`
+|-h, --help |Show help |`aden --help`
+|===
+
+== Core Commands
+
+=== init
+
+Scaffold `.agent/` templates in a target repository.
+
+[source,bash]
+----
+aden init [DIR]
+----
+
+Creates:
+- `.agent/` — templates, onboarding docs, constraints, session log
+- `.adenignore` — security-first defaults (skips `*.env`, `secrets/`, `target/`)
+
+=== new
+
+Create a new project from a language template with Aden scaffolding.
+
+[source,bash]
+----
+aden new NAME --lang rust|go|js|python [DIR]
+----
+
+Scaffolds:
+- `Cargo.toml` with workspace structure
+- `.agent/` with templates and constraints
+- `.adenignore` with security defaults
+- `docs/kickoff-NAME.adoc` with project goals
+
+=== gen
+
+Parse source files and emit `.adoc`/`.aden` contracts.
+
+[source,bash]
+----
+# Single file
+aden gen src/lib.rs
+
+# Directory (auto-detects structure)
+aden gen src/ --auto
+
+# Whole project (quiet mode for CI)
+aden gen . --auto --quiet
+
+# Three-way merge (preserve human blocks)
+aden gen src/ --auto --merge
+
+# Dry-run (show what would change)
+aden gen src/ --auto --propose
+
+# Markdown output
+aden gen . --auto --format md
+----
+
+|===
+|Flag |Description
+
+|--auto |Auto-detect existing contract structure
+|--merge |Three-way merge: update only `[generated]` blocks
+|--propose |Dry-run: output MergeActions without writing files
+|--format |Output format: `adoc` (default), `md`
+|--quiet |Suppress per-file emit lines
+|===
+
+=== check
+
+Verify all `<<refs>>` resolve to existing `[[anchors]]`.
+
+[source,bash]
+----
+aden check [DIR]
+aden check . --severity Error
+----
+
+Validates:
+- Every cross-reference resolves
+- No include cycles
+- No duplicate anchors
+- Source hash integrity
+- Typed edges valid
+
+|===
+|Severity |Behavior
+
+|Suggest |Non-blocking recommendation
+|Warn |Surfaces in output
+|Forbid |Fails CI gate
+|===
+
+=== lint
+
+Lint source files using tree-sitter AST analysis.
+
+[source,bash]
+----
+aden lint [PATH]
+aden lint . --fix
+aden lint . --severity Error
+aden lint . --json
+----
+
+Checks:
+- Unused variables
+- Unreachable code
+- Implicit returns
+- Security patterns (OWASP)
+- Style consistency
+
+=== test
+
+Discover and run tests across all languages.
+
+[source,bash]
+----
+aden test [PATH]
+aden test . --scope unit
+aden test . --scope integration
+aden test . --scope all
+aden test . --filter PATTERN
+aden test . --list
+----
+
+Supports:
+- Rust: `#[test]`, `#[cfg(test)]`
+- Python: `def test_*()`, `class Test*`
+- Go: `func Test*`
+- TypeScript: `describe/it/test`, `@Test`
+- Java: `@Test`, `@ParameterizedTest`
+- 305+ languages via tree-sitter
+
+== Graph Commands
+
+=== asm
+
+Assemble a context prompt from the knowledge graph.
+
+[source,bash]
+----
+# Basic usage
+aden asm --from mod-aden-core
+
+# With depth and budget
+aden asm --from mod-aden-core --depth 3 --budget 8192
+
+# Specific edge types
+aden asm --from mod-aden-core --edge_types Uses,Calls
+
+# Output to file
+aden asm --from mod-aden-core --out context.adoc
+
+# Silent mode (skip intro)
+aden asm --from mod-aden-core --silent
+
+# Inspect mode (show what would be included)
+aden asm --from mod-aden-core --inspect
+
+# Auto mode (adjust budget based on relevance)
+aden asm --from mod-aden-core --auto
+
+# Strict mode (never exceed budget)
+aden asm --from mod-aden-core --strict
+
+# Tag filtering
+aden asm --from mod-aden-core --include-tag main
+aden asm --from mod-aden-core --exclude-tag admin
+
+# Set attributes for conditional processing
+aden asm --from mod-aden-core --set-attr mode=production
+----
+
+|===
+|Flag |Description |Default
+
+|--from |Starting anchor (required) |—
+|--depth |BFS traversal depth |3
+|--budget |Token budget (bytes/4 heuristic) |8192
+|--edge_types |Comma-separated edge types |All
+|--out |Output file path |stdout
+|--format |Output format: `llm` (default), `adg`, `aden` |llm
+|--silent |Skip intro, output only context |false
+|--auto |Adjust budget based on relevance |false
+|--strict |Never exceed budget |false
+|--inspect |Show what would be included |false
+|--include_tag |Include content with this tag |—
+|--exclude_tag |Exclude content with this tag |—
+|--set_attr |Set attribute for conditional processing |—
+|===
+
+=== query
+
+Query the knowledge graph and emit JSON.
+
+[source,bash]
+----
+# Reachable nodes
+aden query --from mod-aden-core --depth 2
+
+# Backlinks (everything referencing this anchor)
+aden query --backlinks mod-aden-core
+
+# Impact analysis (transitive closure)
+aden query --impact mod-aden-core
+
+# JSON output
+aden query --from mod-aden-core --json
+
+# Table output
+aden query --from mod-aden-core --format table
+----
+
+|===
+|Flag |Description
+
+|--from |Starting anchor
+|--depth |BFS traversal depth
+|--backlinks |Find all documents referencing this anchor
+|--impact |Find transitive closure over dependency edges
+|--format |Output format: `json` (default), `table`
+|===
+
+=== ask
+
+Natural-language question to subgraph assembly.
+
+[source,bash]
+----
+# Basic question
+aden ask "How does authentication work?"
+
+# Pin starting anchor
+aden ask "How does authentication work?" --from mod-auth
+
+# Custom budget
+aden ask "What breaks if I rename this?" --budget 8192
+
+# Custom model
+aden ask "Explain the parser" --model ollama:llama3
+----
+
+Internally:
+1. Search the inverted index for matching keywords
+2. Classify intent: Explain, Usage, Refactor, Impact, Debug, General
+3. Select edge types and depth based on intent
+4. BFS traversal from starting anchor
+5. Token budgeting with 4/3 bytes-per-token heuristic
+6. Assemble context with AsciiDoc markup stripped
+
+|===
+|Intent |Depth |Edge Types
+
+|Explain |2 |Uses, Calls, Implements, Documents
+|Usage |2 |Uses, Documents, Constrains
+|Refactor |4 |Uses, Calls, Constrains, Implements
+|Impact |3 |Uses, Calls, Constrains
+|Debug |3 |Uses, Calls, Implements
+|General |2 |Uses, Documents, Constrains
+|===
+
+=== search
+
+Full-text search across the knowledge graph.
+
+[source,bash]
+----
+aden search "authentication"
+aden search "token budget" --limit 20
+aden search "parser" --doc_type module
+aden search "security" --semantics
+----
+
+|===
+|Flag |Description |Default
+
+|--limit |Max results |50
+|--offset |Pagination offset |0
+|--doc_type |Filter: module, adr, plan, use-case |All
+|--semantics |Include semantic relationship results |false
+|===
+
+=== list
+
+List all anchors and contracts in the knowledge graph.
+
+[source,bash]
+----
+aden list
+aden list --filter "mod-aden-*"
+aden list --verbose
+aden list --semantics
+aden list --limit 20
+aden list --unlimited
+----
+
+|===
+|Flag |Description |Default
+
+|--filter |Filter by pattern |All
+|--verbose |Show detailed info |false
+|--semantics |Show only semantic concept nodes |false
+|--limit |Max results |50
+|--offset |Pagination offset |0
+|--unlimited |No limit |false
+|===
+
+=== locate
+
+Find symbol definitions or call sites.
+
+[source,bash]
+----
+# Find definition
+aden locate --symbol assemble
+
+# Find call sites
+aden locate --caller_of assemble
+
+# With context
+aden locate --symbol assemble --context 5
+
+# JSON output
+aden locate --symbol assemble --json
+
+# Limit results
+aden locate --symbol Error --limit 10
+----
+
+|===
+|Flag |Description |Default
+
+|--symbol |Find definition of this symbol |—
+|--caller_of |Find call sites of this symbol |—
+|--format |Output format: `plain` (default), `json` |plain
+|--context |Include N lines of context |—
+|--limit |Max results |50
+|===
+
+== Health and CI Commands
+
+=== heal
+
+Detect drift between source and contracts.
+
+[source,bash]
+----
+# Scan for drift
+aden heal .
+
+# Generate proposals for review
+aden heal . --propose
+
+# Auto-fix high-confidence issues
+aden heal . --fix
+
+# Garbage collect orphaned contracts
+aden heal . --gc
+
+# Limit to files changed since git ref
+aden heal . --since HEAD~5
+
+# Apply a specific proposal
+aden heal . --apply 12345
+
+# Watch mode (auto-heal on changes)
+aden heal . --watch src/
+----
+
+|===
+|Drift Event |Severity |Auto-Fix
+
+|StaleHash |High |Yes
+|SignatureMismatch |High |Yes
+|MissingContract |Medium |No
+|OrphanAnchor |Medium |Yes (--gc)
+|BrokenReference |Critical |No
+|DeadLink |Low |No
+|MarkdownDrift |High |Yes
+|StaleMarkdown |Medium |No
+|===
+
+=== doctor
+
+Diagnose the environment and repo health.
+
+[source,bash]
+----
+aden doctor
+aden doctor --verbose
+----
+
+Checks:
+- Git availability
+- Rust toolchain (rustc, cargo)
+- Aden CLI in PATH
+- `.agent/` directory present
+- `.adenignore` present
+- Knowledge graph health score
+
+=== ci-check
+
+Run all local CI gates before committing.
+
+[source,bash]
+----
+aden ci-check .
+----
+
+Runs:
+1. `aden check` — reference validation
+2. Constitutional firewall — policy enforcement
+3. `aden test` — test execution
+4. `aden lint` — source linting
+5. Secret scan — hardcoded credentials
+6. Accreditation check — license compliance
+7. OWASP audit — security vulnerabilities
+8. Merge conflict markers — clean diffs
+9. Insecure protocol — no HTTP/FTP
+10. Cargo clippy — Rust best practices
+11. Cargo audit — dependency vulnerabilities
+12. Contract freshness — drift detection
+
+=== review
+
+Semantic review with token budgeting.
+
+[source,bash]
+----
+aden review [PATH]
+aden review . --since HEAD~5
+----
+
+Validates low-confidence proposals against a token budget.
+
+=== audit
+
+OWASP-style security audit.
+
+[source,bash]
+----
+aden audit [PATH]
+aden audit . --lang rust
+aden audit . --format json
+aden audit . --strict
+----
+
+|===
+|Flag |Description |Default
+
+|--lang |Filter by language |Auto-detect
+|--format |Output: `text`, `json`, `adoc` |text
+|--strict |Exit non-zero on any finding |false
+|===
+
+=== emergency
+
+Override severity level, auto-expires.
+
+[source,bash]
+----
+aden emergency --reason "Urgent fix needed" --ttl 24h
+----
+
+|===
+|Flag |Description |Default
+
+|--reason |Justification for override |—
+|--ttl |Time-to-live: `1h`, `24h`, `7d` |24h
+|===
+
+=== suggest
+
+AI assistant: describe intent, get the right command.
+
+[source,bash]
+----
+aden suggest "find all tests in the project"
+aden suggest "generate docs for my code"
+aden suggest "find how X works"
+----
+
+## Workspace Commands
+
+### session
+
+Atomic session lock for agents.
+
+[source,bash]
+----
+aden session --agent_id claude --task "Refactor auth module" --status in_progress
+aden session --agent_id claude --task "Refactor auth module" --status completed
+----
+
+### federation
+
+Multi-repository workspace management.
+
+[source,bash]
+----
+aden federation list
+aden federation add ../other-repo --name "backend"
+aden federation remove backend
+aden federation config
+----
+
+### mcp
+
+Model Context Protocol integration.
+
+[source,bash]
+----
+# Install for all platforms
+aden mcp install --all
+
+# Install for specific platform
+aden mcp install --platform opencode
+aden mcp install --platform claude
+aden mcp install --platform cursor
+
+# Uninstall
+aden mcp uninstall --all
+aden mcp uninstall --platform opencode
+
+# List configured platforms
+aden mcp list
+
+# Start HTTP server for CI/agents
+aden mcp serve --port 3030
+----
+
+|===
+|Platform |Config Path
+
+|opencode |~/.config/opencode/mcp.json
+|claude |~/.claude/mcp.json
+|cursor |~/.cursor/mcp.json
+|codex |~/.codex/mcp.json
+|zed |~/.config/zed/mcp.json
+|windsurf |~/.windsurf/mcp.json
+|===
+
+### kickoff
+
+Create kickoff document for a new initiative.
+
+[source,bash]
+----
+aden kickoff --name my-project
+aden kickoff --name my-project --interactive
+----
+
+### workflow
+
+Instantiate templates with substitutions.
+
+[source,bash]
+----
+aden workflow kickoff
+aden workflow design
+aden workflow spec
+aden workflow task
+aden workflow adr
+aden workflow kickoff --from FILE
+aden workflow kickoff --out FILE
+----
+
+### licenses
+
+Generate third-party accreditation report.
+
+[source,bash]
+----
+aden licenses
+aden licenses --out NOTICE.md
+aden licenses --full
+----
+
+### complete
+
+Fill incomplete contracts via LLM.
+
+[source,bash]
+----
+aden complete [DIR]
+aden complete . --model ollama:llama3
+aden complete . --dry-run
+----
+
+## Watch Mode
+
+### watch
+
+Watch source files and auto-regenerate contracts.
+
+[source,bash]
+----
+aden watch [DIR]
+aden watch . --sync
+aden watch . --graph-sync
+aden watch . --restore
+----
+
+|===
+|Flag |Description
+
+|--sync |Run gen + check + heal on each change
+|--graph-sync |Also sync graph in real-time
+|--restore |Restore graph from cache on startup
+|===
+
+## Sync Command
+
+### sync
+
+Run `gen` + `check` + `heal` in one pass.
+
+[source,bash]
+----
+aden sync .
+----
+
+This is the recommended command for keeping everything in sync before committing.
+
+#== Output Formats
+
+Aden commands default to the format best suited for their intended consumer. LLM-facing commands default to stripped, token-dense prose. Human-facing commands default to human-readable output.
+
+=== LLM-Facing Commands
+
+These commands default to formats optimized for AI agents consuming context:
+
+|===
+|Command |Default Format |What It Means
+
+|`aden asm` |`--format llm` |Stripped prose — no `[[anchors]]`, no `|===` tables, no `:key: value` lines. Every token carries signal.
+|`aden ask` |Uses `asm` internally |Same stripped prose default. No `--format` flag needed.
+|`aden query` |`--format json` |Structured JSON for programmatic consumption.
+|===
+
+To get raw AsciiDoc from these commands (e.g. for an IDE renderer), opt in explicitly:
+
+[source,bash]
+----
+aden asm --from mod-aden-core --format aden
+aden query --from mod-aden-core --format table
+----
+
+=== Human-Facing Commands
+
+These commands default to human-readable output:
+
+|===
+|Command |Default Format |What It Means
+
+|`aden audit` |`--format text` |Color-coded text report for terminal reading.
+|`aden locate` |`--format plain` |Human-readable symbol location with line numbers.
+|`aden list` |Table |Terminal table with anchor names.
+|`aden search` |Table |Terminal table with BM25 scores.
+|===
+
+To get machine-readable output, opt in:
+
+[source,bash]
+----
+aden audit --format json
+aden locate --symbol main --json
+aden search "authentication" --json
+----
+
+=== Contract Generation Format
+
+`aden gen` produces contract files, not LLM context. The `--format` flag controls the contract file format:
+
+|===
+|Command |Default Format |What It Means
+
+|`aden gen` |`--format adoc` |AsciiDoc contracts (default, recommended).
+|`aden gen` |`--format md` |Markdown contracts (for teams that prefer `.md`).
+|===
+
+[source,bash]
+----
+# Default: AsciiDoc contracts
+aden gen . --auto
+
+# Markdown contracts
+aden gen . --auto --format md
+----
+
+=== Previous Commands (Deprecated)
+
+|===
+|Old |New |Reason
+
+|`aden graph` |`aden query` |Renamed for clarity
+|`aden ls` |`aden list` |Consistent naming
+|`aden regen` |`aden gen . --auto` |Unified with gen
+|===
+
+## Related Documents
+
+. <<getting-started>> — Hands-on tutorial
+. <<user-guide>> — Daily workflows
+. <<ai-integration>> — AI agent usage
+. <<architecture>> — Crate architecture
