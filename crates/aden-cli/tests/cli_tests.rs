@@ -88,9 +88,11 @@ fn test_asm_assembles_nonempty_output() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(output.status.success(), "aden asm failed: {}", stdout);
+    // aden asm outputs ADG (JSON) format; verify the anchor name is present.
     assert!(
-        stdout.contains("[[readme]]"),
-        "Should contain the readme anchor"
+        stdout.contains("\"readme\""),
+        "Should contain the readme anchor in ADG output, got: {}",
+        stdout
     );
 }
 

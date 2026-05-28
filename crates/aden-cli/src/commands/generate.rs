@@ -10,6 +10,9 @@ use crate::util::{
 /// This ensures deterministic module anchors exist before symbol contracts.
 /// Language-agnostic: works for any project with src/ directories.
 fn generate_module_contracts(root: &Path, out_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    // Ensure the output directory exists before writing any contracts.
+    std::fs::create_dir_all(out_dir)?;
+
     // Common source directory names across languages
     let src_dirs = ["src", "lib", "app", "modules", "source"];
     
@@ -211,13 +214,15 @@ pub fn cmd_gen(
         let source = std::fs::read_to_string(path)?;
         let docs = aden_parse::parse_file(path, &source)?;
 
+        // Resolve output dir relative to the file's parent, not the CWD.
+        let file_root = path.parent().unwrap_or(path);
         let effective_out = if detect_out_dir {
             detect_contract_structure(path, path)
-                .unwrap_or_else(|| Path::new("contracts").to_path_buf())
+                .unwrap_or_else(|| file_root.join("contracts"))
         } else {
             out_dir
-                .unwrap_or_else(|| Path::new("contracts"))
-                .to_path_buf()
+                .map(|d| d.to_path_buf())
+                .unwrap_or_else(|| file_root.join("contracts"))
         };
 
         if merge || propose {
@@ -231,7 +236,17 @@ pub fn cmd_gen(
     }
 
     let root = find_project_root(path);
-    let effective_out = out_dir.unwrap_or_else(|| Path::new("contracts"));
+    // Default output dir is <target>/contracts — always relative to the
+    // project being indexed, never to the current working directory.
+    let default_out = root.join("contracts");
+    let effective_out_buf;
+    let effective_out = match out_dir {
+        Some(d) => d,
+        None => {
+            effective_out_buf = default_out;
+            &effective_out_buf
+        }
+    };
 
     // Auto-generate module contracts for each crate (deterministic)
     generate_module_contracts(&root, effective_out)?;
@@ -438,7 +453,11 @@ pub fn cmd_gen_contract(
         return Ok(());
     }
 
-    let effective_out = out_dir.unwrap_or_else(|| Path::new("contracts"));
+    // NOTE: callers must pass a resolved out_dir. The fallback "contracts" is
+    // intentionally relative to the CWD as a last resort; callers should never
+    // hit this branch.
+    let fallback = std::path::PathBuf::from("contracts");
+    let effective_out = out_dir.unwrap_or(&fallback);
     std::fs::create_dir_all(effective_out)?;
 
     let contract_path = effective_out.join(format!("{}.adoc", sanitize_anchor(&docs[0].anchor)));
