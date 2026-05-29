@@ -313,8 +313,12 @@ pub fn cmd_gen(
 
         // Open store for writing contracts
         let store_path = root.join(".aden").join("store");
-        let storage = SledStorage::new(store_path.to_str().unwrap_or(".aden/store"))
-            .map_err(|e| format!("Failed to open store: {}", e))?;
+        let storage = SledStorage::new(
+            store_path
+                .to_str()
+                .expect("Store path should be valid UTF-8"),
+        )
+        .map_err(|e| format!("Failed to open store at {}: {}", store_path.display(), e))?;
 
         let cache_path = root.join(".aden").join("gen-cache.json");
         let mut cache = load_gen_cache(&cache_path);

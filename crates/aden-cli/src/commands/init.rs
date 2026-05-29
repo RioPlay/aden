@@ -30,11 +30,11 @@ pub fn cmd_new(name: &str, lang: &str, parent: &Path) -> Result<(), Box<dyn std:
     // Run aden init in the new project
     cmd_init(&project_dir)?;
 
-    // Create initial docs directory
-    let docs_dir = project_dir.join("docs");
-    std::fs::create_dir_all(&docs_dir)?;
+    // Create initial docs directory (hidden under .aden)
+    let aden_docs_dir = project_dir.join(".aden").join("docs");
+    std::fs::create_dir_all(&aden_docs_dir)?;
 
-    // Create README with project identity
+    // Create README with project identity, stored under .aden/docs
     let readme = format!(
         r###"= {name}
 :proj: {name}
@@ -77,11 +77,11 @@ aden ci-check .
         name = name,
         lang = lang_lower
     );
-    std::fs::write(docs_dir.join("README.adoc"), readme)?;
+    std::fs::write(aden_docs_dir.join("README.adoc"), readme)?;
 
     if !quiet::is_quiet() { println!("✓ Created project {} in {}", name, project_dir.display()); }
     println!("✓ Language: {}", lang_lower);
-    println!("✓ Scaffolding: aden init, docs/, build system");
+    println!("✓ Scaffolding: aden init, .aden/docs, build system");
     println!("  Next steps:");
     println!("    cd {}", project_dir.display());
     println!("    aden kickoff --interactive --name {}", name);
@@ -439,7 +439,7 @@ Depending on your project's language/package manager:
 
 Always verify that third-party licenses are compatible with your project's license.
 "###;
-    std::fs::write(target.join("NOTICE.md"), notice)?;
+    std::fs::write(target.join(".aden").join("NOTICE.md"), notice)?;
 
     println!("Initialized .agent/ in {}", target.display());
     println!("Generated .adenignore with security-first defaults.");

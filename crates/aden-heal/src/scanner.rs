@@ -140,7 +140,11 @@ impl Scanner {
         let mut contract_docs: Vec<(String, Document)> = Vec::new();
 
         if store_path.exists() {
-            if let Ok(storage) = SledStorage::new(store_path.to_str().unwrap_or(".aden/store")) {
+            if let Ok(storage) = SledStorage::new(
+                store_path
+                    .to_str()
+                    .expect("Store path should be valid UTF-8"),
+            ) {
                 if let Ok(all_docs) = storage.get_all_documents() {
                     if !all_docs.is_empty() {
                         for (anchor, doc) in all_docs {
