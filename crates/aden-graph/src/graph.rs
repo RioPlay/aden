@@ -353,9 +353,12 @@ impl AdenGraph<DocumentNode, AdenEdge> {
         // Parallel first pass: parse all files
         let parsed_docs: Vec<(PathBuf, ParsedDocument)> = files
             .par_iter()
-            .map(|file_path| {
-                let parsed = parse_file(file_path).map_err(|e| GraphError::Parse(e.to_string()))?;
-                Ok((file_path.clone(), parsed))
+            .filter_map(|file_path| {
+                match parse_file(file_path) {
+                    Ok(parsed) => Some(Ok((file_path.clone(), parsed))),
+                    Err(e) if e.to_string().contains("binary") => None,
+                    Err(e) => Some(Err(GraphError::Parse(e.to_string()))),
+                }
             })
             .collect::<Result<Vec<_>, _>>()?;
 
@@ -501,6 +504,17 @@ impl AdenGraph<DocumentNode, AdenEdge> {
         Ok(graph)
     }
 
+    /// Mark documents as self-references based on the given config.
+    /// Documents whose source_path matches any pattern in
+    /// `self_reference_patterns` get confidence 0.1 to prevent self-bias.
+    pub fn mark_self_references(&mut self, config: &aden_core::AdenConfig) {
+        for idx in self.graph.node_indices() {
+            if let Some(node) = self.graph.node_weight_mut(idx) {
+                node.doc.mark_self_reference(config);
+            }
+        }
+    }
+
     /// Build a graph from a storage backend instead of files.
     ///
     /// Loads all documents and edges from the storage layer and constructs
@@ -616,6 +630,7 @@ fn parsed_to_document(parsed: &ParsedDocument, anchor: &str, file_path: &Path) -
         blocks: parsed.blocks.clone(),
         source_span: None,
         metadata: parsed.metadata.clone(),
+        confidence: 0.9,
     }
 }
 

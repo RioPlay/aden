@@ -145,8 +145,13 @@ enum BlockState {
 pub fn parse_file(path: &Path) -> Result<ParsedDocument, ParseError> {
     let mut file = std::fs::File::open(path).map_err(|e| ParseError::Io(e.to_string()))?;
     let mut raw = String::new();
-    file.read_to_string(&mut raw)
-        .map_err(|e| ParseError::Io(e.to_string()))?;
+    match file.read_to_string(&mut raw) {
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
+            return Err(ParseError::Io("Skipping binary file".to_string()));
+        }
+        Err(e) => return Err(ParseError::Io(e.to_string())),
+    }
 
     let mut attrs = HashMap::new();
     // ── Extract hashtags (brain-like keyword linking) from raw text ───────────

@@ -456,6 +456,7 @@ fn parsed_to_doc(parsed: &aden_graph::parser::ParsedDocument, anchor: &str, _fil
         blocks: vec![],
         source_span: None,
         metadata: None,
+        confidence: 0.9,
     }
 }
 

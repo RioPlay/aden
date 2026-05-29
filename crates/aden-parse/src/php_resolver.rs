@@ -647,6 +647,7 @@ fn emit_php_symbol(
         blocks,
         source_span: Some(span),
         metadata: None,
+        confidence: 0.9,
     })
 }
 

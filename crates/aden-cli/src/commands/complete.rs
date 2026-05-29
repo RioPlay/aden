@@ -53,7 +53,7 @@ pub fn cmd_complete(
         
         let asm_opts = AssemblyOptions {
             start_anchor: anchor.clone(),
-            max_depth: 2,
+            max_depth: 5,
             token_budget: 4096,
             edge_types: Vec::new(),
             block_filter: Vec::new(),

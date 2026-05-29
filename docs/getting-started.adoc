@@ -34,6 +34,23 @@ aden
 # Expected output: aden 0.1.0
 ----
 
+=== Adding Aden to Your PATH
+
+After installation via `install.sh`, add aden to your PATH if it's not automatically available:
+
+.Linux (recommended — user-local)
+[source,bash]
+----
+# Add to ~/.bashrc or ~/.zshrc
+export PATH="$HOME/.local/bin:$PATH"
+
+# Or create a symlink
+mkdir -p ~/.local/bin
+ln -s /path/to/aden ~/.local/bin/aden
+----
+
+NOTE: Currently aden is only distributed via GitHub. Clone the repository and run `install.sh` to install.
+
 == Step 2: Initialize Your Repository
 
 Run this inside any project folder:

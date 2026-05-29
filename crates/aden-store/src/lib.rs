@@ -609,6 +609,7 @@ mod tests {
             blocks: vec![],
             source_span: None,
             metadata: None,
+            confidence: 1.0,
         };
 
         storage.put_document(&doc).unwrap();
@@ -625,7 +626,7 @@ mod tests {
         let path = temp_path();
         let storage = SledStorage::new(&path).unwrap();
 
-        storage
+storage
             .put_document(&Document {
                 anchor: "src".to_string(),
                 node_type: aden_core::NodeType::Note,
@@ -633,6 +634,7 @@ mod tests {
                 blocks: vec![],
                 source_span: None,
                 metadata: None,
+                confidence: 1.0,
             })
             .unwrap();
 
@@ -644,6 +646,7 @@ mod tests {
                 blocks: vec![],
                 source_span: None,
                 metadata: None,
+                confidence: 1.0,
             })
             .unwrap();
 
@@ -684,6 +687,7 @@ mod tests {
                     blocks: vec![],
                     source_span: None,
                     metadata: None,
+                    confidence: 1.0,
                 })
                 .unwrap();
         }
@@ -712,6 +716,7 @@ mod tests {
                     blocks: vec![],
                     source_span: None,
                     metadata: None,
+                    confidence: 1.0,
                 })
                 .unwrap();
         }
@@ -757,6 +762,7 @@ mod tests {
             blocks: vec![],
             source_span: None,
             metadata: None,
+            confidence: 1.0,
         };
 
         let bytes = serialize_document(&doc).unwrap();
@@ -786,6 +792,7 @@ mod tests {
                 blocks: vec![],
                 source_span: None,
                 metadata: None,
+                confidence: 1.0,
             })
             .unwrap();
 
@@ -797,6 +804,7 @@ mod tests {
                 blocks: vec![],
                 source_span: None,
                 metadata: None,
+                confidence: 1.0,
             })
             .unwrap();
 

@@ -12,15 +12,19 @@
 //! `tree-sitter-language-pack` to cover 305+ languages with symbol
 //! extraction only (no call resolution).
 
+pub mod asciidoc;
 pub mod c_resolver;
 pub mod csharp_resolver;
+pub mod csv;
 mod extractor;
 pub mod generic;
 pub mod go_resolver;
 pub mod java_resolver;
 pub mod kotlin_resolver;
+pub mod markdown;
 pub mod php_resolver;
 mod powershell;
+pub mod plaintext;
 pub mod python_resolver;
 pub mod router;
 pub mod ruby_resolver;

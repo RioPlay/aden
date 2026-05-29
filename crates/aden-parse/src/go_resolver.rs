@@ -321,6 +321,7 @@ fn emit_go_symbol<'a>(
         blocks,
         source_span: Some(span),
         metadata: None,
+        confidence: 0.9,
     })
 }
 

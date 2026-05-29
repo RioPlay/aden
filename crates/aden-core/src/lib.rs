@@ -167,6 +167,8 @@ pub struct Document {
     pub source_span: Option<SourceSpan>,
     /// Document-level metadata.
     pub metadata: Option<DocumentMetadata>,
+    /// Confidence in this document's claims (0.0-1.0).
+    pub confidence: f64,
 }
 
 /// Document-level metadata.
@@ -203,6 +205,23 @@ impl Document {
             }
         }
     }
+
+    /// Mark as self-reference if source path matches any pattern in config.
+    /// Self-references get low confidence (0.1) to prevent self-bias.
+    pub fn mark_self_reference(&mut self, config: &AdenConfig) {
+        let source_file = match self.attributes.get("source_file") {
+            Some(s) => s,
+            None => return,
+        };
+        let is_self = config
+            .profile
+            .self_reference_patterns
+            .iter()
+            .any(|pattern| source_file.contains(pattern));
+        if is_self {
+            self.confidence = 0.1;
+        }
+    }
 }
 
 /// Runtime profile for Aden: controls what is emitted vs redacted.
@@ -237,7 +256,7 @@ pub struct AdenConfig {
     pub profile: ProfileConfig,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProfileConfig {
     pub mode: ProfileMode,
     /// Attribute keys to redact when mode == Public.
@@ -250,6 +269,22 @@ pub struct ProfileConfig {
     /// ADRs, retrospectives, kickoffs, research notes are proposals - not reality.
     #[serde(default = "default_private_patterns")]
     pub private_patterns: Vec<String>,
+    /// Patterns for the tool's own files. Documents matching these get low confidence (0.1)
+    /// to prevent self-bias when the tool is used as a general-purpose knowledge compiler.
+    #[serde(default = "default_self_reference_patterns")]
+    pub self_reference_patterns: Vec<String>,
+}
+
+impl Default for ProfileConfig {
+    fn default() -> Self {
+        Self {
+            mode: ProfileMode::default(),
+            redact_fields: default_redact_fields(),
+            private_dirs: default_private_dirs(),
+            private_patterns: default_private_patterns(),
+            self_reference_patterns: default_self_reference_patterns(),
+        }
+    }
 }
 
 fn default_private_patterns() -> Vec<String> {
@@ -259,6 +294,14 @@ fn default_private_patterns() -> Vec<String> {
         "kickoff-*".to_string(),  // Project kickoffs
         "research-*".to_string(), // Research notes
         "design-*".to_string(),   // Pre-implementation designs
+    ]
+}
+
+fn default_self_reference_patterns() -> Vec<String> {
+    vec![
+        ".aden/contracts/".to_string(),
+        ".aden/proposals/".to_string(),
+        ".agent/".to_string(),
     ]
 }
 

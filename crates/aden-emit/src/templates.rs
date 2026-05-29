@@ -69,6 +69,7 @@ pub fn module_contract(
         blocks,
         source_span: None,
         metadata: None,
+        confidence: 0.9,
     }
 }
 
@@ -116,6 +117,7 @@ pub fn adr(
         blocks,
         source_span: None,
         metadata: None,
+        confidence: 0.9,
     }
 }
 
@@ -155,6 +157,7 @@ pub fn rfc(
         blocks,
         source_span: None,
         metadata: None,
+        confidence: 0.9,
     }
 }
 
@@ -198,6 +201,7 @@ pub fn runbook(
         blocks,
         source_span: None,
         metadata: None,
+        confidence: 0.9,
     }
 }
 
@@ -244,6 +248,7 @@ pub fn plan(
         blocks,
         source_span: None,
         metadata: None,
+        confidence: 0.9,
     }
 }
 
@@ -280,5 +285,6 @@ pub fn context(
         blocks,
         source_span: None,
         metadata: None,
+        confidence: 0.9,
     }
 }

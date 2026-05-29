@@ -104,6 +104,7 @@ mod tests {
             blocks: Vec::new(),
             source_span: None,
             metadata: None,
+            confidence: 0.9,
         };
         let doc2 = Document {
             anchor: "func-b".to_string(),
@@ -112,6 +113,7 @@ mod tests {
             blocks: Vec::new(),
             source_span: None,
             metadata: None,
+            confidence: 0.9,
         };
         let node1 = DocumentNode {
             doc: doc1.clone(),
@@ -393,6 +395,7 @@ Closing paragraph.
             blocks: Vec::new(),
             source_span: None,
             metadata: None,
+            confidence: 0.9,
         };
         let doc2 = Document {
             anchor: "concept-b".to_string(),
@@ -401,6 +404,7 @@ Closing paragraph.
             blocks: Vec::new(),
             source_span: None,
             metadata: None,
+            confidence: 0.9,
         };
 
         let node1 = DocumentNode {

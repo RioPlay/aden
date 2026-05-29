@@ -150,8 +150,9 @@ pub fn extract_documents(path: &Path, _source: &str) -> Result<Vec<Document>> {
             attributes: attrs,
             blocks,
             source_span: None,
-        metadata: None,
-        });
+metadata: None,
+        confidence: 0.9,
+    });
     }
 
     for ty in parsed.types {
@@ -182,8 +183,9 @@ pub fn extract_documents(path: &Path, _source: &str) -> Result<Vec<Document>> {
             attributes: attrs,
             blocks,
             source_span: None,
-        metadata: None,
-        });
+metadata: None,
+        confidence: 0.9,
+    });
     }
 
     Ok(docs)

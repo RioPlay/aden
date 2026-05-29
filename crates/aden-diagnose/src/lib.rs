@@ -114,6 +114,8 @@ pub enum IssueCategory {
     IncludeCycle,
     /// A document references a source file that doesn't exist.
     MissingSource,
+    /// A document has low confidence (self-reference or low-quality).
+    LowConfidence,
     /// A user-defined rule fired.
     Custom(String),
 }
@@ -127,6 +129,7 @@ impl std::fmt::Display for IssueCategory {
             IssueCategory::OrphanDocument => write!(f, "orphan-document"),
             IssueCategory::IncludeCycle => write!(f, "include-cycle"),
             IssueCategory::MissingSource => write!(f, "missing-source"),
+            IssueCategory::LowConfidence => write!(f, "low-confidence"),
             IssueCategory::Custom(name) => write!(f, "custom-{}", name),
         }
     }
@@ -291,7 +294,11 @@ pub fn diagnose_with_rules(path: &Path, rules: &DiagnosticRules) -> Result<Diagn
     let mut issues: Vec<Issue> = Vec::new();
 
     // Build the knowledge graph from the directory.
-    let graph = AdenGraph::build_from_directory(path)?;
+    let mut graph = AdenGraph::build_from_directory(path)?;
+
+    // Mark self-references as low-confidence to prevent self-bias.
+    let config = aden_core::AdenConfig::load(path);
+    graph.mark_self_references(&config);
 
     // Collect all .adoc files for reference scanning.
     let files = collect_adoc_files(path);
@@ -320,7 +327,10 @@ pub fn diagnose_with_rules(path: &Path, rules: &DiagnosticRules) -> Result<Diagn
     // 8. Missing source files.
     issues.extend(scan_missing_source(&graph));
 
-    // 9. Custom rules.
+    // 9. Low confidence documents (self-references).
+    issues.extend(scan_low_confidence(&graph));
+
+    // 10. Custom rules.
     for check in &rules.custom_checks {
         issues.extend(check(&graph, &files));
     }
@@ -638,6 +648,43 @@ fn scan_missing_source(graph: &AdenGraph<DocumentNode, AdenEdge>) -> Vec<Issue> 
                     })).unwrap_or_default(),
                 });
             }
+        }
+    }
+
+    issues
+}
+
+/// Scan for documents with low confidence (self-references or low-quality).
+fn scan_low_confidence(graph: &AdenGraph<DocumentNode, AdenEdge>) -> Vec<Issue> {
+    let mut issues = Vec::new();
+    let threshold = 0.5;
+
+    for node_idx in graph.graph.node_indices() {
+        let node = &graph.graph[node_idx];
+        if node.doc.confidence < threshold {
+            let reason = if node.doc.confidence == 0.1 {
+                "self-reference detected"
+            } else {
+                "low confidence"
+            };
+            issues.push(Issue {
+                category: IssueCategory::LowConfidence,
+                severity: Severity::Warning,
+                file: node.doc.attributes.get("source_file").cloned(),
+                line: None,
+                message: format!(
+                    "Low confidence ({:.1}) for [[{}]]: {}",
+                    node.doc.confidence,
+                    node.anchor(),
+                    reason
+                ),
+                suggestion: Some("Verify this document's claims independently.".to_string()),
+                raw: serde_json::to_string(&serde_json::json!({
+                    "anchor": node.anchor(),
+                    "confidence": node.doc.confidence,
+                    "reason": reason,
+                })).unwrap_or_default(),
+            });
         }
     }
 

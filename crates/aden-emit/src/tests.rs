@@ -52,6 +52,7 @@ mod tests {
             blocks: vec![aden_core::Block::Paragraph("Hello".to_string())],
             source_span: None,
             metadata: None,
+            confidence: 0.9,
         };
         let out = emit_document(&doc);
         assert!(out.contains("[[test-anchor]]"));
@@ -72,6 +73,7 @@ mod tests {
             blocks: vec![aden_core::Block::Table(table)],
             source_span: None,
             metadata: None,
+            confidence: 0.9,
         };
         let out = emit_document(&doc);
         assert!(out.contains("|==="));

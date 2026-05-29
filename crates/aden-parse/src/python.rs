@@ -23,7 +23,8 @@ pub fn extract_documents(path: &Path, source: &str) -> Result<Vec<Document>> {
             attributes: attrs,
             blocks: vec![Block::Paragraph("Python source file (python-parser feature not enabled).".to_string())],
             source_span: None,
-        }]);
+        ,
+        confidence: 0.9,}]);
     }
 
     #[cfg(feature = "python-parser")]
@@ -71,7 +72,8 @@ pub fn extract_documents(path: &Path, source: &str) -> Result<Vec<Document>> {
                     }
                     let anchor = make_anchor(&proj_name, &file_name, name);
                     let attrs = build_code_attributes(source, "function", Some(path), Some(&span));
-                    docs.push(Document { anchor, node_type: NodeType::Function, attributes: attrs, blocks, source_span: Some(span) });
+                    docs.push(Document { anchor, node_type: NodeType::Function, attributes: attrs, blocks, source_span: Some(span) ,
+        confidence: 0.9,});
                 }
             }
         }
@@ -97,7 +99,8 @@ pub fn extract_documents(path: &Path, source: &str) -> Result<Vec<Document>> {
                         attributes: attrs,
                         blocks: vec![],
                         source_span: Some(span),
-                    });
+                    ,
+        confidence: 0.9,});
                 }
             }
         }

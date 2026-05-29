@@ -563,15 +563,15 @@ pub fn edge_types_for_intent(intent: &QueryIntent) -> Vec<aden_core::EdgeType> {
 
 pub fn depth_for_intent(intent: &QueryIntent) -> usize {
     match intent {
-        QueryIntent::Debug => 3,
-        QueryIntent::Usage => 2,
-        QueryIntent::Explain => 2,
-        QueryIntent::Refactor => 4,
-        QueryIntent::Impact => 3,
-        QueryIntent::List => 1,
-        QueryIntent::Compare => 2,
+        QueryIntent::Debug => 6,
+        QueryIntent::Usage => 5,
+        QueryIntent::Explain => 5,
+        QueryIntent::Refactor => 5,
+        QueryIntent::Impact => 4,
+        QueryIntent::List => 2,
+        QueryIntent::Compare => 5,
         QueryIntent::Count => 1,
-        QueryIntent::General => 2,
+        QueryIntent::General => 4,
     }
 }
 
@@ -652,7 +652,7 @@ pub fn cmd_ask(
         let suggestions: Vec<String> = graph.anchor_to_index.keys()
             .filter(|a| {
                 let lower = a.to_lowercase();
-                lower.contains(&anchor_lower) || anchor_lower.len() >= 3 && 
+                lower.contains(&anchor_lower) || anchor_lower.len() >= 3 &&
                 anchor_lower.chars().all(|c| lower.contains(c))
             })
             .take(5)
@@ -661,27 +661,29 @@ pub fn cmd_ask(
 
         let mut final_suggestions = suggestions.clone();
         if final_suggestions.is_empty() {
-            // Try common fallbacks
-            for fallback in &["readme", "index", "overview", "readme.md"] {
+            // Try common fallbacks - first check which ones exist
+            for fallback in &["index", "mod-project", "readme", "architecture", "philosophy"] {
                 if graph.anchor_to_index.contains_key(*fallback) {
                     final_suggestions.push(fallback.to_string());
-                    break;
                 }
             }
         }
 
         if !final_suggestions.is_empty() {
             println!(
-                "WARNING: Anchor '{}' not found. Did you mean: {}?",
+                "WARNING: Anchor '{}' not found. Using: {}",
                 start_anchor,
-                final_suggestions.join(", ")
+                final_suggestions[0]
             );
-            println!("         Use 'aden list .' to see available anchors.\n");
             start_anchor = final_suggestions[0].clone();
         } else {
-            return Err(
-                "No valid anchors found. Run 'aden list .' to see available anchors.".into(),
-            );
+            // Last resort: use first available anchor
+            if let Some(first) = graph.anchor_to_index.keys().next() {
+                println!("WARNING: Anchor '{}' not found. Using: {}", start_anchor, first);
+                start_anchor = first.clone();
+            } else {
+                return Err("No anchors found in graph.".into());
+            }
         }
     }
 

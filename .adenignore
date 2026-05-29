@@ -5,6 +5,7 @@ contracts/
 docs/.aden/
 target/
 .git/
+.opencode/
 
 # Secrets (never process)
 *.pem

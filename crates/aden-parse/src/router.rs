@@ -8,15 +8,19 @@
 //! falls back to a `GenericExtractor` when `tree-sitter-language-pack`
 //! advertises support for the language.
 
+use crate::asciidoc::AsciiDocExtractor;
 use crate::c_resolver::CResolver;
 use crate::csharp_resolver::CSharpResolver;
+use crate::csv::CsvExtractor;
 use crate::extractor::LanguageExtractor;
 #[cfg(feature = "generic")]
 use crate::generic::GenericExtractor;
 use crate::go_resolver::GoResolver;
 use crate::java_resolver::JavaResolver;
 use crate::kotlin_resolver::KotlinResolver;
+use crate::markdown::MarkdownExtractor;
 use crate::php_resolver::PhpResolver;
+use crate::plaintext::PlainTextExtractor;
 use crate::python_resolver::PythonResolver;
 use crate::ruby_resolver::RubyResolver;
 #[cfg(feature = "rust-deep")]
@@ -97,6 +101,30 @@ impl LanguageRouter {
             let php: Arc<dyn LanguageExtractor> = Arc::new(PhpResolver::new());
             self.by_extension.insert("php", Arc::clone(&php));
         }
+        {
+            let md: Arc<dyn LanguageExtractor> = Arc::new(MarkdownExtractor::new());
+            self.by_extension.insert("md", Arc::clone(&md));
+            self.by_extension.insert("markdown", Arc::clone(&md));
+            self.by_extension.insert("mdown", Arc::clone(&md));
+            self.by_extension.insert("mkd", Arc::clone(&md));
+            self.by_extension.insert("mkdn", Arc::clone(&md));
+        }
+        {
+            let adoc: Arc<dyn LanguageExtractor> = Arc::new(AsciiDocExtractor::new());
+            self.by_extension.insert("adoc", Arc::clone(&adoc));
+            self.by_extension.insert("asciidoc", Arc::clone(&adoc));
+            self.by_extension.insert("asc", Arc::clone(&adoc));
+        }
+        {
+            let txt: Arc<dyn LanguageExtractor> = Arc::new(PlainTextExtractor::new());
+            self.by_extension.insert("txt", Arc::clone(&txt));
+            self.by_extension.insert("text", Arc::clone(&txt));
+        }
+        {
+            let csv: Arc<dyn LanguageExtractor> = Arc::new(CsvExtractor::new());
+            self.by_extension.insert("csv", Arc::clone(&csv));
+            self.by_extension.insert("tsv", Arc::clone(&csv));
+        }
     }
 
     /// Register a custom extractor.  Later registrations shadow earlier ones.
@@ -126,15 +154,15 @@ impl LanguageRouter {
                 "BUILD" | "WORKSPACE" => "bzl",
                 _ => ext,
             };
-            // Known plaintext / non-code files: silently skip.
+            // Known config/plaintext files without extensions: skip.
+            // Files WITH extensions (README.md, etc.) pass through to extractors.
             if file_name == "Kconfig"
-                || file_name.starts_with("README")
-                || file_name.starts_with("COPYING")
-                || file_name.starts_with("AUTHORS")
-                || file_name.starts_with("INSTALL")
                 || file_name == "Build"
                 || file_name == "config"
                 || file_name == "settings"
+                || file_name.starts_with("COPYING")
+                || file_name.starts_with("AUTHORS")
+                || file_name.starts_with("INSTALL")
             {
                 return Ok(Vec::new());
             }

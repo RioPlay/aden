@@ -642,6 +642,53 @@ aden sync .
 
 This is the recommended command for keeping everything in sync before committing.
 
+=== status
+
+Show project health status at a glance.
+
+[source,bash]
+----
+aden status
+aden status . --json
+aden status . --verbose
+----
+
+Displays:
+- Total contracts and symbols
+- Orphan count
+- Stale contracts
+- Graph integrity
+- Last generated timestamp
+
+=== diagnose
+
+Deterministic diagnostic scanner for knowledge graphs.
+
+[source,bash]
+----
+aden diagnose
+aden diagnose --path . --severity error
+aden diagnose --format json
+----
+
+Runs comprehensive checks:
+- Missing source files
+- Broken references
+- Duplicate anchors
+- Graph consistency
+
+=== query-adq
+
+Execute an Aden Query (.adq) script.
+
+[source,bash]
+----
+aden query-adq script.adq
+aden query-adq find-calls.adq --path src/
+----
+
+Aden Query Language allows advanced graph traversal with custom filters.
+
 #== Output Formats
 
 Aden commands default to the format best suited for their intended consumer. LLM-facing commands default to stripped, token-dense prose. Human-facing commands default to human-readable output.
