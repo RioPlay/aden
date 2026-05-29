@@ -39,6 +39,14 @@ struct Cli {
     json: bool,
     #[arg(short, long, global = true, help = "Verbose output")]
     verbose: bool,
+    #[arg(
+        short = 'p',
+        long,
+        global = true,
+        value_name = "PATH",
+        help = "Aden project path (overrides CWD for this run)"
+    )]
+    project: Option<PathBuf>,
     #[command(subcommand)]
     command: Commands,
 }
@@ -582,6 +590,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _unlimited = cli.unlimited;
     let _global_json = cli.json;
 
+    if let Some(ref project_path) = cli.project {
+        if project_path.exists() && project_path.is_dir() {
+            std::env::set_current_dir(project_path)?;
+            eprintln!("Switched to aden project: {}", project_path.display());
+        } else {
+            eprintln!("Warning: Project path does not exist: {}", project_path.display());
+        }
+    }
+
     match cli.command {
         Commands::Init { path } => commands::cmd_init(&path),
         Commands::Regen { path } => {
@@ -742,7 +759,9 @@ commands::cmd_gen(&path, None, false, quiet, false, false, "adoc", true)
         Commands::Status { path } => {
             use crate::util::quick_health_score;
             
+            let aden_path = path.join(".aden");
             println!("Aden Status: {}", path.display());
+            println!("Active .aden: {}", aden_path.display());
             
             let health = quick_health_score(&path).unwrap_or(0.0);
             let health_pct = (health * 100.0).round() as i32;
