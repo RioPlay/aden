@@ -20,7 +20,7 @@ Invocation:
 
 [source,bash]
 ----
-den ask "How does the authentication flow work?"
+aden ask "How does the authentication flow work?"
 ----
 
 What happens internally:
@@ -88,7 +88,7 @@ Use `aden asm` when you already know the starting anchor and want exact edge typ
 
 [source,bash]
 ----
-den asm --from mod-aden-graph --depth 3 --budget 8192 --edge-types "Uses,Calls"
+aden asm --from mod-aden-graph --depth 3 --budget 8192 --edge-types "Uses,Calls"
 ----
 
 This is useful for:
@@ -108,10 +108,10 @@ consumption:
 aden query --from mod-aden-core --depth 2 . | jq '.[] | .anchor'
 
 # Everything that references this anchor (backlinks)
-den query --backlinks mod-aden-core . | jq '.[] | .anchor'
+aden query --backlinks mod-aden-core . | jq '.[] | .anchor'
 
 # Transitive closure over dependency edges (blast radius)
-den query --impact mod-aden-core . | jq '.[] | .anchor'
+aden query --impact mod-aden-core . | jq '.[] | .anchor'
 ----
 
 == Finding Symbols with `aden locate` and `aden search`
