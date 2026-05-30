@@ -10,11 +10,10 @@
 //! Built on the official `rmcp` Rust SDK.
 
 use rmcp::{
+    ErrorData as McpError, ServerHandler, ServiceExt,
     model::*,
     service::{RequestContext, RoleServer},
     transport::stdio,
-    ErrorData as McpError,
-    ServerHandler, ServiceExt,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -238,55 +237,290 @@ fn tool_from_spec(spec: &ToolSpec) -> Tool {
 
 /// Every MCP tool maps 1:1 to `aden <name> <args>`.
 static TOOLS: &[ToolSpec] = &[
-    ToolSpec { name: "init",       description: "Scaffold .agent/ workspace and templates.",                                                                    args: &[("path", "string")] },
-    ToolSpec { name: "new",        description: "Create a new project from a language template.",                                                               args: &[("name", "string"), ("lang", "string"), ("path", "string")] },
-    ToolSpec { name: "kickoff",    description: "Create a structured kickoff document.",                                                                         args: &[("name", "string"), ("interactive", "boolean"), ("path", "string")] },
-    ToolSpec { name: "workflow",   description: "Instantiate templates with substitutions.",                                                                  args: &[("template", "string"), ("out", "string"), ("from", "string"), ("path", "string")] },
-    ToolSpec { name: "gen",        description: "Generate contracts from source. Use --auto for whole project.",                                                args: &[("path", "string"), ("auto", "boolean"), ("quiet", "boolean")] },
-    ToolSpec { name: "check",      description: "Validate cross-references and graph integrity.",                                                             args: &[("path", "string"), ("severity", "string")] },
-    ToolSpec { name: "lint",       description: "Lint source files.",                                                                                         args: &[("path", "string"), ("severity", "string"), ("fix", "boolean"), ("json", "boolean"), ("unlimited", "boolean")] },
-    ToolSpec { name: "test",       description: "Discover and run tests.",                                                                                      args: &[("path", "string"), ("scope", "string"), ("filter", "string"), ("list", "boolean")] },
-    ToolSpec { name: "asm",        description: "Assemble a context prompt from the knowledge graph. Pass the anchor via `from`.",                               args: &[("from", "string"), ("path", "string"), ("depth", "integer"), ("budget", "integer"), ("edge_types", "string"), ("format", "string"), ("inspect", "boolean"), ("out", "string"), ("include_tag", "string"), ("exclude_tag", "string"), ("set_attr", "string"), ("silent", "boolean"), ("auto", "boolean"), ("strict", "boolean")] },
-    ToolSpec { name: "query",      description: "Query the knowledge graph and emit JSON. Use backlinks=<anchor> for blast radius (what references a symbol) or impact=<anchor>.", args: &[("path", "string"), ("from", "string"), ("edge_type", "string"), ("depth", "integer"), ("backlinks", "string"), ("impact", "string"), ("format", "string")] },
-    ToolSpec { name: "query-adq",  description: "Execute an Aden Query (.adq) script.",                                                                       args: &[("script", "string"), ("path", "string")] },
-    ToolSpec { name: "ask",        description: "Ask a natural-language question. Routes to the best matching anchor.",                                            args: &[("question", "string"), ("budget", "integer"), ("from", "string"), ("model", "string")] },
-    ToolSpec { name: "search",     description: "Full-text search with BM25 ranking.",                                                                           args: &[("query", "string"), ("limit", "integer"), ("offset", "integer"), ("doc_type", "string"), ("semantics", "boolean")] },
-    ToolSpec { name: "list",       description: "List all indexed anchors.",                                                                                    args: &[("path", "string"), ("filter", "string"), ("limit", "integer"), ("verbose", "boolean"), ("semantics", "boolean"), ("offset", "integer"), ("unlimited", "boolean")] },
-    ToolSpec { name: "grep",       description: "Structure-aware content search: find a pattern, each hit tagged with its enclosing symbol. Prefer over plain grep.", args: &[("pattern", "string"), ("path", "string"), ("regex", "boolean"), ("ignore_case", "boolean"), ("symbol_only", "boolean"), ("limit", "integer")] },
-    ToolSpec { name: "locate",     description: "Find symbol definition and call sites. For JSON output pass format=json.",                                      args: &[("symbol", "string"), ("caller_of", "string"), ("path", "string"), ("limit", "integer"), ("show_context", "integer"), ("format", "string")] },
-    ToolSpec { name: "heal",       description: "Self-healing documentation engine: scan for drift, propose patches, apply reviewed changes.",                      args: &[("path", "string"), ("fix", "boolean"), ("gc", "boolean"), ("propose", "boolean"), ("since", "string"), ("apply", "string"), ("watch", "string")] },
-    ToolSpec { name: "status",     description: "Show project health status at a glance.",                                                                        args: &[("path", "string")] },
-    ToolSpec { name: "sync",       description: "Run gen + check + heal in one pass.",                                                                          args: &[("path", "string")] },
-    ToolSpec { name: "ci-check",   description: "Run all local CI gates: aden check, project tests, aden lint, secret scan, attribution check, OWASP audit, and merge-conflict-marker scan (plus warning-only clippy/cargo-audit).", args: &[("path", "string")] },
-    ToolSpec { name: "regen",      description: "Regenerate all contracts from source (alias: gen . --auto --quiet).",                                          args: &[("path", "string")] },
-    ToolSpec { name: "complete",   description: "Scan for incomplete contracts and report them. Note: automatic LLM filling is not yet implemented — this currently lists the contracts that need completion and (with --model) previews the prompt.", args: &[("path", "string"), ("dry-run", "boolean"), ("model", "string")] },
-    ToolSpec { name: "watch",      description: "Watch source files and auto-regenerate contracts. WARNING: this is a long-running daemon and is not usable over MCP (the call will time out) — run it from a terminal. Use `gen`/`sync` for one-shot updates.", args: &[("path", "string"), ("sync", "boolean"), ("graph-sync", "boolean"), ("restore", "boolean")] },
-    ToolSpec { name: "session",    description: "Append entry to .agent/session.adoc.",                                                                       args: &[("agent-id", "string"), ("task", "string"), ("status", "string")] },
-    ToolSpec { name: "federation", description: "List or manage multi-repo workspace.",                                                                         args: &[("action", "string")] },
-    ToolSpec { name: "emergency",  description: "Downgrade Forbid policies to Warn with justification.",                                                       args: &[("reason", "string"), ("path", "string"), ("ttl", "string")] },
-    ToolSpec { name: "doctor",     description: "Environment diagnostics.",                                                                                     args: &[("path", "string")] },
-    ToolSpec { name: "audit",      description: "OWASP-aligned security audit: scan source for vulnerabilities.",                                                args: &[("path", "string"), ("lang", "string"), ("format", "string"), ("strict", "boolean")] },
-    ToolSpec { name: "suggest",    description: "Get a recommended aden command for your intent.",                                                                 args: &[("intent", "string")] },
-    ToolSpec { name: "licenses",   description: "Generate third-party dependency attribution.",                                                                   args: &[("path", "string"), ("full", "boolean")] },
-    ToolSpec { name: "review",     description: "Semantic review of pending proposals.",                                                                        args: &[("path", "string"), ("since", "string"), ("budget", "integer")] },
-    ToolSpec { name: "mcp",        description: "MCP (Model Context Protocol) integration management. action is a subcommand: install, uninstall, list.",          args: &[("action", "string")] },
-    ToolSpec { name: "diagnose",   description: "Deterministic diagnostic scanner for knowledge graphs.",                                                         args: &[("path", "string"), ("format", "string")] },
+    ToolSpec {
+        name: "init",
+        description: "Scaffold .agent/ workspace and templates.",
+        args: &[("path", "string")],
+    },
+    ToolSpec {
+        name: "new",
+        description: "Create a new project from a language template.",
+        args: &[("name", "string"), ("lang", "string"), ("path", "string")],
+    },
+    ToolSpec {
+        name: "kickoff",
+        description: "Create a structured kickoff document.",
+        args: &[
+            ("name", "string"),
+            ("interactive", "boolean"),
+            ("path", "string"),
+        ],
+    },
+    ToolSpec {
+        name: "workflow",
+        description: "Instantiate templates with substitutions.",
+        args: &[
+            ("template", "string"),
+            ("out", "string"),
+            ("from", "string"),
+            ("path", "string"),
+        ],
+    },
+    ToolSpec {
+        name: "gen",
+        description: "Generate contracts from source. Use --auto for whole project.",
+        args: &[
+            ("path", "string"),
+            ("auto", "boolean"),
+            ("quiet", "boolean"),
+        ],
+    },
+    ToolSpec {
+        name: "check",
+        description: "Validate cross-references and graph integrity.",
+        args: &[("path", "string"), ("severity", "string")],
+    },
+    ToolSpec {
+        name: "lint",
+        description: "Lint source files.",
+        args: &[
+            ("path", "string"),
+            ("severity", "string"),
+            ("fix", "boolean"),
+            ("json", "boolean"),
+            ("unlimited", "boolean"),
+        ],
+    },
+    ToolSpec {
+        name: "test",
+        description: "Discover and run tests.",
+        args: &[
+            ("path", "string"),
+            ("scope", "string"),
+            ("filter", "string"),
+            ("list", "boolean"),
+        ],
+    },
+    ToolSpec {
+        name: "asm",
+        description: "Assemble a context prompt from the knowledge graph. Pass the anchor via `from`.",
+        args: &[
+            ("from", "string"),
+            ("path", "string"),
+            ("depth", "integer"),
+            ("budget", "integer"),
+            ("edge_types", "string"),
+            ("format", "string"),
+            ("inspect", "boolean"),
+            ("out", "string"),
+            ("include_tag", "string"),
+            ("exclude_tag", "string"),
+            ("set_attr", "string"),
+            ("silent", "boolean"),
+            ("auto", "boolean"),
+            ("strict", "boolean"),
+        ],
+    },
+    ToolSpec {
+        name: "query",
+        description: "Query the knowledge graph and emit JSON. Use backlinks=<anchor> for blast radius (what references a symbol) or impact=<anchor>.",
+        args: &[
+            ("path", "string"),
+            ("from", "string"),
+            ("edge_type", "string"),
+            ("depth", "integer"),
+            ("backlinks", "string"),
+            ("impact", "string"),
+            ("format", "string"),
+        ],
+    },
+    ToolSpec {
+        name: "query-adq",
+        description: "Execute an Aden Query (.adq) script.",
+        args: &[("script", "string"), ("path", "string")],
+    },
+    ToolSpec {
+        name: "ask",
+        description: "Ask a natural-language question. Routes to the best matching anchor.",
+        args: &[
+            ("question", "string"),
+            ("budget", "integer"),
+            ("from", "string"),
+            ("model", "string"),
+        ],
+    },
+    ToolSpec {
+        name: "search",
+        description: "Full-text search with BM25 ranking.",
+        args: &[
+            ("query", "string"),
+            ("limit", "integer"),
+            ("offset", "integer"),
+            ("doc_type", "string"),
+            ("semantics", "boolean"),
+        ],
+    },
+    ToolSpec {
+        name: "list",
+        description: "List all indexed anchors.",
+        args: &[
+            ("path", "string"),
+            ("filter", "string"),
+            ("limit", "integer"),
+            ("verbose", "boolean"),
+            ("semantics", "boolean"),
+            ("offset", "integer"),
+            ("unlimited", "boolean"),
+        ],
+    },
+    ToolSpec {
+        name: "grep",
+        description: "Structure-aware content search: find a pattern, each hit tagged with its enclosing symbol. Prefer over plain grep.",
+        args: &[
+            ("pattern", "string"),
+            ("path", "string"),
+            ("regex", "boolean"),
+            ("ignore_case", "boolean"),
+            ("symbol_only", "boolean"),
+            ("limit", "integer"),
+        ],
+    },
+    ToolSpec {
+        name: "locate",
+        description: "Find symbol definition and call sites. For JSON output pass format=json.",
+        args: &[
+            ("symbol", "string"),
+            ("caller_of", "string"),
+            ("path", "string"),
+            ("limit", "integer"),
+            ("show_context", "integer"),
+            ("format", "string"),
+        ],
+    },
+    ToolSpec {
+        name: "heal",
+        description: "Self-healing documentation engine: scan for drift, propose patches, apply reviewed changes.",
+        args: &[
+            ("path", "string"),
+            ("fix", "boolean"),
+            ("gc", "boolean"),
+            ("propose", "boolean"),
+            ("since", "string"),
+            ("apply", "string"),
+            ("watch", "string"),
+        ],
+    },
+    ToolSpec {
+        name: "status",
+        description: "Show project health status at a glance.",
+        args: &[("path", "string")],
+    },
+    ToolSpec {
+        name: "sync",
+        description: "Run gen + check + heal in one pass.",
+        args: &[("path", "string")],
+    },
+    ToolSpec {
+        name: "ci-check",
+        description: "Run all local CI gates: aden check, project tests, aden lint, secret scan, attribution check, OWASP audit, and merge-conflict-marker scan (plus warning-only clippy/cargo-audit).",
+        args: &[("path", "string")],
+    },
+    ToolSpec {
+        name: "regen",
+        description: "Regenerate all contracts from source (alias: gen . --auto --quiet).",
+        args: &[("path", "string")],
+    },
+    ToolSpec {
+        name: "complete",
+        description: "Scan for incomplete contracts and report them. Note: automatic LLM filling is not yet implemented — this currently lists the contracts that need completion and (with --model) previews the prompt.",
+        args: &[
+            ("path", "string"),
+            ("dry-run", "boolean"),
+            ("model", "string"),
+        ],
+    },
+    ToolSpec {
+        name: "watch",
+        description: "Watch source files and auto-regenerate contracts. WARNING: this is a long-running daemon and is not usable over MCP (the call will time out) — run it from a terminal. Use `gen`/`sync` for one-shot updates.",
+        args: &[
+            ("path", "string"),
+            ("sync", "boolean"),
+            ("graph-sync", "boolean"),
+            ("restore", "boolean"),
+        ],
+    },
+    ToolSpec {
+        name: "session",
+        description: "Append entry to .agent/session.adoc.",
+        args: &[
+            ("agent-id", "string"),
+            ("task", "string"),
+            ("status", "string"),
+        ],
+    },
+    ToolSpec {
+        name: "federation",
+        description: "List or manage multi-repo workspace.",
+        args: &[("action", "string")],
+    },
+    ToolSpec {
+        name: "emergency",
+        description: "Downgrade Forbid policies to Warn with justification.",
+        args: &[("reason", "string"), ("path", "string"), ("ttl", "string")],
+    },
+    ToolSpec {
+        name: "doctor",
+        description: "Environment diagnostics.",
+        args: &[("path", "string")],
+    },
+    ToolSpec {
+        name: "audit",
+        description: "OWASP-aligned security audit: scan source for vulnerabilities.",
+        args: &[
+            ("path", "string"),
+            ("lang", "string"),
+            ("format", "string"),
+            ("strict", "boolean"),
+        ],
+    },
+    ToolSpec {
+        name: "suggest",
+        description: "Get a recommended aden command for your intent.",
+        args: &[("intent", "string")],
+    },
+    ToolSpec {
+        name: "licenses",
+        description: "Generate third-party dependency attribution.",
+        args: &[("path", "string"), ("full", "boolean")],
+    },
+    ToolSpec {
+        name: "review",
+        description: "Semantic review of pending proposals.",
+        args: &[
+            ("path", "string"),
+            ("since", "string"),
+            ("budget", "integer"),
+        ],
+    },
+    ToolSpec {
+        name: "mcp",
+        description: "MCP (Model Context Protocol) integration management. action is a subcommand: install, uninstall, list.",
+        args: &[("action", "string")],
+    },
+    ToolSpec {
+        name: "diagnose",
+        description: "Deterministic diagnostic scanner for knowledge graphs.",
+        args: &[("path", "string"), ("format", "string")],
+    },
 ];
 
 // ── ServerHandler impl ────────────────────────────────────────
 
 impl ServerHandler for AdenMcpServer {
     fn get_info(&self) -> ServerInfo {
-        InitializeResult::new(
-            ServerCapabilities::builder()
-                .enable_tools()
-                .build(),
-        )
-        .with_server_info(Implementation::new(
-            "aden-mcp",
-            env!("CARGO_PKG_VERSION"),
-        ))
-        .with_instructions(SERVER_INSTRUCTIONS)
+        InitializeResult::new(ServerCapabilities::builder().enable_tools().build())
+            .with_server_info(Implementation::new("aden-mcp", env!("CARGO_PKG_VERSION")))
+            .with_instructions(SERVER_INSTRUCTIONS)
     }
 
     fn get_tool(&self, name: &str) -> Option<Tool> {
@@ -311,19 +545,16 @@ impl ServerHandler for AdenMcpServer {
         let args = request.arguments.unwrap_or_default();
 
         // Validate tool exists
-        let spec = TOOLS
-            .iter()
-            .find(|t| t.name == tool_name)
-            .ok_or_else(|| {
-                McpError::invalid_params(format!("unknown tool: {}", tool_name), None)
-            })?;
+        let spec = TOOLS.iter().find(|t| t.name == tool_name).ok_or_else(|| {
+            McpError::invalid_params(format!("unknown tool: {}", tool_name), None)
+        })?;
 
         // SECURITY (audit HIGH-1): confine any caller-supplied filesystem path
         // to the server's project_dir before shelling out. The CLI does not
         // confine paths (find_project_root will happily resolve `/etc`), so an
         // MCP client could otherwise read or write arbitrary host files via the
         // `path` argument. Reject out-of-tree paths at the boundary.
-        if let Err(e) = confine_path_args(&self.project_dir, &args) {
+        if let Err(e) = confine_path_args(tool_name, &args, &self.project_dir) {
             return Ok(CallToolResult::error(vec![Content::text(e)]));
         }
 
@@ -359,40 +590,46 @@ impl ServerHandler for AdenMcpServer {
 /// point it anywhere, but an MCP client is untrusted and must stay sandboxed
 /// to the project the server was launched for.
 fn confine_path_args(
-    project_dir: &Path,
+    tool: &str,
     args: &serde_json::Map<String, serde_json::Value>,
+    project_dir: &Path,
 ) -> Result<(), String> {
-    // The only caller-supplied argument that names a filesystem location is
-    // `path` (every tool's project/dir argument). Other string args are
-    // symbols, queries, anchors, etc. — not paths.
-    let Some(raw) = args.get("path").and_then(|v| v.as_str()) else {
-        return Ok(());
-    };
-    if raw.is_empty() {
-        return Ok(());
-    }
-
     let root = canonical_or_self(project_dir);
-    let candidate = {
+    // Every caller-supplied argument that names a filesystem location must be
+    // confined — not just `path`. Some tools also take a path via `out`
+    // (asm/workflow write target) or `from` (workflow source file). NOTE:
+    // `from` is a filesystem path only for `workflow`; for asm/ask/query it is
+    // a graph ANCHOR, not a path, so it must NOT be confined there.
+    let path_args: &[&str] = match tool {
+        "asm" => &["path", "out"],
+        "workflow" => &["path", "out", "from"],
+        _ => &["path"],
+    };
+    for key in path_args {
+        let Some(raw) = args.get(*key).and_then(|v| v.as_str()) else {
+            continue;
+        };
+        if raw.is_empty() {
+            continue;
+        }
         let p = Path::new(raw);
-        if p.is_absolute() {
+        let candidate = if p.is_absolute() {
             p.to_path_buf()
         } else {
             root.join(p)
+        };
+        let resolved = resolve_existing_prefix(&candidate);
+        if !resolved.starts_with(&root) {
+            return Err(format!(
+                "{} argument '{}' resolves outside the project directory '{}' and is \
+                 refused (the MCP server is confined to its project root)",
+                key,
+                raw,
+                root.display()
+            ));
         }
-    };
-    let resolved = resolve_existing_prefix(&candidate);
-
-    if resolved.starts_with(&root) {
-        Ok(())
-    } else {
-        Err(format!(
-            "path '{}' resolves outside the project directory '{}' and is refused \
-             (the MCP server is confined to its project root)",
-            raw,
-            root.display()
-        ))
     }
+    Ok(())
 }
 
 /// Canonicalize `p`, falling back to a lexically-normalized form if it does not
@@ -587,7 +824,10 @@ mod tests {
         let mut args = serde_json::Map::new();
         args.insert("path".into(), serde_json::json!("--fix"));
         let out = build_cli_args(spec("heal"), &args, &[]);
-        let dd = out.iter().position(|a| a == "--").expect("-- terminator present");
+        let dd = out
+            .iter()
+            .position(|a| a == "--")
+            .expect("-- terminator present");
         let val = out.iter().position(|a| a == "--fix").unwrap();
         assert!(dd < val, "the -- must precede the smuggled value: {out:?}");
     }
@@ -605,20 +845,58 @@ mod tests {
     #[test]
     fn confine_path_rejects_outside_project() {
         let proj = std::env::temp_dir();
-        // Absolute escape.
+        // Absolute escape via `path`.
         let mut esc = serde_json::Map::new();
         esc.insert("path".into(), serde_json::json!("/etc"));
-        assert!(confine_path_args(&proj, &esc).is_err(), "/etc must be refused");
+        assert!(
+            confine_path_args("grep", &esc, &proj).is_err(),
+            "/etc must be refused"
+        );
         // `..` traversal escape.
         let mut trav = serde_json::Map::new();
         trav.insert("path".into(), serde_json::json!("../../../../etc"));
-        assert!(confine_path_args(&proj, &trav).is_err(), ".. escape must be refused");
+        assert!(
+            confine_path_args("grep", &trav, &proj).is_err(),
+            ".. escape must be refused"
+        );
         // In-tree relative path is allowed.
         let mut ok = serde_json::Map::new();
         ok.insert("path".into(), serde_json::json!("."));
-        assert!(confine_path_args(&proj, &ok).is_ok(), "'.' must be allowed");
+        assert!(
+            confine_path_args("grep", &ok, &proj).is_ok(),
+            "'.' must be allowed"
+        );
         // No path arg → nothing to confine.
-        assert!(confine_path_args(&proj, &serde_json::Map::new()).is_ok());
+        assert!(confine_path_args("grep", &serde_json::Map::new(), &proj).is_ok());
+    }
+
+    #[test]
+    fn confine_checks_out_and_from_not_just_path() {
+        // Regression: confinement originally only guarded `path`, so asm/workflow
+        // could write outside the project via `out` (or read via workflow `from`).
+        let proj = std::env::temp_dir();
+        // asm --out escaping the root must be refused.
+        let mut asm_out = serde_json::Map::new();
+        asm_out.insert("from".into(), serde_json::json!("mod-x")); // anchor, not a path — must be ignored
+        asm_out.insert("out".into(), serde_json::json!("/etc/aden-pwned"));
+        assert!(
+            confine_path_args("asm", &asm_out, &proj).is_err(),
+            "asm --out /etc must be refused"
+        );
+        // workflow `from` (a real file path) escaping must be refused.
+        let mut wf = serde_json::Map::new();
+        wf.insert("from".into(), serde_json::json!("../../../../etc/passwd"));
+        assert!(
+            confine_path_args("workflow", &wf, &proj).is_err(),
+            "workflow --from escape must be refused"
+        );
+        // asm `from` as an anchor (no path semantics for asm) must NOT trip the check.
+        let mut asm_anchor = serde_json::Map::new();
+        asm_anchor.insert("from".into(), serde_json::json!("aden://module/x#y"));
+        assert!(
+            confine_path_args("asm", &asm_anchor, &proj).is_ok(),
+            "asm anchor from must be allowed"
+        );
     }
 
     #[test]
@@ -628,7 +906,10 @@ mod tests {
         let mut args = serde_json::Map::new();
         args.insert("pattern".into(), serde_json::json!("TODO"));
         let cmd = build_cli_args(spec("grep"), &args, structured_output_flags("grep"));
-        assert!(cmd.contains(&"--json".to_string()), "grep must request --json: {cmd:?}");
+        assert!(
+            cmd.contains(&"--json".to_string()),
+            "grep must request --json: {cmd:?}"
+        );
         assert_eq!(cmd.iter().filter(|a| *a == "--json").count(), 1);
         // Critical ordering: --json (a flag) must come BEFORE the `--`
         // terminator, or clap would parse it as a positional. The pattern is
@@ -650,7 +931,11 @@ mod tests {
     fn structured_output_tools_request_json() {
         // Tools with a real JSON envelope must auto-request --json over MCP.
         for t in ["grep", "search", "list", "test"] {
-            assert_eq!(structured_output_flags(t), &["--json"], "{t} should request --json");
+            assert_eq!(
+                structured_output_flags(t),
+                &["--json"],
+                "{t} should request --json"
+            );
         }
     }
 
@@ -658,7 +943,12 @@ mod tests {
     fn required_args_surface_in_schema() {
         let server = AdenMcpServer::new(PathBuf::from("."));
         let tool = server.get_tool("ask").unwrap();
-        let req = tool.input_schema.get("required").unwrap().as_array().unwrap();
+        let req = tool
+            .input_schema
+            .get("required")
+            .unwrap()
+            .as_array()
+            .unwrap();
         assert!(req.iter().any(|v| v == "question"));
         // gen has no required args (path defaults to ".").
         let gen_tool = server.get_tool("gen").unwrap();
