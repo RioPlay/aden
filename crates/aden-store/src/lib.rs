@@ -169,6 +169,20 @@ pub trait GraphStorage: Send + Sync {
         edge_type: EdgeType,
     ) -> Result<(), StoreError>;
 
+    /// Insert many edges in one pass, writing each node's adjacency list once.
+    ///
+    /// `put_edge` is read-modify-write per edge, so building N edges out of a
+    /// single high-degree node (e.g. a module that contains thousands of
+    /// symbols) is O(N^2). This groups by endpoint and rewrites each adjacency
+    /// list a single time — O(E) — which is what makes linking a large repo
+    /// (kernel-scale) feasible. Default impl falls back to repeated `put_edge`.
+    fn put_edges_bulk(&self, edges: &[(String, String, EdgeType)]) -> Result<(), StoreError> {
+        for (src, dst, et) in edges {
+            self.put_edge(src, dst, et.clone())?;
+        }
+        Ok(())
+    }
+
     /// Delete an edge.
     fn delete_edge(
         &self,
@@ -349,6 +363,58 @@ impl GraphStorage for SledStorage {
         in_tree
             .insert(in_key, bytes)
             .map_err(|e| StoreError::Io(e.to_string()))?;
+
+        Ok(())
+    }
+
+    fn put_edges_bulk(&self, edges: &[(String, String, EdgeType)]) -> Result<(), StoreError> {
+        use std::collections::HashMap;
+
+        // Group additions per endpoint so each adjacency list is read+written
+        // exactly once instead of once per edge.
+        let mut out_add: HashMap<&str, Vec<(String, EdgeType)>> = HashMap::new();
+        let mut in_add: HashMap<&str, Vec<(String, EdgeType)>> = HashMap::new();
+
+        let edges_tree = self.get_tree(TreeName::Edges.name())?;
+        for (src, dst, edge_type) in edges {
+            edges_tree
+                .insert(edge_key(src, dst, edge_type), vec![])
+                .map_err(|e| StoreError::Io(e.to_string()))?;
+            out_add
+                .entry(src.as_str())
+                .or_default()
+                .push((dst.clone(), edge_type.clone()));
+            in_add
+                .entry(dst.as_str())
+                .or_default()
+                .push((src.clone(), edge_type.clone()));
+        }
+
+        let out_tree = self.get_tree(TreeName::Outgoing.name())?;
+        for (src, mut adds) in out_add {
+            let key = outgoing_key(src);
+            let mut cur: Vec<(String, EdgeType)> = match out_tree.get(key.as_bytes())? {
+                Some(bytes) => deserialize(&bytes)?,
+                None => Vec::new(),
+            };
+            cur.append(&mut adds);
+            out_tree
+                .insert(key, serialize(&cur)?)
+                .map_err(|e| StoreError::Io(e.to_string()))?;
+        }
+
+        let in_tree = self.get_tree(TreeName::Incoming.name())?;
+        for (dst, mut adds) in in_add {
+            let key = incoming_key(dst);
+            let mut cur: Vec<(String, EdgeType)> = match in_tree.get(key.as_bytes())? {
+                Some(bytes) => deserialize(&bytes)?,
+                None => Vec::new(),
+            };
+            cur.append(&mut adds);
+            in_tree
+                .insert(key, serialize(&cur)?)
+                .map_err(|e| StoreError::Io(e.to_string()))?;
+        }
 
         Ok(())
     }

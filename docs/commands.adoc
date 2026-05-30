@@ -112,22 +112,26 @@ Validates:
 
 === lint
 
-Lint source files using tree-sitter AST analysis.
+Lint source files with fast, language-aware heuristic checks (per-line pattern
+rules; comment lines are skipped). Not a full type-aware analyzer — for deep
+correctness use the language's own toolchain.
 
 [source,bash]
 ----
 aden lint [PATH]
-aden lint . --fix
+aden lint . --fix              # apply safe auto-fixes (e.g. redundant conversions)
 aden lint . --severity Error
-aden lint . --json
+aden lint . --json             # machine-readable; banner suppressed
 ----
 
-Checks:
-- Unused variables
-- Unreachable code
-- Implicit returns
-- Security patterns (OWASP)
-- Style consistency
+Checks (language-dependent):
+- Security patterns: `eval`/`exec` use, etc.
+- Risky constructs: `unsafe fn`, `unwrap()`, `todo!()`/`unimplemented!()`
+- Leftover debug prints
+- Redundant chained conversions (`.to_string().to_string()`)
+
+`--fix` applies only the unambiguously-safe rewrites and reports how many issues
+still need manual review.
 
 === test
 

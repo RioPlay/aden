@@ -45,10 +45,14 @@ pub fn cmd_lint(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let min_severity = LintSeverity::from_str(severity);
 
-    println!("Aden Universal Linter");
-    println!("=====================");
-    println!("Scanning: {}", path.display());
-    println!();
+    // The banner is human chrome — keep it off stdout in --json mode so the
+    // output is valid JSON for programmatic consumers.
+    if !json {
+        println!("Aden Universal Linter");
+        println!("=====================");
+        println!("Scanning: {}", path.display());
+        println!();
+    }
 
     let _results: Vec<LintResult> = Vec::new();
 
@@ -122,7 +126,42 @@ pub fn cmd_lint(
         }
     }
 
-    if error_count > 0 && !fix {
+    // --fix: apply the safe, unambiguous auto-fixes (collapsing redundant
+    // chained conversions) and report honestly on what still needs manual work,
+    // instead of silently doing nothing.
+    if fix {
+        use std::collections::BTreeSet;
+        let fixable_files: BTreeSet<&str> = filtered
+            .iter()
+            .filter(|r| r.rule == "redundant_to_string")
+            .map(|r| r.file.as_str())
+            .collect();
+        let mut fixed_files = 0usize;
+        for file in &fixable_files {
+            if let Ok(content) = std::fs::read_to_string(file) {
+                let new = content
+                    .replace(".to_string().to_string()", ".to_string()")
+                    .replace(".to_owned().to_string()", ".to_owned()")
+                    .replace(".to_string().to_owned()", ".to_string()");
+                if new != content && std::fs::write(file, new).is_ok() {
+                    fixed_files += 1;
+                }
+            }
+        }
+        let manual = filtered
+            .iter()
+            .filter(|r| r.rule != "redundant_to_string")
+            .count();
+        if !json {
+            println!(
+                "\n--fix: auto-fixed redundant conversions in {} file(s); {} issue(s) require manual review.",
+                fixed_files, manual
+            );
+        }
+        return Ok(());
+    }
+
+    if error_count > 0 {
         std::process::exit(1);
     }
 
@@ -198,10 +237,33 @@ fn lint_file(path: &Path, content: &str, ext: &str) -> Vec<LintResult> {
     results
 }
 
+/// True if the line is a comment in the given language. Code-level rules
+/// (security, style) must never fire on prose inside a comment — e.g. the word
+/// `eval(` in a Python `#` comment is not an eval call.
+fn is_comment_line(trimmed: &str, ext: &str) -> bool {
+    if trimmed.is_empty() {
+        return false;
+    }
+    match ext {
+        "py" | "rb" => trimmed.starts_with('#'),
+        "rs" | "go" | "java" | "kt" | "cs" | "ts" | "tsx" | "js" | "jsx" | "php" | "c" | "h"
+        | "cpp" => {
+            trimmed.starts_with("//") || trimmed.starts_with("/*") || trimmed.starts_with('*')
+        }
+        "adoc" | "aden" => trimmed.starts_with("//"),
+        _ => false,
+    }
+}
+
 fn apply_lint_rules(path: &Path, line: &str, line_num: usize, ext: &str) -> Vec<LintResult> {
     let mut results = Vec::new();
 
     let _path_str = path.to_string_lossy();
+
+    // Skip comment-only lines for every language.
+    if is_comment_line(line.trim(), ext) {
+        return results;
+    }
 
     let line_results = match ext {
         "rs" => lint_rust_line(line, line_num),
@@ -282,15 +344,22 @@ fn lint_rust_line(line: &str, line_num: usize) -> Vec<LintResult> {
         });
     }
 
-    // NEW: String.to_string() on already String
-    if line.contains(".to_string()") && line.contains("String") {
+    // Redundant conversion: a `.to_string()` chained onto something already
+    // owned (`.to_string().to_string()`, `.to_owned().to_string()`) is an
+    // unambiguous no-op. The old rule fired on any line containing both
+    // "String" and ".to_string()", which false-flagged legitimate
+    // `let s: String = x.to_string()` (&str -> String) conversions.
+    if line.contains(".to_string().to_string()")
+        || line.contains(".to_owned().to_string()")
+        || line.contains(".to_string().to_owned()")
+    {
         results.push(LintResult {
             file: String::new(),
             line: line_num,
-            column: line.find(".to_string()").unwrap_or(0) + 1,
+            column: line.find(".to_string()").or_else(|| line.find(".to_owned()")).unwrap_or(0) + 1,
             severity: LintSeverity::Warn,
             rule: "redundant_to_string".to_string(),
-            message: "Redundant .to_string() on String type".to_string(),
+            message: "Redundant chained conversion — the value is already owned".to_string(),
         });
     }
 
@@ -303,18 +372,6 @@ fn lint_rust_line(line: &str, line_num: usize) -> Vec<LintResult> {
             severity: LintSeverity::Warn,
             rule: "debug_print".to_string(),
             message: "Debug println left in code - remove in production".to_string(),
-        });
-    }
-
-    // NEW: String.to_string() on already String
-    if line.contains(".to_string()") && line.contains("String") {
-        results.push(LintResult {
-            file: String::new(),
-            line: line_num,
-            column: line.find(".to_string()").unwrap_or(0) + 1,
-            severity: LintSeverity::Suggest,
-            rule: "redundant_to_string".to_string(),
-            message: "Redundant .to_string() on String type".to_string(),
         });
     }
 

@@ -1,6 +1,7 @@
 use aden_graph::graph::AdenGraph;
 use aden_store::{GraphStorage, SledStorage};
 use rayon::prelude::*;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::types::GenCacheEntry;
@@ -9,10 +10,20 @@ use crate::util::{
     sanitize_anchor, sanitize_source_file, save_gen_cache,
 };
 
+/// One stored symbol plus the compact data the linker needs. Carrying callee
+/// names out of the parse phase means linking never has to reload the (huge)
+/// document store to rebuild the call graph.
+struct EmittedSymbol {
+    anchor: String,
+    cache_key: String,
+    cache_val: GenCacheEntry,
+    callees: Vec<String>,
+}
+
 /// Work item returned from parallel file processing.
 enum WorkItem {
     Skip,
-    Emitted(Vec<(String, (String, GenCacheEntry))>),
+    Emitted(Vec<EmittedSymbol>),
 }
 
 /// Emit a progress line unless quiet mode is on.
@@ -196,38 +207,6 @@ fn detect_contract_structure(path: &Path, source_path: &Path) -> Option<std::pat
     None
 }
 
-/// Infer parent module anchor from source file path.
-/// Works with any directory layout: looks for the first named sub-directory
-/// under known workspace roots (crates/, packages/, modules/, src/), or
-/// falls back to the immediate parent directory of the source file.
-fn infer_parent_module_from_source(source_path: &Path) -> Option<String> {
-    let path_str = source_path.to_string_lossy();
-
-    // Check for common workspace sub-directory patterns
-    for workspace_dir in &["/crates/", "/packages/", "/modules/"] {
-        if let Some(start) = path_str.find(workspace_dir) {
-            let after = &path_str[start + workspace_dir.len()..];
-            if let Some(end) = after.find('/') {
-                let mod_name = &after[..end];
-                if !mod_name.is_empty() {
-                    return Some(format!("mod-{}", mod_name));
-                }
-            }
-        }
-    }
-
-    // Flat src/ layout: use the immediate parent directory name
-    if let Some(parent) = source_path.parent() {
-        if let Some(name) = parent.file_name().and_then(|n| n.to_str()) {
-            if !name.is_empty() && name != "." && name != "src" {
-                return Some(format!("mod-{}", name));
-            }
-        }
-    }
-
-    None
-}
-
 /// Module name for a symbol anchor of the form
 /// `aden://module/<path>/<file>#<symbol>`.
 ///
@@ -254,67 +233,156 @@ fn crate_from_anchor(anchor: &str) -> Option<String> {
     }
 }
 
-/// Link the stored symbol documents into a connected graph by persisting edges.
+/// Callee names referenced by a symbol document, for call-graph linking.
+/// Reads both the `edge::calls[...]` listing and the `Callee` table so it works
+/// regardless of which an extractor emits.
+fn extract_callees(doc: &aden_core::Document) -> Vec<String> {
+    use aden_core::Block;
+    let mut callees = Vec::new();
+    for block in &doc.blocks {
+        match block {
+            Block::Listing { code, .. } => {
+                for line in code.lines() {
+                    if let Some(rest) = line.trim().strip_prefix("edge::calls[") {
+                        if let Some(callee) = rest.strip_suffix(']') {
+                            if !callee.is_empty() {
+                                callees.push(callee.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+            Block::Table(t) if t.headers.first().map(|h| h.eq_ignore_ascii_case("callee")) == Some(true) => {
+                for row in &t.rows {
+                    if let Some(c) = row.first() {
+                        if !c.is_empty() {
+                            callees.push(c.clone());
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    callees.sort();
+    callees.dedup();
+    callees
+}
+
+/// Slim a document before storing it. Drops the `edge::calls[...]` listing
+/// block — it is redundant with the `Callee` table for display and is no longer
+/// needed for linking (callees are carried out of the parse phase directly), so
+/// storing it just bloats the (already large) store on big repos.
+fn slim_doc_for_store(doc: &mut aden_core::Document) {
+    use aden_core::Block;
+    doc.blocks.retain(|b| {
+        let Block::Listing { code, .. } = b else {
+            return true;
+        };
+        // Drop only listings that are purely `edge::` macros.
+        !code
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .all(|l| l.trim().starts_with("edge::"))
+    });
+}
+
+/// Resolve a callee string to a single target anchor, or None if unknown or
+/// ambiguous. Tries the full callee, then the trailing segment after the last
+/// `.`/`:` so receiver/qualified calls link (`c.ExecuteC` → `ExecuteC`,
+/// `click.echo` → `echo`, `Path::new` → `new`). Ambiguous names are left
+/// unlinked rather than guessed, keeping the call graph precise.
+fn resolve_callee<'a>(callee: &str, name_index: &HashMap<&str, Vec<&'a str>>) -> Option<&'a str> {
+    if let Some(t) = name_index.get(callee) {
+        return if t.len() == 1 { Some(t[0]) } else { None };
+    }
+    let base = callee.rsplit(['.', ':']).next().unwrap_or(callee);
+    if base != callee && !base.is_empty() {
+        if let Some(t) = name_index.get(base) {
+            if t.len() == 1 {
+                return Some(t[0]);
+            }
+        }
+    }
+    None
+}
+
+/// Connect the stored symbols into a traversable graph by persisting edges,
+/// with bounded memory so it scales to large repositories.
 ///
-/// `aden gen` stores one document per symbol but historically wrote zero edges,
-/// leaving every symbol an orphan and making `aden asm` / `ask` / `query` unable
-/// to traverse anything (their graph is rebuilt store-first). This pass derives
-/// two edge families from data already present in the store and persists them so
-/// the graph is actually connected:
+/// Critically this never calls `get_all_documents()` — loading every full
+/// document into RAM is what made linking the Linux kernel (a 17 GB store)
+/// OOM. Instead it:
+/// 1. reads only the anchor *keys* (`get_all_anchors`) to build the name index
+///    and the module containment edges, and
+/// 2. takes call-site data as compact `(anchor, callees)` records collected
+///    during the parse phase.
+/// All edges are then written with a single `put_edges_bulk` pass (O(E), not the
+/// O(N^2) that per-edge writes incur on high-degree module nodes).
 ///
-/// 1. Containment: `mod-<crate>` --Documents--> symbol, symbol --PartOf-->
-///    `mod-<crate>`, and `mod-project` --Documents--> each `mod-<crate>`. The
-///    module nodes are synthesized here because otherwise they are only written
-///    to ignored `.aden/contracts/*.adoc` files and never enter the store.
-/// 2. Call graph: each symbol's `edge::calls[<callee>]` listing block (emitted by
-///    the language extractors) is resolved against the symbol-name index and
-///    persisted as a `Calls` edge when the callee name resolves unambiguously.
-fn link_store_edges<S: GraphStorage>(storage: &S) -> Result<(), Box<dyn std::error::Error>> {
+/// Edges built:
+/// - Containment: `mod-<crate>` --Documents--> symbol, symbol --PartOf-->
+///   `mod-<crate>`, `mod-project` --Documents--> each module. Module nodes are
+///   synthesized here (they otherwise live only in ignored `.adoc` files).
+/// - Calls: each resolved callee becomes a `Calls` edge.
+fn link_store_edges<S: GraphStorage>(
+    storage: &S,
+    link_records: &[(String, Vec<String>)],
+) -> Result<(), Box<dyn std::error::Error>> {
     use aden_core::{Block, Document, EdgeType, NodeType};
-    use std::collections::{HashMap, HashSet};
+    use std::collections::HashSet;
 
-    let docs = storage.get_all_documents()?;
+    // Anchor keys only — cheap relative to full documents.
+    let anchors = storage.get_all_anchors()?;
 
-    // Short symbol name (after the final '#') -> anchors that define it.
-    let mut name_index: HashMap<String, Vec<String>> = HashMap::new();
-    for anchor in docs.keys() {
+    // Short symbol name -> anchors that define it (borrows from `anchors`).
+    let mut name_index: HashMap<&str, Vec<&str>> = HashMap::new();
+    for anchor in &anchors {
         if let Some(hash) = anchor.rfind('#') {
             let name = &anchor[hash + 1..];
             if !name.is_empty() {
-                name_index
-                    .entry(name.to_string())
-                    .or_default()
-                    .push(anchor.clone());
+                name_index.entry(name).or_default().push(anchor.as_str());
             }
         }
     }
 
-    // Containment edges (module <-> symbol) + collect the module set.
+    let mut edges: Vec<(String, String, EdgeType)> = Vec::new();
     let mut modules: HashSet<String> = HashSet::new();
-    for anchor in docs.keys() {
+
+    // Containment for every anchor.
+    for anchor in &anchors {
         if let Some(krate) = crate_from_anchor(anchor) {
             let module_anchor = format!("mod-{}", krate);
             modules.insert(krate);
-            let _ = storage.put_edge(&module_anchor, anchor, EdgeType::Documents);
-            let _ = storage.put_edge(anchor, &module_anchor, EdgeType::PartOf);
+            edges.push((module_anchor.clone(), anchor.clone(), EdgeType::Documents));
+            edges.push((anchor.clone(), module_anchor, EdgeType::PartOf));
         }
     }
 
-    // Synthesize module nodes (they only exist as ignored .adoc files otherwise)
-    // plus the project root, and connect the project to each module.
-    let make_module_doc = |anchor: &str, body: &str| Document {
-        anchor: anchor.to_string(),
-        node_type: NodeType::Module,
-        attributes: HashMap::new(),
-        blocks: vec![Block::Paragraph(body.to_string())],
-        source_span: None,
-        metadata: None,
-        confidence: 1.0,
-    };
+    // Call edges from the compact per-symbol records.
+    for (anchor, callees) in link_records {
+        for callee in callees {
+            if let Some(target) = resolve_callee(callee, &name_index) {
+                if target != anchor.as_str() {
+                    edges.push((anchor.clone(), target.to_string(), EdgeType::Calls));
+                }
+            }
+        }
+    }
 
+    // Synthesize module nodes + project root, and connect the project to each.
     if !modules.is_empty() {
+        let make_module_doc = |anchor: &str, body: &str| Document {
+            anchor: anchor.to_string(),
+            node_type: NodeType::Module,
+            attributes: HashMap::new(),
+            blocks: vec![Block::Paragraph(body.to_string())],
+            source_span: None,
+            metadata: None,
+            confidence: 1.0,
+        };
         let project = "mod-project";
-        if !docs.contains_key(project) {
+        if !anchors.contains(project) {
             let _ = storage.put_document(&make_module_doc(
                 project,
                 "Project root. Links to every crate/module in the project.",
@@ -322,7 +390,7 @@ fn link_store_edges<S: GraphStorage>(storage: &S) -> Result<(), Box<dyn std::err
         }
         for krate in &modules {
             let module_anchor = format!("mod-{}", krate);
-            if !docs.contains_key(&module_anchor) {
+            if !anchors.contains(&module_anchor) {
                 let _ = storage.put_document(&make_module_doc(
                     &module_anchor,
                     &format!(
@@ -331,58 +399,12 @@ fn link_store_edges<S: GraphStorage>(storage: &S) -> Result<(), Box<dyn std::err
                     ),
                 ));
             }
-            let _ = storage.put_edge(project, &module_anchor, EdgeType::Documents);
-            let _ = storage.put_edge(&module_anchor, project, EdgeType::PartOf);
+            edges.push((project.to_string(), module_anchor.clone(), EdgeType::Documents));
+            edges.push((module_anchor, project.to_string(), EdgeType::PartOf));
         }
     }
 
-    // Resolve a callee string to a single target anchor, or None if it is
-    // unknown or ambiguous. Tries the full callee first, then the trailing
-    // segment after the last `.`/`:` — so receiver/qualified calls become real
-    // edges: `c.ExecuteC` → `ExecuteC`, `click.echo` → `echo`, `Path::new`
-    // → `new`. Ambiguous names (multiple definitions) are left unlinked rather
-    // than guessed, keeping the call graph precise.
-    let resolve_callee = |callee: &str| -> Option<String> {
-        if let Some(t) = name_index.get(callee) {
-            if t.len() == 1 {
-                return Some(t[0].clone());
-            }
-            return None; // exact name is ambiguous — don't guess
-        }
-        let base = callee.rsplit(['.', ':']).next().unwrap_or(callee);
-        if base != callee && !base.is_empty() {
-            if let Some(t) = name_index.get(base) {
-                if t.len() == 1 {
-                    return Some(t[0].clone());
-                }
-            }
-        }
-        None
-    };
-
-    // Call-graph edges: resolve `edge::calls[<callee>]` to anchors.
-    for (anchor, doc) in &docs {
-        for block in &doc.blocks {
-            let Block::Listing { code, .. } = block else {
-                continue;
-            };
-            for line in code.lines() {
-                let line = line.trim();
-                let Some(rest) = line.strip_prefix("edge::calls[") else {
-                    continue;
-                };
-                let Some(callee) = rest.strip_suffix(']') else {
-                    continue;
-                };
-                if let Some(target) = resolve_callee(callee) {
-                    if target != *anchor {
-                        let _ = storage.put_edge(anchor, &target, EdgeType::Calls);
-                    }
-                }
-            }
-        }
-    }
-
+    storage.put_edges_bulk(&edges)?;
     storage.flush()?;
     Ok(())
 }
@@ -585,16 +607,12 @@ pub fn cmd_gen(
                     let mut doc_clone = doc.clone();
                     sanitize_source_file(&mut doc_clone);
 
-                    let parent_module = infer_parent_module_from_source(src_path);
-                    if let Some(ref pm) = parent_module {
-                        doc_clone.blocks.push(aden_core::Block::Paragraph(
-                            "== Relationships".to_string(),
-                        ));
-                        doc_clone.blocks.push(aden_core::Block::DescriptionList(vec![(
-                            format!("<<{},module>>", pm),
-                            "This symbol is part of the parent module.".to_string(),
-                        )]));
-                    }
+                    // Capture call sites for graph linking before slimming, then
+                    // drop the redundant edge:: listing so the store stays compact.
+                    // Real containment/Calls edges are built in link_store_edges,
+                    // so the old parent-module relationship boilerplate is gone.
+                    let callees = extract_callees(&doc_clone);
+                    slim_doc_for_store(&mut doc_clone);
 
                     if let Err(e) = storage.put_document(&doc_clone) {
                         eprintln!("WARN: Failed to store {}: {}", doc_clone.anchor, e);
@@ -610,7 +628,12 @@ pub fn cmd_gen(
                         source_path: src_path.to_string_lossy().to_string(),
                     };
 
-                    emitted.push((doc_clone.anchor.clone(), (cache_key.clone(), cache_val)));
+                    emitted.push(EmittedSymbol {
+                        anchor: doc_clone.anchor.clone(),
+                        cache_key: cache_key.clone(),
+                        cache_val,
+                        callees,
+                    });
                 }
 
                 if emitted.is_empty() {
@@ -621,14 +644,19 @@ pub fn cmd_gen(
             })
             .collect();
 
-        // Phase 2: Merge parallel results into shared state
+        // Phase 2: Merge parallel results into shared state. Collect compact
+        // (anchor, callees) link records so the linker never reloads documents.
+        let mut link_records: Vec<(String, Vec<String>)> = Vec::new();
         for item in work_items {
             match item {
                 WorkItem::Skip => skipped += 1,
                 WorkItem::Emitted(emitted) => {
-                    for (anchor, (cache_key, cache_val)) in emitted {
-                        generated.push(anchor);
-                        cache.entries.insert(cache_key, cache_val);
+                    for sym in emitted {
+                        generated.push(sym.anchor.clone());
+                        cache.entries.insert(sym.cache_key, sym.cache_val);
+                        if !sym.callees.is_empty() {
+                            link_records.push((sym.anchor, sym.callees));
+                        }
                     }
                 }
             }
@@ -639,7 +667,7 @@ pub fn cmd_gen(
 
         // Connect the graph: persist module<->symbol containment and call edges
         // so the store-first graph used by asm/ask/query is actually traversable.
-        if let Err(e) = link_store_edges(&storage) {
+        if let Err(e) = link_store_edges(&storage, &link_records) {
             eprintln!("WARN: Failed to link graph edges: {}", e);
         }
 
