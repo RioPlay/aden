@@ -79,13 +79,18 @@ and fixed the root causes:
 - Symbol signature rendering still emits `param_x:_str: Unknown` and a `name:`
   that duplicates the node title — minor remaining density noise.
 
-## Test Results Summary (v0.1.0 - Current)
+## Test Results Summary (v0.1.0 — historical snapshot)
+
+> Historical snapshot. A later polyglot sweep added TypeScript (parsed via
+> `tree-sitter-language-pack`, same path as the languages below). Treat the
+> table as a point-in-time record, not the current support matrix.
 
 | Language | init | gen | query | check | Status |
 |-----------|------|-----|-------|-------|--------|
 | **Rust** | ✅ | ✅ | ✅ | ✅ | Working |
 | **Go** | ✅ | ✅ | ✅ | ✅ | Module path parsed from go.mod ("unknown" only when no go.mod found) |
 | **JavaScript** | ✅ | ✅ | ✅ | ✅ | Duplicate store entries (cosmetic) |
+| **TypeScript** | ✅ | ✅ | ✅ | ✅ | Added in later polyglot sweep |
 | **Python** | ✅ | ✅ | ✅ | ✅ | Working (uses tree-sitter-language-pack) |
 
 ## Confirmed Issues
@@ -135,8 +140,10 @@ Python files ARE being parsed correctly via tree-sitter-language-pack. The earli
 The duplicates appear during "Stored" phase but don't affect final anchor list. Low priority.
 
 ## Priority Order
-1. MCP server connectivity (blocks MCP users)
-2. Persistent active project setting
-3. Go module path resolution
-4. JavaScript duplicate store entries
-5. Virtual project structure support
+1. Persistent active project setting
+2. Go module path resolution
+3. JavaScript duplicate store entries
+4. Virtual project structure support
+
+(MCP server connectivity was removed from this list — it was diagnosed as
+NOT-A-BUG; see "MCP Server Not Responding" above.)
