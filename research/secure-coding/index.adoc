@@ -1,0 +1,20 @@
+[[sec-index]]
+= Secure Coding Knowledge Base
+
+A small, cross-linked corpus of best-in-class secure-coding guidance, assembled
+from authoritative public sources and wired together so aden can build a graph
+of relationships between weaknesses, the practices that mitigate them, and
+aden's own audited findings.
+
+Sources: OWASP Secure Coding Practices Quick Reference Guide, OWASP Top 10:2025,
+and the 2024 MITRE/CISA CWE Top 25.
+
+== Map
+
+- Weakness catalog: <<cwe-top25>>
+- Mitigating practices: <<scp-checklist>>
+- 2025 risk view: <<owasp-top10-2025>>
+- How aden's own audit findings map onto these: <<aden-audit-map>>
+
+This index references every top-level document so nothing is an orphan:
+<<cwe-top25>>, <<scp-checklist>>, <<owasp-top10-2025>>, <<aden-audit-map>>.
