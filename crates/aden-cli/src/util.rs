@@ -12,51 +12,6 @@ use std::path::{Path, PathBuf};
 
 use crate::types::GenCache;
 
-/// Infer the parent module anchor from a source file path.
-///
-/// Supports all common monorepo workspace layouts:
-///   - `crates/<name>/src/...`   (Cargo workspaces)
-///   - `packages/<name>/src/...` (npm/pnpm workspaces, some Cargo)
-///   - `modules/<name>/src/...`  (Go, generic)
-///   - `libs/<name>/src/...`     (Nx, Bazel)
-///   - `services/<name>/src/...` (microservice repos)
-///   - `apps/<name>/src/...`     (monorepo apps)
-///   - `src/<name>/...`          (flat layout — returns mod-<name>)
-///
-/// Returns `None` for single-package repos (no subdirectory workspace).
-fn infer_parent_module_from_source(source_path: &std::path::Path) -> Option<String> {
-    let path_str = source_path.to_string_lossy();
-    // Ordered by specificity: longer segment names first to avoid false matches
-    const WORKSPACE_DIRS: &[(&str, usize)] = &[
-        ("/crates/",   8),
-        ("/packages/", 10),
-        ("/modules/",  9),
-        ("/libs/",     6),
-        ("/services/", 10),
-        ("/apps/",     6),
-        ("crates/",    7),
-        ("packages/",  9),
-        ("modules/",   8),
-        ("libs/",      5),
-        ("services/",  9),
-        ("apps/",      5),
-        ("/src/",      5), // flat layout: /src/<name>/...
-        ("src/",       4),
-    ];
-    for (segment, skip) in WORKSPACE_DIRS {
-        if let Some(start) = path_str.find(segment) {
-            let after = &path_str[start + skip..];
-            if let Some(end) = after.find('/') {
-                let name = &after[..end];
-                if !name.is_empty() && name != "src" && name != "lib" && name != "main" {
-                    return Some(format!("mod-{}", name));
-                }
-            }
-        }
-    }
-    None
-}
-
 /// Reject project names that could traverse directories.
 pub fn validate_name(name: &str) -> Result<(), Box<dyn std::error::Error>> {
     if name.contains('/') || name.contains('\\') || name == ".." || name.starts_with("../") {
@@ -75,32 +30,6 @@ pub fn safe_relative(path_str: &str) -> Result<(), Box<dyn std::error::Error>> {
         return Err(format!("Path traversal blocked: '{}' contains '..'", path_str).into());
     }
     Ok(())
-}
-
-/// Walk up from `start` looking for a directory containing `.aden/`.
-pub fn find_aden_root(start: &Path) -> Option<PathBuf> {
-    let mut current = start.canonicalize().unwrap_or_else(|_| start.to_path_buf());
-    loop {
-        if current.join(".aden").is_dir() {
-            return Some(current);
-        }
-        if let Some(parent) = current.parent() {
-            current = parent.to_path_buf();
-        } else {
-            return None;
-        }
-    }
-}
-
-/// Compute the base-cache path for a given contract output path.
-pub fn base_cache_path(contract_path: &Path) -> Option<PathBuf> {
-    let file_name = contract_path.file_name()?.to_str()?;
-    let root = if contract_path.is_absolute() {
-        find_aden_root(contract_path.parent()?)?
-    } else {
-        find_aden_root(std::env::current_dir().ok()?.as_path())?
-    };
-    Some(root.join(".aden").join("contract-base").join(file_name))
 }
 
 /// Project-root markers across ecosystems. Ordered roughly by how strongly each
@@ -331,61 +260,6 @@ pub fn parse_edge_types(input: &str) -> Vec<aden_core::EdgeType> {
         .split(',')
         .filter_map(parse_single_edge_type)
         .collect()
-}
-
-/// Emit documents to files or stdout.
-pub fn emit_docs(
-    mut docs: Vec<aden_core::Document>,
-    out_dir: Option<&Path>,
-    source: &Path,
-    format: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
-    if docs.is_empty() {
-        return Ok(());
-    }
-    // SECURITY: Strip absolute paths from source_file attributes before emitting
-    for doc in &mut docs {
-        sanitize_source_file(doc);
-    }
-
-    // Auto-link to parent module (infer from source path)
-    let parent_module = infer_parent_module_from_source(source);
-    if parent_module.is_some() {
-        for doc in &mut docs {
-            doc.blocks.push(aden_core::Block::Paragraph("== Relationships".to_string()));
-            doc.blocks.push(aden_core::Block::DescriptionList(vec![
-                (format!("<<{},module>>", parent_module.as_ref().unwrap()), 
-                 "This symbol is part of the parent module.".to_string())
-            ]));
-        }
-    }
-
-    let is_markdown = format.eq_ignore_ascii_case("md");
-    let output = if is_markdown {
-        aden_emit::emit_md(&docs)
-    } else {
-        aden_emit::emit(&docs)
-    };
-
-    if let Some(out) = out_dir {
-        std::fs::create_dir_all(out)?;
-        for doc in &docs {
-            let ext = if is_markdown { "md" } else { "adoc" };
-            let file_name = format!("{}.{}", sanitize_anchor(&doc.anchor), ext);
-            let file_path = out.join(&file_name);
-            let content = if is_markdown {
-                aden_emit::emit_document_md(doc)
-            } else {
-                aden_emit::emit_document(doc)
-            };
-            std::fs::write(&file_path, content)?;
-            println!("Emitted {}", file_path.display());
-        }
-    } else {
-        println!("{output}");
-    }
-
-    Ok(())
 }
 
 /// Load the generation cache from disk, returning a default on any error.
