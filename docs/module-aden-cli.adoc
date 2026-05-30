@@ -150,7 +150,7 @@ aden review . --since REF
 ----
 
 === audit
-OWASP-style security audit.
+OWASP-aligned security audit.
 [source,bash]
 ----
 aden audit [PATH]

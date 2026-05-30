@@ -504,7 +504,7 @@ Validates low-confidence proposals against a token budget.
 
 === audit
 
-OWASP-style security audit.
+OWASP-aligned security audit.
 
 [source,bash]
 ----

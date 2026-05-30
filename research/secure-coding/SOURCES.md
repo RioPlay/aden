@@ -15,10 +15,15 @@ license governs it (see per-document headers).
 | Document | Primary source | Source license |
 |---|---|---|
 | `scp-checklist.adoc` | OWASP Secure Coding Practices — Quick Reference Guide | CC BY-SA 3.0 |
-| `owasp-top10-2025.adoc` | OWASP Top 10:2025 (A05 Injection) | CC BY-SA 4.0 / 3.0 |
+| `owasp-top10-2025.adoc` | OWASP Top 10:2025 (A05 Injection) | CC BY 3.0 (attribution only) |
 | `cwe-top25.adoc` | 2024 CWE Top 25 Most Dangerous Software Weaknesses (MITRE/CISA) | MITRE CWE Terms of Use |
-| `aden-audit-map.adoc` | Original aden work (maps the above onto aden's own audit) | AGPL-3.0-compatible / aden-authored |
-| `index.adoc` | Original (navigation hub) | aden-authored |
+| `aden-audit-map.adoc` | Original aden work (maps the above onto aden's own audit) | aden-authored (AGPL-3.0) |
+| `index.adoc` | Original (navigation hub) | aden-authored (AGPL-3.0) |
+
+Note the two OWASP works carry **different** licenses: the Secure Coding
+Practices guide is CC BY-SA 3.0 (ShareAlike); the Top 10 is CC BY 3.0
+(attribution only, no ShareAlike) — both verified against each work's own
+license footer on 2026-05-30.
 
 ## Citations
 
@@ -27,23 +32,40 @@ license governs it (see per-document headers).
   Licensed under Creative Commons Attribution-ShareAlike 3.0
   (https://creativecommons.org/licenses/by-sa/3.0/).
 - **OWASP Top 10:2025.** The OWASP Foundation.
-  https://owasp.org/Top10/2025/A05_2025-Injection/  Licensed under Creative
-  Commons Attribution-ShareAlike.
+  https://owasp.org/Top10/2025/A05_2025-Injection/  "This work is licensed under
+  a Creative Commons Attribution 3.0 Unported License." (CC BY 3.0,
+  https://creativecommons.org/licenses/by/3.0/).
 - **2024 CWE Top 25 Most Dangerous Software Weaknesses.** The MITRE Corporation /
-  CISA. https://cwe.mitre.org/top25/archive/2024/2024_cwe_top25.html
-  CWE™ is © The MITRE Corporation. Used under the CWE Terms of Use
-  (https://cwe.mitre.org/about/termsofuse.html): "The MITRE Corporation hereby
-  grants you a non-exclusive, royalty-free license to use CWE for research,
-  development, and commercial purposes." CWE is a trademark of The MITRE
-  Corporation.
+  CISA. https://cwe.mitre.org/top25/archive/2024/2024_cwe_top25.html  Used under
+  the CWE Terms of Use (https://cwe.mitre.org/about/termsofuse.html): "The MITRE
+  Corporation hereby grants you a non-exclusive, royalty-free license to use CWE
+  for research, development, and commercial purposes."
+
+## Required notices (reproduced verbatim per the source terms)
+
+> Copyright © 2006–2026, The MITRE Corporation.
+>
+> CWE, CWSS, CWRAF, and the CWE logo are trademarks of The MITRE Corporation.
+
+## Trademark & non-endorsement
+
+CWE™ is a trademark of The MITRE Corporation; "OWASP" and the OWASP logo are
+trademarks of the OWASP Foundation. These marks are used here **nominatively** —
+to identify the standards this corpus summarizes. Neither The MITRE Corporation
+nor the OWASP Foundation endorses, sponsors, or is affiliated with aden.
+References in aden's own documentation/CLI to an "OWASP-aligned" or
+"OWASP-Top-10-informed" audit describe aden's own functionality and do not imply
+affiliation.
 
 ## License of this corpus
 
-Because `scp-checklist.adoc` and `owasp-top10-2025.adoc` are derivative works of
-CC BY-SA material, those documents (and any redistribution of this corpus that
-includes them) are licensed under **CC BY-SA 3.0**, NOT aden's AGPL-3.0. The
-`cwe-top25.adoc` entries reproduce CWE identifiers/names under MITRE's terms with
-the attribution above. `index.adoc` and `aden-audit-map.adoc` are aden-authored.
+Because `scp-checklist.adoc` closely follows CC BY-SA 3.0 material, that
+document (and any redistribution of this corpus that includes it) is licensed
+under **CC BY-SA 3.0**, NOT aden's AGPL-3.0. `owasp-top10-2025.adoc` follows
+CC BY 3.0 material (attribution only). The `cwe-top25.adoc` entries reproduce
+CWE identifiers/names under MITRE's terms with the notices above. `index.adoc`
+and `aden-audit-map.adoc` are aden-authored.
 
-Keep this segregation intact: do not copy CC BY-SA prose into AGPL-licensed
-source files.
+Keep this segregation intact: do not copy CC BY-SA / CC BY / CWE text into
+AGPL-licensed source files, and do not `include_str!`/`include_bytes!` these
+documents into any aden binary.

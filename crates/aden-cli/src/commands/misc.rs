@@ -8,7 +8,7 @@ use std::sync::OnceLock;
 use crate::types::{OwaspFinding, OwaspSeverity};
 use crate::util::quick_health_score;
 
-/// OWASP-style security audit: scan source for vulnerabilities.
+/// OWASP-aligned security audit: scan source for vulnerabilities.
 pub fn cmd_audit(
     path: &Path,
     lang_filter: Option<&str>,

@@ -152,6 +152,18 @@ in `NOTICE.md`** (regenerate with `aden licenses`). If you maintain a project
 Aden depends on and feel under-credited, that is an oversight we want to
 correct — please open an issue and we will fix it.
 
+### Third-party reference material
+
+The `research/` tree contains documentation that Aden *parses and queries*, not
+code it compiles or links — e.g. a secure-coding knowledge base summarizing
+OWASP and MITRE CWE guidance. This material is under its own third-party
+licenses (CC BY-SA 3.0, CC BY 3.0, and the MITRE CWE Terms of Use), kept
+segregated from Aden's AGPL-3.0 source and never embedded in any binary. Full
+citations, required notices, and trademark/non-endorsement statements are in
+`research/secure-coding/SOURCES.md` and `research/README.md`. "OWASP" and "CWE"
+are trademarks of their respective owners; their use here is nominative and
+implies no affiliation or endorsement.
+
 ## The Name
 
 **A Dense Referential Context Compiler** — Every token is load-bearing. Every edge is typed. Every anchor resolves.

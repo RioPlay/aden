@@ -58,7 +58,7 @@ impl std::fmt::Display for OwaspSeverity {
     }
 }
 
-/// A single OWASP-style finding.
+/// A single OWASP-aligned finding.
 pub struct OwaspFinding {
     pub owasp_id: &'static str,
     pub category: &'static str,

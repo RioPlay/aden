@@ -450,7 +450,7 @@ enum Commands {
         #[command(subcommand)]
         action: FederationAction,
     },
-    /// OWASP-style security audit: scan source for vulnerabilities
+    /// OWASP-aligned security audit: scan source for vulnerabilities
     Audit {
         #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
         path: PathBuf,
