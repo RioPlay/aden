@@ -620,6 +620,32 @@ enum FederationAction {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Run all CLI work on a worker thread with a large stack. The OS main-thread
+    // stack is ~1 MB on Windows (vs ~8 MB on Linux/macOS), which is too small for
+    // clap-derive's monolithic command-tree build (the 44-variant `Commands`
+    // enum) at `Cli::parse()` and for the uncapped tree-sitter AST walkers in
+    // aden-parse on deeply nested sources. A 64 MB stack clears both on every
+    // platform. The thread is named "main" so panic/overflow diagnostics still
+    // read `thread 'main'`, and errors are printed here (Display, unquoted) to
+    // match the formatting the runtime's `Termination` impl would otherwise give
+    // the original `Box<dyn Error>` (which isn't `Send`, so it can't cross join).
+    let child = std::thread::Builder::new()
+        .name("main".into())
+        .stack_size(64 * 1024 * 1024)
+        .spawn(|| {
+            real_main().unwrap_or_else(|e| {
+                eprintln!("Error: {e}");
+                std::process::exit(1);
+            })
+        })
+        .expect("failed to spawn aden worker thread");
+    match child.join() {
+        Ok(()) => Ok(()),
+        Err(_) => std::process::exit(101), // worker thread panicked (already reported)
+    }
+}
+
+fn real_main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     let quiet = !cli.verbose;
     crate::util::quiet::set_quiet(quiet);
