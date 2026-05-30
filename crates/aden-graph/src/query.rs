@@ -10,6 +10,7 @@
 
 use crate::graph::AdenGraph;
 use crate::nodes::{DocumentNode, AdenEdge, GraphNode};
+use aden_core::EdgeType;
 use petgraph::Direction;
 use serde::{Deserialize, Serialize};
 
@@ -32,7 +33,7 @@ impl std::fmt::Debug for AdqInterpreter<'_> {
 #[derive(Debug, thiserror::Error)]
 pub enum QueryError {
     #[error(
-        "unknown ADQ function: '{0}'. Valid: node(anchor), incoming(anchor), outgoing(anchor), nodes, edges"
+        "unknown ADQ function: '{0}'. Valid: node(anchor), incoming(anchor), outgoing(anchor), nodes, edges, where <predicate>"
     )]
     UnknownFunction(String),
     #[error("invalid anchor: {0}")]
@@ -48,6 +49,19 @@ impl<'a> AdqInterpreter<'a> {
 
     pub fn execute(&self, adq_script: &str) -> Result<QueryResult, QueryError> {
         let script = adq_script.trim();
+
+        // `where <predicate>` — graph-wide predicate selection (dead code,
+        // reachability, …). Checked before the function-call form so a predicate
+        // such as `where backlinks=0` is not mistaken for a function call.
+        let lower = script.to_ascii_lowercase();
+        if lower == "where" || lower.starts_with("where ") || lower.starts_with("where(") {
+            let pred = script[5..]
+                .trim()
+                .trim_start_matches('(')
+                .trim_end_matches(')')
+                .trim();
+            return self.exec_where(pred);
+        }
 
         // Parse function calls: node(anchor), incoming(anchor), outgoing(anchor)
         // Also support: node anchor, incoming anchor
@@ -139,34 +153,86 @@ impl<'a> AdqInterpreter<'a> {
         Ok(QueryResult { nodes, total })
     }
 
-    #[allow(dead_code)]
-    fn exec_where(&self, args: &[&str]) -> Result<QueryResult, QueryError> {
-        // Simple where: anchor contains "term" or type = "Note"
+    /// Graph-wide predicate selection: `where <predicate>`.
+    ///
+    /// The foundation for issue detectors (dead code, etc.) that need to select
+    /// nodes by graph-derived facts rather than by a single anchor. Evaluates a
+    /// boolean predicate over each node using facts computed from graph structure
+    /// and node type — never from any one language — so it stays language-agnostic.
+    ///
+    /// Fields:
+    /// - `callers`   — incoming `Calls` edges (0 ⇒ never called ⇒ dead-code candidate)
+    /// - `refs`      — incoming *reference* edges (Calls/Uses/Invokes/RelatesTo/Tests/…),
+    ///   excluding structural containment (the module-hub `Documents`/`PartOf` edges)
+    /// - `backlinks` — every incoming edge (includes the module-hub `Documents` edge)
+    /// - `calls`     — outgoing `Calls` edges
+    /// - `type`      — node type (Function, Type, Module, …)
+    /// - `anchor` / `name` — substring match on the anchor
+    ///
+    /// Operators `=` `!=` `>` `<` `>=` `<=` `~`(contains); combine atoms with
+    /// `and`/`or`; negate one with `not`. Example dead-code query:
+    /// `where callers=0 and type=Function`.
+    fn exec_where(&self, predicate: &str) -> Result<QueryResult, QueryError> {
+        let pred = Predicate::parse(predicate)?;
         let mut nodes = Vec::new();
-
         for idx in self.graph.graph.node_indices() {
-            if let Some(node) = self.graph.graph.node_weight(idx) {
-                let mut matches = true;
-                for arg in args {
-                    let arg = arg.trim_matches(|c| c == '(' || c == ')' || c == ';');
-                    if arg.starts_with("anchor:") || arg.starts_with("anchor=") {
-                        let term = arg
-                            .split(':')
-                            .nth(1)
-                            .unwrap_or(arg.split('=').nth(1).unwrap_or(""));
-                        if !node.anchor().contains(term) {
-                            matches = false;
-                        }
-                    }
-                }
-                if matches {
-                    nodes.push(node.anchor().to_string());
-                }
+            let Some(node) = self.graph.graph.node_weight(idx) else {
+                continue;
+            };
+            let facts = self.node_facts(idx, node);
+            if pred.eval(&facts) {
+                nodes.push(format!(
+                    "{}  [type={} callers={} refs={} calls={}]",
+                    facts.anchor, facts.type_name, facts.callers, facts.refs, facts.calls
+                ));
             }
         }
-
         let total = nodes.len();
         Ok(QueryResult { nodes, total })
+    }
+
+    /// Compute the graph-derived facts for one node, consumed by `where`.
+    fn node_facts(
+        &self,
+        idx: petgraph::graph::NodeIndex,
+        node: &DocumentNode,
+    ) -> NodeFacts {
+        let mut callers = 0usize;
+        let mut refs = 0usize;
+        let mut backlinks = 0usize;
+        for e in self.graph.graph.edges_directed(idx, Direction::Incoming) {
+            backlinks += 1;
+            match e.weight().edge_type {
+                EdgeType::Calls => {
+                    callers += 1;
+                    refs += 1;
+                }
+                EdgeType::Uses
+                | EdgeType::Invokes
+                | EdgeType::RelatesTo
+                | EdgeType::Tests
+                | EdgeType::Verifies
+                | EdgeType::Implements
+                | EdgeType::Requires
+                | EdgeType::Mutates => refs += 1,
+                // Documents / PartOf / IsA / … are structural, not references.
+                _ => {}
+            }
+        }
+        let calls = self
+            .graph
+            .graph
+            .edges_directed(idx, Direction::Outgoing)
+            .filter(|e| e.weight().edge_type == EdgeType::Calls)
+            .count();
+        NodeFacts {
+            anchor: node.anchor().to_string(),
+            type_name: format!("{:?}", node.doc.node_type),
+            callers,
+            refs,
+            backlinks,
+            calls,
+        }
     }
 
     fn exec_all_nodes(&self, _args: &[&str]) -> Result<QueryResult, QueryError> {
@@ -196,10 +262,252 @@ impl<'a> AdqInterpreter<'a> {
     }
 }
 
+/// Graph-derived facts about a single node, evaluated by `where` predicates.
+struct NodeFacts {
+    anchor: String,
+    type_name: String,
+    callers: usize,
+    refs: usize,
+    backlinks: usize,
+    calls: usize,
+}
+
+#[derive(Clone, Copy)]
+enum Cmp {
+    Eq,
+    Ne,
+    Gt,
+    Lt,
+    Ge,
+    Le,
+    Contains,
+}
+
+/// A single comparison, e.g. `callers=0` or `not type=Module`.
+struct Atom {
+    field: String,
+    cmp: Cmp,
+    value: String,
+    negated: bool,
+}
+
+impl Atom {
+    fn parse(input: &str) -> Result<Atom, QueryError> {
+        let mut s = input.trim();
+        let mut negated = false;
+        if let Some(rest) = strip_kw_prefix(s, "not") {
+            s = rest.trim();
+            negated = true;
+        }
+        // Longest operators first so `>=` is not parsed as `>` then `=`.
+        const OPS: [(&str, Cmp); 7] = [
+            (">=", Cmp::Ge),
+            ("<=", Cmp::Le),
+            ("!=", Cmp::Ne),
+            ("~", Cmp::Contains),
+            ("=", Cmp::Eq),
+            (">", Cmp::Gt),
+            ("<", Cmp::Lt),
+        ];
+        for (tok, cmp) in OPS {
+            if let Some(p) = s.find(tok) {
+                let field = s[..p].trim().to_ascii_lowercase();
+                let value = s[p + tok.len()..]
+                    .trim()
+                    .trim_matches(|c| c == '"' || c == '\'')
+                    .to_string();
+                if field.is_empty() {
+                    break;
+                }
+                return Ok(Atom {
+                    field,
+                    cmp,
+                    value,
+                    negated,
+                });
+            }
+        }
+        Err(QueryError::Parse(format!(
+            "cannot parse predicate atom `{}` (expected `field <op> value`, e.g. `callers=0`)",
+            s
+        )))
+    }
+
+    fn eval(&self, f: &NodeFacts) -> bool {
+        let matched = match self.field.as_str() {
+            "callers" => self.cmp_num(f.callers),
+            "refs" => self.cmp_num(f.refs),
+            "backlinks" => self.cmp_num(f.backlinks),
+            "calls" => self.cmp_num(f.calls),
+            "type" => self.cmp_str(&f.type_name),
+            "anchor" | "name" => self.cmp_str(&f.anchor),
+            _ => false,
+        };
+        matched ^ self.negated
+    }
+
+    fn cmp_num(&self, lhs: usize) -> bool {
+        let Ok(rhs) = self.value.parse::<usize>() else {
+            return false;
+        };
+        match self.cmp {
+            Cmp::Eq => lhs == rhs,
+            Cmp::Ne => lhs != rhs,
+            Cmp::Gt => lhs > rhs,
+            Cmp::Lt => lhs < rhs,
+            Cmp::Ge => lhs >= rhs,
+            Cmp::Le => lhs <= rhs,
+            Cmp::Contains => false,
+        }
+    }
+
+    fn cmp_str(&self, lhs: &str) -> bool {
+        let l = lhs.to_ascii_lowercase();
+        let r = self.value.to_ascii_lowercase();
+        match self.cmp {
+            Cmp::Eq => l == r,
+            Cmp::Ne => l != r,
+            Cmp::Contains => l.contains(&r),
+            // Ordering comparisons are meaningless for strings.
+            _ => false,
+        }
+    }
+}
+
+/// A predicate in disjunctive normal form: an OR of AND-groups of [`Atom`]s.
+/// (`a and b or c` ⇒ `(a and b) or (c)`.)
+struct Predicate {
+    groups: Vec<Vec<Atom>>,
+}
+
+impl Predicate {
+    fn parse(input: &str) -> Result<Self, QueryError> {
+        let input = input.trim();
+        if input.is_empty() {
+            return Err(QueryError::Parse(
+                "`where` requires a predicate, e.g. `where callers=0 and type=Function`".into(),
+            ));
+        }
+        let mut groups = Vec::new();
+        for or_part in split_kw(input, "or") {
+            let mut atoms = Vec::new();
+            for and_part in split_kw(&or_part, "and") {
+                if and_part.trim().is_empty() {
+                    continue;
+                }
+                atoms.push(Atom::parse(&and_part)?);
+            }
+            if !atoms.is_empty() {
+                groups.push(atoms);
+            }
+        }
+        if groups.is_empty() {
+            return Err(QueryError::Parse("empty predicate".into()));
+        }
+        Ok(Predicate { groups })
+    }
+
+    fn eval(&self, f: &NodeFacts) -> bool {
+        self.groups.iter().any(|g| g.iter().all(|a| a.eval(f)))
+    }
+}
+
+/// Split on a whole-word keyword surrounded by spaces (case-insensitive), so
+/// `and`/`or` inside identifiers (e.g. `android`) never trigger a split.
+fn split_kw(input: &str, kw: &str) -> Vec<String> {
+    let lower = input.to_ascii_lowercase();
+    let pat = format!(" {} ", kw);
+    let mut parts = Vec::new();
+    let mut start = 0;
+    let mut search = 0;
+    while let Some(rel) = lower[search..].find(&pat) {
+        let abs = search + rel;
+        parts.push(input[start..abs].to_string());
+        start = abs + pat.len();
+        search = start;
+    }
+    parts.push(input[start..].to_string());
+    parts
+}
+
+/// Strip a leading whole-word keyword (`not `) case-insensitively.
+fn strip_kw_prefix<'a>(s: &'a str, kw: &str) -> Option<&'a str> {
+    let pat = format!("{} ", kw);
+    if s.len() >= pat.len() && s[..pat.len()].eq_ignore_ascii_case(&pat) {
+        Some(&s[pat.len()..])
+    } else {
+        None
+    }
+}
+
 pub fn execute_adq(
     graph: &AdenGraph<DocumentNode, AdenEdge>,
     script: &str,
 ) -> Result<QueryResult, QueryError> {
     let interpreter = AdqInterpreter::new(graph);
     interpreter.execute(script)
+}
+
+#[cfg(test)]
+mod predicate_tests {
+    use super::*;
+
+    fn facts(anchor: &str, ty: &str, callers: usize, refs: usize, calls: usize) -> NodeFacts {
+        NodeFacts {
+            anchor: anchor.to_string(),
+            type_name: ty.to_string(),
+            callers,
+            refs,
+            backlinks: callers,
+            calls,
+        }
+    }
+
+    #[test]
+    fn dead_code_predicate_selects_zero_caller_symbols() {
+        let p = Predicate::parse("callers=0 and type=Function").unwrap();
+        assert!(p.eval(&facts("a#dead", "Function", 0, 0, 2)));
+        assert!(!p.eval(&facts("a#live", "Function", 3, 3, 0)));
+        assert!(!p.eval(&facts("a#type", "Type", 0, 0, 0)));
+    }
+
+    #[test]
+    fn comparison_operators_parse_and_eval() {
+        assert!(Predicate::parse("callers>=2").unwrap().eval(&facts("x", "Function", 2, 2, 0)));
+        assert!(Predicate::parse("callers>1").unwrap().eval(&facts("x", "Function", 2, 0, 0)));
+        assert!(Predicate::parse("calls<=0").unwrap().eval(&facts("x", "Function", 0, 0, 0)));
+        assert!(Predicate::parse("callers!=0").unwrap().eval(&facts("x", "Function", 1, 0, 0)));
+    }
+
+    #[test]
+    fn not_and_or_combine() {
+        // `not pub` style negation on a string field
+        let p = Predicate::parse("not type=Module").unwrap();
+        assert!(p.eval(&facts("x", "Function", 0, 0, 0)));
+        assert!(!p.eval(&facts("x", "Module", 0, 0, 0)));
+        // OR of two AND-groups
+        let p = Predicate::parse("type=Module or callers=0").unwrap();
+        assert!(p.eval(&facts("x", "Module", 5, 5, 0)));
+        assert!(p.eval(&facts("x", "Function", 0, 0, 0)));
+        assert!(!p.eval(&facts("x", "Function", 4, 4, 0)));
+    }
+
+    #[test]
+    fn contains_match_on_anchor() {
+        let p = Predicate::parse("anchor~resolve_callee").unwrap();
+        assert!(p.eval(&facts("aden://module/x/y.rs#resolve_callee", "Function", 1, 1, 0)));
+        assert!(!p.eval(&facts("aden://module/x/y.rs#other", "Function", 1, 1, 0)));
+    }
+
+    #[test]
+    fn keyword_inside_identifier_does_not_split() {
+        // `android` contains "and" but must not be treated as a conjunction.
+        let p = Predicate::parse("anchor~android").unwrap();
+        assert!(p.eval(&facts("pkg#android_init", "Function", 0, 0, 0)));
+    }
+
+    #[test]
+    fn empty_predicate_is_an_error() {
+        assert!(Predicate::parse("   ").is_err());
+    }
 }

@@ -1,7 +1,7 @@
-:proj: aden
+:proj: unknown
 
 [[agent-onboarding]]
-= Agent Onboarding — Aden
+= Agent Onboarding — unknown
 
 [IMPORTANT]
 ====
@@ -16,39 +16,41 @@ Read this document before starting any work in this repository.
 cat .agent/context.adoc    # Project constraints and conventions
 cat .agent/session.adoc    # Who else is working and on what?
 
-# 2. Understand the codebase
-#    Aden is available as a context tool on its own source:
-aden ask "What does <module> do?"
-aden asm --from <anchor> --depth 2
-aden locate --symbol <name> .
+# 2. Understand the codebase before changing it
+#    Use whatever tools are available to you:
+#    - Read source files and existing tests
+#    - Use aden (if installed) for graph-based context assembly:
+#        aden ask "What does <module> do?"
+#        aden asm --from <anchor> --depth 2
+#        aden locate --symbol <name> .
 
-# 3. Make your change, run tests
-cargo test --workspace
+# 3. Make your change
+#    Run the project's own tests and build before committing.
 
 # 4. Log your session
 echo "| $(date -u +%Y-%m-%dT%H:%M:%SZ) | <your-id> | <task> | <files> | completed |" >> .agent/session.adoc
 ----
 
-== Context Tools
+== Context Tools (if aden is installed)
 
-Aden builds a traversable knowledge graph from source code and documentation,
-enabling focused context assembly for any codebase it's run against.
+Aden builds a traversable knowledge graph from this codebase so you can
+query relationships and retrieve focused context without reading every file.
 
 [cols="1,2"]
 |===
 |Goal |Command
 
-|Ask a natural language question
+|Ask a question about the codebase
 |`aden ask "<question>"`
 
-|Assemble focused context for an anchor
-|`aden asm --from <anchor> --depth 2`
-
-|Find a symbol definition
+|Find where a symbol is defined
 |`aden locate --symbol <name> .`
 
-|Full-text search
+|Search for a keyword
 |`aden search "<term>" .`
+
+|Get focused context for a topic
+|`aden asm --from <anchor> --depth 2`
 
 |Explore graph dependencies
 |`aden query --from <anchor> --depth 2`
@@ -56,12 +58,17 @@ enabling focused context assembly for any codebase it's run against.
 |List all indexed anchors
 |`aden list .`
 
-|Check drift between source and graph
-|`aden heal .`
-
 |Check knowledge graph health
 |`aden status .`
 |===
+
+Aden is a *read* tool for this codebase — it does not dictate your workflow,
+language, or CI process. Use it when it helps; ignore it when it does not.
+
+== Project Conventions
+
+Read `.agent/constraints.adoc` for hard rules specific to this project.
+Read `.agent/glossary.adoc` for project-specific terminology.
 
 == Session Protocol
 
@@ -72,22 +79,7 @@ Before you start:
 When you finish:
 
 . Update your row to `completed` and note what changed.
-
-== Emergency Procedures
-
-[cols="1,2"]
-|===
-|Situation |Action
-
-|Broken `<<refs>>` after rename
-|`aden search "old_name"` to find references, update them.
-
-|Another agent modified the same file
-|Stop. Re-read their session entry, resolve manually.
-
-|Drift detected after your changes
-|`aden heal .` to identify stale contracts.
-|===
+. This gives other agents and humans visibility without coordination overhead.
 
 == Related Documents
 

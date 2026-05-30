@@ -347,6 +347,38 @@ fn extract_function(
         }
     }
 
+    // Type-usage edges: types referenced in the signature are `Uses`d, so a type
+    // that is used (but never "called") is not a false dead-code candidate. Only
+    // names that resolve to a stored symbol become edges (see link_store_edges).
+    {
+        let mut type_uses: Vec<String> = Vec::new();
+        for p in &params {
+            for t in extract_type_idents(&p.ty) {
+                if !type_uses.contains(&t) {
+                    type_uses.push(t);
+                }
+            }
+        }
+        if let Some(ref rt) = return_type {
+            for t in extract_type_idents(rt) {
+                if !type_uses.contains(&t) {
+                    type_uses.push(t);
+                }
+            }
+        }
+        if !type_uses.is_empty() {
+            let uses_code = type_uses
+                .iter()
+                .map(|t| format!("edge::uses[{}]", t))
+                .collect::<Vec<_>>()
+                .join("\n");
+            blocks.push(Block::Listing {
+                language: None,
+                code: uses_code,
+            });
+        }
+    }
+
     if !buffered_comments.is_empty() {
         blocks.push(Block::Admonition {
             kind: aden_core::AdmonitionKind::Note,
@@ -356,13 +388,56 @@ fn extract_function(
     }
     Some(Document {
         anchor,
-        node_type: NodeType::Type,
+        node_type: NodeType::Function,
         attributes: attrs,
         blocks,
         source_span: None,
         metadata: None,
         confidence: 0.9,
     })
+}
+
+/// Pull plausible user/library type identifiers out of a type string (e.g.
+/// `&HashMap<String, Vec<DocumentNode>>` → `DocumentNode`) so they can be linked
+/// as `Uses` edges. Keeps PascalCase names and skips ubiquitous std containers
+/// and primitives — those never resolve to a repo symbol anyway, so dropping
+/// them keeps the store lean. Linking stays language-agnostic: only names that
+/// match a stored symbol actually become edges.
+fn extract_type_idents(ty: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    for ch in ty.chars() {
+        if ch.is_alphanumeric() || ch == '_' {
+            cur.push(ch);
+        } else {
+            push_type_ident(&mut out, &cur);
+            cur.clear();
+        }
+    }
+    push_type_ident(&mut out, &cur);
+    out
+}
+
+fn push_type_ident(out: &mut Vec<String>, ident: &str) {
+    let Some(first) = ident.chars().next() else {
+        return;
+    };
+    // Types are PascalCase by convention; a lowercase ident is a primitive,
+    // lifetime, or keyword (`str`, `usize`, `dyn`, `mut`, …) — skip it.
+    if !first.is_ascii_uppercase() {
+        return;
+    }
+    const SKIP: &[&str] = &[
+        "String", "Vec", "Option", "Result", "Box", "Rc", "Arc", "HashMap", "HashSet",
+        "BTreeMap", "BTreeSet", "Cow", "Path", "PathBuf", "Self", "Ok", "Err", "Some", "None",
+        "VecDeque", "Cell", "RefCell", "Mutex", "RwLock", "Duration", "Instant",
+    ];
+    if SKIP.contains(&ident) {
+        return;
+    }
+    if !out.iter().any(|x| x == ident) {
+        out.push(ident.to_string());
+    }
 }
 
 /// Standard-library and common utility functions to exclude from call-graph extraction.

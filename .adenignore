@@ -2,10 +2,8 @@
 # Contracts are build artifacts; never commit them.
 contracts/
 .aden/
-docs/.aden/
 target/
 .git/
-.opencode/
 
 # Secrets (never process)
 *.pem

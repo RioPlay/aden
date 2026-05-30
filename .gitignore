@@ -1,46 +1,107 @@
+# ─────────────────────────────────────────────────────────────────────────
+# Build output & aden artifacts
+# ─────────────────────────────────────────────────────────────────────────
 /target
-**/contracts/
 **/.aden/
-
-# Generated contract artifacts — NEVER commit these
-# aden gen emits .adoc files into contracts/ (gitignored above), but if
-# generation runs in-tree, block them at the source level too.
+# Legacy on-disk contracts (aden is now store-first and emits no .adoc; these
+# remain as a safety net in case an old/in-tree generation ever runs).
+**/contracts/
 crates/**/*.adoc
 benches/**/*.adoc
 src/**/*.adoc
-# Cargo.lock is committed at workspace root for CI reproducibility
-# Per-crate locks are ignored (none used)
+# Cargo.lock is committed at the workspace root for CI reproducibility.
+
+# ─────────────────────────────────────────────────────────────────────────
+# Agent / tooling runtime (never commit local state or locks)
+# ─────────────────────────────────────────────────────────────────────────
+.claude/settings.local.json
+.claude/*.lock
+.claude/scheduled_tasks.json
+.opencode/
+
+# ─────────────────────────────────────────────────────────────────────────
+# Secrets & credentials — NEVER commit these.
+# Kept in lockstep with aden_core::filter::is_secret_path so the repo refuses
+# exactly what aden refuses to index. If aden becomes widely used, this is the
+# safety net that keeps a careless `git add .` from leaking a key.
+# ─────────────────────────────────────────────────────────────────────────
+# dotenv & ecosystem credential files
+.env
+.env.*
+.envrc
+.npmrc
+.pypirc
+.netrc
+_netrc
+.htpasswd
+credentials
+credentials.*
+service-account*.json
+# private keys / keystores / encrypted secrets
+*.pem
+*.key
+*.p8
+*.p12
+*.pfx
+*.keystore
+*.jks
+*.kdbx
+*.ppk
+*.asc
+*.gpg
+*.pgp
+id_rsa
+id_dsa
+id_ecdsa
+id_ed25519
+# public keys are fine to share; keep an explicit allow for placeholders
+*.pub
+!tools/keys/.gitkeep
+# credential-bearing directories
+.ssh/
+.gnupg/
+.aws/
+.azure/
+.kube/
+.docker/config.json
+secrets/
+secret/
+private/
+
+# ─────────────────────────────────────────────────────────────────────────
+# Generated signing artifacts (public material OK, private NO)
+# ─────────────────────────────────────────────────────────────────────────
+/signatures/
+*.sig
+asc/
+
+# ─────────────────────────────────────────────────────────────────────────
+# Polyglot build / dependency output (aden targets any repo; if one is nested
+# here for testing, don't accidentally vendor it in)
+# ─────────────────────────────────────────────────────────────────────────
+node_modules/
+__pycache__/
+*.pyc
+.venv/
+venv/
+dist/
+build/
+out/
+vendor/
+.gradle/
+.cache/
+coverage/
+
+# ─────────────────────────────────────────────────────────────────────────
+# Editor / OS debris
+# ─────────────────────────────────────────────────────────────────────────
 *.bak
 *.swp
 *.swo
 *.tmp
 *.temp
 .DS_Store
+Thumbs.db
+*.log
 .vscode/
 .idea/
-
-# IDE / Editor runtime files
-.opencode/
-
-# Secrets — NEVER commit these
-*.pem
-*.key
-*.p8
-*.p12
-*.pfx
-.env
-.env.local
-.env.*.local
-secrets/
-private/
-id_rsa
-id_ecdsa
-id_ed25519
-*.pub
-!tools/keys/.gitkeep
-.den/
-
-# Generated signing artifacts (public keys OK, private NO)
-/signatures/
-*.sig
-asc/

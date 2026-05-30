@@ -90,42 +90,23 @@ enum Commands {
         #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
         path: PathBuf,
     },
-    /// Parse source file(s) and emit .aden / .adoc contracts
-    /// Regenerate all contracts from source files (alias: aden gen .)
+    /// Recompile the whole project into the knowledge graph (.aden/store) — alias for `aden gen .`
     Regen {
         #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
         path: PathBuf,
     },
+    /// Compile source into the knowledge graph (.aden/store). A directory indexes
+    /// the whole project; a single file re-indexes just that file. Store-first:
+    /// `gen` writes only to .aden/store, never to disk.
     Gen {
         #[arg(value_name = "PATH", value_hint = ValueHint::AnyPath)]
         paths: Vec<PathBuf>,
-        #[arg(long, value_name = "DIR", value_hint = ValueHint::DirPath, help = "Output directory (default: ./contracts/)")]
-        out_dir: Option<PathBuf>,
         #[arg(
             long,
-            help = "Auto-detect existing contract structure (contracts/crates/<name>/src/)"
-        )]
-        detect_out_dir: bool,
-        #[arg(
-            long,
-            help = "Auto-discover source files and generate contracts for the whole project (default when PATH is directory)"
+            help = "Auto-discover source files for the whole project (default when PATH is a directory)"
         )]
         auto: bool,
-        #[arg(
-            long,
-            help = "Three-way merge: update only [generated] blocks while preserving [human]/[agent] blocks"
-        )]
-        merge: bool,
-        #[arg(long, help = "Dry-run: output MergeActions without writing files")]
-        propose: bool,
-        #[arg(
-            long,
-            value_name = "FORMAT",
-            default_value = "adoc",
-            help = "Output format: adoc (AsciiDoc), md (Markdown)"
-        )]
-        format: String,
-        #[arg(long, help = "Suppress per-file emit lines (summary only)")]
+        #[arg(long, help = "Suppress per-file output (summary only)")]
         quiet: bool,
     },
     /// Verify all <<refs>> resolve to existing [[anchors]]
@@ -627,16 +608,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if graph_cache.exists() {
                 let _ = std::fs::remove_dir_all(&graph_cache);
             }
-commands::cmd_gen(&path, None, false, quiet, false, false, "adoc", true)
+            commands::cmd_gen(&path, true)
         }
         Commands::Gen {
             paths,
-            out_dir,
-            detect_out_dir,
-            auto,
-            merge,
-            propose,
-            format,
+            auto: _,
             quiet,
         } => {
             let effective_path = if paths.is_empty() {
@@ -644,16 +620,7 @@ commands::cmd_gen(&path, None, false, quiet, false, false, "adoc", true)
             } else {
                 paths[0].clone()
             };
-            commands::cmd_gen(
-                &effective_path,
-                out_dir.as_deref(),
-                detect_out_dir,
-                auto,
-                merge,
-                propose,
-                &format,
-                quiet,
-            )
+            commands::cmd_gen(&effective_path, quiet)
         }
         Commands::Check { path, severity } => commands::cmd_check(&path, &severity),
         Commands::Complete { path, dry_run, model } => {
@@ -822,7 +789,7 @@ commands::cmd_gen(&path, None, false, quiet, false, false, "adoc", true)
             
             // 1. Generate contracts
             println!("\n[1/3] Generating contracts...");
-            if let Err(e) = commands::cmd_gen(&path, None, false, true, false, false, "adoc", true) {
+            if let Err(e) = commands::cmd_gen(&path, true) {
                 eprintln!("Gen error: {}", e);
             }
             

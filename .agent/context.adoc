@@ -1,78 +1,62 @@
-:proj: aden
-:lang: rust
-:standard: Rust Edition 2021/2024
+:proj: unknown
+:lang: unknown
+:ai_name: agent
+:standard: unknown
 
 [[agent-context]]
-= Shared Context — Aden
+= Shared Context — unknown
 
-This file is the canonical shared memory for all agent sessions on the Aden project.
+This file is the canonical shared memory for all agent sessions on `unknown`.
 
 == Project Identity
 
 [cols="1,2"]
 |===
-|Name |Aden — A Dense Referential Context Compiler
-|Primary Language |Rust
-|Runtime / Standard |Edition 2021/2024, latest stable
+|Name |unknown
+|Primary Language |unknown
+|Runtime / Framework |unknown
 |===
-
-== What Aden Is
-
-Aden is a **codebase-agnostic context harness**. It parses any source tree into a
-traversable knowledge graph and assembles maximally dense, LLM-ready context from it.
-It does not impose its own conventions on codebases it indexes — it reads and graphs
-what is already there.
 
 == Hard Constraints
 
 . **Never commit secrets**, credentials, or private keys.
 . **Never emit files outside the working directory** without explicit confirmation.
 . **Never ignore test failures** — a failing test is a signal, not noise.
-. **Never commit generated build artifacts** — `contracts/`, `.aden/`, `target/`.
-. **Never assume Cargo/Rust structure when working on the aden CLI** — aden is
-  designed to handle any language and any directory layout.
+. **Never commit generated build artifacts** (e.g. contracts/, .aden/, target/, node_modules/).
+. **Always read existing code** before writing new code in the same area.
 
-== Language Defaults
+== Language and Style Defaults
 
-- Primary language: Rust Edition 2021/2024
-- Error handling: `thiserror` for error enums
-- Serialization: `serde` + `serde_json`
-- All public types must have `#[derive(Debug)]` and doc comments
+- Primary language: `unknown`
+- Standard / runtime: `unknown`
+- Conventions: see `.agent/constraints.adoc` for project-specific rules.
 
-== Key Crates
+== Dependencies
 
 |===
-|Crate |Responsibility
+|Name |Purpose |Version Policy
 
-|aden-core |Schema: Document, Block, Edge, Symbol, merge engine
-|aden-parse |Language routers and AST extraction (Rust, Python, Go, TS/JS, C#, Java, Kotlin, PHP, Ruby, + generic fallback)
-|aden-emit |Deterministic AsciiDoc and ADG emitter
-|aden-graph |DiGraph, typed edges, integrity checks, cycle detection
-|aden-asm |Context assembler: BFS traversal, token budgeting, LLM output
-|aden-index |Full-text search with fuzzy matching
-|aden-heal |Drift detection and health scoring
-|aden-propose |Patch generation and proposal lifecycle
-|aden-mcp |MCP server (JSON-RPC over stdio)
-|aden-policy |Constitutional policy engine
-|aden-cli |Binary (`aden`) with all subcommands
+| | |
 |===
 
 == Context Tools
 
-Since aden is self-hosting, you can use it on its own source:
+If aden is installed, it can assemble focused context from the knowledge graph:
 
 [source,bash]
 ----
-aden ask "How does context assembly work?"
-aden asm --from mod-aden-asm --depth 2
-aden locate --symbol assemble .
-aden search "token budget" .
+aden ask "<question>"               # natural language query
+aden asm --from <anchor> --depth 2  # focused context assembly
+aden locate --symbol <name> .       # find a symbol
 ----
+
+Aden is supplemental. The authoritative source of truth is always the source
+code and tests in this repository.
 
 == Next Steps
 
 . Read `.agent/onboarding.adoc` before your first session.
-. Read `.agent/constraints.adoc` for what not to do.
+. Read `.agent/constraints.adoc` to know what not to do.
 . Append your session entry to `.agent/session.adoc` before starting work.
 
 == Related Documents

@@ -9,29 +9,8 @@ Every agent that modifies files must append an entry here before completing.
 
 == Active Sessions
 
-[[session-20260528-mcp-update]]
-=== 2026-05-28 — MCP Server Update & Doc Cleanup
-
-**Task:** Update aden MCP server tool signatures to match current CLI, consolidate overlapping docs.
-
-**Changes:**
-- Fixed `ci-check` tool signature: removed stale `--severity` arg (CLI has none)
-- Fixed `sync` tool signature: removed stale `--format` arg (CLI has none)
-- Added missing args: `workflow --from`, `emergency --ttl`, `audit --lang/--format`, `asm --inspect/--out/--include_tag/--exclude_tag/--set_attr/--silent/--auto/--strict`, `heal --apply/--watch`, `watch --graph-sync/--restore`, `locate --caller_of/--show_context/--format`, `search --offset/--doc_type/--semantics`, `list --semantics/--offset/--unlimited`, `gen --detect-out-dir/--out-dir`, `ask --model`
-- Reordered TOOLS table alphabetically for readability
-- Deleted `docs/llm-integration-guide.adoc` (duplicated `ai-integration.adoc`)
-- Rewrote `docs/security-model.adoc` (was a stub, now has real threat model + permissions)
-- Fixed `docs/index.adoc` broken references (llm-integration-guide→ai-integration, agent-guide→ai-integration, etc.)
-
-**Validation:**
-- MCP server builds clean, 4/4 tests pass
-- Full CI: all 12 gates pass
-- `aden check`: all refs resolve (ADR code edge errors are pre-existing)
-- `aden sync`: refs resolve, all contracts complete
-
 |===
 |Timestamp |Agent |Task |Files |Status |Confidence
-|2026-05-28T04:14:58Z |opencodelib |Migrate aden-mcp to rmcp 1.x SDK; fix aden-cli build errors |crates/aden-mcp/Cargo.toml, crates/aden-mcp/src/lib.rs, crates/aden-mcp/src/main.rs, crates/aden-cli/src/util.rs, crates/aden-cli/src/main.rs, crates/aden-cli/src/commands/generate.rs, crates/aden-cli/src/commands/init.rs |completed |High
 |===
 
 == How to Append

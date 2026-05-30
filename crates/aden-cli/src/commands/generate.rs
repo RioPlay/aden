@@ -2,12 +2,11 @@ use aden_graph::graph::AdenGraph;
 use aden_store::{GraphStorage, Storage};
 use rayon::prelude::*;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::types::GenCacheEntry;
 use crate::util::{
-    base_cache_path, discover_source_files, emit_docs, find_project_root, load_gen_cache,
-    sanitize_anchor, sanitize_source_file, save_gen_cache,
+    discover_source_files, find_project_root, load_gen_cache, sanitize_source_file, save_gen_cache,
 };
 
 /// One stored symbol plus the compact data the linker needs. Carrying callee
@@ -18,6 +17,10 @@ struct EmittedSymbol {
     cache_key: String,
     cache_val: GenCacheEntry,
     callees: Vec<String>,
+    /// `edge::uses[Type]` references — types named in a signature/fields, linked
+    /// as `Uses` edges so a type that is used but never *called* is not a false
+    /// dead-code candidate.
+    uses: Vec<String>,
     /// `<<target>>` cross-references found in the document body (docs link to
     /// other docs / code via these).
     refs: Vec<String>,
@@ -34,180 +37,6 @@ macro_rules! progress {
     ($quiet:expr, $($arg:tt)*) => {
         if !$quiet { println!($($arg)*); }
     };
-}
-
-/// Automatically generate module contracts for directories in the workspace.
-/// This ensures deterministic module anchors exist before symbol contracts.
-/// Language-agnostic: works for any project with src/ directories.
-fn generate_module_contracts(root: &Path, out_dir: &Path, quiet: bool) -> Result<(), Box<dyn std::error::Error>> {
-    // Ensure the output directory exists before writing any contracts.
-    std::fs::create_dir_all(out_dir)?;
-
-    // Common source directory names across languages
-    let src_dirs = ["src", "lib", "app", "modules", "source"];
-    
-    // Find all directories that could be modules (contain source files)
-    let mut modules: Vec<(String, PathBuf)> = Vec::new();
-    
-    // Check for common workspace structures
-    let workspace_dirs = [
-        root.join("crates"),
-        root.join("packages"),
-        root.join("modules"),
-        root.join("src"),
-    ];
-    
-    for ws_dir in workspace_dirs.iter() {
-        if !ws_dir.is_dir() {
-            continue;
-        }
-        
-        for entry in std::fs::read_dir(ws_dir)? {
-            let entry = entry?;
-            let mod_path = entry.path();
-            if !mod_path.is_dir() {
-                continue;
-            }
-            
-            // Check if this module has source files
-            for src_name in &src_dirs {
-                let src_path = mod_path.join(src_name);
-                if src_path.is_dir() {
-                    let mod_name = mod_path.file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("");
-                    if !mod_name.is_empty() && !mod_name.starts_with('.') {
-                        modules.push((mod_name.to_string(), src_path));
-                    }
-                    break;
-                }
-            }
-        }
-    }
-    
-    // Also check root src/ directly
-    for src_name in &src_dirs {
-        let src_path = root.join(src_name);
-        if src_path.is_dir() {
-            let mod_name = root.file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("project")
-                .to_string();
-            modules.push((mod_name, src_path));
-            break;
-        }
-    }
-    
-    // ── Generate root mod-project (once, before individual modules) ───────
-    let project_anchor = "mod-project";
-    let project_path = out_dir.join(format!("{}.adoc", project_anchor));
-    if !project_path.exists() {
-        let mut module_lines = Vec::new();
-        for (mod_name, _) in &modules {
-            module_lines.push(format!(
-                "| <<mod-{name}>> | {name}",
-                name = mod_name
-            ));
-        }
-        let modules_table = if module_lines.is_empty() {
-            String::new()
-        } else {
-            format!(
-                "\n|===\n| Module | Description\n\n{}\n|===",
-                module_lines.join("\n")
-            )
-        };
-        let project_content = format!(
-            r#":source_file: .
-:node-type: module
-:last-verified: {date}T00:00:00Z
-
-[[mod-project]]
-= Project Root
-
-Root module for the project. All submodules reference this.
-
-== Modules
-{modules_table}
-"#,
-            date = chrono::Utc::now().format("%Y-%m-%d"),
-            modules_table = modules_table
-        );
-        std::fs::write(&project_path, &project_content)?;
-        progress!(quiet, "Generated: {}", project_path.display());
-    }
-
-    // ── Generate individual module contracts ──────────────────────────────
-    for (mod_name, src_path) in modules {
-        let module_anchor = format!("mod-{}", mod_name);
-        let contract_file = format!("{}.adoc", module_anchor);
-        let out_path = out_dir.join(&contract_file);
-
-        // Preserve any existing module contract that already declares the right
-        // anchor — it may contain human or agent edits. We intentionally do NOT
-        // pattern-match Aden's own historical boilerplate here: baking the
-        // tool's own identity into regeneration logic is exactly what makes a
-        // context compiler "self-centered" and breaks it on other codebases.
-        if out_path.exists()
-            && let Ok(existing) = std::fs::read_to_string(&out_path)
-            && existing.contains(&format!("[[{}]]", module_anchor))
-        {
-            continue;
-        }
-
-        let content = format!(
-            r#":source_file: {src}
-:node-type: module
-:last-verified: {date}T00:00:00Z
-
-[[{anchor}]]
-= {name}
-
-Part of: <<mod-project>>
-"#,
-            src = src_path.display(),
-            date = chrono::Utc::now().format("%Y-%m-%d"),
-            anchor = module_anchor,
-            name = mod_name
-        );
-
-        if let Some(parent) = out_path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(&out_path, &content)?;
-        progress!(quiet, "Generated module: {} ({})", out_path.display(), src_path.display());
-    }
-
-    Ok(())
-}
-
-/// Detect existing contract structure and return matching output directory.
-/// Supports any workspace layout: crates/, packages/, modules/, or flat src/.
-fn detect_contract_structure(path: &Path, source_path: &Path) -> Option<std::path::PathBuf> {
-    let root = find_project_root(path);
-    let rel = source_path.strip_prefix(&root).ok()?;
-
-    let components: Vec<_> = rel.components().collect();
-    if components.len() >= 3 {
-        let first = components[0].as_os_str().to_str()?;
-        let second = components[1].as_os_str().to_str()?;
-
-        // Support any named workspace directory, not just "crates"
-        for workspace_dir in &["crates", "packages", "modules"] {
-            if first == *workspace_dir {
-                let contract_dir = root
-                    .join("contracts")
-                    .join(workspace_dir)
-                    .join(second)
-                    .join("src");
-                if contract_dir.exists() && contract_dir.is_dir() {
-                    return Some(contract_dir);
-                }
-            }
-        }
-    }
-
-    None
 }
 
 /// Module name for a symbol anchor of the form
@@ -272,6 +101,30 @@ fn extract_callees(doc: &aden_core::Document) -> Vec<String> {
     callees
 }
 
+/// Type names a symbol `Uses`, read from `edge::uses[...]` listings (emitted by
+/// extractors for the types referenced in a signature/fields). Kept separate
+/// from callees so they link as `Uses` edges, not `Calls`.
+fn extract_uses(doc: &aden_core::Document) -> Vec<String> {
+    use aden_core::Block;
+    let mut uses = Vec::new();
+    for block in &doc.blocks {
+        if let Block::Listing { code, .. } = block {
+            for line in code.lines() {
+                if let Some(rest) = line.trim().strip_prefix("edge::uses[") {
+                    if let Some(t) = rest.strip_suffix(']') {
+                        if !t.is_empty() {
+                            uses.push(t.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    uses.sort();
+    uses.dedup();
+    uses
+}
+
 /// Append `<<target>>` cross-reference targets found in `text` to `out`.
 fn collect_xrefs(text: &str, out: &mut Vec<String>) {
     let mut rest = text;
@@ -323,24 +176,73 @@ fn slim_doc_for_store(doc: &mut aden_core::Document) {
     });
 }
 
-/// Resolve a callee string to a single target anchor, or None if unknown or
-/// ambiguous. Tries the full callee, then the trailing segment after the last
-/// `.`/`:` so receiver/qualified calls link (`c.ExecuteC` → `ExecuteC`,
-/// `click.echo` → `echo`, `Path::new` → `new`). Ambiguous names are left
-/// unlinked rather than guessed, keeping the call graph precise.
-fn resolve_callee<'a>(callee: &str, name_index: &HashMap<&str, Vec<&'a str>>) -> Option<&'a str> {
+/// Resolve a callee string to a single target anchor, or None if unknown.
+/// Tries the full callee, then the trailing segment after the last `.`/`:` so
+/// receiver/qualified calls link (`c.ExecuteC` → `ExecuteC`, `click.echo` →
+/// `echo`, `Path::new` → `new`). When a name is ambiguous (defined in several
+/// places) we disambiguate by locality: prefer a candidate in the caller's own
+/// FILE, then in its crate. Most calls are intra-file/intra-crate, so this
+/// resolves the common case (e.g. a private `node_text` helper copied into every
+/// extractor file) instead of dropping the edge — without guessing across
+/// modules, which would forge false edges.
+fn resolve_callee<'a>(
+    callee: &str,
+    caller: &str,
+    name_index: &HashMap<&str, Vec<&'a str>>,
+) -> Option<&'a str> {
+    let caller_file = anchor_file(caller);
+    let caller_crate = crate_from_anchor(caller);
+    let pick = |cands: &[&'a str]| -> Option<&'a str> {
+        match cands {
+            [] => None,
+            [one] => Some(*one),
+            many => {
+                // Ambiguous: prefer the caller's own file, then its crate.
+                if let Some(cf) = caller_file {
+                    let same: Vec<&'a str> = many
+                        .iter()
+                        .copied()
+                        .filter(|a| anchor_file(a) == Some(cf))
+                        .collect();
+                    if same.len() == 1 {
+                        return Some(same[0]);
+                    }
+                }
+                let cc = caller_crate.as_deref()?;
+                let same: Vec<&'a str> = many
+                    .iter()
+                    .copied()
+                    .filter(|a| crate_from_anchor(a).as_deref() == Some(cc))
+                    .collect();
+                if same.len() == 1 {
+                    Some(same[0])
+                } else {
+                    None
+                }
+            }
+        }
+    };
     if let Some(t) = name_index.get(callee) {
-        return if t.len() == 1 { Some(t[0]) } else { None };
+        if let Some(r) = pick(t) {
+            return Some(r);
+        }
     }
     let base = callee.rsplit(['.', ':']).next().unwrap_or(callee);
     if base != callee && !base.is_empty() {
         if let Some(t) = name_index.get(base) {
-            if t.len() == 1 {
-                return Some(t[0]);
+            if let Some(r) = pick(t) {
+                return Some(r);
             }
         }
     }
     None
+}
+
+/// The file portion of a module anchor: `aden://module/<file>#<sym>` → `<file>`
+/// (e.g. `aden-parse/rust.rs`). Used to scope ambiguous-callee resolution to the
+/// caller's own file. Returns `None` for non-module anchors (docs, etc.).
+fn anchor_file(anchor: &str) -> Option<&str> {
+    anchor.strip_prefix("aden://module/")?.split('#').next()
 }
 
 /// Connect the stored symbols into a traversable graph by persisting edges,
@@ -364,6 +266,7 @@ fn resolve_callee<'a>(callee: &str, name_index: &HashMap<&str, Vec<&'a str>>) ->
 fn link_store_edges<S: GraphStorage>(
     storage: &S,
     link_records: &[(String, Vec<String>)],
+    use_records: &[(String, Vec<String>)],
     ref_records: &[(String, Vec<String>)],
 ) -> Result<(), Box<dyn std::error::Error>> {
     use aden_core::{Block, Document, EdgeType, NodeType};
@@ -399,9 +302,22 @@ fn link_store_edges<S: GraphStorage>(
     // Call edges from the compact per-symbol records.
     for (anchor, callees) in link_records {
         for callee in callees {
-            if let Some(target) = resolve_callee(callee, &name_index) {
+            if let Some(target) = resolve_callee(callee, anchor, &name_index) {
                 if target != anchor.as_str() {
                     edges.push((anchor.clone(), target.to_string(), EdgeType::Calls));
+                }
+            }
+        }
+    }
+
+    // Type-usage edges: a symbol whose signature/fields name a stored type
+    // `Uses` it. Keeps a type that is used (but never *called*) from looking like
+    // dead code in graph-wide queries like `where callers=0`.
+    for (anchor, used_types) in use_records {
+        for used in used_types {
+            if let Some(target) = resolve_callee(used, anchor, &name_index) {
+                if target != anchor.as_str() {
+                    edges.push((anchor.clone(), target.to_string(), EdgeType::Uses));
                 }
             }
         }
@@ -411,7 +327,7 @@ fn link_store_edges<S: GraphStorage>(
     // backlinks work (a doc and what it references are mutually reachable).
     for (anchor, refs) in ref_records {
         for r in refs {
-            if let Some(target) = resolve_callee(r, &name_index) {
+            if let Some(target) = resolve_callee(r, anchor, &name_index) {
                 if target != anchor.as_str() {
                     edges.push((anchor.clone(), target.to_string(), EdgeType::RelatesTo));
                     edges.push((target.to_string(), anchor.clone(), EdgeType::RelatesTo));
@@ -477,7 +393,7 @@ pub fn ensure_fresh(path: &Path) {
     // project must be indexed on first query (this is what makes asm/ask/locate
     // work without an explicit `aden gen`).
     if !root.join(".aden").join("store").exists() {
-        let _ = cmd_gen(&root, None, false, true, false, false, "adoc", true);
+        let _ = cmd_gen(&root, true);
         return;
     }
 
@@ -507,86 +423,35 @@ pub fn ensure_fresh(path: &Path) {
 
     if stale {
         // Quiet incremental regen: re-parses only changed files and re-links edges.
-        let _ = cmd_gen(&root, None, false, true, false, false, "adoc", true);
+        let _ = cmd_gen(&root, true);
     }
 }
 
 /// Auto-document a codebase: discover source files, skip unchanged,
 /// emit structured contracts to store, and optionally to disk.
-pub fn cmd_gen(
-    path: &Path,
-    out_dir: Option<&Path>,
-    detect_out_dir: bool,
-    auto: bool,
-    merge: bool,
-    propose: bool,
-    format: &str,
-    quiet: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
-    if path.is_file() {
-        let source = std::fs::read_to_string(path)?;
-        let docs = aden_parse::parse_file(path, &source)?;
-
-        // Resolve output dir relative to the file's parent, not the CWD.
-        let file_root = path.parent().unwrap_or(path);
-        let effective_out = if detect_out_dir {
-            detect_contract_structure(path, path)
-                .unwrap_or_else(|| file_root.join(".aden/contracts"))
-        } else {
-            out_dir
-                .map(|d| d.to_path_buf())
-                .unwrap_or_else(|| file_root.join(".aden/contracts"))
-        };
-
-        if merge || propose {
-            return cmd_gen_contract(path, &source, docs, Some(&effective_out), propose);
-        }
-        return emit_docs(docs, Some(&effective_out), path, format);
-    }
-
-    if !path.is_dir() {
+pub fn cmd_gen(path: &Path, quiet: bool) -> Result<(), Box<dyn std::error::Error>> {
+    if !path.exists() {
         return Err("Path does not exist or is not a file/directory".into());
     }
 
-    let root = find_project_root(path);
-    // Default output dir is <target>/.aden/contracts — inside .aden, never pollutes project
-    let default_out = root.join(".aden").join("contracts");
-    let effective_out_buf;
-    let effective_out = match out_dir {
-        Some(d) => d,
-        None => {
-            effective_out_buf = default_out;
-            &effective_out_buf
-        }
+    // Project root: for a single file, search upward from its directory.
+    let search_start = if path.is_file() {
+        path.parent().unwrap_or(path)
+    } else {
+        path
     };
+    let root = find_project_root(search_start);
 
-    // Auto-generate module contracts for each crate (deterministic)
-    generate_module_contracts(&root, effective_out, quiet)?;
-
-    if detect_out_dir && out_dir.is_none() {
-        let mut auto_detected = false;
-        if root.join(".aden").join("contracts").join("crates").exists() {
-            let contracts_crates = root.join(".aden").join("contracts").join("crates");
-            if contracts_crates.is_dir() {
-                progress!(quiet, "INFO: Detected .aden/contracts/crates/ structure. Using --detect-out-dir.");
-                progress!(quiet, "      Contracts will be placed in .aden/contracts/crates/<crate>/src/");
-                auto_detected = true;
-            }
-        }
-        if !auto_detected {
-            progress!(quiet, "INFO: No existing contract structure detected. Using default .aden/contracts/");
-        }
-    }
-
-    if merge || propose {
-        return cmd_gen_merge(&root, effective_out, propose);
-    }
-
-    // Default to auto mode for directories (backward compatible with single files)
-    let auto_by_default = path.is_dir();
-    if auto || auto_by_default {
-        // ── AUTO MODE: workspace-aware incremental generation ────────────────
-        let sources = discover_source_files(&root)?;
+    // Store-first: `gen` writes ONLY to .aden/store. Module hub nodes
+    // (mod-project, mod-<crate>) are synthesized into the store by
+    // link_store_edges — no .adoc files or contracts/ directory are emitted.
+    {
+        // A single file re-indexes just itself; a directory indexes the project.
+        let sources = if path.is_file() {
+            vec![path.to_path_buf()]
+        } else {
+            discover_source_files(&root)?
+        };
         if sources.is_empty() {
             eprintln!(
                 "No source files discovered in {}. Is this a supported project?",
@@ -671,6 +536,7 @@ pub fn cmd_gen(
                     // Real containment/Calls edges are built in link_store_edges,
                     // so the old parent-module relationship boilerplate is gone.
                     let callees = extract_callees(&doc_clone);
+                    let uses = extract_uses(&doc_clone);
                     let refs = extract_doc_refs(&doc_clone);
                     slim_doc_for_store(&mut doc_clone);
 
@@ -693,6 +559,7 @@ pub fn cmd_gen(
                         cache_key: cache_key.clone(),
                         cache_val,
                         callees,
+                        uses,
                         refs,
                     });
                 }
@@ -708,6 +575,7 @@ pub fn cmd_gen(
         // Phase 2: Merge parallel results into shared state. Collect compact
         // (anchor, callees) link records so the linker never reloads documents.
         let mut link_records: Vec<(String, Vec<String>)> = Vec::new();
+        let mut use_records: Vec<(String, Vec<String>)> = Vec::new();
         let mut ref_records: Vec<(String, Vec<String>)> = Vec::new();
         for item in work_items {
             match item {
@@ -718,6 +586,9 @@ pub fn cmd_gen(
                         cache.entries.insert(sym.cache_key, sym.cache_val);
                         if !sym.refs.is_empty() {
                             ref_records.push((sym.anchor.clone(), sym.refs));
+                        }
+                        if !sym.uses.is_empty() {
+                            use_records.push((sym.anchor.clone(), sym.uses));
                         }
                         if !sym.callees.is_empty() {
                             link_records.push((sym.anchor, sym.callees));
@@ -732,7 +603,7 @@ pub fn cmd_gen(
 
         // Connect the graph: persist module<->symbol containment and call edges
         // so the store-first graph used by asm/ask/query is actually traversable.
-        if let Err(e) = link_store_edges(&storage, &link_records, &ref_records) {
+        if let Err(e) = link_store_edges(&storage, &link_records, &use_records, &ref_records) {
             eprintln!("WARN: Failed to link graph edges: {}", e);
         }
 
@@ -765,13 +636,9 @@ pub fn cmd_gen(
                 }
             }
         }
-    } else {
-        // ── LEGACY MODE: flat parse_directory output ────────────────────────
-        let docs = aden_parse::parse_directory(path)?;
-        return emit_docs(docs, out_dir, path, format);
     }
 
-    // Invalidate caches after generating contracts so next query rebuilds
+    // Invalidate caches after generating so the next query rebuilds
     let cache_dir = path.join(".aden/cache");
     if cache_dir.exists() {
         let _ = std::fs::remove_dir_all(&cache_dir);
@@ -781,205 +648,93 @@ pub fn cmd_gen(
     Ok(())
 }
 
-/// Single-file contract generation with three-way merge support.
-pub fn cmd_gen_contract(
-    _path: &Path,
-    _source: &str,
-    docs: Vec<aden_core::Document>,
-    out_dir: Option<&Path>,
-    propose: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
-    use aden_core::contract::{
-        ContractDocument, ContractState, MergeAction, ParseMode, parse_contract,
-    };
+#[cfg(test)]
+mod link_tests {
+    use super::*;
+    use std::collections::HashMap;
 
-    if docs.is_empty() {
-        return Ok(());
-    }
-
-    // NOTE: callers must pass a resolved out_dir. The fallback "contracts" is
-    // intentionally relative to the CWD as a last resort; callers should never
-    // hit this branch.
-    let fallback = std::path::PathBuf::from("contracts");
-    let effective_out = out_dir.unwrap_or(&fallback);
-    std::fs::create_dir_all(effective_out)?;
-
-    let contract_path = effective_out.join(format!("{}.adoc", sanitize_anchor(&docs[0].anchor)));
-
-    // Ground: freshly generated contract from AST
-    let ground_doc = ContractDocument::from_document(&docs[0]);
-
-    // Base: last pure generated content (from .aden/contract-base/)
-    let base_doc = if let Some(base_path) = base_cache_path(&contract_path) {
-        if base_path.exists() {
-            let existing = std::fs::read_to_string(&base_path)?;
-            parse_contract(&existing, ParseMode::Permissive).unwrap_or_else(|_| ground_doc.clone())
-        } else {
-            ground_doc.clone()
-        }
-    } else {
-        ground_doc.clone()
-    };
-
-    // Working: current contract file on disk (with possible human edits)
-    let working_doc = if contract_path.exists() {
-        let existing = std::fs::read_to_string(&contract_path)?;
-        parse_contract(&existing, ParseMode::Permissive).unwrap_or_else(|e| {
-            eprintln!(
-                "WARN: Failed to parse existing contract {}: {}. Treating as fresh.",
-                contract_path.display(),
-                e
-            );
-            ground_doc.clone()
-        })
-    } else {
-        ground_doc.clone()
-    };
-
-    let state = ContractState::new(ground_doc.clone(), base_doc, working_doc);
-    let proposal = state.propose()?;
-
-    if propose {
-        println!("// Merge Proposal for {}", contract_path.display());
-        println!(
-            "//   Preserved: {} | Updated: {} | Conflicts: {} | Inserted: {} | Deleted: {}",
-            proposal.preserved_count,
-            proposal.updated_count,
-            proposal.conflict_count,
-            proposal.inserted_count,
-            proposal.deleted_count
+    #[test]
+    fn anchor_file_extracts_path() {
+        assert_eq!(
+            anchor_file("aden://module/aden-parse/rust.rs#node_text"),
+            Some("aden-parse/rust.rs")
         );
-        for action in &proposal.actions {
-            match action {
-                MergeAction::UpdateGenerated { index, .. } => {
-                    println!("  UPDATE [generated] @ block {}", index);
-                }
-                MergeAction::PreserveHuman { index } => {
-                    println!("  PRESERVE human/agent block @ {}", index);
-                }
-                MergeAction::Conflict { index, reason } => {
-                    println!("  CONFLICT @ block {}: {}", index, reason);
-                }
-                MergeAction::InsertGenerated { after_index, .. } => {
-                    println!("  INSERT [generated] after block {}", after_index);
-                }
-                MergeAction::DeleteGenerated { index, reason } => {
-                    println!("  DELETE [generated] @ block {}: {}", index, reason);
-                }
-            }
-        }
-        return Ok(());
+        assert_eq!(anchor_file("aden://doc/x/y.md/h1foo"), None);
     }
 
-    // Merge mode: apply and write
-    let merged = state.apply(&proposal)?;
-    let output = aden_emit::emit_contract_document(&merged);
-    std::fs::write(&contract_path, output)?;
-    println!("Merged contract: {}", contract_path.display());
-
-    // Update base cache so next run has clean generated snapshot
-    if let Some(base_path) = base_cache_path(&contract_path) {
-        if let Some(parent) = base_path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(&base_path, aden_emit::emit_contract_document(&ground_doc))?;
+    #[test]
+    fn resolve_unique_callee_links() {
+        let mut idx: HashMap<&str, Vec<&str>> = HashMap::new();
+        idx.insert("foo", vec!["aden://module/c/a.rs#foo"]);
+        assert_eq!(
+            resolve_callee("foo", "aden://module/c/b.rs#bar", &idx),
+            Some("aden://module/c/a.rs#foo")
+        );
     }
 
-    Ok(())
-}
-
-/// Directory-mode contract generation with merge support.
-pub fn cmd_gen_merge(
-    root: &Path,
-    effective_out: &Path,
-    propose: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
-    use aden_core::contract::{ContractDocument, ContractState, ParseMode, parse_contract};
-
-    let sources = discover_source_files(root)?;
-    if sources.is_empty() {
-        eprintln!("No source files discovered in {}.", root.display());
-        return Ok(());
+    #[test]
+    fn ambiguous_callee_prefers_same_file() {
+        let mut idx: HashMap<&str, Vec<&str>> = HashMap::new();
+        idx.insert(
+            "node_text",
+            vec![
+                "aden://module/aden-parse/rust.rs#node_text",
+                "aden://module/aden-parse/tree_sitter_common.rs#node_text",
+                "aden://module/aden-cli/x.rs#node_text",
+            ],
+        );
+        // Caller in rust.rs → the rust.rs copy wins (same file), not the shared one.
+        assert_eq!(
+            resolve_callee(
+                "node_text",
+                "aden://module/aden-parse/rust.rs#extract_struct",
+                &idx
+            ),
+            Some("aden://module/aden-parse/rust.rs#node_text")
+        );
     }
 
-    std::fs::create_dir_all(effective_out)?;
+    #[test]
+    fn ambiguous_callee_falls_back_to_same_crate_then_gives_up() {
+        let mut idx: HashMap<&str, Vec<&str>> = HashMap::new();
+        idx.insert(
+            "helper",
+            vec![
+                "aden://module/crate-a/x.rs#helper",
+                "aden://module/crate-b/y.rs#helper",
+            ],
+        );
+        // Different file but same crate → same-crate wins.
+        assert_eq!(
+            resolve_callee("helper", "aden://module/crate-a/z.rs#caller", &idx),
+            Some("aden://module/crate-a/x.rs#helper")
+        );
+        // Caller in a third crate → genuinely ambiguous, do not guess.
+        assert_eq!(
+            resolve_callee("helper", "aden://module/crate-c/z.rs#caller", &idx),
+            None
+        );
+    }
 
-    for src_path in &sources {
-        let source = match std::fs::read_to_string(src_path) {
-            Ok(s) => s,
-            Err(e) if e.kind() == std::io::ErrorKind::InvalidData => continue,
-            Err(e) => {
-                eprintln!("WARN: Failed to read {}: {}", src_path.display(), e);
-                continue;
-            }
+    #[test]
+    fn extract_uses_reads_edge_uses_listings() {
+        use aden_core::{Block, Document, NodeType};
+        let doc = Document {
+            anchor: "x".into(),
+            node_type: NodeType::Function,
+            attributes: Default::default(),
+            blocks: vec![Block::Listing {
+                language: None,
+                code: "edge::uses[EmittedSymbol]\nedge::uses[DocumentNode]".into(),
+            }],
+            source_span: None,
+            metadata: None,
+            confidence: 1.0,
         };
-
-        let docs = match aden_parse::parse_file(src_path, &source) {
-            Ok(d) => d,
-            Err(aden_core::Error::UnsupportedLanguage(_)) => continue,
-            Err(e) => {
-                eprintln!("WARN: Parse failed for {}: {}", src_path.display(), e);
-                continue;
-            }
-        };
-
-        for doc in &docs {
-            let file_name = format!("{}.adoc", sanitize_anchor(&doc.anchor));
-            let contract_path = effective_out.join(&file_name);
-
-            let ground_doc = ContractDocument::from_document(doc);
-
-            // Base: last pure generated content
-            let base_doc = if let Some(base_path) = base_cache_path(&contract_path) {
-                if base_path.exists() {
-                    let existing = std::fs::read_to_string(&base_path)?;
-                    parse_contract(&existing, ParseMode::Permissive)
-                        .unwrap_or_else(|_| ground_doc.clone())
-                } else {
-                    ground_doc.clone()
-                }
-            } else {
-                ground_doc.clone()
-            };
-
-            // Working: current contract file on disk
-            let working_doc = if contract_path.exists() {
-                let existing = std::fs::read_to_string(&contract_path)?;
-                parse_contract(&existing, ParseMode::Permissive)
-                    .unwrap_or_else(|_| ground_doc.clone())
-            } else {
-                ground_doc.clone()
-            };
-
-            let state = ContractState::new(ground_doc.clone(), base_doc, working_doc);
-            let proposal = state.propose()?;
-
-            if propose {
-                println!("// Proposal: {}", contract_path.display());
-                println!(
-                    "//   Preserved: {} | Updated: {} | Conflicts: {} | Inserted: {} | Deleted: {}",
-                    proposal.preserved_count,
-                    proposal.updated_count,
-                    proposal.conflict_count,
-                    proposal.inserted_count,
-                    proposal.deleted_count
-                );
-            } else {
-                let merged = state.apply(&proposal)?;
-                let output = aden_emit::emit_contract_document(&merged);
-                std::fs::write(&contract_path, output)?;
-                println!("Merged contract: {}", contract_path.display());
-
-                // Update base cache
-                if let Some(base_path) = base_cache_path(&contract_path) {
-                    if let Some(parent) = base_path.parent() {
-                        std::fs::create_dir_all(parent)?;
-                    }
-                    std::fs::write(&base_path, aden_emit::emit_contract_document(&ground_doc))?;
-                }
-            }
-        }
+        // sorted + deduped
+        assert_eq!(
+            extract_uses(&doc),
+            vec!["DocumentNode".to_string(), "EmittedSymbol".to_string()]
+        );
     }
-
-    Ok(())
 }

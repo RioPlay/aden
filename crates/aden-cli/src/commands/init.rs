@@ -449,25 +449,16 @@ Always verify that third-party licenses are compatible with your project's licen
     );
     println!("Sample hooks: .aden/hooks/pre-commit, .aden/hooks/pre-push");
     
-    // Auto-generate contracts for the project
-    println!("\nGenerating contracts...");
-    match crate::commands::generate::cmd_gen(
-        target,
-        None,
-        false,
-        true,
-        false,
-        false,
-        "adoc",
-        false,
-    ) {
+    // Compile the project into the knowledge graph (.aden/store)
+    println!("\nBuilding the knowledge graph...");
+    match crate::commands::generate::cmd_gen(target, false) {
         Ok(_) => {
-            println!("✅ Contracts generated successfully.");
+            println!("✅ Knowledge graph built in .aden/store.");
             println!("✅ Project is ready. Run 'aden status' to check health.");
         }
         Err(e) => {
-            eprintln!("Note: Could not auto-generate contracts: {}", e);
-            println!("You can run 'aden gen --auto' later to generate them.");
+            eprintln!("Note: Could not build the knowledge graph: {}", e);
+            println!("You can run 'aden gen' later to build it.");
         }
     }
     
