@@ -130,7 +130,7 @@ enum Commands {
         #[arg(long, value_name = "MODEL", help = "LLM model to use (e.g., ollama:llama3)")]
         model: Option<String>,
     },
-    /// Lint source files using tree-sitter AST analysis
+    /// Lint source files using fast, language-agnostic line-based heuristics
     Lint {
         #[arg(value_name = "PATH", default_value = ".", value_hint = ValueHint::AnyPath)]
         path: PathBuf,
