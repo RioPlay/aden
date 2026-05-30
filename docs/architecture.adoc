@@ -187,6 +187,38 @@ Given a starting anchor and token budget:
 4. Stop when budget exhausted
 5. Concatenate with `<<<` page breaks
 
+=== 5. Persist (aden-store)
+
+`aden gen` is **store-first**: it writes the compiled graph only to `.aden/store`,
+a fjall LSM-tree keyed store with postcard-serialized values. It does not write
+`.adoc` files on every run.
+
+The `.adoc` contracts are the **source of truth**; `.aden/store` is a
+**materialized view**. If the store is missing, stale, or deleted, it is
+rebuilt deterministically from the `.adoc` contracts — the same source always
+produces the same store. This keeps the durable artifact (text contracts,
+diffable and reviewable in git) separate from the fast lookup artifact (the
+on-disk graph).
+
+== What happens when you run `aden ask`
+
+A read command like `aden ask "How does auth work?"` runs end to end as:
+
+1. **Auto-reindex** — any source file changed since the last run is re-parsed
+   and the graph updated, so reads are always against a fresh graph (no manual
+   `aden gen` required).
+2. **Store lookup / rehydrate** — the compiled graph is loaded from
+   `.aden/store` (fjall + postcard); if absent it is rebuilt from the `.adoc`
+   contracts.
+3. **Search (aden-index)** — the question is matched against the inverted index
+   (BM25) to find the best entry-point anchors.
+4. **Assemble (aden-asm)** — a BFS traversal walks outward from those anchors
+   along selected edge types, estimating tokens per document with the
+   bytes ÷ 4 heuristic and stopping when the budget is exhausted (default
+   budget for `ask` is 4096 tokens).
+5. **Result** — the selected documents are concatenated into a single assembled
+   prompt context.
+
 == Crate Architecture
 
 Aden is a Cargo workspace. Each crate has a single responsibility.
@@ -230,6 +262,14 @@ flowchart TB
         PO[aden-policy<br/>Governance]
     end
 
+    subgraph store[Persistence]
+        ST[aden-store<br/>fjall LSM-tree<br/>.aden/store]
+    end
+
+    subgraph diagnose[Diagnostics]
+        DI[aden-diagnose<br/>Diagnostic Scanner]
+    end
+
     subgraph integration[Integration]
         MCP[aden-mcp<br/>MCP]
         LSP[aden-lsp<br/>LSP]
@@ -240,12 +280,16 @@ flowchart TB
     CLI --> graph
     CLI --> asm
     CLI --> heal
+    CLI --> store
+    CLI --> diagnose
 
     parse --> emit
     parse --> graph
+    graph --> store
     graph --> asm
     asm --> index
     heal --> propose
+    diagnose --> graph
 ----
 
 === Data Flow
@@ -258,6 +302,7 @@ flowchart TD
     subgraph gen[aden gen]
         P1[aden-parse] --> E[aden-emit] --> F[.adoc files]
         P1 --> G[aden-graph] --> DG[DiGraph]
+        DG --> ST[aden-store<br/>.aden/store]
     end
 
     subgraph check[aden check]
@@ -272,10 +317,15 @@ flowchart TD
         H[aden-heal] --> PR[aden-propose] --> P[atches]
     end
 
+    subgraph lint[aden lint]
+        DI[aden-diagnose] --> DR[Diagnostics]
+    end
+
     CLI --> gen
     CLI --> check
     CLI --> ask
     CLI --> heal
+    CLI --> lint
 ----
 
 == Key Features
@@ -442,9 +492,14 @@ See also:
 - <<mod-aden-propose>>
 - <<mod-aden-policy>>
 - <<mod-aden-index>>
-- <<mod-aden-api>>
-- <<mod-aden-attest>>
-- <<mod-aden-telemetry>>
-- <<mod-aden-simulate>>
+- <<mod-aden-store>> — fjall LSM-tree persistence (`.aden/store`)
+- <<mod-aden-diagnose>> — deterministic diagnostic scanner (backs `aden lint`)
 - <<mod-aden-lsp>>
 - <<mod-aden-mcp>>
+
+Experimental / unintegrated (real logic + tests, but no callers — see <<experimental-crates>>):
+
+- `aden-api`
+- `aden-attest`
+- `aden-telemetry`
+- `aden-simulate`

@@ -55,7 +55,7 @@ aden query --from mod-aden-core --depth 2
 aden ci-check .
 ```
 
-This runs: check → heal → lint → test → audit → clippy
+This runs: `aden check` → constitutional firewall (warn-only) → tests → `aden lint` → secret scan → accreditation check → owasp audit → merge-conflict-marker check → clippy
 
 ## Common Commands
 

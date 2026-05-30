@@ -19,14 +19,16 @@ This repository uses **AsciiDoc** (`.adoc`), not Markdown.
 
 ### Before Changing Code
 ```bash
-aden ask --from <anchor> "What breaks if I change X?"
+aden query --impact <anchor>      # blast radius: downstream reach
+aden query --backlinks <anchor>   # blast radius: what references this anchor
+aden ask "What does X do?" --from <anchor>   # explanation, not blast radius
 aden query --from <anchor> --depth 2
 aden locate --symbol <symbol>
 ```
 
 ### After Writing Code
 ```bash
-aden gen <file>           # Generate contract
+aden gen <file>           # Index this file into the knowledge graph (.aden/store)
 aden check . --severity Forbid  # Validate refs (fails only on critical)
 ```
 

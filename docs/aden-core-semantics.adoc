@@ -45,3 +45,11 @@ A content block within a document (paragraph, table, listing, etc.).
 = Edge
 
 A typed relationship between two nodes.
+
+[[merge-schema]]
+= Three-Way Merge Schema
+
+The schema backing `heal`/`gen` reconciliation: `ContractState`
+(`ground`/`base`/`working`), `MergeProposal` (the proposed reconciliation), its
+per-block `MergeAction`, and `ContractRegion` (the region a block belongs to,
+which governs merge behavior).

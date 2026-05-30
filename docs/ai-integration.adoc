@@ -164,24 +164,66 @@ aden suggest "find all tests in the project"
 
 == MCP Tools (for AI Platforms)
 
-When using Aden via MCP (OpenCode, Claude Code, Cursor, etc.), these tools are available:
+When using Aden via MCP (OpenCode, Claude Code, Cursor, etc.), the server exposes
+~33 tools — one per CLI subcommand. They are grouped below by purpose. A few of the
+most-used tools list their key arguments; for the rest, run `aden <tool> --help`.
 
+.Read / query
 |===
 |Tool|Purpose|Key Arguments
 |ask|Natural language Q&A|question, budget, from
-|grep|Structure-aware content search (hit + enclosing symbol)|pattern, regex, ignore_case, symbol_only, limit
-|search|Full-text search|query, limit, offset, doc_type, semantics
 |asm|Graph-traversed context|from, depth, budget, format (llm = default LLM-dense prose, adg = compact JSON, aden = raw AsciiDoc)
-|query|Structured JSON|from, depth, backlinks, impact
+|query|Structured JSON graph neighborhood|from, depth, backlinks, impact
+|query-adq|Structured ADQ query|—
+|grep|Structure-aware content search (hit + enclosing symbol)|pattern, regex, ignore_case, symbol_only, limit
 |locate|Symbol definitions|symbol, caller_of, show_context, limit, format
+|search|Full-text search|query, limit, offset, doc_type, semantics
 |list|Anchors in graph|filter, limit, semantics
-|heal|Drift detection|fix, gc, propose
-|status|Health score|path
-|sync|gen + check + heal|path
+|===
+
+.Build / maintain
+|===
+|Tool|Purpose|Key Arguments
 |gen|Generate contracts|auto, quiet
+|regen|Regenerate contracts|—
+|heal|Drift detection / repair|path, fix, gc, propose, since, apply, watch
+|check|Validate all references|path
+|sync|gen + check + heal|path
 |lint|Lint source|path, severity, fix, json
 |test|Run tests|path, scope, filter, list
+|ci-check|CI gate (check + heal + tests + secret scan)|—
 |===
+
+.Project lifecycle
+|===
+|Tool|Purpose
+|init|Initialize an Aden project
+|new|Scaffold a new artifact
+|kickoff|Start a new work session/plan
+|session|Manage work sessions
+|workflow|Run a defined workflow
+|suggest|Suggest next actions
+|review|Review proposed changes
+|complete|Report contracts needing completion
+|===
+
+.Ops / meta
+|===
+|Tool|Purpose
+|status|Health score
+|doctor|Diagnose environment/setup
+|diagnose|Diagnose graph/project issues
+|audit|Audit the project
+|licenses|License inventory
+|federation|Cross-project federation
+|emergency|Emergency recovery
+|watch|Watch files and auto-regenerate (terminal-only — see note)
+|mcp|MCP server management (install/list)
+|===
+
+NOTE: The `watch` tool (and `heal --watch`) is a long-running, blocking
+process and is *terminal-only* — it is not usable over MCP. The MCP server
+times out any blocking tool at 120s, so invoke `watch` from a shell, not via MCP.
 
 NOTE: Over MCP, the search tools (`grep`, `search`, `list`) return a structured
 JSON envelope automatically — `{total, returned, truncated, ...}` — not the human
@@ -218,14 +260,19 @@ If you are running as a persistent agent, use `aden watch` to auto-regenerate co
 When `aden heal` runs, it detects these drift event types:
 
 |===
-|Type|Description|Fixable?
-|StaleHash|Source changed, contract has old hash|Yes (--fix)
-|MissingContract|Symbol has no contract|Yes (--fix creates a stub; `gen` is preferred)
-|SignatureMismatch|Function signature changed in source|Yes (--fix)
-|BrokenReference|Document references a missing anchor|No (manual fix)
-|OrphanAnchor|Contract has no incoming edges|No (add a `<<ref>>` or delete)
-|StaleMarkdown|Manual .md file is out of date|No (manual)
+|Drift Kind|Meaning|Auto-fixed by `--fix`?
+|StaleHash|Source changed, contract hash stale|Yes (0.99)
+|SignatureMismatch|Symbol signature changed|Yes (0.90)
+|MissingContract|Source symbol has no contract|Yes (0.85), but SKIPS when the target path exists/collides (store-first: won't clobber)
+|StaleMarkdown|Markdown's source files changed|Yes (0.80)
+|MarkdownDrift|Markdown content drifted|No (confidence 0.75, below the 0.8 auto-fix threshold) — detect-only
+|OrphanAnchor|Contract/anchor with no live source|No via `--fix`; removed via `--gc`
+|BrokenReference|`<<anchor>>` points at a missing target|No (detect-only)
+|DeadLink|`include::` path doesn't resolve|No (detect-only)
+|MissingMarkdownTemplate|Markdown lacks its template|No (detect-only)
 |===
+
+NOTE: `--fix` only applies fixes with confidence ≥ 0.8.
 
 NOTE: deleting a symbol or file no longer needs a manual step — `gen` prunes
 removed symbols on re-index, and `aden heal . --gc` sweeps the store for
@@ -270,7 +317,7 @@ You have access to Aden, a knowledge graph compiler for codebases.
 - `check()`: Validate all references
 - `lint()`: Lint source files
 - `test()`: Run tests
-- `complete()`: Fill incomplete contracts via LLM
+- `complete()`: report contracts that need completion (automatic LLM filling is not yet implemented)
 
 ## Best Practices:
 

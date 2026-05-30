@@ -17,7 +17,10 @@ This document tracks crates in the aden workspace that are **not yet fully integ
 
 == Experimental Crates (Not Integrated)
 
-These crates are included in the workspace but **not used** by `aden-cli` or `aden-mcp`.
+These crates are included in the workspace but have **no callers** — zero
+workspace dependents and not wired into any binary. They are **implemented**
+(real function bodies + tests), not empty stubs; they simply have no integration
+path yet (Phase 4-6 roadmap).
 
 === aden-api
 *Path:* `crates/aden-api/` +
@@ -93,6 +96,13 @@ These crates are **actively used** and form the core aden functionality:
 - `aden-heal` - Self-healing
 - `aden-propose` - Patch generation (used by heal)
 - `aden-policy` - Constitutional directives
+- `aden-store` - fjall LSM-tree persistence (`.aden/store`)
+- `aden-diagnose` - Deterministic diagnostic scanner (backs `aden lint`)
+
+NOTE: `aden-mcp` is integrated but unusual — it has no `aden-*` crate
+dependencies. It shells out to the `aden` binary as a sibling process
+(`resolve_aden_binary` + `tokio::process::Command`) rather than linking the
+core crates directly.
 
 == Cleanup Recommendations
 
@@ -124,5 +134,5 @@ Experimental crates older than 12 months without integration plans should be:
 
 ---
 
-*Last updated:* 2026-05-27 +
+*Last updated:* 2026-05-30 +
 *Next review:* 2026-08-27

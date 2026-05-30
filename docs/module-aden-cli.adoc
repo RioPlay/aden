@@ -28,6 +28,14 @@ aden gen .
 aden gen . --quiet
 ----
 
+=== regen
+Recompile the whole project from scratch — alias for `aden gen .` that also clears `gen-cache.json` and the graph cache first. Use after a big merge or when caches may be stale.
+[source,bash]
+----
+aden regen
+aden regen .
+----
+
 === check
 Verify all refs resolve to existing anchors.
 [source,bash]
@@ -63,7 +71,7 @@ Assemble context prompt from knowledge graph.
 ----
 aden asm --from ANCHOR
 aden asm --from foo --depth 3 --budget 8192
-aden asm --from bar --edge-types imports,uses
+aden asm --from bar --edge-types Uses,Calls
 aden asm --from baz --silent
 aden asm --from qux --inspect
 ----
@@ -112,6 +120,25 @@ aden locate --symbol SYMBOL
 aden locate --caller-of SYMBOL
 ----
 
+=== grep
+Flagship structure-aware content search: every match is tagged with the enclosing symbol resolved from the graph, so a hit doubles as an `aden asm --from <symbol>` entry point.
+[source,bash]
+----
+aden grep "PATTERN"
+aden grep --regex "\.parse\("
+aden grep -i "todo"
+aden grep "buffer" --symbol-only
+aden grep "parse" --json
+----
+
+=== query-adq
+Execute an Aden Query (`.adq`) script for advanced graph traversal with custom filters.
+[source,bash]
+----
+aden query-adq script.adq
+aden query-adq find-calls.adq --path src/
+----
+
 == Health and CI
 
 === heal
@@ -156,6 +183,40 @@ OWASP-aligned security audit.
 aden audit [PATH]
 aden audit . --lang rust
 aden audit . --format json
+----
+
+=== status
+Show project health at a glance: project path, active `.aden` store path, a health-score percentage (✅/⚠️/❌), and an orphan-document count. Takes only `[DIR]`. Gated behind the `watch` cargo feature.
+[source,bash]
+----
+aden status
+aden status .
+----
+
+=== sync
+Run `gen` + `check` + `heal` in one pass — the recommended pre-commit sync.
+[source,bash]
+----
+aden sync .
+----
+
+=== watch
+Watch source files and auto-regenerate the graph on change.
+[source,bash]
+----
+aden watch [DIR]
+aden watch . --sync
+aden watch . --graph-sync
+aden watch . --restore
+----
+
+=== diagnose
+Deterministic diagnostic scanner: missing source files, broken references, duplicate anchors, graph consistency.
+[source,bash]
+----
+aden diagnose
+aden diagnose --path .
+aden diagnose --format json
 ----
 
 == Session and Workspace

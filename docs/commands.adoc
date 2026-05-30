@@ -29,11 +29,18 @@ Scaffold `.agent/` templates in a target repository.
 [source,bash]
 ----
 aden init [DIR]
+aden init . --with-secure-refs
 ----
 
 Creates:
 - `.agent/` — templates, onboarding docs, constraints, session log
 - `.adenignore` — security-first defaults (skips `*.env`, `secrets/`, `target/`)
+
+|===
+|Flag |Description
+
+|--with-secure-refs |Scaffolds CWE Top 25 / OWASP SCP reference stubs under `.agent/secure-coding-refs/`
+|===
 
 === new
 
@@ -74,6 +81,18 @@ aden gen . --quiet
 |--auto |Auto-discover source files for the whole project (default when PATH is a directory)
 |--quiet |Suppress per-file output (summary only)
 |===
+
+=== regen
+
+Recompile the whole project from scratch — alias for `aden gen .` that ALSO
+clears `gen-cache.json` and the graph cache before rebuilding (use after a big
+merge or when caches may be stale).
+
+[source,bash]
+----
+aden regen
+aden regen .
+----
 
 === check
 
@@ -232,6 +251,7 @@ aden query --from mod-aden-core --format table
 |--depth |BFS traversal depth
 |--backlinks |Find all documents referencing this anchor
 |--impact |Find transitive closure over dependency edges
+|--edge-type |Restrict traversal to a single edge type (e.g. `Uses`, `Calls`)
 |--format |Output format: `json` (default), `table`
 |===
 
@@ -494,6 +514,10 @@ Runs:
 
 Semantic review with token budgeting.
 
+When to use: before committing a batch of changes, surface the low-confidence
+heal proposals worth a human look — scoped to a git range so you only review
+what actually changed.
+
 [source,bash]
 ----
 aden review [PATH]
@@ -501,6 +525,9 @@ aden review . --since HEAD~5
 ----
 
 Validates low-confidence proposals against a token budget.
+
+Example: `aden review . --since HEAD~5` reviews drift proposals for everything
+touched in the last five commits.
 
 === audit
 
@@ -542,6 +569,10 @@ aden emergency --reason "Urgent fix needed" --ttl 24h
 
 AI assistant: describe intent, get the right command.
 
+When to use: you know what you want to accomplish but not which aden command or
+flags do it. Describe the goal in plain language and `suggest` maps it to a
+concrete invocation.
+
 [source,bash]
 ----
 aden suggest "find all tests in the project"
@@ -549,11 +580,18 @@ aden suggest "generate docs for my code"
 aden suggest "find how X works"
 ----
 
-## Workspace Commands
+Example: `aden suggest "what breaks if I change this function"` points you at
+`aden query --impact <anchor>`.
 
-### session
+== Workspace Commands
+
+=== session
 
 Atomic session lock for agents.
+
+When to use: before multiple agents (or you and an agent) touch the same repo,
+record who is doing what so concurrent work does not collide. Mark the session
+`in_progress` when you start and `completed` when you finish.
 
 [source,bash]
 ----
@@ -561,7 +599,10 @@ aden session --agent-id claude --task "Refactor auth module" --status in_progres
 aden session --agent-id claude --task "Refactor auth module" --status completed
 ----
 
-### federation
+Example: start a tracked session, do the work, then close it out with the same
+`--agent-id`/`--task` and `--status completed`.
+
+=== federation
 
 Multi-repository workspace management.
 
@@ -573,7 +614,7 @@ aden federation remove backend
 aden federation config
 ----
 
-### mcp
+=== mcp
 
 Model Context Protocol integration.
 
@@ -609,9 +650,13 @@ aden mcp serve --port 3030
 |windsurf |~/.windsurf/mcp.json
 |===
 
-### kickoff
+=== kickoff
 
 Create kickoff document for a new initiative.
+
+When to use: at the start of a new project or feature, generate a structured
+kickoff doc (goals, scope, constraints) instead of writing one from scratch.
+Add `--interactive` to be prompted for the fields.
 
 [source,bash]
 ----
@@ -619,9 +664,15 @@ aden kickoff --name my-project
 aden kickoff --name my-project --interactive
 ----
 
-### workflow
+Example: `aden kickoff --name payments-v2` scaffolds `docs/kickoff-payments-v2.adoc`.
+
+=== workflow
 
 Instantiate templates with substitutions.
+
+When to use: to stamp out a standard document (kickoff, design, spec, task, ADR)
+from its template with placeholders filled in, optionally seeding from an
+existing file (`--from`) or writing straight to a path (`--out`).
 
 [source,bash]
 ----
@@ -634,7 +685,10 @@ aden workflow kickoff --from FILE
 aden workflow kickoff --out FILE
 ----
 
-### licenses
+Example: `aden workflow adr --out docs/adr-007-cache.adoc` creates a new ADR
+from the ADR template.
+
+=== licenses
 
 Generate third-party accreditation report.
 
@@ -645,20 +699,28 @@ aden licenses --out NOTICE.md
 aden licenses --full
 ----
 
-### complete
+=== complete
 
-Fill incomplete contracts via LLM.
+Report incomplete contracts (missing required documentation).
+
+When to use: to find which contracts still need documentation filled in. NOTE:
+`complete` only REPORTS the incomplete contracts — automatic LLM filling is NOT
+implemented yet. With `--model` it previews the prompt that would be sent to an
+LLM rather than filling anything.
 
 [source,bash]
 ----
 aden complete [DIR]
-aden complete . --model ollama:llama3
+aden complete . --model ollama:llama3   # previews the LLM prompt; does not fill
 aden complete . --dry-run
 ----
 
-## Watch Mode
+Example: `aden complete .` lists every contract missing required fields so you
+can document them by hand.
 
-### watch
+== Watch Mode
+
+=== watch
 
 Watch source files and auto-regenerate contracts.
 
@@ -678,9 +740,9 @@ aden watch . --restore
 |--restore |Restore graph from cache on startup
 |===
 
-## Sync Command
+== Sync Command
 
-### sync
+=== sync
 
 Run `gen` + `check` + `heal` in one pass.
 
@@ -693,21 +755,23 @@ This is the recommended command for keeping everything in sync before committing
 
 === status
 
-Show project health status at a glance.
+Show project health status at a glance. Takes only an optional `[DIR]`
+(default `.`) — there are no meaningful `--json` or `--verbose` modes.
+
+NOTE: `status` is gated behind the `watch` cargo feature; it is only present
+in builds compiled with that feature enabled.
 
 [source,bash]
 ----
 aden status
-aden status . --json
-aden status . --verbose
+aden status .
 ----
 
-Displays:
-- Total contracts and symbols
-- Orphan count
-- Stale contracts
-- Graph integrity
-- Last generated timestamp
+Prints a compact summary:
+- the project path
+- the active `.aden` store path
+- a health-score percentage with an emoji (✅ / ⚠️ / ❌)
+- an orphan-document count
 
 === diagnose
 
@@ -738,7 +802,7 @@ aden query-adq find-calls.adq --path src/
 
 Aden Query Language allows advanced graph traversal with custom filters.
 
-#== Output Formats
+== Output Formats
 
 Aden commands default to the format best suited for their intended consumer. LLM-facing commands default to stripped, token-dense prose. Human-facing commands default to human-readable output.
 
@@ -800,7 +864,7 @@ store, and machine-readable output is available via `--json` where noted above.
 |`aden ls` |`aden list` |Consistent naming
 |===
 
-## Related Documents
+== Related Documents
 
 . <<getting-started>> — Hands-on tutorial
 . <<user-guide>> — Daily workflows

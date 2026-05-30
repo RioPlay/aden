@@ -26,13 +26,20 @@ aden ask "What is the main entry point?"
 aden ask "Which modules handle authentication?"
 
 # 5. Drill into a specific module
-aden query --from mod-auth --depth 2
+#    First resolve a name to a real anchor, then traverse from it:
+aden locate --symbol authenticate          # copy an aden://… line from the output
+aden query --from "aden://module/<crate>/<module-doc>.adoc#code_block_3" --depth 2
 ----
+
+NOTE: `aden query`/`aden asm` take a full `aden://…` anchor (or a module alias
+like `mod-<crate>`), **not** a bare symbol name. Always run `aden locate`,
+`aden grep`, or `aden list .` first to get the real anchor — a bare name returns
+`Anchor not found or ambiguous`.
 
 === What Each Step Gives You
 
 - `aden init` scaffolds `.agent/` with templates and `.adenignore`.
-- `aden gen` compiles every public function, struct, and trait into the knowledge graph at `.aden/store` (store-first — no files are emitted).
+- `aden gen` compiles every function, struct, and trait (public *and* private) into the knowledge graph at `.aden/store` (store-first — no files are emitted).
 - `aden check` guarantees there are no broken references or duplicate anchors.
 - `aden ask` gives you a token-bounded context prompt. Paste it into ChatGPT, Claude, or your local LLM and ask follow-ups.
 - `aden query` prints a dependency map so you can see what calls what.
@@ -43,14 +50,16 @@ You want to rename a function. You need to know the blast radius.
 
 [source,bash]
 ----
-# 1. Locate the symbol
+# 1. Locate the symbol — this prints the real aden:// anchors for it
 aden locate --symbol old_function_name
+#    -> copy an `aden://…` line from the output; that is your ANCHOR
 
-# 2. See what depends on it
-aden query --impact old_function_name . | jq '.[] | .anchor'
+# 2. See what depends on it (pass the resolved anchor, not the bare name)
+aden query --impact "$ANCHOR" --format json | jq '.[] | .anchor'
 
 # 3. Get context for the change
-aden ask --from old_function_name "What breaks if I rename this?"
+aden ask "What breaks if I rename old_function_name?"
+#    (or, anchored:  aden asm --from "$ANCHOR" --depth 4 --budget 8192)
 
 # 4. Make your edits
 # ... (your IDE here) ...
@@ -100,9 +109,17 @@ Before approving a PR, assemble the relevant context for an AI reviewer.
 # From the PR branch
 aden gen src/ --auto
 
-# Assemble context from the changed modules
-for anchor in $(git diff --name-only main | sed 's|src/||;s|/|_|g;s|\..*$||'); do
-    aden asm --from "$anchor" --depth 2 --budget 4096 >> review-context.adoc
+# Assemble context from the changed symbols.
+#
+# A file path is NOT an anchor, and there is no string transform from a path to
+# an anchor — you must resolve through the graph. For each symbol you changed,
+# look up its real aden:// anchor with `aden locate` (or `aden grep --json`,
+# whose `anchor` field gives a candidate), then assemble from that anchor:
+for sym in changed_function another_changed_symbol; do
+    anchor=$(aden locate --symbol "$sym" 2>/dev/null \
+             | grep -m1 '^aden://')                       # first matching anchor
+    [ -n "$anchor" ] && aden asm --from "$anchor" --depth 2 --budget 4096 \
+        >> review-context.adoc
 done
 
 # Feed review-context.adoc to an LLM with the prompt:
@@ -134,6 +151,11 @@ aden gen src/ --auto
 # Validate before every commit
 aden ci-check .
 ----
+
+NOTE: `aden new --lang` only scaffolds **rust**, **go**, or **typescript**
+(aliases: `rs`, `golang`, `ts`/`js`/`javascript`); any other value errors with
+`Language '<x>' not yet supported`. This is the *scaffold* language for a fresh
+project skeleton — it is unrelated to the 300+ languages `aden gen` can *index*.
 
 === What Gets Scaffolded
 
@@ -169,6 +191,7 @@ If `aden ask` prints `OVER BUDGET` in the summary footer, it stopped early. Eith
 
 | `DuplicateAnchor` | Two files declare the same `[[anchor]]` | Rename one anchor
 | `UnresolvedReference` | A `<<ref>>` points to a missing anchor | Create the target doc or fix the typo
+| `Anchor '<name>' not found or ambiguous` | A bare symbol/file name was passed to `asm`/`query` `--from`/`--backlinks`/`--impact` | Resolve it to a real `aden://…` anchor first with `aden grep`, `aden locate --symbol <name>`, or `aden list .`, then pass that URI
 | `No relevant documents found` | Search keywords do not match anchors | Use `aden search` to discover anchor names
 | Empty `aden ask` output | Token budget exhausted on first node | Lower depth or raise budget
 | Generated contracts have empty signatures | The parser does not recognize the language | Add a language adapter or write manual `.adoc`

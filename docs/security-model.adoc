@@ -18,8 +18,11 @@ Aden assumes the following threats:
 |Hardcoded secrets in source |Secret scan in `ci-check` |Implemented
 |Unsafe Rust code |Zero `unsafe` blocks in application code |Enforced
 |Stale context leading to wrong decisions |`heal` detects drift, `check` validates integrity |Implemented
-|Excessive token budget leaking context |Token budgeting with 4/3 heuristic, hard cap |Implemented
+|Excessive token budget leaking context |Token budgeting with ~4-bytes-per-token heuristic, hard cap |Implemented
 |Malicious contract injection |Contracts are build artifacts, gitignored |Enforced
+|Path args escaping the project root over MCP |`confine_path_args` rejects any path/out/from argument resolving outside the project dir |Implemented
+|Argument injection via leading-dash values over MCP |`--` end-of-options terminator separates injected flags from user values in `build_cli_args` |Implemented
+|Unbounded/blocking MCP tool execution |120s `COMMAND_TIMEOUT` bounds every spawned command |Implemented
 |===
 
 == Include Directive Security
@@ -54,7 +57,10 @@ OpenAI, Slack keys, or a PEM private-key block) — so a key embedded in an
 ordinary `config.json`/`settings.yaml` is kept out of the graph too. The content
 screen is deliberately high-confidence (structured tokens only, no entropy
 heuristic), so a credential in an unrecognized custom format could still slip
-through; add such files to `.adenignore` to be sure.
+through; add such files to `.adenignore` to be sure. This two-layer gen secret
+floor is applied at *indexing* time only; the read tools `grep`/`locate`/`audit`
+operate on raw file content and are NOT redacted — don't assume their output is
+secret-filtered.
 ====
 
 == Permissions Model
