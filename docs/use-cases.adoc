@@ -6,6 +6,21 @@
 
 Aden is a **context compiler** — it turns any body of knowledge into a traversable, attributed, token-dense graph. What follows is a non-exhaustive list of domains where this capability unlocks value that traditional documentation, wiki, or note-taking tools cannot provide.
 
+[IMPORTANT]
+====
+*Scope of this document.* With one exception, the use cases below are
+**illustrative and aspirational** — they sketch the long-term vision of aden as a
+general knowledge-graph compiler for any domain. The non-software examples
+reference entities, edge types, and features that aden does **not** implement
+today (e.g. `Supports`/`Contradicts`/`Owns` edges, confidence-degradation
+tracking, and temporal graph slices are not real — see `.agent/glossary.adoc` and
+`docs/architecture.adoc` for what actually exists). Treat them as product
+direction, not current capability.
+
+The single **implemented-today** case is *Software Engineering* (#1 below); its
+worked example uses only real commands and real output against this repository.
+====
+
 == The Core Pattern
 
 Every use case below follows the same workflow:
@@ -17,11 +32,85 @@ Every use case below follows the same workflow:
 . **Drift** — Detect when reality and documentation diverge
 . **Audit** — Verify attribution, accreditation, and provenance
 
-== 1. Software Engineering (The Origin Story)
+== 1. Software Engineering (The Origin Story) — Implemented Today
 
-Already implemented. Aden extracts symbols, call graphs, and API contracts from source code, producing machine-readable documentation that AI agents and humans can query without reading every file.
+Aden extracts symbols, call graphs, and API contracts from source code,
+producing a machine-readable knowledge graph that AI agents and humans can query
+without reading every file.
 
-*Impact:* Eliminates stale documentation, ensures every refactor propagates correctly, makes onboarding instant.
+*Impact:* Eliminates stale documentation, ensures every refactor propagates
+correctly, makes onboarding instant.
+
+=== Worked Example: Blast Radius Before a Refactor
+
+The real flow is two steps — *find* the symbol, then *assemble* context from it.
+Anchors are stable `aden://…` URIs, so you never hand-type a symbol path; you
+copy the one the tool returns. (The output below is real output from aden's own
+repository.)
+
+*Step 1 — find the symbol.* `aden grep` is structure-aware: every hit is tagged
+with the enclosing symbol's name, which you then resolve to its anchor.
+
+[source,bash]
+----
+$ aden grep "fn cmd_asm"
+Found 1 match(es) for 'fn cmd_asm':
+crates/aden-cli/src/commands/query.rs:231  (cmd_asm): pub fn cmd_asm(opts: AsmOptions) -> ...
+----
+
+*Step 2 — resolve the symbol name to its anchor.* `aden locate` returns the
+stable `aden://…` URIs you feed to `asm`/`query`.
+
+[source,bash]
+----
+$ aden locate --symbol cmd_asm
+Found 8 match(es) for 'cmd_asm':
+cmd_asm function crates/aden-cli/src/commands/query.rs:231
+aden://doc/aden/aden---module-aden-cli-query.rs-cmd_asm.adoc/h2signature   heading ...
+code_block_3 code [aden://module/aden/aden---module-aden-cli-query.rs-cmd_asm.adoc#code_block_3]
+----
+
+*Step 3 — assemble token-dense context for an agent.* `aden asm --from <anchor>`
+runs a BFS from that node under a token budget and emits a focused, structured
+prompt — the signature plus the symbols it actually references — instead of
+dumping the whole file.
+
+[source,bash]
+----
+$ aden asm --from "aden://doc/aden/aden---module-aden-cli-query.rs-cmd_asm.adoc/h2signature" --depth 1
+aden://doc/aden/aden---module-aden-cli-query.rs-cmd_asm.adoc/h2signature
+
+Signature
+Name        cmd_asm
+Visibility  Private
+param opts  opts: AsmOptions
+Returns     Result<(), Box<dyn std::error::Error>>
+
+ensure_fresh  242
+load_or_build_index  245
+resolve_anchor_fuzzy  247
+resolve_anchor_in_store  268
+build_neighborhood_cached  279
+assemble_adg  328
+... (callees within the budget)
+----
+
+*Optional — blast radius via the graph.* `aden query --backlinks <anchor>` shows
+what references a node and `--impact` shows its downstream reach. Note these are
+only as rich as the graph's edge density for that symbol — for a thinly-connected
+private helper you may see just its enclosing module, whereas a widely-used public
+API surfaces a large neighborhood:
+
+[source,bash]
+----
+$ aden query --backlinks "aden://module/aden/aden---module-aden-cli-query.rs-cmd_asm.adoc#code_block_3"
+[ { "anchor": "mod-aden", "depth": 1, "node_type": "Module" } ]
+----
+
+This is the software-engineering case made concrete: grep to find the symbol,
+`locate` to get a stable anchor, then `asm` to reason about its neighborhood — no
+file reading, no guessing symbol paths. The per-symbol assembly is the strongest
+path today; graph-wide `--impact` quality tracks how densely the target is linked.
 
 == 2. Academic Research & Literature Reviews
 
@@ -81,7 +170,11 @@ aden ask "What changed about Organization Z's infrastructure between January and
 
 Aden diffs the graph states, highlights new edges (new facilities, new personnel), and produces a confidence-graded timeline.
 
-*Differentiator:* Unlike manual spreadsheets, the graph is **self-checking** — if two sources contradict, aden flags it as BrokenReference.
+*Differentiator:* Unlike manual spreadsheets, the graph is **self-checking** for
+cross-reference integrity — a `<<reference>>` that points at a missing target
+surfaces as a `BrokenReference` drift event. (Note: `BrokenReference` detects
+*missing anchors*, not semantic contradiction between two sources; aspirational
+contradiction edges are not implemented — see the scope note at the top.)
 
 == 7. Manufacturing & Supply Chain
 
