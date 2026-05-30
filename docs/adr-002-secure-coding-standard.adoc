@@ -55,8 +55,9 @@ We will split "secure coding as a standard" into two cleanly-licensed layers:
   can become `aden check` rules over time.
 
 . **Reference Corpus (third-party, attributed, data-only scaffold).** The
-  OWASP/CWE-derived documents (`research/secure-coding/`, CC BY-SA 3.0 + MITRE
-  terms) ship as an *optional* scaffold — `aden init --with-secure-refs` writes
+  OWASP/CWE-derived documents (`research/secure-coding/`, OWASP SCP CC BY-SA 4.0
+  / OWASP Top 10 CC BY 3.0 / MITRE CWE terms) ship as an *optional* scaffold —
+  `aden init --with-secure-refs` writes
   them into the target project as separate, separately-licensed data files that
   aden parses. They are NEVER compiled into the AGPL binary. The aden-authored
   constitution `<<refs>>` these reference docs when present, giving the graph
@@ -96,7 +97,7 @@ recorded (aden-authored) in `research/secure-coding/aden-audit-map.adoc`.
 |Artifact |License |May embed in AGPL binary?
 
 |Aden Secure-Coding Constitution (original) |AGPL-3.0 |YES (`include_str!` ok)
-|OWASP-derived reference docs |CC BY-SA 3.0 |NO — data-file scaffold only
+|OWASP-derived reference docs |CC BY-SA 4.0 (SCP) / CC BY 3.0 (Top 10) |NO — data-file scaffold only
 |MITRE CWE reference docs |CWE Terms of Use |NO — data-file scaffold only
 |`aden-audit-map`, `index` (original) |aden-authored |YES if rewritten free of refs to copyleft docs
 |===
@@ -127,11 +128,19 @@ license conflict, enforceable later |Two artifacts |—
 |2026-05-30 |accepted |RioPlay
 |===
 
-Implementation note (2026-05-30): Layer 1 (the aden-authored Secure-Coding
-Constitution) is implemented as `crates/aden-cli/templates/secure-coding.adoc`
-and scaffolded by `aden init` into `.agent/secure-coding.adoc`. Layer 2 (the
-attributed reference-corpus scaffold) and the `aden check` enforcement subset
-remain follow-ups.
+Implementation note (2026-05-30): Both layers and an enforcement subset are
+implemented.
+Layer 1 — the aden-authored Secure-Coding Constitution lives at
+`.agent/templates/secure-coding.adoc` and is embedded via `include_str!` and
+scaffolded by `aden init` into `.agent/secure-coding.adoc` (see
+`crates/aden-cli/src/commands/init.rs`).
+Layer 2 — `aden init --with-secure-refs` scaffolds the attributed reference
+stubs (`.agent/templates/secure-refs-*.adoc`) into `.agent/secure-coding-refs/`;
+these stubs contain only facts + aden's framing + citations, never source prose.
+Enforcement — a machine-checkable subset ships in `aden lint`
+(`lint_secure_coding_line` in `crates/aden-cli/src/commands/lint.rs`), tagging
+violations with constitution anchors (`sc-data-is-data`, `sc-no-secret-ingest`).
+A dedicated `aden check` integration remains a possible future refinement.
 
 An ADR is accepted when a reviewer acknowledges it. No code (constitution
 template, `aden init --with-secure-refs`, or `aden check` rules) should be

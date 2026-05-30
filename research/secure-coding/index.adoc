@@ -1,5 +1,5 @@
 // Navigation hub — aden-authored. Links to third-party reference docs whose
-// own licenses (OWASP CC BY-SA 3.0; MITRE CWE Terms of Use) are recorded in
+// own licenses (OWASP CC BY-SA 4.0; MITRE CWE Terms of Use) are recorded in
 // SOURCES.md. This corpus is NOT part of aden's AGPL source.
 [[sec-index]]
 = Secure Coding Knowledge Base

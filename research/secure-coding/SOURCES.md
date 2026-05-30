@@ -14,23 +14,24 @@ license governs it (see per-document headers).
 
 | Document | Primary source | Source license |
 |---|---|---|
-| `scp-checklist.adoc` | OWASP Secure Coding Practices — Quick Reference Guide | CC BY-SA 3.0 |
+| `scp-checklist.adoc` | OWASP Secure Coding Practices — Quick Reference Guide | CC BY-SA 4.0 |
 | `owasp-top10-2025.adoc` | OWASP Top 10:2025 (A05 Injection) | CC BY 3.0 (attribution only) |
 | `cwe-top25.adoc` | 2024 CWE Top 25 Most Dangerous Software Weaknesses (MITRE/CISA) | MITRE CWE Terms of Use |
 | `aden-audit-map.adoc` | Original aden work (maps the above onto aden's own audit) | aden-authored (AGPL-3.0) |
 | `index.adoc` | Original (navigation hub) | aden-authored (AGPL-3.0) |
 
 Note the two OWASP works carry **different** licenses: the Secure Coding
-Practices guide is CC BY-SA 3.0 (ShareAlike); the Top 10 is CC BY 3.0
-(attribution only, no ShareAlike) — both verified against each work's own
-license footer on 2026-05-30.
+Practices guide is CC BY-SA 4.0 (ShareAlike); the Top 10 is CC BY 3.0
+(attribution only, no ShareAlike) — each verified against its own project
+page / license footer (OWASP SCP page states CC BY-SA 4.0; OWASP Top 10 footer
+states CC BY 3.0).
 
 ## Citations
 
 - **OWASP Secure Coding Practices — Quick Reference Guide.** The OWASP
   Foundation. https://owasp.org/www-project-secure-coding-practices-quick-reference-guide/
-  Licensed under Creative Commons Attribution-ShareAlike 3.0
-  (https://creativecommons.org/licenses/by-sa/3.0/).
+  Licensed under Creative Commons Attribution-ShareAlike 4.0
+  (https://creativecommons.org/licenses/by-sa/4.0/).
 - **OWASP Top 10:2025.** The OWASP Foundation.
   https://owasp.org/Top10/2025/A05_2025-Injection/  "This work is licensed under
   a Creative Commons Attribution 3.0 Unported License." (CC BY 3.0,
@@ -59,9 +60,9 @@ affiliation.
 
 ## License of this corpus
 
-Because `scp-checklist.adoc` closely follows CC BY-SA 3.0 material, that
+Because `scp-checklist.adoc` closely follows CC BY-SA 4.0 material, that
 document (and any redistribution of this corpus that includes it) is licensed
-under **CC BY-SA 3.0**, NOT aden's AGPL-3.0. `owasp-top10-2025.adoc` follows
+under **CC BY-SA 4.0**, NOT aden's AGPL-3.0. `owasp-top10-2025.adoc` follows
 CC BY 3.0 material (attribution only). The `cwe-top25.adoc` entries reproduce
 CWE identifiers/names under MITRE's terms with the notices above. `index.adoc`
 and `aden-audit-map.adoc` are aden-authored.

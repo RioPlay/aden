@@ -220,12 +220,16 @@ When `aden heal` runs, it detects these drift event types:
 |===
 |Type|Description|Fixable?
 |StaleHash|Source changed, contract has old hash|Yes (--fix)
-|MissingContract|New symbol has no contract|No (run gen)
+|MissingContract|Symbol has no contract|Yes (--fix creates a stub; `gen` is preferred)
 |SignatureMismatch|Function signature changed in source|Yes (--fix)
-|BrokenReference|Document ссылается на missing anchor|No (manual fix)
-|OrphanContract|Contract exists but no matching source|Yes (--gc)
+|BrokenReference|Document references a missing anchor|No (manual fix)
+|OrphanAnchor|Contract has no incoming edges|No (add a `<<ref>>` or delete)
 |StaleMarkdown|Manual .md file is out of date|No (manual)
 |===
+
+NOTE: deleting a symbol or file no longer needs a manual step — `gen` prunes
+removed symbols on re-index, and `aden heal . --gc` sweeps the store for
+contracts whose source no longer exists.
 
 Use `aden heal . --fix` for auto-fixing high-confidence issues.
 

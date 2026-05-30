@@ -41,7 +41,7 @@ Create a new project from a language template with Aden scaffolding.
 
 [source,bash]
 ----
-aden new NAME --lang rust|go|js|python [DIR]
+aden new NAME --lang rust|go|js [DIR]
 ----
 
 Scaffolds:

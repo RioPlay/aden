@@ -16,7 +16,7 @@ sources below, each under its own license.
   Per-entry detail: https://cwe.mitre.org/data/definitions/<N>.html
 * *OWASP Secure Coding Practices — Quick Reference Guide* — The OWASP Foundation.
   https://owasp.org/www-project-secure-coding-practices-quick-reference-guide/
-  Licensed CC BY-SA 3.0 (https://creativecommons.org/licenses/by-sa/3.0/).
+  Licensed CC BY-SA 4.0 (https://creativecommons.org/licenses/by-sa/4.0/).
 * *OWASP Top 10:2025* — The OWASP Foundation. https://owasp.org/Top10/
   Licensed CC BY 3.0 (https://creativecommons.org/licenses/by/3.0/).
 

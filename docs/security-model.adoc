@@ -45,12 +45,16 @@ Any detected secret fails CI — the secret-scan gate returns an error on detect
 
 [NOTE]
 ====
-The `gen`/index secret floor (`aden_core::filter::is_secret_path`) that keeps
-credential files out of the knowledge graph matches by **filename, extension,
-and parent directory** — never by content. A credential embedded in a file
-with an ordinary source extension (e.g. `application.properties`,
-`config.json`, `settings.yaml`) is therefore indexed and can be served by
-`search`/`ask`/`asm`. Add such files to `.adenignore` if they contain secrets.
+The `gen`/index secret floor has **two layers**: (1)
+`aden_core::filter::is_secret_path` blocks known credential files by filename,
+extension, and parent directory; and (2)
+`aden_core::filter::content_has_high_confidence_secret` scans file *content* and
+refuses to index any file carrying a structured credential token (AWS, GitHub,
+OpenAI, Slack keys, or a PEM private-key block) — so a key embedded in an
+ordinary `config.json`/`settings.yaml` is kept out of the graph too. The content
+screen is deliberately high-confidence (structured tokens only, no entropy
+heuristic), so a credential in an unrecognized custom format could still slip
+through; add such files to `.adenignore` to be sure.
 ====
 
 == Permissions Model

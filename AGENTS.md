@@ -62,7 +62,7 @@ aden ci-check .           # Full CI gates before commit
 | `aden-policy` | Constitutional directives, precedence |
 | `aden-api` | REST/gRPC types |
 | `aden-attest` | Attestation primitives |
-| `aden-store` | Sled-backed graph store (store-first persistence) |
+| `aden-store` | fjall-backed (LSM-tree) graph store (store-first persistence) |
 | `aden-diagnose` | Deterministic knowledge-graph diagnostics |
 | `aden-lsp` | Language Server Protocol integration |
 | `aden-simulate` | Change-impact simulation |
