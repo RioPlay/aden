@@ -221,10 +221,10 @@ static TOOLS: &[ToolSpec] = &[
     ToolSpec { name: "heal",       description: "Self-healing documentation engine: scan for drift, propose patches, apply reviewed changes.",                      args: &[("path", "string"), ("fix", "boolean"), ("gc", "boolean"), ("propose", "boolean"), ("since", "string"), ("apply", "string"), ("watch", "string")] },
     ToolSpec { name: "status",     description: "Show project health status at a glance.",                                                                        args: &[("path", "string")] },
     ToolSpec { name: "sync",       description: "Run gen + check + heal in one pass.",                                                                          args: &[("path", "string")] },
-    ToolSpec { name: "ci-check",   description: "Full CI gates: build, test, lint, check.",                                                                     args: &[("path", "string")] },
+    ToolSpec { name: "ci-check",   description: "Run all local CI gates: aden check, project tests, aden lint, secret scan, attribution check, OWASP audit, and merge-conflict-marker scan (plus warning-only clippy/cargo-audit).", args: &[("path", "string")] },
     ToolSpec { name: "regen",      description: "Regenerate all contracts from source (alias: gen . --auto --quiet).",                                          args: &[("path", "string")] },
-    ToolSpec { name: "complete",   description: "Fill incomplete contracts with LLM-generated content.",                                                        args: &[("path", "string"), ("dry-run", "boolean"), ("model", "string")] },
-    ToolSpec { name: "watch",      description: "Watch source files and auto-regenerate contracts.",                                                            args: &[("path", "string"), ("sync", "boolean"), ("graph-sync", "boolean"), ("restore", "boolean")] },
+    ToolSpec { name: "complete",   description: "Scan for incomplete contracts and report them. Note: automatic LLM filling is not yet implemented — this currently lists the contracts that need completion and (with --model) previews the prompt.", args: &[("path", "string"), ("dry-run", "boolean"), ("model", "string")] },
+    ToolSpec { name: "watch",      description: "Watch source files and auto-regenerate contracts. WARNING: this is a long-running daemon and is not usable over MCP (the call will time out) — run it from a terminal. Use `gen`/`sync` for one-shot updates.", args: &[("path", "string"), ("sync", "boolean"), ("graph-sync", "boolean"), ("restore", "boolean")] },
     ToolSpec { name: "session",    description: "Append entry to .agent/session.adoc.",                                                                       args: &[("agent-id", "string"), ("task", "string"), ("status", "string")] },
     ToolSpec { name: "federation", description: "List or manage multi-repo workspace.",                                                                         args: &[("action", "string")] },
     ToolSpec { name: "emergency",  description: "Downgrade Forbid policies to Warn with justification.",                                                       args: &[("reason", "string"), ("path", "string"), ("ttl", "string")] },
@@ -331,13 +331,30 @@ fn resolve_aden_binary() -> std::ffi::OsString {
     std::ffi::OsString::from("aden")
 }
 
+/// Hard ceiling on how long a single shelled-out `aden` invocation may run.
+/// MCP tool calls are request/response, so a tool that never returns (a
+/// `watch` daemon, `heal --watch`, or a runaway `gen` on a huge untrusted
+/// repo) would otherwise block the JSON-RPC stream indefinitely. Time out
+/// instead and surface a clean error to the caller.
+const COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
 async fn run_aden_command(project_dir: &Path, args: &[&str]) -> Result<String, String> {
-    let output = tokio::process::Command::new(resolve_aden_binary())
+    let child = tokio::process::Command::new(resolve_aden_binary())
         .args(args)
         .current_dir(project_dir)
-        .output()
-        .await
-        .map_err(|e| format!("failed to run aden: {}", e))?;
+        .output();
+
+    let output = match tokio::time::timeout(COMMAND_TIMEOUT, child).await {
+        Ok(result) => result.map_err(|e| format!("failed to run aden: {}", e))?,
+        Err(_) => {
+            return Err(format!(
+                "aden command timed out after {}s. Long-running tools like `watch` \
+                 are not usable over MCP (each tool call is request/response); run \
+                 them from a terminal instead.",
+                COMMAND_TIMEOUT.as_secs()
+            ));
+        }
+    };
 
     if output.status.success() {
         let raw = String::from_utf8_lossy(&output.stdout).into_owned();
