@@ -36,16 +36,28 @@ This prevents an agent from accidentally (or maliciously) inlining `/etc/passwd`
 
 `aden ci-check` includes a secret scan that checks for:
 
-- Hardcoded passwords (regex patterns for `password`, `passwd`, `pwd`)
-- API keys (AWS, GCP, Azure patterns)
-- Private keys (PEM, SSH key patterns)
-- Content hashes in `.aden/cache/` are excluded (false positive suppression)
+- Hardcoded passwords (regex matching `password = "..."` assignments)
+- API keys (AWS `AKIA...`, GitHub `ghp_`/`gho_`, OpenAI `sk-...` patterns)
+- Long hex strings (possible API keys)
+- Content hashes in `.aden/cache/` and generated files are excluded (false-positive suppression)
 
-Secrets are flagged as `Forbid` severity — CI fails on any detection.
+Any detected secret fails CI — the secret-scan gate returns an error on detection.
+
+[NOTE]
+====
+The `gen`/index secret floor (`aden_core::filter::is_secret_path`) that keeps
+credential files out of the knowledge graph matches by **filename, extension,
+and parent directory** — never by content. A credential embedded in a file
+with an ordinary source extension (e.g. `application.properties`,
+`config.json`, `settings.yaml`) is therefore indexed and can be served by
+`search`/`ask`/`asm`. Add such files to `.adenignore` if they contain secrets.
+====
 
 == Permissions Model
 
-Aden's internal permissions model uses principals, roles, and actions:
+The example below models principals, roles, and actions as a knowledge graph.
+This illustrates modeling a permissions domain *in* Aden — Aden itself does not
+implement an internal permissions/RBAC system:
 
 [semantics]
 ----

@@ -118,9 +118,12 @@ pub fn cmd_grep(
 
     println!("Found {} match(es) for '{}':", total, pattern);
     for m in matches.iter().take(limit) {
+        // SECURITY: m.text is a raw line from an untrusted source file — strip
+        // terminal escape sequences before printing (audit MEDIUM-3).
+        let text = crate::util::sanitize_terminal(&m.text);
         match &m.symbol {
-            Some(sym) => println!("{}:{}  ({}): {}", m.file, m.line, sym, m.text),
-            None => println!("{}:{}: {}", m.file, m.line, m.text),
+            Some(sym) => println!("{}:{}  ({}): {}", m.file, m.line, sym, text),
+            None => println!("{}:{}: {}", m.file, m.line, text),
         }
     }
     if total > limit {

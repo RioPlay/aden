@@ -177,19 +177,55 @@ fn walk_supported_files(
     Ok(())
 }
 
-/// Strip absolute prefix from source_file attributes to prevent
-/// username / home-directory leakage in emitted contracts.
-pub fn sanitize_source_file(doc: &mut aden_core::Document) {
-    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+/// Strip the project-root prefix from a doc's `source_file` attribute so no
+/// absolute host path (and the `$HOME`/username it contains) is persisted to
+/// the store or emitted into LLM context.
+///
+/// SECURITY (audit MEDIUM-2): this must strip against the actual discovery
+/// `root`, NOT `std::env::current_dir()`. When aden indexes a repo that is not
+/// under the process cwd (e.g. `aden gen /other/repo`, or any MCP call where
+/// the resolved root differs from cwd), a cwd-based strip silently fails and
+/// the full `/home/<user>/...` path leaks through. Stripping against `root`
+/// always yields a repo-relative path. As defense-in-depth, if the value is
+/// still absolute afterwards, fall back to the bare file name so no absolute
+/// component can ever be stored.
+pub fn sanitize_source_file(doc: &mut aden_core::Document, root: &Path) {
     if let Some(source_file) = doc.attributes.get("source_file") {
         let p = std::path::Path::new(source_file);
-        if p.is_absolute()
-            && let Ok(rel) = p.strip_prefix(&cwd)
-        {
-            doc.attributes
-                .insert("source_file".to_string(), rel.to_string_lossy().to_string());
+        if p.is_absolute() {
+            let rel = p
+                .strip_prefix(root)
+                .ok()
+                .map(|r| r.to_string_lossy().to_string())
+                .or_else(|| p.file_name().map(|f| f.to_string_lossy().to_string()));
+            if let Some(rel) = rel {
+                doc.attributes.insert("source_file".to_string(), rel);
+            }
         }
     }
+}
+
+/// Make untrusted text safe to print to a terminal.
+///
+/// SECURITY (audit MEDIUM-3): aden's read commands echo content from arbitrary
+/// untrusted source files to stdout. A crafted line containing ANSI/OSC escape
+/// sequences (`ESC[2J`, OSC-52 clipboard writes, OSC-8 hyperlinks/title spoof)
+/// would otherwise be interpreted by the operator's terminal and fed verbatim
+/// into an agent's context. Replace ESC and all C0/C1 control bytes (except
+/// `\t`) with a visible `\xNN` form. Applied unconditionally — not gated on
+/// isatty — so piped/agent output is sanitized too.
+pub fn sanitize_terminal(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        let cp = c as u32;
+        // C0 controls (0x00–0x1F) except tab, DEL (0x7F), and C1 (0x80–0x9F).
+        if (cp < 0x20 && c != '\t') || cp == 0x7f || (0x80..=0x9f).contains(&cp) {
+            out.push_str(&format!("\\x{:02x}", cp.min(0xff)));
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 /// Normalize path separators for cross-platform skip-pattern matching.
@@ -597,4 +633,47 @@ pub fn generate_proposal_id() -> String {
         .as_nanos();
     let pid = std::process::id();
     format!("{pid}-{ts}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sanitize_terminal_neutralizes_escapes_keeps_text() {
+        // ESC, BEL, and an OSC-52 clipboard sequence must be rendered visible.
+        let evil = "\x1b[2Jclear\x07bell\x1b]52;c;cG93d2540\x07";
+        let out = sanitize_terminal(evil);
+        assert!(!out.contains('\x1b'), "raw ESC must be gone: {out:?}");
+        assert!(!out.contains('\x07'), "raw BEL must be gone: {out:?}");
+        assert!(out.contains("\\x1b"), "ESC shown as \\x1b: {out:?}");
+        assert!(out.contains("clear") && out.contains("bell"), "real text kept");
+        // Tabs are preserved; ordinary unicode passes through.
+        assert_eq!(sanitize_terminal("a\tb→c"), "a\tb→c");
+    }
+
+    #[test]
+    fn sanitize_source_file_strips_against_root_not_cwd() {
+        use std::collections::HashMap;
+        let mut attrs = HashMap::new();
+        attrs.insert(
+            "source_file".to_string(),
+            "/home/someone/projects/widget/src/lib.rs".to_string(),
+        );
+        let mut doc = aden_core::Document {
+            anchor: "x".into(),
+            node_type: aden_core::NodeType::Function,
+            attributes: attrs,
+            blocks: vec![],
+            source_span: None,
+            metadata: None,
+            confidence: 1.0,
+        };
+        sanitize_source_file(&mut doc, Path::new("/home/someone/projects/widget"));
+        assert_eq!(
+            doc.attributes.get("source_file").map(|s| s.as_str()),
+            Some("src/lib.rs"),
+            "must strip against the given root, leaking no /home/ prefix"
+        );
+    }
 }

@@ -315,41 +315,29 @@ pub fn cmd_audit(
     let info = counts(OwaspSeverity::Info);
 
     if is_json {
-        println!("{{");
-        println!("  \"findings\": [");
-        for (i, f) in findings.iter().enumerate() {
-            let comma = if i + 1 < findings.len() { "," } else { "" };
-            println!("    {{");
-            println!("      \"owasp_id\": \"{}\",", f.owasp_id);
-            println!("      \"category\": \"{}\",", f.category);
-            println!("      \"severity\": \"{}\",", f.severity);
-            println!("      \"file\": \"{}\",", f.file.display());
-            println!("      \"line\": {},", f.line);
-            println!("      \"snippet\": \"{}\",", f.snippet.replace('"', "\\\""));
-            println!(
-                "      \"description\": \"{}\",",
-                f.description.replace('"', "\\\"")
-            );
-            println!(
-                "      \"remediation\": \"{}\"",
-                f.remediation.replace('"', "\\\"")
-            );
-            println!("    }}{comma}");
-        }
-        println!("  ],");
-        println!("  \"summary\": {{");
-        println!(
-            "    \"total\": {}, \"critical\": {}, \"high\": {}, \"medium\": {}, \"low\": {}, \"info\": {}, \"scanned\": {}",
-            findings.len(),
-            crit,
-            high,
-            med,
-            low,
-            info,
-            total_scanned
-        );
-        println!("  }}");
-        println!("}}");
+        // SECURITY (audit MEDIUM-4): build JSON with serde, not string
+        // concatenation. `snippet` is attacker-controlled (a line from an
+        // untrusted source file); the old hand-rolled escaper only handled `"`,
+        // so a trailing backslash or a raw control byte could break out of the
+        // string or produce invalid JSON. serde_json escapes everything.
+        let doc = serde_json::json!({
+            "findings": findings.iter().map(|f| serde_json::json!({
+                "owasp_id": f.owasp_id,
+                "category": f.category,
+                "severity": f.severity.to_string(),
+                "file": f.file.display().to_string(),
+                "line": f.line,
+                "snippet": f.snippet,
+                "description": f.description,
+                "remediation": f.remediation,
+            })).collect::<Vec<_>>(),
+            "summary": {
+                "total": findings.len(),
+                "critical": crit, "high": high, "medium": med,
+                "low": low, "info": info, "scanned": total_scanned,
+            },
+        });
+        println!("{}", serde_json::to_string_pretty(&doc).unwrap_or_else(|_| "{}".to_string()));
     } else if is_adoc {
         let header = format!(
             "= OWASP Security Audit Report\n:date: {}\n:toc: auto\n\n== Summary\n\n| Severity | Count\n| Critical | {crit}\n| High     | {high}\n| Medium   | {med}\n| Low      | {low}\n| Info     | {info}\n\n_{total_scanned} files scanned._\n\n== Findings\n",

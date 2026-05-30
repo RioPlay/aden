@@ -562,7 +562,7 @@ fn cmd_gen_inner(path: &Path, quiet: bool, silent: bool) -> Result<(), Box<dyn s
                 let mut emitted = Vec::new();
                 for doc in docs {
                     let mut doc_clone = doc.clone();
-                    sanitize_source_file(&mut doc_clone);
+                    sanitize_source_file(&mut doc_clone, &root);
 
                     // Capture call sites for graph linking before slimming, then
                     // drop the redundant edge:: listing so the store stays compact.

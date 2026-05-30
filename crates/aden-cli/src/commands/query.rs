@@ -10,8 +10,8 @@ use aden_store::GraphStorage;
 
 use crate::types::{AnchorPattern, QueryIntent};
 use crate::util::{
-    load_or_build_index, node_to_json, parse_single_edge_type, perform_check, sanitize_anchor,
-    sanitize_source_file, valid_edge_types,
+    find_project_root, load_or_build_index, node_to_json, parse_single_edge_type, perform_check,
+    sanitize_anchor, sanitize_source_file, valid_edge_types,
 };
 use aden_index::SearchResult;
 
@@ -1550,8 +1550,9 @@ pub fn cmd_watch(
                         if let Ok(source) = std::fs::read_to_string(p) {
                             match aden_parse::parse_file(p, &source) {
                                 Ok(mut docs) if !docs.is_empty() => {
+                                    let watch_root = find_project_root(path);
                                     for doc in &mut docs {
-                                        sanitize_source_file(doc);
+                                        sanitize_source_file(doc, &watch_root);
                                         let safe_anchor = sanitize_anchor(&doc.anchor);
                                         let out_path = contracts_dir.join(format!("{}.adoc", safe_anchor));
                                         if std::fs::write(&out_path, aden_emit::emit_document(doc)).is_ok() {
