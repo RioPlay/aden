@@ -1,3 +1,6 @@
+// Copyright (c) 2026 RioPlay <rioplay@rioplay.dev>
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // LLM-optimized context assembly output
 // This module formats aden context in ways LLMs find most useful
 

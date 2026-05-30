@@ -632,6 +632,31 @@ fn emit_php_symbol(
         }
     }
 
+    // Type-usage edges: types named in typed params are `Uses`d, so a type that
+    // is used (but never "called") is not a false dead-code candidate. Only names
+    // that resolve to a stored symbol actually become edges.
+    {
+        let mut type_uses: Vec<String> = Vec::new();
+        for p in &sym.params {
+            for t in crate::tree_sitter_common::extract_type_idents(&p.ty) {
+                if !type_uses.contains(&t) {
+                    type_uses.push(t);
+                }
+            }
+        }
+        if !type_uses.is_empty() {
+            let uses_code = type_uses
+                .iter()
+                .map(|t| format!("edge::uses[{}]", t))
+                .collect::<Vec<_>>()
+                .join("\n");
+            blocks.push(Block::Listing {
+                language: None,
+                code: uses_code,
+            });
+        }
+    }
+
     if sym.doc_comment.is_some() {
         blocks.push(Block::Admonition {
             kind: aden_core::AdmonitionKind::Note,

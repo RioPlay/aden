@@ -104,6 +104,7 @@ struct KotlinSymbol<'a> {
     kind: NodeType,
     node: tree_sitter::Node<'a>,
     params: Vec<Parameter>,
+    return_type: Option<String>, // Declared return type, if any
     doc_comment: Option<String>,
     visibility: String,
     is_extension: bool,
@@ -222,7 +223,9 @@ fn walk_source_file<'a>(
         | "companion_object"
         | "enum_class_declaration"
         | "data_class_declaration"
-        | "sealed_class_declaration" => {
+        | "sealed_class_declaration"
+        | "type_alias"
+        | "type_alias_declaration" => {
             parse_type_declaration(node, source, package, file_name, symbols);
         }
         "function_declaration" => {
@@ -302,7 +305,14 @@ fn parse_type_declaration<'a>(
     file_name: &str,
     symbols: &mut Vec<KotlinSymbol<'a>>,
 ) {
-    if let Some(name_node) = node.child_by_field_name("name") {
+    // Most declarations expose a `name` field; `type_alias` may instead carry a
+    // bare `type_identifier` child, so fall back to that.
+    let name_node = node.child_by_field_name("name").or_else(|| {
+        let mut cursor = node.walk();
+        node.children(&mut cursor)
+            .find(|c| c.kind() == "type_identifier")
+    });
+    if let Some(name_node) = name_node {
         let name = node_text(name_node, source).to_string();
         let vis = extract_visibility(node, source);
         let kind = match node.kind() {
@@ -318,6 +328,7 @@ fn parse_type_declaration<'a>(
             kind,
             node,
             params: Vec::new(),
+            return_type: None,
             doc_comment: extract_doc_comment(node, source),
             visibility: vis,
             is_extension: false,
@@ -403,6 +414,19 @@ fn parse_function<'a>(
             }
         }
 
+        // Declared return type: in the tree-sitter Kotlin grammar the return
+        // type sits in the `type` field of the function (the `: Foo` after the
+        // parameter list). Only capture nodes that follow the parameter list so
+        // a receiver/value-parameter type is never mistaken for it.
+        let return_type = node
+            .child_by_field_name("type")
+            .filter(|t| {
+                node.child_by_field_name("parameters")
+                    .map(|p| t.start_byte() >= p.end_byte())
+                    .unwrap_or(true)
+            })
+            .map(|n| node_text(n, source).to_string());
+
         let class_name = find_parent_type_name(node, source);
         let display_name = if let Some(ref recv) = receiver_type {
             format!("{}.{}", recv, name)
@@ -422,6 +446,7 @@ fn parse_function<'a>(
             kind: NodeType::Function,
             node,
             params,
+            return_type,
             doc_comment: extract_doc_comment(node, source),
             visibility: vis,
             is_extension,
@@ -500,6 +525,9 @@ fn emit_kotlin_symbol(
             format!("{}: {}", p.name, p.ty),
         ]);
     }
+    if let Some(ref rt) = sym.return_type {
+        rows.push(vec!["Returns".to_string(), rt.clone()]);
+    }
     rows.push(vec!["Qualified".to_string(), sym.qualified_name.clone()]);
 
     blocks.push(Block::Paragraph("== Signature".to_string()));
@@ -534,6 +562,38 @@ fn emit_kotlin_symbol(
             blocks.push(Block::Listing {
                 language: None,
                 code: edge_code,
+            });
+        }
+    }
+
+    // Type-usage edges: types named in the signature (params + return type) are
+    // Used, so a type that is used but never called is not a false dead-code
+    // candidate. Only names that resolve to a stored symbol become edges.
+    {
+        let mut type_uses: Vec<String> = Vec::new();
+        for p in &sym.params {
+            for t in crate::tree_sitter_common::extract_type_idents(&p.ty) {
+                if !type_uses.contains(&t) {
+                    type_uses.push(t);
+                }
+            }
+        }
+        if let Some(ref rt) = sym.return_type {
+            for t in crate::tree_sitter_common::extract_type_idents(rt) {
+                if !type_uses.contains(&t) {
+                    type_uses.push(t);
+                }
+            }
+        }
+        if !type_uses.is_empty() {
+            let uses_code = type_uses
+                .iter()
+                .map(|t| format!("edge::uses[{}]", t))
+                .collect::<Vec<_>>()
+                .join("\n");
+            blocks.push(Block::Listing {
+                language: None,
+                code: uses_code,
             });
         }
     }

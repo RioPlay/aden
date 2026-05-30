@@ -1,3 +1,6 @@
+// Copyright (c) 2026 RioPlay <rioplay@rioplay.dev>
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 use std::path::Path;
 
 use crate::util::{escape_adoc_cell, safe_relative, validate_name};

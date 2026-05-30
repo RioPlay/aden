@@ -75,3 +75,54 @@ pub fn infer_project_name(path: &Path) -> String {
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "unknown".to_string())
 }
+
+/// Pull plausible user/library type identifiers out of a type string (e.g.
+/// `&HashMap<String, Vec<DocumentNode>>` → `DocumentNode`, `list[Schema]` →
+/// `Schema`) so a symbol can be linked to the types it references via `Uses`
+/// edges. This is the universal piece every extractor shares: it keeps
+/// PascalCase names and skips ubiquitous std/builtin containers and primitives
+/// (which rarely resolve to a repo symbol), keeping the store lean. Linking
+/// stays language-agnostic — only names that match a stored symbol become edges.
+/// The PascalCase convention holds across Rust, Go (exported), TypeScript, Java,
+/// C#, Kotlin, and Python classes.
+pub fn extract_type_idents(ty: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    for ch in ty.chars() {
+        if ch.is_alphanumeric() || ch == '_' {
+            cur.push(ch);
+        } else {
+            push_type_ident(&mut out, &cur);
+            cur.clear();
+        }
+    }
+    push_type_ident(&mut out, &cur);
+    out
+}
+
+fn push_type_ident(out: &mut Vec<String>, ident: &str) {
+    let Some(first) = ident.chars().next() else {
+        return;
+    };
+    // Types are PascalCase by convention; a lowercase ident is a primitive,
+    // keyword, or builtin (`str`, `int`, `usize`, `dyn`, `mut`, …) — skip it.
+    if !first.is_ascii_uppercase() {
+        return;
+    }
+    const SKIP: &[&str] = &[
+        // Rust std
+        "String", "Vec", "Option", "Result", "Box", "Rc", "Arc", "HashMap", "HashSet", "BTreeMap",
+        "BTreeSet", "Cow", "Path", "PathBuf", "Self", "Ok", "Err", "Some", "None", "VecDeque",
+        "Cell", "RefCell", "Mutex", "RwLock", "Duration", "Instant",
+        // cross-language builtins / container generics
+        "List", "Dict", "Set", "Map", "Tuple", "Any", "Optional", "Union", "Array", "Object",
+        "Promise", "Number", "Boolean", "Void", "Sequence", "Iterable", "Iterator", "Callable",
+        "Type", "None", "True", "False",
+    ];
+    if SKIP.contains(&ident) {
+        return;
+    }
+    if !out.iter().any(|x| x == ident) {
+        out.push(ident.to_string());
+    }
+}

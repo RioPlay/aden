@@ -1,3 +1,6 @@
+// Copyright (c) 2026 RioPlay <rioplay@rioplay.dev>
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Polyglot resolver smoke tests — Phase 1.5 coverage.
 //
 // Each test provides a minimal source sample for a language added in the

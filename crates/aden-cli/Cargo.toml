@@ -33,9 +33,6 @@ ureq = "2"
 aden-diagnose = { path = "../aden-diagnose" }
 aden-store = { path = "../aden-store" }
 rayon.workspace = true
-ignore = "0.4.25"
-grep-searcher = "0.1.16"
-grep-regex = "0.1.14"
 
 [features]
 default = ["watch"]

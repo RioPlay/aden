@@ -1,3 +1,6 @@
+// Copyright (c) 2026 RioPlay <rioplay@rioplay.dev>
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Integration tests for the aden CLI.
 // These exercise the installed binary via std::process::Command.
 

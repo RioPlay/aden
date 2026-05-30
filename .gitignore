@@ -12,11 +12,9 @@ src/**/*.adoc
 # Cargo.lock is committed at the workspace root for CI reproducibility.
 
 # ─────────────────────────────────────────────────────────────────────────
-# Agent / tooling runtime (never commit local state or locks)
+# Agent / tooling runtime (never commit local state, settings, or locks)
 # ─────────────────────────────────────────────────────────────────────────
-.claude/settings.local.json
-.claude/*.lock
-.claude/scheduled_tasks.json
+.claude/
 .opencode/
 
 # ─────────────────────────────────────────────────────────────────────────

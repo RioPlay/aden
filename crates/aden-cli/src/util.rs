@@ -1,3 +1,6 @@
+// Copyright (c) 2026 RioPlay <rioplay@rioplay.dev>
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 pub mod quiet;
 
 use aden_emit::check::{collect_anchors, find_refs};

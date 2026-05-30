@@ -97,6 +97,7 @@ struct CsSymbol<'a> {
     kind: NodeType,
     node: tree_sitter::Node<'a>,
     params: Vec<Parameter>,
+    return_type: Option<String>,
     doc_comment: Option<String>,
     visibility: String,
     is_static: bool,
@@ -236,6 +237,9 @@ fn walk_compilation_unit<'a>(
         | "record_struct_declaration" => {
             parse_type_declaration(node, source, namespace, file_name, symbols);
         }
+        "delegate_declaration" => {
+            parse_delegate(node, source, namespace, file_name, symbols);
+        }
         "method_declaration" | "local_function_statement" => {
             parse_method(node, source, namespace, file_name, symbols);
         }
@@ -323,6 +327,7 @@ fn parse_type_declaration<'a>(
             kind: NodeType::Type,
             node,
             params: Vec::new(),
+            return_type: None,
             doc_comment: extract_doc_comment(node, source),
             visibility: vis,
             is_static,
@@ -391,6 +396,13 @@ fn parse_method<'a>(
             }
         }
 
+        // Return type: `method_declaration` uses the `returns` field, while
+        // `local_function_statement` uses `type` — accept either.
+        let return_type = node
+            .child_by_field_name("returns")
+            .or_else(|| node.child_by_field_name("type"))
+            .map(|n| node_text(n, source).to_string());
+
         let class_name = find_parent_type_name(node, source).unwrap_or_default();
         let qname = if class_name.is_empty() {
             format!("{}.{}", namespace, name)
@@ -404,6 +416,7 @@ fn parse_method<'a>(
             kind: NodeType::Function,
             node,
             params,
+            return_type,
             doc_comment: extract_doc_comment(node, source),
             visibility: vis,
             is_static,
@@ -450,10 +463,67 @@ fn parse_constructor<'a>(
         kind: NodeType::Function,
         node,
         params,
+        return_type: None,
         doc_comment: extract_doc_comment(node, source),
         visibility: vis,
         is_static: false,
     });
+}
+
+fn parse_delegate<'a>(
+    node: tree_sitter::Node<'a>,
+    source: &str,
+    namespace: &str,
+    _file_name: &str,
+    symbols: &mut Vec<CsSymbol<'a>>,
+) {
+    if let Some(name_node) = node.child_by_field_name("name") {
+        let name = node_text(name_node, source).to_string();
+        let vis = extract_visibility(node, source);
+        let is_static = has_modifier(node, source, "static");
+
+        let mut params = Vec::new();
+        if let Some(params_node) = node.child_by_field_name("parameters") {
+            let mut pc = params_node.walk();
+            for param in params_node.children(&mut pc) {
+                if param.kind() == "parameter" {
+                    let param_type = param
+                        .child_by_field_name("type")
+                        .map(|n| node_text(n, source).to_string())
+                        .unwrap_or_default();
+                    let param_name = param
+                        .child_by_field_name("name")
+                        .map(|n| node_text(n, source).to_string())
+                        .unwrap_or_default();
+                    params.push(Parameter {
+                        name: param_name,
+                        ty: param_type,
+                        default_value: None,
+                    });
+                }
+            }
+        }
+
+        // Delegate return type: `delegate_declaration` uses the `type` field
+        // (`returns` in some grammar versions) — accept either.
+        let return_type = node
+            .child_by_field_name("type")
+            .or_else(|| node.child_by_field_name("returns"))
+            .map(|n| node_text(n, source).to_string());
+
+        let qname = format!("{}.{}", namespace, name);
+        symbols.push(CsSymbol {
+            name,
+            qualified_name: qname,
+            kind: NodeType::Type,
+            node,
+            params,
+            return_type,
+            doc_comment: extract_doc_comment(node, source),
+            visibility: vis,
+            is_static,
+        });
+    }
 }
 
 fn parse_property<'a>(
@@ -533,6 +603,9 @@ fn emit_cs_symbol(
             format!("{}: {}", p.name, p.ty),
         ]);
     }
+    if let Some(ref rt) = sym.return_type {
+        rows.push(vec!["Returns".to_string(), rt.clone()]);
+    }
     rows.push(vec!["Qualified".to_string(), sym.qualified_name.clone()]);
 
     blocks.push(Block::Paragraph("== Signature".to_string()));
@@ -568,6 +641,38 @@ fn emit_cs_symbol(
             blocks.push(Block::Listing {
                 language: None,
                 code: edge_code,
+            });
+        }
+    }
+
+    // Type-usage edges: types named in the signature (params + return) are
+    // `Used`, so a type that is used but never called is not a false dead-code
+    // candidate. Only names that resolve to a stored symbol become edges.
+    {
+        let mut type_uses: Vec<String> = Vec::new();
+        for p in &sym.params {
+            for t in crate::tree_sitter_common::extract_type_idents(&p.ty) {
+                if !type_uses.contains(&t) {
+                    type_uses.push(t);
+                }
+            }
+        }
+        if let Some(ref rt) = sym.return_type {
+            for t in crate::tree_sitter_common::extract_type_idents(rt) {
+                if !type_uses.contains(&t) {
+                    type_uses.push(t);
+                }
+            }
+        }
+        if !type_uses.is_empty() {
+            let uses_code = type_uses
+                .iter()
+                .map(|t| format!("edge::uses[{}]", t))
+                .collect::<Vec<_>>()
+                .join("\n");
+            blocks.push(Block::Listing {
+                language: None,
+                code: uses_code,
             });
         }
     }

@@ -79,6 +79,11 @@ struct SymbolInfo<'a> {
     kind: NodeType,
     node: tree_sitter::Node<'a>,
     params: Vec<Parameter>,
+    /// Return-type annotation text, when present (`def f() -> T`).
+    return_type: Option<String>,
+    /// Extra type strings to feed `edge::uses` — e.g. the right-hand side of a
+    /// `type X = ...` alias, which has no params/return to carry the reference.
+    extra_type_strings: Vec<String>,
     doc_comment: Option<String>,
     is_async: bool,
 }
@@ -115,6 +120,13 @@ fn collect_module_items<'a>(
         "class_definition" => {
             let sym = extract_class_symbol(node, source);
             ctx.symbols.push(sym);
+        }
+        "type_alias_statement" => {
+            // PEP 695 `type X = ...` — a named type. (Enum/TypedDict classes
+            // are already handled as `class_definition` → NodeType::Type.)
+            if let Some(sym) = extract_type_alias_symbol(node, source) {
+                ctx.symbols.push(sym);
+            }
         }
         "import_statement" => {
             extract_import_statement(node, source, ctx);
@@ -163,18 +175,30 @@ fn extract_function_symbol<'a>(
                     default_value: None,
                 });
             } else if param.kind() == "typed_parameter" {
+                // `typed_parameter` has no `name` field; the parameter name is a
+                // bare `identifier` child, and the annotation lives in `type`.
                 let p_name = param
-                    .child_by_field_name("name")
+                    .named_child(0)
+                    .filter(|n| n.kind() == "identifier")
                     .map(|n| node_text(n, source).to_string())
                     .unwrap_or_else(|| node_text(param, source).to_string());
+                let p_ty = param
+                    .child_by_field_name("type")
+                    .map(|n| node_text(n, source).to_string())
+                    .unwrap_or_else(|| "Unknown".to_string());
                 params.push(Parameter {
                     name: p_name,
-                    ty: "Unknown".to_string(),
+                    ty: p_ty,
                     default_value: None,
                 });
             }
         }
     }
+
+    // `def f(...) -> T` — annotation lives in the `return_type` field.
+    let return_type = node
+        .child_by_field_name("return_type")
+        .map(|n| node_text(n, source).to_string());
 
     let doc_comment = extract_preceding_docstring(node, source);
 
@@ -184,9 +208,39 @@ fn extract_function_symbol<'a>(
         kind: NodeType::Function,
         node,
         params,
+        return_type,
+        extra_type_strings: Vec::new(),
         doc_comment,
         is_async,
     }
+}
+
+/// Extract a PEP 695 `type X = ...` alias as a `NodeType::Type` symbol. The
+/// right-hand side is captured so the types it references become `edge::uses`.
+fn extract_type_alias_symbol<'a>(
+    node: tree_sitter::Node<'a>,
+    source: &str,
+) -> Option<SymbolInfo<'a>> {
+    // `type_alias_statement` fields: `left` (the alias name), `right` (value).
+    let left = node.child_by_field_name("left")?;
+    let name = node_text(left, source).trim().to_string();
+    let value = node
+        .child_by_field_name("right")
+        .map(|n| node_text(n, source).to_string());
+
+    let doc_comment = extract_preceding_docstring(node, source);
+
+    Some(SymbolInfo {
+        name: name.clone(),
+        qualified_name: name,
+        kind: NodeType::Type,
+        node,
+        params: Vec::new(),
+        return_type: None,
+        extra_type_strings: value.into_iter().collect(),
+        doc_comment,
+        is_async: false,
+    })
 }
 
 fn extract_class_symbol<'a>(node: tree_sitter::Node<'a>, source: &str) -> SymbolInfo<'a> {
@@ -220,6 +274,8 @@ fn extract_class_symbol<'a>(node: tree_sitter::Node<'a>, source: &str) -> Symbol
         kind: NodeType::Type,
         node,
         params,
+        return_type: None,
+        extra_type_strings: Vec::new(),
         doc_comment,
         is_async: false,
     }
@@ -365,6 +421,50 @@ fn emit_symbol_document<'a>(
             language: None,
             code: edge_code,
         });
+    }
+
+    // Type-usage edges: types named in the signature (param/return annotations)
+    // and in a type-alias's right-hand side are `Used`, so a type that is used
+    // but never "called" is not a false dead-code candidate. Class symbols reuse
+    // `params` to carry method names (not types), so only Functions draw on
+    // `params`/`return_type`; `extra_type_strings` (the type-alias RHS) always
+    // counts. Only names matching a stored symbol actually become edges.
+    {
+        let mut type_uses: Vec<String> = Vec::new();
+        if sym.kind == NodeType::Function {
+            for p in &sym.params {
+                for t in crate::tree_sitter_common::extract_type_idents(&p.ty) {
+                    if !type_uses.contains(&t) {
+                        type_uses.push(t);
+                    }
+                }
+            }
+            if let Some(ref rt) = sym.return_type {
+                for t in crate::tree_sitter_common::extract_type_idents(rt) {
+                    if !type_uses.contains(&t) {
+                        type_uses.push(t);
+                    }
+                }
+            }
+        }
+        for s in &sym.extra_type_strings {
+            for t in crate::tree_sitter_common::extract_type_idents(s) {
+                if !type_uses.contains(&t) {
+                    type_uses.push(t);
+                }
+            }
+        }
+        if !type_uses.is_empty() {
+            let uses_code = type_uses
+                .iter()
+                .map(|t| format!("edge::uses[{}]", t))
+                .collect::<Vec<_>>()
+                .join("\n");
+            blocks.push(Block::Listing {
+                language: None,
+                code: uses_code,
+            });
+        }
     }
 
     Some(Document {

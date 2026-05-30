@@ -120,6 +120,11 @@ fn walk_program<'a>(
                 symbols.push(sym);
             }
         }
+        "interface_declaration" | "type_alias_declaration" | "enum_declaration" => {
+            if let Some(sym) = extract_type_symbol(node, source) {
+                symbols.push(sym);
+            }
+        }
         "method_definition" => {
             if let Some(sym) = extract_method_symbol(node, source) {
                 symbols.push(sym);
@@ -138,6 +143,13 @@ fn walk_program<'a>(
                     sym.is_export = true;
                     symbols.push(sym);
                 } else if let Some(mut sym) = extract_class_symbol(declaration, source) {
+                    sym.is_export = true;
+                    symbols.push(sym);
+                } else if matches!(
+                    declaration.kind(),
+                    "interface_declaration" | "type_alias_declaration" | "enum_declaration"
+                ) && let Some(mut sym) = extract_type_symbol(declaration, source)
+                {
                     sym.is_export = true;
                     symbols.push(sym);
                 }
@@ -179,33 +191,59 @@ fn extract_arrow_function_symbol<'a>(
     node: tree_sitter::Node<'a>,
     source: &str,
 ) -> Option<TsSymbol<'a>> {
-    // Look for a parent variable_declarator to get the name.
-    let mut current = node.parent()?;
-    while let Some(parent) = current.parent() {
-        if parent.kind() == "variable_declarator" {
-            let name_node = parent.child_by_field_name("name")?;
-            let name = node_text(name_node, source).to_string();
-            let params = extract_ts_params(node, source);
-            let doc = extract_ts_doc_comment(parent, source);
-            return Some(TsSymbol {
-                name,
-                kind: NodeType::Function,
-                node,
-                params,
-                doc_comment: doc,
-                is_async: false,
-                is_export: false,
-            });
-        }
-        current = parent;
-        if current.kind() == "statement_block" || current.kind() == "program" {
-            break;
-        }
+    // Only treat the arrow as a named function when it is the *direct value* of a
+    // variable declarator, i.e. `const f = () => {...}`. An arrow that is merely
+    // nested inside the initializer — e.g. an argument to a builder call like
+    // `export const ZodFile = base$(() => {...})` or `$ZodIssueTooSmall = z(...)` —
+    // does NOT name a function; the declared symbol is a value/type, not a
+    // callable. Walking up to *any* ancestor declarator (the old behaviour)
+    // mislabeled every such schema/value as a Function, which is what made the
+    // zod corpus 73% false-dead. Require the declarator's `value` field to be
+    // exactly this arrow node.
+    let parent = node.parent()?;
+    if parent.kind() != "variable_declarator" {
+        return None;
     }
-    None
+    match parent.child_by_field_name("value") {
+        Some(v) if v.id() == node.id() => {}
+        _ => return None,
+    }
+    let name_node = parent.child_by_field_name("name")?;
+    let name = node_text(name_node, source).to_string();
+    let params = extract_ts_params(node, source);
+    let doc = extract_ts_doc_comment(parent, source);
+    Some(TsSymbol {
+        name,
+        kind: NodeType::Function,
+        node,
+        params,
+        doc_comment: doc,
+        is_async: false,
+        is_export: false,
+    })
 }
 
 fn extract_class_symbol<'a>(node: tree_sitter::Node<'a>, source: &str) -> Option<TsSymbol<'a>> {
+    let name_node = node.child_by_field_name("name")?;
+    let name = node_text(name_node, source).to_string();
+    let doc = extract_ts_doc_comment(node, source);
+
+    Some(TsSymbol {
+        name,
+        kind: NodeType::Type,
+        node,
+        params: Vec::new(),
+        doc_comment: doc,
+        is_async: false,
+        is_export: false,
+    })
+}
+
+/// Extract a TypeScript type-level declaration — `interface`, `type` alias, or
+/// `enum`. These are all `NodeType::Type`; previously they were not extracted at
+/// all (so an interface used only as a type annotation looked like dead code, and
+/// nothing pointed back at it).
+fn extract_type_symbol<'a>(node: tree_sitter::Node<'a>, source: &str) -> Option<TsSymbol<'a>> {
     let name_node = node.child_by_field_name("name")?;
     let name = node_text(name_node, source).to_string();
     let doc = extract_ts_doc_comment(node, source);
@@ -228,11 +266,27 @@ fn extract_method_symbol<'a>(node: tree_sitter::Node<'a>, source: &str) -> Optio
     let params = extract_ts_params(node, source);
     let doc = extract_ts_doc_comment(node, source);
 
-    // Qualify with class name if inside a class
-    let class_name = node
-        .parent()
-        .and_then(|p| p.child_by_field_name("name"))
-        .map(|n| node_text(n, source).to_string());
+    // Qualify with the enclosing class name. A method_definition's parent is the
+    // `class_body`, not the class declaration, so the old `parent().name` lookup
+    // always failed and every method collapsed to a bare, colliding name (e.g.
+    // 49 different `getSizing`s). Walk up to the class declaration instead.
+    let class_name = {
+        let mut cur = node.parent();
+        let mut found = None;
+        while let Some(n) = cur {
+            if matches!(
+                n.kind(),
+                "class_declaration" | "class" | "abstract_class_declaration"
+            ) {
+                found = n
+                    .child_by_field_name("name")
+                    .map(|x| node_text(x, source).to_string());
+                break;
+            }
+            cur = n.parent();
+        }
+        found
+    };
     let qualified = class_name
         .map(|c| format!("{}.{}", c, name))
         .unwrap_or(name);
@@ -253,14 +307,25 @@ fn extract_ts_params(node: tree_sitter::Node, source: &str) -> Vec<Parameter> {
     if let Some(params_node) = node.child_by_field_name("parameters") {
         let mut cursor = params_node.walk();
         for child in params_node.children(&mut cursor) {
-            if child.kind() == "formal_parameter" || child.kind() == "required_parameter" {
+            if matches!(
+                child.kind(),
+                "formal_parameter" | "required_parameter" | "optional_parameter"
+            ) {
+                // Capture the TS type annotation (the `type` field holds a
+                // `type_annotation` node like `: MyType`) so type-usage edges can
+                // be emitted from it. Falls back to "Unknown" for untyped params.
+                let ty = child
+                    .child_by_field_name("type")
+                    .map(|t| node_text(t, source).trim_start_matches(':').trim().to_string())
+                    .filter(|t| !t.is_empty())
+                    .unwrap_or_else(|| "Unknown".to_string());
                 let mut p_cursor = child.walk();
                 for p_child in child.children(&mut p_cursor) {
                     if p_child.kind() == "identifier" {
                         let name = node_text(p_child, source).to_string();
                         params.push(Parameter {
                             name,
-                            ty: "Unknown".to_string(),
+                            ty: ty.clone(),
                             default_value: None,
                         });
                     }
@@ -432,8 +497,10 @@ fn emit_ts_symbol<'a>(
         }));
     }
 
-    // Resolve call sites
-    let calls = resolve_ts_call_sites(sym.node, source, all_symbols, imports);
+    // Resolve call sites. Methods are named `Class.method`; the part before the
+    // last `.` is the enclosing class, used to resolve `this.x()` → `Class.x`.
+    let enclosing_class = sym.name.rsplit_once('.').map(|(c, _)| c);
+    let calls = resolve_ts_call_sites(sym.node, source, all_symbols, imports, enclosing_class);
     if !calls.is_empty() {
         let call_rows: Vec<Vec<String>> = calls
             .iter()
@@ -452,6 +519,35 @@ fn emit_ts_symbol<'a>(
             language: None,
             code: edge_code,
         });
+    }
+
+    // Type-usage edges: types named in parameter annotations are `Uses`d, so a
+    // type used only as an annotation (never "called") is not a false dead-code
+    // candidate. Skip the "Unknown" placeholder used for untyped params. Only
+    // names that resolve to a stored symbol actually become edges.
+    {
+        let mut type_uses: Vec<String> = Vec::new();
+        for p in &sym.params {
+            if p.ty == "Unknown" {
+                continue;
+            }
+            for t in crate::tree_sitter_common::extract_type_idents(&p.ty) {
+                if !type_uses.contains(&t) {
+                    type_uses.push(t);
+                }
+            }
+        }
+        if !type_uses.is_empty() {
+            let uses_code = type_uses
+                .iter()
+                .map(|t| format!("edge::uses[{}]", t))
+                .collect::<Vec<_>>()
+                .join("\n");
+            blocks.push(Block::Listing {
+                language: None,
+                code: uses_code,
+            });
+        }
     }
 
     Some(Document {
@@ -475,17 +571,24 @@ fn resolve_ts_call_sites<'a>(
     source: &str,
     all_symbols: &[TsSymbol<'a>],
     imports: &[TsImport],
+    enclosing_class: Option<&str>,
 ) -> Vec<TsCallSite> {
     let mut calls = Vec::new();
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        calls.extend(resolve_ts_call_sites(child, source, all_symbols, imports));
+        calls.extend(resolve_ts_call_sites(
+            child,
+            source,
+            all_symbols,
+            imports,
+            enclosing_class,
+        ));
     }
 
     if node.kind() == "call_expression"
         && let Some(func) = node.child_by_field_name("function")
     {
-        let callee = resolve_ts_callee(func, source, all_symbols, imports);
+        let callee = resolve_ts_callee(func, source, all_symbols, imports, enclosing_class);
         if !callee.is_empty() && callee.len() >= 2 && !is_ts_std_noise(&callee) {
             let line = func.start_position().row + 1;
             calls.push(TsCallSite { callee, line });
@@ -499,6 +602,7 @@ fn resolve_ts_callee(
     source: &str,
     _all_symbols: &[TsSymbol],
     imports: &[TsImport],
+    enclosing_class: Option<&str>,
 ) -> String {
     match node.kind() {
         "identifier" => {
@@ -524,6 +628,13 @@ fn resolve_ts_callee(
                 .map(|n| node_text(n, source).trim().to_string());
             match (obj, prop) {
                 (Some(o), Some(p)) => {
+                    // `this.x()` / `super.x()` are calls to the enclosing class's
+                    // own method, which we can resolve exactly to `Class.x`.
+                    if (o == "this" || o == "super")
+                        && let Some(cls) = enclosing_class
+                    {
+                        return format!("{}.{}", cls, p);
+                    }
                     for imp in imports {
                         if imp.local_name == o {
                             return format!("{}.{}", imp.source_path, p);
@@ -542,6 +653,7 @@ fn resolve_ts_callee(
             source,
             _all_symbols,
             imports,
+            enclosing_class,
         ),
         _ => node_text(node, source).trim().to_string(),
     }

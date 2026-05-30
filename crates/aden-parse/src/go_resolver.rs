@@ -245,6 +245,79 @@ fn extract_import(node: tree_sitter::Node, source: &str, imports: &mut Vec<GoImp
     }
 }
 
+/// Collect the raw type strings referenced in a symbol's signature so they can
+/// be turned into `edge::uses`. For functions/methods this is the parameter
+/// types and the result type; for `type_declaration`s backing a struct it is
+/// the field types. The strings are fed through the shared
+/// `extract_type_idents` helper, which keeps only PascalCase user types and
+/// drops builtins — so capturing a slightly wide set here is harmless.
+fn collect_go_signature_types(node: tree_sitter::Node, source: &str) -> Vec<String> {
+    let mut types: Vec<String> = Vec::new();
+    match node.kind() {
+        "function_declaration" | "method_declaration" => {
+            // Parameter types live under the `parameters` field; multiple
+            // returns use a second `parameter_list`, a single return is the
+            // bare type node under the `result` field.
+            if let Some(params) = node.child_by_field_name("parameters") {
+                collect_param_decl_types(params, source, &mut types);
+            }
+            if let Some(result) = node.child_by_field_name("result") {
+                if result.kind() == "parameter_list" {
+                    collect_param_decl_types(result, source, &mut types);
+                } else {
+                    push_go_type(result, source, &mut types);
+                }
+            }
+        }
+        "type_declaration" => {
+            // type Foo struct { a Bar; b Baz } — capture each field type.
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                if child.kind() == "type_spec"
+                    && let Some(ty) = child.child_by_field_name("type")
+                    && ty.kind() == "struct_type"
+                {
+                    let mut sc = ty.walk();
+                    for fld_list in ty.children(&mut sc) {
+                        if fld_list.kind() == "field_declaration_list" {
+                            let mut fc = fld_list.walk();
+                            for fld in fld_list.children(&mut fc) {
+                                if fld.kind() == "field_declaration"
+                                    && let Some(fty) = fld.child_by_field_name("type")
+                                {
+                                    push_go_type(fty, source, &mut types);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    types
+}
+
+/// Walk a `parameter_list`, pushing the `type` of each `parameter_declaration`.
+fn collect_param_decl_types(list: tree_sitter::Node, source: &str, out: &mut Vec<String>) {
+    let mut cursor = list.walk();
+    for child in list.children(&mut cursor) {
+        if (child.kind() == "parameter_declaration"
+            || child.kind() == "variadic_parameter_declaration")
+            && let Some(ty) = child.child_by_field_name("type")
+        {
+            push_go_type(ty, source, out);
+        }
+    }
+}
+
+fn push_go_type(node: tree_sitter::Node, source: &str, out: &mut Vec<String>) {
+    let text = node_text(node, source).trim().to_string();
+    if !text.is_empty() && !out.contains(&text) {
+        out.push(text);
+    }
+}
+
 fn extract_go_doc_comment(node: tree_sitter::Node, source: &str) -> Option<String> {
     let mut current = node.prev_named_sibling();
     while let Some(sib) = current {
@@ -310,6 +383,31 @@ fn emit_go_symbol<'a>(
             blocks.push(Block::Listing {
                 language: None,
                 code: edge_code,
+            });
+        }
+    }
+
+    // Type-usage edges: types named in the signature (params/result) or struct
+    // fields are Used, so a type that is used but never called is not a false
+    // dead-code candidate. Only names matching a stored symbol become edges.
+    {
+        let mut type_uses: Vec<String> = Vec::new();
+        for ty in collect_go_signature_types(sym.node, source) {
+            for t in crate::tree_sitter_common::extract_type_idents(&ty) {
+                if !type_uses.contains(&t) {
+                    type_uses.push(t);
+                }
+            }
+        }
+        if !type_uses.is_empty() {
+            let uses_code = type_uses
+                .iter()
+                .map(|t| format!("edge::uses[{}]", t))
+                .collect::<Vec<_>>()
+                .join("\n");
+            blocks.push(Block::Listing {
+                language: None,
+                code: uses_code,
             });
         }
     }
