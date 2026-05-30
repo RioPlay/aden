@@ -142,12 +142,41 @@ pub fn cmd_lint(
         let mut fixed_files = 0usize;
         for file in &fixable_files {
             if let Ok(content) = std::fs::read_to_string(file) {
-                let new = content
-                    .replace(".to_string().to_string()", ".to_string()")
-                    .replace(".to_owned().to_string()", ".to_owned()")
-                    .replace(".to_string().to_owned()", ".to_string()");
-                if new != content && std::fs::write(file, new).is_ok() {
-                    fixed_files += 1;
+                let mut changed = false;
+                let mut out_lines: Vec<String> = Vec::with_capacity(content.lines().count());
+                for line in content.lines() {
+                    // Only collapse on a line whose *code* (string/comment text
+                    // blanked) actually contains the redundant chain. This is
+                    // what stops --fix from rewriting the pattern where it
+                    // appears inside a string literal or comment — the blind
+                    // whole-file replace used to corrupt such files (including
+                    // aden's own lint rules).
+                    let code = code_only(line);
+                    let has_redundant = code.contains(".to_string().to_string()")
+                        || code.contains(".to_owned().to_string()")
+                        || code.contains(".to_string().to_owned()");
+                    if has_redundant {
+                        let fixed = line
+                            .replace(".to_string().to_string()", ".to_string()")
+                            .replace(".to_owned().to_string()", ".to_owned()")
+                            .replace(".to_string().to_owned()", ".to_string()");
+                        if fixed != line {
+                            changed = true;
+                        }
+                        out_lines.push(fixed);
+                    } else {
+                        out_lines.push(line.to_string());
+                    }
+                }
+                if changed {
+                    // Preserve a trailing newline if the original had one.
+                    let mut new = out_lines.join("\n");
+                    if content.ends_with('\n') {
+                        new.push('\n');
+                    }
+                    if std::fs::write(file, new).is_ok() {
+                        fixed_files += 1;
+                    }
                 }
             }
         }
@@ -289,8 +318,54 @@ fn apply_lint_rules(path: &Path, line: &str, line_num: usize, ext: &str) -> Vec<
     results
 }
 
+/// Return `line` with string-literal contents and any trailing `//` comment
+/// blanked out (replaced by spaces, preserving column positions), so that a
+/// textual pattern match only fires on genuine *code* — not on a pattern that
+/// happens to appear inside a string literal or a comment.
+///
+/// This is a deliberately small, single-line scanner (the linter is line-based
+/// by design); it does not span multi-line strings, but it correctly handles
+/// the common cases that caused false positives — e.g. aden's own lint rules
+/// contain the literal `".to_string().to_string()"` as a string, which must
+/// never be flagged or rewritten.
+pub(crate) fn code_only(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut chars = line.chars().peekable();
+    let mut in_str = false;
+    let mut escaped = false;
+    while let Some(c) = chars.next() {
+        if in_str {
+            // Inside a string literal: blank everything until the closing quote.
+            if escaped {
+                escaped = false;
+                out.push(' ');
+            } else if c == '\\' {
+                escaped = true;
+                out.push(' ');
+            } else if c == '"' {
+                in_str = false;
+                out.push(' ');
+            } else {
+                out.push(' ');
+            }
+        } else if c == '"' {
+            in_str = true;
+            out.push(' ');
+        } else if c == '/' && chars.peek() == Some(&'/') {
+            // Rest of the line is a comment — drop it.
+            break;
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 fn lint_rust_line(line: &str, line_num: usize) -> Vec<LintResult> {
     let mut results = Vec::new();
+    // Code with string/comment text blanked out, for patterns that must only
+    // match real code (avoids flagging a pattern quoted inside a string).
+    let code = code_only(line);
 
     // Skip lines that are comments or string-literal definitions — the pattern
     // may appear as documentation or as a value being matched, not as real usage.
@@ -352,14 +427,14 @@ fn lint_rust_line(line: &str, line_num: usize) -> Vec<LintResult> {
     // unambiguous no-op. The old rule fired on any line containing both
     // "String" and ".to_string()", which false-flagged legitimate
     // `let s: String = x.to_string()` (&str -> String) conversions.
-    if line.contains(".to_string().to_string()")
-        || line.contains(".to_owned().to_string()")
-        || line.contains(".to_string().to_owned()")
+    if code.contains(".to_string().to_string()")
+        || code.contains(".to_owned().to_string()")
+        || code.contains(".to_string().to_owned()")
     {
         results.push(LintResult {
             file: String::new(),
             line: line_num,
-            column: line.find(".to_string()").or_else(|| line.find(".to_owned()")).unwrap_or(0) + 1,
+            column: code.find(".to_string()").or_else(|| code.find(".to_owned()")).unwrap_or(0) + 1,
             severity: LintSeverity::Warn,
             rule: "redundant_to_string".to_string(),
             message: "Redundant chained conversion — the value is already owned".to_string(),
@@ -772,4 +847,48 @@ fn lint_adoc_line(line: &str, line_num: usize) -> Vec<LintResult> {
     }
 
     results
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn code_only_blanks_strings_and_comments() {
+        // Pattern inside a string literal is not code.
+        assert!(!code_only(r#"line.contains(".to_string().to_string()")"#)
+            .contains(".to_string().to_string()"));
+        // Pattern inside a line comment is not code.
+        assert!(!code_only("// foo .to_string().to_string() bar")
+            .contains(".to_string().to_string()"));
+        // Genuine code is preserved.
+        assert!(code_only(r#"let x = y.to_string().to_string();"#)
+            .contains(".to_string().to_string()"));
+        // Escaped quote inside a string does not prematurely end it.
+        assert!(!code_only(r#"let s = "a \" .to_string().to_string()";"#)
+            .contains(".to_string().to_string()"));
+    }
+
+    #[test]
+    fn redundant_to_string_not_flagged_inside_string_literal() {
+        // Regression: aden's own lint rules contain this pattern as a string;
+        // it must never be flagged (which previously led --fix to corrupt the
+        // file).
+        let line = r#"    line.contains(".to_string().to_string()")"#;
+        let results = lint_rust_line(line, 1);
+        assert!(
+            !results.iter().any(|r| r.rule == "redundant_to_string"),
+            "pattern in a string literal must not be flagged: {results:?}"
+        );
+    }
+
+    #[test]
+    fn redundant_to_string_flagged_in_real_code() {
+        let line = r#"    let x = y.to_string().to_string();"#;
+        let results = lint_rust_line(line, 1);
+        assert!(
+            results.iter().any(|r| r.rule == "redundant_to_string"),
+            "genuine redundant conversion should be flagged"
+        );
+    }
 }

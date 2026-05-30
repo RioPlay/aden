@@ -418,22 +418,51 @@ pub fn perform_check(path: &Path) -> Result<Vec<String>, Box<dyn std::error::Err
     }
 
     let orphans = graph.orphans();
-    if orphans.is_empty() {
-        messages.push("INFO: No orphan documents.".to_string());
+    // Many orphans are EXPECTED: doc-heading anchors (aden://doc/...) and
+    // standalone metadata docs (ADR/plan/use-case/readme/agent) legitimately
+    // have no graph edges — they are reference material, not dead code. Only
+    // flag *actionable* orphans (code symbols/modules that should be connected)
+    // as a WARNING, so the real signal is not buried under hundreds of expected
+    // metadata nodes. The rest are reported as a quiet count.
+    let is_expected_metadata = |a: &str| {
+        a.starts_with("aden://doc/")
+            || a.starts_with("adr-")
+            || a.starts_with("plan-")
+            || a.starts_with("use-case-")
+            || a.starts_with("agent-")
+            || a == "readme"
+    };
+    let (expected, actionable): (Vec<&String>, Vec<&String>) =
+        orphans.iter().partition(|a| is_expected_metadata(a));
+
+    if actionable.is_empty() {
+        if expected.is_empty() {
+            messages.push("INFO: No orphan documents.".to_string());
+        } else {
+            messages.push(format!(
+                "INFO: No actionable orphans ({} expected metadata doc(s) have no edges, which is normal).",
+                expected.len()
+            ));
+        }
     } else {
         // Summarize rather than emit one warning per orphan — a large repo can
-        // have hundreds, which buries the rest of the check output (and the
-        // agent's context). Show a count and a sample.
+        // have hundreds, which buries the rest of the check output.
         const ORPHAN_SAMPLE: usize = 10;
         messages.push(format!(
-            "WARNING: {} orphan document(s) (run 'aden heal . --gc' to link or remove):",
-            orphans.len()
+            "WARNING: {} actionable orphan symbol(s) with no edges (run 'aden heal . --gc' to remove if deleted):",
+            actionable.len()
         ));
-        for o in orphans.iter().take(ORPHAN_SAMPLE) {
+        for o in actionable.iter().take(ORPHAN_SAMPLE) {
             messages.push(format!("  - {}", o));
         }
-        if orphans.len() > ORPHAN_SAMPLE {
-            messages.push(format!("  ... and {} more", orphans.len() - ORPHAN_SAMPLE));
+        if actionable.len() > ORPHAN_SAMPLE {
+            messages.push(format!("  ... and {} more", actionable.len() - ORPHAN_SAMPLE));
+        }
+        if !expected.is_empty() {
+            messages.push(format!(
+                "INFO: (plus {} expected metadata doc(s) with no edges — normal)",
+                expected.len()
+            ));
         }
     }
 

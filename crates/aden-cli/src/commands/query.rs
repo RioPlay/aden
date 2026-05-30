@@ -1576,11 +1576,18 @@ pub fn cmd_watch(
             // Summary
             if contracts_regenerated > 0 {
                 println!("INFO: Regenerated {} contract(s)", contracts_regenerated);
-                
-                // Optional: Update graph incrementally
-                if graph_sync {
-                    // For now, just rebuild graph (incremental coming soon)
-                    // TODO: Implement incremental graph update
+            }
+
+            // Graph sync: keep the store-first knowledge graph current. The
+            // per-file .adoc emit above does not touch .aden/store, so without
+            // this `query`/`asm`/`locate` would serve a stale graph. Re-running
+            // the gen path indexes changed files, prunes deleted symbols, and
+            // re-links edges — the same logic `aden gen` uses — so the graph
+            // stays consistent (not just the contract files).
+            if graph_sync && !paths_to_process.is_empty() {
+                match crate::commands::generate::cmd_gen(path, true) {
+                    Ok(()) => println!("INFO: Graph synced ({})", path.display()),
+                    Err(e) => eprintln!("ERROR: Graph sync failed: {}", e),
                 }
             }
 
