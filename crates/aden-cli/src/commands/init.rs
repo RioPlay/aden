@@ -82,7 +82,9 @@ aden ci-check .
     );
     std::fs::write(aden_docs_dir.join("README.adoc"), readme)?;
 
-    if !quiet::is_quiet() { println!("✓ Created project {} in {}", name, project_dir.display()); }
+    if !quiet::is_quiet() {
+        println!("✓ Created project {} in {}", name, project_dir.display());
+    }
     println!("✓ Language: {}", lang_lower);
     println!("✓ Scaffolding: aden init, .aden/docs, build system");
     println!("  Next steps:");
@@ -297,6 +299,14 @@ pub fn cmd_init(target: &Path) -> Result<(), Box<dyn std::error::Error>> {
         .replace("agent-session-template", "agent-session");
     std::fs::write(agent_dir.join("onboarding.adoc"), onboarding_content)?;
 
+    // Aden's built-in secure-coding constitution (ADR-002). Original AGPL text —
+    // aden's own standard — written as a live `.agent` doc so every project
+    // inherits it. NOT a copy of any third-party guide.
+    std::fs::write(
+        agent_dir.join("secure-coding.adoc"),
+        include_str!("../../../../.agent/templates/secure-coding.adoc"),
+    )?;
+
     // Security-first scaffolding: contracts are build artifacts
     let aden_dir = target.join(".aden");
     std::fs::create_dir_all(&aden_dir)?;
@@ -450,8 +460,9 @@ Always verify that third-party licenses are compatible with your project's licen
         "Generated {} template files.",
         templates_dir.read_dir()?.count()
     );
+    println!("Wrote .agent/secure-coding.adoc — aden's built-in secure-coding standard.");
     println!("Sample hooks: .aden/hooks/pre-commit, .aden/hooks/pre-push");
-    
+
     // Compile the project into the knowledge graph (.aden/store)
     println!("\nBuilding the knowledge graph...");
     match crate::commands::generate::cmd_gen(target, false) {
@@ -464,6 +475,6 @@ Always verify that third-party licenses are compatible with your project's licen
             println!("You can run 'aden gen' later to build it.");
         }
     }
-    
+
     Ok(())
 }

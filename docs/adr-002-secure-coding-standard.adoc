@@ -1,6 +1,6 @@
 :proj: aden
 :author: RioPlay
-:status: proposed
+:status: accepted
 :toc: left
 :toclevels: 3
 
@@ -124,8 +124,14 @@ license conflict, enforceable later |Two artifacts |—
 |Date |Status |Reviewer
 
 |2026-05-30 |proposed |
-| |accepted |
+|2026-05-30 |accepted |RioPlay
 |===
+
+Implementation note (2026-05-30): Layer 1 (the aden-authored Secure-Coding
+Constitution) is implemented as `crates/aden-cli/templates/secure-coding.adoc`
+and scaffolded by `aden init` into `.agent/secure-coding.adoc`. Layer 2 (the
+attributed reference-corpus scaffold) and the `aden check` enforcement subset
+remain follow-ups.
 
 An ADR is accepted when a reviewer acknowledges it. No code (constitution
 template, `aden init --with-secure-refs`, or `aden check` rules) should be

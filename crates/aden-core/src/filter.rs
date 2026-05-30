@@ -106,16 +106,27 @@ pub fn is_secret_path(relative: &Path) -> bool {
 
     // Exact credential filenames.
     const SECRET_NAMES: &[&str] = &[
-        ".env", ".envrc", ".npmrc", ".pypirc", ".netrc", "_netrc", ".htpasswd",
-        "credentials", "credentials.json", "credentials.toml", "credentials.yml",
-        "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519",
+        ".env",
+        ".envrc",
+        ".npmrc",
+        ".pypirc",
+        ".netrc",
+        "_netrc",
+        ".htpasswd",
+        "credentials",
+        "credentials.json",
+        "credentials.toml",
+        "credentials.yml",
+        "id_rsa",
+        "id_dsa",
+        "id_ecdsa",
+        "id_ed25519",
     ];
     if SECRET_NAMES.contains(&name.as_str()) {
         return true;
     }
     // dotenv variants (.env.local, .env.production, …) and GCP service accounts.
-    if name.starts_with(".env.")
-        || (name.starts_with("service-account") && name.ends_with(".json"))
+    if name.starts_with(".env.") || (name.starts_with("service-account") && name.ends_with(".json"))
     {
         return true;
     }
@@ -375,8 +386,14 @@ mod tests {
             ignore_patterns: compile_rules(&[".agent/".to_string()]),
             allow_patterns: Vec::new(),
         };
-        assert!(filter.should_skip(Path::new("agent/file.adoc")), "Should match agent/");
-        assert!(filter.should_skip(Path::new("agent/templates/foo.adoc")), "Should match agent/templates/");
+        assert!(
+            filter.should_skip(Path::new("agent/file.adoc")),
+            "Should match agent/"
+        );
+        assert!(
+            filter.should_skip(Path::new("agent/templates/foo.adoc")),
+            "Should match agent/templates/"
+        );
         assert!(!filter.should_skip(Path::new("src/main.rs")));
     }
 
@@ -430,10 +447,10 @@ mod tests {
         // legitimate file from the graph, so the bar is high-confidence only.
         for src in [
             "fn main() { let sk = compute(); println!(\"{sk}\"); }", // `sk` as an identifier
-            "// AKIA is an AWS key prefix; this comment mentions it",  // prefix w/o a token body
+            "// AKIA is an AWS key prefix; this comment mentions it", // prefix w/o a token body
             "let url = \"https://api.github.com/repos/x/y\";",
             "const RETRIES: usize = 3; let total = a + b;",
-            "ghp_ token format starts with ghp underscore",           // prefix, but no 36-char body
+            "ghp_ token format starts with ghp underscore", // prefix, but no 36-char body
         ] {
             assert!(
                 !content_has_high_confidence_secret(src),

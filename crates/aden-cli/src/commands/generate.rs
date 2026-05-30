@@ -67,8 +67,8 @@ fn crate_from_anchor(anchor: &str) -> Option<String> {
     let segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
     let name = match segs.len() {
         0 => return None,
-        1 => segs[0],                 // file at module root — use it
-        n => segs[n - 2],             // directory containing the file
+        1 => segs[0],     // file at module root — use it
+        n => segs[n - 2], // directory containing the file
     };
     if name.is_empty() {
         None
@@ -96,7 +96,9 @@ fn extract_callees(doc: &aden_core::Document) -> Vec<String> {
                     }
                 }
             }
-            Block::Table(t) if t.headers.first().map(|h| h.eq_ignore_ascii_case("callee")) == Some(true) => {
+            Block::Table(t)
+                if t.headers.first().map(|h| h.eq_ignore_ascii_case("callee")) == Some(true) =>
+            {
                 for row in &t.rows {
                     if let Some(c) = row.first() {
                         if !c.is_empty() {
@@ -226,11 +228,7 @@ fn resolve_callee<'a>(
                     .copied()
                     .filter(|a| crate_from_anchor(a).as_deref() == Some(cc))
                     .collect();
-                if same.len() == 1 {
-                    Some(same[0])
-                } else {
-                    None
-                }
+                if same.len() == 1 { Some(same[0]) } else { None }
             }
         }
     };
@@ -377,7 +375,11 @@ fn link_store_edges<S: GraphStorage>(
                     ),
                 ));
             }
-            edges.push((project.to_string(), module_anchor.clone(), EdgeType::Documents));
+            edges.push((
+                project.to_string(),
+                module_anchor.clone(),
+                EdgeType::Documents,
+            ));
             edges.push((module_anchor, project.to_string(), EdgeType::PartOf));
         }
     }
@@ -420,7 +422,12 @@ pub fn ensure_fresh(path: &Path) {
     // avoids perpetual staleness from files that are discovered but never
     // cached (e.g. unsupported languages that fail to parse). A file newer than
     // anything gen knew about is genuinely new or modified.
-    let newest_known = cache.entries.values().map(|e| e.source_mtime).max().unwrap_or(0);
+    let newest_known = cache
+        .entries
+        .values()
+        .map(|e| e.source_mtime)
+        .max()
+        .unwrap_or(0);
 
     let stale = sources.iter().any(|src| {
         let mtime = src
@@ -675,7 +682,12 @@ fn cmd_gen_inner(path: &Path, quiet: bool, silent: bool) -> Result<(), Box<dyn s
         if !path.is_file() {
             let live: std::collections::HashSet<String> = sources
                 .iter()
-                .map(|p| p.strip_prefix(&root).unwrap_or(p).to_string_lossy().to_string())
+                .map(|p| {
+                    p.strip_prefix(&root)
+                        .unwrap_or(p)
+                        .to_string_lossy()
+                        .to_string()
+                })
                 .collect();
             let dead_keys: Vec<String> = cache
                 .entries
@@ -710,7 +722,9 @@ fn cmd_gen_inner(path: &Path, quiet: bool, silent: bool) -> Result<(), Box<dyn s
         }
 
         // Flush store to persist all documents
-        storage.flush().map_err(|e| format!("Store flush failed: {}", e))?;
+        storage
+            .flush()
+            .map_err(|e| format!("Store flush failed: {}", e))?;
 
         // Connect the graph: persist module<->symbol containment and call edges
         // so the store-first graph used by asm/ask/query is actually traversable.
@@ -723,12 +737,26 @@ fn cmd_gen_inner(path: &Path, quiet: bool, silent: bool) -> Result<(), Box<dyn s
         // The summary is "summary only" output: shown under --quiet/regen, but
         // suppressed entirely on the silent refresh-on-read path.
         if pruned > 0 {
-            progress!(silent, "\nStored {} contracts. Skipped {} unchanged files. Pruned {} stale symbol(s).", generated.len(), skipped, pruned);
+            progress!(
+                silent,
+                "\nStored {} contracts. Skipped {} unchanged files. Pruned {} stale symbol(s).",
+                generated.len(),
+                skipped,
+                pruned
+            );
         } else {
-            progress!(silent, "\nStored {} contracts. Skipped {} unchanged files.", generated.len(), skipped);
+            progress!(
+                silent,
+                "\nStored {} contracts. Skipped {} unchanged files.",
+                generated.len(),
+                skipped
+            );
         }
         if skipped == 0 && generated.len() == sources.len() {
-            progress!(silent, "(All files were skipped — nothing changed since last run)");
+            progress!(
+                silent,
+                "(All files were skipped — nothing changed since last run)"
+            );
         }
 
         // Report orphan symbols using store-first graph build. Suppressed in
