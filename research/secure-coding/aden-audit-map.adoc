@@ -34,11 +34,15 @@ into LLM context. Weakness class: <<cwe-200>> (exposure of sensitive info).
 Mitigated by <<scp-error-handling>> and <<scp-data-protection>>.
 
 [[finding-secret-filter]]
-== Finding INFO-1 — Content-blind secret filtering
-The gen secret floor matches by filename/extension/directory, never content, so
-a credential inside an ordinary config file is indexed. Weakness class:
+== Finding INFO-1 — Content-blind secret filtering (RESOLVED)
+The gen secret floor originally matched by filename/extension/directory only, so
+a credential inside an ordinary source/config file was indexed. Weakness class:
 <<cwe-798>> (hard-coded credentials) and <<cwe-200>>. Mitigated by
-<<scp-data-protection>>; documented limitation, `.adenignore` recommended.
+<<scp-data-protection>>. RESOLVED: a high-confidence content screen
+(`content_has_high_confidence_secret`) now refuses to index any file whose
+content carries a structured credential token (AWS/GitHub/OpenAI/Slack keys,
+PEM private keys), complementing the filename floor. `.adenignore` remains
+available for project-specific cases.
 
 == Cross-cutting observation
 Aden's confirmed findings cluster into three CWE families — path/input

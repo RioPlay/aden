@@ -546,6 +546,22 @@ fn cmd_gen_inner(path: &Path, quiet: bool, silent: bool) -> Result<(), Box<dyn s
                     }
                 };
 
+                // Security floor (content): the filename-based is_secret_path
+                // check above misses a credential embedded in an ordinary source
+                // or config file. Scan content for high-confidence secret tokens
+                // (AWS/GitHub/OpenAI/Slack keys, PEM private keys) and refuse to
+                // index such a file into the store, where ask/asm would otherwise
+                // assemble it into LLM context (CWE-798/CWE-200).
+                if aden_core::filter::content_has_high_confidence_secret(&source) {
+                    if !silent {
+                        eprintln!(
+                            "WARN: Skipping {} — file content matches a credential pattern (not indexed). Add to .adenignore if intentional.",
+                            src_rel.display()
+                        );
+                    }
+                    return None;
+                }
+
                 // Parse
                 let docs = match aden_parse::parse_file(src_path, &source) {
                     Ok(d) => d,

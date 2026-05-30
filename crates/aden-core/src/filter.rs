@@ -132,6 +132,72 @@ pub fn is_secret_path(relative: &Path) -> bool {
     false
 }
 
+/// Content-based credential detection — a *high-confidence* complement to
+/// [`is_secret_path`] for the indexing boundary (CWE-798 / CWE-200).
+///
+/// `is_secret_path` is filename/extension/directory based, so a credential
+/// embedded in an ordinary-looking source or config file (e.g. `config.json`,
+/// `settings.py`) would still be indexed into the store and could be re-served
+/// into LLM context. This scans the file's *content* for unambiguous,
+/// structurally-distinctive secret tokens.
+///
+/// Deliberately NOT an entropy heuristic: only well-known, structured provider
+/// token shapes are matched, so false positives (which would silently drop a
+/// legitimate file from the graph) are near-impossible. Like `is_secret_path`,
+/// this is applied only at indexing — never to ephemeral `grep`/`audit`, which
+/// must still be able to find a secret in order to fix it.
+pub fn content_has_high_confidence_secret(content: &str) -> bool {
+    // PEM private-key blocks (RSA/EC/OPENSSH/PGP/generic).
+    if content.contains("-----BEGIN ") && content.contains("PRIVATE KEY-----") {
+        return true;
+    }
+    // Provider tokens: a fixed prefix followed by N token chars. Scanning by
+    // byte windows keeps this dependency-free (no regex).
+    const TOKEN_PREFIXES: &[(&str, usize)] = &[
+        ("AKIA", 16),  // AWS access key id
+        ("ASIA", 16),  // AWS temporary access key id
+        ("ghp_", 36),  // GitHub personal access token
+        ("gho_", 36),  // GitHub OAuth token
+        ("ghs_", 36),  // GitHub server-to-server token
+        ("ghr_", 36),  // GitHub refresh token
+        ("xoxb-", 10), // Slack bot token
+        ("xoxp-", 10), // Slack user token
+    ];
+    for (prefix, min_alnum) in TOKEN_PREFIXES {
+        if has_prefixed_token(content, prefix, *min_alnum) {
+            return true;
+        }
+    }
+    // OpenAI keys: `sk-` followed by >=20 token chars (covers sk- / sk-proj-).
+    if has_prefixed_token(content, "sk-", 20) {
+        return true;
+    }
+    false
+}
+
+/// True if `content` contains `prefix` immediately followed by at least
+/// `min_alnum` token characters (`[A-Za-z0-9_-]`).
+fn has_prefixed_token(content: &str, prefix: &str, min_alnum: usize) -> bool {
+    let bytes = content.as_bytes();
+    let plen = prefix.len();
+    let mut i = 0;
+    while let Some(off) = content[i..].find(prefix) {
+        let start = i + off + plen;
+        let run = bytes[start..]
+            .iter()
+            .take_while(|b| b.is_ascii_alphanumeric() || **b == b'_' || **b == b'-')
+            .count();
+        if run >= min_alnum {
+            return true;
+        }
+        i = i + off + plen;
+        if i >= content.len() {
+            break;
+        }
+    }
+    false
+}
+
 /// A compiled path filter combining `.adenignore` and `.adenallow` rules.
 #[derive(Debug, Clone)]
 pub struct AdenFilter {
@@ -339,5 +405,40 @@ mod tests {
         };
         assert!(filter.should_skip(Path::new("target/debug")));
         assert!(!filter.should_skip(Path::new("target/custom-tool/main.rs")));
+    }
+
+    #[test]
+    fn content_secret_detects_real_credentials() {
+        // Embedded in an ordinary-looking source/config file the path filter misses.
+        assert!(content_has_high_confidence_secret(
+            r#"{ "aws_key": "AKIAIOSFODNN7EXAMPLE" }"#
+        ));
+        assert!(content_has_high_confidence_secret(
+            "let t = \"ghp_0123456789abcdefghijklmnopqrstuvwxyz\";"
+        ));
+        assert!(content_has_high_confidence_secret(
+            "OPENAI_API_KEY=sk-abcdefghijklmnopqrstuvwxyz0123456789"
+        ));
+        assert!(content_has_high_confidence_secret(
+            "-----BEGIN RSA PRIVATE KEY-----\nMIIE...\n-----END RSA PRIVATE KEY-----"
+        ));
+    }
+
+    #[test]
+    fn content_secret_no_false_positives_on_normal_code() {
+        // Must NOT fire on ordinary source — a false positive silently drops a
+        // legitimate file from the graph, so the bar is high-confidence only.
+        for src in [
+            "fn main() { let sk = compute(); println!(\"{sk}\"); }", // `sk` as an identifier
+            "// AKIA is an AWS key prefix; this comment mentions it",  // prefix w/o a token body
+            "let url = \"https://api.github.com/repos/x/y\";",
+            "const RETRIES: usize = 3; let total = a + b;",
+            "ghp_ token format starts with ghp underscore",           // prefix, but no 36-char body
+        ] {
+            assert!(
+                !content_has_high_confidence_secret(src),
+                "false positive on: {src:?}"
+            );
+        }
     }
 }
