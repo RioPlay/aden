@@ -66,6 +66,7 @@ fn required_args(tool: &str) -> &'static [&'static str] {
     match tool {
         "ask" => &["question"],
         "search" => &["query"],
+        "grep" => &["pattern"],
         "suggest" => &["intent"],
         "kickoff" => &["brief"],
         "new" => &["name", "lang"],
@@ -85,6 +86,8 @@ fn is_positional(tool: &str, arg: &str) -> bool {
         ("ask", "question") => true,
         // search: aden search <QUERY> [DIR]
         ("search", "query") => true,
+        // grep:  aden grep <PATTERN> [DIR]
+        ("grep", "pattern") => true,
         // suggest: aden suggest <INTENT>
         ("suggest", "intent") => true,
         // new:   aden new <NAME> <LANG> [DIR]
@@ -171,6 +174,7 @@ static TOOLS: &[ToolSpec] = &[
     ToolSpec { name: "ask",        description: "Ask a natural-language question. Routes to the best matching anchor.",                                            args: &[("question", "string"), ("budget", "integer"), ("from", "string"), ("model", "string")] },
     ToolSpec { name: "search",     description: "Full-text search with BM25 ranking.",                                                                           args: &[("query", "string"), ("limit", "integer"), ("offset", "integer"), ("doc_type", "string"), ("semantics", "boolean")] },
     ToolSpec { name: "list",       description: "List all indexed anchors.",                                                                                    args: &[("path", "string"), ("filter", "string"), ("limit", "integer"), ("verbose", "boolean"), ("semantics", "boolean"), ("offset", "integer"), ("unlimited", "boolean")] },
+    ToolSpec { name: "grep",       description: "Structure-aware content search: find a pattern, each hit tagged with its enclosing symbol. Prefer over plain grep.", args: &[("pattern", "string"), ("path", "string"), ("regex", "boolean"), ("ignore_case", "boolean"), ("symbol_only", "boolean"), ("limit", "integer")] },
     ToolSpec { name: "locate",     description: "Find symbol definition and call sites.",                                                                       args: &[("symbol", "string"), ("caller_of", "string"), ("path", "string"), ("limit", "integer"), ("json", "boolean"), ("show_context", "integer"), ("format", "string")] },
     ToolSpec { name: "heal",       description: "Self-healing documentation engine: scan for drift, propose patches, apply reviewed changes.",                      args: &[("path", "string"), ("fix", "boolean"), ("gc", "boolean"), ("propose", "boolean"), ("since", "string"), ("apply", "string"), ("watch", "string")] },
     ToolSpec { name: "status",     description: "Show project health status at a glance.",                                                                        args: &[("path", "string")] },

@@ -326,6 +326,22 @@ enum Commands {
         path: PathBuf,
     },
     /// Locate a symbol definition or its call sites in the knowledge graph
+    /// Structure-aware content search: find a pattern and tag each hit with the
+    /// symbol it lives inside (a graph-aware replacement for grep).
+    Grep {
+        #[arg(value_name = "PATTERN", help = "Text (or regex with --regex) to search for")]
+        pattern: String,
+        #[arg(long, help = "Treat PATTERN as a regular expression")]
+        regex: bool,
+        #[arg(short = 'i', long, help = "Case-insensitive match")]
+        ignore_case: bool,
+        #[arg(long, help = "Only report matches that fall inside a known symbol")]
+        symbol_only: bool,
+        #[arg(long, value_name = "N", default_value = "100", help = "Limit number of results")]
+        limit: usize,
+        #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
+        path: PathBuf,
+    },
     Locate {
         #[arg(long, value_name = "SYMBOL", help = "Find definition of this symbol")]
         symbol: Option<String>,
@@ -736,6 +752,25 @@ commands::cmd_gen(&path, None, false, quiet, false, false, "adoc", true)
                 limit
             };
             commands::cmd_list(&path, filter.as_deref(), verbose, effective_limit, offset, semantics)
+        }
+        Commands::Grep {
+            pattern,
+            regex,
+            ignore_case,
+            symbol_only,
+            limit,
+            path,
+        } => {
+            let effective_limit = if cli.unlimited { usize::MAX } else { limit };
+            commands::cmd_grep(
+                &pattern,
+                &path,
+                regex,
+                ignore_case,
+                symbol_only,
+                effective_limit,
+                cli.json,
+            )
         }
         Commands::Locate {
             symbol,

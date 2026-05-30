@@ -228,15 +228,29 @@ fn infer_parent_module_from_source(source_path: &Path) -> Option<String> {
     None
 }
 
-/// Crate/module name embedded in a symbol anchor of the form
-/// `aden://module/<crate>/<file>#<symbol>`.
+/// Module name for a symbol anchor of the form
+/// `aden://module/<path>/<file>#<symbol>`.
+///
+/// The module is the directory that immediately contains the file — i.e. the
+/// package. Using the *first* path segment was wrong for path-based ecosystems:
+/// Go anchors like `aden://module/github.com/spf13/cobra/command.go#Execute`
+/// collapsed the entire repo into `mod-github.com`. The last path segment is
+/// always the file (`make_anchor` appends `/<file>#<sym>`), so the directory
+/// before it is the real package/crate. For aden's own `crate/file.rs` layout
+/// this still yields the crate name, so nothing regresses.
 fn crate_from_anchor(anchor: &str) -> Option<String> {
     let rest = anchor.strip_prefix("aden://module/")?;
-    let krate = rest.split('/').next()?;
-    if krate.is_empty() {
+    let path = rest.split('#').next()?;
+    let segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    let name = match segs.len() {
+        0 => return None,
+        1 => segs[0],                 // file at module root — use it
+        n => segs[n - 2],             // directory containing the file
+    };
+    if name.is_empty() {
         None
     } else {
-        Some(krate.to_string())
+        Some(name.to_string())
     }
 }
 
@@ -322,6 +336,30 @@ fn link_store_edges<S: GraphStorage>(storage: &S) -> Result<(), Box<dyn std::err
         }
     }
 
+    // Resolve a callee string to a single target anchor, or None if it is
+    // unknown or ambiguous. Tries the full callee first, then the trailing
+    // segment after the last `.`/`:` — so receiver/qualified calls become real
+    // edges: `c.ExecuteC` → `ExecuteC`, `click.echo` → `echo`, `Path::new`
+    // → `new`. Ambiguous names (multiple definitions) are left unlinked rather
+    // than guessed, keeping the call graph precise.
+    let resolve_callee = |callee: &str| -> Option<String> {
+        if let Some(t) = name_index.get(callee) {
+            if t.len() == 1 {
+                return Some(t[0].clone());
+            }
+            return None; // exact name is ambiguous — don't guess
+        }
+        let base = callee.rsplit(['.', ':']).next().unwrap_or(callee);
+        if base != callee && !base.is_empty() {
+            if let Some(t) = name_index.get(base) {
+                if t.len() == 1 {
+                    return Some(t[0].clone());
+                }
+            }
+        }
+        None
+    };
+
     // Call-graph edges: resolve `edge::calls[<callee>]` to anchors.
     for (anchor, doc) in &docs {
         for block in &doc.blocks {
@@ -336,11 +374,9 @@ fn link_store_edges<S: GraphStorage>(storage: &S) -> Result<(), Box<dyn std::err
                 let Some(callee) = rest.strip_suffix(']') else {
                     continue;
                 };
-                if let Some(targets) = name_index.get(callee) {
-                    // Only link when the callee resolves unambiguously, so we
-                    // never fabricate an edge to the wrong same-named symbol.
-                    if targets.len() == 1 && targets[0] != *anchor {
-                        let _ = storage.put_edge(anchor, &targets[0], EdgeType::Calls);
+                if let Some(target) = resolve_callee(callee) {
+                    if target != *anchor {
+                        let _ = storage.put_edge(anchor, &target, EdgeType::Calls);
                     }
                 }
             }

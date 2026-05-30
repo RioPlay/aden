@@ -2,6 +2,7 @@ pub mod complete;
 pub mod diagnose;
 pub mod federation;
 pub mod generate;
+pub mod grep;
 pub mod heal;
 pub mod init;
 pub mod lint;
@@ -14,6 +15,7 @@ pub mod test_cmd;
 pub use diagnose::cmd_diagnose;
 pub use federation::cmd_federation;
 pub use generate::{cmd_gen, ensure_fresh};
+pub use grep::cmd_grep;
 #[cfg(feature = "watch")]
 pub use heal::cmd_heal_watch;
 pub use heal::{cmd_heal_apply, cmd_heal_scan, cmd_heal_scan_since};

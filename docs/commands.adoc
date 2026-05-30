@@ -325,6 +325,43 @@ aden list --unlimited
 |--unlimited |No limit |false
 |===
 
+=== grep
+
+Structure-aware content search. Unlike plain `grep`, every match is tagged with
+the symbol it lives inside, resolved from the knowledge graph — so a hit doubles
+as a graph entry point you can feed straight into `aden asm --from <symbol>`.
+
+[source,bash]
+----
+# Literal search (default), each hit tagged with its enclosing symbol
+aden grep "InitDefaultHelpFlag"
+
+# Regex search
+aden grep --regex "\.parse\("
+
+# Case-insensitive
+aden grep -i "todo"
+
+# Only matches that fall inside a known symbol
+aden grep "buffer" --symbol-only
+
+# Structured output
+aden grep "parse" --json
+----
+
+|===
+|Flag |Description |Default
+
+|--regex |Treat PATTERN as a regular expression |false (literal)
+|-i, --ignore-case |Case-insensitive match |false
+|--symbol-only |Only report matches inside a known symbol |false
+|--limit |Max results |100
+|--json |Structured output (file, line, symbol, anchor, text) |false
+|===
+
+Output is `file:line  (enclosing-symbol): matched text`. The enclosing symbol
+resolves with bare-name lookup, so `aden asm --from <symbol>` expands it.
+
 === locate
 
 Find symbol definitions or call sites.

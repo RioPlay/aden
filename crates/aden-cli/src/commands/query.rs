@@ -589,7 +589,7 @@ pub fn edge_types_for_intent(intent: &QueryIntent) -> Vec<aden_core::EdgeType> {
     // context. Module-level overviews are still available via
     // `aden asm --from mod-<name>` (which traverses all edges by default).
     let semantic = vec![IsA, RelatesTo, SimilarTo, AssociatedWith, Explains];
-    match intent {
+    let mut edges: Vec<aden_core::EdgeType> = match intent {
         QueryIntent::Debug => vec![Constrains, Documents, Calls, Invokes, Requires].into_iter().chain(semantic.clone()).collect(),
         QueryIntent::Usage => vec![Uses, Invokes, Requires, Documents].into_iter().chain(semantic.clone()).collect(),
         QueryIntent::Explain => vec![Uses, Calls, Implements, Documents].into_iter().chain(semantic.clone()).collect(),
@@ -599,7 +599,13 @@ pub fn edge_types_for_intent(intent: &QueryIntent) -> Vec<aden_core::EdgeType> {
         QueryIntent::Compare => vec![Uses, Documents, Constrains].into_iter().chain(semantic.clone()).collect(),
         QueryIntent::Count => vec![Documents, Uses].into_iter().chain(semantic.clone()).collect(),
         QueryIntent::General => vec![Uses, Documents, Constrains].into_iter().chain(semantic).collect(),
+    };
+    // The call graph is the densest, most useful relationship for code questions,
+    // so it must be traversable for EVERY intent — not just Explain/Refactor.
+    if !edges.contains(&Calls) {
+        edges.push(Calls);
     }
+    edges
 }
 
 pub fn depth_for_intent(intent: &QueryIntent) -> usize {
