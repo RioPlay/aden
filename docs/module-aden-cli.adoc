@@ -33,11 +33,11 @@ Verify all refs resolve to existing anchors.
 [source,bash]
 ----
 aden check [DIR]
-aden check . --severity Error
+aden check . --severity Forbid
 ----
 
 === lint
-Lint source files using tree-sitter AST analysis.
+Lint source files using fast, language-agnostic line-based heuristics.
 [source,bash]
 ----
 aden lint [PATH]
@@ -63,7 +63,7 @@ Assemble context prompt from knowledge graph.
 ----
 aden asm --from ANCHOR
 aden asm --from foo --depth 3 --budget 8192
-aden asm --from bar --edge_types imports,uses
+aden asm --from bar --edge-types imports,uses
 aden asm --from baz --silent
 aden asm --from qux --inspect
 ----
@@ -92,7 +92,7 @@ Full-text search across knowledge graph.
 ----
 aden search QUERY
 aden search QUERY --limit 20
-aden search QUERY --doc_type module|adr|plan
+aden search QUERY --doc-type module|adr|plan
 ----
 
 === list
@@ -164,7 +164,7 @@ aden audit . --format json
 Atomic session lock for agents.
 [source,bash]
 ----
-aden session --agent_id ID --task DESC --status in_progress|completed
+aden session --agent-id ID --task DESC --status in_progress|completed
 ----
 
 === federation
@@ -276,7 +276,7 @@ aden gen . --auto --verbose
 
 === Broken references
 ----
-aden check . --severity Error
+aden check . --severity Forbid
 ----
 
 === Low health score

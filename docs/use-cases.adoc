@@ -52,7 +52,7 @@ Aden locates the clause, traces all dependent clauses, and assembles a digest wi
 A journalist builds a knowledge graph from leaked documents, interview transcripts, and public records. Entities (people, companies, assets) are nodes. Relationships are edges (`Owns`, `Funnelled-to`, `Obfuscated-by`).
 
 ----
-aden graph --depth 3 "shell-company-X"
+aden query --from "shell-company-X" --depth 3
 ----
 
 Reveals the full ownership chain in seconds instead of weeks of spreadsheet work.

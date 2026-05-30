@@ -27,12 +27,15 @@ What happens internally:
 
 1. **Search**: The question is tokenized and searched against the in-memory inverted index built from all `.adoc` / `.aden` contracts.
 2. **Anchor resolution**: The top-ranked document anchor becomes the starting node (or you pin it with `--from`).
-3. **Intent classification**: The question is classified into one of six intents:
-   - `Explain` --- "How does X work?" → depth 2, edges: Uses, Calls, Implements, Documents
-   - `Usage` --- "How do I use X?" → depth 2, edges: Uses, Documents, Constrains
-   - `Refactor` --- "What breaks if I change X?" → depth 4, edges: Uses, Calls, Constrains, Implements
+3. **Intent classification**: The question is classified into one of nine intents (the per-intent code edges below; every intent additionally traverses the semantic edges IsA, RelatesTo, SimilarTo, AssociatedWith, Explains, and `Calls` is always included):
+   - `Debug` --- "Why does X fail?" → depth 3, edges: Constrains, Documents, Calls, Invokes, Requires
+   - `Usage` --- "How do I use X?" → depth 2, edges: Uses, Invokes, Requires, Documents
+   - `Explain` --- "What does X do?" → depth 2, edges: Uses, Calls, Implements, Documents
+   - `Refactor` --- "Refactor X" → depth 4, edges: Calls, Uses, Mutates, Supersedes, Amends
    - `Impact` --- "What depends on X?" → depth 3, edges: Uses, Calls, Constrains
-   - `Debug` --- "Why is X failing?" → depth 3, edges: Uses, Calls, Implements
+   - `List` --- "list/show me all X" → depth 2, edges: Uses, Documents
+   - `Compare` --- "compare X and Y" → depth 3, edges: Uses, Documents, Constrains
+   - `Count` --- "how many X" → depth 1, edges: Documents, Uses
    - `General` --- fallback → depth 2, edges: Uses, Documents, Constrains
 4. **Graph traversal**: A BFS walk collects neighbors along the selected edge types, stopping at `max_depth`.
 5. **Token budgeting**: Each collected document is estimated with a bytes/4 heuristic. Documents are included until the cumulative total would exceed `--budget` (default 4096 for `ask`, 8192 for `asm`).
@@ -168,7 +171,7 @@ When using Aden via MCP (OpenCode, Claude Code, Cursor, etc.), these tools are a
 |ask|Natural language Q&A|question, budget, from
 |grep|Structure-aware content search (hit + enclosing symbol)|pattern, regex, ignore_case, symbol_only, limit
 |search|Full-text search|query, limit, offset, doc_type, semantics
-|asm|Graph-traversed context|from, depth, budget, format (adg for LLMs)
+|asm|Graph-traversed context|from, depth, budget, format (llm = default LLM-dense prose, adg = compact JSON, aden = raw AsciiDoc)
 |query|Structured JSON|from, depth, backlinks, impact
 |locate|Symbol definitions|symbol, caller_of, show_context, limit, format
 |list|Anchors in graph|filter, limit, semantics

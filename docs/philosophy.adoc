@@ -96,7 +96,7 @@ The `gen` command extracts a semantic contract directly from source code. The `h
 **Aden Solution:**
 [source,bash]
 ----
-aden graph --from module-core --depth 3
+aden query --from module-core --depth 3
 # Outputs every document reachable from module-core through Uses, Calls, Implements edges
 aden query --backlinks module-core
 # Outputs every document that references module-core as a dependency

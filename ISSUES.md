@@ -68,8 +68,9 @@ and fixed the root causes:
 - `aden heal` / `aden check` flood stdout (hundreds of events, repeated file
   lists) — context-hostile for an agent; should summarize/cap.
 - `aden list --filter "mod-*"` glob returns 0 even when matches exist.
-- `locate --caller-of` is unimplemented. (Docs corrected 2026-05-30 to the real
-  binary flags `--caller-of`/`--show-context`.) The CLI `locate` still ignores
+- `locate --caller-of` is implemented: it lists a symbol's callers by walking
+  incoming `Calls` edges in the graph (run `gen` first to populate the call
+  graph), enriched with each caller's `file:line`. The CLI `locate` still ignores
   the global `-j` — only `--format json` works — but the MCP `locate` tool no
   longer exposes a `json` arg, so agents route JSON via `format=json`.
 - MCP server (ISSUES item 4 below): likely the debug `println!`s in
@@ -83,7 +84,7 @@ and fixed the root causes:
 | Language | init | gen | query | check | Status |
 |-----------|------|-----|-------|-------|--------|
 | **Rust** | ✅ | ✅ | ✅ | ✅ | Working |
-| **Go** | ✅ | ✅ | ✅ | ✅ | Module path = "unknown" (minor) |
+| **Go** | ✅ | ✅ | ✅ | ✅ | Module path parsed from go.mod ("unknown" only when no go.mod found) |
 | **JavaScript** | ✅ | ✅ | ✅ | ✅ | Duplicate store entries (cosmetic) |
 | **Python** | ✅ | ✅ | ✅ | ✅ | Working (uses tree-sitter-language-pack) |
 

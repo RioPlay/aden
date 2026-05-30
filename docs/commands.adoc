@@ -82,7 +82,7 @@ Verify all `<<refs>>` resolve to existing `[[anchors]]`.
 [source,bash]
 ----
 aden check [DIR]
-aden check . --severity Error
+aden check . --severity Forbid
 ----
 
 Validates:
@@ -160,7 +160,7 @@ aden asm --from mod-aden-core
 aden asm --from mod-aden-core --depth 3 --budget 8192
 
 # Specific edge types
-aden asm --from mod-aden-core --edge_types Uses,Calls
+aden asm --from mod-aden-core --edge-types Uses,Calls
 
 # Output to file
 aden asm --from mod-aden-core --out context.adoc
@@ -191,16 +191,16 @@ aden asm --from mod-aden-core --set-attr mode=production
 |--from |Starting anchor (required) |—
 |--depth |BFS traversal depth |3
 |--budget |Token budget (bytes/4 heuristic) |8192
-|--edge_types |Comma-separated edge types |All
+|--edge-types |Comma-separated edge types |All
 |--out |Output file path |stdout
 |--format |Output format: `llm` (default), `adg`, `aden` |llm
 |--silent |Skip intro, output only context |false
 |--auto |Adjust budget based on relevance |false
 |--strict |Never exceed budget |false
 |--inspect |Show what would be included |false
-|--include_tag |Include content with this tag |—
-|--exclude_tag |Exclude content with this tag |—
-|--set_attr |Set attribute for conditional processing |—
+|--include-tag |Include content with this tag |—
+|--exclude-tag |Exclude content with this tag |—
+|--set-attr |Set attribute for conditional processing |—
 |===
 
 === query
@@ -281,7 +281,7 @@ Full-text search across the knowledge graph.
 ----
 aden search "authentication"
 aden search "token budget" --limit 20
-aden search "parser" --doc_type module
+aden search "parser" --doc-type module
 aden search "security" --semantics
 aden search "token budget" --json    # structured envelope
 ----
@@ -291,7 +291,7 @@ aden search "token budget" --json    # structured envelope
 
 |--limit |Max results |50
 |--offset |Pagination offset |0
-|--doc_type |Filter: module, adr, plan, use-case |All
+|--doc-type |Filter: module, adr, plan, use-case |All
 |--semantics |Include semantic relationship results |false
 |--json |Structured envelope instead of the human table |false
 |===
@@ -441,11 +441,11 @@ aden heal . --watch src/
 
 |StaleHash |High |Yes
 |SignatureMismatch |High |Yes
-|MissingContract |Medium |No
+|MissingContract |Medium |Yes
 |OrphanAnchor |Medium |Yes (--gc)
 |BrokenReference |Critical |No
 |DeadLink |Low |No
-|MarkdownDrift |High |Yes
+|MarkdownDrift |High |No
 |StaleMarkdown |Medium |No
 |===
 
@@ -557,8 +557,8 @@ Atomic session lock for agents.
 
 [source,bash]
 ----
-aden session --agent_id claude --task "Refactor auth module" --status in_progress
-aden session --agent_id claude --task "Refactor auth module" --status completed
+aden session --agent-id claude --task "Refactor auth module" --status in_progress
+aden session --agent-id claude --task "Refactor auth module" --status completed
 ----
 
 ### federation
@@ -716,7 +716,7 @@ Deterministic diagnostic scanner for knowledge graphs.
 [source,bash]
 ----
 aden diagnose
-aden diagnose --path . --severity error
+aden diagnose --path .
 aden diagnose --format json
 ----
 
@@ -798,7 +798,6 @@ store, and machine-readable output is available via `--json` where noted above.
 
 |`aden graph` |`aden query` |Renamed for clarity
 |`aden ls` |`aden list` |Consistent naming
-|`aden regen` |`aden gen . --auto` |Unified with gen
 |===
 
 ## Related Documents

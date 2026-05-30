@@ -21,7 +21,7 @@ This repository uses **AsciiDoc** (`.adoc`), not Markdown.
 ```bash
 aden ask --from <anchor> "What breaks if I change X?"
 aden query --from <anchor> --depth 2
-aden locate <symbol>
+aden locate --symbol <symbol>
 ```
 
 ### After Writing Code
@@ -62,7 +62,11 @@ aden ci-check .           # Full CI gates before commit
 | `aden-policy` | Constitutional directives, precedence |
 | `aden-api` | REST/gRPC types |
 | `aden-attest` | Attestation primitives |
-| `aden-py` | PyO3 Python bindings |
+| `aden-store` | Sled-backed graph store (store-first persistence) |
+| `aden-diagnose` | Deterministic knowledge-graph diagnostics |
+| `aden-lsp` | Language Server Protocol integration |
+| `aden-simulate` | Change-impact simulation |
+| `aden-telemetry` | Local telemetry primitives |
 
 ## Documentation
 

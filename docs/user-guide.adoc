@@ -26,7 +26,7 @@ aden ask "What is the main entry point?"
 aden ask "Which modules handle authentication?"
 
 # 5. Drill into a specific module
-aden graph --from mod-auth --depth 2
+aden query --from mod-auth --depth 2
 ----
 
 === What Each Step Gives You
@@ -44,7 +44,7 @@ You want to rename a function. You need to know the blast radius.
 [source,bash]
 ----
 # 1. Locate the symbol
-aden locate old_function_name
+aden locate --symbol old_function_name
 
 # 2. See what depends on it
 aden query --impact old_function_name . | jq '.[] | .anchor'
@@ -65,7 +65,7 @@ aden heal .
 
 === Tips for Refactoring
 
-- Use `--depth 4` with `aden ask` when refactoring core modules. The default depth of 2 may miss indirect callers.
+- `aden ask` picks traversal depth automatically from the question's intent (e.g. depth 2 for explain/usage, depth 4 for refactor questions). To set depth explicitly, use `aden asm --from <anchor> --depth 4` when drilling into core modules.
 - Use `aden query --backlinks <anchor>` to find documents that reference a module but do not call it (e.g., ADRs, runbooks).
 - Always run `aden check .` after `aden gen`. If you renamed an anchor, every `<<old-anchor>>` will fail validation and point you to exactly what needs updating.
 
@@ -122,7 +122,7 @@ Starting a greenfield project? Scaffold it with Aden from day one.
 [source,bash]
 ----
 # Create a new Rust project with Aden scaffolding
-aden new my-project --lang rust --path .
+aden new my-project --lang rust .
 cd my-project
 
 # Generate a kickoff document

@@ -101,7 +101,8 @@ aden sync .
 
 [source,bash]
 ----
-aden status . --verbose
+aden status .   # shows the orphan document count
+aden check .    # lists the specific orphan anchors (sampled)
 ----
 
 If the orphans are `adr-*`, `security-model`, `experimental-crates`, etc., they are expected.
