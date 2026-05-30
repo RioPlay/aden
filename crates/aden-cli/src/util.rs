@@ -4,7 +4,7 @@
 pub mod quiet;
 
 use aden_emit::check::{collect_anchors, find_refs};
-use aden_graph::{cycles::find_cycles, integrity::check_hashes, GraphNode};
+use aden_graph::{GraphNode, cycles::find_cycles, integrity::check_hashes};
 use serde_json::Map;
 use std::collections::HashSet;
 use std::io::Read;
@@ -113,8 +113,7 @@ const EXTENSIONLESS_SOURCE_FILES: &[&str] = &[
 pub fn discover_source_files(root: &Path) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
     use std::collections::HashSet;
 
-    let supported: HashSet<&'static str> =
-        aden_parse::supported_extensions().into_iter().collect();
+    let supported: HashSet<&'static str> = aden_parse::supported_extensions().into_iter().collect();
     let filter = aden_core::filter::AdenFilter::from_directory(root);
 
     let mut files = Vec::new();
@@ -358,15 +357,15 @@ fn check_incomplete_contracts(path: &Path) -> Vec<String> {
                             // Check if it's been filled (has non-empty required fields)
                             // A filled contract won't have the hint line or will have content after ====
                             let has_hint = text.contains("Hint:");
-                            let has_content_after_marker = text.match_indices("[must-complete]")
+                            let has_content_after_marker = text
+                                .match_indices("[must-complete]")
                                 .last()
                                 .map(|(pos, _)| text[pos..].contains("===="))
                                 .unwrap_or(false);
 
                             if has_hint || !has_content_after_marker {
-                                let anchor = p.file_stem()
-                                    .and_then(|s| s.to_str())
-                                    .unwrap_or("unknown");
+                                let anchor =
+                                    p.file_stem().and_then(|s| s.to_str()).unwrap_or("unknown");
                                 incomplete.push(format!(
                                     "WARNING: Incomplete contract: {} - run 'aden complete' to fill missing documentation",
                                     anchor
@@ -492,7 +491,10 @@ pub fn perform_check(path: &Path) -> Result<Vec<String>, Box<dyn std::error::Err
             messages.push(format!("  - {}", o));
         }
         if actionable.len() > ORPHAN_SAMPLE {
-            messages.push(format!("  ... and {} more", actionable.len() - ORPHAN_SAMPLE));
+            messages.push(format!(
+                "  ... and {} more",
+                actionable.len() - ORPHAN_SAMPLE
+            ));
         }
         if !expected.is_empty() {
             messages.push(format!(
@@ -647,7 +649,10 @@ mod tests {
         assert!(!out.contains('\x1b'), "raw ESC must be gone: {out:?}");
         assert!(!out.contains('\x07'), "raw BEL must be gone: {out:?}");
         assert!(out.contains("\\x1b"), "ESC shown as \\x1b: {out:?}");
-        assert!(out.contains("clear") && out.contains("bell"), "real text kept");
+        assert!(
+            out.contains("clear") && out.contains("bell"),
+            "real text kept"
+        );
         // Tabs are preserved; ordinary unicode passes through.
         assert_eq!(sanitize_terminal("a\tb→c"), "a\tb→c");
     }

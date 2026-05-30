@@ -1,8 +1,8 @@
 // Copyright (c) 2026 RioPlay <rioplay@rioplay.dev>
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::path::Path;
 use std::io::Read;
+use std::path::Path;
 
 use aden_asm::traverse::{AssemblyOptions, assemble};
 use aden_graph::cache::build_from_directory_cached;
@@ -24,7 +24,7 @@ pub fn cmd_complete(
     }
 
     let incomplete = find_incomplete_contracts(path)?;
-    
+
     if incomplete.is_empty() {
         println!("No incomplete contracts found.");
         return Ok(());
@@ -53,7 +53,7 @@ pub fn cmd_complete(
 
     for (_file, anchor) in &incomplete {
         println!("Processing: {}", anchor);
-        
+
         let asm_opts = AssemblyOptions {
             start_anchor: anchor.clone(),
             max_depth: 5,
@@ -95,9 +95,7 @@ Please provide:
 If this symbol belongs to a larger module or package, cross-reference it
 using the module's anchor (e.g. <<mod-mypackage,mypackage>>).]
 "#,
-            anchor,
-            anchor,
-            context
+            anchor, anchor, context
         );
 
         // For now, just show the prompt - full LLM integration would go here
@@ -108,9 +106,11 @@ using the module's anchor (e.g. <<mod-mypackage,mypackage>>).]
     Ok(())
 }
 
-fn find_incomplete_contracts(path: &Path) -> Result<Vec<(std::path::PathBuf, String)>, Box<dyn std::error::Error>> {
+fn find_incomplete_contracts(
+    path: &Path,
+) -> Result<Vec<(std::path::PathBuf, String)>, Box<dyn std::error::Error>> {
     let mut incomplete = Vec::new();
-    
+
     for entry in std::fs::read_dir(path)? {
         let entry = entry?;
         let p = entry.path();
@@ -124,9 +124,7 @@ fn find_incomplete_contracts(path: &Path) -> Result<Vec<(std::path::PathBuf, Str
                         // Reverse the filesystem-safe encoding used by aden-gen:
                         // "aden---module-foo-bar.rs-MyStruct" → "aden://module/foo/bar.rs#MyStruct"
                         // For anchors in other schemes, use the stem as-is.
-                        let stem = p.file_stem()
-                            .and_then(|s| s.to_str())
-                            .unwrap_or("unknown");
+                        let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("unknown");
                         let anchor = if stem.contains("---module-") {
                             stem.replacen("---module-", "://module/", 1)
                                 .replacen("---", "/", 1)
@@ -139,6 +137,6 @@ fn find_incomplete_contracts(path: &Path) -> Result<Vec<(std::path::PathBuf, Str
             }
         }
     }
-    
+
     Ok(incomplete)
 }

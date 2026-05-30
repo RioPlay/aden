@@ -102,14 +102,14 @@ impl AnchorPattern {
     /// module index page when both score similarly.
     pub fn tiebreak(&self) -> i32 {
         match self {
-            AnchorPattern::Symbol   => 100,
-            AnchorPattern::Adr      => 80,
-            AnchorPattern::Plan     => 70,
-            AnchorPattern::UseCase  => 60,
-            AnchorPattern::Module   => 50,
-            AnchorPattern::Agent    => 40,
-            AnchorPattern::Generic  => 30,
-            AnchorPattern::Readme   => 10,
+            AnchorPattern::Symbol => 100,
+            AnchorPattern::Adr => 80,
+            AnchorPattern::Plan => 70,
+            AnchorPattern::UseCase => 60,
+            AnchorPattern::Module => 50,
+            AnchorPattern::Agent => 40,
+            AnchorPattern::Generic => 30,
+            AnchorPattern::Readme => 10,
         }
     }
 

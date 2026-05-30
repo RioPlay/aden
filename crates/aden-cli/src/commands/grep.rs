@@ -154,8 +154,12 @@ fn load_symbol_spans(root: &Path) -> HashMap<String, Vec<Span>> {
     for (anchor, doc) in docs {
         let (Some(file), Some(start), Some(end)) = (
             doc.attributes.get("source_file"),
-            doc.attributes.get("start_line").and_then(|s| s.parse::<usize>().ok()),
-            doc.attributes.get("end_line").and_then(|s| s.parse::<usize>().ok()),
+            doc.attributes
+                .get("start_line")
+                .and_then(|s| s.parse::<usize>().ok()),
+            doc.attributes
+                .get("end_line")
+                .and_then(|s| s.parse::<usize>().ok()),
         ) else {
             continue;
         };
@@ -166,7 +170,10 @@ fn load_symbol_spans(root: &Path) -> HashMap<String, Vec<Span>> {
             .unwrap_or(Path::new(file))
             .to_string_lossy()
             .to_string();
-        by_file.entry(rel).or_default().push(Span { anchor, start, end });
+        by_file
+            .entry(rel)
+            .or_default()
+            .push(Span { anchor, start, end });
     }
     by_file
 }
@@ -204,8 +211,14 @@ fn print_json(matches: &[Match], limit: usize) {
                 "    {{\"file\": {}, \"line\": {}, \"symbol\": {}, \"anchor\": {}, \"text\": {}}}",
                 json_str(&m.file),
                 m.line,
-                m.symbol.as_deref().map(json_str).unwrap_or_else(|| "null".to_string()),
-                m.anchor.as_deref().map(json_str).unwrap_or_else(|| "null".to_string()),
+                m.symbol
+                    .as_deref()
+                    .map(json_str)
+                    .unwrap_or_else(|| "null".to_string()),
+                m.anchor
+                    .as_deref()
+                    .map(json_str)
+                    .unwrap_or_else(|| "null".to_string()),
                 json_str(&m.text),
             )
         })
