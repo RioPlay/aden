@@ -30,7 +30,7 @@ Block:: A content unit within a Document: table, paragraph, listing, admonition,
 Symbol:: A named entity extracted from source code (function, type, trait, module).
 Anchor:: A globally unique AsciiDoc identifier matching `^[a-z0-9_-]+$`.
 Emitter:: The `aden-emit` crate responsible for serializing `Document` structs into `.adoc` / `.aden` text.
-Extraction:: The process of parsing source code (Rust, Python, PowerShell) into a `Vec<Document>`.
+Extraction:: The process of parsing source code (Rust, Python, Go, TypeScript, Java, and 300+ languages via tree-sitter) into a `Vec<Document>`.
 ContractRegion:: Semantic region of a contract (`Generated`, `Human`, `Agent`, `Security`, `Contract`, `Constitution`, `Override`, `Proposed`). Determines merge behavior.
 ContractState:: Three-way merge state (`ground`/`base`/`working`) for incremental contract generation.
 Constitution:: A `[constitution]` block containing precedence-ranked policy directives. The highest authority in the contract hierarchy.
@@ -59,6 +59,8 @@ Staging:: Write-only audit trail in `.aden/staging/` for agent proposals before 
 |serde_json |JSON consumer for bridges |Latest stable
 |fnv |Stable content hashing |Latest stable
 |petgraph |Graph data structure |Latest stable
+|fjall |LSM-tree store for `.aden/store` |Latest stable
+|postcard |Compact store serialization |Latest stable
 |regex |Lightweight AsciiDoc parsing |Latest stable
 |toml |Configuration parsing |Latest stable
 |===
@@ -75,21 +77,25 @@ Staging:: Write-only audit trail in `.aden/staging/` for agent proposals before 
 |aden-index |Inverted-index semantic search |Shipped Phase 0
 |aden-heal |Drift detection and health scoring |Shipped Phase 0
 |aden-propose |Patch generation and proposal lifecycle |Shipped Phase 0
-|aden-mcp |MCP server integration |Shipped Phase 0
+|aden-store |fjall LSM-tree persistence (`.aden/store`) |Shipped Phase 0
+|aden-diagnose |Rule-based diagnostic scanner (backs `aden lint`) |Shipped Phase 0
+|aden-mcp |MCP server integration (shells out to the `aden` binary) |Shipped Phase 0
 |aden-lsp |LSP for `.adoc`/`.aden` files |Shipped Phase 0
 |aden-policy |Constitutional policy engine, directives |Shipped Phase 0
 |aden-cli |Binary (`aden`) with all commands |Shipped Phase 0
+|aden-api |REST/gRPC API types (experimental, unintegrated) |Implemented, uncalled
+|aden-attest |Attestation/provenance types (experimental, unintegrated) |Implemented, uncalled
+|aden-simulate |Contract simulation/threat modeling (experimental, unintegrated) |Implemented, uncalled
+|aden-telemetry |Token/latency telemetry (experimental, unintegrated) |Implemented, uncalled
 |===
 
 == Phase 1-6 Crate Map (Planned)
 |===
 |Crate |Purpose |Status
 
-|aden-graph |RocksDB persistence, `.adg` emitter |Phase 2
 |aden-retrieval |Tier 1-3 search (structural, semantic, lexical) |Phase 2
 |aden-mcp |Execution-based MCP server |Phase 2
 |aden-a2a |Google A2A agent bridge |Phase 2
-|aden-policy |Directive engine, override validation, DbC checker |Phase 3
 |aden-attest |SPDX, CycloneDX, Ed25519, SLSA, SBOMit |Phase 4
 |aden-telemetry |OTLP ingestion, proposal engine, cost-report |Phase 5
 |aden-simulate |Simulation, history diff, fuzz-contract, threat-model |Phase 5

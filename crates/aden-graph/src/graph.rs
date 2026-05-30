@@ -34,8 +34,8 @@
 //! let graph: AdenGraph<MyNode, MyEdge> = AdenGraph::new();
 //! ```
 
-use crate::nodes::{DocumentNode, AdenEdge, GraphEdge, GraphNode};
-use crate::parser::{parse_file, ParsedDocument};
+use crate::nodes::{AdenEdge, DocumentNode, GraphEdge, GraphNode};
+use crate::parser::{ParsedDocument, parse_file};
 use aden_core::{Document, EdgeType, NodeType};
 use aden_store::GraphStorage;
 use petgraph::graph::{DiGraph, NodeIndex};
@@ -112,12 +112,16 @@ impl<N: GraphNode, E: GraphEdge> AdenGraph<N, E> {
             .anchor_to_index
             .get(src_anchor)
             .copied()
-            .ok_or_else(|| GraphError::UnresolvedReference(src_anchor.to_string(), "not found".to_string()))?;
+            .ok_or_else(|| {
+                GraphError::UnresolvedReference(src_anchor.to_string(), "not found".to_string())
+            })?;
         let tgt_idx = self
             .anchor_to_index
             .get(tgt_anchor)
             .copied()
-            .ok_or_else(|| GraphError::UnresolvedReference(tgt_anchor.to_string(), "not found".to_string()))?;
+            .ok_or_else(|| {
+                GraphError::UnresolvedReference(tgt_anchor.to_string(), "not found".to_string())
+            })?;
 
         if !self.graph.contains_edge(src_idx, tgt_idx) {
             self.graph.add_edge(src_idx, tgt_idx, edge);
@@ -318,15 +322,32 @@ impl<N: GraphNode, E: GraphEdge> AdenGraph<N, E> {
 /// Supported knowledge file extensions.
 const SUPPORTED_EXTENSIONS: &[&str] = &["adoc", "aden", "md", "txt"];
 
+/// Maximum directory recursion depth when collecting knowledge files.
+/// SECURITY: bounds traversal on an untrusted repo so a deeply-nested or
+/// symlink-cycled tree cannot exhaust the stack/time.
+const MAX_COLLECT_DEPTH: usize = 32;
+
 /// Recursively collect knowledge files from a directory.
 fn collect_files(dir: &Path) -> Result<Vec<PathBuf>, GraphError> {
+    collect_files_inner(dir, 0)
+}
+
+fn collect_files_inner(dir: &Path, depth: usize) -> Result<Vec<PathBuf>, GraphError> {
     let mut files = Vec::new();
+    if depth > MAX_COLLECT_DEPTH {
+        return Ok(files);
+    }
     let entries = std::fs::read_dir(dir).map_err(|e| GraphError::Io(e.to_string()))?;
     for entry in entries {
         let entry = entry.map_err(|e| GraphError::Io(e.to_string()))?;
+        // SECURITY: never follow symlinks — a crafted repo could symlink out of
+        // the tree (traversal / info-exposure) or form a cycle (DoS).
+        if entry.file_type().map(|ft| ft.is_symlink()).unwrap_or(true) {
+            continue;
+        }
         let path = entry.path();
         if path.is_dir() {
-            files.extend(collect_files(&path)?);
+            files.extend(collect_files_inner(&path, depth + 1)?);
         } else if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
             if SUPPORTED_EXTENSIONS.contains(&ext) {
                 files.push(path);
@@ -353,12 +374,10 @@ impl AdenGraph<DocumentNode, AdenEdge> {
         // Parallel first pass: parse all files
         let parsed_docs: Vec<(PathBuf, ParsedDocument)> = files
             .par_iter()
-            .filter_map(|file_path| {
-                match parse_file(file_path) {
-                    Ok(parsed) => Some(Ok((file_path.clone(), parsed))),
-                    Err(e) if e.to_string().contains("binary") => None,
-                    Err(e) => Some(Err(GraphError::Parse(e.to_string()))),
-                }
+            .filter_map(|file_path| match parse_file(file_path) {
+                Ok(parsed) => Some(Ok((file_path.clone(), parsed))),
+                Err(e) if e.to_string().contains("binary") => None,
+                Err(e) => Some(Err(GraphError::Parse(e.to_string()))),
             })
             .collect::<Result<Vec<_>, _>>()?;
 
@@ -434,12 +453,17 @@ impl AdenGraph<DocumentNode, AdenEdge> {
                 } else {
                     EdgeType::UsedBy
                 };
-                if let Err(_) = graph.add_edge_by_anchor(&source_anchor, ref_anchor, AdenEdge {
-                    edge_type,
-                }) {}
-                if let Err(_) = graph.add_edge_by_anchor(ref_anchor, &source_anchor, AdenEdge {
-                    edge_type: backlink_type,
-                }) {}
+                if let Err(_) =
+                    graph.add_edge_by_anchor(&source_anchor, ref_anchor, AdenEdge { edge_type })
+                {
+                }
+                if let Err(_) = graph.add_edge_by_anchor(
+                    ref_anchor,
+                    &source_anchor,
+                    AdenEdge {
+                        edge_type: backlink_type,
+                    },
+                ) {}
             }
 
             // Build edges from includes: include::target
@@ -459,9 +483,10 @@ impl AdenGraph<DocumentNode, AdenEdge> {
                 } else {
                     EdgeType::Requires
                 };
-                if let Err(_) = graph.add_edge_by_anchor(&source_anchor, &target_anchor, AdenEdge {
-                    edge_type,
-                }) {}
+                if let Err(_) =
+                    graph.add_edge_by_anchor(&source_anchor, &target_anchor, AdenEdge { edge_type })
+                {
+                }
             }
 
             // Build edges from edge:: macros
@@ -495,9 +520,11 @@ impl AdenGraph<DocumentNode, AdenEdge> {
                     "isequivalent" | "is-equivalent-to" => EdgeType::IsEquivalentTo,
                     _ => EdgeType::RelatesTo,
                 };
-                if let Err(_) = graph.add_edge_by_anchor(&source_anchor, &edge_macro.target, AdenEdge {
-                    edge_type,
-                }) {}
+                if let Err(_) = graph.add_edge_by_anchor(
+                    &source_anchor,
+                    &edge_macro.target,
+                    AdenEdge { edge_type },
+                ) {}
             }
         }
 
@@ -524,14 +551,16 @@ impl AdenGraph<DocumentNode, AdenEdge> {
         let mut graph = Self::new();
 
         // Load all documents from storage
-        let docs = storage.get_all_documents().map_err(|e| GraphError::Io(e.to_string()))?;
+        let docs = storage
+            .get_all_documents()
+            .map_err(|e| GraphError::Io(e.to_string()))?;
 
         // Create nodes from documents
         for (_anchor, doc) in docs {
             let node = DocumentNode {
                 doc,
                 source_path: PathBuf::new(), // storage doesn't track paths
-                parsed: None, // no parsed doc from storage
+                parsed: None,                // no parsed doc from storage
             };
             graph.add_node(node);
         }
@@ -567,11 +596,17 @@ impl AdenGraph<DocumentNode, AdenEdge> {
         ];
 
         for edge_type in &edge_types {
-            let typed_edges = storage.get_edges_by_type(edge_type).map_err(|e| GraphError::Io(e.to_string()))?;
+            let typed_edges = storage
+                .get_edges_by_type(edge_type)
+                .map_err(|e| GraphError::Io(e.to_string()))?;
             for (src, dst) in typed_edges {
-                if let Err(_) = graph.add_edge_by_anchor(&src, &dst, AdenEdge {
-                    edge_type: edge_type.clone(),
-                }) {}
+                if let Err(_) = graph.add_edge_by_anchor(
+                    &src,
+                    &dst,
+                    AdenEdge {
+                        edge_type: edge_type.clone(),
+                    },
+                ) {}
             }
         }
 
@@ -583,17 +618,34 @@ impl AdenGraph<DocumentNode, AdenEdge> {
     pub fn validate_typed_edges(&self) -> Vec<String> {
         let mut errors = Vec::new();
         let code_types = [
-            EdgeType::Uses, EdgeType::UsedBy, EdgeType::Implements,
-            EdgeType::Tests, EdgeType::Documents, EdgeType::Constrains,
-            EdgeType::Justifies, EdgeType::Invokes, EdgeType::Requires,
-            EdgeType::Mutates, EdgeType::Calls, EdgeType::Supersedes,
-            EdgeType::Amends, EdgeType::Verifies,
+            EdgeType::Uses,
+            EdgeType::UsedBy,
+            EdgeType::Implements,
+            EdgeType::Tests,
+            EdgeType::Documents,
+            EdgeType::Constrains,
+            EdgeType::Justifies,
+            EdgeType::Invokes,
+            EdgeType::Requires,
+            EdgeType::Mutates,
+            EdgeType::Calls,
+            EdgeType::Supersedes,
+            EdgeType::Amends,
+            EdgeType::Verifies,
         ];
         let semantic_types = [
-            EdgeType::IsA, EdgeType::PartOf, EdgeType::RelatesTo,
-            EdgeType::SimilarTo, EdgeType::Causes, EdgeType::Implies,
-            EdgeType::SynonymOf, EdgeType::AntonymOf, EdgeType::AssociatedWith,
-            EdgeType::PrerequisiteFor, EdgeType::Explains, EdgeType::IsEquivalentTo,
+            EdgeType::IsA,
+            EdgeType::PartOf,
+            EdgeType::RelatesTo,
+            EdgeType::SimilarTo,
+            EdgeType::Causes,
+            EdgeType::Implies,
+            EdgeType::SynonymOf,
+            EdgeType::AntonymOf,
+            EdgeType::AssociatedWith,
+            EdgeType::PrerequisiteFor,
+            EdgeType::Explains,
+            EdgeType::IsEquivalentTo,
         ];
 
         for edge_idx in self.graph.edge_indices() {
@@ -622,7 +674,10 @@ impl AdenGraph<DocumentNode, AdenEdge> {
 /// Convert a `ParsedDocument` into a `Document` with the given anchor.
 fn parsed_to_document(parsed: &ParsedDocument, anchor: &str, file_path: &Path) -> Document {
     let mut attributes = parsed.attributes.clone();
-    attributes.insert("source_file".to_string(), file_path.to_string_lossy().to_string());
+    attributes.insert(
+        "source_file".to_string(),
+        file_path.to_string_lossy().to_string(),
+    );
     Document {
         anchor: anchor.to_string(),
         node_type: detect_node_type(anchor, file_path),
@@ -639,7 +694,9 @@ fn detect_node_type(anchor: &str, file_path: &Path) -> NodeType {
     let path_str = file_path.to_string_lossy().to_lowercase();
     let anchor_lower = anchor.to_lowercase();
 
-    if path_str.ends_with(".adoc") && (path_str.contains("/adr/") || anchor_lower.starts_with("adr-")) {
+    if path_str.ends_with(".adoc")
+        && (path_str.contains("/adr/") || anchor_lower.starts_with("adr-"))
+    {
         return NodeType::Adr;
     }
     if path_str.contains("runbook") || anchor_lower.starts_with("runbook") {

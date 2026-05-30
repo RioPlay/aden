@@ -30,8 +30,8 @@ pub fn cmd_new(name: &str, lang: &str, parent: &Path) -> Result<(), Box<dyn std:
         }
     }
 
-    // Run aden init in the new project
-    cmd_init(&project_dir)?;
+    // Run aden init in the new project (refs are opt-in via `aden init`).
+    cmd_init(&project_dir, false)?;
 
     // Create initial docs directory (hidden under .aden)
     let aden_docs_dir = project_dir.join(".aden").join("docs");
@@ -82,7 +82,9 @@ aden ci-check .
     );
     std::fs::write(aden_docs_dir.join("README.adoc"), readme)?;
 
-    if !quiet::is_quiet() { println!("✓ Created project {} in {}", name, project_dir.display()); }
+    if !quiet::is_quiet() {
+        println!("✓ Created project {} in {}", name, project_dir.display());
+    }
     println!("✓ Language: {}", lang_lower);
     println!("✓ Scaffolding: aden init, .aden/docs, build system");
     println!("  Next steps:");
@@ -181,7 +183,7 @@ fn scaffold_js(dir: &Path, name: &str) -> Result<(), Box<dyn std::error::Error>>
 /// (`cp target/release/aden ~/.cargo/bin/aden-stable`), then re-run
 /// `aden init` to propagate changes to the local workspace.
 /// See CONTRIBUTING.md for the full stable binary ritual.
-pub fn cmd_init(target: &Path) -> Result<(), Box<dyn std::error::Error>> {
+pub fn cmd_init(target: &Path, with_secure_refs: bool) -> Result<(), Box<dyn std::error::Error>> {
     let agent_dir = target.join(".agent");
     let templates_dir = agent_dir.join("templates");
     std::fs::create_dir_all(&templates_dir)?;
@@ -296,6 +298,42 @@ pub fn cmd_init(target: &Path) -> Result<(), Box<dyn std::error::Error>> {
         .replace("agent-context-template", "agent-context")
         .replace("agent-session-template", "agent-session");
     std::fs::write(agent_dir.join("onboarding.adoc"), onboarding_content)?;
+
+    // Aden's built-in secure-coding constitution (ADR-002). Original AGPL text —
+    // aden's own standard — written as a live `.agent` doc so every project
+    // inherits it. NOT a copy of any third-party guide.
+    std::fs::write(
+        agent_dir.join("secure-coding.adoc"),
+        include_str!("../../../../.agent/templates/secure-coding.adoc"),
+    )?;
+
+    // Optional (--with-secure-refs): scaffold secure-coding REFERENCE stubs.
+    // LICENSING (ADR-002): these embedded templates contain only aden-authored
+    // text — uncopyrightable facts (CWE IDs/names) and aden's own category
+    // glosses — plus citations and canonical fetch URLs. They deliberately do
+    // NOT bundle OWASP/MITRE prose, so no third-party copyleft text is compiled
+    // into the binary. The full documents are fetched by the user from the URLs
+    // in SOURCES and remain under their own licenses.
+    if with_secure_refs {
+        let refs_dir = agent_dir.join("secure-coding-refs");
+        std::fs::create_dir_all(&refs_dir)?;
+        for (name, content) in [
+            (
+                "cwe-top25.adoc",
+                include_str!("../../../../.agent/templates/secure-refs-cwe.adoc"),
+            ),
+            (
+                "owasp-scp.adoc",
+                include_str!("../../../../.agent/templates/secure-refs-scp.adoc"),
+            ),
+            (
+                "SOURCES.adoc",
+                include_str!("../../../../.agent/templates/secure-refs-sources.adoc"),
+            ),
+        ] {
+            std::fs::write(refs_dir.join(name), content)?;
+        }
+    }
 
     // Security-first scaffolding: contracts are build artifacts
     let aden_dir = target.join(".aden");
@@ -450,8 +488,14 @@ Always verify that third-party licenses are compatible with your project's licen
         "Generated {} template files.",
         templates_dir.read_dir()?.count()
     );
+    println!("Wrote .agent/secure-coding.adoc — aden's built-in secure-coding standard.");
+    if with_secure_refs {
+        println!(
+            "Wrote .agent/secure-coding-refs/ — CWE/OWASP reference stubs + citations (fetch full text from the URLs in SOURCES.adoc)."
+        );
+    }
     println!("Sample hooks: .aden/hooks/pre-commit, .aden/hooks/pre-push");
-    
+
     // Compile the project into the knowledge graph (.aden/store)
     println!("\nBuilding the knowledge graph...");
     match crate::commands::generate::cmd_gen(target, false) {
@@ -464,6 +508,6 @@ Always verify that third-party licenses are compatible with your project's licen
             println!("You can run 'aden gen' later to build it.");
         }
     }
-    
+
     Ok(())
 }

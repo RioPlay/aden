@@ -118,9 +118,12 @@ pub fn cmd_grep(
 
     println!("Found {} match(es) for '{}':", total, pattern);
     for m in matches.iter().take(limit) {
+        // SECURITY: m.text is a raw line from an untrusted source file — strip
+        // terminal escape sequences before printing (audit MEDIUM-3).
+        let text = crate::util::sanitize_terminal(&m.text);
         match &m.symbol {
-            Some(sym) => println!("{}:{}  ({}): {}", m.file, m.line, sym, m.text),
-            None => println!("{}:{}: {}", m.file, m.line, m.text),
+            Some(sym) => println!("{}:{}  ({}): {}", m.file, m.line, sym, text),
+            None => println!("{}:{}: {}", m.file, m.line, text),
         }
     }
     if total > limit {
@@ -151,8 +154,12 @@ fn load_symbol_spans(root: &Path) -> HashMap<String, Vec<Span>> {
     for (anchor, doc) in docs {
         let (Some(file), Some(start), Some(end)) = (
             doc.attributes.get("source_file"),
-            doc.attributes.get("start_line").and_then(|s| s.parse::<usize>().ok()),
-            doc.attributes.get("end_line").and_then(|s| s.parse::<usize>().ok()),
+            doc.attributes
+                .get("start_line")
+                .and_then(|s| s.parse::<usize>().ok()),
+            doc.attributes
+                .get("end_line")
+                .and_then(|s| s.parse::<usize>().ok()),
         ) else {
             continue;
         };
@@ -163,7 +170,10 @@ fn load_symbol_spans(root: &Path) -> HashMap<String, Vec<Span>> {
             .unwrap_or(Path::new(file))
             .to_string_lossy()
             .to_string();
-        by_file.entry(rel).or_default().push(Span { anchor, start, end });
+        by_file
+            .entry(rel)
+            .or_default()
+            .push(Span { anchor, start, end });
     }
     by_file
 }
@@ -186,22 +196,40 @@ fn short_name(anchor: &str) -> String {
     }
 }
 
+/// Emit a structured envelope rather than a bare array. The agent-facing client
+/// needs the total count and an explicit `truncated` flag — the human footer
+/// ("... and N more (raise --limit)") is noise to a program. `returned` is how
+/// many of `total` matches are in the array after `limit` applies.
 fn print_json(matches: &[Match], limit: usize) {
+    let total = matches.len();
+    let returned = total.min(limit);
     let items: Vec<String> = matches
         .iter()
         .take(limit)
         .map(|m| {
             format!(
-                "  {{\"file\": {}, \"line\": {}, \"symbol\": {}, \"anchor\": {}, \"text\": {}}}",
+                "    {{\"file\": {}, \"line\": {}, \"symbol\": {}, \"anchor\": {}, \"text\": {}}}",
                 json_str(&m.file),
                 m.line,
-                m.symbol.as_deref().map(json_str).unwrap_or_else(|| "null".to_string()),
-                m.anchor.as_deref().map(json_str).unwrap_or_else(|| "null".to_string()),
+                m.symbol
+                    .as_deref()
+                    .map(json_str)
+                    .unwrap_or_else(|| "null".to_string()),
+                m.anchor
+                    .as_deref()
+                    .map(json_str)
+                    .unwrap_or_else(|| "null".to_string()),
                 json_str(&m.text),
             )
         })
         .collect();
-    println!("[\n{}\n]", items.join(",\n"));
+    println!(
+        "{{\"total\": {}, \"returned\": {}, \"truncated\": {}, \"matches\": [\n{}\n]}}",
+        total,
+        returned,
+        total > limit,
+        items.join(",\n")
+    );
 }
 
 /// Minimal JSON string escaping (quotes, backslashes, control chars).

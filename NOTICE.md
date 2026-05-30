@@ -1,3 +1,40 @@
+# NOTICE
+
+**aden** — A Dense Referential Context Compiler.
+
+© RioPlay.
+
+Licensed under AGPL-3.0-or-later (see [LICENSE](LICENSE)).
+
+This NOTICE file additionally lists the licenses of the third-party
+dependencies aden builds against, for attribution and license-compatibility
+purposes.
+
+## License compatibility
+
+aden is distributed under AGPL-3.0-or-later. The overwhelming majority of its
+dependencies are permissively licensed (MIT / Apache-2.0 and similar), which are
+GPL/AGPL-compatible. The two non-permissive dependencies are used under
+AGPL-compatible terms:
+
+- **`self_cell`** — `Apache-2.0 OR GPL-2.0-only`. Used under the **Apache-2.0**
+  branch, which is compatible with AGPL-3.0.
+- **`option-ext`** — `MPL-2.0`. MPL is a file-level (weak) copyleft and is
+  compatible with (A)GPL-licensed projects; it is consumed unmodified as an
+  upstream crate.
+
+## Bundled reference material
+
+The repository also contains third-party *reference material* used to inform
+aden's secure-coding checks. See [`research/secure-coding/SOURCES.md`](research/secure-coding/SOURCES.md)
+for full attribution. This material — which includes the OWASP Secure Coding
+Practices (CC BY-SA 4.0, a ShareAlike license), the OWASP Top 10 (CC BY 3.0),
+and the MITRE CWE corpus — is **not** part of aden's AGPL-licensed source and is
+**not** compiled into the binary. It is retained for research/derivation only
+and carries its own upstream licenses.
+
+---
+
 # Third-Party Dependencies
 
 This project uses the following open-source packages.

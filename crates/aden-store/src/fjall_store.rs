@@ -145,6 +145,10 @@ impl GraphStorage for FjallStorage {
                 None => vec![],
             };
             cur.append(&mut adds);
+            // Dedup so re-indexing an unchanged edge does not inflate the list.
+            // EdgeType has no Ord, so dedup via a seen-set, preserving order.
+            let mut seen = HashSet::new();
+            cur.retain(|e| seen.insert(e.clone()));
             self.outgoing.insert(&key, serialize(&cur)?)?;
         }
         for (dst, mut adds) in in_add {
@@ -154,6 +158,8 @@ impl GraphStorage for FjallStorage {
                 None => vec![],
             };
             cur.append(&mut adds);
+            let mut seen = HashSet::new();
+            cur.retain(|e| seen.insert(e.clone()));
             self.incoming.insert(&key, serialize(&cur)?)?;
         }
         Ok(())
@@ -162,18 +168,64 @@ impl GraphStorage for FjallStorage {
     fn delete_edge(&self, src: &str, dst: &str, edge_type: &EdgeType) -> Result<(), StoreError> {
         self.edges.remove(edge_key(src, dst, edge_type))?;
 
+        // Drop ONLY the (dst, edge_type) entry from src's outgoing list and the
+        // (src, edge_type) entry from dst's incoming list. The retain predicate
+        // must match the endpoint as well as the type — matching on type alone
+        // would wipe every same-type neighbour from the adjacency list.
         let out_key = outgoing_key(src);
         if let Some(b) = self.outgoing.get(&out_key)? {
             let mut out: Vec<(String, EdgeType)> = deserialize(&b)?;
-            out.retain(|(_, t)| t != edge_type);
+            out.retain(|(n, t)| !(n == dst && t == edge_type));
             self.outgoing.insert(&out_key, serialize(&out)?)?;
         }
         let in_key = incoming_key(dst);
         if let Some(b) = self.incoming.get(&in_key)? {
             let mut inc: Vec<(String, EdgeType)> = deserialize(&b)?;
-            inc.retain(|(_, t)| t != edge_type);
+            inc.retain(|(n, t)| !(n == src && t == edge_type));
             self.incoming.insert(&in_key, serialize(&inc)?)?;
         }
+        Ok(())
+    }
+
+    fn delete_node(&self, anchor: &str) -> Result<(), StoreError> {
+        // Remove the doc record.
+        self.docs.remove(doc_key(anchor))?;
+
+        // Outgoing: for each (dst, et), drop the edge key and remove anchor from
+        // dst's incoming mirror list.
+        let out: Vec<(String, EdgeType)> = match self.outgoing.get(outgoing_key(anchor))? {
+            Some(b) => deserialize(&b)?,
+            None => vec![],
+        };
+        for (dst, et) in &out {
+            self.edges.remove(edge_key(anchor, dst, et))?;
+            let in_key = incoming_key(dst);
+            if let Some(b) = self.incoming.get(&in_key)? {
+                let mut inc: Vec<(String, EdgeType)> = deserialize(&b)?;
+                inc.retain(|(n, t)| !(n == anchor && t == et));
+                self.incoming.insert(&in_key, serialize(&inc)?)?;
+            }
+        }
+
+        // Incoming: for each (src, et), drop the edge key and remove anchor from
+        // src's outgoing mirror list.
+        let inc: Vec<(String, EdgeType)> = match self.incoming.get(incoming_key(anchor))? {
+            Some(b) => deserialize(&b)?,
+            None => vec![],
+        };
+        for (src, et) in &inc {
+            self.edges.remove(edge_key(src, anchor, et))?;
+            let out_key = outgoing_key(src);
+            if let Some(b) = self.outgoing.get(&out_key)? {
+                let mut o: Vec<(String, EdgeType)> = deserialize(&b)?;
+                o.retain(|(n, t)| !(n == anchor && t == et));
+                self.outgoing.insert(&out_key, serialize(&o)?)?;
+            }
+        }
+
+        // Finally drop the anchor's own adjacency lists.
+        self.outgoing.remove(outgoing_key(anchor))?;
+        self.incoming.remove(incoming_key(anchor))?;
         Ok(())
     }
 

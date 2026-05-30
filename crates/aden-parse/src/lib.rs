@@ -52,7 +52,27 @@ fn get_router() -> &'static LanguageRouter {
 }
 
 /// Detect language from file extension and parse into Documents.
+///
+/// SECURITY (DoS hardening): the language extractors run on untrusted source
+/// from arbitrary repositories. A bug in any one extractor (e.g. an
+/// out-of-bounds slice on a malformed comment) would otherwise panic and abort
+/// the entire `gen`/index run. We contain each file's parse in `catch_unwind`
+/// so a single malformed file degrades to a skipped file (`ParseError`) that
+/// callers already handle, rather than taking down the whole batch.
 pub fn parse_file(path: &Path, source: &str) -> Result<Vec<Document>> {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        parse_file_inner(path, source)
+    }));
+    match result {
+        Ok(r) => r,
+        Err(_) => Err(Error::Parse(format!(
+            "parser panicked on {} (skipped; this file did not abort the run)",
+            path.display()
+        ))),
+    }
+}
+
+fn parse_file_inner(path: &Path, source: &str) -> Result<Vec<Document>> {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
 
     // PowerShell stays on the JSON bridge for now.

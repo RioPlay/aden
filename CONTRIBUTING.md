@@ -35,11 +35,16 @@ Run the full CI check locally:
 aden ci-check .
 ```
 
-This runs: `aden check`, `aden heal`, `aden lint`, `cargo test`, and `cargo clippy`.
+This runs blocking gates — `aden check`, project tests, `aden lint`, a secret
+scan, an accreditation/attribution check, an OWASP-style `aden audit`, and a
+merge-conflict-marker scan — plus warning-only gates (constitutional firewall,
+insecure-protocol scan, `cargo clippy`, `cargo audit`, contract freshness). It
+does not run `aden heal`.
 
 ### Automatic Pre-Commit Hooks (Recommended)
 
-Aden ships with sample hooks. Install them for automatic validation:
+Run `aden init` to scaffold sample git hooks under `.aden/hooks/`, then install
+them for automatic validation:
 
 ```bash
 # Install pre-commit hook
@@ -119,7 +124,3 @@ aden-stable ci-check .
 ### Why This Matters
 
 If you skip step 3, the `.agent/` workspace on disk will contain stale templates that don't match the binary's embedded versions. This causes silent drift that breaks downstream projects and wastes debugging time.
-
-== Modules
-
-See: <<mod-aden-core>>, <<mod-aden-cli>>, <<mod-aden-graph>>

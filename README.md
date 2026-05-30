@@ -18,14 +18,17 @@ Aden compiles source code, documentation, notes, and plans into a **knowledge gr
 Source Code → Aden Pipeline → Knowledge Graph → Context for AI
 ```
 
-## What Aden Replaces
+## Where Aden Fits
 
-| Replaces | Why |
-|----------|-----|
-| Static analysis tools (clippy, Semgrep) | Aden finds *semantic relationships*, not bugs |
-| Documentation generators (Rustdoc, Javadoc) | Aden produces *machine-navigable* context, not HTML |
-|grep + manual file hunting | Aden lets you query by intent, not keywords |
-| Scrolling through READMEs | Aden assembles exactly the context you need |
+Aden **complements** your existing tools — it maps the structure of a codebase,
+it does not find bugs or render HTML.
+
+| Instead of / alongside | What Aden adds |
+|------------------------|----------------|
+| Static analysis tools (clippy, Semgrep) | Aden finds *semantic relationships and blast radius*, not bugs — keep clippy/Semgrep for correctness; use Aden to navigate the graph |
+| Documentation generators (Rustdoc, Javadoc) | Aden produces *machine-navigable* context for LLMs, not HTML |
+| grep + manual file hunting | Aden lets you query by intent and relationship, with every hit tagged by its enclosing symbol |
+| Scrolling through READMEs | Aden assembles exactly the connected context you need, within a token budget |
 
 ## Quick Start
 
@@ -46,14 +49,18 @@ aden ask "How does login work?"
 # Structure-aware search: every match tagged with its enclosing symbol
 aden grep "hash_password"
 
-# Find a symbol's definition with an exact line number
+# Find a symbol's definition AND its real aden:// anchor
 aden locate --symbol login
 
 # Blast radius before a refactor — who depends on this symbol?
-aden query --backlinks hash_password
+# query/asm take a full aden:// anchor (from locate/grep/list), not a bare name:
+aden query --backlinks "aden://module/<crate>/<module-doc>.adoc#code_block_3"
 
 # Assemble a module (or symbol) overview within a token budget
-aden asm --from mod-<crate> --depth 1
+aden asm --from "aden://module/<crate>/<module-doc>.adoc#code_block_3" --depth 1
+
+# Expose Aden's commands to your AI client as MCP tools
+aden mcp install --platform claude   # see docs/mcp-intro.md
 ```
 
 The graph is **fresh by construction**: read commands (`ask`/`asm`/`query`/
@@ -89,7 +96,7 @@ indexes Markdown/AsciiDoc documentation alongside code.
 
 - **Deep extraction** (call graph, signatures, doc comments): Rust, Python, Go,
   TypeScript/JavaScript, Java, C#, C, Ruby, PHP, Kotlin, PowerShell.
-- **Generic extraction** (symbols + structure): 305+ further languages via
+- **Generic extraction** (symbols + structure): 300+ further languages via
   tree-sitter.
 
 Grammars are compiled into the binary at build time (see `.cargo/config.toml` /
@@ -151,6 +158,18 @@ Aden's 350+ direct and transitive dependencies — each with its license — liv
 in `NOTICE.md`** (regenerate with `aden licenses`). If you maintain a project
 Aden depends on and feel under-credited, that is an oversight we want to
 correct — please open an issue and we will fix it.
+
+### Third-party reference material
+
+The `research/` tree contains documentation that Aden *parses and queries*, not
+code it compiles or links — e.g. a secure-coding knowledge base summarizing
+OWASP and MITRE CWE guidance. This material is under its own third-party
+licenses (CC BY-SA 3.0, CC BY 3.0, and the MITRE CWE Terms of Use), kept
+segregated from Aden's AGPL-3.0 source and never embedded in any binary. Full
+citations, required notices, and trademark/non-endorsement statements are in
+`research/secure-coding/SOURCES.md` and `research/README.md`. "OWASP" and "CWE"
+are trademarks of their respective owners; their use here is nominative and
+implies no affiliation or endorsement.
 
 ## The Name
 

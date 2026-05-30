@@ -25,6 +25,7 @@ This is the canonical entry point for all Aden documentation. Read the document 
 |Document |What You'll Learn |Time
 
 |<<ai-integration>> |How to use `aden ask`, `aden asm`, `aden query`, `aden locate` as an AI agent |20 minutes
+|link:mcp-intro.md[MCP Setup] |Install the Aden MCP server (`aden mcp install --platform <client>`) and verify it |10 minutes
 |===
 
 == For Contributors
@@ -61,8 +62,10 @@ This is the canonical entry point for all Aden documentation. Read the document 
 
 [source,bash]
 ----
-# Install
-cargo install --path crates/aden-cli
+# Install (builds release; installs both `aden` and `aden-mcp` to ~/.local/bin)
+./install.sh
+# NOTE: `cargo install --path crates/aden-cli` installs ONLY the `aden` binary
+# and silently omits the `aden-mcp` server. Use ./install.sh if you want MCP.
 
 # Initialize a project
 aden init

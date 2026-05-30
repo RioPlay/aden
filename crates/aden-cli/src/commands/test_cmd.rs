@@ -42,11 +42,14 @@ pub fn cmd_test(
     scope: Option<&str>,
     filter: Option<&str>,
     list_only: bool,
+    json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    println!("Aden Universal Test Runner");
-    println!("===========================");
-    println!("Scanning: {}", path.display());
-    println!();
+    if !json {
+        println!("Aden Universal Test Runner");
+        println!("===========================");
+        println!("Scanning: {}", path.display());
+        println!();
+    }
 
     let test_scope = scope.map(TestScope::from_str);
     let mut all_tests = discover_tests(path)?;
@@ -59,8 +62,67 @@ pub fn cmd_test(
         all_tests.retain(|t| t.name.to_lowercase().contains(&f.to_lowercase()));
     }
 
-    println!("Discovered {} tests", all_tests.len());
+    // --list (or -j --list): report the discovered tests without running them.
+    if list_only {
+        if json {
+            let envelope = serde_json::json!({
+                "scanned_path": path.to_string_lossy(),
+                "discovered": all_tests.len(),
+                "ran": false,
+                "tests": all_tests,
+            });
+            println!("{}", serde_json::to_string_pretty(&envelope)?);
+            return Ok(());
+        }
+        println!("Discovered {} tests", all_tests.len());
+        print_test_list(&all_tests);
+        return Ok(());
+    }
 
+    if !json {
+        println!("Discovered {} tests", all_tests.len());
+        print_test_list(&all_tests);
+        println!();
+        println!("Running tests...");
+        println!();
+    }
+
+    let results = run_tests(&all_tests)?;
+    let passed = results.iter().filter(|r| r.passed).count();
+    let failed = results.iter().filter(|r| !r.passed).count();
+
+    if json {
+        let envelope = serde_json::json!({
+            "scanned_path": path.to_string_lossy(),
+            "discovered": all_tests.len(),
+            "ran": true,
+            "passed": passed,
+            "failed": failed,
+            "results": results,
+        });
+        println!("{}", serde_json::to_string_pretty(&envelope)?);
+    } else {
+        println!("Results: {} passed, {} failed", passed, failed);
+        for result in &results {
+            if !result.passed {
+                println!(
+                    "  FAIL: {} - {}",
+                    result.file,
+                    result.message.as_deref().unwrap_or("unknown error")
+                );
+            }
+        }
+    }
+
+    if failed > 0 {
+        std::process::exit(1);
+    }
+
+    Ok(())
+}
+
+/// Print the discovered tests as a numbered human list.
+fn print_test_list(all_tests: &[TestInfo]) {
     for (i, test) in all_tests.iter().enumerate() {
         let scope_str = match test.scope {
             TestScope::Unit => "unit",
@@ -75,37 +137,6 @@ pub fn cmd_test(
             test.line
         );
     }
-
-    if list_only {
-        return Ok(());
-    }
-
-    println!();
-    println!("Running tests...");
-    println!();
-
-    let results = run_tests(&all_tests)?;
-
-    let passed = results.iter().filter(|r| r.passed).count();
-    let failed = results.iter().filter(|r| !r.passed).count();
-
-    println!("Results: {} passed, {} failed", passed, failed);
-
-    for result in &results {
-        if !result.passed {
-            println!(
-                "  FAIL: {} - {}",
-                result.file,
-                result.message.as_deref().unwrap_or("unknown error")
-            );
-        }
-    }
-
-    if failed > 0 {
-        std::process::exit(1);
-    }
-
-    Ok(())
 }
 
 fn discover_tests(path: &Path) -> Result<Vec<TestInfo>, Box<dyn std::error::Error>> {

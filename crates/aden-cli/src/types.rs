@@ -14,6 +14,12 @@ pub struct GenCache {
 pub struct GenCacheEntry {
     pub source_mtime: u64,
     pub source_path: String,
+    /// Anchors this source file contributed to the store on its last index.
+    /// Used to prune deleted symbols: on re-index, any previously-recorded
+    /// anchor absent from the fresh parse is stale and gets removed. Defaults
+    /// to empty for caches written before this field existed (back-compat).
+    #[serde(default)]
+    pub anchors: Vec<String>,
 }
 
 /// Intent classification for natural-language queries.
@@ -52,7 +58,7 @@ impl std::fmt::Display for OwaspSeverity {
     }
 }
 
-/// A single OWASP-style finding.
+/// A single OWASP-aligned finding.
 pub struct OwaspFinding {
     pub owasp_id: &'static str,
     pub category: &'static str,
@@ -96,14 +102,14 @@ impl AnchorPattern {
     /// module index page when both score similarly.
     pub fn tiebreak(&self) -> i32 {
         match self {
-            AnchorPattern::Symbol   => 100,
-            AnchorPattern::Adr      => 80,
-            AnchorPattern::Plan     => 70,
-            AnchorPattern::UseCase  => 60,
-            AnchorPattern::Module   => 50,
-            AnchorPattern::Agent    => 40,
-            AnchorPattern::Generic  => 30,
-            AnchorPattern::Readme   => 10,
+            AnchorPattern::Symbol => 100,
+            AnchorPattern::Adr => 80,
+            AnchorPattern::Plan => 70,
+            AnchorPattern::UseCase => 60,
+            AnchorPattern::Module => 50,
+            AnchorPattern::Agent => 40,
+            AnchorPattern::Generic => 30,
+            AnchorPattern::Readme => 10,
         }
     }
 

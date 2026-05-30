@@ -4,58 +4,13 @@
 pub mod quiet;
 
 use aden_emit::check::{collect_anchors, find_refs};
-use aden_graph::{cycles::find_cycles, integrity::check_hashes, GraphNode};
+use aden_graph::{GraphNode, cycles::find_cycles, integrity::check_hashes};
 use serde_json::Map;
 use std::collections::HashSet;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use crate::types::GenCache;
-
-/// Infer the parent module anchor from a source file path.
-///
-/// Supports all common monorepo workspace layouts:
-///   - `crates/<name>/src/...`   (Cargo workspaces)
-///   - `packages/<name>/src/...` (npm/pnpm workspaces, some Cargo)
-///   - `modules/<name>/src/...`  (Go, generic)
-///   - `libs/<name>/src/...`     (Nx, Bazel)
-///   - `services/<name>/src/...` (microservice repos)
-///   - `apps/<name>/src/...`     (monorepo apps)
-///   - `src/<name>/...`          (flat layout — returns mod-<name>)
-///
-/// Returns `None` for single-package repos (no subdirectory workspace).
-fn infer_parent_module_from_source(source_path: &std::path::Path) -> Option<String> {
-    let path_str = source_path.to_string_lossy();
-    // Ordered by specificity: longer segment names first to avoid false matches
-    const WORKSPACE_DIRS: &[(&str, usize)] = &[
-        ("/crates/",   8),
-        ("/packages/", 10),
-        ("/modules/",  9),
-        ("/libs/",     6),
-        ("/services/", 10),
-        ("/apps/",     6),
-        ("crates/",    7),
-        ("packages/",  9),
-        ("modules/",   8),
-        ("libs/",      5),
-        ("services/",  9),
-        ("apps/",      5),
-        ("/src/",      5), // flat layout: /src/<name>/...
-        ("src/",       4),
-    ];
-    for (segment, skip) in WORKSPACE_DIRS {
-        if let Some(start) = path_str.find(segment) {
-            let after = &path_str[start + skip..];
-            if let Some(end) = after.find('/') {
-                let name = &after[..end];
-                if !name.is_empty() && name != "src" && name != "lib" && name != "main" {
-                    return Some(format!("mod-{}", name));
-                }
-            }
-        }
-    }
-    None
-}
 
 /// Reject project names that could traverse directories.
 pub fn validate_name(name: &str) -> Result<(), Box<dyn std::error::Error>> {
@@ -75,32 +30,6 @@ pub fn safe_relative(path_str: &str) -> Result<(), Box<dyn std::error::Error>> {
         return Err(format!("Path traversal blocked: '{}' contains '..'", path_str).into());
     }
     Ok(())
-}
-
-/// Walk up from `start` looking for a directory containing `.aden/`.
-pub fn find_aden_root(start: &Path) -> Option<PathBuf> {
-    let mut current = start.canonicalize().unwrap_or_else(|_| start.to_path_buf());
-    loop {
-        if current.join(".aden").is_dir() {
-            return Some(current);
-        }
-        if let Some(parent) = current.parent() {
-            current = parent.to_path_buf();
-        } else {
-            return None;
-        }
-    }
-}
-
-/// Compute the base-cache path for a given contract output path.
-pub fn base_cache_path(contract_path: &Path) -> Option<PathBuf> {
-    let file_name = contract_path.file_name()?.to_str()?;
-    let root = if contract_path.is_absolute() {
-        find_aden_root(contract_path.parent()?)?
-    } else {
-        find_aden_root(std::env::current_dir().ok()?.as_path())?
-    };
-    Some(root.join(".aden").join("contract-base").join(file_name))
 }
 
 /// Project-root markers across ecosystems. Ordered roughly by how strongly each
@@ -184,8 +113,7 @@ const EXTENSIONLESS_SOURCE_FILES: &[&str] = &[
 pub fn discover_source_files(root: &Path) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
     use std::collections::HashSet;
 
-    let supported: HashSet<&'static str> =
-        aden_parse::supported_extensions().into_iter().collect();
+    let supported: HashSet<&'static str> = aden_parse::supported_extensions().into_iter().collect();
     let filter = aden_core::filter::AdenFilter::from_directory(root);
 
     let mut files = Vec::new();
@@ -248,19 +176,55 @@ fn walk_supported_files(
     Ok(())
 }
 
-/// Strip absolute prefix from source_file attributes to prevent
-/// username / home-directory leakage in emitted contracts.
-pub fn sanitize_source_file(doc: &mut aden_core::Document) {
-    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+/// Strip the project-root prefix from a doc's `source_file` attribute so no
+/// absolute host path (and the `$HOME`/username it contains) is persisted to
+/// the store or emitted into LLM context.
+///
+/// SECURITY (audit MEDIUM-2): this must strip against the actual discovery
+/// `root`, NOT `std::env::current_dir()`. When aden indexes a repo that is not
+/// under the process cwd (e.g. `aden gen /other/repo`, or any MCP call where
+/// the resolved root differs from cwd), a cwd-based strip silently fails and
+/// the full `/home/<user>/...` path leaks through. Stripping against `root`
+/// always yields a repo-relative path. As defense-in-depth, if the value is
+/// still absolute afterwards, fall back to the bare file name so no absolute
+/// component can ever be stored.
+pub fn sanitize_source_file(doc: &mut aden_core::Document, root: &Path) {
     if let Some(source_file) = doc.attributes.get("source_file") {
         let p = std::path::Path::new(source_file);
-        if p.is_absolute()
-            && let Ok(rel) = p.strip_prefix(&cwd)
-        {
-            doc.attributes
-                .insert("source_file".to_string(), rel.to_string_lossy().to_string());
+        if p.is_absolute() {
+            let rel = p
+                .strip_prefix(root)
+                .ok()
+                .map(|r| r.to_string_lossy().to_string())
+                .or_else(|| p.file_name().map(|f| f.to_string_lossy().to_string()));
+            if let Some(rel) = rel {
+                doc.attributes.insert("source_file".to_string(), rel);
+            }
         }
     }
+}
+
+/// Make untrusted text safe to print to a terminal.
+///
+/// SECURITY (audit MEDIUM-3): aden's read commands echo content from arbitrary
+/// untrusted source files to stdout. A crafted line containing ANSI/OSC escape
+/// sequences (`ESC[2J`, OSC-52 clipboard writes, OSC-8 hyperlinks/title spoof)
+/// would otherwise be interpreted by the operator's terminal and fed verbatim
+/// into an agent's context. Replace ESC and all C0/C1 control bytes (except
+/// `\t`) with a visible `\xNN` form. Applied unconditionally — not gated on
+/// isatty — so piped/agent output is sanitized too.
+pub fn sanitize_terminal(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        let cp = c as u32;
+        // C0 controls (0x00–0x1F) except tab, DEL (0x7F), and C1 (0x80–0x9F).
+        if (cp < 0x20 && c != '\t') || cp == 0x7f || (0x80..=0x9f).contains(&cp) {
+            out.push_str(&format!("\\x{:02x}", cp.min(0xff)));
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 /// Normalize path separators for cross-platform skip-pattern matching.
@@ -333,61 +297,6 @@ pub fn parse_edge_types(input: &str) -> Vec<aden_core::EdgeType> {
         .collect()
 }
 
-/// Emit documents to files or stdout.
-pub fn emit_docs(
-    mut docs: Vec<aden_core::Document>,
-    out_dir: Option<&Path>,
-    source: &Path,
-    format: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
-    if docs.is_empty() {
-        return Ok(());
-    }
-    // SECURITY: Strip absolute paths from source_file attributes before emitting
-    for doc in &mut docs {
-        sanitize_source_file(doc);
-    }
-
-    // Auto-link to parent module (infer from source path)
-    let parent_module = infer_parent_module_from_source(source);
-    if parent_module.is_some() {
-        for doc in &mut docs {
-            doc.blocks.push(aden_core::Block::Paragraph("== Relationships".to_string()));
-            doc.blocks.push(aden_core::Block::DescriptionList(vec![
-                (format!("<<{},module>>", parent_module.as_ref().unwrap()), 
-                 "This symbol is part of the parent module.".to_string())
-            ]));
-        }
-    }
-
-    let is_markdown = format.eq_ignore_ascii_case("md");
-    let output = if is_markdown {
-        aden_emit::emit_md(&docs)
-    } else {
-        aden_emit::emit(&docs)
-    };
-
-    if let Some(out) = out_dir {
-        std::fs::create_dir_all(out)?;
-        for doc in &docs {
-            let ext = if is_markdown { "md" } else { "adoc" };
-            let file_name = format!("{}.{}", sanitize_anchor(&doc.anchor), ext);
-            let file_path = out.join(&file_name);
-            let content = if is_markdown {
-                aden_emit::emit_document_md(doc)
-            } else {
-                aden_emit::emit_document(doc)
-            };
-            std::fs::write(&file_path, content)?;
-            println!("Emitted {}", file_path.display());
-        }
-    } else {
-        println!("{output}");
-    }
-
-    Ok(())
-}
-
 /// Load the generation cache from disk, returning a default on any error.
 pub fn load_gen_cache(path: &Path) -> GenCache {
     std::fs::read_to_string(path)
@@ -448,15 +357,15 @@ fn check_incomplete_contracts(path: &Path) -> Vec<String> {
                             // Check if it's been filled (has non-empty required fields)
                             // A filled contract won't have the hint line or will have content after ====
                             let has_hint = text.contains("Hint:");
-                            let has_content_after_marker = text.match_indices("[must-complete]")
+                            let has_content_after_marker = text
+                                .match_indices("[must-complete]")
                                 .last()
                                 .map(|(pos, _)| text[pos..].contains("===="))
                                 .unwrap_or(false);
 
                             if has_hint || !has_content_after_marker {
-                                let anchor = p.file_stem()
-                                    .and_then(|s| s.to_str())
-                                    .unwrap_or("unknown");
+                                let anchor =
+                                    p.file_stem().and_then(|s| s.to_str()).unwrap_or("unknown");
                                 incomplete.push(format!(
                                     "WARNING: Incomplete contract: {} - run 'aden complete' to fill missing documentation",
                                     anchor
@@ -544,22 +453,54 @@ pub fn perform_check(path: &Path) -> Result<Vec<String>, Box<dyn std::error::Err
     }
 
     let orphans = graph.orphans();
-    if orphans.is_empty() {
-        messages.push("INFO: No orphan documents.".to_string());
+    // Many orphans are EXPECTED: doc-heading anchors (aden://doc/...) and
+    // standalone metadata docs (ADR/plan/use-case/readme/agent) legitimately
+    // have no graph edges — they are reference material, not dead code. Only
+    // flag *actionable* orphans (code symbols/modules that should be connected)
+    // as a WARNING, so the real signal is not buried under hundreds of expected
+    // metadata nodes. The rest are reported as a quiet count.
+    let is_expected_metadata = |a: &str| {
+        a.starts_with("aden://doc/")
+            || a.starts_with("adr-")
+            || a.starts_with("plan-")
+            || a.starts_with("use-case-")
+            || a.starts_with("agent-")
+            || a == "readme"
+    };
+    let (expected, actionable): (Vec<&String>, Vec<&String>) =
+        orphans.iter().partition(|a| is_expected_metadata(a));
+
+    if actionable.is_empty() {
+        if expected.is_empty() {
+            messages.push("INFO: No orphan documents.".to_string());
+        } else {
+            messages.push(format!(
+                "INFO: No actionable orphans ({} expected metadata doc(s) have no edges, which is normal).",
+                expected.len()
+            ));
+        }
     } else {
         // Summarize rather than emit one warning per orphan — a large repo can
-        // have hundreds, which buries the rest of the check output (and the
-        // agent's context). Show a count and a sample.
+        // have hundreds, which buries the rest of the check output.
         const ORPHAN_SAMPLE: usize = 10;
         messages.push(format!(
-            "WARNING: {} orphan document(s) (run 'aden heal . --gc' to link or remove):",
-            orphans.len()
+            "WARNING: {} actionable orphan symbol(s) with no edges (run 'aden heal . --gc' to remove if deleted):",
+            actionable.len()
         ));
-        for o in orphans.iter().take(ORPHAN_SAMPLE) {
+        for o in actionable.iter().take(ORPHAN_SAMPLE) {
             messages.push(format!("  - {}", o));
         }
-        if orphans.len() > ORPHAN_SAMPLE {
-            messages.push(format!("  ... and {} more", orphans.len() - ORPHAN_SAMPLE));
+        if actionable.len() > ORPHAN_SAMPLE {
+            messages.push(format!(
+                "  ... and {} more",
+                actionable.len() - ORPHAN_SAMPLE
+            ));
+        }
+        if !expected.is_empty() {
+            messages.push(format!(
+                "INFO: (plus {} expected metadata doc(s) with no edges — normal)",
+                expected.len()
+            ));
         }
     }
 
@@ -694,4 +635,50 @@ pub fn generate_proposal_id() -> String {
         .as_nanos();
     let pid = std::process::id();
     format!("{pid}-{ts}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sanitize_terminal_neutralizes_escapes_keeps_text() {
+        // ESC, BEL, and an OSC-52 clipboard sequence must be rendered visible.
+        let evil = "\x1b[2Jclear\x07bell\x1b]52;c;cG93d2540\x07";
+        let out = sanitize_terminal(evil);
+        assert!(!out.contains('\x1b'), "raw ESC must be gone: {out:?}");
+        assert!(!out.contains('\x07'), "raw BEL must be gone: {out:?}");
+        assert!(out.contains("\\x1b"), "ESC shown as \\x1b: {out:?}");
+        assert!(
+            out.contains("clear") && out.contains("bell"),
+            "real text kept"
+        );
+        // Tabs are preserved; ordinary unicode passes through.
+        assert_eq!(sanitize_terminal("a\tb→c"), "a\tb→c");
+    }
+
+    #[test]
+    fn sanitize_source_file_strips_against_root_not_cwd() {
+        use std::collections::HashMap;
+        let mut attrs = HashMap::new();
+        attrs.insert(
+            "source_file".to_string(),
+            "/home/someone/projects/widget/src/lib.rs".to_string(),
+        );
+        let mut doc = aden_core::Document {
+            anchor: "x".into(),
+            node_type: aden_core::NodeType::Function,
+            attributes: attrs,
+            blocks: vec![],
+            source_span: None,
+            metadata: None,
+            confidence: 1.0,
+        };
+        sanitize_source_file(&mut doc, Path::new("/home/someone/projects/widget"));
+        assert_eq!(
+            doc.attributes.get("source_file").map(|s| s.as_str()),
+            Some("src/lib.rs"),
+            "must strip against the given root, leaking no /home/ prefix"
+        );
+    }
 }

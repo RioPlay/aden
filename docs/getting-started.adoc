@@ -20,11 +20,23 @@ a large codebase without reading every file.
   Java, C#, C, Ruby, PHP, Kotlin; generic symbol extraction for 300+ more — all
   via tree-sitter grammars compiled into the binary (fully offline).
 
+== When to use Aden vs. plain grep
+
+Reach for Aden when you need **structure-aware** answers: "what calls this?",
+"what is the blast radius of this change?", "give me the connected neighborhood
+of this symbol as LLM context." Aden tags every hit with its enclosing symbol and
+walks typed edges (`Calls`, `Documents`, `RelatesTo`).
+
+Reach for plain `grep`/`rg` when you just need a quick literal string match and do
+not care about relationships. The two compose well — Aden's call resolution is
+heuristic, so pair `query` (graph) with `grep` (textual, complete) when you need
+certainty.
+
 == Install
 
 [source,bash]
 ----
-./install.sh        # builds release, installs to ~/.local/bin, adds to PATH
+./install.sh        # builds release, installs aden + aden-mcp to ~/.local/bin, adds to PATH
 aden --version
 ----
 
@@ -43,59 +55,92 @@ automatically (see <<fresh>>).
 == 2. Ask a question
 
 `aden ask` resolves your question to the most relevant symbol and assembles a
-token-budgeted, markup-stripped neighborhood around it — signatures and call
-graph inline, no format noise.
+token-budgeted neighborhood around it — signatures and call graph inline.
+
+Real output is wrapped in `aden://…` anchor lines and `<!-- ADEN CONTEXT
+ASSEMBLY -->` comments (so the assembling tool can see exactly which anchor,
+depth, and budget produced it). For example, asking about a real symbol in this
+repo:
 
 [source]
 ----
-$ aden ask "How does login work?"
+$ aden ask "How does cmd_new scaffold a project?"
+// Aden Ask: 'How does cmd_new scaffold a project?' → [[aden://doc/aden/aden---module-aden-cli-init.rs-cmd_new.adoc#...#cmd_new]]
+// Strategy: Explain | Depth: 2 | Edges: "Uses, Calls, Implements, Documents, ..."
 
-login
-login(user: str, password: str)
-calls: lookup_user(8), hash_password(9)
----
-hash_password
-hash_password(password: str)
-calls: sha256(4)
+<!-- ADEN CONTEXT ASSEMBLY -->
+<!-- Question: How does cmd_new scaffold a project? -->
+<!-- Anchor: aden://doc/aden/aden---module-aden-cli-init.rs-cmd_new.adoc#...#cmd_new | Depth: 2 | Budget: 4096 -->
+
+cmd_new
+Create a new project from a language template.
+Scaffolds build system, aden workspace, and initial documents.
+
+// ────────────────────────────────────────────────
+// Aden Ask Summary
+//   Nodes   : 1 | ~42 tokens (167 bytes) / 4096 budget (on budget)
+// ────────────────────────────────────────────────
 ----
 
-Feed that straight into an LLM prompt — it is already dense.
+Feed that straight into an LLM prompt — it is already dense, and the comment
+lines tell the model precisely what context it is looking at.
 
 == 3. Search with structure (`grep`)
 
-Unlike plain grep, every match is tagged with the symbol it lives inside, so a
-hit doubles as a graph entry point.
+Unlike plain grep, every match is tagged with the symbol it lives inside (shown
+in parentheses), so a hit doubles as a graph entry point.
 
 [source]
 ----
-$ aden grep "hash_password"
-Found 2 match(es) for 'hash_password':
-src/auth.py:1  (hash_password): def hash_password(password: str) -> str:
-src/auth.py:9  (login): return hash_password(password) == stored
+$ aden grep "fn cmd_new"
+Found 1 match(es) for 'fn cmd_new':
+crates/aden-cli/src/commands/init.rs:11  (cmd_new): pub fn cmd_new(name: &str, lang: &str, parent: &Path) -> Result<(), Box<dyn std::error::Error>> {
 ----
 
-The enclosing symbol resolves with `aden asm --from <symbol>` to expand context.
+The parenthesized name (`cmd_new`) is the enclosing symbol. **It is not yet an
+anchor** — feed it to `aden locate --symbol cmd_new` to get the real `aden://…`
+anchor, then expand it with `asm`/`query` (see <<anchors>>). Use `--json` for a
+machine-readable form that also includes a candidate `anchor` field per match.
+
 Flags: `--regex`, `-i`, `--symbol-only`, `--json`.
 
-== 4. Locate a definition
+[[anchors]]
+== 4. Locate a definition — and get a real anchor
+
+`locate` is how you turn a symbol name into the `aden://…` anchor that the
+traversal commands actually accept. It prints both the source location and the
+graph anchors for that symbol:
 
 [source]
 ----
-$ aden locate --symbol login
-Found 1 match(es) for 'login':
-login function src/auth.py:6
+$ aden locate --symbol cmd_new
+Found 8 match(es) for 'cmd_new':
+cmd_new function crates/aden-cli/src/commands/init.rs:11
+aden://doc/aden/aden---module-aden-cli-init.rs-cmd_new.adoc/h2signature  heading ...
+aden://module/aden/aden---module-aden-cli-init.rs-cmd_new.adoc#code_block_3  code ...
 ----
+
+Copy one of those `aden://…` lines — that is your anchor for `asm`/`query`.
+
+[IMPORTANT]
+====
+**Bare symbol names are not anchors.** `aden asm --from cmd_new` returns
+`Anchor 'cmd_new' not found or ambiguous`. Always resolve a name to a full
+`aden://…` URI first via `aden grep`, `aden locate`, or `aden list .` and then
+pass that URI to `--from` / `--backlinks` / `--impact`.
+====
 
 == 5. Blast radius before a refactor
 
-`--backlinks` answers "what references this symbol?" — the set you must check
-before changing it.
+`--backlinks` answers "what references this anchor?" — the set you must check
+before changing it. Use a real anchor (from step 4):
 
 [source]
 ----
-$ aden query --backlinks hash_password --format table
+$ aden query --backlinks "aden://module/aden/aden---module-aden-cli-init.rs-cmd_new.adoc#code_block_3" --format table
 | Anchor | Depth | Node Type |
-| ...#login | 1 | Function |
+|=== |
+| "mod-aden" | 1 | "Module" |
 ----
 
 (`--from` walks outgoing edges; `--impact` walks the transitive dependency
@@ -103,13 +148,19 @@ closure; `--backlinks` walks incoming references.)
 
 == 6. Assemble a module overview
 
-A bare symbol or module name resolves automatically; pass a token budget to
-bound the output.
+Pass a resolved anchor and a token budget to bound the output. The two-step flow
+is always: **find the anchor, then assemble it.**
 
 [source,bash]
 ----
-aden asm --from mod-<crate> --depth 1 --budget 4096
-aden asm --from login --depth 2          # symbol-centred context
+# Step 1: resolve the name to an anchor
+aden locate --symbol cmd_new          # copy an aden://… line from the output
+
+# Step 2: assemble context from that anchor
+aden asm --from "aden://doc/aden/aden---module-aden-cli-init.rs-cmd_new.adoc/h2signature" --depth 1 --budget 2048
+
+# A module-level anchor (mod-<crate> or an aden://module/… URI) gives a broader sweep
+aden asm --from "aden://module/aden/aden---module-aden-cli-init.rs-cmd_new.adoc#code_block_3" --depth 1 --budget 4096
 ----
 
 If an anchor is unknown or ambiguous, `asm`/`ask` fail clearly rather than
@@ -132,7 +183,15 @@ agent can call `ask`, `grep`, `asm`, `query`, `locate`, etc. directly:
 aden mcp install --platform claude      # or: opencode, cursor, codex, zed, windsurf
 ----
 
-See <<ai-integration>> for the agent workflow and recommended system prompt.
+This writes the MCP server config for your client (it uses the `aden-mcp`
+binary that `./install.sh` already put on your PATH). After running it: confirm
+the binary is reachable with `aden-mcp --version`, then **fully restart your AI
+client** so it picks up the new server. Your agent should then list the `aden`
+tools (`grep`, `ask`, `asm`, `query`, `locate`, …).
+
+See `docs/mcp-intro.md` for the full MCP setup guide, <<ai-integration>> for the
+agent workflow and recommended system prompt, and <<troubleshooting>> if the
+tools do not appear.
 
 == What Aden is great at — and where it stops
 

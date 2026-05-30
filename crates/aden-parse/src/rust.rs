@@ -218,8 +218,12 @@ fn process_line_comment(node: tree_sitter::Node, source: &str) -> Option<String>
 
 fn process_block_comment(node: tree_sitter::Node, source: &str) -> Option<String> {
     let text = node_text(node, source);
-    if text.starts_with("/**") && text.ends_with("*/") {
-        let inner = &text[3..text.len() - 2];
+    if let Some(inner) = text
+        .strip_prefix("/**")
+        .and_then(|s| s.strip_suffix("*/"))
+    {
+        // `/**/` (len 4) yields inner == "" here — the old `&text[3..len-2]`
+        // slice panicked (begin > end) on that untrusted input.
         let lines: Vec<String> = inner
             .lines()
             .map(|l| {

@@ -106,16 +106,27 @@ pub fn is_secret_path(relative: &Path) -> bool {
 
     // Exact credential filenames.
     const SECRET_NAMES: &[&str] = &[
-        ".env", ".envrc", ".npmrc", ".pypirc", ".netrc", "_netrc", ".htpasswd",
-        "credentials", "credentials.json", "credentials.toml", "credentials.yml",
-        "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519",
+        ".env",
+        ".envrc",
+        ".npmrc",
+        ".pypirc",
+        ".netrc",
+        "_netrc",
+        ".htpasswd",
+        "credentials",
+        "credentials.json",
+        "credentials.toml",
+        "credentials.yml",
+        "id_rsa",
+        "id_dsa",
+        "id_ecdsa",
+        "id_ed25519",
     ];
     if SECRET_NAMES.contains(&name.as_str()) {
         return true;
     }
     // dotenv variants (.env.local, .env.production, …) and GCP service accounts.
-    if name.starts_with(".env.")
-        || (name.starts_with("service-account") && name.ends_with(".json"))
+    if name.starts_with(".env.") || (name.starts_with("service-account") && name.ends_with(".json"))
     {
         return true;
     }
@@ -127,6 +138,72 @@ pub fn is_secret_path(relative: &Path) -> bool {
     if let Some(ext) = relative.extension().and_then(|e| e.to_str()) {
         if SECRET_EXTS.contains(&ext.to_ascii_lowercase().as_str()) {
             return true;
+        }
+    }
+    false
+}
+
+/// Content-based credential detection — a *high-confidence* complement to
+/// [`is_secret_path`] for the indexing boundary (CWE-798 / CWE-200).
+///
+/// `is_secret_path` is filename/extension/directory based, so a credential
+/// embedded in an ordinary-looking source or config file (e.g. `config.json`,
+/// `settings.py`) would still be indexed into the store and could be re-served
+/// into LLM context. This scans the file's *content* for unambiguous,
+/// structurally-distinctive secret tokens.
+///
+/// Deliberately NOT an entropy heuristic: only well-known, structured provider
+/// token shapes are matched, so false positives (which would silently drop a
+/// legitimate file from the graph) are near-impossible. Like `is_secret_path`,
+/// this is applied only at indexing — never to ephemeral `grep`/`audit`, which
+/// must still be able to find a secret in order to fix it.
+pub fn content_has_high_confidence_secret(content: &str) -> bool {
+    // PEM private-key blocks (RSA/EC/OPENSSH/PGP/generic).
+    if content.contains("-----BEGIN ") && content.contains("PRIVATE KEY-----") {
+        return true;
+    }
+    // Provider tokens: a fixed prefix followed by N token chars. Scanning by
+    // byte windows keeps this dependency-free (no regex).
+    const TOKEN_PREFIXES: &[(&str, usize)] = &[
+        ("AKIA", 16),  // AWS access key id
+        ("ASIA", 16),  // AWS temporary access key id
+        ("ghp_", 36),  // GitHub personal access token
+        ("gho_", 36),  // GitHub OAuth token
+        ("ghs_", 36),  // GitHub server-to-server token
+        ("ghr_", 36),  // GitHub refresh token
+        ("xoxb-", 10), // Slack bot token
+        ("xoxp-", 10), // Slack user token
+    ];
+    for (prefix, min_alnum) in TOKEN_PREFIXES {
+        if has_prefixed_token(content, prefix, *min_alnum) {
+            return true;
+        }
+    }
+    // OpenAI keys: `sk-` followed by >=20 token chars (covers sk- / sk-proj-).
+    if has_prefixed_token(content, "sk-", 20) {
+        return true;
+    }
+    false
+}
+
+/// True if `content` contains `prefix` immediately followed by at least
+/// `min_alnum` token characters (`[A-Za-z0-9_-]`).
+fn has_prefixed_token(content: &str, prefix: &str, min_alnum: usize) -> bool {
+    let bytes = content.as_bytes();
+    let plen = prefix.len();
+    let mut i = 0;
+    while let Some(off) = content[i..].find(prefix) {
+        let start = i + off + plen;
+        let run = bytes[start..]
+            .iter()
+            .take_while(|b| b.is_ascii_alphanumeric() || **b == b'_' || **b == b'-')
+            .count();
+        if run >= min_alnum {
+            return true;
+        }
+        i = i + off + plen;
+        if i >= content.len() {
+            break;
         }
     }
     false
@@ -192,12 +269,12 @@ impl GlobRule {
     fn matches(&self, path: &str) -> bool {
         if self.is_dir_rule {
             let trimmed = self.pattern.trim_end_matches('/');
-            let matches_dir = path == trimmed || path.starts_with(&(trimmed.to_string() + "/"));
-            if matches_dir {
+            if dir_rule_matches(path, trimmed) {
                 return true;
             }
+            // A dotted rule (".agent/") also matches its undotted form ("agent/").
             if let Some(without_dot) = trimmed.strip_prefix('.') {
-                path == without_dot || path.starts_with(&(without_dot.to_string() + "/"))
+                dir_rule_matches(path, without_dot)
             } else {
                 false
             }
@@ -205,6 +282,23 @@ impl GlobRule {
             match_glob(path, &self.pattern)
         }
     }
+}
+
+/// Match a directory ignore rule against a relative path.
+///
+/// Anchored prefix matching handles root-level and multi-segment rules
+/// (`target/custom-tool/`). A bare single-segment name *additionally* matches a
+/// directory of that name at ANY depth — gitignore semantics — so `.aden/`
+/// prunes a nested `crates/foo/.aden/` (where per-crate caches live), not only a
+/// top-level `.aden/`. Without this, generated artifacts leak into grep/index.
+fn dir_rule_matches(path: &str, dir: &str) -> bool {
+    if path == dir || path.starts_with(&format!("{dir}/")) {
+        return true;
+    }
+    if !dir.contains('/') {
+        return path.split('/').any(|seg| seg == dir);
+    }
+    false
 }
 
 fn compile_rules(lines: &[String]) -> Vec<GlobRule> {
@@ -292,9 +386,32 @@ mod tests {
             ignore_patterns: compile_rules(&[".agent/".to_string()]),
             allow_patterns: Vec::new(),
         };
-        assert!(filter.should_skip(Path::new("agent/file.adoc")), "Should match agent/");
-        assert!(filter.should_skip(Path::new("agent/templates/foo.adoc")), "Should match agent/templates/");
+        assert!(
+            filter.should_skip(Path::new("agent/file.adoc")),
+            "Should match agent/"
+        );
+        assert!(
+            filter.should_skip(Path::new("agent/templates/foo.adoc")),
+            "Should match agent/templates/"
+        );
         assert!(!filter.should_skip(Path::new("src/main.rs")));
+    }
+
+    #[test]
+    fn test_dir_rule_matches_nested_dir() {
+        // Regression: a bare `.aden/` rule must prune the per-crate caches at
+        // `crates/<x>/.aden/...`, not only a top-level `.aden/`. Otherwise the
+        // generated index-cache.json leaks into grep/index results.
+        let filter = AdenFilter {
+            ignore_patterns: compile_rules(&[".aden/".to_string(), "target/".to_string()]),
+            allow_patterns: Vec::new(),
+        };
+        assert!(filter.should_skip(Path::new(".aden/store")));
+        assert!(filter.should_skip(Path::new("crates/aden-cli/.aden")));
+        assert!(filter.should_skip(Path::new("crates/aden-cli/.aden/cache/index-cache.json")));
+        assert!(filter.should_skip(Path::new("crates/foo/target/debug/x")));
+        // A real source file with no ignored segment is still kept.
+        assert!(!filter.should_skip(Path::new("crates/aden-cli/src/main.rs")));
     }
 
     #[test]
@@ -305,5 +422,40 @@ mod tests {
         };
         assert!(filter.should_skip(Path::new("target/debug")));
         assert!(!filter.should_skip(Path::new("target/custom-tool/main.rs")));
+    }
+
+    #[test]
+    fn content_secret_detects_real_credentials() {
+        // Embedded in an ordinary-looking source/config file the path filter misses.
+        assert!(content_has_high_confidence_secret(
+            r#"{ "aws_key": "AKIAIOSFODNN7EXAMPLE" }"#
+        ));
+        assert!(content_has_high_confidence_secret(
+            "let t = \"ghp_0123456789abcdefghijklmnopqrstuvwxyz\";"
+        ));
+        assert!(content_has_high_confidence_secret(
+            "OPENAI_API_KEY=sk-abcdefghijklmnopqrstuvwxyz0123456789"
+        ));
+        assert!(content_has_high_confidence_secret(
+            "-----BEGIN RSA PRIVATE KEY-----\nMIIE...\n-----END RSA PRIVATE KEY-----"
+        ));
+    }
+
+    #[test]
+    fn content_secret_no_false_positives_on_normal_code() {
+        // Must NOT fire on ordinary source — a false positive silently drops a
+        // legitimate file from the graph, so the bar is high-confidence only.
+        for src in [
+            "fn main() { let sk = compute(); println!(\"{sk}\"); }", // `sk` as an identifier
+            "// AKIA is an AWS key prefix; this comment mentions it", // prefix w/o a token body
+            "let url = \"https://api.github.com/repos/x/y\";",
+            "const RETRIES: usize = 3; let total = a + b;",
+            "ghp_ token format starts with ghp underscore", // prefix, but no 36-char body
+        ] {
+            assert!(
+                !content_has_high_confidence_secret(src),
+                "false positive on: {src:?}"
+            );
+        }
     }
 }

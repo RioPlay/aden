@@ -48,8 +48,10 @@ fn print_diagnosis(diagnosis: &aden_diagnose::Diagnosis) {
     let score = diagnosis.health_score;
 
     println!("Aden Diagnose: {}", score as i32);
-    println!("Issues: {} errors, {} warnings, {} info ({} total)",
-        diagnosis.error_count, diagnosis.warning_count, diagnosis.info_count, total);
+    println!(
+        "Issues: {} errors, {} warnings, {} info ({} total)",
+        diagnosis.error_count, diagnosis.warning_count, diagnosis.info_count, total
+    );
     println!();
 
     if diagnosis.issues.is_empty() {
@@ -68,9 +70,17 @@ fn print_diagnosis(diagnosis: &aden_diagnose::Diagnosis) {
     }
 
     for (category, issues) in &by_category {
-        println!("== {} ({} issues)", category.to_uppercase().replace('-', " "), issues.len());
+        println!(
+            "== {} ({} issues)",
+            category.to_uppercase().replace('-', " "),
+            issues.len()
+        );
         for issue in issues {
-            let file = issue.file.as_deref().map(|f| format!(" ({})", f)).unwrap_or_default();
+            let file = issue
+                .file
+                .as_deref()
+                .map(|f| format!(" ({})", f))
+                .unwrap_or_default();
             let line = issue.line.map(|l| format!(":{}", l)).unwrap_or_default();
             let sev = match issue.severity {
                 aden_diagnose::Severity::Error => "ERROR",

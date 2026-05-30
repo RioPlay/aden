@@ -10,8 +10,8 @@ use aden_store::GraphStorage;
 
 use crate::types::{AnchorPattern, QueryIntent};
 use crate::util::{
-    load_or_build_index, node_to_json, parse_single_edge_type, perform_check, sanitize_anchor,
-    sanitize_source_file, valid_edge_types,
+    find_project_root, load_or_build_index, node_to_json, parse_single_edge_type, perform_check,
+    sanitize_anchor, sanitize_source_file, valid_edge_types,
 };
 use aden_index::SearchResult;
 
@@ -20,22 +20,20 @@ use aden_index::SearchResult;
 /// spuriously in many codebases.
 const SYMBOL_STOP_WORDS: &[&str] = &[
     // question words
-    "how", "what", "why", "when", "where", "which", "does", "do", "did",
-    "is", "are", "was", "were", "will", "would", "can", "could", "should",
-    // connectives
-    "the", "an", "in", "to", "of", "and", "or", "not", "that", "this",
-    "with", "for", "from", "into", "on", "by", "at", "its", "it", "a",
+    "how", "what", "why", "when", "where", "which", "does", "do", "did", "is", "are", "was", "were",
+    "will", "would", "can", "could", "should", // connectives
+    "the", "an", "in", "to", "of", "and", "or", "not", "that", "this", "with", "for", "from",
+    "into", "on", "by", "at", "its", "it", "a",
     // common verbs that collide with symbol names in many codebases
-    "include", "output", "input", "get", "set", "new", "add", "find",
-    "build", "make", "run", "use", "put", "take", "call", "handle",
-    "process", "check", "update", "create", "delete", "remove", "read",
-    "write", "send", "receive", "parse", "emit", "render", "load", "save",
-    "open", "close", "start", "stop", "init", "reset", "fetch", "log",
-    "print", "format", "encode", "decode", "next", "map", "list", "count",
+    "include", "output", "input", "get", "set", "new", "add", "find", "build", "make", "run", "use",
+    "put", "take", "call", "handle", "process", "check", "update", "create", "delete", "remove",
+    "read", "write", "send", "receive", "parse", "emit", "render", "load", "save", "open", "close",
+    "start", "stop", "init", "reset", "fetch", "log", "print", "format", "encode", "decode",
+    "next", "map", "list", "count",
     // generic nouns that are often symbol names *and* common English words
-    "context", "result", "error", "data", "value", "node", "graph", "block",
-    "item", "type", "name", "path", "file", "line", "text", "token", "key",
-    "time", "index", "state", "kind", "source", "target", "mode", "level",
+    "context", "result", "error", "data", "value", "node", "graph", "block", "item", "type", "name",
+    "path", "file", "line", "text", "token", "key", "time", "index", "state", "kind", "source",
+    "target", "mode", "level",
 ];
 
 /// Extract explicit `func()` or `Type::method()` references from a query.
@@ -108,10 +106,7 @@ fn resolve_anchor_fuzzy(query: &str, results: &[SearchResult]) -> String {
     // symbol names (≥3 chars, not a stop word, not a single common letter).
     let query_tokens: Vec<String> = query
         .split(|c: char| !c.is_alphanumeric() && c != '_')
-        .filter(|s| {
-            s.len() >= 3
-                && !SYMBOL_STOP_WORDS.contains(&s.to_lowercase().as_str())
-        })
+        .filter(|s| s.len() >= 3 && !SYMBOL_STOP_WORDS.contains(&s.to_lowercase().as_str()))
         .map(|s| s.to_lowercase())
         .collect();
 
@@ -287,7 +282,10 @@ pub fn cmd_asm(opts: AsmOptions) -> Result<(), Box<dyn std::error::Error>> {
         println!("=== Context Assembly Inspection ===");
         println!("Start: {}", resolved_anchor.clone());
         println!("Depth: {}", opts.depth);
-        println!("Budget: {} tokens (auto={}, strict={})", effective_budget, opts.auto, opts.strict);
+        println!(
+            "Budget: {} tokens (auto={}, strict={})",
+            effective_budget, opts.auto, opts.strict
+        );
         println!("\n=== Nodes to be included ===");
 
         let mut visited = std::collections::HashSet::new();
@@ -327,7 +325,13 @@ pub fn cmd_asm(opts: AsmOptions) -> Result<(), Box<dyn std::error::Error>> {
     let output = match opts.format.as_str() {
         "adg" => assemble_adg(&graph, &asm_opts)?,
         "aden" | "llm" => assemble(&graph, &asm_opts)?,
-        _ => return Err(format!("Unknown format: '{}'. Use 'llm' (default), 'adg', or 'aden' (raw AsciiDoc).", opts.format).into()),
+        _ => {
+            return Err(format!(
+                "Unknown format: '{}'. Use 'llm' (default), 'adg', or 'aden' (raw AsciiDoc).",
+                opts.format
+            )
+            .into());
+        }
     };
 
     if let Some(out_path) = &opts.out {
@@ -365,12 +369,15 @@ pub fn cmd_query(
     }
 
     // Resolve bare/suffix names to the full store anchors the graph uses.
-    let from = from
-        .map(|a| aden_graph::cache::resolve_anchor_in_store(path, a).unwrap_or_else(|| a.to_string()));
-    let backlinks = backlinks
-        .map(|a| aden_graph::cache::resolve_anchor_in_store(path, a).unwrap_or_else(|| a.to_string()));
-    let impact = impact
-        .map(|a| aden_graph::cache::resolve_anchor_in_store(path, a).unwrap_or_else(|| a.to_string()));
+    let from = from.map(|a| {
+        aden_graph::cache::resolve_anchor_in_store(path, a).unwrap_or_else(|| a.to_string())
+    });
+    let backlinks = backlinks.map(|a| {
+        aden_graph::cache::resolve_anchor_in_store(path, a).unwrap_or_else(|| a.to_string())
+    });
+    let impact = impact.map(|a| {
+        aden_graph::cache::resolve_anchor_in_store(path, a).unwrap_or_else(|| a.to_string())
+    });
 
     let mut results = Vec::new();
 
@@ -550,15 +557,42 @@ pub fn edge_types_for_intent(intent: &QueryIntent) -> Vec<aden_core::EdgeType> {
     // `aden asm --from mod-<name>` (which traverses all edges by default).
     let semantic = vec![IsA, RelatesTo, SimilarTo, AssociatedWith, Explains];
     let mut edges: Vec<aden_core::EdgeType> = match intent {
-        QueryIntent::Debug => vec![Constrains, Documents, Calls, Invokes, Requires].into_iter().chain(semantic.clone()).collect(),
-        QueryIntent::Usage => vec![Uses, Invokes, Requires, Documents].into_iter().chain(semantic.clone()).collect(),
-        QueryIntent::Explain => vec![Uses, Calls, Implements, Documents].into_iter().chain(semantic.clone()).collect(),
-        QueryIntent::Refactor => vec![Calls, Uses, Mutates, Supersedes, Amends].into_iter().chain(semantic.clone()).collect(),
-        QueryIntent::Impact => vec![Uses, Calls, Constrains].into_iter().chain(semantic.clone()).collect(),
-        QueryIntent::List => vec![Uses, Documents].into_iter().chain(semantic.clone()).collect(),
-        QueryIntent::Compare => vec![Uses, Documents, Constrains].into_iter().chain(semantic.clone()).collect(),
-        QueryIntent::Count => vec![Documents, Uses].into_iter().chain(semantic.clone()).collect(),
-        QueryIntent::General => vec![Uses, Documents, Constrains].into_iter().chain(semantic).collect(),
+        QueryIntent::Debug => vec![Constrains, Documents, Calls, Invokes, Requires]
+            .into_iter()
+            .chain(semantic.clone())
+            .collect(),
+        QueryIntent::Usage => vec![Uses, Invokes, Requires, Documents]
+            .into_iter()
+            .chain(semantic.clone())
+            .collect(),
+        QueryIntent::Explain => vec![Uses, Calls, Implements, Documents]
+            .into_iter()
+            .chain(semantic.clone())
+            .collect(),
+        QueryIntent::Refactor => vec![Calls, Uses, Mutates, Supersedes, Amends]
+            .into_iter()
+            .chain(semantic.clone())
+            .collect(),
+        QueryIntent::Impact => vec![Uses, Calls, Constrains]
+            .into_iter()
+            .chain(semantic.clone())
+            .collect(),
+        QueryIntent::List => vec![Uses, Documents]
+            .into_iter()
+            .chain(semantic.clone())
+            .collect(),
+        QueryIntent::Compare => vec![Uses, Documents, Constrains]
+            .into_iter()
+            .chain(semantic.clone())
+            .collect(),
+        QueryIntent::Count => vec![Documents, Uses]
+            .into_iter()
+            .chain(semantic.clone())
+            .collect(),
+        QueryIntent::General => vec![Uses, Documents, Constrains]
+            .into_iter()
+            .chain(semantic)
+            .collect(),
     };
     // The call graph is the densest, most useful relationship for code questions,
     // so it must be traversable for EVERY intent — not just Explain/Refactor.
@@ -677,7 +711,11 @@ pub fn cmd_ask(
     };
 
     let block_filter = block_filter_for_intent(&intent);
-    let edge_types_str = edge_types.iter().map(|e| format!("{:?}", e)).collect::<Vec<_>>().join(", ");
+    let edge_types_str = edge_types
+        .iter()
+        .map(|e| format!("{:?}", e))
+        .collect::<Vec<_>>()
+        .join(", ");
 
     // Stream: load only the neighborhood reachable along the intent's edge types.
     let graph =
@@ -703,11 +741,14 @@ pub fn cmd_ask(
         // Show context with metadata for LLMs
         println!("<!-- ADEN CONTEXT ASSEMBLY -->");
         println!("<!-- Question: {} -->", question);
-        println!("<!-- Anchor: {} | Depth: {} | Budget: {} -->", start_anchor, depth, budget);
+        println!(
+            "<!-- Anchor: {} | Depth: {} | Budget: {} -->",
+            start_anchor, depth, budget
+        );
         println!("<!-- Strategy: {:?} -->", intent);
         println!("<!-- Edge Types: {} -->", edge_types_str);
         println!();
-        
+
         let bytes = assembled.len();
         // Tokens estimated with the same ~4-bytes/token heuristic the assembler
         // budgets against, so the label compares like with like.
@@ -877,6 +918,7 @@ pub fn cmd_search(
     offset: usize,
     doc_type: Option<&str>,
     include_semantics: bool,
+    json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if !path.is_dir() {
         return Err("search requires a directory path".into());
@@ -904,8 +946,15 @@ pub fn cmd_search(
             "use-case" | "usecase" => "use-case-",
             "agent" => "agent-",
             _ => {
-                eprintln!("Warning: Unknown doc type '{}'. Valid: module, adr, plan, use-case, agent", dt);
-                return Err(format!("Invalid --type '{}'. Use: module, adr, plan, use-case, agent", dt).into());
+                eprintln!(
+                    "Warning: Unknown doc type '{}'. Valid: module, adr, plan, use-case, agent",
+                    dt
+                );
+                return Err(format!(
+                    "Invalid --type '{}'. Use: module, adr, plan, use-case, agent",
+                    dt
+                )
+                .into());
             }
         };
         results.retain(|r| r.anchor.starts_with(dt_pattern));
@@ -915,7 +964,7 @@ pub fn cmd_search(
     let mut semantic_results: Vec<(String, String)> = Vec::new();
     if include_semantics {
         if let Ok(graph) = aden_graph::cache::build_from_directory_cached(path) {
-    let query_lower = query.to_lowercase();
+            let query_lower = query.to_lowercase();
             for edge_idx in graph.graph.edge_indices() {
                 let (src, tgt) = graph.graph.edge_endpoints(edge_idx).expect("valid edge");
                 let edge_type = &graph.graph[edge_idx];
@@ -947,6 +996,30 @@ pub fn cmd_search(
         }
     }
 
+    // Machine-readable envelope for agents: explicit counts + pagination so the
+    // caller never has to parse the human table or guess whether more exists.
+    if json {
+        let total = results.len();
+        let page: Vec<_> = results.iter().skip(offset).take(limit).collect();
+        let env = serde_json::json!({
+            "total": total,
+            "returned": page.len(),
+            "offset": offset,
+            "truncated": offset + page.len() < total,
+            "results": page.iter().map(|r| serde_json::json!({
+                "anchor": r.anchor,
+                "score": r.score,
+                "snippet": r.snippet,
+            })).collect::<Vec<_>>(),
+            "semantic": semantic_results.iter().map(|(anchor, rel)| serde_json::json!({
+                "anchor": anchor,
+                "relationship": rel,
+            })).collect::<Vec<_>>(),
+        });
+        println!("{}", serde_json::to_string_pretty(&env)?);
+        return Ok(());
+    }
+
     if results.is_empty() && semantic_results.is_empty() {
         println!("No results for '{}'", query);
         return Ok(());
@@ -955,7 +1028,12 @@ pub fn cmd_search(
     let total = results.len();
     let limited: Vec<_> = results.into_iter().skip(offset).take(limit).collect();
 
-    println!("Showing {}/{} results (offset={})", limited.len(), total, offset);
+    println!(
+        "Showing {}/{} results (offset={})",
+        limited.len(),
+        total,
+        offset
+    );
     println!("| Anchor | Score | Snippet |");
     println!("|=== |");
     for r in &limited {
@@ -987,6 +1065,7 @@ pub fn cmd_list(
     limit: usize,
     offset: usize,
     semantics_only: bool,
+    json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if !path.is_dir() {
         return Err("list requires a directory path".into());
@@ -997,7 +1076,8 @@ pub fn cmd_list(
 
     // If semantics_only, collect only nodes that are part of semantic relationships
     let anchors: Vec<String> = if semantics_only {
-        let mut semantic_anchors: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut semantic_anchors: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
         for edge_idx in graph.graph.edge_indices() {
             let edge_type = &graph.graph[edge_idx];
             let semantic_types = [
@@ -1035,6 +1115,44 @@ pub fn cmd_list(
     };
     let total_count = filtered.len();
     let limited: Vec<_> = filtered.into_iter().skip(offset).take(limit).collect();
+
+    // Machine-readable envelope for agents: counts + pagination, no table chrome.
+    if json {
+        let items: Vec<serde_json::Value> = limited
+            .iter()
+            .map(|anchor| {
+                if verbose {
+                    let (node_type, source) = graph
+                        .anchor_to_index
+                        .get(anchor)
+                        .and_then(|idx| graph.graph.node_weight(*idx))
+                        .map(|n| {
+                            (
+                                n.doc
+                                    .attributes
+                                    .get("node-type")
+                                    .cloned()
+                                    .unwrap_or_else(|| "unknown".to_string()),
+                                n.source_path.to_string_lossy().to_string(),
+                            )
+                        })
+                        .unwrap_or_else(|| ("unknown".to_string(), String::new()));
+                    serde_json::json!({"anchor": anchor, "type": node_type, "source": source})
+                } else {
+                    serde_json::json!(anchor)
+                }
+            })
+            .collect();
+        let env = serde_json::json!({
+            "total": total_count,
+            "returned": limited.len(),
+            "offset": offset,
+            "truncated": offset + limited.len() < total_count,
+            "anchors": items,
+        });
+        println!("{}", serde_json::to_string_pretty(&env)?);
+        return Ok(());
+    }
 
     let offset_info = if offset > 0 {
         format!(" (offset={})", offset)
@@ -1119,10 +1237,18 @@ fn print_locate_results(hits: &[serde_json::Value], format: &str, context: Optio
                 let after = end_num + ctx;
                 let all_lines: Vec<&str> = lines.lines().collect();
                 if before < all_lines.len() && before < after {
-                    println!("  Context (lines {}-{}):", before + 1, after.min(all_lines.len()));
+                    println!(
+                        "  Context (lines {}-{}):",
+                        before + 1,
+                        after.min(all_lines.len())
+                    );
                     for (i, line) in all_lines.iter().enumerate().take(after).skip(before) {
                         let line_num = i + 1;
-                        let marker = if line_num >= start_num && line_num <= end_num { ">" } else { " " };
+                        let marker = if line_num >= start_num && line_num <= end_num {
+                            ">"
+                        } else {
+                            " "
+                        };
                         println!("{}{:4}: {}", marker, line_num, line);
                     }
                 }
@@ -1153,10 +1279,8 @@ pub fn cmd_locate(
         // `locate` take ~47s on the kernel (1.2M nodes); this is bounded by the
         // number of matches.
         let store_path = path.join(".aden").join("store");
-        let storage = aden_store::Storage::new(
-            store_path.to_str().ok_or("invalid store path")?,
-        )
-        .map_err(|e| format!("failed to open store: {}", e))?;
+        let storage = aden_store::Storage::new(store_path.to_str().ok_or("invalid store path")?)
+            .map_err(|e| format!("failed to open store: {}", e))?;
         let all_anchors = storage.get_all_anchors().unwrap_or_default();
 
         let sym_lower = sym.to_lowercase();
@@ -1211,7 +1335,10 @@ pub fn cmd_locate(
                 return Ok(());
             }
             println!("No symbol found matching '{}'", sym);
-            println!("Hint: Try 'aden search \"{}\"' to find related anchors", sym);
+            println!(
+                "Hint: Try 'aden search \"{}\"' to find related anchors",
+                sym
+            );
             return Ok(());
         }
 
@@ -1224,10 +1351,113 @@ pub fn cmd_locate(
         return Ok(());
     }
 
-    // If --caller-of is given, show call sites (requires call-graph edges with span metadata).
-    if let Some(_target) = caller_of {
-        println!("caller-of requires call-graph edges with line metadata (not yet implemented)");
-        println!("Use 'aden graph --from <anchor> --depth 1' for module-level callers instead.");
+    // If --caller-of is given, list callers via incoming `Calls` edges in the
+    // knowledge graph. This is the reverse of `query --backlinks`, filtered to
+    // call edges, with each caller enriched by its source file + line from the
+    // store. The call graph is already populated by `gen` (link_store_edges),
+    // so no new metadata is required — earlier this branch was a stub.
+    if let Some(target) = caller_of {
+        use serde_json::json;
+
+        let graph = aden_graph::cache::build_from_directory_cached(path)?;
+
+        // A bare symbol (e.g. `assemble`) may resolve to several anchors across
+        // modules; union the callers of every matching definition.
+        let tl = target.to_lowercase();
+        let targets: Vec<_> = graph
+            .graph
+            .node_indices()
+            .filter(|&i| {
+                let al = graph.graph[i].doc.anchor.to_lowercase();
+                al.ends_with(&tl) || al.contains(&format!("#{}", tl))
+            })
+            .collect();
+
+        if targets.is_empty() {
+            println!("No symbol found matching '{}'", target);
+            println!(
+                "Hint: Try 'aden locate . --symbol {}' to confirm it is indexed.",
+                target
+            );
+            return Ok(());
+        }
+
+        // Collect unique callers via incoming `Calls` edges.
+        let mut seen = HashSet::new();
+        let mut callers: Vec<String> = Vec::new();
+        for &t in &targets {
+            for neighbor in graph.graph.neighbors_directed(t, Direction::Incoming) {
+                let is_call = graph
+                    .graph
+                    .find_edge(neighbor, t)
+                    .and_then(|e| graph.graph.edge_weight(e))
+                    .map(|e| e.edge_type == aden_core::EdgeType::Calls)
+                    .unwrap_or(false);
+                if is_call {
+                    let a = graph.graph[neighbor].doc.anchor.clone();
+                    if seen.insert(a.clone()) {
+                        callers.push(a);
+                    }
+                }
+            }
+        }
+        callers.sort();
+
+        if callers.is_empty() {
+            println!(
+                "No callers found for '{}' (unused, an entry point, or invoked via dynamic dispatch).",
+                target
+            );
+            return Ok(());
+        }
+
+        // Enrich each caller with file:line from the store (best-effort).
+        let storage = aden_store::Storage::new(
+            path.join(".aden")
+                .join("store")
+                .to_str()
+                .ok_or("invalid store path")?,
+        )
+        .ok();
+        let hits: Vec<serde_json::Value> = callers
+            .iter()
+            .take(limit)
+            .map(|a| {
+                let (file, line) = storage
+                    .as_ref()
+                    .and_then(|s| s.get_document(a).ok().flatten())
+                    .map(|doc| {
+                        (
+                            doc.attributes
+                                .get("source_file")
+                                .cloned()
+                                .unwrap_or_default(),
+                            doc.attributes
+                                .get("start_line")
+                                .cloned()
+                                .unwrap_or_default(),
+                        )
+                    })
+                    .unwrap_or_default();
+                json!({ "anchor": a, "file": file, "start_line": line })
+            })
+            .collect();
+
+        println!("Found {} caller(s) of '{}':", hits.len(), target);
+        if format == "json" {
+            println!("{}", serde_json::to_string_pretty(&hits)?);
+        } else {
+            for h in &hits {
+                let file = h["file"].as_str().unwrap_or("");
+                let line = h["start_line"].as_str().unwrap_or("");
+                let loc = if file.is_empty() {
+                    String::new()
+                } else {
+                    format!("  ({}:{})", file, line)
+                };
+                println!("  {}{}", h["anchor"].as_str().unwrap_or(""), loc);
+            }
+        }
         return Ok(());
     }
 
@@ -1242,11 +1472,11 @@ pub fn cmd_watch(
     sync_all: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
-    use std::sync::mpsc::channel;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::Arc;
-    use std::time::{Duration, Instant};
     use std::collections::HashSet;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::mpsc::channel;
+    use std::time::{Duration, Instant};
 
     if !path.is_dir() {
         return Err("watch requires a directory path".into());
@@ -1258,10 +1488,12 @@ pub fn cmd_watch(
     // Setup ctrl-c handler
     ctrlc::set_handler(move || {
         r.store(false, Ordering::SeqCst);
-    }).expect("Error setting Ctrl-C handler");
+    })
+    .expect("Error setting Ctrl-C handler");
 
     // Optional: Restore graph from cache for faster startup
-    let mut graph: Option<aden_graph::AdenGraph<aden_graph::DocumentNode, aden_graph::AdenEdge>> = None;
+    let mut graph: Option<aden_graph::AdenGraph<aden_graph::DocumentNode, aden_graph::AdenEdge>> =
+        None;
     if graph_sync && restore {
         println!("Restoring graph from cache...");
         match aden_graph::cache::build_from_directory_cached(path) {
@@ -1353,7 +1585,10 @@ pub fn cmd_watch(
         None
     };
 
-    println!("Watching {} for changes... Press Ctrl+C to stop.", path.display());
+    println!(
+        "Watching {} for changes... Press Ctrl+C to stop.",
+        path.display()
+    );
     if graph_sync {
         println!("Graph sync enabled - contracts and graph stay current.");
     }
@@ -1385,15 +1620,22 @@ pub fn cmd_watch(
 
                     if source_exts.contains(&ext.as_str()) {
                         // Source file change - regenerate contract
-                        println!("INFO: Source change: {}", p.file_name().unwrap_or_default().to_string_lossy());
+                        println!(
+                            "INFO: Source change: {}",
+                            p.file_name().unwrap_or_default().to_string_lossy()
+                        );
                         if let Ok(source) = std::fs::read_to_string(p) {
                             match aden_parse::parse_file(p, &source) {
                                 Ok(mut docs) if !docs.is_empty() => {
+                                    let watch_root = find_project_root(path);
                                     for doc in &mut docs {
-                                        sanitize_source_file(doc);
+                                        sanitize_source_file(doc, &watch_root);
                                         let safe_anchor = sanitize_anchor(&doc.anchor);
-                                        let out_path = contracts_dir.join(format!("{}.adoc", safe_anchor));
-                                        if std::fs::write(&out_path, aden_emit::emit_document(doc)).is_ok() {
+                                        let out_path =
+                                            contracts_dir.join(format!("{}.adoc", safe_anchor));
+                                        if std::fs::write(&out_path, aden_emit::emit_document(doc))
+                                            .is_ok()
+                                        {
                                             contracts_regenerated += 1;
                                         }
                                     }
@@ -1415,18 +1657,25 @@ pub fn cmd_watch(
             // Summary
             if contracts_regenerated > 0 {
                 println!("INFO: Regenerated {} contract(s)", contracts_regenerated);
-                
-                // Optional: Update graph incrementally
-                if graph_sync {
-                    // For now, just rebuild graph (incremental coming soon)
-                    // TODO: Implement incremental graph update
+            }
+
+            // Graph sync: keep the store-first knowledge graph current. The
+            // per-file .adoc emit above does not touch .aden/store, so without
+            // this `query`/`asm`/`locate` would serve a stale graph. Re-running
+            // the gen path indexes changed files, prunes deleted symbols, and
+            // re-links edges — the same logic `aden gen` uses — so the graph
+            // stays consistent (not just the contract files).
+            if graph_sync && !paths_to_process.is_empty() {
+                match crate::commands::generate::cmd_gen(path, true) {
+                    Ok(()) => println!("INFO: Graph synced ({})", path.display()),
+                    Err(e) => eprintln!("ERROR: Graph sync failed: {}", e),
                 }
             }
 
             // Unified sync mode: run gen + check + heal
             if sync_all && !paths_to_process.is_empty() {
                 println!("INFO: Running unified sync...");
-                
+
                 // Run check
                 if let Err(e) = crate::util::perform_check(path) {
                     let has_errors = format!("{:?}", e).contains("ERROR:");

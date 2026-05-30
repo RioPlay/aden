@@ -48,6 +48,15 @@ repository = "https://github.com/RioPlay/aden"
 homepage = "https://aden.rioplay.dev"
 documentation = "https://docs.rs/aden"
 
+# SECURITY (CWE-190): aden does extensive byte-offset/span arithmetic on
+# UNTRUSTED source while parsing arbitrary repos. By default release builds wrap
+# integer overflow silently, which could turn a crafted file into wrong offsets
+# (and downstream out-of-range slices). Enable overflow checks in release so an
+# overflow PANICS instead — and the per-file `catch_unwind` boundary in
+# aden-parse degrades that panic to a skipped file rather than aborting the run.
+[profile.release]
+overflow-checks = true
+
 [workspace.dependencies]
 rayon = "1.10"
 

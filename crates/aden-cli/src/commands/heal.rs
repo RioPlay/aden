@@ -17,23 +17,66 @@ fn summarize_drift_event(event: &aden_heal::DriftEvent) -> String {
     match event {
         StaleHash { target_path, .. } => format!("StaleHash: {}", target_path),
         SignatureMismatch { anchor, .. } => format!("SignatureMismatch: {}", anchor),
-        MissingContract { symbol_name, source_path, .. } => {
+        MissingContract {
+            symbol_name,
+            source_path,
+            ..
+        } => {
             format!("MissingContract: {} ({})", symbol_name, source_path)
         }
         OrphanAnchor { anchor, .. } => format!("OrphanAnchor: {}", anchor),
-        BrokenReference { contract_path, ref_anchor, line } => {
-            format!("BrokenReference: <<{}>> in {}:{}", ref_anchor, contract_path, line)
+        BrokenReference {
+            contract_path,
+            ref_anchor,
+            line,
+        } => {
+            format!(
+                "BrokenReference: <<{}>> in {}:{}",
+                ref_anchor, contract_path, line
+            )
         }
-        DeadLink { contract_path, include_path } => {
+        DeadLink {
+            contract_path,
+            include_path,
+        } => {
             format!("DeadLink: {} -> {}", contract_path, include_path)
         }
         MarkdownDrift { md_path, .. } => format!("MarkdownDrift: {}", md_path),
-        StaleMarkdown { md_path, source_files_changed } => {
-            format!("StaleMarkdown: {} ({} source file(s) changed)", md_path, source_files_changed.len())
+        StaleMarkdown {
+            md_path,
+            source_files_changed,
+        } => {
+            format!(
+                "StaleMarkdown: {} ({} source file(s) changed)",
+                md_path,
+                source_files_changed.len()
+            )
         }
-        MissingMarkdownTemplate { md_path, template_source } => {
-            format!("MissingMarkdownTemplate: {} (from {})", md_path, template_source)
+        MissingMarkdownTemplate {
+            md_path,
+            template_source,
+        } => {
+            format!(
+                "MissingMarkdownTemplate: {} (from {})",
+                md_path, template_source
+            )
         }
+    }
+}
+
+/// The drift-event variant name, for aggregating skip counts by kind.
+fn drift_kind_name(event: &aden_heal::DriftEvent) -> &'static str {
+    use aden_heal::DriftEvent::*;
+    match event {
+        StaleHash { .. } => "StaleHash",
+        SignatureMismatch { .. } => "SignatureMismatch",
+        MissingContract { .. } => "MissingContract",
+        OrphanAnchor { .. } => "OrphanAnchor",
+        BrokenReference { .. } => "BrokenReference",
+        DeadLink { .. } => "DeadLink",
+        MarkdownDrift { .. } => "MarkdownDrift",
+        StaleMarkdown { .. } => "StaleMarkdown",
+        MissingMarkdownTemplate { .. } => "MissingMarkdownTemplate",
     }
 }
 
@@ -160,7 +203,11 @@ pub fn cmd_heal_scan(
             let print_group = |name: &str, events: &Vec<&aden_heal::DriftEvent>, _path: &Path| {
                 if !events.is_empty() {
                     println!("\n=== {} ({} events) ===", name, events.len());
-                    let shown = if unlimited { events.len() } else { events.len().min(HEAL_GROUP_CAP) };
+                    let shown = if unlimited {
+                        events.len()
+                    } else {
+                        events.len().min(HEAL_GROUP_CAP)
+                    };
                     for (i, event) in events.iter().take(shown).enumerate() {
                         println!("  {}. {}", i + 1, summarize_drift_event(event));
 
@@ -225,9 +272,13 @@ pub fn cmd_heal_scan(
             print_group("LOW", &low, path);
 
             if fix {
+                use std::collections::BTreeMap;
                 println!("\n--fix flag set. Attempting auto-fix...");
                 let mut fixed_count = 0;
                 let mut failed_count = 0;
+                // Aggregate skipped events by drift kind instead of printing one
+                // noisy line per event (a large repo has hundreds of orphans).
+                let mut skipped_by_kind: BTreeMap<&'static str, usize> = BTreeMap::new();
 
                 for event in &report.events {
                     let confidence = match event {
@@ -240,7 +291,7 @@ pub fn cmd_heal_scan(
                     };
 
                     if confidence < 0.8 {
-                        println!("  Skipping {:?}: low confidence ({:.2})", event, confidence);
+                        *skipped_by_kind.entry(drift_kind_name(event)).or_default() += 1;
                         failed_count += 1;
                         continue;
                     }
@@ -277,19 +328,34 @@ pub fn cmd_heal_scan(
                             ..
                         } => {
                             let contract_path = PathBuf::from(source_path).with_extension("adoc");
-                            if let Some(parent) = contract_path.parent() {
-                                let _ = std::fs::create_dir_all(parent);
+                            // DATA SAFETY: `source_path.with_extension("adoc")`
+                            // collides with the source itself when the source is
+                            // already a .adoc/.md doc (e.g. docs/architecture.adoc),
+                            // which would overwrite real content with a stub. Also
+                            // never clobber any pre-existing file. aden is store-
+                            // first — contracts live in .aden/store, not on disk —
+                            // so a missing contract is regenerated by `aden gen`,
+                            // not by writing a disk stub here. Skip rather than
+                            // destroy: report it for manual/`gen` handling.
+                            if contract_path == PathBuf::from(source_path) || contract_path.exists()
+                            {
+                                *skipped_by_kind.entry("MissingContract").or_default() += 1;
+                                failed_count += 1;
+                            } else {
+                                if let Some(parent) = contract_path.parent() {
+                                    let _ = std::fs::create_dir_all(parent);
+                                }
+                                let content = format!(
+                                    "[[{}]]\n= {}\n\nagent-note::STUB[Auto-generated by aden-heal]\n",
+                                    anchor, symbol_name
+                                );
+                                std::fs::write(&contract_path, content)?;
+                                println!(
+                                    "  Fixed: {} (created stub contract)",
+                                    contract_path.display()
+                                );
+                                fixed_count += 1;
                             }
-                            let content = format!(
-                                "[[{}]]\n= {}\n\nagent-note::STUB[Auto-generated by aden-heal]\n",
-                                anchor, symbol_name
-                            );
-                            std::fs::write(&contract_path, content)?;
-                            println!(
-                                "  Fixed: {} (created stub contract)",
-                                contract_path.display()
-                            );
-                            fixed_count += 1;
                         }
                         aden_heal::DriftEvent::SignatureMismatch {
                             contract_path,
@@ -315,15 +381,22 @@ pub fn cmd_heal_scan(
                             fixed_count += 1;
                         }
                         _ => {
-                            println!("  Skipping {:?}: cannot auto-fix", event);
+                            *skipped_by_kind.entry(drift_kind_name(event)).or_default() += 1;
                             failed_count += 1;
                         }
                     }
                 }
 
-                println!("\nFixed: {} events", fixed_count);
+                println!("\nFixed: {} event(s)", fixed_count);
                 if failed_count > 0 {
-                    println!("Skipped: {} events (require manual review)", failed_count);
+                    println!(
+                        "Skipped: {} event(s) requiring manual review:",
+                        failed_count
+                    );
+                    for (kind, count) in &skipped_by_kind {
+                        println!("  {} × {}", count, kind);
+                    }
+                    println!("  (run 'aden heal . --propose' to generate patches for review)");
                 }
 
                 return Ok(());
@@ -650,71 +723,89 @@ pub fn generate_proposal(
     }
 }
 
+/// Garbage-collect stale nodes from the store (store-first).
+///
+/// A code-symbol node is stale when the source file it came from no longer
+/// exists on disk (or is no longer a discovered source). This is the
+/// authoritative sweep that complements gen's incremental auto-prune: gen
+/// prunes as it re-indexes changed/removed files; `heal --gc` re-scans the
+/// whole store and removes anything orphaned by deletions that gen never saw
+/// (e.g. files removed while gen wasn't run, or a store left stale by an old
+/// additive-only build).
+///
+/// Synthesized hub nodes (`mod-*`) and any node without a `source_file`
+/// attribute (doc headings created without one, metadata) are never removed —
+/// they are not tied to a single source file.
 pub fn cmd_heal_gc(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     use crate::util::discover_source_files;
+    use aden_store::{GraphStorage, Storage};
 
     println!("Aden Garbage Collector");
     println!("======================\n");
 
     let root = find_project_root(path);
-    let sources = discover_source_files(&root)?;
 
-    let source_set: std::collections::HashSet<String> = sources
+    let store_path = root.join(".aden").join("store");
+    if !store_path.is_dir() {
+        println!("No store found at {}. Nothing to GC.", store_path.display());
+        return Ok(());
+    }
+    let storage = Storage::new(store_path.to_str().ok_or("invalid store path")?)
+        .map_err(|e| format!("Failed to open store: {}", e))?;
+
+    // Live source files, relative to root — the same form sanitize_source_file
+    // writes into each doc's `source_file` attribute.
+    let live: std::collections::HashSet<String> = discover_source_files(&root)?
         .iter()
         .map(|s| {
-            let rel = s.strip_prefix(&root).unwrap_or(s);
-            rel.file_stem()
-                .unwrap_or_default()
+            s.strip_prefix(&root)
+                .unwrap_or(s)
                 .to_string_lossy()
                 .to_string()
         })
         .collect();
 
-    let contracts_dir = path.join("contracts");
-    if !contracts_dir.exists() {
-        println!("No contracts/ directory found. Nothing to GC.");
-        return Ok(());
-    }
+    let docs = storage
+        .get_all_documents()
+        .map_err(|e| format!("Failed to read store: {}", e))?;
 
-    let mut removed = 0;
-    let mut kept = 0;
-
-    fn walk_contracts(
-        dir: &Path,
-        source_set: &std::collections::HashSet<String>,
-        removed: &mut usize,
-        kept: &mut usize,
-    ) -> std::io::Result<()> {
-        for entry in std::fs::read_dir(dir)? {
-            let entry = entry?;
-            let path = entry.path();
-
-            if path.is_dir() {
-                walk_contracts(&path, source_set, removed, kept)?;
-            } else if path.extension().map(|e| e == "adoc").unwrap_or(false) {
-                let file_stem = path.file_stem().unwrap_or_default().to_string_lossy();
-
-                let is_orphan = !source_set
-                    .iter()
-                    .any(|s| file_stem.contains(s) || file_stem.starts_with("module-"));
-
-                if is_orphan {
-                    println!("  Removing orphaned: {}", path.display());
-                    std::fs::remove_file(&path)?;
-                    *removed += 1;
+    let mut stale: Vec<String> = Vec::new();
+    let mut kept = 0usize;
+    for (anchor, doc) in &docs {
+        // Never GC synthesized hubs or nodes not tied to a source file.
+        if anchor.starts_with("mod-") {
+            kept += 1;
+            continue;
+        }
+        match doc.attributes.get("source_file") {
+            Some(src) => {
+                // Stale if the source file is gone from the project, or missing
+                // on disk (covers absolute-path entries from an older gen run).
+                let on_disk = root.join(src).exists();
+                if !live.contains(src) && !on_disk {
+                    stale.push(anchor.clone());
                 } else {
-                    *kept += 1;
+                    kept += 1;
                 }
             }
+            None => kept += 1, // no source_file → not a prunable code symbol
         }
-        Ok(())
     }
 
-    walk_contracts(&contracts_dir, &source_set, &mut removed, &mut kept)?;
+    let mut removed = 0usize;
+    for anchor in &stale {
+        match storage.delete_node(anchor) {
+            Ok(()) => {
+                println!("  Removing orphaned: {}", anchor);
+                removed += 1;
+            }
+            Err(e) => eprintln!("  WARN: failed to remove {}: {}", anchor, e),
+        }
+    }
+    storage
+        .flush()
+        .map_err(|e| format!("Store flush failed: {}", e))?;
 
-    println!(
-        "\nGC complete: {} contracts removed, {} kept",
-        removed, kept
-    );
+    println!("\nGC complete: {} node(s) removed, {} kept", removed, kept);
     Ok(())
 }

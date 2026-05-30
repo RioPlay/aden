@@ -57,6 +57,10 @@ enum Commands {
     Init {
         #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
         path: PathBuf,
+        /// Also scaffold secure-coding reference stubs (CWE Top 25 + OWASP SCP
+        /// index, with citations) into .agent/secure-coding-refs/
+        #[arg(long)]
+        with_secure_refs: bool,
     },
     /// Create a new project from a language template with aden scaffolding
     New {
@@ -125,12 +129,20 @@ enum Commands {
     Complete {
         #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::AnyPath)]
         path: PathBuf,
-        #[arg(long, help = "Dry-run mode (don't actually complete)", default_value = "false")]
+        #[arg(
+            long,
+            help = "Dry-run mode (don't actually complete)",
+            default_value = "false"
+        )]
         dry_run: bool,
-        #[arg(long, value_name = "MODEL", help = "LLM model to use (e.g., ollama:llama3)")]
+        #[arg(
+            long,
+            value_name = "MODEL",
+            help = "LLM model to use (e.g., ollama:llama3)"
+        )]
         model: Option<String>,
     },
-    /// Lint source files using tree-sitter AST analysis
+    /// Lint source files using fast, language-agnostic line-based heuristics
     Lint {
         #[arg(value_name = "PATH", default_value = ".", value_hint = ValueHint::AnyPath)]
         path: PathBuf,
@@ -190,11 +202,23 @@ enum Commands {
         strict: bool,
         #[arg(long, help = "Inspect: show what would be included without outputting")]
         inspect: bool,
-        #[arg(long, value_name = "TAG", help = "Include only content with this tag (can repeat)")]
+        #[arg(
+            long,
+            value_name = "TAG",
+            help = "Include only content with this tag (can repeat)"
+        )]
         include_tag: Vec<String>,
-        #[arg(long, value_name = "TAG", help = "Exclude content with this tag (can repeat)")]
+        #[arg(
+            long,
+            value_name = "TAG",
+            help = "Exclude content with this tag (can repeat)"
+        )]
         exclude_tag: Vec<String>,
-        #[arg(long, value_name = "ATTR", help = "Set attribute for conditional processing (can repeat)")]
+        #[arg(
+            long,
+            value_name = "ATTR",
+            help = "Set attribute for conditional processing (can repeat)"
+        )]
         set_attr: Vec<String>,
     },
     /// Query the knowledge graph and emit JSON
@@ -310,7 +334,10 @@ enum Commands {
     /// Structure-aware content search: find a pattern and tag each hit with the
     /// symbol it lives inside (a graph-aware replacement for grep).
     Grep {
-        #[arg(value_name = "PATTERN", help = "Text (or regex with --regex) to search for")]
+        #[arg(
+            value_name = "PATTERN",
+            help = "Text (or regex with --regex) to search for"
+        )]
         pattern: String,
         #[arg(long, help = "Treat PATTERN as a regular expression")]
         regex: bool,
@@ -318,7 +345,12 @@ enum Commands {
         ignore_case: bool,
         #[arg(long, help = "Only report matches that fall inside a known symbol")]
         symbol_only: bool,
-        #[arg(long, value_name = "N", default_value = "100", help = "Limit number of results")]
+        #[arg(
+            long,
+            value_name = "N",
+            default_value = "100",
+            help = "Limit number of results"
+        )]
         limit: usize,
         #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
         path: PathBuf,
@@ -330,7 +362,11 @@ enum Commands {
         caller_of: Option<String>,
         #[arg(long, value_name = "FORMAT", default_value = "plain")]
         format: String,
-        #[arg(long, value_name = "N", help = "Include N lines of context around symbol")]
+        #[arg(
+            long,
+            value_name = "N",
+            help = "Include N lines of context around symbol"
+        )]
         show_context: Option<usize>,
         #[arg(
             long,
@@ -357,7 +393,10 @@ enum Commands {
     Watch {
         #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
         path: PathBuf,
-        #[arg(long, help = "Also sync graph in real-time (contracts + graph stay current)")]
+        #[arg(
+            long,
+            help = "Also sync graph in real-time (contracts + graph stay current)"
+        )]
         graph_sync: bool,
         #[arg(long, help = "Restore graph from cache on startup for faster sync")]
         restore: bool,
@@ -450,7 +489,7 @@ enum Commands {
         #[command(subcommand)]
         action: FederationAction,
     },
-    /// OWASP-style security audit: scan source for vulnerabilities
+    /// OWASP-aligned security audit: scan source for vulnerabilities
     Audit {
         #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
         path: PathBuf,
@@ -592,12 +631,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::env::set_current_dir(project_path)?;
             eprintln!("Switched to aden project: {}", project_path.display());
         } else {
-            eprintln!("Warning: Project path does not exist: {}", project_path.display());
+            eprintln!(
+                "Warning: Project path does not exist: {}",
+                project_path.display()
+            );
         }
     }
 
     match cli.command {
-        Commands::Init { path } => commands::cmd_init(&path),
+        Commands::Init {
+            path,
+            with_secure_refs,
+        } => commands::cmd_init(&path, with_secure_refs),
         Commands::Regen { path } => {
             let root = find_project_root(&path);
             let gen_cache = root.join(".aden").join("gen-cache.json");
@@ -623,9 +668,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             commands::cmd_gen(&effective_path, quiet)
         }
         Commands::Check { path, severity } => commands::cmd_check(&path, &severity),
-        Commands::Complete { path, dry_run, model } => {
-            cmd_complete(&path, dry_run, model.as_deref())
-        }
+        Commands::Complete {
+            path,
+            dry_run,
+            model,
+        } => cmd_complete(&path, dry_run, model.as_deref()),
         Commands::Lint {
             path,
             severity,
@@ -637,7 +684,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             scope,
             filter,
             list,
-        } => commands::cmd_test(&path, scope.as_deref(), filter.as_deref(), list),
+        } => commands::cmd_test(&path, scope.as_deref(), filter.as_deref(), list, cli.json),
         Commands::Asm {
             from,
             depth,
@@ -700,9 +747,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             model,
             path,
         } => commands::cmd_ask(&path, &question, from.as_deref(), budget, model.as_deref()),
-        Commands::Search { query, path, limit, offset, doc_type, semantics } => {
+        Commands::Search {
+            query,
+            path,
+            limit,
+            offset,
+            doc_type,
+            semantics,
+        } => {
             let effective_limit = if cli.unlimited { usize::MAX } else { limit };
-            commands::cmd_search(&path, &query, effective_limit, offset, doc_type.as_deref(), semantics)
+            commands::cmd_search(
+                &path,
+                &query,
+                effective_limit,
+                offset,
+                doc_type.as_deref(),
+                semantics,
+                cli.json,
+            )
         }
         Commands::List {
             filter,
@@ -718,7 +780,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 limit
             };
-            commands::cmd_list(&path, filter.as_deref(), verbose, effective_limit, offset, semantics)
+            commands::cmd_list(
+                &path,
+                filter.as_deref(),
+                verbose,
+                effective_limit,
+                offset,
+                semantics,
+                cli.json,
+            )
         }
         Commands::Grep {
             pattern,
@@ -760,17 +830,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         #[cfg(feature = "watch")]
         Commands::Status { path } => {
             use crate::util::quick_health_score;
-            
+
             let aden_path = path.join(".aden");
             println!("Aden Status: {}", path.display());
             println!("Active .aden: {}", aden_path.display());
-            
+
             let health = quick_health_score(&path).unwrap_or(0.0);
             let health_pct = (health * 100.0).round() as i32;
-            
-            let emoji = if health >= 0.95 { "✅" } else if health >= 0.8 { "⚠️" } else { "❌" };
+
+            let emoji = if health >= 0.95 {
+                "✅"
+            } else if health >= 0.8 {
+                "⚠️"
+            } else {
+                "❌"
+            };
             println!("{} Health: {}/100", emoji, health_pct);
-            
+
             // Quick orphan check
             let graph = aden_graph::cache::build_from_directory_cached(&path).ok();
             if let Some(g) = graph {
@@ -781,18 +857,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     println!("⚠️ {} orphan document(s)", orphans.len());
                 }
             }
-            
+
             Ok(())
         }
         Commands::Sync { path } => {
             println!("Running aden sync on {}...", path.display());
-            
+
             // 1. Generate contracts
             println!("\n[1/3] Generating contracts...");
             if let Err(e) = commands::cmd_gen(&path, true) {
                 eprintln!("Gen error: {}", e);
             }
-            
+
             // 2. Check references
             println!("\n[2/3] Checking references...");
             if let Err(e) = commands::cmd_check(&path, "Warn") {
@@ -801,17 +877,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     println!("Check OK");
                 }
             }
-            
+
             // 3. Heal scan
             println!("\n[3/3] Scanning for drift...");
             if let Err(e) = commands::cmd_heal_scan(&path, false, false, false, cli.unlimited) {
                 eprintln!("Heal error: {}", e);
             }
-            
+
             println!("\nSync complete!");
             Ok(())
         }
-        Commands::Watch { path, graph_sync, restore, sync } => commands::cmd_watch(&path, graph_sync, restore, sync),
+        Commands::Watch {
+            path,
+            graph_sync,
+            restore,
+            sync,
+        } => commands::cmd_watch(&path, graph_sync, restore, sync),
         Commands::Heal {
             path,
             propose,
@@ -864,7 +945,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             files.as_deref(),
             status.as_deref().unwrap_or("in_progress"),
         ),
-        Commands::Licenses { path, out, full } => commands::cmd_licenses(&path, out.as_deref(), full, false),
+        Commands::Licenses { path, out, full } => {
+            commands::cmd_licenses(&path, out.as_deref(), full, false)
+        }
         Commands::Federation { action } => commands::cmd_federation(&action),
         Commands::Audit {
             path,

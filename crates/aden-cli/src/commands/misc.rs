@@ -8,7 +8,7 @@ use std::sync::OnceLock;
 use crate::types::{OwaspFinding, OwaspSeverity};
 use crate::util::quick_health_score;
 
-/// OWASP-style security audit: scan source for vulnerabilities.
+/// OWASP-aligned security audit: scan source for vulnerabilities.
 pub fn cmd_audit(
     path: &Path,
     lang_filter: Option<&str>,
@@ -315,41 +315,32 @@ pub fn cmd_audit(
     let info = counts(OwaspSeverity::Info);
 
     if is_json {
-        println!("{{");
-        println!("  \"findings\": [");
-        for (i, f) in findings.iter().enumerate() {
-            let comma = if i + 1 < findings.len() { "," } else { "" };
-            println!("    {{");
-            println!("      \"owasp_id\": \"{}\",", f.owasp_id);
-            println!("      \"category\": \"{}\",", f.category);
-            println!("      \"severity\": \"{}\",", f.severity);
-            println!("      \"file\": \"{}\",", f.file.display());
-            println!("      \"line\": {},", f.line);
-            println!("      \"snippet\": \"{}\",", f.snippet.replace('"', "\\\""));
-            println!(
-                "      \"description\": \"{}\",",
-                f.description.replace('"', "\\\"")
-            );
-            println!(
-                "      \"remediation\": \"{}\"",
-                f.remediation.replace('"', "\\\"")
-            );
-            println!("    }}{comma}");
-        }
-        println!("  ],");
-        println!("  \"summary\": {{");
+        // SECURITY (audit MEDIUM-4): build JSON with serde, not string
+        // concatenation. `snippet` is attacker-controlled (a line from an
+        // untrusted source file); the old hand-rolled escaper only handled `"`,
+        // so a trailing backslash or a raw control byte could break out of the
+        // string or produce invalid JSON. serde_json escapes everything.
+        let doc = serde_json::json!({
+            "findings": findings.iter().map(|f| serde_json::json!({
+                "owasp_id": f.owasp_id,
+                "category": f.category,
+                "severity": f.severity.to_string(),
+                "file": f.file.display().to_string(),
+                "line": f.line,
+                "snippet": f.snippet,
+                "description": f.description,
+                "remediation": f.remediation,
+            })).collect::<Vec<_>>(),
+            "summary": {
+                "total": findings.len(),
+                "critical": crit, "high": high, "medium": med,
+                "low": low, "info": info, "scanned": total_scanned,
+            },
+        });
         println!(
-            "    \"total\": {}, \"critical\": {}, \"high\": {}, \"medium\": {}, \"low\": {}, \"info\": {}, \"scanned\": {}",
-            findings.len(),
-            crit,
-            high,
-            med,
-            low,
-            info,
-            total_scanned
+            "{}",
+            serde_json::to_string_pretty(&doc).unwrap_or_else(|_| "{}".to_string())
         );
-        println!("  }}");
-        println!("}}");
     } else if is_adoc {
         let header = format!(
             "= OWASP Security Audit Report\n:date: {}\n:toc: auto\n\n== Summary\n\n| Severity | Count\n| Critical | {crit}\n| High     | {high}\n| Medium   | {med}\n| Low      | {low}\n| Info     | {info}\n\n_{total_scanned} files scanned._\n\n== Findings\n",
@@ -993,7 +984,11 @@ pub fn cmd_doctor(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
 
     if is_rust {
         for tool in &["rustc", "cargo"] {
-            if std::process::Command::new(tool).arg("--version").output().is_ok() {
+            if std::process::Command::new(tool)
+                .arg("--version")
+                .output()
+                .is_ok()
+            {
                 println!("✓ {} found (Rust project)", tool);
             } else {
                 println!("✗ {} NOT FOUND (Rust project detected)", tool);
@@ -1003,7 +998,11 @@ pub fn cmd_doctor(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     }
     if is_node {
         for tool in &["node", "npm"] {
-            if std::process::Command::new(tool).arg("--version").output().is_ok() {
+            if std::process::Command::new(tool)
+                .arg("--version")
+                .output()
+                .is_ok()
+            {
                 println!("✓ {} found (Node project)", tool);
             } else {
                 println!("⚠ {} not found (package.json detected)", tool);
@@ -1011,14 +1010,22 @@ pub fn cmd_doctor(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     if is_python {
-        if std::process::Command::new("python3").arg("--version").output().is_ok() {
+        if std::process::Command::new("python3")
+            .arg("--version")
+            .output()
+            .is_ok()
+        {
             println!("✓ python3 found (Python project)");
         } else {
             println!("⚠ python3 not found (pyproject.toml/setup.py detected)");
         }
     }
     if is_go {
-        if std::process::Command::new("go").arg("version").output().is_ok() {
+        if std::process::Command::new("go")
+            .arg("version")
+            .output()
+            .is_ok()
+        {
             println!("✓ go found (Go project)");
         } else {
             println!("⚠ go not found (go.mod detected)");
@@ -1046,15 +1053,18 @@ pub fn cmd_doctor(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_default()
         .join(".aden")
         .join("keys");
-    let signing_key = key_dir
-        .read_dir()
-        .ok()
-        .and_then(|mut d| d.find_map(|e| {
+    let signing_key = key_dir.read_dir().ok().and_then(|mut d| {
+        d.find_map(|e| {
             let e = e.ok()?;
             let name = e.file_name();
             let s = name.to_string_lossy();
-            if s.ends_with(".pub") { Some(e.path()) } else { None }
-        }));
+            if s.ends_with(".pub") {
+                Some(e.path())
+            } else {
+                None
+            }
+        })
+    });
     if let Some(key_path) = signing_key {
         println!("✓ Signing public key: {}", key_path.display());
     } else {
@@ -1331,11 +1341,15 @@ pub fn cmd_licenses(
 
     if full {
         markdown.push_str("## Dependencies with Licenses\n\n");
-        let mut license_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        let mut license_counts: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
 
         for (name, version) in &packages {
             let crate_info = fetch_crate_info(name, version)?;
-            let license = crate_info.get("license").and_then(|l| l.as_str()).unwrap_or("UNKNOWN");
+            let license = crate_info
+                .get("license")
+                .and_then(|l| l.as_str())
+                .unwrap_or("UNKNOWN");
 
             *license_counts.entry(license.to_string()).or_insert(0) += 1;
 
@@ -1357,9 +1371,9 @@ pub fn cmd_licenses(
         markdown.push_str("| License | Count |\n");
         markdown.push_str("|--------|-------|\n");
         let mut sorted_licenses: Vec<_> = license_counts.iter().collect();
-    sorted_licenses.sort_by(|a, b| b.1.cmp(&a.1));
+        sorted_licenses.sort_by(|a, b| b.1.cmp(&a.1));
 
-    for (license, count) in sorted_licenses {
+        for (license, count) in sorted_licenses {
             markdown.push_str(&format!("| {} | {} |\n", license, count));
         }
         markdown.push('\n');
@@ -1389,11 +1403,12 @@ pub fn cmd_licenses(
     Ok(())
 }
 
-fn fetch_crate_info(name: &str, version: &str) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+fn fetch_crate_info(
+    name: &str,
+    version: &str,
+) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
     let url = format!("https://crates.io/api/v1/crates/{}/{}", name, version);
-    let response = ureq::get(&url)
-        .set("User-Agent", "aden/0.1.0")
-        .call()?;
+    let response = ureq::get(&url).set("User-Agent", "aden/0.1.0").call()?;
 
     if response.status() == 200 {
         let mut json_str = String::new();

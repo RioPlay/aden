@@ -17,8 +17,6 @@ use crate::util::{
 /// document store to rebuild the call graph.
 struct EmittedSymbol {
     anchor: String,
-    cache_key: String,
-    cache_val: GenCacheEntry,
     callees: Vec<String>,
     /// `edge::uses[Type]` references — types named in a signature/fields, linked
     /// as `Uses` edges so a type that is used but never *called* is not a false
@@ -30,9 +28,20 @@ struct EmittedSymbol {
 }
 
 /// Work item returned from parallel file processing.
+///
+/// `Reindexed` is emitted whenever a file was (re)parsed — even if it produced
+/// ZERO symbols (e.g. every function was deleted). That is deliberate: the
+/// prune step diffs each reindexed file's fresh anchor set against the set the
+/// cache recorded last time, so an emptied file correctly drops its stale
+/// symbols. `Skip` is reserved for files whose mtime is unchanged.
 enum WorkItem {
     Skip,
-    Emitted(Vec<EmittedSymbol>),
+    Reindexed {
+        cache_key: String,
+        source_mtime: u64,
+        source_path: String,
+        symbols: Vec<EmittedSymbol>,
+    },
 }
 
 /// Emit a progress line unless quiet mode is on.
@@ -58,8 +67,8 @@ fn crate_from_anchor(anchor: &str) -> Option<String> {
     let segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
     let name = match segs.len() {
         0 => return None,
-        1 => segs[0],                 // file at module root — use it
-        n => segs[n - 2],             // directory containing the file
+        1 => segs[0],     // file at module root — use it
+        n => segs[n - 2], // directory containing the file
     };
     if name.is_empty() {
         None
@@ -87,7 +96,9 @@ fn extract_callees(doc: &aden_core::Document) -> Vec<String> {
                     }
                 }
             }
-            Block::Table(t) if t.headers.first().map(|h| h.eq_ignore_ascii_case("callee")) == Some(true) => {
+            Block::Table(t)
+                if t.headers.first().map(|h| h.eq_ignore_ascii_case("callee")) == Some(true) =>
+            {
                 for row in &t.rows {
                     if let Some(c) = row.first() {
                         if !c.is_empty() {
@@ -217,11 +228,7 @@ fn resolve_callee<'a>(
                     .copied()
                     .filter(|a| crate_from_anchor(a).as_deref() == Some(cc))
                     .collect();
-                if same.len() == 1 {
-                    Some(same[0])
-                } else {
-                    None
-                }
+                if same.len() == 1 { Some(same[0]) } else { None }
             }
         }
     };
@@ -368,7 +375,11 @@ fn link_store_edges<S: GraphStorage>(
                     ),
                 ));
             }
-            edges.push((project.to_string(), module_anchor.clone(), EdgeType::Documents));
+            edges.push((
+                project.to_string(),
+                module_anchor.clone(),
+                EdgeType::Documents,
+            ));
             edges.push((module_anchor, project.to_string(), EdgeType::PartOf));
         }
     }
@@ -396,7 +407,7 @@ pub fn ensure_fresh(path: &Path) {
     // project must be indexed on first query (this is what makes asm/ask/locate
     // work without an explicit `aden gen`).
     if !root.join(".aden").join("store").exists() {
-        let _ = cmd_gen(&root, true);
+        let _ = cmd_gen_silent(&root);
         return;
     }
 
@@ -411,7 +422,12 @@ pub fn ensure_fresh(path: &Path) {
     // avoids perpetual staleness from files that are discovered but never
     // cached (e.g. unsupported languages that fail to parse). A file newer than
     // anything gen knew about is genuinely new or modified.
-    let newest_known = cache.entries.values().map(|e| e.source_mtime).max().unwrap_or(0);
+    let newest_known = cache
+        .entries
+        .values()
+        .map(|e| e.source_mtime)
+        .max()
+        .unwrap_or(0);
 
     let stale = sources.iter().any(|src| {
         let mtime = src
@@ -425,14 +441,33 @@ pub fn ensure_fresh(path: &Path) {
     });
 
     if stale {
-        // Quiet incremental regen: re-parses only changed files and re-links edges.
-        let _ = cmd_gen(&root, true);
+        // Silent incremental regen: re-parses only changed files and re-links
+        // edges, without printing anything (this runs transparently on reads).
+        let _ = cmd_gen_silent(&root);
     }
 }
 
 /// Auto-document a codebase: discover source files, skip unchanged,
 /// emit structured contracts to store, and optionally to disk.
+/// Compile source into the store.
+///
+/// Two independent verbosity axes:
+/// - `quiet`  — suppress the per-file "Stored <anchor>" progress lines but
+///   still print the one-line summary. This is what `--quiet`/`regen` want
+///   ("summary only").
+/// - `silent` — suppress EVERYTHING, including the summary and parse warnings.
+///   This is the transparent refresh-on-read path (`ensure_fresh`), which must
+///   never write to stdout/stderr during `ask`/`query`/`grep`/etc.
 pub fn cmd_gen(path: &Path, quiet: bool) -> Result<(), Box<dyn std::error::Error>> {
+    cmd_gen_inner(path, quiet, false)
+}
+
+/// Fully-silent variant for the auto-refresh path (see `ensure_fresh`).
+pub fn cmd_gen_silent(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    cmd_gen_inner(path, true, true)
+}
+
+fn cmd_gen_inner(path: &Path, quiet: bool, silent: bool) -> Result<(), Box<dyn std::error::Error>> {
     if !path.exists() {
         return Err("Path does not exist or is not a file/directory".into());
     }
@@ -518,12 +553,30 @@ pub fn cmd_gen(path: &Path, quiet: bool) -> Result<(), Box<dyn std::error::Error
                     }
                 };
 
+                // Security floor (content): the filename-based is_secret_path
+                // check above misses a credential embedded in an ordinary source
+                // or config file. Scan content for high-confidence secret tokens
+                // (AWS/GitHub/OpenAI/Slack keys, PEM private keys) and refuse to
+                // index such a file into the store, where ask/asm would otherwise
+                // assemble it into LLM context (CWE-798/CWE-200).
+                if aden_core::filter::content_has_high_confidence_secret(&source) {
+                    if !silent {
+                        eprintln!(
+                            "WARN: Skipping {} — file content matches a credential pattern (not indexed). Add to .adenignore if intentional.",
+                            src_rel.display()
+                        );
+                    }
+                    return None;
+                }
+
                 // Parse
                 let docs = match aden_parse::parse_file(src_path, &source) {
                     Ok(d) => d,
                     Err(aden_core::Error::UnsupportedLanguage(_)) => return None,
                     Err(e) => {
-                        eprintln!("WARN: Parse failed for {}: {}", src_path.display(), e);
+                        if !silent {
+                            eprintln!("WARN: Parse failed for {}: {}", src_path.display(), e);
+                        }
                         return None;
                     }
                 };
@@ -532,7 +585,7 @@ pub fn cmd_gen(path: &Path, quiet: bool) -> Result<(), Box<dyn std::error::Error
                 let mut emitted = Vec::new();
                 for doc in docs {
                     let mut doc_clone = doc.clone();
-                    sanitize_source_file(&mut doc_clone);
+                    sanitize_source_file(&mut doc_clone, &root);
 
                     // Capture call sites for graph linking before slimming, then
                     // drop the redundant edge:: listing so the store stays compact.
@@ -552,26 +605,22 @@ pub fn cmd_gen(path: &Path, quiet: bool) -> Result<(), Box<dyn std::error::Error
                         progress!(quiet, "Stored {}", doc_clone.anchor);
                     }
 
-                    let cache_val = GenCacheEntry {
-                        source_mtime: mtime_secs,
-                        source_path: src_path.to_string_lossy().to_string(),
-                    };
-
                     emitted.push(EmittedSymbol {
                         anchor: doc_clone.anchor.clone(),
-                        cache_key: cache_key.clone(),
-                        cache_val,
                         callees,
                         uses,
                         refs,
                     });
                 }
 
-                if emitted.is_empty() {
-                    Some(WorkItem::Skip)
-                } else {
-                    Some(WorkItem::Emitted(emitted))
-                }
+                // Always report a reindexed file — even with zero symbols — so
+                // the prune step can drop anchors a now-empty file used to own.
+                Some(WorkItem::Reindexed {
+                    cache_key: cache_key.clone(),
+                    source_mtime: mtime_secs,
+                    source_path: src_path.to_string_lossy().to_string(),
+                    symbols: emitted,
+                })
             })
             .collect();
 
@@ -580,13 +629,38 @@ pub fn cmd_gen(path: &Path, quiet: bool) -> Result<(), Box<dyn std::error::Error
         let mut link_records: Vec<(String, Vec<String>)> = Vec::new();
         let mut use_records: Vec<(String, Vec<String>)> = Vec::new();
         let mut ref_records: Vec<(String, Vec<String>)> = Vec::new();
+        // Anchors to prune: symbols a reindexed file no longer defines.
+        let mut stale_anchors: Vec<String> = Vec::new();
         for item in work_items {
             match item {
                 WorkItem::Skip => skipped += 1,
-                WorkItem::Emitted(emitted) => {
-                    for sym in emitted {
+                WorkItem::Reindexed {
+                    cache_key,
+                    source_mtime,
+                    source_path,
+                    symbols,
+                } => {
+                    let fresh: Vec<String> = symbols.iter().map(|s| s.anchor.clone()).collect();
+                    // Diff against what this file contributed last time: any
+                    // previously-recorded anchor not in the fresh set is a
+                    // symbol that was deleted/renamed and must be pruned.
+                    if let Some(prev) = cache.entries.get(&cache_key) {
+                        for old in &prev.anchors {
+                            if !fresh.contains(old) {
+                                stale_anchors.push(old.clone());
+                            }
+                        }
+                    }
+                    cache.entries.insert(
+                        cache_key,
+                        GenCacheEntry {
+                            source_mtime,
+                            source_path,
+                            anchors: fresh,
+                        },
+                    );
+                    for sym in symbols {
                         generated.push(sym.anchor.clone());
-                        cache.entries.insert(sym.cache_key, sym.cache_val);
                         if !sym.refs.is_empty() {
                             ref_records.push((sym.anchor.clone(), sym.refs));
                         }
@@ -601,8 +675,56 @@ pub fn cmd_gen(path: &Path, quiet: bool) -> Result<(), Box<dyn std::error::Error
             }
         }
 
+        // Case (b): whole-file deletion. On a full-tree gen (NOT a single-file
+        // re-index, which only knows about one file), any cache entry whose
+        // source file is no longer in the discovered set is gone — prune all
+        // anchors it owned and drop the entry.
+        if !path.is_file() {
+            let live: std::collections::HashSet<String> = sources
+                .iter()
+                .map(|p| {
+                    p.strip_prefix(&root)
+                        .unwrap_or(p)
+                        .to_string_lossy()
+                        .to_string()
+                })
+                .collect();
+            let dead_keys: Vec<String> = cache
+                .entries
+                .keys()
+                .filter(|k| !live.contains(*k))
+                .cloned()
+                .collect();
+            for k in dead_keys {
+                if let Some(entry) = cache.entries.remove(&k) {
+                    stale_anchors.extend(entry.anchors);
+                }
+            }
+        }
+
+        // Prune stale nodes (deleted symbols / deleted files). delete_node
+        // cascades edges in both directions so no dangling reference survives.
+        // Guard: never touch synthesized hub nodes (mod-*) — they carry no
+        // source_file and are rebuilt by link_store_edges below.
+        let mut pruned = 0usize;
+        for anchor in &stale_anchors {
+            if anchor.starts_with("mod-") {
+                continue;
+            }
+            match storage.delete_node(anchor) {
+                Ok(()) => pruned += 1,
+                Err(e) => {
+                    if !silent {
+                        eprintln!("WARN: Failed to prune {}: {}", anchor, e);
+                    }
+                }
+            }
+        }
+
         // Flush store to persist all documents
-        storage.flush().map_err(|e| format!("Store flush failed: {}", e))?;
+        storage
+            .flush()
+            .map_err(|e| format!("Store flush failed: {}", e))?;
 
         // Connect the graph: persist module<->symbol containment and call edges
         // so the store-first graph used by asm/ask/query is actually traversable.
@@ -612,9 +734,29 @@ pub fn cmd_gen(path: &Path, quiet: bool) -> Result<(), Box<dyn std::error::Error
 
         save_gen_cache(&cache_path, &cache)?;
 
-        progress!(quiet, "\nStored {} contracts. Skipped {} unchanged files.", generated.len(), skipped);
+        // The summary is "summary only" output: shown under --quiet/regen, but
+        // suppressed entirely on the silent refresh-on-read path.
+        if pruned > 0 {
+            progress!(
+                silent,
+                "\nStored {} contracts. Skipped {} unchanged files. Pruned {} stale symbol(s).",
+                generated.len(),
+                skipped,
+                pruned
+            );
+        } else {
+            progress!(
+                silent,
+                "\nStored {} contracts. Skipped {} unchanged files.",
+                generated.len(),
+                skipped
+            );
+        }
         if skipped == 0 && generated.len() == sources.len() {
-            progress!(quiet, "(All files were skipped — nothing changed since last run)");
+            progress!(
+                silent,
+                "(All files were skipped — nothing changed since last run)"
+            );
         }
 
         // Report orphan symbols using store-first graph build. Suppressed in

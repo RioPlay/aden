@@ -19,14 +19,16 @@ This repository uses **AsciiDoc** (`.adoc`), not Markdown.
 
 ### Before Changing Code
 ```bash
-aden ask --from <anchor> "What breaks if I change X?"
+aden query --impact <anchor>      # blast radius: downstream reach
+aden query --backlinks <anchor>   # blast radius: what references this anchor
+aden ask "What does X do?" --from <anchor>   # explanation, not blast radius
 aden query --from <anchor> --depth 2
-aden locate <symbol>
+aden locate --symbol <symbol>
 ```
 
 ### After Writing Code
 ```bash
-aden gen <file>           # Generate contract
+aden gen <file>           # Index this file into the knowledge graph (.aden/store)
 aden check . --severity Forbid  # Validate refs (fails only on critical)
 ```
 
@@ -62,7 +64,11 @@ aden ci-check .           # Full CI gates before commit
 | `aden-policy` | Constitutional directives, precedence |
 | `aden-api` | REST/gRPC types |
 | `aden-attest` | Attestation primitives |
-| `aden-py` | PyO3 Python bindings |
+| `aden-store` | fjall-backed (LSM-tree) graph store (store-first persistence) |
+| `aden-diagnose` | Deterministic knowledge-graph diagnostics |
+| `aden-lsp` | Language Server Protocol integration |
+| `aden-simulate` | Change-impact simulation |
+| `aden-telemetry` | Local telemetry primitives |
 
 ## Documentation
 

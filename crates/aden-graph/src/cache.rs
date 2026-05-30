@@ -16,7 +16,8 @@
 //
 //! Disk cache for the Aden knowledge graph.
 //!
-//! Uses Sled + Postcard for fast binary storage with git ref tracking.
+//! Uses the fjall (LSM-tree) store + Postcard for fast binary storage with git
+//! ref tracking.
 //! Stores graph keyed by content hash AND git ref, enabling:
 //! - Fast incremental loads via content-key validation
 //! - Time-travel queries via git ref lookup
@@ -29,7 +30,7 @@
 
 use crate::bridge::GraphBridge;
 use crate::graph::AdenGraph;
-use crate::nodes::{DocumentNode, AdenEdge, GraphNode};
+use crate::nodes::{AdenEdge, DocumentNode, GraphNode};
 use aden_core::{Document, EdgeType};
 use aden_store::{GraphStorage, Storage};
 use blake3::Hasher;
@@ -66,6 +67,10 @@ fn compute_content_hash(dir: &Path) -> Result<String, std::io::Error> {
     let mut paths: Vec<PathBuf> = Vec::new();
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
+        // SECURITY: never follow symlinks (traversal / cycle DoS on untrusted repos).
+        if entry.file_type().map(|ft| ft.is_symlink()).unwrap_or(true) {
+            continue;
+        }
         let path = entry.path();
         if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
             if (ext == "adoc" || ext == "aden" || ext == "md" || ext == "txt") && path.is_file() {
@@ -100,12 +105,24 @@ fn compute_content_hash(dir: &Path) -> Result<String, std::io::Error> {
 }
 
 fn walk_knowledge_files(dir: &Path) -> Result<Vec<PathBuf>, std::io::Error> {
+    walk_knowledge_files_inner(dir, 0)
+}
+
+fn walk_knowledge_files_inner(dir: &Path, depth: usize) -> Result<Vec<PathBuf>, std::io::Error> {
     let mut paths = Vec::new();
+    // SECURITY: bound recursion and never follow symlinks — an untrusted repo
+    // could otherwise cycle (DoS) or escape the tree.
+    if depth > 32 {
+        return Ok(paths);
+    }
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
+        if entry.file_type().map(|ft| ft.is_symlink()).unwrap_or(true) {
+            continue;
+        }
         let path = entry.path();
         if path.is_dir() {
-            paths.extend(walk_knowledge_files(&path)?);
+            paths.extend(walk_knowledge_files_inner(&path, depth + 1)?);
         } else if let Some(ext) = path.extension().and_then(|e| e.to_str())
             && (ext == "adoc" || ext == "aden" || ext == "md" || ext == "txt")
         {
@@ -242,10 +259,9 @@ fn build_graph_from_docs_and_edges(
 
     // Second pass: insert edges
     for (src, dst, edge_type) in edges {
-        if let (Some(&src_idx), Some(&dst_idx)) = (
-            anchor_to_index.get(&src),
-            anchor_to_index.get(&dst),
-        ) {
+        if let (Some(&src_idx), Some(&dst_idx)) =
+            (anchor_to_index.get(&src), anchor_to_index.get(&dst))
+        {
             graph.add_edge(src_idx, dst_idx, AdenEdge { edge_type });
         }
     }
@@ -342,7 +358,9 @@ pub fn build_neighborhood_cached(
 }
 
 /// Build a graph, using the on-disk cache when possible.
-pub fn build_from_directory_cached(dir: &Path) -> Result<AdenGraph<DocumentNode, AdenEdge>, crate::graph::GraphError> {
+pub fn build_from_directory_cached(
+    dir: &Path,
+) -> Result<AdenGraph<DocumentNode, AdenEdge>, crate::graph::GraphError> {
     if let Some(cached) = try_load(dir) {
         return Ok(cached);
     }
