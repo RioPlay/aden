@@ -18,6 +18,9 @@ struct EmittedSymbol {
     cache_key: String,
     cache_val: GenCacheEntry,
     callees: Vec<String>,
+    /// `<<target>>` cross-references found in the document body (docs link to
+    /// other docs / code via these).
+    refs: Vec<String>,
 }
 
 /// Work item returned from parallel file processing.
@@ -269,6 +272,39 @@ fn extract_callees(doc: &aden_core::Document) -> Vec<String> {
     callees
 }
 
+/// Append `<<target>>` cross-reference targets found in `text` to `out`.
+fn collect_xrefs(text: &str, out: &mut Vec<String>) {
+    let mut rest = text;
+    while let Some(s) = rest.find("<<") {
+        let after = &rest[s + 2..];
+        let Some(e) = after.find(">>") else { break };
+        let inner = &after[..e];
+        let target = inner.split(',').next().unwrap_or(inner).trim();
+        if !target.is_empty() && !target.contains('{') {
+            out.push(target.to_string());
+        }
+        rest = &after[e + 2..];
+    }
+}
+
+/// Cross-references a document makes via `<<target>>` macros in its prose. These
+/// become graph edges so documentation is connected to what it references (docs
+/// were previously hollow, unlinked islands).
+fn extract_doc_refs(doc: &aden_core::Document) -> Vec<String> {
+    use aden_core::Block;
+    let mut refs = Vec::new();
+    for block in &doc.blocks {
+        match block {
+            Block::Paragraph(t) => collect_xrefs(t, &mut refs),
+            Block::Listing { code, .. } => collect_xrefs(code, &mut refs),
+            _ => {}
+        }
+    }
+    refs.sort();
+    refs.dedup();
+    refs
+}
+
 /// Slim a document before storing it. Drops the `edge::calls[...]` listing
 /// block — it is redundant with the `Callee` table for display and is no longer
 /// needed for linking (callees are carried out of the parse phase directly), so
@@ -328,6 +364,7 @@ fn resolve_callee<'a>(callee: &str, name_index: &HashMap<&str, Vec<&'a str>>) ->
 fn link_store_edges<S: GraphStorage>(
     storage: &S,
     link_records: &[(String, Vec<String>)],
+    ref_records: &[(String, Vec<String>)],
 ) -> Result<(), Box<dyn std::error::Error>> {
     use aden_core::{Block, Document, EdgeType, NodeType};
     use std::collections::HashSet;
@@ -365,6 +402,19 @@ fn link_store_edges<S: GraphStorage>(
             if let Some(target) = resolve_callee(callee, &name_index) {
                 if target != anchor.as_str() {
                     edges.push((anchor.clone(), target.to_string(), EdgeType::Calls));
+                }
+            }
+        }
+    }
+
+    // Cross-reference edges from document `<<target>>` macros. Bidirectional so
+    // backlinks work (a doc and what it references are mutually reachable).
+    for (anchor, refs) in ref_records {
+        for r in refs {
+            if let Some(target) = resolve_callee(r, &name_index) {
+                if target != anchor.as_str() {
+                    edges.push((anchor.clone(), target.to_string(), EdgeType::RelatesTo));
+                    edges.push((target.to_string(), anchor.clone(), EdgeType::RelatesTo));
                 }
             }
         }
@@ -423,8 +473,11 @@ pub fn ensure_fresh(path: &Path) {
     use std::time::UNIX_EPOCH;
 
     let root = find_project_root(path);
-    // No store yet → nothing to refresh; the command will gen or report as before.
+    // No store yet → build it now. Read commands are store-first, so a fresh
+    // project must be indexed on first query (this is what makes asm/ask/locate
+    // work without an explicit `aden gen`).
     if !root.join(".aden").join("store").exists() {
+        let _ = cmd_gen(&root, None, false, true, false, false, "adoc", true);
         return;
     }
 
@@ -612,6 +665,7 @@ pub fn cmd_gen(
                     // Real containment/Calls edges are built in link_store_edges,
                     // so the old parent-module relationship boilerplate is gone.
                     let callees = extract_callees(&doc_clone);
+                    let refs = extract_doc_refs(&doc_clone);
                     slim_doc_for_store(&mut doc_clone);
 
                     if let Err(e) = storage.put_document(&doc_clone) {
@@ -633,6 +687,7 @@ pub fn cmd_gen(
                         cache_key: cache_key.clone(),
                         cache_val,
                         callees,
+                        refs,
                     });
                 }
 
@@ -647,6 +702,7 @@ pub fn cmd_gen(
         // Phase 2: Merge parallel results into shared state. Collect compact
         // (anchor, callees) link records so the linker never reloads documents.
         let mut link_records: Vec<(String, Vec<String>)> = Vec::new();
+        let mut ref_records: Vec<(String, Vec<String>)> = Vec::new();
         for item in work_items {
             match item {
                 WorkItem::Skip => skipped += 1,
@@ -654,6 +710,9 @@ pub fn cmd_gen(
                     for sym in emitted {
                         generated.push(sym.anchor.clone());
                         cache.entries.insert(sym.cache_key, sym.cache_val);
+                        if !sym.refs.is_empty() {
+                            ref_records.push((sym.anchor.clone(), sym.refs));
+                        }
                         if !sym.callees.is_empty() {
                             link_records.push((sym.anchor, sym.callees));
                         }
@@ -667,7 +726,7 @@ pub fn cmd_gen(
 
         // Connect the graph: persist module<->symbol containment and call edges
         // so the store-first graph used by asm/ask/query is actually traversable.
-        if let Err(e) = link_store_edges(&storage, &link_records) {
+        if let Err(e) = link_store_edges(&storage, &link_records, &ref_records) {
             eprintln!("WARN: Failed to link graph edges: {}", e);
         }
 

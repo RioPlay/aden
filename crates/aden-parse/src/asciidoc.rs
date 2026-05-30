@@ -36,6 +36,7 @@ impl crate::extractor::LanguageExtractor for AsciiDocExtractor {
         let crate_name = infer_project_name(path);
 
         let (attributes, body) = parse_document_attributes(source);
+        let body_lines: Vec<&str> = body.lines().collect();
         let mut headings = Vec::new();
         let mut code_blocks = Vec::new();
         let _in_literal_block = false;
@@ -100,16 +101,35 @@ impl crate::extractor::LanguageExtractor for AsciiDocExtractor {
         }
 
         if !headings.is_empty() {
-            for (level, title, line_num) in headings {
+            for hi in 0..headings.len() {
+                let (level, ref title, line_num) = headings[hi];
                 let anchor = if level > 0 {
-                    make_adoc_anchor(&crate_name, &file_name, &title, level)
+                    make_adoc_anchor(&crate_name, &file_name, title, level)
                 } else {
                     format!("aden://doc/{}/{}#{}", crate_name, file_name, title)
                 };
+
+                // Capture the section's prose so the node carries real content,
+                // not just its title. The body runs from just after this heading
+                // to the next heading that starts a new block — adjacent heading
+                // lines (e.g. an `[[anchor]]` directly above its `= Title`) are
+                // treated as one header for the same section.
+                let body_start = line_num; // 0-based index of the line after the heading
+                let body_end = headings[hi + 1..]
+                    .iter()
+                    .find(|h| h.2 > line_num + 1)
+                    .map(|h| h.2 - 1)
+                    .unwrap_or(body_lines.len());
+                let body_text = if body_start < body_end && body_end <= body_lines.len() {
+                    body_lines[body_start..body_end].join("\n").trim().to_string()
+                } else {
+                    String::new()
+                };
+
                 let span = SourceSpan {
                     file: path.to_string_lossy().to_string(),
                     start_line: line_num,
-                    end_line: line_num,
+                    end_line: body_end.max(line_num),
                     start_byte: 0,
                     end_byte: 0,
                 };
@@ -123,11 +143,16 @@ impl crate::extractor::LanguageExtractor for AsciiDocExtractor {
                     attrs.insert("heading_level".to_string(), level.to_string());
                 }
 
+                let mut blocks = vec![Block::Paragraph(title.clone())];
+                if !body_text.is_empty() {
+                    blocks.push(Block::Paragraph(body_text));
+                }
+
                 docs.push(Document {
                     anchor,
                     node_type: NodeType::Module,
                     attributes: attrs,
-                    blocks: vec![Block::Paragraph(title.clone())],
+                    blocks,
                     source_span: Some(span),
                     metadata: attributes.clone(),
                     confidence: 0.9,

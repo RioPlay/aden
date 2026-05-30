@@ -2,7 +2,8 @@ use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 
 use aden_core::AdenConfig;
-use aden_graph::{AdenEdge, AdenGraph, Direction, DocumentNode};
+use aden_graph::Direction;
+use aden_store::GraphStorage;
 
 use crate::types::{AnchorPattern, QueryIntent};
 use crate::util::{
@@ -229,69 +230,6 @@ pub struct AsmOptions {
     pub attributes: Vec<String>,
 }
 
-/// Resolve a user-supplied anchor to a full graph anchor.
-///
-/// Accepts an exact anchor key, or a bare symbol/module name that resolves to a
-/// single full anchor URI via `#<name>` suffix match (so `assemble` finds
-/// `aden://module/aden-asm/traverse.rs#assemble`). Returns an error — never a
-/// silent substitution — when the name is unknown or ambiguous, because emitting
-/// an unrelated node as if it answered the query is the worst outcome for an LLM.
-fn resolve_anchor(
-    graph: &AdenGraph<DocumentNode, AdenEdge>,
-    anchor: &str,
-) -> Result<String, Box<dyn std::error::Error>> {
-    if graph.anchor_to_index.contains_key(anchor) {
-        return Ok(anchor.to_string());
-    }
-    let matches: Vec<String> = graph
-        .anchor_to_index
-        .keys()
-        .filter(|a| a.rsplit('#').next() == Some(anchor))
-        .cloned()
-        .collect();
-    match matches.len() {
-        1 => Ok(matches.into_iter().next().unwrap()),
-        0 => {
-            let needle = anchor.to_lowercase();
-            let suggestions: Vec<String> = graph
-                .anchor_to_index
-                .keys()
-                .filter(|a| a.to_lowercase().contains(&needle))
-                .take(5)
-                .cloned()
-                .collect();
-            let hint = if suggestions.is_empty() {
-                String::new()
-            } else {
-                format!(" Did you mean: {}?", suggestions.join(", "))
-            };
-            Err(format!(
-                "Anchor '{}' not found.{} Run 'aden list .' to see available anchors.",
-                anchor, hint
-            )
-            .into())
-        }
-        n => {
-            let mut shown = matches;
-            shown.truncate(8);
-            let more = if n > shown.len() {
-                format!(", … (+{} more)", n - shown.len())
-            } else {
-                String::new()
-            };
-            Err(format!(
-                "Anchor '{}' is ambiguous — {} symbols share that name: {}{}. \
-                 Pass the full anchor URI (see 'aden list').",
-                anchor,
-                n,
-                shown.join(", "),
-                more
-            )
-            .into())
-        }
-    }
-}
-
 pub fn cmd_asm(opts: AsmOptions) -> Result<(), Box<dyn std::error::Error>> {
     use aden_asm::traverse::{AssemblyOptions, assemble, assemble_adg};
 
@@ -300,9 +238,7 @@ pub fn cmd_asm(opts: AsmOptions) -> Result<(), Box<dyn std::error::Error>> {
     }
     super::ensure_fresh(&opts.path);
 
-let graph = aden_graph::cache::build_from_directory_cached(&opts.path)?;
-
-    let (mut resolved_anchor, effective_budget) = if opts.auto && !opts.strict {
+    let (from_anchor, effective_budget) = if opts.auto && !opts.strict {
         let index = load_or_build_index(&opts.path)?;
         let results = index.query(&opts.from);
         let resolved = resolve_anchor_fuzzy(&opts.from, &results);
@@ -322,14 +258,27 @@ let graph = aden_graph::cache::build_from_directory_cached(&opts.path)?;
         (opts.from.clone(), opts.budget)
     };
 
-    // Resolve the anchor. A bare symbol or module name (e.g. `assemble` or
-    // `mod-aden-core`) is accepted when it resolves UNAMBIGUOUSLY to a single
-    // full anchor URI. We never silently substitute a fuzzy match: emitting an
-    // unrelated node as if it answered the query is the worst failure mode for
-    // an LLM consumer, so an unresolved or ambiguous anchor is a hard error.
-    if !graph.anchor_to_index.contains_key(&resolved_anchor) {
-        resolved_anchor = resolve_anchor(&graph, &resolved_anchor)?;
-    }
+    // Resolve the anchor against the store (cheap — no full-graph load). A bare
+    // symbol/module name resolves to a single full anchor by `#suffix` match;
+    // unknown/ambiguous is a hard error. We never silently substitute a fuzzy
+    // match — emitting an unrelated node is the worst failure mode for an LLM.
+    let resolved_anchor = aden_graph::cache::resolve_anchor_in_store(&opts.path, &from_anchor)
+        .ok_or_else(|| {
+            format!(
+                "Anchor '{}' not found or ambiguous. Run 'aden list .' to see available anchors.",
+                from_anchor
+            )
+        })?;
+
+    // Stream the read path: load only the neighborhood reachable from the start
+    // within depth, not the entire graph. At kernel scale a full load OOMs / takes
+    // tens of seconds; this fetches just the documents it actually traverses.
+    let graph = aden_graph::cache::build_neighborhood_cached(
+        &opts.path,
+        &resolved_anchor,
+        opts.depth,
+        &opts.edge_types,
+    )?;
 
     if opts.inspect {
         println!("=== Context Assembly Inspection ===");
@@ -412,9 +361,17 @@ pub fn cmd_query(
         return Err("exactly one of --from, --backlinks, or --impact must be specified".into());
     }
 
+    // Resolve bare/suffix names to the full store anchors the graph uses.
+    let from = from
+        .map(|a| aden_graph::cache::resolve_anchor_in_store(path, a).unwrap_or_else(|| a.to_string()));
+    let backlinks = backlinks
+        .map(|a| aden_graph::cache::resolve_anchor_in_store(path, a).unwrap_or_else(|| a.to_string()));
+    let impact = impact
+        .map(|a| aden_graph::cache::resolve_anchor_in_store(path, a).unwrap_or_else(|| a.to_string()));
+
     let mut results = Vec::new();
 
-    if let Some(anchor) = from {
+    if let Some(anchor) = &from {
         let start_idx = graph.get_index(anchor).ok_or_else(|| {
             format!(
                 "Anchor '{}' not found. Run 'aden list .' to see available anchors.",
@@ -460,7 +417,7 @@ pub fn cmd_query(
                 }
             }
         }
-    } else if let Some(anchor) = backlinks {
+    } else if let Some(anchor) = &backlinks {
         let target_idx = graph.get_index(anchor).ok_or_else(|| {
             format!(
                 "Anchor '{}' not found. Run 'aden list .' to see available anchors.",
@@ -473,7 +430,7 @@ pub fn cmd_query(
         {
             results.push(node_to_json(&graph.graph[neighbor], 1));
         }
-    } else if let Some(anchor) = impact {
+    } else if let Some(anchor) = &impact {
         let start_idx = graph.get_index(anchor).ok_or_else(|| {
             format!(
                 "Anchor '{}' not found. Run 'aden list .' to see available anchors.",
@@ -655,7 +612,7 @@ pub fn cmd_ask(
     super::ensure_fresh(path);
 
     // Step 1: Resolve question to an anchor via search, or use override
-    let mut start_anchor = if let Some(anchor) = from_override {
+    let start_anchor = if let Some(anchor) = from_override {
         anchor.to_string()
     } else {
         let idx = load_or_build_index(path)?;
@@ -693,29 +650,36 @@ pub fn cmd_ask(
     );
     println!();
 
-    // Step 3: Build graph and assemble context
-    let graph = aden_graph::cache::build_from_directory_cached(path)?;
-
-    // Resolve the starting anchor. Prefer an unambiguous exact/suffix match.
-    // If the search-derived anchor cannot be resolved, fall back to the
-    // deterministic project root (`mod-project`) rather than an arbitrary node,
-    // so the agent gets a coherent project overview instead of random context.
-    if !graph.anchor_to_index.contains_key(&start_anchor) {
-        match resolve_anchor(&graph, &start_anchor) {
-            Ok(resolved) => start_anchor = resolved,
-            Err(_) if graph.anchor_to_index.contains_key("mod-project") => {
+    // Step 3: Resolve the starting anchor against the store (no full-graph
+    // load). Prefer an unambiguous exact/suffix match; if the search-derived
+    // anchor cannot be resolved, fall back to the deterministic project root
+    // rather than a random node, so the agent gets a coherent overview.
+    let start_anchor = match aden_graph::cache::resolve_anchor_in_store(path, &start_anchor) {
+        Some(a) => a,
+        None => {
+            if aden_graph::cache::resolve_anchor_in_store(path, "mod-project").is_some() {
                 eprintln!(
                     "NOTE: '{}' is not a graph anchor; using project root 'mod-project'.",
                     start_anchor
                 );
-                start_anchor = "mod-project".to_string();
+                "mod-project".to_string()
+            } else {
+                return Err(format!(
+                    "Anchor '{}' not found. Run 'aden list .' to see available anchors.",
+                    start_anchor
+                )
+                .into());
             }
-            Err(e) => return Err(e),
         }
-    }
+    };
 
     let block_filter = block_filter_for_intent(&intent);
     let edge_types_str = edge_types.iter().map(|e| format!("{:?}", e)).collect::<Vec<_>>().join(", ");
+
+    // Stream: load only the neighborhood reachable along the intent's edge types.
+    let graph =
+        aden_graph::cache::build_neighborhood_cached(path, &start_anchor, depth, &edge_types)?;
+
     let opts = AssemblyOptions {
         start_anchor: start_anchor.clone(),
         max_depth: depth,
@@ -1179,111 +1143,80 @@ pub fn cmd_locate(
     }
     super::ensure_fresh(path);
 
-    let graph = aden_graph::cache::build_from_directory_cached(path)?;
-
     // If --symbol is given, find the definition.
     if let Some(sym) = symbol {
+        // Match against anchor *keys* in the store and deserialize only the
+        // documents that match. Building the full petgraph here is what made
+        // `locate` take ~47s on the kernel (1.2M nodes); this is bounded by the
+        // number of matches.
+        let store_path = path.join(".aden").join("store");
+        let storage = aden_store::SledStorage::new(
+            store_path.to_str().ok_or("invalid store path")?,
+        )
+        .map_err(|e| format!("failed to open store: {}", e))?;
+        let all_anchors = storage.get_all_anchors().unwrap_or_default();
+
         let sym_lower = sym.to_lowercase();
-        let mut hits = Vec::new();
+        let mut matched: Vec<&String> = all_anchors
+            .iter()
+            .filter(|a| {
+                let al = a.to_lowercase();
+                al.ends_with(&sym_lower)
+                    || al.contains(&format!("#{}", sym_lower))
+                    || al.contains(&sym_lower)
+            })
+            .collect();
+        matched.sort();
 
-        for node in graph.graph.node_indices() {
-            let anchor = &graph.graph[node].doc.anchor;
-            let anchor_lower = anchor.to_lowercase();
-
-            // Case-insensitive match: exact suffix, #suffix, or partial
-            if anchor_lower.ends_with(&sym_lower)
-                || anchor_lower.contains(&format!("#{}", &sym_lower))
-                || anchor_lower.contains(&sym_lower)
-            {
-                let attrs = &graph.graph[node].doc.attributes;
-                let file = attrs.get("source_file").cloned().unwrap_or_default();
-                let start_line = attrs.get("start_line").cloned().unwrap_or_default();
-                let end_line = attrs.get("end_line").cloned().unwrap_or_default();
-                let node_type = attrs
-                    .get("node-type")
-                    .cloned()
-                    .unwrap_or_else(|| format!("{:?}", graph.graph[node].doc.node_type));
-                hits.push(json!({
-                    "anchor": anchor,
-                    "node_type": node_type,
-                    "file": file,
-                    "start_line": start_line,
-                    "end_line": end_line,
-                }));
-            }
-        }
+        let hits: Vec<serde_json::Value> = matched
+            .iter()
+            .take(limit)
+            .filter_map(|a| {
+                let doc = storage.get_document(a).ok().flatten()?;
+                let attrs = &doc.attributes;
+                Some(json!({
+                    "anchor": a,
+                    "node_type": attrs.get("node-type").cloned()
+                        .unwrap_or_else(|| format!("{:?}", doc.node_type)),
+                    "file": attrs.get("source_file").cloned().unwrap_or_default(),
+                    "start_line": attrs.get("start_line").cloned().unwrap_or_default(),
+                    "end_line": attrs.get("end_line").cloned().unwrap_or_default(),
+                }))
+            })
+            .collect();
 
         if hits.is_empty() {
-            // Try fuzzy search - match any part of the anchor
-            let mut fuzzy_hits = Vec::new();
-            let search_term = sym.to_lowercase();
-            for node in graph.graph.node_indices() {
-            let anchor = &graph.graph[node].doc.anchor;
-                let anchor_lower = anchor.to_lowercase();
-                if anchor_lower.contains(&search_term)
-                    || anchor_lower.split('#').any(|p| p.contains(&search_term))
-                {
-                    let attrs = &graph.graph[node].doc.attributes;
-                    let file = attrs.get("source_file").cloned().unwrap_or_default();
-                    let start_line = attrs.get("start_line").cloned().unwrap_or_default();
-                    let end_line = attrs.get("end_line").cloned().unwrap_or_default();
-                    let node_type = attrs
-                        .get("node-type")
-                        .cloned()
-                        .unwrap_or_else(|| format!("{:?}", graph.graph[node].doc.node_type));
-                    fuzzy_hits.push(json!({
-                        "anchor": anchor,
-                        "node_type": node_type,
-                        "file": file,
-                        "start_line": start_line,
-                        "end_line": end_line,
-                    }));
-                }
-            }
-
-            if fuzzy_hits.is_empty() {
-                // Fall back to full-text search index
-                let index = load_or_build_index(path)?;
-                let search_results = index.query(sym);
-
-                if !search_results.is_empty() {
-                    println!(
-                        "Found {} match(es) in full-text index for '{}':",
-                        search_results.len(),
-                        sym
-                    );
-                    println!("| Anchor | Score | Snippet |");
-                    println!("|=== |");
-                    for r in search_results.iter().take(limit) {
-                        let snippet = if r.snippet.len() > 60 {
-                            format!("{}...", &r.snippet[..60])
-                        } else {
-                            r.snippet.clone()
-                        };
-                        println!("| {} | {:.1} | {} |", r.anchor, r.score, snippet);
-                    }
-                    return Ok(());
-                }
-
-                println!("No symbol found matching '{}'", sym);
+            // Fall back to the full-text search index.
+            let index = load_or_build_index(path)?;
+            let search_results = index.query(sym);
+            if !search_results.is_empty() {
                 println!(
-                    "Hint: Try 'aden search \"{}\"' to find related anchors",
+                    "Found {} match(es) in full-text index for '{}':",
+                    search_results.len(),
                     sym
                 );
+                println!("| Anchor | Score | Snippet |");
+                println!("|=== |");
+                for r in search_results.iter().take(limit) {
+                    let snippet = if r.snippet.len() > 60 {
+                        format!("{}...", &r.snippet[..60])
+                    } else {
+                        r.snippet.clone()
+                    };
+                    println!("| {} | {:.1} | {} |", r.anchor, r.score, snippet);
+                }
                 return Ok(());
             }
-            println!("Found {} fuzzy match(es) for '{}':", fuzzy_hits.len(), sym);
-            let fuzzy_limited: Vec<_> = fuzzy_hits.iter().take(limit).cloned().collect();
-            print_locate_results(&fuzzy_limited, format, context);
+            println!("No symbol found matching '{}'", sym);
+            println!("Hint: Try 'aden search \"{}\"' to find related anchors", sym);
             return Ok(());
         }
 
-        println!("Found {} match(es) for '{}':", hits.len(), sym);
-        let hits_limited: Vec<_> = hits.iter().take(limit).cloned().collect();
+        println!("Found {} match(es) for '{}':", matched.len(), sym);
         if format == "json" {
-            println!("{}", serde_json::to_string_pretty(&hits_limited)?);
+            println!("{}", serde_json::to_string_pretty(&hits)?);
         } else {
-            print_locate_results(&hits_limited, format, context);
+            print_locate_results(&hits, format, context);
         }
         return Ok(());
     }

@@ -31,9 +31,9 @@ use crate::bridge::GraphBridge;
 use crate::graph::AdenGraph;
 use crate::nodes::{DocumentNode, AdenEdge, GraphNode};
 use aden_core::{Document, EdgeType};
-use aden_store::SledStorage;
+use aden_store::{GraphStorage, SledStorage};
 use blake3::Hasher;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 
 const CACHE_DIR: &str = ".aden/cache";
@@ -256,6 +256,89 @@ fn build_graph_from_docs_and_edges(
         path_to_index,
         backlinks_cache: None,
     }
+}
+
+/// Resolve a user anchor against the store without loading the whole graph.
+///
+/// Returns the anchor unchanged if it exists exactly; otherwise resolves a bare
+/// symbol/module name to a single full anchor by `#suffix` match (reading only
+/// the anchor *keys*). Returns `None` if unknown or ambiguous — callers should
+/// treat that as "not found" rather than guessing.
+pub fn resolve_anchor_in_store(dir: &Path, anchor: &str) -> Option<String> {
+    let store_path = dir.join(".aden").join("store");
+    let storage = SledStorage::new(store_path.to_str()?).ok()?;
+    if matches!(storage.get_document(anchor), Ok(Some(_))) {
+        return Some(anchor.to_string());
+    }
+    let anchors = storage.get_all_anchors().ok()?;
+    if anchors.contains(anchor) {
+        return Some(anchor.to_string());
+    }
+    let matches: Vec<&String> = anchors
+        .iter()
+        .filter(|a| a.rsplit('#').next() == Some(anchor))
+        .collect();
+    if matches.len() == 1 {
+        Some(matches[0].clone())
+    } else {
+        None
+    }
+}
+
+/// Build a graph containing only the neighborhood reachable from `start` within
+/// `depth`, following `edge_types` (empty = all). This is the streaming read
+/// path: instead of loading the entire store into a petgraph (which OOMs / takes
+/// tens of seconds at kernel scale), it walks per-node adjacency lists from the
+/// start anchor and fetches only the documents it actually visits.
+///
+/// A hard node cap bounds pathological fan-out (e.g. starting at a module that
+/// contains thousands of symbols), mirroring the assembler's own DoS guard.
+pub fn build_neighborhood_cached(
+    dir: &Path,
+    start: &str,
+    depth: usize,
+    edge_types: &[EdgeType],
+) -> Result<AdenGraph<DocumentNode, AdenEdge>, crate::graph::GraphError> {
+    const MAX_NODES: usize = 10_000;
+    let store_path = dir.join(".aden").join("store");
+    let storage = SledStorage::new(
+        store_path
+            .to_str()
+            .ok_or_else(|| crate::graph::GraphError::Io("invalid store path".into()))?,
+    )
+    .map_err(|e| crate::graph::GraphError::Io(e.to_string()))?;
+
+    let mut visited: HashSet<String> = HashSet::new();
+    visited.insert(start.to_string());
+    let mut queue: VecDeque<(String, usize)> = VecDeque::new();
+    queue.push_back((start.to_string(), 0));
+    let mut edges: Vec<(String, String, EdgeType)> = Vec::new();
+
+    while let Some((current, d)) = queue.pop_front() {
+        if d >= depth || visited.len() >= MAX_NODES {
+            continue;
+        }
+        let outgoing = storage.get_outgoing_edges(&current).unwrap_or_default();
+        for (nbr, et) in outgoing {
+            if !edge_types.is_empty() && !edge_types.contains(&et) {
+                continue;
+            }
+            edges.push((current.clone(), nbr.clone(), et));
+            if visited.insert(nbr.clone()) && visited.len() <= MAX_NODES {
+                queue.push_back((nbr, d + 1));
+            }
+        }
+    }
+
+    // Fetch only the documents we actually visited.
+    let mut docs: HashMap<String, Document> = HashMap::new();
+    for anchor in &visited {
+        if let Ok(Some(doc)) = storage.get_document(anchor) {
+            docs.insert(anchor.clone(), doc);
+        }
+    }
+
+    Ok(build_graph_from_docs_and_edges(docs, edges))
 }
 
 /// Build a graph, using the on-disk cache when possible.
