@@ -36,6 +36,7 @@ impl crate::extractor::LanguageExtractor for MarkdownExtractor {
         let crate_name = infer_project_name(path);
 
         let (frontmatter, body) = parse_frontmatter(source);
+        let body_lines: Vec<&str> = body.lines().collect();
         let mut headings = Vec::new();
         let mut code_blocks = Vec::new();
         let mut links = Vec::new();
@@ -83,12 +84,53 @@ impl crate::extractor::LanguageExtractor for MarkdownExtractor {
         }
 
         if !headings.is_empty() {
-            for (level, title, line_num) in headings {
-                let anchor = make_doc_anchor(&crate_name, &file_name, &title, level);
+            for hi in 0..headings.len() {
+                let (level, ref title, line_num) = headings[hi];
+                let anchor = make_doc_anchor(&crate_name, &file_name, title, level);
+
+                // Capture the section's prose so the node carries real content,
+                // not just its title. The body runs from just after this heading
+                // to the next heading.
+                let body_start = line_num; // 0-based index of the line after the heading
+                let body_end = headings[hi + 1..]
+                    .iter()
+                    .find(|h| h.2 > line_num)
+                    .map(|h| h.2 - 1)
+                    .unwrap_or(body_lines.len());
+                let mut body_text = if body_start < body_end && body_end <= body_lines.len() {
+                    body_lines[body_start..body_end].join("\n").trim().to_string()
+                } else {
+                    String::new()
+                };
+
+                // Surface markdown links as AsciiDoc-style cross-references so the
+                // gen-time linker turns them into RelatesTo edges. The targets are
+                // normalized down to bare anchor names.
+                if !links.is_empty() {
+                    let targets: Vec<String> = links
+                        .iter()
+                        .map(|l| {
+                            let url = l.split_once("->").map(|(_, u)| u).unwrap_or(l.as_str());
+                            normalize_link_target(url)
+                        })
+                        .filter(|t| !t.is_empty())
+                        .map(|t| format!("<<{}>>", t))
+                        .collect();
+                    if !targets.is_empty() {
+                        let refs_line = format!("See: {}", targets.join(", "));
+                        if body_text.is_empty() {
+                            body_text = refs_line;
+                        } else {
+                            body_text.push('\n');
+                            body_text.push_str(&refs_line);
+                        }
+                    }
+                }
+
                 let span = SourceSpan {
                     file: path.to_string_lossy().to_string(),
                     start_line: line_num,
-                    end_line: line_num,
+                    end_line: body_end.max(line_num),
                     start_byte: 0,
                     end_byte: 0,
                 };
@@ -104,11 +146,16 @@ impl crate::extractor::LanguageExtractor for MarkdownExtractor {
                     attrs.insert("links".to_string(), links.join(";"));
                 }
 
+                let mut blocks = vec![Block::Paragraph(title.clone())];
+                if !body_text.is_empty() {
+                    blocks.push(Block::Paragraph(body_text));
+                }
+
                 docs.push(Document {
                     anchor,
                     node_type: NodeType::Module,
                     attributes: attrs,
-                    blocks: vec![Block::Paragraph(title.clone())],
+                    blocks,
                     source_span: Some(span),
                     metadata: frontmatter.clone(),
                     confidence: 0.9,
@@ -343,6 +390,42 @@ fn infer_project_name(path: &Path) -> String {
         .and_then(|p| p.file_name())
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "unknown".to_string())
+}
+
+/// Normalize a markdown link target down to a bare anchor name suitable for an
+/// AsciiDoc-style `<<target>>` cross-reference.
+///
+/// Handles forms like `./foo.md#bar` -> `bar`, `#bar` -> `bar`,
+/// `[[wikilink]]` -> `wikilink`, and `path/to/foo.md` -> `foo`.
+fn normalize_link_target(url: &str) -> String {
+    let mut t = url.trim();
+
+    // Wikilinks: [[target]]
+    t = t.trim_start_matches("[[").trim_end_matches("]]");
+
+    // Drop any explicit aden:// scheme noise by keeping the trailing portion.
+    // Prefer a `#fragment` when present, otherwise fall back to the file stem.
+    if let Some((before, fragment)) = t.rsplit_once('#') {
+        let fragment = fragment.trim();
+        if !fragment.is_empty() {
+            return fragment.to_string();
+        }
+        t = before;
+    }
+
+    // Strip a leading `./` and any path components, keeping the last segment.
+    let last = t
+        .trim_start_matches("./")
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(t);
+
+    // Strip a trailing `.md` (or related) extension to keep a bare stem.
+    last.strip_suffix(".md")
+        .or_else(|| last.strip_suffix(".markdown"))
+        .unwrap_or(last)
+        .trim()
+        .to_string()
 }
 
 fn extract_markdown_link(line: &str) -> Option<String> {

@@ -40,9 +40,19 @@ pub fn cmd_audit(
     if path.is_file() {
         files.push(path.to_path_buf());
     } else {
+        // Honor .adenignore/.adenallow + the built-in ignore list (build
+        // artifacts, .git, vendored deps, …) so the audit walks only project
+        // source, like the rest of aden's file discovery.
+        let filter = aden_core::filter::AdenFilter::from_directory(path);
         for entry in walkdir::WalkDir::new(path)
             .follow_links(false)
             .into_iter()
+            .filter_entry(|e| {
+                e.path()
+                    .strip_prefix(path)
+                    .map(|rel| rel.as_os_str().is_empty() || !filter.should_skip(rel))
+                    .unwrap_or(true)
+            })
             .filter_map(|e| e.ok())
         {
             let p = entry.path();
