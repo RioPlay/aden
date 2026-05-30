@@ -1,0 +1,42 @@
+// Aden-authored. Citations and license notices for the external standards the
+// reference stubs summarize. Original AGPL text; the cited works keep their own
+// licenses and are NOT reproduced here.
+[[secure-refs-sources]]
+= Secure-Coding References — Sources & Licensing
+
+The sibling reference stubs (<<secure-refs-cwe>>, <<secure-refs-scp>>) list only
+uncopyrightable facts (identifiers, names) and aden's own framing. They do NOT
+reproduce the source prose. Fetch the authoritative text from the canonical
+sources below, each under its own license.
+
+== Sources
+
+* *2024 CWE Top 25 Most Dangerous Software Weaknesses* — The MITRE Corporation /
+  CISA. https://cwe.mitre.org/top25/archive/2024/2024_cwe_top25.html
+  Per-entry detail: https://cwe.mitre.org/data/definitions/<N>.html
+* *OWASP Secure Coding Practices — Quick Reference Guide* — The OWASP Foundation.
+  https://owasp.org/www-project-secure-coding-practices-quick-reference-guide/
+  Licensed CC BY-SA 3.0 (https://creativecommons.org/licenses/by-sa/3.0/).
+* *OWASP Top 10:2025* — The OWASP Foundation. https://owasp.org/Top10/
+  Licensed CC BY 3.0 (https://creativecommons.org/licenses/by/3.0/).
+
+== Required notices
+
+Copyright © 2006–2026, The MITRE Corporation. CWE, CWSS, CWRAF, and the CWE logo
+are trademarks of The MITRE Corporation.
+
+"OWASP" and the OWASP logo are trademarks of the OWASP Foundation.
+
+== Trademark & non-endorsement
+
+CWE™ and "OWASP" are used here nominatively, to identify the standards these
+stubs summarize. Neither The MITRE Corporation nor the OWASP Foundation
+endorses, sponsors, or is affiliated with aden or this project.
+
+== Note
+
+This material was scaffolded by `aden init --with-secure-refs`. It is
+aden-authored reference scaffolding — it deliberately does not bundle the source
+documents' text, so no third-party copyleft content is embedded in the aden
+binary. To work with the full documents, fetch them from the URLs above; they
+remain under their own licenses.
