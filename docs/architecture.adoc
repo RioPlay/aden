@@ -101,8 +101,8 @@ Contracts support regions that determine how content is handled during regenerat
 AI agents have finite context windows. Aden budgets tokens by:
 
 1. **BFS traversal** — walk the graph from a starting node
-2. **Depth limiting** — stop at depth N (default: 2)
-3. **Token estimation** — ~4/3 bytes per token heuristic
+2. **Depth limiting** — stop at depth N (default: 3)
+3. **Token estimation** — ~4-bytes-per-token heuristic (byte length ÷ 4)
 4. **Assembly** — concatenate documents until budget exhausted
 
 == Pipeline Stages
@@ -298,13 +298,18 @@ When source code changes, contracts become stale. `aden heal` detects drift:
 
 === Three-Way Merge
 
-`aden gen --merge` performs a three-way merge:
+The three-way merge engine lives in `aden-core` (`ContractState` /
+`MergeProposal`). It reconciles:
 
 - **ground**: freshly parsed AST
 - **base**: last generated contract
 - **working**: current file with human edits
 
-Output: per-block `MergeAction`:
+NOTE: This engine is not currently exposed through an `aden gen --merge` CLI
+flag (that flag does not exist). Today `gen` is store-first and writes only to
+`.aden/store`; proposal review is available through `aden heal --propose`.
+
+The engine produces a per-block `MergeAction`:
 
 - `UpdateGenerated` — overwrite with new AST
 - `PreserveHuman` — keep human blocks intact

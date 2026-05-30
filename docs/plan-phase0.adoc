@@ -23,8 +23,8 @@ Foundation. If this is wrong, everything collapses.
 |0.2 |`ContractRegion` enum and serialization |`aden-core` |Shipped |All 8 regions (`Generated`, `Human`, `Agent`, `Security`, `Contract`, `Constitution`, `Override`, `Proposed`) round-trip parse and serialize
 |0.3 |Strict AsciiDoc profile parser (`ParseMode::Strict`) |`aden-parse` |Shipped |Rejects non-profile syntax with line-specific errors; CI-enforced
 |0.4 |Permissive authoring parser (`ParseMode::Permissive`) |`aden-parse` |Shipped |Allows freeform prose outside blocks; warns but never fails
-|0.5 |`aden gen --merge` (reads Git staged/unstaged) |`aden-cli` |Shipped |Computes AST diff; applies updates only to `[generated]` blocks
-|0.6 |`aden gen --propose` (dry-run) |`aden-cli` |Shipped |Outputs per-block `MergeAction`: `UpdateGenerated`, `PreserveHuman`, `Conflict`
+|0.5 |`aden gen --merge` (reads Git staged/unstaged) |`aden-cli` |Deferred |Merge engine shipped in `aden-core`; no `gen --merge` CLI flag is exposed yet
+|0.6 |`aden gen --propose` (dry-run) |`aden-cli` |Deferred |Per-block `MergeAction` modeling exists; proposal review is exposed via `aden heal --propose`, not `gen --propose`
 |0.7 |`[constitution]` block parsing with precedence rules |`aden-policy` |Shipped |`aden check` resolves Agent A vs. Agent B directive conflicts using stated `:precedence:`
 |0.8 |Subagent staging protocol skeleton |`aden-core` |Shipped |`.aden/staging/{role}-{timestamp}.adoc` written; never read by `aden check`
 |===
@@ -41,12 +41,17 @@ Foundation. If this is wrong, everything collapses.
 
 == Exit Gate
 
-A developer edits `src/lib.rs`, runs `aden gen --merge`, and the `.aden` file updates `[generated]` without touching their `[human]` architectural notes.
+The contract kernel — `ContractState`, the three-way merge engine, region
+parsing, and `[constitution]` precedence — is shipped and tested in `aden-core`
+/ `aden-policy`. The `aden gen --merge` / `aden gen --propose` CLI surface that
+would let a developer edit `src/lib.rs` and merge updates into `[generated]`
+in-place is not yet wired up; the merge engine it depends on is ready.
 
 == Trace
 
 - *2026-05-23*: Initial plan written.
-- *2026-05-24*: Phase 0 delivered. All acceptance criteria satisfied. Workspace compiles warning-free.
+- *2026-05-24*: Phase 0 core delivered (schema, parsing, merge engine, policy). Workspace compiles warning-free.
+- *2026-05-30*: Status corrected — the `aden gen --merge`/`--propose` CLI flags (0.5, 0.6) were never wired up; the underlying merge engine in `aden-core` is shipped.
 
 == Related Documents
 
