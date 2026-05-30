@@ -100,46 +100,51 @@ pub fn base_cache_path(contract_path: &Path) -> Option<PathBuf> {
     Some(root.join(".aden").join("contract-base").join(file_name))
 }
 
-/// Recursively walk a directory and collect files matching any of `exts`.
-/// Skips paths that contain any substring in `skip_patterns`.
-pub fn walk_src_files(
-    dir: &Path,
-    exts: &[&str],
-    out: &mut Vec<PathBuf>,
-    skip_patterns: &[&str],
-) -> Result<(), Box<dyn std::error::Error>> {
-    for entry in std::fs::read_dir(dir).map_err(|e| format!("read_dir: {}", e))? {
-        let entry = entry.map_err(|e| format!("entry: {}", e))?;
-        let p = entry.path();
-        let p_str = normalize_sep(&p);
-        if skip_patterns.iter().any(|pat| p_str.contains(pat)) {
-            continue;
-        }
-        if entry.file_type()?.is_symlink() {
-            continue;
-        }
-        if entry.file_type()?.is_dir() {
-            walk_src_files(&p, exts, out, skip_patterns)?;
-        } else if entry.file_type()?.is_file()
-            && let Some(ext) = p.extension().and_then(|e| e.to_str())
-            && exts.contains(&ext)
-        {
-            out.push(p);
-        }
-    }
-    Ok(())
-}
+/// Project-root markers across ecosystems. Ordered roughly by how strongly each
+/// signals a repository root. Includes VCS and Aden's own workspace dir so that
+/// root detection works for *any* language — not just the ones whose build
+/// manifests happen to be listed first.
+const ROOT_MARKER_FILES: &[&str] = &[
+    // Aden / VCS — strongest signal of the true repo root
+    "aden.toml",
+    ".git",
+    ".aden",
+    ".hg",
+    ".svn",
+    // Rust
+    "Cargo.toml",
+    // Go
+    "go.mod",
+    // Node / JS / TS
+    "package.json",
+    // Python
+    "pyproject.toml",
+    "setup.py",
+    "setup.cfg",
+    "requirements.txt",
+    "Pipfile",
+    // JVM
+    "pom.xml",
+    "build.gradle",
+    "build.gradle.kts",
+    "settings.gradle",
+    // Ruby
+    "Gemfile",
+    // PHP
+    "composer.json",
+    // C / C++
+    "CMakeLists.txt",
+    // Generic
+    "Makefile",
+];
 
-/// Find project root by walking up from `start` looking for Cargo.toml,
-/// aden.toml, go.mod, or package.json.
+/// Find project root by walking up from `start` looking for any known
+/// project-root marker (a build manifest, a VCS directory, or `.aden/`).
+/// Language-agnostic: every ecosystem's manifest is recognized equally.
 pub fn find_project_root(start: &Path) -> PathBuf {
     let mut current = start.canonicalize().unwrap_or_else(|_| start.to_path_buf());
     loop {
-        if current.join("Cargo.toml").exists()
-            || current.join("aden.toml").exists()
-            || current.join("go.mod").exists()
-            || current.join("package.json").exists()
-        {
+        if ROOT_MARKER_FILES.iter().any(|m| current.join(m).exists()) {
             return current;
         }
         if let Some(parent) = current.parent() {
@@ -150,36 +155,94 @@ pub fn find_project_root(start: &Path) -> PathBuf {
     }
 }
 
-/// Discover source files based on build system detected at `root`.
-pub fn discover_source_files(root: &Path) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
-    let mut files = Vec::new();
+/// Source files without an extension that Aden's parser recognizes by name
+/// (the router maps these to languages such as `make`, `dockerfile`, `bzl`).
+const EXTENSIONLESS_SOURCE_FILES: &[&str] = &[
+    "Makefile",
+    "makefile",
+    "GNUmakefile",
+    "Dockerfile",
+    "dockerfile",
+    "BUILD",
+    "WORKSPACE",
+];
 
-    if root.join("Cargo.toml").exists() {
-        walk_src_files(root, &["rs"], &mut files, &["/.git/", "/target/"])?;
-        files.sort_by(|a, b| {
-            let a_is_src = normalize_sep(a).contains("/src/");
-            let b_is_src = normalize_sep(b).contains("/src/");
-            b_is_src.cmp(&a_is_src)
-        });
-    } else if root.join("go.mod").exists() {
-        walk_src_files(root, &["go"], &mut files, &["/vendor/", " /.git/"])?;
-    } else if root.join("package.json").exists() {
-        walk_src_files(
-            root,
-            &["ts", "tsx", "js", "jsx", "mjs", "cjs"],
-            &mut files,
-            &["/node_modules/", " /.git/"],
-        )?;
-    } else {
-        walk_src_files(
-            root,
-            &["rs", "py", "js", "ts", "go", "c", "cpp", "h"],
-            &mut files,
-            &["/.git/", "/target/"],
-        )?;
-    }
+/// Discover source files anywhere under `root`, regardless of language.
+///
+/// Aden is a *language-agnostic* context compiler, so discovery must not be
+/// gated on which build manifest (Cargo.toml, go.mod, package.json, …) happens
+/// to be present — doing that silently drops every other language in a
+/// polyglot repository and biases the tool toward whatever ecosystem it was
+/// first built for. Instead we walk the whole tree and keep any file the
+/// parser can actually handle (`aden_parse::supported_extensions()` is the
+/// single source of truth), honoring `.adenignore`/`.adenallow` and the
+/// cross-ecosystem built-in ignore list so build artifacts and vendored deps
+/// are skipped for every language.
+pub fn discover_source_files(root: &Path) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
+    use std::collections::HashSet;
+
+    let supported: HashSet<&'static str> =
+        aden_parse::supported_extensions().into_iter().collect();
+    let filter = aden_core::filter::AdenFilter::from_directory(root);
+
+    let mut files = Vec::new();
+    walk_supported_files(root, root, &supported, &filter, &mut files)?;
+
+    // Prioritize files under a `src/`-style directory so that, when a token
+    // budget truncates generation, the most load-bearing code is processed
+    // first. This is a neutral heuristic that helps every layout, not just
+    // Cargo's.
+    files.sort_by(|a, b| {
+        let a_is_src = normalize_sep(a).contains("/src/");
+        let b_is_src = normalize_sep(b).contains("/src/");
+        b_is_src.cmp(&a_is_src)
+    });
 
     Ok(files)
+}
+
+/// Recursively collect parseable source files, pruning ignored directories.
+fn walk_supported_files(
+    dir: &Path,
+    root: &Path,
+    supported: &std::collections::HashSet<&'static str>,
+    filter: &aden_core::filter::AdenFilter,
+    out: &mut Vec<PathBuf>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    for entry in std::fs::read_dir(dir).map_err(|e| format!("read_dir {}: {}", dir.display(), e))? {
+        let entry = entry?;
+        let p = entry.path();
+        let file_type = entry.file_type()?;
+
+        // SECURITY: never follow symlinks — they can escape the project root.
+        if file_type.is_symlink() {
+            continue;
+        }
+
+        // Honor .adenignore / .adenallow / built-in ignores (relative to root).
+        if let Ok(rel) = p.strip_prefix(root)
+            && filter.should_skip(rel)
+        {
+            continue;
+        }
+
+        if file_type.is_dir() {
+            walk_supported_files(&p, root, supported, filter, out)?;
+        } else if file_type.is_file() {
+            let keep = match p.extension().and_then(|e| e.to_str()) {
+                Some(ext) => supported.contains(ext),
+                None => p
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|n| EXTENSIONLESS_SOURCE_FILES.contains(&n))
+                    .unwrap_or(false),
+            };
+            if keep {
+                out.push(p);
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Strip absolute prefix from source_file attributes to prevent
@@ -516,12 +579,58 @@ pub fn perform_check(path: &Path) -> Result<Vec<String>, Box<dyn std::error::Err
     Ok(messages)
 }
 
+/// Collect store-backed contracts as `(synthetic_path, adoc_text)` entries.
+///
+/// `aden gen --auto` writes symbol contracts to the sled store (only module
+/// contracts land on disk), so without this the full-text index — and therefore
+/// `search` and `ask` — would never see any code symbols on any project. We
+/// re-emit each stored `Document` to AsciiDoc and feed it to the index.
+fn collect_store_entries(path: &Path) -> Vec<(PathBuf, String)> {
+    use aden_store::{GraphStorage, SledStorage};
+
+    let store_path = find_project_root(path).join(".aden").join("store");
+    if !store_path.is_dir() {
+        return Vec::new();
+    }
+    let Some(store_str) = store_path.to_str() else {
+        return Vec::new();
+    };
+    let Ok(storage) = SledStorage::new(store_str) else {
+        return Vec::new();
+    };
+    let Ok(docs) = storage.get_all_documents() else {
+        return Vec::new();
+    };
+    docs.into_values()
+        .map(|doc| {
+            // Use the recorded source file as the synthetic path when available
+            // so snippets and locate-style lookups point at the real code.
+            let synthetic = doc
+                .attributes
+                .get("source_file")
+                .cloned()
+                .unwrap_or_else(|| doc.anchor.clone());
+            (PathBuf::from(synthetic), aden_emit::emit_document(&doc))
+        })
+        .collect()
+}
+
 /// Load the search index from disk cache, or build and cache it.
+///
+/// The index merges on-disk `.adoc`/`.aden`/`.txt` files with contracts kept in
+/// the sled store, so language-agnostic `gen --auto` output (which is
+/// store-first) is fully searchable.
 pub fn load_or_build_index(path: &Path) -> Result<aden_index::Index, Box<dyn std::error::Error>> {
     if let Some(cached) = aden_index::try_load(path) {
         return Ok(cached);
     }
-    let index = aden_index::Index::from_directory(path)?;
+    let mut index = aden_index::Index::from_directory(path)?;
+    // Merge store-backed contracts (disk entries already ingested take priority).
+    let store_entries = collect_store_entries(path);
+    if !store_entries.is_empty() {
+        index.ingest(store_entries);
+        index.finalize();
+    }
     let _ = aden_index::save(&index, path);
     Ok(index)
 }

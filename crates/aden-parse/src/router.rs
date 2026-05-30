@@ -141,6 +141,11 @@ impl LanguageRouter {
         self.by_extension.contains_key(ext)
     }
 
+    /// All file extensions handled by a registered deep extractor.
+    pub fn deep_extensions(&self) -> Vec<&'static str> {
+        self.by_extension.keys().copied().collect()
+    }
+
     /// Extract `Document`s from a single source file.
     pub fn parse_file(&self, path: &Path, source: &str) -> Result<Vec<Document>> {
         let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
@@ -360,4 +365,82 @@ fn ext_to_language_pack_id(ext: &str) -> Option<&'static str> {
 #[cfg(not(feature = "generic"))]
 fn ext_to_language_pack_id(_ext: &str) -> Option<&'static str> {
     None
+}
+
+/// File extensions the generic `tree-sitter-language-pack` fallback can parse.
+///
+/// This list MUST stay in sync with `ext_to_language_pack_id`; the
+/// `generic_extensions_all_resolve` test enforces that every entry here maps
+/// to a real language id. It exists so that source-file *discovery* knows the
+/// full breadth of what Aden can *parse* — keeping the compiler truly
+/// language-agnostic instead of biased toward whatever language Aden itself
+/// happens to be written in.
+#[cfg(feature = "generic")]
+pub const GENERIC_PACK_EXTENSIONS: &[&str] = &[
+    "py", "rs", "go", "js", "mjs", "cjs", "ts", "tsx", "java", "kt", "kts", "scala", "cs", "fs",
+    "fsx", "fsi", "clj", "cljs", "cljc", "c", "h", "cpp", "cc", "cxx", "hpp", "zig", "odin", "m",
+    "mm", "swift", "d", "html", "css", "scss", "vue", "svelte", "astro", "graphql", "gql", "json",
+    "json5", "yaml", "yml", "toml", "xml", "proto", "rb", "php", "lua", "pl", "pm", "r", "R", "sh",
+    "bash", "zsh", "fish", "awk", "hs", "ml", "mli", "ex", "exs", "erl", "gleam", "elm", "lean",
+    "lisp", "cl", "el", "scm", "rkt", "sql", "dockerfile", "makefile", "Makefile", "GNUmakefile",
+    "mk", "cmake", "tf", "tfvars", "bicep", "cue", "dhall", "rego", "pkl", "star", "bzl", "nginx",
+    "conf", "ini", "cfg", "properties", "md", "markdown", "adoc", "asciidoc", "rst", "org", "tex",
+    "bib", "typst", "dart", "gd", "jl", "groovy", "ino", "asm", "s", "S", "nasm", "dts", "dtsi",
+    "v", "vhd", "vhdl", "verilog", "sv", "svh", "f", "f90", "f95", "f03", "f08", "pug", "j2",
+    "jinja2", "hbs", "blade", "eex", "leex", "heex", "razor", "cshtml", "glsl", "hlsl", "wgsl",
+    "slang", "sol", "cairo", "move", "mojo", "cr", "hx", "nim", "nims", "nu", "csv", "tsv", "diff",
+    "patch", "nix", "roc", "ps1", "psm1", "psd1",
+];
+
+#[cfg(not(feature = "generic"))]
+pub const GENERIC_PACK_EXTENSIONS: &[&str] = &[];
+
+/// Every file extension Aden can extract symbols from — the union of deep
+/// extractors, the generic language-pack fallback, and the PowerShell bridge.
+///
+/// This is the single source of truth used by source-file discovery so that
+/// the set of files Aden *finds* always matches the set it can *parse*. Without
+/// it, discovery tends to drift toward one ecosystem's conventions and silently
+/// drops every other language in a polyglot repository.
+pub fn supported_extensions() -> Vec<&'static str> {
+    use std::collections::BTreeSet;
+    let mut set: BTreeSet<&'static str> = BTreeSet::new();
+    for ext in LanguageRouter::new().deep_extensions() {
+        set.insert(ext);
+    }
+    for ext in GENERIC_PACK_EXTENSIONS {
+        set.insert(ext);
+    }
+    // PowerShell is handled by a dedicated bridge in lib.rs, not the router.
+    for ext in ["ps1", "psm1", "psd1"] {
+        set.insert(ext);
+    }
+    set.into_iter().collect()
+}
+
+#[cfg(all(test, feature = "generic"))]
+mod ext_table_tests {
+    use super::*;
+
+    #[test]
+    fn generic_extensions_all_resolve() {
+        for ext in GENERIC_PACK_EXTENSIONS {
+            assert!(
+                ext_to_language_pack_id(ext).is_some(),
+                "extension '{}' is listed in GENERIC_PACK_EXTENSIONS but ext_to_language_pack_id \
+                 does not resolve it — keep the two in sync",
+                ext
+            );
+        }
+    }
+
+    #[test]
+    fn supported_extensions_is_broad_and_polyglot() {
+        let exts = supported_extensions();
+        // A handful of languages from different ecosystems must all be present,
+        // proving discovery is not biased toward any single language.
+        for needle in ["rs", "py", "go", "ts", "java", "rb", "php", "swift", "ex", "md"] {
+            assert!(exts.contains(&needle), "missing expected extension '{}'", needle);
+        }
+    }
 }

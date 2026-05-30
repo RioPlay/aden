@@ -129,15 +129,16 @@ Root module for the project. All submodules reference this.
         let contract_file = format!("{}.adoc", module_anchor);
         let out_path = out_dir.join(&contract_file);
 
-        // Skip if already exists and valid (no stale boilerplate).
-        if out_path.exists() {
-            if let Ok(existing) = std::fs::read_to_string(&out_path) {
-                let has_anchor = existing.contains(&format!("[[{}]]", module_anchor));
-                let is_stale = existing.contains("Core module for aden ");
-                if has_anchor && !is_stale {
-                    continue;
-                }
-            }
+        // Preserve any existing module contract that already declares the right
+        // anchor — it may contain human or agent edits. We intentionally do NOT
+        // pattern-match Aden's own historical boilerplate here: baking the
+        // tool's own identity into regeneration logic is exactly what makes a
+        // context compiler "self-centered" and breaks it on other codebases.
+        if out_path.exists()
+            && let Ok(existing) = std::fs::read_to_string(&out_path)
+            && existing.contains(&format!("[[{}]]", module_anchor))
+        {
+            continue;
         }
 
         let content = format!(

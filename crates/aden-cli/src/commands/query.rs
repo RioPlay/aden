@@ -661,8 +661,10 @@ pub fn cmd_ask(
 
         let mut final_suggestions = suggestions.clone();
         if final_suggestions.is_empty() {
-            // Try common fallbacks - first check which ones exist
-            for fallback in &["index", "mod-project", "readme", "architecture", "philosophy"] {
+            // Generic entry-point anchors only — never Aden's own doc names
+            // (e.g. "philosophy"), so suggestions stay relevant on any project.
+            // "mod-project" is the root anchor Aden generates for every repo.
+            for fallback in &["index", "mod-project", "readme", "overview", "architecture"] {
                 if graph.anchor_to_index.contains_key(*fallback) {
                     final_suggestions.push(fallback.to_string());
                 }

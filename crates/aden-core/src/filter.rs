@@ -14,23 +14,64 @@
 use std::path::Path;
 
 /// Smart built-in exclusion patterns that apply when no `.adenignore` exists.
+///
+/// These defaults are deliberately *polyglot*: Aden compiles context for any
+/// codebase, so we exclude the build-output and dependency directories of every
+/// common ecosystem — not just the one Aden itself is written in. Anything
+/// project-specific belongs in a user-authored `.adenignore`, never here.
 pub const BUILT_IN_IGNORES: &[&str] = &[
-    "target/",
+    // Aden's own artifacts and version control
     ".git/",
+    ".hg/",
+    ".svn/",
     ".agent/",
     ".aden/",
     "contracts/",
-    "node_modules/",
-    "vendor/",
+    // Editor / OS debris
     ".vscode/",
     ".idea/",
-    ".cargo/",
+    ".vs/",
     "*.swp",
     "*.swo",
     ".DS_Store",
     "Thumbs.db",
     "*.tmp",
     "*.temp",
+    // Generic build output (shared across many ecosystems).
+    // NOTE: deliberately NOT excluding "bin/" or "packages/" — they are build
+    // output in some ecosystems but *source* in others (e.g. `packages/<name>`
+    // in npm/pnpm/lerna monorepos, which discovery treats as modules).
+    "build/",
+    "dist/",
+    "out/",
+    "obj/",
+    // Rust / Cargo
+    "target/",
+    ".cargo/",
+    // Node / JS / TS
+    "node_modules/",
+    ".next/",
+    ".nuxt/",
+    ".svelte-kit/",
+    "bower_components/",
+    // Python
+    "__pycache__/",
+    ".venv/",
+    "venv/",
+    ".tox/",
+    ".mypy_cache/",
+    ".pytest_cache/",
+    ".ruff_cache/",
+    "*.egg-info/",
+    // Go / vendored dependencies
+    "vendor/",
+    // JVM (Gradle / Maven)
+    ".gradle/",
+    // Ruby / Bundler
+    ".bundle/",
+    // Misc caches and coverage
+    ".cache/",
+    "coverage/",
 ];
 
 /// A compiled path filter combining `.adenignore` and `.adenallow` rules.
@@ -167,6 +208,24 @@ mod tests {
         assert!(!filter.should_skip(Path::new("src/lib.rs")));
         assert!(filter.should_skip(Path::new("agent/file.adoc")));
         assert!(filter.should_skip(Path::new(".agent/file.adoc")));
+    }
+
+    #[test]
+    fn test_builtin_skips_are_polyglot() {
+        let filter = AdenFilter::from_directory(Path::new("/tmp/nonexistent"));
+        // Build/dependency dirs from many ecosystems are excluded by default.
+        assert!(filter.should_skip(Path::new("__pycache__/mod.cpython-312.pyc")));
+        assert!(filter.should_skip(Path::new(".venv/lib/python3.12/site.py")));
+        assert!(filter.should_skip(Path::new("vendor/golang.org/x/foo.go")));
+        assert!(filter.should_skip(Path::new(".gradle/caches/modules")));
+        assert!(filter.should_skip(Path::new("dist/bundle.js")));
+        assert!(filter.should_skip(Path::new("obj/Debug/App.dll")));
+        // …but real source in any language is kept, including monorepo
+        // `packages/` and `bin/` which are source dirs in some ecosystems.
+        assert!(!filter.should_skip(Path::new("app/main.py")));
+        assert!(!filter.should_skip(Path::new("packages/api/src/index.ts")));
+        assert!(!filter.should_skip(Path::new("bin/console.rb")));
+        assert!(!filter.should_skip(Path::new("cmd/server/main.go")));
     }
 
     #[test]

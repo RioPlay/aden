@@ -324,62 +324,65 @@ fn build_snippet(text: &str, query_tokens: &[String]) -> String {
 impl Index {
     /// Build an index from all `.adoc` and `.aden` files under `dir`.
     pub fn from_directory(dir: &Path) -> Result<Self, std::io::Error> {
-        let mut index = Index::default();
         let mut files = Vec::new();
         let filter = AdenFilter::from_directory(dir);
         Self::collect_files(dir, &filter, &mut files)?;
 
-        // Parallel: read and parse all files
-        let parsed_docs: Vec<_> = files
+        // Parallel: read every file as (path, text).
+        let entries: Vec<(PathBuf, String)> = files
             .par_iter()
-            .map(|path| {
-                let text = std::fs::read_to_string(path);
-                text.ok().and_then(|text| parse_adoc(path, &text))
-            })
-            .flatten()
+            .filter_map(|path| std::fs::read_to_string(path).ok().map(|t| (path.clone(), t)))
             .collect();
 
-        // Merge results into index
-        for (anchor, source_path, counts) in &parsed_docs {
-            index.anchor_paths.insert(anchor.clone(), source_path.clone());
+        let mut index = Index::default();
+        index.ingest(entries);
+        index.finalize();
+        Ok(index)
+    }
+
+    /// Ingest a batch of `(source_path, text)` documents into the index.
+    ///
+    /// `source_path` is used only as the recorded location and (for `.txt`) as
+    /// the anchor source — it does **not** have to exist on disk. This is what
+    /// lets the index include contracts that live in the sled store rather than
+    /// as files, so `search`/`ask` can see code symbols emitted by
+    /// `aden gen --auto`. Anchors already present are left untouched (earlier
+    /// ingestions win), so on-disk contracts take precedence over store copies.
+    ///
+    /// Call [`Index::finalize`] once after all `ingest` calls to recompute the
+    /// BM25 average document length.
+    pub fn ingest(&mut self, entries: Vec<(PathBuf, String)>) {
+        let parsed: Vec<((String, PathBuf, HashMap<String, usize>), String)> = entries
+            .into_par_iter()
+            .filter_map(|(path, text)| parse_adoc(&path, &text).map(|p| (p, text)))
+            .collect();
+
+        for ((anchor, source_path, counts), text) in parsed {
+            if self.doc_lengths.contains_key(&anchor) {
+                continue; // already indexed (e.g. an on-disk copy) — don't double count
+            }
+            self.anchor_paths.insert(anchor.clone(), source_path);
             let doc_len: usize = counts.values().sum();
-            index.doc_lengths.insert(anchor.clone(), doc_len);
-            for (token, count) in counts {
-                index
-                    .inverted
+            self.doc_lengths.insert(anchor.clone(), doc_len);
+            for (token, count) in &counts {
+                self.inverted
                     .entry(token.clone())
                     .or_default()
                     .push((anchor.clone(), *count));
             }
+            self.anchor_text.insert(anchor, text);
         }
+    }
 
-        // Parallel: read text for snippet generation
-        let text_docs: Vec<_> = files
-            .par_iter()
-            .filter_map(|path| {
-                let text = std::fs::read_to_string(path).ok()?;
-                let anchor = parsed_docs
-                    .iter()
-                    .find(|(_, sp, _)| *sp == *path)
-                    .map(|(a, _, _)| a.clone());
-                anchor.map(|a| (a, text))
-            })
-            .collect();
-
-        for (anchor, text) in text_docs {
-            index.anchor_text.insert(anchor, text);
-        }
-
-        // Compute average document length for BM25
-        let total_len: usize = index.doc_lengths.values().sum();
-        let doc_count = index.doc_lengths.len();
-        index.avg_doc_length = if doc_count > 0 {
+    /// Recompute the BM25 average document length. Call once after ingestion.
+    pub fn finalize(&mut self) {
+        let total_len: usize = self.doc_lengths.values().sum();
+        let doc_count = self.doc_lengths.len();
+        self.avg_doc_length = if doc_count > 0 {
             total_len as f64 / doc_count as f64
         } else {
             1.0
         };
-
-        Ok(index)
     }
 
     fn collect_files(dir: &Path, filter: &AdenFilter, out: &mut Vec<PathBuf>) -> Result<(), std::io::Error> {

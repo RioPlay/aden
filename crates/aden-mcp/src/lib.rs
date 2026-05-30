@@ -32,6 +32,24 @@ impl AdenMcpServer {
     }
 }
 
+/// Guidance surfaced to the LLM at session start. Frames Aden as a
+/// language-agnostic context compiler and gives the canonical workflow so the
+/// model uses the tools correctly on *any* project (not just Rust).
+const SERVER_INSTRUCTIONS: &str = "\
+Aden is a language-agnostic referential context compiler. It turns ANY codebase \
+or documentation (Rust, Python, Go, TypeScript, Java, Ruby, PHP, C/C++, and 300+ \
+more — plus Markdown/AsciiDoc docs) into a queryable knowledge graph. Nothing \
+here is specific to Aden's own source; every result is derived from the target \
+project you point it at.\n\n\
+Typical workflow:\n\
+1. `gen` with auto=true to compile contracts for the whole project (run this first \
+on a fresh project).\n\
+2. `ask` a natural-language question, or `search` for keywords, to retrieve \
+context. `locate` finds a symbol's definition and call sites.\n\
+3. `query`/`asm` traverse the graph (e.g. blast radius before a refactor).\n\
+4. `check`/`heal` validate and keep contracts in sync with the code.\n\n\
+The `path` argument defaults to the current project directory for every tool.";
+
 // ── Tool declaration ──────────────────────────────────────────
 
 /// A tool the LLM can invoke.  Zero code per tool — just metadata.
@@ -39,6 +57,102 @@ struct ToolSpec {
     name: &'static str,
     description: &'static str,
     args: &'static [(&'static str, &'static str)], // (arg_name, arg_type: "string"|"boolean"|"integer")
+}
+
+/// Required argument names per tool (must match the `arg_name` strings in the
+/// TOOLS table exactly). Anything not listed is optional — `path` always
+/// defaults to the current project directory, so it is never required.
+fn required_args(tool: &str) -> &'static [&'static str] {
+    match tool {
+        "ask" => &["question"],
+        "search" => &["query"],
+        "suggest" => &["intent"],
+        "kickoff" => &["brief"],
+        "new" => &["name", "lang"],
+        "workflow" => &["template"],
+        "session" => &["agent-id", "task", "status"],
+        "emergency" => &["reason"],
+        _ => &[],
+    }
+}
+
+/// Returns true if `arg` should be passed positionally (no `--` prefix) for `tool`.
+fn is_positional(tool: &str, arg: &str) -> bool {
+    match (tool, arg) {
+        // path is positional for every command
+        (_, "path") => true,
+        // ask:   aden ask <QUESTION> [DIR]
+        ("ask", "question") => true,
+        // search: aden search <QUERY> [DIR]
+        ("search", "query") => true,
+        // suggest: aden suggest <INTENT>
+        ("suggest", "intent") => true,
+        // new:   aden new <NAME> <LANG> [DIR]
+        ("new", "name" | "lang") => true,
+        // kickoff: aden kickoff <BRIEF> [DIR]
+        ("kickoff", "brief") => true,
+        _ => false,
+    }
+}
+
+/// Translate MCP JSON arguments into `aden` CLI arguments for `spec`.
+///
+/// The first element is the subcommand name. Snake_case arg names are converted
+/// to the kebab-case long flags clap actually accepts (`edge_types` →
+/// `--edge-types`); positional args are emitted bare. Pure and side-effect-free
+/// so the flag mapping is unit-tested directly.
+fn build_cli_args(spec: &ToolSpec, args: &serde_json::Map<String, serde_json::Value>) -> Vec<String> {
+    let mut cmd_args: Vec<String> = vec![spec.name.to_string()];
+    for &(arg_name, arg_type) in spec.args {
+        let val = match args.get(arg_name) {
+            Some(v) => v,
+            None => continue,
+        };
+        let flag = format!("--{}", arg_name.replace('_', "-"));
+        match arg_type {
+            "boolean" if val.as_bool().unwrap_or(false) => {
+                cmd_args.push(flag);
+            }
+            "string" | "integer" => {
+                let s = match arg_type {
+                    "integer" => val
+                        .as_u64()
+                        .map(|n| n.to_string())
+                        .or_else(|| val.as_i64().map(|n| n.to_string())),
+                    _ => val.as_str().map(|s| s.to_string()),
+                };
+                if let Some(s) = s {
+                    if is_positional(spec.name, arg_name) {
+                        cmd_args.push(s);
+                    } else {
+                        cmd_args.push(flag);
+                        cmd_args.push(s);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    cmd_args
+}
+
+/// Build the JSON Schema + `Tool` for a spec. Single builder so `get_tool` and
+/// `list_tools` can never drift apart.
+fn tool_from_spec(spec: &ToolSpec) -> Tool {
+    let mut props = serde_json::Map::new();
+    for &(arg_name, ty) in spec.args {
+        let mut p = serde_json::Map::new();
+        p.insert("type".to_string(), serde_json::json!(ty));
+        props.insert(arg_name.to_string(), serde_json::Value::Object(p));
+    }
+    let mut schema = JsonObject::new();
+    schema.insert("type".to_string(), serde_json::json!("object"));
+    schema.insert("properties".to_string(), serde_json::Value::Object(props));
+    let required = required_args(spec.name);
+    if !required.is_empty() {
+        schema.insert("required".to_string(), serde_json::json!(required));
+    }
+    Tool::new(spec.name, spec.description, Arc::new(schema))
 }
 
 /// Every MCP tool maps 1:1 to `aden <name> <args>`.
@@ -90,21 +204,11 @@ impl ServerHandler for AdenMcpServer {
             "aden-mcp",
             env!("CARGO_PKG_VERSION"),
         ))
+        .with_instructions(SERVER_INSTRUCTIONS)
     }
 
     fn get_tool(&self, name: &str) -> Option<Tool> {
-        TOOLS.iter().find(|t| t.name == name).map(|t| {
-            let mut props = serde_json::Map::new();
-            for &(arg_name, ty) in t.args {
-                let mut p = serde_json::Map::new();
-                p.insert("type".to_string(), serde_json::json!(ty));
-                props.insert(arg_name.to_string(), serde_json::Value::Object(p));
-            }
-            let mut schema = JsonObject::new();
-            schema.insert("type".to_string(), serde_json::json!("object"));
-            schema.insert("properties".to_string(), serde_json::Value::Object(props));
-            Tool::new(t.name, t.description, Arc::new(schema))
-        })
+        TOOLS.iter().find(|t| t.name == name).map(tool_from_spec)
     }
 
     async fn list_tools(
@@ -112,21 +216,7 @@ impl ServerHandler for AdenMcpServer {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, McpError> {
-        let tools: Vec<Tool> = TOOLS
-            .iter()
-            .map(|t| {
-                let mut props = serde_json::Map::new();
-                for &(arg_name, ty) in t.args {
-                    let mut p = serde_json::Map::new();
-                    p.insert("type".to_string(), serde_json::json!(ty));
-                    props.insert(arg_name.to_string(), serde_json::Value::Object(p));
-                }
-                let mut schema = JsonObject::new();
-                schema.insert("type".to_string(), serde_json::json!("object"));
-                schema.insert("properties".to_string(), serde_json::Value::Object(props));
-                Tool::new(t.name, t.description, Arc::new(schema))
-            })
-            .collect();
+        let tools: Vec<Tool> = TOOLS.iter().map(tool_from_spec).collect();
         Ok(ListToolsResult::with_all_items(tools))
     }
 
@@ -147,56 +237,7 @@ impl ServerHandler for AdenMcpServer {
             })?;
 
         // Build CLI args: `aden <name> [positional] [--flag|--key value] ...`
-        let mut cmd_args: Vec<String> = vec![tool_name.to_string()];
-
-        /// Returns true if the arg should be passed positionally (no -- prefix).
-        fn is_positional(tool: &str, arg: &str) -> bool {
-            match (tool, arg) {
-                // path is positional for every command
-                (_, "path") => true,
-                // ask:   aden ask <QUESTION> [DIR]
-                ("ask", "question") => true,
-                // search: aden search <QUERY> [DIR]
-                ("search", "query") => true,
-                // suggest: aden suggest <INTENT>
-                ("suggest", "intent") => true,
-                // new:   aden new <NAME> <LANG> [DIR]
-                ("new", "name" | "lang") => true,
-                // kickoff: aden kickoff <BRIEF> [DIR]
-                ("kickoff", "brief") => true,
-                _ => false,
-            }
-        }
-
-        for &(arg_name, arg_type) in spec.args {
-            let val = match args.get(arg_name) {
-                Some(v) => v,
-                None => continue,
-            };
-            match arg_type {
-                "boolean" if val.as_bool().unwrap_or(false) => {
-                    cmd_args.push(format!("--{}", arg_name));
-                }
-                "string" | "integer" => {
-                    let s = match arg_type {
-                        "integer" => val
-                            .as_u64()
-                            .map(|n| n.to_string())
-                            .or_else(|| val.as_i64().map(|n| n.to_string())),
-                        _ => val.as_str().map(|s| s.to_string()),
-                    };
-                    if let Some(s) = s {
-                        if is_positional(tool_name, arg_name) {
-                            cmd_args.push(s);
-                        } else {
-                            cmd_args.push(format!("--{}", arg_name));
-                            cmd_args.push(s);
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
+        let cmd_args = build_cli_args(spec, &args);
 
         // Run
         let output = run_aden_command(
@@ -214,8 +255,29 @@ impl ServerHandler for AdenMcpServer {
 
 // ── CLI bridge ──────────────────────────────────────────────
 
+/// Resolve the `aden` CLI binary.
+///
+/// Order: `ADEN_BIN` env override → a sibling of the running `aden-mcp`
+/// executable (the usual install layout) → bare `aden` on `PATH`. Hardcoding
+/// `"aden"` breaks whenever the MCP server runs from a context where the CLI
+/// is installed but not on `PATH` (a very common MCP-client launch setup).
+fn resolve_aden_binary() -> std::ffi::OsString {
+    if let Some(explicit) = std::env::var_os("ADEN_BIN") {
+        return explicit;
+    }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
+    {
+        let sibling = dir.join(if cfg!(windows) { "aden.exe" } else { "aden" });
+        if sibling.is_file() {
+            return sibling.into_os_string();
+        }
+    }
+    std::ffi::OsString::from("aden")
+}
+
 async fn run_aden_command(project_dir: &Path, args: &[&str]) -> Result<String, String> {
-    let output = tokio::process::Command::new("aden")
+    let output = tokio::process::Command::new(resolve_aden_binary())
         .args(args)
         .current_dir(project_dir)
         .output()
@@ -284,6 +346,50 @@ mod tests {
     fn test_get_tool_returns_none_for_unknown() {
         let server = AdenMcpServer::new(PathBuf::from("."));
         assert!(server.get_tool("nonexistent").is_none());
+    }
+
+    fn spec(name: &str) -> &'static ToolSpec {
+        TOOLS.iter().find(|t| t.name == name).unwrap()
+    }
+
+    #[test]
+    fn snake_case_args_become_kebab_flags() {
+        // Regression: `edge_types` must map to `--edge-types`, not `--edge_types`
+        // (clap derives kebab-case long flags), otherwise the CLI rejects it.
+        let mut args = serde_json::Map::new();
+        args.insert("edge_types".into(), serde_json::json!("uses,calls"));
+        let out = build_cli_args(spec("asm"), &args);
+        assert_eq!(out, vec!["asm", "--edge-types", "uses,calls"]);
+    }
+
+    #[test]
+    fn positional_and_boolean_args_render_correctly() {
+        let mut args = serde_json::Map::new();
+        args.insert("question".into(), serde_json::json!("how does X work"));
+        args.insert("budget".into(), serde_json::json!(2048));
+        let out = build_cli_args(spec("ask"), &args);
+        // question is positional (no flag); budget is a value flag.
+        assert!(out.contains(&"how does X work".to_string()));
+        assert!(!out.contains(&"--question".to_string()));
+        assert_eq!(out[0], "ask");
+
+        let mut g = serde_json::Map::new();
+        g.insert("auto".into(), serde_json::json!(true));
+        g.insert("path".into(), serde_json::json!("."));
+        let out = build_cli_args(spec("gen"), &g);
+        assert!(out.contains(&"--auto".to_string())); // boolean flag, no value
+        assert!(out.contains(&".".to_string())); // path positional
+    }
+
+    #[test]
+    fn required_args_surface_in_schema() {
+        let server = AdenMcpServer::new(PathBuf::from("."));
+        let tool = server.get_tool("ask").unwrap();
+        let req = tool.input_schema.get("required").unwrap().as_array().unwrap();
+        assert!(req.iter().any(|v| v == "question"));
+        // gen has no required args (path defaults to ".").
+        let gen_tool = server.get_tool("gen").unwrap();
+        assert!(gen_tool.input_schema.get("required").is_none());
     }
 
     #[test]

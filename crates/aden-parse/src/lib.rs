@@ -35,7 +35,7 @@ pub mod typescript_resolver;
 
 pub use extractor::LanguageExtractor;
 pub(crate) use extractor::make_anchor;
-pub use router::LanguageRouter;
+pub use router::{supported_extensions, LanguageRouter};
 
 #[cfg(test)]
 mod tests;
