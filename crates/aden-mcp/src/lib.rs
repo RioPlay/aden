@@ -116,6 +116,17 @@ fn is_positional(tool: &str, arg: &str) -> bool {
     }
 }
 
+/// True if the positional `arg` of `tool` is a clap SUBCOMMAND token (a fixed
+/// verb like `list`/`install`) rather than a free-form value positional.
+///
+/// A `--` end-of-options terminator must NOT be emitted before a subcommand —
+/// clap would fail to dispatch it. It is only needed before value positionals
+/// (path/question/pattern/…), where an attacker-controlled leading-dash value
+/// could otherwise be parsed as a flag.
+fn is_subcommand_dispatch(tool: &str, arg: &str) -> bool {
+    matches!((tool, arg), ("federation" | "mcp", "action"))
+}
+
 /// Contract-test accessor: every tool paired with its declared `(arg, type)` list.
 /// Lets `aden-cli` assert that no MCP-emittable flag has drifted from the CLI.
 pub fn tool_arg_specs() -> Vec<(&'static str, &'static [(&'static str, &'static str)])> {
@@ -146,8 +157,18 @@ fn structured_output_flags(tool: &str) -> &'static [&'static str] {
 /// to the kebab-case long flags clap actually accepts (`edge_types` →
 /// `--edge-types`); positional args are emitted bare. Pure and side-effect-free
 /// so the flag mapping is unit-tested directly.
-fn build_cli_args(spec: &ToolSpec, args: &serde_json::Map<String, serde_json::Value>) -> Vec<String> {
+fn build_cli_args(
+    spec: &ToolSpec,
+    args: &serde_json::Map<String, serde_json::Value>,
+    extra_flags: &[&str],
+) -> Vec<String> {
     let mut cmd_args: Vec<String> = vec![spec.name.to_string()];
+    // Positional values are collected separately so we can emit a single `--`
+    // end-of-options terminator before them. Without it, a caller-supplied
+    // value beginning with `-` (e.g. path="--fix") would be parsed by clap as a
+    // flag rather than data — argument smuggling into the selected subcommand
+    // (security: audit finding MEDIUM-1).
+    let mut positionals: Vec<String> = Vec::new();
     for &(arg_name, arg_type) in spec.args {
         let val = match args.get(arg_name) {
             Some(v) => v,
@@ -167,8 +188,12 @@ fn build_cli_args(spec: &ToolSpec, args: &serde_json::Map<String, serde_json::Va
                     _ => val.as_str().map(|s| s.to_string()),
                 };
                 if let Some(s) = s {
-                    if is_positional(spec.name, arg_name) {
+                    if is_subcommand_dispatch(spec.name, arg_name) {
+                        // A subcommand verb (federation/mcp `action`) must be a
+                        // bare token before any `--`, so clap can dispatch it.
                         cmd_args.push(s);
+                    } else if is_positional(spec.name, arg_name) {
+                        positionals.push(s);
                     } else {
                         cmd_args.push(flag);
                         cmd_args.push(s);
@@ -177,6 +202,17 @@ fn build_cli_args(spec: &ToolSpec, args: &serde_json::Map<String, serde_json::Va
             }
             _ => {}
         }
+    }
+    // Extra machine-output flags (e.g. `--json`) go with the flags, before the
+    // `--` terminator, so clap parses them as flags rather than positionals.
+    for flag in extra_flags {
+        if !cmd_args.iter().any(|a| a == flag) {
+            cmd_args.push(flag.to_string());
+        }
+    }
+    if !positionals.is_empty() {
+        cmd_args.push("--".to_string());
+        cmd_args.extend(positionals);
     }
     cmd_args
 }
@@ -282,17 +318,22 @@ impl ServerHandler for AdenMcpServer {
                 McpError::invalid_params(format!("unknown tool: {}", tool_name), None)
             })?;
 
-        // Build CLI args: `aden <name> [positional] [--flag|--key value] ...`
-        let mut cmd_args = build_cli_args(spec, &args);
-        // Read tools print terminal chrome (truncation footers, banners) by
-        // default. Request machine-readable JSON so the agent receives a
-        // structured envelope (counts, explicit `truncated`) instead. `--json`
-        // is a global flag accepted after the subcommand.
-        for flag in structured_output_flags(spec.name) {
-            if !cmd_args.iter().any(|a| a == flag) {
-                cmd_args.push(flag.to_string());
-            }
+        // SECURITY (audit HIGH-1): confine any caller-supplied filesystem path
+        // to the server's project_dir before shelling out. The CLI does not
+        // confine paths (find_project_root will happily resolve `/etc`), so an
+        // MCP client could otherwise read or write arbitrary host files via the
+        // `path` argument. Reject out-of-tree paths at the boundary.
+        if let Err(e) = confine_path_args(&self.project_dir, &args) {
+            return Ok(CallToolResult::error(vec![Content::text(e)]));
         }
+
+        // Build CLI args: `aden <name> [--flag|--key value] [extra] -- [positional]`.
+        // Read tools print terminal chrome (truncation footers, banners) by
+        // default; request machine-readable JSON so the agent receives a
+        // structured envelope instead. These extra flags must be emitted with
+        // the other flags — BEFORE the `--` terminator — or clap would treat
+        // them as positional data.
+        let cmd_args = build_cli_args(spec, &args, structured_output_flags(spec.name));
 
         // Run
         let output = run_aden_command(
@@ -306,6 +347,91 @@ impl ServerHandler for AdenMcpServer {
             Err(e) => Ok(CallToolResult::error(vec![Content::text(e)])),
         }
     }
+}
+
+// ── Path confinement ────────────────────────────────────────
+
+/// Reject any caller-supplied `path` argument that resolves outside
+/// `project_dir`. Returns `Err(message)` if a path escapes the project root.
+///
+/// Confinement is enforced HERE, at the MCP boundary, rather than in the CLI:
+/// the CLI is also used directly by trusted operators who may legitimately
+/// point it anywhere, but an MCP client is untrusted and must stay sandboxed
+/// to the project the server was launched for.
+fn confine_path_args(
+    project_dir: &Path,
+    args: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(), String> {
+    // The only caller-supplied argument that names a filesystem location is
+    // `path` (every tool's project/dir argument). Other string args are
+    // symbols, queries, anchors, etc. — not paths.
+    let Some(raw) = args.get("path").and_then(|v| v.as_str()) else {
+        return Ok(());
+    };
+    if raw.is_empty() {
+        return Ok(());
+    }
+
+    let root = canonical_or_self(project_dir);
+    let candidate = {
+        let p = Path::new(raw);
+        if p.is_absolute() {
+            p.to_path_buf()
+        } else {
+            root.join(p)
+        }
+    };
+    let resolved = resolve_existing_prefix(&candidate);
+
+    if resolved.starts_with(&root) {
+        Ok(())
+    } else {
+        Err(format!(
+            "path '{}' resolves outside the project directory '{}' and is refused \
+             (the MCP server is confined to its project root)",
+            raw,
+            root.display()
+        ))
+    }
+}
+
+/// Canonicalize `p`, falling back to a lexically-normalized form if it does not
+/// exist yet (so a not-yet-created target like `aden new`'s dir still checks).
+fn canonical_or_self(p: &Path) -> std::path::PathBuf {
+    p.canonicalize().unwrap_or_else(|_| normalize_lexical(p))
+}
+
+/// Canonicalize the deepest existing ancestor of `p`, then re-append the
+/// remaining (not-yet-existing) components — and lexically resolve any `..` so
+/// a non-existent path cannot smuggle traversal past the containment check.
+fn resolve_existing_prefix(p: &Path) -> std::path::PathBuf {
+    let mut ancestor = p;
+    loop {
+        if let Ok(c) = ancestor.canonicalize() {
+            let rest = p.strip_prefix(ancestor).unwrap_or(Path::new(""));
+            return normalize_lexical(&c.join(rest));
+        }
+        match ancestor.parent() {
+            Some(par) => ancestor = par,
+            None => return normalize_lexical(p),
+        }
+    }
+}
+
+/// Lexically resolve `.`/`..` without touching the filesystem.
+fn normalize_lexical(p: &Path) -> std::path::PathBuf {
+    use std::path::Component;
+    let mut out = std::path::PathBuf::new();
+    for comp in p.components() {
+        match comp {
+            Component::ParentDir => {
+                out.pop();
+            }
+            Component::CurDir => {}
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
 }
 
 // ── CLI bridge ──────────────────────────────────────────────
@@ -430,7 +556,7 @@ mod tests {
         // (clap derives kebab-case long flags), otherwise the CLI rejects it.
         let mut args = serde_json::Map::new();
         args.insert("edge_types".into(), serde_json::json!("uses,calls"));
-        let out = build_cli_args(spec("asm"), &args);
+        let out = build_cli_args(spec("asm"), &args, &[]);
         assert_eq!(out, vec!["asm", "--edge-types", "uses,calls"]);
     }
 
@@ -439,7 +565,7 @@ mod tests {
         let mut args = serde_json::Map::new();
         args.insert("question".into(), serde_json::json!("how does X work"));
         args.insert("budget".into(), serde_json::json!(2048));
-        let out = build_cli_args(spec("ask"), &args);
+        let out = build_cli_args(spec("ask"), &args, &[]);
         // question is positional (no flag); budget is a value flag.
         assert!(out.contains(&"how does X work".to_string()));
         assert!(!out.contains(&"--question".to_string()));
@@ -448,9 +574,51 @@ mod tests {
         let mut g = serde_json::Map::new();
         g.insert("auto".into(), serde_json::json!(true));
         g.insert("path".into(), serde_json::json!("."));
-        let out = build_cli_args(spec("gen"), &g);
+        let out = build_cli_args(spec("gen"), &g, &[]);
         assert!(out.contains(&"--auto".to_string())); // boolean flag, no value
         assert!(out.contains(&".".to_string())); // path positional
+    }
+
+    #[test]
+    fn positionals_follow_a_double_dash_terminator() {
+        // Security (MEDIUM-1): a leading-dash value must not smuggle a CLI flag.
+        // A `--` terminator is emitted before the first value positional, so
+        // clap treats `--fix` as data, not the heal --fix boolean.
+        let mut args = serde_json::Map::new();
+        args.insert("path".into(), serde_json::json!("--fix"));
+        let out = build_cli_args(spec("heal"), &args, &[]);
+        let dd = out.iter().position(|a| a == "--").expect("-- terminator present");
+        let val = out.iter().position(|a| a == "--fix").unwrap();
+        assert!(dd < val, "the -- must precede the smuggled value: {out:?}");
+    }
+
+    #[test]
+    fn subcommand_dispatch_has_no_double_dash() {
+        // federation/mcp `action` is a clap SUBCOMMAND verb — it must stay a
+        // bare token with NO `--` before it, or clap can't dispatch it.
+        let mut args = serde_json::Map::new();
+        args.insert("action".into(), serde_json::json!("list"));
+        let out = build_cli_args(spec("federation"), &args, &[]);
+        assert_eq!(out, vec!["federation", "list"], "no -- before a subcommand");
+    }
+
+    #[test]
+    fn confine_path_rejects_outside_project() {
+        let proj = std::env::temp_dir();
+        // Absolute escape.
+        let mut esc = serde_json::Map::new();
+        esc.insert("path".into(), serde_json::json!("/etc"));
+        assert!(confine_path_args(&proj, &esc).is_err(), "/etc must be refused");
+        // `..` traversal escape.
+        let mut trav = serde_json::Map::new();
+        trav.insert("path".into(), serde_json::json!("../../../../etc"));
+        assert!(confine_path_args(&proj, &trav).is_err(), ".. escape must be refused");
+        // In-tree relative path is allowed.
+        let mut ok = serde_json::Map::new();
+        ok.insert("path".into(), serde_json::json!("."));
+        assert!(confine_path_args(&proj, &ok).is_ok(), "'.' must be allowed");
+        // No path arg → nothing to confine.
+        assert!(confine_path_args(&proj, &serde_json::Map::new()).is_ok());
     }
 
     #[test]
@@ -459,20 +627,17 @@ mod tests {
         // envelope, not the human truncation footer.
         let mut args = serde_json::Map::new();
         args.insert("pattern".into(), serde_json::json!("TODO"));
-        let mut cmd = build_cli_args(spec("grep"), &args);
-        for flag in structured_output_flags("grep") {
-            if !cmd.iter().any(|a| a == flag) {
-                cmd.push(flag.to_string());
-            }
-        }
+        let cmd = build_cli_args(spec("grep"), &args, structured_output_flags("grep"));
         assert!(cmd.contains(&"--json".to_string()), "grep must request --json: {cmd:?}");
-        // Idempotent: applying twice does not duplicate the flag.
-        for flag in structured_output_flags("grep") {
-            if !cmd.iter().any(|a| a == flag) {
-                cmd.push(flag.to_string());
-            }
-        }
         assert_eq!(cmd.iter().filter(|a| *a == "--json").count(), 1);
+        // Critical ordering: --json (a flag) must come BEFORE the `--`
+        // terminator, or clap would parse it as a positional. The pattern is
+        // a value positional, so a `--` is present.
+        let dd = cmd.iter().position(|a| a == "--");
+        let js = cmd.iter().position(|a| a == "--json").unwrap();
+        if let Some(dd) = dd {
+            assert!(js < dd, "--json must precede the -- terminator: {cmd:?}");
+        }
     }
 
     #[test]
