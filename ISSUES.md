@@ -1,5 +1,36 @@
 # Aden Issues - Future Work
 
+## 2026-05-30 — MCP rewrite phase 1+2 (contract + structured output)
+
+The MCP server is a thin director that maps each tool 1:1 to a CLI subcommand
+and returns its stdout. Two classes of defect made agent calls fail or return
+junk; both are fixed:
+
+- **FIXED — MCP↔CLI flag drift.** The MCP `TOOLS` table declared flags the CLI
+  does not accept, so clap rejected them or they were silently dropped. Affected
+  `kickoff` (`brief`→`--name`), `new` (`lang` was positional, is `--lang`),
+  `workflow` (`output`→`--out`, template positional), `gen` (5 nonexistent flags
+  removed), `asm` (`--anchor` removed; the anchor is `--from`), `diagnose`
+  (`severity`/`fix` removed; `path` is `--path`), `locate` (`json` removed — see
+  below), `test` (`json`/`unlimited` removed), `session` (`status` no longer
+  required), and the subcommand-based `mcp`/`federation`. A build-time
+  parity test (`crates/aden-cli/tests/mcp_flag_parity.rs`) now asserts every
+  MCP-emittable flag is accepted by the CLI, so drift fails the build.
+- **FIXED — generated artifacts polluted grep/index.** A bare `.aden/` ignore
+  rule only matched at the repo root, so per-crate caches at
+  `crates/<x>/.aden/cache/index-cache.json` were walked. Directory ignore rules
+  now match a bare name at any depth (gitignore semantics), so `aden grep` no
+  longer drowns real hits in cache noise.
+- **ADDED — structured output for read tools.** `grep`, `search`, and `list`
+  now emit a JSON envelope (`{total, returned, truncated[, offset], …}`) under
+  `--json`/`-j`, and the MCP requests it automatically — agents read counts and
+  truncation as data instead of parsing human tables or the "... and N more"
+  footer.
+
+### Still open
+- `ask` can route to a thin stub anchor (a bare module declaration → ~10 tokens)
+  with no "result too thin, broaden" fallback. Phase 3.
+
 ## 2026-05-29 — Graph connectivity & density fixes (validation pass)
 
 A validation pass against the docs (run on the aden repo itself and on an
@@ -37,9 +68,10 @@ and fixed the root causes:
 - `aden heal` / `aden check` flood stdout (hundreds of events, repeated file
   lists) — context-hostile for an agent; should summarize/cap.
 - `aden list --filter "mod-*"` glob returns 0 even when matches exist.
-- `locate --caller-of` is unimplemented; docs use `--caller_of`/`--context`
-  while the binary expects `--caller-of`/`--show-context`; `locate --json`
-  (global `-j`) is ignored — only `--format json` works.
+- `locate --caller-of` is unimplemented. (Docs corrected 2026-05-30 to the real
+  binary flags `--caller-of`/`--show-context`.) The CLI `locate` still ignores
+  the global `-j` — only `--format json` works — but the MCP `locate` tool no
+  longer exposes a `json` arg, so agents route JSON via `format=json`.
 - MCP server (ISSUES item 4 below): likely the debug `println!`s in
   `aden-cli/src/mcp.rs` corrupting the stdio JSON-RPC stream (flagged by
   `aden lint`).

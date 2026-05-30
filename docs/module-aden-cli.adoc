@@ -109,7 +109,7 @@ Find symbol definitions or call sites.
 [source,bash]
 ----
 aden locate --symbol SYMBOL
-aden locate --caller_of SYMBOL
+aden locate --caller-of SYMBOL
 ----
 
 == Health and CI

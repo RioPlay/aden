@@ -283,6 +283,7 @@ aden search "authentication"
 aden search "token budget" --limit 20
 aden search "parser" --doc_type module
 aden search "security" --semantics
+aden search "token budget" --json    # structured envelope
 ----
 
 |===
@@ -292,7 +293,13 @@ aden search "security" --semantics
 |--offset |Pagination offset |0
 |--doc_type |Filter: module, adr, plan, use-case |All
 |--semantics |Include semantic relationship results |false
+|--json |Structured envelope instead of the human table |false
 |===
+
+With `--json` (or the global `-j`), `search` emits an envelope carrying explicit
+counts and pagination so a caller never has to parse the table or guess whether
+more results exist: `{total, returned, offset, truncated, results: [{anchor,
+score, snippet}], semantic: [...]}`.
 
 === list
 
@@ -306,6 +313,7 @@ aden list --verbose
 aden list --semantics
 aden list --limit 20
 aden list --unlimited
+aden list --json                # structured envelope
 ----
 
 |===
@@ -317,7 +325,12 @@ aden list --unlimited
 |--limit |Max results |50
 |--offset |Pagination offset |0
 |--unlimited |No limit |false
+|--json |Structured envelope instead of the human table |false
 |===
+
+With `--json` (or the global `-j`), `list` emits `{total, returned, offset,
+truncated, anchors: [...]}`. In `--verbose` mode each anchor becomes
+`{anchor, type, source}`; otherwise the array holds anchor strings.
 
 === grep
 
@@ -350,11 +363,16 @@ aden grep "parse" --json
 |-i, --ignore-case |Case-insensitive match |false
 |--symbol-only |Only report matches inside a known symbol |false
 |--limit |Max results |100
-|--json |Structured output (file, line, symbol, anchor, text) |false
+|--json |Structured envelope (see below) |false
 |===
 
 Output is `file:line  (enclosing-symbol): matched text`. The enclosing symbol
 resolves with bare-name lookup, so `aden asm --from <symbol>` expands it.
+
+With `--json` (or the global `-j`), `grep` emits an envelope rather than a bare
+array — `{total, returned, truncated, matches: [{file, line, symbol, anchor,
+text}]}` — so a program reads the total and truncation state as data instead of
+the human "... and N more" footer.
 
 === locate
 
@@ -366,13 +384,13 @@ Find symbol definitions or call sites.
 aden locate --symbol assemble
 
 # Find call sites
-aden locate --caller_of assemble
+aden locate --caller-of assemble
 
 # With context
-aden locate --symbol assemble --context 5
+aden locate --symbol assemble --show-context 5
 
-# JSON output
-aden locate --symbol assemble --json
+# JSON output (locate ignores the global -j; use --format json)
+aden locate --symbol assemble --format json
 
 # Limit results
 aden locate --symbol Error --limit 10
@@ -382,9 +400,9 @@ aden locate --symbol Error --limit 10
 |Flag |Description |Default
 
 |--symbol |Find definition of this symbol |—
-|--caller_of |Find call sites of this symbol |—
+|--caller-of |Find call sites of this symbol |—
 |--format |Output format: `plain` (default), `json` |plain
-|--context |Include N lines of context |—
+|--show-context |Include N lines of context |—
 |--limit |Max results |50
 |===
 
@@ -762,7 +780,7 @@ To get machine-readable output, opt in:
 [source,bash]
 ----
 aden audit --format json
-aden locate --symbol main --json
+aden locate --symbol main --format json
 aden search "authentication" --json
 ----
 
