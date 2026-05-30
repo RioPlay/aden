@@ -206,11 +206,17 @@ aden mcp list
 ----
 
 === mcp serve
-Start HTTP server for CI and agents.
+Start the MCP (Model Context Protocol) server for CI and agents.
 [source,bash]
 ----
 aden mcp serve --port 3030
 ----
+
+The MCP server is a thin 1:1 bridge: each tool maps to an `aden` subcommand and
+shells out to the CLI. It locates that binary via `ADEN_BIN`, then a sibling of
+the running `aden-mcp` executable, then `PATH` — so set `ADEN_BIN` if `aden` is
+installed somewhere non-standard. Like the CLI, every tool is language-agnostic
+and operates on the target project, not on Aden itself.
 
 == Utility Commands
 

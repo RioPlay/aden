@@ -72,6 +72,28 @@ cargo test --workspace
 cargo clippy --workspace
 ```
 
+## Language Grammars (Offline Parsing)
+
+Aden parses source via `tree-sitter-language-pack`, which by default *downloads*
+grammars at runtime. That would make `aden gen` fail to parse first-class
+languages on any offline / air-gapped / locked-down CI box. To avoid that,
+`.cargo/config.toml` pins `TSLP_LANGUAGES`, which compiles those grammars
+*statically into the binary* at build time (sources are fetched once during
+`cargo build`, which has network):
+
+```toml
+# .cargo/config.toml
+[env]
+TSLP_LANGUAGES = "rust,python,go,typescript,tsx,javascript,c,...,swift"
+```
+
+- Editing that list changes which languages parse offline. The deep-resolver
+  languages (rust, python, go, ts/js, c, java, kotlin, csharp, ruby, php) **must**
+  be listed — their resolvers load the grammar from the pack too.
+- To bundle every supported grammar (larger binary, much longer build), build
+  with `TSLP_LANGUAGES=all cargo build` — an explicit env var overrides the file.
+- A normal `cargo build` already picks up `.cargo/config.toml`; no extra step.
+
 ## Developer Ritual
 
 Aden templates are embedded in the binary via `include_str!`. When templates change, the binary must be rebuilt and the local `.agent/` workspace re-initialized.

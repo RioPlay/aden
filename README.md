@@ -67,7 +67,17 @@ aden asm --from mod-auth --depth 2
 
 ## Supported Languages
 
-Rust, Python, Go, TypeScript/JavaScript, Java, C#, C, Ruby, PHP, Kotlin, PowerShell — plus 305+ generic language extractors.
+Aden is language-agnostic: `aden gen` discovers and parses **every** file type it
+has a grammar for — not just whichever build manifest happens to be present — and
+indexes Markdown/AsciiDoc documentation alongside code.
+
+- **Deep extraction** (call graph, signatures, doc comments): Rust, Python, Go,
+  TypeScript/JavaScript, Java, C#, C, Ruby, PHP, Kotlin, PowerShell.
+- **Generic extraction** (symbols + structure): 305+ further languages via
+  tree-sitter.
+
+Grammars are compiled into the binary at build time (see `.cargo/config.toml` /
+`TSLP_LANGUAGES`), so parsing works fully offline — no runtime downloads.
 
 ## Documentation
 

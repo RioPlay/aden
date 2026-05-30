@@ -80,13 +80,16 @@ aden gen . --auto
 
 **Symptom:** Searching for a known function returns only module documents.
 
-**Cause:** The index was built before symbol contracts existed, or the index cache is corrupt.
+**Cause:** `aden gen --auto` writes symbol contracts to the sled store (only
+module contracts land on disk). The full-text index merges both on-disk files
+*and* store-backed contracts, so symbols are normally searchable — but a stale
+index cache built *before* the last `gen` will miss newly generated symbols.
 
-**Fix:**
+**Fix:** Rebuild the index so it re-reads the store:
 
 [source,bash]
 ----
-# Clear all caches and rebuild
+# Clear the search index cache and rebuild (search/ask rebuild it on demand)
 rm -rf .aden/cache/
 aden sync .
 ----

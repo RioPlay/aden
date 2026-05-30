@@ -91,6 +91,11 @@ aden gen . --auto --quiet
 rm -rf contracts/ && aden gen . --auto
 ----
 
+`aden gen --auto` is language-agnostic — point it at a Python, Go, TypeScript,
+Java, Ruby, mixed, or docs-only project and it discovers every supported file
+(skipping build artifacts and anything in `.adenignore`). The examples here use
+Rust because that is what this repository is written in.
+
 For Rust projects, you should see files like:
 
 [source]

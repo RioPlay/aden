@@ -150,6 +150,16 @@ Extracts symbols, signatures, and relationships from source code using tree-sitt
 |305+ others |Shallow |Generic AST fallback
 |===
 
+Discovery is **language-agnostic**: `aden gen --auto` walks the whole project and
+keeps every file whose extension a parser can handle (the canonical set is
+`aden_parse::supported_extensions()`), honoring `.adenignore`. It does *not* gate
+on the build manifest, so a polyglot repo — or a Rust repo with Python scripts and
+Markdown docs — is fully covered rather than reduced to a single language.
+
+Grammars are compiled into the binary at build time via `TSLP_LANGUAGES` (set in
+`.cargo/config.toml`); the language pack would otherwise download them at runtime,
+which breaks offline and air-gapped use. See CONTRIBUTING.md.
+
 === 2. Graph Build (aden-graph)
 
 Builds a directed graph (`DiGraph`) from all contracts + documentation + <<adr-001>> + <<plan-phase0>> + <<project-context>>.
