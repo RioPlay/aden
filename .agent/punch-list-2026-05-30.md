@@ -13,7 +13,20 @@ Each item is backed by an observed run, not inference. Effort: S ≤1h · M few 
 
 - **Docs (goal 1):** Largely done this session — 10 docs corrected against code + verified (commits `0ef247a`, `98562e7`, `08f0101`). Remaining: stale `.agent/audit-2026-05-30.md` snapshot (see Docs Remaining).
 - **MCP (goal 2):** ✅ **Accurate & sound.** Wire test PASS on all 6 steps; description/timeout fixes landed (`720e4ac`). See MCP section.
-- **Functions (goal 2):** Mixed — most work; a cluster of real bugs below.
+- **Functions (goal 2):** ✅ Phases A/B/C complete — every confirmed functional bug fixed; only H7 (`complete` LLM, XL feature) remains.
+
+## Polyglot validation (2026-05-30) — NOT self-pilled
+
+Built scratch Python/Go/TypeScript projects and ran the full surface to confirm
+the fixes generalize beyond aden's own Rust source. All passed:
+- Call graph / `caller-of`: Python `login→hash_password`, Go `Handle→process`,
+  TS `fetchUser→normalize` all resolve.
+- Deletion pruning: Python `_salt` removed from the store (verified via backlinks
+  "not found", not just hidden). `heal --gc`: Go file-delete removed 3 nodes,
+  kept hubs.
+- `test --json` valid JSON (Python); grep structure-tagging works (TS + Python);
+  `audit` caught a planted AWS key (Python). Go reads its go.mod module path.
+- Only blemish: known cosmetic TS/JS duplicate-store entry (pre-existing, ISSUES.md).
 
 ---
 
