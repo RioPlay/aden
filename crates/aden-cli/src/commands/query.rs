@@ -1288,10 +1288,107 @@ pub fn cmd_locate(
         return Ok(());
     }
 
-    // If --caller-of is given, show call sites (requires call-graph edges with span metadata).
-    if let Some(_target) = caller_of {
-        println!("caller-of requires call-graph edges with line metadata (not yet implemented)");
-        println!("Use 'aden graph --from <anchor> --depth 1' for module-level callers instead.");
+    // If --caller-of is given, list callers via incoming `Calls` edges in the
+    // knowledge graph. This is the reverse of `query --backlinks`, filtered to
+    // call edges, with each caller enriched by its source file + line from the
+    // store. The call graph is already populated by `gen` (link_store_edges),
+    // so no new metadata is required — earlier this branch was a stub.
+    if let Some(target) = caller_of {
+        use serde_json::json;
+
+        let graph = aden_graph::cache::build_from_directory_cached(path)?;
+
+        // A bare symbol (e.g. `assemble`) may resolve to several anchors across
+        // modules; union the callers of every matching definition.
+        let tl = target.to_lowercase();
+        let targets: Vec<_> = graph
+            .graph
+            .node_indices()
+            .filter(|&i| {
+                let al = graph.graph[i].doc.anchor.to_lowercase();
+                al.ends_with(&tl) || al.contains(&format!("#{}", tl))
+            })
+            .collect();
+
+        if targets.is_empty() {
+            println!("No symbol found matching '{}'", target);
+            println!(
+                "Hint: Try 'aden locate . --symbol {}' to confirm it is indexed.",
+                target
+            );
+            return Ok(());
+        }
+
+        // Collect unique callers via incoming `Calls` edges.
+        let mut seen = HashSet::new();
+        let mut callers: Vec<String> = Vec::new();
+        for &t in &targets {
+            for neighbor in graph.graph.neighbors_directed(t, Direction::Incoming) {
+                let is_call = graph
+                    .graph
+                    .find_edge(neighbor, t)
+                    .and_then(|e| graph.graph.edge_weight(e))
+                    .map(|e| e.edge_type == aden_core::EdgeType::Calls)
+                    .unwrap_or(false);
+                if is_call {
+                    let a = graph.graph[neighbor].doc.anchor.clone();
+                    if seen.insert(a.clone()) {
+                        callers.push(a);
+                    }
+                }
+            }
+        }
+        callers.sort();
+
+        if callers.is_empty() {
+            println!(
+                "No callers found for '{}' (unused, an entry point, or invoked via dynamic dispatch).",
+                target
+            );
+            return Ok(());
+        }
+
+        // Enrich each caller with file:line from the store (best-effort).
+        let storage = aden_store::Storage::new(
+            path.join(".aden")
+                .join("store")
+                .to_str()
+                .ok_or("invalid store path")?,
+        )
+        .ok();
+        let hits: Vec<serde_json::Value> = callers
+            .iter()
+            .take(limit)
+            .map(|a| {
+                let (file, line) = storage
+                    .as_ref()
+                    .and_then(|s| s.get_document(a).ok().flatten())
+                    .map(|doc| {
+                        (
+                            doc.attributes.get("source_file").cloned().unwrap_or_default(),
+                            doc.attributes.get("start_line").cloned().unwrap_or_default(),
+                        )
+                    })
+                    .unwrap_or_default();
+                json!({ "anchor": a, "file": file, "start_line": line })
+            })
+            .collect();
+
+        println!("Found {} caller(s) of '{}':", hits.len(), target);
+        if format == "json" {
+            println!("{}", serde_json::to_string_pretty(&hits)?);
+        } else {
+            for h in &hits {
+                let file = h["file"].as_str().unwrap_or("");
+                let line = h["start_line"].as_str().unwrap_or("");
+                let loc = if file.is_empty() {
+                    String::new()
+                } else {
+                    format!("  ({}:{})", file, line)
+                };
+                println!("  {}{}", h["anchor"].as_str().unwrap_or(""), loc);
+            }
+        }
         return Ok(());
     }
 
