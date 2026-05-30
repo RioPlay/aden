@@ -7,6 +7,9 @@
 
 use serde_json::Value;
 use std::path::{Path, PathBuf};
+use toml_edit::{
+    Array as TomlArray, DocumentMut, Item as TomlItem, Table as TomlTable, value as toml_value,
+};
 
 /// Supported MCP platforms.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -74,18 +77,20 @@ impl Platform {
                 PathBuf::from(".cursor/mcp.json"),
                 home.join(".cursor/mcp.json"),
             ],
+            // Codex reads MCP servers from a TOML config (`[mcp_servers.<id>]`),
+            // not JSON. Project-scoped `.codex/config.toml` is honored in trusted
+            // projects; the user file is `~/.codex/config.toml`.
             Platform::Codex => vec![
-                PathBuf::from(".codex/config.json"),
-                home.join(".codex/config.json"),
+                PathBuf::from(".codex/config.toml"),
+                home.join(".codex/config.toml"),
             ],
             Platform::Zed => vec![
                 PathBuf::from(".zed/settings.json"),
                 home.join(".config/zed/settings.json"),
             ],
-            Platform::Windsurf => vec![
-                PathBuf::from(".windsurf/config.json"),
-                home.join(".windsurf/config.json"),
-            ],
+            // Windsurf (Cascade) reads only a single user-global config at
+            // `~/.codeium/windsurf/mcp_config.json` — there is no project scope.
+            Platform::Windsurf => vec![home.join(".codeium/windsurf/mcp_config.json")],
         }
     }
 
@@ -94,18 +99,24 @@ impl Platform {
         self.config_paths().iter().any(|p| p.exists())
     }
 
-    /// The JSON key under which MCP servers live for this platform.
+    /// True if this platform's config file is TOML rather than JSON.
+    pub fn is_toml(&self) -> bool {
+        matches!(self, Platform::Codex)
+    }
+
+    /// The config key/table under which MCP servers live for this platform.
+    /// For TOML platforms (Codex) this is the table name (`mcp_servers`).
     pub fn server_config_key(&self) -> &'static str {
         match self {
             Platform::OpenCode => "mcp",
-            Platform::ClaudeCode | Platform::Cursor | Platform::Codex | Platform::Windsurf => {
-                "mcpServers"
-            }
+            Platform::ClaudeCode | Platform::Cursor | Platform::Windsurf => "mcpServers",
+            Platform::Codex => "mcp_servers",
             Platform::Zed => "context_servers",
         }
     }
 
-    /// The JSON value to insert for the aden MCP server.
+    /// The JSON value to insert for the aden MCP server. Only valid for
+    /// JSON-config platforms; TOML platforms (Codex) are handled separately.
     pub fn aden_config(&self, binary: &str, project: &str) -> Value {
         match self {
             Platform::OpenCode => serde_json::json!({
@@ -117,15 +128,15 @@ impl Platform {
                 "command": binary,
                 "args": [project],
             }),
-            Platform::Codex => serde_json::json!({
-                "type": "stdio",
-                "command": binary,
-                "args": [project],
-            }),
+            // Zed requires `source: "custom"` for manually-declared servers.
             Platform::Zed => serde_json::json!({
+                "source": "custom",
                 "command": binary,
                 "args": [project],
             }),
+            Platform::Codex => {
+                unreachable!("Codex uses a TOML config; handled by the TOML install path")
+            }
         }
     }
 }
@@ -186,6 +197,48 @@ fn write_config(path: &Path, value: &Value) -> Result<(), String> {
     Ok(())
 }
 
+/// Read a TOML config file as an editable document, or return an empty one.
+/// `toml_edit` preserves the user's existing keys, comments, and formatting.
+fn read_toml(path: &Path) -> Result<DocumentMut, String> {
+    if !path.exists() {
+        return Ok(DocumentMut::new());
+    }
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
+    text.parse::<DocumentMut>()
+        .map_err(|e| format!("Invalid TOML in {}: {}", path.display(), e))
+}
+
+/// Write a TOML document atomically (temp + rename).
+fn write_toml(path: &Path, doc: &DocumentMut) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create directory {}: {}", parent.display(), e))?;
+    }
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, doc.to_string())
+        .map_err(|e| format!("Failed to write temp file {}: {}", tmp.display(), e))?;
+    std::fs::rename(&tmp, path).map_err(|e| {
+        format!(
+            "Failed to rename {} to {}: {}",
+            tmp.display(),
+            path.display(),
+            e
+        )
+    })?;
+    Ok(())
+}
+
+/// Build the `[mcp_servers.aden]` TOML table for Codex.
+fn codex_aden_table(binary: &str, project: &str) -> TomlTable {
+    let mut tbl = TomlTable::new();
+    tbl["command"] = toml_value(binary);
+    let mut args = TomlArray::new();
+    args.push(project);
+    tbl["args"] = toml_value(args);
+    tbl
+}
+
 /// Return the first existing config path, or the first config path if none exist.
 fn active_config_path(platform: &Platform) -> PathBuf {
     platform
@@ -200,8 +253,16 @@ fn is_configured_at(path: &Path, platform: &Platform) -> Result<bool, String> {
     if !path.exists() {
         return Ok(false);
     }
-    let cfg = read_config(path)?;
     let key = platform.server_config_key();
+    if platform.is_toml() {
+        let doc = read_toml(path)?;
+        return Ok(doc
+            .get(key)
+            .and_then(|t| t.as_table())
+            .map(|t| t.contains_key("aden"))
+            .unwrap_or(false));
+    }
+    let cfg = read_config(path)?;
     match cfg.get(key) {
         Some(Value::Object(map)) => Ok(map.contains_key("aden")),
         _ => Ok(false),
@@ -216,8 +277,32 @@ fn install_platform(
     dry_run: bool,
 ) -> Result<(), String> {
     let config_path = active_config_path(platform);
-    let mut cfg = read_config(&config_path)?;
     let key = platform.server_config_key();
+    let binary = binary.to_string_lossy();
+    let project = project.to_string_lossy();
+
+    if platform.is_toml() {
+        let mut doc = read_toml(&config_path)?;
+        // Ensure the [mcp_servers] table exists, then set [mcp_servers.aden].
+        // Mark the parent implicit so a fresh config renders just the
+        // `[mcp_servers.aden]` subtable, not a redundant empty `[mcp_servers]`.
+        if !doc.get(key).map(|t| t.is_table()).unwrap_or(false) {
+            let mut parent = TomlTable::new();
+            parent.set_implicit(true);
+            doc[key] = TomlItem::Table(parent);
+        }
+        doc[key]["aden"] = TomlItem::Table(codex_aden_table(&binary, &project));
+
+        if dry_run {
+            println!("  [dry-run] Would write: {}", config_path.display());
+            return Ok(());
+        }
+        write_toml(&config_path, &doc)?;
+        println!("  ✓ Configured: {}", config_path.display());
+        return Ok(());
+    }
+
+    let mut cfg = read_config(&config_path)?;
 
     // Ensure the server config key exists as an object
     if !cfg.get(key).map(|v| v.is_object()).unwrap_or(false) {
@@ -226,8 +311,7 @@ fn install_platform(
 
     // Merge or create the aden entry
     if let Some(Value::Object(servers)) = cfg.get_mut(key) {
-        let aden_value =
-            platform.aden_config(&binary.to_string_lossy(), &project.to_string_lossy());
+        let aden_value = platform.aden_config(&binary, &project);
         servers.insert("aden".to_string(), aden_value);
     }
 
@@ -249,8 +333,29 @@ fn uninstall_platform(platform: &Platform, dry_run: bool) -> Result<(), String> 
         return Ok(());
     }
 
-    let mut cfg = read_config(&config_path)?;
     let key = platform.server_config_key();
+
+    if platform.is_toml() {
+        let mut doc = read_toml(&config_path)?;
+        let changed = doc
+            .get_mut(key)
+            .and_then(|t| t.as_table_mut())
+            .map(|t| t.remove("aden").is_some())
+            .unwrap_or(false);
+        if !changed {
+            println!("  ✗ aden was not configured in: {}", config_path.display());
+            return Ok(());
+        }
+        if dry_run {
+            println!("  [dry-run] Would update: {}", config_path.display());
+            return Ok(());
+        }
+        write_toml(&config_path, &doc)?;
+        println!("  ✓ Removed aden from: {}", config_path.display());
+        return Ok(());
+    }
+
+    let mut cfg = read_config(&config_path)?;
 
     let changed = match cfg.get_mut(key) {
         Some(Value::Object(servers)) => servers.remove("aden").is_some(),
@@ -551,4 +656,149 @@ pub fn run_http_server(_project_dir: &Path, port: u16) -> Result<(), Box<dyn std
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_codex_is_toml() {
+        assert!(Platform::Codex.is_toml());
+        for p in [
+            Platform::ClaudeCode,
+            Platform::Cursor,
+            Platform::OpenCode,
+            Platform::Zed,
+            Platform::Windsurf,
+        ] {
+            assert!(!p.is_toml(), "{} should be JSON", p.display_name());
+        }
+    }
+
+    #[test]
+    fn windsurf_path_is_codeium_mcp_config() {
+        // Windsurf reads only ~/.codeium/windsurf/mcp_config.json (user-global).
+        let paths = Platform::Windsurf.config_paths();
+        assert_eq!(paths.len(), 1);
+        assert!(
+            paths[0].ends_with(".codeium/windsurf/mcp_config.json"),
+            "got {:?}",
+            paths[0]
+        );
+        assert_eq!(Platform::Windsurf.server_config_key(), "mcpServers");
+    }
+
+    #[test]
+    fn codex_path_is_toml_with_mcp_servers_table() {
+        let paths = Platform::Codex.config_paths();
+        assert!(
+            paths
+                .iter()
+                .all(|p| p.extension().and_then(|e| e.to_str()) == Some("toml")),
+            "codex must use .toml files: {paths:?}"
+        );
+        assert_eq!(Platform::Codex.server_config_key(), "mcp_servers");
+    }
+
+    #[test]
+    fn zed_requires_source_custom() {
+        let v = Platform::Zed.aden_config("aden-mcp", "/proj");
+        assert_eq!(v["source"], "custom");
+        assert_eq!(v["command"], "aden-mcp");
+        assert_eq!(v["args"][0], "/proj");
+        assert_eq!(Platform::Zed.server_config_key(), "context_servers");
+    }
+
+    #[test]
+    fn claude_cursor_windsurf_use_command_args() {
+        for p in [Platform::ClaudeCode, Platform::Cursor, Platform::Windsurf] {
+            let v = p.aden_config("aden-mcp", "/proj");
+            assert_eq!(v["command"], "aden-mcp", "{}", p.display_name());
+            assert_eq!(v["args"][0], "/proj", "{}", p.display_name());
+        }
+    }
+
+    #[test]
+    fn opencode_uses_local_command_array() {
+        let v = Platform::OpenCode.aden_config("aden-mcp", "/proj");
+        assert_eq!(v["type"], "local");
+        assert_eq!(v["command"][0], "aden-mcp");
+        assert_eq!(v["command"][1], "/proj");
+        assert_eq!(v["enabled"], true);
+        assert_eq!(Platform::OpenCode.server_config_key(), "mcp");
+    }
+
+    #[test]
+    fn codex_table_has_command_and_args() {
+        let tbl = codex_aden_table("aden-mcp", "/proj");
+        assert_eq!(tbl["command"].as_str(), Some("aden-mcp"));
+        assert_eq!(
+            tbl["args"]
+                .as_array()
+                .and_then(|a| a.get(0))
+                .and_then(|v| v.as_str()),
+            Some("/proj")
+        );
+    }
+
+    #[test]
+    fn codex_toml_merge_preserves_existing_content() {
+        // A realistic existing ~/.codex/config.toml with a user setting and
+        // another MCP server. Installing aden must not clobber either.
+        let existing =
+            "model = \"gpt-5-codex\"\n\n[mcp_servers.other]\ncommand = \"other-mcp\"\nargs = []\n";
+        let mut doc = existing.parse::<DocumentMut>().unwrap();
+        let key = "mcp_servers";
+        if !doc.get(key).map(|t| t.is_table()).unwrap_or(false) {
+            doc[key] = TomlItem::Table(TomlTable::new());
+        }
+        doc[key]["aden"] = TomlItem::Table(codex_aden_table("aden-mcp", "/proj"));
+
+        let out = doc.to_string();
+        assert!(
+            out.contains("model = \"gpt-5-codex\""),
+            "lost user key:\n{out}"
+        );
+        assert!(
+            out.contains("[mcp_servers.other]"),
+            "lost other server:\n{out}"
+        );
+        assert!(
+            out.contains("command = \"other-mcp\""),
+            "lost other cmd:\n{out}"
+        );
+        assert!(
+            out.contains("[mcp_servers.aden]"),
+            "missing aden table:\n{out}"
+        );
+        assert!(
+            out.contains("command = \"aden-mcp\""),
+            "missing aden cmd:\n{out}"
+        );
+    }
+
+    #[test]
+    fn toml_roundtrip_via_files_is_idempotent() {
+        // read_toml on a missing file yields empty; write+read round-trips.
+        let dir = std::env::temp_dir().join("aden_mcp_toml_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("config.toml");
+        let _ = std::fs::remove_file(&path);
+
+        let mut doc = read_toml(&path).unwrap(); // empty
+        doc["mcp_servers"] = TomlItem::Table(TomlTable::new());
+        doc["mcp_servers"]["aden"] = TomlItem::Table(codex_aden_table("aden-mcp", "/proj"));
+        write_toml(&path, &doc).unwrap();
+
+        let reloaded = read_toml(&path).unwrap();
+        assert!(
+            reloaded
+                .get("mcp_servers")
+                .and_then(|t| t.as_table())
+                .map(|t| t.contains_key("aden"))
+                .unwrap_or(false)
+        );
+        let _ = std::fs::remove_file(&path);
+    }
 }

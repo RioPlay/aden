@@ -639,15 +639,20 @@ aden mcp list
 aden mcp serve --port 3030
 ----
 
-|===
-|Platform |Config Path
+Each platform reads MCP servers from its own config file and schema. `aden mcp
+install` writes the project-local file when one applies, falling back to the
+user-global path, and merges the `aden` entry into any existing config without
+disturbing other servers.
 
-|opencode |~/.config/opencode/mcp.json
-|claude |~/.claude/mcp.json
-|cursor |~/.cursor/mcp.json
-|codex |~/.codex/mcp.json
-|zed |~/.config/zed/mcp.json
-|windsurf |~/.windsurf/mcp.json
+|===
+|Platform |Config Path |Format
+
+|opencode |`.opencode/opencode.json` or `~/.config/opencode/opencode.json` |JSON, `mcp` key (`type: local`)
+|claude |`.mcp.json` (project-scoped) |JSON, `mcpServers` key
+|cursor |`.cursor/mcp.json` or `~/.cursor/mcp.json` |JSON, `mcpServers` key
+|codex |`.codex/config.toml` or `~/.codex/config.toml` |*TOML*, `[mcp_servers.aden]` table
+|zed |`.zed/settings.json` or `~/.config/zed/settings.json` |JSON, `context_servers` key (`source: custom`)
+|windsurf |`~/.codeium/windsurf/mcp_config.json` (user-global only) |JSON, `mcpServers` key
 |===
 
 === kickoff

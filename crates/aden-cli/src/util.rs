@@ -191,15 +191,26 @@ fn walk_supported_files(
 pub fn sanitize_source_file(doc: &mut aden_core::Document, root: &Path) {
     if let Some(source_file) = doc.attributes.get("source_file") {
         let p = std::path::Path::new(source_file);
-        if p.is_absolute() {
-            let rel = p
-                .strip_prefix(root)
-                .ok()
-                .map(|r| r.to_string_lossy().to_string())
-                .or_else(|| p.file_name().map(|f| f.to_string_lossy().to_string()));
-            if let Some(rel) = rel {
-                doc.attributes.insert("source_file".to_string(), rel);
-            }
+        // Strip the root prefix component-wise. We do NOT gate this on
+        // `p.is_absolute()`: a Unix-style path like `/home/...` is not
+        // "absolute" on Windows (no drive letter), but `strip_prefix` still
+        // works cross-platform, so a graph built on one OS is sanitized on
+        // another. The bare-filename fallback only applies to genuinely
+        // host-absolute paths, so relative paths that simply don't match the
+        // root are left untouched.
+        let rel = p
+            .strip_prefix(root)
+            .ok()
+            .map(|r| r.to_string_lossy().to_string())
+            .or_else(|| {
+                if p.is_absolute() {
+                    p.file_name().map(|f| f.to_string_lossy().to_string())
+                } else {
+                    None
+                }
+            });
+        if let Some(rel) = rel {
+            doc.attributes.insert("source_file".to_string(), rel);
         }
     }
 }

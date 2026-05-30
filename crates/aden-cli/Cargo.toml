@@ -26,6 +26,7 @@ aden-propose = { version = "0.1.0", path = "../aden-propose" }
 aden-policy = { version = "0.1.0", path = "../aden-policy" }
 regex = "1.11"
 dirs = "6"
+toml_edit = "0.22"
 walkdir = "2"
 chrono = "0.4"
 serde_yaml = "0.9"
