@@ -297,7 +297,7 @@ fn apply_lint_rules(path: &Path, line: &str, line_num: usize, ext: &str) -> Vec<
         return results;
     }
 
-    let line_results = match ext {
+    let mut line_results = match ext {
         "rs" => lint_rust_line(line, line_num),
         "py" => lint_python_line(line, line_num),
         "ts" | "tsx" | "js" | "jsx" => lint_typescript_line(line, line_num),
@@ -310,9 +310,93 @@ fn apply_lint_rules(path: &Path, line: &str, line_num: usize, ext: &str) -> Vec<
         _ => vec![],
     };
 
+    // Language-agnostic secure-coding rules (ADR-002): a high-confidence subset
+    // of the secure-coding constitution, enforced across all source languages.
+    // Skipped for doc/markup extensions, which have no executable surface.
+    if !matches!(ext, "adoc" | "aden") {
+        line_results.extend(lint_secure_coding_line(line, line_num, ext));
+    }
+
     for mut r in line_results {
         r.file = path.to_string_lossy().to_string();
         results.push(r);
+    }
+
+    results
+}
+
+/// Machine-checkable subset of the secure-coding constitution
+/// (`.agent/secure-coding.adoc`, ADR-002). Each rule is tagged with the
+/// constitution anchor it enforces, and is deliberately HIGH-CONFIDENCE —
+/// matched only against real code (string/comment text blanked via `code_only`)
+/// and only on patterns that are almost always genuine violations — so this
+/// does not flood a scan with false positives.
+fn lint_secure_coding_line(line: &str, line_num: usize, ext: &str) -> Vec<LintResult> {
+    let mut results = Vec::new();
+    // `code_only` blanks string literals and `//` comments. For languages that
+    // use `#` line comments (Python, Ruby, PHP-hash), also drop a trailing `#`
+    // comment first so e.g. `run([...])  # shell=True` is not flagged. Done on
+    // the already-string-blanked text so a `#` inside a string is not mistaken
+    // for a comment.
+    let blanked = code_only(line);
+    let code = if matches!(ext, "py" | "rb") {
+        match blanked.find('#') {
+            Some(i) => blanked[..i].to_string(),
+            None => blanked,
+        }
+    } else {
+        blanked
+    };
+
+    // sc-data-is-data: spawning a subprocess through a shell interprets data as
+    // a command (CWE-78). The high-confidence signals differ per language.
+    let shell_exec: Option<&str> = match ext {
+        "py" => code
+            .contains("shell=True")
+            .then_some("subprocess called with shell=True — pass an argument list instead"),
+        // Match the RAW line: the signal is the shell name *inside* the string
+        // literal, which `code_only` would blank. Require the `Command::new(`
+        // call in code so a mere mention of "sh" in a string elsewhere is safe.
+        "rs" => (code.contains("Command::new(")
+            && (line.contains("Command::new(\"sh\")") || line.contains("Command::new(\"bash\")")))
+        .then_some("spawning a shell — pass program + args as an argv vector instead"),
+        // NOTE: no JS/TS rule here. The high-confidence single-line signal would
+        // be `child_process.exec(`, but real code splits the require/import from
+        // the call across lines, and bare `.exec(` collides with RegExp.exec —
+        // both unacceptable for a line-based linter. Omitted rather than noisy.
+        // Ruby/PHP: the call (`system(`, `shell_exec(`) is code and survives
+        // code_only, but the danger signal (string interpolation `#{`, or a PHP
+        // `$var`) lives INSIDE the string literal — so check it on the raw line.
+        "rb" => (code.contains("system(") && (line.contains("#{") || line.contains("\" +")))
+            .then_some("shell command built from interpolated input — use an argv array form"),
+        "php" => ((code.contains("shell_exec(") || code.contains("system(")) && line.contains('$'))
+            .then_some("shell command with a variable — use escapeshellarg or a safe API"),
+        _ => None,
+    };
+    if let Some(msg) = shell_exec {
+        results.push(LintResult {
+            file: String::new(),
+            line: line_num,
+            column: 1,
+            severity: LintSeverity::Warn,
+            rule: "sc-data-is-data".to_string(),
+            message: format!("{msg} (secure-coding: sc-data-is-data)"),
+        });
+    }
+
+    // sc-no-secret-ingest: an obviously hard-coded provider credential in source
+    // (AWS/GitHub/OpenAI key shapes). Mirrors the gen indexing screen. NOTE:
+    // scan the RAW line, not `code` — a hard-coded secret lives *inside* a
+    // string literal, which `code_only` blanks, so checking `code` would miss it.
+    if aden_core::filter::content_has_high_confidence_secret(line) {
+        results.push(LintResult {
+            file: String::new(),
+            line: line_num,
+            column: 1,
+            severity: LintSeverity::Error,
+            rule: "sc-no-secret-ingest".to_string(),
+            message: "hard-coded credential token in source — move it to a secret store (secure-coding: sc-no-secret-ingest)".to_string(),
+        });
     }
 
     results
@@ -410,8 +494,14 @@ fn lint_rust_line(line: &str, line_num: usize) -> Vec<LintResult> {
         });
     }
 
-// NEW: Unnecessary clone on Copy types
-    if line.contains(".clone()") && (line.contains("i32") || line.contains("bool") || line.contains("char") || line.contains("f32") || line.contains("f64")) {
+    // NEW: Unnecessary clone on Copy types
+    if line.contains(".clone()")
+        && (line.contains("i32")
+            || line.contains("bool")
+            || line.contains("char")
+            || line.contains("f32")
+            || line.contains("f64"))
+    {
         results.push(LintResult {
             file: String::new(),
             line: line_num,
@@ -434,7 +524,11 @@ fn lint_rust_line(line: &str, line_num: usize) -> Vec<LintResult> {
         results.push(LintResult {
             file: String::new(),
             line: line_num,
-            column: code.find(".to_string()").or_else(|| code.find(".to_owned()")).unwrap_or(0) + 1,
+            column: code
+                .find(".to_string()")
+                .or_else(|| code.find(".to_owned()"))
+                .unwrap_or(0)
+                + 1,
             severity: LintSeverity::Warn,
             rule: "redundant_to_string".to_string(),
             message: "Redundant chained conversion — the value is already owned".to_string(),
@@ -442,7 +536,9 @@ fn lint_rust_line(line: &str, line_num: usize) -> Vec<LintResult> {
     }
 
     // NEW: Debug println left in code
-    if line.contains("println!") && (line.contains("\"") && !line.contains("logger") && !line.contains("log::")) {
+    if line.contains("println!")
+        && (line.contains("\"") && !line.contains("logger") && !line.contains("log::"))
+    {
         results.push(LintResult {
             file: String::new(),
             line: line_num,
@@ -538,7 +634,11 @@ fn lint_python_line(line: &str, line_num: usize) -> Vec<LintResult> {
     }
 
     // NEW: print statements (debug leftovers)
-    if line.contains("print(") && !line.contains("#") && !line.contains("logger") && !line.contains("logging") {
+    if line.contains("print(")
+        && !line.contains("#")
+        && !line.contains("logger")
+        && !line.contains("logging")
+    {
         results.push(LintResult {
             file: String::new(),
             line: line_num,
@@ -562,7 +662,12 @@ fn lint_python_line(line: &str, line_num: usize) -> Vec<LintResult> {
     }
 
     // NEW: shadowing built-in
-    if line.contains("list = ") || line.contains("dict = ") || line.contains("str = ") || line.contains("int = ") || line.contains("type = ") {
+    if line.contains("list = ")
+        || line.contains("dict = ")
+        || line.contains("str = ")
+        || line.contains("int = ")
+        || line.contains("type = ")
+    {
         results.push(LintResult {
             file: String::new(),
             line: line_num,
@@ -615,7 +720,11 @@ fn lint_typescript_line(line: &str, line_num: usize) -> Vec<LintResult> {
     }
 
     // NEW: == instead of === (loose equality)
-    if line.contains(" = ") && line.contains(" == ") && !line.contains("===") && !line.contains("//") {
+    if line.contains(" = ")
+        && line.contains(" == ")
+        && !line.contains("===")
+        && !line.contains("//")
+    {
         results.push(LintResult {
             file: String::new(),
             line: line_num,
@@ -651,17 +760,21 @@ fn lint_typescript_line(line: &str, line_num: usize) -> Vec<LintResult> {
     }
 
     // NEW: trailing console.info/warn/error
-    if (line.contains("console.info(") || line.contains("console.warn(") || line.contains("console.error("))
-        && !line.contains("logger") && !line.contains("log.") {
-            results.push(LintResult {
-                file: String::new(),
-                line: line_num,
-                column: 1,
-                severity: LintSeverity::Suggest,
-                rule: "console_output".to_string(),
-                message: "Console output found - consider using structured logger".to_string(),
-            });
-        }
+    if (line.contains("console.info(")
+        || line.contains("console.warn(")
+        || line.contains("console.error("))
+        && !line.contains("logger")
+        && !line.contains("log.")
+    {
+        results.push(LintResult {
+            file: String::new(),
+            line: line_num,
+            column: 1,
+            severity: LintSeverity::Suggest,
+            rule: "console_output".to_string(),
+            message: "Console output found - consider using structured logger".to_string(),
+        });
+    }
 
     // NEW: process.exit in non-test code
     if line.contains("process.exit(") && !line.contains("test") && !line.contains("__tests__") {
@@ -671,7 +784,8 @@ fn lint_typescript_line(line: &str, line_num: usize) -> Vec<LintResult> {
             column: line.find("process.exit(").unwrap_or(0) + 1,
             severity: LintSeverity::Warn,
             rule: "process_exit".to_string(),
-            message: "process.exit() found - avoid in production, prefer throwing errors".to_string(),
+            message: "process.exit() found - avoid in production, prefer throwing errors"
+                .to_string(),
         });
     }
 
@@ -704,7 +818,7 @@ fn lint_go_line(line: &str, line_num: usize) -> Vec<LintResult> {
         });
     }
 
-    // NEW: log.Printf debugging  
+    // NEW: log.Printf debugging
     if line.contains("log.Printf(") || line.contains("log.Println(") {
         // This is acceptable for logging, but flag if it looks like debug
     }
@@ -830,7 +944,8 @@ fn lint_adoc_line(line: &str, line_num: usize) -> Vec<LintResult> {
             column: 1,
             severity: LintSeverity::Error,
             rule: "ascii_graph".to_string(),
-            message: "ASCII graph detected. Use Mermaid diagrams in [mermaid] code blocks instead.".to_string(),
+            message: "ASCII graph detected. Use Mermaid diagrams in [mermaid] code blocks instead."
+                .to_string(),
         });
     }
 
@@ -853,20 +968,68 @@ fn lint_adoc_line(line: &str, line_num: usize) -> Vec<LintResult> {
 mod tests {
     use super::*;
 
+    fn rules(line: &str, ext: &str) -> Vec<String> {
+        lint_secure_coding_line(line, 1, ext)
+            .into_iter()
+            .map(|r| r.rule)
+            .collect()
+    }
+
+    #[test]
+    fn secure_coding_flags_real_violations() {
+        // sc-data-is-data — shell exec signals per language.
+        assert!(
+            rules("subprocess.run(cmd, shell=True)", "py").contains(&"sc-data-is-data".to_string())
+        );
+        assert!(
+            rules("Command::new(\"sh\").arg(\"-c\")", "rs")
+                .contains(&"sc-data-is-data".to_string())
+        );
+        assert!(
+            rules("system(\"rm #{user_path}\")", "rb").contains(&"sc-data-is-data".to_string())
+        );
+        // sc-no-secret-ingest — hard-coded credential in a string literal.
+        assert!(
+            rules("let k = \"AKIAIOSFODNN7EXAMPLE\";", "rs")
+                .contains(&"sc-no-secret-ingest".to_string())
+        );
+    }
+
+    #[test]
+    fn secure_coding_no_false_positives() {
+        // shell=True only in a trailing comment must not flag.
+        assert!(
+            !rules("subprocess.run([\"ls\"])  # not shell=True", "py")
+                .contains(&"sc-data-is-data".to_string())
+        );
+        // `sk`/`AKIA` as identifiers/words, not credential tokens.
+        assert!(rules("let sk = total; let akia = 1;", "rs").is_empty());
+        // safe argv-form subprocess is fine.
+        assert!(rules("subprocess.run([\"git\", \"status\"])", "py").is_empty());
+        // a regex exec in JS must not be flagged (we ship no JS shell rule).
+        assert!(rules("const m = /a/.exec(input);", "js").is_empty());
+    }
+
     #[test]
     fn code_only_blanks_strings_and_comments() {
         // Pattern inside a string literal is not code.
-        assert!(!code_only(r#"line.contains(".to_string().to_string()")"#)
-            .contains(".to_string().to_string()"));
+        assert!(
+            !code_only(r#"line.contains(".to_string().to_string()")"#)
+                .contains(".to_string().to_string()")
+        );
         // Pattern inside a line comment is not code.
-        assert!(!code_only("// foo .to_string().to_string() bar")
-            .contains(".to_string().to_string()"));
+        assert!(
+            !code_only("// foo .to_string().to_string() bar").contains(".to_string().to_string()")
+        );
         // Genuine code is preserved.
-        assert!(code_only(r#"let x = y.to_string().to_string();"#)
-            .contains(".to_string().to_string()"));
+        assert!(
+            code_only(r#"let x = y.to_string().to_string();"#).contains(".to_string().to_string()")
+        );
         // Escaped quote inside a string does not prematurely end it.
-        assert!(!code_only(r#"let s = "a \" .to_string().to_string()";"#)
-            .contains(".to_string().to_string()"));
+        assert!(
+            !code_only(r#"let s = "a \" .to_string().to_string()";"#)
+                .contains(".to_string().to_string()")
+        );
     }
 
     #[test]
