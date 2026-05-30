@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: CC-BY-SA-3.0
+// Source: OWASP Top 10:2025, (c) The OWASP Foundation, CC BY-SA.
+//   https://owasp.org/Top10/2025/A05_2025-Injection/
+// Third-party reference material — NOT part of aden's AGPL source. See SOURCES.md.
 [[owasp-top10-2025]]
 = OWASP Top 10:2025 — Selected Risks
 

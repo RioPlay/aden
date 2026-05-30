@@ -1,3 +1,8 @@
+// Source: 2024 CWE Top 25 Most Dangerous Software Weaknesses.
+//   CWE(TM) is (c) The MITRE Corporation; used under the CWE Terms of Use
+//   (non-exclusive, royalty-free license for research/development/commercial).
+//   https://cwe.mitre.org/top25/archive/2024/2024_cwe_top25.html
+// Third-party reference material — NOT part of aden's AGPL source. See SOURCES.md.
 [[cwe-top25]]
 = CWE Top 25 Most Dangerous Software Weaknesses (2024)
 

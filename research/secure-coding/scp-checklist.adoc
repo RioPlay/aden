@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: CC-BY-SA-3.0
+// Source: OWASP Secure Coding Practices — Quick Reference Guide,
+//   (c) The OWASP Foundation, CC BY-SA 3.0.
+//   https://owasp.org/www-project-secure-coding-practices-quick-reference-guide/
+// Third-party reference material — NOT part of aden's AGPL source. See SOURCES.md.
 [[scp-checklist]]
 = OWASP Secure Coding Practices — Checklist Categories
 
