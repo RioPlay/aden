@@ -167,8 +167,12 @@ fn extract_doc_comment(node: tree_sitter::Node, source: &str) -> Option<String> 
     let mut comments = Vec::new();
     for line in &lines {
         let trimmed = line.trim();
-        if trimmed.starts_with("/**") && trimmed.ends_with("*/") {
-            let inner = &trimmed[3..trimmed.len() - 2];
+        if let Some(inner) = trimmed
+            .strip_prefix("/**")
+            .and_then(|s| s.strip_suffix("*/"))
+        {
+            // `/**/` (len 4) yields inner == "" here — the old `&trimmed[3..len-2]`
+            // slice panicked (begin > end) on that untrusted input.
             let lines: Vec<String> = inner
                 .lines()
                 .map(|l| {

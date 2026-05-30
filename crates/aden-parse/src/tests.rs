@@ -184,3 +184,28 @@ fn router_registers_polyglot_extensions() {
         );
     }
 }
+
+// ── Untrusted-input DoS regression ──────────────────────────────
+
+// SECURITY: an empty block comment `/**/` (len 4) used to hit a reverse
+// byte-slice (`&s[3..len-2]` => 3..2) and panic the whole parse run. The
+// doc-comment/block-comment extractors now use strip_prefix/strip_suffix, and
+// parse_file wraps each file in catch_unwind. parse_file must return Ok for
+// `/**/` in every affected language — never panic.
+#[test]
+fn empty_block_comment_does_not_panic() {
+    use std::path::Path;
+    let cases = [
+        ("a.php", "<?php\n/**/\nfunction f(){}\n"),
+        ("B.java", "/**/\nclass C {}\n"),
+        ("c.kt", "/**/\nfun g() {}\n"),
+        ("d.rs", "/**/\npub fn h() {}\n"),
+    ];
+    for (name, src) in &cases {
+        let result = crate::parse_file(Path::new(name), src);
+        assert!(
+            result.is_ok(),
+            "parse_file({name}) on '/**/' must not error/panic, got {result:?}"
+        );
+    }
+}
