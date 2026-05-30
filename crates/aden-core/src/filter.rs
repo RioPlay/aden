@@ -26,7 +26,12 @@ pub const BUILT_IN_IGNORES: &[&str] = &[
     ".svn/",
     ".agent/",
     ".aden/",
-    "contracts/",
+    // NOTE: do NOT hard-code "contracts/" here — it is aden's *own* output dir
+    // name, but it is also *source* in other ecosystems (Solidity/Vyper smart
+    // contracts live in `contracts/`). aden's actual output lives under `.aden/`
+    // (already skipped). Skipping bare `contracts/` would silently drop the
+    // entire codebase of any smart-contract repo — an aden-centric assumption
+    // that breaks language-agnosticism.
     // Editor / OS debris
     ".vscode/",
     ".idea/",
@@ -74,6 +79,57 @@ pub const BUILT_IN_IGNORES: &[&str] = &[
     "coverage/",
 ];
 
+/// Universal credential/secret detection, applied on **every** repo regardless
+/// of `.adenignore`, so secret material never enters the knowledge graph (where
+/// `ask`/`grep`/`asm` could surface it to an LLM). It is a security floor, not a
+/// convenience filter: matching is by filename / extension / parent directory —
+/// never by repo-specific layout — so it stays language- and project-agnostic.
+/// An explicit `.adenallow` entry can still opt a specific path back in.
+pub fn is_secret_path(relative: &Path) -> bool {
+    let rel = relative.to_string_lossy().replace('\\', "/");
+
+    // Any path segment that is a well-known credential directory.
+    const SECRET_DIRS: &[&str] = &[
+        ".ssh", ".gnupg", ".aws", ".azure", ".kube", "secrets", "secret",
+    ];
+    if rel.split('/').any(|seg| SECRET_DIRS.contains(&seg)) {
+        return true;
+    }
+
+    let name = relative
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+
+    // Exact credential filenames.
+    const SECRET_NAMES: &[&str] = &[
+        ".env", ".envrc", ".npmrc", ".pypirc", ".netrc", "_netrc", ".htpasswd",
+        "credentials", "credentials.json", "credentials.toml", "credentials.yml",
+        "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519",
+    ];
+    if SECRET_NAMES.contains(&name.as_str()) {
+        return true;
+    }
+    // dotenv variants (.env.local, .env.production, …) and GCP service accounts.
+    if name.starts_with(".env.")
+        || (name.starts_with("service-account") && name.ends_with(".json"))
+    {
+        return true;
+    }
+
+    // Private-key / keystore / encrypted-secret extensions.
+    const SECRET_EXTS: &[&str] = &[
+        "pem", "key", "p8", "p12", "pfx", "keystore", "jks", "kdbx", "ppk", "asc", "gpg", "pgp",
+    ];
+    if let Some(ext) = relative.extension().and_then(|e| e.to_str()) {
+        if SECRET_EXTS.contains(&ext.to_ascii_lowercase().as_str()) {
+            return true;
+        }
+    }
+    false
+}
+
 /// A compiled path filter combining `.adenignore` and `.adenallow` rules.
 #[derive(Debug, Clone)]
 pub struct AdenFilter {
@@ -113,7 +169,11 @@ impl AdenFilter {
     pub fn should_skip(&self, relative: &Path) -> bool {
         // Normalize separators so Windows backslash paths match slash patterns.
         let rel_str = relative.to_string_lossy().replace('\\', "/");
-        let matched_ignore = self.ignore_patterns.iter().any(|r| r.matches(&rel_str));
+        // Secret files are skipped on every repo, regardless of .adenignore — a
+        // non-negotiable security floor (an explicit .adenallow can still opt
+        // a path back in below).
+        let matched_ignore =
+            is_secret_path(relative) || self.ignore_patterns.iter().any(|r| r.matches(&rel_str));
         if !matched_ignore {
             return false;
         }
