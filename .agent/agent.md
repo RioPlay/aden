@@ -79,7 +79,7 @@ This runs: check → heal → lint → test → audit → clippy
 ## This Project Uses
 
 - **AsciiDoc** (`.adoc`) — don't convert to Markdown
-- **Contracts** in `contracts/` — regenerated, don't edit manually
+- **Knowledge graph** in `.aden/store` — built by `aden gen`, never edit by hand
 - **Graph edges** — `Uses`, `Calls`, `Documents`, `PartOf`, `IsA`, etc.
 
 ## Agent Session

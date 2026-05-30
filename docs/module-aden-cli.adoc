@@ -20,14 +20,12 @@ aden new NAME --lang rust|go|js [DIR]
 ----
 
 === gen
-Parse source and emit .aden/.adoc contracts.
+Compile source into the knowledge graph (`.aden/store`); store-first, emits no files.
 [source,bash]
 ----
 aden gen PATH
-aden gen . --auto
-aden gen . --merge
-aden gen . --propose
-aden gen . --format md
+aden gen .
+aden gen . --quiet
 ----
 
 === check

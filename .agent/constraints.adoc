@@ -105,15 +105,15 @@ Use double-angle brackets for all references:
 
 === Contract Generation
 
-NEVER edit `.adoc` contracts manually. Always regenerate:
+Store-first: `aden gen` compiles source into the knowledge graph at
+`.aden/store` and emits no files — there are no `.adoc` contracts to hand-edit.
+Re-run `gen` whenever source changes (read commands also refresh on read):
 
 [source,bash]
 ----
-aden gen src/lib.rs    # Generate
-aden gen src/ --auto   # Batch generate
+aden gen src/lib.rs    # Re-index a single file
+aden gen .             # Re-index the whole project
 ----
-
-Manual edits will be overwritten on next `aden gen`.
 
 == Git Standards
 

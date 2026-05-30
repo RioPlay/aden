@@ -39,8 +39,8 @@ aden ci-check .           # Full CI gates before commit
 
 ## Conventions
 
-- **Never edit `.adoc` contracts by hand** — regenerate with `aden gen`
-- **Never commit `contracts/` or `.aden/`** — build artifacts (in `.gitignore`)
+- **Never hand-edit the knowledge graph** — rebuild with `aden gen`
+- **Never commit `.aden/`** — the build artifact (in `.gitignore`)
 - **Never ignore test failures**
 - **Append your session** to `.agent/session.adoc` before finishing
 - **Never suppress warnings** without `// SAFETY:` or `// REVIEW:`

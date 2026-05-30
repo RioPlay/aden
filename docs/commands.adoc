@@ -52,37 +52,27 @@ Scaffolds:
 
 === gen
 
-Parse source files and emit `.adoc`/`.aden` contracts.
+Compile source into the knowledge graph (`.aden/store`). Store-first: `gen`
+writes only to the store and emits no files. A directory indexes the whole
+project; a single file re-indexes just that file.
 
 [source,bash]
 ----
-# Single file
+# Single file (re-index just this file)
 aden gen src/lib.rs
 
-# Directory (auto-detects structure)
-aden gen src/ --auto
+# Whole project (a directory is auto-discovered)
+aden gen .
 
-# Whole project (quiet mode for CI)
-aden gen . --auto --quiet
-
-# Three-way merge (preserve human blocks)
-aden gen src/ --auto --merge
-
-# Dry-run (show what would change)
-aden gen src/ --auto --propose
-
-# Markdown output
-aden gen . --auto --format md
+# Quiet mode for CI (summary only)
+aden gen . --quiet
 ----
 
 |===
 |Flag |Description
 
-|--auto |Auto-detect existing contract structure
-|--merge |Three-way merge: update only `[generated]` blocks
-|--propose |Dry-run: output MergeActions without writing files
-|--format |Output format: `adoc` (default), `md`
-|--quiet |Suppress per-file emit lines
+|--auto |Auto-discover source files for the whole project (default when PATH is a directory)
+|--quiet |Suppress per-file output (summary only)
 |===
 
 === check
@@ -776,25 +766,12 @@ aden locate --symbol main --json
 aden search "authentication" --json
 ----
 
-=== Contract Generation Format
+=== How `gen` Stores Output
 
-`aden gen` produces contract files, not LLM context. The `--format` flag controls the contract file format:
-
-|===
-|Command |Default Format |What It Means
-
-|`aden gen` |`--format adoc` |AsciiDoc contracts (default, recommended).
-|`aden gen` |`--format md` |Markdown contracts (for teams that prefer `.md`).
-|===
-
-[source,bash]
-----
-# Default: AsciiDoc contracts
-aden gen . --auto
-
-# Markdown contracts
-aden gen . --auto --format md
-----
+`aden gen` is store-first: it compiles source into the knowledge graph at
+`.aden/store` and emits no files (there is no output-format flag). Read
+commands (`ask`, `asm`, `query`, `grep`) serve LLM-ready context from the
+store, and machine-readable output is available via `--json` where noted above.
 
 === Previous Commands (Deprecated)
 

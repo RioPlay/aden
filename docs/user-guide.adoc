@@ -32,10 +32,10 @@ aden graph --from mod-auth --depth 2
 === What Each Step Gives You
 
 - `aden init` scaffolds `.agent/` with templates and `.adenignore`.
-- `aden gen` produces `.adoc` contracts in `./contracts/` containing every public function, struct, and trait.
+- `aden gen` compiles every public function, struct, and trait into the knowledge graph at `.aden/store` (store-first — no files are emitted).
 - `aden check` guarantees there are no broken references or duplicate anchors.
 - `aden ask` gives you a token-bounded context prompt. Paste it into ChatGPT, Claude, or your local LLM and ask follow-ups.
-- `aden graph` prints a dependency map so you can see what calls what.
+- `aden query` prints a dependency map so you can see what calls what.
 
 == Workflow 2: Refactor with Confidence
 
@@ -141,36 +141,6 @@ aden ci-check .
 - `.agent/` with templates, constraints, and session log
 - `.adenignore` with security-first defaults
 - `docs/kickoff-my-project.adoc` with project goals and acceptance criteria
-
-== Workflow 6: Contract-Based Generation with Merge
-
-When your contracts contain `[human]` architectural notes, you do not want `aden gen` to overwrite them.
-
-[source,bash]
-----
-# 1. Edit source code
-# ... (your IDE here) ...
-
-# 2. Preview the merge without writing files
-aden gen src/ --auto --propose
-
-# 3. Review the proposal output
-# It shows: UpdateGenerated, PreserveHuman, Conflict, InsertGenerated, DeleteGenerated
-
-# 4. Apply the merge
-aden gen src/ --auto --merge
-----
-
-=== What Each Flag Does
-
-- `--propose` → dry-run. Outputs per-block `MergeAction` to stdout. No files written.
-- `--merge` → three-way merge. `ground` = freshly parsed AST; `base` = last generated; `working` = current file with human edits.
-- Both flags can be combined with `--auto` for directory-wide generation.
-
-[IMPORTANT]
-====
-If a `[human]` block and a `[generated]` block share the same tag, `aden gen --merge` emits a `[proposed]` conflict marker instead of silently overwriting.
-====
 
 == Token Budgeting Strategies
 

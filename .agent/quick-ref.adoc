@@ -9,12 +9,11 @@
 |===
 |Task |Command
 
-|Active development |`aden watch .` (auto-regenerates contracts on save)
+|Active development |`aden watch .` (auto-updates the graph on save)
 |Before commit |`aden ci-check .` (runs all gates)
 |Review changes before fixing |`aden heal . --propose`
 |Apply fixes (if confident) |`aden heal . --fix`
-|Regenerate contracts |`aden gen src/ --auto`
-|Three-way merge (preserves human blocks) |`aden gen src/ --auto --merge`
+|Rebuild the graph |`aden gen .`
 |===
 
 == Common Workflows
@@ -49,10 +48,8 @@ git push
 |===
 |Use Case |Command
 
-|Generate contracts |`aden gen src/ --auto`
-|Generate single file |`aden gen src/lib.rs`
-|Merge preserve human |`aden gen src/ --auto --merge`
-|Preview merge |`aden gen src/ --auto --propose`
+|Build the graph |`aden gen .`
+|Index a single file |`aden gen src/lib.rs`
 
 |Validate graph |`aden check .`
 |Fix drift |`aden heal . --fix`

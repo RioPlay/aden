@@ -10,7 +10,7 @@
 . `compile_gate`: All code must compile/build successfully
 . `check_gate`: All `<<refs>>` must resolve, no cycles, valid edges
 . `heal_scan_changed_only`: Only scan files changed since last commit
-. `security_gate`: Never commit `.aden/`, `contracts/`, or secret artifacts. Run `aden ci-check` before every commit.
+. `security_gate`: Never commit `.aden/` or secret artifacts. Run `aden ci-check` before every commit.
 
 == Confidence-Based Escalation
 |===

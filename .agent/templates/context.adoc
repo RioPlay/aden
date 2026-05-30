@@ -22,7 +22,7 @@ This file is the canonical shared memory for all agent sessions on `{project}`.
 . **Never commit secrets**, credentials, or private keys.
 . **Never emit files outside the working directory** without explicit confirmation.
 . **Never ignore test failures** — a failing test is a signal, not noise.
-. **Never commit generated build artifacts** (e.g. contracts/, .aden/, target/, node_modules/).
+. **Never commit generated build artifacts** (e.g. .aden/, target/, node_modules/).
 . **Always read existing code** before writing new code in the same area.
 
 == Language and Style Defaults

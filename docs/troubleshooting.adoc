@@ -52,14 +52,11 @@ aden ask "How does aden_asm::traverse::assemble work?"
 
 [source,bash]
 ----
-# Prune stale contracts
-aden heal . --gc
-
-# Or regenerate from scratch
-rm -rf contracts/ && aden gen . --auto
+# Rebuild the store from scratch (drops nodes for deleted source)
+rm -rf .aden/store && aden gen .
 ----
 
-**Prevention:** The pre-commit hook now runs `aden gen . --quiet`, which auto-prunes deleted source contracts. Ensure your `.git/hooks/pre-commit` is up to date.
+**Prevention:** The pre-commit hook runs `aden gen . --quiet` to keep the store in sync with the source. Ensure your `.git/hooks/pre-commit` is up to date.
 
 === "StaleHash" drift events everywhere
 

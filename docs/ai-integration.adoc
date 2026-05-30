@@ -4,7 +4,7 @@
 [[ai-integration]]
 = AI Integration Guide: Keeping Agents in the Know
 
-Aden was built for hybrid teams of humans and AI agents. This guide explains how AI agents should use `aden ask`, `aden asm`, `aden graph`, and `aden query` to stay synchronized with a codebase without reading every file.
+Aden was built for hybrid teams of humans and AI agents. This guide explains how AI agents should use `aden ask`, `aden asm`, `aden grep`, and `aden query` to stay synchronized with a codebase without reading every file.
 
 == The Core Idea
 
@@ -93,16 +93,16 @@ This is useful for:
 - Debugging why `aden ask` returned too much or too little context
 - Building reproducible prompts for regression tasks
 
-== When to Use `aden graph` and `aden query`
+== When to Use `aden query`
 
-`aden graph --from <anchor> --depth N` prints a debug report. Use it to sanity-check the graph structure before asking.
-
-`aden query` emits JSON, making it ideal for programmatic consumption:
+`aden query --from <anchor> --depth N` traverses the graph and emits JSON —
+ideal both for sanity-checking structure before asking and for programmatic
+consumption:
 
 [source,bash]
 ----
 # Reachable nodes from an anchor
-den query --from mod-aden-core --depth 2 . | jq '.[] | .anchor'
+aden query --from mod-aden-core --depth 2 . | jq '.[] | .anchor'
 
 # Everything that references this anchor (backlinks)
 den query --backlinks mod-aden-core . | jq '.[] | .anchor'
@@ -232,7 +232,7 @@ Aden is designed with token scarcity in mind. Follow these rules:
 
 == Security Notes for Agents
 
-- Aden assumes contracts are build artifacts. Never commit `contracts/` or `.aden/`.
+- Aden assumes contracts are build artifacts. Never commit `.aden/`.
 - `aden init` generates `.adenignore` with security defaults. Do not remove entries that skip `*.env`, `secrets/`, or `target/`.
 - Include directives are bounded to the project root. Path traversal outside the repo is rejected at parse time.
 

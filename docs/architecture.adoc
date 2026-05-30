@@ -128,7 +128,7 @@ flowchart LR
 
     S1 --> S2 --> S3 --> S4
 
-    S2 -.->|aden gen| G1[contracts/]
+    S2 -.->|aden gen| G1[.aden/store]
     S3 -.->|aden check| G2[Validation]
 ----
 
@@ -383,7 +383,7 @@ Extracted and indexed for search.
 
 == Security Posture
 
-- `contracts/` and `.aden/` are build artifacts — auto-ignored in `.gitignore`
+- `.aden/` (the knowledge-graph store) is the build artifact — auto-ignored in `.gitignore`
 - Include directives bounded to project root — no path traversal
 - No `unsafe` blocks in application code
 - AGPL-3.0-or-later license prevents cloud capture without sharing modifications
@@ -395,11 +395,7 @@ Extracted and indexed for search.
 
 |`aden init` |Scaffold .agent/ templates |`aden init .`
 
-|`aden gen` |Generate contracts |`aden gen src/lib.rs`, `aden gen --auto .`
-
-|`aden gen --merge` |Preserve human blocks |`aden gen src/ --auto --merge`
-
-|`aden gen --propose` |Dry-run merge |`aden gen src/ --propose`
+|`aden gen` |Compile source into `.aden/store` |`aden gen .`, `aden gen src/lib.rs`
 
 |`aden check` |Validate references |`aden check .`
 
