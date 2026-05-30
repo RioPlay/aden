@@ -1,285 +1,158 @@
 :proj: aden
 :author: RioPlay
+:toc: left
 
 [[getting-started]]
 = Getting Started with Aden
 
-This guide takes you from a fresh install to a working knowledge graph in under ten minutes. Every command below is real. Run them as you read.
+A hands-on, verified walkthrough — every command below works as shown.
 
-== Why This Works: The Repeatable Doc Pipeline
+== What Aden Is
 
-Aden treats documentation as a build artifact. Just as `cargo build` turns Rust source into a binary, `aden gen` turns source code into AsciiDoc contracts. Just as `cargo test` verifies correctness, `aden check` verifies that every cross-reference resolves. This pipeline is fully repeatable:
+Aden compiles a codebase (and its docs) into a **knowledge graph** and serves
+**dense, connected context** from it — built for AI agents that must understand
+a large codebase without reading every file.
 
-1. Source code changes.
-2. `aden gen` regenerates contracts deterministically.
-3. `aden check` validates the graph integrity.
-4. `aden ask` assembles context from the validated graph.
+- **Nodes**: every function, type, module, and documentation heading.
+- **Edges**: `Calls` (resolved call sites), `Documents`/`PartOf` (a module
+  contains its symbols), and `RelatesTo` (doc `<<cross-references>>`).
+- **Language-agnostic**: deep extraction for Rust, Python, Go, TypeScript/JS,
+  Java, C#, C, Ruby, PHP, Kotlin; generic symbol extraction for 300+ more — all
+  via tree-sitter grammars compiled into the binary (fully offline).
 
-Because everything is plain text, you can diff contracts in Git, review them in pull requests, and audit them with standard tools.
-
-== Prerequisites
-
-- Rust toolchain (1.85 or later)
-- A project with source code (any language Aden supports)
-
-== Step 1: Install Aden
+== Install
 
 [source,bash]
 ----
-# From the repository root
-../install.sh
-
-# Verify
-aden
-# Expected output: aden 0.1.0
+./install.sh        # builds release, installs to ~/.local/bin, adds to PATH
+aden --version
 ----
 
-=== Adding Aden to Your PATH
-
-After installation via `install.sh`, add aden to your PATH if it's not automatically available:
-
-.Linux (recommended — user-local)
-[source,bash]
-----
-# Add to ~/.bashrc or ~/.zshrc
-export PATH="$HOME/.local/bin:$PATH"
-
-# Or create a symlink
-mkdir -p ~/.local/bin
-ln -s /path/to/aden ~/.local/bin/aden
-----
-
-NOTE: Currently aden is only distributed via GitHub. Clone the repository and run `install.sh` to install.
-
-== Step 2: Initialize Your Repository
-
-Run this inside any project folder:
+== 1. Index your codebase
 
 [source,bash]
 ----
-cd /path/to/your-project
-aden init
+cd your-project
+aden gen . --auto          # compile the whole project into the graph
 ----
 
-You will see:
+`gen` is incremental and fast (sub-second on typical repos; it skips unchanged
+files). You usually only run it once — read commands keep the graph fresh
+automatically (see <<fresh>>).
+
+== 2. Ask a question
+
+`aden ask` resolves your question to the most relevant symbol and assembles a
+token-budgeted, markup-stripped neighborhood around it — signatures and call
+graph inline, no format noise.
 
 [source]
 ----
-Initialized .agent/ in .
-Generated .adenignore with security-first defaults.
-Generated 19 template files.
+$ aden ask "How does login work?"
+
+login
+login(user: str, password: str)
+calls: lookup_user(8), hash_password(9)
+---
+hash_password
+hash_password(password: str)
+calls: sha256(4)
 ----
 
-What just happened:
-- `.agent/` now contains templates, onboarding docs, constraints, and a session log.
-- `.adenignore` prevents sensitive files and build artifacts from being indexed.
-- The templates are AsciiDoc files you can customize for your team's conventions.
+Feed that straight into an LLM prompt — it is already dense.
 
-== Step 3: Generate Contracts from Source
+== 3. Search with structure (`grep`)
 
-Aden extracts structure from your code and emits `.adoc` contracts into `./contracts/`.
-
-[source,bash]
-----
-# Single file
-aden gen src/lib.rs
-
-# Entire directory tree (quiet mode for CI/scripts)
-aden gen . --auto --quiet
-
-# Regenerate everything from scratch
-rm -rf contracts/ && aden gen . --auto
-----
-
-`aden gen --auto` is language-agnostic — point it at a Python, Go, TypeScript,
-Java, Ruby, mixed, or docs-only project and it discovers every supported file
-(skipping build artifacts and anything in `.adenignore`). The examples here use
-Rust because that is what this repository is written in.
-
-For Rust projects, you should see files like:
+Unlike plain grep, every match is tagged with the symbol it lives inside, so a
+hit doubles as a graph entry point.
 
 [source]
 ----
-contracts/
-  crates/
-    aden-core/
-      src/
-        aden---module-aden-core-lib.rs-ContractRegion.adoc
-        aden---module-aden-core-lib.rs-Document.adoc
-  INDEX.adoc
-  mod-project.adoc
-  mod-aden-core.adoc
+$ aden grep "hash_password"
+Found 2 match(es) for 'hash_password':
+src/auth.py:1  (hash_password): def hash_password(password: str) -> str:
+src/auth.py:9  (login): return hash_password(password) == stored
 ----
 
-Each symbol contract contains:
-- An anchor (`[[module/file.rs#symbol]]`)
-- A title and description
-- Signature table (functions, types, traits)
-- Callee table (call graph)
-- A source hash for drift detection
+The enclosing symbol resolves with `aden asm --from <symbol>` to expand context.
+Flags: `--regex`, `-i`, `--symbol-only`, `--json`.
 
-**Note:** `contracts/` is gitignored by default. Contracts are build artifacts — source code is the source of truth. If you delete a source file, re-running `aden gen --auto` automatically prunes its stale contract.
-
-== Step 4: Validate the Graph
-
-[source,bash]
-----
-aden check .
-----
-
-If everything is clean:
+== 4. Locate a definition
 
 [source]
 ----
-INFO: All cross-references resolve.
-INFO: No include cycles detected.
-INFO: No orphan documents.
-INFO: All source_hash values valid.
-INFO: All typed edges valid.
+$ aden locate --symbol login
+Found 1 match(es) for 'login':
+login function src/auth.py:6
 ----
 
-If you see errors, fix them before committing:
-- `DuplicateAnchor("foo")` means two files declare `[[foo]]`. Rename one.
-- `UnresolvedReference` means a `<<foo>>` points to a missing `[[foo]]`. Create the target or fix the typo.
+== 5. Blast radius before a refactor
 
-== Step 5: Ask Questions (LLM-First by Default)
-
-Now the fun part. Ask Aden about your codebase in plain English:
-
-[source,bash]
-----
-aden ask "What does the parser module do?"
-----
-
-Aden performs four steps automatically:
-1. **Searches** the knowledge graph for documents matching your keywords.
-2. **Classifies intent** (Explain, Usage, Refactor, Impact, Debug, or General).
-3. **Selects edge types and depth** appropriate to that intent.
-4. **Assembles** a context prompt via BFS traversal, staying within a token budget.
-
-**The output is LLM-dense prose by default** — no `[[anchors]]`, no `|===` table noise, no attribute lines. Every token carries signal. If you need raw AsciiDoc for an IDE renderer, opt-in with `--format aden`.
-
-=== Pinning a Starting Anchor
-
-If Aden's search picks the wrong document, pin it:
-
-[source,bash]
-----
-aden ask --from mod-aden-parse "How does error handling work?"
-----
-
-== Step 6: Explore Dependencies
-
-Before a refactor, understand the blast radius:
-
-[source,bash]
-----
-aden graph --from mod-aden-core --depth 2
-----
-
-This outputs a debug report of every document reachable from `mod-aden-core` within two hops.
-
-== Step 7: Detect Drift and Clean Up
-
-After you change source code, contracts become stale. Aden notices:
-
-[source,bash]
-----
-aden heal .
-----
-
-Output shows drift events like `StaleHash`, `SignatureMismatch`, or `MissingContract`. Address them by re-running `aden gen` on the changed files.
-
-To remove stale contracts (e.g. after deleting a source file):
-
-[source,bash]
-----
-aden heal . --gc
-----
-
-This removes contracts whose source file no longer exists and auto-links orphans where possible.
-
-== Step 8: Generate Contracts With Three-Way Merge
-
-When you edit source files, Aden can preserve your human-written notes while updating only the machine-generated parts.
-
-[source,bash]
-----
-# Preview what would change
-aden gen src/lib.rs --propose
-
-# Actually apply the merge (updates [generated] blocks only)
-aden gen src/lib.rs --merge
-
-# Or merge the entire project
-aden gen src/ --auto --merge
-----
-
-What happens:
-- `aden gen --propose` shows a dry-run of `MergeAction` per block without writing files.
-- `aden gen --merge` applies updates only to `[generated]` blocks.
-- `[human]`, `[agent]`, `[security]`, and `[override]` blocks are preserved.
-- Conflicts are emitted as `[proposed]` blocks for manual review.
-
-== Essential Commands
-
-|===
-|Goal|Command
-|Generate contracts|`aden gen --auto .`
-|Find anchors|`aden list . --limit 20`
-|Ask a question|`aden ask "<question>"`
-|Find symbol|`aden locate --symbol <name> .`
-|Find with context|`aden locate --symbol <name> --context 3 .`
-|Full-text search|`aden search "<query>" .`
-|Get context (LLM-dense)|`aden asm --from <anchor> --depth 2 .`
-|Raw AsciiDoc context|`aden asm --from <anchor> --format aden --depth 2 .`
-|Check health|`aden status .`
-|Fix drift|`aden heal . --fix`
-|Full sync|`aden sync .`
-|Validate|`aden ci-check .`
-|Watch for changes|`aden watch . --sync`
-|===
-
-=== Newer Commands (v0.1.0+)
-
-|===
-|Goal|Command
-|Project health score|`aden status .`
-|gen + check + heal|`aden sync .`
-|Complete missing docs|`aden complete . --model ollama:llama3`
-|Multi-repo management|`aden federation list`
-|Session logging|`aden session --agent-id <id> --task "<task>" --status completed`
-|Environment diagnostics|`aden doctor .`
-|Security audit|`aden audit .`
-|License report|`aden licenses .`
-|Semantic review|`aden review . --since HEAD~5`
-|===
-
-== Example AI Agent Workflow
+`--backlinks` answers "what references this symbol?" — the set you must check
+before changing it.
 
 [source]
 ----
-# 1. Discover what's available
-aden list . --limit 10
-
-# 2. Ask a question
-aden ask "how does auth work?"
-
-# 3. Find a specific function
-aden locate --symbol "assemble" .
-
-# 4. Search documentation
-aden search "authentication" .
-
-# 5. Get focused context
-aden asm --from mod-aden-cli --depth 2 --budget 4096 .
-
-# 6. Validate everything
-aden ci-check .
+$ aden query --backlinks hash_password --format table
+| Anchor | Depth | Node Type |
+| ...#login | 1 | Function |
 ----
 
-== What Is Next?
+(`--from` walks outgoing edges; `--impact` walks the transitive dependency
+closure; `--backlinks` walks incoming references.)
 
-- Read <<user-guide>> for daily workflows.
-- Read <<ai-integration>> if you are an AI agent or building agent pipelines.
-- Read <<philosophy>> for the design rationale.
+== 6. Assemble a module overview
+
+A bare symbol or module name resolves automatically; pass a token budget to
+bound the output.
+
+[source,bash]
+----
+aden asm --from mod-<crate> --depth 1 --budget 4096
+aden asm --from login --depth 2          # symbol-centred context
+----
+
+If an anchor is unknown or ambiguous, `asm`/`ask` fail clearly rather than
+emitting unrelated context.
+
+[[fresh]]
+== Fresh by construction
+
+Read commands (`ask`, `asm`, `query`, `locate`, `grep`) detect changed source
+files and re-index them before serving — so the graph is never stale and you
+rarely run `gen` by hand. Edit a file, ask again, and the answer reflects it.
+
+== For AI agents (MCP)
+
+Aden exposes its commands as MCP tools (CLI subcommand maps 1:1 to a tool), so an
+agent can call `ask`, `grep`, `asm`, `query`, `locate`, etc. directly:
+
+[source,bash]
+----
+aden mcp install --platform claude      # or: opencode, cursor, codex, zed, windsurf
+----
+
+See <<ai-integration>> for the agent workflow and recommended system prompt.
+
+== What Aden is great at — and where it stops
+
+**Great at:** fast, offline, language-agnostic indexing; dense LLM-ready
+context; structure-aware search; call-graph navigation and blast-radius queries;
+staying fresh automatically.
+
+**Honest limits:**
+
+- **Call resolution is heuristic** (unambiguous name + receiver/qualifier
+  matching), not a typechecker. It can miss dynamic/ambiguous calls — pair the
+  graph (`query`) with `grep` (textual, complete) when you need certainty.
+- **`aden lint`** is fast language-agnostic *heuristic* checks, not a type-aware
+  analyzer. For Rust, prefer `clippy`; for deep correctness use the language's
+  own toolchain.
+- **Very large monorepos** (e.g. the Linux kernel, ~1.2M symbols) index fine,
+  but per-query latency grows with repo size; small/medium repos are instant.
+
+== Related
+
+- <<commands>> — full CLI reference
+- <<ai-integration>> — using Aden from an AI agent / MCP
+- <<architecture>> — how the graph is built and served

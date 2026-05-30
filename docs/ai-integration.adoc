@@ -147,7 +147,9 @@ aden suggest "find all tests in the project"
 |------|---------|
 | Explore structure | `aden ask "what is X"` |
 | Find symbol | `aden locate --symbol X .` |
-| Find with context | `aden locate --symbol X --context 5 .` |
+| Grep with structure (each hit tagged with its enclosing symbol) | `aden grep "pattern" .` |
+| Who references this symbol (blast radius) | `aden query --backlinks X .` |
+| Find with context | `aden locate --symbol X --show-context 5 .` |
 | Search docs | `aden search "query" .` |
 | Get LLM-dense context (default) | `aden asm --from <anchor> --depth N .` |
 | Raw AsciiDoc context | `aden asm --from <anchor> --format aden --depth N .` |
@@ -164,6 +166,7 @@ When using Aden via MCP (OpenCode, Claude Code, Cursor, etc.), these tools are a
 |===
 |Tool|Purpose|Key Arguments
 |ask|Natural language Q&A|question, budget, from
+|grep|Structure-aware content search (hit + enclosing symbol)|pattern, regex, ignore_case, symbol_only
 |search|Full-text search|query, limit, semantics
 |asm|Graph-traversed context|anchor, depth, budget, format (adg for LLMs)
 |query|Structured JSON|anchor, depth, backlinks, impact

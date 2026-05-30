@@ -33,30 +33,46 @@ Source Code → Aden Pipeline → Knowledge Graph → Context for AI
 # Install (builds release, copies to ~/.local/bin, adds to PATH)
 ./install.sh
 
-# Initialize your project
+# Initialize your project (optional — read commands auto-build the index)
 cd your-project
 aden init
 
-# Generate contracts from source
-aden gen --auto .
+# Compile the whole codebase into the knowledge graph
+aden gen . --auto
 
-# Ask questions about your codebase
-aden ask "How does authentication work?"
+# Ask a natural-language question — returns dense, connected context
+aden ask "How does login work?"
 
-# Find the blast radius before refactoring
-aden asm --from mod-auth --depth 2
+# Structure-aware search: every match tagged with its enclosing symbol
+aden grep "hash_password"
+
+# Find a symbol's definition with an exact line number
+aden locate --symbol login
+
+# Blast radius before a refactor — who depends on this symbol?
+aden query --backlinks hash_password
+
+# Assemble a module (or symbol) overview within a token budget
+aden asm --from mod-<crate> --depth 1
 ```
+
+The graph is **fresh by construction**: read commands (`ask`/`asm`/`query`/
+`locate`/`grep`) detect changed source and re-index it automatically, so you
+rarely need to run `gen` by hand.
 
 ## Core Commands
 
 | Command | Purpose |
 |---------|---------|
-| `aden gen` | Generate `.adoc` contracts from source code |
-| `aden ask` | Ask natural language questions, get graph-traversed context |
-| `aden asm` | Assemble context within a token budget |
-| `aden check` | Validate referential integrity |
-| `aden heal` | Detect and fix drift between code and contracts |
+| `aden gen` | Compile source into the knowledge graph (symbols, call edges, docs) |
+| `aden ask` | Natural-language question → dense, graph-traversed context |
+| `aden grep` | Structure-aware search — every hit tagged with its enclosing symbol |
+| `aden asm` | Assemble context from an anchor within a token budget |
+| `aden query` | Graph queries: `--from`, `--backlinks` (callers), `--impact` |
 | `aden locate` | Find symbol definitions with exact line numbers |
+| `aden check` | Validate referential integrity |
+| `aden lint` | Fast, language-agnostic heuristic checks |
+| `aden heal` | Detect drift between code and contracts |
 
 ## Why AsciiDoc?
 
