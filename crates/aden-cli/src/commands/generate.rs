@@ -17,8 +17,6 @@ use crate::util::{
 /// document store to rebuild the call graph.
 struct EmittedSymbol {
     anchor: String,
-    cache_key: String,
-    cache_val: GenCacheEntry,
     callees: Vec<String>,
     /// `edge::uses[Type]` references — types named in a signature/fields, linked
     /// as `Uses` edges so a type that is used but never *called* is not a false
@@ -30,9 +28,20 @@ struct EmittedSymbol {
 }
 
 /// Work item returned from parallel file processing.
+///
+/// `Reindexed` is emitted whenever a file was (re)parsed — even if it produced
+/// ZERO symbols (e.g. every function was deleted). That is deliberate: the
+/// prune step diffs each reindexed file's fresh anchor set against the set the
+/// cache recorded last time, so an emptied file correctly drops its stale
+/// symbols. `Skip` is reserved for files whose mtime is unchanged.
 enum WorkItem {
     Skip,
-    Emitted(Vec<EmittedSymbol>),
+    Reindexed {
+        cache_key: String,
+        source_mtime: u64,
+        source_path: String,
+        symbols: Vec<EmittedSymbol>,
+    },
 }
 
 /// Emit a progress line unless quiet mode is on.
@@ -573,26 +582,22 @@ fn cmd_gen_inner(path: &Path, quiet: bool, silent: bool) -> Result<(), Box<dyn s
                         progress!(quiet, "Stored {}", doc_clone.anchor);
                     }
 
-                    let cache_val = GenCacheEntry {
-                        source_mtime: mtime_secs,
-                        source_path: src_path.to_string_lossy().to_string(),
-                    };
-
                     emitted.push(EmittedSymbol {
                         anchor: doc_clone.anchor.clone(),
-                        cache_key: cache_key.clone(),
-                        cache_val,
                         callees,
                         uses,
                         refs,
                     });
                 }
 
-                if emitted.is_empty() {
-                    Some(WorkItem::Skip)
-                } else {
-                    Some(WorkItem::Emitted(emitted))
-                }
+                // Always report a reindexed file — even with zero symbols — so
+                // the prune step can drop anchors a now-empty file used to own.
+                Some(WorkItem::Reindexed {
+                    cache_key: cache_key.clone(),
+                    source_mtime: mtime_secs,
+                    source_path: src_path.to_string_lossy().to_string(),
+                    symbols: emitted,
+                })
             })
             .collect();
 
@@ -601,13 +606,38 @@ fn cmd_gen_inner(path: &Path, quiet: bool, silent: bool) -> Result<(), Box<dyn s
         let mut link_records: Vec<(String, Vec<String>)> = Vec::new();
         let mut use_records: Vec<(String, Vec<String>)> = Vec::new();
         let mut ref_records: Vec<(String, Vec<String>)> = Vec::new();
+        // Anchors to prune: symbols a reindexed file no longer defines.
+        let mut stale_anchors: Vec<String> = Vec::new();
         for item in work_items {
             match item {
                 WorkItem::Skip => skipped += 1,
-                WorkItem::Emitted(emitted) => {
-                    for sym in emitted {
+                WorkItem::Reindexed {
+                    cache_key,
+                    source_mtime,
+                    source_path,
+                    symbols,
+                } => {
+                    let fresh: Vec<String> = symbols.iter().map(|s| s.anchor.clone()).collect();
+                    // Diff against what this file contributed last time: any
+                    // previously-recorded anchor not in the fresh set is a
+                    // symbol that was deleted/renamed and must be pruned.
+                    if let Some(prev) = cache.entries.get(&cache_key) {
+                        for old in &prev.anchors {
+                            if !fresh.contains(old) {
+                                stale_anchors.push(old.clone());
+                            }
+                        }
+                    }
+                    cache.entries.insert(
+                        cache_key,
+                        GenCacheEntry {
+                            source_mtime,
+                            source_path,
+                            anchors: fresh,
+                        },
+                    );
+                    for sym in symbols {
                         generated.push(sym.anchor.clone());
-                        cache.entries.insert(sym.cache_key, sym.cache_val);
                         if !sym.refs.is_empty() {
                             ref_records.push((sym.anchor.clone(), sym.refs));
                         }
@@ -617,6 +647,47 @@ fn cmd_gen_inner(path: &Path, quiet: bool, silent: bool) -> Result<(), Box<dyn s
                         if !sym.callees.is_empty() {
                             link_records.push((sym.anchor, sym.callees));
                         }
+                    }
+                }
+            }
+        }
+
+        // Case (b): whole-file deletion. On a full-tree gen (NOT a single-file
+        // re-index, which only knows about one file), any cache entry whose
+        // source file is no longer in the discovered set is gone — prune all
+        // anchors it owned and drop the entry.
+        if !path.is_file() {
+            let live: std::collections::HashSet<String> = sources
+                .iter()
+                .map(|p| p.strip_prefix(&root).unwrap_or(p).to_string_lossy().to_string())
+                .collect();
+            let dead_keys: Vec<String> = cache
+                .entries
+                .keys()
+                .filter(|k| !live.contains(*k))
+                .cloned()
+                .collect();
+            for k in dead_keys {
+                if let Some(entry) = cache.entries.remove(&k) {
+                    stale_anchors.extend(entry.anchors);
+                }
+            }
+        }
+
+        // Prune stale nodes (deleted symbols / deleted files). delete_node
+        // cascades edges in both directions so no dangling reference survives.
+        // Guard: never touch synthesized hub nodes (mod-*) — they carry no
+        // source_file and are rebuilt by link_store_edges below.
+        let mut pruned = 0usize;
+        for anchor in &stale_anchors {
+            if anchor.starts_with("mod-") {
+                continue;
+            }
+            match storage.delete_node(anchor) {
+                Ok(()) => pruned += 1,
+                Err(e) => {
+                    if !silent {
+                        eprintln!("WARN: Failed to prune {}: {}", anchor, e);
                     }
                 }
             }
@@ -635,7 +706,11 @@ fn cmd_gen_inner(path: &Path, quiet: bool, silent: bool) -> Result<(), Box<dyn s
 
         // The summary is "summary only" output: shown under --quiet/regen, but
         // suppressed entirely on the silent refresh-on-read path.
-        progress!(silent, "\nStored {} contracts. Skipped {} unchanged files.", generated.len(), skipped);
+        if pruned > 0 {
+            progress!(silent, "\nStored {} contracts. Skipped {} unchanged files. Pruned {} stale symbol(s).", generated.len(), skipped, pruned);
+        } else {
+            progress!(silent, "\nStored {} contracts. Skipped {} unchanged files.", generated.len(), skipped);
+        }
         if skipped == 0 && generated.len() == sources.len() {
             progress!(silent, "(All files were skipped — nothing changed since last run)");
         }

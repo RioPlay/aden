@@ -14,6 +14,12 @@ pub struct GenCache {
 pub struct GenCacheEntry {
     pub source_mtime: u64,
     pub source_path: String,
+    /// Anchors this source file contributed to the store on its last index.
+    /// Used to prune deleted symbols: on re-index, any previously-recorded
+    /// anchor absent from the fresh parse is stale and gets removed. Defaults
+    /// to empty for caches written before this field existed (back-compat).
+    #[serde(default)]
+    pub anchors: Vec<String>,
 }
 
 /// Intent classification for natural-language queries.

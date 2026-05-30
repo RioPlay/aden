@@ -191,6 +191,27 @@ pub trait GraphStorage: Send + Sync {
         edge_type: &EdgeType,
     ) -> Result<(), StoreError>;
 
+    /// Delete a node and ALL of its incident edges in one operation.
+    ///
+    /// This is the safe way to remove a symbol during incremental re-index:
+    /// `delete_document` alone leaves dangling adjacency entries. `delete_node`
+    /// removes the document, every edge incident to `anchor` (both directions),
+    /// the back-references in each neighbour's mirror list, and the anchor's own
+    /// outgoing/incoming adjacency lists — so no dangling reference survives.
+    ///
+    /// The default implementation composes the existing per-edge APIs; backends
+    /// may override for efficiency.
+    fn delete_node(&self, anchor: &str) -> Result<(), StoreError> {
+        for (dst, et) in self.get_outgoing_edges(anchor)? {
+            self.delete_edge(anchor, &dst, &et)?;
+        }
+        for (src, et) in self.get_incoming_edges(anchor)? {
+            self.delete_edge(&src, anchor, &et)?;
+        }
+        self.delete_document(anchor)?;
+        Ok(())
+    }
+
     /// Get all edges of a type.
     fn get_edges_by_type(
         &self,
@@ -410,6 +431,80 @@ storage
         let neighborhood = storage.neighborhood("center", 1).unwrap();
         assert_eq!(neighborhood.len(), 1); // only "center" at depth 1
         assert_eq!(neighborhood["center"].len(), 3);
+
+        fs::remove_dir_all(&path).ok();
+    }
+
+    fn note(anchor: &str) -> Document {
+        Document {
+            anchor: anchor.to_string(),
+            node_type: aden_core::NodeType::Note,
+            attributes: HashMap::new(),
+            blocks: vec![],
+            source_span: None,
+            metadata: None,
+            confidence: 1.0,
+        }
+    }
+
+    #[test]
+    fn delete_edge_removes_only_the_named_endpoint() {
+        // Regression: delete_edge used to match on edge_type only, so removing
+        // one (src,A,Uses) edge wiped (src,B,Uses) too. It must remove exactly
+        // the named (src,dst,type) edge and leave the sibling intact.
+        let path = temp_path();
+        let storage = Storage::new(&path).unwrap();
+        for a in &["src", "A", "B"] {
+            storage.put_document(&note(a)).unwrap();
+        }
+        storage.put_edge("src", "A", EdgeType::Uses).unwrap();
+        storage.put_edge("src", "B", EdgeType::Uses).unwrap();
+
+        storage.delete_edge("src", "A", &EdgeType::Uses).unwrap();
+
+        let out = storage.get_outgoing_edges("src").unwrap();
+        assert_eq!(out.len(), 1, "only the (src,A) edge should be gone: {out:?}");
+        assert_eq!(out[0].0, "B");
+        assert!(!storage.edge_exists("src", "A", &EdgeType::Uses).unwrap());
+        assert!(storage.edge_exists("src", "B", &EdgeType::Uses).unwrap());
+        // B's incoming mirror must still reference src.
+        assert_eq!(storage.get_incoming_edges("B").unwrap().len(), 1);
+
+        fs::remove_dir_all(&path).ok();
+    }
+
+    #[test]
+    fn delete_node_cascades_and_leaves_no_dangling_edges() {
+        // center is referenced by `up` and references `down`. Deleting center
+        // must remove its doc, its edges in both directions, and the mirror
+        // back-references in up.outgoing and down.incoming.
+        let path = temp_path();
+        let storage = Storage::new(&path).unwrap();
+        for a in &["center", "up", "down"] {
+            storage.put_document(&note(a)).unwrap();
+        }
+        storage.put_edge("up", "center", EdgeType::Calls).unwrap();
+        storage.put_edge("center", "down", EdgeType::Calls).unwrap();
+
+        storage.delete_node("center").unwrap();
+
+        // Doc gone.
+        assert!(storage.get_document("center").unwrap().is_none());
+        assert!(!storage.get_all_anchors().unwrap().contains("center"));
+        // No dangling edges referencing center in either neighbour's mirror.
+        assert!(
+            storage.get_outgoing_edges("up").unwrap().is_empty(),
+            "up should no longer list center as a callee"
+        );
+        assert!(
+            storage.get_incoming_edges("down").unwrap().is_empty(),
+            "down should no longer list center as a caller"
+        );
+        assert!(!storage.edge_exists("up", "center", &EdgeType::Calls).unwrap());
+        assert!(!storage.edge_exists("center", "down", &EdgeType::Calls).unwrap());
+        // Neighbours themselves survive.
+        assert!(storage.get_document("up").unwrap().is_some());
+        assert!(storage.get_document("down").unwrap().is_some());
 
         fs::remove_dir_all(&path).ok();
     }

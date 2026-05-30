@@ -650,71 +650,89 @@ pub fn generate_proposal(
     }
 }
 
+/// Garbage-collect stale nodes from the store (store-first).
+///
+/// A code-symbol node is stale when the source file it came from no longer
+/// exists on disk (or is no longer a discovered source). This is the
+/// authoritative sweep that complements gen's incremental auto-prune: gen
+/// prunes as it re-indexes changed/removed files; `heal --gc` re-scans the
+/// whole store and removes anything orphaned by deletions that gen never saw
+/// (e.g. files removed while gen wasn't run, or a store left stale by an old
+/// additive-only build).
+///
+/// Synthesized hub nodes (`mod-*`) and any node without a `source_file`
+/// attribute (doc headings created without one, metadata) are never removed —
+/// they are not tied to a single source file.
 pub fn cmd_heal_gc(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     use crate::util::discover_source_files;
+    use aden_store::{GraphStorage, Storage};
 
     println!("Aden Garbage Collector");
     println!("======================\n");
 
     let root = find_project_root(path);
-    let sources = discover_source_files(&root)?;
 
-    let source_set: std::collections::HashSet<String> = sources
+    let store_path = root.join(".aden").join("store");
+    if !store_path.is_dir() {
+        println!("No store found at {}. Nothing to GC.", store_path.display());
+        return Ok(());
+    }
+    let storage = Storage::new(store_path.to_str().ok_or("invalid store path")?)
+        .map_err(|e| format!("Failed to open store: {}", e))?;
+
+    // Live source files, relative to root — the same form sanitize_source_file
+    // writes into each doc's `source_file` attribute.
+    let live: std::collections::HashSet<String> = discover_source_files(&root)?
         .iter()
         .map(|s| {
-            let rel = s.strip_prefix(&root).unwrap_or(s);
-            rel.file_stem()
-                .unwrap_or_default()
+            s.strip_prefix(&root)
+                .unwrap_or(s)
                 .to_string_lossy()
                 .to_string()
         })
         .collect();
 
-    let contracts_dir = path.join("contracts");
-    if !contracts_dir.exists() {
-        println!("No contracts/ directory found. Nothing to GC.");
-        return Ok(());
-    }
+    let docs = storage
+        .get_all_documents()
+        .map_err(|e| format!("Failed to read store: {}", e))?;
 
-    let mut removed = 0;
-    let mut kept = 0;
-
-    fn walk_contracts(
-        dir: &Path,
-        source_set: &std::collections::HashSet<String>,
-        removed: &mut usize,
-        kept: &mut usize,
-    ) -> std::io::Result<()> {
-        for entry in std::fs::read_dir(dir)? {
-            let entry = entry?;
-            let path = entry.path();
-
-            if path.is_dir() {
-                walk_contracts(&path, source_set, removed, kept)?;
-            } else if path.extension().map(|e| e == "adoc").unwrap_or(false) {
-                let file_stem = path.file_stem().unwrap_or_default().to_string_lossy();
-
-                let is_orphan = !source_set
-                    .iter()
-                    .any(|s| file_stem.contains(s) || file_stem.starts_with("module-"));
-
-                if is_orphan {
-                    println!("  Removing orphaned: {}", path.display());
-                    std::fs::remove_file(&path)?;
-                    *removed += 1;
+    let mut stale: Vec<String> = Vec::new();
+    let mut kept = 0usize;
+    for (anchor, doc) in &docs {
+        // Never GC synthesized hubs or nodes not tied to a source file.
+        if anchor.starts_with("mod-") {
+            kept += 1;
+            continue;
+        }
+        match doc.attributes.get("source_file") {
+            Some(src) => {
+                // Stale if the source file is gone from the project, or missing
+                // on disk (covers absolute-path entries from an older gen run).
+                let on_disk = root.join(src).exists();
+                if !live.contains(src) && !on_disk {
+                    stale.push(anchor.clone());
                 } else {
-                    *kept += 1;
+                    kept += 1;
                 }
             }
+            None => kept += 1, // no source_file → not a prunable code symbol
         }
-        Ok(())
     }
 
-    walk_contracts(&contracts_dir, &source_set, &mut removed, &mut kept)?;
+    let mut removed = 0usize;
+    for anchor in &stale {
+        match storage.delete_node(anchor) {
+            Ok(()) => {
+                println!("  Removing orphaned: {}", anchor);
+                removed += 1;
+            }
+            Err(e) => eprintln!("  WARN: failed to remove {}: {}", anchor, e),
+        }
+    }
+    storage
+        .flush()
+        .map_err(|e| format!("Store flush failed: {}", e))?;
 
-    println!(
-        "\nGC complete: {} contracts removed, {} kept",
-        removed, kept
-    );
+    println!("\nGC complete: {} node(s) removed, {} kept", removed, kept);
     Ok(())
 }
