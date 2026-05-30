@@ -64,7 +64,12 @@ impl Platform {
                 home.join(".config/opencode/opencode.json"),
                 home.join(".config/opencode/opencode.jsonc"),
             ],
-            Platform::ClaudeCode => vec![home.join(".claude/settings.json")],
+            // Claude Code reads MCP servers from a project-scoped `.mcp.json`
+            // (committed, discoverable) — NOT `~/.claude/settings.json`. We write
+            // only the project file and never rewrite the user's `~/.claude.json`
+            // state; for a user-scoped install use `claude mcp add aden -s user
+            // -- aden-mcp`.
+            Platform::ClaudeCode => vec![PathBuf::from(".mcp.json")],
             Platform::Cursor => vec![
                 PathBuf::from(".cursor/mcp.json"),
                 home.join(".cursor/mcp.json"),
@@ -318,11 +323,19 @@ pub fn run_install(
         return Ok(());
     }
 
-    // Resolve binary
+    // Resolve the MCP server binary. The stdio server is `aden-mcp`, NOT the
+    // `aden` CLI — configuring `aden <project>` as the command would fail (it
+    // isn't a subcommand). Default to the `aden-mcp` sibling of the running
+    // executable; honor an explicit --bin override.
     let binary = if let Some(b) = binary_override {
         b.to_path_buf()
     } else {
-        std::env::current_exe().map_err(|e| e.to_string())?
+        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        let mcp_name = if cfg!(windows) { "aden-mcp.exe" } else { "aden-mcp" };
+        exe.parent()
+            .map(|d| d.join(mcp_name))
+            .filter(|p| p.exists())
+            .unwrap_or_else(|| PathBuf::from("aden-mcp"))
     };
     let binary = absolute_path(&binary)?;
 

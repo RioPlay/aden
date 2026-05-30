@@ -41,12 +41,20 @@ or documentation (Rust, Python, Go, TypeScript, Java, Ruby, PHP, C/C++, and 300+
 more — plus Markdown/AsciiDoc docs) into a queryable knowledge graph. Nothing \
 here is specific to Aden's own source; every result is derived from the target \
 project you point it at.\n\n\
+The graph is fresh by construction: read tools (`ask`, `asm`, `query`, `locate`, \
+`grep`) auto-reindex any source that changed since the last run, so you do NOT \
+need to call `gen` before each session. Only run `gen` (auto=true) after large \
+external changes — e.g. cloning a new repo, a big merge, or generated code \
+appearing outside your edits.\n\n\
 Typical workflow:\n\
-1. `gen` with auto=true to compile contracts for the whole project (run this first \
-on a fresh project).\n\
+1. `grep \"pattern\"` for structure-aware content search: every match is tagged \
+with its enclosing symbol. Prefer it over a plain text grep — the enclosing \
+symbol name it returns is exactly what you feed to `asm` as an anchor.\n\
 2. `ask` a natural-language question, or `search` for keywords, to retrieve \
 context. `locate` finds a symbol's definition and call sites.\n\
-3. `query`/`asm` traverse the graph (e.g. blast radius before a refactor).\n\
+3. `query`/`asm` traverse the graph. Before a refactor, `query` with \
+backlinks=<symbol> shows what references that symbol (its blast radius); \
+impact=<symbol> shows the downstream reach.\n\
 4. `check`/`heal` validate and keep contracts in sync with the code.\n\n\
 The `path` argument defaults to the current project directory for every tool.";
 
@@ -169,7 +177,7 @@ static TOOLS: &[ToolSpec] = &[
     ToolSpec { name: "lint",       description: "Lint source files.",                                                                                         args: &[("path", "string"), ("severity", "string"), ("fix", "boolean"), ("json", "boolean"), ("unlimited", "boolean")] },
     ToolSpec { name: "test",       description: "Discover and run tests.",                                                                                      args: &[("path", "string"), ("scope", "string"), ("filter", "string"), ("list", "boolean"), ("unlimited", "boolean"), ("json", "boolean")] },
     ToolSpec { name: "asm",        description: "Assemble a context prompt from the knowledge graph.",                                                          args: &[("anchor", "string"), ("depth", "integer"), ("budget", "integer"), ("edge_types", "string"), ("format", "string"), ("from", "string"), ("inspect", "boolean"), ("out", "string"), ("include_tag", "string"), ("exclude_tag", "string"), ("set_attr", "string"), ("silent", "boolean"), ("auto", "boolean"), ("strict", "boolean")] },
-    ToolSpec { name: "query",      description: "Query the knowledge graph and emit JSON.",                                                                       args: &[("anchor", "string"), ("depth", "integer"), ("backlinks", "boolean"), ("impact", "boolean"), ("format", "string")] },
+    ToolSpec { name: "query",      description: "Query the knowledge graph and emit JSON. Use backlinks=<anchor> for blast radius (what references a symbol) or impact=<anchor>.", args: &[("path", "string"), ("from", "string"), ("edge_type", "string"), ("depth", "integer"), ("backlinks", "string"), ("impact", "string"), ("format", "string")] },
     ToolSpec { name: "query-adq",  description: "Execute an Aden Query (.adq) script.",                                                                       args: &[("script", "string"), ("path", "string")] },
     ToolSpec { name: "ask",        description: "Ask a natural-language question. Routes to the best matching anchor.",                                            args: &[("question", "string"), ("budget", "integer"), ("from", "string"), ("model", "string")] },
     ToolSpec { name: "search",     description: "Full-text search with BM25 ranking.",                                                                           args: &[("query", "string"), ("limit", "integer"), ("offset", "integer"), ("doc_type", "string"), ("semantics", "boolean")] },
