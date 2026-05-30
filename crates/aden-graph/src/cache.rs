@@ -31,7 +31,7 @@ use crate::bridge::GraphBridge;
 use crate::graph::AdenGraph;
 use crate::nodes::{DocumentNode, AdenEdge, GraphNode};
 use aden_core::{Document, EdgeType};
-use aden_store::{GraphStorage, SledStorage};
+use aden_store::{GraphStorage, Storage};
 use blake3::Hasher;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -133,7 +133,7 @@ pub fn try_load(path: &Path) -> Option<AdenGraph<DocumentNode, AdenEdge>> {
     // 1. Try contracts store first (store-first architecture)
     let store_path = path.join(".aden").join("store");
     if store_path.exists() {
-        if let Ok(storage) = SledStorage::new(store_path.to_str()?) {
+        if let Ok(storage) = Storage::new(store_path.to_str()?) {
             if let Ok((docs, edges)) = GraphBridge::load_from_storage(&storage) {
                 if !docs.is_empty() {
                     return Some(build_graph_from_docs_and_edges(docs, edges));
@@ -148,7 +148,7 @@ pub fn try_load(path: &Path) -> Option<AdenGraph<DocumentNode, AdenEdge>> {
         return None;
     }
 
-    if let Ok(storage) = SledStorage::new(sled_path.to_str()?) {
+    if let Ok(storage) = Storage::new(sled_path.to_str()?) {
         let current_hash = compute_content_hash(path).ok()?;
         let stored_hash = GraphBridge::load_meta(&storage, "content_hash").ok()??;
 
@@ -201,7 +201,7 @@ pub fn save(
         .unwrap_or_else(|_| "0".to_string());
 
     // Save to Sled
-    let storage = SledStorage::new(sled_path.to_str().ok_or("invalid path")?)?;
+    let storage = Storage::new(sled_path.to_str().ok_or("invalid path")?)?;
     GraphBridge::sync_to_storage(&storage, &docs, &edge_tuples)?;
     GraphBridge::save_meta(&storage, "content_hash", &content_hash)?;
     GraphBridge::save_meta(&storage, "last_updated", &timestamp)?;
@@ -266,7 +266,7 @@ fn build_graph_from_docs_and_edges(
 /// treat that as "not found" rather than guessing.
 pub fn resolve_anchor_in_store(dir: &Path, anchor: &str) -> Option<String> {
     let store_path = dir.join(".aden").join("store");
-    let storage = SledStorage::new(store_path.to_str()?).ok()?;
+    let storage = Storage::new(store_path.to_str()?).ok()?;
     if matches!(storage.get_document(anchor), Ok(Some(_))) {
         return Some(anchor.to_string());
     }
@@ -301,7 +301,7 @@ pub fn build_neighborhood_cached(
 ) -> Result<AdenGraph<DocumentNode, AdenEdge>, crate::graph::GraphError> {
     const MAX_NODES: usize = 10_000;
     let store_path = dir.join(".aden").join("store");
-    let storage = SledStorage::new(
+    let storage = Storage::new(
         store_path
             .to_str()
             .ok_or_else(|| crate::graph::GraphError::Io("invalid store path".into()))?,

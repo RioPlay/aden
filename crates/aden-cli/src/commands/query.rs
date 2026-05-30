@@ -1150,7 +1150,7 @@ pub fn cmd_locate(
         // `locate` take ~47s on the kernel (1.2M nodes); this is bounded by the
         // number of matches.
         let store_path = path.join(".aden").join("store");
-        let storage = aden_store::SledStorage::new(
+        let storage = aden_store::Storage::new(
             store_path.to_str().ok_or("invalid store path")?,
         )
         .map_err(|e| format!("failed to open store: {}", e))?;

@@ -37,3 +37,6 @@ rayon.workspace = true
 [features]
 default = ["watch"]
 watch = ["notify"]
+# Build the `aden` binary against the fjall storage backend (cargo unifies the
+# feature across the workspace, so all crates use the same backend).
+fjall = ["aden-store/fjall-backend"]

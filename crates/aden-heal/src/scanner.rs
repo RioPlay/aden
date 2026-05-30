@@ -19,7 +19,7 @@ use crate::drift::DriftEvent;
 use aden_core::{Block, Document};
 use aden_graph::cache::try_load;
 use aden_graph::graph::AdenGraph;
-use aden_store::{GraphStorage, SledStorage};
+use aden_store::{GraphStorage, Storage};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -140,7 +140,7 @@ impl Scanner {
         let mut contract_docs: Vec<(String, Document)> = Vec::new();
 
         if store_path.exists() {
-            if let Ok(storage) = SledStorage::new(
+            if let Ok(storage) = Storage::new(
                 store_path
                     .to_str()
                     .expect("Store path should be valid UTF-8"),

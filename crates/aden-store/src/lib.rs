@@ -237,15 +237,33 @@ pub trait GraphStorage: Send + Sync {
     fn flush(&self) -> Result<(), StoreError>;
 }
 
-// ─── Sled Implementation ─────────────────────────────────────────────────────
+// ─── Backend selection ───────────────────────────────────────────────────────
+
+#[cfg(feature = "fjall-backend")]
+pub mod fjall_store;
+#[cfg(feature = "fjall-backend")]
+pub use fjall_store::FjallStorage;
+
+/// The active storage backend, chosen at compile time. Defaults to fjall;
+/// build with `--features sled-backend --no-default-features` to fall back to
+/// sled. Both implement [`GraphStorage`], so call sites use `Storage::new(path)`
+/// and never name a concrete engine.
+#[cfg(feature = "fjall-backend")]
+pub type Storage = FjallStorage;
+#[cfg(all(feature = "sled-backend", not(feature = "fjall-backend")))]
+pub type Storage = SledStorage;
+
+// ─── Sled Implementation (fallback backend) ──────────────────────────────────
 
 /// A Sled-backed implementation of [`GraphStorage`].
 ///
 /// Uses Postcard serialization for compact, fast binary storage.
+#[cfg(feature = "sled-backend")]
 pub struct SledStorage {
     db: sled::Db,
 }
 
+#[cfg(feature = "sled-backend")]
 impl SledStorage {
     /// Create a new Sled storage at the given path.
     pub fn new(path: &str) -> Result<Self, StoreError> {
@@ -262,6 +280,7 @@ impl SledStorage {
     }
 }
 
+#[cfg(feature = "sled-backend")]
 impl GraphStorage for SledStorage {
     fn get_document(&self, anchor: &str) -> Result<Option<Document>, StoreError> {
         let key = doc_key(anchor);
@@ -651,6 +670,7 @@ pub enum StoreError {
     Duplicate(String),
 }
 
+#[cfg(feature = "sled-backend")]
 impl From<sled::Error> for StoreError {
     fn from(e: sled::Error) -> Self {
         StoreError::Io(e.to_string())
@@ -672,7 +692,7 @@ mod tests {
     #[test]
     fn test_put_and_get_document() {
         let path = temp_path();
-        let storage = SledStorage::new(&path).unwrap();
+        let storage = Storage::new(&path).unwrap();
 
         let doc = Document {
             anchor: "test-anchor".to_string(),
@@ -696,7 +716,7 @@ mod tests {
     #[test]
     fn test_put_and_get_edge() {
         let path = temp_path();
-        let storage = SledStorage::new(&path).unwrap();
+        let storage = Storage::new(&path).unwrap();
 
 storage
             .put_document(&Document {
@@ -747,7 +767,7 @@ storage
     #[test]
     fn test_bfs_traversal() {
         let path = temp_path();
-        let storage = SledStorage::new(&path).unwrap();
+        let storage = Storage::new(&path).unwrap();
 
         // Create a chain: A → B → C
         for anchor in &["A", "B", "C"] {
@@ -776,7 +796,7 @@ storage
     #[test]
     fn test_neighborhood() {
         let path = temp_path();
-        let storage = SledStorage::new(&path).unwrap();
+        let storage = Storage::new(&path).unwrap();
 
         // Create a star: center → A, center → B, center → C
         for anchor in &["center", "A", "B", "C"] {
@@ -809,7 +829,7 @@ storage
     #[test]
     fn test_meta() {
         let path = temp_path();
-        let storage = SledStorage::new(&path).unwrap();
+        let storage = Storage::new(&path).unwrap();
 
         storage.put_meta("version", "1.0").unwrap();
         let version = storage.get_meta("version").unwrap().unwrap();
@@ -851,7 +871,7 @@ storage
     #[test]
     fn test_count_nodes_edges() {
         let path = temp_path();
-        let storage = SledStorage::new(&path).unwrap();
+        let storage = Storage::new(&path).unwrap();
 
         assert_eq!(storage.count_nodes().unwrap(), 0);
         assert_eq!(storage.count_edges().unwrap(), 0);

@@ -597,7 +597,7 @@ pub fn perform_check(path: &Path) -> Result<Vec<String>, Box<dyn std::error::Err
 /// `search` and `ask` — would never see any code symbols on any project. We
 /// re-emit each stored `Document` to AsciiDoc and feed it to the index.
 fn collect_store_entries(path: &Path) -> Vec<(PathBuf, String)> {
-    use aden_store::{GraphStorage, SledStorage};
+    use aden_store::{GraphStorage, Storage};
 
     let store_path = find_project_root(path).join(".aden").join("store");
     if !store_path.is_dir() {
@@ -606,7 +606,7 @@ fn collect_store_entries(path: &Path) -> Vec<(PathBuf, String)> {
     let Some(store_str) = store_path.to_str() else {
         return Vec::new();
     };
-    let Ok(storage) = SledStorage::new(store_str) else {
+    let Ok(storage) = Storage::new(store_str) else {
         return Vec::new();
     };
     let Ok(docs) = storage.get_all_documents() else {

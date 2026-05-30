@@ -1,5 +1,5 @@
 use aden_graph::graph::AdenGraph;
-use aden_store::{GraphStorage, SledStorage};
+use aden_store::{GraphStorage, Storage};
 use rayon::prelude::*;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -597,7 +597,7 @@ pub fn cmd_gen(
 
         // Open store for writing contracts
         let store_path = root.join(".aden").join("store");
-        let storage = SledStorage::new(
+        let storage = Storage::new(
             store_path
                 .to_str()
                 .expect("Store path should be valid UTF-8"),

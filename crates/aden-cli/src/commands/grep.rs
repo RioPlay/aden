@@ -135,14 +135,14 @@ pub fn cmd_grep(
 /// Load `source_file -> [span]` from the store so each match can be attributed
 /// to the symbol that encloses it.
 fn load_symbol_spans(root: &Path) -> HashMap<String, Vec<Span>> {
-    use aden_store::{GraphStorage, SledStorage};
+    use aden_store::{GraphStorage, Storage};
 
     let mut by_file: HashMap<String, Vec<Span>> = HashMap::new();
     let store_path = root.join(".aden").join("store");
     let Some(store_str) = store_path.to_str() else {
         return by_file;
     };
-    let Ok(storage) = SledStorage::new(store_str) else {
+    let Ok(storage) = Storage::new(store_str) else {
         return by_file;
     };
     let Ok(docs) = storage.get_all_documents() else {

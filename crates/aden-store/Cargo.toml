@@ -10,9 +10,21 @@ description = "Aden: Storage abstraction layer for the knowledge graph"
 [dependencies]
 aden-core = { path = "../aden-core" }
 postcard = { version = "1.0", features = ["alloc"] }
-sled = "0.34"
+sled = { version = "0.34", optional = true }
 thiserror = "2.0"
 serde = { version = "1.0", features = ["derive"] }
+fjall = { version = "2.11", optional = true }
+
+[features]
+# fjall (pure-Rust LSM-tree) is the default backend: on the Linux kernel it
+# produced an ~8.5x smaller store (528 MB vs 4.4 GB), faster gen, faster
+# queries, and — unlike sled — pulls no unmaintained transitive deps. sled
+# remains available as a fallback via `--features sled-backend`. The active
+# backend is chosen at compile time via the `Storage` type alias; both
+# implement the same `GraphStorage` trait.
+default = ["fjall-backend"]
+fjall-backend = ["dep:fjall"]
+sled-backend = ["dep:sled"]
 
 [dev-dependencies]
 uuid = { version = "1.12", features = ["v4", "serde"] }
