@@ -1,0 +1,82 @@
+# Aden Punch List — 2026-05-30
+
+Goals in scope: **(1) docs accurate · (2) all functions work, esp. MCP.**
+(Security audit deliberately deferred — out of scope for this list.)
+
+Derived from a functional validation sweep (every CLI command run end-to-end;
+mutating commands in scratch dirs) + a real JSON-RPC wire test of `aden-mcp`.
+Each item is backed by an observed run, not inference. Effort: S ≤1h · M few h · L day+ · XL multi-day feature.
+
+---
+
+## Goal status at a glance
+
+- **Docs (goal 1):** Largely done this session — 10 docs corrected against code + verified (commits `0ef247a`, `98562e7`, `08f0101`). Remaining: stale `.agent/audit-2026-05-30.md` snapshot (see Docs Remaining).
+- **MCP (goal 2):** ✅ **Accurate & sound.** Wire test PASS on all 6 steps; description/timeout fixes landed (`720e4ac`). See MCP section.
+- **Functions (goal 2):** Mixed — most work; a cluster of real bugs below.
+
+---
+
+## Functional punch list
+
+### HIGH — real bugs / broken features
+
+- [ ] **H1 · Deletion pruning is broken (`gen`)** — M/L. Delete a function from a source file, re-`gen`; the new parse correctly omits it ("Stored 2 contracts") but the **old symbol node + its edges are never pruned from `.aden/store`**. Confirmed via scratch-dir repro (gen 2 fns → remove 1 → re-gen → stale symbol still queryable). Root cause of the stale data we wiped earlier and the `caller_of` inconsistency. Fix: prune store entries whose `source_file` no longer defines them (and whose file is gone) on re-index.
+- [ ] **H2 · `heal --gc` is a no-op on store-first projects** — M. Verbatim: "Aden Garbage Collector … No contracts" then nothing. It only ever GC'd on-disk `.adoc` contracts; it never touches store nodes/edges. This is the *intended* home for H1's pruning. Fix: make `--gc` enumerate store docs, drop those whose source no longer defines the symbol, and remove incident edges.
+- [ ] **H3 · `lint --fix` corrupts source** — M. **Data-safety bug.** `--fix` does blind textual `.replace(".to_string().to_string()", ".to_string()")` etc. with no AST/awareness, so it mangles any file containing those patterns inside **string literals or comments** — it corrupted aden's own `lint.rs` detection literals during this sweep (reverted). On a pristine repo it reports 0 files (the "no-op" symptom), but on files that legitimately contain the patterns it silently breaks them. Fix: gate replacement to actual code tokens, or drop the textual `--fix` until it's AST-based.
+- [ ] **H4 · `heal --fix` makes drift worse / noisy** — M. Exit 0 but spams "Skipping OrphanAnchor { … }: low confidence" and does not improve the health score. Fix: suppress/aggregate low-confidence skips; confirm it actually applies the high-confidence fixes (StaleHash/MissingContract/SignatureMismatch).
+- [ ] **H5 · `test --json` emits the human banner, not JSON** — S. `json.loads()` fails: stdout starts with "Aden Universal Test Runner …". The `--json`/`-j` path isn't wired for `test`. Fix: emit a JSON envelope (mirror `lint --json`, which works).
+- [ ] **H6 · `query-adq node|incoming|outgoing` broken** — S/M. RC=1 "query-adq requires a directory path" — DIR is mandatory and undocumented for these verbs. (The `where` verb **works** — the earlier "unwired" report was wrong.) Fix: default DIR to `.` like the other read commands, or document the positional.
+- [ ] **H7 · `complete` is an explicit LLM stub** — XL (feature). Scans + previews the prompt only ("full LLM integration would go here", `complete.rs:103`); never calls a model. MCP description already corrected to say so (`720e4ac`). Real fix is the LLM integration — defer unless prioritized.
+- [ ] **H8 · `regen` prints nothing** — S. Exit 0 but silent, while it's documented as an alias for `gen .` (which prints "Stored N contracts…"). Fix: route `regen` through the same summary output as `gen`.
+
+### MEDIUM
+
+- [ ] **M1 · `watch --graph-sync` is a no-op** — M. Flag accepted, prints "Graph sync enabled…", but the graph is never updated (known TODO in `query.rs`). Fix: wire the incremental graph rebuild, or reject the flag as unimplemented.
+- [ ] **M2 · `heal --apply <bad-id>` wrong exit code** — S. Refuses a missing proposal but returns the wrong code. Fix: non-zero exit on apply failure.
+- [ ] **M3 · `check`/`status` orphan-count noise** — S. 991 orphans reported as a warning floods output / drags health to 0/100; many are intentional metadata docs. Fix: classify metadata anchors as non-orphans or summarize.
+- [ ] **M4 · `ask` JSON path** — S. Human mode works (resolves intent → anchor → context). Verify `-j/--json` produces a clean envelope (human mode confirmed; JSON unconfirmed).
+- [ ] **M5 · `status --verbose` unused** — S. Flag accepted, no effect (doc already corrected). Fix: honor it or drop it.
+
+### LOW / confirmed working (no action)
+
+- **Work as documented:** `gen` (file + `--auto`), `sync`, `search`, `grep`, `locate --symbol`, **`locate --caller-of`** (real callers, confirmed), `list`, `query --from/--backlinks/--impact`, `query-adq where`, `asm` (`--budget` respected), `lint`, `lint --json`, `test --list`, `init`, `new`, `workflow`, `session`, `audit` (no OWASP findings in 92 files), `diagnose`, `review`, `kickoff`, `emergency` (`--ttl` honored), `federation` (list/add/config).
+
+---
+
+## MCP server — ✅ done (goal 2)
+
+Wire test (real JSON-RPC 2.0 over stdio, not a `</dev/null` probe): **PASS on all 6 steps.**
+- `initialize` → serverInfo + tools capability ✓
+- `tools/list` → exactly 33 tools ✓
+- `tools/call` grep/locate → well-formed structured-JSON content ✓
+- unknown tool → `-32602` graceful error ✓
+- missing required arg → `isError:true` usage text, no panic ✓
+- no crash/hang; clean stderr throughout ✓
+
+Fixes landed (`720e4ac`): `complete`/`watch`/`ci-check` descriptions corrected to match code; `run_aden_command` wrapped in a 120s timeout so blocking tools (`watch`, `heal --watch`) or a runaway `gen` fail cleanly instead of hanging the stream. `mcp_flag_parity` + 9 unit tests pass.
+
+---
+
+## Docs remaining (goal 1)
+
+- [ ] `.agent/audit-2026-05-30.md` — point-in-time snapshot now overtaken: ~16 stale findings (MCP flag drift resolved, `--caller-of` implemented, `exec_where` wired, removed deps) + ~15 line-number drifts. Cheapest fix: a top-of-file "Phase-1 fixes landed" note; or strike the resolved findings. Low priority (internal working doc, not user-facing).
+
+---
+
+## Recommended execution order
+
+**Phase A — quick wins (S, ~half day):** H5 `test --json`, H8 `regen` output, H6 `query-adq` DIR default, M2 `heal --apply` exit code.
+
+**Phase B — the core feature you flagged (M/L):** H1 + H2 deletion pruning — make `gen` prune removed symbols on re-index and `heal --gc` actually GC store nodes+edges. Highest-value correctness fix; eliminates the stale-data class entirely.
+
+**Phase C — safety + behavior (M):** H3 `lint --fix` corruption (data-safety), H4 `heal --fix` behavior, M1 `watch --graph-sync`, M3 orphan-count noise.
+
+**Deferred features:** H7 `complete` LLM integration (XL), M4/M5 polish.
+
+**Out of scope:** security audit (deferred by request).
+
+---
+
+### Process note
+A functional agent ran `aden lint . --fix` against the real repo and H3 corrupted `lint.rs` (caught + reverted; tree clean). All future mutating validation must run in scratch dirs only.
