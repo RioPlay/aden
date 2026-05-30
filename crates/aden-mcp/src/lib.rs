@@ -76,10 +76,13 @@ fn required_args(tool: &str) -> &'static [&'static str] {
         "search" => &["query"],
         "grep" => &["pattern"],
         "suggest" => &["intent"],
-        "kickoff" => &["brief"],
+        "kickoff" => &["name"],
         "new" => &["name", "lang"],
         "workflow" => &["template"],
-        "session" => &["agent-id", "task", "status"],
+        // `from` carries the anchor for asm; the CLI marks it required.
+        "asm" => &["from"],
+        // CLI makes `status` optional (Option<String>); only id + task are required.
+        "session" => &["agent-id", "task"],
         "emergency" => &["reason"],
         _ => &[],
     }
@@ -88,7 +91,10 @@ fn required_args(tool: &str) -> &'static [&'static str] {
 /// Returns true if `arg` should be passed positionally (no `--` prefix) for `tool`.
 fn is_positional(tool: &str, arg: &str) -> bool {
     match (tool, arg) {
-        // path is positional for every command
+        // diagnose is the lone command whose `path` is a `--path` flag, not a
+        // positional. Must come before the catch-all `path` rule below.
+        ("diagnose", "path") => false,
+        // path is positional for every other command
         (_, "path") => true,
         // ask:   aden ask <QUESTION> [DIR]
         ("ask", "question") => true,
@@ -98,11 +104,39 @@ fn is_positional(tool: &str, arg: &str) -> bool {
         ("grep", "pattern") => true,
         // suggest: aden suggest <INTENT>
         ("suggest", "intent") => true,
-        // new:   aden new <NAME> <LANG> [DIR]
-        ("new", "name" | "lang") => true,
-        // kickoff: aden kickoff <BRIEF> [DIR]
-        ("kickoff", "brief") => true,
+        // new:   aden new <NAME> --lang <LANG> [DIR]  (lang is a flag, not positional)
+        ("new", "name") => true,
+        // workflow: aden workflow <TEMPLATE> [DIR]
+        ("workflow", "template") => true,
+        // query-adq: aden query-adq <SCRIPT> [DIR]
+        ("query-adq", "script") => true,
+        // federation/mcp dispatch on a positional subcommand token (list, add, …)
+        ("federation" | "mcp", "action") => true,
         _ => false,
+    }
+}
+
+/// Contract-test accessor: every tool paired with its declared `(arg, type)` list.
+/// Lets `aden-cli` assert that no MCP-emittable flag has drifted from the CLI.
+pub fn tool_arg_specs() -> Vec<(&'static str, &'static [(&'static str, &'static str)])> {
+    TOOLS.iter().map(|t| (t.name, t.args)).collect()
+}
+
+/// Contract-test accessor: does `tool` take `arg` positionally (vs. as a `--flag`)?
+pub fn arg_is_positional(tool: &str, arg: &str) -> bool {
+    is_positional(tool, arg)
+}
+
+/// Extra CLI flags the MCP appends so a read tool emits machine-readable output
+/// instead of terminal chrome. Only tools that actually have a JSON path belong
+/// here; the flags are skipped if the agent already supplied them (e.g. a
+/// `format` arg), so we never pass a flag twice. Expanded per Phase 2 as
+/// `search`/`list`/`ask` gain JSON envelopes.
+fn structured_output_flags(tool: &str) -> &'static [&'static str] {
+    match tool {
+        // These honor the global `-j/--json` and print a structured envelope.
+        "grep" | "search" | "list" => &["--json"],
+        _ => &[],
     }
 }
 
@@ -170,20 +204,20 @@ fn tool_from_spec(spec: &ToolSpec) -> Tool {
 static TOOLS: &[ToolSpec] = &[
     ToolSpec { name: "init",       description: "Scaffold .agent/ workspace and templates.",                                                                    args: &[("path", "string")] },
     ToolSpec { name: "new",        description: "Create a new project from a language template.",                                                               args: &[("name", "string"), ("lang", "string"), ("path", "string")] },
-    ToolSpec { name: "kickoff",    description: "Create a structured kickoff document.",                                                                         args: &[("brief", "string"), ("path", "string")] },
-    ToolSpec { name: "workflow",   description: "Instantiate templates with substitutions.",                                                                  args: &[("template", "string"), ("output", "string"), ("from", "string")] },
-    ToolSpec { name: "gen",        description: "Generate contracts from source. Use --auto for whole project.",                                                args: &[("path", "string"), ("auto", "boolean"), ("merge", "boolean"), ("propose", "boolean"), ("format", "string"), ("quiet", "boolean"), ("detect-out-dir", "boolean"), ("out-dir", "string")] },
-    ToolSpec { name: "check",      description: "Validate cross-references and graph integrity.",                                                             args: &[("path", "string")] },
+    ToolSpec { name: "kickoff",    description: "Create a structured kickoff document.",                                                                         args: &[("name", "string"), ("interactive", "boolean"), ("path", "string")] },
+    ToolSpec { name: "workflow",   description: "Instantiate templates with substitutions.",                                                                  args: &[("template", "string"), ("out", "string"), ("from", "string"), ("path", "string")] },
+    ToolSpec { name: "gen",        description: "Generate contracts from source. Use --auto for whole project.",                                                args: &[("path", "string"), ("auto", "boolean"), ("quiet", "boolean")] },
+    ToolSpec { name: "check",      description: "Validate cross-references and graph integrity.",                                                             args: &[("path", "string"), ("severity", "string")] },
     ToolSpec { name: "lint",       description: "Lint source files.",                                                                                         args: &[("path", "string"), ("severity", "string"), ("fix", "boolean"), ("json", "boolean"), ("unlimited", "boolean")] },
-    ToolSpec { name: "test",       description: "Discover and run tests.",                                                                                      args: &[("path", "string"), ("scope", "string"), ("filter", "string"), ("list", "boolean"), ("unlimited", "boolean"), ("json", "boolean")] },
-    ToolSpec { name: "asm",        description: "Assemble a context prompt from the knowledge graph.",                                                          args: &[("anchor", "string"), ("depth", "integer"), ("budget", "integer"), ("edge_types", "string"), ("format", "string"), ("from", "string"), ("inspect", "boolean"), ("out", "string"), ("include_tag", "string"), ("exclude_tag", "string"), ("set_attr", "string"), ("silent", "boolean"), ("auto", "boolean"), ("strict", "boolean")] },
+    ToolSpec { name: "test",       description: "Discover and run tests.",                                                                                      args: &[("path", "string"), ("scope", "string"), ("filter", "string"), ("list", "boolean")] },
+    ToolSpec { name: "asm",        description: "Assemble a context prompt from the knowledge graph. Pass the anchor via `from`.",                               args: &[("from", "string"), ("path", "string"), ("depth", "integer"), ("budget", "integer"), ("edge_types", "string"), ("format", "string"), ("inspect", "boolean"), ("out", "string"), ("include_tag", "string"), ("exclude_tag", "string"), ("set_attr", "string"), ("silent", "boolean"), ("auto", "boolean"), ("strict", "boolean")] },
     ToolSpec { name: "query",      description: "Query the knowledge graph and emit JSON. Use backlinks=<anchor> for blast radius (what references a symbol) or impact=<anchor>.", args: &[("path", "string"), ("from", "string"), ("edge_type", "string"), ("depth", "integer"), ("backlinks", "string"), ("impact", "string"), ("format", "string")] },
     ToolSpec { name: "query-adq",  description: "Execute an Aden Query (.adq) script.",                                                                       args: &[("script", "string"), ("path", "string")] },
     ToolSpec { name: "ask",        description: "Ask a natural-language question. Routes to the best matching anchor.",                                            args: &[("question", "string"), ("budget", "integer"), ("from", "string"), ("model", "string")] },
     ToolSpec { name: "search",     description: "Full-text search with BM25 ranking.",                                                                           args: &[("query", "string"), ("limit", "integer"), ("offset", "integer"), ("doc_type", "string"), ("semantics", "boolean")] },
     ToolSpec { name: "list",       description: "List all indexed anchors.",                                                                                    args: &[("path", "string"), ("filter", "string"), ("limit", "integer"), ("verbose", "boolean"), ("semantics", "boolean"), ("offset", "integer"), ("unlimited", "boolean")] },
     ToolSpec { name: "grep",       description: "Structure-aware content search: find a pattern, each hit tagged with its enclosing symbol. Prefer over plain grep.", args: &[("pattern", "string"), ("path", "string"), ("regex", "boolean"), ("ignore_case", "boolean"), ("symbol_only", "boolean"), ("limit", "integer")] },
-    ToolSpec { name: "locate",     description: "Find symbol definition and call sites.",                                                                       args: &[("symbol", "string"), ("caller_of", "string"), ("path", "string"), ("limit", "integer"), ("json", "boolean"), ("show_context", "integer"), ("format", "string")] },
+    ToolSpec { name: "locate",     description: "Find symbol definition and call sites. For JSON output pass format=json.",                                      args: &[("symbol", "string"), ("caller_of", "string"), ("path", "string"), ("limit", "integer"), ("show_context", "integer"), ("format", "string")] },
     ToolSpec { name: "heal",       description: "Self-healing documentation engine: scan for drift, propose patches, apply reviewed changes.",                      args: &[("path", "string"), ("fix", "boolean"), ("gc", "boolean"), ("propose", "boolean"), ("since", "string"), ("apply", "string"), ("watch", "string")] },
     ToolSpec { name: "status",     description: "Show project health status at a glance.",                                                                        args: &[("path", "string")] },
     ToolSpec { name: "sync",       description: "Run gen + check + heal in one pass.",                                                                          args: &[("path", "string")] },
@@ -199,8 +233,8 @@ static TOOLS: &[ToolSpec] = &[
     ToolSpec { name: "suggest",    description: "Get a recommended aden command for your intent.",                                                                 args: &[("intent", "string")] },
     ToolSpec { name: "licenses",   description: "Generate third-party dependency attribution.",                                                                   args: &[("path", "string"), ("full", "boolean")] },
     ToolSpec { name: "review",     description: "Semantic review of pending proposals.",                                                                        args: &[("path", "string"), ("since", "string"), ("budget", "integer")] },
-    ToolSpec { name: "mcp",        description: "MCP (Model Context Protocol) integration management.",                                                         args: &[("action", "string"), ("tool", "string"), ("client", "string")] },
-    ToolSpec { name: "diagnose",   description: "Deterministic diagnostic scanner for knowledge graphs.",                                                         args: &[("path", "string"), ("severity", "string"), ("fix", "boolean")] },
+    ToolSpec { name: "mcp",        description: "MCP (Model Context Protocol) integration management. action is a subcommand: install, uninstall, list.",          args: &[("action", "string")] },
+    ToolSpec { name: "diagnose",   description: "Deterministic diagnostic scanner for knowledge graphs.",                                                         args: &[("path", "string"), ("format", "string")] },
 ];
 
 // ── ServerHandler impl ────────────────────────────────────────
@@ -249,7 +283,16 @@ impl ServerHandler for AdenMcpServer {
             })?;
 
         // Build CLI args: `aden <name> [positional] [--flag|--key value] ...`
-        let cmd_args = build_cli_args(spec, &args);
+        let mut cmd_args = build_cli_args(spec, &args);
+        // Read tools print terminal chrome (truncation footers, banners) by
+        // default. Request machine-readable JSON so the agent receives a
+        // structured envelope (counts, explicit `truncated`) instead. `--json`
+        // is a global flag accepted after the subcommand.
+        for flag in structured_output_flags(spec.name) {
+            if !cmd_args.iter().any(|a| a == flag) {
+                cmd_args.push(flag.to_string());
+            }
+        }
 
         // Run
         let output = run_aden_command(
@@ -391,6 +434,34 @@ mod tests {
         let out = build_cli_args(spec("gen"), &g);
         assert!(out.contains(&"--auto".to_string())); // boolean flag, no value
         assert!(out.contains(&".".to_string())); // path positional
+    }
+
+    #[test]
+    fn grep_requests_structured_json_output() {
+        // The MCP injects `--json` for grep so the agent gets the structured
+        // envelope, not the human truncation footer.
+        let mut args = serde_json::Map::new();
+        args.insert("pattern".into(), serde_json::json!("TODO"));
+        let mut cmd = build_cli_args(spec("grep"), &args);
+        for flag in structured_output_flags("grep") {
+            if !cmd.iter().any(|a| a == flag) {
+                cmd.push(flag.to_string());
+            }
+        }
+        assert!(cmd.contains(&"--json".to_string()), "grep must request --json: {cmd:?}");
+        // Idempotent: applying twice does not duplicate the flag.
+        for flag in structured_output_flags("grep") {
+            if !cmd.iter().any(|a| a == flag) {
+                cmd.push(flag.to_string());
+            }
+        }
+        assert_eq!(cmd.iter().filter(|a| *a == "--json").count(), 1);
+    }
+
+    #[test]
+    fn non_read_tools_get_no_structured_flags() {
+        assert!(structured_output_flags("gen").is_empty());
+        assert!(structured_output_flags("status").is_empty());
     }
 
     #[test]

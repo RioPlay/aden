@@ -186,13 +186,19 @@ fn short_name(anchor: &str) -> String {
     }
 }
 
+/// Emit a structured envelope rather than a bare array. The agent-facing client
+/// needs the total count and an explicit `truncated` flag — the human footer
+/// ("... and N more (raise --limit)") is noise to a program. `returned` is how
+/// many of `total` matches are in the array after `limit` applies.
 fn print_json(matches: &[Match], limit: usize) {
+    let total = matches.len();
+    let returned = total.min(limit);
     let items: Vec<String> = matches
         .iter()
         .take(limit)
         .map(|m| {
             format!(
-                "  {{\"file\": {}, \"line\": {}, \"symbol\": {}, \"anchor\": {}, \"text\": {}}}",
+                "    {{\"file\": {}, \"line\": {}, \"symbol\": {}, \"anchor\": {}, \"text\": {}}}",
                 json_str(&m.file),
                 m.line,
                 m.symbol.as_deref().map(json_str).unwrap_or_else(|| "null".to_string()),
@@ -201,7 +207,13 @@ fn print_json(matches: &[Match], limit: usize) {
             )
         })
         .collect();
-    println!("[\n{}\n]", items.join(",\n"));
+    println!(
+        "{{\"total\": {}, \"returned\": {}, \"truncated\": {}, \"matches\": [\n{}\n]}}",
+        total,
+        returned,
+        total > limit,
+        items.join(",\n")
+    );
 }
 
 /// Minimal JSON string escaping (quotes, backslashes, control chars).

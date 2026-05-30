@@ -192,12 +192,12 @@ impl GlobRule {
     fn matches(&self, path: &str) -> bool {
         if self.is_dir_rule {
             let trimmed = self.pattern.trim_end_matches('/');
-            let matches_dir = path == trimmed || path.starts_with(&(trimmed.to_string() + "/"));
-            if matches_dir {
+            if dir_rule_matches(path, trimmed) {
                 return true;
             }
+            // A dotted rule (".agent/") also matches its undotted form ("agent/").
             if let Some(without_dot) = trimmed.strip_prefix('.') {
-                path == without_dot || path.starts_with(&(without_dot.to_string() + "/"))
+                dir_rule_matches(path, without_dot)
             } else {
                 false
             }
@@ -205,6 +205,23 @@ impl GlobRule {
             match_glob(path, &self.pattern)
         }
     }
+}
+
+/// Match a directory ignore rule against a relative path.
+///
+/// Anchored prefix matching handles root-level and multi-segment rules
+/// (`target/custom-tool/`). A bare single-segment name *additionally* matches a
+/// directory of that name at ANY depth — gitignore semantics — so `.aden/`
+/// prunes a nested `crates/foo/.aden/` (where per-crate caches live), not only a
+/// top-level `.aden/`. Without this, generated artifacts leak into grep/index.
+fn dir_rule_matches(path: &str, dir: &str) -> bool {
+    if path == dir || path.starts_with(&format!("{dir}/")) {
+        return true;
+    }
+    if !dir.contains('/') {
+        return path.split('/').any(|seg| seg == dir);
+    }
+    false
 }
 
 fn compile_rules(lines: &[String]) -> Vec<GlobRule> {
@@ -295,6 +312,23 @@ mod tests {
         assert!(filter.should_skip(Path::new("agent/file.adoc")), "Should match agent/");
         assert!(filter.should_skip(Path::new("agent/templates/foo.adoc")), "Should match agent/templates/");
         assert!(!filter.should_skip(Path::new("src/main.rs")));
+    }
+
+    #[test]
+    fn test_dir_rule_matches_nested_dir() {
+        // Regression: a bare `.aden/` rule must prune the per-crate caches at
+        // `crates/<x>/.aden/...`, not only a top-level `.aden/`. Otherwise the
+        // generated index-cache.json leaks into grep/index results.
+        let filter = AdenFilter {
+            ignore_patterns: compile_rules(&[".aden/".to_string(), "target/".to_string()]),
+            allow_patterns: Vec::new(),
+        };
+        assert!(filter.should_skip(Path::new(".aden/store")));
+        assert!(filter.should_skip(Path::new("crates/aden-cli/.aden")));
+        assert!(filter.should_skip(Path::new("crates/aden-cli/.aden/cache/index-cache.json")));
+        assert!(filter.should_skip(Path::new("crates/foo/target/debug/x")));
+        // A real source file with no ignored segment is still kept.
+        assert!(!filter.should_skip(Path::new("crates/aden-cli/src/main.rs")));
     }
 
     #[test]

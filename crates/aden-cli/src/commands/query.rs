@@ -877,6 +877,7 @@ pub fn cmd_search(
     offset: usize,
     doc_type: Option<&str>,
     include_semantics: bool,
+    json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if !path.is_dir() {
         return Err("search requires a directory path".into());
@@ -947,6 +948,30 @@ pub fn cmd_search(
         }
     }
 
+    // Machine-readable envelope for agents: explicit counts + pagination so the
+    // caller never has to parse the human table or guess whether more exists.
+    if json {
+        let total = results.len();
+        let page: Vec<_> = results.iter().skip(offset).take(limit).collect();
+        let env = serde_json::json!({
+            "total": total,
+            "returned": page.len(),
+            "offset": offset,
+            "truncated": offset + page.len() < total,
+            "results": page.iter().map(|r| serde_json::json!({
+                "anchor": r.anchor,
+                "score": r.score,
+                "snippet": r.snippet,
+            })).collect::<Vec<_>>(),
+            "semantic": semantic_results.iter().map(|(anchor, rel)| serde_json::json!({
+                "anchor": anchor,
+                "relationship": rel,
+            })).collect::<Vec<_>>(),
+        });
+        println!("{}", serde_json::to_string_pretty(&env)?);
+        return Ok(());
+    }
+
     if results.is_empty() && semantic_results.is_empty() {
         println!("No results for '{}'", query);
         return Ok(());
@@ -987,6 +1012,7 @@ pub fn cmd_list(
     limit: usize,
     offset: usize,
     semantics_only: bool,
+    json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if !path.is_dir() {
         return Err("list requires a directory path".into());
@@ -1035,6 +1061,44 @@ pub fn cmd_list(
     };
     let total_count = filtered.len();
     let limited: Vec<_> = filtered.into_iter().skip(offset).take(limit).collect();
+
+    // Machine-readable envelope for agents: counts + pagination, no table chrome.
+    if json {
+        let items: Vec<serde_json::Value> = limited
+            .iter()
+            .map(|anchor| {
+                if verbose {
+                    let (node_type, source) = graph
+                        .anchor_to_index
+                        .get(anchor)
+                        .and_then(|idx| graph.graph.node_weight(*idx))
+                        .map(|n| {
+                            (
+                                n.doc
+                                    .attributes
+                                    .get("node-type")
+                                    .cloned()
+                                    .unwrap_or_else(|| "unknown".to_string()),
+                                n.source_path.to_string_lossy().to_string(),
+                            )
+                        })
+                        .unwrap_or_else(|| ("unknown".to_string(), String::new()));
+                    serde_json::json!({"anchor": anchor, "type": node_type, "source": source})
+                } else {
+                    serde_json::json!(anchor)
+                }
+            })
+            .collect();
+        let env = serde_json::json!({
+            "total": total_count,
+            "returned": limited.len(),
+            "offset": offset,
+            "truncated": offset + limited.len() < total_count,
+            "anchors": items,
+        });
+        println!("{}", serde_json::to_string_pretty(&env)?);
+        return Ok(());
+    }
 
     let offset_info = if offset > 0 {
         format!(" (offset={})", offset)

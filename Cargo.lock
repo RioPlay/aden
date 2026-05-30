@@ -55,6 +55,7 @@ dependencies = [
  "aden-graph",
  "aden-heal",
  "aden-index",
+ "aden-mcp",
  "aden-parse",
  "aden-policy",
  "aden-propose",

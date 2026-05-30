@@ -702,7 +702,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         } => commands::cmd_ask(&path, &question, from.as_deref(), budget, model.as_deref()),
         Commands::Search { query, path, limit, offset, doc_type, semantics } => {
             let effective_limit = if cli.unlimited { usize::MAX } else { limit };
-            commands::cmd_search(&path, &query, effective_limit, offset, doc_type.as_deref(), semantics)
+            commands::cmd_search(&path, &query, effective_limit, offset, doc_type.as_deref(), semantics, cli.json)
         }
         Commands::List {
             filter,
@@ -718,7 +718,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 limit
             };
-            commands::cmd_list(&path, filter.as_deref(), verbose, effective_limit, offset, semantics)
+            commands::cmd_list(&path, filter.as_deref(), verbose, effective_limit, offset, semantics, cli.json)
         }
         Commands::Grep {
             pattern,
