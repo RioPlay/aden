@@ -3,6 +3,37 @@ use std::path::PathBuf;
 
 use crate::util::{find_project_root, generate_proposal_id, is_safe_id};
 
+/// Render a drift event as a single concise line.
+///
+/// The derived `Debug` form inlines bulky fields — most painfully
+/// `StaleMarkdown`, which lists every changed source file — so printing one
+/// event per line with `{:?}` floods an agent's context with thousands of
+/// lines. This keeps each event to its identifying path/anchor plus a count.
+fn summarize_drift_event(event: &aden_heal::DriftEvent) -> String {
+    use aden_heal::DriftEvent::*;
+    match event {
+        StaleHash { target_path, .. } => format!("StaleHash: {}", target_path),
+        SignatureMismatch { anchor, .. } => format!("SignatureMismatch: {}", anchor),
+        MissingContract { symbol_name, source_path, .. } => {
+            format!("MissingContract: {} ({})", symbol_name, source_path)
+        }
+        OrphanAnchor { anchor, .. } => format!("OrphanAnchor: {}", anchor),
+        BrokenReference { contract_path, ref_anchor, line } => {
+            format!("BrokenReference: <<{}>> in {}:{}", ref_anchor, contract_path, line)
+        }
+        DeadLink { contract_path, include_path } => {
+            format!("DeadLink: {} -> {}", contract_path, include_path)
+        }
+        MarkdownDrift { md_path, .. } => format!("MarkdownDrift: {}", md_path),
+        StaleMarkdown { md_path, source_files_changed } => {
+            format!("StaleMarkdown: {} ({} source file(s) changed)", md_path, source_files_changed.len())
+        }
+        MissingMarkdownTemplate { md_path, template_source } => {
+            format!("MissingMarkdownTemplate: {} (from {})", md_path, template_source)
+        }
+    }
+}
+
 pub fn cmd_heal_scan_since(
     path: &Path,
     propose: bool,
@@ -76,6 +107,7 @@ pub fn cmd_heal_scan(
     propose: bool,
     fix: bool,
     gc: bool,
+    unlimited: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use aden_heal::{Scanner, generate};
 
@@ -117,11 +149,17 @@ pub fn cmd_heal_scan(
                 }
             }
 
+            // Cap how many events are listed per severity group so a large repo
+            // doesn't bury the agent in thousands of lines (a single
+            // StaleMarkdown debug-prints its entire changed-files list). The
+            // count is always shown; pass --unlimited for the full enumeration.
+            const HEAL_GROUP_CAP: usize = 10;
             let print_group = |name: &str, events: &Vec<&aden_heal::DriftEvent>, _path: &Path| {
                 if !events.is_empty() {
                     println!("\n=== {} ({} events) ===", name, events.len());
-                    for (i, event) in events.iter().enumerate() {
-                        println!("  {}. {:?}", i + 1, event);
+                    let shown = if unlimited { events.len() } else { events.len().min(HEAL_GROUP_CAP) };
+                    for (i, event) in events.iter().take(shown).enumerate() {
+                        println!("  {}. {}", i + 1, summarize_drift_event(event));
 
                         let fix_hint = match event {
                             aden_heal::DriftEvent::StaleHash { target_path, .. } => {
@@ -168,6 +206,12 @@ pub fn cmd_heal_scan(
                         if let Some(hint) = fix_hint {
                             println!("{}", hint);
                         }
+                    }
+                    if shown < events.len() {
+                        println!(
+                            "  ... and {} more (run 'aden heal . --unlimited' for the full list)",
+                            events.len() - shown
+                        );
                     }
                 }
             };

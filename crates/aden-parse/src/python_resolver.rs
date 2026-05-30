@@ -323,7 +323,15 @@ fn emit_symbol_document<'a>(
     // Signature table
     let mut sig_rows = vec![vec!["Name".to_string(), sym.name.clone()]];
     for p in &sym.params {
-        sig_rows.push(vec![format!("param {}", p.name), p.ty.clone()]);
+        // Value carries the parameter name (and type when known) so the
+        // assembled signature reads `f(name: T)` — not `f(Unknown)`. Python is
+        // frequently untyped, so a bare "Unknown" type is dropped as noise.
+        let value = if p.ty.is_empty() || p.ty == "Unknown" {
+            p.name.clone()
+        } else {
+            format!("{}: {}", p.name, p.ty)
+        };
+        sig_rows.push(vec![format!("param {}", p.name), value]);
     }
     if sym.is_async {
         sig_rows.push(vec!["Async".to_string(), "true".to_string()]);

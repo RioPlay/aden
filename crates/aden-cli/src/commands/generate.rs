@@ -228,6 +228,178 @@ fn infer_parent_module_from_source(source_path: &Path) -> Option<String> {
     None
 }
 
+/// Crate/module name embedded in a symbol anchor of the form
+/// `aden://module/<crate>/<file>#<symbol>`.
+fn crate_from_anchor(anchor: &str) -> Option<String> {
+    let rest = anchor.strip_prefix("aden://module/")?;
+    let krate = rest.split('/').next()?;
+    if krate.is_empty() {
+        None
+    } else {
+        Some(krate.to_string())
+    }
+}
+
+/// Link the stored symbol documents into a connected graph by persisting edges.
+///
+/// `aden gen` stores one document per symbol but historically wrote zero edges,
+/// leaving every symbol an orphan and making `aden asm` / `ask` / `query` unable
+/// to traverse anything (their graph is rebuilt store-first). This pass derives
+/// two edge families from data already present in the store and persists them so
+/// the graph is actually connected:
+///
+/// 1. Containment: `mod-<crate>` --Documents--> symbol, symbol --PartOf-->
+///    `mod-<crate>`, and `mod-project` --Documents--> each `mod-<crate>`. The
+///    module nodes are synthesized here because otherwise they are only written
+///    to ignored `.aden/contracts/*.adoc` files and never enter the store.
+/// 2. Call graph: each symbol's `edge::calls[<callee>]` listing block (emitted by
+///    the language extractors) is resolved against the symbol-name index and
+///    persisted as a `Calls` edge when the callee name resolves unambiguously.
+fn link_store_edges<S: GraphStorage>(storage: &S) -> Result<(), Box<dyn std::error::Error>> {
+    use aden_core::{Block, Document, EdgeType, NodeType};
+    use std::collections::{HashMap, HashSet};
+
+    let docs = storage.get_all_documents()?;
+
+    // Short symbol name (after the final '#') -> anchors that define it.
+    let mut name_index: HashMap<String, Vec<String>> = HashMap::new();
+    for anchor in docs.keys() {
+        if let Some(hash) = anchor.rfind('#') {
+            let name = &anchor[hash + 1..];
+            if !name.is_empty() {
+                name_index
+                    .entry(name.to_string())
+                    .or_default()
+                    .push(anchor.clone());
+            }
+        }
+    }
+
+    // Containment edges (module <-> symbol) + collect the module set.
+    let mut modules: HashSet<String> = HashSet::new();
+    for anchor in docs.keys() {
+        if let Some(krate) = crate_from_anchor(anchor) {
+            let module_anchor = format!("mod-{}", krate);
+            modules.insert(krate);
+            let _ = storage.put_edge(&module_anchor, anchor, EdgeType::Documents);
+            let _ = storage.put_edge(anchor, &module_anchor, EdgeType::PartOf);
+        }
+    }
+
+    // Synthesize module nodes (they only exist as ignored .adoc files otherwise)
+    // plus the project root, and connect the project to each module.
+    let make_module_doc = |anchor: &str, body: &str| Document {
+        anchor: anchor.to_string(),
+        node_type: NodeType::Module,
+        attributes: HashMap::new(),
+        blocks: vec![Block::Paragraph(body.to_string())],
+        source_span: None,
+        metadata: None,
+        confidence: 1.0,
+    };
+
+    if !modules.is_empty() {
+        let project = "mod-project";
+        if !docs.contains_key(project) {
+            let _ = storage.put_document(&make_module_doc(
+                project,
+                "Project root. Links to every crate/module in the project.",
+            ));
+        }
+        for krate in &modules {
+            let module_anchor = format!("mod-{}", krate);
+            if !docs.contains_key(&module_anchor) {
+                let _ = storage.put_document(&make_module_doc(
+                    &module_anchor,
+                    &format!(
+                        "Module {}. Contains the symbols extracted from its source.",
+                        krate
+                    ),
+                ));
+            }
+            let _ = storage.put_edge(project, &module_anchor, EdgeType::Documents);
+            let _ = storage.put_edge(&module_anchor, project, EdgeType::PartOf);
+        }
+    }
+
+    // Call-graph edges: resolve `edge::calls[<callee>]` to anchors.
+    for (anchor, doc) in &docs {
+        for block in &doc.blocks {
+            let Block::Listing { code, .. } = block else {
+                continue;
+            };
+            for line in code.lines() {
+                let line = line.trim();
+                let Some(rest) = line.strip_prefix("edge::calls[") else {
+                    continue;
+                };
+                let Some(callee) = rest.strip_suffix(']') else {
+                    continue;
+                };
+                if let Some(targets) = name_index.get(callee) {
+                    // Only link when the callee resolves unambiguously, so we
+                    // never fabricate an edge to the wrong same-named symbol.
+                    if targets.len() == 1 && targets[0] != *anchor {
+                        let _ = storage.put_edge(anchor, &targets[0], EdgeType::Calls);
+                    }
+                }
+            }
+        }
+    }
+
+    storage.flush()?;
+    Ok(())
+}
+
+/// Ensure the store is up to date with the source before a read command serves
+/// from it. This is the "fresh by construction" path: a cheap mtime sweep over
+/// the gen-cache, and — only if a source file is new or modified — a quiet
+/// incremental `gen` (which skips unchanged files and re-links edges). When
+/// nothing changed it is just stat calls, so queries stay fast while never
+/// serving stale context. Deletions are intentionally ignored here (they only
+/// leave harmless orphans); `aden heal . --gc` reclaims those.
+///
+/// Best-effort: any error degrades to serving the existing store rather than
+/// failing the read.
+pub fn ensure_fresh(path: &Path) {
+    use std::time::UNIX_EPOCH;
+
+    let root = find_project_root(path);
+    // No store yet → nothing to refresh; the command will gen or report as before.
+    if !root.join(".aden").join("store").exists() {
+        return;
+    }
+
+    let cache = load_gen_cache(&root.join(".aden").join("gen-cache.json"));
+    let sources = match discover_source_files(&root) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+
+    // The newest source mtime gen has already seen. Comparing against this —
+    // rather than requiring every discovered file to be present in the cache —
+    // avoids perpetual staleness from files that are discovered but never
+    // cached (e.g. unsupported languages that fail to parse). A file newer than
+    // anything gen knew about is genuinely new or modified.
+    let newest_known = cache.entries.values().map(|e| e.source_mtime).max().unwrap_or(0);
+
+    let stale = sources.iter().any(|src| {
+        let mtime = src
+            .metadata()
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        mtime > newest_known
+    });
+
+    if stale {
+        // Quiet incremental regen: re-parses only changed files and re-links edges.
+        let _ = cmd_gen(&root, None, false, true, false, false, "adoc", true);
+    }
+}
+
 /// Auto-document a codebase: discover source files, skip unchanged,
 /// emit structured contracts to store, and optionally to disk.
 pub fn cmd_gen(
@@ -429,6 +601,12 @@ pub fn cmd_gen(
         // Flush store to persist all documents
         storage.flush().map_err(|e| format!("Store flush failed: {}", e))?;
 
+        // Connect the graph: persist module<->symbol containment and call edges
+        // so the store-first graph used by asm/ask/query is actually traversable.
+        if let Err(e) = link_store_edges(&storage) {
+            eprintln!("WARN: Failed to link graph edges: {}", e);
+        }
+
         save_gen_cache(&cache_path, &cache)?;
 
         progress!(quiet, "\nStored {} contracts. Skipped {} unchanged files.", generated.len(), skipped);
@@ -436,23 +614,26 @@ pub fn cmd_gen(
             progress!(quiet, "(All files were skipped — nothing changed since last run)");
         }
 
-        // Report orphan symbols using store-first graph build
-        match AdenGraph::build_from_storage(&storage) {
-            Ok(graph) => {
-                let orphans = graph.orphans();
-                if !orphans.is_empty() {
-                    eprintln!("\nWARNING: {} orphan symbol(s) detected:", orphans.len());
-                    for orphan in orphans.iter().take(5) {
-                        eprintln!("  - {}", orphan);
+        // Report orphan symbols using store-first graph build. Suppressed in
+        // quiet mode so the transparent refresh-on-read path stays silent.
+        if !quiet {
+            match AdenGraph::build_from_storage(&storage) {
+                Ok(graph) => {
+                    let orphans = graph.orphans();
+                    if !orphans.is_empty() {
+                        eprintln!("\nWARNING: {} orphan symbol(s) detected:", orphans.len());
+                        for orphan in orphans.iter().take(5) {
+                            eprintln!("  - {}", orphan);
+                        }
+                        if orphans.len() > 5 {
+                            eprintln!("  ... and {} more", orphans.len() - 5);
+                        }
+                        eprintln!("  Run 'aden heal . --gc' to auto-link or remove orphans");
                     }
-                    if orphans.len() > 5 {
-                        eprintln!("  ... and {} more", orphans.len() - 5);
-                    }
-                    eprintln!("  Run 'aden heal . --gc' to auto-link or remove orphans");
                 }
-            }
-            Err(e) => {
-                eprintln!("Note: Could not check for orphans: {}", e);
+                Err(e) => {
+                    eprintln!("Note: Could not check for orphans: {}", e);
+                }
             }
         }
     } else {

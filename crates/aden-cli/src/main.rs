@@ -802,7 +802,7 @@ commands::cmd_gen(&path, None, false, quiet, false, false, "adoc", true)
             
             // 3. Heal scan
             println!("\n[3/3] Scanning for drift...");
-            if let Err(e) = commands::cmd_heal_scan(&path, false, false, false) {
+            if let Err(e) = commands::cmd_heal_scan(&path, false, false, false, cli.unlimited) {
                 eprintln!("Heal error: {}", e);
             }
             
@@ -833,7 +833,7 @@ commands::cmd_gen(&path, None, false, quiet, false, false, "adoc", true)
             } else if let Some(ref git_ref) = since {
                 commands::cmd_heal_scan_since(&path, propose, git_ref)
             } else {
-                commands::cmd_heal_scan(&path, propose, fix, gc)
+                commands::cmd_heal_scan(&path, propose, fix, gc, cli.unlimited)
             }
         }
         Commands::CiCheck { path } => commands::cmd_ci_check(&path),

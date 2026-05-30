@@ -29,7 +29,7 @@
 //! | Tree | Key | Value |
 //! |---|---|---|
 //! | `docs` | `doc:{anchor}` | Serialized Document |
-//! | `edges` | `edge:{src}:{dst}:{type}` | () (edge existence) |
+//! | `edges` | `edge<US>{src}<US>{dst}<US>{type}` | () (edge existence) |
 //! | `outgoing` | `out:{anchor}` | Vec<(anchor, edge_type)> |
 //! | `incoming` | `in:{anchor}` | Vec<(anchor, edge_type)> |
 //! | `index` | `idx:{term}` | Vec<(anchor, score)> |
@@ -79,9 +79,15 @@ pub fn doc_key(anchor: &str) -> String {
     format!("doc:{anchor}")
 }
 
+/// Field separator for composite keys. ASCII Unit Separator (0x1F) never
+/// appears in anchors (which contain `:` `/` `#` etc.), so splitting on it is
+/// unambiguous — unlike `:`, which collides with symbol anchors like
+/// `aden://module/crate/file.rs#sym` and silently broke edge loading.
+pub const KEY_SEP: char = '\u{1f}';
+
 /// Build an edge key.
 pub fn edge_key(src: &str, dst: &str, edge_type: &EdgeType) -> String {
-    format!("edge:{src}:{dst}:{edge_type:?}")
+    format!("edge{KEY_SEP}{src}{KEY_SEP}{dst}{KEY_SEP}{edge_type:?}")
 }
 
 /// Build an outgoing edge key.
@@ -397,8 +403,8 @@ impl GraphStorage for SledStorage {
         for item in tree.iter() {
             let (key, _) = item.map_err(|e| StoreError::Io(e.to_string()))?;
             let key_str = String::from_utf8_lossy(&key);
-            if let Some(suffix) = key_str.strip_prefix("edge:") {
-                let parts: Vec<&str> = suffix.split(':').collect();
+            if let Some(suffix) = key_str.strip_prefix(&format!("edge{KEY_SEP}")) {
+                let parts: Vec<&str> = suffix.split(KEY_SEP).collect();
                 if parts.len() == 3 && parts[2] == edge_str {
                     edges.push((parts[0].to_string(), parts[1].to_string()));
                 }

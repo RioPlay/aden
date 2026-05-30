@@ -2,7 +2,7 @@ use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 
 use aden_core::AdenConfig;
-use aden_graph::Direction;
+use aden_graph::{AdenEdge, AdenGraph, Direction, DocumentNode};
 
 use crate::types::{AnchorPattern, QueryIntent};
 use crate::util::{
@@ -229,12 +229,76 @@ pub struct AsmOptions {
     pub attributes: Vec<String>,
 }
 
+/// Resolve a user-supplied anchor to a full graph anchor.
+///
+/// Accepts an exact anchor key, or a bare symbol/module name that resolves to a
+/// single full anchor URI via `#<name>` suffix match (so `assemble` finds
+/// `aden://module/aden-asm/traverse.rs#assemble`). Returns an error — never a
+/// silent substitution — when the name is unknown or ambiguous, because emitting
+/// an unrelated node as if it answered the query is the worst outcome for an LLM.
+fn resolve_anchor(
+    graph: &AdenGraph<DocumentNode, AdenEdge>,
+    anchor: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    if graph.anchor_to_index.contains_key(anchor) {
+        return Ok(anchor.to_string());
+    }
+    let matches: Vec<String> = graph
+        .anchor_to_index
+        .keys()
+        .filter(|a| a.rsplit('#').next() == Some(anchor))
+        .cloned()
+        .collect();
+    match matches.len() {
+        1 => Ok(matches.into_iter().next().unwrap()),
+        0 => {
+            let needle = anchor.to_lowercase();
+            let suggestions: Vec<String> = graph
+                .anchor_to_index
+                .keys()
+                .filter(|a| a.to_lowercase().contains(&needle))
+                .take(5)
+                .cloned()
+                .collect();
+            let hint = if suggestions.is_empty() {
+                String::new()
+            } else {
+                format!(" Did you mean: {}?", suggestions.join(", "))
+            };
+            Err(format!(
+                "Anchor '{}' not found.{} Run 'aden list .' to see available anchors.",
+                anchor, hint
+            )
+            .into())
+        }
+        n => {
+            let mut shown = matches;
+            shown.truncate(8);
+            let more = if n > shown.len() {
+                format!(", … (+{} more)", n - shown.len())
+            } else {
+                String::new()
+            };
+            Err(format!(
+                "Anchor '{}' is ambiguous — {} symbols share that name: {}{}. \
+                 Pass the full anchor URI (see 'aden list').",
+                anchor,
+                n,
+                shown.join(", "),
+                more
+            )
+            .into())
+        }
+    }
+}
+
 pub fn cmd_asm(opts: AsmOptions) -> Result<(), Box<dyn std::error::Error>> {
     use aden_asm::traverse::{AssemblyOptions, assemble, assemble_adg};
 
     if !opts.path.is_dir() {
         return Err("asm requires a directory path".into());
     }
+    super::ensure_fresh(&opts.path);
 
 let graph = aden_graph::cache::build_from_directory_cached(&opts.path)?;
 
@@ -258,42 +322,13 @@ let graph = aden_graph::cache::build_from_directory_cached(&opts.path)?;
         (opts.from.clone(), opts.budget)
     };
 
-    // Verify anchor exists, fallback if not found
+    // Resolve the anchor. A bare symbol or module name (e.g. `assemble` or
+    // `mod-aden-core`) is accepted when it resolves UNAMBIGUOUSLY to a single
+    // full anchor URI. We never silently substitute a fuzzy match: emitting an
+    // unrelated node as if it answered the query is the worst failure mode for
+    // an LLM consumer, so an unresolved or ambiguous anchor is a hard error.
     if !graph.anchor_to_index.contains_key(&resolved_anchor) {
-        let anchor_lower = resolved_anchor.to_lowercase();
-        let suggestions: Vec<String> = graph.anchor_to_index.keys()
-            .filter(|a| {
-                let lower = a.to_lowercase();
-                lower.contains(&anchor_lower) || anchor_lower.len() >= 3 && 
-                anchor_lower.chars().all(|c| lower.contains(c))
-            })
-            .take(5)
-            .cloned()
-            .collect();
-
-        let mut final_suggestions = suggestions.clone();
-        if final_suggestions.is_empty() {
-            for fallback in &["readme", "index", "overview", "readme.md"] {
-                if graph.anchor_to_index.contains_key(*fallback) {
-                    final_suggestions.push(fallback.to_string());
-                    break;
-                }
-            }
-        }
-
-        if !final_suggestions.is_empty() {
-            println!(
-                "WARNING: Anchor '{}' not found. Did you mean: {}?",
-                resolved_anchor,
-                final_suggestions.join(", ")
-            );
-            println!("         Use 'aden list .' to see available anchors.\n");
-            resolved_anchor = final_suggestions[0].clone();
-        } else {
-            return Err(
-                "No valid anchors found. Run 'aden list .' to see available anchors.".into(),
-            );
-        }
+        resolved_anchor = resolve_anchor(&graph, &resolved_anchor)?;
     }
 
     if opts.inspect {
@@ -368,6 +403,7 @@ pub fn cmd_query(
     if !path.is_dir() {
         return Err("query requires a directory path".into());
     }
+    super::ensure_fresh(path);
 
     let graph = aden_graph::cache::build_from_directory_cached(path)?;
 
@@ -546,8 +582,13 @@ pub fn classify_intent(question: &str) -> QueryIntent {
 
 pub fn edge_types_for_intent(intent: &QueryIntent) -> Vec<aden_core::EdgeType> {
     use aden_core::EdgeType::*;
-    // Include both code edges AND semantic edges for all intents
-    let semantic = vec![IsA, PartOf, RelatesTo, SimilarTo, AssociatedWith, Explains];
+    // Include both code edges AND semantic edges for all intents.
+    // NOTE: `PartOf` is deliberately excluded — it is the symbol->module
+    // containment edge, and traversing it turns every module into a hub that
+    // drags in all sibling symbols (and their doc code-blocks), flooding the
+    // context. Module-level overviews are still available via
+    // `aden asm --from mod-<name>` (which traverses all edges by default).
+    let semantic = vec![IsA, RelatesTo, SimilarTo, AssociatedWith, Explains];
     match intent {
         QueryIntent::Debug => vec![Constrains, Documents, Calls, Invokes, Requires].into_iter().chain(semantic.clone()).collect(),
         QueryIntent::Usage => vec![Uses, Invokes, Requires, Documents].into_iter().chain(semantic.clone()).collect(),
@@ -562,16 +603,19 @@ pub fn edge_types_for_intent(intent: &QueryIntent) -> Vec<aden_core::EdgeType> {
 }
 
 pub fn depth_for_intent(intent: &QueryIntent) -> usize {
+    // Depths match the documented strategy table (docs/commands.adoc). Shallow
+    // traversal keeps the assembled context dense and on-topic; budget still
+    // bounds total size, but a tight depth keeps what's included relevant.
     match intent {
-        QueryIntent::Debug => 6,
-        QueryIntent::Usage => 5,
-        QueryIntent::Explain => 5,
-        QueryIntent::Refactor => 5,
-        QueryIntent::Impact => 4,
+        QueryIntent::Debug => 3,
+        QueryIntent::Usage => 2,
+        QueryIntent::Explain => 2,
+        QueryIntent::Refactor => 4,
+        QueryIntent::Impact => 3,
         QueryIntent::List => 2,
-        QueryIntent::Compare => 5,
+        QueryIntent::Compare => 3,
         QueryIntent::Count => 1,
-        QueryIntent::General => 4,
+        QueryIntent::General => 2,
     }
 }
 
@@ -602,6 +646,7 @@ pub fn cmd_ask(
     if !path.is_dir() {
         return Err("ask requires a directory path".into());
     }
+    super::ensure_fresh(path);
 
     // Step 1: Resolve question to an anchor via search, or use override
     let mut start_anchor = if let Some(anchor) = from_override {
@@ -645,47 +690,21 @@ pub fn cmd_ask(
     // Step 3: Build graph and assemble context
     let graph = aden_graph::cache::build_from_directory_cached(path)?;
 
-    // Verify anchor exists, fallback if not found
+    // Resolve the starting anchor. Prefer an unambiguous exact/suffix match.
+    // If the search-derived anchor cannot be resolved, fall back to the
+    // deterministic project root (`mod-project`) rather than an arbitrary node,
+    // so the agent gets a coherent project overview instead of random context.
     if !graph.anchor_to_index.contains_key(&start_anchor) {
-        // Try fuzzy matching to find similar anchor
-        let anchor_lower = start_anchor.to_lowercase();
-        let suggestions: Vec<String> = graph.anchor_to_index.keys()
-            .filter(|a| {
-                let lower = a.to_lowercase();
-                lower.contains(&anchor_lower) || anchor_lower.len() >= 3 &&
-                anchor_lower.chars().all(|c| lower.contains(c))
-            })
-            .take(5)
-            .cloned()
-            .collect();
-
-        let mut final_suggestions = suggestions.clone();
-        if final_suggestions.is_empty() {
-            // Generic entry-point anchors only — never Aden's own doc names
-            // (e.g. "philosophy"), so suggestions stay relevant on any project.
-            // "mod-project" is the root anchor Aden generates for every repo.
-            for fallback in &["index", "mod-project", "readme", "overview", "architecture"] {
-                if graph.anchor_to_index.contains_key(*fallback) {
-                    final_suggestions.push(fallback.to_string());
-                }
+        match resolve_anchor(&graph, &start_anchor) {
+            Ok(resolved) => start_anchor = resolved,
+            Err(_) if graph.anchor_to_index.contains_key("mod-project") => {
+                eprintln!(
+                    "NOTE: '{}' is not a graph anchor; using project root 'mod-project'.",
+                    start_anchor
+                );
+                start_anchor = "mod-project".to_string();
             }
-        }
-
-        if !final_suggestions.is_empty() {
-            println!(
-                "WARNING: Anchor '{}' not found. Using: {}",
-                start_anchor,
-                final_suggestions[0]
-            );
-            start_anchor = final_suggestions[0].clone();
-        } else {
-            // Last resort: use first available anchor
-            if let Some(first) = graph.anchor_to_index.keys().next() {
-                println!("WARNING: Anchor '{}' not found. Using: {}", start_anchor, first);
-                start_anchor = first.clone();
-            } else {
-                return Err("No anchors found in graph.".into());
-            }
+            Err(e) => return Err(e),
         }
     }
 
@@ -716,14 +735,21 @@ pub fn cmd_ask(
         println!("<!-- Edge Types: {} -->", edge_types_str);
         println!();
         
-        let consumed = assembled.len();
-        let budget_label = if consumed > budget {
+        let bytes = assembled.len();
+        // Tokens estimated with the same ~4-bytes/token heuristic the assembler
+        // budgets against, so the label compares like with like.
+        let est_tokens = bytes.div_ceil(4);
+        let budget_label = if est_tokens > budget {
             "OVER BUDGET"
         } else {
             "on budget"
         };
-        let page_breaks = assembled.matches("\n<<<\n").count();
-        let node_count = page_breaks + 1;
+        // llm_mode joins documents with "\n\n---\n\n"; count those to get nodes.
+        let node_count = if assembled.is_empty() {
+            0
+        } else {
+            assembled.matches("\n\n---\n\n").count() + 1
+        };
 
         println!("{}", assembled);
         println!();
@@ -733,8 +759,8 @@ pub fn cmd_ask(
         println!("//   Anchor  : [[{}]]", start_anchor);
         println!("//   Strategy: {:?} | Depth: {}", intent, depth);
         println!(
-            "//   Nodes   : {} | Bytes: {} / {} ({})",
-            node_count, consumed, budget, budget_label
+            "//   Nodes   : {} | ~{} tokens ({} bytes) / {} budget ({})",
+            node_count, est_tokens, bytes, budget, budget_label
         );
         println!("// ────────────────────────────────────────────────");
     }
@@ -882,6 +908,7 @@ pub fn cmd_search(
     if !path.is_dir() {
         return Err("search requires a directory path".into());
     }
+    super::ensure_fresh(path);
 
     // Load config to check for private patterns (ADRs, retros, etc.)
     let config = AdenConfig::load(path);
@@ -991,6 +1018,7 @@ pub fn cmd_list(
     if !path.is_dir() {
         return Err("list requires a directory path".into());
     }
+    super::ensure_fresh(path);
 
     let graph = aden_graph::cache::build_from_directory_cached(path)?;
 
@@ -1143,6 +1171,7 @@ pub fn cmd_locate(
     if !path.is_dir() {
         return Err("locate requires a directory path".into());
     }
+    super::ensure_fresh(path);
 
     let graph = aden_graph::cache::build_from_directory_cached(path)?;
 

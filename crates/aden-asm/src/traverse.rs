@@ -442,11 +442,65 @@ pub fn strip_asciidoc_markup(text: &str) -> String {
     }
     let mut table_mode = TableMode::None;
     let mut callee_calls: Vec<String> = Vec::new();
+    // Accumulated rows of the current Signature property table, collapsed into a
+    // single dense line on close.
+    let mut sig_acc: Vec<(String, String)> = Vec::new();
 
     let flush_callees = |calls: &mut Vec<String>, out: &mut Vec<String>| {
         if !calls.is_empty() {
             out.push(format!("calls: {}", calls.join(", ")));
             calls.clear();
+        }
+    };
+
+    // Collapse a function's signature table into one line:
+    // `[async] [unsafe] name(p1: T1, p2: T2) -> Ret`. The `Name` row duplicates
+    // the node title and `Visibility` repeats on every symbol, so both are
+    // dropped; non-function tables (no params/return) fall back to key:value
+    // lines, still without the redundant name. Every language extractor emits
+    // this same Property/Value schema, so this is language-agnostic.
+    let flush_signature = |acc: &mut Vec<(String, String)>, out: &mut Vec<String>| {
+        if acc.is_empty() {
+            return;
+        }
+        let mut name: Option<String> = None;
+        let mut params: Vec<String> = Vec::new();
+        let mut ret: Option<String> = None;
+        let (mut is_async, mut is_unsafe) = (false, false);
+        let mut extras: Vec<(String, String)> = Vec::new();
+        for (k, v) in acc.drain(..) {
+            match k.to_lowercase().as_str() {
+                "name" => name = Some(v),
+                "visibility" => {} // low signal, present on every symbol
+                "async" => is_async = v.eq_ignore_ascii_case("true"),
+                "unsafe" => is_unsafe = v.eq_ignore_ascii_case("true"),
+                k if k.starts_with("param") => params.push(v),
+                "returns" | "return" => ret = Some(v),
+                _ => extras.push((k, v)),
+            }
+        }
+        if let Some(n) = &name {
+            if !params.is_empty() || ret.is_some() {
+                let mut line = String::new();
+                if is_async {
+                    line.push_str("async ");
+                }
+                if is_unsafe {
+                    line.push_str("unsafe ");
+                }
+                line.push_str(n);
+                line.push('(');
+                line.push_str(&params.join(", "));
+                line.push(')');
+                if let Some(r) = &ret {
+                    line.push_str(" -> ");
+                    line.push_str(r.trim_start_matches("->").trim());
+                }
+                out.push(line);
+            }
+        }
+        for (k, v) in extras {
+            out.push(format!("{}: {}", k.to_lowercase().replace(' ', "_"), v));
         }
     };
 
@@ -457,6 +511,7 @@ pub fn strip_asciidoc_markup(text: &str) -> String {
         if trimmed.starts_with("[[") && trimmed.ends_with("]]") {
             continue;
         }
+
 
         // --- Skip: :key: value AsciiDoc attribute lines ---
         // Matches ":source_file: foo.rs", ":author: Alice", ":toc:", ":!numbered:"
@@ -489,8 +544,9 @@ pub fn strip_asciidoc_markup(text: &str) -> String {
 
         // --- Table delimiter |=== ---
         if trimmed == "|===" {
-            // Flush any accumulated callee list when table closes
+            // Flush accumulated callee list / signature when the table closes
             flush_callees(&mut callee_calls, &mut out);
+            flush_signature(&mut sig_acc, &mut out);
             table_mode = TableMode::None;
             continue;
         }
@@ -519,12 +575,11 @@ pub fn strip_asciidoc_markup(text: &str) -> String {
 
                 match table_mode {
                     TableMode::Property => {
-                        // Compact: |Name|foo| → "name: foo"
-                        let key = cells[0].to_lowercase().replace(' ', "_");
+                        // Accumulate; collapsed into one signature line on close.
+                        let key = cells[0].trim().to_string();
                         let val = cells[1..].join(" ").trim().to_string();
                         if !key.is_empty() && !val.is_empty() {
-                            out.push(format!("{}: {}", key, val));
-                            prev_blank = false;
+                            sig_acc.push((key, val));
                         }
                         continue;
                     }
@@ -553,8 +608,9 @@ pub fn strip_asciidoc_markup(text: &str) -> String {
                 }
             }
         } else if table_mode != TableMode::None {
-            // Non-table line encountered — flush callee list and reset mode
+            // Non-table line encountered — flush accumulated table state
             flush_callees(&mut callee_calls, &mut out);
+            flush_signature(&mut sig_acc, &mut out);
             table_mode = TableMode::None;
         }
 
@@ -569,6 +625,25 @@ pub fn strip_asciidoc_markup(text: &str) -> String {
             replace_xrefs(line)
         };
 
+        // --- Skip: per-symbol boilerplate that repeats on every node and
+        //     carries zero signal. The generic parent-module relationship is
+        //     now redundant (the graph has real Calls/PartOf edges), and the
+        //     tree-sitter provenance note repeats verbatim on every symbol —
+        //     pure token tax across a multi-node assembly. Checked here, after
+        //     xref replacement turns "<<mod-x,module>>:: ..." into "module:: ...".
+        {
+            let p = processed.trim();
+            if p == "module:: This symbol is part of the parent module."
+                || p == "NOTE: Extracted from source code via tree-sitter. Confidence is heuristic."
+                || p == "Extracted from source code via tree-sitter. Confidence is heuristic."
+                // The collapsed `name(params) -> ret` line is self-evidently a
+                // signature; the label is one redundant line per symbol.
+                || p == "Signature:"
+            {
+                continue;
+            }
+        }
+
         // Collapse multiple blank lines to one
         let is_blank = processed.trim().is_empty();
         if is_blank {
@@ -582,10 +657,37 @@ pub fn strip_asciidoc_markup(text: &str) -> String {
         out.push(processed);
     }
 
-    // Final flush of any pending callee list
+    // Final flush of any pending callee list / signature
     flush_callees(&mut callee_calls, &mut out);
+    flush_signature(&mut sig_acc, &mut out);
 
-    out.join("\n").trim().to_string()
+    // Drop a trailing empty section header. A header line (ends with ':' and
+    // has no value after the colon, e.g. "Relationships:") with no real content
+    // after it carries no signal — common once the parent-module boilerplate is
+    // suppressed and the section is left dangling at a node's end. Only the
+    // trailing case is removed so genuine heading hierarchies stay intact.
+    let is_empty_header = |s: &str| {
+        let t = s.trim_end();
+        t.ends_with(':') && !t[..t.len() - 1].contains(' ') && !t[..t.len() - 1].contains(':')
+    };
+    let mut compact: Vec<String> = Vec::with_capacity(out.len());
+    for i in 0..out.len() {
+        if is_empty_header(&out[i])
+            && out[i + 1..].iter().all(|l| l.trim().is_empty())
+            // Only when real content precedes it — never collapse a genuine
+            // heading hierarchy (a header whose previous line is also a header).
+            && compact
+                .iter()
+                .rev()
+                .find(|l| !l.trim().is_empty())
+                .is_some_and(|prev| !is_empty_header(prev))
+        {
+            continue; // dangling section header after real content
+        }
+        compact.push(out[i].clone());
+    }
+
+    compact.join("\n").trim().to_string()
 }
 
 /// Replace AsciiDoc cross-reference macros with their display text or target.
@@ -649,10 +751,13 @@ fn truncate_to_tokens(text: &str, max_tokens: usize) -> String {
 
 /// Improved token estimation using a word-based heuristic.
 /// Typical LLM tokenization yields roughly 0.75 words per token.
+/// Estimate the token cost of `text`.
+///
+/// Uses the standard ~4-bytes-per-token heuristic (the same one the docs
+/// advertise). A previous word-count heuristic ignored punctuation and
+/// operators, which under-counted code by ~2x and let `asm`/`ask` blow far past
+/// their token budget (e.g. emitting 28 KB under a 4096-token budget). For dense
+/// LLM context the budget must mean what it says, so estimate from byte length.
 fn estimate_tokens(text: &str) -> usize {
-    let word_count = text
-        .split(|c: char| !c.is_alphanumeric() && c != '_')
-        .filter(|s| !s.is_empty())
-        .count();
-    (word_count * 4 / 3).max(1)
+    text.len().div_ceil(4).max(1)
 }

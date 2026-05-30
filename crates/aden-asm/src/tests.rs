@@ -113,13 +113,19 @@ mod tests {
 
     #[test]
     fn test_strip_compacts_property_table() {
-        let input = "|===\n|Property|Value\n|Name|assemble\n|Visibility|Public\n|Returns|String\n|===";
+        // The signature table collapses to a single dense line:
+        // `name(params) -> ret`. The Name row (duplicates the node title) and
+        // the Visibility row (repeats on every symbol) are dropped.
+        let input = "|===\n|Property|Value\n|Name|assemble\n|Visibility|Public\n|param graph|graph: &Graph\n|Returns|String\n|===";
         let out = strip_asciidoc_markup(input);
         assert!(!out.contains("|==="), "table delimiter must be removed");
         assert!(!out.contains("|Property|Value"), "header row must be removed");
-        assert!(out.contains("name: assemble"), "property must be compacted to key: value");
-        assert!(out.contains("visibility: Public"), "property must be compacted");
-        assert!(out.contains("returns: String"), "property must be compacted");
+        assert!(
+            out.contains("assemble(graph: &Graph) -> String"),
+            "signature must collapse to one line, got: {out:?}"
+        );
+        assert!(!out.contains("name: assemble"), "redundant Name row must be dropped");
+        assert!(!out.to_lowercase().contains("visibility"), "Visibility row must be dropped");
     }
 
     #[test]

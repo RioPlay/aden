@@ -1,5 +1,51 @@
 # Aden Issues - Future Work
 
+## 2026-05-29 — Graph connectivity & density fixes (validation pass)
+
+A validation pass against the docs (run on the aden repo itself and on an
+external Python repo, github.com/pallets/click) found that the core promise —
+"graph the whole codebase so an LLM understands it in one shot" — was broken,
+and fixed the root causes:
+
+- **FIXED — Edges silently dropped for any symbol/doc anchor.** `aden-store`'s
+  `edge_key` packed `edge:{src}:{dst}:{type}` with `:`, but symbol anchors
+  contain `:` (`aden://module/...`). `get_edges_by_type` required exactly 3
+  colon-split parts, so it dropped every edge touching a symbol — the entire
+  graph was disconnected. Switched the field separator to ASCII Unit Separator
+  (`KEY_SEP`, 0x1F).
+- **FIXED — gen wrote zero edges + module nodes never stored.** `cmd_gen` now
+  runs `link_store_edges`: persists `mod-<crate>`/`mod-project` nodes plus
+  module↔symbol containment (Documents/PartOf) and `Calls` edges resolved from
+  `edge::calls[...]`. `aden asm/query --from mod-<crate>` now returns the whole
+  module; orphans dropped from ~1600 to ~640 (remainder are doc headings).
+- **FIXED — asm/ask emitted a random fuzzy-matched symbol** when the anchor was
+  not found. `resolve_anchor` now does exact + unambiguous `#suffix` resolution
+  (bare `assemble` works) and hard-errors on miss/ambiguous; `ask` falls back to
+  `mod-project`, never an arbitrary node.
+- **FIXED — token budget ignored (density).** `estimate_tokens` counted only
+  alphanumeric words, under-counting code ~2x; `ask` dumped 28 KB under a 4096
+  budget. Switched to the documented bytes/4 heuristic; aligned intent depths to
+  the docs (Explain 5→2 etc.); removed `PartOf` from auto-traversal so a symbol
+  no longer climbs to its module hub and pulls in every sibling.
+- **FIXED — per-node boilerplate.** Stripped the repeated tree-sitter provenance
+  NOTE, the generic `module:: This symbol is part of the parent module.` line,
+  and dangling empty `Relationships:` headers from llm-mode output.
+
+### Still open (lower priority)
+- Doc-heading anchors (`aden://doc/...`) remain orphans — not linked to the
+  symbols/sections they document.
+- `aden heal` / `aden check` flood stdout (hundreds of events, repeated file
+  lists) — context-hostile for an agent; should summarize/cap.
+- `aden list --filter "mod-*"` glob returns 0 even when matches exist.
+- `locate --caller-of` is unimplemented; docs use `--caller_of`/`--context`
+  while the binary expects `--caller-of`/`--show-context`; `locate --json`
+  (global `-j`) is ignored — only `--format json` works.
+- MCP server (ISSUES item 4 below): likely the debug `println!`s in
+  `aden-cli/src/mcp.rs` corrupting the stdio JSON-RPC stream (flagged by
+  `aden lint`).
+- Symbol signature rendering still emits `param_x:_str: Unknown` and a `name:`
+  that duplicates the node title — minor remaining density noise.
+
 ## Test Results Summary (v0.1.0 - Current)
 
 | Language | init | gen | query | check | Status |
@@ -30,11 +76,17 @@
 **Description:** Users must specify `--project` flag on every command or change directories manually.
 **Status:** Partial fix - `--project` flag implemented. Persistent setting not yet implemented.
 
-### 4. MCP Server Not Responding
-**Severity:** High (for MCP users)
-**Description:** `aden-mcp` exits with "connection closed: initialize request" when run directly.
-**Root Cause:** MCP server requires an initialization request that isn't provided when running without an MCP client.
-**Status:** Not fixed - needs proper MCP client to test.
+### 4. MCP Server Not Responding — NOT A BUG (2026-05-29)
+**Severity:** ~~High~~ resolved / misdiagnosed
+**Description:** `aden-mcp` appeared to "exit with connection closed: initialize request" when run directly.
+**Root Cause:** That is expected behaviour of a *stdio* JSON-RPC server: with no MCP client on the other end of stdin, there is no `initialize` request to process. It is not a fault.
+**Verified working:** Feeding a real MCP handshake over stdin
+(`initialize` → `notifications/initialized` → `tools/list` / `tools/call`) returns
+correct JSON-RPC responses: protocol negotiation, all 33 tools with schemas, and
+a live `tools/call locate` returning results — clean stdout, empty stderr, exit 0.
+The `rmcp` SDK owns the stdout framing and `run_aden_command` captures subprocess
+output, so nothing pollutes the stream.
+**Status:** Works. Use via an MCP client (`aden mcp install --platform <name>`), not by running the binary bare.
 
 ### 5. Source Required for Contracts
 **Severity:** Medium

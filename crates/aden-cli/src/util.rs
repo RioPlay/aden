@@ -544,8 +544,19 @@ pub fn perform_check(path: &Path) -> Result<Vec<String>, Box<dyn std::error::Err
     if orphans.is_empty() {
         messages.push("INFO: No orphan documents.".to_string());
     } else {
-        for o in &orphans {
-            messages.push(format!("WARNING: Orphan document: {}", o));
+        // Summarize rather than emit one warning per orphan — a large repo can
+        // have hundreds, which buries the rest of the check output (and the
+        // agent's context). Show a count and a sample.
+        const ORPHAN_SAMPLE: usize = 10;
+        messages.push(format!(
+            "WARNING: {} orphan document(s) (run 'aden heal . --gc' to link or remove):",
+            orphans.len()
+        ));
+        for o in orphans.iter().take(ORPHAN_SAMPLE) {
+            messages.push(format!("  - {}", o));
+        }
+        if orphans.len() > ORPHAN_SAMPLE {
+            messages.push(format!("  ... and {} more", orphans.len() - ORPHAN_SAMPLE));
         }
     }
 

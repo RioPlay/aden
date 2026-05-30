@@ -13,7 +13,7 @@ pub mod test_cmd;
 // Re-export all command functions so main.rs can use `commands::cmd_init(...)` etc.
 pub use diagnose::cmd_diagnose;
 pub use federation::cmd_federation;
-pub use generate::cmd_gen;
+pub use generate::{cmd_gen, ensure_fresh};
 #[cfg(feature = "watch")]
 pub use heal::cmd_heal_watch;
 pub use heal::{cmd_heal_apply, cmd_heal_scan, cmd_heal_scan_since};
