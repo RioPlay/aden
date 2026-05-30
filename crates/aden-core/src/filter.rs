@@ -79,12 +79,14 @@ pub const BUILT_IN_IGNORES: &[&str] = &[
     "coverage/",
 ];
 
-/// Universal credential/secret detection, applied on **every** repo regardless
-/// of `.adenignore`, so secret material never enters the knowledge graph (where
-/// `ask`/`grep`/`asm` could surface it to an LLM). It is a security floor, not a
-/// convenience filter: matching is by filename / extension / parent directory —
-/// never by repo-specific layout — so it stays language- and project-agnostic.
-/// An explicit `.adenallow` entry can still opt a specific path back in.
+/// Universal credential/secret detection. This is a security floor applied at
+/// the **indexing** boundary (`gen` → the persistent store), so secret material
+/// never enters the knowledge graph where `ask`/`asm` would assemble it into LLM
+/// context. It deliberately does NOT gate ephemeral, targeted search (`grep`,
+/// `locate`, `audit`) — you must be able to *find* secrets to fix them, and a
+/// search result is scoped to the query rather than persisted and re-served.
+/// Matching is by filename / extension / parent directory — never repo layout —
+/// so it stays language- and project-agnostic.
 pub fn is_secret_path(relative: &Path) -> bool {
     let rel = relative.to_string_lossy().replace('\\', "/");
 
@@ -169,11 +171,7 @@ impl AdenFilter {
     pub fn should_skip(&self, relative: &Path) -> bool {
         // Normalize separators so Windows backslash paths match slash patterns.
         let rel_str = relative.to_string_lossy().replace('\\', "/");
-        // Secret files are skipped on every repo, regardless of .adenignore — a
-        // non-negotiable security floor (an explicit .adenallow can still opt
-        // a path back in below).
-        let matched_ignore =
-            is_secret_path(relative) || self.ignore_patterns.iter().any(|r| r.matches(&rel_str));
+        let matched_ignore = self.ignore_patterns.iter().any(|r| r.matches(&rel_str));
         if !matched_ignore {
             return false;
         }

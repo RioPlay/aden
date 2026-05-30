@@ -625,6 +625,12 @@ pub fn cmd_gen(
 
                 // Check mtime cache — if match, return Skip
                 let src_rel = src_path.strip_prefix(&root).unwrap_or(src_path);
+                // Security floor: never index credential material into the store
+                // (where ask/asm would assemble it into LLM context). Search
+                // (grep/locate/audit) can still see these files to fix them.
+                if aden_core::filter::is_secret_path(src_rel) {
+                    return None;
+                }
                 let cache_key = src_rel.to_string_lossy().to_string();
                 if let Some(e) = cache.entries.get(&cache_key) {
                     if e.source_mtime == mtime_secs {
