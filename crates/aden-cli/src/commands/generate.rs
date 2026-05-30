@@ -396,7 +396,7 @@ pub fn ensure_fresh(path: &Path) {
     // project must be indexed on first query (this is what makes asm/ask/locate
     // work without an explicit `aden gen`).
     if !root.join(".aden").join("store").exists() {
-        let _ = cmd_gen(&root, true);
+        let _ = cmd_gen_silent(&root);
         return;
     }
 
@@ -425,14 +425,33 @@ pub fn ensure_fresh(path: &Path) {
     });
 
     if stale {
-        // Quiet incremental regen: re-parses only changed files and re-links edges.
-        let _ = cmd_gen(&root, true);
+        // Silent incremental regen: re-parses only changed files and re-links
+        // edges, without printing anything (this runs transparently on reads).
+        let _ = cmd_gen_silent(&root);
     }
 }
 
 /// Auto-document a codebase: discover source files, skip unchanged,
 /// emit structured contracts to store, and optionally to disk.
+/// Compile source into the store.
+///
+/// Two independent verbosity axes:
+/// - `quiet`  — suppress the per-file "Stored <anchor>" progress lines but
+///   still print the one-line summary. This is what `--quiet`/`regen` want
+///   ("summary only").
+/// - `silent` — suppress EVERYTHING, including the summary and parse warnings.
+///   This is the transparent refresh-on-read path (`ensure_fresh`), which must
+///   never write to stdout/stderr during `ask`/`query`/`grep`/etc.
 pub fn cmd_gen(path: &Path, quiet: bool) -> Result<(), Box<dyn std::error::Error>> {
+    cmd_gen_inner(path, quiet, false)
+}
+
+/// Fully-silent variant for the auto-refresh path (see `ensure_fresh`).
+pub fn cmd_gen_silent(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    cmd_gen_inner(path, true, true)
+}
+
+fn cmd_gen_inner(path: &Path, quiet: bool, silent: bool) -> Result<(), Box<dyn std::error::Error>> {
     if !path.exists() {
         return Err("Path does not exist or is not a file/directory".into());
     }
@@ -523,7 +542,9 @@ pub fn cmd_gen(path: &Path, quiet: bool) -> Result<(), Box<dyn std::error::Error
                     Ok(d) => d,
                     Err(aden_core::Error::UnsupportedLanguage(_)) => return None,
                     Err(e) => {
-                        eprintln!("WARN: Parse failed for {}: {}", src_path.display(), e);
+                        if !silent {
+                            eprintln!("WARN: Parse failed for {}: {}", src_path.display(), e);
+                        }
                         return None;
                     }
                 };
@@ -612,9 +633,11 @@ pub fn cmd_gen(path: &Path, quiet: bool) -> Result<(), Box<dyn std::error::Error
 
         save_gen_cache(&cache_path, &cache)?;
 
-        progress!(quiet, "\nStored {} contracts. Skipped {} unchanged files.", generated.len(), skipped);
+        // The summary is "summary only" output: shown under --quiet/regen, but
+        // suppressed entirely on the silent refresh-on-read path.
+        progress!(silent, "\nStored {} contracts. Skipped {} unchanged files.", generated.len(), skipped);
         if skipped == 0 && generated.len() == sources.len() {
-            progress!(quiet, "(All files were skipped — nothing changed since last run)");
+            progress!(silent, "(All files were skipped — nothing changed since last run)");
         }
 
         // Report orphan symbols using store-first graph build. Suppressed in

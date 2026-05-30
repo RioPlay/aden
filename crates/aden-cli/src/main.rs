@@ -637,7 +637,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             scope,
             filter,
             list,
-        } => commands::cmd_test(&path, scope.as_deref(), filter.as_deref(), list),
+        } => commands::cmd_test(&path, scope.as_deref(), filter.as_deref(), list, cli.json),
         Commands::Asm {
             from,
             depth,

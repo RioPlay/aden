@@ -25,15 +25,15 @@ Each item is backed by an observed run, not inference. Effort: S ≤1h · M few 
 - [ ] **H2 · `heal --gc` is a no-op on store-first projects** — M. Verbatim: "Aden Garbage Collector … No contracts" then nothing. It only ever GC'd on-disk `.adoc` contracts; it never touches store nodes/edges. This is the *intended* home for H1's pruning. Fix: make `--gc` enumerate store docs, drop those whose source no longer defines the symbol, and remove incident edges.
 - [ ] **H3 · `lint --fix` corrupts source** — M. **Data-safety bug.** `--fix` does blind textual `.replace(".to_string().to_string()", ".to_string()")` etc. with no AST/awareness, so it mangles any file containing those patterns inside **string literals or comments** — it corrupted aden's own `lint.rs` detection literals during this sweep (reverted). On a pristine repo it reports 0 files (the "no-op" symptom), but on files that legitimately contain the patterns it silently breaks them. Fix: gate replacement to actual code tokens, or drop the textual `--fix` until it's AST-based.
 - [ ] **H4 · `heal --fix` makes drift worse / noisy** — M. Exit 0 but spams "Skipping OrphanAnchor { … }: low confidence" and does not improve the health score. Fix: suppress/aggregate low-confidence skips; confirm it actually applies the high-confidence fixes (StaleHash/MissingContract/SignatureMismatch).
-- [ ] **H5 · `test --json` emits the human banner, not JSON** — S. `json.loads()` fails: stdout starts with "Aden Universal Test Runner …". The `--json`/`-j` path isn't wired for `test`. Fix: emit a JSON envelope (mirror `lint --json`, which works).
-- [ ] **H6 · `query-adq node|incoming|outgoing` broken** — S/M. RC=1 "query-adq requires a directory path" — DIR is mandatory and undocumented for these verbs. (The `where` verb **works** — the earlier "unwired" report was wrong.) Fix: default DIR to `.` like the other read commands, or document the positional.
+- [x] **H5 · `test --json` emits the human banner, not JSON** — DONE (`a` commit). Root cause: the `Test` clap struct had no json field and `cmd_test` ignored the global `-j`. Added a `json` param + structured envelope `{scanned_path, discovered, ran, passed, failed, results|tests}`; also added `test` to the MCP `structured_output_flags` allow-list so the MCP `test` tool returns parseable JSON. Verified over CLI + MCP wire.
+- [x] **H6 · `query-adq node|incoming|outgoing`** — NOT A BUG (false alarm). The sweep agent invoked it as TWO args (`query-adq node <anchor>`); `script` is a single positional ADQ expression, so `node` became the script and `<anchor>` a (nonexistent) DIR. Called correctly — `query-adq "node(<valid-anchor>)"` with DIR defaulting to `.` — it returns proper JSON. At most a help-text clarity nit. Downgraded; no fix needed.
 - [ ] **H7 · `complete` is an explicit LLM stub** — XL (feature). Scans + previews the prompt only ("full LLM integration would go here", `complete.rs:103`); never calls a model. MCP description already corrected to say so (`720e4ac`). Real fix is the LLM integration — defer unless prioritized.
-- [ ] **H8 · `regen` prints nothing** — S. Exit 0 but silent, while it's documented as an alias for `gen .` (which prints "Stored N contracts…"). Fix: route `regen` through the same summary output as `gen`.
+- [x] **H8 · `regen`/`gen --quiet` print no summary** — DONE. Root cause: `quiet` was overloaded — `ensure_fresh` (the silent refresh-on-read path) and user `regen`/`--quiet` both passed `quiet=true`, so the "summary only" line was suppressed for everyone. Split **silent** (new `cmd_gen_silent`, used by `ensure_fresh`) from **quiet** (suppress per-file lines, keep summary). Now `regen` → "Stored N contracts. Skipped M"; read commands stay silent. Verified.
 
 ### MEDIUM
 
 - [ ] **M1 · `watch --graph-sync` is a no-op** — M. Flag accepted, prints "Graph sync enabled…", but the graph is never updated (known TODO in `query.rs`). Fix: wire the incremental graph rebuild, or reject the flag as unimplemented.
-- [ ] **M2 · `heal --apply <bad-id>` wrong exit code** — S. Refuses a missing proposal but returns the wrong code. Fix: non-zero exit on apply failure.
+- [x] **M2 · `heal --apply <bad-id>` exit code** — NOT A BUG (false alarm). Verified: `aden heal . --apply nonexistent_id_123` returns **exit=1** with `Error: "Failed to load proposal '...': No such file or directory"`. That is the correct non-zero-on-failure behavior. No fix needed.
 - [ ] **M3 · `check`/`status` orphan-count noise** — S. 991 orphans reported as a warning floods output / drags health to 0/100; many are intentional metadata docs. Fix: classify metadata anchors as non-orphans or summarize.
 - [ ] **M4 · `ask` JSON path** — S. Human mode works (resolves intent → anchor → context). Verify `-j/--json` produces a clean envelope (human mode confirmed; JSON unconfirmed).
 - [ ] **M5 · `status --verbose` unused** — S. Flag accepted, no effect (doc already corrected). Fix: honor it or drop it.
@@ -78,5 +78,11 @@ Fixes landed (`720e4ac`): `complete`/`watch`/`ci-check` descriptions corrected t
 
 ---
 
-### Process note
-A functional agent ran `aden lint . --fix` against the real repo and H3 corrupted `lint.rs` (caught + reverted; tree clean). All future mutating validation must run in scratch dirs only.
+### Process notes
+- A functional agent ran `aden lint . --fix` against the real repo and H3 corrupted `lint.rs` (caught + reverted; tree clean). All future mutating validation must run in scratch dirs only.
+- Concurrent sweep agents running `gen`/`heal` against the SAME `.aden/store` corrupted it (`FjallError: Storage(Unrecoverable)`) — the store is single-writer. Rebuilt with a clean single-process `gen . --auto`. Never run multiple mutating aden processes against one store.
+
+### Progress (2026-05-30)
+- **Phase A COMPLETE:** H5 ✅ (real fix), H8 ✅ (real fix), H6 ✅ (false alarm), M2 ✅ (false alarm).
+- 3 of the sweep's findings turned out to be false alarms (H6, M2, plus petgraph/SignatureMismatch in the doc pass) — the agent verdicts skew pessimistic; verifying each against the live binary before fixing is essential.
+- **Next: Phase B — H1 + H2 deletion pruning** (the core correctness fix). Then Phase C (H3 lint --fix data-safety, H4 heal --fix, M1 watch --graph-sync, M3 orphan noise).

@@ -135,7 +135,7 @@ pub fn arg_is_positional(tool: &str, arg: &str) -> bool {
 fn structured_output_flags(tool: &str) -> &'static [&'static str] {
     match tool {
         // These honor the global `-j/--json` and print a structured envelope.
-        "grep" | "search" | "list" => &["--json"],
+        "grep" | "search" | "list" | "test" => &["--json"],
         _ => &[],
     }
 }
@@ -479,6 +479,14 @@ mod tests {
     fn non_read_tools_get_no_structured_flags() {
         assert!(structured_output_flags("gen").is_empty());
         assert!(structured_output_flags("status").is_empty());
+    }
+
+    #[test]
+    fn structured_output_tools_request_json() {
+        // Tools with a real JSON envelope must auto-request --json over MCP.
+        for t in ["grep", "search", "list", "test"] {
+            assert_eq!(structured_output_flags(t), &["--json"], "{t} should request --json");
+        }
     }
 
     #[test]
