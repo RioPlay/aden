@@ -78,7 +78,7 @@ Staging:: Write-only audit trail in `.aden/staging/` for agent proposals before 
 |aden-heal |Drift detection and health scoring |Shipped Phase 0
 |aden-propose |Patch generation and proposal lifecycle |Shipped Phase 0
 |aden-store |fjall LSM-tree persistence (`.aden/store`) |Shipped Phase 0
-|aden-diagnose |Rule-based diagnostic scanner (backs `aden lint`) |Shipped Phase 0
+|aden-diagnose |Rule-based diagnostic scanner (backs `aden diagnose`) |Shipped Phase 0
 |aden-mcp |MCP server integration (shells out to the `aden` binary) |Shipped Phase 0
 |aden-lsp |LSP for `.adoc`/`.aden` files |Shipped Phase 0
 |aden-policy |Constitutional policy engine, directives |Shipped Phase 0
@@ -116,7 +116,7 @@ Contributing:: See CONTRIBUTING.md
 
 == Related Documents
 
-. Root entry point: `README.adoc` at repository root
+. Root entry point: `README.md` at repository root
 . Phase plans: <<plan-phase0>> (phase 1-6 TBD)
 . Architecture decisions: <<adr-001>>
 . Background: <<philosophy>>, <<use-cases>>

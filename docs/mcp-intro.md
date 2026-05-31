@@ -113,8 +113,9 @@ big merge, or generated code appearing outside the agent's own edits.
 - **Timeout.** Long-running tools are bounded by a 120-second guard so a single
   call cannot hang the client indefinitely.
 - **`watch` is terminal-only.** The continuous file-watch / live-reindex mode is
-  intentionally **not** exposed as an MCP tool — run `aden watch` in a terminal
-  if you want it.
+  a long-running daemon: it is listed as a tool but **is not usable over MCP**
+  (the call will time out) — run `aden watch` in a terminal if you want it, and
+  use `gen`/`sync` for one-shot updates.
 
 ## See also
 

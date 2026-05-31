@@ -72,14 +72,12 @@ git push
 
 |`--propose` |Preview only, no files written |Review before applying
 |`--fix` |Auto-apply changes |Confident in the fix
-|`--merge` |Three-way merge, preserves [human] blocks |Updating contracts
 |===
 
 == When to Use What
 
 - **Use `ci-check`** before every commit (set up hooks!)
 - **Use `watch`** during active development
-- **Use `gen --merge`** to update contracts without losing notes
 - **Use `heal --propose`** to review drift before fixing
 - **Use `heal --fix`** only when you trust the output
 

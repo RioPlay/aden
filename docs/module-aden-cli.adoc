@@ -87,11 +87,16 @@ aden query --impact ANCHOR
 ----
 
 === ask
-Natural-language question to subgraph assembly.
+Natural-language question to subgraph assembly. Intent is auto-classified
+(depth + edge types per intent) and the budget is relevance-boosted by default;
+override or pin any of it with the flags below.
 [source,bash]
 ----
 aden ask "QUESTION" [DIR]
 aden ask "QUESTION" --from ANCHOR
+aden ask "QUESTION" --intent impact|explain|usage|refactor|debug|list|compare|count|general
+aden ask "QUESTION" --depth N --edge-types "Calls,Uses"
+aden ask "QUESTION" --strict        # use --budget as an exact cap (no boost)
 ----
 
 === search
@@ -100,7 +105,7 @@ Full-text search across knowledge graph.
 ----
 aden search QUERY
 aden search QUERY --limit 20
-aden search QUERY --doc-type module|adr|plan
+aden search QUERY --doc-type module|adr|plan|use-case
 ----
 
 === list

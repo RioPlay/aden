@@ -34,7 +34,7 @@ aden init . --with-secure-refs
 
 Creates:
 - `.agent/` — templates, onboarding docs, constraints, session log
-- `.adenignore` — security-first defaults (skips `*.env`, `secrets/`, `target/`)
+- `.adenignore` — security-first defaults (skips `*.env`, `*.key`, `target/`)
 
 |===
 |Flag |Description
@@ -52,10 +52,10 @@ aden new NAME --lang rust|go|js [DIR]
 ----
 
 Scaffolds:
-- `Cargo.toml` with workspace structure
+- `Cargo.toml` and a starter `src/main.rs` (for the Rust template)
 - `.agent/` with templates and constraints
 - `.adenignore` with security defaults
-- `docs/kickoff-NAME.adoc` with project goals
+- `.aden/docs/README.adoc` with project identity and quick-start steps
 
 === gen
 
@@ -267,8 +267,16 @@ aden ask "How does authentication work?"
 # Pin starting anchor
 aden ask "How does authentication work?" --from mod-auth
 
-# Custom budget
+# --budget is the BASE the relevance boost scales from (not a hard cap)
 aden ask "What breaks if I rename this?" --budget 8192
+
+# Exact budget, no boost — deterministic size for scripts/agents
+aden ask "List the public API" --budget 4096 --strict
+
+# Override the auto-classified intent / depth / edge types
+aden ask "Explain the parser" --intent impact
+aden ask "Explain the parser" --depth 4
+aden ask "Explain the parser" --edge-types "Calls,Uses"
 
 # Custom model
 aden ask "Explain the parser" --model ollama:llama3
@@ -276,22 +284,36 @@ aden ask "Explain the parser" --model ollama:llama3
 
 Internally:
 1. Search the inverted index for matching keywords
-2. Classify intent: Explain, Usage, Refactor, Impact, Debug, General
-3. Select edge types and depth based on intent
-4. BFS traversal from starting anchor
-5. Token budgeting with 4/3 bytes-per-token heuristic
+2. Classify intent by keyword/phrase scoring (highest-scoring intent wins):
+   Explain, Usage, Refactor, Impact, Debug, List, Compare, Count, General
+3. Select edge types and depth from the intent — override with
+   `--intent` / `--depth` / `--edge-types`
+4. BFS traversal from the matched anchor(s)
+5. Token budgeting with a ~4-bytes-per-token heuristic. Unlike `asm` (a hard
+   cap), `ask` *boosts* the budget by match relevance by default (up to ~4x,
+   capped at 32k), treating `--budget` as a base; pass `--strict` to use
+   `--budget` as an exact cap instead.
 6. Assemble context with AsciiDoc markup stripped
 
 |===
-|Intent |Depth |Edge Types
+|Intent |Depth |Edge Types (primary; all also add the semantic edges)
 
 |Explain |2 |Uses, Calls, Implements, Documents
-|Usage |2 |Uses, Documents, Constrains
-|Refactor |4 |Uses, Calls, Constrains, Implements
+|Usage |2 |Uses, Invokes, Requires, Documents
+|Refactor |4 |Calls, Uses, Mutates, Supersedes, Amends
 |Impact |3 |Uses, Calls, Constrains
-|Debug |3 |Uses, Calls, Implements
+|Debug |3 |Constrains, Documents, Calls, Invokes, Requires
+|List |2 |Uses, Documents
+|Compare |3 |Uses, Documents, Constrains
+|Count |1 |Documents, Uses
 |General |2 |Uses, Documents, Constrains
 |===
+
+NOTE: Classification is keyword/phrase based, so phrasing matters — e.g. "blast
+radius of X" and "what depends on X" route to Impact, while an unusual phrasing
+may fall back to a more general intent. Use `--intent` to pin it. All intents
+also include the semantic edges `IsA`, `RelatesTo`, `SimilarTo`,
+`AssociatedWith`, `Explains`.
 
 === search
 

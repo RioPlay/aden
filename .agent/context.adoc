@@ -52,14 +52,14 @@ The 18-crate workspace, by role:
 |`aden-graph` |Knowledge-graph model, traversal (BFS), and anchor resolution.
 |`aden-store` |Persistent materialized view of the graph (fjall/LSM key-value store).
 |`aden-index` |Indexing pipeline: walk sources, extract, persist contracts.
-|`aden-emit` |Context assembly / prompt emission under a token budget.
+|`aden-asm` |Context assembly: graph traversal and prompt emission under a token budget.
+|`aden-emit` |Document/contract emission: standard contract templates and `check` support.
 |`aden-heal` |Drift detection and repair (`heal`); keeps contracts in sync with code.
 |`aden-diagnose` |Diagnostics and health reporting over the graph.
 |`aden-policy` |Constitution / policy rules (constraints, gates).
 |`aden-propose` |Change proposal generation (preview before apply).
 |`aden-simulate` |Simulation / dry-run of graph operations.
 |`aden-attest` |Attribution and accreditation / provenance checks.
-|`aden-audit` |OWASP-style security audit gate.
 |`aden-mcp` |Model Context Protocol server exposing aden tools to agents.
 |`aden-lsp` |Language Server Protocol integration for editors.
 |`aden-api` |Programmatic API surface over the engine.

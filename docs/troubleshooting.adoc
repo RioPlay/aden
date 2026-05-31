@@ -77,10 +77,11 @@ aden gen . --auto
 
 **Symptom:** Searching for a known function returns only module documents.
 
-**Cause:** `aden gen --auto` writes symbol contracts to the fjall store (only
-module contracts land on disk). The full-text index merges both on-disk files
-*and* store-backed contracts, so symbols are normally searchable — but a stale
-index cache built *before* the last `gen` will miss newly generated symbols.
+**Cause:** `aden gen --auto` is store-first: it writes all contracts (both
+module and symbol) to the fjall store and nothing to disk. The full-text index
+merges your on-disk `.adoc`/`.aden`/`.txt` files *and* the store-backed
+contracts, so symbols are normally searchable — but a stale index cache built
+*before* the last `gen` will miss newly generated symbols.
 
 **Fix:** Rebuild the index so it re-reads the store:
 

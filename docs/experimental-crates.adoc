@@ -97,7 +97,7 @@ These crates are **actively used** and form the core aden functionality:
 - `aden-propose` - Patch generation (used by heal)
 - `aden-policy` - Constitutional directives
 - `aden-store` - fjall LSM-tree persistence (`.aden/store`)
-- `aden-diagnose` - Deterministic diagnostic scanner (backs `aden lint`)
+- `aden-diagnose` - Deterministic diagnostic scanner (backs `aden diagnose`)
 
 NOTE: `aden-mcp` is integrated but unusual — it has no `aden-*` crate
 dependencies. It shells out to the `aden` binary as a sibling process

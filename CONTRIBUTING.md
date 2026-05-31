@@ -41,20 +41,27 @@ merge-conflict-marker scan — plus warning-only gates (constitutional firewall,
 insecure-protocol scan, `cargo clippy`, `cargo audit`, contract freshness). It
 does not run `aden heal`.
 
-### Automatic Pre-Commit Hooks (Recommended)
+### Sample Pre-Commit Hooks (Recommended)
 
-Run `aden init` to scaffold sample git hooks under `.aden/hooks/`, then install
-them for automatic validation:
+Run `aden init` to scaffold sample git hooks under `.aden/hooks/`. These are
+templates: every command in them is commented out, so you must uncomment and
+adapt the lines that fit your project before they do anything. Install them by
+copying into `.git/hooks/` and making them executable:
 
 ```bash
 # Install pre-commit hook
 cp .aden/hooks/pre-commit .git/hooks/
+chmod +x .git/hooks/pre-commit
 
 # Install pre-push hook (optional, more thorough)
 cp .aden/hooks/pre-push .git/hooks/
+chmod +x .git/hooks/pre-push
 ```
 
-Now `git commit` automatically runs `aden ci-check .` and `git push` runs full validation.
+The sample pre-commit hook suggests running your test command and `aden check .`;
+the sample pre-push hook suggests your build/lint commands and `aden gen src/ --auto`.
+Edit them to your needs (for example, swap in `aden ci-check .`) so `git commit`
+and `git push` run the validation you want.
 
 ### Manual Workflow
 

@@ -37,8 +37,8 @@ What happens internally:
    - `Compare` --- "compare X and Y" → depth 3, edges: Uses, Documents, Constrains
    - `Count` --- "how many X" → depth 1, edges: Documents, Uses
    - `General` --- fallback → depth 2, edges: Uses, Documents, Constrains
-4. **Graph traversal**: A BFS walk collects neighbors along the selected edge types, stopping at `max_depth`.
-5. **Token budgeting**: Each collected document is estimated with a bytes/4 heuristic. Documents are included until the cumulative total would exceed `--budget` (default 4096 for `ask`, 8192 for `asm`).
+4. **Graph traversal**: A BFS walk collects neighbors along the selected edge types, stopping at `max_depth`. Each node's neighbors are expanded in deterministic edge-priority order (most load-bearing types such as `Calls` first), so the budget favors the most relevant context and the output is reproducible.
+5. **Token budgeting**: Each collected document is estimated with a bytes/4 heuristic; documents are included until the cumulative total (inter-document separators counted) would exceed the budget, and an overflowing final document is truncated at a word boundary. `asm` treats `--budget` (default 8192) as a hard cap — output never exceeds it. `ask` instead *boosts* the budget by the match relevance by default (up to ~4x, capped at 32k), treating `--budget` (default 4096) as a base; pass `ask --strict` to make it an exact cap.
 6. **Assembly**: Documents are concatenated with `\n\n---\n\n` separators. Output is stripped of AsciiDoc markup (anchors, refs, attribute lines, block delimiters) so every token carries signal.
 
 === Example Output

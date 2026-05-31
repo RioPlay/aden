@@ -100,10 +100,16 @@ Contracts support regions that determine how content is handled during regenerat
 
 AI agents have finite context windows. Aden budgets tokens by:
 
-1. **BFS traversal** — walk the graph from a starting node
+1. **BFS traversal** — walk the graph from a starting node, expanding each
+   node's neighbours in deterministic priority order (most structurally
+   load-bearing edge types first: `Calls`, then `Uses`, containment, …) so the
+   budget is spent on the most relevant context and the output is reproducible
 2. **Depth limiting** — stop at depth N (default: 3)
 3. **Token estimation** — ~4-bytes-per-token heuristic (byte length ÷ 4)
-4. **Assembly** — concatenate documents until budget exhausted
+4. **Assembly** — concatenate documents until the budget is reached. The budget
+   is a hard cap: inter-document separators are counted, and a final document
+   that would overflow is truncated at a word boundary rather than pushing the
+   assembled output past the budget
 
 == Pipeline Stages
 
@@ -181,11 +187,13 @@ Ensures referential integrity:
 
 Given a starting anchor and token budget:
 
-1. BFS traversal from anchor
+1. BFS traversal from the anchor, expanding each node's neighbours in
+   deterministic edge-priority order (e.g. `Calls` before `Documents`)
 2. Collect documents along selected edge types
-3. Estimate token count per document
-4. Stop when budget exhausted
-5. Concatenate with `<<<` page breaks
+3. Estimate token count per document (and per separator)
+4. Stop when the budget is reached; a final overflowing document is truncated at
+   a word boundary so the assembled output never exceeds the budget
+5. Concatenate (LLM-dense `---` separators by default; `<<<` in raw mode)
 
 === 5. Persist (aden-store)
 
@@ -214,8 +222,9 @@ A read command like `aden ask "How does auth work?"` runs end to end as:
    (BM25) to find the best entry-point anchors.
 4. **Assemble (aden-asm)** — a BFS traversal walks outward from those anchors
    along selected edge types, estimating tokens per document with the
-   bytes ÷ 4 heuristic and stopping when the budget is exhausted (default
-   budget for `ask` is 4096 tokens).
+   bytes ÷ 4 heuristic. `ask` boosts its base `--budget` (default 4096) by the
+   match relevance by default — up to ~4x, capped at 32k — so a strong match
+   gets more context; pass `ask --strict` for an exact cap.
 5. **Result** — the selected documents are concatenated into a single assembled
    prompt context.
 
@@ -317,7 +326,7 @@ flowchart TD
         H[aden-heal] --> PR[aden-propose] --> P[atches]
     end
 
-    subgraph lint[aden lint]
+    subgraph diagnose[aden diagnose]
         DI[aden-diagnose] --> DR[Diagnostics]
     end
 
@@ -325,7 +334,7 @@ flowchart TD
     CLI --> check
     CLI --> ask
     CLI --> heal
-    CLI --> lint
+    CLI --> diagnose
 ----
 
 == Key Features
@@ -493,7 +502,7 @@ See also:
 - <<mod-aden-policy>>
 - <<mod-aden-index>>
 - <<mod-aden-store>> — fjall LSM-tree persistence (`.aden/store`)
-- <<mod-aden-diagnose>> — deterministic diagnostic scanner (backs `aden lint`)
+- <<mod-aden-diagnose>> — deterministic diagnostic scanner (backs `aden diagnose`)
 - <<mod-aden-lsp>>
 - <<mod-aden-mcp>>
 
