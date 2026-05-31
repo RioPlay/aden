@@ -11,6 +11,12 @@ use std::path::Path;
 
 pub struct MarkdownExtractor;
 
+impl Default for MarkdownExtractor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MarkdownExtractor {
     pub fn new() -> Self {
         Self
@@ -63,11 +69,10 @@ impl crate::extractor::LanguageExtractor for MarkdownExtractor {
                 continue;
             }
 
-            if !in_code_block {
-                if let Some(link) = extract_markdown_link(line) {
+            if !in_code_block
+                && let Some(link) = extract_markdown_link(line) {
                     links.push(link);
                 }
-            }
 
             if in_code_block {
                 current_code_lines.push(line.to_string());
@@ -343,12 +348,11 @@ fn extract_code_references(code: &str, lang: &str) -> Vec<String> {
                         let name = name.split('{').next().unwrap_or(name);
                         refs.push(format!("class:{}", name.trim()));
                     }
-                } else if trimmed.starts_with("interface ") || trimmed.starts_with("type ") {
-                    if let Some(name) = trimmed.split_whitespace().nth(1) {
+                } else if (trimmed.starts_with("interface ") || trimmed.starts_with("type "))
+                    && let Some(name) = trimmed.split_whitespace().nth(1) {
                         let name = name.split('{').next().unwrap_or(name);
                         refs.push(format!("type:{}", name));
                     }
-                }
             }
         }
         "go" => {
@@ -364,12 +368,11 @@ fn extract_code_references(code: &str, lang: &str) -> Vec<String> {
                         let name = name.split_whitespace().next().unwrap_or(name);
                         refs.push(format!("type:{}", name));
                     }
-                } else if trimmed.starts_with("import ") {
-                    if let Some(name) = trimmed.strip_prefix("import ") {
+                } else if trimmed.starts_with("import ")
+                    && let Some(name) = trimmed.strip_prefix("import ") {
                         let name = name.trim_matches('"');
                         refs.push(format!("use:{}", name));
                     }
-                }
             }
         }
         _ => {}
@@ -430,8 +433,8 @@ fn normalize_link_target(url: &str) -> String {
 
 fn extract_markdown_link(line: &str) -> Option<String> {
     let line = line.trim();
-    if line.starts_with('[') {
-        if let Some(bracket_end) = line.find("](") {
+    if line.starts_with('[')
+        && let Some(bracket_end) = line.find("](") {
             let inner = &line[1..bracket_end];
             if let Some(paren_start) = line.find("](") {
                 let url_start = paren_start + 2;
@@ -441,6 +444,5 @@ fn extract_markdown_link(line: &str) -> Option<String> {
                 }
             }
         }
-    }
     None
 }

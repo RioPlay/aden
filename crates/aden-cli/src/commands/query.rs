@@ -42,8 +42,8 @@ const SYMBOL_STOP_WORDS: &[&str] = &[
 fn extract_explicit_symbols(query: &str) -> Vec<String> {
     let mut symbols = Vec::new();
     // Match word characters immediately followed by `(`
-    let mut chars = query.char_indices().peekable();
-    while let Some((i, c)) = chars.next() {
+    let chars = query.char_indices().peekable();
+    for (i, c) in chars {
         if c == '(' {
             // Walk backwards to collect the symbol name
             let before = &query[..i];
@@ -119,7 +119,7 @@ fn resolve_anchor_fuzzy(query: &str, results: &[SearchResult]) -> String {
             if SYMBOL_STOP_WORDS.contains(&sym_lower.as_str()) {
                 continue;
             }
-            if query_tokens.iter().any(|t| *t == sym_lower) {
+            if query_tokens.contains(&sym_lower) {
                 return result.anchor.clone();
             }
         }
@@ -136,11 +136,10 @@ fn resolve_anchor_fuzzy(query: &str, results: &[SearchResult]) -> String {
 
     // Helper: true if anchor is a symbol whose bare name is a stop word.
     let is_stopword_symbol = |anchor: &str| -> bool {
-        if let Some(sym) = anchor.rsplit('#').next() {
-            if anchor.contains('#') {
+        if let Some(sym) = anchor.rsplit('#').next()
+            && anchor.contains('#') {
                 return SYMBOL_STOP_WORDS.contains(&sym.to_lowercase().as_str());
             }
-        }
         false
     };
 
@@ -962,8 +961,8 @@ pub fn cmd_search(
 
     // If --semantics, also search the graph for semantic relationships
     let mut semantic_results: Vec<(String, String)> = Vec::new();
-    if include_semantics {
-        if let Ok(graph) = aden_graph::cache::build_from_directory_cached(path) {
+    if include_semantics
+        && let Ok(graph) = aden_graph::cache::build_from_directory_cached(path) {
             let query_lower = query.to_lowercase();
             for edge_idx in graph.graph.edge_indices() {
                 let (src, tgt) = graph.graph.edge_endpoints(edge_idx).expect("valid edge");
@@ -994,7 +993,6 @@ pub fn cmd_search(
                 }
             }
         }
-    }
 
     // Machine-readable envelope for agents: explicit counts + pagination so the
     // caller never has to parse the human table or guess whether more exists.
@@ -1229,8 +1227,8 @@ fn print_locate_results(hits: &[serde_json::Value], format: &str, context: Optio
         }
 
         // Show context if requested
-        if ctx > 0 && !file.is_empty() {
-            if let Ok(lines) = std::fs::read_to_string(file) {
+        if ctx > 0 && !file.is_empty()
+            && let Ok(lines) = std::fs::read_to_string(file) {
                 let start_num: usize = start.parse().unwrap_or(1);
                 let end_num: usize = end.parse().unwrap_or(start_num);
                 let before = start_num.saturating_sub(ctx);
@@ -1253,7 +1251,6 @@ fn print_locate_results(hits: &[serde_json::Value], format: &str, context: Optio
                     }
                 }
             }
-        }
     }
 }
 

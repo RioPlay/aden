@@ -327,13 +327,11 @@ impl AdenConfig {
     /// Load `aden.toml` from the given directory, or return defaults if absent.
     pub fn load(dir: &std::path::Path) -> Self {
         let path = dir.join("aden.toml");
-        if path.exists() {
-            if let Ok(text) = std::fs::read_to_string(&path) {
-                if let Ok(config) = toml::from_str::<AdenConfig>(&text) {
+        if path.exists()
+            && let Ok(text) = std::fs::read_to_string(&path)
+                && let Ok(config) = toml::from_str::<AdenConfig>(&text) {
                     return config;
                 }
-            }
-        }
         Self::default()
     }
 

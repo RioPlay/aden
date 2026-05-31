@@ -17,7 +17,70 @@
 use aden_core::{Block, EdgeType};
 use aden_graph::{AdenGraph, DocumentNode, AdenEdge};
 use petgraph::Direction;
-use std::collections::{HashSet, VecDeque};
+use petgraph::graph::NodeIndex;
+use petgraph::visit::EdgeRef;
+use std::collections::{HashMap, HashSet, VecDeque};
+
+/// Traversal priority of an edge type (lower = more structurally load-bearing,
+/// hence visited first within the budget). On a high-fan-out "god object" the
+/// budget would otherwise be spent on whatever petgraph happened to yield first;
+/// ordering by importance keeps the assembled context focused and deterministic.
+fn edge_priority(et: &EdgeType) -> u8 {
+    match et {
+        EdgeType::Calls => 0,
+        EdgeType::Invokes => 1,
+        EdgeType::Implements => 2,
+        EdgeType::IsA => 3,
+        EdgeType::PartOf => 4,
+        EdgeType::Uses => 5,
+        EdgeType::Requires => 6,
+        EdgeType::Mutates => 7,
+        EdgeType::Constrains => 8,
+        EdgeType::Tests => 9,
+        EdgeType::Verifies => 10,
+        EdgeType::Documents => 11,
+        _ => 12, // everything else
+    }
+}
+
+/// Collect the eligible outgoing neighbors of `node` (those whose edge passes the
+/// `edge_types` filter) and sort them deterministically by (edge priority, then
+/// target anchor). Shared by `assemble` and `assemble_adg` so both spend the
+/// budget on the same, structurally-ranked frontier regardless of petgraph's
+/// arbitrary neighbor iteration order.
+fn ordered_neighbors(
+    graph: &AdenGraph<DocumentNode, AdenEdge>,
+    node: NodeIndex,
+    edge_types: &[EdgeType],
+) -> Vec<NodeIndex> {
+    // The graph is a petgraph multigraph: a single (node -> target) pair can
+    // carry several parallel edges of *different* types (e.g. Calls AND
+    // Documents). Iterate the edges (not neighbors_directed + find_edge, which
+    // yields the target once per parallel edge and resolves to an arbitrary,
+    // last-inserted edge) and keep the BEST (minimum) priority across all of a
+    // target's parallel edges that pass the filter. This both picks the right
+    // edge type per target and deduplicates the neighbor to a single visit.
+    let mut best: HashMap<NodeIndex, u8> = HashMap::new();
+    for edge in graph.graph.edges_directed(node, Direction::Outgoing) {
+        let edge_type = &edge.weight().edge_type;
+        if edge_types.is_empty() || edge_types.contains(edge_type) {
+            let prio = edge_priority(edge_type);
+            best.entry(edge.target())
+                .and_modify(|p| {
+                    if prio < *p {
+                        *p = prio;
+                    }
+                })
+                .or_insert(prio);
+        }
+    }
+    let mut neighbors: Vec<(u8, &str, NodeIndex)> = best
+        .into_iter()
+        .map(|(target, prio)| (prio, graph.graph[target].doc.anchor.as_str(), target))
+        .collect();
+    neighbors.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(b.1)));
+    neighbors.into_iter().map(|(_, _, n)| n).collect()
+}
 
 /// Which block types to include when assembling a document.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -88,6 +151,14 @@ pub fn assemble(graph: &AdenGraph<DocumentNode, AdenEdge>, opts: &AssemblyOption
     let mut result = Vec::new();
     let mut total_tokens = 0usize;
 
+    // Single-source the separator so its byte cost is counted in the budget by
+    // the same value that the final join concatenates. The separators are
+    // emitted *between* documents (one per doc after the first), so for any doc
+    // that isn't first its preceding separator must fit alongside it; otherwise
+    // the joined output overshoots the budget by sep_cost per gap.
+    let separator = if opts.llm_mode { "\n\n---\n\n" } else { "\n<<<\n" };
+    let sep_cost = estimate_tokens(separator);
+
     queue.push_back((start_idx, 0usize));
 
     const MAX_VISITED_NODES: usize = 10_000;
@@ -119,15 +190,20 @@ pub fn assemble(graph: &AdenGraph<DocumentNode, AdenEdge>, opts: &AssemblyOption
 
         let tokens = estimate_tokens(&text);
         let remaining = opts.token_budget.saturating_sub(total_tokens);
+        // A separator precedes this doc in the final join iff something is
+        // already in `result`. Count it against the budget here so the joined
+        // output (docs + separators) stays within `token_budget`.
+        let sep = if result.is_empty() { 0 } else { sep_cost };
 
-        if tokens <= remaining {
-            // Document fits entirely — include it.
-            total_tokens += tokens;
+        if tokens + sep <= remaining {
+            // Document (plus its preceding separator) fits entirely — include it.
+            total_tokens += tokens + sep;
             visited.insert(node);
             result.push(text);
-        } else if opts.llm_mode && remaining > 32 {
-            // LLM mode: partial inclusion — truncate to fit remaining budget.
-            let truncated = truncate_to_tokens(&text, remaining);
+        } else if opts.llm_mode && remaining.saturating_sub(sep) > 32 {
+            // LLM mode: partial inclusion — truncate so the doc PLUS its
+            // preceding separator fit within the remaining budget.
+            let truncated = truncate_to_tokens(&text, remaining.saturating_sub(sep));
             visited.insert(node);
             result.push(truncated);
             break; // Budget exhausted after partial doc
@@ -135,18 +211,12 @@ pub fn assemble(graph: &AdenGraph<DocumentNode, AdenEdge>, opts: &AssemblyOption
             break; // Not in LLM mode or nothing meaningful fits
         }
 
-        // Add neighbors
-        for neighbor in graph.graph.neighbors_directed(node, Direction::Outgoing) {
-            if let Some(edge) = graph.graph.find_edge(node, neighbor) {
-                let edge_type = graph.graph.edge_weight(edge).map(|e| &e.edge_type).unwrap_or(&EdgeType::Uses);
-                if opts.edge_types.is_empty() || opts.edge_types.contains(edge_type) {
-                    queue.push_back((neighbor, depth + 1));
-                }
-            }
+        // Add neighbors in deterministic, structural-priority order.
+        for neighbor in ordered_neighbors(graph, node, &opts.edge_types) {
+            queue.push_back((neighbor, depth + 1));
         }
     }
 
-    let separator = if opts.llm_mode { "\n\n---\n\n" } else { "\n<<<\n" };
     Ok(result.join(separator))
 }
 
@@ -163,6 +233,17 @@ pub fn assemble_adg(graph: &AdenGraph<DocumentNode, AdenEdge>, opts: &AssemblyOp
     let mut results = Vec::new();
     let mut total_tokens = 0usize;
 
+    // The elements are joined with ",\n" and the whole thing wrapped in
+    // "[\n" ... "\n]" — bytes concatenated *after* budgeting that, left
+    // uncounted, push the joined output past the budget. Single-source both so
+    // the cost charged here matches the bytes the final `format!` emits.
+    const SEPARATOR: &str = ",\n"; // between adjacent elements
+    const WRAPPER: &str = "[\n\n]"; // constant "[\n" prefix + "\n]" suffix (4 bytes)
+    let sep_cost = estimate_tokens(SEPARATOR);
+    // Reserve the constant wrapper up front so the total (wrapper + docs +
+    // separators) stays within budget.
+    total_tokens += estimate_tokens(WRAPPER);
+
     queue.push_back((start_idx, 0usize));
 
     const MAX_VISITED_NODES: usize = 10_000;
@@ -178,25 +259,27 @@ pub fn assemble_adg(graph: &AdenGraph<DocumentNode, AdenEdge>, opts: &AssemblyOp
         }
         let doc = &graph.graph[node];
         let adg_json = emit_adg(&doc.doc).map_err(|e| AssemblyError::Graph(e.to_string()))?;
-        let tokens = adg_json.len() / 4; // rough token estimate
-        if total_tokens + tokens > opts.token_budget {
+        // Use the same div_ceil estimator as the text path (not a floor) so the
+        // per-element charge is always >= the element's real token cost. By
+        // subadditivity of div_ceil, the running total then stays >= the final
+        // joined output's estimate — closing the +1-token ADG rounding overshoot.
+        let tokens = estimate_tokens(&adg_json);
+        // A separator precedes this element in the final join iff something is
+        // already buffered. Count it against the budget here.
+        let sep = if results.is_empty() { 0 } else { sep_cost };
+        if total_tokens + tokens + sep > opts.token_budget {
             break;
         }
-        total_tokens += tokens;
+        total_tokens += tokens + sep;
         visited.insert(node);
         results.push(adg_json);
 
-        for neighbor in graph.graph.neighbors_directed(node, Direction::Outgoing) {
-            if let Some(edge) = graph.graph.find_edge(node, neighbor) {
-                let edge_type = graph.graph.edge_weight(edge).map(|e| &e.edge_type).unwrap_or(&EdgeType::Uses);
-                if opts.edge_types.is_empty() || opts.edge_types.contains(edge_type) {
-                    queue.push_back((neighbor, depth + 1));
-                }
-            }
+        for neighbor in ordered_neighbors(graph, node, &opts.edge_types) {
+            queue.push_back((neighbor, depth + 1));
         }
     }
 
-    let output = format!("[\n{}\n]", results.join(",\n"));
+    let output = format!("[\n{}\n]", results.join(SEPARATOR));
     Ok(output)
 }
 
@@ -479,8 +562,8 @@ pub fn strip_asciidoc_markup(text: &str) -> String {
                 _ => extras.push((k, v)),
             }
         }
-        if let Some(n) = &name {
-            if !params.is_empty() || ret.is_some() {
+        if let Some(n) = &name
+            && (!params.is_empty() || ret.is_some()) {
                 let mut line = String::new();
                 if is_async {
                     line.push_str("async ");
@@ -498,7 +581,6 @@ pub fn strip_asciidoc_markup(text: &str) -> String {
                 }
                 out.push(line);
             }
-        }
         for (k, v) in extras {
             out.push(format!("{}: {}", k.to_lowercase().replace(' ', "_"), v));
         }
@@ -515,8 +597,8 @@ pub fn strip_asciidoc_markup(text: &str) -> String {
 
         // --- Skip: :key: value AsciiDoc attribute lines ---
         // Matches ":source_file: foo.rs", ":author: Alice", ":toc:", ":!numbered:"
-        if trimmed.starts_with(':') {
-            if let Some(rest) = trimmed.strip_prefix(':') {
+        if trimmed.starts_with(':')
+            && let Some(rest) = trimmed.strip_prefix(':') {
                 let rest = rest.strip_prefix('!').unwrap_or(rest);
                 if let Some(colon) = rest.find(':') {
                     let key = &rest[..colon];
@@ -525,7 +607,6 @@ pub fn strip_asciidoc_markup(text: &str) -> String {
                     }
                 }
             }
-        }
 
         // --- Skip: block delimiters ---
         if matches!(trimmed, "----" | "====" | "****" | "____" | "--" | "'''" | "<<<") {
@@ -564,7 +645,7 @@ pub fn strip_asciidoc_markup(text: &str) -> String {
                 let h0 = cells[0].to_lowercase();
                 let h1 = cells[1].to_lowercase();
 
-                if (h0 == "property" && h1 == "value") || (h0 == "name" && h1 == "value") {
+                if h1 == "value" && (h0 == "property" || h0 == "name") {
                     table_mode = TableMode::Property;
                     continue;
                 }
@@ -725,27 +806,38 @@ fn replace_xrefs(line: &str) -> String {
     result
 }
 
-/// Truncate text to approximately `max_tokens` tokens at a word boundary.
+/// Truncate text to fit within `max_tokens`, consistent with `estimate_tokens`.
+///
+/// `estimate_tokens` counts bytes (4 bytes ≈ 1 token), so the cap here is a byte
+/// budget (`max_tokens * 4`) rather than a word count — a word heuristic
+/// over-counted long tokens (e.g. code) and let the truncated doc still blow past
+/// the byte-based budget. The cut is taken at a UTF-8 char boundary, preferring a
+/// word/whitespace boundary at or before the limit, and the trailing " …" is
+/// included within the budget so the doc's `estimate_tokens` stays <= `max_tokens`.
 fn truncate_to_tokens(text: &str, max_tokens: usize) -> String {
-    // Each word ≈ 4/3 tokens, so max words ≈ max_tokens * 3/4
-    let max_words = (max_tokens * 3 / 4).max(1);
-    let mut word_count = 0;
-    let mut last_boundary = text.len();
-
-    for (i, c) in text.char_indices() {
-        if c.is_whitespace() {
-            word_count += 1;
-            if word_count >= max_words {
-                last_boundary = i;
-                break;
-            }
-        }
+    let max_bytes = max_tokens.saturating_mul(4);
+    if text.len() <= max_bytes {
+        return text.to_string();
     }
 
-    let mut truncated = text[..last_boundary].trim_end().to_string();
-    if last_boundary < text.len() {
-        truncated.push_str(" …");
+    // Reserve room for the " …" ellipsis (4 bytes) so the final string —
+    // including the marker — never exceeds the byte budget.
+    const ELLIPSIS: &str = " …";
+    let content_budget = max_bytes.saturating_sub(ELLIPSIS.len());
+
+    // Largest char boundary at or before the content budget.
+    let mut cut = content_budget.min(text.len());
+    while cut > 0 && !text.is_char_boundary(cut) {
+        cut -= 1;
     }
+
+    // Prefer a whitespace boundary at or before the cut so we don't split a word.
+    if let Some(ws) = text[..cut].rfind(char::is_whitespace) {
+        cut = ws;
+    }
+
+    let mut truncated = text[..cut].trim_end().to_string();
+    truncated.push_str(ELLIPSIS);
     truncated
 }
 
@@ -760,4 +852,323 @@ fn truncate_to_tokens(text: &str, max_tokens: usize) -> String {
 /// LLM context the budget must mean what it says, so estimate from byte length.
 fn estimate_tokens(text: &str) -> usize {
     text.len().div_ceil(4).max(1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aden_core::{Document, NodeType};
+
+    // ── FIX 1: truncate_to_tokens budget guarantee ───────────────────────────
+
+    /// Build a `DocumentNode` with the given anchor (no blocks, no parsed data).
+    fn node(anchor: &str) -> DocumentNode {
+        DocumentNode {
+            doc: Document {
+                anchor: anchor.to_string(),
+                node_type: NodeType::Function,
+                attributes: std::collections::HashMap::new(),
+                blocks: Vec::new(),
+                source_span: None,
+                metadata: None,
+                confidence: 1.0,
+            },
+            parsed: None,
+            source_path: std::path::PathBuf::from("/tmp/x.adoc"),
+        }
+    }
+
+    /// The core invariant of FIX 1: whatever `truncate_to_tokens` returns,
+    /// `estimate_tokens` of it must be within budget. Exercised across plain
+    /// ASCII, repeated multibyte UTF-8, and a single giant whitespace-free token
+    /// (the case the old word-count heuristic blew through), for a spread of
+    /// budgets. A failure here means the budget no longer means what it says.
+    #[test]
+    fn truncate_never_exceeds_budget() {
+        let ascii = "the quick brown fox jumps over the lazy dog ".repeat(200);
+        let multibyte = "café 你好 🚀 ".repeat(300);
+        let giant_token = "x".repeat(20_000); // no whitespace anywhere
+        let inputs = [
+            ascii.as_str(),
+            multibyte.as_str(),
+            giant_token.as_str(),
+            "short",
+        ];
+        for &text in &inputs {
+            for &budget in &[1usize, 8, 64, 1000] {
+                let out = truncate_to_tokens(text, budget);
+                let est = estimate_tokens(&out);
+                assert!(
+                    est <= budget,
+                    "estimate_tokens({est}) exceeded budget {budget} for input len {} (out len {})",
+                    text.len(),
+                    out.len()
+                );
+            }
+        }
+    }
+
+    /// When truncation actually happens the result must end with the ellipsis
+    /// marker, signalling the doc was cut.
+    #[test]
+    fn truncate_marks_cut_with_ellipsis() {
+        let text = "alpha beta gamma delta epsilon zeta eta theta ".repeat(50);
+        let out = truncate_to_tokens(&text, 8);
+        assert!(out.len() < text.len(), "expected truncation to shorten text");
+        assert!(out.ends_with('…'), "truncated text must end with ellipsis: {out:?}");
+    }
+
+    /// When the text already fits the byte budget it is returned verbatim — no
+    /// ellipsis, no allocation churn that changes content.
+    #[test]
+    fn truncate_returns_unchanged_when_within_budget() {
+        let text = "this easily fits";
+        // budget 1000 tokens == 4000 bytes, far more than this string.
+        let out = truncate_to_tokens(text, 1000);
+        assert_eq!(out, text);
+        assert!(!out.ends_with('…'));
+    }
+
+    /// Multibyte input must never be cut mid-codepoint. The result is a `String`,
+    /// so an invalid cut would have panicked inside `truncate_to_tokens`; reaching
+    /// the asserts proves it stayed on a char boundary. Cover several budgets that
+    /// land near multibyte boundaries.
+    #[test]
+    fn truncate_respects_multibyte_boundaries() {
+        // Each "café 你好 🚀 " unit mixes 1-, 2-, 3- and 4-byte codepoints.
+        let text = "café 你好 🚀 ".repeat(100);
+        for budget in 1..=80 {
+            let out = truncate_to_tokens(&text, budget);
+            // String is UTF-8 by construction; the real check is "did not panic".
+            assert!(out.is_char_boundary(out.len()));
+            assert!(estimate_tokens(&out) <= budget, "budget {budget} violated");
+        }
+    }
+
+    // ── FIX 2: edge_priority + ordered_neighbors structural ranking ───────────
+
+    /// edge_priority encodes the intended monotonic structural ordering:
+    /// Calls is the most load-bearing, then Uses, then Documents, and any
+    /// "other" edge type (here RelatesTo) sorts last.
+    #[test]
+    fn edge_priority_is_monotonic_calls_uses_documents_other() {
+        let calls = edge_priority(&EdgeType::Calls);
+        let uses = edge_priority(&EdgeType::Uses);
+        let documents = edge_priority(&EdgeType::Documents);
+        let other = edge_priority(&EdgeType::RelatesTo); // falls into the `_ => 12` arm
+        assert!(calls < uses, "Calls ({calls}) must rank before Uses ({uses})");
+        assert!(uses < documents, "Uses ({uses}) must rank before Documents ({documents})");
+        assert!(
+            documents < other,
+            "Documents ({documents}) must rank before other/RelatesTo ({other})"
+        );
+    }
+
+    /// ordered_neighbors must return the frontier sorted by (edge_priority, then
+    /// target anchor) regardless of insertion / petgraph iteration order. This is
+    /// FIX 2's core: a high-fan-out node spends the budget on the most structural
+    /// edges first, deterministically.
+    #[test]
+    fn ordered_neighbors_sorts_by_priority_then_anchor() {
+        let mut graph = AdenGraph::<DocumentNode, AdenEdge>::new();
+        let src = graph.graph.add_node(node("src"));
+
+        // Two Calls neighbors with anchors out of order, plus one Uses and one
+        // Documents neighbor. Insertion order deliberately scrambles priority so
+        // a naive (unsorted) implementation would fail.
+        let documents_n = graph.graph.add_node(node("d-documents"));
+        let calls_b = graph.graph.add_node(node("calls-b"));
+        let uses_n = graph.graph.add_node(node("c-uses"));
+        let calls_a = graph.graph.add_node(node("calls-a"));
+
+        graph.graph.add_edge(src, documents_n, AdenEdge { edge_type: EdgeType::Documents });
+        graph.graph.add_edge(src, calls_b, AdenEdge { edge_type: EdgeType::Calls });
+        graph.graph.add_edge(src, uses_n, AdenEdge { edge_type: EdgeType::Uses });
+        graph.graph.add_edge(src, calls_a, AdenEdge { edge_type: EdgeType::Calls });
+
+        // edge_types empty => follow all.
+        let ordered = ordered_neighbors(&graph, src, &[]);
+        let anchors: Vec<&str> = ordered
+            .iter()
+            .map(|&idx| graph.graph[idx].doc.anchor.as_str())
+            .collect();
+
+        // Calls (priority 0) first, the two Calls in anchor order; then Uses (5),
+        // then Documents (11).
+        assert_eq!(
+            anchors,
+            vec!["calls-a", "calls-b", "c-uses", "d-documents"],
+            "neighbors must be ordered by (edge_priority, anchor)"
+        );
+    }
+
+    /// The `edge_types` filter must drop non-matching neighbors entirely while
+    /// preserving the priority/anchor ordering of the rest.
+    #[test]
+    fn ordered_neighbors_respects_edge_type_filter() {
+        let mut graph = AdenGraph::<DocumentNode, AdenEdge>::new();
+        let src = graph.graph.add_node(node("src"));
+        let calls_n = graph.graph.add_node(node("calls-x"));
+        let uses_n = graph.graph.add_node(node("uses-y"));
+        graph.graph.add_edge(src, calls_n, AdenEdge { edge_type: EdgeType::Calls });
+        graph.graph.add_edge(src, uses_n, AdenEdge { edge_type: EdgeType::Uses });
+
+        let ordered = ordered_neighbors(&graph, src, &[EdgeType::Calls]);
+        let anchors: Vec<&str> = ordered
+            .iter()
+            .map(|&idx| graph.graph[idx].doc.anchor.as_str())
+            .collect();
+        assert_eq!(anchors, vec!["calls-x"], "filter must keep only Calls neighbors");
+    }
+
+    // ── FIX B: parallel-edge (multigraph) priority folding ────────────────────
+
+    /// Build a `DocumentNode` carrying a single Paragraph block so
+    /// `document_to_text` / `assemble` emit real, byte-bearing content (the
+    /// blockless `node()` helper above would assemble to the empty string and
+    /// could not exercise the budget arithmetic).
+    fn node_with_text(anchor: &str, text: &str) -> DocumentNode {
+        DocumentNode {
+            doc: Document {
+                anchor: anchor.to_string(),
+                node_type: NodeType::Function,
+                attributes: std::collections::HashMap::new(),
+                blocks: vec![Block::Paragraph(text.to_string())],
+                source_span: None,
+                metadata: None,
+                confidence: 1.0,
+            },
+            parsed: None,
+            source_path: std::path::PathBuf::from("/tmp/x.adoc"),
+        }
+    }
+
+    /// The graph is a petgraph multigraph: a single (src -> tgt) pair can carry
+    /// several parallel edges of different types. FIX B folds them to the BEST
+    /// (minimum) priority and visits the target exactly once. Here `tgt` is
+    /// reachable from `src` by BOTH a Documents (priority 11) and a Calls
+    /// (priority 0) edge — added straight onto the inner `DiGraph` to bypass
+    /// `AdenGraph::add_edge`'s `contains_edge` dedup and force a true multigraph.
+    /// A separate Documents-only neighbor `late` (priority 11) must rank AFTER
+    /// `tgt`, proving `tgt` is ranked by its Calls edge, not its Documents edge,
+    /// and that the pre-fix "arbitrary last-inserted edge" bug is gone.
+    #[test]
+    fn ordered_neighbors_folds_parallel_edges_to_best_priority_once() {
+        let mut graph = AdenGraph::<DocumentNode, AdenEdge>::new();
+        let src = graph.graph.add_node(node("src"));
+        let tgt = graph.graph.add_node(node("a-target"));
+        let late = graph.graph.add_node(node("z-late"));
+
+        // Insert the WEAKER (Documents) edge first, then the STRONGER (Calls)
+        // edge, on the SAME (src -> tgt) pair — a parallel/multigraph edge. A
+        // naive find_edge-based impl would pick whichever it resolves to (often
+        // the last-inserted Calls, or the first Documents) and could enqueue the
+        // target twice.
+        graph.graph.add_edge(src, tgt, AdenEdge { edge_type: EdgeType::Documents });
+        graph.graph.add_edge(src, tgt, AdenEdge { edge_type: EdgeType::Calls });
+        // A single-edge Documents-only neighbor to verify ranking, not just dedup.
+        graph.graph.add_edge(src, late, AdenEdge { edge_type: EdgeType::Documents });
+
+        let ordered = ordered_neighbors(&graph, src, &[]);
+        let anchors: Vec<&str> = ordered
+            .iter()
+            .map(|&idx| graph.graph[idx].doc.anchor.as_str())
+            .collect();
+
+        // `tgt` must appear EXACTLY ONCE (parallel edges deduped) and BEFORE the
+        // Documents-only `late` (ranked by its best/Calls priority 0 < 11).
+        assert_eq!(
+            anchors,
+            vec!["a-target", "z-late"],
+            "parallel edges must fold to the best (Calls) priority and the target appear once"
+        );
+        assert_eq!(
+            anchors.iter().filter(|&&a| a == "a-target").count(),
+            1,
+            "the parallel-edge target must be enqueued exactly once, not per parallel edge"
+        );
+    }
+
+    // ── FIX A: assemble() respects the token budget end-to-end ────────────────
+
+    /// Lock FIX A end-to-end: build a graph of several small docs reachable from
+    /// a hub and assert `estimate_tokens(assemble(...))` <= the (tight) budget.
+    /// The previously-uncounted inter-doc separators pushed the joined output
+    /// past the budget (the ~2.36x overshoot); this guards against a regression
+    /// at the public `assemble` boundary, not just the truncate helper.
+    #[test]
+    fn assemble_output_never_exceeds_token_budget() {
+        let mut graph = AdenGraph::<DocumentNode, AdenEdge>::new();
+        // A hub plus several small leaf docs, each big enough that the separator
+        // accounting matters but small enough that several fit a tight budget.
+        let hub = graph.add_node(node_with_text(
+            "hub",
+            "the hub doc body with some words to spend a few tokens",
+        ));
+        let mut leaves = Vec::new();
+        for i in 0..12 {
+            let n = graph.add_node(node_with_text(
+                &format!("leaf-{i:02}"),
+                "leaf paragraph content with several words consuming tokens here",
+            ));
+            leaves.push(n);
+        }
+        // Fan the hub out to every leaf via Calls edges.
+        for &leaf in &leaves {
+            graph.add_edge(hub, leaf, AdenEdge { edge_type: EdgeType::Calls });
+        }
+
+        // Several tight budgets across the boundary where docs+separators would
+        // overflow if the separators were uncounted.
+        for &budget in &[8usize, 16, 32, 50, 100] {
+            let opts = AssemblyOptions {
+                start_anchor: "hub".to_string(),
+                max_depth: 3,
+                token_budget: budget,
+                llm_mode: true,
+                ..Default::default()
+            };
+            let output = assemble(&graph, &opts).expect("assemble must succeed");
+            let est = estimate_tokens(&output);
+            assert!(
+                est <= budget,
+                "assemble output estimate_tokens({est}) exceeded budget {budget} (output len {} bytes)",
+                output.len()
+            );
+        }
+    }
+
+    /// FIX A for the ADG (compact JSON) path: the `[\n ... \n]` wrapper and the
+    /// `,\n` element separators are now charged against the budget, so the full
+    /// emitted JSON stays within it.
+    #[test]
+    fn assemble_adg_output_never_exceeds_token_budget() {
+        let mut graph = AdenGraph::<DocumentNode, AdenEdge>::new();
+        let hub = graph.add_node(node_with_text("hub", "hub body words for tokens"));
+        for i in 0..10 {
+            let n = graph.add_node(node_with_text(
+                &format!("leaf-{i:02}"),
+                "leaf body words consuming a few tokens each",
+            ));
+            graph.add_edge(hub, n, AdenEdge { edge_type: EdgeType::Calls });
+        }
+        for &budget in &[16usize, 32, 64, 128] {
+            let opts = AssemblyOptions {
+                start_anchor: "hub".to_string(),
+                max_depth: 3,
+                token_budget: budget,
+                ..Default::default()
+            };
+            let output = assemble_adg(&graph, &opts).expect("assemble_adg must succeed");
+            // assemble_adg uses the floor estimator (len/4) per doc but counts the
+            // wrapper/separator via estimate_tokens; the full output's byte/4 must
+            // still fit the budget.
+            let est = output.len() / 4;
+            assert!(
+                est <= budget,
+                "assemble_adg output len/4 ({est}) exceeded budget {budget} (output len {} bytes)",
+                output.len()
+            );
+        }
+    }
 }

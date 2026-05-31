@@ -11,6 +11,12 @@ use std::path::Path;
 
 pub struct PlainTextExtractor;
 
+impl Default for PlainTextExtractor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PlainTextExtractor {
     pub fn new() -> Self {
         Self

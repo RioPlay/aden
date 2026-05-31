@@ -135,11 +135,10 @@ pub fn is_secret_path(relative: &Path) -> bool {
     const SECRET_EXTS: &[&str] = &[
         "pem", "key", "p8", "p12", "pfx", "keystore", "jks", "kdbx", "ppk", "asc", "gpg", "pgp",
     ];
-    if let Some(ext) = relative.extension().and_then(|e| e.to_str()) {
-        if SECRET_EXTS.contains(&ext.to_ascii_lowercase().as_str()) {
+    if let Some(ext) = relative.extension().and_then(|e| e.to_str())
+        && SECRET_EXTS.contains(&ext.to_ascii_lowercase().as_str()) {
             return true;
         }
-    }
     false
 }
 

@@ -54,6 +54,10 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+/// A custom diagnostic check: receives the graph and file list, returns issues.
+type CustomCheck =
+    Arc<dyn Fn(&AdenGraph<DocumentNode, AdenEdge>, &[PathBuf]) -> Vec<Issue> + Send + Sync>;
+
 // ── Severity ──────────────────────────────────────────────────────
 
 /// Severity of a diagnostic issue.
@@ -159,6 +163,7 @@ impl Diagnosis {
     /// - 5 per error
     /// - 1 per warning
     /// - 0.5 per info
+    ///
     /// Floor at 0.
     pub fn calc_health_score(issues: &[Issue]) -> f64 {
         let deduction: f64 = issues.iter().map(|i| i.severity.weight()).sum();
@@ -247,7 +252,7 @@ pub struct DiagnosticRules {
 
     /// Custom rule functions to run during diagnosis.
     /// Each function receives the graph and file list, returns issues.
-    pub custom_checks: Vec<Arc<dyn Fn(&AdenGraph<DocumentNode, AdenEdge>, &[PathBuf]) -> Vec<Issue> + Send + Sync>>,
+    pub custom_checks: Vec<CustomCheck>,
 }
 
 impl Default for DiagnosticRules {
@@ -350,13 +355,13 @@ pub fn diagnose_with_rules(path: &Path, rules: &DiagnosticRules) -> Result<Diagn
 /// Run `diagnose` and return JSON-serialised output.
 pub fn diagnose_json(path: &Path) -> Result<String, DiagnoseError> {
     let diagnosis = diagnose(path)?;
-    Ok(serde_json::to_string_pretty(&diagnosis).map_err(|e| DiagnoseError::Generic(e.to_string()))?)
+    serde_json::to_string_pretty(&diagnosis).map_err(|e| DiagnoseError::Generic(e.to_string()))
 }
 
 /// Run `diagnose_with_rules` and return JSON-serialised output.
 pub fn diagnose_json_with_rules(path: &Path, rules: &DiagnosticRules) -> Result<String, DiagnoseError> {
     let diagnosis = diagnose_with_rules(path, rules)?;
-    Ok(serde_json::to_string_pretty(&diagnosis).map_err(|e| DiagnoseError::Generic(e.to_string()))?)
+    serde_json::to_string_pretty(&diagnosis).map_err(|e| DiagnoseError::Generic(e.to_string()))
 }
 
 // ── Individual scanners ───────────────────────────────────────────
@@ -585,9 +590,7 @@ fn scan_orphans(graph: &AdenGraph<DocumentNode, AdenEdge>, rules: &DiagnosticRul
             file: node.map(|n| n.source_path.to_string_lossy().to_string()),
             line: None,
             message: format!("Orphan document: [[{}]] has no edges", anchor),
-            suggestion: Some(format!(
-                "Add references to or from this document, or verify it should exist."
-            )),
+            suggestion: Some("Add references to or from this document, or verify it should exist.".to_string()),
             raw: serde_json::to_string(&serde_json::json!({
                 "anchor": anchor,
                 "is_metadata": is_metadata,
@@ -708,11 +711,10 @@ fn collect_adoc_files(dir: &Path) -> Vec<PathBuf> {
         let path = entry.path();
         if path.is_dir() {
             files.extend(collect_adoc_files(&path));
-        } else if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-            if ext == "adoc" {
+        } else if let Some(ext) = path.extension().and_then(|e| e.to_str())
+            && ext == "adoc" {
                 files.push(path);
             }
-        }
     }
     files.sort();
     files
@@ -729,7 +731,7 @@ fn find_similar_anchor(target: &str, anchors: &HashSet<&str>) -> Option<String> 
                 || target.starts_with(&a[..1.min(a.len())])
         })
         .map(|a| {
-            let distance = levenshtein_distance(target, *a);
+            let distance = levenshtein_distance(target, a);
             (a.to_string(), distance)
         })
         .filter(|(_, d)| *d <= 3 && *d > 0) // exact match is not a suggestion
@@ -755,11 +757,11 @@ fn levenshtein_distance(a: &str, b: &str) -> u32 {
 
     let mut matrix = vec![vec![0u32; n + 1]; m + 1];
 
-    for i in 0..=m {
-        matrix[i][0] = i as u32;
+    for (i, row) in matrix.iter_mut().enumerate() {
+        row[0] = i as u32;
     }
-    for j in 0..=n {
-        matrix[0][j] = j as u32;
+    for (j, cell) in matrix[0].iter_mut().enumerate() {
+        *cell = j as u32;
     }
 
     for i in 1..=m {

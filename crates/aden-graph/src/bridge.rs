@@ -24,6 +24,10 @@ use aden_core::{Document, EdgeType};
 use aden_store::{GraphStorage, StoreError};
 use std::collections::{HashMap, HashSet};
 
+/// Documents loaded from storage (anchor → document) paired with their edges
+/// as `(source, target, edge_type)` triples.
+type LoadedGraph = (HashMap<String, Document>, Vec<(String, String, EdgeType)>);
+
 /// Bridge between AdenGraph and GraphStorage.
 ///
 /// Provides methods to sync an in-memory graph to storage and load it back.
@@ -50,7 +54,7 @@ impl GraphBridge {
 
         // Insert edges
         for (src, dst, edge_type) in edges {
-            storage.put_edge(src, dst, edge_type.clone())?;
+            storage.put_edge(src, dst, *edge_type)?;
         }
 
         Ok(())
@@ -59,7 +63,7 @@ impl GraphBridge {
     /// Load a graph from storage into in-memory structures.
     pub fn load_from_storage<S: GraphStorage>(
         storage: &S,
-    ) -> Result<(HashMap<String, Document>, Vec<(String, String, EdgeType)>), StoreError> {
+    ) -> Result<LoadedGraph, StoreError> {
         let docs = storage.get_all_documents()?;
         let mut edges = Vec::new();
 
@@ -68,7 +72,7 @@ impl GraphBridge {
         for edge_type in &edge_types {
             let typed_edges = storage.get_edges_by_type(edge_type)?;
             for (src, dst) in typed_edges {
-                edges.push((src, dst, edge_type.clone()));
+                edges.push((src, dst, *edge_type));
             }
         }
 

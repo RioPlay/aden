@@ -574,6 +574,12 @@ enum McpAction {
         binary: Option<PathBuf>,
         #[arg(long, value_name = "PATH", help = "Project directory to serve")]
         project: Option<PathBuf>,
+        #[arg(
+            long,
+            value_name = "SCOPE",
+            help = "Install scope: user (global) or project (local). Default: user for Claude Code, project otherwise"
+        )]
+        scope: Option<String>,
         #[arg(long, help = "Install for all platforms, not just detected ones")]
         all: bool,
         #[arg(long, help = "Show what would be done without writing files")]
@@ -583,6 +589,12 @@ enum McpAction {
     Uninstall {
         #[arg(long, value_name = "PLATFORM", help = "Target platform")]
         platform: Option<String>,
+        #[arg(
+            long,
+            value_name = "SCOPE",
+            help = "Uninstall scope: user (global) or project (local). Default: user for Claude Code, project otherwise"
+        )]
+        scope: Option<String>,
         #[arg(long, help = "Remove from all supported platforms")]
         all: bool,
         #[arg(long, help = "Show what would be done without writing files")]
@@ -998,6 +1010,7 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
                 platform,
                 binary,
                 project,
+                scope,
                 all,
                 dry_run,
             } => {
@@ -1006,17 +1019,19 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
                     &platforms,
                     binary.as_deref(),
                     project.as_deref(),
+                    scope.as_deref(),
                     all,
                     dry_run,
                 )
             }
             McpAction::Uninstall {
                 platform,
+                scope,
                 all,
                 dry_run,
             } => {
                 let platforms = platform.map_or_else(Vec::new, |p| vec![p]);
-                mcp::run_uninstall(&platforms, all, dry_run)
+                mcp::run_uninstall(&platforms, scope.as_deref(), all, dry_run)
             }
             McpAction::List => mcp::run_list(),
             McpAction::Serve { port, path } => mcp::run_http_server(&path, port),

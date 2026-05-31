@@ -75,11 +75,10 @@ fn compute_content_hash(dir: &Path) -> Result<String, std::io::Error> {
         if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
             if (ext == "adoc" || ext == "aden" || ext == "md" || ext == "txt") && path.is_file() {
                 paths.push(path);
-            } else if path.is_dir() {
-                if let Ok(sub) = walk_knowledge_files(&path) {
+            } else if path.is_dir()
+                && let Ok(sub) = walk_knowledge_files(&path) {
                     paths.extend(sub);
                 }
-            }
         } else if path.is_dir()
             && let Ok(sub) = walk_knowledge_files(&path)
         {
@@ -149,15 +148,12 @@ fn sled_db_path(path: &Path) -> PathBuf {
 pub fn try_load(path: &Path) -> Option<AdenGraph<DocumentNode, AdenEdge>> {
     // 1. Try contracts store first (store-first architecture)
     let store_path = path.join(".aden").join("store");
-    if store_path.exists() {
-        if let Ok(storage) = Storage::new(store_path.to_str()?) {
-            if let Ok((docs, edges)) = GraphBridge::load_from_storage(&storage) {
-                if !docs.is_empty() {
+    if store_path.exists()
+        && let Ok(storage) = Storage::new(store_path.to_str()?)
+            && let Ok((docs, edges)) = GraphBridge::load_from_storage(&storage)
+                && !docs.is_empty() {
                     return Some(build_graph_from_docs_and_edges(docs, edges));
                 }
-            }
-        }
-    }
 
     // 2. Fall back to legacy cache
     let sled_path = sled_db_path(path);
@@ -206,7 +202,7 @@ pub fn save(
         let edge_type = &graph.graph[edge_idx];
         let src_anchor = src_node.anchor().to_string();
         let tgt_anchor = tgt_node.anchor().to_string();
-        edge_tuples.push((src_anchor, tgt_anchor, edge_type.edge_type.clone()));
+        edge_tuples.push((src_anchor, tgt_anchor, edge_type.edge_type));
     }
 
     // Get current git ref

@@ -25,6 +25,10 @@ See <<module-helper>>.
         token_budget: 8192,
         edge_types: vec![],
         block_filter: Vec::new(),
+        include_tags: Vec::new(),
+        exclude_tags: Vec::new(),
+        attributes: Vec::new(),
+        llm_mode: true,
     };
 
     c.bench_function("assembly", |b| {

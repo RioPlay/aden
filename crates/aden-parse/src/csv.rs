@@ -11,6 +11,12 @@ use std::path::Path;
 
 pub struct CsvExtractor;
 
+impl Default for CsvExtractor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CsvExtractor {
     pub fn new() -> Self {
         Self

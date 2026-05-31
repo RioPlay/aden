@@ -440,7 +440,7 @@ Closing paragraph.
         ];
 
         for edge_type in semantic_edges {
-            graph.graph.add_edge(idx1, idx2, AdenEdge { edge_type: edge_type.clone() });
+            graph.graph.add_edge(idx1, idx2, AdenEdge { edge_type });
             let errors = graph.validate_typed_edges();
             assert!(
                 errors.is_empty(),

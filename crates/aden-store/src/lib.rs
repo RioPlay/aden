@@ -178,7 +178,7 @@ pub trait GraphStorage: Send + Sync {
     /// (kernel-scale) feasible. Default impl falls back to repeated `put_edge`.
     fn put_edges_bulk(&self, edges: &[(String, String, EdgeType)]) -> Result<(), StoreError> {
         for (src, dst, et) in edges {
-            self.put_edge(src, dst, et.clone())?;
+            self.put_edge(src, dst, *et)?;
         }
         Ok(())
     }

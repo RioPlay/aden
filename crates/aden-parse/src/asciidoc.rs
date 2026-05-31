@@ -11,6 +11,12 @@ use std::path::Path;
 
 pub struct AsciiDocExtractor;
 
+impl Default for AsciiDocExtractor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AsciiDocExtractor {
     pub fn new() -> Self {
         Self
@@ -60,33 +66,33 @@ impl crate::extractor::LanguageExtractor for AsciiDocExtractor {
                 continue;
             }
 
-            if line.starts_with("= ") {
-                let title = line[2..].trim().to_string();
+            if let Some(rest) = line.strip_prefix("= ") {
+                let title = rest.trim().to_string();
                 if !title.is_empty() {
                     headings.push((1, title, line_num));
                 }
-            } else if line.starts_with("== ") {
-                let title = line[3..].trim().to_string();
+            } else if let Some(rest) = line.strip_prefix("== ") {
+                let title = rest.trim().to_string();
                 if !title.is_empty() {
                     headings.push((2, title, line_num));
                 }
-            } else if line.starts_with("=== ") {
-                let title = line[4..].trim().to_string();
+            } else if let Some(rest) = line.strip_prefix("=== ") {
+                let title = rest.trim().to_string();
                 if !title.is_empty() {
                     headings.push((3, title, line_num));
                 }
-            } else if line.starts_with("==== ") {
-                let title = line[5..].trim().to_string();
+            } else if let Some(rest) = line.strip_prefix("==== ") {
+                let title = rest.trim().to_string();
                 if !title.is_empty() {
                     headings.push((4, title, line_num));
                 }
-            } else if line.starts_with("===== ") {
-                let title = line[6..].trim().to_string();
+            } else if let Some(rest) = line.strip_prefix("===== ") {
+                let title = rest.trim().to_string();
                 if !title.is_empty() {
                     headings.push((5, title, line_num));
                 }
-            } else if line.starts_with("====== ") {
-                let title = line[7..].trim().to_string();
+            } else if let Some(rest) = line.strip_prefix("====== ") {
+                let title = rest.trim().to_string();
                 if !title.is_empty() {
                     headings.push((6, title, line_num));
                 }
@@ -234,10 +240,6 @@ fn parse_document_attributes(
                 }
             }
             end_line = i;
-        } else if line.is_empty() && i > 0 {
-            break;
-        } else if !line.starts_with(':') {
-            break;
         } else {
             break;
         }
@@ -357,12 +359,11 @@ fn extract_code_references(code: &str, lang: &str) -> Vec<String> {
                         let name = name.split('{').next().unwrap_or(name);
                         refs.push(format!("class:{}", name.trim()));
                     }
-                } else if trimmed.starts_with("interface ") || trimmed.starts_with("type ") {
-                    if let Some(name) = trimmed.split_whitespace().nth(1) {
+                } else if (trimmed.starts_with("interface ") || trimmed.starts_with("type "))
+                    && let Some(name) = trimmed.split_whitespace().nth(1) {
                         let name = name.split('{').next().unwrap_or(name);
                         refs.push(format!("type:{}", name));
                     }
-                }
             }
         }
         "go" => {
@@ -378,12 +379,11 @@ fn extract_code_references(code: &str, lang: &str) -> Vec<String> {
                         let name = name.split_whitespace().next().unwrap_or(name);
                         refs.push(format!("type:{}", name));
                     }
-                } else if trimmed.starts_with("import ") {
-                    if let Some(name) = trimmed.strip_prefix("import ") {
+                } else if trimmed.starts_with("import ")
+                    && let Some(name) = trimmed.strip_prefix("import ") {
                         let name = name.trim_matches('"');
                         refs.push(format!("use:{}", name));
                     }
-                }
             }
         }
         _ => {}

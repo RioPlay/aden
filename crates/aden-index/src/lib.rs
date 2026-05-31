@@ -154,18 +154,17 @@ fn parse_adoc(path: &Path, text: &str) -> Option<(String, PathBuf, HashMap<Strin
     let is_txt = path.extension().and_then(|e| e.to_str()).unwrap_or("") == "txt";
 
     // For .txt files, derive anchor from filename (without extension)
-    if is_txt {
-        if let Some(stem) = path.file_stem() {
+    if is_txt
+        && let Some(stem) = path.file_stem() {
             let stem_str = stem.to_string_lossy().to_lowercase();
             // Replace spaces/dashes with hyphens for valid anchor
-            let anchor_str = stem_str.replace(' ', "-").replace('_', "-");
+            let anchor_str = stem_str.replace([' ', '_'], "-");
             anchor = Some(anchor_str);
             // Add filename tokens
             for token in tokenize(&stem.to_string_lossy()) {
                 *counts.entry(token).or_insert(0) += 1;
             }
         }
-    }
 
     let mut in_listing = false;
     // Tracks whether the current table is a callee/implementation-metadata table.
@@ -352,7 +351,7 @@ impl Index {
     /// Call [`Index::finalize`] once after all `ingest` calls to recompute the
     /// BM25 average document length.
     pub fn ingest(&mut self, entries: Vec<(PathBuf, String)>) {
-        let parsed: Vec<((String, PathBuf, HashMap<String, usize>), String)> = entries
+        let parsed: Vec<_> = entries
             .into_par_iter()
             .filter_map(|(path, text)| parse_adoc(&path, &text).map(|p| (p, text)))
             .collect();
@@ -416,12 +415,11 @@ impl Index {
                     // For files in different directories, skip prefix check (security: only for project root)
                     let parent = path.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| path.clone());
                     let is_cross_dir = root != parent;
-                    if !is_cross_dir {
-                        if let Ok(rel) = path.strip_prefix(root)
+                    if !is_cross_dir
+                        && let Ok(rel) = path.strip_prefix(root)
                             && filter.should_skip(rel) {
                                 continue;
                         }
-                    }
                     out.push(path);
                 }
             }
@@ -627,6 +625,9 @@ impl Index {
     }
 }
 
+// Tests live here, mid-file, with the semantic-normalization helpers below them
+// kept adjacent to the code they support; relocating them adds churn for no gain.
+#[allow(clippy::items_after_test_module)]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1201,7 +1202,7 @@ impl SemanticNormalizer {
         let months = ["", "Jan", "Feb", "Mar", "Apr", "May", "Jun",
                       "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
         let idx: usize = n.parse().ok()?;
-        if idx >= 1 && idx <= 12 {
+        if (1..=12).contains(&idx) {
             Some(months[idx].to_string())
         } else {
             None
@@ -1213,7 +1214,7 @@ impl SemanticNormalizer {
         let months = ["", "January", "February", "March", "April", "May", "June",
                       "July", "August", "September", "October", "November", "December"];
         let idx: usize = n.parse().ok()?;
-        if idx >= 1 && idx <= 12 {
+        if (1..=12).contains(&idx) {
             Some(months[idx].to_string())
         } else {
             None

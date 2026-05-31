@@ -111,7 +111,7 @@ impl GraphStorage for FjallStorage {
             Some(b) => deserialize(&b)?,
             None => vec![],
         };
-        out.push((dst.to_string(), edge_type.clone()));
+        out.push((dst.to_string(), edge_type));
         self.outgoing.insert(&out_key, serialize(&out)?)?;
 
         let in_key = incoming_key(dst);
@@ -119,7 +119,7 @@ impl GraphStorage for FjallStorage {
             Some(b) => deserialize(&b)?,
             None => vec![],
         };
-        inc.push((src.to_string(), edge_type.clone()));
+        inc.push((src.to_string(), edge_type));
         self.incoming.insert(&in_key, serialize(&inc)?)?;
         Ok(())
     }
@@ -132,11 +132,11 @@ impl GraphStorage for FjallStorage {
             out_add
                 .entry(src.as_str())
                 .or_default()
-                .push((dst.clone(), edge_type.clone()));
+                .push((dst.clone(), *edge_type));
             in_add
                 .entry(dst.as_str())
                 .or_default()
-                .push((src.clone(), edge_type.clone()));
+                .push((src.clone(), *edge_type));
         }
         for (src, mut adds) in out_add {
             let key = outgoing_key(src);

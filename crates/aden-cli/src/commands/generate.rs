@@ -87,24 +87,21 @@ fn extract_callees(doc: &aden_core::Document) -> Vec<String> {
         match block {
             Block::Listing { code, .. } => {
                 for line in code.lines() {
-                    if let Some(rest) = line.trim().strip_prefix("edge::calls[") {
-                        if let Some(callee) = rest.strip_suffix(']') {
-                            if !callee.is_empty() {
+                    if let Some(rest) = line.trim().strip_prefix("edge::calls[")
+                        && let Some(callee) = rest.strip_suffix(']')
+                            && !callee.is_empty() {
                                 callees.push(callee.to_string());
                             }
-                        }
-                    }
                 }
             }
             Block::Table(t)
                 if t.headers.first().map(|h| h.eq_ignore_ascii_case("callee")) == Some(true) =>
             {
                 for row in &t.rows {
-                    if let Some(c) = row.first() {
-                        if !c.is_empty() {
+                    if let Some(c) = row.first()
+                        && !c.is_empty() {
                             callees.push(c.clone());
                         }
-                    }
                 }
             }
             _ => {}
@@ -124,13 +121,11 @@ fn extract_uses(doc: &aden_core::Document) -> Vec<String> {
     for block in &doc.blocks {
         if let Block::Listing { code, .. } = block {
             for line in code.lines() {
-                if let Some(rest) = line.trim().strip_prefix("edge::uses[") {
-                    if let Some(t) = rest.strip_suffix(']') {
-                        if !t.is_empty() {
+                if let Some(rest) = line.trim().strip_prefix("edge::uses[")
+                    && let Some(t) = rest.strip_suffix(']')
+                        && !t.is_empty() {
                             uses.push(t.to_string());
                         }
-                    }
-                }
             }
         }
     }
@@ -232,19 +227,16 @@ fn resolve_callee<'a>(
             }
         }
     };
-    if let Some(t) = name_index.get(callee) {
-        if let Some(r) = pick(t) {
+    if let Some(t) = name_index.get(callee)
+        && let Some(r) = pick(t) {
             return Some(r);
         }
-    }
     let base = callee.rsplit(['.', ':']).next().unwrap_or(callee);
-    if base != callee && !base.is_empty() {
-        if let Some(t) = name_index.get(base) {
-            if let Some(r) = pick(t) {
+    if base != callee && !base.is_empty()
+        && let Some(t) = name_index.get(base)
+            && let Some(r) = pick(t) {
                 return Some(r);
             }
-        }
-    }
     None
 }
 
@@ -253,6 +245,48 @@ fn resolve_callee<'a>(
 /// caller's own file. Returns `None` for non-module anchors (docs, etc.).
 fn anchor_file(anchor: &str) -> Option<&str> {
     anchor.strip_prefix("aden://module/")?.split('#').next()
+}
+
+/// Tally of how the call-site callee references fared during resolution. Counts
+/// are per callee reference, not per built edge — self-calls and several callee
+/// strings collapsing onto one target are each counted once here, yet build zero
+/// or deduped edges. Pure diagnostics: it never changes which edges are built, it
+/// just explains where the call graph thins out (a dropped call site is either an
+/// `Unresolved` name that matches no stored symbol, or an `Ambiguous` one that
+/// matches several and couldn't be disambiguated by locality).
+#[derive(Default)]
+struct CalleeStats {
+    resolved: usize,
+    unresolved: usize,
+    ambiguous: usize,
+}
+
+/// Why a callee did not produce a `Calls` edge — used to attribute drops to the
+/// messiness they signal (no such symbol vs. a name shared across modules).
+enum DropReason {
+    Unresolved,
+    Ambiguous,
+}
+
+/// Classify a callee that `resolve_callee` declined to link. Mirrors that
+/// function's lookup order (full name, then trailing segment) but only inspects
+/// candidate *counts*: zero candidates → `Unresolved`, otherwise the locality
+/// heuristic gave up on multiple → `Ambiguous`. Cheap (HashMap lookups, no
+/// allocation) and never alters resolution.
+fn classify_drop(callee: &str, name_index: &HashMap<&str, Vec<&str>>) -> DropReason {
+    let count = |name: &str| name_index.get(name).map(|c| c.len()).unwrap_or(0);
+    let mut n = count(callee);
+    if n == 0 {
+        let base = callee.rsplit(['.', ':']).next().unwrap_or(callee);
+        if base != callee && !base.is_empty() {
+            n = count(base);
+        }
+    }
+    if n == 0 {
+        DropReason::Unresolved
+    } else {
+        DropReason::Ambiguous
+    }
 }
 
 /// Connect the stored symbols into a traversable graph by persisting edges,
@@ -265,6 +299,7 @@ fn anchor_file(anchor: &str) -> Option<&str> {
 ///    and the module containment edges, and
 /// 2. takes call-site data as compact `(anchor, callees)` records collected
 ///    during the parse phase.
+///
 /// All edges are then written with a single `put_edges_bulk` pass (O(E), not the
 /// O(N^2) that per-edge writes incur on high-degree module nodes).
 ///
@@ -278,7 +313,7 @@ fn link_store_edges<S: GraphStorage>(
     link_records: &[(String, Vec<String>)],
     use_records: &[(String, Vec<String>)],
     ref_records: &[(String, Vec<String>)],
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<CalleeStats, Box<dyn std::error::Error>> {
     use aden_core::{Block, Document, EdgeType, NodeType};
     use std::collections::HashSet;
 
@@ -309,13 +344,23 @@ fn link_store_edges<S: GraphStorage>(
         }
     }
 
-    // Call edges from the compact per-symbol records.
+    // Call edges from the compact per-symbol records. Tally each callee so the
+    // gen summary can flag where the call graph silently thins out.
+    let mut callee_stats = CalleeStats::default();
     for (anchor, callees) in link_records {
         for callee in callees {
-            if let Some(target) = resolve_callee(callee, anchor, &name_index) {
-                if target != anchor.as_str() {
+            match resolve_callee(callee, anchor, &name_index) {
+                Some(target) if target != anchor.as_str() => {
+                    callee_stats.resolved += 1;
                     edges.push((anchor.clone(), target.to_string(), EdgeType::Calls));
                 }
+                // A self-call resolves but builds no edge (we skip self-loops);
+                // count it as resolved so it isn't mistaken for a dropped edge.
+                Some(_) => callee_stats.resolved += 1,
+                None => match classify_drop(callee, &name_index) {
+                    DropReason::Unresolved => callee_stats.unresolved += 1,
+                    DropReason::Ambiguous => callee_stats.ambiguous += 1,
+                },
             }
         }
     }
@@ -325,11 +370,10 @@ fn link_store_edges<S: GraphStorage>(
     // dead code in graph-wide queries like `where callers=0`.
     for (anchor, used_types) in use_records {
         for used in used_types {
-            if let Some(target) = resolve_callee(used, anchor, &name_index) {
-                if target != anchor.as_str() {
+            if let Some(target) = resolve_callee(used, anchor, &name_index)
+                && target != anchor.as_str() {
                     edges.push((anchor.clone(), target.to_string(), EdgeType::Uses));
                 }
-            }
         }
     }
 
@@ -337,12 +381,11 @@ fn link_store_edges<S: GraphStorage>(
     // backlinks work (a doc and what it references are mutually reachable).
     for (anchor, refs) in ref_records {
         for r in refs {
-            if let Some(target) = resolve_callee(r, anchor, &name_index) {
-                if target != anchor.as_str() {
+            if let Some(target) = resolve_callee(r, anchor, &name_index)
+                && target != anchor.as_str() {
                     edges.push((anchor.clone(), target.to_string(), EdgeType::RelatesTo));
                     edges.push((target.to_string(), anchor.clone(), EdgeType::RelatesTo));
                 }
-            }
         }
     }
 
@@ -386,7 +429,7 @@ fn link_store_edges<S: GraphStorage>(
 
     storage.put_edges_bulk(&edges)?;
     storage.flush()?;
-    Ok(())
+    Ok(callee_stats)
 }
 
 /// Ensure the store is up to date with the source before a read command serves
@@ -535,11 +578,10 @@ fn cmd_gen_inner(path: &Path, quiet: bool, silent: bool) -> Result<(), Box<dyn s
                     return None;
                 }
                 let cache_key = src_rel.to_string_lossy().to_string();
-                if let Some(e) = cache.entries.get(&cache_key) {
-                    if e.source_mtime == mtime_secs {
+                if let Some(e) = cache.entries.get(&cache_key)
+                    && e.source_mtime == mtime_secs {
                         return Some(WorkItem::Skip);
                     }
-                }
 
                 // Read source
                 let source = match std::fs::read_to_string(src_path) {
@@ -728,9 +770,14 @@ fn cmd_gen_inner(path: &Path, quiet: bool, silent: bool) -> Result<(), Box<dyn s
 
         // Connect the graph: persist module<->symbol containment and call edges
         // so the store-first graph used by asm/ask/query is actually traversable.
-        if let Err(e) = link_store_edges(&storage, &link_records, &use_records, &ref_records) {
-            eprintln!("WARN: Failed to link graph edges: {}", e);
-        }
+        let callee_stats = match link_store_edges(&storage, &link_records, &use_records, &ref_records)
+        {
+            Ok(stats) => stats,
+            Err(e) => {
+                eprintln!("WARN: Failed to link graph edges: {}", e);
+                CalleeStats::default()
+            }
+        };
 
         save_gen_cache(&cache_path, &cache)?;
 
@@ -756,6 +803,22 @@ fn cmd_gen_inner(path: &Path, quiet: bool, silent: bool) -> Result<(), Box<dyn s
             progress!(
                 silent,
                 "(All files were skipped — nothing changed since last run)"
+            );
+        }
+
+        // Call-graph resolution health. Dropped call sites (unresolved/ambiguous
+        // callees) are exactly where the graph thins out, so surface the counts
+        // on the same summary channel — quiet/regen still shows it, the silent
+        // refresh-on-read path stays silent. Only emit when something dropped to
+        // keep the clean case uncluttered. Counts are per callee reference, not
+        // per built edge (self-calls / collapsed targets inflate `resolved`).
+        if callee_stats.unresolved > 0 || callee_stats.ambiguous > 0 {
+            progress!(
+                silent,
+                "Call sites: {} resolved, {} unresolved, {} ambiguous.",
+                callee_stats.resolved,
+                callee_stats.unresolved,
+                callee_stats.ambiguous
             );
         }
 
@@ -858,6 +921,61 @@ mod link_tests {
         assert_eq!(
             resolve_callee("helper", "aden://module/crate-c/z.rs#caller", &idx),
             None
+        );
+    }
+
+    #[test]
+    fn classify_drop_zero_candidates_is_unresolved() {
+        // Empty index: nothing matches the callee at all.
+        let idx: HashMap<&str, Vec<&str>> = HashMap::new();
+        assert!(
+            matches!(classify_drop("nonexistent", &idx), DropReason::Unresolved),
+            "a callee with zero candidates must be Unresolved"
+        );
+        // A name present but unrelated to the callee is still zero candidates.
+        let mut idx2: HashMap<&str, Vec<&str>> = HashMap::new();
+        idx2.insert("something_else", vec!["aden://module/c/a.rs#something_else"]);
+        assert!(matches!(classify_drop("missing", &idx2), DropReason::Unresolved));
+    }
+
+    #[test]
+    fn classify_drop_multiple_full_name_candidates_is_ambiguous() {
+        // The full callee name itself resolves to >= 2 candidates.
+        let mut idx: HashMap<&str, Vec<&str>> = HashMap::new();
+        idx.insert(
+            "helper",
+            vec![
+                "aden://module/crate-a/x.rs#helper",
+                "aden://module/crate-b/y.rs#helper",
+            ],
+        );
+        assert!(
+            matches!(classify_drop("helper", &idx), DropReason::Ambiguous),
+            ">=2 candidates for the full name must be Ambiguous"
+        );
+    }
+
+    #[test]
+    fn classify_drop_trailing_segment_with_multiple_candidates_is_ambiguous() {
+        // Full qualified name has no candidates, but its trailing segment
+        // (after '.' / ':') matches >= 2 — mirrors resolve_callee's fallback.
+        let mut idx: HashMap<&str, Vec<&str>> = HashMap::new();
+        idx.insert(
+            "node_text",
+            vec![
+                "aden://module/aden-parse/rust.rs#node_text",
+                "aden://module/aden-parse/python.rs#node_text",
+            ],
+        );
+        // Dotted receiver call: `self.node_text` → base `node_text`.
+        assert!(
+            matches!(classify_drop("self.node_text", &idx), DropReason::Ambiguous),
+            "trailing segment after '.' with >=2 candidates must be Ambiguous"
+        );
+        // Path-qualified call: `Parser::node_text` → base `node_text`.
+        assert!(
+            matches!(classify_drop("Parser::node_text", &idx), DropReason::Ambiguous),
+            "trailing segment after ':' with >=2 candidates must be Ambiguous"
         );
     }
 

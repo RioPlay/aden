@@ -348,11 +348,10 @@ fn collect_files_inner(dir: &Path, depth: usize) -> Result<Vec<PathBuf>, GraphEr
         let path = entry.path();
         if path.is_dir() {
             files.extend(collect_files_inner(&path, depth + 1)?);
-        } else if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-            if SUPPORTED_EXTENSIONS.contains(&ext) {
+        } else if let Some(ext) = path.extension().and_then(|e| e.to_str())
+            && SUPPORTED_EXTENSIONS.contains(&ext) {
                 files.push(path);
             }
-        }
     }
     files.sort();
     Ok(files)
@@ -392,7 +391,7 @@ impl AdenGraph<DocumentNode, AdenEdge> {
                         .and_then(|s| s.to_str())
                         .unwrap_or("unknown")
                         .to_string();
-                    let doc = parsed_to_document(&parsed, &anchor, file_path);
+                    let doc = parsed_to_document(parsed, &anchor, file_path);
                     vec![(
                         doc.anchor.clone(),
                         DocumentNode {
@@ -405,7 +404,7 @@ impl AdenGraph<DocumentNode, AdenEdge> {
                     anchors
                         .iter()
                         .map(|anchor| {
-                            let doc = parsed_to_document(&parsed, anchor, file_path);
+                            let doc = parsed_to_document(parsed, anchor, file_path);
                             (
                                 doc.anchor.clone(),
                                 DocumentNode {
@@ -453,17 +452,14 @@ impl AdenGraph<DocumentNode, AdenEdge> {
                 } else {
                     EdgeType::UsedBy
                 };
-                if let Err(_) =
-                    graph.add_edge_by_anchor(&source_anchor, ref_anchor, AdenEdge { edge_type })
-                {
-                }
-                if let Err(_) = graph.add_edge_by_anchor(
+                let _ = graph.add_edge_by_anchor(&source_anchor, ref_anchor, AdenEdge { edge_type });
+                let _ = graph.add_edge_by_anchor(
                     ref_anchor,
                     &source_anchor,
                     AdenEdge {
                         edge_type: backlink_type,
                     },
-                ) {}
+                );
             }
 
             // Build edges from includes: include::target
@@ -473,18 +469,13 @@ impl AdenGraph<DocumentNode, AdenEdge> {
                     .file_stem()
                     .and_then(|s| s.to_str())
                     .unwrap_or("unknown");
-                let target_anchor = if inc.path.starts_with("[[") {
-                    inc_file_stem.to_string()
-                } else {
-                    inc_file_stem.to_string()
-                };
+                let target_anchor = inc_file_stem.to_string();
                 let edge_type = if source_anchor.starts_with("adr-") {
                     EdgeType::RelatesTo
                 } else {
                     EdgeType::Requires
                 };
-                if let Err(_) =
-                    graph.add_edge_by_anchor(&source_anchor, &target_anchor, AdenEdge { edge_type })
+                if graph.add_edge_by_anchor(&source_anchor, &target_anchor, AdenEdge { edge_type }).is_err()
                 {
                 }
             }
@@ -520,11 +511,11 @@ impl AdenGraph<DocumentNode, AdenEdge> {
                     "isequivalent" | "is-equivalent-to" => EdgeType::IsEquivalentTo,
                     _ => EdgeType::RelatesTo,
                 };
-                if let Err(_) = graph.add_edge_by_anchor(
+                if graph.add_edge_by_anchor(
                     &source_anchor,
                     &edge_macro.target,
                     AdenEdge { edge_type },
-                ) {}
+                ).is_err() {}
             }
         }
 
@@ -600,13 +591,13 @@ impl AdenGraph<DocumentNode, AdenEdge> {
                 .get_edges_by_type(edge_type)
                 .map_err(|e| GraphError::Io(e.to_string()))?;
             for (src, dst) in typed_edges {
-                if let Err(_) = graph.add_edge_by_anchor(
+                if graph.add_edge_by_anchor(
                     &src,
                     &dst,
                     AdenEdge {
-                        edge_type: edge_type.clone(),
+                        edge_type: *edge_type,
                     },
-                ) {}
+                ).is_err() {}
             }
         }
 

@@ -1371,7 +1371,7 @@ pub fn cmd_licenses(
         markdown.push_str("| License | Count |\n");
         markdown.push_str("|--------|-------|\n");
         let mut sorted_licenses: Vec<_> = license_counts.iter().collect();
-        sorted_licenses.sort_by(|a, b| b.1.cmp(&a.1));
+        sorted_licenses.sort_by(|a, b| b.1.cmp(a.1));
 
         for (license, count) in sorted_licenses {
             markdown.push_str(&format!("| {} | {} |\n", license, count));

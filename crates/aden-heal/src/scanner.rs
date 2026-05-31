@@ -102,8 +102,8 @@ impl Scanner {
                 }
 
                 // Slow path: read & parse
-                if let Ok(content) = std::fs::read_to_string(path) {
-                    if let Ok(docs) = aden_parse::parse_file(path, &content) {
+                if let Ok(content) = std::fs::read_to_string(path)
+                    && let Ok(docs) = aden_parse::parse_file(path, &content) {
                         let mut cache_updates = Vec::new();
                         let mut entries = Vec::new();
                         for doc in docs {
@@ -114,19 +114,16 @@ impl Scanner {
                         }
                         return Some((cache_updates, entries));
                     }
-                }
                 None::<(Vec<(String, (u64, String))>, Vec<(PathBuf, Document)>)>
             })
             .collect();
 
         // Merge parallel results
-        for work in source_work {
-            if let Some((cache_updates, entries)) = work {
-                for (rel_str, entry) in cache_updates {
-                    new_cache.entries.insert(rel_str, entry);
-                }
-                source_entries.extend(entries);
+        for (cache_updates, entries) in source_work.into_iter().flatten() {
+            for (rel_str, entry) in cache_updates {
+                new_cache.entries.insert(rel_str, entry);
             }
+            source_entries.extend(entries);
         }
 
         let mut anchor_to_source_idx: HashMap<String, usize> = HashMap::new();
@@ -139,22 +136,19 @@ impl Scanner {
         let mut aden_anchors: HashSet<String> = HashSet::new();
         let mut contract_docs: Vec<(String, Document)> = Vec::new();
 
-        if store_path.exists() {
-            if let Ok(storage) = Storage::new(
+        if store_path.exists()
+            && let Ok(storage) = Storage::new(
                 store_path
                     .to_str()
                     .expect("Store path should be valid UTF-8"),
-            ) {
-                if let Ok(all_docs) = storage.get_all_documents() {
-                    if !all_docs.is_empty() {
+            )
+                && let Ok(all_docs) = storage.get_all_documents()
+                    && !all_docs.is_empty() {
                         for (anchor, doc) in all_docs {
                             aden_anchors.insert(anchor.clone());
                             contract_docs.push((anchor.clone(), doc));
                         }
                     }
-                }
-            }
-        }
 
         // Fallback: if store has no docs, parse .adoc files from disk
         if contract_docs.is_empty() {
@@ -175,8 +169,8 @@ impl Scanner {
         for (anchor, doc) in &contract_docs {
             if let Some(expected_hash) = doc.attributes.get("source_hash") {
                 let source_path = self.find_source_for_doc(doc);
-                if let Some(source_path) = source_path {
-                    if let Ok(content) = std::fs::read_to_string(&source_path) {
+                if let Some(source_path) = source_path
+                    && let Ok(content) = std::fs::read_to_string(&source_path) {
                         let actual_hash = aden_core::stable_hash(content.as_bytes());
                         if actual_hash != *expected_hash {
                             events.push(DriftEvent::StaleHash {
@@ -186,7 +180,6 @@ impl Scanner {
                             });
                         }
                     }
-                }
             }
         }
 
@@ -261,14 +254,13 @@ impl Scanner {
                 let inc_paths: Vec<&str> = includes.split(',').collect();
                 for inc_path in inc_paths {
                     let inc_path = inc_path.trim();
-                    if let Ok(inc_path_buf) = resolve_include_from_anchor(anchor, inc_path, &self.repo_root) {
-                        if !inc_path_buf.exists() {
+                    if let Ok(inc_path_buf) = resolve_include_from_anchor(anchor, inc_path, &self.repo_root)
+                        && !inc_path_buf.exists() {
                             events.push(DriftEvent::DeadLink {
                                 contract_path: format!(".aden/store:{}", anchor),
                                 include_path: inc_path.to_string(),
                             });
                         }
-                    }
                 }
             }
         }
