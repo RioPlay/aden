@@ -402,10 +402,15 @@ enum Commands {
         #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
         path: PathBuf,
     },
-    /// Run gen + check + heal in sequence to sync everything
+    /// Run gen + check + heal (with gc) in sequence to sync everything
     Sync {
         #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
         path: PathBuf,
+        #[arg(
+            long,
+            help = "Skip garbage-collection of deleted symbols/files from the store"
+        )]
+        no_gc: bool,
     },
     /// Watch source files for changes and auto-regenerate contracts
     #[cfg(feature = "watch")]
@@ -907,15 +912,14 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
         }
         #[cfg(feature = "watch")]
         Commands::Status { path } => {
-            use crate::util::quick_health_score;
-
             let aden_path = path.join(".aden");
             println!("Aden Status: {}", path.display());
             println!("Active .aden: {}", aden_path.display());
 
-            let health = quick_health_score(&path).unwrap_or(0.0);
+            // Health is a heal-drift metric (stale docs vs. code), separate
+            // from orphans. Keep it as the honest drift signal.
+            let health = crate::util::quick_health_score(&path).unwrap_or(0.0);
             let health_pct = (health * 100.0).round() as i32;
-
             let emoji = if health >= 0.95 {
                 "✅"
             } else if health >= 0.8 {
@@ -925,20 +929,33 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
             };
             println!("{} Health: {}/100", emoji, health_pct);
 
-            // Quick orphan check
-            let graph = aden_graph::cache::build_from_directory_cached(&path).ok();
-            if let Some(g) = graph {
-                let orphans = g.orphans();
-                if orphans.is_empty() {
-                    println!("✅ No orphan documents");
+            // Orphan breakdown via the SAME classifier `check` uses, so status
+            // never again reports expected metadata docs as scary orphans.
+            if let Ok(g) = aden_graph::cache::build_from_directory_cached(&path) {
+                let (expected, actionable) = crate::util::classify_orphans(&g);
+                if actionable.is_empty() {
+                    if expected.is_empty() {
+                        println!("✅ No orphan documents");
+                    } else {
+                        println!(
+                            "✅ No actionable orphans ({} expected metadata doc(s), which is normal)",
+                            expected.len()
+                        );
+                    }
                 } else {
-                    println!("⚠️ {} orphan document(s)", orphans.len());
+                    println!(
+                        "⚠️ {} actionable orphan document(s) (run 'aden heal . --gc' to remove if deleted)",
+                        actionable.len()
+                    );
+                    if !expected.is_empty() {
+                        println!("   (plus {} expected metadata doc(s) — normal)", expected.len());
+                    }
                 }
             }
 
             Ok(())
         }
-        Commands::Sync { path } => {
+        Commands::Sync { path, no_gc } => {
             println!("Running aden sync on {}...", path.display());
 
             // 1. Generate contracts
@@ -956,9 +973,16 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
 
-            // 3. Heal scan
-            println!("\n[3/3] Scanning for drift...");
-            if let Err(e) = commands::cmd_heal_scan(&path, false, false, false, cli.unlimited) {
+            // 3. Heal scan — gc by default so deleted symbols/files are pruned
+            // from the store (the orphan/drift these leave behind is exactly
+            // what "sync everything" is meant to converge). `--no-gc` opts out.
+            let gc = !no_gc;
+            if gc {
+                println!("\n[3/3] Scanning for drift (with gc)...");
+            } else {
+                println!("\n[3/3] Scanning for drift...");
+            }
+            if let Err(e) = commands::cmd_heal_scan(&path, false, false, gc, cli.unlimited) {
                 eprintln!("Heal error: {}", e);
             }
 

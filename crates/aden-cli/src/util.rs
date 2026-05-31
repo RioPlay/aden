@@ -491,23 +491,14 @@ pub fn perform_check(path: &Path) -> Result<Vec<String>, Box<dyn std::error::Err
         }
     }
 
-    let orphans = graph.orphans();
     // Many orphans are EXPECTED: doc-heading anchors (aden://doc/...) and
     // standalone metadata docs (ADR/plan/use-case/readme/agent) legitimately
     // have no graph edges — they are reference material, not dead code. Only
     // flag *actionable* orphans (code symbols/modules that should be connected)
     // as a WARNING, so the real signal is not buried under hundreds of expected
-    // metadata nodes. The rest are reported as a quiet count.
-    let is_expected_metadata = |a: &str| {
-        a.starts_with("aden://doc/")
-            || a.starts_with("adr-")
-            || a.starts_with("plan-")
-            || a.starts_with("use-case-")
-            || a.starts_with("agent-")
-            || a == "readme"
-    };
-    let (expected, actionable): (Vec<&String>, Vec<&String>) =
-        orphans.iter().partition(|a| is_expected_metadata(a));
+    // metadata nodes. The rest are reported as a quiet count. Classification is
+    // shared with `status`/`quick_health_score` via `classify_orphans`.
+    let (expected, actionable) = classify_orphans(&graph);
 
     if actionable.is_empty() {
         if expected.is_empty() {
@@ -630,6 +621,35 @@ pub fn load_or_build_index(path: &Path) -> Result<aden_index::Index, Box<dyn std
 }
 
 /// Compute a quick health score from drift events (consistent with heal report).
+/// Classify an anchor as *expected* metadata that legitimately has no graph
+/// edges. Doc-heading anchors (`aden://doc/...`) and standalone metadata docs
+/// (ADR/plan/use-case/readme/agent) are reference material, not dead code, so
+/// they are NOT actionable orphans.
+///
+/// Single source of truth for orphan classification — `status` and `check`
+/// (`perform_check`) both route through it so they can never disagree on what
+/// counts as a real orphan.
+pub fn is_expected_metadata(anchor: &str) -> bool {
+    anchor.starts_with("aden://doc/")
+        || anchor.starts_with("adr-")
+        || anchor.starts_with("plan-")
+        || anchor.starts_with("use-case-")
+        || anchor.starts_with("agent-")
+        || anchor == "readme"
+}
+
+/// Partition a graph's orphans into `(expected_metadata, actionable)`.
+/// Actionable orphans are code symbols/modules that should be connected but
+/// aren't; expected ones are reference docs that normally have no edges.
+pub fn classify_orphans(
+    graph: &aden_graph::AdenGraph<aden_graph::DocumentNode, aden_graph::AdenEdge>,
+) -> (Vec<String>, Vec<String>) {
+    graph
+        .orphans()
+        .into_iter()
+        .partition(|a| is_expected_metadata(a))
+}
+
 pub fn quick_health_score(path: &Path) -> Result<f64, Box<dyn std::error::Error>> {
     use aden_heal::{Scanner, generate};
 

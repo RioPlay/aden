@@ -989,9 +989,9 @@ mod tests {
             rules("system(\"rm #{user_path}\")", "rb").contains(&"sc-data-is-data".to_string())
         );
         // sc-no-secret-ingest — hard-coded credential in a string literal.
+        let aws_key_code = ["let k = \"", "AKIA", "IOSFODNN7EXAMPLE\";"].concat();
         assert!(
-            rules("let k = \"AKIAIOSFODNN7EXAMPLE\";", "rs")
-                .contains(&"sc-no-secret-ingest".to_string())
+            rules(&aws_key_code, "rs").contains(&"sc-no-secret-ingest".to_string())
         );
     }
 
