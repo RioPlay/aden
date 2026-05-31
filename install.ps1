@@ -56,27 +56,30 @@ if (-not (Test-Path $InstallDir)) {
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 }
 
+# Windows binaries carry a .exe extension; PowerShell Core on Unix does not.
+$ExeExt = if ($IsWindows -or $env:OS -eq 'Windows_NT') { ".exe" } else { "" }
+
 # Copy binaries
-$AdenSrc = Join-Path $PROJECT_ROOT "target/release/aden"
-$McpSrc = Join-Path $PROJECT_ROOT "target/release/aden-mcp"
+$AdenSrc = Join-Path $PROJECT_ROOT "target/release/aden$ExeExt"
+$McpSrc = Join-Path $PROJECT_ROOT "target/release/aden-mcp$ExeExt"
 
 if (-not (Test-Path $AdenSrc)) {
     Die "Build failed: aden binary not found"
 }
 
-Copy-Item -Path $AdenSrc -Destination (Join-Path $InstallDir "aden") -Force
+Copy-Item -Path $AdenSrc -Destination (Join-Path $InstallDir "aden$ExeExt") -Force
 if (Test-Path $McpSrc) {
-    Copy-Item -Path $McpSrc -Destination (Join-Path $InstallDir "aden-mcp") -Force
+    Copy-Item -Path $McpSrc -Destination (Join-Path $InstallDir "aden-mcp$ExeExt") -Force
 }
 
 # Verify
-$InstalledPath = Join-Path $InstallDir "aden"
+$InstalledPath = Join-Path $InstallDir "aden$ExeExt"
 if (Test-Path $InstalledPath) {
     $Version = & $InstalledPath --version 2>$null
     if (-not $Version) { $Version = "unknown" }
 
     Banner -Text "Installed"
-    Write-Host "  aden     -> $InstallDir\aden"
+    Write-Host "  aden     -> $InstallDir\aden$ExeExt"
     Write-Host "  Version: $Version"
     Write-Host ""
     Write-Host "Next steps:"
