@@ -121,6 +121,8 @@ pub fn is_secret_path(relative: &Path) -> bool {
         "id_dsa",
         "id_ecdsa",
         "id_ed25519",
+        "kubeconfig",
+        ".dockercfg",
     ];
     if SECRET_NAMES.contains(&name.as_str()) {
         return true;
@@ -131,9 +133,12 @@ pub fn is_secret_path(relative: &Path) -> bool {
         return true;
     }
 
-    // Private-key / keystore / encrypted-secret extensions.
+    // Private-key / keystore / encrypted-secret extensions. Terraform state and
+    // tfvars files routinely contain plaintext provider credentials, so they are
+    // treated as secrets at the indexing boundary.
     const SECRET_EXTS: &[&str] = &[
         "pem", "key", "p8", "p12", "pfx", "keystore", "jks", "kdbx", "ppk", "asc", "gpg", "pgp",
+        "tfstate", "tfvars",
     ];
     if let Some(ext) = relative.extension().and_then(|e| e.to_str())
         && SECRET_EXTS.contains(&ext.to_ascii_lowercase().as_str()) {

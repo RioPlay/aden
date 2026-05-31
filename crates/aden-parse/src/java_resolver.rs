@@ -120,11 +120,15 @@ fn infer_java_package(path: &Path, source: &str) -> String {
     // Fallback: infer from directory structure (src/main/java/com/example/Foo.java -> com.example)
     let path_str = path.to_string_lossy();
     if let Some(idx) = path_str.rfind("/java/") {
-        let after_java = &path_str[idx + 6..path_str.rfind('/').unwrap_or(path_str.len())];
+        let start = idx + 6;
+        let end = path_str.rfind('/').unwrap_or(path_str.len()).max(start);
+        let after_java = &path_str[start..end];
         return after_java.replace('/', ".");
     }
     if let Some(idx) = path_str.rfind("\\\\java\\\\") {
-        let after_java = &path_str[idx + 7..path_str.rfind('\\').unwrap_or(path_str.len())];
+        let start = idx + 7;
+        let end = path_str.rfind('\\').unwrap_or(path_str.len()).max(start);
+        let after_java = &path_str[start..end];
         return after_java.replace('\\', ".");
     }
     path.parent()

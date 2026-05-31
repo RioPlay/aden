@@ -118,7 +118,9 @@ fn infer_kotlin_package(path: &Path, source: &str) -> String {
     let path_str = path.to_string_lossy();
     // src/main/kotlin/com/example/Foo.kt -> com.example
     if let Some(idx) = path_str.rfind("/kotlin/") {
-        let after = &path_str[idx + 8..path_str.rfind('/').unwrap_or(path_str.len())];
+        let start = idx + 8;
+        let end = path_str.rfind('/').unwrap_or(path_str.len()).max(start);
+        let after = &path_str[start..end];
         return after.replace('/', ".");
     }
     path.parent()

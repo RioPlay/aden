@@ -343,7 +343,7 @@ impl Index {
     ///
     /// `source_path` is used only as the recorded location and (for `.txt`) as
     /// the anchor source — it does **not** have to exist on disk. This is what
-    /// lets the index include contracts that live in the sled store rather than
+    /// lets the index include contracts that live in the fjall store rather than
     /// as files, so `search`/`ask` can see code symbols emitted by
     /// `aden gen --auto`. Anchors already present are left untouched (earlier
     /// ingestions win), so on-disk contracts take precedence over store copies.

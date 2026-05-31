@@ -120,7 +120,9 @@ fn infer_php_namespace(path: &Path, source: &str) -> String {
     let path_str = path.to_string_lossy();
     // src/Foo/Bar.php -> Foo\Bar
     if let Some(idx) = path_str.rfind("/src/") {
-        let after = &path_str[idx + 5..path_str.rfind('/').unwrap_or(path_str.len())];
+        let start = idx + 5;
+        let end = path_str.rfind('/').unwrap_or(path_str.len()).max(start);
+        let after = &path_str[start..end];
         return after.replace('/', "\\");
     }
     path.parent()

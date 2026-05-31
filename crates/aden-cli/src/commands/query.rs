@@ -1005,18 +1005,38 @@ Context begins below (--- separates different documents):
                 "max_tokens": 2048
             });
 
-            let output = std::process::Command::new("curl")
+            // Keep the API key off the process command line (visible in
+            // `ps`/`/proc/<pid>/cmdline` to any local user) and out of the
+            // child's inherited environment. The Authorization header is fed
+            // to curl through a `--config -` block read from stdin; only the
+            // non-sensitive URL/payload stay on argv. Escape `\` and `"` for
+            // curl's config-file string syntax.
+            let escaped_key = api_key.replace('\\', "\\\\").replace('"', "\\\"");
+            let curl_config = format!("header = \"Authorization: Bearer {}\"\n", escaped_key);
+
+            use std::io::Write as _;
+            let mut child = std::process::Command::new("curl")
                 .args([
                     "-sS",
                     "https://api.openai.com/v1/chat/completions",
                     "-H",
-                    &format!("Authorization: Bearer {}", api_key),
-                    "-H",
                     "Content-Type: application/json",
                     "-d",
                     &payload.to_string(),
+                    "--config",
+                    "-",
                 ])
-                .output()?;
+                .env_remove("OPENAI_API_KEY")
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()?;
+            child
+                .stdin
+                .take()
+                .ok_or("failed to open curl stdin")?
+                .write_all(curl_config.as_bytes())?;
+            let output = child.wait_with_output()?;
 
             if output.status.success() {
                 let json: serde_json::Value = serde_json::from_slice(&output.stdout)?;
@@ -1729,10 +1749,6 @@ pub fn cmd_watch(
         None
     };
 
-    println!(
-        "Watching {} for changes... Press Ctrl+C to stop.",
-        path.display()
-    );
     if graph_sync {
         println!("Graph sync enabled - contracts and graph stay current.");
     }

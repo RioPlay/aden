@@ -102,31 +102,12 @@ and fixed the root causes:
 **Example:** `index.js#util` appears twice in "Stored 4 contracts" but only once in list.
 **Status:** Low priority - cosmetic issue.
 
-### 2. Go Module Path Not Resolved
-**Severity:** Low  
-**Description:** Go files show `aden://module/unknown/main.go#main` instead of extracting the actual module path from `go.mod`.
-**Root Cause:** Go module path resolution not implemented or failing silently.
-**Expected:** Should show something like `aden://module/example.com/project/main.go#main`
-**Status:** Low priority - cosmetic issue.
-
-### 3. No Persistent Active Project Setting
+### 2. No Persistent Active Project Setting
 **Severity:** Medium
 **Description:** Users must specify `--project` flag on every command or change directories manually.
 **Status:** Partial fix - `--project` flag implemented. Persistent setting not yet implemented.
 
-### 4. MCP Server Not Responding — NOT A BUG (2026-05-29)
-**Severity:** ~~High~~ resolved / misdiagnosed
-**Description:** `aden-mcp` appeared to "exit with connection closed: initialize request" when run directly.
-**Root Cause:** That is expected behaviour of a *stdio* JSON-RPC server: with no MCP client on the other end of stdin, there is no `initialize` request to process. It is not a fault.
-**Verified working:** Feeding a real MCP handshake over stdin
-(`initialize` → `notifications/initialized` → `tools/list` / `tools/call`) returns
-correct JSON-RPC responses: protocol negotiation, all 33 tools with schemas, and
-a live `tools/call locate` returning results — clean stdout, empty stderr, exit 0.
-The `rmcp` SDK owns the stdout framing and `run_aden_command` captures subprocess
-output, so nothing pollutes the stream.
-**Status:** Works. Use via an MCP client (`aden mcp install --platform <name>`), not by running the binary bare.
-
-### 5. Source Required for Contracts
+### 3. Source Required for Contracts
 **Severity:** Medium
 **Description:** Contracts cannot be generated without source files present. No way to define a "virtual" project structure purely from contracts.
 **Status:** Not implemented - requires design work.
@@ -141,9 +122,5 @@ The duplicates appear during "Stored" phase but don't affect final anchor list. 
 
 ## Priority Order
 1. Persistent active project setting
-2. Go module path resolution
-3. JavaScript duplicate store entries
-4. Virtual project structure support
-
-(MCP server connectivity was removed from this list — it was diagnosed as
-NOT-A-BUG; see "MCP Server Not Responding" above.)
+2. JavaScript duplicate store entries
+3. Virtual project structure support

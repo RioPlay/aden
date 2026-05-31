@@ -300,27 +300,13 @@ pub fn valid_edge_types() -> Vec<&'static str> {
     ]
 }
 
-/// Parse a comma-separated list of edge-type strings.
-///
-/// NOTE: this is the lenient parser — it silently drops unrecognized tokens.
-/// Prefer [`parse_edge_types_validated`] on any user-facing flag so a typo
-/// (`--edge-types garbage`) is a hard error instead of a silently-empty filter
-/// (which the assembler interprets as "follow all edges").
-pub fn parse_edge_types(input: &str) -> Vec<aden_core::EdgeType> {
-    input
-        .split(',')
-        .filter_map(parse_single_edge_type)
-        .collect()
-}
-
 /// Parse a comma-separated list of edge-type strings, returning `Err` on any
 /// unrecognized token (and on an all-empty result).
 ///
-/// This is the validating counterpart to [`parse_edge_types`]: rather than
-/// silently `filter_map`-ing unknown tokens away (which yields an empty vec the
-/// assembler treats as "follow all edges"), it rejects bad input with the same
-/// message the `query --edge-type` path uses. Empty tokens from trailing/double
-/// commas are skipped; a wholly empty input is an error.
+/// Rather than silently `filter_map`-ing unknown tokens away (which yields an
+/// empty vec the assembler treats as "follow all edges"), it rejects bad input
+/// with the same message the `query --edge-type` path uses. Empty tokens from
+/// trailing/double commas are skipped; a wholly empty input is an error.
 pub fn parse_edge_types_validated(
     input: &str,
 ) -> Result<Vec<aden_core::EdgeType>, Box<dyn std::error::Error>> {
@@ -589,7 +575,7 @@ pub fn perform_check(path: &Path) -> Result<Vec<String>, Box<dyn std::error::Err
 
 /// Collect store-backed contracts as `(synthetic_path, adoc_text)` entries.
 ///
-/// `aden gen --auto` writes symbol contracts to the sled store (only module
+/// `aden gen --auto` writes symbol contracts to the fjall store (only module
 /// contracts land on disk), so without this the full-text index — and therefore
 /// `search` and `ask` — would never see any code symbols on any project. We
 /// re-emit each stored `Document` to AsciiDoc and feed it to the index.
@@ -626,7 +612,7 @@ fn collect_store_entries(path: &Path) -> Vec<(PathBuf, String)> {
 /// Load the search index from disk cache, or build and cache it.
 ///
 /// The index merges on-disk `.adoc`/`.aden`/`.txt` files with contracts kept in
-/// the sled store, so language-agnostic `gen --auto` output (which is
+/// the fjall store, so language-agnostic `gen --auto` output (which is
 /// store-first) is fully searchable.
 pub fn load_or_build_index(path: &Path) -> Result<aden_index::Index, Box<dyn std::error::Error>> {
     if let Some(cached) = aden_index::try_load(path) {
