@@ -23,7 +23,7 @@ pub struct GenCacheEntry {
 }
 
 /// Intent classification for natural-language queries.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum QueryIntent {
     Debug,    // "Why does X fail?"
     Usage,    // "How do I use X?"
@@ -34,6 +34,30 @@ pub enum QueryIntent {
     Compare,  // "compare X and Y"
     Count,    // "how many tests", "count the functions"
     General,  // default
+}
+
+impl std::str::FromStr for QueryIntent {
+    type Err = String;
+
+    /// Parse an intent from its variant name, case-insensitively. Used by
+    /// `aden ask --intent <INTENT>` to bypass automatic classification.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "debug" => Ok(QueryIntent::Debug),
+            "usage" => Ok(QueryIntent::Usage),
+            "explain" => Ok(QueryIntent::Explain),
+            "refactor" => Ok(QueryIntent::Refactor),
+            "impact" => Ok(QueryIntent::Impact),
+            "list" => Ok(QueryIntent::List),
+            "compare" => Ok(QueryIntent::Compare),
+            "count" => Ok(QueryIntent::Count),
+            "general" => Ok(QueryIntent::General),
+            other => Err(format!(
+                "invalid intent '{}'. Valid: debug, usage, explain, refactor, impact, list, compare, count, general",
+                other
+            )),
+        }
+    }
 }
 
 /// Severity of an OWASP finding.

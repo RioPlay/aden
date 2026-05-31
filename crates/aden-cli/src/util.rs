@@ -301,11 +301,53 @@ pub fn valid_edge_types() -> Vec<&'static str> {
 }
 
 /// Parse a comma-separated list of edge-type strings.
+///
+/// NOTE: this is the lenient parser — it silently drops unrecognized tokens.
+/// Prefer [`parse_edge_types_validated`] on any user-facing flag so a typo
+/// (`--edge-types garbage`) is a hard error instead of a silently-empty filter
+/// (which the assembler interprets as "follow all edges").
 pub fn parse_edge_types(input: &str) -> Vec<aden_core::EdgeType> {
     input
         .split(',')
         .filter_map(parse_single_edge_type)
         .collect()
+}
+
+/// Parse a comma-separated list of edge-type strings, returning `Err` on any
+/// unrecognized token (and on an all-empty result).
+///
+/// This is the validating counterpart to [`parse_edge_types`]: rather than
+/// silently `filter_map`-ing unknown tokens away (which yields an empty vec the
+/// assembler treats as "follow all edges"), it rejects bad input with the same
+/// message the `query --edge-type` path uses. Empty tokens from trailing/double
+/// commas are skipped; a wholly empty input is an error.
+pub fn parse_edge_types_validated(
+    input: &str,
+) -> Result<Vec<aden_core::EdgeType>, Box<dyn std::error::Error>> {
+    let valid = valid_edge_types().join(", ");
+    let mut out = Vec::new();
+    for tok in input.split(',') {
+        let trimmed = tok.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        match parse_single_edge_type(trimmed) {
+            Some(et) => out.push(et),
+            None => {
+                return Err(
+                    format!("invalid edge type: '{}'. Valid: {}", trimmed, valid).into(),
+                );
+            }
+        }
+    }
+    if out.is_empty() {
+        return Err(format!(
+            "no valid edge types in '{}'. Valid: {}",
+            input, valid
+        )
+        .into());
+    }
+    Ok(out)
 }
 
 /// Load the generation cache from disk, returning a default on any error.
@@ -666,6 +708,35 @@ mod tests {
         );
         // Tabs are preserved; ordinary unicode passes through.
         assert_eq!(sanitize_terminal("a\tb→c"), "a\tb→c");
+    }
+
+    #[test]
+    fn parse_edge_types_validated_accepts_valid_list() {
+        let out = parse_edge_types_validated("uses, calls").expect("valid input");
+        assert_eq!(
+            out,
+            vec![aden_core::EdgeType::Uses, aden_core::EdgeType::Calls]
+        );
+    }
+
+    #[test]
+    fn parse_edge_types_validated_rejects_unknown_token() {
+        let err = parse_edge_types_validated("uses,garbage").unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("invalid edge type: 'garbage'"),
+            "got: {msg}"
+        );
+        assert!(msg.contains("Valid:"), "must list valid types: {msg}");
+    }
+
+    #[test]
+    fn parse_edge_types_validated_rejects_all_empty() {
+        // The previous silent-swallow path returned an empty vec here, which the
+        // assembler treats as "follow all edges". Now it must be an error.
+        assert!(parse_edge_types_validated("garbage,nonsense").is_err());
+        assert!(parse_edge_types_validated("").is_err());
+        assert!(parse_edge_types_validated(",,").is_err());
     }
 
     #[test]

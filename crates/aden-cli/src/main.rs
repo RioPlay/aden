@@ -269,6 +269,25 @@ enum Commands {
             help = "LLM model: ollama:<name>, openai:<name>, or auto"
         )]
         model: Option<String>,
+        #[arg(
+            long,
+            value_name = "INTENT",
+            help = "Override intent classification: debug, usage, explain, refactor, impact, list, compare, count, general"
+        )]
+        intent: Option<String>,
+        #[arg(long, value_name = "N", help = "Override the intent's traversal depth")]
+        depth: Option<usize>,
+        #[arg(
+            long,
+            value_name = "TYPES",
+            help = "Override the intent's edge types (comma-separated)"
+        )]
+        edge_types: Option<String>,
+        #[arg(
+            long,
+            help = "Strict mode: use --budget as an exact cap (disable the relevance boost)"
+        )]
+        strict: bool,
     },
     /// Search the knowledge graph for documents matching a query
     Search {
@@ -740,7 +759,8 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
             set_attr,
         } => {
             let types = edge_types
-                .map(|s| util::parse_edge_types(&s))
+                .map(|s| util::parse_edge_types_validated(&s))
+                .transpose()?
                 .unwrap_or_default();
             let (effective_format, effective_budget, effective_auto) = (asm_format, budget, auto);
             commands::cmd_asm(AsmOptions {
@@ -784,7 +804,27 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
             budget,
             model,
             path,
-        } => commands::cmd_ask(&path, &question, from.as_deref(), budget, model.as_deref()),
+            intent,
+            depth,
+            edge_types,
+            strict,
+        } => {
+            let intent_override = intent.map(|s| s.parse()).transpose()?;
+            let edge_types_override = edge_types
+                .map(|s| util::parse_edge_types_validated(&s))
+                .transpose()?;
+            commands::cmd_ask(
+                &path,
+                &question,
+                from.as_deref(),
+                budget,
+                model.as_deref(),
+                intent_override,
+                depth,
+                edge_types_override,
+                strict,
+            )
+        }
         Commands::Search {
             query,
             path,

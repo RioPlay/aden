@@ -227,6 +227,26 @@ pub struct AsmOptions {
     pub attributes: Vec<String>,
 }
 
+/// Scales `avg_score` into the additive budget multiplier for `--auto`.
+const AUTO_BOOST_SCALE: f64 = 2.0;
+/// Ceiling on the boost; with scale 2.0 the effective budget tops out at ×4.
+const AUTO_BOOST_MAX: f64 = 3.0;
+/// Hard cap on the auto-scaled budget, in tokens.
+const AUTO_BUDGET_CAP: usize = 32_000;
+
+/// Compute the `--auto` effective token budget from a base budget and the
+/// average search relevance.
+///
+/// Smooth (un-truncated) boost: intermediate relevance scales continuously
+/// instead of snapping to integer buckets. The boost is `avg_score * SCALE`
+/// clamped to `[0, AUTO_BOOST_MAX]`, the budget is multiplied by `1 + boost`,
+/// rounded once, and capped at [`AUTO_BUDGET_CAP`]. With the default scale of
+/// 2.0 and max of 3.0 the effective budget tops out at ×4 of the base.
+fn auto_boosted_budget(base: usize, avg_score: f64) -> usize {
+    let boost = (avg_score * AUTO_BOOST_SCALE).clamp(0.0, AUTO_BOOST_MAX);
+    ((base as f64 * (1.0 + boost)).round() as usize).min(AUTO_BUDGET_CAP)
+}
+
 pub fn cmd_asm(opts: AsmOptions) -> Result<(), Box<dyn std::error::Error>> {
     use aden_asm::traverse::{AssemblyOptions, assemble, assemble_adg};
 
@@ -238,7 +258,20 @@ pub fn cmd_asm(opts: AsmOptions) -> Result<(), Box<dyn std::error::Error>> {
     let (from_anchor, effective_budget) = if opts.auto && !opts.strict {
         let index = load_or_build_index(&opts.path)?;
         let results = index.query(&opts.from);
-        let resolved = resolve_anchor_fuzzy(&opts.from, &results);
+        // Exact-first: if the user passed an anchor that already resolves
+        // exactly in the store, keep it. `--auto` must not fuzzy-re-resolve a
+        // valid anchor onto a thinner doc-shell node — the non-auto path would
+        // have produced full content for the same URI, and silently swapping in
+        // a lower-relevance node is the worst failure mode for an LLM. We only
+        // fall back to fuzzy resolution when the exact anchor is NOT found, and
+        // either way the search results still feed the relevance boost.
+        let resolved = if aden_graph::cache::resolve_anchor_in_store(&opts.path, &opts.from)
+            .is_some()
+        {
+            opts.from.clone()
+        } else {
+            resolve_anchor_fuzzy(&opts.from, &results)
+        };
         if resolved != opts.from {
             eprintln!("INFO: Resolved '{}' → '{}'", opts.from, resolved);
         }
@@ -247,8 +280,10 @@ pub fn cmd_asm(opts: AsmOptions) -> Result<(), Box<dyn std::error::Error>> {
         } else {
             let avg_score: f64 =
                 results.iter().map(|r| r.score).sum::<f64>() / results.len() as f64;
-            let boost = (avg_score * 2.0).min(3.0) as usize;
-            (opts.budget * (1 + boost)).min(32000)
+            // Smooth (un-truncated) boost: intermediate relevance scales
+            // continuously instead of snapping to integer buckets. The ×4
+            // high-relevance ceiling is preserved via AUTO_BOOST_MAX.
+            auto_boosted_budget(opts.budget, avg_score)
         };
         (resolved, budget)
     } else {
@@ -494,56 +529,132 @@ pub fn cmd_query(
 }
 
 /// Intent classification helpers.
+///
+/// Scores EVERY [`QueryIntent`] against the question and picks the highest,
+/// rather than first-match. This fixes two defects of the old chain: missing
+/// synonyms (e.g. "impact", "what breaks", "callers") and greedy shadowing
+/// (a generic "what is" no longer beats a specific "what is affected by …").
+///
+/// Single-word keywords match whole words in the question's token set, with a
+/// stem-lite `starts_with` for keywords ≥4 chars (so `fail`→`fails`/`failing`,
+/// `break`→`breaks`). Multi-word phrases (containing a space) match as
+/// substrings of the full lowercased question.
 pub fn classify_intent(question: &str) -> QueryIntent {
+    use QueryIntent::*;
+
     let q = question.to_lowercase();
-    if q.contains("fail")
-        || q.contains("error")
-        || q.contains("panic")
-        || q.contains("crash")
-        || q.contains("broken")
-    {
-        QueryIntent::Debug
-    } else if q.contains("how do i")
-        || q.contains("how to")
-        || q.contains("usage")
-        || q.contains("example")
-    {
-        QueryIntent::Usage
-    } else if q.contains("refactor") || q.contains("rewrite") || q.contains("rename") {
-        QueryIntent::Refactor
-    } else if q.contains("depend")
-        || q.contains("blast radius")
-        || q.contains("what uses")
-        || q.contains("who calls")
-    {
-        QueryIntent::Impact
-    } else if q.contains("what is")
-        || q.contains("what does")
-        || q.contains("explain")
-        || q.contains("how does")
-    {
-        QueryIntent::Explain
-    } else if q.contains("list")
-        || q.contains("show me all")
-        || q.contains("give me a list")
-        || q.contains("what are all")
-    {
-        QueryIntent::List
-    } else if q.contains("compare")
-        || q.contains("difference between")
-        || q.contains("versus")
-        || q.contains("vs ")
-    {
-        QueryIntent::Compare
-    } else if q.contains("how many")
-        || q.contains("count ")
-        || q.contains("number of")
-        || q.contains("total ")
-    {
-        QueryIntent::Count
-    } else {
-        QueryIntent::General
+    let words: HashSet<&str> = q
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect();
+
+    // (single-word keywords, multi-word phrases) per intent. Phrases are
+    // matched by substring on the full string; single words by whole-word
+    // (with a stem-lite prefix match for words ≥4 chars).
+    let intents: &[(QueryIntent, &[&str], &[&str])] = &[
+        (
+            Debug,
+            &[
+                "fail", "error", "panic", "crash", "broken", "break", "bug", "wrong", "overshoot",
+                "hang", "debug", "troubleshoot", "diagnose",
+            ],
+            &["doesn't work", "not working", "why is", "why does"],
+        ),
+        (
+            Usage,
+            &["usage", "example"],
+            &["how do i", "how to", "how can i", "how should i use"],
+        ),
+        (
+            Refactor,
+            &["refactor", "rewrite", "rename", "restructure", "extract", "simplify"],
+            &["clean up", "move ", "split "],
+        ),
+        (
+            Impact,
+            &[
+                "depend", "dependency", "caller", "consumer", "affected", "affect", "impact",
+                "downstream", "references", "ripple",
+            ],
+            &[
+                "blast radius", "what uses", "who calls", "what calls", "what breaks",
+                "what is affected", "if i change", "if i modify",
+            ],
+        ),
+        (
+            Explain,
+            &["explain", "describe", "overview", "purpose"],
+            &["what is", "what does", "how does", "what's"],
+        ),
+        (
+            List,
+            &["list", "enumerate"],
+            &["show me all", "give me a list", "what are all"],
+        ),
+        (
+            Compare,
+            &["compare", "versus", "differ"],
+            &["vs ", "difference between"],
+        ),
+        (
+            // Count's signal is the leading phrase ("how many", "number of",
+            // "count of"). The bare word "total" was dropped: it is far more
+            // often incidental English ("the total impact of X") than a counting
+            // request, and as a single-word tie it wrongly pulled Impact/Debug
+            // questions into a depth-1 tally.
+            Count,
+            &[],
+            &["how many", "number of", "count of"],
+        ),
+    ];
+
+    // Score every intent.
+    let scores: Vec<usize> = intents
+        .iter()
+        .map(|(_, keywords, phrases)| {
+            let mut score = 0usize;
+            for kw in *keywords {
+                let hit = words.contains(kw)
+                    || (kw.len() >= 4 && words.iter().any(|w| w.starts_with(kw)));
+                if hit {
+                    score += 1;
+                }
+            }
+            for phrase in *phrases {
+                if q.contains(phrase) {
+                    score += 1;
+                }
+            }
+            score
+        })
+        .collect();
+
+    let max_score = scores.iter().copied().max().unwrap_or(0);
+    // General is the only intent chosen when nothing matched.
+    if max_score == 0 {
+        return General;
     }
+
+    // Tie/fallback priority order. Among intents tied for the highest score,
+    // pick the one earliest here. Count precedes Impact so a counting question
+    // that co-mentions an Impact word ("how many callers does X have") resolves
+    // to Count (a depth-1 tally) rather than a depth-3 blast-radius traversal;
+    // pure Impact questions ("blast radius of X", no Count phrase) outscore Count
+    // and are unaffected by the relative order.
+    const PRIORITY: &[QueryIntent] = &[
+        Debug, Count, Impact, Refactor, Usage, Compare, List, Explain,
+    ];
+    let tied = |variant: &QueryIntent| -> bool {
+        intents.iter().zip(scores.iter()).any(|((iv, ..), s)| {
+            *s == max_score && std::mem::discriminant(iv) == std::mem::discriminant(variant)
+        })
+    };
+    for variant in PRIORITY {
+        if tied(variant) {
+            return variant.clone();
+        }
+    }
+    General
 }
 
 pub fn edge_types_for_intent(intent: &QueryIntent) -> Vec<aden_core::EdgeType> {
@@ -633,12 +744,17 @@ pub fn block_filter_for_intent(intent: &QueryIntent) -> Vec<aden_asm::traverse::
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn cmd_ask(
     path: &Path,
     question: &str,
     from_override: Option<&str>,
     budget: usize,
     model: Option<&str>,
+    intent_override: Option<QueryIntent>,
+    depth_override: Option<usize>,
+    edge_types_override: Option<Vec<aden_core::EdgeType>>,
+    strict: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use aden_asm::traverse::{AssemblyOptions, assemble};
 
@@ -647,9 +763,13 @@ pub fn cmd_ask(
     }
     super::ensure_fresh(path);
 
-    // Step 1: Resolve question to an anchor via search, or use override
-    let start_anchor = if let Some(anchor) = from_override {
-        anchor.to_string()
+    // Step 1: Resolve question to an anchor via search, or use override.
+    // `ask` is the fuzzy "answer my question well" path, so it leans on the
+    // relevance boost BY DEFAULT (unlike `asm`, which is hard-cap and opt-in via
+    // --auto). Capture the average search relevance so the budget can be scaled;
+    // a pinned --from anchor has no search relevance, so it stays at base.
+    let (start_anchor, avg_score) = if let Some(anchor) = from_override {
+        (anchor.to_string(), None)
     } else {
         let idx = load_or_build_index(path)?;
         let results = idx.query(question);
@@ -660,7 +780,16 @@ pub fn cmd_ask(
             );
             return Ok(());
         }
-        resolve_anchor_fuzzy(question, &results)
+        let avg: f64 = results.iter().map(|r| r.score).sum::<f64>() / results.len() as f64;
+        (resolve_anchor_fuzzy(question, &results), Some(avg))
+    };
+
+    // Apply the relevance boost by default; `--strict` opts out and treats
+    // --budget as an exact cap (deterministic size for callers/agents). The
+    // user's --budget is the BASE the boost multiplies.
+    let effective_budget = match (strict, avg_score) {
+        (false, Some(avg)) => auto_boosted_budget(budget, avg),
+        _ => budget,
     };
 
     println!("// Aden Ask: '{}' → [[{}]]", question, start_anchor);
@@ -669,14 +798,23 @@ pub fn cmd_ask(
     }
     println!();
 
-    // Step 2: Classify intent and route assembly strategy
-    let intent = classify_intent(question);
-    let edge_types = edge_types_for_intent(&intent);
-    let depth = depth_for_intent(&intent);
+    // Step 2: Classify intent and route assembly strategy. Any of intent,
+    // depth, or edge types may be pinned by the caller to bypass automatic
+    // routing (`aden ask --intent/--depth/--edge-types`).
+    let intent_was_overridden = intent_override.is_some();
+    let intent = intent_override.unwrap_or_else(|| classify_intent(question));
+    let edge_types = edge_types_override.unwrap_or_else(|| edge_types_for_intent(&intent));
+    let depth = depth_override.unwrap_or_else(|| depth_for_intent(&intent));
+
+    let strategy_label = if intent_was_overridden {
+        format!("{:?} (override)", intent)
+    } else {
+        format!("{:?}", intent)
+    };
 
     println!(
-        "// Strategy: {:?} | Depth: {} | Edges: {:?}",
-        intent,
+        "// Strategy: {} | Depth: {} | Edges: {:?}",
+        strategy_label,
         depth,
         edge_types
             .iter()
@@ -723,7 +861,7 @@ pub fn cmd_ask(
     let opts = AssemblyOptions {
         start_anchor: start_anchor.clone(),
         max_depth: depth,
-        token_budget: budget,
+        token_budget: effective_budget,
         edge_types,
         block_filter,
         include_tags: Vec::new(),
@@ -740,9 +878,18 @@ pub fn cmd_ask(
         // Show context with metadata for LLMs
         println!("<!-- ADEN CONTEXT ASSEMBLY -->");
         println!("<!-- Question: {} -->", question);
+        // Note the boost when the default relevance scaling raised the budget
+        // above the user's base, so the effective cap the assembler used is
+        // transparent.
+        let boosted = effective_budget > budget;
+        let budget_note = if boosted {
+            format!("{} (boosted from {})", effective_budget, budget)
+        } else {
+            format!("{}", effective_budget)
+        };
         println!(
             "<!-- Anchor: {} | Depth: {} | Budget: {} -->",
-            start_anchor, depth, budget
+            start_anchor, depth, budget_note
         );
         println!("<!-- Strategy: {:?} -->", intent);
         println!("<!-- Edge Types: {} -->", edge_types_str);
@@ -752,7 +899,7 @@ pub fn cmd_ask(
         // Tokens estimated with the same ~4-bytes/token heuristic the assembler
         // budgets against, so the label compares like with like.
         let est_tokens = bytes.div_ceil(4);
-        let budget_label = if est_tokens > budget {
+        let budget_label = if est_tokens > effective_budget {
             "OVER BUDGET"
         } else {
             "on budget"
@@ -773,7 +920,7 @@ pub fn cmd_ask(
         println!("//   Strategy: {:?} | Depth: {}", intent, depth);
         println!(
             "//   Nodes   : {} | ~{} tokens ({} bytes) / {} budget ({})",
-            node_count, est_tokens, bytes, budget, budget_label
+            node_count, est_tokens, bytes, budget_note, budget_label
         );
         println!("// ────────────────────────────────────────────────");
     }
@@ -1704,4 +1851,257 @@ pub fn cmd_watch(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::QueryIntent;
+
+    // ---- classify_intent: previously-misrouting phrasings now route correctly.
+
+    /// "what breaks if I change X" used to fall through to General (the old
+    /// first-match chain had no "what breaks"/"if i change" signal). It must
+    /// now route to an actionable intent (Debug via "break"/"breaks", or Impact
+    /// via the "what breaks"/"if i change" phrases) — never General.
+    #[test]
+    fn classify_what_breaks_if_i_change_not_general() {
+        let intent = classify_intent("what breaks if I change parse_file");
+        assert!(
+            matches!(intent, QueryIntent::Debug | QueryIntent::Impact),
+            "expected Debug or Impact, got {:?}",
+            intent
+        );
+        assert!(
+            !matches!(intent, QueryIntent::General),
+            "must not route to General"
+        );
+    }
+
+    /// "what is affected by modifying X": the generic Explain "what is" phrase
+    /// used to shadow this. Score-and-max gives Impact (affected + what is
+    /// affected = 2) the win over Explain ("what is" = 1).
+    #[test]
+    fn classify_what_is_affected_routes_impact_not_explain() {
+        let intent = classify_intent("what is affected by modifying the scanner");
+        assert!(
+            matches!(intent, QueryIntent::Impact),
+            "expected Impact, got {:?}",
+            intent
+        );
+        assert!(
+            !matches!(intent, QueryIntent::Explain),
+            "must not route to Explain"
+        );
+    }
+
+    #[test]
+    fn classify_what_is_the_impact_routes_impact() {
+        let intent = classify_intent("what is the impact of changing the store");
+        assert!(
+            matches!(intent, QueryIntent::Impact),
+            "expected Impact, got {:?}",
+            intent
+        );
+    }
+
+    #[test]
+    fn classify_blast_radius_routes_impact() {
+        let intent = classify_intent("blast radius of resolve_anchor");
+        assert!(
+            matches!(intent, QueryIntent::Impact),
+            "expected Impact, got {:?}",
+            intent
+        );
+    }
+
+    #[test]
+    fn classify_how_do_i_use_routes_usage() {
+        let intent = classify_intent("how do I use the assembler");
+        assert!(
+            matches!(intent, QueryIntent::Usage),
+            "expected Usage, got {:?}",
+            intent
+        );
+    }
+
+    #[test]
+    fn classify_how_does_work_routes_explain() {
+        let intent = classify_intent("how does the cache work");
+        assert!(
+            matches!(intent, QueryIntent::Explain),
+            "expected Explain, got {:?}",
+            intent
+        );
+    }
+
+    /// "how to use X" (the imperative phrasing, distinct from "how do I use X")
+    /// also routes to Usage via the "how to" phrase.
+    #[test]
+    fn classify_how_to_use_routes_usage() {
+        let intent = classify_intent("how to use the assembler");
+        assert!(
+            matches!(intent, QueryIntent::Usage),
+            "expected Usage, got {:?}",
+            intent
+        );
+    }
+
+    #[test]
+    fn classify_how_many_routes_count() {
+        let intent = classify_intent("how many edge types are there");
+        assert!(
+            matches!(intent, QueryIntent::Count),
+            "expected Count, got {:?}",
+            intent
+        );
+    }
+
+    /// "how many callers does X have" ties Count ("how many") with Impact
+    /// ("caller"); Count must win now that it precedes Impact in PRIORITY,
+    /// so a counting question is a depth-1 tally, not a blast-radius traversal.
+    #[test]
+    fn classify_how_many_callers_routes_count() {
+        let intent = classify_intent("how many callers does parse_file have");
+        assert!(
+            matches!(intent, QueryIntent::Count),
+            "expected Count, got {:?}",
+            intent
+        );
+    }
+
+    /// "how many functions depend on X" likewise resolves to Count, not Impact.
+    #[test]
+    fn classify_how_many_depend_routes_count() {
+        let intent = classify_intent("how many functions depend on the store");
+        assert!(
+            matches!(intent, QueryIntent::Count),
+            "expected Count, got {:?}",
+            intent
+        );
+    }
+
+    /// "how do I debug X" ties Debug ("debug") with Usage ("how do i"); Debug
+    /// wins because it leads PRIORITY.
+    #[test]
+    fn classify_how_do_i_debug_routes_debug() {
+        let intent = classify_intent("how do I debug the assembler");
+        assert!(
+            matches!(intent, QueryIntent::Debug),
+            "expected Debug, got {:?}",
+            intent
+        );
+    }
+
+    #[test]
+    fn classify_refactor_routes_refactor() {
+        let intent = classify_intent("refactor the traverse module");
+        assert!(
+            matches!(intent, QueryIntent::Refactor),
+            "expected Refactor, got {:?}",
+            intent
+        );
+    }
+
+    /// Empty/no-signal questions fall back to General.
+    #[test]
+    fn classify_no_signal_routes_general() {
+        let intent = classify_intent("the quick brown fox");
+        assert!(
+            matches!(intent, QueryIntent::General),
+            "expected General, got {:?}",
+            intent
+        );
+    }
+
+    // ---- auto_boosted_budget: float boost math.
+
+    /// Boost is monotonically non-decreasing in avg_score.
+    #[test]
+    fn auto_boost_monotonic_in_avg_score() {
+        let base = 1_000usize;
+        let mut prev = 0usize;
+        let mut score = 0.0f64;
+        while score <= 2.0 {
+            let b = auto_boosted_budget(base, score);
+            assert!(
+                b >= prev,
+                "budget decreased at score {}: {} < {}",
+                score,
+                b,
+                prev
+            );
+            prev = b;
+            score += 0.05;
+        }
+    }
+
+    /// Very high relevance is capped at AUTO_BUDGET_CAP, and the ×4 ceiling from
+    /// AUTO_BOOST_MAX holds for a base small enough not to hit the cap first.
+    #[test]
+    fn auto_boost_capped() {
+        // Huge avg_score: boost clamps to AUTO_BOOST_MAX (3.0) → ×4 of base.
+        let base = 1_000usize;
+        assert_eq!(auto_boosted_budget(base, 1_000.0), 4_000);
+        // A base large enough that ×4 would exceed the hard cap is clamped.
+        assert_eq!(auto_boosted_budget(100_000, 1_000.0), AUTO_BUDGET_CAP);
+        // zero relevance leaves the budget untouched.
+        assert_eq!(auto_boosted_budget(base, 0.0), base);
+    }
+
+    /// A mid relevance produces a non-integer-multiple boost, proving the old
+    /// integer truncation is gone. avg_score 0.3 → boost 0.6 → 1.6× base.
+    #[test]
+    fn auto_boost_mid_relevance_is_fractional() {
+        // 1000 * (1 + 0.3*2.0) = 1000 * 1.6 = 1600 — not a clean integer
+        // multiple of base, which the old `(score as usize)`-style truncation
+        // could never produce (it would have snapped to 1000 or 2000).
+        assert_eq!(auto_boosted_budget(1_000, 0.3), 1_600);
+        assert_ne!(auto_boosted_budget(1_000, 0.3), 1_000);
+        assert_ne!(auto_boosted_budget(1_000, 0.3), 2_000);
+        // 1234 * (1 + 0.25*2.0) = 1234 * 1.5 = 1851 (rounded from 1851.0).
+        assert_eq!(auto_boosted_budget(1_234, 0.25), 1_851);
+    }
+
+    // ---- ask budget selection: boost by default, --strict opts out.
+    //
+    // The full `cmd_ask` path requires a built index / store (I/O), so we cannot
+    // drive it from a unit test without a fixture. Instead we guard the pure
+    // budget-selection expression `match (strict, avg_score)` that `cmd_ask`
+    // uses (query.rs ~line 785): with search relevance present and strict=false
+    // the boost helper is applied; strict=true (or no relevance) returns the
+    // base budget unchanged. The behavioral stage covers the end-to-end wiring.
+    fn select_ask_budget(strict: bool, budget: usize, avg_score: Option<f64>) -> usize {
+        match (strict, avg_score) {
+            (false, Some(avg)) => auto_boosted_budget(budget, avg),
+            _ => budget,
+        }
+    }
+
+    #[test]
+    fn ask_boosts_budget_by_default() {
+        // Default (non-strict) ask with positive relevance scales the budget via
+        // the shared boost helper — not the raw --budget.
+        let base = 1_000usize;
+        let avg = 0.3f64;
+        assert_eq!(
+            select_ask_budget(false, base, Some(avg)),
+            auto_boosted_budget(base, avg)
+        );
+        assert!(
+            select_ask_budget(false, base, Some(avg)) > base,
+            "boost must exceed base for positive relevance"
+        );
+    }
+
+    #[test]
+    fn ask_strict_uses_exact_budget() {
+        // --strict bypasses the boost entirely: budget is the exact cap.
+        let base = 1_000usize;
+        assert_eq!(select_ask_budget(true, base, Some(0.3)), base);
+        assert_eq!(select_ask_budget(true, base, Some(1_000.0)), base);
+        // A pinned --from anchor has no search relevance (None) → base, even
+        // when not strict.
+        assert_eq!(select_ask_budget(false, base, None), base);
+    }
 }
