@@ -246,12 +246,15 @@ aden mcp list
 
 == Keeping the Graph Fresh
 
-Stale context is worse than no context. Run these commands as part of your agent loop:
+Stale context is worse than no context. Use this order in your agent loop:
 
 1. Before starting work: `aden status .` (quick health check) or `aden check .` (validate integrity)
-2. After writing code: `aden gen <path>` (update contracts)
-3. Before committing: `aden ci-check .` (check + heal + tests)
-4. Or use `aden sync .` for a single command that does gen + check + heal
+2. After writing code: `aden gen <path>` (index changed source)
+3. Before committing: `aden ready .` (fast aden-only gates: gen + lint + check + heal drift + audit)
+4. Before pushing to remote: `aden ci-check .` (full gate suite including external tools)
+5. After large merges or file deletions: `aden sync .` (reconcile store — runs gen + check + heal with gc)
+
+NOTE: Do NOT chain `aden gen` before `aden ready` or `aden ci-check` — both already run gen internally as their first step. Running gen twice wastes time and may produce inconsistent results.
 
 If you are running as a persistent agent, use `aden watch` to auto-regenerate contracts on file changes.
 
@@ -305,17 +308,22 @@ You have access to Aden, a knowledge graph compiler for codebases.
 
 ## Aden Tools Available:
 - `ask(question)`: Ask natural language questions about the codebase
+- `ask(question)`: Natural-language question — best first tool for exploration
 - `search(query)`: Full-text search with semantic understanding, --semantics flag for graph edges
 - `asm(from, depth)`: Assemble context from a starting anchor (passed as `from`)
 - `query(anchor, depth)`: Get structured graph neighborhood as JSON
 - `locate(symbol)`: Find symbol definitions and call sites, --show-context N for surrounding code
+- `understand(symbol)`: One-shot comprehension — definition + backlinks + impact + context in one call; replaces locate + query --backlinks + query --impact + asm
 - `list()`: List all available anchors, --semantics for semantic nodes
+- `grep(pattern)`: Structure-aware search — every hit tagged with its enclosing symbol
 - `heal()`: Check documentation health, --fix for auto-fix, --gc for orphan cleanup
-- `status()`: Get health score (100/100 = healthy)
-- `sync()`: Run gen + check + heal in sequence
+- `status()`: Get health score and actionable orphan count
+- `ready()`: Fast pre-commit gate — gen + lint + check + heal drift + audit (aden-only, no external tools)
+- `sync()`: Reconcile store — gen + check + heal with gc; use after merges or file deletions, NOT as a pre-commit step
+- `ci-check()`: Full gate suite including external tools (clippy, cargo audit, etc.); use before push
 - `gen()`: Generate contracts, --auto for whole project, --quiet for summary only
 - `check()`: Validate all references
-- `lint()`: Lint source files
+- `lint()`: Lint source files; --dead-code for graph-based unreferenced symbol detection
 - `test()`: Run tests
 - `complete()`: report contracts that need completion (automatic LLM filling is not yet implemented)
 

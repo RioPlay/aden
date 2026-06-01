@@ -131,6 +131,8 @@ aden lint [PATH]
 aden lint . --fix              # apply safe auto-fixes (e.g. redundant conversions)
 aden lint . --severity Error
 aden lint . --json             # machine-readable; banner suppressed
+aden lint . --dead-code        # flag symbols with no incoming graph edges
+aden lint . --dead-code --include-public  # also flag public API / entry points
 ----
 
 Checks (language-dependent):
@@ -141,6 +143,12 @@ Checks (language-dependent):
 
 `--fix` applies only the unambiguously-safe rewrites and reports how many issues
 still need manual review.
+
+`--dead-code` loads the knowledge graph and flags `Function`/`Type` nodes with
+zero incoming edges (callers/references). Conservative by default: entry points
+(`main`), metadata anchors, and synthetic `mod-` nodes are skipped.
+`--include-public` widens scope to public API symbols. Findings merge into the
+normal output so `--severity` and `--json` apply automatically.
 
 === test
 
@@ -509,16 +517,35 @@ Checks:
 - `.adenignore` present
 - Knowledge graph health score
 
+=== ready
+
+Fast, dev-facing pre-commit combo. Runs aden's own gates only — no external
+tool dependencies. Use this before every local commit.
+
+[source,bash]
+----
+aden ready .
+aden ready . --fix    # forward --fix to linter and high-confidence heal
+----
+
+Steps (fail-fast on hard gates):
+1. `aden gen` — index changed source
+2. `aden lint` — heuristic source checks
+3. `aden check` — reference validation
+4. `aden heal --scan` — doc drift detection (reportable signal)
+5. `aden audit` — OWASP security scan
+
 === ci-check
 
-Run all local CI gates before committing.
+Full CI gate suite. Use this before pushing to remote — includes external tool
+checks not in `ready`.
 
 [source,bash]
 ----
 aden ci-check .
 ----
 
-Runs:
+Steps (in order):
 1. `aden check` — reference validation
 2. Constitutional firewall — policy enforcement
 3. `aden test` — test execution
@@ -771,14 +798,40 @@ aden watch . --restore
 
 === sync
 
-Run `gen` + `check` + `heal` in one pass.
+Run `gen` + `check` + `heal` (with garbage-collection) in one pass. Use this
+to reconcile the knowledge graph and doc contracts after large changes, merges,
+or when the store may have accumulated stale entries from deleted files.
 
 [source,bash]
 ----
 aden sync .
+aden sync . --no-gc   # skip store garbage-collection (faster, leaves orphans)
 ----
 
-This is the recommended command for keeping everything in sync before committing.
+NOTE: `sync` is for *graph reconciliation*, not the daily pre-commit loop. For
+pre-commit use `aden ready`; for the full external-tool gate use `aden ci-check`.
+
+=== understand
+
+One-shot symbol comprehension. Replaces the manual chain of `locate` →
+`query --backlinks` → `query --impact` → `asm`.
+
+[source,bash]
+----
+aden understand <SYMBOL> [DIR]
+aden understand Database::connect .
+aden understand connect . --budget 8000
+aden understand connect . --json
+----
+
+Returns in a single report:
+- Anchor resolution and definition location
+- Backlinks — who calls / references this symbol
+- Impact — what this symbol calls downstream
+- Assembled context block within `--budget` tokens (default 4000)
+
+`--json` emits a single object `{symbol, anchor, definition, backlinks, impact, context}`
+for programmatic use.
 
 === status
 

@@ -198,11 +198,21 @@ aden status
 aden status .
 ----
 
+=== ready
+Fast pre-commit combo — gen + lint + check + heal drift + audit. Use before every commit.
+[source,bash]
+----
+aden ready .
+aden ready . --fix
+----
+
 === sync
-Run `gen` + `check` + `heal` in one pass — the recommended pre-commit sync.
+Reconcile the store — gen + check + heal with gc (default). Use after large merges
+or file deletions, not as a routine pre-commit step. `aden ready` is the pre-commit command.
 [source,bash]
 ----
 aden sync .
+aden sync . --no-gc
 ----
 
 === watch

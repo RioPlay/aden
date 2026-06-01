@@ -173,6 +173,26 @@ Read commands (`ask`, `asm`, `query`, `locate`, `grep`) detect changed source
 files and re-index them before serving — so the graph is never stale and you
 rarely run `gen` by hand. Edit a file, ask again, and the answer reflects it.
 
+== Pre-commit workflow
+
+[source,bash]
+----
+# During development — every commit:
+aden ready .             # gen + lint + check + heal drift + audit (fast, no external tools)
+
+# Before pushing to remote:
+aden ci-check .          # adds tests, clippy, cargo audit, license check, etc.
+
+# After a large merge or deleting files:
+aden sync .              # reconcile store — prunes stale entries, re-checks refs
+----
+
+To understand a symbol before changing it:
+[source,bash]
+----
+aden understand <symbol> .     # definition + callers + impact + context in one shot
+----
+
 == For AI agents (MCP)
 
 Aden exposes its commands as MCP tools (CLI subcommand maps 1:1 to a tool), so an

@@ -10,9 +10,12 @@
 |Task |Command
 
 |Active development |`aden watch .` (auto-updates the graph on save)
-|Before commit |`aden ci-check .` (runs all gates)
-|Review changes before fixing |`aden heal . --propose`
+|Before every commit |`aden ready .` (fast aden-only gates)
+|Before push to remote |`aden ci-check .` (full gate suite incl. external tools)
+|One-shot symbol comprehension |`aden understand <symbol> .`
+|Review drift before fixing |`aden heal . --propose`
 |Apply fixes (if confident) |`aden heal . --fix`
+|Reconcile store after big changes |`aden sync .`
 |Rebuild the graph |`aden gen .`
 |===
 
@@ -30,7 +33,7 @@ aden watch .                    # Terminal 1: auto-regenerate
 # ... make edits ...
 
 # === BEFORE COMMIT ===
-aden ci-check .                # Validates everything
+aden ready .                   # Fast: gen + lint + check + heal drift + audit
 
 # === IF DRIFT DETECTED ===
 aden heal . --propose > fix-review.adoc  # Review first
@@ -38,8 +41,7 @@ aden heal . --propose > fix-review.adoc  # Review first
 aden heal . --fix              # Apply fixes
 
 # === PUSH ===
-aden gen src/ --auto           # Fresh contracts
-aden ci-check .                # Final validation
+aden ci-check .                # Full gate: adds tests, clippy, cargo audit, etc.
 git push
 ----
 
@@ -57,12 +59,14 @@ git push
 |Garbage collect |`aden heal . --gc`
 
 |Ask question |`aden ask "how does X work?"`
+|Understand a symbol |`aden understand <symbol> .`
 |Get context |`aden asm --from mod-x --depth 2`
 |Find symbol |`aden locate --symbol foo`
 |Search docs |`aden search "query"`
 
 |Auto-regenerate |`aden watch .`
-|Full validation |`aden ci-check .`
+|Pre-commit (fast) |`aden ready .`
+|Pre-push (full) |`aden ci-check .`
 |===
 
 == Severity Levels
