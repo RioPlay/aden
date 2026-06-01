@@ -16,7 +16,7 @@
 //
 use crate::HealError;
 use crate::drift::DriftEvent;
-use aden_core::{Block, Document};
+use aden_core::{Block, Document, filter::AdenFilter};
 use aden_graph::cache::try_load;
 use aden_graph::graph::AdenGraph;
 use aden_store::{GraphStorage, Storage};
@@ -37,6 +37,7 @@ pub struct Scanner {
     pub repo_root: PathBuf,
     cache: Option<SourceCache>,
     cache_path: PathBuf,
+    filter: AdenFilter,
 }
 
 impl Scanner {
@@ -46,10 +47,12 @@ impl Scanner {
         let cache = std::fs::read(&cache_path)
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok());
+        let filter = AdenFilter::from_directory(&root);
         Self {
             repo_root: root,
             cache,
             cache_path,
+            filter,
         }
     }
 
@@ -277,11 +280,21 @@ impl Scanner {
         Ok(events)
     }
 
-    fn is_excluded_dir(path: &Path) -> bool {
-        path.file_name()
+    fn is_excluded_dir(&self, path: &Path) -> bool {
+        // Always skip hard-coded build/vcs dirs regardless of .adenignore
+        if path
+            .file_name()
             .and_then(|n| n.to_str())
             .map(|n| matches!(n, "target" | ".git" | "node_modules" | ".cargo" | ".rustup"))
             .unwrap_or(false)
+        {
+            return true;
+        }
+        // Also honour .adenignore so agent dirs, tool configs, etc. are skipped
+        if let Ok(rel) = path.strip_prefix(&self.repo_root) {
+            return self.filter.should_skip(rel);
+        }
+        false
     }
 
     fn scan_markdown_drift(&self) -> Result<Vec<DriftEvent>, HealError> {
@@ -343,7 +356,7 @@ impl Scanner {
                 continue;
             }
             if path.is_dir() {
-                if !Self::is_excluded_dir(&path) {
+                if !self.is_excluded_dir(&path) {
                     self.collect_source_files(&path, files)?;
                 }
             } else if path.is_file() {
@@ -429,7 +442,7 @@ impl Scanner {
                 continue;
             }
             if path.is_dir() {
-                if !Self::is_excluded_dir(&path) {
+                if !self.is_excluded_dir(&path) {
                     self.collect_contract_files(&path, files)?;
                 }
             } else if path.is_file() {

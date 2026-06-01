@@ -13,6 +13,34 @@ target/
 .env.local
 .env.*
 
+# Agent workspace — not project source
+.agent/
+
+# AI coding assistant config dirs — not project source
+.claude/         # Claude Code (Anthropic)
+.cursor/         # Cursor
+.roo/            # Roo Code
+.kilocode/       # Kilo Code
+.continue/       # Continue
+.codeium/        # Codeium / Windsurf (acquired by OpenAI)
+.windsurf/       # Windsurf rules
+.codex/          # OpenAI Codex CLI
+.aider/          # Aider
+.tabnine/        # Tabnine
+.copilot/        # GitHub Copilot (legacy)
+.zed/            # Zed AI
+.supermaven/     # Supermaven
+.cody/           # Sourcegraph Cody
+.pear/           # Pear AI
+
+# AI instruction files at repo root
+AGENTS.md
+CLAUDE.md
+GEMINI.md
+.windsurfrules
+.cursorrules
+.github/copilot-instructions.md
+
 # Editor debris
 *.swp
 *.swo
