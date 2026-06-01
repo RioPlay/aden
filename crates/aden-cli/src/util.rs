@@ -650,15 +650,27 @@ pub fn classify_orphans(
         .partition(|a| is_expected_metadata(a))
 }
 
+/// Health = fraction of nodes that are NOT actionable orphans.
+pub fn health_score_from_graph(
+    graph: &aden_graph::AdenGraph<aden_graph::DocumentNode, aden_graph::AdenEdge>,
+) -> f64 {
+    let total = graph.graph.node_count();
+    if total == 0 {
+        return 1.0;
+    }
+    let (_expected, actionable) = classify_orphans(graph);
+    let connected = total.saturating_sub(actionable.len());
+    connected as f64 / total as f64
+}
+
 pub fn quick_health_score(path: &Path) -> Result<f64, Box<dyn std::error::Error>> {
-    use aden_heal::{Scanner, generate};
-
-    let scanner = Scanner::new(path);
-    let events = scanner.scan()?;
-
-    // Use same weighting as heal report: severity-weighted events / total contracts
-    let report = generate(events, path);
-    Ok(report.overall_score)
+    // Use the graph-based approach so the health score agrees with `check` and
+    // `status`: expected metadata docs (doc headings, ADRs, plans, etc.) are
+    // NOT counted as unhealthy orphans. The heal-scanner approach counted all
+    // OrphanAnchor events including the ~5000 expected metadata docs, producing
+    // a permanently 0/100 score even on a fully-synced project.
+    let graph = aden_graph::cache::build_from_directory_cached(path)?;
+    Ok(health_score_from_graph(&graph))
 }
 
 /// Escape text for safe insertion into an AsciiDoc table cell.

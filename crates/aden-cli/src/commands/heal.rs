@@ -806,6 +806,66 @@ pub fn cmd_heal_gc(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         .flush()
         .map_err(|e| format!("Store flush failed: {}", e))?;
 
-    println!("\nGC complete: {} node(s) removed, {} kept", removed, kept);
+    // Prune orphaned contract adoc files from contracts/ whose anchor no longer
+    // exists in the knowledge graph. These accumulate when symbols are renamed or
+    // refactored — gen creates new contracts but never deletes old ones.
+    let contracts_dir = root.join("contracts");
+    let mut contracts_removed = 0usize;
+    let mut contracts_kept = 0usize;
+    if contracts_dir.is_dir() {
+        // Build the live anchor set from the (now-cleaned) store.
+        let live_anchors: std::collections::HashSet<String> = storage
+            .get_all_documents()
+            .unwrap_or_default()
+            .into_keys()
+            .collect();
+
+        for entry in walkdir::WalkDir::new(&contracts_dir)
+            .follow_links(false)
+            .into_iter()
+            .filter_map(|e| e.ok())
+        {
+            let p = entry.path();
+            if !p.is_file() {
+                continue;
+            }
+            let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
+            if ext != "adoc" {
+                continue;
+            }
+            // Extract the anchor from the contract file (first [[anchor]] line).
+            let content = match std::fs::read_to_string(p) {
+                Ok(c) => c,
+                Err(_) => {
+                    contracts_kept += 1;
+                    continue;
+                }
+            };
+            let anchor = content.lines().find_map(|line| {
+                let trimmed = line.trim();
+                if trimmed.starts_with("[[") && trimmed.ends_with("]]") {
+                    Some(trimmed[2..trimmed.len() - 2].to_string())
+                } else {
+                    None
+                }
+            });
+            match anchor {
+                Some(a) if !live_anchors.contains(&a) => {
+                    match std::fs::remove_file(p) {
+                        Ok(()) => {
+                            contracts_removed += 1;
+                        }
+                        Err(e) => eprintln!("  WARN: failed to remove contract {}: {}", p.display(), e),
+                    }
+                }
+                _ => contracts_kept += 1,
+            }
+        }
+    }
+
+    println!(
+        "\nGC complete: {} store node(s) removed, {} kept; {} orphaned contract(s) pruned, {} kept",
+        removed, kept, contracts_removed, contracts_kept
+    );
     Ok(())
 }

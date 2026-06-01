@@ -1059,6 +1059,16 @@ pub fn cmd_ready(path: &Path, fix: bool) -> Result<(), Box<dyn std::error::Error
         let critical = events
             .iter()
             .filter(|e| {
+                // OrphanAnchor events for expected metadata (doc headings, ADRs,
+                // plans, etc.) are normal — same classifier used by `status` and
+                // `check`. Only count actionable orphans as critical.
+                let is_expected_orphan = matches!(e,
+                    aden_heal::DriftEvent::OrphanAnchor { anchor, .. }
+                    if crate::util::is_expected_metadata(anchor)
+                );
+                if is_expected_orphan {
+                    return false;
+                }
                 matches!(
                     e,
                     aden_heal::DriftEvent::BrokenReference { .. }
