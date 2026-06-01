@@ -52,12 +52,18 @@ aden grep "hash_password"
 # Find a symbol's definition AND its real aden:// anchor
 aden locate --symbol login
 
+# One-shot symbol comprehension (replaces locate + backlinks + impact + asm)
+aden understand Database::connect .
+
 # Blast radius before a refactor — who depends on this symbol?
 # query/asm take a full aden:// anchor (from locate/grep/list), not a bare name:
 aden query --backlinks "aden://module/<crate>/<module-doc>.adoc#code_block_3"
 
 # Assemble a module (or symbol) overview within a token budget
 aden asm --from "aden://module/<crate>/<module-doc>.adoc#code_block_3" --depth 1
+
+# Before every commit (fast, aden-only gates)
+aden ready .
 
 # Expose Aden's commands to your AI client as MCP tools
 aden mcp install --platform claude   # see docs/mcp-intro.md
@@ -73,13 +79,17 @@ rarely need to run `gen` by hand.
 |---------|---------|
 | `aden gen` | Compile source into the knowledge graph (symbols, call edges, docs) |
 | `aden ask` | Natural-language question → dense, graph-traversed context |
+| `aden understand` | One-shot symbol comprehension: definition + callers + impact + context |
 | `aden grep` | Structure-aware search — every hit tagged with its enclosing symbol |
 | `aden asm` | Assemble context from an anchor within a token budget |
 | `aden query` | Graph queries: `--from`, `--backlinks` (callers), `--impact` |
 | `aden locate` | Find symbol definitions with exact line numbers |
 | `aden check` | Validate referential integrity |
-| `aden lint` | Fast, language-agnostic heuristic checks |
+| `aden lint` | Fast, language-agnostic heuristic checks; `--dead-code` for graph-based detection |
 | `aden heal` | Detect drift between code and contracts |
+| `aden ready` | Fast pre-commit gate: gen → lint → check → heal drift → audit |
+| `aden sync` | Reconcile store after merges or file deletions (gen + check + heal with gc) |
+| `aden ci-check` | Full CI gate suite including external tools; use before push |
 
 ## Why AsciiDoc?
 

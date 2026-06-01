@@ -11,11 +11,11 @@ For the full tool/prompt reference and the recommended agent system prompt, see
 ## What the Aden MCP server is
 
 `aden-mcp` is a **thin director**: it exposes Aden's CLI as MCP tools, where
-each tool maps **1:1 to an `aden` subcommand** (~33 tools — `grep`, `ask`,
-`asm`, `query`, `locate`, `gen`, `heal`, `check`, `list`, and so on). There is
-no separate logic path — calling the `grep` tool runs the same code as
-`aden grep` on the command line, so anything documented for the CLI applies
-verbatim to the MCP tools.
+each tool maps **1:1 to an `aden` subcommand** (~35 tools — `grep`, `ask`,
+`understand`, `asm`, `query`, `locate`, `gen`, `heal`, `check`, `ready`,
+`sync`, `list`, and so on). There is no separate logic path — calling the
+`grep` tool runs the same code as `aden grep` on the command line, so anything
+documented for the CLI applies verbatim to the MCP tools.
 
 The server operates on the **target project you point it at** — nothing it
 returns is specific to Aden's own source. Every result is derived from the
@@ -72,15 +72,23 @@ If the tools do not appear, see [`troubleshooting.adoc`](troubleshooting.adoc).
 
 ## The key tools
 
-**Read / navigate (use these constantly):**
+**Understand (start here):**
 
+- `understand` — one-shot symbol comprehension: resolves a bare name to its
+  anchor, returns definition location, backlinks (callers), downstream impact,
+  and an assembled context block. Replaces the manual `locate` → `query
+  --backlinks` → `query --impact` → `asm` chain. Use this before touching any
+  existing symbol.
+
+**Read / navigate:**
+
+- `ask` — natural-language question → dense, token-budgeted, graph-traversed
+  context. Best first tool for exploratory questions.
 - `grep` — structure-aware search; every match is tagged with its enclosing
   symbol. The enclosing-symbol name is your starting point for resolving an
   anchor.
 - `locate` — find a symbol's definition **and its real `aden://…` anchors**.
 - `list` — page through the anchors in the graph.
-- `ask` — natural-language question → dense, token-budgeted, graph-traversed
-  context.
 - `asm` — assemble context from a specific anchor within a token budget.
 - `query` — graph traversal: `from` (outgoing edges), `backlinks` (who
   references this — blast radius), `impact` (downstream transitive reach).
@@ -88,7 +96,17 @@ If the tools do not appear, see [`troubleshooting.adoc`](troubleshooting.adoc).
 **Anchors, not bare names.** `asm`/`query` take a full `aden://…` anchor (or a
 module alias like `mod-<crate>`), not a bare symbol name — a bare name returns
 `Anchor not found or ambiguous`. The flow is always: `grep`/`locate`/`list` to
-get the `aden://…` anchor, then feed that anchor to `asm`/`query`.
+get the `aden://…` anchor, then feed that anchor to `asm`/`query`. Or use
+`understand` to skip all of this.
+
+**Pre-commit / CI:**
+
+- `ready` — fast pre-commit gate: gen + lint + check + heal drift + audit.
+  Aden-only, no external tools. **Use before every commit.**
+- `ci-check` — full gate suite including external tools (clippy, cargo audit,
+  licenses). Use before push to remote.
+- `sync` — reconcile the store after large merges or file deletions (gen +
+  check + heal with gc). Not a routine pre-commit step — use `ready` for that.
 
 **Maintain:**
 
@@ -96,6 +114,8 @@ get the `aden://…` anchor, then feed that anchor to `asm`/`query`.
 - `heal` — detect and propose fixes for drift between code and contracts.
 - `check` — validate referential integrity (no broken refs, no duplicate
   anchors).
+- `lint` — heuristic source checks; add `dead_code=true` to flag unreferenced
+  symbols via the knowledge graph.
 
 ### You rarely need to call `gen`
 
