@@ -553,7 +553,7 @@ pub fn cmd_ci_check(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     gate!("tests", { run_project_tests(path) });
 
     gate!("aden lint", {
-        crate::commands::cmd_lint(path, "Error", false, false)
+        crate::commands::cmd_lint(path, "Error", false, false, false, false)
     });
 
     gate!("secret scan", {
@@ -565,12 +565,7 @@ pub fn cmd_ci_check(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         let patterns = SECRET_PATTERNS.get_or_init(|| {
             vec![
                 (
-                    // Built dynamically to avoid static security linter detection of the pattern itself
-                    Regex::new(&format!(
-                        r"-----BEGIN (RSA |EC |OPENSSH |DSA )?{}-----",
-                        "PRIVATE KEY"
-                    ))
-                    .unwrap(),
+                    Regex::new(r"-----BEGIN (RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----").unwrap(),
                     "private key",
                 ),
                 (Regex::new(r"AKIA[0-9A-Z]{16}").unwrap(), "AWS access key"),
@@ -956,6 +951,132 @@ pub fn cmd_ci_check(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     }
     println!(
         "\n{}[CI] ALL GATES PASSED — Ready to commit.{}",
+        green, reset
+    );
+    Ok(())
+}
+
+/// Fast, dev-facing pre-commit combo: gen → lint → check refs → heal drift
+/// scan → owasp audit. Unlike `ci-check`, `ready` is the quick local loop —
+/// it skips the external-tool gates (cargo audit, clippy, license/NOTICE) and
+/// focuses on aden's own correctness plus documentation drift. Each step prints
+/// a clear PASS/FAIL line; the run fails fast on the first hard error but always
+/// emits a final commit-readiness summary. Returns Err if any hard gate failed.
+pub fn cmd_ready(path: &Path, fix: bool) -> Result<(), Box<dyn std::error::Error>> {
+    let green = "\x1b[0;32m";
+    let red = "\x1b[0;31m";
+    let yellow = "\x1b[1;33m";
+    let reset = "\x1b[0m";
+
+    // (step label, passed?) — recorded for the final summary.
+    let mut results: Vec<(&str, bool)> = Vec::new();
+    // The first hard error short-circuits the remaining steps (fail fast).
+    let mut hard_failure: Option<String> = None;
+
+    // Helper: run a hard gate unless we have already failed fast.
+    macro_rules! step {
+        ($name:expr, $body:expr) => {{
+            if hard_failure.is_some() {
+                println!("{}[ready] SKIP: {} (earlier step failed){}", yellow, $name, reset);
+                results.push(($name, false));
+            } else {
+                println!("[ready] Running: {} ...", $name);
+                match $body {
+                    Ok(()) => {
+                        println!("{}[ready] PASS: {}{}", green, $name, reset);
+                        results.push(($name, true));
+                    }
+                    Err(e) => {
+                        let e: Box<dyn std::error::Error> = e;
+                        println!("{}[ready] FAIL: {} — {}{}", red, $name, e, reset);
+                        results.push(($name, false));
+                        hard_failure = Some(format!("{}: {}", $name, e));
+                    }
+                }
+            }
+        }};
+    }
+
+    println!("aden ready — pre-commit checks for {}\n", path.display());
+
+    // (1) gen — recompile the project into the knowledge graph.
+    step!("gen", { crate::commands::cmd_gen(path, true) });
+
+    // (2) lint — fast line-based heuristics. --fix forwards to the linter.
+    step!("lint", { crate::commands::cmd_lint(path, "Error", fix, false, false, false) });
+
+    // (3) check refs — validate every <<ref>> resolves to an [[anchor]].
+    step!("check refs", {
+        if !path.is_dir() {
+            Err("not a directory".into())
+        } else {
+            crate::util::perform_check(path).map(|_| ())
+        }
+    });
+
+    // (4) heal drift scan — doc-mismatch gate. Drift (broken refs, orphan
+    // anchors, signature mismatch, or a degraded health score) is a reportable
+    // hard signal here, per the pre-commit intent: never commit stale docs.
+    // With --fix we apply high-confidence auto-fixes first, then re-scan.
+    step!("heal drift scan", {
+        use aden_heal::{Scanner, generate};
+        if fix {
+            // Auto-apply StaleHash/MissingContract fixes before judging drift.
+            let _ = crate::commands::cmd_heal_scan(path, false, true, false, false);
+        }
+        let scanner = Scanner::new(path);
+        let events = scanner.scan()?;
+        let report = generate(events.clone(), path);
+        let critical = events
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e,
+                    aden_heal::DriftEvent::BrokenReference { .. }
+                        | aden_heal::DriftEvent::OrphanAnchor { .. }
+                        | aden_heal::DriftEvent::SignatureMismatch { .. }
+                )
+            })
+            .count();
+        if critical > 0 {
+            Err(Box::<dyn std::error::Error>::from(format!(
+                "{} critical drift event(s) (broken refs, orphans, signature mismatch) — run 'aden heal . --fix'",
+                critical
+            )))
+        } else if report.overall_score < 0.90 {
+            Err(Box::<dyn std::error::Error>::from(format!(
+                "doc drift: health score {:.2} (< 0.90) — run 'aden gen' / 'aden heal . --fix'",
+                report.overall_score
+            )))
+        } else {
+            Ok(())
+        }
+    });
+
+    // (5) audit — OWASP-aligned source scan (in-process, no external tools).
+    step!("owasp audit", { cmd_audit(path, None, "text", true) });
+
+    // ── Final verdict ─────────────────────────────────────
+    println!("\n[ready] Summary:");
+    for (name, passed) in &results {
+        let (mark, color) = if *passed {
+            ("PASS", green)
+        } else {
+            ("FAIL", red)
+        };
+        println!("  {}{:>4}{} {}", color, mark, reset, name);
+    }
+
+    if let Some(reason) = hard_failure {
+        println!(
+            "\n{}[ready] NOT commit-ready — fix the failing step: {}{}",
+            red, reason, reset
+        );
+        return Err(reason.into());
+    }
+
+    println!(
+        "\n{}[ready] All checks passed — tree looks commit-ready.{}",
         green, reset
     );
     Ok(())
@@ -1612,4 +1733,39 @@ pub fn cmd_suggest(intent: &str) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Smoke test: `cmd_ready` runs the full step pipeline end-to-end over a
+    /// tiny temp project and produces a verdict without panicking. We only
+    /// assert that it terminates with a Result (the verdict itself depends on
+    /// generated contract drift, which is the gate working as intended), which
+    /// also pins the command wiring so it can never silently drop out of the
+    /// build. An empty (non-directory) path must produce a hard failure.
+    #[test]
+    fn cmd_ready_runs_on_temp_project() {
+        let dir = std::env::temp_dir().join(format!("aden-ready-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // A trivial Rust project: the pipeline has real source to run against.
+        std::fs::write(dir.join("Cargo.toml"), "[package]\nname=\"x\"\nversion=\"0.0.0\"\n")
+            .unwrap();
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("src/lib.rs"), "pub fn noop() {}\n").unwrap();
+
+        // Must complete without panicking and yield a verdict (Ok or Err).
+        let _verdict = cmd_ready(&dir, false);
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // A non-directory path is a hard failure at the "check refs" gate, so
+        // ready must report NOT commit-ready (Err).
+        let missing = dir.join("does-not-exist");
+        assert!(
+            cmd_ready(&missing, false).is_err(),
+            "ready should fail when the target path is not a directory"
+        );
+    }
 }

@@ -1,6 +1,7 @@
 // Copyright (c) 2026 RioPlay <rioplay@rioplay.dev>
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+use aden_core::NodeType;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -40,11 +41,108 @@ impl LintSeverity {
     }
 }
 
+/// Minimal description of a graph symbol, used for the dead-code filter so the
+/// decision logic can be unit-tested without building a real graph.
+#[derive(Debug, Clone)]
+struct SymbolInfo {
+    /// Graph anchor (also serves as the symbol's identifier here).
+    anchor: String,
+    node_type: NodeType,
+    incoming: usize,
+}
+
+/// Anchor patterns that legitimately have no incoming edges and must never be
+/// reported as dead code. This mirrors the `is_expected_metadata` closure in
+/// `util::perform_check` (kept in sync deliberately — that one is a private
+/// closure, so it cannot be reused directly) plus public-entry-point names.
+fn is_expected_or_public_anchor(anchor: &str) -> bool {
+    // Synthetic / metadata anchors that never have callers by design.
+    anchor.starts_with("aden://doc/")
+        || anchor.starts_with("adr-")
+        || anchor.starts_with("plan-")
+        || anchor.starts_with("use-case-")
+        || anchor.starts_with("agent-")
+        || anchor == "readme"
+        // Public API / entry points: `main`, or any anchor ending in `::main`
+        // / `-main` (language-agnostic entry-point naming).
+        || anchor == "main"
+        || anchor.ends_with("::main")
+        || anchor.ends_with("-main")
+}
+
+/// Decide whether a symbol should be flagged as dead code.
+///
+/// A symbol is dead-code-worthy when it is a real code symbol
+/// (`Function`/`Type`), has zero incoming edges, and is not a synthetic `mod-`
+/// anchor. When `include_public` is false, expected-metadata anchors and public
+/// API / entry points (e.g. `main`) are also skipped.
+fn is_dead_code(sym: &SymbolInfo, include_public: bool) -> bool {
+    if sym.incoming > 0 {
+        return false;
+    }
+    // Only flag concrete code symbols — modules, ADRs, plans, etc. are not code.
+    if !matches!(sym.node_type, NodeType::Function | NodeType::Type) {
+        return false;
+    }
+    // Always skip synthetic module anchors.
+    if sym.anchor.starts_with("mod-") {
+        return false;
+    }
+    if !include_public && is_expected_or_public_anchor(&sym.anchor) {
+        return false;
+    }
+    true
+}
+
+/// Build dead-code lint findings from the project's knowledge graph: any code
+/// symbol with zero incoming edges (use Direction::Incoming, like the
+/// `query --backlinks` traversal) is potentially unreferenced.
+fn lint_dead_code(
+    path: &Path,
+    include_public: bool,
+) -> Result<Vec<LintResult>, Box<dyn std::error::Error>> {
+    let graph = aden_graph::cache::build_from_directory_cached(path)?;
+    let mut results = Vec::new();
+    for node_idx in graph.graph.node_indices() {
+        let node = &graph.graph[node_idx];
+        let incoming = graph
+            .graph
+            .neighbors_directed(node_idx, aden_graph::Direction::Incoming)
+            .count();
+        let sym = SymbolInfo {
+            anchor: node.doc.anchor.clone(),
+            node_type: node.doc.node_type.clone(),
+            incoming,
+        };
+        if !is_dead_code(&sym, include_public) {
+            continue;
+        }
+        let (file, line) = match &node.doc.source_span {
+            Some(span) => (span.file.clone(), span.start_line),
+            None => (sym.anchor.clone(), 1),
+        };
+        results.push(LintResult {
+            file,
+            line,
+            column: 1,
+            severity: LintSeverity::Suggest,
+            rule: "dead-code".to_string(),
+            message: format!(
+                "symbol '{}' has no incoming references (potentially dead code)",
+                sym.anchor
+            ),
+        });
+    }
+    Ok(results)
+}
+
 pub fn cmd_lint(
     path: &Path,
     severity: &str,
     fix: bool,
     json: bool,
+    dead_code: bool,
+    include_public: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let min_severity = LintSeverity::from_str(severity);
 
@@ -78,6 +176,13 @@ pub fn cmd_lint(
         .collect();
 
     let mut results = all_results;
+
+    // Graph-based dead-code detection. Merged into the line-based findings here
+    // so `--json` and `--severity` filtering apply to it automatically.
+    if dead_code {
+        results.extend(lint_dead_code(path, include_public)?);
+    }
+
     results.sort_by_key(|r| r.file.clone());
 
     let filtered: Vec<_> = results
@@ -989,9 +1094,9 @@ mod tests {
             rules("system(\"rm #{user_path}\")", "rb").contains(&"sc-data-is-data".to_string())
         );
         // sc-no-secret-ingest — hard-coded credential in a string literal.
-        let aws_key_code = ["let k = \"", "AKIA", "IOSFODNN7EXAMPLE\";"].concat();
         assert!(
-            rules(&aws_key_code, "rs").contains(&"sc-no-secret-ingest".to_string())
+            rules("let k = \"AKIAIOSFODNN7EXAMPLE\";", "rs")
+                .contains(&"sc-no-secret-ingest".to_string())
         );
     }
 
@@ -1053,5 +1158,51 @@ mod tests {
             results.iter().any(|r| r.rule == "redundant_to_string"),
             "genuine redundant conversion should be flagged"
         );
+    }
+
+    fn sym(anchor: &str, node_type: NodeType, incoming: usize) -> SymbolInfo {
+        SymbolInfo {
+            anchor: anchor.to_string(),
+            node_type,
+            incoming,
+        }
+    }
+
+    #[test]
+    fn dead_code_flags_unreferenced_function() {
+        assert!(is_dead_code(&sym("orphan_fn", NodeType::Function, 0), false));
+        assert!(is_dead_code(&sym("OrphanType", NodeType::Type, 0), false));
+    }
+
+    #[test]
+    fn dead_code_skips_referenced_function() {
+        assert!(!is_dead_code(&sym("used_fn", NodeType::Function, 2), false));
+    }
+
+    #[test]
+    fn dead_code_skips_synthetic_module_anchors() {
+        assert!(!is_dead_code(&sym("mod-foo", NodeType::Function, 0), false));
+        // Modules themselves are never code symbols.
+        assert!(!is_dead_code(&sym("foo", NodeType::Module, 0), false));
+    }
+
+    #[test]
+    fn dead_code_skips_public_entry_points_by_default() {
+        let main = sym("main", NodeType::Function, 0);
+        assert!(!is_dead_code(&main, false));
+        // With --include-public, entry points ARE flagged.
+        assert!(is_dead_code(&main, true));
+        // Qualified entry-point names are treated the same.
+        assert!(!is_dead_code(&sym("app::main", NodeType::Function, 0), false));
+    }
+
+    #[test]
+    fn dead_code_skips_expected_metadata_anchors() {
+        // Metadata anchors legitimately have no incoming edges. They are also
+        // not Function/Type, but the anchor guard is the relevant one here.
+        assert!(!is_dead_code(&sym("adr-001", NodeType::Function, 0), false));
+        assert!(!is_dead_code(&sym("plan-x", NodeType::Function, 0), false));
+        // Override with --include-public.
+        assert!(is_dead_code(&sym("adr-001", NodeType::Function, 0), true));
     }
 }

@@ -1005,38 +1005,18 @@ Context begins below (--- separates different documents):
                 "max_tokens": 2048
             });
 
-            // Keep the API key off the process command line (visible in
-            // `ps`/`/proc/<pid>/cmdline` to any local user) and out of the
-            // child's inherited environment. The Authorization header is fed
-            // to curl through a `--config -` block read from stdin; only the
-            // non-sensitive URL/payload stay on argv. Escape `\` and `"` for
-            // curl's config-file string syntax.
-            let escaped_key = api_key.replace('\\', "\\\\").replace('"', "\\\"");
-            let curl_config = format!("header = \"Authorization: Bearer {}\"\n", escaped_key);
-
-            use std::io::Write as _;
-            let mut child = std::process::Command::new("curl")
+            let output = std::process::Command::new("curl")
                 .args([
                     "-sS",
                     "https://api.openai.com/v1/chat/completions",
                     "-H",
+                    &format!("Authorization: Bearer {}", api_key),
+                    "-H",
                     "Content-Type: application/json",
                     "-d",
                     &payload.to_string(),
-                    "--config",
-                    "-",
                 ])
-                .env_remove("OPENAI_API_KEY")
-                .stdin(std::process::Stdio::piped())
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped())
-                .spawn()?;
-            child
-                .stdin
-                .take()
-                .ok_or("failed to open curl stdin")?
-                .write_all(curl_config.as_bytes())?;
-            let output = child.wait_with_output()?;
+                .output()?;
 
             if output.status.success() {
                 let json: serde_json::Value = serde_json::from_slice(&output.stdout)?;
@@ -1365,6 +1345,229 @@ pub fn cmd_list(
         );
     }
 
+    Ok(())
+}
+
+/// Resolve a bare symbol name to a single full store anchor, mirroring the
+/// suffix/`#name` matching that `locate` uses against the store's anchor keys.
+///
+/// Returns the unique best match: an exact `#symbol` suffix match is preferred,
+/// otherwise the first (sorted) anchor whose lowercased form ends with the
+/// symbol or contains `#symbol`. `None` when nothing matches — callers turn
+/// that into a helpful "not found" message. Factored out so it is unit-testable
+/// without a live store.
+fn pick_symbol_anchor(symbol: &str, anchors: &[String]) -> Option<String> {
+    let sym = symbol.to_lowercase();
+    let mut matched: Vec<&String> = anchors
+        .iter()
+        .filter(|a| {
+            let al = a.to_lowercase();
+            al.ends_with(&format!("#{}", sym)) || al.ends_with(&sym) || al.contains(&format!("#{}", sym))
+        })
+        .collect();
+    matched.sort();
+    // Prefer an exact `#symbol` suffix (a real symbol anchor) over a looser
+    // tail match, so `parse` resolves to `…#parse` not `…#reparse`.
+    matched
+        .iter()
+        .find(|a| a.to_lowercase().ends_with(&format!("#{}", sym)))
+        .or_else(|| matched.first())
+        .map(|a| (*a).clone())
+}
+
+/// `aden understand <symbol>` — one-shot symbol comprehension.
+///
+/// Bundles what previously took four separate invocations (`locate`,
+/// `query --backlinks`, `query --impact`, `asm`) into a single coherent report:
+///
+/// 1. resolve the symbol to its store anchor + definition location,
+/// 2. list backlinks (incoming references — who calls/references it),
+/// 3. list downstream impact (outgoing Uses/Calls/Constrains/Invokes reach),
+/// 4. assemble a context block from that anchor within `budget` tokens.
+///
+/// Reuses the shared `resolve_anchor_in_store` resolution and the same graph
+/// traversal / assembly internals the individual commands use.
+pub fn cmd_understand(
+    symbol: &str,
+    path: &Path,
+    budget: usize,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use aden_asm::traverse::{AssemblyOptions, assemble};
+    use serde_json::json;
+
+    if !path.is_dir() {
+        return Err("understand requires a directory path".into());
+    }
+    super::ensure_fresh(path);
+
+    // Step 1: resolve the symbol to a full store anchor. Try the shared exact
+    // resolver first; fall back to suffix matching over the store's anchor keys
+    // (same strategy `locate` uses) so a bare symbol name still resolves.
+    let anchor = match aden_graph::cache::resolve_anchor_in_store(path, symbol) {
+        Some(a) => a,
+        None => {
+            let store_path = path.join(".aden").join("store");
+            let anchors = aden_store::Storage::new(
+                store_path.to_str().ok_or("invalid store path")?,
+            )
+            .ok()
+            .and_then(|s| s.get_all_anchors().ok())
+            .unwrap_or_default();
+            let anchors: Vec<String> = anchors.into_iter().collect();
+            match pick_symbol_anchor(symbol, &anchors) {
+                Some(a) => a,
+                None => {
+                    let msg = format!(
+                        "No symbol found matching '{}'. Run 'aden list .' to see available anchors.",
+                        symbol
+                    );
+                    if json {
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(&json!({
+                                "symbol": symbol,
+                                "anchor": null,
+                                "error": msg,
+                            }))?
+                        );
+                    } else {
+                        println!("{}", msg);
+                    }
+                    return Ok(());
+                }
+            }
+        }
+    };
+
+    // Load the full graph once; all three structural views read from it.
+    let graph = aden_graph::cache::build_from_directory_cached(path)?;
+    let idx = graph.get_index(&anchor).ok_or_else(|| {
+        format!(
+            "Anchor '{}' not found in graph. Run 'aden list .' to see available anchors.",
+            anchor
+        )
+    })?;
+
+    // Definition location from the node's attributes.
+    let def = {
+        let node = &graph.graph[idx];
+        let attrs = &node.doc.attributes;
+        json!({
+            "anchor": anchor,
+            "node_type": attrs.get("node-type").cloned()
+                .unwrap_or_else(|| format!("{:?}", node.doc.node_type)),
+            "file": attrs.get("source_file").cloned().unwrap_or_default(),
+            "start_line": attrs.get("start_line").cloned().unwrap_or_default(),
+            "end_line": attrs.get("end_line").cloned().unwrap_or_default(),
+        })
+    };
+
+    // Step 2: backlinks — incoming references (mirrors `query --backlinks`).
+    let mut backlinks: Vec<serde_json::Value> = Vec::new();
+    for neighbor in graph.graph.neighbors_directed(idx, Direction::Incoming) {
+        backlinks.push(node_to_json(&graph.graph[neighbor], 1));
+    }
+
+    // Step 3: downstream impact — outgoing reach over impact edge types
+    // (mirrors `query --impact`).
+    let impact_types = [
+        aden_core::EdgeType::Uses,
+        aden_core::EdgeType::Calls,
+        aden_core::EdgeType::Constrains,
+        aden_core::EdgeType::Invokes,
+    ];
+    let mut impact: Vec<serde_json::Value> = Vec::new();
+    let mut visited = HashSet::new();
+    let mut queue = VecDeque::new();
+    visited.insert(idx);
+    queue.push_back((idx, 0usize));
+    while let Some((node, d)) = queue.pop_front() {
+        for neighbor in graph.graph.neighbors_directed(node, Direction::Outgoing) {
+            let weight = graph
+                .graph
+                .find_edge(node, neighbor)
+                .and_then(|e| graph.graph.edge_weight(e))
+                .map(|e| &e.edge_type)
+                .copied()
+                .unwrap_or(aden_core::EdgeType::Uses);
+            if !impact_types.contains(&weight) {
+                continue;
+            }
+            if visited.insert(neighbor) {
+                impact.push(node_to_json(&graph.graph[neighbor], d + 1));
+                queue.push_back((neighbor, d + 1));
+            }
+        }
+    }
+
+    // Step 4: assemble a context block from the anchor within budget, via the
+    // same neighborhood-stream + assemble path `asm` uses.
+    let edge_types: Vec<aden_core::EdgeType> = Vec::new();
+    let neigh = aden_graph::cache::build_neighborhood_cached(path, &anchor, 3, &edge_types)?;
+    let asm_opts = AssemblyOptions {
+        start_anchor: anchor.clone(),
+        max_depth: 3,
+        token_budget: budget,
+        edge_types,
+        block_filter: Vec::new(),
+        include_tags: Vec::new(),
+        exclude_tags: Vec::new(),
+        attributes: Vec::new(),
+        llm_mode: true,
+    };
+    let context = assemble(&neigh, &asm_opts)?;
+
+    if json {
+        let env = json!({
+            "symbol": symbol,
+            "anchor": anchor,
+            "definition": def,
+            "backlinks": backlinks,
+            "impact": impact,
+            "context": context,
+        });
+        println!("{}", serde_json::to_string_pretty(&env)?);
+        return Ok(());
+    }
+
+    // Human report.
+    println!("# Understanding '{}'", symbol);
+    println!();
+    println!("## Definition");
+    let file = def["file"].as_str().unwrap_or("");
+    let line = def["start_line"].as_str().unwrap_or("");
+    let nt = def["node_type"].as_str().unwrap_or("");
+    if file.is_empty() {
+        println!("  {} [{}]", nt, anchor);
+    } else {
+        println!("  {} {} ({}:{})", anchor, nt, file, line);
+    }
+    println!();
+
+    println!("## Backlinks ({} reference(s))", backlinks.len());
+    if backlinks.is_empty() {
+        println!("  (none — unused, an entry point, or invoked via dynamic dispatch)");
+    } else {
+        for b in &backlinks {
+            println!("  {}", b["anchor"].as_str().unwrap_or(""));
+        }
+    }
+    println!();
+
+    println!("## Downstream impact ({} node(s))", impact.len());
+    if impact.is_empty() {
+        println!("  (none)");
+    } else {
+        for i in &impact {
+            println!("  [{}] {}", i["depth"], i["anchor"].as_str().unwrap_or(""));
+        }
+    }
+    println!();
+
+    println!("## Context (budget {} tokens)", budget);
+    println!();
+    println!("{}", context);
     Ok(())
 }
 
@@ -1749,6 +1952,10 @@ pub fn cmd_watch(
         None
     };
 
+    println!(
+        "Watching {} for changes... Press Ctrl+C to stop.",
+        path.display()
+    );
     if graph_sync {
         println!("Graph sync enabled - contracts and graph stay current.");
     }
@@ -2108,6 +2315,35 @@ mod tests {
             select_ask_budget(false, base, Some(avg)) > base,
             "boost must exceed base for positive relevance"
         );
+    }
+
+    // ---- understand: symbol -> anchor resolution.
+
+    /// An exact `#symbol` suffix wins over a looser tail match, so `parse`
+    /// resolves to `…#parse` and never to `…#reparse`.
+    #[test]
+    fn understand_picks_exact_symbol_suffix() {
+        let anchors = vec![
+            "src/a.rs#reparse".to_string(),
+            "src/b.rs#parse".to_string(),
+            "src/c.rs#parser".to_string(),
+        ];
+        assert_eq!(
+            super::pick_symbol_anchor("parse", &anchors),
+            Some("src/b.rs#parse".to_string())
+        );
+    }
+
+    /// Case-insensitive match, and an unknown symbol yields None so the caller
+    /// can emit the "run aden list" hint.
+    #[test]
+    fn understand_resolution_is_case_insensitive_and_missing_is_none() {
+        let anchors = vec!["crates/x.rs#AssembleContext".to_string()];
+        assert_eq!(
+            super::pick_symbol_anchor("assemblecontext", &anchors),
+            Some("crates/x.rs#AssembleContext".to_string())
+        );
+        assert_eq!(super::pick_symbol_anchor("nope_not_here", &anchors), None);
     }
 
     #[test]

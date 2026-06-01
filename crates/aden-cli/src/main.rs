@@ -157,6 +157,10 @@ enum Commands {
         fix: bool,
         #[arg(long, help = "Output JSON format")]
         json: bool,
+        #[arg(long, help = "Flag potentially dead code (symbols with no incoming graph edges)")]
+        dead_code: bool,
+        #[arg(long, help = "Include public API / entry points in dead-code analysis")]
+        include_public: bool,
     },
     /// Discover and run tests across all languages
     Test {
@@ -459,6 +463,26 @@ enum Commands {
         )]
         watch: Option<PathBuf>,
     },
+    /// Fast pre-commit combo: gen + lint + check + heal drift scan + audit
+    Ready {
+        #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
+        path: PathBuf,
+        #[arg(long, help = "Apply auto-fixes where possible (lint + high-confidence heal)")]
+        fix: bool,
+    },
+    /// One-shot symbol comprehension: definition, backlinks, impact, and assembled context
+    Understand {
+        /// Symbol name to understand
+        symbol: String,
+        #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
+        path: PathBuf,
+        /// Token budget for the assembled context block
+        #[arg(long, value_name = "TOKENS", default_value = "4000")]
+        budget: usize,
+        /// Emit a single JSON object instead of a human report
+        #[arg(long)]
+        json: bool,
+    },
     /// Run all local CI gates before committing (check, heal, test, secret-scan)
     CiCheck {
         #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
@@ -740,7 +764,13 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
             severity,
             fix,
             json,
-        } => commands::cmd_lint(&path, &severity, fix, json),
+            dead_code,
+            include_public,
+        } => commands::cmd_lint(&path, &severity, fix, json, dead_code, include_public),
+        Commands::Ready { path, fix } => commands::cmd_ready(&path, fix),
+        Commands::Understand { symbol, path, budget, json } => {
+            commands::cmd_understand(&symbol, &path, budget, json)
+        }
         Commands::Test {
             path,
             scope,

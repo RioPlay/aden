@@ -25,13 +25,14 @@ pub use heal::{cmd_heal_apply, cmd_heal_scan, cmd_heal_scan_since};
 pub use init::{cmd_init, cmd_new};
 pub use lint::cmd_lint;
 pub use misc::{
-    cmd_audit, cmd_ci_check, cmd_doctor, cmd_emergency, cmd_licenses, cmd_review, cmd_review_since,
-    cmd_suggest,
+    cmd_audit, cmd_ci_check, cmd_doctor, cmd_emergency, cmd_licenses, cmd_ready, cmd_review,
+    cmd_review_since, cmd_suggest,
 };
 #[cfg(feature = "watch")]
 pub use query::cmd_watch;
 pub use query::{
     cmd_ask, cmd_asm, cmd_check, cmd_list, cmd_locate, cmd_query, cmd_query_adq, cmd_search,
+    cmd_understand,
 };
 pub use session::{cmd_kickoff, cmd_session, cmd_workflow};
 pub use test_cmd::cmd_test;
