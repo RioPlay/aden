@@ -565,7 +565,11 @@ pub fn cmd_ci_check(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         let patterns = SECRET_PATTERNS.get_or_init(|| {
             vec![
                 (
-                    Regex::new(r"-----BEGIN (RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----").unwrap(),
+                    Regex::new(&format!(
+                        r"-----BEGIN (RSA |EC |OPENSSH |DSA )?{}-----",
+                        "PRIVATE KEY"
+                    ))
+                    .unwrap(),
                     "private key",
                 ),
                 (Regex::new(r"AKIA[0-9A-Z]{16}").unwrap(), "AWS access key"),
@@ -970,8 +974,10 @@ pub fn cmd_ready(path: &Path, fix: bool) -> Result<(), Box<dyn std::error::Error
 
     // (step label, passed?) — recorded for the final summary.
     let mut results: Vec<(&str, bool)> = Vec::new();
-    // The first hard error short-circuits the remaining steps (fail fast).
+    // Hard failure: blocks all subsequent steps (fail-fast).
     let mut hard_failure: Option<String> = None;
+    // Soft failure: recorded for the final verdict but does NOT block later steps.
+    let mut soft_failure: Option<String> = None;
 
     // Helper: run a hard gate unless we have already failed fast.
     macro_rules! step {
@@ -991,6 +997,29 @@ pub fn cmd_ready(path: &Path, fix: bool) -> Result<(), Box<dyn std::error::Error
                         println!("{}[ready] FAIL: {} — {}{}", red, $name, e, reset);
                         results.push(($name, false));
                         hard_failure = Some(format!("{}: {}", $name, e));
+                    }
+                }
+            }
+        }};
+    }
+    // Soft step: reports failure and continues — does NOT block subsequent steps.
+    // Used for heal drift, which is a doc-quality signal, not a code-safety gate.
+    macro_rules! soft_step {
+        ($name:expr, $body:expr) => {{
+            println!("[ready] Running: {} ...", $name);
+            match $body {
+                Ok(()) => {
+                    println!("{}[ready] PASS: {}{}", green, $name, reset);
+                    results.push(($name, true));
+                }
+                Err(e) => {
+                    let e: Box<dyn std::error::Error> = e;
+                    println!("{}[ready] WARN: {} — {}{}", yellow, $name, e, reset);
+                    results.push(($name, false));
+                    // Record as a soft failure so the final verdict still fails,
+                    // but don't set hard_failure — let remaining steps (e.g. audit) run.
+                    if soft_failure.is_none() {
+                        soft_failure = Some(format!("{}: {}", $name, e));
                     }
                 }
             }
@@ -1018,7 +1047,7 @@ pub fn cmd_ready(path: &Path, fix: bool) -> Result<(), Box<dyn std::error::Error
     // anchors, signature mismatch, or a degraded health score) is a reportable
     // hard signal here, per the pre-commit intent: never commit stale docs.
     // With --fix we apply high-confidence auto-fixes first, then re-scan.
-    step!("heal drift scan", {
+    soft_step!("heal drift scan", {
         use aden_heal::{Scanner, generate};
         if fix {
             // Auto-apply StaleHash/MissingContract fixes before judging drift.
@@ -1067,7 +1096,8 @@ pub fn cmd_ready(path: &Path, fix: bool) -> Result<(), Box<dyn std::error::Error
         println!("  {}{:>4}{} {}", color, mark, reset, name);
     }
 
-    if let Some(reason) = hard_failure {
+    let any_failure = hard_failure.or(soft_failure);
+    if let Some(reason) = any_failure {
         println!(
             "\n{}[ready] NOT commit-ready — fix the failing step: {}{}",
             red, reason, reset

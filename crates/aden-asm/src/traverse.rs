@@ -887,11 +887,11 @@ mod tests {
     fn truncate_never_exceeds_budget() {
         let ascii = "the quick brown fox jumps over the lazy dog ".repeat(200);
         let multibyte = "café 你好 🚀 ".repeat(300);
-        let giant_token = "x".repeat(20_000); // no whitespace anywhere
+        let giant_word = "x".repeat(20_000); // no whitespace anywhere
         let inputs = [
             ascii.as_str(),
             multibyte.as_str(),
-            giant_token.as_str(),
+            giant_word.as_str(),
             "short",
         ];
         for &text in &inputs {
