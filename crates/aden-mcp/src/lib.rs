@@ -109,6 +109,8 @@ fn is_positional(tool: &str, arg: &str) -> bool {
         ("workflow", "template") => true,
         // query-adq: aden query-adq <SCRIPT> [DIR]
         ("query-adq", "script") => true,
+        // understand: aden understand <SYMBOL> [DIR]
+        ("understand", "symbol") => true,
         // federation/mcp dispatch on a positional subcommand token (list, add, …)
         ("federation" | "mcp", "action") => true,
         _ => false,
@@ -282,13 +284,15 @@ static TOOLS: &[ToolSpec] = &[
     },
     ToolSpec {
         name: "lint",
-        description: "Lint source files.",
+        description: "Lint source files. Use dead_code=true to flag symbols with no incoming graph edges (Function/Type nodes with zero callers). Conservative by default — skips entry points and public API; set include_public=true to widen.",
         args: &[
             ("path", "string"),
             ("severity", "string"),
             ("fix", "boolean"),
             ("json", "boolean"),
             ("unlimited", "boolean"),
+            ("dead_code", "boolean"),
+            ("include_public", "boolean"),
         ],
     },
     ToolSpec {
@@ -416,13 +420,28 @@ static TOOLS: &[ToolSpec] = &[
         args: &[("path", "string")],
     },
     ToolSpec {
+        name: "ready",
+        description: "Fast pre-commit gate — gen + lint + check + heal drift scan + audit. Aden-only, no external tool dependencies. Use before every commit. Prefer over ci-check for local dev loops.",
+        args: &[("path", "string"), ("fix", "boolean")],
+    },
+    ToolSpec {
+        name: "understand",
+        description: "One-shot symbol comprehension: resolves a symbol to its anchor, shows its definition location, lists backlinks (callers/references), lists downstream impact, and assembles a context block. Replaces the manual locate → query --backlinks → query --impact → asm chain.",
+        args: &[
+            ("symbol", "string"),
+            ("path", "string"),
+            ("budget", "integer"),
+            ("json", "boolean"),
+        ],
+    },
+    ToolSpec {
         name: "sync",
-        description: "Run gen + check + heal in one pass.",
-        args: &[("path", "string")],
+        description: "Reconcile the store — gen + check + heal with gc (prunes deleted symbols). Use after large merges or file deletions, NOT as a routine pre-commit step (use `ready` for that). Pass no_gc=true to skip garbage-collection.",
+        args: &[("path", "string"), ("no_gc", "boolean")],
     },
     ToolSpec {
         name: "ci-check",
-        description: "Run all local CI gates: aden check, project tests, aden lint, secret scan, attribution check, OWASP audit, and merge-conflict-marker scan (plus warning-only clippy/cargo-audit).",
+        description: "Full CI gate suite: aden check, project tests, aden lint, secret scan, attribution check, OWASP audit, merge-conflict-marker scan, insecure-protocol check, cargo clippy, cargo audit, contract freshness. Use before push to remote. For local dev use `ready` instead.",
         args: &[("path", "string")],
     },
     ToolSpec {
