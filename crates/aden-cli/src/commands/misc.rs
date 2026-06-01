@@ -1059,20 +1059,15 @@ pub fn cmd_ready(path: &Path, fix: bool) -> Result<(), Box<dyn std::error::Error
         let critical = events
             .iter()
             .filter(|e| {
-                // OrphanAnchor events for expected metadata (doc headings, ADRs,
-                // plans, etc.) are normal — same classifier used by `status` and
-                // `check`. Only count actionable orphans as critical.
-                let is_expected_orphan = matches!(e,
-                    aden_heal::DriftEvent::OrphanAnchor { anchor, .. }
-                    if crate::util::is_expected_metadata(anchor)
-                );
-                if is_expected_orphan {
-                    return false;
-                }
+                // Only hard correctness failures block a commit:
+                // - BrokenReference (Critical): a <<ref>> points at a missing anchor
+                // - SignatureMismatch (High): a symbol's signature changed
+                // OrphanAnchor (Medium) and MissingContract (Medium) are maintenance
+                // signals — stale store entries and undocumented symbols — not
+                // pre-commit blockers. Run `aden sync` to clean them up.
                 matches!(
                     e,
                     aden_heal::DriftEvent::BrokenReference { .. }
-                        | aden_heal::DriftEvent::OrphanAnchor { .. }
                         | aden_heal::DriftEvent::SignatureMismatch { .. }
                 )
             })
