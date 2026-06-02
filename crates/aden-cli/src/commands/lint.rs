@@ -374,6 +374,27 @@ fn lint_file(path: &Path, content: &str, ext: &str) -> Vec<LintResult> {
     results
 }
 
+/// Byte offset of a standalone macro call `name` (e.g. `println!`) in `line`,
+/// requiring the match to not be preceded by an identifier character. This keeps
+/// `println!` from matching inside `eprintln!` (and `print!` inside `eprint!`),
+/// which is what caused the `debug_print` rule to flag every stderr line.
+fn find_macro(line: &str, name: &str) -> Option<usize> {
+    let bytes = line.as_bytes();
+    let mut from = 0;
+    while let Some(rel) = line[from..].find(name) {
+        let idx = from + rel;
+        let prev_is_ident = idx > 0 && {
+            let c = bytes[idx - 1];
+            c.is_ascii_alphanumeric() || c == b'_'
+        };
+        if !prev_is_ident {
+            return Some(idx);
+        }
+        from = idx + name.len();
+    }
+    None
+}
+
 /// True if the line is a comment in the given language. Code-level rules
 /// (security, style) must never fire on prose inside a comment — e.g. the word
 /// `eval(` in a Python `#` comment is not an eval call.
@@ -640,17 +661,28 @@ fn lint_rust_line(line: &str, line_num: usize) -> Vec<LintResult> {
         });
     }
 
-    // NEW: Debug println left in code
-    if line.contains("println!")
-        && (line.contains("\"") && !line.contains("logger") && !line.contains("log::"))
-    {
+    // Debug print left in code. Only flag prints that actually look like
+    // debugging: the `dbg!` macro, or a `print!`/`println!` using a debug
+    // formatter (`{:?}`/`{:#?}`). A bare `println!("…")` is a CLI program's
+    // legitimate product and `eprintln!` is diagnostic output, so neither is
+    // flagged. (The previous rule matched the `println!` substring, which also
+    // fired on every `eprintln!` and on all user-facing CLI output.)
+    let has_print_macro = find_macro(line, "println!").is_some() || find_macro(line, "print!").is_some();
+    let uses_debug_fmt = line.contains("{:?}") || line.contains("{:#?}");
+    let has_dbg_macro = find_macro(line, "dbg!").is_some();
+    if has_dbg_macro || (has_print_macro && uses_debug_fmt) {
+        let column = find_macro(line, "dbg!")
+            .or_else(|| find_macro(line, "println!"))
+            .or_else(|| find_macro(line, "print!"))
+            .map(|i| i + 1)
+            .unwrap_or(1);
         results.push(LintResult {
             file: String::new(),
             line: line_num,
-            column: line.find("println!").map(|i| i + 1).unwrap_or(1),
+            column,
             severity: LintSeverity::Warn,
             rule: "debug_print".to_string(),
-            message: "Debug println left in code - remove in production".to_string(),
+            message: "Debug print left in code (dbg!/{:?}) — remove before release".to_string(),
         });
     }
 

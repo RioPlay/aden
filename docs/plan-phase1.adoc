@@ -1,0 +1,107 @@
+:proj: aden
+:phase: 1
+:agent_role: architect
+:scope: merge-integration
+
+[[plan-phase1]]
+= Phase 1: Wiring the Three-Way Merge (gen/heal integration)
+
+== Objective
+
+Close the gap documented in <<plan-phase0>>: the three-way merge engine
+(`ContractState` / `MergeProposal` / `ContractRegion`) is shipped and tested in
+`aden-core` but has *zero* non-test callers — `gen` overwrites the store and
+`heal` only detects document-level drift. Phase 1 routes every store write
+through the merge engine so `gen` becomes non-destructive by construction, gives
+durable human/agent intent a home, and surfaces only genuine conflicts.
+
+== Design decisions (locked)
+
+. *Contract home* — generated content lives in the rebuildable, git-ignored
+  store (`.aden/store`); durable human/agent intent lives in *sparse,
+  per-anchor, git-tracked overlays* at `.aden/overlays/<sanitized-anchor>.adoc`.
+  No full per-symbol `.adoc` mirror (that is the deleted "legacy" model). An
+  overlay holds only `[human]`/`[agent]`/`[security]`/`[contract]`/
+  `[constitution]`/`[override]` blocks — never generated content.
+. *Auto-apply boundary* — the `MergeAction` taxonomy is the gate. Auto-apply
+  every action except `Conflict`; `Conflict` is routed to `.aden/proposals/`
+  for review. Precedence is a soft default, not a hard rule. `gen` always prints
+  a one-line merge summary — nothing is silent.
+
+== The reconcile model
+
+In the store-first model the store holds only the generated `Document`, so the
+merge reduces to a per-anchor decision:
+
+* `ground`   = `ContractDocument::from_document(fresh)`   (fresh AST)
+* `base`     = `ContractDocument::from_document(stored)`  (last gen output)
+* `working`  = `base` + the overlay's non-generated blocks
+
+No conflict ⇒ write the fresh `Document` (today's behavior, now *proven* safe).
+Conflict ⇒ keep the stored doc, emit a proposal. With no overlays present the
+output is byte-identical to pre-Phase-1 `gen` — a zero-risk rollout.
+
+== Deliverables
+
+|===
+|ID |Deliverable |Crate |Acceptance Criteria
+
+|1.1 |`MergeProposal::is_clean`, `overlay_onto`, `reconcile_anchor`; harden
+`propose()` so a generated change/delete that orphans an overlay reference emits
+`Conflict` |`aden-core` |Unit tests below pass; existing 100-fixture suite green
+|1.2 |Overlay layer: `overlay_path` / `sanitize_anchor_filename` / `load_overlay`
+|`aden-cli` |Round-trips a `[human]` block through disk and back
+|1.3 |Merge gate at `generate.rs:641`; conflicts collected and written as
+`aden_propose::Proposal`; one-line summary |`aden-cli` |Conflict keeps store
+doc; proposal appears in `.aden/proposals/`
+|1.4 |`gen --propose` (dry-run) and `gen --force-regen` (bypass) |`aden-cli`
+|`--propose` mutates nothing; `--force-regen` overwrites
+|1.5 |Region-aware `heal`: `DriftEvent::OverlayConflict`; `--fix` guard asserts
+target `is_generated()` |`aden-heal` / `aden-cli` |`heal --fix` never writes an
+overlay file
+|===
+
+== Security & Quality Gates
+
+|===
+|Gate |Requirement |Verification
+
+|Preservation |Merge never edits/deletes a `[human]`/`[agent]` block |100-fixture regression
+|Determinism |Same source + overlay → identical store and proposal bytes |CI SHA-256
+|No-overlay parity |Repos without overlays produce byte-identical store to pre-Phase-1 `gen` |Integration test
+|===
+
+== Out of scope (Phase 2+)
+
+`aden new <anchor>` authoring; overlay-aware `asm` assembly; `[constitution]`
+precedence in conflict resolution; updating <<philosophy>> / architecture docs
+to drop the "not currently exposed" notes and mark phase-0 0.5/0.6 shipped.
+
+== Trace
+
+- *2026-06-01*: Plan written. Decisions on contract home + auto-apply boundary locked.
+- *2026-06-01*: Deliverables 1.1–1.4 shipped. `aden-core` reconcile
+  (`reconcile_anchor`, `overlay_onto`, `MergeProposal::is_clean`,
+  `RegionBlock::is_durable`) with hardened orphan-conflict detection; `aden-cli`
+  overlay layer (`overlay.rs`); merge gate wired at the `gen` store-write site;
+  `gen --propose` (dry-run) and `gen --force-regen` (bypass) flags, both also
+  bypassing the mtime cache. Verified end-to-end: conflict preserves the store +
+  writes a proposal, dry-run mutates nothing, force overwrites, no-overlay repos
+  stay byte-for-byte identical. Workspace tests green, clippy clean.
+  *Remaining:* 1.5 region-aware `heal` (`OverlayConflict` drift class +
+  `is_generated()` fix guard).
+- *2026-06-01*: Post-review fixes applied. Perf: gate now skips the per-symbol
+  store read + overlay parse unless the anchor has an overlay (slug index built
+  once; zero overhead when `.aden/overlays/` is absent). Robustness: overlays
+  carry an `:anchor:` header that `load_overlay` verifies, so a filename-slug
+  collision can never misapply intent (warns + ignores). Accuracy: the summary
+  counts only documents actually written (`EmittedSymbol.wrote`), so a
+  conflict-held or dry-run symbol no longer inflates "Stored N". Messaging:
+  conflict guidance points to editing the overlay or `--force-regen` (not
+  `heal --apply`, which only prints for `MergeConflict`). See <<plan-phase2>>
+  for delivery + semantics.
+
+== Related Documents
+
+. <<plan-phase0>>
+. <<philosophy>>

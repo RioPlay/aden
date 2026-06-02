@@ -358,15 +358,20 @@ When source code changes, contracts become stale. `aden heal` detects drift:
 === Three-Way Merge
 
 The three-way merge engine lives in `aden-core` (`ContractState` /
-`MergeProposal`). It reconciles:
+`MergeProposal`). For each symbol it reconciles:
 
-- **ground**: freshly parsed AST
-- **base**: last generated contract
-- **working**: current file with human edits
+- **ground**: freshly parsed AST (`from_document` of the new parse)
+- **base**: the generated document currently in the store (last `gen`)
+- **working**: `base` plus the symbol's intent overlay (`[human]`/`[agent]`)
 
-NOTE: This engine is not currently exposed through an `aden gen --merge` CLI
-flag (that flag does not exist). Today `gen` is store-first and writes only to
-`.aden/store`; proposal review is available through `aden heal --propose`.
+It is wired into `gen` (`reconcile_anchor`): the generated layer always updates
+the store (so it never drifts from source), while durable overlay intent —
+stored sparsely in git-tracked `.aden/overlays/<anchor>.adoc` — is preserved and
+folded into the read graph so `asm`/`ask`/`query` surface it. When a symbol that
+carries an overlay has its generated content change, `gen` writes a one-time
+*review notice* to `.aden/proposals/` (notify, not block). `gen --propose` is a
+dry-run; `gen --force-regen` skips the gate. Author overlays with
+`aden overlay <anchor>`.
 
 The engine produces a per-block `MergeAction`:
 
@@ -491,20 +496,20 @@ Extracted and indexed for search.
 == Module Overview
 
 See also:
-- <<mod-aden-core>>
-- <<mod-aden-cli>>
-- <<mod-aden-parse>>
-- <<mod-aden-emit>>
-- <<mod-aden-asm>>
-- <<mod-aden-graph>>
-- <<mod-aden-heal>>
-- <<mod-aden-propose>>
-- <<mod-aden-policy>>
-- <<mod-aden-index>>
-- <<mod-aden-store>> — fjall LSM-tree persistence (`.aden/store`)
-- <<mod-aden-diagnose>> — deterministic diagnostic scanner (backs `aden diagnose`)
-- <<mod-aden-lsp>>
-- <<mod-aden-mcp>>
+- `aden-core`
+- `aden-cli`
+- `aden-parse`
+- `aden-emit`
+- `aden-asm`
+- `aden-graph`
+- `aden-heal`
+- `aden-propose`
+- `aden-policy`
+- `aden-index`
+- `aden-store` — fjall LSM-tree persistence (`.aden/store`)
+- `aden-diagnose` — deterministic diagnostic scanner (backs `aden diagnose`)
+- `aden-lsp`
+- `aden-mcp`
 
 Experimental / unintegrated (real logic + tests, but no callers — see <<experimental-crates>>):
 

@@ -439,36 +439,60 @@ pub fn perform_check(path: &Path) -> Result<Vec<String>, Box<dyn std::error::Err
         }
     }
 
-    // Also check on-disk .adoc/.aden files for anchors not yet in store
-    for entry in std::fs::read_dir(path)? {
-        let entry = entry?;
+    // Walk the WHOLE tree for on-disk .adoc/.aden files, honoring
+    // .adenignore/.adenallow plus aden's own scaffolding dirs. A previous version
+    // scanned only `read_dir(path)` (the top level), so `check .` never saw refs
+    // in subdirectories (e.g. docs/architecture.adoc) and reported "All <<refs>>
+    // resolve" while a narrower `check docs` and `aden diagnose` flagged the same
+    // broken refs — root-scope under-reporting. `.aden/` (store, overlays,
+    // proposals) and `.agent/` (templates/scaffolding) are aden's own artifacts,
+    // not project content to validate, so they are always skipped.
+    let filter = aden_core::filter::AdenFilter::from_directory(path);
+    let is_aden_artifact = |rel: &Path| -> bool {
+        rel.components().any(|c| {
+            matches!(c.as_os_str().to_str(), Some(".aden") | Some(".agent"))
+        })
+    };
+    let mut doc_files: Vec<PathBuf> = Vec::new();
+    for entry in walkdir::WalkDir::new(path)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|e| {
+            e.path()
+                .strip_prefix(path)
+                .map(|rel| {
+                    rel.as_os_str().is_empty()
+                        || (!filter.should_skip(rel) && !is_aden_artifact(rel))
+                })
+                .unwrap_or(true)
+        })
+        .filter_map(|e| e.ok())
+    {
         let p = entry.path();
         if p.is_file() {
             let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
             if ext == "adoc" || ext == "aden" {
-                let mut text = String::new();
-                std::fs::File::open(&p)?.read_to_string(&mut text)?;
-                all_anchors.extend(collect_anchors(&text));
+                doc_files.push(p.to_path_buf());
             }
         }
     }
 
-    // Check for unresolved refs in on-disk files
+    // Collect anchors defined in on-disk docs not yet in the store.
+    for p in &doc_files {
+        let mut text = String::new();
+        std::fs::File::open(p)?.read_to_string(&mut text)?;
+        all_anchors.extend(collect_anchors(&text));
+    }
+
+    // Check for unresolved refs across every on-disk doc.
     let mut unresolved = Vec::new();
-    for entry in std::fs::read_dir(path)? {
-        let entry = entry?;
-        let p = entry.path();
-        if p.is_file() {
-            let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
-            if ext == "adoc" || ext == "aden" {
-                let mut text = String::new();
-                std::fs::File::open(&p)?.read_to_string(&mut text)?;
-                for line in text.lines() {
-                    for r in find_refs(line) {
-                        if !all_anchors.contains(&r) {
-                            unresolved.push(format!("{}: unresolved <<{}>>", p.display(), r));
-                        }
-                    }
+    for p in &doc_files {
+        let mut text = String::new();
+        std::fs::File::open(p)?.read_to_string(&mut text)?;
+        for line in text.lines() {
+            for r in find_refs(line) {
+                if !all_anchors.contains(&r) {
+                    unresolved.push(format!("{}: unresolved <<{}>>", p.display(), r));
                 }
             }
         }

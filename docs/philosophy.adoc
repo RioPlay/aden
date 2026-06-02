@@ -60,6 +60,31 @@ When an LLM consumes context, every token costs. A verbose 500-comment documenta
 
 This is the difference between dumping an entire codebase into a prompt and *surgically* selecting the precise context an agent needs.
 
+=== Why Separate Generated and Human Intent?
+
+A contract has two owners with different authority. The *generated* layer —
+signatures, call edges, structure — is machine-owned: it is extracted from
+source and must track it exactly, or the graph drifts into the very staleness
+Aden exists to prevent. The *intent* layer — "this must stay pure", "this is the
+load-bearing invariant", an agent's design note — is human/agent-owned and must
+never be silently overwritten by regeneration.
+
+Aden keeps them in separate homes by ownership. The generated layer lives in the
+rebuildable, git-ignored store (`.aden/store`); `aden gen` overwrites it freely.
+Durable intent lives in sparse, git-tracked *overlays*
+(`.aden/overlays/<anchor>.adoc`) — one small file only for the symbols you
+actually have something to say about. You author them with
+`aden overlay <anchor>`.
+
+On every `gen`, a per-symbol three-way merge reconciles the two: the generated
+layer updates (no drift), the overlay is preserved, and its blocks are folded
+into the read graph so `asm`/`ask`/`query` deliver your intent alongside the
+machine facts. When a symbol you have annotated changes, Aden emits a one-time
+*review notice* (`.aden/proposals/`) so you re-check the note — it *notifies*,
+it does not *block*. The result: machine truth stays fresh, human intent stays
+durable and visible, and neither clobbers the other. A block tagged with the
+symbol's anchor opts into the change notice; an untagged note simply annotates.
+
 == Primary Use Cases
 
 === Use Case 1: AI Agent Onboarding

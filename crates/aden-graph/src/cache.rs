@@ -36,7 +36,7 @@ pub fn try_load(path: &Path) -> Option<AdenGraph<DocumentNode, AdenEdge>> {
         && let Ok((docs, edges)) = GraphBridge::load_from_storage(&storage)
         && !docs.is_empty()
     {
-        return Some(build_graph_from_docs_and_edges(docs, edges));
+        return Some(build_graph_from_docs_and_edges(docs, edges, path));
     }
     None
 }
@@ -44,14 +44,26 @@ pub fn try_load(path: &Path) -> Option<AdenGraph<DocumentNode, AdenEdge>> {
 fn build_graph_from_docs_and_edges(
     docs: HashMap<String, Document>,
     edges: Vec<(String, String, EdgeType)>,
+    root: &Path,
 ) -> AdenGraph<DocumentNode, AdenEdge> {
     use petgraph::graph::DiGraph;
     let mut graph = DiGraph::new();
     let mut anchor_to_index: HashMap<String, petgraph::graph::NodeIndex> = HashMap::new();
     let mut path_to_index: HashMap<PathBuf, petgraph::graph::NodeIndex> = HashMap::new();
 
+    // Intent overlays: fold durable [human]/[agent] blocks into the in-memory
+    // document so the context-assembling readers (asm/ask) surface them. The store
+    // stays pure-generated (so the reconcile base is clean); folding is in-memory
+    // only. The slug set is read once so this is free when no overlays exist.
+    let overlay_slugs = aden_core::overlay::overlay_slugs(root);
+
     // First pass: insert nodes
-    for (anchor, doc) in docs {
+    for (anchor, mut doc) in docs {
+        if !overlay_slugs.is_empty()
+            && overlay_slugs.contains(&aden_core::overlay::sanitize_anchor_filename(&anchor))
+        {
+            aden_core::overlay::fold_overlay(root, &anchor, &mut doc);
+        }
         let source_path = doc
             .attributes
             .get("source_file")
@@ -165,7 +177,7 @@ pub fn build_neighborhood_cached(
         }
     }
 
-    Ok(build_graph_from_docs_and_edges(docs, edges))
+    Ok(build_graph_from_docs_and_edges(docs, edges, dir))
 }
 
 /// Build a graph, using the on-disk cache when possible.

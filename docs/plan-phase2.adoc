@@ -1,0 +1,117 @@
+:proj: aden
+:phase: 2
+:agent_role: architect
+:scope: overlay-delivery
+
+[[plan-phase2]]
+= Phase 2: Delivering Overlay Intent (and making it ergonomic)
+
+== Objective
+
+Phase 1 (<<plan-phase1>>) made `gen` non-destructive and gave durable
+human/agent intent a home (`.aden/overlays/<anchor>.adoc`), protecting it from
+being clobbered. But that intent is currently *inert*: no reader
+(`asm`/`ask`/`query`/`check`) ever surfaces it, and authoring an overlay means
+hand-creating a file at a sanitized path with an exact tag. Phase 2 makes the
+intent actually reach consumers and makes it pleasant to author.
+
+== The central decision: delivery enables "notify", not "block"
+
+Phase 1 conflict semantics *block*: a guarded symbol whose generated content
+changed is held at its old stored doc until the human resolves. That is the
+correct *safe* default only while intent is undelivered — blocking at least
+keeps something observable.
+
+Once intent is delivered to readers, the better model is *notify*:
+
+* The store always tracks source (generated content updates freely — no drift).
+* Overlay intent is always preserved (separate file) and always delivered to
+  readers (folded into the assembled view).
+* A guarded generated unit that changes raises a *notice* (proposal) so the
+  human re-reviews their note — it does not withhold the update.
+
+`notify` keeps the graph fresh, removes the `--force-regen` friction, and is
+softer / more LLM-guided. *It must land together with delivery* — shipping
+`notify` without delivery would make overlays do nothing observable.
+
+== Delivery design: fold at graph-build, keep the store pure
+
+The store stays *pure generated* — this is what `reconcile_anchor` reads as its
+clean `base`, so it must not contain overlay content. Instead, fold overlay
+durable blocks into the *in-memory* graph when it is built from the store:
+
+* `AdenGraph::build_from_storage(storage, root)` — for each loaded
+  `DocumentNode`, look up its overlay and append the durable
+  (`[human]`/`[agent]`/…) blocks to the node's blocks.
+* Every reader (`asm`, `query`, `ask`, `check`) builds the graph through this one
+  chokepoint, so all of them gain overlay-awareness uniformly with no per-reader
+  changes.
+* The overlay file remains the git-tracked source of truth; the store is the
+  rebuildable pure-generated layer; the graph is the merged read view.
+
+This requires moving the overlay helpers (`overlay_path`,
+`sanitize_anchor_filename`, `load_overlay`, `overlay_slugs`) from
+`aden-cli::commands::overlay` into `aden-core` (their proper home; both
+`aden-graph` and `aden-cli` then depend on them). `aden-cli` keeps a re-export
+for compatibility.
+
+== Deliverables
+
+|===
+|ID |Deliverable |Crate |Acceptance Criteria
+
+|2.1 |Move overlay helpers into `aden-core::overlay` |`aden-core` |Existing
+overlay tests pass against the new path; `aden-cli` re-export compiles
+|2.2 |`build_from_storage` folds overlay durable blocks into the graph |
+`aden-graph` |`asm --from <anchor>` includes the overlay's `[human]` text
+|2.3 |Switch conflict semantics to *notify*: `gen` always writes, emits a notice
+proposal on guarded change |`aden-cli` |Store updates on guarded change; a
+proposal is still written; no `--force-regen` needed
+|2.4 |`aden new <anchor>` scaffolds an overlay (correct path, `:anchor:` header,
+guard convention documented) |`aden-cli` |Round-trips through `gen` and `asm`
+|2.5 |`heal --gc` proposes pruning overlays whose anchor no longer exists |
+`aden-cli` |Orphan overlay surfaced, never deleted silently
+|2.6 |Guard ergonomics + docs: define the guard convention (an `:anchor:`-tagged
+or `:guard:`-attributed block guards; untagged blocks annotate only) and
+document it in <<philosophy>> |`aden-core` / docs |Documented; `aden new`
+scaffolds the guard form
+|===
+
+== Quality gates
+
+|===
+|Gate |Requirement |Verification
+
+|Store purity |Store never contains overlay content; reconcile `base` stays clean |Re-gen after `asm` produces no spurious conflict
+|Delivery |`asm`/`ask`/`query` surface overlay intent within budget |Integration test per reader
+|Freshness |Guarded change updates the store (notify, not block) |Integration test
+|===
+
+== Out of scope (Phase 3+)
+
+`[constitution]` precedence in conflict resolution; 1.5 region-aware `heal`
+scan (`OverlayConflict` drift class) — folded here as a lower-priority detection
+nicety since the gen gate already closes the clobber risk.
+
+== Trace
+
+- *2026-06-01*: Plan written after Phase 1 post-review. Delivery-via-graph-build
+  and notify-with-delivery decisions recorded.
+- *2026-06-01*: Deliverables 2.1–2.6 shipped. Overlay helpers moved to
+  `aden_core::overlay` (2.1); `build_graph_from_docs_and_edges` folds durable
+  overlay blocks into the in-memory graph so `asm`/`ask`/`query`/`check` surface
+  intent, store stays pure-generated (2.2); `gen` switched to *notify* — always
+  updates the store, emits a self-clearing `OverlayReview` notice on guarded
+  change (2.3); `aden overlay <anchor>` scaffolds an overlay with the guard
+  convention (2.4); `heal --gc` surfaces (never deletes) orphaned overlays
+  (2.5); guard convention + ownership split documented in <<philosophy>> and the
+  architecture three-way-merge note corrected (2.6). Verified end-to-end:
+  intent delivered through `asm`, store stays fresh on guarded change, notice
+  self-clears next run, scaffold round-trips, gc preserves intent. Lib tests
+  green, clippy clean. *Remaining (Phase 3):* `[constitution]` precedence; the
+  1.5 region-aware `heal` scan (`OverlayConflict`).
+
+== Related Documents
+
+. <<plan-phase1>>
+. <<philosophy>>

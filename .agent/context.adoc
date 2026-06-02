@@ -1,28 +1,21 @@
-:proj: aden
-:lang: Rust (edition 2024)
+:proj: unknown
+:lang: unknown
 :ai_name: agent
-:standard: cargo
+:standard: unknown
 
 [[agent-context]]
-= Shared Context — aden
+= Shared Context — unknown
 
-This file is the canonical shared memory for all agent sessions on `aden`.
+This file is the canonical shared memory for all agent sessions on `unknown`.
 
 == Project Identity
 
 [cols="1,2"]
 |===
-|Name |aden — A Dense Referential Context Compiler
-|Primary Language |Rust (edition 2024)
-|Runtime / Build |cargo
-|License |AGPL-3.0-or-later
-|Structure |Cargo workspace, 18 crates
+|Name |unknown
+|Primary Language |unknown
+|Runtime / Framework |unknown
 |===
-
-aden turns any codebase or document corpus into a queryable, attributed,
-token-dense knowledge graph: it extracts symbols, call graphs, and references,
-materializes them into a persistent store, and assembles focused context for
-LLM agents. See `docs/architecture.adoc` and `.agent/glossary.adoc`.
 
 == Hard Constraints
 
@@ -34,50 +27,17 @@ LLM agents. See `docs/architecture.adoc` and `.agent/glossary.adoc`.
 
 == Language and Style Defaults
 
-- Primary language: `Rust` (edition 2024)
-- Standard / build: `cargo` (`cargo build --workspace`, `cargo test --workspace`)
+- Primary language: `unknown`
+- Standard / runtime: `unknown`
 - Conventions: see `.agent/constraints.adoc` for project-specific rules.
 
-== Workspace Crates
+== Dependencies
 
-The 18-crate workspace, by role:
-
-[cols="1,2"]
 |===
-|Crate |Role
+|Name |Purpose |Version Policy
 
-|`aden-core` |Core types, filters, and shared primitives (incl. secret screening).
-|`aden-cli` |The `aden` command-line binary; orchestrates all subcommands.
-|`aden-parse` |Source parsing via tree-sitter; symbol/reference extraction.
-|`aden-graph` |Knowledge-graph model, traversal (BFS), and anchor resolution.
-|`aden-store` |Persistent materialized view of the graph (fjall/LSM key-value store).
-|`aden-index` |Indexing pipeline: walk sources, extract, persist contracts.
-|`aden-asm` |Context assembly: graph traversal and prompt emission under a token budget.
-|`aden-emit` |Document/contract emission: standard contract templates and `check` support.
-|`aden-heal` |Drift detection and repair (`heal`); keeps contracts in sync with code.
-|`aden-diagnose` |Diagnostics and health reporting over the graph.
-|`aden-policy` |Constitution / policy rules (constraints, gates).
-|`aden-propose` |Change proposal generation (preview before apply).
-|`aden-simulate` |Simulation / dry-run of graph operations.
-|`aden-attest` |Attribution and accreditation / provenance checks.
-|`aden-mcp` |Model Context Protocol server exposing aden tools to agents.
-|`aden-lsp` |Language Server Protocol integration for editors.
-|`aden-api` |Programmatic API surface over the engine.
-|`aden-telemetry` |Telemetry / metrics plumbing.
+| | |
 |===
-
-=== External dependencies (key)
-
-- `tree-sitter` + `tree-sitter-language-pack` — multi-language parsing
-  (grammars compiled statically; see `CONTRIBUTING.md`).
-- `fjall` — embedded LSM key-value store backing `aden-store`.
-- `petgraph` — in-memory graph representation.
-- `clap` — CLI argument parsing.
-- `rmcp` — Rust MCP SDK for the `aden-mcp` server.
-- `tower-lsp` — LSP server framework for `aden-lsp`.
-- `serde` / `serde_json` — serialization.
-
-A full third-party license inventory lives in `NOTICE.md`.
 
 == Context Tools
 

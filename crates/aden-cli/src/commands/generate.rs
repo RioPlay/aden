@@ -25,6 +25,10 @@ struct EmittedSymbol {
     /// `<<target>>` cross-references found in the document body (docs link to
     /// other docs / code via these).
     refs: Vec<String>,
+    /// Whether this symbol's generated document was actually written to the
+    /// store. False when the merge gate held it back (overlay conflict) or on a
+    /// dry-run — so the summary count reflects real writes, not just processing.
+    wrote: bool,
 }
 
 /// Work item returned from parallel file processing.
@@ -41,6 +45,10 @@ enum WorkItem {
         source_mtime: u64,
         source_path: String,
         symbols: Vec<EmittedSymbol>,
+        /// Anchors whose freshly-generated content collided with durable
+        /// `[human]`/`[agent]` overlay intent. Surfaced as proposals; the
+        /// stored document is left untouched for these.
+        conflicts: Vec<(String, aden_core::contract::MergeProposal)>,
     },
 }
 
@@ -502,15 +510,83 @@ pub fn ensure_fresh(path: &Path) {
 ///   This is the transparent refresh-on-read path (`ensure_fresh`), which must
 ///   never write to stdout/stderr during `ask`/`query`/`grep`/etc.
 pub fn cmd_gen(path: &Path, quiet: bool) -> Result<(), Box<dyn std::error::Error>> {
-    cmd_gen_inner(path, quiet, false)
+    cmd_gen_inner(path, quiet, false, false, false)
+}
+
+/// Persist one review *notice* per guarded change into `.aden/proposals/`,
+/// reusing the existing `aden_propose` pipeline. A notice records that a symbol
+/// carrying durable overlay intent had its generated content updated, so the
+/// author re-reviews the overlay; it is informational (the store was already
+/// updated and the overlay preserved). Ids are deterministic
+/// (`overlay-review-<sanitized-anchor>`) so the same change overwrites the same
+/// file rather than accumulating. Returns the number written.
+fn write_merge_proposals(
+    root: &Path,
+    conflicts: &[(String, aden_core::contract::MergeProposal)],
+) -> usize {
+    use crate::commands::overlay;
+    use std::fmt::Write as _;
+
+    let mut written = 0usize;
+    for (anchor, proposal) in conflicts {
+        let slug = overlay::sanitize_anchor_filename(anchor);
+        let mut patch = String::new();
+        let _ = writeln!(patch, "// Overlay review notice for {anchor}");
+        for action in &proposal.actions {
+            if let aden_core::contract::MergeAction::Conflict { reason, .. } = action {
+                let _ = writeln!(patch, "// CHANGED: {reason}");
+            }
+        }
+        let _ = writeln!(
+            patch,
+            "//\n// The generated layer was updated and your overlay was preserved.\n// Re-check that your intent still holds: .aden/overlays/{slug}.adoc"
+        );
+
+        let prop = aden_propose::Proposal {
+            id: format!("overlay-review-{slug}"),
+            target_path: overlay::overlay_path(root, anchor),
+            drift_type: "OverlayReview".to_string(),
+            confidence: 0.5,
+            status: aden_propose::ProposalStatus::PendingReview,
+            rationale: format!(
+                "Generated content for {anchor} changed while a durable [human]/[agent] overlay annotates it; store updated, overlay preserved — re-review the annotation."
+            ),
+            patch_asciidoc: patch,
+        };
+        if aden_propose::persist(&prop, root).is_ok() {
+            written += 1;
+        }
+    }
+    written
+}
+
+/// `gen` with the three-way-merge flags exposed on the CLI.
+///
+/// * `propose` — dry-run: reconcile and write conflict proposals, but never
+///   mutate the store.
+/// * `force` — bypass the merge gate and overwrite the store unconditionally
+///   (emergency escape hatch; can clobber `[human]`/`[agent]` overlay collisions).
+pub fn cmd_gen_opts(
+    path: &Path,
+    quiet: bool,
+    propose: bool,
+    force: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    cmd_gen_inner(path, quiet, false, propose, force)
 }
 
 /// Fully-silent variant for the auto-refresh path (see `ensure_fresh`).
 pub fn cmd_gen_silent(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    cmd_gen_inner(path, true, true)
+    cmd_gen_inner(path, true, true, false, false)
 }
 
-fn cmd_gen_inner(path: &Path, quiet: bool, silent: bool) -> Result<(), Box<dyn std::error::Error>> {
+fn cmd_gen_inner(
+    path: &Path,
+    quiet: bool,
+    silent: bool,
+    propose: bool,
+    force: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     if !path.exists() {
         return Err("Path does not exist or is not a file/directory".into());
     }
@@ -555,6 +631,12 @@ fn cmd_gen_inner(path: &Path, quiet: bool, silent: bool) -> Result<(), Box<dyn s
         let mut generated = Vec::new();
         let mut skipped = 0usize;
 
+        // Anchors that have an intent overlay on disk. Computed once: only these
+        // symbols can produce a merge conflict, so the gate skips the per-symbol
+        // store read + overlay parse for every other symbol. Empty when there is
+        // no `.aden/overlays/` directory (the common case → zero overhead).
+        let overlay_slugs = crate::commands::overlay::overlay_slugs(&root);
+
         // Phase 1: Parallel file processing — read, parse, write to store
         let work_items: Vec<_> = sources
             .par_iter()
@@ -578,10 +660,16 @@ fn cmd_gen_inner(path: &Path, quiet: bool, silent: bool) -> Result<(), Box<dyn s
                     return None;
                 }
                 let cache_key = src_rel.to_string_lossy().to_string();
-                if let Some(e) = cache.entries.get(&cache_key)
-                    && e.source_mtime == mtime_secs {
-                        return Some(WorkItem::Skip);
-                    }
+                // `--force-regen` and `--propose` must re-examine every file even
+                // when its mtime is unchanged: force needs to overwrite, and the
+                // dry-run needs to audit current state against overlays.
+                if !force
+                    && !propose
+                    && let Some(e) = cache.entries.get(&cache_key)
+                    && e.source_mtime == mtime_secs
+                {
+                    return Some(WorkItem::Skip);
+                }
 
                 // Read source
                 let source = match std::fs::read_to_string(src_path) {
@@ -625,6 +713,7 @@ fn cmd_gen_inner(path: &Path, quiet: bool, silent: bool) -> Result<(), Box<dyn s
 
                 // Write each document to store
                 let mut emitted = Vec::new();
+                let mut conflicts: Vec<(String, aden_core::contract::MergeProposal)> = Vec::new();
                 for doc in docs {
                     let mut doc_clone = doc.clone();
                     sanitize_source_file(&mut doc_clone, &root);
@@ -638,13 +727,48 @@ fn cmd_gen_inner(path: &Path, quiet: bool, silent: bool) -> Result<(), Box<dyn s
                     let refs = extract_doc_refs(&doc_clone);
                     slim_doc_for_store(&mut doc_clone);
 
-                    if let Err(e) = storage.put_document(&doc_clone) {
-                        eprintln!("WARN: Failed to store {}: {}", doc_clone.anchor, e);
-                        continue;
+                    // Three-way merge gate. A conflict can only arise when the
+                    // symbol has an overlay, so for everything else we skip the
+                    // store read + overlay parse entirely (zero overhead in the
+                    // common case). `propose` is a dry-run that never writes;
+                    // `force` skips the gate (no notices).
+                    //
+                    // Semantics are *notify*, not block: the generated layer
+                    // always updates so the store never drifts from source, and
+                    // the overlay's durable intent is preserved (separate file)
+                    // and delivered to readers (folded into the read graph). When
+                    // a guarded generated unit changes we record a *notice* so the
+                    // author re-reviews their overlay. The notice self-clears on
+                    // the next run once the generated content settles.
+                    let write = !propose;
+                    if !force
+                        && overlay_slugs.contains(
+                            &crate::commands::overlay::sanitize_anchor_filename(&doc_clone.anchor),
+                        )
+                    {
+                        let stored = storage.get_document(&doc_clone.anchor).ok().flatten();
+                        let overlay =
+                            crate::commands::overlay::load_overlay(&root, &doc_clone.anchor);
+                        if let Ok(p) = aden_core::contract::reconcile_anchor(
+                            &doc_clone,
+                            stored.as_ref(),
+                            overlay.as_ref(),
+                        ) && !p.is_clean()
+                        {
+                            conflicts.push((doc_clone.anchor.clone(), p));
+                        }
                     }
 
-                    if !quiet {
-                        progress!(quiet, "Stored {}", doc_clone.anchor);
+                    let mut wrote = false;
+                    if write {
+                        if let Err(e) = storage.put_document(&doc_clone) {
+                            eprintln!("WARN: Failed to store {}: {}", doc_clone.anchor, e);
+                            continue;
+                        }
+                        wrote = true;
+                        if !quiet {
+                            progress!(quiet, "Stored {}", doc_clone.anchor);
+                        }
                     }
 
                     emitted.push(EmittedSymbol {
@@ -652,6 +776,7 @@ fn cmd_gen_inner(path: &Path, quiet: bool, silent: bool) -> Result<(), Box<dyn s
                         callees,
                         uses,
                         refs,
+                        wrote,
                     });
                 }
 
@@ -662,6 +787,7 @@ fn cmd_gen_inner(path: &Path, quiet: bool, silent: bool) -> Result<(), Box<dyn s
                     source_mtime: mtime_secs,
                     source_path: src_path.to_string_lossy().to_string(),
                     symbols: emitted,
+                    conflicts,
                 })
             })
             .collect();
@@ -673,6 +799,8 @@ fn cmd_gen_inner(path: &Path, quiet: bool, silent: bool) -> Result<(), Box<dyn s
         let mut ref_records: Vec<(String, Vec<String>)> = Vec::new();
         // Anchors to prune: symbols a reindexed file no longer defines.
         let mut stale_anchors: Vec<String> = Vec::new();
+        // Merge conflicts surfaced by the reconcile gate, written as proposals.
+        let mut merge_conflicts: Vec<(String, aden_core::contract::MergeProposal)> = Vec::new();
         for item in work_items {
             match item {
                 WorkItem::Skip => skipped += 1,
@@ -681,7 +809,9 @@ fn cmd_gen_inner(path: &Path, quiet: bool, silent: bool) -> Result<(), Box<dyn s
                     source_mtime,
                     source_path,
                     symbols,
+                    conflicts,
                 } => {
+                    merge_conflicts.extend(conflicts);
                     let fresh: Vec<String> = symbols.iter().map(|s| s.anchor.clone()).collect();
                     // Diff against what this file contributed last time: any
                     // previously-recorded anchor not in the fresh set is a
@@ -702,7 +832,11 @@ fn cmd_gen_inner(path: &Path, quiet: bool, silent: bool) -> Result<(), Box<dyn s
                         },
                     );
                     for sym in symbols {
-                        generated.push(sym.anchor.clone());
+                        // Count only symbols actually written to the store, so the
+                        // summary never claims to have stored a conflict-held doc.
+                        if sym.wrote {
+                            generated.push(sym.anchor.clone());
+                        }
                         if !sym.refs.is_empty() {
                             ref_records.push((sym.anchor.clone(), sym.refs));
                         }
@@ -715,6 +849,19 @@ fn cmd_gen_inner(path: &Path, quiet: bool, silent: bool) -> Result<(), Box<dyn s
                     }
                 }
             }
+        }
+
+        // Dry-run: never mutate the store (no prune, link, flush, or cache
+        // save). Write conflict proposals and report, then stop.
+        if propose {
+            let written = write_merge_proposals(&root, &merge_conflicts);
+            progress!(
+                silent,
+                "gen --propose: {} annotated symbol(s) would change → {} review notice(s) in .aden/proposals/. No store changes written.",
+                merge_conflicts.len(),
+                written
+            );
+            return Ok(());
         }
 
         // Case (b): whole-file deletion. On a full-tree gen (NOT a single-file
@@ -803,6 +950,19 @@ fn cmd_gen_inner(path: &Path, quiet: bool, silent: bool) -> Result<(), Box<dyn s
             progress!(
                 silent,
                 "(All files were skipped — nothing changed since last run)"
+            );
+        }
+
+        // Notices: a guarded symbol's generated content changed while a durable
+        // overlay annotates it. The store was updated (no drift) and the overlay
+        // is preserved + delivered; the notice asks the author to re-review.
+        if !merge_conflicts.is_empty() {
+            let written = write_merge_proposals(&root, &merge_conflicts);
+            progress!(
+                silent,
+                "{} annotated symbol(s) changed → {} review notice(s) in .aden/proposals/ (your overlay intent is preserved; re-check it in .aden/overlays/).",
+                merge_conflicts.len(),
+                written
             );
         }
 

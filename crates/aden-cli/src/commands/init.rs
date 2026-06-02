@@ -107,7 +107,7 @@ repository = "https://github.com/<user>/{name}"
 
 [dependencies]
 thiserror = "2"
-serde = {{ version = "2", features = ["derive"] }}
+serde = {{ version = "1", features = ["derive"] }}
 
 [[bin]]
 name = "{name}"

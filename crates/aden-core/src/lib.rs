@@ -21,6 +21,7 @@
 
 pub mod contract;
 pub mod filter;
+pub mod overlay;
 pub mod staging;
 
 use serde::{Deserialize, Serialize};

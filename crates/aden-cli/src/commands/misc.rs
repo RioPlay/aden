@@ -909,27 +909,32 @@ pub fn cmd_ci_check(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         let scanner = Scanner::new(path);
         let events = scanner.scan()?;
         let report = generate(events.clone(), path);
-        let critical_count = events
+        // Only genuinely actionable drift counts here: broken refs and signature
+        // mismatches. OrphanAnchor is overwhelmingly EXPECTED metadata (doc-heading
+        // nodes; ADR/plan/use-case docs with no edges), so including it inflated the
+        // figure into the thousands and labeled benign drift "critical" in a gate
+        // that is non-blocking by design. Broken refs are already a hard failure via
+        // the blocking `aden check` gate above; here they are a soft re-surfacing.
+        let actionable_count = events
             .iter()
             .filter(|e| {
                 matches!(
                     e,
                     aden_heal::DriftEvent::BrokenReference { .. }
-                        | aden_heal::DriftEvent::OrphanAnchor { .. }
                         | aden_heal::DriftEvent::SignatureMismatch { .. }
                 )
             })
             .count();
-        if critical_count > 0 {
+        if actionable_count > 0 {
             Err(Box::<dyn std::error::Error>::from(format!(
-                "{} critical drift events (broken refs, orphans, signature mismatch)",
-                critical_count
+                "{} actionable drift event(s) (broken refs / signature mismatch) — run 'aden heal'",
+                actionable_count
             )))
         } else if report.overall_score < 0.90 {
-            // Only fail if health score is critically low (<0.90)
-            // Minor drift is auto-fixable in CI
+            // Soft warning only when the health score is genuinely low; minor drift
+            // is auto-fixable and must not block commits.
             Err(Box::<dyn std::error::Error>::from(format!(
-                "Health score: {:.2} — critical contract drift (run 'aden gen' to fix)",
+                "Health score: {:.2} — contract drift (run 'aden gen' to refresh)",
                 report.overall_score
             )))
         } else {

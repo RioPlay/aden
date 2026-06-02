@@ -319,6 +319,19 @@ pub fn cmd_heal_scan(
                                 std::fs::write(&target, updated)?;
                                 println!("  Fixed: {} (updated hash)", target.display());
                                 fixed_count += 1;
+                            } else {
+                                // Store-first StaleHash: target_path is a store
+                                // pseudo-path (".aden/store:aden://…"), not a file
+                                // on disk, so there is no :source_hash: line for
+                                // heal to rewrite — the store's recorded hash is
+                                // refreshed by `aden gen`, not heal. Count it as a
+                                // skipped event with guidance so it never silently
+                                // vanishes from both the Fixed and Skipped tallies
+                                // (the prior behaviour: dropped from each).
+                                *skipped_by_kind
+                                    .entry("StaleHash in store (run `aden gen` to refresh)")
+                                    .or_default() += 1;
+                                failed_count += 1;
                             }
                         }
                         aden_heal::DriftEvent::MissingContract { .. } => {
@@ -388,7 +401,10 @@ pub fn cmd_heal_scan(
                 println!("Apply with: aden heal --apply <proposal-id>");
             } else {
                 println!("\nRun with --propose to generate patch files for review.");
-                println!("Or use --fix to auto-fix StaleHash and MissingContract events.");
+                println!(
+                    "Or use --fix to repair on-disk contract hashes/signatures; \
+                     store-resident drift (StaleHash/MissingContract) is refreshed by `aden gen`."
+                );
             }
 
             Ok(())
@@ -833,6 +849,49 @@ pub fn cmd_heal_gc(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
                 _ => contracts_kept += 1,
             }
         }
+    }
+
+    // Surface (never delete) intent overlays whose anchor no longer exists.
+    // Overlays are human/agent-authored and git-tracked, so silently removing
+    // one would destroy durable intent — exactly what the merge gate protects.
+    // GC only reports them; the human decides whether to delete or re-point.
+    let overlays_dir = root.join(".aden").join("overlays");
+    let mut orphan_overlays: Vec<String> = Vec::new();
+    if overlays_dir.is_dir() {
+        let live_anchors: std::collections::HashSet<String> = storage
+            .get_all_documents()
+            .unwrap_or_default()
+            .into_keys()
+            .collect();
+        for entry in std::fs::read_dir(&overlays_dir).into_iter().flatten().flatten() {
+            let p = entry.path();
+            if p.extension().and_then(|e| e.to_str()) != Some("adoc") {
+                continue;
+            }
+            // The :anchor: header is authoritative for which symbol this annotates.
+            if let Ok(content) = std::fs::read_to_string(&p) {
+                let declared = content.lines().find_map(|l| {
+                    l.trim()
+                        .strip_prefix(":anchor:")
+                        .map(|v| v.trim().to_string())
+                });
+                if let Some(a) = declared
+                    && !live_anchors.contains(&a)
+                {
+                    orphan_overlays.push(format!("{} (anchor: {})", p.display(), a));
+                }
+            }
+        }
+    }
+    if !orphan_overlays.is_empty() {
+        println!(
+            "\nWARNING: {} intent overlay(s) annotate a symbol that no longer exists:",
+            orphan_overlays.len()
+        );
+        for o in &orphan_overlays {
+            println!("  - {o}");
+        }
+        println!("  These are NOT deleted (they hold your intent). Re-point or remove them manually.");
     }
 
     println!(

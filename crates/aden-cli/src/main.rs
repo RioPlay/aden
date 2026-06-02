@@ -71,6 +71,14 @@ enum Commands {
         #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
         path: PathBuf,
     },
+    /// Author an intent overlay for a symbol: durable [human]/[agent] notes that
+    /// survive `aden gen` and are delivered to readers (asm/ask).
+    Overlay {
+        #[arg(value_name = "ANCHOR", help = "Anchor or bare symbol name to annotate")]
+        anchor: String,
+        #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
+        path: PathBuf,
+    },
     /// Create a kickoff document for a new initiative (interactive or from a brief)
     Kickoff {
         #[arg(long, value_name = "NAME")]
@@ -94,7 +102,9 @@ enum Commands {
         #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
         path: PathBuf,
     },
-    /// Recompile the whole project into the knowledge graph (.aden/store) — alias for `aden gen .`
+    /// Recompile the whole project into the knowledge graph (.aden/store) from scratch:
+    /// clears the gen/graph caches first, then regenerates. The full-rebuild counterpart
+    /// to the incremental `aden gen .` (not a transparent alias — it always re-stores all).
     Regen {
         #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
         path: PathBuf,
@@ -112,6 +122,16 @@ enum Commands {
         auto: bool,
         #[arg(long, help = "Suppress per-file output (summary only)")]
         quiet: bool,
+        #[arg(
+            long,
+            help = "Dry-run: reconcile and write conflict proposals without changing the store"
+        )]
+        propose: bool,
+        #[arg(
+            long,
+            help = "Bypass the merge gate and overwrite the store (may clobber [human]/[agent] overlay collisions)"
+        )]
+        force_regen: bool,
     },
     /// Verify all <<refs>> resolve to existing [[anchors]]
     Check {
@@ -745,15 +765,17 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
             paths,
             auto: _,
             quiet,
+            propose,
+            force_regen,
         } => {
             let effective_path = if paths.is_empty() {
                 std::path::PathBuf::from(".")
             } else {
                 paths[0].clone()
             };
-            commands::cmd_gen(&effective_path, quiet)
+            commands::cmd_gen_opts(&effective_path, quiet, propose, force_regen)
         }
-        Commands::Check { path, severity } => commands::cmd_check(&path, &severity),
+        Commands::Check { path, severity } => commands::cmd_check(&path, &severity, cli.json),
         Commands::Complete {
             path,
             dry_run,
@@ -938,18 +960,48 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
                 &format,
                 effective_limit,
                 show_context,
+                cli.json,
             )
         }
         #[cfg(feature = "watch")]
         Commands::Status { path } => {
             let aden_path = path.join(".aden");
-            println!("Aden Status: {}", path.display());
-            println!("Active .aden: {}", aden_path.display());
 
             // Health is a heal-drift metric (stale docs vs. code), separate
             // from orphans. Keep it as the honest drift signal.
             let health = crate::util::quick_health_score(&path).unwrap_or(0.0);
             let health_pct = (health * 100.0).round() as i32;
+
+            // Orphan breakdown via the SAME classifier `check` uses, so status
+            // never reports expected metadata docs as scary orphans. Computed once.
+            let (expected_n, actionable): (usize, Vec<String>) =
+                match aden_graph::cache::build_from_directory_cached(&path) {
+                    Ok(g) => {
+                        let (expected, actionable) = crate::util::classify_orphans(&g);
+                        (expected.len(), actionable)
+                    }
+                    Err(_) => (0, Vec::new()),
+                };
+
+            // Machine-readable for the global `-j/--json` flag (previously ignored).
+            if cli.json {
+                let env = serde_json::json!({
+                    "path": path.display().to_string(),
+                    "aden_dir": aden_path.display().to_string(),
+                    "health_score": health,
+                    "health": health_pct,
+                    "orphans": {
+                        "expected": expected_n,
+                        "actionable_count": actionable.len(),
+                        "actionable": actionable,
+                    },
+                });
+                println!("{}", serde_json::to_string_pretty(&env)?);
+                return Ok(());
+            }
+
+            println!("Aden Status: {}", path.display());
+            println!("Active .aden: {}", aden_path.display());
             let emoji = if health >= 0.95 {
                 "✅"
             } else if health >= 0.8 {
@@ -959,27 +1011,22 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
             };
             println!("{} Health: {}/100", emoji, health_pct);
 
-            // Orphan breakdown via the SAME classifier `check` uses, so status
-            // never again reports expected metadata docs as scary orphans.
-            if let Ok(g) = aden_graph::cache::build_from_directory_cached(&path) {
-                let (expected, actionable) = crate::util::classify_orphans(&g);
-                if actionable.is_empty() {
-                    if expected.is_empty() {
-                        println!("✅ No orphan documents");
-                    } else {
-                        println!(
-                            "✅ No actionable orphans ({} expected metadata doc(s), which is normal)",
-                            expected.len()
-                        );
-                    }
+            if actionable.is_empty() {
+                if expected_n == 0 {
+                    println!("✅ No orphan documents");
                 } else {
                     println!(
-                        "⚠️ {} actionable orphan document(s) (run 'aden heal . --gc' to remove if deleted)",
-                        actionable.len()
+                        "✅ No actionable orphans ({} expected metadata doc(s), which is normal)",
+                        expected_n
                     );
-                    if !expected.is_empty() {
-                        println!("   (plus {} expected metadata doc(s) — normal)", expected.len());
-                    }
+                }
+            } else {
+                println!(
+                    "⚠️ {} actionable orphan document(s) (run 'aden heal . --gc' to remove if deleted)",
+                    actionable.len()
+                );
+                if expected_n > 0 {
+                    println!("   (plus {} expected metadata doc(s) — normal)", expected_n);
                 }
             }
 
@@ -996,7 +1043,7 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
 
             // 2. Check references
             println!("\n[2/3] Checking references...");
-            if let Err(e) = commands::cmd_check(&path, "Warn") {
+            if let Err(e) = commands::cmd_check(&path, "Warn", false) {
                 let msg = format!("{}", e);
                 if !msg.contains("ERROR") {
                     println!("Check OK");
@@ -1088,6 +1135,7 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
             strict,
         } => commands::cmd_audit(&path, lang.as_deref(), &format, strict),
         Commands::New { name, lang, path } => commands::cmd_new(&name, &lang, &path),
+        Commands::Overlay { anchor, path } => commands::overlay::cmd_overlay(&path, &anchor),
         Commands::Kickoff {
             name,
             interactive,

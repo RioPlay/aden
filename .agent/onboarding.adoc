@@ -1,9 +1,7 @@
-:proj: aden
-:lang: Rust (edition 2024)
-:runtime: cargo
+:proj: unknown
 
 [[agent-onboarding]]
-= Agent Onboarding — aden
+= Agent Onboarding — unknown
 
 [IMPORTANT]
 ====

@@ -38,6 +38,12 @@ pub struct SearchResult {
 /// In-memory inverted index built from a directory of `.adoc`/`.aden` files.
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Index {
+    /// Tokenizer/format version the cache on disk was built with. Bumped whenever
+    /// the tokenization pipeline changes so a stale cache is rebuilt rather than
+    /// silently shadowing the new logic. A versionless (pre-stemming) cache
+    /// deserializes to `0` and is rejected by [`try_load`].
+    #[serde(default)]
+    version: u32,
     /// token -> [(anchor, occurrences_in_document)]
     inverted: HashMap<String, Vec<(String, usize)>>,
     /// anchor -> source path
@@ -56,6 +62,13 @@ const BM25_B: f64 = 0.75;
 
 const INDEX_CACHE_FILE: &str = ".aden/cache/index-cache.json";
 
+/// Current tokenizer/format version. Bumped on ANY change to how tokens are
+/// produced, so a stale cache is rebuilt rather than silently shadowing the new
+/// logic. v1: pre-stemming, versionless (deserializes to `0`). v2: conservative
+/// suffix stemming in [`tokenize`]/[`Index::query`]. v3: `-ss` guard in [`stem`]
+/// (so `process`/`processes` converge) + the `get` stop word.
+const CURRENT_INDEX_VERSION: u32 = 3;
+
 /// Build an index, using the on-disk cache when possible.
 /// `key` should be a hash of all `.adoc`/`.aden` file paths + mtimes.
 pub fn try_load(dir: &std::path::Path) -> Option<Index> {
@@ -64,7 +77,13 @@ pub fn try_load(dir: &std::path::Path) -> Option<Index> {
         return None;
     }
     let text = std::fs::read_to_string(&index_path).ok()?;
-    serde_json::from_str(&text).ok()
+    let index: Index = serde_json::from_str(&text).ok()?;
+    // Reject a cache built by an older tokenizer (e.g. pre-stemming). Returning
+    // `None` forces `load_or_build_index` to rebuild from source.
+    if index.version != CURRENT_INDEX_VERSION {
+        return None;
+    }
+    Some(index)
 }
 
 /// Save the index to disk cache.
@@ -82,7 +101,7 @@ pub fn save(index: &Index, dir: &std::path::Path) -> Result<(), Box<dyn std::err
 const STOP_WORDS: &[&str] = &[
     "a", "an", "the", "and", "or", "but", "is", "are", "was", "were", "be", "been", "being",
     "have", "has", "had", "do", "does", "did", "will", "would", "could", "should", "might",
-    "must", "shall", "can", "need", "dare", "ought", "used", "to", "of", "in", "for", "on", "with",
+    "must", "shall", "can", "need", "dare", "ought", "used", "get", "to", "of", "in", "for", "on", "with",
     "at", "by", "from", "as", "into", "through", "during", "before", "after", "above", "below",
     "between", "under", "again", "further", "then", "once", "it", "its", "it's", "this", "that",
     "these", "those", "i", "you", "he", "she", "we", "they", "me", "him", "her", "us", "them",
@@ -95,7 +114,70 @@ fn is_stop_word(word: &str) -> bool {
     STOP_WORDS.contains(&word)
 }
 
-/// Tokenize a string into lowercase words with punctuation stripped.
+/// Conservative English suffix stemmer. Collapses common inflections to a shared
+/// stem so a query term matches the indexed term despite plural/tense differences
+/// (`overlays`→`overlay`, `readers`→`reader`, `delivering`/`delivered`→`deliver`).
+///
+/// Scope: this is intentionally a *suffix* normalizer, not a full morphological
+/// stemmer. It reliably unifies plurals and verb inflections, but it does NOT
+/// bridge cross-part-of-speech derivations (the verb `delivered`→`deliver` does
+/// not unify with the noun `delivery`→`delivery`). It is English-scoped, matching
+/// the existing English stop-word list and `SemanticNormalizer`.
+///
+/// Guards:
+/// - Only purely-alphabetic tokens are stemmed; tokens containing digits or `_`
+///   (code identifiers, `SemanticNormalizer` outputs like `"5"`/`"05"`) pass
+///   through untouched.
+/// - A stem is never reduced below `MIN_STEM_LEN` characters, so short words like
+///   `"based"` or `"sales"` are not mangled.
+fn stem(word: &str) -> String {
+    /// Minimum surviving stem length; a rule that would shorten below this is skipped.
+    const MIN_STEM_LEN: usize = 4;
+
+    // Guard: only stem purely-alphabetic ASCII tokens. Anything with a digit or
+    // underscore is a code identifier or a normalized form we must not touch.
+    if word.is_empty() || !word.bytes().all(|b| b.is_ascii_alphabetic()) {
+        return word.to_string();
+    }
+
+    let len = word.len();
+    // Helper: strip `suffix` and optionally append `add`, but only if the result
+    // keeps at least MIN_STEM_LEN chars. Returns None when the guard blocks it.
+    let try_strip = |suffix: &str, add: &str| -> Option<String> {
+        if len > suffix.len() && word.ends_with(suffix) {
+            let stem_len = len - suffix.len();
+            if stem_len + add.len() >= MIN_STEM_LEN {
+                let mut s = word[..stem_len].to_string();
+                s.push_str(add);
+                return Some(s);
+            }
+        }
+        None
+    };
+
+    // Ordered, most-specific first. Plurals first (-ies → y, then -es, then -s),
+    // then verb/adverb inflections (-ing, -ed, -ly). At most one rule fires.
+    if let Some(s) = try_strip("ies", "y") {
+        return s;
+    }
+    for suffix in ["es", "s", "ing", "ed", "ly"] {
+        // The bare `-s` rule must not strip the final `s` of an `-ss` word
+        // (process, address, access, class, success): that leaves a half-word
+        // (`proces`) which diverges from its `-es`-stripped plural
+        // (`processes` → `process`), so singular and plural land in different
+        // token buckets and never cross-match — silently halving recall across a
+        // software-central vocabulary class. An `-ss` word is its own stem.
+        if suffix == "s" && word.ends_with("ss") {
+            continue;
+        }
+        if let Some(s) = try_strip(suffix, "") {
+            return s;
+        }
+    }
+    word.to_string()
+}
+
+/// Tokenize a string into lowercase, punctuation-stripped, stemmed words.
 pub fn tokenize(text: &str) -> Vec<String> {
     text.split_whitespace()
         .map(|w| {
@@ -103,6 +185,9 @@ pub fn tokenize(text: &str) -> Vec<String> {
                 .to_lowercase()
         })
         .filter(|w| !w.is_empty() && !is_stop_word(w))
+        // Stem as the final step so the same normalization lands on the indexed
+        // tokens here and on the query tokens in `Index::query`.
+        .map(|w| stem(&w))
         .collect()
 }
 
@@ -382,6 +467,10 @@ impl Index {
         } else {
             1.0
         };
+        // Stamp the tokenizer version. Both build paths (`from_directory` and the
+        // store-merge rebuild in `load_or_build_index`) end in `finalize`, so this
+        // single site covers every freshly-built index that gets cached.
+        self.version = CURRENT_INDEX_VERSION;
     }
 
     fn collect_files(dir: &Path, filter: &AdenFilter, out: &mut Vec<PathBuf>) -> Result<(), std::io::Error> {
@@ -469,11 +558,23 @@ impl Index {
             }
         }
 
-        // Filter stop words from the expanded token set
-        let tokens: Vec<String> = all_query_tokens
-            .into_iter()
-            .filter(|t| !is_stop_word(t))
-            .collect();
+        // Filter stop words from the expanded token set, then stem as the final
+        // step — mirroring `tokenize` on the index side — so query terms match the
+        // stemmed postings. Stemming runs AFTER `SemanticNormalizer` so forms like
+        // "5"/"05" are produced first and then passed through untouched by `stem`
+        // (its alphabetic-only guard).
+        let mut tokens: Vec<String> = Vec::new();
+        for t in all_query_tokens {
+            if is_stop_word(&t) {
+                continue;
+            }
+            let stemmed = stem(&t);
+            // Dedupe: distinct normalized forms can stem to the same token; scoring
+            // a token twice would inflate its BM25 contribution.
+            if !tokens.contains(&stemmed) {
+                tokens.push(stemmed);
+            }
+        }
 
         if tokens.is_empty() {
             return Vec::new();
@@ -493,6 +594,15 @@ impl Index {
 
         // Apply title/anchor boosts
         let query_lower = query_str.to_lowercase();
+        // Stemmed, stop-word-filtered query tokens for the ranking boosts, so the
+        // anchor/title boosts key off the SAME normalization as BM25. Without this,
+        // the plural "overlays" would fail to boost an "overlay-delivery" anchor
+        // even though BM25 already matches the stemmed "overlay". Computed once.
+        let significant_query_tokens: Vec<String> = query_lower
+            .split_whitespace()
+            .filter(|t| !is_stop_word(t))
+            .map(stem)
+            .collect();
         for (anchor, score) in scores.iter_mut() {
             let anchor_lower = anchor.to_lowercase();
             let source_path = self.anchor_paths.get(anchor);
@@ -519,21 +629,19 @@ impl Index {
             // Only non-stop-word query tokens may trigger the anchor-match boost.
             // Without this guard, a query like "How does output get written?" boosts
             // `get_current_git_ref` 30x because the fragment contains "get".
-            let significant_query_tokens: Vec<&str> = query_lower
-                .split_whitespace()
-                .filter(|t| !is_stop_word(t))
-                .collect();
-
+            // Tokens are stemmed (see `significant_query_tokens`), so an inflected
+            // query still matches the anchor slug (substring match is unaffected —
+            // a stem is a prefix of its surface form).
             let anchor_match = if is_symbol {
                 // Match on the symbol name fragment only, with significant tokens only.
                 if let Some(fragment) = anchor.rsplit('#').next() {
                     let frag_lower = fragment.to_lowercase();
-                    significant_query_tokens.iter().any(|t| frag_lower.contains(*t))
+                    significant_query_tokens.iter().any(|t| frag_lower.contains(t.as_str()))
                 } else {
                     false
                 }
             } else {
-                significant_query_tokens.iter().any(|t| anchor_lower.contains(*t))
+                significant_query_tokens.iter().any(|t| anchor_lower.contains(t.as_str()))
             };
 
             if anchor_match {
@@ -541,14 +649,20 @@ impl Index {
                 *score *= if is_symbol { 30.0 } else { 20.0 };
             }
 
-            // Additional 10x boost for title match (first line of document text)
+            // Additional 10x boost for title match (first line of document text).
+            // Uses the same stemmed, stop-word-filtered tokens so the title boost is
+            // consistent with the anchor boost and BM25 (and no longer fires on
+            // incidental stop words appearing in a heading).
             if let Some(text) = self.anchor_text.get(anchor)
                 && let Some(first_line) = text.lines().next()
-                && query_lower
-                    .split_whitespace()
-                    .any(|t| first_line.to_lowercase().contains(t))
             {
-                *score *= 10.0;
+                let first_line_lower = first_line.to_lowercase();
+                if significant_query_tokens
+                    .iter()
+                    .any(|t| first_line_lower.contains(t.as_str()))
+                {
+                    *score *= 10.0;
+                }
             }
         }
 
@@ -567,11 +681,17 @@ impl Index {
             })
             .collect();
 
-        // Sort by descending score
+        // Sort by descending score, then by anchor name as a deterministic
+        // tiebreak. Without the secondary key, equal BM25 scores inherit the
+        // arbitrary `HashMap` iteration order, which made `ask` routing — and the
+        // top-K primary/alternate split that consumes this order — flip
+        // run-to-run on ties. Lexicographic tiebreak makes the whole pipeline
+        // stable for free.
         results.sort_by(|a, b| {
             b.score
                 .partial_cmp(&a.score)
                 .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.anchor.cmp(&b.anchor))
         });
 
         // If no results or weak results (score < 1.0), try fuzzy search
@@ -606,7 +726,14 @@ impl Index {
             }
         }
 
-        fuzzy_matches.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        // Fuzzy scores are all equal (1.0), so an anchor-name tiebreak is what
+        // actually determines order here — without it the result is the arbitrary
+        // key iteration order. (Also avoids a NaN `unwrap` panic.)
+        fuzzy_matches.sort_by(|a, b| {
+            b.1.partial_cmp(&a.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.0.cmp(&b.0))
+        });
 
         fuzzy_matches
             .into_iter()
@@ -652,6 +779,147 @@ mod tests {
         assert!(tokens.contains(&"test".to_string()));
         assert!(!tokens.contains(&"a".to_string())); // stop word
         assert!(!tokens.contains(&"is".to_string())); // stop word
+    }
+
+    #[test]
+    fn stem_collapses_plurals() {
+        // Plain `-s` and `-ies` plurals reduce to the singular stem.
+        assert_eq!(stem("overlays"), "overlay");
+        assert_eq!(stem("readers"), "reader");
+        assert_eq!(stem("deliveries"), "delivery"); // -ies -> y
+        // The singular passes through unchanged, so query/index agree.
+        assert_eq!(stem("overlay"), "overlay");
+        assert_eq!(stem("reader"), "reader");
+        assert_eq!(stem("delivery"), "delivery");
+    }
+
+    #[test]
+    fn stem_ss_words_stay_whole_and_match_their_plural() {
+        // The bare `-s` rule must not strip the final `s` of an `-ss` word; the
+        // singular must stay whole AND converge with its `-es`-stripped plural so
+        // they share a token bucket (recall). Regression for process/processes.
+        for (singular, plural) in [
+            ("process", "processes"),
+            ("access", "accesses"),
+            ("address", "addresses"),
+            ("class", "classes"),
+            ("success", "successes"),
+        ] {
+            assert_eq!(stem(singular), singular, "`-ss` singular must stay whole");
+            assert_eq!(
+                stem(singular),
+                stem(plural),
+                "singular and plural must stem to the same token"
+            );
+        }
+    }
+
+    #[test]
+    fn stem_collapses_verb_and_adverb_inflections() {
+        assert_eq!(stem("delivering"), "deliver");
+        assert_eq!(stem("delivered"), "deliver");
+        assert_eq!(stem("quickly"), "quick");
+        // Inflections of the same verb converge on one stem.
+        assert_eq!(stem("rendering"), stem("rendered"));
+    }
+
+    #[test]
+    fn stem_min_length_guard() {
+        // Stripping would leave fewer than MIN_STEM_LEN (4) chars — left untouched.
+        assert_eq!(stem("based"), "based"); // -ed would give "bas" (3)
+        assert_eq!(stem("ring"), "ring"); // -ing would give "r" (1)
+        assert_eq!(stem("oily"), "oily"); // -ly would give "oi" (2)
+        assert_eq!(stem("bus"), "bus"); // -s would give "bu" (2)
+    }
+
+    #[test]
+    fn stem_skips_non_alphabetic_tokens() {
+        // Code identifiers and normalized numerics must pass through verbatim so
+        // they keep matching their indexed forms and SemanticNormalizer outputs.
+        assert_eq!(stem("fold_overlay"), "fold_overlay");
+        assert_eq!(stem("5"), "5");
+        assert_eq!(stem("05"), "05");
+        assert_eq!(stem("utf8"), "utf8");
+    }
+
+    #[test]
+    fn tokenize_and_query_stem_consistently() {
+        // The whole point: an inflected query token matches the stemmed posting.
+        let indexed = tokenize("The overlay is delivered to every reader");
+        assert!(indexed.contains(&"overlay".to_string()));
+        assert!(indexed.contains(&"deliver".to_string()));
+        assert!(indexed.contains(&"reader".to_string()));
+
+        // A distractor that mentions "overlay" only incidentally (inside a grep
+        // example) — without stem-consistent ranking this used to outrank the real
+        // doc for the vague query.
+        let dir2 = temp_dir_with_files(&[
+            (
+                "overlay.adoc",
+                "[[overlay-delivery]]\n= Overlay Delivery\n\nThe overlay is delivered to every reader. Overlay delivery folds each contract into the assembled view so the reader sees one document.\n",
+            ),
+            (
+                "grep.adoc",
+                "[[grep-examples]]\n= Grep Examples\n\nRun a search across the tree. Example: grep -r overlay . to find matches. This page is about command-line search recipes.\n",
+            ),
+        ]);
+        let index = Index::from_directory(dir2.path()).unwrap();
+        // Inflected, plural query form routes to the doc about the singular topic,
+        // and ranks it FIRST — the anchor/title boost is stem-consistent, so
+        // "overlays"/"delivered"/"readers" boost the "overlay-delivery" anchor.
+        let results = index.query("how do overlays get delivered to readers");
+        assert_eq!(
+            results.first().map(|r| r.anchor.as_str()),
+            Some("overlay-delivery"),
+            "stemmed query should rank the overlay-delivery doc first, got: {:?}",
+            results.iter().map(|r| &r.anchor).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn query_orders_score_ties_deterministically() {
+        // Two documents identical except their anchor name produce the SAME BM25
+        // score for a shared term. Without a tiebreak the order followed arbitrary
+        // HashMap iteration (flipping `ask` routing run-to-run); the lexicographic
+        // secondary key must put "aaa-doc" before "zzz-doc" every time.
+        let dir = temp_dir_with_files(&[
+            ("zzz.adoc", "[[zzz-doc]]\n= Topic\n\nwidget widget widget\n"),
+            ("aaa.adoc", "[[aaa-doc]]\n= Topic\n\nwidget widget widget\n"),
+        ]);
+        let index = Index::from_directory(dir.path()).unwrap();
+        let got: Vec<String> = index.query("widget").into_iter().map(|r| r.anchor).collect();
+        assert_eq!(
+            got,
+            vec!["aaa-doc".to_string(), "zzz-doc".to_string()],
+            "tied scores must order by anchor name deterministically, got: {:?}",
+            got
+        );
+        // Stable across repeated queries within the same process.
+        let again: Vec<String> = index.query("widget").into_iter().map(|r| r.anchor).collect();
+        assert_eq!(got, again);
+    }
+
+    #[test]
+    fn try_load_rejects_stale_version() {
+        // A versionless (pre-stemming) cache deserializes with version 0 and must
+        // be rejected so the index is rebuilt with the current tokenizer.
+        let dir = tempfile::tempdir().unwrap();
+        let cache_dir = dir.path().join(".aden/cache");
+        std::fs::create_dir_all(&cache_dir).unwrap();
+        // Minimal valid Index JSON without a `version` field.
+        std::fs::write(
+            cache_dir.join("index-cache.json"),
+            r#"{"inverted":{},"anchor_paths":{},"anchor_text":{},"doc_lengths":{},"avg_doc_length":1.0}"#,
+        )
+        .unwrap();
+        assert!(try_load(dir.path()).is_none(), "stale versionless cache must be rejected");
+
+        // A freshly built + saved index carries the current version and loads back.
+        let mut index = Index::default();
+        index.finalize();
+        assert_eq!(index.version, CURRENT_INDEX_VERSION);
+        save(&index, dir.path()).unwrap();
+        assert!(try_load(dir.path()).is_some(), "current-version cache must load");
     }
 
     #[test]

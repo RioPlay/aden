@@ -63,6 +63,36 @@ fn extract_explicit_symbols(query: &str) -> Vec<String> {
     symbols
 }
 
+/// BM25-score window, below the top score, treated as "effectively tied" with
+/// the leader. Used both by [`resolve_anchor_fuzzy`] (structural tiebreak) and by
+/// `cmd_ask` (to decide whether routing is ambiguous enough to seed alternates).
+const ANCHOR_NOISE_BAND: f64 = 5.0;
+
+/// Collect up to `max` distinct anchors that sit within [`ANCHOR_NOISE_BAND`] of
+/// the top score and are *not* the already-chosen `primary` (a near-tie set). The
+/// list is in rank order, deduped, and excludes the primary so callers can treat
+/// it as shallow "also consider" seeds. Returns empty when there is a clear winner.
+fn inband_alternate_candidates(primary: &str, results: &[SearchResult], max: usize) -> Vec<String> {
+    if results.is_empty() {
+        return Vec::new();
+    }
+    let top_score = results[0].score;
+    let mut out: Vec<String> = Vec::new();
+    for r in results {
+        if (top_score - r.score) > ANCHOR_NOISE_BAND {
+            break; // results are score-ordered; nothing past here is in-band
+        }
+        if r.anchor == primary || out.contains(&r.anchor) {
+            continue;
+        }
+        out.push(r.anchor.clone());
+        if out.len() >= max {
+            break;
+        }
+    }
+    out
+}
+
 /// Resolve a natural-language query to the best matching anchor.
 ///
 /// Strategy (in order):
@@ -132,7 +162,7 @@ fn resolve_anchor_fuzzy(query: &str, results: &[SearchResult]) -> String {
     // just because BM25 ranked it highest — "error" is a stop word and the user
     // was asking a general question, not asking about a specific Error type).
     let top_score = results[0].score;
-    let noise_band = 5.0_f64;
+    let noise_band = ANCHOR_NOISE_BAND;
 
     // Helper: true if anchor is a symbol whose bare name is a stop word.
     let is_stopword_symbol = |anchor: &str| -> bool {
@@ -161,7 +191,11 @@ fn resolve_anchor_fuzzy(query: &str, results: &[SearchResult]) -> String {
     best.anchor.clone()
 }
 
-pub fn cmd_check(path: &Path, severity: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub fn cmd_check(
+    path: &Path,
+    severity: &str,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     if !path.is_dir() {
         return Err("check requires a directory path".into());
     }
@@ -180,6 +214,39 @@ pub fn cmd_check(path: &Path, severity: &str) -> Result<(), Box<dyn std::error::
     };
 
     let messages = perform_check(path)?;
+
+    // Machine-readable for the global `-j/--json` flag (previously ignored).
+    // Classify the human messages by prefix into errors/warnings/info, mirroring
+    // the exit semantics of the text path below.
+    if json {
+        let mut errors = Vec::new();
+        let mut warnings = Vec::new();
+        let mut info = Vec::new();
+        for m in &messages {
+            if let Some(rest) = m.strip_prefix("ERROR: ") {
+                errors.push(rest.to_string());
+            } else if let Some(rest) = m.strip_prefix("WARNING: ") {
+                warnings.push(rest.to_string());
+            } else if let Some(rest) = m.strip_prefix("INFO: ") {
+                info.push(rest.to_string());
+            } else {
+                info.push(m.clone());
+            }
+        }
+        let fails = !errors.is_empty() || (!warnings.is_empty() && min_severity <= 1);
+        let env = serde_json::json!({
+            "ok": !fails,
+            "errors": errors,
+            "warnings": warnings,
+            "info": info,
+        });
+        println!("{}", serde_json::to_string_pretty(&env)?);
+        if fails {
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+
     let mut exit_code = 0i32;
     for msg in &messages {
         if msg.starts_with("ERROR:") {
@@ -768,8 +835,13 @@ pub fn cmd_ask(
     // relevance boost BY DEFAULT (unlike `asm`, which is hard-cap and opt-in via
     // --auto). Capture the average search relevance so the budget can be scaled;
     // a pinned --from anchor has no search relevance, so it stays at base.
-    let (start_anchor, avg_score) = if let Some(anchor) = from_override {
-        (anchor.to_string(), None)
+    // `alt_candidates` are near-tie runner-up anchors (search-space names, not yet
+    // store-resolved). They stay empty for a clear winner or a pinned `--from`, so
+    // those paths assemble exactly as before. When routing is ambiguous they let us
+    // seed shallow context from the alternates rather than betting the whole budget
+    // on a single, possibly-misranked anchor.
+    let (start_anchor, avg_score, alt_candidates) = if let Some(anchor) = from_override {
+        (anchor.to_string(), None, Vec::new())
     } else {
         let idx = load_or_build_index(path)?;
         let results = idx.query(question);
@@ -781,7 +853,11 @@ pub fn cmd_ask(
             return Ok(());
         }
         let avg: f64 = results.iter().map(|r| r.score).sum::<f64>() / results.len() as f64;
-        (resolve_anchor_fuzzy(question, &results), Some(avg))
+        let primary = resolve_anchor_fuzzy(question, &results);
+        // Up to 2 in-band alternates, deduped against the (possibly non-rank-1)
+        // primary. Empty ⇒ clear winner ⇒ unchanged single-seed behavior below.
+        let alts = inband_alternate_candidates(&primary, &results, 2);
+        (primary, Some(avg), alts)
     };
 
     // Apply the relevance boost by default; `--strict` opts out and treats
@@ -847,6 +923,24 @@ pub fn cmd_ask(
         }
     };
 
+    // Resolve the near-tie alternates against the store, using the same validator
+    // as the primary. Skip any that don't resolve, collapse onto the primary, or
+    // duplicate each other. We deliberately do NOT fall back to `mod-project` for
+    // alternates — an alternate that doesn't resolve is simply dropped.
+    let resolved_alts: Vec<String> = {
+        let mut seen = vec![start_anchor.clone()];
+        let mut out = Vec::new();
+        for cand in &alt_candidates {
+            if let Some(a) = aden_graph::cache::resolve_anchor_in_store(path, cand)
+                && !seen.contains(&a)
+            {
+                seen.push(a.clone());
+                out.push(a);
+            }
+        }
+        out
+    };
+
     let block_filter = block_filter_for_intent(&intent);
     let edge_types_str = edge_types
         .iter()
@@ -854,22 +948,48 @@ pub fn cmd_ask(
         .collect::<Vec<_>>()
         .join(", ");
 
-    // Stream: load only the neighborhood reachable along the intent's edge types.
-    let graph =
-        aden_graph::cache::build_neighborhood_cached(path, &start_anchor, depth, &edge_types)?;
-
-    let opts = AssemblyOptions {
-        start_anchor: start_anchor.clone(),
-        max_depth: depth,
-        token_budget: effective_budget,
-        edge_types,
-        block_filter,
-        include_tags: Vec::new(),
-        exclude_tags: Vec::new(),
-        attributes: Vec::new(),
-        llm_mode: true, // aden ask always targets an LLM — emit clean prose
+    // Helper: assemble one seed's neighborhood at a given depth/budget. Cloning the
+    // filters per call keeps `edge_types`/`block_filter` available across seeds.
+    let assemble_seed = |seed: &str, seed_depth: usize, seed_budget: usize| -> Result<String, Box<dyn std::error::Error>> {
+        let graph =
+            aden_graph::cache::build_neighborhood_cached(path, seed, seed_depth, &edge_types)?;
+        let opts = AssemblyOptions {
+            start_anchor: seed.to_string(),
+            max_depth: seed_depth,
+            token_budget: seed_budget,
+            edge_types: edge_types.clone(),
+            block_filter: block_filter.clone(),
+            include_tags: Vec::new(),
+            exclude_tags: Vec::new(),
+            attributes: Vec::new(),
+            llm_mode: true, // aden ask always targets an LLM — emit clean prose
+        };
+        Ok(assemble(&graph, &opts)?)
     };
-    let assembled = assemble(&graph, &opts)?;
+
+    // Clear winner ⇒ today's behavior exactly: one seed, full budget. Ambiguous ⇒
+    // primary takes the majority of the budget at full depth, and each shallow
+    // alternate gets an even slice of the remainder, appended with a brief header.
+    // This is paid for ONLY on near-ties, and the total stays within the budget.
+    let assembled = if resolved_alts.is_empty() {
+        assemble_seed(&start_anchor, depth, effective_budget)?
+    } else {
+        let primary_budget = effective_budget * 60 / 100;
+        let alt_pool = effective_budget.saturating_sub(primary_budget);
+        let per_alt = (alt_pool / resolved_alts.len()).max(1);
+        let shallow_depth = depth.min(1);
+        let mut combined = assemble_seed(&start_anchor, depth, primary_budget)?;
+        for alt in &resolved_alts {
+            let alt_text = assemble_seed(alt, shallow_depth, per_alt)?;
+            if alt_text.trim().is_empty() {
+                continue;
+            }
+            combined.push_str("\n\n---\n\n");
+            combined.push_str(&format!("// alternate (ambiguous match): [[{}]]\n", alt));
+            combined.push_str(&alt_text);
+        }
+        combined
+    };
 
     // Step 4: Send to LLM or print raw context
     if let Some(model_spec) = model {
@@ -891,6 +1011,11 @@ pub fn cmd_ask(
             "<!-- Anchor: {} | Depth: {} | Budget: {} -->",
             start_anchor, depth, budget_note
         );
+        if !resolved_alts.is_empty() {
+            // Make the ambiguity-driven seeding transparent: these shallow seeds
+            // were appended because routing was a near-tie.
+            println!("<!-- Alternates (ambiguous, shallow): {} -->", resolved_alts.join(", "));
+        }
         println!("<!-- Strategy: {:?} -->", intent);
         println!("<!-- Edge Types: {} -->", edge_types_str);
         println!();
@@ -917,6 +1042,9 @@ pub fn cmd_ask(
         println!("// Aden Ask Summary");
         println!("//   Question: {}", question);
         println!("//   Anchor  : [[{}]]", start_anchor);
+        if !resolved_alts.is_empty() {
+            println!("//   Alts    : {} (ambiguous, shallow)", resolved_alts.join(", "));
+        }
         println!("//   Strategy: {:?} | Depth: {}", intent, depth);
         println!(
             "//   Nodes   : {} | ~{} tokens ({} bytes) / {} budget ({})",
@@ -1057,6 +1185,27 @@ pub fn cmd_query_adq(path: &Path, script: &str) -> Result<(), Box<dyn std::error
     Ok(())
 }
 
+/// True if `anchor` belongs to the requested `--doc-type` (already lower-cased
+/// and validated by the caller). Matches the real anchor shapes: code symbols
+/// use the `aden://module/…` scheme; docs encode their type in the filename
+/// segment; legacy metadata anchors use short `kind-` prefixes.
+fn anchor_matches_doc_type(anchor: &str, dtl: &str) -> bool {
+    let a = anchor.to_lowercase();
+    match dtl {
+        "module" | "mod" => a.starts_with("aden://module/") || a.starts_with("mod-"),
+        "adr" => a.starts_with("adr-") || a.contains("/adr-") || a.contains("/adr."),
+        "plan" => a.starts_with("plan-") || a.contains("/plan-") || a.contains("/plan."),
+        "use-case" | "usecase" => {
+            a.starts_with("use-case-")
+                || a.contains("/use-case")
+                || a.contains("/use_case")
+                || a.contains("/usecase")
+        }
+        "agent" => a.starts_with("agent-") || a.contains("/agent.") || a.contains("/agents."),
+        _ => false,
+    }
+}
+
 pub fn cmd_search(
     path: &Path,
     query: &str,
@@ -1083,27 +1232,30 @@ pub fn cmd_search(
         results.retain(|r| !config.is_private_anchor(&r.anchor));
     }
 
-    // Filter by document type if specified
+    // Filter by document type if specified. The doc-type lives in the anchor
+    // URI scheme (code symbols are `aden://module/…`) or the document's filename
+    // segment for docs (`…/adr-001.adoc`, `…/plan-phase2.adoc`, `…/use-cases.adoc`,
+    // `…/agent.md`), plus legacy short-form anchors (`mod-`, `adr-`, …). A bare
+    // `starts_with("mod-")` matched only the 25 legacy anchors and dropped all
+    // 1000+ real `aden://module/…` symbols, so the most common filter returned
+    // zero. Match against the real anchor shapes instead.
     if let Some(dt) = doc_type {
-        let dt_pattern = match dt.to_lowercase().as_str() {
-            "module" | "mod" => "mod-",
-            "adr" => "adr-",
-            "plan" => "plan-",
-            "use-case" | "usecase" => "use-case-",
-            "agent" => "agent-",
-            _ => {
-                eprintln!(
-                    "Warning: Unknown doc type '{}'. Valid: module, adr, plan, use-case, agent",
-                    dt
-                );
-                return Err(format!(
-                    "Invalid --type '{}'. Use: module, adr, plan, use-case, agent",
-                    dt
-                )
-                .into());
-            }
-        };
-        results.retain(|r| r.anchor.starts_with(dt_pattern));
+        let dtl = dt.to_lowercase();
+        if !matches!(
+            dtl.as_str(),
+            "module" | "mod" | "adr" | "plan" | "use-case" | "usecase" | "agent"
+        ) {
+            eprintln!(
+                "Warning: Unknown doc type '{}'. Valid: module, adr, plan, use-case, agent",
+                dt
+            );
+            return Err(format!(
+                "Invalid --type '{}'. Use: module, adr, plan, use-case, agent",
+                dt
+            )
+            .into());
+        }
+        results.retain(|r| anchor_matches_doc_type(&r.anchor, &dtl));
     }
 
     // If --semantics, also search the graph for semantic relationships
@@ -1631,6 +1783,7 @@ pub fn cmd_locate(
     format: &str,
     limit: usize,
     context: Option<usize>,
+    json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use serde_json::json;
 
@@ -1638,6 +1791,11 @@ pub fn cmd_locate(
         return Err("locate requires a directory path".into());
     }
     super::ensure_fresh(path);
+
+    // JSON is requested via either the global `-j/--json` flag or `--format json`.
+    // In JSON mode every human header ("Found N match(es)…") is suppressed so the
+    // stream is a single machine-parseable value, never JSON prefixed by prose.
+    let want_json = json || format == "json";
 
     // If --symbol is given, find the definition.
     if let Some(sym) = symbol {
@@ -1683,6 +1841,17 @@ pub fn cmd_locate(
             // Fall back to the full-text search index.
             let index = load_or_build_index(path)?;
             let search_results = index.query(sym);
+            if want_json {
+                // Machine-readable: emit the (possibly empty) full-text hits as a
+                // JSON array, never the human "Found … / No symbol found" prose.
+                let arr: Vec<serde_json::Value> = search_results
+                    .iter()
+                    .take(limit)
+                    .map(|r| json!({ "anchor": r.anchor, "score": r.score, "snippet": r.snippet }))
+                    .collect();
+                println!("{}", serde_json::to_string_pretty(&arr)?);
+                return Ok(());
+            }
             if !search_results.is_empty() {
                 println!(
                     "Found {} match(es) in full-text index for '{}':",
@@ -1709,10 +1878,10 @@ pub fn cmd_locate(
             return Ok(());
         }
 
-        println!("Found {} match(es) for '{}':", matched.len(), sym);
-        if format == "json" {
+        if want_json {
             println!("{}", serde_json::to_string_pretty(&hits)?);
         } else {
+            println!("Found {} match(es) for '{}':", matched.len(), sym);
             print_locate_results(&hits, format, context);
         }
         return Ok(());
@@ -1741,6 +1910,10 @@ pub fn cmd_locate(
             .collect();
 
         if targets.is_empty() {
+            if want_json {
+                println!("[]");
+                return Ok(());
+            }
             println!("No symbol found matching '{}'", target);
             println!(
                 "Hint: Try 'aden locate . --symbol {}' to confirm it is indexed.",
@@ -1748,6 +1921,15 @@ pub fn cmd_locate(
             );
             return Ok(());
         }
+
+        // The matched definitions themselves are never their own callers. A bare
+        // name matches loosely (`#fold_overlay` also matches `#fold_overlay_blocks`),
+        // so a target that legitimately calls a sibling target would otherwise be
+        // reported as a self-caller on its own definition line — exclude them.
+        let target_anchors: HashSet<String> = targets
+            .iter()
+            .map(|&i| graph.graph[i].doc.anchor.clone())
+            .collect();
 
         // Collect unique callers via incoming `Calls` edges.
         let mut seen = HashSet::new();
@@ -1762,7 +1944,7 @@ pub fn cmd_locate(
                     .unwrap_or(false);
                 if is_call {
                     let a = graph.graph[neighbor].doc.anchor.clone();
-                    if seen.insert(a.clone()) {
+                    if !target_anchors.contains(&a) && seen.insert(a.clone()) {
                         callers.push(a);
                     }
                 }
@@ -1771,6 +1953,10 @@ pub fn cmd_locate(
         callers.sort();
 
         if callers.is_empty() {
+            if want_json {
+                println!("[]");
+                return Ok(());
+            }
             println!(
                 "No callers found for '{}' (unused, an entry point, or invoked via dynamic dispatch).",
                 target
@@ -1810,10 +1996,10 @@ pub fn cmd_locate(
             })
             .collect();
 
-        println!("Found {} caller(s) of '{}':", hits.len(), target);
-        if format == "json" {
+        if want_json {
             println!("{}", serde_json::to_string_pretty(&hits)?);
         } else {
+            println!("Found {} caller(s) of '{}':", hits.len(), target);
             for h in &hits {
                 let file = h["file"].as_str().unwrap_or("");
                 let line = h["start_line"].as_str().unwrap_or("");
@@ -2355,5 +2541,47 @@ mod tests {
         // A pinned --from anchor has no search relevance (None) → base, even
         // when not strict.
         assert_eq!(select_ask_budget(false, base, None), base);
+    }
+
+    fn result(anchor: &str, score: f64) -> SearchResult {
+        SearchResult {
+            anchor: anchor.to_string(),
+            source_path: std::path::PathBuf::new(),
+            score,
+            snippet: String::new(),
+        }
+    }
+
+    #[test]
+    fn inband_alternates_empty_for_clear_winner() {
+        // Runner-up is more than the noise band below the leader → no alternates.
+        let results = vec![
+            result("a", 30.0),
+            result("b", 30.0 - ANCHOR_NOISE_BAND - 0.1),
+            result("c", 5.0),
+        ];
+        assert!(inband_alternate_candidates("a", &results, 2).is_empty());
+    }
+
+    #[test]
+    fn inband_alternates_collects_near_ties_excluding_primary() {
+        // b and c are within the band; a (the primary) is excluded; d is out of band.
+        let results = vec![
+            result("a", 30.0),
+            result("b", 28.0),
+            result("c", 26.0),
+            result("d", 10.0),
+        ];
+        assert_eq!(inband_alternate_candidates("a", &results, 2), vec!["b", "c"]);
+        // `max` caps the count and rank order is preserved.
+        assert_eq!(inband_alternate_candidates("a", &results, 1), vec!["b"]);
+        // When the primary is the rank-2 anchor, it is still excluded.
+        assert_eq!(inband_alternate_candidates("b", &results, 2), vec!["a", "c"]);
+    }
+
+    #[test]
+    fn inband_alternates_dedupes_repeated_anchors() {
+        let results = vec![result("a", 30.0), result("b", 29.0), result("b", 28.0)];
+        assert_eq!(inband_alternate_candidates("a", &results, 5), vec!["b"]);
     }
 }

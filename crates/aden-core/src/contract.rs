@@ -103,6 +103,13 @@ impl RegionBlock {
     pub fn is_generated(&self) -> bool {
         self.region == ContractRegion::Generated
     }
+
+    /// True if this block carries durable intent that `gen` must never clobber:
+    /// any human-owned region, or an `[agent]` block (preserved unless the agent
+    /// itself proposes an update).
+    pub fn is_durable(&self) -> bool {
+        self.is_human_owned() || self.region == ContractRegion::Agent
+    }
 }
 
 /// Parsed representation of a contract document with region blocks.
@@ -211,18 +218,19 @@ impl ContractState {
                 if let Some(gi) = ground_match {
                     let ground_block = &self.ground.blocks[gi];
                     if ground_block.content != base_block.content {
-                        // AST changed → update, but check for human block with same tag
-                        let human_conflict = self
+                        // AST changed → update, but check for a durable (human or
+                        // agent) block with the same tag that the change collides with.
+                        let durable_conflict = self
                             .working
                             .blocks
                             .iter()
-                            .any(|w| w.is_human_owned() && w.tag == base_block.tag);
+                            .any(|w| w.is_durable() && w.tag == base_block.tag);
 
-                        if human_conflict {
+                        if durable_conflict {
                             actions.push(MergeAction::Conflict {
                                 index: bi,
                                 reason: format!(
-                                    "Generated block '{}' changed but human-owned block with same tag exists in working",
+                                    "Generated block '{}' changed but a durable (human/agent) block with the same tag exists in working",
                                     base_block.tag.as_deref().unwrap_or("(untagged)")
                                 ),
                             });
@@ -236,15 +244,34 @@ impl ContractState {
                         }
                     }
                 } else {
-                    // Symbol deleted in ground
-                    actions.push(MergeAction::DeleteGenerated {
-                        index: bi,
-                        reason: format!(
-                            "Generated block '{}' no longer exists in latest AST",
-                            base_block.tag.as_deref().unwrap_or("(untagged)")
-                        ),
-                    });
-                    deleted += 1;
+                    // Symbol deleted in ground. If a durable overlay block is tagged
+                    // to this anchor, deleting would orphan it — surface a Conflict
+                    // for review instead of silently dropping the generated block.
+                    let orphans_overlay = self
+                        .working
+                        .blocks
+                        .iter()
+                        .any(|w| w.is_durable() && w.tag == base_block.tag);
+
+                    if orphans_overlay {
+                        actions.push(MergeAction::Conflict {
+                            index: bi,
+                            reason: format!(
+                                "Generated block '{}' no longer exists in latest AST but a durable (human/agent) block references it",
+                                base_block.tag.as_deref().unwrap_or("(untagged)")
+                            ),
+                        });
+                        conflicts += 1;
+                    } else {
+                        actions.push(MergeAction::DeleteGenerated {
+                            index: bi,
+                            reason: format!(
+                                "Generated block '{}' no longer exists in latest AST",
+                                base_block.tag.as_deref().unwrap_or("(untagged)")
+                            ),
+                        });
+                        deleted += 1;
+                    }
                 }
             } else {
                 // Non-generated blocks from base: preserve if still in working
@@ -371,6 +398,53 @@ impl ContractState {
 
         Ok(result)
     }
+}
+
+impl MergeProposal {
+    /// True when the merge found no conflict — safe to auto-apply without review.
+    pub fn is_clean(&self) -> bool {
+        self.conflict_count == 0
+    }
+}
+
+/// Build the `working` layer for a per-anchor merge: the generated `base` plus
+/// any non-generated (durable intent) blocks from an overlay. Generated blocks
+/// in the overlay are ignored — overlays only carry intent, never generated content.
+pub fn overlay_onto(base: &ContractDocument, overlay: Option<&ContractDocument>) -> ContractDocument {
+    let mut working = base.clone();
+    if let Some(ov) = overlay {
+        for block in &ov.blocks {
+            if !block.is_generated() {
+                working.blocks.push(block.clone());
+            }
+        }
+    }
+    working
+}
+
+/// Reconcile a freshly-parsed `Document` against the stored generated document
+/// and an optional intent overlay, returning the per-block merge proposal.
+///
+/// * `fresh`   — the document just parsed from source (becomes `ground`).
+/// * `stored`  — the document currently in the store (becomes `base`); `None`
+///   means a brand-new symbol, which yields an `InsertGenerated` proposal.
+/// * `overlay` — durable human/agent blocks layered on top of `base` to form
+///   `working`.
+///
+/// A clean proposal (`is_clean()`) means the caller may write `fresh` to the
+/// store directly. A non-clean proposal should be surfaced for review and the
+/// stored document left untouched.
+pub fn reconcile_anchor(
+    fresh: &crate::Document,
+    stored: Option<&crate::Document>,
+    overlay: Option<&ContractDocument>,
+) -> crate::Result<MergeProposal> {
+    let ground = ContractDocument::from_document(fresh);
+    let base = stored
+        .map(ContractDocument::from_document)
+        .unwrap_or_default();
+    let working = overlay_onto(&base, overlay);
+    ContractState::new(ground, base, working).propose()
 }
 
 impl ContractDocument {
@@ -757,5 +831,103 @@ mod tests {
         let merged = state.apply(&proposal).unwrap();
 
         assert_eq!(merged.blocks[0].content, "new");
+    }
+
+    // ── reconcile_anchor / overlay integration ───────────────────────
+
+    fn doc(anchor: &str, body: &str) -> crate::Document {
+        crate::Document {
+            anchor: anchor.to_string(),
+            blocks: vec![crate::Block::Paragraph(body.to_string())],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn reconcile_update_no_overlay() {
+        let stored = doc("foo", "old");
+        let fresh = doc("foo", "new");
+        let p = reconcile_anchor(&fresh, Some(&stored), None).unwrap();
+        assert!(p.is_clean());
+        assert_eq!(p.updated_count, 1);
+    }
+
+    #[test]
+    fn reconcile_insert_new_symbol() {
+        let fresh = doc("foo", "body");
+        let p = reconcile_anchor(&fresh, None, None).unwrap();
+        assert!(p.is_clean());
+        assert_eq!(p.inserted_count, 1);
+    }
+
+    #[test]
+    fn reconcile_preserves_unrelated_overlay() {
+        let stored = doc("foo", "old");
+        let fresh = doc("foo", "new");
+        let overlay = make_doc(vec![human_block(Some("notes"), "design rationale")]);
+        let p = reconcile_anchor(&fresh, Some(&stored), Some(&overlay)).unwrap();
+        assert!(p.is_clean(), "unrelated overlay tag must not conflict");
+        assert_eq!(p.updated_count, 1);
+    }
+
+    #[test]
+    fn reconcile_conflict_same_tag() {
+        let stored = doc("foo", "old");
+        let fresh = doc("foo", "new");
+        let overlay = make_doc(vec![human_block(Some("foo"), "do not change foo")]);
+        let p = reconcile_anchor(&fresh, Some(&stored), Some(&overlay)).unwrap();
+        assert!(!p.is_clean());
+        assert_eq!(p.conflict_count, 1);
+        assert_eq!(p.updated_count, 0);
+    }
+
+    #[test]
+    fn reconcile_agent_overlay_conflicts_too() {
+        let stored = doc("foo", "old");
+        let fresh = doc("foo", "new");
+        let agent = RegionBlock {
+            region: ContractRegion::Agent,
+            tag: Some("foo".to_string()),
+            attributes: HashMap::new(),
+            content: "agent note about foo".to_string(),
+            start_line: 1,
+            end_line: 1,
+        };
+        let overlay = make_doc(vec![agent]);
+        let p = reconcile_anchor(&fresh, Some(&stored), Some(&overlay)).unwrap();
+        assert_eq!(p.conflict_count, 1, "[agent] blocks are durable");
+    }
+
+    #[test]
+    fn delete_orphaning_durable_block_is_conflict() {
+        let base = make_doc(vec![
+            gen_block(Some("foo"), "fn foo() {}"),
+            gen_block(Some("bar"), "fn bar() {}"),
+        ]);
+        let ground = make_doc(vec![gen_block(Some("foo"), "fn foo() {}")]); // bar deleted
+        let working = make_doc(vec![
+            gen_block(Some("foo"), "fn foo() {}"),
+            gen_block(Some("bar"), "fn bar() {}"),
+            human_block(Some("bar"), "keep these notes about bar"),
+        ]);
+        let p = ContractState::new(ground, base, working).propose().unwrap();
+        assert_eq!(p.conflict_count, 1);
+        assert_eq!(p.deleted_count, 0, "must not silently orphan the overlay");
+    }
+
+    #[test]
+    fn overlay_onto_ignores_generated_overlay_blocks() {
+        let base = make_doc(vec![gen_block(Some("foo"), "g")]);
+        let overlay = make_doc(vec![
+            human_block(Some("n"), "note"),
+            gen_block(Some("foo"), "SHOULD BE IGNORED"),
+        ]);
+        let working = overlay_onto(&base, Some(&overlay));
+        assert_eq!(working.blocks.len(), 2, "only base gen + human overlay block");
+        assert!(working.blocks.iter().any(|b| b.region == ContractRegion::Human));
+        assert!(
+            working.blocks.iter().filter(|b| b.is_generated()).count() == 1,
+            "overlay generated blocks must be dropped"
+        );
     }
 }
