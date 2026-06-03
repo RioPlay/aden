@@ -70,7 +70,8 @@ load-bearing invariant", an agent's design note — is human/agent-owned and mus
 never be silently overwritten by regeneration.
 
 Aden keeps them in separate homes by ownership. The generated layer lives in the
-rebuildable, git-ignored store (`.aden/store`); `aden gen` overwrites it freely.
+rebuildable, per-user project store (see `aden store path`; ADR-003); `aden gen`
+overwrites it freely.
 Durable intent lives in sparse, git-tracked *overlays*
 (`.aden/overlays/<anchor>.adoc`) — one small file only for the symbols you
 actually have something to say about. You author them with

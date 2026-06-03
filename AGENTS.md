@@ -28,7 +28,7 @@ aden locate --symbol <symbol>
 
 ### After Writing Code
 ```bash
-aden gen <file>           # Index this file into the knowledge graph (.aden/store)
+aden gen <file>           # Index this file into the knowledge graph (per-user store)
 aden check . --severity Forbid  # Validate refs (fails only on critical)
 ```
 

@@ -18,7 +18,7 @@ This document tracks crates in the aden workspace that are **not yet fully integ
 == Experimental Crates (Not Integrated)
 
 None at present. The previously-tracked experimental crates (`aden-api`,
-`aden-attest`, `aden-simulate`, `aden-telemetry`) were **removed** on 2026-06-02:
+`aden-attest`, `aden-simulate`, `aden-telemetry`) were **removed** on 2026-06-03:
 they had zero workspace dependents, were not wired into any binary, and existed
 only as roadmap scaffolding (Phase 4-6). Their roadmap intent is still recorded
 in the "Phase 1-6 Crate Map (Planned)" table in `docs/context.adoc`; the code can
@@ -54,8 +54,9 @@ These crates are **actively used** and form the core aden functionality:
 - `aden-heal` - Self-healing
 - `aden-propose` - Patch generation (used by heal)
 - `aden-policy` - Constitutional directives
-- `aden-store` - fjall LSM-tree persistence (`.aden/store`)
+- `aden-store` - fjall LSM-tree persistence (per-user store, ADR-003)
 - `aden-diagnose` - Deterministic diagnostic scanner (backs `aden diagnose`)
+- `aden-paths` - Per-user, per-project path resolution and project identity (ADR-003)
 
 NOTE: `aden-mcp` is integrated but unusual — it has no `aden-*` crate
 dependencies. It shells out to the `aden` binary as a sibling process
@@ -68,16 +69,15 @@ core crates directly.
 - [x] Add status metadata to all experimental crate Cargo.toml files
 - [x] Create this tracking document
 
-=== Phase 2: Decide (Next)
-- [ ] Review each experimental crate
-- [ ] Decide: integrate, keep as-is, or remove
-- [ ] Set timeline for decisions (e.g., 3 months)
+=== Phase 2: Decide (Done)
+- [x] Review each experimental crate
+- [x] Decide: integrate, keep as-is, or remove → decided **remove** (none had an
+  integration path; all were declaration-only roadmap scaffolding)
 
-=== Phase 3: Act
-Based on decisions:
-- *Integrate:* Add to CLI/MCP, write tests, document
-- *Keep:* Move to `experimental/` subdirectory, reduce workspace priority
-- *Remove:* Archive code, update documentation
+=== Phase 3: Act (Done)
+- [x] Removed `aden-api`, `aden-attest`, `aden-simulate`, `aden-telemetry` on
+  2026-06-03; roadmap intent preserved in the "Phase 1-6 Crate Map (Planned)"
+  table in `docs/context.adoc` and recoverable from git history.
 
 == Governance
 
@@ -92,5 +92,5 @@ Experimental crates older than 12 months without integration plans should be:
 
 ---
 
-*Last updated:* 2026-05-30 +
+*Last updated:* 2026-06-03 +
 *Next review:* 2026-08-27

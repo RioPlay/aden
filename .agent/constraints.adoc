@@ -105,8 +105,9 @@ Use double-angle brackets for all references:
 
 === Contract Generation
 
-Store-first: `aden gen` compiles source into the knowledge graph at
-`.aden/store` and emits no files — there are no `.adoc` contracts to hand-edit.
+Store-first: `aden gen` compiles source into the knowledge graph in the
+per-user project store (see `aden store path`; ADR-003) and emits no files —
+there are no `.adoc` contracts to hand-edit.
 Re-run `gen` whenever source changes (read commands also refresh on read):
 
 [source,bash]

@@ -42,7 +42,7 @@ This prevents an agent from accidentally (or maliciously) inlining `/etc/passwd`
 - Hardcoded passwords (regex matching `password = "..."` assignments)
 - API keys (AWS `AKIA...`, GitHub `ghp_`/`gho_`, OpenAI `sk-...` patterns)
 - Long hex strings (possible API keys)
-- Content hashes in `.aden/cache/` and generated files are excluded (false-positive suppression)
+- Content hashes in the per-user cache dir (ADR-003) and generated files are excluded (false-positive suppression)
 
 Any detected secret fails CI — the secret-scan gate returns an error on detection.
 

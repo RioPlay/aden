@@ -79,7 +79,7 @@ This runs: `aden check` → constitutional firewall (warn-only) → tests → `a
 ## This Project Uses
 
 - **AsciiDoc** (`.adoc`) — don't convert to Markdown
-- **Knowledge graph** in `.aden/store` — built by `aden gen`, never edit by hand
+- **Knowledge graph** in the per-user project store (`aden store path`; ADR-003) — built by `aden gen`, never edit by hand
 - **Graph edges** — `Uses`, `Calls`, `Documents`, `PartOf`, `IsA`, etc.
 
 ## Agent Session

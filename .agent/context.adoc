@@ -16,7 +16,7 @@ This file is the canonical shared memory for all agent sessions on `aden`.
 |Primary Language |Rust (edition 2024)
 |Runtime / Build |cargo
 |License |AGPL-3.0-or-later
-|Structure |Cargo workspace, 18 crates
+|Structure |Cargo workspace, 15 crates
 |===
 
 aden turns any codebase or document corpus into a queryable, attributed,
@@ -40,7 +40,7 @@ LLM agents. See `docs/architecture.adoc` and `.agent/glossary.adoc`.
 
 == Workspace Crates
 
-The 18-crate workspace, by role:
+The 15-crate workspace, by role:
 
 [cols="1,2"]
 |===
@@ -60,6 +60,7 @@ The 18-crate workspace, by role:
 |`aden-propose` |Change proposal generation (preview before apply).
 |`aden-mcp` |Model Context Protocol server exposing aden tools to agents.
 |`aden-lsp` |Language Server Protocol integration for editors.
+|`aden-paths` |Per-user, per-project path resolution and project identity (ADR-003).
 |===
 
 === External dependencies (key)

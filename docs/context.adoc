@@ -59,7 +59,7 @@ Staging:: Write-only audit trail in `.aden/staging/` for agent proposals before 
 |serde_json |JSON consumer for bridges |Latest stable
 |fnv |Stable content hashing |Latest stable
 |petgraph |Graph data structure |Latest stable
-|fjall |LSM-tree store for `.aden/store` |Latest stable
+|fjall |LSM-tree backing the per-user project store (ADR-003) |Latest stable
 |postcard |Compact store serialization |Latest stable
 |regex |Lightweight AsciiDoc parsing |Latest stable
 |toml |Configuration parsing |Latest stable
@@ -77,7 +77,7 @@ Staging:: Write-only audit trail in `.aden/staging/` for agent proposals before 
 |aden-index |Inverted-index semantic search |Shipped Phase 0
 |aden-heal |Drift detection and health scoring |Shipped Phase 0
 |aden-propose |Patch generation and proposal lifecycle |Shipped Phase 0
-|aden-store |fjall LSM-tree persistence (`.aden/store`) |Shipped Phase 0
+|aden-store |fjall LSM-tree persistence (per-user store, ADR-003) |Shipped Phase 0
 |aden-diagnose |Rule-based diagnostic scanner (backs `aden diagnose`) |Shipped Phase 0
 |aden-mcp |MCP server integration (shells out to the `aden` binary) |Shipped Phase 0
 |aden-lsp |LSP for `.adoc`/`.aden` files |Shipped Phase 0

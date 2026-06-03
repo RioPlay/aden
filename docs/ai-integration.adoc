@@ -165,7 +165,7 @@ aden suggest "find all tests in the project"
 == MCP Tools (for AI Platforms)
 
 When using Aden via MCP (OpenCode, Claude Code, Cursor, etc.), the server exposes
-~33 tools — one per CLI subcommand. They are grouped below by purpose. A few of the
+~35 tools — one per CLI subcommand. They are grouped below by purpose. A few of the
 most-used tools list their key arguments; for the rest, run `aden <tool> --help`.
 
 .Read / query

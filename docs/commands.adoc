@@ -61,9 +61,10 @@ Scaffolds:
 
 === gen
 
-Compile source into the knowledge graph (`.aden/store`). Store-first: `gen`
-writes only to the store and emits no files. A directory indexes the whole
-project; a single file re-indexes just that file.
+Compile source into the knowledge graph. Store-first: `gen` writes only to the
+per-user project store (run `aden store path` to see its location; see ADR-003)
+and emits no files. A directory indexes the whole project; a single file
+re-indexes just that file.
 
 [source,bash]
 ----
@@ -491,6 +492,28 @@ aden locate --symbol Error --limit 10
 |--limit |Max results |50
 |===
 
+=== overlay
+
+Author an intent overlay for a symbol: durable `[human]`/`[agent]` notes that
+survive `aden gen` and are delivered to readers (`asm`, `ask`). Takes an anchor
+or bare symbol name and an optional `[DIR]`.
+
+[source,bash]
+----
+# Annotate a symbol with a durable intent note
+aden overlay assemble
+
+# Target a fully-qualified anchor in a specific project
+aden overlay "aden://module/app/B.java#Greeter.hello" --project /path/to/proj
+----
+
+|===
+|Flag |Description |Default
+
+|--json |Output JSON where supported |—
+|--project |Aden project path (overrides CWD) |CWD
+|===
+
 == Health and CI Commands
 
 === heal
@@ -535,8 +558,8 @@ aden heal . --watch src/
 |MissingMarkdownTemplate |Medium |No
 |===
 
-Aden is store-first: contracts live in `.aden/store`, not as on-disk `.adoc`
-stubs. Consequently:
+Aden is store-first: contracts live in the per-user project store (see
+`aden store path`), not as on-disk `.adoc` stubs. Consequently:
 
 - `SignatureMismatch` `--fix` rewrites the recorded signature directly in the
   store (legacy on-disk contract files are still rewritten in place). A failure
@@ -830,6 +853,35 @@ aden complete . --dry-run
 Example: `aden complete .` lists every contract missing required fields so you
 can document them by hand.
 
+=== store
+
+Manage per-user, per-project graph stores (see ADR-003). The store lives in the
+per-user data dir, not in the working tree.
+
+[source,bash]
+----
+# Print the resolved store path for the current project
+aden store path
+
+# List all per-user project stores and their real roots
+aden store list
+
+# Remove stores whose project root no longer exists on disk
+aden store prune
+
+# Move a legacy in-tree store (.aden/store) to the central location
+aden store migrate
+----
+
+|===
+|Subcommand |Description
+
+|path |Print the resolved store path for the current project
+|list |List all per-user project stores and their real roots
+|prune |Remove stores whose project root no longer exists on disk
+|migrate |Move a legacy in-tree store (`.aden/store`) to the central location
+|===
+
 == Watch Mode
 
 === watch
@@ -895,9 +947,6 @@ for programmatic use.
 
 Show project health status at a glance. Takes only an optional `[DIR]`
 (default `.`) — there are no meaningful `--json` or `--verbose` modes.
-
-NOTE: `status` is gated behind the `watch` cargo feature; it is only present
-in builds compiled with that feature enabled.
 
 [source,bash]
 ----
@@ -988,8 +1037,9 @@ aden search "authentication" --json
 
 === How `gen` Stores Output
 
-`aden gen` is store-first: it compiles source into the knowledge graph at
-`.aden/store` and emits no files (there is no output-format flag). Read
+`aden gen` is store-first: it compiles source into the knowledge graph in the
+per-user project store (see `aden store path`; ADR-003) and emits no files
+(there is no output-format flag). Read
 commands (`ask`, `asm`, `query`, `grep`) serve LLM-ready context from the
 store, and machine-readable output is available via `--json` where noted above.
 

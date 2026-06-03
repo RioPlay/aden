@@ -90,7 +90,7 @@ aden-mcp .                    # Starts MCP server for Claude, Cursor, Zed, Winds
 
 == What a Good Contract Node Looks Like
 
-`aden gen` compiles each symbol into a contract node in `.aden/store`.
+`aden gen` compiles each symbol into a contract node in the per-user project store (see `aden store path`; ADR-003).
 A good contract node has:
 
 . A clear `[[anchor]]` matching the source symbol name

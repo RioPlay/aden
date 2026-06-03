@@ -15,8 +15,8 @@
 
 [source,bash]
 ----
-# Force index rebuild
-rm -f .aden/cache/index-cache.json
+# Force index rebuild (the cache lives in the per-user data dir, ADR-003)
+rm -f "$(dirname "$(aden store path)")/cache/index-cache.json"
 aden ask "How does assemble() work?"
 
 # Or pin the anchor explicitly
@@ -52,8 +52,10 @@ aden ask "How does aden_asm::traverse::assemble work?"
 
 [source,bash]
 ----
-# Rebuild the store from scratch (drops nodes for deleted source)
-rm -rf .aden/store && aden gen .
+# Rebuild the store from scratch (drops nodes for deleted source).
+# The store is per-user/central (ADR-003), so use regen rather than
+# deleting an in-tree path.
+aden regen .
 ----
 
 **Prevention:** The pre-commit hook runs `aden gen . --quiet` to keep the store in sync with the source. Ensure your `.git/hooks/pre-commit` is up to date.
@@ -87,8 +89,9 @@ contracts, so symbols are normally searchable — but a stale index cache built
 
 [source,bash]
 ----
-# Clear the search index cache and rebuild (search/ask rebuild it on demand)
-rm -rf .aden/cache/
+# Clear the search index cache and rebuild (search/ask rebuild it on demand).
+# The cache lives in the per-user data dir (ADR-003), not in-tree.
+rm -rf "$(dirname "$(aden store path)")/cache"
 aden sync .
 ----
 
