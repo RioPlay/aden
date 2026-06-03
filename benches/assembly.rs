@@ -1,3 +1,6 @@
+// Copyright (c) 2026 RioPlay <rioplay@rioplay.dev>
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 use aden_asm::traverse::{AssemblyOptions, assemble};
 use aden_graph::graph::AdenGraph;
 use criterion::{Criterion, black_box, criterion_group, criterion_main};

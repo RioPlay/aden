@@ -1,3 +1,5 @@
+// Copyright (c) 2026 RioPlay <rioplay@rioplay.dev>
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! Aden workspace root package.
 
 pub use aden_asm;

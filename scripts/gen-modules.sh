@@ -1,4 +1,7 @@
 #!/bin/bash
+# Copyright (c) 2026 RioPlay <rioplay@rioplay.dev>
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 # Deterministic module anchor and documentation generation
 # Run this to generate ALL documentation deterministically
 

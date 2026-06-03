@@ -1,3 +1,6 @@
+# Copyright (c) 2026 RioPlay <rioplay@rioplay.dev>
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 @{
     RootModule           = 'Aden.psm1'
     ModuleVersion        = '0.1.0'

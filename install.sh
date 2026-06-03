@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 RioPlay <rioplay@rioplay.dev>
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 # Aden install script — copies release binaries to ~/.local/bin
 # and ensures the directory is in PATH.
 

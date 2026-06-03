@@ -1,3 +1,6 @@
+# Copyright (c) 2026 RioPlay <rioplay@rioplay.dev>
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 # Aden Installer — PowerShell edition
 # Supports: Windows PowerShell 5.1+, PowerShell Core 7+
 # Builds from source and installs to user-local directory.

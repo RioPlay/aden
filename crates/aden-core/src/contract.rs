@@ -1,7 +1,4 @@
 // Copyright (c) 2026 RioPlay <rioplay@rioplay.dev>
-// All rights reserved.
-//
-// Aden: A Dense Referential Context Compiler
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //!
 //! Contract kernel: three-way merge, region parsing, and constitutional authority.

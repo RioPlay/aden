@@ -1,6 +1,5 @@
 // Copyright (c) 2026 RioPlay <rioplay@rioplay.dev>
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//
 //! Contract test: every flag the MCP server can emit must be accepted by the
 //! `aden` CLI. The MCP layer (`aden-mcp`) translates JSON tool calls into CLI
 //! flags and shells out to this binary; if a declared arg drifts from the CLI's
