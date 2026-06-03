@@ -39,7 +39,7 @@ like `mod-<crate>`), **not** a bare symbol name. Always run `aden locate`,
 === What Each Step Gives You
 
 - `aden init` scaffolds `.agent/` with templates and `.adenignore`.
-- `aden gen` compiles every function, struct, and trait (public *and* private) into the knowledge graph at `.aden/store` (store-first — no files are emitted).
+- `aden gen` compiles every function, struct, and trait (public *and* private) into the per-user project store (run `aden store path` to see its location; store-first — no files are emitted into your working tree).
 - `aden check` guarantees there are no broken references or duplicate anchors.
 - `aden ask` gives you a token-bounded context prompt. Paste it into ChatGPT, Claude, or your local LLM and ask follow-ups.
 - `aden query` prints a dependency map so you can see what calls what.

@@ -102,16 +102,17 @@ enum Commands {
         #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
         path: PathBuf,
     },
-    /// Recompile the whole project into the knowledge graph (.aden/store) from scratch:
-    /// clears the gen/graph caches first, then regenerates. The full-rebuild counterpart
-    /// to the incremental `aden gen .` (not a transparent alias — it always re-stores all).
+    /// Recompile the whole project into the per-user project store (see `aden store
+    /// path`) from scratch: clears the gen/graph caches first, then regenerates. The
+    /// full-rebuild counterpart to the incremental `aden gen .` (not a transparent
+    /// alias — it always re-stores all).
     Regen {
         #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
         path: PathBuf,
     },
-    /// Compile source into the knowledge graph (.aden/store). A directory indexes
-    /// the whole project; a single file re-indexes just that file. Store-first:
-    /// `gen` writes only to .aden/store, never to disk.
+    /// Compile source into the per-user project store (see `aden store path`). A
+    /// directory indexes the whole project; a single file re-indexes just that file.
+    /// Store-first: `gen` writes only to that store, never to the working tree.
     Gen {
         #[arg(value_name = "PATH", value_hint = ValueHint::AnyPath)]
         paths: Vec<PathBuf>,
@@ -832,7 +833,7 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
             json,
             dead_code,
             include_public,
-        } => commands::cmd_lint(&path, &severity, fix, json, dead_code, include_public),
+        } => commands::cmd_lint(&path, &severity, fix, json, dead_code, include_public, false),
         Commands::Ready { path, fix } => commands::cmd_ready(&path, fix),
         Commands::Understand {
             symbol,

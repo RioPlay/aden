@@ -103,7 +103,6 @@ enum ImportKind {
 
 #[derive(Debug)]
 struct PhpSymbol<'a> {
-    name: String,
     qualified_name: String,
     kind: NodeType,
     node: tree_sitter::Node<'a>,
@@ -400,7 +399,6 @@ fn parse_type_declaration<'a>(
     };
 
     symbols.push(PhpSymbol {
-        name: name.clone(),
         qualified_name: qname,
         kind,
         node,
@@ -469,7 +467,6 @@ fn parse_function<'a>(
 
         let qname = format!("{}\\{}", namespace, name);
         symbols.push(PhpSymbol {
-            name,
             qualified_name: qname,
             kind: NodeType::Function,
             node,
@@ -523,7 +520,6 @@ fn parse_method<'a>(
         };
 
         symbols.push(PhpSymbol {
-            name,
             qualified_name: qname,
             kind: NodeType::Function,
             node,

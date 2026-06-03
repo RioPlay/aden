@@ -143,6 +143,11 @@ pub fn cmd_lint(
     json: bool,
     dead_code: bool,
     include_public: bool,
+    // When true, emit no report at all (used by ci-check, which only consumes the
+    // Ok/Err result and builds its own JSON envelope). Distinct from `json`, which
+    // selects the *format* of the standalone report — so `json` can always emit
+    // valid JSON (`[]` on no findings) without polluting a parent's stdout.
+    quiet: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let min_severity = LintSeverity::from_str(severity);
 
@@ -203,13 +208,12 @@ pub fn cmd_lint(
         .filter(|r| r.severity == LintSeverity::Suggest)
         .count();
 
-    if json {
-        // Only emit output when there are findings — when used as a sub-call
-        // from ci-check or similar, silence on no-issues keeps the parent's
-        // stdout clean for its own JSON envelope.
-        if !filtered.is_empty() {
-            println!("{}", serde_json::to_string_pretty(&filtered)?);
-        }
+    if quiet {
+        // No report — ci-check uses only the Ok/Err result.
+    } else if json {
+        // Always valid JSON, including `[]` when there are no findings, so a
+        // standalone `aden lint --json | jq` never sees empty/invalid stdout.
+        println!("{}", serde_json::to_string_pretty(&filtered)?);
     } else {
         if filtered.is_empty() {
             println!("No lint issues found.");

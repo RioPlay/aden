@@ -21,9 +21,10 @@ Aden is a **referential context compiler** — it transforms codebases into trav
                             |                |
                             v                v
                       +-----------+    +-----------+
-                      |  .adoc    |    | aden ask  |
-                      | Contracts |    | aden asm  |
-                      +-----------+    +-----------+
+                      | Per-user  |    | aden ask  |
+                      |   Store   |    | aden asm  |
+                      |  (fjall)  |    +-----------+
+                      +-----------+
 ----
 
 Or as a flowchart:
@@ -32,10 +33,8 @@ Or as a flowchart:
 ----
 flowchart TD
     A[Source Code] --> B[aden-parse]
-    B --> C[aden-emit]
-    C --> D[.adoc Contracts]
-    D --> E[aden-graph]
-    E --> F[Knowledge Graph]
+    B --> E[aden-graph]
+    E --> F[Knowledge Graph<br/>per-user store]
     F --> G[aden ask]
     G --> H[Context for AI]
 ----
@@ -121,7 +120,7 @@ flowchart LR
     end
 
     subgraph Stage2[2. Graph Build]
-        S2[.adoc Files]
+        S2[Contracts]
     end
 
     subgraph Stage3[3. Validate]
@@ -134,7 +133,7 @@ flowchart LR
 
     S1 --> S2 --> S3 --> S4
 
-    S2 -.->|aden gen| G1[.aden/store]
+    S2 -.->|aden gen| G1[per-user store]
     S3 -.->|aden check| G2[Validation]
 ----
 
@@ -197,16 +196,19 @@ Given a starting anchor and token budget:
 
 === 5. Persist (aden-store)
 
-`aden gen` is **store-first**: it writes the compiled graph only to `.aden/store`,
-a fjall LSM-tree keyed store with postcard-serialized values. It does not write
-`.adoc` files on every run.
+`aden gen` is **store-first**: it writes the compiled graph only to the per-user,
+per-project store (`aden store path` prints its location, e.g.
+`~/.local/share/aden/projects/<key>/store`), a fjall LSM-tree keyed store with
+postcard-serialized values. Per <<adr-003>> the store lives *outside* the working
+tree and is never written into it. It does not emit `.adoc` contract files into
+the project tree on any run.
 
-The `.adoc` contracts are the **source of truth**; `.aden/store` is a
-**materialized view**. If the store is missing, stale, or deleted, it is
-rebuilt deterministically from the `.adoc` contracts — the same source always
-produces the same store. This keeps the durable artifact (text contracts,
-diffable and reviewable in git) separate from the fast lookup artifact (the
-on-disk graph).
+The **source of truth** is the source code itself; the per-user store is the
+**durable, rebuildable artifact** derived from it. If the store is missing,
+stale, or deleted, it is rebuilt deterministically from the source — the same
+source always produces the same store. An in-tree `.aden/store` is only a
+legacy/back-compat read path: older stores there are still read (with a
+deprecation notice) and migrated, but fresh `gen` never writes there.
 
 == What happens when you run `aden ask`
 
@@ -215,9 +217,8 @@ A read command like `aden ask "How does auth work?"` runs end to end as:
 1. **Auto-reindex** — any source file changed since the last run is re-parsed
    and the graph updated, so reads are always against a fresh graph (no manual
    `aden gen` required).
-2. **Store lookup / rehydrate** — the compiled graph is loaded from
-   `.aden/store` (fjall + postcard); if absent it is rebuilt from the `.adoc`
-   contracts.
+2. **Store lookup / rehydrate** — the compiled graph is loaded from the per-user
+   store (fjall + postcard); if absent it is rebuilt from source.
 3. **Search (aden-index)** — the question is matched against the inverted index
    (BM25) to find the best entry-point anchors.
 4. **Assemble (aden-asm)** — a BFS traversal walks outward from those anchors
@@ -272,7 +273,7 @@ flowchart TB
     end
 
     subgraph store[Persistence]
-        ST[aden-store<br/>fjall LSM-tree<br/>.aden/store]
+        ST[aden-store<br/>fjall LSM-tree<br/>per-user store]
     end
 
     subgraph diagnose[Diagnostics]
@@ -296,7 +297,6 @@ flowchart TB
     parse --> graph
     graph --> store
     graph --> asm
-    asm --> index
     heal --> propose
     diagnose --> graph
 ----
@@ -309,9 +309,8 @@ flowchart TD
     CLI[CLI<br/>aden-cli]
 
     subgraph gen[aden gen]
-        P1[aden-parse] --> E[aden-emit] --> F[.adoc files]
-        P1 --> G[aden-graph] --> DG[DiGraph]
-        DG --> ST[aden-store<br/>.aden/store]
+        P1[aden-parse] --> G[aden-graph] --> DG[DiGraph]
+        DG --> ST[aden-store<br/>per-user store]
     end
 
     subgraph check[aden check]
@@ -452,7 +451,7 @@ Extracted and indexed for search.
 
 == Security Posture
 
-- `.aden/` (the knowledge-graph store) is the build artifact — auto-ignored in `.gitignore`
+- The knowledge-graph store is a rebuildable build artifact that lives outside the working tree (per-user, per-project) — see <<adr-003>>; legacy in-tree `.aden/store`/cache paths are auto-ignored in `.gitignore`, while durable intent under `.aden/` (overlays, constitution, hooks) is git-tracked
 - Include directives bounded to project root — no path traversal
 - No `unsafe` blocks in application code
 - AGPL-3.0-or-later license prevents cloud capture without sharing modifications
@@ -464,7 +463,7 @@ Extracted and indexed for search.
 
 |`aden init` |Scaffold .agent/ templates |`aden init .`
 
-|`aden gen` |Compile source into `.aden/store` |`aden gen .`, `aden gen src/lib.rs`
+|`aden gen` |Compile source into the per-user store |`aden gen .`, `aden gen src/lib.rs`
 
 |`aden check` |Validate references |`aden check .`
 
@@ -489,7 +488,7 @@ Extracted and indexed for search.
 
 . <<philosophy>> — Design rationale and core thesis
 . <<adr-001>> — AsciiDoc as native substrate
- . <<adr-001>> — All ADRs (consolidated: AsciiDoc substrate, edge types, AGPL-3.0, Markdown emission, polyglot toolchain, semantic networks)
+. <<adr-002>>, <<adr-003>> — Secure-coding standard and store-location decisions
 . <<ai-integration>> — How AI agents use Aden
 . <<user-guide>> — Daily workflows
 == Module Overview
@@ -505,7 +504,8 @@ See also:
 - `aden-propose`
 - `aden-policy`
 - `aden-index`
-- `aden-store` — fjall LSM-tree persistence (`.aden/store`)
+- `aden-store` — fjall LSM-tree persistence (per-user, per-project store; see <<adr-003>>)
+- `aden-paths` — per-user, per-project path resolution and project identity (see <<adr-003>>)
 - `aden-diagnose` — deterministic diagnostic scanner (backs `aden diagnose`)
 - `aden-lsp`
 - `aden-mcp`

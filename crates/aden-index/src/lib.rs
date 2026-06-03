@@ -464,14 +464,23 @@ impl Index {
         let filter = AdenFilter::from_directory(dir);
         Self::collect_files(dir, &filter, &mut files)?;
 
-        // Parallel: read every file as (path, text).
+        // Parallel: read every file as (path, text). Apply the same secret floor
+        // the gen/lint paths use so a credential sitting in an on-disk doc/notes
+        // file (.txt/.adoc/.md) never enters the searchable index, where `search`/
+        // `ask` could surface it verbatim (CWE-200/798). Store-resident contracts
+        // arrive via `ingest` from gen, which already filtered at the source.
         let entries: Vec<(PathBuf, String)> = files
             .par_iter()
+            .filter(|path| {
+                let rel = path.strip_prefix(dir).unwrap_or(path);
+                !aden_core::filter::is_secret_path(rel)
+            })
             .filter_map(|path| {
                 std::fs::read_to_string(path)
                     .ok()
                     .map(|t| (path.clone(), t))
             })
+            .filter(|(_, text)| !aden_core::filter::content_has_high_confidence_secret(text))
             .collect();
 
         let mut index = Index::default();

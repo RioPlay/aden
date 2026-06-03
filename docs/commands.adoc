@@ -918,7 +918,7 @@ Deterministic diagnostic scanner for knowledge graphs.
 [source,bash]
 ----
 aden diagnose
-aden diagnose --path .
+aden diagnose .
 aden diagnose --format json
 ----
 
@@ -935,7 +935,7 @@ Execute an Aden Query (.adq) script.
 [source,bash]
 ----
 aden query-adq script.adq
-aden query-adq find-calls.adq --path src/
+aden query-adq find-calls.adq src/
 ----
 
 Aden Query Language allows advanced graph traversal with custom filters.

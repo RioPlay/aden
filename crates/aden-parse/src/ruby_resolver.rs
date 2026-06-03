@@ -108,7 +108,6 @@ enum RequireKind {
 
 #[derive(Debug)]
 struct RubySymbol<'a> {
-    name: String,
     qualified_name: String,
     kind: NodeType,
     node: tree_sitter::Node<'a>,
@@ -295,7 +294,6 @@ fn parse_class<'a>(
 
     let qname = format!("{}.{}", module, name);
     symbols.push(RubySymbol {
-        name: name.clone(),
         qualified_name: qname,
         kind: NodeType::Type,
         node,
@@ -341,7 +339,6 @@ fn parse_module<'a>(
 
     let qname = format!("{}.{}", module, name);
     symbols.push(RubySymbol {
-        name: name.clone(),
         qualified_name: qname,
         kind: NodeType::Module,
         node,
@@ -444,7 +441,6 @@ fn parse_method<'a>(
     let qname = format!("{}.{}", module, display_name);
 
     symbols.push(RubySymbol {
-        name: display_name,
         qualified_name: qname,
         kind: NodeType::Function,
         node,

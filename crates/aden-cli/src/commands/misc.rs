@@ -566,9 +566,9 @@ pub fn cmd_ci_check(path: &Path, json: bool) -> Result<(), Box<dyn std::error::E
     gate!("tests", { run_project_tests(path) });
 
     gate!("aden lint", {
-        // In JSON mode pass json=true so lint suppresses its human banner/summary;
-        // we only care about the Ok/Err return value for the gate.
-        crate::commands::cmd_lint(path, "Error", false, json, false, false)
+        // quiet=true: ci-check only needs the Ok/Err result and builds its own
+        // JSON envelope, so lint must emit nothing on its own stdout.
+        crate::commands::cmd_lint(path, "Error", false, false, false, false, true)
     });
 
     gate!("secret scan", {
@@ -1071,7 +1071,7 @@ pub fn cmd_ready(path: &Path, fix: bool) -> Result<(), Box<dyn std::error::Error
 
     // (2) lint — fast line-based heuristics. --fix forwards to the linter.
     step!("lint", {
-        crate::commands::cmd_lint(path, "Error", fix, false, false, false)
+        crate::commands::cmd_lint(path, "Error", fix, false, false, false, false)
     });
 
     // (3) check refs — validate every <<ref>> resolves to an [[anchor]].
@@ -1166,7 +1166,6 @@ pub fn cmd_doctor(path: &Path, json: bool) -> Result<(), Box<dyn std::error::Err
         name: String,
         ok: bool,
         detail: String,
-        is_error: bool, // true = blocks, false = warning/info
     }
     let mut checks: Vec<Check> = Vec::new();
     let mut issues: Vec<String> = Vec::new();
@@ -1178,11 +1177,12 @@ pub fn cmd_doctor(path: &Path, json: bool) -> Result<(), Box<dyn std::error::Err
             if !ok && $error {
                 issues.push($name.to_string());
             }
+            // `$error` is consumed above (blocking checks push to `issues`); the
+            // Check struct itself only needs name/ok/detail for rendering.
             checks.push(Check {
                 name: $name.to_string(),
                 ok,
                 detail,
-                is_error: $error,
             });
         }};
     }

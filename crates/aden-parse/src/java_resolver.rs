@@ -102,7 +102,6 @@ struct JavaImport {
 /// Information about a single local symbol.
 #[derive(Debug)]
 struct JavaSymbol<'a> {
-    name: String,
     qualified_name: String, // package.Class#method
     kind: NodeType,
     node: tree_sitter::Node<'a>,
@@ -386,7 +385,6 @@ fn parse_type_declaration<'a>(
 
         let qname = format!("{}.{}", package, name);
         symbols.push(JavaSymbol {
-            name: name.clone(),
             qualified_name: qname,
             kind,
             node,
@@ -481,7 +479,6 @@ fn parse_method<'a>(
         };
 
         symbols.push(JavaSymbol {
-            name,
             qualified_name: qname,
             kind: NodeType::Function,
             node,
@@ -527,7 +524,6 @@ fn parse_constructor<'a>(
 
     let qname = format!("{}.{}/<init>", package, class_name);
     symbols.push(JavaSymbol {
-        name: "<init>".to_string(),
         qualified_name: qname,
         kind: NodeType::Function,
         node,
