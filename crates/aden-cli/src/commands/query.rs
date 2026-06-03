@@ -68,6 +68,33 @@ fn extract_explicit_symbols(query: &str) -> Vec<String> {
 /// `cmd_ask` (to decide whether routing is ambiguous enough to seed alternates).
 const ANCHOR_NOISE_BAND: f64 = 5.0;
 
+/// True if an anchor points at a test/spec file. Such symbols (test fixtures,
+/// `callback` helpers, assertion-message strings) routinely share a name with
+/// the user's query word yet carry almost no explanatory content, so they must
+/// not win `ask` routing over the production symbol they exercise. Detection is
+/// language-agnostic: it keys off the conventional test path/name markers shared
+/// across Python, Go, JS/TS, Rust, Java, Ruby, etc. The match is gated so that a
+/// query genuinely about the test suite can still reach these via the relaxation
+/// fallback when *every* candidate is a test symbol.
+fn is_test_anchor(anchor: &str) -> bool {
+    let a = anchor.to_lowercase();
+    const MARKERS: &[&str] = &[
+        "/test/",
+        "/tests/",
+        "/spec/",
+        "/specs/",
+        "/__tests__/",
+        "test_",
+        "_test.",
+        "_tests.",
+        ".test.",
+        ".spec.",
+        "_spec.",
+        "spec_",
+    ];
+    MARKERS.iter().any(|m| a.contains(m))
+}
+
 /// Collect up to `max` distinct anchors that sit within [`ANCHOR_NOISE_BAND`] of
 /// the top score and are *not* the already-chosen `primary` (a near-tie set). The
 /// list is in rank order, deduped, and excludes the primary so callers can treat
@@ -150,6 +177,13 @@ fn resolve_anchor_fuzzy(query: &str, results: &[SearchResult]) -> String {
         .collect();
 
     for result in results.iter().take(20) {
+        // A test-file symbol must not short-circuit routing just because its name
+        // echoes a query word (e.g. a `callback` test fixture for "…invoke the
+        // callback"). Let it fall through to the score-driven pass, which can
+        // still select it via relaxation if nothing better exists.
+        if is_test_anchor(&result.anchor) {
+            continue;
+        }
         if let Some(sym) = result.anchor.rsplit('#').next() {
             if sym.len() < 3 {
                 continue;
@@ -187,14 +221,18 @@ fn resolve_anchor_fuzzy(query: &str, results: &[SearchResult]) -> String {
         false
     };
 
-    // First pass: pick best within noise band, excluding stop-word symbols.
+    // First pass: pick best within noise band, excluding stop-word symbols and
+    // test-file symbols (which carry a name but little explanatory content).
     let best = results
         .iter()
         .filter(|r| (top_score - r.score) <= noise_band)
         .filter(|r| !is_stopword_symbol(&r.anchor))
+        .filter(|r| !is_test_anchor(&r.anchor))
         .max_by_key(|r| AnchorPattern::from_anchor(&r.anchor).tiebreak());
 
-    // Fallback: if every candidate was a stop-word symbol, relax and take top score.
+    // Fallback: if every in-band candidate was a stop-word or test symbol, relax
+    // and take the structurally-preferred top result (the query may genuinely be
+    // about the test suite, or there may simply be nothing else to offer).
     let best = best.unwrap_or_else(|| {
         results
             .iter()
@@ -1078,14 +1116,21 @@ pub fn cmd_ask(
     // primary takes the majority of the budget at full depth, and each shallow
     // alternate gets an even slice of the remainder, appended with a brief header.
     // This is paid for ONLY on near-ties, and the total stays within the budget.
+    // `primary_only_len` tracks the bytes contributed by the PRIMARY anchor
+    // alone, so the thin-stub check below can't be fooled by a fat alternate
+    // padding the combined output past the threshold.
+    let primary_only_len;
     let assembled = if resolved_alts.is_empty() {
-        assemble_seed(&start_anchor, depth, effective_budget)?
+        let seed = assemble_seed(&start_anchor, depth, effective_budget)?;
+        primary_only_len = seed.len();
+        seed
     } else {
         let primary_budget = effective_budget * 60 / 100;
         let alt_pool = effective_budget.saturating_sub(primary_budget);
         let per_alt = (alt_pool / resolved_alts.len()).max(1);
         let shallow_depth = depth.min(1);
         let mut combined = assemble_seed(&start_anchor, depth, primary_budget)?;
+        primary_only_len = combined.len();
         for alt in &resolved_alts {
             let alt_text = assemble_seed(alt, shallow_depth, per_alt)?;
             if alt_text.trim().is_empty() {
@@ -1102,7 +1147,7 @@ pub fn cmd_ask(
     // (bare module declaration, empty node), broaden to mod-project so the
     // LLM gets a coherent overview rather than an unhelpful 10-token stub.
     let (assembled, start_anchor) = {
-        let est = assembled.len().div_ceil(4);
+        let est = primary_only_len.div_ceil(4);
         if est < THIN_STUB_TOKEN_THRESHOLD
             && start_anchor != "mod-project"
             && aden_graph::cache::resolve_anchor_in_store(path, "mod-project").is_some()
@@ -1997,7 +2042,29 @@ pub fn cmd_locate(
                     || al.contains(&sym_lower)
             })
             .collect();
-        matched.sort();
+        // Precision: surface the exact symbol definition (and its members) before
+        // incidental substring hits (doc headings, `OtherGroup`, code blocks). The
+        // trailing path/anchor segment is compared against the query name:
+        //   rank 0 — segment == name, same case  (the definition the user typed)
+        //   rank 1 — segment == name, any case   (e.g. `group` fn vs `Group` type)
+        //   rank 2 — segment starts `name.`/`::`  (its methods/members)
+        //   rank 3 — any other substring match    (incidental)
+        let locate_rank = |a: &str| -> u8 {
+            let seg = a.rsplit(['#', '/']).next().unwrap_or("");
+            let seg_lower = seg.to_lowercase();
+            if seg == sym {
+                0
+            } else if seg_lower == sym_lower {
+                1
+            } else if seg_lower.starts_with(&format!("{}.", sym_lower))
+                || seg_lower.starts_with(&format!("{}::", sym_lower))
+            {
+                2
+            } else {
+                3
+            }
+        };
+        matched.sort_by(|a, b| locate_rank(a).cmp(&locate_rank(b)).then_with(|| a.cmp(b)));
 
         let hits: Vec<serde_json::Value> = matched
             .iter()
@@ -2726,6 +2793,44 @@ mod tests {
             score,
             snippet: String::new(),
         }
+    }
+
+    #[test]
+    fn test_anchor_detection_is_language_agnostic() {
+        assert!(is_test_anchor("aden://module/p/test_context.py#callback"));
+        assert!(is_test_anchor("aden://module/p/command_test.go#TestRun"));
+        assert!(is_test_anchor("aden://module/p/test/main.ts#run"));
+        assert!(is_test_anchor("aden://module/p/foo.test.ts#x"));
+        assert!(is_test_anchor("aden://module/p/foo.spec.js#x"));
+        assert!(is_test_anchor("aden://module/p/__tests__/foo.js#x"));
+        // Production code must NOT be flagged.
+        assert!(!is_test_anchor("aden://module/p/src/click/core.py#Command"));
+        assert!(!is_test_anchor("aden://module/p/command.go#Execute"));
+        assert!(!is_test_anchor("aden://module/p/latest.ts#x"));
+    }
+
+    #[test]
+    fn ask_routing_skips_test_fixture_for_production_symbol() {
+        // The Python-click repro: query word "callback" matches a test fixture
+        // symbol, but the production symbol must win.
+        let results = vec![
+            result("aden://module/p/test_context.py#callback", 30.0),
+            result("aden://module/p/core.py#Command", 29.0),
+        ];
+        let chosen = resolve_anchor_fuzzy("how does a command invoke the callback", &results);
+        assert_eq!(chosen, "aden://module/p/core.py#Command");
+    }
+
+    #[test]
+    fn ask_routing_relaxes_when_only_test_symbols_exist() {
+        // If every candidate is a test symbol, routing must still return one
+        // rather than nothing (query may genuinely be about the test suite).
+        let results = vec![
+            result("aden://module/p/test_a.py#helper", 30.0),
+            result("aden://module/p/test_b.py#other", 29.0),
+        ];
+        let chosen = resolve_anchor_fuzzy("explain the helper test", &results);
+        assert!(is_test_anchor(&chosen));
     }
 
     #[test]

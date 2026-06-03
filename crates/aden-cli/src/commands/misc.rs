@@ -9,6 +9,11 @@ use crate::types::{OwaspFinding, OwaspSeverity};
 use crate::util::quick_health_score;
 
 /// OWASP-aligned security audit: scan source for vulnerabilities.
+/// A03 SQL-injection detector. Requires a real SQL clause shape (verb + clause
+/// keyword) followed by a concat/interpolation marker, so prose and test strings
+/// that merely contain a SQL verb or a `${}` template do not produce findings.
+pub(crate) const SQL_INJECTION_PATTERN: &str = r#"(?i)\b(SELECT\s+[^;'"]*\bFROM\b|INSERT\s+INTO\b|UPDATE\s+[\w.]+\s+SET\b|DELETE\s+FROM\b|DROP\s+TABLE\b)[^;]*(\+|\$\{|%s|%d|\|\|)"#;
+
 pub fn cmd_audit(
     path: &Path,
     lang_filter: Option<&str>,
@@ -94,8 +99,15 @@ pub fn cmd_audit(
             (Regex::new(r"(?i)\bFunction\s*\(").unwrap(),                      Some("ts"),   "A03", "Injection",        OwaspSeverity::Critical,
              "Dynamic function creation from strings",                         "Avoid Function(); use static function definitions."),
 
-            // A03 - SQL Injection: string-concat in SQL-like strings
-            (Regex::new(r#"(?i)(SELECT|INSERT|UPDATE|DELETE|DROP)\s+[^;]*(\+|\$\{|\{|\{|%s|%d)"#).unwrap(), None, "A03", "SQL Injection", OwaspSeverity::High,
+            // A03 - SQL Injection: string-concat/interpolation in a *real* SQL
+            // statement. The verb must be followed by its clause keyword
+            // (SELECT…FROM, INSERT INTO, UPDATE…SET, DELETE FROM, DROP TABLE) so
+            // prose and test strings that merely contain the word "DELETE" or a
+            // template literal `${i}` do not trip it. Interpolation markers are
+            // string concat (`+`), template/format interpolation (`${`, `%s`,
+            // `%d`) or the SQL concat operator (`||`) — the bare-brace `{`
+            // alternative was removed (it matched arrow-function bodies `=> {`).
+            (Regex::new(SQL_INJECTION_PATTERN).unwrap(), None, "A03", "SQL Injection", OwaspSeverity::High,
              "SQL built via string concatenation or interpolation",           "Use parameterized queries / prepared statements."),
 
             // A03 - Command Injection
@@ -1959,6 +1971,21 @@ mod tests {
     /// generated contract drift, which is the gate working as intended), which
     /// also pins the command wiring so it can never silently drop out of the
     /// build. An empty (non-directory) path must produce a hard failure.
+    #[test]
+    fn sql_injection_pattern_rejects_prose_and_template_literals() {
+        let re = Regex::new(SQL_INJECTION_PATTERN).unwrap();
+        // False positives from the ky validation — must NOT match.
+        assert!(!re.is_match("`Update ${i} should have higher or equal percent than previous`,"));
+        assert!(!re.is_match("test('DELETE request', async t => {"));
+        assert!(!re.is_match("// select the first item from the list"));
+        assert!(!re.is_match("const dropTable = `${name} updated`;"));
+        // Real SQL injection — must match.
+        assert!(re.is_match(r#"db.query("SELECT * FROM users WHERE id = " + userId)"#));
+        assert!(re.is_match("`UPDATE accounts SET balance = ${amount}`"));
+        assert!(re.is_match(r#"query("DELETE FROM sessions WHERE token='" + tok + "'")"#));
+        assert!(re.is_match("\"INSERT INTO logs VALUES (%s)\" % payload"));
+    }
+
     #[test]
     fn cmd_ready_runs_on_temp_project() {
         let dir = std::env::temp_dir().join(format!("aden-ready-test-{}", std::process::id()));
