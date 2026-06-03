@@ -248,7 +248,9 @@ impl<'a> AdqInterpreter<'a> {
     fn exec_all_edges(&self, _args: &[&str]) -> Result<QueryResult, QueryError> {
         let mut nodes = Vec::new();
         for edge in self.graph.graph.edge_indices() {
-            let (src, dst) = self.graph.graph.edge_endpoints(edge).unwrap();
+            let Some((src, dst)) = self.graph.graph.edge_endpoints(edge) else {
+                continue;
+            };
             if let (Some(src_node), Some(dst_node)) = (
                 self.graph.graph.node_weight(src),
                 self.graph.graph.node_weight(dst),

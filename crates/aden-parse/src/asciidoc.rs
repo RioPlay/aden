@@ -96,10 +96,10 @@ impl crate::extractor::LanguageExtractor for AsciiDocExtractor {
                 if !title.is_empty() {
                     headings.push((6, title, line_num));
                 }
-            } else if line.contains("[[") && line.contains("]]") {
-                let start = line.find("[[").unwrap() + 2;
-                let end = line.find("]]").unwrap();
-                let anchor_name = &line[start..end];
+            } else if let (Some(open), Some(close)) = (line.find("[["), line.find("]]"))
+                && open + 2 <= close
+            {
+                let anchor_name = &line[open + 2..close];
                 if !anchor_name.is_empty() {
                     headings.push((0, anchor_name.to_string(), line_num));
                 }
@@ -400,4 +400,23 @@ fn extract_code_references(code: &str, lang: &str) -> Vec<String> {
         _ => {}
     }
     refs
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::extractor::LanguageExtractor;
+    use std::path::Path;
+
+    // Regression: a line where `]]` precedes `[[` (e.g. "]]bar[[") used to panic
+    // with a reversed slice index `start > end`. It must now parse without panic.
+    #[test]
+    fn malformed_anchor_order_does_not_panic() {
+        let ext = AsciiDocExtractor::new();
+        let src = "= Title\n\n]]bar[[\n\nSome content.\n";
+        let docs = ext
+            .extract_documents(src, Path::new("doc.adoc"))
+            .expect("malformed anchor line must not error");
+        assert!(!docs.is_empty());
+    }
 }

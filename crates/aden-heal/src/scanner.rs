@@ -134,11 +134,8 @@ impl Scanner {
                 }
                 true
             }
-            && let Ok(storage) = Storage::open_existing(
-                store_path
-                    .to_str()
-                    .expect("Store path should be valid UTF-8"),
-            )
+            && let Some(store_path_str) = store_path.to_str()
+            && let Ok(storage) = Storage::open_existing(store_path_str)
             && let Ok(all_docs) = storage.get_all_documents()
             && !all_docs.is_empty()
         {
