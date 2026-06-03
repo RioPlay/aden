@@ -276,7 +276,10 @@ pub fn parse_file(path: &Path) -> Result<ParsedDocument, ParseError> {
         if let Some(cap) = IFDEF_RE.captures(trimmed) {
             let attr = cap[1].to_string();
             let active = attrs.contains_key(&attr);
-            conditional_stack.push(Conditional::Ifdef { attr: attr.clone(), active });
+            conditional_stack.push(Conditional::Ifdef {
+                attr: attr.clone(),
+                active,
+            });
             active_conditional_attrs.push(attr);
             current_conditional_content.clear();
             conditional_start_line = line_number;
@@ -290,7 +293,10 @@ pub fn parse_file(path: &Path) -> Result<ParsedDocument, ParseError> {
         if let Some(cap) = IFNDEF_RE.captures(trimmed) {
             let attr = cap[1].to_string();
             let active = !attrs.contains_key(&attr);
-            conditional_stack.push(Conditional::Ifndef { attr: attr.clone(), active });
+            conditional_stack.push(Conditional::Ifndef {
+                attr: attr.clone(),
+                active,
+            });
             active_conditional_attrs.push(attr);
             current_conditional_content.clear();
             conditional_start_line = line_number;
@@ -316,7 +322,9 @@ pub fn parse_file(path: &Path) -> Result<ParsedDocument, ParseError> {
         if ENDIF_RE.is_match(trimmed) {
             if !active_conditional_attrs.is_empty() {
                 let attr = active_conditional_attrs.pop();
-                let is_active = conditional_stack.iter().last()
+                let is_active = conditional_stack
+                    .iter()
+                    .last()
                     .map(|c| match c {
                         Conditional::Ifdef { active, .. } => *active,
                         Conditional::Ifndef { active, .. } => *active,
@@ -361,15 +369,15 @@ pub fn parse_file(path: &Path) -> Result<ParsedDocument, ParseError> {
             if let Some(active_tag) = active_tags.last()
                 && active_tag == &tag_name
             {
-                    let content = current_tag_content.join("\n");
-                    tagged_regions.push(TaggedRegion {
-                        tag_name: tag_name.clone(),
-                        content,
-                        line_start: tag_start_line,
-                        line_end: line_number,
-                    });
-                    active_tags.pop();
-                    current_tag_content.clear();
+                let content = current_tag_content.join("\n");
+                tagged_regions.push(TaggedRegion {
+                    tag_name: tag_name.clone(),
+                    content,
+                    line_start: tag_start_line,
+                    line_end: line_number,
+                });
+                active_tags.pop();
+                current_tag_content.clear();
             }
             continue;
         }
@@ -459,13 +467,22 @@ pub fn parse_file(path: &Path) -> Result<ParsedDocument, ParseError> {
                 } else if let Some(cap) = CHECKLIST_RE.captures(trimmed) {
                     let checked = !cap[1].trim().is_empty();
                     let text = cap[2].trim().to_string();
-                    blocks.push(Block::Checklist(vec![aden_core::ChecklistItem { checked, text }]));
+                    blocks.push(Block::Checklist(vec![aden_core::ChecklistItem {
+                        checked,
+                        text,
+                    }]));
                 } else if let Some(cap) = CHECKLIST_CHECKED_RE.captures(trimmed) {
                     let text = cap[1].trim().to_string();
-                    blocks.push(Block::Checklist(vec![aden_core::ChecklistItem { checked: true, text }]));
+                    blocks.push(Block::Checklist(vec![aden_core::ChecklistItem {
+                        checked: true,
+                        text,
+                    }]));
                 } else if let Some(cap) = CHECKLIST_UNCHECKED_RE.captures(trimmed) {
                     let text = cap[1].trim().to_string();
-                    blocks.push(Block::Checklist(vec![aden_core::ChecklistItem { checked: false, text }]));
+                    blocks.push(Block::Checklist(vec![aden_core::ChecklistItem {
+                        checked: false,
+                        text,
+                    }]));
                 } else if !trimmed.is_empty() {
                     // Start a paragraph
                     paragraph_text.clear();

@@ -30,13 +30,19 @@ use std::path::{Path, PathBuf};
 
 /// Try loading the graph from the store-first fjall store (`.aden/store`).
 pub fn try_load(path: &Path) -> Option<AdenGraph<DocumentNode, AdenEdge>> {
-    let store_path = path.join(".aden").join("store");
-    if store_path.exists()
-        && let Ok(storage) = Storage::new(store_path.to_str()?)
-        && let Ok((docs, edges)) = GraphBridge::load_from_storage(&storage)
-        && !docs.is_empty()
-    {
-        return Some(build_graph_from_docs_and_edges(docs, edges, path));
+    // ADR-003: read the per-user central store (or a legacy in-tree store, with
+    // a deprecation notice); never create one on a read.
+    let (store_path, is_legacy) = aden_paths::resolve_read_store(path);
+    if store_path.exists() {
+        if is_legacy {
+            eprintln!("{}", aden_paths::legacy_notice(path));
+        }
+        if let Ok(storage) = Storage::open_existing(store_path.to_str()?)
+            && let Ok((docs, edges)) = GraphBridge::load_from_storage(&storage)
+            && !docs.is_empty()
+        {
+            return Some(build_graph_from_docs_and_edges(docs, edges, path));
+        }
     }
     None
 }
@@ -104,8 +110,8 @@ fn build_graph_from_docs_and_edges(
 /// the anchor *keys*). Returns `None` if unknown or ambiguous — callers should
 /// treat that as "not found" rather than guessing.
 pub fn resolve_anchor_in_store(dir: &Path, anchor: &str) -> Option<String> {
-    let store_path = dir.join(".aden").join("store");
-    let storage = Storage::new(store_path.to_str()?).ok()?;
+    let (store_path, _) = aden_paths::resolve_read_store(dir);
+    let storage = Storage::open_existing(store_path.to_str()?).ok()?;
     if matches!(storage.get_document(anchor), Ok(Some(_))) {
         return Some(anchor.to_string());
     }
@@ -127,6 +133,37 @@ pub fn resolve_anchor_in_store(dir: &Path, anchor: &str) -> Option<String> {
 /// Build a graph containing only the neighborhood reachable from `start` within
 /// `depth`, following `edge_types` (empty = all). This is the streaming read
 /// path: instead of loading the entire store into a petgraph (which OOMs / takes
+/// True for module-index "hub" anchors that have O(hundreds) of edges each.
+/// These are useful as the root (seed) of a traversal but cause an O(N²) node
+/// explosion when traversed as intermediaries — e.g. depth-3 BFS through a
+/// `mod-aden-core` node visits every symbol in that crate, inflating results
+/// from ~60 to >1000 lines with low-value index content.
+fn is_hub_anchor(anchor: &str) -> bool {
+    let a = anchor.to_lowercase();
+    // Legacy short-form module index anchors.
+    if a.starts_with("mod-") || a.starts_with("module-") {
+        return true;
+    }
+    // Store-scheme module index files (the crate root's mod.rs / lib.rs / main.rs).
+    // e.g. aden://module/aden-core/mod.rs  aden://module/aden-core/lib.rs
+    if a.starts_with("aden://module/") {
+        let path_part = a.trim_start_matches("aden://module/");
+        // No '#' means this is a file-level document (not a symbol), which tends
+        // to be a high-fanout index node.
+        if !path_part.contains('#') {
+            return true;
+        }
+        // Symbol inside a module-root file is also likely a hub.
+        if path_part.contains("/mod.rs#")
+            || path_part.contains("/lib.rs#")
+            || path_part.contains("/main.rs#")
+        {
+            return true;
+        }
+    }
+    false
+}
+
 /// tens of seconds at kernel scale), it walks per-node adjacency lists from the
 /// start anchor and fetches only the documents it actually visits.
 ///
@@ -139,8 +176,8 @@ pub fn build_neighborhood_cached(
     edge_types: &[EdgeType],
 ) -> Result<AdenGraph<DocumentNode, AdenEdge>, crate::graph::GraphError> {
     const MAX_NODES: usize = 10_000;
-    let store_path = dir.join(".aden").join("store");
-    let storage = Storage::new(
+    let (store_path, _) = aden_paths::resolve_read_store(dir);
+    let storage = Storage::open_existing(
         store_path
             .to_str()
             .ok_or_else(|| crate::graph::GraphError::Io("invalid store path".into()))?,
@@ -155,6 +192,14 @@ pub fn build_neighborhood_cached(
 
     while let Some((current, d)) = queue.pop_front() {
         if d >= depth || visited.len() >= MAX_NODES {
+            continue;
+        }
+        // Hub nodes (module-index anchors: `mod-*`, `module-*`, `aden://module/<crate>/mod.rs`)
+        // have O(hundreds) edges each. When reached as an INTERMEDIATE node (d>0)
+        // they explode the BFS from ~60 to ~1000+ nodes at depth 3 while adding
+        // low-value index content. Allow them as the seed (d==0) but stop
+        // expanding them as intermediaries.
+        if d > 0 && is_hub_anchor(&current) {
             continue;
         }
         let outgoing = storage.get_outgoing_edges(&current).unwrap_or_default();

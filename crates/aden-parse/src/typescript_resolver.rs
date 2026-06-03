@@ -138,6 +138,11 @@ fn walk_program<'a>(
         }
         "export_statement" | "export_declaration" => {
             // If the export wraps a declaration, unwrap and mark as exported.
+            // We extract the declaration here and then recurse into its *children*
+            // (not the declaration node itself) to catch nested symbols such as
+            // methods inside an exported class.  Without this guard the plain
+            // `_ => {}` recursion below would visit the `function_declaration` /
+            // `class_declaration` node a second time and emit a duplicate symbol.
             if let Some(declaration) = node.child_by_field_name("declaration") {
                 if let Some(mut sym) = extract_function_symbol(declaration, source, true) {
                     sym.is_export = true;
@@ -153,7 +158,24 @@ fn walk_program<'a>(
                     sym.is_export = true;
                     symbols.push(sym);
                 }
+                // Recurse into the declaration's children (e.g. class body for
+                // methods) but NOT into the declaration node itself — that was
+                // already handled above and re-entering it would produce duplicates.
+                let mut inner_cursor = declaration.walk();
+                for child in declaration.children(&mut inner_cursor) {
+                    walk_program(child, source, symbols, imports);
+                }
             }
+            // Also recurse into any non-declaration children of the export node
+            // (e.g. export-list clauses, `from` specifiers that carry imports).
+            let decl_id = node.child_by_field_name("declaration").map(|d| d.id());
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                if decl_id != Some(child.id()) {
+                    walk_program(child, source, symbols, imports);
+                }
+            }
+            return;
         }
         _ => {}
     }
@@ -482,9 +504,11 @@ fn emit_ts_symbol<'a>(
         blocks.push(Block::Paragraph(doc.clone()));
     }
 
-    let mut sig_rows = vec![vec!["Name".to_string(), sym.name.clone()]];
+    let mut sig_rows = Vec::new();
     for p in &sym.params {
-        sig_rows.push(vec![format!("param {}", p.name), p.ty.clone()]);
+        // Drop "Unknown" type noise; key already carries the param name.
+        let ty = if p.ty == "Unknown" { String::new() } else { p.ty.clone() };
+        sig_rows.push(vec![format!("param {}", p.name), ty]);
     }
     if sym.is_async {
         sig_rows.push(vec!["Async".to_string(), "true".to_string()]);

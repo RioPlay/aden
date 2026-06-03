@@ -377,7 +377,7 @@ fn scan_unresolved_refs(graph: &AdenGraph<DocumentNode, AdenEdge>, files: &[Path
             Err(_) => continue,
         };
 
-        for (line_idx, ref_anchor) in parsed.refs.iter().enumerate() {
+        for ref_anchor in parsed.refs.iter() {
             if !anchors.contains(ref_anchor.as_str()) {
                 // Try to find a similar anchor
                 let suggestion = find_similar_anchor(ref_anchor, &anchors);
@@ -385,12 +385,14 @@ fn scan_unresolved_refs(graph: &AdenGraph<DocumentNode, AdenEdge>, files: &[Path
                     category: IssueCategory::UnresolvedRef,
                     severity: Severity::Error,
                     file: Some(file_path.to_string_lossy().to_string()),
-                    line: Some(line_idx + 1),
+                    // `parsed.refs` is a `Vec<String>` with no source line info,
+                    // so the vector index is NOT a real line number. Emit `None`
+                    // (honest) rather than a fabricated 1,2,3… index.
+                    line: None,
                     message: format!("Unresolved reference: <<{}>>", ref_anchor),
                     suggestion,
                     raw: serde_json::to_string(&serde_json::json!({
                         "ref": ref_anchor,
-                        "line": line_idx + 1,
                     })).unwrap_or_default(),
                 });
             }
@@ -485,7 +487,7 @@ fn scan_stale_refs(graph: &AdenGraph<DocumentNode, AdenEdge>, files: &[PathBuf],
             Err(_) => continue,
         };
 
-        for (line_idx, ref_anchor) in parsed.refs.iter().enumerate() {
+        for ref_anchor in parsed.refs.iter() {
             // Check if this ref matches any stale pattern
             let is_stale_pattern = rules.stale_ref_patterns.iter().any(|pattern| {
                 ref_anchor.starts_with(pattern)
@@ -503,12 +505,14 @@ fn scan_stale_refs(graph: &AdenGraph<DocumentNode, AdenEdge>, files: &[PathBuf],
                     category: IssueCategory::UnresolvedRef,
                     severity: Severity::Warning,
                     file: Some(file_path.to_string_lossy().to_string()),
-                    line: Some(line_idx + 1),
+                    // `parsed.refs` carries no source line info; the vector index
+                    // is not a real line number, so emit `None` rather than a
+                    // fabricated index.
+                    line: None,
                     message: format!("Possible stale reference: <<{}>>", ref_anchor),
                     suggestion,
                     raw: serde_json::to_string(&serde_json::json!({
                         "ref": ref_anchor,
-                        "line": line_idx + 1,
                     })).unwrap_or_default(),
                 });
             }

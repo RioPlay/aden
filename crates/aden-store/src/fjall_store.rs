@@ -12,8 +12,8 @@
 //! interchangeable behind the [`GraphStorage`] trait.
 
 use crate::{
-    deserialize, deserialize_document, doc_key, edge_key, incoming_key, meta_key, outgoing_key,
-    serialize, serialize_document, GraphStorage, StoreError, TreeName, KEY_SEP,
+    GraphStorage, KEY_SEP, StoreError, TreeName, deserialize, deserialize_document, doc_key,
+    edge_key, incoming_key, meta_key, outgoing_key, serialize, serialize_document,
 };
 use aden_core::{Document, EdgeType};
 use fjall::{Config, Keyspace, PartitionCreateOptions, PartitionHandle, PersistMode};
@@ -55,6 +55,22 @@ impl FjallStorage {
             meta: open(TreeName::Meta.name())?,
             keyspace,
         })
+    }
+
+    /// Open an *existing* Fjall store without creating it.
+    ///
+    /// Unlike [`new`](Self::new) — which calls `fjall::Config::open()` and so
+    /// materializes the directory — this returns [`StoreError::NotFound`] when
+    /// the store is absent. Read commands use this so that running e.g.
+    /// `aden query` before `aden gen` yields a clear error rather than silently
+    /// creating an empty store (ADR-003 §5: reads never create).
+    pub fn open_existing(path: &str) -> Result<Self, StoreError> {
+        if !std::path::Path::new(path).exists() {
+            return Err(StoreError::NotFound(format!(
+                "no store at {path}; run 'aden gen' at the project root first"
+            )));
+        }
+        Self::new(path)
     }
 }
 
@@ -229,10 +245,7 @@ impl GraphStorage for FjallStorage {
         Ok(())
     }
 
-    fn get_edges_by_type(
-        &self,
-        edge_type: &EdgeType,
-    ) -> Result<Vec<(String, String)>, StoreError> {
+    fn get_edges_by_type(&self, edge_type: &EdgeType) -> Result<Vec<(String, String)>, StoreError> {
         let edge_str = format!("{:?}", edge_type);
         let prefix = format!("edge{KEY_SEP}");
         let mut edges = Vec::new();

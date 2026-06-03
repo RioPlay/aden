@@ -6,6 +6,7 @@ use std::path::Path;
 
 use aden_asm::traverse::{AssemblyOptions, assemble};
 use aden_graph::cache::build_from_directory_cached;
+use walkdir::WalkDir;
 
 /// Scan for incomplete contracts and optionally fill them using LLM.
 ///
@@ -111,29 +112,34 @@ fn find_incomplete_contracts(
 ) -> Result<Vec<(std::path::PathBuf, String)>, Box<dyn std::error::Error>> {
     let mut incomplete = Vec::new();
 
-    for entry in std::fs::read_dir(path)? {
-        let entry = entry?;
-        let p = entry.path();
-        if p.is_file() {
-            let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
-            if ext == "adoc" || ext == "aden" {
-                let mut text = String::new();
-                if let Ok(mut file) = std::fs::File::open(&p) {
-                    let _ = file.read_to_string(&mut text);
-                    if text.contains("[must-complete]") {
-                        // Reverse the filesystem-safe encoding used by aden-gen:
-                        // "aden---module-foo-bar.rs-MyStruct" → "aden://module/foo/bar.rs#MyStruct"
-                        // For anchors in other schemes, use the stem as-is.
-                        let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("unknown");
-                        let anchor = if stem.contains("---module-") {
-                            stem.replacen("---module-", "://module/", 1)
-                                .replacen("---", "/", 1)
-                        } else {
-                            stem.to_string()
-                        };
-                        incomplete.push((p, anchor));
-                    }
-                }
+    for entry in WalkDir::new(path)
+        .follow_links(false)
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
+        let p = entry.path().to_path_buf();
+        if !p.is_file() {
+            continue;
+        }
+        let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
+        if ext != "adoc" && ext != "aden" {
+            continue;
+        }
+        let mut text = String::new();
+        if let Ok(mut file) = std::fs::File::open(&p) {
+            let _ = file.read_to_string(&mut text);
+            if text.contains("[must-complete]") {
+                // Reverse the filesystem-safe encoding used by aden-gen:
+                // "aden---module-foo-bar.rs-MyStruct" → "aden://module/foo/bar.rs#MyStruct"
+                // For anchors in other schemes, use the stem as-is.
+                let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("unknown");
+                let anchor = if stem.contains("---module-") {
+                    stem.replacen("---module-", "://module/", 1)
+                        .replacen("---", "/", 1)
+                } else {
+                    stem.to_string()
+                };
+                incomplete.push((p, anchor));
             }
         }
     }

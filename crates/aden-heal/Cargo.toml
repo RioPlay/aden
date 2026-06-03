@@ -7,6 +7,7 @@ license.workspace = true
 
 [dependencies]
 aden-core = { path = "../aden-core" }
+aden-paths = { path = "../aden-paths" }
 aden-parse = { path = "../aden-parse" }
 aden-graph = { path = "../aden-graph" }
 aden-emit = { path = "../aden-emit" }

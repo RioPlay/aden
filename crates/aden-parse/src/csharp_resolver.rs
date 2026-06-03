@@ -600,10 +600,7 @@ fn emit_cs_symbol(
         rows.push(vec!["Static".to_string(), "true".to_string()]);
     }
     for p in &sym.params {
-        rows.push(vec![
-            format!("param {}", p.name),
-            format!("{}: {}", p.name, p.ty),
-        ]);
+        rows.push(vec![format!("param {}", p.name), p.ty.clone()]);
     }
     if let Some(ref rt) = sym.return_type {
         rows.push(vec!["Returns".to_string(), rt.clone()]);

@@ -17,7 +17,7 @@
 //
 #[cfg(test)]
 mod tests {
-    use crate::{AdenGraph, DocumentNode, AdenEdge, cycles, parser};
+    use crate::{AdenEdge, AdenGraph, DocumentNode, cycles, parser};
     use aden_core::{Document, EdgeType, NodeType};
     use petgraph::visit::EdgeRef;
     use std::collections::HashMap;
@@ -129,7 +129,13 @@ mod tests {
         let idx2 = graph.graph.add_node(node2);
         graph.anchor_to_index.insert("mod-a".to_string(), idx1);
         graph.anchor_to_index.insert("func-b".to_string(), idx2);
-        graph.graph.add_edge(idx1, idx2, AdenEdge { edge_type: EdgeType::Uses });
+        graph.graph.add_edge(
+            idx1,
+            idx2,
+            AdenEdge {
+                edge_type: EdgeType::Uses,
+            },
+        );
     }
 
     // ── Structured Block Parsing Tests ───────────────────────────

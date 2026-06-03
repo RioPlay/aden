@@ -91,6 +91,44 @@ pub fn extract_documents_inner(path: &Path, source: &str) -> Result<Vec<Document
                     &crate_name,
                     &file_name,
                     &buffered_comments,
+                    None,
+                ) {
+                    docs.push(doc);
+                }
+                buffered_comments.clear();
+            }
+            "impl_item" => {
+                extract_impl_methods(
+                    child,
+                    source,
+                    path,
+                    &crate_name,
+                    &file_name,
+                    &mut docs,
+                );
+                buffered_comments.clear();
+            }
+            "const_item" | "static_item" => {
+                if let Some(doc) = extract_const_or_static(
+                    child,
+                    source,
+                    path,
+                    &crate_name,
+                    &file_name,
+                    &buffered_comments,
+                ) {
+                    docs.push(doc);
+                }
+                buffered_comments.clear();
+            }
+            "type_item" => {
+                if let Some(doc) = extract_type_alias(
+                    child,
+                    source,
+                    path,
+                    &crate_name,
+                    &file_name,
+                    &buffered_comments,
                 ) {
                     docs.push(doc);
                 }
@@ -175,18 +213,7 @@ fn node_text<'a>(node: tree_sitter::Node<'a>, source: &'a str) -> &'a str {
     node.utf8_text(source.as_bytes()).unwrap_or("")
 }
 
-/// Convert a tree-sitter node into an Aden SourceSpan.
-fn node_to_span(node: tree_sitter::Node, path: &Path) -> aden_core::SourceSpan {
-    let start = node.start_position();
-    let end = node.end_position();
-    aden_core::SourceSpan {
-        file: path.to_string_lossy().to_string(),
-        start_line: start.row + 1,
-        end_line: end.row + 1,
-        start_byte: node.start_byte(),
-        end_byte: node.end_byte(),
-    }
-}
+use crate::tree_sitter_common::node_to_span;
 
 fn get_visibility_with_source(node: tree_sitter::Node, source: &str) -> Visibility {
     if let Some(vis) = node.child_by_field_name("visibility_modifier") {
@@ -247,9 +274,21 @@ fn extract_function(
     crate_name: &str,
     file_name: &str,
     buffered_comments: &[String],
+    // When this function is an associated fn/method inside an `impl T`, the
+    // type name qualifies the anchor (`T::method`) so two same-named methods in
+    // different impls don't collide on one anchor (silent overwrite / data loss).
+    type_prefix: Option<&str>,
 ) -> Option<Document> {
     let name_node = node.child_by_field_name("name")?;
-    let name = node_text(name_node, source);
+    let bare_name = node_text(name_node, source);
+    let qualified;
+    let name: &str = match type_prefix {
+        Some(t) => {
+            qualified = format!("{}::{}", t, bare_name);
+            &qualified
+        }
+        None => bare_name,
+    };
     let vis = get_visibility_with_source(node, source);
     let mut is_async = false;
     let mut is_unsafe = false;
@@ -298,10 +337,7 @@ fn extract_function(
     if let Some(doc) = doc_comment {
         blocks.push(Block::Paragraph(doc));
     }
-    let mut sig_rows = vec![
-        vec!["Name".to_string(), name.to_string()],
-        vec!["Visibility".to_string(), format!("{:?}", vis)],
-    ];
+    let mut sig_rows = vec![vec!["Visibility".to_string(), format!("{:?}", vis)]];
     if is_async {
         sig_rows.push(vec!["Async".to_string(), "true".to_string()]);
     }
@@ -309,10 +345,7 @@ fn extract_function(
         sig_rows.push(vec!["Unsafe".to_string(), "true".to_string()]);
     }
     for p in &params {
-        sig_rows.push(vec![
-            format!("param {}", p.name),
-            format!("{}: {}", p.name, p.ty),
-        ]);
+        sig_rows.push(vec![format!("param {}", p.name), p.ty.clone()]);
     }
     if let Some(ref rt) = return_type {
         sig_rows.push(vec!["Returns".to_string(), rt.clone()]);
@@ -393,6 +426,189 @@ fn extract_function(
     Some(Document {
         anchor,
         node_type: NodeType::Function,
+        attributes: attrs,
+        blocks,
+        source_span: None,
+        metadata: None,
+        confidence: 0.9,
+    })
+}
+
+/// Walk an `impl T { ... }` block and emit a Document for each associated fn /
+/// method. The top-level loop does not recurse, so without this these symbols
+/// were invisible. Anchors are qualified with the impl type (`T::method`) so
+/// same-named methods across different impls don't collide.
+fn extract_impl_methods(
+    node: tree_sitter::Node,
+    source: &str,
+    path: &Path,
+    crate_name: &str,
+    file_name: &str,
+    docs: &mut Vec<Document>,
+) {
+    // The impl's target type: the `type` field if present, else the first
+    // `type_identifier` child (e.g. `impl Foo`).
+    let type_name = node
+        .child_by_field_name("type")
+        .or_else(|| {
+            let mut cursor = node.walk();
+            node.children(&mut cursor)
+                .find(|c| c.kind() == "type_identifier")
+        })
+        .map(|n| node_text(n, source).to_string());
+    let type_prefix = type_name.as_deref();
+
+    let Some(body) = node.child_by_field_name("body") else {
+        return;
+    };
+    let mut bc = body.walk();
+    let mut buffered: Vec<String> = Vec::new();
+    for child in body.children(&mut bc) {
+        match child.kind() {
+            "line_comment" => {
+                if let Some(c) = process_line_comment(child, source) {
+                    buffered.push(c);
+                }
+            }
+            "block_comment" => {
+                if let Some(c) = process_block_comment(child, source) {
+                    buffered.push(c);
+                }
+            }
+            "function_item" | "function_signature_item" => {
+                if let Some(doc) = extract_function(
+                    child, source, path, crate_name, file_name, &buffered, type_prefix,
+                ) {
+                    docs.push(doc);
+                }
+                buffered.clear();
+            }
+            _ => {
+                buffered.clear();
+            }
+        }
+    }
+}
+
+/// Emit a Document for a top-level `const` or `static` item. These have a
+/// `name` (identifier), a `type`, and a `value`; without this arm they were
+/// invisible.
+fn extract_const_or_static(
+    node: tree_sitter::Node,
+    source: &str,
+    path: &Path,
+    crate_name: &str,
+    file_name: &str,
+    buffered_comments: &[String],
+) -> Option<Document> {
+    let name_node = node.child_by_field_name("name")?;
+    let name = node_text(name_node, source);
+    let vis = get_visibility_with_source(node, source);
+    let kind_label = if node.kind() == "static_item" {
+        "Static"
+    } else {
+        "Const"
+    };
+    let ty = node
+        .child_by_field_name("type")
+        .map(|n| node_text(n, source).to_string());
+    let anchor = make_anchor(crate_name, file_name, name);
+    let span = node_to_span(node, path);
+    let attrs = build_code_attributes(source, "constant", Some(path), Some(&span));
+    // NodeType has no dedicated `Constant`; a top-level const/static is a named
+    // value item, closest modelled as `Type` (the `Kind` row carries the detail).
+    let mut blocks = Vec::new();
+    if !buffered_comments.is_empty() {
+        blocks.push(Block::Paragraph(buffered_comments.join("\n")));
+    }
+    let mut rows: Vec<Vec<String>> = vec![
+        vec!["Kind".to_string(), kind_label.to_string()],
+        vec!["Visibility".to_string(), format!("{:?}", vis)],
+    ];
+    if let Some(ref t) = ty {
+        rows.push(vec!["Type".to_string(), t.clone()]);
+    }
+    blocks.push(Block::Table(aden_core::Table {
+        headers: vec!["Property".to_string(), "Value".to_string()],
+        rows,
+    }));
+    // Type-usage edges from the declared type.
+    if let Some(ref t) = ty {
+        let uses: Vec<String> = extract_type_idents(t);
+        if !uses.is_empty() {
+            let uses_code = uses
+                .iter()
+                .map(|u| format!("edge::uses[{}]", u))
+                .collect::<Vec<_>>()
+                .join("\n");
+            blocks.push(Block::Listing {
+                language: None,
+                code: uses_code,
+            });
+        }
+    }
+    Some(Document {
+        anchor,
+        node_type: NodeType::Type,
+        attributes: attrs,
+        blocks,
+        source_span: None,
+        metadata: None,
+        confidence: 0.9,
+    })
+}
+
+/// Emit a Document for a top-level `type Alias = ...;`. The RHS types become
+/// `Uses` edges so the alias links to what it references.
+fn extract_type_alias(
+    node: tree_sitter::Node,
+    source: &str,
+    path: &Path,
+    crate_name: &str,
+    file_name: &str,
+    buffered_comments: &[String],
+) -> Option<Document> {
+    let name_node = node.child_by_field_name("name")?;
+    let name = node_text(name_node, source);
+    let vis = get_visibility_with_source(node, source);
+    let value = node
+        .child_by_field_name("type")
+        .map(|n| node_text(n, source).to_string());
+    let anchor = make_anchor(crate_name, file_name, name);
+    let span = node_to_span(node, path);
+    let attrs = build_code_attributes(source, "type", Some(path), Some(&span));
+    let mut blocks = Vec::new();
+    if !buffered_comments.is_empty() {
+        blocks.push(Block::Paragraph(buffered_comments.join("\n")));
+    }
+    let mut rows: Vec<Vec<String>> = vec![
+        vec!["Kind".to_string(), "TypeAlias".to_string()],
+        vec!["Visibility".to_string(), format!("{:?}", vis)],
+    ];
+    if let Some(ref v) = value {
+        rows.push(vec!["Aliases".to_string(), v.clone()]);
+    }
+    blocks.push(Block::Table(aden_core::Table {
+        headers: vec!["Property".to_string(), "Value".to_string()],
+        rows,
+    }));
+    if let Some(ref v) = value {
+        let uses: Vec<String> = extract_type_idents(v);
+        if !uses.is_empty() {
+            let uses_code = uses
+                .iter()
+                .map(|u| format!("edge::uses[{}]", u))
+                .collect::<Vec<_>>()
+                .join("\n");
+            blocks.push(Block::Listing {
+                language: None,
+                code: uses_code,
+            });
+        }
+    }
+    Some(Document {
+        anchor,
+        node_type: NodeType::Type,
         attributes: attrs,
         blocks,
         source_span: None,
@@ -788,3 +1004,4 @@ fn extract_trait(
         confidence: 0.9,
     })
 }
+

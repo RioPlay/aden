@@ -13,7 +13,8 @@
 
 use std::path::Path;
 
-/// Smart built-in exclusion patterns that apply when no `.adenignore` exists.
+/// Smart built-in exclusion patterns. These are always applied; a user
+/// `.adenignore` extends (never replaces) them — see [`AdenFilter::from_directory`].
 ///
 /// These defaults are deliberately *polyglot*: Aden compiles context for any
 /// codebase, so we exclude the build-output and dependency directories of every
@@ -26,6 +27,12 @@ pub const BUILT_IN_IGNORES: &[&str] = &[
     ".svn/",
     ".agent/",
     ".aden/",
+    // Agent / AI-tooling runtime dirs. These hold local state and, in the case
+    // of `.claude/worktrees/`, entire git worktree copies of the repo — indexing
+    // them multiplies every symbol and tanks graph health. They are gitignored by
+    // convention; never index them.
+    ".claude/",
+    ".opencode/",
     // NOTE: do NOT hard-code "contracts/" here — it is aden's *own* output dir
     // name, but it is also *source* in other ecosystems (Solidity/Vyper smart
     // contracts live in `contracts/`). aden's actual output lives under `.aden/`
@@ -227,16 +234,23 @@ impl AdenFilter {
         self.ignore_patterns.len()
     }
 
-    /// Load filter from project root. If `.adenignore` does not exist, use built-in defaults.
+    /// Load filter from project root.
+    ///
+    /// The built-in defaults ([`BUILT_IN_IGNORES`]) are ALWAYS applied; a
+    /// user-authored `.adenignore`, when present, *extends* them rather than
+    /// replacing them. This is a safety floor: adding one project-specific rule
+    /// must never silently re-expose `target/`, `node_modules/`, `.git/`, or the
+    /// agent-runtime worktrees the defaults exist to exclude. To deliberately
+    /// un-ignore a built-in path, use a `.adenallow` entry.
     pub fn from_directory(dir: &Path) -> Self {
         let ignore_file = dir.join(".adenignore");
         let allow_file = dir.join(".adenallow");
 
-        let ignore_lines = if ignore_file.exists() {
-            read_lines(&ignore_file).unwrap_or_default()
-        } else {
-            BUILT_IN_IGNORES.iter().map(|s| s.to_string()).collect()
-        };
+        let mut ignore_lines: Vec<String> =
+            BUILT_IN_IGNORES.iter().map(|s| s.to_string()).collect();
+        if ignore_file.exists() {
+            ignore_lines.extend(read_lines(&ignore_file).unwrap_or_default());
+        }
 
         let allow_lines = if allow_file.exists() {
             read_lines(&allow_file).unwrap_or_default()
@@ -384,6 +398,37 @@ mod tests {
         assert!(!filter.should_skip(Path::new("packages/api/src/index.ts")));
         assert!(!filter.should_skip(Path::new("bin/console.rb")));
         assert!(!filter.should_skip(Path::new("cmd/server/main.go")));
+    }
+
+    #[test]
+    fn test_builtin_skips_agent_tooling_runtime() {
+        let filter = AdenFilter::from_directory(Path::new("/tmp/nonexistent"));
+        // Agent-runtime dirs (and the git-worktree copies inside them) must never
+        // be indexed — regression for the .claude/worktrees pollution.
+        assert!(filter.should_skip(Path::new(".claude/settings.json")));
+        assert!(filter.should_skip(Path::new(
+            ".claude/worktrees/agent-abc/crates/aden-core/src/filter.rs"
+        )));
+        assert!(filter.should_skip(Path::new(".opencode/opencode.jsonc")));
+    }
+
+    #[test]
+    fn test_adenignore_extends_builtins() {
+        // A user `.adenignore` must EXTEND the built-in defaults, not replace
+        // them: adding one custom rule cannot silently re-expose target/, .git/,
+        // node_modules/, or the agent worktrees.
+        let dir = std::env::temp_dir().join(format!("aden-filter-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(".adenignore"), "fixtures/\n").unwrap();
+        let filter = AdenFilter::from_directory(&dir);
+        // The user rule is honored…
+        assert!(filter.should_skip(Path::new("fixtures/sample.rs")));
+        // …and the built-ins are still in force.
+        assert!(filter.should_skip(Path::new("target/debug/foo")));
+        assert!(filter.should_skip(Path::new("node_modules/lodash")));
+        assert!(filter.should_skip(Path::new(".claude/worktrees/agent-x/src/main.rs")));
+        assert!(!filter.should_skip(Path::new("src/lib.rs")));
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

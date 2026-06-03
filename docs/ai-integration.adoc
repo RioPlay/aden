@@ -173,10 +173,10 @@ most-used tools list their key arguments; for the rest, run `aden <tool> --help`
 |Tool|Purpose|Key Arguments
 |ask|Natural language Q&A|question, budget, from
 |asm|Graph-traversed context|from, depth, budget, format (llm = default LLM-dense prose, adg = compact JSON, aden = raw AsciiDoc)
-|query|Structured JSON graph neighborhood|from, depth, backlinks, impact
+|query|Structured JSON graph neighborhood|from, depth, backlinks, impact, edge_type (applies to from/backlinks/impact)
 |query-adq|Structured ADQ query|—
 |grep|Structure-aware content search (hit + enclosing symbol)|pattern, regex, ignore_case, symbol_only, limit
-|locate|Symbol definitions|symbol, caller_of, show_context, limit, format
+|locate|Symbol definitions (requires at least one of `symbol`/`caller_of`)|symbol, caller_of, show_context, limit, format
 |search|Full-text search|query, limit, offset, doc_type, semantics
 |list|Anchors in graph|filter, limit, semantics
 |===
@@ -264,12 +264,12 @@ When `aden heal` runs, it detects these drift event types:
 
 |===
 |Drift Kind|Meaning|Auto-fixed by `--fix`?
-|StaleHash|Source changed, contract hash stale|Yes (0.99)
-|SignatureMismatch|Symbol signature changed|Yes (0.90)
-|MissingContract|Source symbol has no contract|Yes (0.85), but SKIPS when the target path exists/collides (store-first: won't clobber)
+|StaleHash|Source changed, contract hash stale|Legacy on-disk only (0.99); a store-resident StaleHash is skipped with a "run `aden gen`" hint
+|SignatureMismatch|Symbol signature changed|Yes (0.90) — rewrites the signature in the store, not an on-disk stub
+|MissingContract|Source symbol has no contract|Advisory: proposal points at the source and emits `aden gen <src> --auto .`; it does NOT materialize a stub (a stub has no `source_hash` and would self-drift as StaleHash)
 |StaleMarkdown|Markdown's source files changed|Yes (0.80)
 |MarkdownDrift|Markdown content drifted|No (confidence 0.75, below the 0.8 auto-fix threshold) — detect-only
-|OrphanAnchor|Contract/anchor with no live source|No via `--fix`; removed via `--gc`
+|OrphanAnchor|Contract/anchor with no live source (deleted OR newly `.adenignore`-excluded)|No via `--fix`; removed via `--gc`
 |BrokenReference|`<<anchor>>` points at a missing target|No (detect-only)
 |DeadLink|`include::` path doesn't resolve|No (detect-only)
 |MissingMarkdownTemplate|Markdown lacks its template|No (detect-only)

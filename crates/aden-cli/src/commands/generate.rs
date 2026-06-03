@@ -97,9 +97,10 @@ fn extract_callees(doc: &aden_core::Document) -> Vec<String> {
                 for line in code.lines() {
                     if let Some(rest) = line.trim().strip_prefix("edge::calls[")
                         && let Some(callee) = rest.strip_suffix(']')
-                            && !callee.is_empty() {
-                                callees.push(callee.to_string());
-                            }
+                        && !callee.is_empty()
+                    {
+                        callees.push(callee.to_string());
+                    }
                 }
             }
             Block::Table(t)
@@ -107,9 +108,10 @@ fn extract_callees(doc: &aden_core::Document) -> Vec<String> {
             {
                 for row in &t.rows {
                     if let Some(c) = row.first()
-                        && !c.is_empty() {
-                            callees.push(c.clone());
-                        }
+                        && !c.is_empty()
+                    {
+                        callees.push(c.clone());
+                    }
                 }
             }
             _ => {}
@@ -131,9 +133,10 @@ fn extract_uses(doc: &aden_core::Document) -> Vec<String> {
             for line in code.lines() {
                 if let Some(rest) = line.trim().strip_prefix("edge::uses[")
                     && let Some(t) = rest.strip_suffix(']')
-                        && !t.is_empty() {
-                            uses.push(t.to_string());
-                        }
+                    && !t.is_empty()
+                {
+                    uses.push(t.to_string());
+                }
             }
         }
     }
@@ -236,15 +239,18 @@ fn resolve_callee<'a>(
         }
     };
     if let Some(t) = name_index.get(callee)
-        && let Some(r) = pick(t) {
-            return Some(r);
-        }
+        && let Some(r) = pick(t)
+    {
+        return Some(r);
+    }
     let base = callee.rsplit(['.', ':']).next().unwrap_or(callee);
-    if base != callee && !base.is_empty()
+    if base != callee
+        && !base.is_empty()
         && let Some(t) = name_index.get(base)
-            && let Some(r) = pick(t) {
-                return Some(r);
-            }
+        && let Some(r) = pick(t)
+    {
+        return Some(r);
+    }
     None
 }
 
@@ -379,9 +385,10 @@ fn link_store_edges<S: GraphStorage>(
     for (anchor, used_types) in use_records {
         for used in used_types {
             if let Some(target) = resolve_callee(used, anchor, &name_index)
-                && target != anchor.as_str() {
-                    edges.push((anchor.clone(), target.to_string(), EdgeType::Uses));
-                }
+                && target != anchor.as_str()
+            {
+                edges.push((anchor.clone(), target.to_string(), EdgeType::Uses));
+            }
         }
     }
 
@@ -390,11 +397,37 @@ fn link_store_edges<S: GraphStorage>(
     for (anchor, refs) in ref_records {
         for r in refs {
             if let Some(target) = resolve_callee(r, anchor, &name_index)
-                && target != anchor.as_str() {
-                    edges.push((anchor.clone(), target.to_string(), EdgeType::RelatesTo));
-                    edges.push((target.to_string(), anchor.clone(), EdgeType::RelatesTo));
-                }
+                && target != anchor.as_str()
+            {
+                edges.push((anchor.clone(), target.to_string(), EdgeType::RelatesTo));
+                edges.push((target.to_string(), anchor.clone(), EdgeType::RelatesTo));
+            }
         }
+    }
+
+    // Documentation edges: doc nodes whose anchor encodes a code-symbol anchor
+    // in the form `aden://doc/<path>#<code-anchor>` (produced by asciidoc
+    // `[[code-anchor]]` declarations) are linked to the symbol they document.
+    // This makes doc nodes reachable from code traversals and vice-versa.
+    let anchor_set: std::collections::HashSet<&str> = anchors.iter().map(|s| s.as_str()).collect();
+    for anchor in &anchors {
+        let Some(rest) = anchor.strip_prefix("aden://doc/") else {
+            continue;
+        };
+        // The embedded code anchor starts after the first `#` in the `rest`
+        // portion.  A plain doc heading like `aden://doc/x/y.md/h1foo` has no
+        // `#` in `rest`; a symbol-linked doc like
+        // `aden://doc/aden-cli/generate.adoc#aden://module/aden-cli/generate.rs#fn`
+        // has one.
+        let Some(hash_pos) = rest.find('#') else {
+            continue;
+        };
+        let code_anchor = &rest[hash_pos + 1..];
+        if code_anchor.is_empty() || !anchor_set.contains(code_anchor) {
+            continue;
+        }
+        edges.push((anchor.clone(), code_anchor.to_string(), EdgeType::Documents));
+        edges.push((code_anchor.to_string(), anchor.clone(), EdgeType::PartOf));
     }
 
     // Synthesize module nodes + project root, and connect the project to each.
@@ -457,12 +490,13 @@ pub fn ensure_fresh(path: &Path) {
     // No store yet → build it now. Read commands are store-first, so a fresh
     // project must be indexed on first query (this is what makes asm/ask/locate
     // work without an explicit `aden gen`).
-    if !root.join(".aden").join("store").exists() {
+    let (existing_store, _) = aden_paths::resolve_read_store(&root);
+    if !existing_store.exists() {
         let _ = cmd_gen_silent(&root);
         return;
     }
 
-    let cache = load_gen_cache(&root.join(".aden").join("gen-cache.json"));
+    let cache = load_gen_cache(&aden_paths::gen_cache_file(&root));
     let sources = match discover_source_files(&root) {
         Ok(s) => s,
         Err(_) => return,
@@ -617,16 +651,25 @@ fn cmd_gen_inner(
             return Ok(());
         }
 
-        // Open store for writing contracts
-        let store_path = root.join(".aden").join("store");
+        // ADR-003: the store now lives in the per-user data dir, keyed per
+        // project. Refuse to create one at $HOME / fs-root unless explicit, then
+        // migrate any legacy in-tree store before opening the central one.
+        aden_paths::guard_creatable_root(&root, crate::util::creation_explicit())?;
+        crate::util::migrate_legacy_store(&root);
+        let store_path = aden_paths::store_dir(&root);
+        if let Some(parent) = store_path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create store dir {}: {}", parent.display(), e))?;
+        }
         let storage = Storage::new(
             store_path
                 .to_str()
                 .expect("Store path should be valid UTF-8"),
         )
         .map_err(|e| format!("Failed to open store at {}: {}", store_path.display(), e))?;
+        let _ = aden_paths::write_meta(&root);
 
-        let cache_path = root.join(".aden").join("gen-cache.json");
+        let cache_path = aden_paths::gen_cache_file(&root);
         let mut cache = load_gen_cache(&cache_path);
         let mut generated = Vec::new();
         let mut skipped = 0usize;
@@ -917,14 +960,14 @@ fn cmd_gen_inner(
 
         // Connect the graph: persist module<->symbol containment and call edges
         // so the store-first graph used by asm/ask/query is actually traversable.
-        let callee_stats = match link_store_edges(&storage, &link_records, &use_records, &ref_records)
-        {
-            Ok(stats) => stats,
-            Err(e) => {
-                eprintln!("WARN: Failed to link graph edges: {}", e);
-                CalleeStats::default()
-            }
-        };
+        let callee_stats =
+            match link_store_edges(&storage, &link_records, &use_records, &ref_records) {
+                Ok(stats) => stats,
+                Err(e) => {
+                    eprintln!("WARN: Failed to link graph edges: {}", e);
+                    CalleeStats::default()
+                }
+            };
 
         save_gen_cache(&cache_path, &cache)?;
 
@@ -1007,7 +1050,7 @@ fn cmd_gen_inner(
     }
 
     // Invalidate caches after generating so the next query rebuilds
-    let cache_dir = path.join(".aden/cache");
+    let cache_dir = aden_paths::cache_dir(path);
     if cache_dir.exists() {
         let _ = std::fs::remove_dir_all(&cache_dir);
         let _ = std::fs::create_dir_all(&cache_dir);
@@ -1094,8 +1137,14 @@ mod link_tests {
         );
         // A name present but unrelated to the callee is still zero candidates.
         let mut idx2: HashMap<&str, Vec<&str>> = HashMap::new();
-        idx2.insert("something_else", vec!["aden://module/c/a.rs#something_else"]);
-        assert!(matches!(classify_drop("missing", &idx2), DropReason::Unresolved));
+        idx2.insert(
+            "something_else",
+            vec!["aden://module/c/a.rs#something_else"],
+        );
+        assert!(matches!(
+            classify_drop("missing", &idx2),
+            DropReason::Unresolved
+        ));
     }
 
     #[test]
@@ -1134,7 +1183,10 @@ mod link_tests {
         );
         // Path-qualified call: `Parser::node_text` → base `node_text`.
         assert!(
-            matches!(classify_drop("Parser::node_text", &idx), DropReason::Ambiguous),
+            matches!(
+                classify_drop("Parser::node_text", &idx),
+                DropReason::Ambiguous
+            ),
             "trailing segment after ':' with >=2 candidates must be Ambiguous"
         );
     }

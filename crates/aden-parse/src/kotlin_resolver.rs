@@ -526,10 +526,7 @@ fn emit_kotlin_symbol(
         ]);
     }
     for p in &sym.params {
-        rows.push(vec![
-            format!("param {}", p.name),
-            format!("{}: {}", p.name, p.ty),
-        ]);
+        rows.push(vec![format!("param {}", p.name), p.ty.clone()]);
     }
     if let Some(ref rt) = sym.return_type {
         rows.push(vec!["Returns".to_string(), rt.clone()]);

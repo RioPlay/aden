@@ -79,11 +79,25 @@ pub fn cmd_test(
         return Ok(());
     }
 
+    // Count distinct language suites that will be run.
+    let suite_count = {
+        use std::collections::BTreeSet;
+        all_tests
+            .iter()
+            .map(|t| &t.language)
+            .collect::<BTreeSet<_>>()
+            .len()
+    };
+
     if !json {
-        println!("Discovered {} tests", all_tests.len());
+        println!(
+            "Discovered {} test(s) across {} language suite(s)",
+            all_tests.len(),
+            suite_count
+        );
         print_test_list(&all_tests);
         println!();
-        println!("Running tests...");
+        println!("Running {} suite(s)...", suite_count);
         println!();
     }
 
@@ -95,19 +109,25 @@ pub fn cmd_test(
         let envelope = serde_json::json!({
             "scanned_path": path.to_string_lossy(),
             "discovered": all_tests.len(),
+            "suites": suite_count,
             "ran": true,
-            "passed": passed,
-            "failed": failed,
+            "suites_passed": passed,
+            "suites_failed": failed,
             "results": results,
         });
         println!("{}", serde_json::to_string_pretty(&envelope)?);
     } else {
-        println!("Results: {} passed, {} failed", passed, failed);
+        println!(
+            "Results: {} suite(s) passed, {} suite(s) failed",
+            passed, failed
+        );
         for result in &results {
-            if !result.passed {
+            if result.passed {
+                println!("  PASS: {}", result.name);
+            } else {
                 println!(
                     "  FAIL: {} - {}",
-                    result.file,
+                    result.name,
                     result.message.as_deref().unwrap_or("unknown error")
                 );
             }
@@ -436,13 +456,21 @@ fn discover_php_test(line: &str, line_num: usize, file: &str) -> Option<TestInfo
 }
 
 fn run_tests(tests: &[TestInfo]) -> Result<Vec<TestResult>, Box<dyn std::error::Error>> {
+    // Run each language's test suite ONCE, not once per discovered test function.
+    // The previous loop called `run_single_test` for every TestInfo, which ran
+    // `cargo test` / `pytest` / … N times for a project with N discovered tests —
+    // the N-fold problem. Group by language and invoke the runner once per group.
+    use std::collections::BTreeMap;
+    let mut by_lang: BTreeMap<String, &TestInfo> = BTreeMap::new();
+    for t in tests {
+        by_lang.entry(t.language.clone()).or_insert(t);
+    }
     let mut results = Vec::new();
-
-    for test in tests {
-        let result = run_single_test(test)?;
+    for (lang, representative) in &by_lang {
+        let mut result = run_single_test(representative)?;
+        result.name = lang.clone();
         results.push(result);
     }
-
     Ok(results)
 }
 

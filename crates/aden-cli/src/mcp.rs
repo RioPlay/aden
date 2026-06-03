@@ -859,18 +859,23 @@ pub fn run_http_server(_project_dir: &Path, port: u16) -> Result<(), Box<dyn std
             let method = parts[0];
             let path = parts[1];
 
-            let response = match (method, path) {
-                ("GET", "/health") => r#"{"status":"ok","service":"aden"}"#,
-                ("GET", "/") | ("GET", "/api") => {
-                    r#"{"service":"aden","version":"0.1.0","endpoints":["/health","/api/check","/api/heal","/api/asm","/api/query"]}"#
-                }
-                _ => r#"{"error":"not found}"#,
+            let (status_line, body) = match (method, path) {
+                ("GET", "/health") => ("200 OK", r#"{"status":"ok","service":"aden"}"#.to_string()),
+                ("GET", "/") | ("GET", "/api") => (
+                    "200 OK",
+                    format!(
+                        r#"{{"service":"aden","version":"{}","endpoints":["/health","/api/check","/api/heal","/api/asm","/api/query"]}}"#,
+                        env!("CARGO_PKG_VERSION")
+                    ),
+                ),
+                _ => ("404 Not Found", r#"{"error":"not found"}"#.to_string()),
             };
 
             let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-                response.len(),
-                response
+                "HTTP/1.1 {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                status_line,
+                body.len(),
+                body
             );
             stream.write_all(response.as_bytes())?;
         }

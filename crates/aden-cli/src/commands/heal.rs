@@ -199,7 +199,7 @@ pub fn cmd_heal_scan(
             // doesn't bury the agent in thousands of lines (a single
             // StaleMarkdown debug-prints its entire changed-files list). The
             // count is always shown; pass --unlimited for the full enumeration.
-            const HEAL_GROUP_CAP: usize = 10;
+            const HEAL_GROUP_CAP: usize = 5;
             let print_group = |name: &str, events: &Vec<&aden_heal::DriftEvent>, _path: &Path| {
                 if !events.is_empty() {
                     println!("\n=== {} ({} events) ===", name, events.len());
@@ -343,27 +343,93 @@ pub fn cmd_heal_scan(
                             *skipped_by_kind.entry("MissingContract").or_default() += 1;
                         }
                         aden_heal::DriftEvent::SignatureMismatch {
+                            anchor,
                             contract_path,
                             expected_sig: _,
                             actual_sig,
-                            ..
                         } => {
-                            let sig_str = actual_sig.join(",");
-                            let content = std::fs::read_to_string(contract_path)?;
-                            let updated = content
-                                .lines()
-                                .map(|line| {
-                                    if line.trim_start().starts_with(":source_sig:") {
-                                        format!(":source_sig: {}", sig_str)
-                                    } else {
-                                        line.to_string()
+                            // Store-first: the scanner emits a pseudo-path of the
+                            // form ".aden/store:<anchor>" — there is no on-disk
+                            // contract file to rewrite. Update the signature in the
+                            // store via the graph API instead. Any failure is logged
+                            // and counted as skipped, never `?`-aborting the whole run.
+                            if let Some(store_anchor) = contract_path.strip_prefix(".aden/store:") {
+                                match update_store_signature(path, store_anchor, actual_sig) {
+                                    Ok(true) => {
+                                        println!(
+                                            "  Fixed: {} (updated signature in store)",
+                                            anchor
+                                        );
+                                        fixed_count += 1;
                                     }
-                                })
-                                .collect::<Vec<_>>()
-                                .join("\n");
-                            std::fs::write(contract_path, updated)?;
-                            println!("  Fixed: {} (updated signature)", contract_path);
-                            fixed_count += 1;
+                                    Ok(false) => {
+                                        eprintln!(
+                                            "  WARN: signature anchor {} not found in store; skipping",
+                                            anchor
+                                        );
+                                        *skipped_by_kind
+                                            .entry("SignatureMismatch (anchor not in store)")
+                                            .or_default() += 1;
+                                        failed_count += 1;
+                                    }
+                                    Err(e) => {
+                                        eprintln!(
+                                            "  WARN: failed to update signature for {}: {}; skipping",
+                                            anchor, e
+                                        );
+                                        *skipped_by_kind
+                                            .entry("SignatureMismatch (store update failed)")
+                                            .or_default() += 1;
+                                        failed_count += 1;
+                                    }
+                                }
+                            } else {
+                                // Legacy on-disk contract path: rewrite the
+                                // :source_sig: line in place, but tolerate a missing
+                                // file rather than aborting the whole --fix run.
+                                let sig_str = actual_sig.join(",");
+                                match std::fs::read_to_string(contract_path) {
+                                    Ok(content) => {
+                                        let updated = content
+                                            .lines()
+                                            .map(|line| {
+                                                if line.trim_start().starts_with(":source_sig:") {
+                                                    format!(":source_sig: {}", sig_str)
+                                                } else {
+                                                    line.to_string()
+                                                }
+                                            })
+                                            .collect::<Vec<_>>()
+                                            .join("\n");
+                                        if let Err(e) = std::fs::write(contract_path, updated) {
+                                            eprintln!(
+                                                "  WARN: failed to write {}: {}; skipping",
+                                                contract_path, e
+                                            );
+                                            *skipped_by_kind
+                                                .entry("SignatureMismatch (write failed)")
+                                                .or_default() += 1;
+                                            failed_count += 1;
+                                        } else {
+                                            println!(
+                                                "  Fixed: {} (updated signature)",
+                                                contract_path
+                                            );
+                                            fixed_count += 1;
+                                        }
+                                    }
+                                    Err(e) => {
+                                        eprintln!(
+                                            "  WARN: cannot read {}: {}; skipping",
+                                            contract_path, e
+                                        );
+                                        *skipped_by_kind
+                                            .entry("SignatureMismatch (file missing)")
+                                            .or_default() += 1;
+                                        failed_count += 1;
+                                    }
+                                }
+                            }
                         }
                         _ => {
                             *skipped_by_kind.entry(drift_kind_name(event)).or_default() += 1;
@@ -414,6 +480,54 @@ pub fn cmd_heal_scan(
             Err(e.into())
         }
     }
+}
+
+/// Update the recorded signature of a store-resident contract to `actual_sig`.
+///
+/// The scanner derives a contract's "signature" from the `param ` rows of the
+/// doc's Table block(s) (see `extract_sig_from_doc`). To heal a
+/// `SignatureMismatch` we rewrite those `param ` rows' value column in the
+/// store document and persist it via `put_document`. Returns `Ok(true)` if the
+/// anchor existed and was updated, `Ok(false)` if no such anchor is in the store.
+fn update_store_signature(
+    path: &Path,
+    anchor: &str,
+    actual_sig: &[String],
+) -> Result<bool, Box<dyn std::error::Error>> {
+    use aden_core::Block;
+    use aden_store::{GraphStorage, Storage};
+
+    let root = find_project_root(path);
+    let (store_path, _) = aden_paths::resolve_read_store(&root);
+    if !store_path.is_dir() {
+        return Ok(false);
+    }
+    let storage = Storage::open_existing(store_path.to_str().ok_or("invalid store path")?)?;
+
+    let mut doc = match storage.get_document(anchor)? {
+        Some(d) => d,
+        None => return Ok(false),
+    };
+
+    // Replace the value column of each `param ` row in order, in document order,
+    // across all Table blocks — matching how `extract_sig_from_doc` reads them.
+    let mut next = 0usize;
+    for block in &mut doc.blocks {
+        if let Block::Table(table) = block {
+            for row in &mut table.rows {
+                if row.len() >= 2 && row[0].starts_with("param ") {
+                    if let Some(val) = actual_sig.get(next) {
+                        row[1] = val.clone();
+                    }
+                    next += 1;
+                }
+            }
+        }
+    }
+
+    storage.put_document(&doc)?;
+    storage.flush()?;
+    Ok(true)
 }
 
 pub fn cmd_heal_apply(repo_path: &Path, id: &str) -> Result<(), Box<dyn std::error::Error>> {
@@ -615,21 +729,36 @@ pub fn generate_proposal(
             .unwrap();
             writeln!(rationale, "Source: {}", source_path).unwrap();
             writeln!(rationale, "Suggested anchor: {}", anchor).unwrap();
-
-            target = PathBuf::from(source_path).with_extension("adoc");
-            writeln!(patch, "[[{}]]", anchor).unwrap();
-            writeln!(patch, "= {}", symbol_name).unwrap();
-            writeln!(patch).unwrap();
+            writeln!(rationale).unwrap();
             writeln!(
-                patch,
-                "agent-note::STUB[Auto-generated by aden-heal. Review before removing this note.]"
+                rationale,
+                "Aden is store-first: contracts live in .aden/store, not as on-disk\n\
+                 .adoc stubs. A hand-written stub has no recorded source_hash, so it\n\
+                 immediately re-flags as StaleHash on the next scan and self-drifts.\n\
+                 The correct remedy is to generate the contract into the store:\n\
+                 \n  aden gen {} --auto .\n",
+                source_path
             )
             .unwrap();
+
+            // Do NOT target an on-disk .adoc stub. Point the proposal at the
+            // source file (advisory only) and emit the regeneration command as
+            // the patch body. The drift_type is deliberately NOT "MissingContract"
+            // so cmd_heal_apply does not materialize a self-drifting stub via
+            // apply_missing_contract; it falls through to the manual-review path.
+            target = PathBuf::from(source_path);
+            writeln!(
+                patch,
+                "// Run to populate the store-resident contract for `{}`:",
+                symbol_name
+            )
+            .unwrap();
+            writeln!(patch, "// aden gen {} --auto .", source_path).unwrap();
 
             Ok(Proposal {
                 id,
                 target_path: target,
-                drift_type: "MissingContract".to_string(),
+                drift_type: "MissingContractAdvisory".to_string(),
                 confidence,
                 status: ProposalStatus::PendingReview,
                 rationale,
@@ -733,12 +862,12 @@ pub fn cmd_heal_gc(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
 
     let root = find_project_root(path);
 
-    let store_path = root.join(".aden").join("store");
+    let (store_path, _) = aden_paths::resolve_read_store(&root);
     if !store_path.is_dir() {
         println!("No store found at {}. Nothing to GC.", store_path.display());
         return Ok(());
     }
-    let storage = Storage::new(store_path.to_str().ok_or("invalid store path")?)
+    let storage = Storage::open_existing(store_path.to_str().ok_or("invalid store path")?)
         .map_err(|e| format!("Failed to open store: {}", e))?;
 
     // Live source files, relative to root — the same form sanitize_source_file
@@ -767,10 +896,17 @@ pub fn cmd_heal_gc(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         }
         match doc.attributes.get("source_file") {
             Some(src) => {
-                // Stale if the source file is gone from the project, or missing
-                // on disk (covers absolute-path entries from an older gen run).
-                let on_disk = root.join(src).exists();
-                if !live.contains(src) && !on_disk {
+                // A node is stale when its source is no longer a LIVE source
+                // file — i.e. it is not in the set `discover_source_files`
+                // returns. That set already honours `.adenignore`/`.adenallow`
+                // and the built-in ignores, so this single condition covers all
+                // three reconciled cases under the store-first model:
+                //   1. source deleted from disk            → not live → pruned
+                //   2. source newly excluded by .adenignore → not live → pruned
+                //   3. source still indexed                 → live    → kept
+                // gen stops indexing an ignored file, so leaving its stale node
+                // in the store would be drift; GC removes it.
+                if !live.contains(src) {
                     stale.push(anchor.clone());
                 } else {
                     kept += 1;
@@ -838,14 +974,12 @@ pub fn cmd_heal_gc(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
                 }
             });
             match anchor {
-                Some(a) if !live_anchors.contains(&a) => {
-                    match std::fs::remove_file(p) {
-                        Ok(()) => {
-                            contracts_removed += 1;
-                        }
-                        Err(e) => eprintln!("  WARN: failed to remove contract {}: {}", p.display(), e),
+                Some(a) if !live_anchors.contains(&a) => match std::fs::remove_file(p) {
+                    Ok(()) => {
+                        contracts_removed += 1;
                     }
-                }
+                    Err(e) => eprintln!("  WARN: failed to remove contract {}: {}", p.display(), e),
+                },
                 _ => contracts_kept += 1,
             }
         }
@@ -863,7 +997,11 @@ pub fn cmd_heal_gc(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
             .unwrap_or_default()
             .into_keys()
             .collect();
-        for entry in std::fs::read_dir(&overlays_dir).into_iter().flatten().flatten() {
+        for entry in std::fs::read_dir(&overlays_dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
             let p = entry.path();
             if p.extension().and_then(|e| e.to_str()) != Some("adoc") {
                 continue;
@@ -891,7 +1029,9 @@ pub fn cmd_heal_gc(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         for o in &orphan_overlays {
             println!("  - {o}");
         }
-        println!("  These are NOT deleted (they hold your intent). Re-point or remove them manually.");
+        println!(
+            "  These are NOT deleted (they hold your intent). Re-point or remove them manually."
+        );
     }
 
     println!(

@@ -204,7 +204,12 @@ pub fn cmd_lint(
         .count();
 
     if json {
-        println!("{}", serde_json::to_string_pretty(&filtered)?);
+        // Only emit output when there are findings — when used as a sub-call
+        // from ci-check or similar, silence on no-issues keeps the parent's
+        // stdout clean for its own JSON envelope.
+        if !filtered.is_empty() {
+            println!("{}", serde_json::to_string_pretty(&filtered)?);
+        }
     } else {
         if filtered.is_empty() {
             println!("No lint issues found.");
@@ -299,7 +304,7 @@ pub fn cmd_lint(
     }
 
     if error_count > 0 {
-        std::process::exit(1);
+        return Err(format!("{} lint error(s) found", error_count).into());
     }
 
     Ok(())
@@ -366,8 +371,12 @@ fn is_excluded(path: &Path) -> bool {
 fn lint_file(path: &Path, content: &str, ext: &str) -> Vec<LintResult> {
     let mut results = Vec::new();
 
+    // Stateful flag for adoc: are we currently inside a mermaid fenced block?
+    // Threaded across lines so multi-line mermaid blocks are excluded from the
+    // ascii_graph rule (it is per-line otherwise and only caught the first line).
+    let mut mermaid = MermaidState::default();
     for (line_num, line) in content.lines().enumerate() {
-        let line_results = apply_lint_rules(path, line, line_num + 1, ext);
+        let line_results = apply_lint_rules(path, line, line_num + 1, ext, &mut mermaid);
         results.extend(line_results);
     }
 
@@ -395,6 +404,59 @@ fn find_macro(line: &str, name: &str) -> Option<usize> {
     None
 }
 
+/// True if `needle` occurs in `hay` as a whole word — not preceded or followed
+/// by an identifier character (`[A-Za-z0-9_]`). Used so type-name / keyword
+/// rules don't fire on substrings (e.g. `i32` inside `parse_i32`).
+fn word_in(hay: &str, needle: &str) -> bool {
+    let bytes = hay.as_bytes();
+    let mut from = 0;
+    let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    while let Some(rel) = hay[from..].find(needle) {
+        let idx = from + rel;
+        let prev_ok = idx == 0 || !is_ident(bytes[idx - 1]);
+        let end = idx + needle.len();
+        let next_ok = end >= bytes.len() || !is_ident(bytes[end]);
+        if prev_ok && next_ok {
+            return true;
+        }
+        from = idx + needle.len();
+    }
+    false
+}
+
+/// Byte offset of a loose-equality operator (`==` or `!=`) in `code`, excluding
+/// the strict forms (`===`, `!==`) and the assignment/comparison operators
+/// `=`, `<=`, `>=`. Returns `None` when only strict/other operators are present.
+fn find_loose_equality(code: &str) -> Option<usize> {
+    let b = code.as_bytes();
+    let mut i = 0;
+    while i + 1 < b.len() {
+        // `==` not part of `===`, and not `!==`/`<=`/`>=` (those don't start `==`).
+        if b[i] == b'=' && b[i + 1] == b'=' {
+            let third_eq = i + 2 < b.len() && b[i + 2] == b'=';
+            let prev_bang = i > 0 && b[i - 1] == b'!';
+            // `===` -> skip; `!==` would have been caught as `!=` below, but the
+            // `==` here is preceded by `!`, so it's `!==` strict — skip too.
+            if !third_eq && !prev_bang {
+                return Some(i);
+            }
+            i += 2;
+            continue;
+        }
+        // `!=` not part of `!==`.
+        if b[i] == b'!' && b[i + 1] == b'=' {
+            let third_eq = i + 2 < b.len() && b[i + 2] == b'=';
+            if !third_eq {
+                return Some(i);
+            }
+            i += 3;
+            continue;
+        }
+        i += 1;
+    }
+    None
+}
+
 /// True if the line is a comment in the given language. Code-level rules
 /// (security, style) must never fire on prose inside a comment — e.g. the word
 /// `eval(` in a Python `#` comment is not an eval call.
@@ -413,7 +475,13 @@ fn is_comment_line(trimmed: &str, ext: &str) -> bool {
     }
 }
 
-fn apply_lint_rules(path: &Path, line: &str, line_num: usize, ext: &str) -> Vec<LintResult> {
+fn apply_lint_rules(
+    path: &Path,
+    line: &str,
+    line_num: usize,
+    ext: &str,
+    mermaid: &mut MermaidState,
+) -> Vec<LintResult> {
     let mut results = Vec::new();
 
     let _path_str = path.to_string_lossy();
@@ -432,7 +500,7 @@ fn apply_lint_rules(path: &Path, line: &str, line_num: usize, ext: &str) -> Vec<
         "cs" => lint_csharp_line(line, line_num),
         "rb" => lint_ruby_line(line, line_num),
         "php" => lint_php_line(line, line_num),
-        "adoc" | "aden" => lint_adoc_line(line, line_num),
+        "adoc" | "aden" => lint_adoc_line(line, line_num, mermaid),
         _ => vec![],
     };
 
@@ -620,18 +688,26 @@ fn lint_rust_line(line: &str, line_num: usize) -> Vec<LintResult> {
         });
     }
 
-    // NEW: Unnecessary clone on Copy types
-    if line.contains(".clone()")
-        && (line.contains("i32")
-            || line.contains("bool")
-            || line.contains("char")
-            || line.contains("f32")
-            || line.contains("f64"))
+    // NEW: Unnecessary clone on Copy types. Match only against real code, and
+    // require the Copy type name to appear as a whole word (so `parse_i32` /
+    // `bool_flag` / a mention in a comment don't trigger it).
+    let copy_type = |ty: &str| word_in(&code, ty);
+    if code.contains(".clone()")
+        && (copy_type("i32")
+            || copy_type("u32")
+            || copy_type("i64")
+            || copy_type("u64")
+            || copy_type("usize")
+            || copy_type("isize")
+            || copy_type("bool")
+            || copy_type("char")
+            || copy_type("f32")
+            || copy_type("f64"))
     {
         results.push(LintResult {
             file: String::new(),
             line: line_num,
-            column: line.find(".clone()").unwrap_or(0) + 1,
+            column: code.find(".clone()").unwrap_or(0) + 1,
             severity: LintSeverity::Warn,
             rule: "unnecessary_clone".to_string(),
             message: "Unnecessary .clone() on Copy type - use direct assignment".to_string(),
@@ -667,7 +743,8 @@ fn lint_rust_line(line: &str, line_num: usize) -> Vec<LintResult> {
     // legitimate product and `eprintln!` is diagnostic output, so neither is
     // flagged. (The previous rule matched the `println!` substring, which also
     // fired on every `eprintln!` and on all user-facing CLI output.)
-    let has_print_macro = find_macro(line, "println!").is_some() || find_macro(line, "print!").is_some();
+    let has_print_macro =
+        find_macro(line, "println!").is_some() || find_macro(line, "print!").is_some();
     let uses_debug_fmt = line.contains("{:?}") || line.contains("{:#?}");
     let has_dbg_macro = find_macro(line, "dbg!").is_some();
     if has_dbg_macro || (has_print_macro && uses_debug_fmt) {
@@ -686,21 +763,45 @@ fn lint_rust_line(line: &str, line_num: usize) -> Vec<LintResult> {
         });
     }
 
-    // NEW: Unused mut
-    if line.contains("let mut ") && (line.contains("=") && !line.contains(" = ")) {
-        // Check if it's likely unused - pattern: let mut x = something that doesn't get reassigned
-    }
-
-    // NEW: unwrap_or_else with default that's cheap
-    if line.contains("unwrap_or_else(||") || line.contains("unwrap_or_else(|_|") {
-        results.push(LintResult {
-            file: String::new(),
-            line: line_num,
-            column: line.find("unwrap_or_else").unwrap_or(0) + 1,
-            severity: LintSeverity::Suggest,
-            rule: "unwrap_or_default".to_string(),
-            message: "Consider using unwrap_or_default() for simpler syntax".to_string(),
-        });
+    // unwrap_or_else with a closure body that is clearly a Default construction.
+    // The previous rule fired on EVERY `unwrap_or_else(|| ...)`, but the
+    // `unwrap_or_default()` rewrite is only valid when the closure returns the
+    // type's `Default` value. Narrow to high-confidence default constructions so
+    // the suggestion is actually correct.
+    if let Some(start) = code
+        .find("unwrap_or_else(||")
+        .or_else(|| code.find("unwrap_or_else(|_|"))
+    {
+        // Body of the closure: everything after the second `|`.
+        let after = &code[start..];
+        let body = after
+            .split_once("||")
+            .map(|(_, b)| b)
+            .or_else(|| after.split_once("|_|").map(|(_, b)| b))
+            .unwrap_or("");
+        let body_trim = body.trim_start();
+        let is_default_body = body_trim.starts_with("Vec::new()")
+            || body_trim.starts_with("String::new()")
+            || body_trim.starts_with("HashMap::new()")
+            || body_trim.starts_with("HashSet::new()")
+            || body_trim.starts_with("BTreeMap::new()")
+            || body_trim.starts_with("Default::default()")
+            || body_trim.starts_with("vec![]")
+            || body_trim.starts_with("0)")
+            || body_trim.starts_with("0,")
+            || body_trim == "0"
+            || body_trim.starts_with("0 ")
+            || body_trim.starts_with("\"\"");
+        if is_default_body {
+            results.push(LintResult {
+                file: String::new(),
+                line: line_num,
+                column: start + 1,
+                severity: LintSeverity::Suggest,
+                rule: "unwrap_or_default".to_string(),
+                message: "Closure returns a Default value - use unwrap_or_default()".to_string(),
+            });
+        }
     }
 
     results
@@ -708,6 +809,10 @@ fn lint_rust_line(line: &str, line_num: usize) -> Vec<LintResult> {
 
 fn lint_python_line(line: &str, line_num: usize) -> Vec<LintResult> {
     let mut results = Vec::new();
+    // Code with string literals / `//`-comments blanked. (Python uses `#`
+    // comments; comment-only lines are already filtered upstream, and a trailing
+    // `#` comment after code is rare enough for these line rules.)
+    let code = code_only(line);
 
     if line.contains("eval(") {
         results.push(LintResult {
@@ -731,17 +836,27 @@ fn lint_python_line(line: &str, line_num: usize) -> Vec<LintResult> {
         });
     }
 
-    if line.contains("print(") && line.contains("password")
+    // A secret is being logged only when a print/log call AND a secret-ish word
+    // are on the same line. The prior rule used broken || precedence and fired on
+    // ANY line containing "secret" or "token" (e.g. a docstring, a parameter
+    // definition, or a dict) regardless of whether there was a print call.
+    let is_print_call = line.contains("print(")
+        || line.contains("println!(")
+        || line.contains("log::")
+        || line.contains("logging.")
+        || line.contains("logger.");
+    let has_secret_word = line.contains("password")
         || line.contains("secret")
         || line.contains("token")
-    {
+        || line.contains("api_key");
+    if is_print_call && has_secret_word {
         results.push(LintResult {
             file: String::new(),
             line: line_num,
             column: 1,
             severity: LintSeverity::Error,
             rule: "secret_log".to_string(),
-            message: "Potential secret being printed - use logging library with redaction"
+            message: "Potential secret being printed — use a logging library with redaction"
                 .to_string(),
         });
     }
@@ -798,13 +913,25 @@ fn lint_python_line(line: &str, line_num: usize) -> Vec<LintResult> {
         });
     }
 
-    // NEW: shadowing built-in
-    if line.contains("list = ")
-        || line.contains("dict = ")
-        || line.contains("str = ")
-        || line.contains("int = ")
-        || line.contains("type = ")
-    {
+    // NEW: shadowing built-in. Only when the built-in name is assigned as a
+    // bare local (whole word, not a member access like `self.str = ...` and not
+    // inside a string literal — handled by `code_only` + the `.` guard).
+    let shadows_builtin = ["list", "dict", "str", "int", "type"].iter().any(|name| {
+        let pat = format!("{name} = ");
+        let mut from = 0;
+        while let Some(rel) = code[from..].find(&pat) {
+            let idx = from + rel;
+            let prev = code[..idx].chars().next_back();
+            let prev_is_ident_or_dot =
+                matches!(prev, Some(c) if c.is_alphanumeric() || c == '_' || c == '.');
+            if !prev_is_ident_or_dot {
+                return true;
+            }
+            from = idx + pat.len();
+        }
+        false
+    });
+    if shadows_builtin {
         results.push(LintResult {
             file: String::new(),
             line: line_num,
@@ -820,6 +947,9 @@ fn lint_python_line(line: &str, line_num: usize) -> Vec<LintResult> {
 
 fn lint_typescript_line(line: &str, line_num: usize) -> Vec<LintResult> {
     let mut results = Vec::new();
+    // Code with string literals / `//` comments blanked, for rules that must
+    // only fire on real code (not on a pattern quoted in a string).
+    let code = code_only(line);
 
     if line.contains("eval(") {
         results.push(LintResult {
@@ -832,11 +962,26 @@ fn lint_typescript_line(line: &str, line_num: usize) -> Vec<LintResult> {
         });
     }
 
-    if line.contains("any") && line.contains(": ") && !line.contains("//") {
+    // `any` used as a TYPE annotation, not a substring of an identifier like
+    // `company` / `getAnyResult`. Require `any` as a whole word appearing in a
+    // type position: `: any`, `as any`, `<any`, `any>`, `any[]`, `any,`, `any)`,
+    // `any;`, `any |`/`| any`. Checked against code (strings/comments blanked).
+    let any_as_type = word_in(&code, "any")
+        && (code.contains(": any")
+            || code.contains("as any")
+            || code.contains("<any")
+            || code.contains("any>")
+            || code.contains("any[]")
+            || code.contains("any,")
+            || code.contains("any)")
+            || code.contains("any;")
+            || code.contains("any |")
+            || code.contains("| any"));
+    if any_as_type {
         results.push(LintResult {
             file: String::new(),
             line: line_num,
-            column: line.find("any").unwrap_or(0) + 1,
+            column: code.find("any").unwrap_or(0) + 1,
             severity: LintSeverity::Suggest,
             rule: "any_type".to_string(),
             message: "Using 'any' type loses type safety - consider using generic or unknown"
@@ -856,16 +1001,14 @@ fn lint_typescript_line(line: &str, line_num: usize) -> Vec<LintResult> {
         });
     }
 
-    // NEW: == instead of === (loose equality)
-    if line.contains(" = ")
-        && line.contains(" == ")
-        && !line.contains("===")
-        && !line.contains("//")
-    {
+    // NEW: == / != instead of === / !== (loose equality). Detect a genuine
+    // loose-equality operator in code, excluding the strict `===` / `!==` forms.
+    let loose_eq_col = find_loose_equality(&code);
+    if let Some(col) = loose_eq_col {
         results.push(LintResult {
             file: String::new(),
             line: line_num,
-            column: line.find(" == ").unwrap_or(0) + 1,
+            column: col + 1,
             severity: LintSeverity::Suggest,
             rule: "loose_equality".to_string(),
             message: "Use === instead of == for strict equality".to_string(),
@@ -1017,8 +1160,35 @@ fn lint_java_line(line: &str, line_num: usize) -> Vec<LintResult> {
     results
 }
 
-fn lint_csharp_line(_line: &str, _line_num: usize) -> Vec<LintResult> {
-    vec![]
+fn lint_csharp_line(line: &str, line_num: usize) -> Vec<LintResult> {
+    let mut results = Vec::new();
+    let code = code_only(line);
+
+    // Console.WriteLine left in code (debug output).
+    if code.contains("Console.WriteLine(") || code.contains("Console.Write(") {
+        results.push(LintResult {
+            file: String::new(),
+            line: line_num,
+            column: code.find("Console.Write").unwrap_or(0) + 1,
+            severity: LintSeverity::Suggest,
+            rule: "debug_print".to_string(),
+            message: "Console.Write* found - use a logging framework in production".to_string(),
+        });
+    }
+
+    // Empty catch block swallows exceptions.
+    if code.contains("catch") && code.replace(' ', "").contains("catch{}") {
+        results.push(LintResult {
+            file: String::new(),
+            line: line_num,
+            column: code.find("catch").unwrap_or(0) + 1,
+            severity: LintSeverity::Warn,
+            rule: "empty_catch".to_string(),
+            message: "Empty catch block swallows exceptions - handle or log them".to_string(),
+        });
+    }
+
+    results
 }
 
 fn lint_ruby_line(line: &str, line_num: usize) -> Vec<LintResult> {
@@ -1055,24 +1225,57 @@ fn lint_php_line(line: &str, line_num: usize) -> Vec<LintResult> {
     results
 }
 
-fn lint_adoc_line(line: &str, line_num: usize) -> Vec<LintResult> {
+/// Stateful tracker for adoc `[mermaid]` fenced blocks, threaded line-by-line
+/// through [`lint_adoc_line`]. A `[mermaid]` attribute line arms the next
+/// `----` fence to open a mermaid block; the matching `----` closes it. Plain
+/// (non-mermaid) `----` listing blocks are ignored so they don't suppress the
+/// ascii_graph rule. This type is local to this module.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum MermaidState {
+    /// Not in or near a mermaid block.
+    #[default]
+    Outside,
+    /// Saw `[mermaid]`; the next `----` fence opens the block.
+    Armed,
+    /// Inside an open mermaid fenced block.
+    Inside,
+}
+
+/// `mermaid` tracks, across calls (one per line), whether the current line is
+/// inside a `[mermaid]` fenced block. This makes mermaid exclusion stateful so a
+/// multi-line mermaid diagram is never flagged as an ASCII graph.
+fn lint_adoc_line(line: &str, line_num: usize, mermaid: &mut MermaidState) -> Vec<LintResult> {
     let mut results = Vec::new();
+    let trimmed = line.trim();
+
+    // A `[mermaid]` / `[source,mermaid]` attribute line arms the next fence.
+    if trimmed.starts_with("[mermaid") || trimmed.contains("source,mermaid") {
+        *mermaid = MermaidState::Armed;
+        return results;
+    }
+    if trimmed.starts_with("----") {
+        *mermaid = match *mermaid {
+            MermaidState::Armed => MermaidState::Inside, // opening fence
+            MermaidState::Inside => MermaidState::Outside, // closing fence
+            MermaidState::Outside => MermaidState::Outside, // unrelated listing
+        };
+        return results;
+    }
 
     // Rule: No ASCII art graphs - must use Mermaid
     // Box-drawing characters that indicate ASCII graphs
     let ascii_graph_chars = ['│', '├', '└', '┌', '┐', '┘', '┼', '╭', '╮', '╯', '╰', '═'];
     let has_ascii_graph = ascii_graph_chars.iter().any(|c| line.contains(*c));
 
-    // But allow if it's inside a mermaid block
-    // This is a simple heuristic - would need more sophisticated parsing for full correctness
-    let is_in_mermaid = line.starts_with("----")
-        || line.contains("[mermaid")
-        || line.starts_with("flowchart")
-        || line.starts_with("graph")
-        || line.starts_with("pie")
-        || line.starts_with("sequenceDiagram")
-        || line.starts_with("classDiagram")
-        || line.starts_with("stateDiagram");
+    // Allow if inside a mermaid fenced block (stateful) or if the line itself is
+    // a mermaid diagram-type declaration.
+    let is_mermaid_decl = trimmed.starts_with("flowchart")
+        || trimmed.starts_with("graph")
+        || trimmed.starts_with("pie")
+        || trimmed.starts_with("sequenceDiagram")
+        || trimmed.starts_with("classDiagram")
+        || trimmed.starts_with("stateDiagram");
+    let is_in_mermaid = *mermaid == MermaidState::Inside || is_mermaid_decl;
 
     if has_ascii_graph && !is_in_mermaid && line.len() > 10 {
         results.push(LintResult {
@@ -1127,9 +1330,7 @@ mod tests {
         );
         // sc-no-secret-ingest — hard-coded credential in a string literal.
         let aws_key_code = ["let k = \"", "AKIA", "IOSFODNN7EXAMPLE\";"].concat();
-        assert!(
-            rules(&aws_key_code, "rs").contains(&"sc-no-secret-ingest".to_string())
-        );
+        assert!(rules(&aws_key_code, "rs").contains(&"sc-no-secret-ingest".to_string()));
     }
 
     #[test]
@@ -1202,7 +1403,10 @@ mod tests {
 
     #[test]
     fn dead_code_flags_unreferenced_function() {
-        assert!(is_dead_code(&sym("orphan_fn", NodeType::Function, 0), false));
+        assert!(is_dead_code(
+            &sym("orphan_fn", NodeType::Function, 0),
+            false
+        ));
         assert!(is_dead_code(&sym("OrphanType", NodeType::Type, 0), false));
     }
 
@@ -1225,7 +1429,209 @@ mod tests {
         // With --include-public, entry points ARE flagged.
         assert!(is_dead_code(&main, true));
         // Qualified entry-point names are treated the same.
-        assert!(!is_dead_code(&sym("app::main", NodeType::Function, 0), false));
+        assert!(!is_dead_code(
+            &sym("app::main", NodeType::Function, 0),
+            false
+        ));
+    }
+
+    // ---- helpers for per-language line rules ----
+    fn rust_rules(line: &str) -> Vec<String> {
+        lint_rust_line(line, 1)
+            .into_iter()
+            .map(|r| r.rule)
+            .collect()
+    }
+    fn py_rules(line: &str) -> Vec<String> {
+        lint_python_line(line, 1)
+            .into_iter()
+            .map(|r| r.rule)
+            .collect()
+    }
+    fn ts_rules(line: &str) -> Vec<String> {
+        lint_typescript_line(line, 1)
+            .into_iter()
+            .map(|r| r.rule)
+            .collect()
+    }
+    fn cs_rules(line: &str) -> Vec<String> {
+        lint_csharp_line(line, 1)
+            .into_iter()
+            .map(|r| r.rule)
+            .collect()
+    }
+    fn has(v: &[String], r: &str) -> bool {
+        v.iter().any(|x| x == r)
+    }
+
+    // ---------- Rust: unnecessary_clone ----------
+    #[test]
+    fn unnecessary_clone_true_and_false_positives() {
+        // true positive: clone on a whole-word Copy type
+        assert!(has(
+            &rust_rules("let x: i32 = y.clone();"),
+            "unnecessary_clone"
+        ));
+        assert!(has(
+            &rust_rules("let b: bool = flag.clone();"),
+            "unnecessary_clone"
+        ));
+        // false positive: `i32` only as a substring of an identifier
+        assert!(!has(
+            &rust_rules("let v = parse_i32(s).clone();"),
+            "unnecessary_clone"
+        ));
+        // false positive: type name only inside a comment
+        assert!(!has(
+            &rust_rules("let s = name.clone(); // returns i32 later"),
+            "unnecessary_clone"
+        ));
+        // false positive: no copy type at all
+        assert!(!has(
+            &rust_rules("let s = name.clone();"),
+            "unnecessary_clone"
+        ));
+    }
+
+    // ---------- Rust: unwrap_or_default ----------
+    #[test]
+    fn unwrap_or_default_narrowed() {
+        // true positive: closure returns a Default construction
+        assert!(has(
+            &rust_rules("let v = opt.unwrap_or_else(|| Vec::new());"),
+            "unwrap_or_default"
+        ));
+        assert!(has(
+            &rust_rules("let s = opt.unwrap_or_else(|| String::new());"),
+            "unwrap_or_default"
+        ));
+        assert!(has(
+            &rust_rules("let n = opt.unwrap_or_else(|| 0);"),
+            "unwrap_or_default"
+        ));
+        // false positive: closure returns a non-default value
+        assert!(!has(
+            &rust_rules("let v = opt.unwrap_or_else(|| compute_fallback());"),
+            "unwrap_or_default"
+        ));
+        assert!(!has(
+            &rust_rules("let v = opt.unwrap_or_else(|_| other.clone());"),
+            "unwrap_or_default"
+        ));
+    }
+
+    // ---------- Python: shadow_builtin ----------
+    #[test]
+    fn shadow_builtin_true_and_false_positives() {
+        assert!(has(&py_rules("list = []"), "shadow_builtin"));
+        assert!(has(&py_rules("str = get_name()"), "shadow_builtin"));
+        // false positive: member assignment, not a bare local
+        assert!(!has(&py_rules("self.str = value"), "shadow_builtin"));
+        assert!(!has(&py_rules("obj.list = []"), "shadow_builtin"));
+        // false positive: inside a string literal
+        assert!(!has(&py_rules("msg = \"str = value\""), "shadow_builtin"));
+    }
+
+    // ---------- Python: other rules still fire ----------
+    #[test]
+    fn python_basic_rules() {
+        assert!(has(&py_rules("x = eval(user_input)"), "eval_usage"));
+        assert!(has(&py_rules("if x == None:"), "comparison_none"));
+        assert!(has(&py_rules("from os import *"), "wildcard_import"));
+    }
+
+    // ---------- TS: any_type ----------
+    #[test]
+    fn any_type_true_and_false_positives() {
+        assert!(has(&ts_rules("function f(x: any) {}"), "any_type"));
+        assert!(has(&ts_rules("const v = data as any;"), "any_type"));
+        assert!(has(&ts_rules("let xs: any[] = [];"), "any_type"));
+        // false positive: `any` as substring of an identifier
+        assert!(!has(
+            &ts_rules("const company: string = getCompany();"),
+            "any_type"
+        ));
+        assert!(!has(&ts_rules("const r = getAnyResult();"), "any_type"));
+        // false positive: pattern inside a string
+        assert!(!has(&ts_rules("const s: string = \": any\";"), "any_type"));
+    }
+
+    // ---------- TS: loose_equality ----------
+    #[test]
+    fn loose_equality_true_and_false_positives() {
+        assert!(has(&ts_rules("if (a == b) {}"), "loose_equality"));
+        assert!(has(&ts_rules("if (a != b) {}"), "loose_equality"));
+        // false positive: strict equality
+        assert!(!has(&ts_rules("if (a === b) {}"), "loose_equality"));
+        assert!(!has(&ts_rules("if (a !== b) {}"), "loose_equality"));
+        // false positive: plain assignment
+        assert!(!has(&ts_rules("const x = b;"), "loose_equality"));
+        // false positive: `==` inside a string
+        assert!(!has(&ts_rules("const s = \"a == b\";"), "loose_equality"));
+    }
+
+    // ---------- TS: other rules ----------
+    #[test]
+    fn typescript_basic_rules() {
+        assert!(has(&ts_rules("console.log(x);"), "console_log"));
+        assert!(has(&ts_rules("var x = 1;"), "var_usage"));
+    }
+
+    // ---------- C# ----------
+    #[test]
+    fn csharp_rules() {
+        assert!(has(&cs_rules("Console.WriteLine(x);"), "debug_print"));
+        assert!(has(&cs_rules("try { f(); } catch { }"), "empty_catch"));
+        // false positive: WriteLine inside a string is not code
+        assert!(!has(
+            &cs_rules("var s = \"Console.WriteLine(x)\";"),
+            "debug_print"
+        ));
+        assert!(cs_rules("int x = 1;").is_empty());
+    }
+
+    // ---------- adoc: stateful mermaid ----------
+    fn adoc_lines(lines: &[&str]) -> Vec<String> {
+        let mut st = MermaidState::default();
+        let mut out = Vec::new();
+        for (i, l) in lines.iter().enumerate() {
+            for r in lint_adoc_line(l, i + 1, &mut st) {
+                out.push(r.rule);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn adoc_mermaid_block_is_stateful() {
+        // A multi-line mermaid fenced block must NOT be flagged as ascii_graph.
+        let block = [
+            "[mermaid]",
+            "----",
+            "graph TD",
+            "  A --> B",
+            "  ├── child",
+            "  └── leaf",
+            "----",
+        ];
+        assert!(!has(&adoc_lines(&block), "ascii_graph"));
+
+        // The SAME box-drawing content outside a mermaid block IS flagged.
+        let raw = ["Some prose here", "  ├── child node goes here longer"];
+        assert!(has(&adoc_lines(&raw), "ascii_graph"));
+    }
+
+    #[test]
+    fn adoc_plain_listing_block_does_not_suppress() {
+        // A non-mermaid `----` listing block must not arm mermaid state, so an
+        // ascii graph after it is still flagged.
+        let lines = [
+            "----",
+            "some code",
+            "----",
+            "  ├── this is an ascii graph line that is long",
+        ];
+        assert!(has(&adoc_lines(&lines), "ascii_graph"));
     }
 
     #[test]

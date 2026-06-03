@@ -20,9 +20,9 @@
 //! `AdenEdge` (wrapping `aden_core::EdgeType`) so aden_core types
 //! can be used with the generic `AdenGraph<N, E>` engine.
 
-use aden_core::{Document, EdgeType};
-use crate::nodes::{GraphNode, GraphEdge};
+use crate::nodes::{GraphEdge, GraphNode};
 use crate::parser::ParsedDocument;
+use aden_core::{Document, EdgeType};
 use std::collections::HashMap;
 use std::path::PathBuf;
 

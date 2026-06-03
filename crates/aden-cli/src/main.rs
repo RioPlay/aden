@@ -177,7 +177,10 @@ enum Commands {
         fix: bool,
         #[arg(long, help = "Output JSON format")]
         json: bool,
-        #[arg(long, help = "Flag potentially dead code (symbols with no incoming graph edges)")]
+        #[arg(
+            long,
+            help = "Flag potentially dead code (symbols with no incoming graph edges)"
+        )]
         dead_code: bool,
         #[arg(long, help = "Include public API / entry points in dead-code analysis")]
         include_public: bool,
@@ -459,7 +462,7 @@ enum Commands {
         propose: bool,
         #[arg(
             long,
-            help = "Auto-fix StaleHash and MissingContract drift (high confidence only)"
+            help = "Auto-fix high-confidence drift: rewrites SignatureMismatch in the store and legacy on-disk StaleHash. Store-resident StaleHash and MissingContract are reported and deferred to `aden gen`"
         )]
         fix: bool,
         #[arg(
@@ -487,7 +490,10 @@ enum Commands {
     Ready {
         #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
         path: PathBuf,
-        #[arg(long, help = "Apply auto-fixes where possible (lint + high-confidence heal)")]
+        #[arg(
+            long,
+            help = "Apply auto-fixes where possible (lint + high-confidence heal)"
+        )]
         fix: bool,
     },
     /// One-shot symbol comprehension: definition, backlinks, impact, and assembled context
@@ -581,6 +587,11 @@ enum Commands {
     Mcp {
         #[command(subcommand)]
         action: McpAction,
+    },
+    /// Manage per-user, per-project graph stores (ADR-003)
+    Store {
+        #[command(subcommand)]
+        action: StoreAction,
     },
     /// Emergency override: downgrade global Forbid to Warn, auto-expires
     Emergency {
@@ -680,6 +691,27 @@ enum McpAction {
 }
 
 #[derive(Subcommand)]
+enum StoreAction {
+    /// Print the resolved store path for the current project
+    Path {
+        #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
+        path: PathBuf,
+    },
+    /// List all per-user project stores and their real roots
+    List,
+    /// Remove stores whose project root no longer exists on disk
+    Prune {
+        #[arg(long, help = "Show what would be removed without deleting")]
+        dry_run: bool,
+    },
+    /// Move a legacy in-tree store (.aden/store) to the central location
+    Migrate {
+        #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
+        path: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
 enum FederationAction {
     /// List repositories in the workspace
     List,
@@ -732,10 +764,21 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
     let _unlimited = cli.unlimited;
     let _global_json = cli.json;
 
+    // ADR-003 §6: store *creation* is explicitly authorized when -p/--project
+    // was given or the command is `init`. Reads never consult this flag.
+    util::set_creation_explicit(
+        cli.project.is_some() || matches!(cli.command, Commands::Init { .. }),
+    );
+
     if let Some(ref project_path) = cli.project {
         if project_path.exists() && project_path.is_dir() {
             std::env::set_current_dir(project_path)?;
             eprintln!("Switched to aden project: {}", project_path.display());
+            // Persist the resolved root so future calls without --project pick it up.
+            let resolved = find_project_root(project_path);
+            if let Err(e) = util::write_project_conf(&resolved) {
+                eprintln!("Warning: could not write project.conf: {}", e);
+            }
         } else {
             eprintln!(
                 "Warning: Project path does not exist: {}",
@@ -751,11 +794,11 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
         } => commands::cmd_init(&path, with_secure_refs),
         Commands::Regen { path } => {
             let root = find_project_root(&path);
-            let gen_cache = root.join(".aden").join("gen-cache.json");
+            let gen_cache = aden_paths::gen_cache_file(&root);
             if gen_cache.exists() {
                 let _ = std::fs::remove_file(&gen_cache);
             }
-            let graph_cache = root.join(".aden").join("cache");
+            let graph_cache = aden_paths::cache_dir(&root);
             if graph_cache.exists() {
                 let _ = std::fs::remove_dir_all(&graph_cache);
             }
@@ -790,9 +833,12 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
             include_public,
         } => commands::cmd_lint(&path, &severity, fix, json, dead_code, include_public),
         Commands::Ready { path, fix } => commands::cmd_ready(&path, fix),
-        Commands::Understand { symbol, path, budget, json } => {
-            commands::cmd_understand(&symbol, &path, budget, json)
-        }
+        Commands::Understand {
+            symbol,
+            path,
+            budget,
+            json,
+        } => commands::cmd_understand(&symbol, &path, budget, json),
         Commands::Test {
             path,
             scope,
@@ -988,6 +1034,7 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
                 let env = serde_json::json!({
                     "path": path.display().to_string(),
                     "aden_dir": aden_path.display().to_string(),
+                    "store": aden_paths::store_dir(&find_project_root(&path)).display().to_string(),
                     "health_score": health,
                     "health": health_pct,
                     "orphans": {
@@ -1002,6 +1049,10 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
 
             println!("Aden Status: {}", path.display());
             println!("Active .aden: {}", aden_path.display());
+            println!(
+                "Store: {}",
+                aden_paths::store_dir(&find_project_root(&path)).display()
+            );
             let emoji = if health >= 0.95 {
                 "✅"
             } else if health >= 0.8 {
@@ -1098,8 +1149,8 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
                 commands::cmd_heal_scan(&path, propose, fix, gc, cli.unlimited)
             }
         }
-        Commands::CiCheck { path } => commands::cmd_ci_check(&path),
-        Commands::Doctor { path } => commands::cmd_doctor(&path),
+        Commands::CiCheck { path } => commands::cmd_ci_check(&path, cli.json),
+        Commands::Doctor { path } => commands::cmd_doctor(&path, cli.json),
         Commands::Review {
             path,
             budget,
@@ -1125,7 +1176,7 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
             status.as_deref().unwrap_or("in_progress"),
         ),
         Commands::Licenses { path, out, full } => {
-            commands::cmd_licenses(&path, out.as_deref(), full, false)
+            commands::cmd_licenses(&path, out.as_deref(), full, cli.json)
         }
         Commands::Federation { action } => commands::cmd_federation(&action),
         Commands::Audit {
@@ -1133,7 +1184,7 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
             lang,
             format,
             strict,
-        } => commands::cmd_audit(&path, lang.as_deref(), &format, strict),
+        } => commands::cmd_audit(&path, lang.as_deref(), &format, strict, cli.json),
         Commands::New { name, lang, path } => commands::cmd_new(&name, &lang, &path),
         Commands::Overlay { anchor, path } => commands::overlay::cmd_overlay(&path, &anchor),
         Commands::Kickoff {
@@ -1178,8 +1229,21 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
             McpAction::List => mcp::run_list(),
             McpAction::Serve { port, path } => mcp::run_http_server(&path, port),
         },
+        Commands::Store { action } => match action {
+            StoreAction::Path { path } => commands::cmd_store_path(&path),
+            StoreAction::List => commands::cmd_store_list(),
+            StoreAction::Prune { dry_run } => commands::cmd_store_prune(dry_run),
+            StoreAction::Migrate { path } => commands::cmd_store_migrate(&path),
+        },
         Commands::Emergency { reason, ttl, path } => commands::cmd_emergency(&path, &reason, &ttl),
         Commands::Suggest { intent } => commands::cmd_suggest(&intent),
-        Commands::Diagnose { path, format } => commands::cmd_diagnose(&path, &format),
+        Commands::Diagnose { path, format } => {
+            let effective_format = if cli.json && format == "text" {
+                "json".to_string()
+            } else {
+                format
+            };
+            commands::cmd_diagnose(&path, &effective_format)
+        }
     }
 }

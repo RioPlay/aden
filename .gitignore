@@ -2,13 +2,28 @@
 # Build output & aden artifacts
 # ─────────────────────────────────────────────────────────────────────────
 /target
-**/.aden/
+# ADR-003: the rebuildable graph store/caches now live in the per-user data dir,
+# never in-tree. Ignore any legacy in-tree rebuildable artifacts, but TRACK the
+# durable, repo-coupled intent meant to travel with the repository (overlays,
+# constitution, hooks, the persisted project root).
+**/.aden/store/
+**/.aden/cache/
+**/.aden/gen-cache.json
+**/.aden/scan-cache.json
+**/.aden/staging/
 # Legacy on-disk contracts (aden is now store-first and emits no .adoc; these
 # remain as a safety net in case an old/in-tree generation ever runs).
 **/contracts/
 crates/**/*.adoc
 benches/**/*.adoc
 src/**/*.adoc
+# Generated stub .adoc mirrors of real .md/.ts files. A stray gen/heal once
+# committed STUB placeholders alongside (e.g. README.adoc next to README.md) and
+# overwrote hand-authored .agent docs. Ignore the locations where .adoc is NEVER
+# hand-authored. Real docs live in docs/*.adoc and .agent/*.adoc (NOT ignored).
+/*.adoc
+research/**/*.adoc
+editors/**/*.adoc
 # Cargo.lock is committed at the workspace root for CI reproducibility.
 
 # ─────────────────────────────────────────────────────────────────────────

@@ -134,10 +134,19 @@ fn resolve_anchor_fuzzy(query: &str, results: &[SearchResult]) -> String {
 
     // Step 2: qualified token match — tokens that are specific enough to be
     // symbol names (≥3 chars, not a stop word, not a single common letter).
+    // Tokens are STEMMED (via the same stemmer the BM25 index uses) before the
+    // symbol-name comparison so "how does the indexing work" fast-paths to a
+    // symbol named `index`, consistent with the BM25 stem path. We keep both the
+    // raw lowercase form and its stem, so an exact symbol match still wins even
+    // when the symbol name itself doesn't stem cleanly.
     let query_tokens: Vec<String> = query
         .split(|c: char| !c.is_alphanumeric() && c != '_')
         .filter(|s| s.len() >= 3 && !SYMBOL_STOP_WORDS.contains(&s.to_lowercase().as_str()))
-        .map(|s| s.to_lowercase())
+        .flat_map(|s| {
+            let lower = s.to_lowercase();
+            let stemmed = aden_index::tokenize(s);
+            std::iter::once(lower).chain(stemmed)
+        })
         .collect();
 
     for result in results.iter().take(20) {
@@ -149,7 +158,11 @@ fn resolve_anchor_fuzzy(query: &str, results: &[SearchResult]) -> String {
             if SYMBOL_STOP_WORDS.contains(&sym_lower.as_str()) {
                 continue;
             }
-            if query_tokens.contains(&sym_lower) {
+            // Compare against both the raw symbol name and its stem.
+            let sym_stem = aden_index::tokenize(&sym_lower);
+            if query_tokens.contains(&sym_lower)
+                || sym_stem.iter().any(|st| query_tokens.contains(st))
+            {
                 return result.anchor.clone();
             }
         }
@@ -167,9 +180,10 @@ fn resolve_anchor_fuzzy(query: &str, results: &[SearchResult]) -> String {
     // Helper: true if anchor is a symbol whose bare name is a stop word.
     let is_stopword_symbol = |anchor: &str| -> bool {
         if let Some(sym) = anchor.rsplit('#').next()
-            && anchor.contains('#') {
-                return SYMBOL_STOP_WORDS.contains(&sym.to_lowercase().as_str());
-            }
+            && anchor.contains('#')
+        {
+            return SYMBOL_STOP_WORDS.contains(&sym.to_lowercase().as_str());
+        }
         false
     };
 
@@ -332,13 +346,12 @@ pub fn cmd_asm(opts: AsmOptions) -> Result<(), Box<dyn std::error::Error>> {
         // a lower-relevance node is the worst failure mode for an LLM. We only
         // fall back to fuzzy resolution when the exact anchor is NOT found, and
         // either way the search results still feed the relevance boost.
-        let resolved = if aden_graph::cache::resolve_anchor_in_store(&opts.path, &opts.from)
-            .is_some()
-        {
-            opts.from.clone()
-        } else {
-            resolve_anchor_fuzzy(&opts.from, &results)
-        };
+        let resolved =
+            if aden_graph::cache::resolve_anchor_in_store(&opts.path, &opts.from).is_some() {
+                opts.from.clone()
+            } else {
+                resolve_anchor_fuzzy(&opts.from, &results)
+            };
         if resolved != opts.from {
             eprintln!("INFO: Resolved '{}' → '{}'", opts.from, resolved);
         }
@@ -482,6 +495,30 @@ pub fn cmd_query(
 
     let mut results = Vec::new();
 
+    // Parse the --edge-type filter once up front so every mode (--from,
+    // --backlinks, --impact) can honor it.
+    let filter_type = if let Some(et) = edge_type {
+        let valid = valid_edge_types().join(", ");
+        Some(
+            parse_single_edge_type(et)
+                .ok_or_else(|| format!("invalid edge type: '{}'. Valid: {}", et, valid))?,
+        )
+    } else {
+        None
+    };
+
+    // Collect the edge types of ALL parallel edges from `a` to `b`. petgraph is a
+    // multigraph, so a single (a -> b) pair may carry several edges of different
+    // types; `find_edge` would return an arbitrary one. Callers test whether ANY
+    // edge matches the desired type/filter (mirrors `traverse::ordered_neighbors`).
+    let edges_between = |a, b| -> Vec<aden_core::EdgeType> {
+        graph
+            .graph
+            .edges_connecting(a, b)
+            .map(|e| e.weight().edge_type)
+            .collect()
+    };
+
     if let Some(anchor) = &from {
         let start_idx = graph.get_index(anchor).ok_or_else(|| {
             format!(
@@ -489,15 +526,6 @@ pub fn cmd_query(
                 anchor
             )
         })?;
-        let filter_type = if let Some(et) = edge_type {
-            let valid = valid_edge_types().join(", ");
-            Some(
-                parse_single_edge_type(et)
-                    .ok_or_else(|| format!("invalid edge type: '{}'. Valid: {}", et, valid))?,
-            )
-        } else {
-            None
-        };
 
         let mut visited = HashSet::new();
         let mut queue = VecDeque::new();
@@ -510,16 +538,16 @@ pub fn cmd_query(
                 continue;
             }
             for neighbor in graph.graph.neighbors_directed(node, Direction::Outgoing) {
-                let weight = graph
-                    .graph
-                    .find_edge(node, neighbor)
-                    .and_then(|e| graph.graph.edge_weight(e))
-                    .map(|e| &e.edge_type)
-                    .copied()
-                    .unwrap_or(aden_core::EdgeType::Uses);
-                if let Some(ft) = filter_type
-                    && weight != ft
-                {
+                // A (node -> neighbor) pair may carry several parallel edges of
+                // different types (e.g. Calls AND Documents). `find_edge` returns
+                // an arbitrary one, so a node could be wrongly skipped. Check ALL
+                // edges between the pair and keep the neighbor if ANY edge matches
+                // the filter (mirrors `traverse::ordered_neighbors`).
+                let passes = match filter_type {
+                    Some(ft) => edges_between(node, neighbor).contains(&ft),
+                    None => true,
+                };
+                if !passes {
                     continue;
                 }
                 if visited.insert(neighbor) {
@@ -535,11 +563,22 @@ pub fn cmd_query(
                 anchor
             )
         })?;
+        let mut seen = HashSet::new();
         for neighbor in graph
             .graph
             .neighbors_directed(target_idx, Direction::Incoming)
         {
-            results.push(node_to_json(&graph.graph[neighbor], 1));
+            // Honor --edge-type: keep an incoming neighbor only if at least one
+            // edge from it to the target matches the requested type. Check ALL
+            // parallel edges (a source may link via several edge types).
+            if let Some(ft) = filter_type
+                && !edges_between(neighbor, target_idx).contains(&ft)
+            {
+                continue;
+            }
+            if seen.insert(neighbor) {
+                results.push(node_to_json(&graph.graph[neighbor], 1));
+            }
         }
     } else if let Some(anchor) = &impact {
         let start_idx = graph.get_index(anchor).ok_or_else(|| {
@@ -553,6 +592,9 @@ pub fn cmd_query(
             aden_core::EdgeType::Calls,
             aden_core::EdgeType::Constrains,
             aden_core::EdgeType::Invokes,
+            // Implements and Mutates are direct downstream impact edges too.
+            aden_core::EdgeType::Implements,
+            aden_core::EdgeType::Mutates,
         ];
 
         let mut visited = HashSet::new();
@@ -563,14 +605,13 @@ pub fn cmd_query(
 
         while let Some((node, d)) = queue.pop_front() {
             for neighbor in graph.graph.neighbors_directed(node, Direction::Outgoing) {
-                let weight = graph
-                    .graph
-                    .find_edge(node, neighbor)
-                    .and_then(|e| graph.graph.edge_weight(e))
-                    .map(|e| &e.edge_type)
-                    .copied()
-                    .unwrap_or(aden_core::EdgeType::Uses);
-                if !impact_types.contains(&weight) {
+                // Parallel edges: keep the neighbor if ANY edge between the pair
+                // is an impact edge, instead of testing only `find_edge`'s
+                // arbitrary pick.
+                if !edges_between(node, neighbor)
+                    .iter()
+                    .any(|et| impact_types.contains(et))
+                {
                     continue;
                 }
                 if visited.insert(neighbor) {
@@ -606,6 +647,26 @@ pub fn cmd_query(
 /// stem-lite `starts_with` for keywords ≥4 chars (so `fail`→`fails`/`failing`,
 /// `break`→`breaks`). Multi-word phrases (containing a space) match as
 /// substrings of the full lowercased question.
+/// True if query word `word` is the short keyword `kw` (`<4` chars) or one of
+/// its common inflected forms (`-s`, `-es`, `-ed`, `-d`, `-ing`, with a doubled
+/// final consonant variant). Deliberately conservative: it matches `use`→`uses`/
+/// `used`/`using` but NOT unrelated longer words like `user` or `useful`.
+fn is_short_inflection(word: &str, kw: &str) -> bool {
+    if word == kw {
+        return true;
+    }
+    if !word.starts_with(kw) {
+        return false;
+    }
+    let suffix = &word[kw.len()..];
+    matches!(suffix, "s" | "es" | "ed" | "d" | "ing")
+        // doubled-consonant forms: run→running, sum→summed
+        || (kw.chars().last().is_some_and(|c| c.is_ascii_alphabetic())
+            && suffix.len() >= 4
+            && suffix.starts_with(kw.chars().last().unwrap())
+            && matches!(&suffix[1..], "ed" | "ing"))
+}
+
 pub fn classify_intent(question: &str) -> QueryIntent {
     use QueryIntent::*;
 
@@ -622,8 +683,19 @@ pub fn classify_intent(question: &str) -> QueryIntent {
         (
             Debug,
             &[
-                "fail", "error", "panic", "crash", "broken", "break", "bug", "wrong", "overshoot",
-                "hang", "debug", "troubleshoot", "diagnose",
+                "fail",
+                "error",
+                "panic",
+                "crash",
+                "broken",
+                "break",
+                "bug",
+                "wrong",
+                "overshoot",
+                "hang",
+                "debug",
+                "troubleshoot",
+                "diagnose",
             ],
             &["doesn't work", "not working", "why is", "why does"],
         ),
@@ -634,18 +706,39 @@ pub fn classify_intent(question: &str) -> QueryIntent {
         ),
         (
             Refactor,
-            &["refactor", "rewrite", "rename", "restructure", "extract", "simplify"],
+            &[
+                "refactor",
+                "rewrite",
+                "rename",
+                "restructure",
+                "extract",
+                "simplify",
+            ],
             &["clean up", "move ", "split "],
         ),
         (
             Impact,
             &[
-                "depend", "dependency", "caller", "consumer", "affected", "affect", "impact",
-                "downstream", "references", "ripple",
+                "depend",
+                "dependency",
+                "caller",
+                "consumer",
+                "affected",
+                "affect",
+                "impact",
+                "downstream",
+                "references",
+                "ripple",
             ],
             &[
-                "blast radius", "what uses", "who calls", "what calls", "what breaks",
-                "what is affected", "if i change", "if i modify",
+                "blast radius",
+                "what uses",
+                "who calls",
+                "what calls",
+                "what breaks",
+                "what is affected",
+                "if i change",
+                "if i modify",
             ],
         ),
         (
@@ -682,7 +775,13 @@ pub fn classify_intent(question: &str) -> QueryIntent {
             let mut score = 0usize;
             for kw in *keywords {
                 let hit = words.contains(kw)
-                    || (kw.len() >= 4 && words.iter().any(|w| w.starts_with(kw)));
+                    || (kw.len() >= 4 && words.iter().any(|w| w.starts_with(kw)))
+                    // Short keywords (<4 chars) only got an exact-word match, so
+                    // `use` missed `uses`/`used`/`using`. Allow the keyword plus a
+                    // small set of inflectional suffixes — tight enough to avoid
+                    // matching unrelated longer words (`user`, `useful`).
+                    || (kw.len() < 4
+                        && words.iter().any(|w| is_short_inflection(w, kw)));
                 if hit {
                     score += 1;
                 }
@@ -810,6 +909,11 @@ pub fn block_filter_for_intent(intent: &QueryIntent) -> Vec<aden_asm::traverse::
         QueryIntent::General => vec![Paragraph, Table, Listing, Admonition, DescriptionList],
     }
 }
+
+/// Assembled output below this token estimate is treated as a thin stub —
+/// the anchor resolved to a bare declaration with no useful content. `ask`
+/// broadens to `mod-project` when this threshold is not met.
+const THIN_STUB_TOKEN_THRESHOLD: usize = 150;
 
 #[allow(clippy::too_many_arguments)]
 pub fn cmd_ask(
@@ -950,7 +1054,10 @@ pub fn cmd_ask(
 
     // Helper: assemble one seed's neighborhood at a given depth/budget. Cloning the
     // filters per call keeps `edge_types`/`block_filter` available across seeds.
-    let assemble_seed = |seed: &str, seed_depth: usize, seed_budget: usize| -> Result<String, Box<dyn std::error::Error>> {
+    let assemble_seed = |seed: &str,
+                         seed_depth: usize,
+                         seed_budget: usize|
+     -> Result<String, Box<dyn std::error::Error>> {
         let graph =
             aden_graph::cache::build_neighborhood_cached(path, seed, seed_depth, &edge_types)?;
         let opts = AssemblyOptions {
@@ -991,6 +1098,28 @@ pub fn cmd_ask(
         combined
     };
 
+    // Thin-stub fallback: if the resolved anchor assembled almost nothing
+    // (bare module declaration, empty node), broaden to mod-project so the
+    // LLM gets a coherent overview rather than an unhelpful 10-token stub.
+    let (assembled, start_anchor) = {
+        let est = assembled.len().div_ceil(4);
+        if est < THIN_STUB_TOKEN_THRESHOLD
+            && start_anchor != "mod-project"
+            && aden_graph::cache::resolve_anchor_in_store(path, "mod-project").is_some()
+        {
+            eprintln!(
+                "NOTE: '{}' is a thin stub (~{} tokens); broadening to 'mod-project'.",
+                start_anchor, est
+            );
+            match assemble_seed("mod-project", depth.min(1), effective_budget) {
+                Ok(fb) => (fb, "mod-project".to_string()),
+                Err(_) => (assembled, start_anchor),
+            }
+        } else {
+            (assembled, start_anchor)
+        }
+    };
+
     // Step 4: Send to LLM or print raw context
     if let Some(model_spec) = model {
         query_llm(model_spec, question, &assembled, &start_anchor)?;
@@ -1014,7 +1143,10 @@ pub fn cmd_ask(
         if !resolved_alts.is_empty() {
             // Make the ambiguity-driven seeding transparent: these shallow seeds
             // were appended because routing was a near-tie.
-            println!("<!-- Alternates (ambiguous, shallow): {} -->", resolved_alts.join(", "));
+            println!(
+                "<!-- Alternates (ambiguous, shallow): {} -->",
+                resolved_alts.join(", ")
+            );
         }
         println!("<!-- Strategy: {:?} -->", intent);
         println!("<!-- Edge Types: {} -->", edge_types_str);
@@ -1043,7 +1175,10 @@ pub fn cmd_ask(
         println!("//   Question: {}", question);
         println!("//   Anchor  : [[{}]]", start_anchor);
         if !resolved_alts.is_empty() {
-            println!("//   Alts    : {} (ambiguous, shallow)", resolved_alts.join(", "));
+            println!(
+                "//   Alts    : {} (ambiguous, shallow)",
+                resolved_alts.join(", ")
+            );
         }
         println!("//   Strategy: {:?} | Depth: {}", intent, depth);
         println!(
@@ -1260,38 +1395,37 @@ pub fn cmd_search(
 
     // If --semantics, also search the graph for semantic relationships
     let mut semantic_results: Vec<(String, String)> = Vec::new();
-    if include_semantics
-        && let Ok(graph) = aden_graph::cache::build_from_directory_cached(path) {
-            let query_lower = query.to_lowercase();
-            for edge_idx in graph.graph.edge_indices() {
-                let (src, tgt) = graph.graph.edge_endpoints(edge_idx).expect("valid edge");
-                let edge_type = &graph.graph[edge_idx];
-                let semantic_types = [
-                    aden_core::EdgeType::IsA,
-                    aden_core::EdgeType::PartOf,
-                    aden_core::EdgeType::RelatesTo,
-                    aden_core::EdgeType::SimilarTo,
-                    aden_core::EdgeType::Causes,
-                    aden_core::EdgeType::Implies,
-                    aden_core::EdgeType::SynonymOf,
-                    aden_core::EdgeType::AntonymOf,
-                    aden_core::EdgeType::AssociatedWith,
-                    aden_core::EdgeType::PrerequisiteFor,
-                    aden_core::EdgeType::Explains,
-                    aden_core::EdgeType::IsEquivalentTo,
-                ];
-                if semantic_types.contains(&edge_type.edge_type) {
-                    let src_anchor = graph.graph[src].doc.anchor.to_lowercase();
-                    let tgt_anchor = graph.graph[tgt].doc.anchor.to_lowercase();
-                    if src_anchor.contains(&query_lower) || tgt_anchor.contains(&query_lower) {
-                        semantic_results.push((
-                            graph.graph[tgt].doc.anchor.clone(),
-                            format!("{:?} via {:?}", edge_type, graph.graph[src].doc.anchor),
-                        ));
-                    }
+    if include_semantics && let Ok(graph) = aden_graph::cache::build_from_directory_cached(path) {
+        let query_lower = query.to_lowercase();
+        for edge_idx in graph.graph.edge_indices() {
+            let (src, tgt) = graph.graph.edge_endpoints(edge_idx).expect("valid edge");
+            let edge_type = &graph.graph[edge_idx];
+            let semantic_types = [
+                aden_core::EdgeType::IsA,
+                aden_core::EdgeType::PartOf,
+                aden_core::EdgeType::RelatesTo,
+                aden_core::EdgeType::SimilarTo,
+                aden_core::EdgeType::Causes,
+                aden_core::EdgeType::Implies,
+                aden_core::EdgeType::SynonymOf,
+                aden_core::EdgeType::AntonymOf,
+                aden_core::EdgeType::AssociatedWith,
+                aden_core::EdgeType::PrerequisiteFor,
+                aden_core::EdgeType::Explains,
+                aden_core::EdgeType::IsEquivalentTo,
+            ];
+            if semantic_types.contains(&edge_type.edge_type) {
+                let src_anchor = graph.graph[src].doc.anchor.to_lowercase();
+                let tgt_anchor = graph.graph[tgt].doc.anchor.to_lowercase();
+                if src_anchor.contains(&query_lower) || tgt_anchor.contains(&query_lower) {
+                    semantic_results.push((
+                        graph.graph[tgt].doc.anchor.clone(),
+                        format!("{:?} via {:?}", edge_type, graph.graph[src].doc.anchor),
+                    ));
                 }
             }
         }
+    }
 
     // Machine-readable envelope for agents: explicit counts + pagination so the
     // caller never has to parse the human table or guess whether more exists.
@@ -1355,6 +1489,42 @@ pub fn cmd_search(
     Ok(())
 }
 
+/// Standard `*`/`?` glob match. `*` matches any sequence; `?` matches one char.
+/// Used by `cmd_list --filter` so callers can write `mod-aden-*` or `*asm*`.
+fn glob_matches(pattern: &str, text: &str) -> bool {
+    let p: Vec<char> = pattern.chars().collect();
+    let t: Vec<char> = text.chars().collect();
+    let (pl, tl) = (p.len(), t.len());
+    let mut dp = vec![vec![false; tl + 1]; pl + 1];
+    dp[0][0] = true;
+    for i in 1..=pl {
+        if p[i - 1] == '*' {
+            dp[i][0] = dp[i - 1][0];
+        }
+    }
+    for i in 1..=pl {
+        for j in 1..=tl {
+            if p[i - 1] == '*' {
+                dp[i][j] = dp[i - 1][j] || dp[i][j - 1];
+            } else if p[i - 1] == '?' || p[i - 1] == t[j - 1] {
+                dp[i][j] = dp[i - 1][j - 1];
+            }
+        }
+    }
+    dp[pl][tl]
+}
+
+/// Returns true when `anchor` satisfies `pattern`.
+/// Glob patterns (containing `*` or `?`) use full glob semantics;
+/// plain strings fall back to substring match for backward compatibility.
+fn anchor_matches_filter(anchor: &str, pattern: &str) -> bool {
+    if pattern.contains('*') || pattern.contains('?') {
+        glob_matches(pattern, anchor)
+    } else {
+        anchor.contains(pattern)
+    }
+}
+
 pub fn cmd_list(
     path: &Path,
     filter: Option<&str>,
@@ -1407,7 +1577,11 @@ pub fn cmd_list(
     };
 
     let filtered: Vec<_> = match filter {
-        Some(f) => anchors.iter().filter(|a| a.contains(f)).cloned().collect(),
+        Some(f) => anchors
+            .iter()
+            .filter(|a| anchor_matches_filter(a, f))
+            .cloned()
+            .collect(),
         None => anchors,
     };
     let total_count = filtered.len();
@@ -1514,7 +1688,9 @@ fn pick_symbol_anchor(symbol: &str, anchors: &[String]) -> Option<String> {
         .iter()
         .filter(|a| {
             let al = a.to_lowercase();
-            al.ends_with(&format!("#{}", sym)) || al.ends_with(&sym) || al.contains(&format!("#{}", sym))
+            al.ends_with(&format!("#{}", sym))
+                || al.ends_with(&sym)
+                || al.contains(&format!("#{}", sym))
         })
         .collect();
     matched.sort();
@@ -1559,8 +1735,8 @@ pub fn cmd_understand(
     let anchor = match aden_graph::cache::resolve_anchor_in_store(path, symbol) {
         Some(a) => a,
         None => {
-            let store_path = path.join(".aden").join("store");
-            let anchors = aden_store::Storage::new(
+            let (store_path, _) = aden_paths::resolve_read_store(path);
+            let anchors = aden_store::Storage::open_existing(
                 store_path.to_str().ok_or("invalid store path")?,
             )
             .ok()
@@ -1749,30 +1925,32 @@ fn print_locate_results(hits: &[serde_json::Value], format: &str, context: Optio
         }
 
         // Show context if requested
-        if ctx > 0 && !file.is_empty()
-            && let Ok(lines) = std::fs::read_to_string(file) {
-                let start_num: usize = start.parse().unwrap_or(1);
-                let end_num: usize = end.parse().unwrap_or(start_num);
-                let before = start_num.saturating_sub(ctx);
-                let after = end_num + ctx;
-                let all_lines: Vec<&str> = lines.lines().collect();
-                if before < all_lines.len() && before < after {
-                    println!(
-                        "  Context (lines {}-{}):",
-                        before + 1,
-                        after.min(all_lines.len())
-                    );
-                    for (i, line) in all_lines.iter().enumerate().take(after).skip(before) {
-                        let line_num = i + 1;
-                        let marker = if line_num >= start_num && line_num <= end_num {
-                            ">"
-                        } else {
-                            " "
-                        };
-                        println!("{}{:4}: {}", marker, line_num, line);
-                    }
+        if ctx > 0
+            && !file.is_empty()
+            && let Ok(lines) = std::fs::read_to_string(file)
+        {
+            let start_num: usize = start.parse().unwrap_or(1);
+            let end_num: usize = end.parse().unwrap_or(start_num);
+            let before = start_num.saturating_sub(ctx);
+            let after = end_num + ctx;
+            let all_lines: Vec<&str> = lines.lines().collect();
+            if before < all_lines.len() && before < after {
+                println!(
+                    "  Context (lines {}-{}):",
+                    before + 1,
+                    after.min(all_lines.len())
+                );
+                for (i, line) in all_lines.iter().enumerate().take(after).skip(before) {
+                    let line_num = i + 1;
+                    let marker = if line_num >= start_num && line_num <= end_num {
+                        ">"
+                    } else {
+                        " "
+                    };
+                    println!("{}{:4}: {}", marker, line_num, line);
                 }
             }
+        }
     }
 }
 
@@ -1803,9 +1981,10 @@ pub fn cmd_locate(
         // documents that match. Building the full petgraph here is what made
         // `locate` take ~47s on the kernel (1.2M nodes); this is bounded by the
         // number of matches.
-        let store_path = path.join(".aden").join("store");
-        let storage = aden_store::Storage::new(store_path.to_str().ok_or("invalid store path")?)
-            .map_err(|e| format!("failed to open store: {}", e))?;
+        let (store_path, _) = aden_paths::resolve_read_store(path);
+        let storage =
+            aden_store::Storage::open_existing(store_path.to_str().ok_or("invalid store path")?)
+                .map_err(|e| format!("failed to open store: {}", e))?;
         let all_anchors = storage.get_all_anchors().unwrap_or_default();
 
         let sym_lower = sym.to_lowercase();
@@ -1965,13 +2144,10 @@ pub fn cmd_locate(
         }
 
         // Enrich each caller with file:line from the store (best-effort).
-        let storage = aden_store::Storage::new(
-            path.join(".aden")
-                .join("store")
-                .to_str()
-                .ok_or("invalid store path")?,
-        )
-        .ok();
+        let (store_path, _) = aden_paths::resolve_read_store(path);
+        let storage =
+            aden_store::Storage::open_existing(store_path.to_str().ok_or("invalid store path")?)
+                .ok();
         let hits: Vec<serde_json::Value> = callers
             .iter()
             .take(limit)
@@ -2572,11 +2748,17 @@ mod tests {
             result("c", 26.0),
             result("d", 10.0),
         ];
-        assert_eq!(inband_alternate_candidates("a", &results, 2), vec!["b", "c"]);
+        assert_eq!(
+            inband_alternate_candidates("a", &results, 2),
+            vec!["b", "c"]
+        );
         // `max` caps the count and rank order is preserved.
         assert_eq!(inband_alternate_candidates("a", &results, 1), vec!["b"]);
         // When the primary is the rank-2 anchor, it is still excluded.
-        assert_eq!(inband_alternate_candidates("b", &results, 2), vec!["a", "c"]);
+        assert_eq!(
+            inband_alternate_candidates("b", &results, 2),
+            vec!["a", "c"]
+        );
     }
 
     #[test]

@@ -52,8 +52,8 @@ pub mod parser;
 pub mod query;
 
 pub use graph::AdenGraph;
-pub use nodes::{GraphNode, GraphEdge};
-pub use nodes::aden::{DocumentNode, AdenEdge};
+pub use nodes::aden::{AdenEdge, DocumentNode};
+pub use nodes::{GraphEdge, GraphNode};
 pub use petgraph::Direction;
 
 #[cfg(test)]

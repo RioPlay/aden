@@ -56,7 +56,7 @@ impl LanguageExtractor for PythonResolver {
             imports: Vec::new(),
             doc_comments: Vec::new(),
         };
-        collect_module_items(tree.root_node(), source, &mut ctx);
+        collect_module_items(tree.root_node(), source, &mut ctx, "");
 
         // Phase 2: emit Documents with call-site resolution.
         let mut docs = Vec::new();
@@ -108,13 +108,17 @@ fn collect_module_items<'a>(
     node: tree_sitter::Node<'a>,
     source: &str,
     ctx: &mut ExtractionContext<'a>,
+    prefix: &str,
 ) {
     if !node.is_named() {
         return;
     }
     match node.kind() {
         "function_definition" | "async_function_definition" => {
-            let sym = extract_function_symbol(node, source, "");
+            // `prefix` is the enclosing scope (the class name for a method), so a
+            // method's qualified_name becomes `Class.method` and two same-named
+            // methods in different classes no longer collapse to one anchor.
+            let sym = extract_function_symbol(node, source, prefix);
             ctx.symbols.push(sym);
         }
         "class_definition" => {
@@ -140,11 +144,26 @@ fn collect_module_items<'a>(
         _ => {}
     }
 
-    // Recurse into children (functions/classes are already handled above,
-    // but we need to catch top-level siblings).
+    // Members of a class are qualified by the class name (compounded for nested
+    // classes); every other node keeps the current prefix. Recurse into children
+    // (functions/classes handled above, but we still catch nested siblings).
+    let child_prefix: String = if node.kind() == "class_definition" {
+        node.child_by_field_name("name")
+            .map(|n| {
+                let c = node_text(n, source);
+                if prefix.is_empty() {
+                    c.to_string()
+                } else {
+                    format!("{prefix}.{c}")
+                }
+            })
+            .unwrap_or_else(|| prefix.to_string())
+    } else {
+        prefix.to_string()
+    };
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        collect_module_items(child, source, ctx);
+        collect_module_items(child, source, ctx, &child_prefix);
     }
 }
 
@@ -362,7 +381,12 @@ fn emit_symbol_document<'a>(
     proj_name: &str,
     file_name: &str,
 ) -> Option<Document> {
-    let anchor = make_anchor(proj_name, file_name, &sym.name);
+    // Anchor on the QUALIFIED name (`Class.method`), not the bare name, so two
+    // methods named the same in different classes of one file (e.g. two
+    // `__init__`) get distinct anchors instead of collapsing — the second
+    // silently overwrote the first in the store (data loss). Top-level functions
+    // have `qualified_name == name`, so their anchors are unchanged.
+    let anchor = make_anchor(proj_name, file_name, &sym.qualified_name);
     let span = node_to_span(sym.node, path);
     let attrs = build_code_attributes(
         source,
@@ -377,17 +401,16 @@ fn emit_symbol_document<'a>(
     }
 
     // Signature table
-    let mut sig_rows = vec![vec!["Name".to_string(), sym.name.clone()]];
+    let mut sig_rows = Vec::new();
     for p in &sym.params {
-        // Value carries the parameter name (and type when known) so the
-        // assembled signature reads `f(name: T)` — not `f(Unknown)`. Python is
-        // frequently untyped, so a bare "Unknown" type is dropped as noise.
-        let value = if p.ty.is_empty() || p.ty == "Unknown" {
-            p.name.clone()
+        // Key already carries the param name; value is just the type.
+        // Python is frequently untyped — omit the type rather than emitting "Unknown".
+        let ty = if p.ty.is_empty() || p.ty == "Unknown" {
+            String::new()
         } else {
-            format!("{}: {}", p.name, p.ty)
+            p.ty.clone()
         };
-        sig_rows.push(vec![format!("param {}", p.name), value]);
+        sig_rows.push(vec![format!("param {}", p.name), ty]);
     }
     if sym.is_async {
         sig_rows.push(vec!["Async".to_string(), "true".to_string()]);
@@ -661,17 +684,7 @@ fn node_text<'a>(node: tree_sitter::Node<'a>, source: &'a str) -> &'a str {
     &source[node.start_byte()..node.end_byte()]
 }
 
-fn node_to_span<'a>(node: tree_sitter::Node<'a>, path: &Path) -> aden_core::SourceSpan {
-    let start = node.start_position();
-    let end = node.end_position();
-    aden_core::SourceSpan {
-        file: path.to_string_lossy().to_string(),
-        start_line: start.row + 1,
-        end_line: end.row + 1,
-        start_byte: node.start_byte(),
-        end_byte: node.end_byte(),
-    }
-}
+use crate::tree_sitter_common::node_to_span;
 
 /// Best-effort project name from filesystem markers.
 fn infer_python_project_name(path: &Path) -> String {

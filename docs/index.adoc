@@ -54,6 +54,8 @@ This is the canonical entry point for all Aden documentation. Read the document 
 |Document |Decision
 
 |<<adr-001>> |All architecture decisions: AsciiDoc/Rust, AGPL-3.0, Markdown emission, polyglot toolchain, semantic networks
+|<<adr-002>> |Secure-coding standard: CWE Top 25 / OWASP SCP reference model
+|<<adr-003>> |Store location and project identity (centralized per-user store; fixes subfolder pollution)
 |===
 
 == Quick Reference

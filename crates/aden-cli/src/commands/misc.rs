@@ -14,6 +14,7 @@ pub fn cmd_audit(
     lang_filter: Option<&str>,
     format: &str,
     strict: bool,
+    json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut findings: Vec<OwaspFinding> = Vec::new();
 
@@ -284,9 +285,9 @@ pub fn cmd_audit(
         }
     }
 
-    // Output
-    let is_json = format == "json";
-    let is_adoc = format == "adoc";
+    // Output — global -j/--json flag is equivalent to --format json
+    let is_json = json || format == "json";
+    let is_adoc = !is_json && format == "adoc";
 
     if findings.is_empty() {
         if is_json {
@@ -299,7 +300,9 @@ pub fn cmd_audit(
                 aden_core::rfc3339_now().split('T').next().unwrap_or("")
             );
         } else {
-            println!("  No OWASP coding vulnerabilities found in {total_scanned} file(s).");
+            // Use eprintln! so the "clean" message doesn't pollute stdout when
+            // audit is called as a sub-command inside ci-check -j.
+            eprintln!("  No OWASP coding vulnerabilities found in {total_scanned} file(s).");
         }
         return Ok(());
     }
@@ -490,21 +493,27 @@ pub fn run_project_tests(path: &Path) -> Result<(), Box<dyn std::error::Error>> 
     Err("No recognized test framework found (checked Cargo.toml, go.mod, package.json, pyproject.toml, setup.py, requirements.txt)".into())
 }
 
-pub fn cmd_ci_check(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+pub fn cmd_ci_check(path: &Path, json: bool) -> Result<(), Box<dyn std::error::Error>> {
     let mut exit_code = 0i32;
     let mut warnings = Vec::new();
-    let green = "\x1b[0;32m";
-    let red = "\x1b[0;31m";
-    let yellow = "\x1b[1;33m";
-    let reset = "\x1b[0m";
+    let mut gate_results: Vec<serde_json::Value> = Vec::new();
+    let (green, red, yellow, reset) = if json {
+        ("", "", "", "")
+    } else {
+        ("\x1b[0;32m", "\x1b[0;31m", "\x1b[1;33m", "\x1b[0m")
+    };
 
     macro_rules! gate {
         ($name:expr, $cmd:expr) => {{
-            println!("[CI] Running: {} ...", $name);
+            if !json { println!("[CI] Running: {} ...", $name); }
             match $cmd {
-                Ok(_) => println!("{}[CI] PASS: {}{}", green, $name, reset),
+                Ok(_) => {
+                    if !json { println!("{}[CI] PASS: {}{}", green, $name, reset); }
+                    gate_results.push(serde_json::json!({"name":$name,"status":"pass","blocking":true}));
+                }
                 Err(e) => {
-                    println!("{}[CI] FAIL: {} — {}{}", red, $name, e, reset);
+                    if !json { println!("{}[CI] FAIL: {} — {}{}", red, $name, e, reset); }
+                    gate_results.push(serde_json::json!({"name":$name,"status":"fail","blocking":true,"message":e.to_string()}));
                     exit_code = 1;
                 }
             }
@@ -513,12 +522,16 @@ pub fn cmd_ci_check(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
 
     macro_rules! warn {
         ($name:expr, $cmd:expr) => {{
-            println!("[CI] Checking: {} ...", $name);
+            if !json { println!("[CI] Checking: {} ...", $name); }
             match $cmd {
-                Ok(()) => println!("{}[CI] OK:   {}{}", green, $name, reset),
+                Ok(()) => {
+                    if !json { println!("{}[CI] OK:   {}{}", green, $name, reset); }
+                    gate_results.push(serde_json::json!({"name":$name,"status":"ok","blocking":false}));
+                }
                 Err(e) => {
-                    println!("{}[CI] WARN: {} — {}{}", yellow, $name, e, reset);
+                    if !json { println!("{}[CI] WARN: {} — {}{}", yellow, $name, e, reset); }
                     warnings.push(format!("{}: {}", $name, e));
+                    gate_results.push(serde_json::json!({"name":$name,"status":"warn","blocking":false,"message":e.to_string()}));
                 }
             }
         }};
@@ -553,7 +566,9 @@ pub fn cmd_ci_check(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     gate!("tests", { run_project_tests(path) });
 
     gate!("aden lint", {
-        crate::commands::cmd_lint(path, "Error", false, false, false, false)
+        // In JSON mode pass json=true so lint suppresses its human banner/summary;
+        // we only care about the Ok/Err return value for the gate.
+        crate::commands::cmd_lint(path, "Error", false, json, false, false)
     });
 
     gate!("secret scan", {
@@ -740,7 +755,9 @@ pub fn cmd_ci_check(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    gate!("owasp audit", { cmd_audit(path, None, "text", true) });
+    gate!("owasp audit", {
+        cmd_audit(path, None, "text", true, false)
+    });
 
     gate!("merge conflict markers", {
         use aden_core::filter::AdenFilter;
@@ -943,6 +960,19 @@ pub fn cmd_ci_check(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     });
 
     // ── Final Verdict ─────────────────────────────────────
+    if json {
+        let env = serde_json::json!({
+            "ok": exit_code == 0,
+            "gates": gate_results,
+            "warnings": warnings,
+        });
+        println!("{}", serde_json::to_string_pretty(&env)?);
+        if exit_code != 0 {
+            std::process::exit(exit_code);
+        }
+        return Ok(());
+    }
+
     if !warnings.is_empty() {
         println!("\n{}[CI] WARNINGS (non-blocking):{}", yellow, reset);
         for w in &warnings {
@@ -988,7 +1018,10 @@ pub fn cmd_ready(path: &Path, fix: bool) -> Result<(), Box<dyn std::error::Error
     macro_rules! step {
         ($name:expr, $body:expr) => {{
             if hard_failure.is_some() {
-                println!("{}[ready] SKIP: {} (earlier step failed){}", yellow, $name, reset);
+                println!(
+                    "{}[ready] SKIP: {} (earlier step failed){}",
+                    yellow, $name, reset
+                );
                 results.push(($name, false));
             } else {
                 println!("[ready] Running: {} ...", $name);
@@ -1037,7 +1070,9 @@ pub fn cmd_ready(path: &Path, fix: bool) -> Result<(), Box<dyn std::error::Error
     step!("gen", { crate::commands::cmd_gen(path, true) });
 
     // (2) lint — fast line-based heuristics. --fix forwards to the linter.
-    step!("lint", { crate::commands::cmd_lint(path, "Error", fix, false, false, false) });
+    step!("lint", {
+        crate::commands::cmd_lint(path, "Error", fix, false, false, false)
+    });
 
     // (3) check refs — validate every <<ref>> resolves to an [[anchor]].
     step!("check refs", {
@@ -1093,7 +1128,9 @@ pub fn cmd_ready(path: &Path, fix: bool) -> Result<(), Box<dyn std::error::Error
     });
 
     // (5) audit — OWASP-aligned source scan (in-process, no external tools).
-    step!("owasp audit", { cmd_audit(path, None, "text", true) });
+    step!("owasp audit", {
+        cmd_audit(path, None, "text", true, false)
+    });
 
     // ── Final verdict ─────────────────────────────────────
     println!("\n[ready] Summary:");
@@ -1122,27 +1159,47 @@ pub fn cmd_ready(path: &Path, fix: bool) -> Result<(), Box<dyn std::error::Error
     Ok(())
 }
 
-pub fn cmd_doctor(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    println!("Aden Doctor — Environment Diagnostics");
-    println!("═══════════════════════════════════════\n");
+pub fn cmd_doctor(path: &Path, json: bool) -> Result<(), Box<dyn std::error::Error>> {
+    // Collect structured check results regardless of output mode, then either
+    // print the human report or emit JSON. Each check is {name, ok, detail}.
+    struct Check {
+        name: String,
+        ok: bool,
+        detail: String,
+        is_error: bool, // true = blocks, false = warning/info
+    }
+    let mut checks: Vec<Check> = Vec::new();
+    let mut issues: Vec<String> = Vec::new();
 
-    let mut issues = Vec::new();
-
-    // git is universal; language toolchains are detected from project manifests
-    println!("— Version Control —");
-    if std::process::Command::new("git")
-        .arg("--version")
-        .output()
-        .is_ok()
-    {
-        println!("✓ git found");
-    } else {
-        println!("✗ git NOT FOUND");
-        issues.push("git not in PATH".to_string());
+    macro_rules! chk {
+        ($name:expr, $ok:expr, $detail:expr, $error:expr) => {{
+            let ok: bool = $ok;
+            let detail: String = $detail.to_string();
+            if !ok && $error {
+                issues.push($name.to_string());
+            }
+            checks.push(Check {
+                name: $name.to_string(),
+                ok,
+                detail,
+                is_error: $error,
+            });
+        }};
     }
 
-    // Detect project language from manifest files and check relevant toolchain
-    println!("\n— Project Language Toolchain —");
+    // git
+    let git_ok = std::process::Command::new("git")
+        .arg("--version")
+        .output()
+        .is_ok();
+    chk!(
+        "git",
+        git_ok,
+        if git_ok { "git found" } else { "git NOT FOUND" },
+        true
+    );
+
+    // Toolchains (language-agnostic — probe whatever manifests exist)
     let is_rust = path.join("Cargo.toml").exists();
     let is_node = path.join("package.json").exists();
     let is_python = path.join("pyproject.toml").exists() || path.join("setup.py").exists();
@@ -1150,71 +1207,64 @@ pub fn cmd_doctor(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
 
     if is_rust {
         for tool in &["rustc", "cargo"] {
-            if std::process::Command::new(tool)
+            let ok = std::process::Command::new(tool)
                 .arg("--version")
                 .output()
-                .is_ok()
-            {
-                println!("✓ {} found (Rust project)", tool);
-            } else {
-                println!("✗ {} NOT FOUND (Rust project detected)", tool);
-                issues.push(format!("{} not in PATH", tool));
+                .is_ok();
+            chk!(
+                format!("{tool} (Rust)"),
+                ok,
+                if ok {
+                    format!("{tool} found")
+                } else {
+                    format!("{tool} NOT FOUND")
+                },
+                true
+            );
+        }
+    }
+    for (flag, tools, req) in [
+        (is_node, vec!["node", "npm"], false),
+        (is_python, vec!["python3"], false),
+        (is_go, vec!["go"], false),
+    ] {
+        if flag {
+            for tool in tools {
+                let ok = std::process::Command::new(tool)
+                    .arg("--version")
+                    .output()
+                    .is_ok();
+                chk!(
+                    tool,
+                    ok,
+                    if ok {
+                        format!("{tool} found")
+                    } else {
+                        format!("{tool} not found")
+                    },
+                    req
+                );
             }
         }
-    }
-    if is_node {
-        for tool in &["node", "npm"] {
-            if std::process::Command::new(tool)
-                .arg("--version")
-                .output()
-                .is_ok()
-            {
-                println!("✓ {} found (Node project)", tool);
-            } else {
-                println!("⚠ {} not found (package.json detected)", tool);
-            }
-        }
-    }
-    if is_python {
-        if std::process::Command::new("python3")
-            .arg("--version")
-            .output()
-            .is_ok()
-        {
-            println!("✓ python3 found (Python project)");
-        } else {
-            println!("⚠ python3 not found (pyproject.toml/setup.py detected)");
-        }
-    }
-    if is_go {
-        if std::process::Command::new("go")
-            .arg("version")
-            .output()
-            .is_ok()
-        {
-            println!("✓ go found (Go project)");
-        } else {
-            println!("⚠ go not found (go.mod detected)");
-        }
-    }
-    if !is_rust && !is_node && !is_python && !is_go {
-        println!("  (no recognised project manifest — skipping toolchain check)");
     }
 
-    // Aden binary
-    println!("\n— Aden —");
-    if std::process::Command::new("aden")
+    // aden CLI
+    let aden_ok = std::process::Command::new("aden")
         .arg("--version")
         .output()
-        .is_ok()
-    {
-        println!("✓ aden CLI found in PATH");
-    } else {
-        println!("✗ aden CLI NOT in PATH");
-        issues.push("aden CLI not in PATH".to_string());
-    }
+        .is_ok();
+    chk!(
+        "aden CLI",
+        aden_ok,
+        if aden_ok {
+            "aden found in PATH"
+        } else {
+            "aden NOT in PATH"
+        },
+        true
+    );
 
-    // Signing keys (optional — probe both the canonical name and any .pub file present)
+    // Signing key (optional)
     let key_dir = dirs::home_dir()
         .unwrap_or_default()
         .join(".aden")
@@ -1222,37 +1272,57 @@ pub fn cmd_doctor(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let signing_key = key_dir.read_dir().ok().and_then(|mut d| {
         d.find_map(|e| {
             let e = e.ok()?;
-            let name = e.file_name();
-            let s = name.to_string_lossy();
-            if s.ends_with(".pub") {
-                Some(e.path())
-            } else {
-                None
-            }
+            let s = e.file_name().to_string_lossy().to_string();
+            if s.ends_with(".pub") { Some(s) } else { None }
         })
     });
-    if let Some(key_path) = signing_key {
-        println!("✓ Signing public key: {}", key_path.display());
-    } else {
-        println!("  No signing key in ~/.aden/keys/ (optional — used for contract attestation)");
-    }
+    chk!(
+        "signing key",
+        signing_key.is_some(),
+        signing_key
+            .as_deref()
+            .unwrap_or("none (optional — used for contract attestation)"),
+        false
+    );
 
-    // Repo health — generic checks, not aden-project-specific
-    println!("\n— Repo Health —");
-    if path.join(".agent").is_dir() {
-        println!("✓ .agent/ directory present (aden context scaffold)");
-    } else {
-        println!("  .agent/ not present — run 'aden init' to scaffold context templates");
-    }
+    // Store location (ADR-003: graph lives in the per-user data dir, not in-tree)
+    let store_root = crate::util::find_project_root(path);
+    let store_path = aden_paths::store_dir(&store_root);
+    let store_exists = store_path.exists();
+    chk!(
+        "store",
+        store_exists,
+        if store_exists {
+            format!("{}", store_path.display())
+        } else {
+            format!("{} (run 'aden gen')", store_path.display())
+        },
+        false
+    );
 
-    if path.join(".adenignore").exists() {
-        println!("✓ .adenignore present");
-    } else {
-        println!("  .adenignore not present — built-in defaults will be used");
-    }
+    // Repo scaffold
+    chk!(
+        ".agent/",
+        path.join(".agent").is_dir(),
+        if path.join(".agent").is_dir() {
+            ".agent/ present"
+        } else {
+            "not present — run 'aden init'"
+        },
+        false
+    );
+    chk!(
+        ".adenignore",
+        path.join(".adenignore").exists(),
+        if path.join(".adenignore").exists() {
+            "present"
+        } else {
+            "not present — built-in defaults used"
+        },
+        false
+    );
 
-    // Generic documentation check — any docs dir or README is fine
-    println!("\n— Documentation —");
+    // Documentation
     let has_docs = path.join("docs").is_dir()
         || path.join("doc").is_dir()
         || path.join("documentation").is_dir()
@@ -1260,29 +1330,102 @@ pub fn cmd_doctor(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         || path.join("README.adoc").exists()
         || path.join("README.rst").exists()
         || path.join(".agent").is_dir();
+    if !has_docs {
+        issues.push("no documentation found".to_string());
+    }
+    chk!(
+        "docs",
+        has_docs,
+        if has_docs {
+            "documentation present"
+        } else {
+            "no docs/README found"
+        },
+        true
+    );
 
-    if has_docs {
-        println!("✓ Documentation present");
-    } else {
-        println!("⚠ No documentation directory or README found");
-        issues.push("No documentation found".to_string());
+    // Graph connectivity (what this tool actually measures: are all nodes connected?
+    // Different from `heal`'s contract-freshness score — see `aden heal` for that.)
+    let graph_score = quick_health_score(path).ok();
+    if let Some(s) = graph_score {
+        const EPS: f64 = 0.01;
+        let ok = (1.0 - s).abs() < EPS;
+        if !ok {
+            issues.push(format!("graph connectivity {:.2} (target 1.00)", s));
+        }
+        chk!(
+            "graph connectivity",
+            ok,
+            format!(
+                "{:.2}/1.00{}",
+                s,
+                if ok {
+                    ""
+                } else {
+                    " — run 'aden heal .' to see drift"
+                }
+            ),
+            false
+        );
     }
 
-    // Quick heal score
-    println!("\n— Knowledge Graph Health —");
-    if let Ok(score) = quick_health_score(path) {
-        const EPSILON: f64 = 0.01;
-        if (1.0 - score).abs() < EPSILON {
-            println!("✓ Health Score: {:.2}/1.00", score);
-        } else {
-            println!(
-                "⚠ Health Score: {:.2}/1.00 (run 'aden heal .' to see drift)",
-                score
-            );
-            issues.push(format!("Health score {:.2} (target 1.00)", score));
+    if json {
+        let env = serde_json::json!({
+            "ok": issues.is_empty(),
+            "issues": issues,
+            "checks": checks.iter().map(|c| serde_json::json!({
+                "name": c.name,
+                "ok": c.ok,
+                "detail": c.detail,
+            })).collect::<Vec<_>>(),
+        });
+        println!("{}", serde_json::to_string_pretty(&env)?);
+        return Ok(());
+    }
+
+    println!("— Version Control —");
+    for c in checks.iter().filter(|c| c.name == "git") {
+        println!("{} {}", if c.ok { "✓" } else { "✗" }, c.detail);
+    }
+    println!("\n— Project Language Toolchain —");
+    let toolchains: Vec<_> = checks
+        .iter()
+        .filter(|c| {
+            matches!(
+                c.name.as_str(),
+                "rustc (Rust)" | "cargo (Rust)" | "node" | "npm" | "python3" | "go"
+            )
+        })
+        .collect();
+    if toolchains.is_empty() {
+        println!("  (no recognised project manifest — skipping toolchain check)");
+    } else {
+        for c in &toolchains {
+            println!("{} {}", if c.ok { "✓" } else { "⚠" }, c.detail);
         }
     }
-
+    println!("\n— Aden —");
+    for c in checks.iter().filter(|c| c.name == "aden CLI") {
+        println!("{} {}", if c.ok { "✓" } else { "✗" }, c.detail);
+    }
+    for c in checks.iter().filter(|c| c.name == "signing key") {
+        println!("{} {}", if c.ok { "✓" } else { " " }, c.detail);
+    }
+    println!("\n— Repo Health —");
+    for c in checks
+        .iter()
+        .filter(|c| matches!(c.name.as_str(), ".agent/" | ".adenignore" | "docs"))
+    {
+        println!("{} {}", if c.ok { "✓" } else { "⚠" }, c.detail);
+    }
+    println!("\n— Knowledge Graph Connectivity —");
+    for c in checks.iter().filter(|c| c.name == "graph connectivity") {
+        println!(
+            "{} Health Score: {}",
+            if c.ok { "✓" } else { "⚠" },
+            c.detail
+        );
+    }
     println!("\n═══════════════════════════════════════");
     if issues.is_empty() {
         println!("All diagnostics passed. Environment is healthy.");
@@ -1791,8 +1934,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         // A trivial Rust project: the pipeline has real source to run against.
-        std::fs::write(dir.join("Cargo.toml"), "[package]\nname=\"x\"\nversion=\"0.0.0\"\n")
-            .unwrap();
+        std::fs::write(
+            dir.join("Cargo.toml"),
+            "[package]\nname=\"x\"\nversion=\"0.0.0\"\n",
+        )
+        .unwrap();
         std::fs::create_dir_all(dir.join("src")).unwrap();
         std::fs::write(dir.join("src/lib.rs"), "pub fn noop() {}\n").unwrap();
 

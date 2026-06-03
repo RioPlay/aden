@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 aden-core = { path = "../aden-core" }
+aden-paths = { path = "../aden-paths" }
 aden-parse = { path = "../aden-parse" }
 aden-emit = { path = "../aden-emit" }
 clap = { version = "4.5", features = ["derive"] }

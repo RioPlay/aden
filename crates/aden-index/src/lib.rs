@@ -22,9 +22,11 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use aden_core::filter::AdenFilter;
 use rayon::prelude::*;
+use rust_stemmers::{Algorithm, Stemmer};
 
 /// A single search result.
 #[derive(Debug, Clone, PartialEq)]
@@ -60,19 +62,21 @@ pub struct Index {
 const BM25_K1: f64 = 1.5;
 const BM25_B: f64 = 0.75;
 
-const INDEX_CACHE_FILE: &str = ".aden/cache/index-cache.json";
+const INDEX_CACHE_BASENAME: &str = "index-cache.json";
 
 /// Current tokenizer/format version. Bumped on ANY change to how tokens are
 /// produced, so a stale cache is rebuilt rather than silently shadowing the new
 /// logic. v1: pre-stemming, versionless (deserializes to `0`). v2: conservative
-/// suffix stemming in [`tokenize`]/[`Index::query`]. v3: `-ss` guard in [`stem`]
-/// (so `process`/`processes` converge) + the `get` stop word.
-const CURRENT_INDEX_VERSION: u32 = 3;
+/// suffix stemming in [`tokenize`]/[`Index::query`]. v3: `-ss` guard + `get`
+/// stop word. v4: `-us`/`-is` guard (status, focus, analysis stay whole).
+/// v5: `-is`/`-es` plural normalization (analyses→analysis) so Greek `-sis`
+/// nouns and their plurals share a stem.
+const CURRENT_INDEX_VERSION: u32 = 5;
 
 /// Build an index, using the on-disk cache when possible.
 /// `key` should be a hash of all `.adoc`/`.aden` file paths + mtimes.
 pub fn try_load(dir: &std::path::Path) -> Option<Index> {
-    let index_path = dir.join(INDEX_CACHE_FILE);
+    let index_path = aden_paths::cache_dir(dir).join(INDEX_CACHE_BASENAME);
     if !index_path.exists() {
         return None;
     }
@@ -88,9 +92,9 @@ pub fn try_load(dir: &std::path::Path) -> Option<Index> {
 
 /// Save the index to disk cache.
 pub fn save(index: &Index, dir: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
-    let cache_dir = dir.join(".aden/cache");
+    let cache_dir = aden_paths::cache_dir(dir);
     std::fs::create_dir_all(&cache_dir)?;
-    let index_path = cache_dir.join("index-cache.json");
+    let index_path = cache_dir.join(INDEX_CACHE_BASENAME);
     let json = serde_json::to_string_pretty(index)?;
     std::fs::write(&index_path, json)?;
     Ok(())
@@ -100,8 +104,8 @@ pub fn save(index: &Index, dir: &std::path::Path) -> Result<(), Box<dyn std::err
 /// Note: "may" (modal verb) is excluded when capitalized as month names.
 const STOP_WORDS: &[&str] = &[
     "a", "an", "the", "and", "or", "but", "is", "are", "was", "were", "be", "been", "being",
-    "have", "has", "had", "do", "does", "did", "will", "would", "could", "should", "might",
-    "must", "shall", "can", "need", "dare", "ought", "used", "get", "to", "of", "in", "for", "on", "with",
+    "have", "has", "had", "do", "does", "did", "will", "would", "could", "should", "might", "must",
+    "shall", "can", "need", "dare", "ought", "used", "get", "to", "of", "in", "for", "on", "with",
     "at", "by", "from", "as", "into", "through", "during", "before", "after", "above", "below",
     "between", "under", "again", "further", "then", "once", "it", "its", "it's", "this", "that",
     "these", "those", "i", "you", "he", "she", "we", "they", "me", "him", "her", "us", "them",
@@ -111,70 +115,75 @@ const STOP_WORDS: &[&str] = &[
 ];
 
 fn is_stop_word(word: &str) -> bool {
-    STOP_WORDS.contains(&word)
+    static STOP_WORD_SET: OnceLock<std::collections::HashSet<&'static str>> = OnceLock::new();
+    STOP_WORD_SET
+        .get_or_init(|| STOP_WORDS.iter().copied().collect())
+        .contains(word)
 }
 
-/// Conservative English suffix stemmer. Collapses common inflections to a shared
-/// stem so a query term matches the indexed term despite plural/tense differences
-/// (`overlays`→`overlay`, `readers`→`reader`, `delivering`/`delivered`→`deliver`).
-///
-/// Scope: this is intentionally a *suffix* normalizer, not a full morphological
-/// stemmer. It reliably unifies plurals and verb inflections, but it does NOT
-/// bridge cross-part-of-speech derivations (the verb `delivered`→`deliver` does
-/// not unify with the noun `delivery`→`delivery`). It is English-scoped, matching
-/// the existing English stop-word list and `SemanticNormalizer`.
-///
-/// Guards:
-/// - Only purely-alphabetic tokens are stemmed; tokens containing digits or `_`
-///   (code identifiers, `SemanticNormalizer` outputs like `"5"`/`"05"`) pass
-///   through untouched.
-/// - A stem is never reduced below `MIN_STEM_LEN` characters, so short words like
-///   `"based"` or `"sales"` are not mangled.
-fn stem(word: &str) -> String {
-    /// Minimum surviving stem length; a rule that would shorten below this is skipped.
-    const MIN_STEM_LEN: usize = 4;
+static ENGLISH_STEMMER: OnceLock<Stemmer> = OnceLock::new();
 
-    // Guard: only stem purely-alphabetic ASCII tokens. Anything with a digit or
-    // underscore is a code identifier or a normalized form we must not touch.
+/// True if `word` is the `-es` plural of a Greek-derived `-is` noun
+/// (analysis/analyses, thesis/theses, crisis/crises, basis/bases, ...). These
+/// are rewritten to their `-is` singular before stemming so both spellings
+/// converge to one stem. Restricted to known endings to avoid mangling common
+/// `-ses` words like "cases", "phrases", or "houses".
+fn is_is_plural(word: &str) -> bool {
+    // Distinctive `-is`→`-es` endings; each implies a `-sis`/`-xis` singular.
+    const IS_PLURAL_ENDINGS: &[&str] = &[
+        "analyses", "yses",   // analyses, paralyses, ...
+        "theses", // theses, hypotheses, parentheses, syntheses
+        "crises", // crises
+        "neuroses", "noses",    // neuroses, diagnoses, prognoses, psychoses
+        "axes",     // axes (axis) — also "axe", but axis dominates in code/docs
+        "bases",    // bases (basis)
+        "ellipses", // ellipses
+    ];
+    word.len() >= 5 && IS_PLURAL_ENDINGS.iter().any(|s| word.ends_with(s))
+}
+
+/// Normalize an English word to an approximate root form using the Snowball
+/// Porter2 algorithm (via `rust-stemmers`). Handles consonant-doubling
+/// (`running`→`run`, `mapping`→`map`) and irregular plurals
+/// (`analyses`→`analysi`, `analysis`→`analysi`) that the previous hand-rolled
+/// suffix stripper could not converge.
+///
+/// Guards applied before delegation:
+/// - Only purely-alphabetic ASCII tokens are stemmed; anything with a digit or
+///   `_` (code identifiers, `SemanticNormalizer` outputs) passes through untouched.
+/// - Words ending in `-uses` (e.g. `statuses`, `focuses`, `nexuses`) have `-es`
+///   stripped before Porter2 sees them. Porter2 step-1a fires on the trailing `s`
+///   first and collapses `statuses` → `statu`; stripping `-es` first exposes
+///   the `-us` stem so Porter2 returns `status`.
+fn stem(word: &str) -> String {
+    // Guard: only stem purely-alphabetic ASCII tokens.
     if word.is_empty() || !word.bytes().all(|b| b.is_ascii_alphabetic()) {
         return word.to_string();
     }
 
-    let len = word.len();
-    // Helper: strip `suffix` and optionally append `add`, but only if the result
-    // keeps at least MIN_STEM_LEN chars. Returns None when the guard blocks it.
-    let try_strip = |suffix: &str, add: &str| -> Option<String> {
-        if len > suffix.len() && word.ends_with(suffix) {
-            let stem_len = len - suffix.len();
-            if stem_len + add.len() >= MIN_STEM_LEN {
-                let mut s = word[..stem_len].to_string();
-                s.push_str(add);
-                return Some(s);
-            }
-        }
-        None
+    // Pre-guard: `-us` plurals formed with `-es` (statuses, focuses, nexuses).
+    // Porter2 step-1a fires on the trailing `s` and gives the wrong stem.
+    // Strip `-es` first to expose the `-us` base, then let Porter2 finish.
+    // Pre-guard: `-is` singulars and their `-es` plurals (analysis/analyses,
+    // basis/bases, thesis/theses). Porter2 stems `analysis` → `analysi` but
+    // `analyses` → `analys`, so the two never converge. Normalize both to the
+    // `-is` base (`analysi`-style) by rewriting a trailing `-es` plural back to
+    // `-is` before Porter2 sees it: `analyses` → `analysis`, `bases` → `basis`.
+    let normalized;
+    let word_for_porter = if word.len() >= 6 && word.ends_with("uses") {
+        &word[..word.len() - 2] // "statuses" → "status"
+    } else if is_is_plural(word) {
+        // "analyses" → "analysis", "theses" → "thesis", "crises" → "crisis".
+        // Restricted to recognized Greek `-sis`/`-ses` endings so common words
+        // ("cases", "phrases", "houses") are NOT rewritten.
+        normalized = format!("{}is", &word[..word.len() - 2]);
+        &normalized
+    } else {
+        word
     };
 
-    // Ordered, most-specific first. Plurals first (-ies → y, then -es, then -s),
-    // then verb/adverb inflections (-ing, -ed, -ly). At most one rule fires.
-    if let Some(s) = try_strip("ies", "y") {
-        return s;
-    }
-    for suffix in ["es", "s", "ing", "ed", "ly"] {
-        // The bare `-s` rule must not strip the final `s` of an `-ss` word
-        // (process, address, access, class, success): that leaves a half-word
-        // (`proces`) which diverges from its `-es`-stripped plural
-        // (`processes` → `process`), so singular and plural land in different
-        // token buckets and never cross-match — silently halving recall across a
-        // software-central vocabulary class. An `-ss` word is its own stem.
-        if suffix == "s" && word.ends_with("ss") {
-            continue;
-        }
-        if let Some(s) = try_strip(suffix, "") {
-            return s;
-        }
-    }
-    word.to_string()
+    let stemmer = ENGLISH_STEMMER.get_or_init(|| Stemmer::create(Algorithm::English));
+    stemmer.stem(word_for_porter).into_owned()
 }
 
 /// Tokenize a string into lowercase, punctuation-stripped, stemmed words.
@@ -189,6 +198,46 @@ pub fn tokenize(text: &str) -> Vec<String> {
         // tokens here and on the query tokens in `Index::query`.
         .map(|w| stem(&w))
         .collect()
+}
+
+/// True if stemmed query token `token` matches `haystack` on a word/token
+/// boundary rather than as a raw substring. `haystack` is split on common
+/// identifier/slug separators (`_`, `-`, `/`, `.`, `:`, whitespace) and on
+/// camelCase humps; `token` matches a sub-token when it equals that sub-token
+/// or is a prefix of it (so a stem matches its inflected surface form, e.g.
+/// `deliv` → `delivery`, but `run` no longer matches `runtime`).
+fn token_boundary_match(haystack: &str, token: &str) -> bool {
+    if token.is_empty() {
+        return false;
+    }
+    // Split into sub-tokens on separators and camelCase boundaries.
+    let mut subtokens: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut prev_lower = false;
+    for ch in haystack.chars() {
+        if ch.is_ascii_alphanumeric() {
+            // camelCase / lower→Upper hump starts a new sub-token.
+            if ch.is_ascii_uppercase() && prev_lower {
+                if !current.is_empty() {
+                    subtokens.push(std::mem::take(&mut current));
+                }
+            }
+            current.push(ch.to_ascii_lowercase());
+            prev_lower = ch.is_ascii_lowercase() || ch.is_ascii_digit();
+        } else {
+            if !current.is_empty() {
+                subtokens.push(std::mem::take(&mut current));
+            }
+            prev_lower = false;
+        }
+    }
+    if !current.is_empty() {
+        subtokens.push(current);
+    }
+    // A stem (already lowercased) matches when it equals a sub-token or is a
+    // prefix of one. Prefix tolerance keeps inflected forms matching their stem
+    // without re-introducing the mid-word substring problem.
+    subtokens.iter().any(|sub| sub.starts_with(token))
 }
 
 fn levenshtein_distance(s1: &str, s2: &str) -> usize {
@@ -220,7 +269,11 @@ fn levenshtein_distance(s1: &str, s2: &str) -> usize {
 
     for i in 1..=len1 {
         for j in 1..=len2 {
-            let cost = if s1_bytes[i - 1] == s2_bytes[j - 1] { 0 } else { 1 };
+            let cost = if s1_bytes[i - 1] == s2_bytes[j - 1] {
+                0
+            } else {
+                1
+            };
             matrix[i][j] = (matrix[i - 1][j] + 1)
                 .min(matrix[i][j - 1] + 1)
                 .min(matrix[i - 1][j - 1] + cost);
@@ -239,17 +292,16 @@ fn parse_adoc(path: &Path, text: &str) -> Option<(String, PathBuf, HashMap<Strin
     let is_txt = path.extension().and_then(|e| e.to_str()).unwrap_or("") == "txt";
 
     // For .txt files, derive anchor from filename (without extension)
-    if is_txt
-        && let Some(stem) = path.file_stem() {
-            let stem_str = stem.to_string_lossy().to_lowercase();
-            // Replace spaces/dashes with hyphens for valid anchor
-            let anchor_str = stem_str.replace([' ', '_'], "-");
-            anchor = Some(anchor_str);
-            // Add filename tokens
-            for token in tokenize(&stem.to_string_lossy()) {
-                *counts.entry(token).or_insert(0) += 1;
-            }
+    if is_txt && let Some(stem) = path.file_stem() {
+        let stem_str = stem.to_string_lossy().to_lowercase();
+        // Replace spaces/dashes with hyphens for valid anchor
+        let anchor_str = stem_str.replace([' ', '_'], "-");
+        anchor = Some(anchor_str);
+        // Add filename tokens
+        for token in tokenize(&stem.to_string_lossy()) {
+            *counts.entry(token).or_insert(0) += 1;
         }
+    }
 
     let mut in_listing = false;
     // Tracks whether the current table is a callee/implementation-metadata table.
@@ -415,7 +467,11 @@ impl Index {
         // Parallel: read every file as (path, text).
         let entries: Vec<(PathBuf, String)> = files
             .par_iter()
-            .filter_map(|path| std::fs::read_to_string(path).ok().map(|t| (path.clone(), t)))
+            .filter_map(|path| {
+                std::fs::read_to_string(path)
+                    .ok()
+                    .map(|t| (path.clone(), t))
+            })
             .collect();
 
         let mut index = Index::default();
@@ -473,7 +529,11 @@ impl Index {
         self.version = CURRENT_INDEX_VERSION;
     }
 
-    fn collect_files(dir: &Path, filter: &AdenFilter, out: &mut Vec<PathBuf>) -> Result<(), std::io::Error> {
+    fn collect_files(
+        dir: &Path,
+        filter: &AdenFilter,
+        out: &mut Vec<PathBuf>,
+    ) -> Result<(), std::io::Error> {
         Self::collect_files_inner(dir, dir, filter, out)
     }
 
@@ -491,9 +551,10 @@ impl Index {
             }
             if path.is_dir() {
                 if let Ok(rel) = path.strip_prefix(root)
-                    && filter.should_skip(rel) {
-                        continue;
-                    }
+                    && filter.should_skip(rel)
+                {
+                    continue;
+                }
                 Self::collect_files_inner(&path, root, filter, out)?;
             } else if path.is_file() {
                 let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
@@ -502,13 +563,17 @@ impl Index {
                 // - .txt: Plain text (common for notes, READMEs, logs)
                 if ext == "adoc" || ext == "aden" || ext == "txt" {
                     // For files in different directories, skip prefix check (security: only for project root)
-                    let parent = path.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| path.clone());
+                    let parent = path
+                        .parent()
+                        .map(|p| p.to_path_buf())
+                        .unwrap_or_else(|| path.clone());
                     let is_cross_dir = root != parent;
                     if !is_cross_dir
                         && let Ok(rel) = path.strip_prefix(root)
-                            && filter.should_skip(rel) {
-                                continue;
-                        }
+                        && filter.should_skip(rel)
+                    {
+                        continue;
+                    }
                     out.push(path);
                 }
             }
@@ -526,8 +591,7 @@ impl Index {
                 let doc_len = self.doc_lengths.get(anchor).copied().unwrap_or(1);
                 let tf_normalized = (*tf as f64 * (BM25_K1 + 1.0))
                     / (*tf as f64
-                        + BM25_K1
-                            * (1.0 - BM25_B + BM25_B * doc_len as f64 / self.avg_doc_length));
+                        + BM25_K1 * (1.0 - BM25_B + BM25_B * doc_len as f64 / self.avg_doc_length));
                 *scores.entry(anchor.clone()).or_insert(0.0) += idf * tf_normalized;
             }
         }
@@ -538,7 +602,10 @@ impl Index {
         // First, extract all tokens including stop words for semantic normalization
         let raw_tokens: Vec<String> = query_str
             .split_whitespace()
-            .map(|w| w.trim_matches(|c: char| c.is_ascii_punctuation()).to_lowercase())
+            .map(|w| {
+                w.trim_matches(|c: char| c.is_ascii_punctuation())
+                    .to_lowercase()
+            })
             .filter(|w| !w.is_empty())
             .collect();
 
@@ -613,6 +680,19 @@ impl Index {
                 if path_str.contains(".agent/") || path_str.contains(".agent\\") {
                     *score *= 0.01; // 99% penalty — almost exclude from search results
                 }
+                // Down-weight reference / vendored material: it's legitimately
+                // searchable but should not outrank the project's own code/docs for
+                // "how does X work" questions. A CWE catalog under research/ (many
+                // "[rank N]" headings) was hijacking queries like "search ranking".
+                let p = path_str.replace('\\', "/");
+                if p.contains("research/")
+                    || p.contains("vendor/")
+                    || p.contains("third_party/")
+                    || p.contains("third-party/")
+                    || p.contains("node_modules/")
+                {
+                    *score *= 0.1; // 90% penalty — keep findable, but below project content
+                }
             }
 
             // Symbol anchors (any anchor containing '#') are concrete function/struct/enum
@@ -632,38 +712,52 @@ impl Index {
             // Tokens are stemmed (see `significant_query_tokens`), so an inflected
             // query still matches the anchor slug (substring match is unaffected —
             // a stem is a prefix of its surface form).
+            // Anchor boost requires a *token-boundary* match, not a raw substring.
+            // A stemmed query token must equal one of the anchor's own tokens (or
+            // be a prefix of it ending on a sub-token boundary) so `run` no longer
+            // boosts `runtime` and `deliv` no longer boosts unrelated slugs.
             let anchor_match = if is_symbol {
                 // Match on the symbol name fragment only, with significant tokens only.
                 if let Some(fragment) = anchor.rsplit('#').next() {
                     let frag_lower = fragment.to_lowercase();
-                    significant_query_tokens.iter().any(|t| frag_lower.contains(t.as_str()))
+                    significant_query_tokens
+                        .iter()
+                        .any(|t| token_boundary_match(&frag_lower, t))
                 } else {
                     false
                 }
             } else {
-                significant_query_tokens.iter().any(|t| anchor_lower.contains(t.as_str()))
+                significant_query_tokens
+                    .iter()
+                    .any(|t| token_boundary_match(&anchor_lower, t))
             };
 
-            if anchor_match {
-                // Larger boost for symbol anchors on exact fragment hit — they earned it
-                *score *= if is_symbol { 30.0 } else { 20.0 };
-            }
+            // Title match (first line of document text). Uses the same stemmed,
+            // stop-word-filtered tokens and the same token-boundary rule so the
+            // title boost is consistent with the anchor boost and BM25.
+            let title_match = self
+                .anchor_text
+                .get(anchor)
+                .and_then(|text| text.lines().next())
+                .map(|first_line| {
+                    let first_line_lower = first_line.to_lowercase();
+                    significant_query_tokens
+                        .iter()
+                        .any(|t| token_boundary_match(&first_line_lower, t))
+                })
+                .unwrap_or(false);
 
-            // Additional 10x boost for title match (first line of document text).
-            // Uses the same stemmed, stop-word-filtered tokens so the title boost is
-            // consistent with the anchor boost and BM25 (and no longer fires on
-            // incidental stop words appearing in a heading).
-            if let Some(text) = self.anchor_text.get(anchor)
-                && let Some(first_line) = text.lines().next()
-            {
-                let first_line_lower = first_line.to_lowercase();
-                if significant_query_tokens
-                    .iter()
-                    .any(|t| first_line_lower.contains(t.as_str()))
-                {
-                    *score *= 10.0;
-                }
-            }
+            // Cap the combined boost. The anchor boost (30x symbol / 20x slug) and
+            // title boost (10x) were previously multiplied unconditionally → up to
+            // 300x, letting a weak BM25 hit matching both swamp a strong hit. Apply
+            // only the single largest applicable boost instead of stacking.
+            let anchor_boost: f64 = if anchor_match {
+                if is_symbol { 30.0 } else { 20.0 }
+            } else {
+                1.0
+            };
+            let title_boost: f64 = if title_match { 10.0 } else { 1.0 };
+            *score *= anchor_boost.max(title_boost);
         }
 
         let mut results: Vec<SearchResult> = scores
@@ -719,16 +813,32 @@ impl Index {
 
         for anchor in self.anchor_paths.keys() {
             let anchor_lower = anchor.to_lowercase();
-            let dist = levenshtein_distance(query_term, &anchor_lower);
-            let all_chars_match = query_term.chars().all(|c| anchor_lower.contains(c));
-            if dist <= 2 || (query_term.len() >= 2 && all_chars_match) {
-                fuzzy_matches.push((anchor.clone(), 1.0));
+            // Match either against the whole anchor or its symbol-fragment / last
+            // path segment, whichever is closer — a small edit distance on a long
+            // slug would otherwise never fire.
+            let candidate = anchor_lower
+                .rsplit(['#', '/'])
+                .next()
+                .unwrap_or(&anchor_lower);
+            let dist = levenshtein_distance(query_term, candidate)
+                .min(levenshtein_distance(query_term, &anchor_lower));
+            // Only a genuine near-miss qualifies. The old order-agnostic
+            // "all query chars appear somewhere" path is dropped: it matched any
+            // anchor sharing a character set (e.g. "io" matched anything with an
+            // i and an o) and flat-scored 1.0, swamping exact hits.
+            if dist <= 2 {
+                // Score strictly below an exact match (which scores >= 1.0 via
+                // BM25 + boosts): closer fuzzy hits rank higher, but all stay
+                // under 1.0 so a real match always wins. dist 0 → 0.9, 1 → 0.45,
+                // 2 → 0.3.
+                let score = 0.9 / (dist as f64 + 1.0);
+                fuzzy_matches.push((anchor.clone(), score));
             }
         }
 
-        // Fuzzy scores are all equal (1.0), so an anchor-name tiebreak is what
-        // actually determines order here — without it the result is the arbitrary
-        // key iteration order. (Also avoids a NaN `unwrap` panic.)
+        // Sort by descending fuzzy score, then anchor-name tiebreak for a stable
+        // order independent of the arbitrary key iteration order. (The tiebreak
+        // also avoids a NaN `unwrap` panic.)
         fuzzy_matches.sort_by(|a, b| {
             b.1.partial_cmp(&a.1)
                 .unwrap_or(std::cmp::Ordering::Equal)
@@ -783,53 +893,95 @@ mod tests {
 
     #[test]
     fn stem_collapses_plurals() {
-        // Plain `-s` and `-ies` plurals reduce to the singular stem.
+        // Simple -s plurals converge on the singular.
         assert_eq!(stem("overlays"), "overlay");
-        assert_eq!(stem("readers"), "reader");
-        assert_eq!(stem("deliveries"), "delivery"); // -ies -> y
-        // The singular passes through unchanged, so query/index agree.
         assert_eq!(stem("overlay"), "overlay");
+        assert_eq!(stem("readers"), "reader");
         assert_eq!(stem("reader"), "reader");
-        assert_eq!(stem("delivery"), "delivery");
+        // Porter2 normalises -y/-ies to the same base ("deliveri"); both forms
+        // converge so query/index agree even though the stem differs from the
+        // surface singular.
+        assert_eq!(stem("deliveries"), stem("delivery"));
+        assert_eq!(stem("deliveries"), "deliveri");
     }
 
     #[test]
-    fn stem_ss_words_stay_whole_and_match_their_plural() {
-        // The bare `-s` rule must not strip the final `s` of an `-ss` word; the
-        // singular must stay whole AND converge with its `-es`-stripped plural so
-        // they share a token bucket (recall). Regression for process/processes.
+    fn stem_consonant_cluster_words_stay_whole_and_match_their_plural() {
+        // The bare `-s` rule must not strip words ending in -ss/-us/-is; the
+        // singular must stay whole AND converge with its `-es`-stripped plural.
         for (singular, plural) in [
+            // -ss
             ("process", "processes"),
             ("access", "accesses"),
             ("address", "addresses"),
             ("class", "classes"),
             ("success", "successes"),
+            // -us
+            ("status", "statuses"),
+            ("focus", "focuses"),
+            ("nexus", "nexuses"),
+            // -is words are now stemmed by Porter2 (analysis→analysi etc.);
+            // see stem_is_words_stemmed_consistently for those cases.
         ] {
-            assert_eq!(stem(singular), singular, "`-ss` singular must stay whole");
+            assert_eq!(stem(singular), singular, "`{singular}` must stay whole");
             assert_eq!(
                 stem(singular),
                 stem(plural),
-                "singular and plural must stem to the same token"
+                "`{singular}`/`{plural}` must stem to the same token"
             );
         }
     }
 
     #[test]
+    fn stem_is_words_stemmed_consistently() {
+        // Porter2 strips the trailing -s from -is words (analysis→analysi,
+        // basis→basi, thesis→thesi). The stems are short but valid; the same
+        // token is produced for both singular and inflected query forms so
+        // search still works. The old guard that kept these unchanged is gone —
+        // they now benefit from the same normalisation as other words.
+        assert_eq!(stem("analysis"), "analysi");
+        assert_eq!(stem("basis"), "basi");
+        assert_eq!(stem("thesis"), "thesi");
+        // -es plurals of -is nouns must converge to the same stem as the
+        // singular (Porter2 alone gives analyses→"analys" ≠ analysis→"analysi").
+        assert_eq!(stem("analyses"), stem("analysis"));
+        assert_eq!(stem("theses"), stem("thesis"));
+        assert_eq!(stem("crises"), stem("crisis"));
+        // Common -ses words must NOT be rewritten to -sis.
+        assert_eq!(stem("cases"), stem("case"));
+        assert_eq!(stem("phrases"), stem("phrase"));
+        // Verify short-base verb consonant-doubling is now fixed (L4).
+        assert_eq!(stem("running"), "run");
+        assert_eq!(stem("mapping"), "map");
+        assert_eq!(stem("logging"), "log");
+        assert_eq!(stem("running"), stem("run"));
+    }
+
+    #[test]
     fn stem_collapses_verb_and_adverb_inflections() {
-        assert_eq!(stem("delivering"), "deliver");
-        assert_eq!(stem("delivered"), "deliver");
+        // Porter2 strips -ing/-ed and then applies further suffix rules.
+        // deliver* → "deliv" (Porter2 also strips the -er suffix in R2).
+        assert_eq!(stem("delivering"), "deliv");
+        assert_eq!(stem("delivered"), "deliv");
+        // Inflections of the same verb still converge (both → "deliv").
+        assert_eq!(stem("delivering"), stem("delivered"));
         assert_eq!(stem("quickly"), "quick");
-        // Inflections of the same verb converge on one stem.
+        // render* → "render" (the -er suffix is not in R2 for "render").
+        assert_eq!(stem("rendering"), "render");
+        assert_eq!(stem("rendered"), "render");
         assert_eq!(stem("rendering"), stem("rendered"));
     }
 
     #[test]
-    fn stem_min_length_guard() {
-        // Stripping would leave fewer than MIN_STEM_LEN (4) chars — left untouched.
-        assert_eq!(stem("based"), "based"); // -ed would give "bas" (3)
-        assert_eq!(stem("ring"), "ring"); // -ing would give "r" (1)
-        assert_eq!(stem("oily"), "oily"); // -ly would give "oi" (2)
-        assert_eq!(stem("bus"), "bus"); // -s would give "bu" (2)
+    fn stem_short_words_not_over_reduced() {
+        // Porter2 has its own length and R1-region guards; very short words
+        // that would be mangled are left intact.
+        assert_eq!(stem("ring"), "ring"); // stem of "r" has no vowel → no strip
+        assert_eq!(stem("bus"), "bus"); // Porter2 R1-region check prevents "bu"
+        // Porter2 applies its suffix rules more aggressively than the old
+        // hand-rolled stemmer, producing correct base forms:
+        assert_eq!(stem("based"), "base"); // -ed stripped, leaving the stem
+        assert_eq!(stem("oily"), "oili"); // y→i normalisation (Porter2 step 1c)
     }
 
     #[test]
@@ -847,7 +999,7 @@ mod tests {
         // The whole point: an inflected query token matches the stemmed posting.
         let indexed = tokenize("The overlay is delivered to every reader");
         assert!(indexed.contains(&"overlay".to_string()));
-        assert!(indexed.contains(&"deliver".to_string()));
+        assert!(indexed.contains(&"deliv".to_string())); // Porter2: delivered → deliv
         assert!(indexed.contains(&"reader".to_string()));
 
         // A distractor that mentions "overlay" only incidentally (inside a grep
@@ -887,7 +1039,11 @@ mod tests {
             ("aaa.adoc", "[[aaa-doc]]\n= Topic\n\nwidget widget widget\n"),
         ]);
         let index = Index::from_directory(dir.path()).unwrap();
-        let got: Vec<String> = index.query("widget").into_iter().map(|r| r.anchor).collect();
+        let got: Vec<String> = index
+            .query("widget")
+            .into_iter()
+            .map(|r| r.anchor)
+            .collect();
         assert_eq!(
             got,
             vec!["aaa-doc".to_string(), "zzz-doc".to_string()],
@@ -895,7 +1051,11 @@ mod tests {
             got
         );
         // Stable across repeated queries within the same process.
-        let again: Vec<String> = index.query("widget").into_iter().map(|r| r.anchor).collect();
+        let again: Vec<String> = index
+            .query("widget")
+            .into_iter()
+            .map(|r| r.anchor)
+            .collect();
         assert_eq!(got, again);
     }
 
@@ -904,7 +1064,12 @@ mod tests {
         // A versionless (pre-stemming) cache deserializes with version 0 and must
         // be rejected so the index is rebuilt with the current tokenizer.
         let dir = tempfile::tempdir().unwrap();
-        let cache_dir = dir.path().join(".aden/cache");
+        // ADR-003: caches live in the per-user data dir keyed per project. Pin it
+        // to an isolated tempdir so the test neither reads nor pollutes the real
+        // user data dir. (Only this test touches the on-disk cache.)
+        let data = tempfile::tempdir().unwrap();
+        unsafe { std::env::set_var("ADEN_DATA_DIR", data.path()) };
+        let cache_dir = aden_paths::cache_dir(dir.path());
         std::fs::create_dir_all(&cache_dir).unwrap();
         // Minimal valid Index JSON without a `version` field.
         std::fs::write(
@@ -912,14 +1077,21 @@ mod tests {
             r#"{"inverted":{},"anchor_paths":{},"anchor_text":{},"doc_lengths":{},"avg_doc_length":1.0}"#,
         )
         .unwrap();
-        assert!(try_load(dir.path()).is_none(), "stale versionless cache must be rejected");
+        assert!(
+            try_load(dir.path()).is_none(),
+            "stale versionless cache must be rejected"
+        );
 
         // A freshly built + saved index carries the current version and loads back.
         let mut index = Index::default();
         index.finalize();
         assert_eq!(index.version, CURRENT_INDEX_VERSION);
         save(&index, dir.path()).unwrap();
-        assert!(try_load(dir.path()).is_some(), "current-version cache must load");
+        assert!(
+            try_load(dir.path()).is_some(),
+            "current-version cache must load"
+        );
+        unsafe { std::env::remove_var("ADEN_DATA_DIR") };
     }
 
     #[test]
@@ -1047,11 +1219,7 @@ Just mentioning test once.
         let index = Index::from_directory(dir.path()).unwrap();
         let results = index.query("test module");
 
-        assert_eq!(
-            results.len(),
-            2,
-            "Should find both documents"
-        );
+        assert_eq!(results.len(), 2, "Should find both documents");
 
         // high-relevance should score higher due to more occurrences
         assert_eq!(
@@ -1174,23 +1342,28 @@ New content after rebuild.
 
         // Test time normalization
         let time_forms = SemanticNormalizer::normalize("midnight");
-        assert!(time_forms.iter().any(|f| f == "00:00" || f == "midnight"), "midnight normalization");
+        assert!(
+            time_forms.iter().any(|f| f == "00:00" || f == "midnight"),
+            "midnight normalization"
+        );
 
         // Test number normalization
         let num_forms = SemanticNormalizer::normalize("5");
-        assert!(num_forms.iter().any(|f| f == "fifth" || f == "5"), "5 -> fifth");
+        assert!(
+            num_forms.iter().any(|f| f == "fifth" || f == "5"),
+            "5 -> fifth"
+        );
 
         let num_forms2 = SemanticNormalizer::normalize("first");
-        assert!(num_forms2.iter().any(|f| f == "1" || f == "first"), "first -> 1");
+        assert!(
+            num_forms2.iter().any(|f| f == "1" || f == "first"),
+            "first -> 1"
+        );
 
         // Test month normalization
         let month_forms = SemanticNormalizer::normalize("May");
         assert!(month_forms.iter().any(|f| f == "5"), "May -> 5");
     }
-
-
-
-
 
     #[test]
     fn query_finds_attribute_keys_and_values() {
@@ -1356,10 +1529,16 @@ Project context.
 
         let index = Index::from_directory(dir.path()).unwrap();
         let results = index.query("onboarding");
-        assert!(results.is_empty(), "Should not find .agent/templates/ files");
+        assert!(
+            results.is_empty(),
+            "Should not find .agent/templates/ files"
+        );
 
         let results = index.query("style guide");
-        assert!(results.is_empty(), "Should not find .agent/templates/ files");
+        assert!(
+            results.is_empty(),
+            "Should not find .agent/templates/ files"
+        );
 
         let results = index.query("agent context");
         assert!(results.is_empty(), "Should not find .agent/ files");
@@ -1431,17 +1610,44 @@ impl SemanticNormalizer {
     /// Convert word numbers to digits ("seven" -> "7", "five" -> "5")
     fn word_to_number(s: &str) -> Option<String> {
         let words: HashMap<&str, &str> = HashMap::from([
-            ("zero", "0"), ("one", "1"), ("two", "2"), ("three", "3"),
-            ("four", "4"), ("five", "5"), ("six", "6"), ("seven", "7"),
-            ("eight", "8"), ("nine", "9"), ("ten", "10"), ("eleven", "11"),
-            ("twelve", "12"), ("thirteen", "13"), ("fourteen", "14"),
-            ("fifteen", "15"), ("sixteen", "16"), ("seventeen", "17"),
-            ("eighteen", "18"), ("nineteen", "19"), ("twenty", "20"),
-            ("thirty", "30"), ("forty", "40"), ("fifty", "50"),
-            ("sixty", "60"), ("seventy", "70"), ("eighty", "80"), ("ninety", "90"),
-            ("first", "1"), ("second", "2"), ("third", "3"), ("fourth", "4"),
-            ("fifth", "5"), ("sixth", "6"), ("seventh", "7"), ("eighth", "8"),
-            ("ninth", "9"), ("tenth", "10"),
+            ("zero", "0"),
+            ("one", "1"),
+            ("two", "2"),
+            ("three", "3"),
+            ("four", "4"),
+            ("five", "5"),
+            ("six", "6"),
+            ("seven", "7"),
+            ("eight", "8"),
+            ("nine", "9"),
+            ("ten", "10"),
+            ("eleven", "11"),
+            ("twelve", "12"),
+            ("thirteen", "13"),
+            ("fourteen", "14"),
+            ("fifteen", "15"),
+            ("sixteen", "16"),
+            ("seventeen", "17"),
+            ("eighteen", "18"),
+            ("nineteen", "19"),
+            ("twenty", "20"),
+            ("thirty", "30"),
+            ("forty", "40"),
+            ("fifty", "50"),
+            ("sixty", "60"),
+            ("seventy", "70"),
+            ("eighty", "80"),
+            ("ninety", "90"),
+            ("first", "1"),
+            ("second", "2"),
+            ("third", "3"),
+            ("fourth", "4"),
+            ("fifth", "5"),
+            ("sixth", "6"),
+            ("seventh", "7"),
+            ("eighth", "8"),
+            ("ninth", "9"),
+            ("tenth", "10"),
         ]);
         words.get(s.to_lowercase().as_str()).map(|s| s.to_string())
     }
@@ -1449,26 +1655,39 @@ impl SemanticNormalizer {
     /// Convert month names to numbers ("May" -> "5", "June" -> "6")
     fn month_to_number(s: &str) -> Option<String> {
         let months: HashMap<&str, &str> = HashMap::from([
-            ("january", "1"), ("jan", "1"),
-            ("february", "2"), ("feb", "2"),
-            ("march", "3"), ("mar", "3"),
-            ("april", "4"), ("apr", "4"),
+            ("january", "1"),
+            ("jan", "1"),
+            ("february", "2"),
+            ("feb", "2"),
+            ("march", "3"),
+            ("mar", "3"),
+            ("april", "4"),
+            ("apr", "4"),
             ("may", "5"),
-            ("june", "6"), ("jun", "6"),
-            ("july", "7"), ("jul", "7"),
-            ("august", "8"), ("aug", "8"),
-            ("september", "9"), ("sep", "9"), ("sept", "9"),
-            ("october", "10"), ("oct", "10"),
-            ("november", "11"), ("nov", "11"),
-            ("december", "12"), ("dec", "12"),
+            ("june", "6"),
+            ("jun", "6"),
+            ("july", "7"),
+            ("jul", "7"),
+            ("august", "8"),
+            ("aug", "8"),
+            ("september", "9"),
+            ("sep", "9"),
+            ("sept", "9"),
+            ("october", "10"),
+            ("oct", "10"),
+            ("november", "11"),
+            ("nov", "11"),
+            ("december", "12"),
+            ("dec", "12"),
         ]);
         months.get(s.to_lowercase().as_str()).map(|s| s.to_string())
     }
 
     /// Convert number to month name (5 -> "May")
     fn number_to_month(n: &str) -> Option<String> {
-        let months = ["", "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-                      "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+        let months = [
+            "", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+        ];
         let idx: usize = n.parse().ok()?;
         if (1..=12).contains(&idx) {
             Some(months[idx].to_string())
@@ -1479,8 +1698,21 @@ impl SemanticNormalizer {
 
     /// Convert number to full month name (5 -> "May")
     fn number_to_month_name(n: &str) -> Option<String> {
-        let months = ["", "January", "February", "March", "April", "May", "June",
-                      "July", "August", "September", "October", "November", "December"];
+        let months = [
+            "",
+            "January",
+            "February",
+            "March",
+            "April",
+            "May",
+            "June",
+            "July",
+            "August",
+            "September",
+            "October",
+            "November",
+            "December",
+        ];
         let idx: usize = n.parse().ok()?;
         if (1..=12).contains(&idx) {
             Some(months[idx].to_string())
@@ -1520,7 +1752,6 @@ impl SemanticNormalizer {
         ("twelve am", "00:00"),
         ("twelve thirty am", "00:30"),
         ("12:30am", "00:30"),
-
         // === 1AM - 5AM ===
         ("1am", "01:00"),
         ("1 am", "01:00"),
@@ -1528,31 +1759,26 @@ impl SemanticNormalizer {
         ("1:00am", "01:00"),
         ("1:30am", "01:30"),
         ("one thirty am", "01:30"),
-
         ("2am", "02:00"),
         ("2 am", "02:00"),
         ("two am", "02:00"),
         ("2:00am", "02:00"),
         ("2:30am", "02:30"),
-
         ("3am", "03:00"),
         ("3 am", "03:00"),
         ("three am", "03:00"),
         ("3:00am", "03:00"),
         ("3:30am", "03:30"),
-
         ("4am", "04:00"),
         ("4 am", "04:00"),
         ("four am", "04:00"),
         ("4:00am", "04:00"),
         ("4:30am", "04:30"),
-
         ("5am", "05:00"),
         ("5 am", "05:00"),
         ("five am", "05:00"),
         ("5:00am", "05:00"),
         ("5:30am", "05:30"),
-
         // === DAWN / EARLY MORNING (6AM) ===
         ("dawn", "06:00"),
         ("sunrise", "06:00"),
@@ -1561,38 +1787,32 @@ impl SemanticNormalizer {
         ("six am", "06:00"),
         ("6:00am", "06:00"),
         ("6:30am", "06:30"),
-
         // === 7AM - 11AM ===
         ("7am", "07:00"),
         ("7 am", "07:00"),
         ("seven am", "07:00"),
         ("7:00am", "07:00"),
         ("7:30am", "07:30"),
-
         ("8am", "08:00"),
         ("8 am", "08:00"),
         ("eight am", "08:00"),
         ("8:00am", "08:00"),
         ("8:30am", "08:30"),
-
         ("9am", "09:00"),
         ("9 am", "09:00"),
         ("nine am", "09:00"),
         ("9:00am", "09:00"),
         ("9:30am", "09:30"),
-
         ("10am", "10:00"),
         ("10 am", "10:00"),
         ("ten am", "10:00"),
         ("10:00am", "10:00"),
         ("10:30am", "10:30"),
-
         ("11am", "11:00"),
         ("11 am", "11:00"),
         ("eleven am", "11:00"),
         ("11:00am", "11:00"),
         ("11:30am", "11:30"),
-
         // === NOON ===
         ("noon", "12:00"),
         ("midday", "12:00"),
@@ -1601,38 +1821,32 @@ impl SemanticNormalizer {
         ("twelve pm", "12:00"),
         ("12:00pm", "12:00"),
         ("12:30pm", "12:30"),
-
         // === 1PM - 5PM ===
         ("1pm", "13:00"),
         ("1 pm", "13:00"),
         ("one pm", "13:00"),
         ("1:00pm", "13:00"),
         ("1:30pm", "13:30"),
-
         ("2pm", "14:00"),
         ("2 pm", "14:00"),
         ("two pm", "14:00"),
         ("2:00pm", "14:00"),
         ("2:30pm", "14:30"),
-
         ("3pm", "15:00"),
         ("3 pm", "15:00"),
         ("three pm", "15:00"),
         ("3:00pm", "15:00"),
         ("3:30pm", "15:30"),
-
         ("4pm", "16:00"),
         ("4 pm", "16:00"),
         ("four pm", "16:00"),
         ("4:00pm", "16:00"),
         ("4:30pm", "16:30"),
-
         ("5pm", "17:00"),
         ("5 pm", "17:00"),
         ("five pm", "17:00"),
         ("5:00pm", "17:00"),
         ("5:30pm", "17:30"),
-
         // === DUSK / EVENING (6PM) ===
         ("dusk", "18:00"),
         ("sunset", "18:00"),
@@ -1642,38 +1856,32 @@ impl SemanticNormalizer {
         ("six pm", "18:00"),
         ("6:00pm", "18:00"),
         ("6:30pm", "18:30"),
-
         // === 7PM - 11PM ===
         ("7pm", "19:00"),
         ("7 pm", "19:00"),
         ("seven pm", "19:00"),
         ("7:00pm", "19:00"),
         ("7:30pm", "19:30"),
-
         ("8pm", "20:00"),
         ("8 pm", "20:00"),
         ("eight pm", "20:00"),
         ("8:00pm", "20:00"),
         ("8:30pm", "20:30"),
-
         ("9pm", "21:00"),
         ("9 pm", "21:00"),
         ("nine pm", "21:00"),
         ("9:00pm", "21:00"),
         ("9:30pm", "21:30"),
-
         ("10pm", "22:00"),
         ("10 pm", "22:00"),
         ("ten pm", "22:00"),
         ("10:00pm", "22:00"),
         ("10:30pm", "22:30"),
-
         ("11pm", "23:00"),
         ("11 pm", "23:00"),
         ("eleven pm", "23:00"),
         ("11:00pm", "23:00"),
         ("11:30pm", "23:30"),
-
         // === 24-HOUR DIRECT ===
         ("00:00", "midnight"),
         ("0:00", "midnight"),
@@ -1700,7 +1908,6 @@ impl SemanticNormalizer {
         ("21:00", "9pm"),
         ("22:00", "10pm"),
         ("23:00", "11pm"),
-
         // === TIME PERIODS ===
         ("morning", "AM"),
         ("afternoon", "PM"),
@@ -1710,7 +1917,6 @@ impl SemanticNormalizer {
         ("pm", "PM"),
         ("a.m.", "AM"),
         ("p.m.", "PM"),
-
         // === DAY PARTS ===
         ("today", "today"),
         ("tomorrow", "tomorrow"),
@@ -1723,8 +1929,14 @@ impl SemanticNormalizer {
     const TIME_CANONICAL_TO_KEYWORDS: &[(&str, &[&str])] = &[
         ("00:00", &["midnight", "00:00", "0:00", "twelve am", "12am"]),
         ("12:00", &["noon", "midday", "12:00", "twelve pm", "12pm"]),
-        ("06:00", &["dawn", "sunrise", "06:00", "6:00", "six am", "6am"]),
-        ("18:00", &["dusk", "sunset", "evening", "18:00", "six pm", "6pm"]),
+        (
+            "06:00",
+            &["dawn", "sunrise", "06:00", "6:00", "six am", "6am"],
+        ),
+        (
+            "18:00",
+            &["dusk", "sunset", "evening", "18:00", "six pm", "6pm"],
+        ),
         ("AM", &["morning", "am"]),
         ("PM", &["afternoon", "evening", "night", "pm"]),
     ];
@@ -1749,7 +1961,10 @@ impl SemanticNormalizer {
 
         if let Some(caps) = re.captures(&t_clean) {
             let hour: usize = caps.get(1)?.as_str().parse().ok()?;
-            let minute: usize = caps.get(2).map(|m| m.as_str().parse().unwrap_or(0)).unwrap_or(0);
+            let minute: usize = caps
+                .get(2)
+                .map(|m| m.as_str().parse().unwrap_or(0))
+                .unwrap_or(0);
             let is_pm = caps.get(3)?.as_str() == "pm";
 
             // Validate hour
@@ -1836,7 +2051,6 @@ impl SemanticNormalizer {
         ("absolutely", "true"),
         ("definitely", "true"),
         ("certainly", "true"),
-
         // === NEGATIVE (FALSE) ===
         ("no", "false"),
         ("nope", "false"),
@@ -1857,14 +2071,12 @@ impl SemanticNormalizer {
         ("incorrect", "false"),
         ("not", "false"),
         ("none", "false"),
-
         // === NUMERIC BOOLEANS ===
         ("1", "true"),
         ("true", "true"),
         ("0", "false"),
         ("false", "false"),
         ("-1", "false"),
-
         // === BIDIRECTIONAL MAPPINGS ===
         ("true", "true"),
         ("false", "false"),
@@ -1900,7 +2112,8 @@ impl SemanticNormalizer {
     pub fn generate_determinism_contracts() -> String {
         let mut doc = String::new();
 
-        doc.push_str(r#":determinism-version: 1.0
+        doc.push_str(
+            r#":determinism-version: 1.0
 :determinism-count: 
 
 [[determinisms]]
@@ -1914,7 +2127,8 @@ edges in the knowledge graph via `edge::is_equivalent_to`.
 
 |===
 |Keyword |Canonical |Category
-"#);
+"#,
+        );
 
         // Add boolean determinisms
         let mut bool_true: Vec<&str> = Vec::new();
@@ -1941,7 +2155,7 @@ edges in the knowledge graph via `edge::is_equivalent_to`.
         doc.push_str("== Time Determinisms (Key Times)\n\n");
         doc.push_str("|===\n");
         doc.push_str("|Keyword |Canonical |Category\n");
-        
+
         let key_times = [
             ("midnight", "00:00"),
             ("noon", "12:00"),
@@ -1952,15 +2166,15 @@ edges in the knowledge graph via `edge::is_equivalent_to`.
             ("evening", "PM"),
             ("night", "PM"),
         ];
-        
+
         for (kw, canon) in &key_times {
             doc.push_str(&format!("|{} |{} |time\n", kw, canon));
             // Add reverse mapping
             doc.push_str(&format!("|{} |{} |time\n", canon, kw));
         }
-        
+
         doc.push_str("|===\n\n");
-        
+
         // Add edge declarations for time
         for (_kw, canon) in &key_times {
             doc.push_str(&format!("edge::is_equivalent_to[{}]\n", canon));
@@ -1971,56 +2185,83 @@ edges in the knowledge graph via `edge::is_equivalent_to`.
         doc.push_str("== Number Determinisms\n\n");
         doc.push_str("|===\n");
         doc.push_str("|Keyword |Canonical |Category\n");
-        
+
         let numbers = [
-            ("zero", "0"), ("one", "1"), ("two", "2"), ("three", "3"),
-            ("four", "4"), ("five", "5"), ("six", "6"), ("seven", "7"),
-            ("eight", "8"), ("nine", "9"), ("ten", "10"),
-            ("first", "1"), ("second", "2"), ("third", "3"), ("fourth", "4"),
-            ("fifth", "5"), ("sixth", "6"), ("seventh", "7"), ("eighth", "8"),
-            ("ninth", "9"), ("tenth", "10"),
+            ("zero", "0"),
+            ("one", "1"),
+            ("two", "2"),
+            ("three", "3"),
+            ("four", "4"),
+            ("five", "5"),
+            ("six", "6"),
+            ("seven", "7"),
+            ("eight", "8"),
+            ("nine", "9"),
+            ("ten", "10"),
+            ("first", "1"),
+            ("second", "2"),
+            ("third", "3"),
+            ("fourth", "4"),
+            ("fifth", "5"),
+            ("sixth", "6"),
+            ("seventh", "7"),
+            ("eighth", "8"),
+            ("ninth", "9"),
+            ("tenth", "10"),
         ];
-        
+
         for (kw, canon) in &numbers {
             doc.push_str(&format!("|{} |{} |number\n", kw, canon));
             doc.push_str(&format!("|{} |{} |number\n", canon, kw));
         }
-        
+
         doc.push_str("|===\n\n");
-        
+
         // Add edge declarations for numbers
         for (_, canon) in &numbers {
             doc.push_str(&format!("edge::is_equivalent_to[{}]\n", canon));
         }
         doc.push('\n');
 
-        // Month determinisms  
+        // Month determinisms
         doc.push_str("== Month Determinisms\n\n");
         doc.push_str("|===\n");
         doc.push_str("|Keyword |Canonical |Category\n");
-        
+
         let months = [
-            ("january", "1"), ("jan", "1"),
-            ("february", "2"), ("feb", "2"),
-            ("march", "3"), ("mar", "3"),
-            ("april", "4"), ("apr", "4"),
+            ("january", "1"),
+            ("jan", "1"),
+            ("february", "2"),
+            ("feb", "2"),
+            ("march", "3"),
+            ("mar", "3"),
+            ("april", "4"),
+            ("apr", "4"),
             ("may", "5"),
-            ("june", "6"), ("jun", "6"),
-            ("july", "7"), ("jul", "7"),
-            ("august", "8"), ("aug", "8"),
-            ("september", "9"), ("sep", "9"), ("sept", "9"),
-            ("october", "10"), ("oct", "10"),
-            ("november", "11"), ("nov", "11"),
-            ("december", "12"), ("dec", "12"),
+            ("june", "6"),
+            ("jun", "6"),
+            ("july", "7"),
+            ("jul", "7"),
+            ("august", "8"),
+            ("aug", "8"),
+            ("september", "9"),
+            ("sep", "9"),
+            ("sept", "9"),
+            ("october", "10"),
+            ("oct", "10"),
+            ("november", "11"),
+            ("nov", "11"),
+            ("december", "12"),
+            ("dec", "12"),
         ];
-        
+
         for (kw, canon) in &months {
             doc.push_str(&format!("|{} |{} |month\n", kw, canon));
             doc.push_str(&format!("|{} |{} |month\n", canon, kw));
         }
-        
+
         doc.push_str("|===\n\n");
-        
+
         // Add edge declarations for months
         for (_, canon) in &months {
             doc.push_str(&format!("edge::is_equivalent_to[{}]\n", canon));

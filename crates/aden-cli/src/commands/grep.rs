@@ -141,11 +141,11 @@ fn load_symbol_spans(root: &Path) -> HashMap<String, Vec<Span>> {
     use aden_store::{GraphStorage, Storage};
 
     let mut by_file: HashMap<String, Vec<Span>> = HashMap::new();
-    let store_path = root.join(".aden").join("store");
+    let (store_path, _) = aden_paths::resolve_read_store(root);
     let Some(store_str) = store_path.to_str() else {
         return by_file;
     };
-    let Ok(storage) = Storage::new(store_str) else {
+    let Ok(storage) = Storage::open_existing(store_str) else {
         return by_file;
     };
     let Ok(docs) = storage.get_all_documents() else {

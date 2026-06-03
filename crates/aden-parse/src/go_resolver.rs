@@ -171,7 +171,10 @@ fn walk_package_decl<'a>(
                     symbols.push(GoSymbol {
                         name,
                         kind: NodeType::Type,
-                        node,
+                        // Use this spec's own node, not the outer
+                        // `type_declaration`. In a grouped `type ( A ...; B ... )`
+                        // all specs otherwise shared the whole-block span.
+                        node: child,
                         receiver: None,
                         doc_comment: doc,
                     });
@@ -273,29 +276,40 @@ fn collect_go_signature_types(node: tree_sitter::Node, source: &str) -> Vec<Stri
             // type Foo struct { a Bar; b Baz } — capture each field type.
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
-                if child.kind() == "type_spec"
-                    && let Some(ty) = child.child_by_field_name("type")
-                    && ty.kind() == "struct_type"
-                {
-                    let mut sc = ty.walk();
-                    for fld_list in ty.children(&mut sc) {
-                        if fld_list.kind() == "field_declaration_list" {
-                            let mut fc = fld_list.walk();
-                            for fld in fld_list.children(&mut fc) {
-                                if fld.kind() == "field_declaration"
-                                    && let Some(fty) = fld.child_by_field_name("type")
-                                {
-                                    push_go_type(fty, source, &mut types);
-                                }
-                            }
-                        }
-                    }
+                if child.kind() == "type_spec" {
+                    collect_type_spec_field_types(child, source, &mut types);
                 }
             }
+        }
+        // A symbol's node is now its own `type_spec` (see walk_package_decl), so
+        // handle that directly too.
+        "type_spec" => {
+            collect_type_spec_field_types(node, source, &mut types);
         }
         _ => {}
     }
     types
+}
+
+/// Given a `type_spec` backing a struct, push each field's type.
+fn collect_type_spec_field_types(spec: tree_sitter::Node, source: &str, out: &mut Vec<String>) {
+    if let Some(ty) = spec.child_by_field_name("type")
+        && ty.kind() == "struct_type"
+    {
+        let mut sc = ty.walk();
+        for fld_list in ty.children(&mut sc) {
+            if fld_list.kind() == "field_declaration_list" {
+                let mut fc = fld_list.walk();
+                for fld in fld_list.children(&mut fc) {
+                    if fld.kind() == "field_declaration"
+                        && let Some(fty) = fld.child_by_field_name("type")
+                    {
+                        push_go_type(fty, source, out);
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Walk a `parameter_list`, pushing the `type` of each `parameter_declaration`.
@@ -557,14 +571,5 @@ fn node_text<'a>(node: tree_sitter::Node<'a>, source: &'a str) -> &'a str {
     &source[node.start_byte()..node.end_byte()]
 }
 
-fn node_to_span<'a>(node: tree_sitter::Node<'a>, path: &Path) -> aden_core::SourceSpan {
-    let start = node.start_position();
-    let end = node.end_position();
-    aden_core::SourceSpan {
-        file: path.to_string_lossy().to_string(),
-        start_line: start.row + 1,
-        end_line: end.row + 1,
-        start_byte: node.start_byte(),
-        end_byte: node.end_byte(),
-    }
-}
+use crate::tree_sitter_common::node_to_span;
+

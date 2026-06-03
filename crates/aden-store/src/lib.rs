@@ -162,12 +162,7 @@ pub trait GraphStorage: Send + Sync {
     fn get_incoming_edges(&self, anchor: &str) -> Result<Vec<(String, EdgeType)>, StoreError>;
 
     /// Put an edge.
-    fn put_edge(
-        &self,
-        src: &str,
-        dst: &str,
-        edge_type: EdgeType,
-    ) -> Result<(), StoreError>;
+    fn put_edge(&self, src: &str, dst: &str, edge_type: EdgeType) -> Result<(), StoreError>;
 
     /// Insert many edges in one pass, writing each node's adjacency list once.
     ///
@@ -184,12 +179,7 @@ pub trait GraphStorage: Send + Sync {
     }
 
     /// Delete an edge.
-    fn delete_edge(
-        &self,
-        src: &str,
-        dst: &str,
-        edge_type: &EdgeType,
-    ) -> Result<(), StoreError>;
+    fn delete_edge(&self, src: &str, dst: &str, edge_type: &EdgeType) -> Result<(), StoreError>;
 
     /// Delete a node and ALL of its incident edges in one operation.
     ///
@@ -213,10 +203,7 @@ pub trait GraphStorage: Send + Sync {
     }
 
     /// Get all edges of a type.
-    fn get_edges_by_type(
-        &self,
-        edge_type: &EdgeType,
-    ) -> Result<Vec<(String, String)>, StoreError>;
+    fn get_edges_by_type(&self, edge_type: &EdgeType) -> Result<Vec<(String, String)>, StoreError>;
 
     /// Check if an edge exists.
     fn edge_exists(&self, src: &str, dst: &str, edge_type: &EdgeType) -> Result<bool, StoreError>;
@@ -327,7 +314,7 @@ mod tests {
         let path = temp_path();
         let storage = Storage::new(&path).unwrap();
 
-storage
+        storage
             .put_document(&Document {
                 anchor: "src".to_string(),
                 node_type: aden_core::NodeType::Note,
@@ -351,9 +338,7 @@ storage
             })
             .unwrap();
 
-        storage
-            .put_edge("src", "dst", EdgeType::Uses)
-            .unwrap();
+        storage.put_edge("src", "dst", EdgeType::Uses).unwrap();
 
         let outgoing = storage.get_outgoing_edges("src").unwrap();
         assert_eq!(outgoing.len(), 1);
@@ -423,9 +408,7 @@ storage
         }
 
         for target in &["A", "B", "C"] {
-            storage
-                .put_edge("center", target, EdgeType::Uses)
-                .unwrap();
+            storage.put_edge("center", target, EdgeType::Uses).unwrap();
         }
 
         let neighborhood = storage.neighborhood("center", 1).unwrap();
@@ -463,7 +446,11 @@ storage
         storage.delete_edge("src", "A", &EdgeType::Uses).unwrap();
 
         let out = storage.get_outgoing_edges("src").unwrap();
-        assert_eq!(out.len(), 1, "only the (src,A) edge should be gone: {out:?}");
+        assert_eq!(
+            out.len(),
+            1,
+            "only the (src,A) edge should be gone: {out:?}"
+        );
         assert_eq!(out[0].0, "B");
         assert!(!storage.edge_exists("src", "A", &EdgeType::Uses).unwrap());
         assert!(storage.edge_exists("src", "B", &EdgeType::Uses).unwrap());
@@ -500,8 +487,16 @@ storage
             storage.get_incoming_edges("down").unwrap().is_empty(),
             "down should no longer list center as a caller"
         );
-        assert!(!storage.edge_exists("up", "center", &EdgeType::Calls).unwrap());
-        assert!(!storage.edge_exists("center", "down", &EdgeType::Calls).unwrap());
+        assert!(
+            !storage
+                .edge_exists("up", "center", &EdgeType::Calls)
+                .unwrap()
+        );
+        assert!(
+            !storage
+                .edge_exists("center", "down", &EdgeType::Calls)
+                .unwrap()
+        );
         // Neighbours themselves survive.
         assert!(storage.get_document("up").unwrap().is_some());
         assert!(storage.get_document("down").unwrap().is_some());
@@ -545,10 +540,7 @@ storage
 
         assert_eq!(retrieved.anchor, doc.anchor);
         assert_eq!(retrieved.node_type, doc.node_type);
-        assert_eq!(
-            retrieved.attributes.get("key"),
-            doc.attributes.get("key")
-        );
+        assert_eq!(retrieved.attributes.get("key"), doc.attributes.get("key"));
     }
 
     #[test]

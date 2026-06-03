@@ -185,6 +185,49 @@ fn router_registers_polyglot_extensions() {
     }
 }
 
+// ── TypeScript / JavaScript duplicate-symbol regression ─────────
+
+/// `export function foo() {}` must produce exactly ONE symbol, not two.
+///
+/// Root cause: `walk_program` handled `export_statement` by extracting the
+/// inner declaration AND then continued recursing into all children, which
+/// caused the `function_declaration` child to be extracted a second time
+/// (without `is_export`). This test guards against that regression.
+#[test]
+fn ts_exported_function_no_duplicate() {
+    let src = "export function greet(name: string): void {}";
+    let resolver = crate::typescript_resolver::TypeScriptResolver::new();
+    let docs = resolver
+        .extract_documents(src, Path::new("src/hello.ts"))
+        .expect("parse should succeed");
+    let greet_docs: Vec<_> = docs.iter().filter(|d| d.anchor.contains("greet")).collect();
+    assert_eq!(
+        greet_docs.len(),
+        1,
+        "expected exactly one 'greet' symbol; got {}: {:?}",
+        greet_docs.len(),
+        greet_docs.iter().map(|d| &d.anchor).collect::<Vec<_>>()
+    );
+}
+
+/// Same guard for JavaScript (`.js` extension — routes through TypeScriptResolver).
+#[test]
+fn js_exported_function_no_duplicate() {
+    let src = "export function util(x) { return x; }";
+    let resolver = crate::typescript_resolver::TypeScriptResolver::new();
+    let docs = resolver
+        .extract_documents(src, Path::new("src/index.js"))
+        .expect("parse should succeed");
+    let util_docs: Vec<_> = docs.iter().filter(|d| d.anchor.contains("util")).collect();
+    assert_eq!(
+        util_docs.len(),
+        1,
+        "expected exactly one 'util' symbol; got {}: {:?}",
+        util_docs.len(),
+        util_docs.iter().map(|d| &d.anchor).collect::<Vec<_>>()
+    );
+}
+
 // ── Untrusted-input DoS regression ──────────────────────────────
 
 // SECURITY: an empty block comment `/**/` (len 4) used to hit a reverse

@@ -573,7 +573,18 @@ fn emit_java_symbol(
     package: &str,
     file_name: &str,
 ) -> Option<Document> {
-    let anchor = make_anchor(package, file_name, &sym.name);
+    // Qualify with the enclosing class so same-named methods across classes don't
+    // collapse to one anchor (data loss). `qualified_name` is
+    // `<package>.<Class>/<method>` (methods) or `<package>.<Class>` (types);
+    // strip the package prefix `make_anchor` already supplies and normalize the
+    // `/` member separator to `.` → fragment `Class.method`. Type anchors (no
+    // member part) are unchanged.
+    let fragment = sym
+        .qualified_name
+        .strip_prefix(&format!("{package}."))
+        .unwrap_or(&sym.qualified_name)
+        .replace('/', ".");
+    let anchor = make_anchor(package, file_name, &fragment);
     let span = node_to_span(sym.node, path);
     let attrs = build_code_attributes(
         source,
@@ -595,10 +606,7 @@ fn emit_java_symbol(
         rows.push(vec!["Static".to_string(), "true".to_string()]);
     }
     for p in &sym.params {
-        rows.push(vec![
-            format!("param {}", p.name),
-            format!("{}: {}", p.name, p.ty),
-        ]);
+        rows.push(vec![format!("param {}", p.name), p.ty.clone()]);
     }
     rows.push(vec!["Qualified".to_string(), sym.qualified_name.clone()]);
 

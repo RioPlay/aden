@@ -573,7 +573,17 @@ fn emit_php_symbol(
     namespace: &str,
     file_name: &str,
 ) -> Option<Document> {
-    let anchor = make_anchor(namespace, file_name, &sym.name);
+    // Qualify with the enclosing class so same-named methods across classes don't
+    // collapse to one anchor (data loss). `qualified_name` is
+    // `<namespace>\<Class>\<method>`; strip the namespace prefix `make_anchor`
+    // already supplies and normalize `\` to `.` → fragment `Class.method`.
+    // Top-level type anchors are unchanged.
+    let fragment = sym
+        .qualified_name
+        .strip_prefix(&format!("{namespace}\\"))
+        .unwrap_or(&sym.qualified_name)
+        .replace('\\', ".");
+    let anchor = make_anchor(namespace, file_name, &fragment);
     let span = node_to_span(sym.node, path);
     let attrs = build_code_attributes(
         source,
@@ -595,10 +605,7 @@ fn emit_php_symbol(
         rows.push(vec!["Static".to_string(), "true".to_string()]);
     }
     for p in &sym.params {
-        rows.push(vec![
-            format!("param {}", p.name),
-            format!("{}: {}", p.name, p.ty),
-        ]);
+        rows.push(vec![format!("param {}", p.name), p.ty.clone()]);
     }
     rows.push(vec!["Qualified".to_string(), sym.qualified_name.clone()]);
 

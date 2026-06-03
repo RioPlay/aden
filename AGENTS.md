@@ -74,11 +74,10 @@ aden ci-check .           # Full CI gates before commit
 
 | Document | Purpose |
 | --- | --- |
-| `docs/module-aden-cli.adoc` | CLI reference |
+| `docs/commands.adoc` | Complete CLI reference (every flag) |
 | `docs/getting-started.adoc` | Quick start guide |
 | `docs/architecture.adoc` | System architecture |
 | `docs/context.adoc` | Glossary, conventions |
-| `docs/plan-phase0.adoc` | Foundation roadmap |
 | `docs/adr-*.adoc` | Architecture decisions |
 | `docs/use-cases.adoc` | Non-software use cases |
 

@@ -60,7 +60,37 @@ struct PsType {
     text: String,
 }
 
-pub fn extract_documents(path: &Path, _source: &str) -> Result<Vec<Document>> {
+/// Compute a `SourceSpan` for a PowerShell symbol by locating its verbatim
+/// `Extent.Text` within the source. The PS adapter does not emit line/offset
+/// data, so we recover the span here — without it every symbol had no span and
+/// span-based navigation (jump-to-definition) was impossible.
+fn span_for_text(text: &str, source: &str, path: &Path) -> aden_core::SourceSpan {
+    let file = path.to_string_lossy().to_string();
+    if let Some(start_byte) = source.find(text) {
+        let end_byte = start_byte + text.len();
+        let start_line = source[..start_byte].bytes().filter(|b| *b == b'\n').count() + 1;
+        let end_line = start_line + text.bytes().filter(|b| *b == b'\n').count();
+        aden_core::SourceSpan {
+            file,
+            start_line,
+            end_line,
+            start_byte,
+            end_byte,
+        }
+    } else {
+        // Text not found verbatim (e.g. CRLF normalization): fall back to a
+        // whole-file span rather than dropping the span entirely.
+        aden_core::SourceSpan {
+            file,
+            start_line: 1,
+            end_line: source.bytes().filter(|b| *b == b'\n').count() + 1,
+            start_byte: 0,
+            end_byte: source.len(),
+        }
+    }
+}
+
+pub fn extract_documents(path: &Path, source: &str) -> Result<Vec<Document>> {
     // SECURITY: Resolve script only from the binary's directory to avoid
     // cwd-borne attacks. Never fall back to a relative path.
     let script_path = std::env::current_exe()
@@ -112,6 +142,7 @@ pub fn extract_documents(path: &Path, _source: &str) -> Result<Vec<Document>> {
 
     for func in parsed.functions {
         let anchor = crate::make_anchor(&crate_name, &file_name, &func.name);
+        let span = span_for_text(&func.text, source, path);
         let mut attrs = HashMap::new();
         attrs.insert(
             "source_hash".to_string(),
@@ -133,30 +164,30 @@ pub fn extract_documents(path: &Path, _source: &str) -> Result<Vec<Document>> {
                 default_value: None,
             })
             .collect();
-        let mut rows = vec![vec!["Name".to_string(), func.name.clone()]];
-        for p in &params {
-            rows.push(vec![
-                format!("param {}", p.name),
-                format!("{}: {}", p.name, p.ty),
-            ]);
+        let rows: Vec<Vec<String>> = params
+            .iter()
+            .map(|p| vec![format!("param {}", p.name), p.ty.clone()])
+            .collect();
+        if !rows.is_empty() {
+            blocks.push(Block::Table(aden_core::Table {
+                headers: vec!["Property".to_string(), "Value".to_string()],
+                rows,
+            }));
         }
-        blocks.push(Block::Table(aden_core::Table {
-            headers: vec!["Property".to_string(), "Value".to_string()],
-            rows,
-        }));
         docs.push(Document {
             anchor,
             node_type: NodeType::Function,
             attributes: attrs,
             blocks,
-            source_span: None,
-metadata: None,
-        confidence: 0.9,
-    });
+            source_span: Some(span),
+            metadata: None,
+            confidence: 0.9,
+        });
     }
 
     for ty in parsed.types {
         let anchor = crate::make_anchor(&crate_name, &file_name, &ty.name);
+        let span = span_for_text(&ty.text, source, path);
         let mut attrs = HashMap::new();
         attrs.insert(
             "source_hash".to_string(),
@@ -182,10 +213,10 @@ metadata: None,
             node_type: NodeType::Type,
             attributes: attrs,
             blocks,
-            source_span: None,
-metadata: None,
-        confidence: 0.9,
-    });
+            source_span: Some(span),
+            metadata: None,
+            confidence: 0.9,
+        });
     }
 
     Ok(docs)

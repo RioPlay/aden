@@ -15,7 +15,7 @@
 // GNU Affero General Public License for more details.
 //
 use crate::graph::AdenGraph;
-use crate::nodes::{DocumentNode, AdenEdge, GraphNode};
+use crate::nodes::{AdenEdge, DocumentNode, GraphNode};
 
 /// Verify `:source_hash:` for all nodes that have one.
 /// Returns a list of (anchor, warning_message) for stale or mismatched hashes.

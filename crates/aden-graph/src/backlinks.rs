@@ -15,7 +15,7 @@
 // GNU Affero General Public License for more details.
 //
 use crate::graph::AdenGraph;
-use crate::nodes::{DocumentNode, AdenEdge, GraphNode};
+use crate::nodes::{AdenEdge, DocumentNode, GraphNode};
 use aden_core::{Block, Table};
 use petgraph::Direction;
 

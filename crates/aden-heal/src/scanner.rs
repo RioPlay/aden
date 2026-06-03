@@ -43,7 +43,7 @@ pub struct Scanner {
 impl Scanner {
     pub fn new(repo_root: impl AsRef<Path>) -> Self {
         let root = repo_root.as_ref().to_path_buf();
-        let cache_path = root.join(".aden").join("scan-cache.json");
+        let cache_path = aden_paths::scan_cache_file(&root);
         let cache = std::fs::read(&cache_path)
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok());
@@ -106,17 +106,18 @@ impl Scanner {
 
                 // Slow path: read & parse
                 if let Ok(content) = std::fs::read_to_string(path)
-                    && let Ok(docs) = aden_parse::parse_file(path, &content) {
-                        let mut cache_updates = Vec::new();
-                        let mut entries = Vec::new();
-                        for doc in docs {
-                            if let Ok(json) = serde_json::to_string(&doc) {
-                                cache_updates.push((rel_str.clone(), (current_mtime, json)));
-                            }
-                            entries.push((path.clone(), doc));
+                    && let Ok(docs) = aden_parse::parse_file(path, &content)
+                {
+                    let mut cache_updates = Vec::new();
+                    let mut entries = Vec::new();
+                    for doc in docs {
+                        if let Ok(json) = serde_json::to_string(&doc) {
+                            cache_updates.push((rel_str.clone(), (current_mtime, json)));
                         }
-                        return Some((cache_updates, entries));
+                        entries.push((path.clone(), doc));
                     }
+                    return Some((cache_updates, entries));
+                }
                 None::<(Vec<(String, (u64, String))>, Vec<(PathBuf, Document)>)>
             })
             .collect();
@@ -135,23 +136,30 @@ impl Scanner {
         }
 
         // b. Load contracts from store, fall back to disk .adoc files if store is empty
-        let store_path = self.repo_root.join(".aden").join("store");
+        let (store_path, is_legacy) = aden_paths::resolve_read_store(&self.repo_root);
         let mut aden_anchors: HashSet<String> = HashSet::new();
         let mut contract_docs: Vec<(String, Document)> = Vec::new();
 
         if store_path.exists()
-            && let Ok(storage) = Storage::new(
+            && {
+                if is_legacy {
+                    eprintln!("{}", aden_paths::legacy_notice(&self.repo_root));
+                }
+                true
+            }
+            && let Ok(storage) = Storage::open_existing(
                 store_path
                     .to_str()
                     .expect("Store path should be valid UTF-8"),
             )
-                && let Ok(all_docs) = storage.get_all_documents()
-                    && !all_docs.is_empty() {
-                        for (anchor, doc) in all_docs {
-                            aden_anchors.insert(anchor.clone());
-                            contract_docs.push((anchor.clone(), doc));
-                        }
-                    }
+            && let Ok(all_docs) = storage.get_all_documents()
+            && !all_docs.is_empty()
+        {
+            for (anchor, doc) in all_docs {
+                aden_anchors.insert(anchor.clone());
+                contract_docs.push((anchor.clone(), doc));
+            }
+        }
 
         // Fallback: if store has no docs, parse .adoc files from disk
         if contract_docs.is_empty() {
@@ -173,16 +181,17 @@ impl Scanner {
             if let Some(expected_hash) = doc.attributes.get("source_hash") {
                 let source_path = self.find_source_for_doc(doc);
                 if let Some(source_path) = source_path
-                    && let Ok(content) = std::fs::read_to_string(&source_path) {
-                        let actual_hash = aden_core::stable_hash(content.as_bytes());
-                        if actual_hash != *expected_hash {
-                            events.push(DriftEvent::StaleHash {
-                                target_path: format!(".aden/store:{}", anchor),
-                                expected_hash: expected_hash.clone(),
-                                actual_hash,
-                            });
-                        }
+                    && let Ok(content) = std::fs::read_to_string(&source_path)
+                {
+                    let actual_hash = aden_core::stable_hash(content.as_bytes());
+                    if actual_hash != *expected_hash {
+                        events.push(DriftEvent::StaleHash {
+                            target_path: format!(".aden/store:{}", anchor),
+                            expected_hash: expected_hash.clone(),
+                            actual_hash,
+                        });
                     }
+                }
             }
         }
 
@@ -194,7 +203,7 @@ impl Scanner {
                 let contract_sig = extract_sig_from_doc(doc);
                 if contract_sig != current_sig {
                     events.push(DriftEvent::SignatureMismatch {
-        anchor: anchor.to_string(),
+                        anchor: anchor.to_string(),
                         contract_path: format!(".aden/store:{}", anchor),
                         expected_sig: contract_sig,
                         actual_sig: current_sig,
@@ -233,20 +242,20 @@ impl Scanner {
         // Use store-first graph loading for broken reference detection
         if let Some(graph) = try_load(&self.repo_root) {
             for (contract_path, ref_anchor) in graph.unresolved_refs() {
-                let _line = find_ref_line(&contract_path, &ref_anchor);
+                let line = find_ref_line(&self.repo_root, &contract_path, &ref_anchor);
                 events.push(DriftEvent::BrokenReference {
                     contract_path,
                     ref_anchor,
-                    line: 0,
+                    line,
                 });
             }
         } else if let Ok(graph) = AdenGraph::build_from_directory(&self.repo_root) {
             for (contract_path, ref_anchor) in graph.unresolved_refs() {
-                let _line = find_ref_line(&contract_path, &ref_anchor);
+                let line = find_ref_line(&self.repo_root, &contract_path, &ref_anchor);
                 events.push(DriftEvent::BrokenReference {
                     contract_path,
                     ref_anchor,
-                    line: 0,
+                    line,
                 });
             }
         }
@@ -257,13 +266,15 @@ impl Scanner {
                 let inc_paths: Vec<&str> = includes.split(',').collect();
                 for inc_path in inc_paths {
                     let inc_path = inc_path.trim();
-                    if let Ok(inc_path_buf) = resolve_include_from_anchor(anchor, inc_path, &self.repo_root)
-                        && !inc_path_buf.exists() {
-                            events.push(DriftEvent::DeadLink {
-                                contract_path: format!(".aden/store:{}", anchor),
-                                include_path: inc_path.to_string(),
-                            });
-                        }
+                    if let Ok(inc_path_buf) =
+                        resolve_include_from_anchor(anchor, inc_path, &self.repo_root)
+                        && !inc_path_buf.exists()
+                    {
+                        events.push(DriftEvent::DeadLink {
+                            contract_path: format!(".aden/store:{}", anchor),
+                            include_path: inc_path.to_string(),
+                        });
+                    }
                 }
             }
         }
@@ -309,6 +320,48 @@ impl Scanner {
             "MAINTAINERS.md",
         ];
 
+        // Collect code source files ONCE, outside the per-markdown loop. This is
+        // an O(N) recursive walk; doing it per markdown file made the whole scan
+        // O(N*M). We deliberately exclude documentation extensions (.md/.rst/.adoc)
+        // from the staleness trigger set so editing one markdown file does not make
+        // every OTHER markdown file report as stale.
+        let mut code_sources = Vec::new();
+        self.collect_source_files(&self.repo_root, &mut code_sources)?;
+        code_sources.retain(|p| {
+            let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
+            !matches!(ext, "md" | "rst" | "adoc" | "aden")
+        });
+
+        // Only repos that already participate in aden's markdown convention
+        // (i.e. at least one of the known docs exists) are eligible for the
+        // "missing template" check. This avoids flagging MissingMarkdownTemplate
+        // on every project that happens not to ship a NOTICE.md/MAINTAINERS.md.
+        let participates = known_md_files
+            .iter()
+            .any(|k| self.repo_root.join(k).exists());
+
+        // A known markdown file absent from a participating repo root is a
+        // "missing template" condition: aden expects to keep it in sync, but
+        // there is nothing on disk. This is detectable without any markdown
+        // generation infrastructure, so MissingMarkdownTemplate is emitted here.
+        // (MarkdownDrift — a content-level diff of a generated template against
+        // the on-disk file — requires the `aden gen --format md` renderer, which
+        // the scanner does not invoke, so it is not emitted from here.)
+        if participates {
+            for known in &known_md_files {
+                let candidate = self.repo_root.join(known);
+                if !candidate.exists() {
+                    events.push(DriftEvent::MissingMarkdownTemplate {
+                        md_path: candidate.to_string_lossy().to_string(),
+                        template_source: format!(
+                            "aden gen . --format md (would generate {})",
+                            known
+                        ),
+                    });
+                }
+            }
+        }
+
         for entry in std::fs::read_dir(&self.repo_root)? {
             let entry = entry?;
             let path = entry.path();
@@ -326,11 +379,7 @@ impl Scanner {
             // Check if source files have been modified since markdown was last modified
             let md_mtime = Self::mtime(&path);
 
-            // Collect source files modified after markdown
-            let mut changed_sources = Vec::new();
-            self.collect_source_files(&self.repo_root, &mut changed_sources)?;
-
-            let stale_sources: Vec<String> = changed_sources
+            let stale_sources: Vec<String> = code_sources
                 .iter()
                 .filter(|s| Self::mtime(s) > md_mtime)
                 .map(|s| s.to_string_lossy().to_string())
@@ -456,7 +505,11 @@ impl Scanner {
     }
 }
 
-fn parsed_to_doc(parsed: &aden_graph::parser::ParsedDocument, anchor: &str, _file_path: &Path) -> Document {
+fn parsed_to_doc(
+    parsed: &aden_graph::parser::ParsedDocument,
+    anchor: &str,
+    _file_path: &Path,
+) -> Document {
     use aden_core::Document;
     Document {
         anchor: anchor.to_string(),
@@ -497,7 +550,27 @@ fn is_public_symbol(doc: &Document) -> bool {
     true
 }
 
-fn find_ref_line(content: &str, ref_anchor: &str) -> usize {
+/// Find the 1-based line number where `ref_anchor` is referenced inside the
+/// contract at `contract_path`. Returns 0 when the contract is store-resident
+/// (pseudo-path `.aden/store:…`, no file to read), unreadable, or the reference
+/// can't be located by text search.
+fn find_ref_line(repo_root: &Path, contract_path: &str, ref_anchor: &str) -> usize {
+    // Store-backed pseudo-paths have no on-disk file to scan.
+    if contract_path.starts_with(".aden/store:") {
+        return 0;
+    }
+    let path = {
+        let p = Path::new(contract_path);
+        if p.is_absolute() {
+            p.to_path_buf()
+        } else {
+            repo_root.join(p)
+        }
+    };
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return 0,
+    };
     for (i, line) in content.lines().enumerate() {
         if line.contains(&format!("<<{}", ref_anchor)) {
             return i + 1;
@@ -507,7 +580,11 @@ fn find_ref_line(content: &str, ref_anchor: &str) -> usize {
 }
 
 /// Resolve an include path from an anchor, preventing directory traversal attacks.
-fn resolve_include_from_anchor(_anchor: &str, include: &str, repo_root: &Path) -> std::io::Result<PathBuf> {
+fn resolve_include_from_anchor(
+    _anchor: &str,
+    include: &str,
+    repo_root: &Path,
+) -> std::io::Result<PathBuf> {
     let candidate = repo_root.join(include);
 
     // Prevent traversal outside the base directory

@@ -430,18 +430,18 @@ fn parse_method<'a>(
         }
     }
 
-    let class_name = find_parent_type_name(node, source).unwrap_or_default();
     let display_name = if is_singleton && !name.starts_with("self.") {
         format!("self.{}", name)
     } else {
         name.clone()
     };
 
-    let qname = if class_name.is_empty() {
-        format!("{}.{}", module, display_name)
-    } else {
-        format!("{}.{}/{}", module, class_name, display_name)
-    };
+    // `module` already encodes the enclosing class/module chain (walk_program
+    // descends into class bodies with it), so qualify on that alone. Appending
+    // the parent type again produced a doubled `A.A/run`; the `module.` strip in
+    // emit then yields a clean `A.run` fragment, distinct per class.
+    let _ = find_parent_type_name; // retained for other call sites
+    let qname = format!("{}.{}", module, display_name);
 
     symbols.push(RubySymbol {
         name: display_name,
@@ -477,7 +477,16 @@ fn emit_ruby_symbol(
     module: &str,
     file_name: &str,
 ) -> Option<Document> {
-    let anchor = make_anchor(module, file_name, &sym.name);
+    // Qualify the anchor with the enclosing class/module so same-named methods in
+    // different classes of one file don't collapse to one anchor (data loss).
+    // `qualified_name` is `<module>.<Class>.<method>`; strip the leading
+    // project-module prefix that `make_anchor` already supplies so the fragment
+    // stays `Class.method` and top-level/class anchors are unchanged.
+    let fragment = sym
+        .qualified_name
+        .strip_prefix(&format!("{module}."))
+        .unwrap_or(&sym.qualified_name);
+    let anchor = make_anchor(module, file_name, fragment);
     let span = node_to_span(sym.node, path);
     let attrs = build_code_attributes(
         source,
@@ -499,10 +508,11 @@ fn emit_ruby_symbol(
         rows.push(vec!["Parent".to_string(), parent.clone()]);
     }
     for p in &sym.params {
-        let mut desc = p.name.clone();
-        if let Some(ref def) = p.default_value {
-            desc.push_str(&format!(" = {}", def));
-        }
+        let desc = p
+            .default_value
+            .as_ref()
+            .map(|d| format!("= {}", d))
+            .unwrap_or_default();
         rows.push(vec![format!("param {}", p.name), desc]);
     }
     rows.push(vec!["Qualified".to_string(), sym.qualified_name.clone()]);

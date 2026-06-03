@@ -3,6 +3,24 @@
 
 pub mod quiet;
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Whether store *creation* was explicitly authorized for this run — set true
+/// when `-p/--project` was given or the command is `init`. Consumed by the
+/// ADR-003 creation safety rail (`aden_paths::guard_creatable_root`) so reads
+/// stay frictionless while creation at `$HOME`/fs-root is refused by default.
+static CREATION_EXPLICIT: AtomicBool = AtomicBool::new(false);
+
+/// Set the global creation-explicit flag. Called once during startup.
+pub fn set_creation_explicit(v: bool) {
+    CREATION_EXPLICIT.store(v, Ordering::Relaxed);
+}
+
+/// Query whether store creation was explicitly authorized this run.
+pub fn creation_explicit() -> bool {
+    CREATION_EXPLICIT.load(Ordering::Relaxed)
+}
+
 use aden_emit::check::{collect_anchors, find_refs};
 use aden_graph::{GraphNode, cycles::find_cycles, integrity::check_hashes};
 use serde_json::Map;
@@ -32,59 +50,79 @@ pub fn safe_relative(path_str: &str) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Project-root markers across ecosystems. Ordered roughly by how strongly each
-/// signals a repository root. Includes VCS and Aden's own workspace dir so that
-/// root detection works for *any* language — not just the ones whose build
-/// manifests happen to be listed first.
-const ROOT_MARKER_FILES: &[&str] = &[
-    // Aden / VCS — strongest signal of the true repo root
-    "aden.toml",
-    ".git",
-    ".aden",
-    ".hg",
-    ".svn",
-    // Rust
-    "Cargo.toml",
-    // Go
-    "go.mod",
-    // Node / JS / TS
-    "package.json",
-    // Python
-    "pyproject.toml",
-    "setup.py",
-    "setup.cfg",
-    "requirements.txt",
-    "Pipfile",
-    // JVM
-    "pom.xml",
-    "build.gradle",
-    "build.gradle.kts",
-    "settings.gradle",
-    // Ruby
-    "Gemfile",
-    // PHP
-    "composer.json",
-    // C / C++
-    "CMakeLists.txt",
-    // Generic
-    "Makefile",
-];
-
-/// Find project root by walking up from `start` looking for any known
-/// project-root marker (a build manifest, a VCS directory, or `.aden/`).
-/// Language-agnostic: every ecosystem's manifest is recognized equally.
+/// Find the canonical project root containing `start`.
+///
+/// Single source of truth lives in [`aden_paths::resolve_root`] (ADR-003 §1):
+/// `git rev-parse --show-toplevel` → root-marker walk-up → persisted
+/// `.aden/project.conf` → canonical `start`. This thin wrapper keeps the
+/// long-standing call sites working while every crate shares one resolver, so a
+/// subdir and the repo root map to the same store key.
 pub fn find_project_root(start: &Path) -> PathBuf {
-    let mut current = start.canonicalize().unwrap_or_else(|_| start.to_path_buf());
-    loop {
-        if ROOT_MARKER_FILES.iter().any(|m| current.join(m).exists()) {
-            return current;
-        }
-        if let Some(parent) = current.parent() {
-            current = parent.to_path_buf();
-        } else {
-            return start.canonicalize().unwrap_or_else(|_| start.to_path_buf());
+    aden_paths::resolve_root(start)
+}
+
+/// One-time migration of a legacy in-tree store (`<root>/.aden/store`) to the
+/// per-user central location (ADR-003). No-op when there is nothing to move or
+/// a central store already exists. Called by creation paths (`gen`/`regen`)
+/// before the central store is opened, so no store handle is live.
+///
+/// Tries an atomic `rename` first, falling back to a recursive copy + remove
+/// when the two locations are on different filesystems (the common case, since
+/// the data dir is typically under `$HOME` while the repo may be elsewhere).
+pub fn migrate_legacy_store(root: &Path) {
+    let legacy = aden_paths::legacy_store_dir(root);
+    let central = aden_paths::store_dir(root);
+    if !legacy.is_dir() || central.exists() {
+        return;
+    }
+    if let Some(parent) = central.parent() {
+        if std::fs::create_dir_all(parent).is_err() {
+            return;
         }
     }
+    eprintln!(
+        "migrating legacy in-tree store {} -> {}",
+        legacy.display(),
+        central.display()
+    );
+    if std::fs::rename(&legacy, &central).is_ok() {
+        let _ = aden_paths::write_meta(root);
+        return;
+    }
+    // Cross-filesystem: copy then remove the legacy tree.
+    if copy_dir_recursive(&legacy, &central).is_ok() {
+        let _ = std::fs::remove_dir_all(&legacy);
+        let _ = aden_paths::write_meta(root);
+    } else {
+        eprintln!("warning: could not migrate legacy store; it will continue to be read in place");
+    }
+}
+
+/// Recursively copy a directory tree from `src` to `dst`.
+fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir_recursive(&from, &to)?;
+        } else {
+            std::fs::copy(&from, &to)?;
+        }
+    }
+    Ok(())
+}
+
+/// Persist the active project root to `.aden/project.conf` so subsequent
+/// commands without `--project` can find it via [`find_project_root`].
+pub fn write_project_conf(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let aden_dir = root.join(".aden");
+    std::fs::create_dir_all(&aden_dir)?;
+    let conf = aden_dir.join("project.conf");
+    let abs = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    std::fs::write(conf, format!("{}\n", abs.display()))?;
+    Ok(())
 }
 
 /// Source files without an extension that Aden's parser recognizes by name
@@ -320,18 +358,12 @@ pub fn parse_edge_types_validated(
         match parse_single_edge_type(trimmed) {
             Some(et) => out.push(et),
             None => {
-                return Err(
-                    format!("invalid edge type: '{}'. Valid: {}", trimmed, valid).into(),
-                );
+                return Err(format!("invalid edge type: '{}'. Valid: {}", trimmed, valid).into());
             }
         }
     }
     if out.is_empty() {
-        return Err(format!(
-            "no valid edge types in '{}'. Valid: {}",
-            input, valid
-        )
-        .into());
+        return Err(format!("no valid edge types in '{}'. Valid: {}", input, valid).into());
     }
     Ok(out)
 }
@@ -382,36 +414,36 @@ pub fn resolve_node_type(node: &aden_graph::DocumentNode) -> String {
 fn check_incomplete_contracts(path: &Path) -> Vec<String> {
     let mut incomplete = Vec::new();
 
-    if let Ok(entries) = std::fs::read_dir(path) {
-        for entry in entries.flatten() {
-            let p = entry.path();
-            if p.is_file() {
-                let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
-                if ext == "adoc" || ext == "aden" {
-                    let mut text = String::new();
-                    if let Ok(mut file) = std::fs::File::open(&p) {
-                        let _ = file.read_to_string(&mut text);
-                        // Check for [must-complete] marker
-                        if text.contains("[must-complete]") {
-                            // Check if it's been filled (has non-empty required fields)
-                            // A filled contract won't have the hint line or will have content after ====
-                            let has_hint = text.contains("Hint:");
-                            let has_content_after_marker = text
-                                .match_indices("[must-complete]")
-                                .last()
-                                .map(|(pos, _)| text[pos..].contains("===="))
-                                .unwrap_or(false);
+    for entry in walkdir::WalkDir::new(path)
+        .follow_links(false)
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
+        let p = entry.path().to_path_buf();
+        if !p.is_file() {
+            continue;
+        }
+        let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
+        if ext != "adoc" && ext != "aden" {
+            continue;
+        }
+        let mut text = String::new();
+        if let Ok(mut file) = std::fs::File::open(&p) {
+            let _ = file.read_to_string(&mut text);
+            if text.contains("[must-complete]") {
+                let has_hint = text.contains("Hint:");
+                let has_content_after_marker = text
+                    .match_indices("[must-complete]")
+                    .last()
+                    .map(|(pos, _)| text[pos..].contains("===="))
+                    .unwrap_or(false);
 
-                            if has_hint || !has_content_after_marker {
-                                let anchor =
-                                    p.file_stem().and_then(|s| s.to_str()).unwrap_or("unknown");
-                                incomplete.push(format!(
-                                    "WARNING: Incomplete contract: {} - run 'aden complete' to fill missing documentation",
-                                    anchor
-                                ));
-                            }
-                        }
-                    }
+                if has_hint || !has_content_after_marker {
+                    let anchor = p.file_stem().and_then(|s| s.to_str()).unwrap_or("unknown");
+                    incomplete.push(format!(
+                        "WARNING: Incomplete contract: {} - run 'aden complete' to fill missing documentation",
+                        anchor
+                    ));
                 }
             }
         }
@@ -449,9 +481,8 @@ pub fn perform_check(path: &Path) -> Result<Vec<String>, Box<dyn std::error::Err
     // not project content to validate, so they are always skipped.
     let filter = aden_core::filter::AdenFilter::from_directory(path);
     let is_aden_artifact = |rel: &Path| -> bool {
-        rel.components().any(|c| {
-            matches!(c.as_os_str().to_str(), Some(".aden") | Some(".agent"))
-        })
+        rel.components()
+            .any(|c| matches!(c.as_os_str().to_str(), Some(".aden") | Some(".agent")))
     };
     let mut doc_files: Vec<PathBuf> = Vec::new();
     for entry in walkdir::WalkDir::new(path)
@@ -501,8 +532,20 @@ pub fn perform_check(path: &Path) -> Result<Vec<String>, Box<dyn std::error::Err
     if unresolved.is_empty() {
         messages.push("INFO: All <<refs>> resolve.".to_string());
     } else {
-        for issue in unresolved {
+        // Cap at 5 per check to avoid flooding agent context; total count always shown.
+        const UNRESOLVED_CAP: usize = 5;
+        messages.push(format!(
+            "ERROR: {} unresolved <<ref>>(s) found:",
+            unresolved.len()
+        ));
+        for issue in unresolved.iter().take(UNRESOLVED_CAP) {
             messages.push(format!("ERROR: {}", issue));
+        }
+        if unresolved.len() > UNRESOLVED_CAP {
+            messages.push(format!(
+                "  ... and {} more unresolved ref(s)",
+                unresolved.len() - UNRESOLVED_CAP
+            ));
         }
     }
 
@@ -597,14 +640,14 @@ pub fn perform_check(path: &Path) -> Result<Vec<String>, Box<dyn std::error::Err
 fn collect_store_entries(path: &Path) -> Vec<(PathBuf, String)> {
     use aden_store::{GraphStorage, Storage};
 
-    let store_path = find_project_root(path).join(".aden").join("store");
+    let (store_path, _) = aden_paths::resolve_read_store(&find_project_root(path));
     if !store_path.is_dir() {
         return Vec::new();
     }
     let Some(store_str) = store_path.to_str() else {
         return Vec::new();
     };
-    let Ok(storage) = Storage::new(store_str) else {
+    let Ok(storage) = Storage::open_existing(store_str) else {
         return Vec::new();
     };
     let Ok(docs) = storage.get_all_documents() else {
@@ -765,10 +808,7 @@ mod tests {
     fn parse_edge_types_validated_rejects_unknown_token() {
         let err = parse_edge_types_validated("uses,garbage").unwrap_err();
         let msg = err.to_string();
-        assert!(
-            msg.contains("invalid edge type: 'garbage'"),
-            "got: {msg}"
-        );
+        assert!(msg.contains("invalid edge type: 'garbage'"), "got: {msg}");
         assert!(msg.contains("Valid:"), "must list valid types: {msg}");
     }
 

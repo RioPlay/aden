@@ -1,18 +1,17 @@
 [package]
-name = "aden-index"
+name = "aden-paths"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
+rust-version.workspace = true
+description = "Aden: per-user, per-project store/cache path resolution and project identity"
 
 [dependencies]
-aden-core = { path = "../aden-core" }
-aden-paths = { path = "../aden-paths" }
+dirs = { workspace = true }
+sha2 = { workspace = true }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-regex = "1.0"
-rayon.workspace = true
-rust-stemmers = "1.0"
 
 [dev-dependencies]
-tempfile = "3.27.0"
+tempfile = "3"

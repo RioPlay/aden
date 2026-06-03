@@ -5,9 +5,7 @@
 //! so lower crates (e.g. `aden-graph`, which folds overlays into the read graph)
 //! can share it; this module re-exports it for CLI call sites.
 
-pub use aden_core::overlay::{
-    load_overlay, overlay_path, overlay_slugs, sanitize_anchor_filename,
-};
+pub use aden_core::overlay::{load_overlay, overlay_path, overlay_slugs, sanitize_anchor_filename};
 
 use std::path::Path;
 

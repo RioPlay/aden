@@ -15,7 +15,7 @@
 // GNU Affero General Public License for more details.
 //
 use crate::graph::AdenGraph;
-use crate::nodes::{DocumentNode, AdenEdge, GraphNode};
+use crate::nodes::{AdenEdge, DocumentNode, GraphNode};
 use petgraph::graph::NodeIndex;
 use petgraph::visit::EdgeRef;
 use std::collections::HashSet;
@@ -68,7 +68,10 @@ fn dfs_cycle(
             dfs_cycle(graph, neighbor, visited, rec_stack, path, cycles);
         } else if rec_stack.contains(&neighbor) {
             // Found a cycle — extract the cycle from path
-            if let Some(pos) = path.iter().position(|a| *a == graph.graph[neighbor].anchor()) {
+            if let Some(pos) = path
+                .iter()
+                .position(|a| *a == graph.graph[neighbor].anchor())
+            {
                 let cycle = path[pos..].to_vec();
                 cycles.push(cycle);
             }

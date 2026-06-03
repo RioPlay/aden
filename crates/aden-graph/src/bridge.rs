@@ -61,9 +61,7 @@ impl GraphBridge {
     }
 
     /// Load a graph from storage into in-memory structures.
-    pub fn load_from_storage<S: GraphStorage>(
-        storage: &S,
-    ) -> Result<LoadedGraph, StoreError> {
+    pub fn load_from_storage<S: GraphStorage>(storage: &S) -> Result<LoadedGraph, StoreError> {
         let docs = storage.get_all_documents()?;
         let mut edges = Vec::new();
 
@@ -129,9 +127,7 @@ impl GraphBridge {
     }
 
     /// Get all anchors from storage.
-    pub fn get_all_anchors<S: GraphStorage>(
-        storage: &S,
-    ) -> Result<HashSet<String>, StoreError> {
+    pub fn get_all_anchors<S: GraphStorage>(storage: &S) -> Result<HashSet<String>, StoreError> {
         storage.get_all_anchors()
     }
 

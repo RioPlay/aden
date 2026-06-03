@@ -125,11 +125,28 @@ re-index them automatically before answering. So you do *not* run `gen` before
 each query. Only call `gen` after large external changes — cloning a new repo, a
 big merge, or generated code appearing outside the agent's own edits.
 
+### Argument conventions
+
+- **Use `snake_case` argument names** (`agent_id`, `dry_run`, `graph_sync`,
+  `caller_of`, `show_context`). The server translates them to the CLI's
+  `--kebab-case` flags for you.
+- **Unknown arguments are rejected** at the schema boundary, so a typo like
+  `dept` for `depth` fails fast instead of silently no-op'ing.
+- **Booleans must be real JSON booleans** (`true`/`false`), not the strings
+  `"true"`/`"false"` — a non-boolean value is rejected, not coerced.
+- **`locate` requires at least one of `symbol` or `caller_of`**; calling it with
+  neither fails fast with a clear message.
+
 ## Security boundary
 
 - **Path confinement.** Tools operate inside the served project directory; the
   `path`/`--project` argument defaults to that directory and the server does not
-  reach outside it.
+  reach outside it. Directory arguments are confined too — including
+  `heal`'s `watch` target — so a client cannot point a tool at an out-of-tree
+  path like `/etc`.
+- **Error sanitization.** CLI errors returned to the client are scrubbed of
+  panic backtraces and absolute filesystem paths, and capped in length, so host
+  layout does not leak over the channel.
 - **Timeout.** Long-running tools are bounded by a 120-second guard so a single
   call cannot hang the client indefinitely.
 - **`watch` is terminal-only.** The continuous file-watch / live-reindex mode is

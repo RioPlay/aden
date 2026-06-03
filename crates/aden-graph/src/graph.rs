@@ -98,6 +98,7 @@ impl<N: GraphNode, E: GraphEdge> AdenGraph<N, E> {
         let idx = self.graph.add_node(node);
         self.anchor_to_index.insert(anchor, idx);
         self.path_to_index.insert(source_path, idx);
+        self.backlinks_cache = None;
         idx
     }
 
@@ -125,6 +126,7 @@ impl<N: GraphNode, E: GraphEdge> AdenGraph<N, E> {
 
         if !self.graph.contains_edge(src_idx, tgt_idx) {
             self.graph.add_edge(src_idx, tgt_idx, edge);
+            self.backlinks_cache = None;
         }
         Ok(())
     }
@@ -133,6 +135,7 @@ impl<N: GraphNode, E: GraphEdge> AdenGraph<N, E> {
     pub fn add_edge(&mut self, src: NodeIndex, tgt: NodeIndex, edge: E) {
         if !self.graph.contains_edge(src, tgt) {
             self.graph.add_edge(src, tgt, edge);
+            self.backlinks_cache = None;
         }
     }
 
@@ -261,15 +264,16 @@ impl<N: GraphNode, E: GraphEdge> AdenGraph<N, E> {
     /// Run BFS traversal from an anchor.
     pub fn bfs(&self, start: &str, max_depth: usize) -> Vec<(String, String)> {
         let mut visited = std::collections::HashSet::new();
-        let mut queue = vec![(start.to_string(), 0usize)];
+        let mut queue = std::collections::VecDeque::new();
+        queue.push_back((start.to_string(), 0usize));
         let mut results = Vec::new();
 
         if let Some(_start_idx) = self.anchor_to_index.get(start) {
             visited.insert(start.to_string());
 
-            while let Some((current, d)) = queue.pop() {
+            while let Some((current, d)) = queue.pop_front() {
                 if d >= max_depth {
-                    break;
+                    continue;
                 }
 
                 if let Some(&current_idx) = self.anchor_to_index.get(&current) {
@@ -277,7 +281,7 @@ impl<N: GraphNode, E: GraphEdge> AdenGraph<N, E> {
                         let neighbor_anchor = self.graph[neighbor].anchor().to_string();
                         if visited.insert(neighbor_anchor.clone()) {
                             results.push((current.clone(), neighbor_anchor.clone()));
-                            queue.push((neighbor_anchor, d + 1));
+                            queue.push_back((neighbor_anchor, d + 1));
                         }
                     }
                 }
@@ -290,14 +294,15 @@ impl<N: GraphNode, E: GraphEdge> AdenGraph<N, E> {
     /// Get neighborhood of an anchor at a given depth.
     pub fn neighborhood(&self, anchor: &str, depth: usize) -> HashMap<String, Vec<String>> {
         let mut visited = std::collections::HashSet::new();
-        let mut queue = vec![(anchor.to_string(), 0usize)];
+        let mut queue = std::collections::VecDeque::new();
+        queue.push_back((anchor.to_string(), 0usize));
         let mut result = HashMap::new();
 
         visited.insert(anchor.to_string());
 
-        while let Some((current, d)) = queue.pop() {
+        while let Some((current, d)) = queue.pop_front() {
             if d >= depth {
-                break;
+                continue;
             }
 
             if let Some(&current_idx) = self.anchor_to_index.get(&current) {
@@ -306,7 +311,7 @@ impl<N: GraphNode, E: GraphEdge> AdenGraph<N, E> {
                     let neighbor_anchor = self.graph[neighbor].anchor().to_string();
                     if visited.insert(neighbor_anchor.clone()) {
                         neighbors.push(neighbor_anchor.clone());
-                        queue.push((neighbor_anchor, d + 1));
+                        queue.push_back((neighbor_anchor, d + 1));
                     }
                 }
                 if !neighbors.is_empty() {
@@ -349,9 +354,10 @@ fn collect_files_inner(dir: &Path, depth: usize) -> Result<Vec<PathBuf>, GraphEr
         if path.is_dir() {
             files.extend(collect_files_inner(&path, depth + 1)?);
         } else if let Some(ext) = path.extension().and_then(|e| e.to_str())
-            && SUPPORTED_EXTENSIONS.contains(&ext) {
-                files.push(path);
-            }
+            && SUPPORTED_EXTENSIONS.contains(&ext)
+        {
+            files.push(path);
+        }
     }
     files.sort();
     Ok(files)
@@ -452,7 +458,8 @@ impl AdenGraph<DocumentNode, AdenEdge> {
                 } else {
                     EdgeType::UsedBy
                 };
-                let _ = graph.add_edge_by_anchor(&source_anchor, ref_anchor, AdenEdge { edge_type });
+                let _ =
+                    graph.add_edge_by_anchor(&source_anchor, ref_anchor, AdenEdge { edge_type });
                 let _ = graph.add_edge_by_anchor(
                     ref_anchor,
                     &source_anchor,
@@ -475,9 +482,10 @@ impl AdenGraph<DocumentNode, AdenEdge> {
                 } else {
                     EdgeType::Requires
                 };
-                if graph.add_edge_by_anchor(&source_anchor, &target_anchor, AdenEdge { edge_type }).is_err()
-                {
-                }
+                if graph
+                    .add_edge_by_anchor(&source_anchor, &target_anchor, AdenEdge { edge_type })
+                    .is_err()
+                {}
             }
 
             // Build edges from edge:: macros
@@ -511,11 +519,10 @@ impl AdenGraph<DocumentNode, AdenEdge> {
                     "isequivalent" | "is-equivalent-to" => EdgeType::IsEquivalentTo,
                     _ => EdgeType::RelatesTo,
                 };
-                if graph.add_edge_by_anchor(
-                    &source_anchor,
-                    &edge_macro.target,
-                    AdenEdge { edge_type },
-                ).is_err() {}
+                if graph
+                    .add_edge_by_anchor(&source_anchor, &edge_macro.target, AdenEdge { edge_type })
+                    .is_err()
+                {}
             }
         }
 
@@ -591,13 +598,16 @@ impl AdenGraph<DocumentNode, AdenEdge> {
                 .get_edges_by_type(edge_type)
                 .map_err(|e| GraphError::Io(e.to_string()))?;
             for (src, dst) in typed_edges {
-                if graph.add_edge_by_anchor(
-                    &src,
-                    &dst,
-                    AdenEdge {
-                        edge_type: *edge_type,
-                    },
-                ).is_err() {}
+                if graph
+                    .add_edge_by_anchor(
+                        &src,
+                        &dst,
+                        AdenEdge {
+                            edge_type: *edge_type,
+                        },
+                    )
+                    .is_err()
+                {}
             }
         }
 

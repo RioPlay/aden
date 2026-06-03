@@ -9,7 +9,7 @@
 //! Supports: node(), incoming(), outgoing(), where, limit, order_by
 
 use crate::graph::AdenGraph;
-use crate::nodes::{DocumentNode, AdenEdge, GraphNode};
+use crate::nodes::{AdenEdge, DocumentNode, GraphNode};
 use aden_core::EdgeType;
 use petgraph::Direction;
 use serde::{Deserialize, Serialize};
@@ -26,7 +26,9 @@ pub struct AdqInterpreter<'a> {
 
 impl std::fmt::Debug for AdqInterpreter<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AdqInterpreter").field("graph", &"AdenGraph").finish()
+        f.debug_struct("AdqInterpreter")
+            .field("graph", &"AdenGraph")
+            .finish()
     }
 }
 
@@ -164,7 +166,8 @@ impl<'a> AdqInterpreter<'a> {
     /// - `callers`   — incoming `Calls` edges (0 ⇒ never called ⇒ dead-code candidate)
     /// - `refs`      — incoming *reference* edges (Calls/Uses/Invokes/RelatesTo/Tests/…),
     ///   excluding structural containment (the module-hub `Documents`/`PartOf` edges)
-    /// - `backlinks` — every incoming edge (includes the module-hub `Documents` edge)
+    /// - `backlinks` — incoming reference edges (same set as `refs`; excludes
+    ///   structural containment like the module-hub `Documents`/`PartOf` edges)
     /// - `calls`     — outgoing `Calls` edges
     /// - `type`      — node type (Function, Type, Module, …)
     /// - `anchor` / `name` — substring match on the anchor
@@ -192,20 +195,16 @@ impl<'a> AdqInterpreter<'a> {
     }
 
     /// Compute the graph-derived facts for one node, consumed by `where`.
-    fn node_facts(
-        &self,
-        idx: petgraph::graph::NodeIndex,
-        node: &DocumentNode,
-    ) -> NodeFacts {
+    fn node_facts(&self, idx: petgraph::graph::NodeIndex, node: &DocumentNode) -> NodeFacts {
         let mut callers = 0usize;
         let mut refs = 0usize;
         let mut backlinks = 0usize;
         for e in self.graph.graph.edges_directed(idx, Direction::Incoming) {
-            backlinks += 1;
             match e.weight().edge_type {
                 EdgeType::Calls => {
                     callers += 1;
                     refs += 1;
+                    backlinks += 1;
                 }
                 EdgeType::Uses
                 | EdgeType::Invokes
@@ -214,7 +213,10 @@ impl<'a> AdqInterpreter<'a> {
                 | EdgeType::Verifies
                 | EdgeType::Implements
                 | EdgeType::Requires
-                | EdgeType::Mutates => refs += 1,
+                | EdgeType::Mutates => {
+                    refs += 1;
+                    backlinks += 1;
+                }
                 // Documents / PartOf / IsA / … are structural, not references.
                 _ => {}
             }
@@ -473,10 +475,26 @@ mod predicate_tests {
 
     #[test]
     fn comparison_operators_parse_and_eval() {
-        assert!(Predicate::parse("callers>=2").unwrap().eval(&facts("x", "Function", 2, 2, 0)));
-        assert!(Predicate::parse("callers>1").unwrap().eval(&facts("x", "Function", 2, 0, 0)));
-        assert!(Predicate::parse("calls<=0").unwrap().eval(&facts("x", "Function", 0, 0, 0)));
-        assert!(Predicate::parse("callers!=0").unwrap().eval(&facts("x", "Function", 1, 0, 0)));
+        assert!(
+            Predicate::parse("callers>=2")
+                .unwrap()
+                .eval(&facts("x", "Function", 2, 2, 0))
+        );
+        assert!(
+            Predicate::parse("callers>1")
+                .unwrap()
+                .eval(&facts("x", "Function", 2, 0, 0))
+        );
+        assert!(
+            Predicate::parse("calls<=0")
+                .unwrap()
+                .eval(&facts("x", "Function", 0, 0, 0))
+        );
+        assert!(
+            Predicate::parse("callers!=0")
+                .unwrap()
+                .eval(&facts("x", "Function", 1, 0, 0))
+        );
     }
 
     #[test]
@@ -495,7 +513,13 @@ mod predicate_tests {
     #[test]
     fn contains_match_on_anchor() {
         let p = Predicate::parse("anchor~resolve_callee").unwrap();
-        assert!(p.eval(&facts("aden://module/x/y.rs#resolve_callee", "Function", 1, 1, 0)));
+        assert!(p.eval(&facts(
+            "aden://module/x/y.rs#resolve_callee",
+            "Function",
+            1,
+            1,
+            0
+        )));
         assert!(!p.eval(&facts("aden://module/x/y.rs#other", "Function", 1, 1, 0)));
     }
 

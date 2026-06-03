@@ -41,7 +41,7 @@
 
 pub mod aden;
 
-pub use aden::{DocumentNode, AdenEdge};
+pub use aden::{AdenEdge, DocumentNode};
 
 use std::collections::HashMap;
 use std::path::PathBuf;

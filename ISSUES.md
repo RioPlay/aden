@@ -28,8 +28,9 @@ junk; both are fixed:
   footer.
 
 ### Still open
-- `ask` can route to a thin stub anchor (a bare module declaration → ~10 tokens)
-  with no "result too thin, broaden" fallback. Phase 3.
+- ~~`ask` can route to a thin stub anchor (a bare module declaration → ~10 tokens)
+  with no "result too thin, broaden" fallback. Phase 3.~~ **FIXED** — `ask` now
+  detects assembled output < 150 tokens and falls back to `mod-project`.
 
 ## 2026-05-29 — Graph connectivity & density fixes (validation pass)
 
@@ -67,7 +68,9 @@ and fixed the root causes:
   symbols/sections they document.
 - `aden heal` / `aden check` flood stdout (hundreds of events, repeated file
   lists) — context-hostile for an agent; should summarize/cap.
-- `aden list --filter "mod-*"` glob returns 0 even when matches exist.
+- ~~`aden list --filter "mod-*"` glob returns 0 even when matches exist.~~ **FIXED** —
+  `--filter` now uses glob matching for patterns containing `*`/`?`; plain strings
+  still use substring match for backward compatibility.
 - `locate --caller-of` is implemented: it lists a symbol's callers by walking
   incoming `Calls` edges in the graph (run `gen` first to populate the call
   graph), enriched with each caller's `file:line`. The CLI `locate` still ignores

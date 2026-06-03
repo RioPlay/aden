@@ -1,5 +1,5 @@
-:proj: unknown
-:session: active
+:proj: aden
+:session: idle
 
 [[agent-session]]
 = Agent Session Log

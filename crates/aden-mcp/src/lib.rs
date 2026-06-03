@@ -81,10 +81,48 @@ fn required_args(tool: &str) -> &'static [&'static str] {
         // `from` carries the anchor for asm; the CLI marks it required.
         "asm" => &["from"],
         // CLI makes `status` optional (Option<String>); only id + task are required.
-        "session" => &["agent-id", "task"],
+        "session" => &["agent_id", "task"],
         "emergency" => &["reason"],
         _ => &[],
     }
+}
+
+/// Cross-argument validation that a flat JSON-schema `required` list cannot
+/// express (e.g. "at least one of A or B"). Returns `Err(message)` when the
+/// constraint is violated. Runs after schema validation, before shelling out.
+fn validate_args(tool: &str, args: &serde_json::Map<String, serde_json::Value>) -> Result<(), String> {
+    let present = |k: &str| args.get(k).map(|v| !v.is_null()).unwrap_or(false);
+    if tool == "locate" && !present("symbol") && !present("caller_of") {
+        return Err(
+            "locate requires at least one of `symbol` or `caller_of`".to_string(),
+        );
+    }
+    // Type-check declared boolean args: a non-bool value (e.g. the string
+    // "true") must be rejected, not silently coerced to false and dropped.
+    if let Some(spec) = TOOLS.iter().find(|t| t.name == tool) {
+        for &(arg_name, arg_type) in spec.args {
+            if arg_type != "boolean" {
+                continue;
+            }
+            if let Some(v) = args.get(arg_name)
+                && !v.is_null()
+                && !v.is_boolean()
+            {
+                return Err(format!(
+                    "argument `{}` must be a boolean (true/false), got {}",
+                    arg_name,
+                    match v {
+                        serde_json::Value::String(_) => "a string",
+                        serde_json::Value::Number(_) => "a number",
+                        serde_json::Value::Array(_) => "an array",
+                        serde_json::Value::Object(_) => "an object",
+                        _ => "a non-boolean value",
+                    }
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Returns true if `arg` should be passed positionally (no `--` prefix) for `tool`.
@@ -230,6 +268,9 @@ fn tool_from_spec(spec: &ToolSpec) -> Tool {
     let mut schema = JsonObject::new();
     schema.insert("type".to_string(), serde_json::json!("object"));
     schema.insert("properties".to_string(), serde_json::Value::Object(props));
+    // Reject unknown/misspelled args at the schema boundary instead of silently
+    // ignoring them (e.g. a typo'd `dept` for `depth` would otherwise no-op).
+    schema.insert("additionalProperties".to_string(), serde_json::json!(false));
     let required = required_args(spec.name);
     if !required.is_empty() {
         schema.insert("required".to_string(), serde_json::json!(required));
@@ -454,7 +495,7 @@ static TOOLS: &[ToolSpec] = &[
         description: "Scan for incomplete contracts and report them. Note: automatic LLM filling is not yet implemented — this currently lists the contracts that need completion and (with --model) previews the prompt.",
         args: &[
             ("path", "string"),
-            ("dry-run", "boolean"),
+            ("dry_run", "boolean"),
             ("model", "string"),
         ],
     },
@@ -464,7 +505,7 @@ static TOOLS: &[ToolSpec] = &[
         args: &[
             ("path", "string"),
             ("sync", "boolean"),
-            ("graph-sync", "boolean"),
+            ("graph_sync", "boolean"),
             ("restore", "boolean"),
         ],
     },
@@ -472,7 +513,7 @@ static TOOLS: &[ToolSpec] = &[
         name: "session",
         description: "Append entry to .agent/session.adoc.",
         args: &[
-            ("agent-id", "string"),
+            ("agent_id", "string"),
             ("task", "string"),
             ("status", "string"),
         ],
@@ -577,6 +618,14 @@ impl ServerHandler for AdenMcpServer {
             return Ok(CallToolResult::error(vec![Content::text(e)]));
         }
 
+        // `locate` needs at least one of `symbol`/`caller_of`; neither can be
+        // expressed as a JSON-schema `required` (that is an AND). Validate the
+        // "at least one of" constraint here so an empty call fails fast with a
+        // clear message instead of shelling out to a CLI usage error.
+        if let Err(e) = validate_args(tool_name, &args) {
+            return Ok(CallToolResult::error(vec![Content::text(e)]));
+        }
+
         // Build CLI args: `aden <name> [--flag|--key value] [extra] -- [positional]`.
         // Read tools print terminal chrome (truncation footers, banners) by
         // default; request machine-readable JSON so the agent receives a
@@ -622,6 +671,9 @@ fn confine_path_args(
     let path_args: &[&str] = match tool {
         "asm" => &["path", "out"],
         "workflow" => &["path", "out", "from"],
+        // `heal --watch <DIR>` names a directory to monitor; confine it so a
+        // client cannot point the watcher at an out-of-tree path like `/etc`.
+        "heal" => &["path", "watch"],
         _ => &["path"],
     };
     for key in path_args {
@@ -753,8 +805,81 @@ async fn run_aden_command(project_dir: &Path, args: &[&str]) -> Result<String, S
         if !out.trim().is_empty() {
             err.push_str(&format!("\n(stdout): {}", out));
         }
-        Err(err)
+        Err(sanitize_error(&err))
     }
+}
+
+/// Sanitize CLI stderr before returning it to an (untrusted) MCP caller.
+///
+/// Raw stderr can leak host-specific detail — absolute filesystem paths,
+/// `RUST_BACKTRACE` frames, addresses — that an MCP client has no business
+/// seeing. Drop panic backtrace noise, redact absolute paths, collapse blank
+/// runs, and cap the total length so a runaway error can't flood the channel.
+fn sanitize_error(raw: &str) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    for line in raw.lines() {
+        let t = line.trim_end();
+        let lt = t.trim_start();
+        // Drop backtrace frames and the backtrace hint banner entirely.
+        if lt.starts_with("note: run with")
+            || lt.starts_with("note: Some details")
+            || lt.starts_with("stack backtrace:")
+            || lt.starts_with("at ")
+            || (lt.chars().take_while(|c| c.is_ascii_digit()).count() > 0
+                && lt.contains(": ")
+                && lt.split_once(": ").is_some_and(|(n, _)| {
+                    !n.is_empty() && n.chars().all(|c| c.is_ascii_digit())
+                }))
+        {
+            continue;
+        }
+        lines.push(redact_abs_paths(t));
+    }
+    let mut msg = lines.join("\n");
+    msg = msg.trim().to_string();
+    if msg.is_empty() {
+        msg = "aden command failed (no error output)".to_string();
+    }
+    // Cap length so a pathological error cannot flood the JSON-RPC stream.
+    const MAX: usize = 4000;
+    if msg.len() > MAX {
+        let mut end = MAX;
+        while !msg.is_char_boundary(end) {
+            end -= 1;
+        }
+        msg.truncate(end);
+        msg.push_str("\n… (error output truncated)");
+    }
+    msg
+}
+
+/// Replace absolute filesystem paths in `s` with a `<path>` placeholder so host
+/// directory layout does not leak to the MCP client.
+fn redact_abs_paths(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.char_indices().peekable();
+    while let Some((i, c)) = chars.next() {
+        // Unix absolute path: a `/` that starts a token (preceded by start or
+        // whitespace/quote/paren) and is followed by a path-like char.
+        let token_start = i == 0
+            || s[..i]
+                .chars()
+                .next_back()
+                .is_some_and(|p| p.is_whitespace() || matches!(p, '\'' | '"' | '(' | '[' | '='));
+        if c == '/' && token_start && s[i + 1..].starts_with(|n: char| n.is_alphanumeric()) {
+            // consume the rest of the path token
+            while let Some(&(_, nc)) = chars.peek() {
+                if nc.is_whitespace() || matches!(nc, '\'' | '"' | ')' | ']' | ',') {
+                    break;
+                }
+                chars.next();
+            }
+            out.push_str("<path>");
+            continue;
+        }
+        out.push(c);
+    }
+    out
 }
 
 // ── Public serve ────────────────────────────────────────────
@@ -972,6 +1097,82 @@ mod tests {
         // gen has no required args (path defaults to ".").
         let gen_tool = server.get_tool("gen").unwrap();
         assert!(gen_tool.input_schema.get("required").is_none());
+    }
+
+    #[test]
+    fn locate_requires_symbol_or_caller_of() {
+        // Empty call must be rejected.
+        assert!(validate_args("locate", &serde_json::Map::new()).is_err());
+        // Either arg alone is sufficient.
+        let mut a = serde_json::Map::new();
+        a.insert("symbol".into(), serde_json::json!("foo"));
+        assert!(validate_args("locate", &a).is_ok());
+        let mut b = serde_json::Map::new();
+        b.insert("caller_of".into(), serde_json::json!("foo"));
+        assert!(validate_args("locate", &b).is_ok());
+    }
+
+    #[test]
+    fn boolean_args_reject_non_bool_values() {
+        let mut a = serde_json::Map::new();
+        a.insert("auto".into(), serde_json::json!("true")); // string, not bool
+        let err = validate_args("gen", &a).unwrap_err();
+        assert!(err.contains("auto") && err.contains("boolean"), "{err}");
+        // A real bool passes.
+        let mut ok = serde_json::Map::new();
+        ok.insert("auto".into(), serde_json::json!(true));
+        assert!(validate_args("gen", &ok).is_ok());
+    }
+
+    #[test]
+    fn schema_rejects_unknown_properties() {
+        let server = AdenMcpServer::new(PathBuf::from("."));
+        let tool = server.get_tool("gen").unwrap();
+        assert_eq!(
+            tool.input_schema.get("additionalProperties"),
+            Some(&serde_json::json!(false))
+        );
+    }
+
+    #[test]
+    fn renamed_snake_case_args_emit_kebab_flags() {
+        // session agent_id → --agent-id; complete dry_run → --dry-run; watch graph_sync → --graph-sync
+        let mut s = serde_json::Map::new();
+        s.insert("agent_id".into(), serde_json::json!("a1"));
+        s.insert("task".into(), serde_json::json!("t"));
+        let out = build_cli_args(spec("session"), &s, &[]);
+        assert!(out.contains(&"--agent-id".to_string()) && out.contains(&"a1".to_string()));
+
+        let mut c = serde_json::Map::new();
+        c.insert("dry_run".into(), serde_json::json!(true));
+        assert!(build_cli_args(spec("complete"), &c, &[]).contains(&"--dry-run".to_string()));
+
+        let mut w = serde_json::Map::new();
+        w.insert("graph_sync".into(), serde_json::json!(true));
+        assert!(build_cli_args(spec("watch"), &w, &[]).contains(&"--graph-sync".to_string()));
+    }
+
+    #[test]
+    fn heal_watch_dir_is_confined() {
+        let proj = std::env::temp_dir();
+        let mut esc = serde_json::Map::new();
+        esc.insert("watch".into(), serde_json::json!("/etc"));
+        assert!(
+            confine_path_args("heal", &esc, &proj).is_err(),
+            "heal watch=/etc must be refused"
+        );
+    }
+
+    #[test]
+    fn sanitize_error_redacts_paths_and_drops_backtrace() {
+        let raw = "thread 'main' panicked at /home/user/secret/foo.rs:10\n\
+                   note: run with `RUST_BACKTRACE=1` for a backtrace\n\
+                   stack backtrace:\n   0: core::panicking\n   1: aden::main";
+        let out = sanitize_error(raw);
+        assert!(!out.contains("/home/user/secret"), "abs path leaked: {out}");
+        assert!(out.contains("<path>"));
+        assert!(!out.contains("stack backtrace"));
+        assert!(!out.contains("RUST_BACKTRACE"));
     }
 
     #[test]

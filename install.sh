@@ -19,11 +19,15 @@ cargo build --release -p aden-cli -p aden-mcp 2>&1 | tail -3
 # Ensure install directory exists
 mkdir -p "$INSTALL_DIR"
 
-# Copy binaries
+# Copy binaries.
+# Use `install`, not `cp`: it unlinks the destination first, so replacing a
+# binary that is currently running (e.g. the aden-mcp server held open by an
+# editor/agent session) succeeds with a fresh inode instead of failing with
+# "Text file busy" (ETXTBSY). The running process keeps the old inode until it
+# restarts; the new copy is what the next launch picks up.
 echo "Installing binaries to $INSTALL_DIR ..."
-cp "$PROJECT_ROOT/target/release/aden" "$INSTALL_DIR/"
-cp "$PROJECT_ROOT/target/release/aden-mcp" "$INSTALL_DIR/"
-chmod +x "$INSTALL_DIR/aden" "$INSTALL_DIR/aden-mcp"
+install -m 755 "$PROJECT_ROOT/target/release/aden" "$INSTALL_DIR/aden"
+install -m 755 "$PROJECT_ROOT/target/release/aden-mcp" "$INSTALL_DIR/aden-mcp"
 
 # Detect shell profile
 SHELL_NAME="${SHELL##*/}"
