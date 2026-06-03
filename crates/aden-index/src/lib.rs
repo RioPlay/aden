@@ -1932,24 +1932,6 @@ impl SemanticNormalizer {
         ("yesterday", "yesterday"),
     ];
 
-    // Reverse lookup: canonical → keywords (for bidirectional search)
-    // Currently unused but kept for future bidirectional search implementation
-    #[allow(dead_code)]
-    const TIME_CANONICAL_TO_KEYWORDS: &[(&str, &[&str])] = &[
-        ("00:00", &["midnight", "00:00", "0:00", "twelve am", "12am"]),
-        ("12:00", &["noon", "midday", "12:00", "twelve pm", "12pm"]),
-        (
-            "06:00",
-            &["dawn", "sunrise", "06:00", "6:00", "six am", "6am"],
-        ),
-        (
-            "18:00",
-            &["dusk", "sunset", "evening", "18:00", "six pm", "6pm"],
-        ),
-        ("AM", &["morning", "am"]),
-        ("PM", &["afternoon", "evening", "night", "pm"]),
-    ];
-
     /// Normalize time terms to canonical forms (bidirectional)
     fn time_to_canonical(term: &str) -> Option<String> {
         let t = term.to_lowercase();

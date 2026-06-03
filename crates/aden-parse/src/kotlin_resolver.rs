@@ -1,10 +1,9 @@
 // Copyright (c) 2026 RioPlay <rioplay@rioplay.dev>
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //!
-//! Deep Kotlin resolver — import + call-site analysis.
+//! Deep Kotlin resolver — symbol + call-site analysis.
 //!
 //! Handles:
-//!   • `package`, `import` resolution (single, wildcard, aliased)
 //!   • Class, object, interface, data class declarations
 //!   • Function declarations (top-level, member, extension)
 //!   • Property declarations (val, var, const val)
@@ -58,14 +57,12 @@ impl LanguageExtractor for KotlinResolver {
         let module_path = infer_kotlin_package(path, source);
         let file_name = path.file_name().unwrap_or_default().to_string_lossy();
 
-        let mut imports: Vec<KotlinImport> = Vec::new();
         let mut symbols: Vec<KotlinSymbol> = Vec::new();
         walk_source_file(
             tree.root_node(),
             source,
             &module_path,
             &file_name,
-            &mut imports,
             &mut symbols,
         );
 
@@ -76,7 +73,6 @@ impl LanguageExtractor for KotlinResolver {
                 source,
                 path,
                 &symbols,
-                &imports,
                 &module_path,
                 &file_name,
             ) {
@@ -86,15 +82,6 @@ impl LanguageExtractor for KotlinResolver {
 
         Ok(docs)
     }
-}
-
-#[derive(Debug)]
-#[allow(dead_code)]
-struct KotlinImport {
-    package: String,
-    name: String, // class name or "*"
-    alias: Option<String>,
-    is_wildcard: bool,
 }
 
 #[derive(Debug)]
@@ -209,7 +196,6 @@ fn walk_source_file<'a>(
     source: &str,
     package: &str,
     file_name: &str,
-    imports: &mut Vec<KotlinImport>,
     symbols: &mut Vec<KotlinSymbol<'a>>,
 ) {
     if !node.is_named() {
@@ -217,12 +203,7 @@ fn walk_source_file<'a>(
     }
 
     match node.kind() {
-        "package_header" => {}
-        "import_header" => {
-            if let Some(imp) = parse_import(node, source) {
-                imports.push(imp);
-            }
-        }
+        "package_header" | "import_header" => {}
         "class_declaration"
         | "object_declaration"
         | "interface_declaration"
@@ -244,64 +225,18 @@ fn walk_source_file<'a>(
         | "block" | "expression" => {
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
-                walk_source_file(child, source, package, file_name, imports, symbols);
+                walk_source_file(child, source, package, file_name, symbols);
             }
         }
         _ => {
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
                 if child.is_named() {
-                    walk_source_file(child, source, package, file_name, imports, symbols);
+                    walk_source_file(child, source, package, file_name, symbols);
                 }
             }
         }
     }
-}
-
-fn parse_import(node: tree_sitter::Node, source: &str) -> Option<KotlinImport> {
-    let text = node_text(node, source).trim();
-    if !text.starts_with("import ") {
-        return None;
-    }
-    let without_import = &text["import ".len()..];
-    // Handle alias: import foo.Bar as Baz
-    let (main, alias) = if let Some(idx) = without_import.rfind(" as ") {
-        (
-            &without_import[..idx],
-            Some(without_import[idx + 4..].trim().to_string()),
-        )
-    } else {
-        (without_import, None)
-    };
-
-    let is_wildcard = main.ends_with(".*");
-    if is_wildcard {
-        let pkg = main[..main.len() - 1].trim_end_matches('.').to_string();
-        return Some(KotlinImport {
-            package: pkg.clone(),
-            name: "*".to_string(),
-            alias: None,
-            is_wildcard,
-        });
-    }
-
-    let parts: Vec<&str> = main.split('.').collect();
-    if parts.is_empty() {
-        return None;
-    }
-    let name = parts.last()?.to_string();
-    let pkg = if parts.len() > 1 {
-        parts[..parts.len() - 1].join(".")
-    } else {
-        String::new()
-    };
-
-    Some(KotlinImport {
-        package: pkg,
-        name,
-        alias,
-        is_wildcard,
-    })
 }
 
 fn parse_type_declaration<'a>(
@@ -351,14 +286,7 @@ fn parse_type_declaration<'a>(
                 let mut cc = child.walk();
                 for grandchild in child.children(&mut cc) {
                     if grandchild.is_named() {
-                        walk_source_file(
-                            grandchild,
-                            source,
-                            package,
-                            file_name,
-                            &mut Vec::new(),
-                            symbols,
-                        );
+                        walk_source_file(grandchild, source, package, file_name, symbols);
                     }
                 }
             }
@@ -495,7 +423,6 @@ fn emit_kotlin_symbol(
     source: &str,
     path: &Path,
     _all_symbols: &[KotlinSymbol],
-    _imports: &[KotlinImport],
     package: &str,
     file_name: &str,
 ) -> Option<Document> {

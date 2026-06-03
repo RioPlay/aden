@@ -253,23 +253,6 @@ fn emit_region_block(out: &mut String, block: &RegionBlock) {
 /// Deterministic Aden Graph (ADG) format for CI comparison and compact storage.
 /// Same source produces identical bytes (SHA-256 match).
 #[derive(Debug, Serialize, Deserialize)]
-#[allow(dead_code)]
-struct AdgNode {
-    anchor: String,
-    title: String,
-    block_count: usize,
-    content_hash: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[allow(dead_code)]
-struct AdgEdge {
-    source: String,
-    target: String,
-    edge_type: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
 struct AdgDocument {
     anchor: String,
     title: String,

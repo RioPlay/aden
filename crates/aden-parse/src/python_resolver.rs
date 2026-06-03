@@ -54,7 +54,6 @@ impl LanguageExtractor for PythonResolver {
         let mut ctx = ExtractionContext {
             symbols: Vec::new(),
             imports: Vec::new(),
-            doc_comments: Vec::new(),
         };
         collect_module_items(tree.root_node(), source, &mut ctx, "");
 
@@ -96,11 +95,9 @@ struct ImportBinding {
     original_name: Option<String>, // Some for `from x import y`, None for `import x`
 }
 
-#[allow(dead_code)]
 struct ExtractionContext<'a> {
     symbols: Vec<SymbolInfo<'a>>,
     imports: Vec<ImportBinding>,
-    doc_comments: Vec<String>,
 }
 
 /// Walk a module-level AST and populate symbols + imports.

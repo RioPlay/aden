@@ -15,15 +15,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "aden-api"
-version = "0.1.0"
-dependencies = [
- "aden-core",
- "aden-graph",
- "serde",
-]
-
-[[package]]
 name = "aden-asm"
 version = "0.1.0"
 dependencies = [
@@ -34,14 +25,6 @@ dependencies = [
  "regex",
  "tempfile",
  "thiserror",
-]
-
-[[package]]
-name = "aden-attest"
-version = "0.1.0"
-dependencies = [
- "aden-core",
- "serde",
 ]
 
 [[package]]
@@ -221,14 +204,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "aden-simulate"
-version = "0.1.0"
-dependencies = [
- "aden-core",
- "serde",
-]
-
-[[package]]
 name = "aden-store"
 version = "0.1.0"
 dependencies = [
@@ -238,14 +213,6 @@ dependencies = [
  "serde",
  "thiserror",
  "uuid",
-]
-
-[[package]]
-name = "aden-telemetry"
-version = "0.1.0"
-dependencies = [
- "aden-core",
- "serde",
 ]
 
 [[package]]

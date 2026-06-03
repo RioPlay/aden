@@ -105,12 +105,10 @@ struct GoImport {
 }
 
 #[derive(Debug)]
-#[allow(dead_code)]
 struct GoSymbol<'a> {
     name: String,
     kind: NodeType,
     node: tree_sitter::Node<'a>,
-    receiver: Option<String>, // e.g. "Point" for `func (p Point) Distance()`
     doc_comment: Option<String>,
 }
 
@@ -136,7 +134,6 @@ fn walk_package_decl<'a>(
                     name,
                     kind: NodeType::Function,
                     node,
-                    receiver: None,
                     doc_comment: doc,
                 });
             }
@@ -154,7 +151,6 @@ fn walk_package_decl<'a>(
                     name: qualified,
                     kind: NodeType::Function,
                     node,
-                    receiver,
                     doc_comment: doc,
                 });
             }
@@ -175,7 +171,6 @@ fn walk_package_decl<'a>(
                         // `type_declaration`. In a grouped `type ( A ...; B ... )`
                         // all specs otherwise shared the whole-block span.
                         node: child,
-                        receiver: None,
                         doc_comment: doc,
                     });
                 }

@@ -1,15 +1,13 @@
 // Copyright (c) 2026 RioPlay <rioplay@rioplay.dev>
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //!
-//! Deep PHP resolver — import + call-site analysis.
+//! Deep PHP resolver — symbol + call-site analysis.
 //!
 //! Handles:
-//!   • `namespace`, `use` resolution (single, group, aliased, const, function)
 //!   • Class, interface, trait, enum declarations
 //!   • Function declarations (global)
 //!   • Method declarations (instance, static)
 //!   • Property declarations
-//!   • `require`, `require_once`, `include`, `include_once`
 //!   • Intra-file and cross-module call resolution (best-effort)
 //!   • Emits `edge::calls[]` macros for graph ingestion
 //!
@@ -61,21 +59,19 @@ impl LanguageExtractor for PhpResolver {
         let namespace = infer_php_namespace(path, source);
         let file_name = path.file_name().unwrap_or_default().to_string_lossy();
 
-        let mut imports: Vec<PhpImport> = Vec::new();
         let mut symbols: Vec<PhpSymbol> = Vec::new();
         walk_program(
             tree.root_node(),
             source,
             &namespace,
             &file_name,
-            &mut imports,
             &mut symbols,
         );
 
         let mut docs = Vec::new();
         for sym in &symbols {
             if let Some(doc) = emit_php_symbol(
-                sym, source, path, &symbols, &imports, &namespace, &file_name,
+                sym, source, path, &symbols, &namespace, &file_name,
             ) {
                 docs.push(doc);
             }
@@ -83,22 +79,6 @@ impl LanguageExtractor for PhpResolver {
 
         Ok(docs)
     }
-}
-
-#[derive(Debug)]
-#[allow(dead_code)]
-struct PhpImport {
-    kind: ImportKind,
-    name: String,
-    alias: Option<String>,
-}
-
-#[derive(Debug)]
-enum ImportKind {
-    Class,
-    Function,
-    Const,
-    Mixed, // use with multiple
 }
 
 #[derive(Debug)]
@@ -228,7 +208,6 @@ fn walk_program<'a>(
     source: &str,
     namespace: &str,
     file_name: &str,
-    imports: &mut Vec<PhpImport>,
     symbols: &mut Vec<PhpSymbol<'a>>,
 ) {
     if !node.is_named() {
@@ -240,12 +219,7 @@ fn walk_program<'a>(
             // Namespace may wrap declarations
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
-                walk_program(child, source, namespace, file_name, imports, symbols);
-            }
-        }
-        "namespace_use_declaration" | "use_declaration" => {
-            if let Some(imp) = parse_use(node, source) {
-                imports.push(imp);
+                walk_program(child, source, namespace, file_name, symbols);
             }
         }
         "class_declaration"
@@ -264,12 +238,6 @@ fn walk_program<'a>(
         "property_declaration" => {
             parse_property(node, source, namespace, file_name, symbols);
         }
-        "require_statement"
-        | "require_once_statement"
-        | "include_statement"
-        | "include_once_statement" => {
-            parse_require(node, source, imports);
-        }
         "program"
         | "declaration_list"
         | "class_interface_clause"
@@ -282,85 +250,17 @@ fn walk_program<'a>(
         | "block" => {
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
-                walk_program(child, source, namespace, file_name, imports, symbols);
+                walk_program(child, source, namespace, file_name, symbols);
             }
         }
         _ => {
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
                 if child.is_named() {
-                    walk_program(child, source, namespace, file_name, imports, symbols);
+                    walk_program(child, source, namespace, file_name, symbols);
                 }
             }
         }
-    }
-}
-
-fn parse_use(node: tree_sitter::Node, source: &str) -> Option<PhpImport> {
-    let text = node_text(node, source).trim();
-    // use Foo\Bar;
-    // use Foo\Bar as Baz;
-    // use function Foo\bar;
-    // use const Foo\BAR;
-    // use Foo\{Bar, Baz};
-
-    let kind = if text.contains("use function ") {
-        ImportKind::Function
-    } else if text.contains("use const ") {
-        ImportKind::Const
-    } else if text.contains('{') {
-        ImportKind::Mixed
-    } else {
-        ImportKind::Class
-    };
-
-    // Extract name - use last path segment
-    let text_clean = text
-        .trim_start_matches("use ")
-        .trim_start_matches("function ")
-        .trim_start_matches("const ")
-        .trim_end_matches(';');
-
-    let (main, alias) = if let Some(idx) = text_clean.rfind(" as ") {
-        (
-            &text_clean[..idx],
-            Some(text_clean[idx + 4..].trim().to_string()),
-        )
-    } else {
-        (text_clean, None)
-    };
-
-    let name = if let Some(last_backslash) = main.rfind('\\') {
-        main[last_backslash + 1..].trim().to_string()
-    } else {
-        main.trim().to_string()
-    };
-
-    Some(PhpImport { kind, name, alias })
-}
-
-fn parse_require(node: tree_sitter::Node, source: &str, imports: &mut Vec<PhpImport>) {
-    let text = node_text(node, source).trim();
-    // require 'path.php'; require_once('path.php');
-    // Extract string argument
-    if let Some(start) = text.find('\'') {
-        if let Some(end) = text[start + 1..].find('\'') {
-            let path = &text[start + 1..start + 1 + end];
-            imports.push(PhpImport {
-                kind: ImportKind::Class,
-                name: path.to_string(),
-                alias: None,
-            });
-        }
-    } else if let Some(start) = text.find('"')
-        && let Some(end) = text[start + 1..].find('"')
-    {
-        let path = &text[start + 1..start + 1 + end];
-        imports.push(PhpImport {
-            kind: ImportKind::Class,
-            name: path.to_string(),
-            alias: None,
-        });
     }
 }
 
@@ -418,14 +318,7 @@ fn parse_type_declaration<'a>(
             let mut cc = child.walk();
             for grandchild in child.children(&mut cc) {
                 if grandchild.is_named() {
-                    walk_program(
-                        grandchild,
-                        source,
-                        namespace,
-                        file_name,
-                        &mut Vec::new(),
-                        symbols,
-                    );
+                    walk_program(grandchild, source, namespace, file_name, symbols);
                 }
             }
         }
@@ -565,7 +458,6 @@ fn emit_php_symbol(
     source: &str,
     path: &Path,
     _all_symbols: &[PhpSymbol],
-    _imports: &[PhpImport],
     namespace: &str,
     file_name: &str,
 ) -> Option<Document> {

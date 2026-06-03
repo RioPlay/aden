@@ -1,10 +1,9 @@
 // Copyright (c) 2026 RioPlay <rioplay@rioplay.dev>
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //!
-//! Deep C# resolver — import + call-site analysis.
+//! Deep C# resolver — symbol + call-site analysis.
 //!
 //! Handles:
-//!   • `using` directive resolution (namespace, alias, static)
 //!   • Class, interface, enum, struct declarations
 //!   • Method declarations, constructors, properties
 //!   • Extension methods (best-effort detection)
@@ -58,21 +57,19 @@ impl LanguageExtractor for CSharpResolver {
         let namespace = infer_cs_namespace(path, source);
         let file_name = path.file_name().unwrap_or_default().to_string_lossy();
 
-        let mut usings: Vec<CsUsing> = Vec::new();
         let mut symbols: Vec<CsSymbol> = Vec::new();
         walk_compilation_unit(
             tree.root_node(),
             source,
             &namespace,
             &file_name,
-            &mut usings,
             &mut symbols,
         );
 
         let mut docs = Vec::new();
         for sym in &symbols {
             if let Some(doc) =
-                emit_cs_symbol(sym, source, path, &symbols, &usings, &namespace, &file_name)
+                emit_cs_symbol(sym, source, path, &symbols, &namespace, &file_name)
             {
                 docs.push(doc);
             }
@@ -80,14 +77,6 @@ impl LanguageExtractor for CSharpResolver {
 
         Ok(docs)
     }
-}
-
-#[derive(Debug)]
-#[allow(dead_code)]
-struct CsUsing {
-    namespace: String,
-    alias: Option<String>,
-    is_static: bool,
 }
 
 #[derive(Debug)]
@@ -218,7 +207,6 @@ fn walk_compilation_unit<'a>(
     source: &str,
     namespace: &str,
     file_name: &str,
-    usings: &mut Vec<CsUsing>,
     symbols: &mut Vec<CsSymbol<'a>>,
 ) {
     if !node.is_named() {
@@ -226,11 +214,6 @@ fn walk_compilation_unit<'a>(
     }
 
     match node.kind() {
-        "using_directive" => {
-            if let Some(u) = parse_using(node, source) {
-                usings.push(u);
-            }
-        }
         "class_declaration"
         | "interface_declaration"
         | "enum_declaration"
@@ -265,49 +248,18 @@ fn walk_compilation_unit<'a>(
         | "declaration_list" => {
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
-                walk_compilation_unit(child, source, namespace, file_name, usings, symbols);
+                walk_compilation_unit(child, source, namespace, file_name, symbols);
             }
         }
         _ => {
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
                 if child.is_named() {
-                    walk_compilation_unit(child, source, namespace, file_name, usings, symbols);
+                    walk_compilation_unit(child, source, namespace, file_name, symbols);
                 }
             }
         }
     }
-}
-
-fn parse_using(node: tree_sitter::Node, source: &str) -> Option<CsUsing> {
-    let text = node_text(node, source).trim();
-    let is_static = text.contains("using static ");
-    let is_alias = text.contains(" = ");
-
-    if is_alias {
-        // using Foo = Bar.Baz;
-        let main = text.trim_start_matches("using ").trim_end_matches(';');
-        let parts: Vec<&str> = main.split(" = ").collect();
-        if parts.len() == 2 {
-            return Some(CsUsing {
-                namespace: parts[1].trim().to_string(),
-                alias: Some(parts[0].trim().to_string()),
-                is_static,
-            });
-        }
-    }
-
-    let ns = text
-        .trim_start_matches("using static ")
-        .trim_start_matches("using ")
-        .trim_end_matches(';')
-        .trim();
-
-    Some(CsUsing {
-        namespace: ns.to_string(),
-        alias: None,
-        is_static,
-    })
 }
 
 fn parse_type_declaration<'a>(
@@ -354,7 +306,6 @@ fn parse_type_declaration<'a>(
                             source,
                             namespace,
                             file_name,
-                            &mut Vec::new(),
                             symbols,
                         );
                     }
@@ -574,7 +525,6 @@ fn emit_cs_symbol(
     source: &str,
     path: &Path,
     _all_symbols: &[CsSymbol],
-    _usings: &[CsUsing],
     namespace: &str,
     file_name: &str,
 ) -> Option<Document> {

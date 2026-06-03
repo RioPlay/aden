@@ -83,10 +83,6 @@ Staging:: Write-only audit trail in `.aden/staging/` for agent proposals before 
 |aden-lsp |LSP for `.adoc`/`.aden` files |Shipped Phase 0
 |aden-policy |Constitutional policy engine, directives |Shipped Phase 0
 |aden-cli |Binary (`aden`) with all commands |Shipped Phase 0
-|aden-api |REST/gRPC API types (experimental, unintegrated) |Implemented, uncalled
-|aden-attest |Attestation/provenance types (experimental, unintegrated) |Implemented, uncalled
-|aden-simulate |Contract simulation/threat modeling (experimental, unintegrated) |Implemented, uncalled
-|aden-telemetry |Token/latency telemetry (experimental, unintegrated) |Implemented, uncalled
 |===
 
 == Phase 1-6 Crate Map (Planned)

@@ -5,7 +5,7 @@
 set -e
 
 # Step 1: Generate module anchors in MULTIPLE locations for graph discovery
-for crate in aden-core aden-cli aden-parse aden-emit aden-asm aden-graph aden-heal aden-propose aden-policy aden-index aden-api aden-attest aden-telemetry aden-simulate aden-lsp aden-mcp; do
+for crate in aden-core aden-cli aden-parse aden-emit aden-asm aden-graph aden-heal aden-propose aden-policy aden-index aden-lsp aden-mcp; do
   lib_file="crates/$crate/src/lib.rs"
   main_file="crates/$crate/src/main.rs"
   
@@ -58,7 +58,7 @@ if ! grep -q "<<mod-aden-" docs/architecture.adoc; then
   echo "== Module Overview" >> docs/architecture.adoc
   echo "" >> docs/architecture.adoc
   echo "See also:" >> docs/architecture.adoc
-  for crate in aden-core aden-cli aden-parse aden-emit aden-asm aden-graph aden-heal aden-propose aden-policy aden-index aden-api aden-attest aden-telemetry aden-simulate aden-lsp aden-mcp; do
+  for crate in aden-core aden-cli aden-parse aden-emit aden-asm aden-graph aden-heal aden-propose aden-policy aden-index aden-lsp aden-mcp; do
     echo "- <<mod-$crate>>" >> docs/architecture.adoc
   done
   echo "Added module links to architecture.adoc"

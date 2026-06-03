@@ -1,11 +1,9 @@
 // Copyright (c) 2026 RioPlay <rioplay@rioplay.dev>
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //!
-//! Deep Ruby resolver — import + call-site analysis.
+//! Deep Ruby resolver — symbol + call-site analysis.
 //!
 //! Handles:
-//!   • `require`, `require_relative`, `load` resolution
-//!   • `include`, `extend`, `prepend` for module composition
 //!   • Class declarations, module declarations
 //!   • Method definitions (instance, singleton, class methods)
 //!   • Block/proc/lambda references
@@ -59,14 +57,12 @@ impl LanguageExtractor for RubyResolver {
         let module_name = infer_ruby_module(path);
         let file_name = path.file_name().unwrap_or_default().to_string_lossy();
 
-        let mut requires: Vec<RubyRequire> = Vec::new();
         let mut symbols: Vec<RubySymbol> = Vec::new();
         walk_program(
             tree.root_node(),
             source,
             &module_name,
             &file_name,
-            &mut requires,
             &mut symbols,
         );
 
@@ -77,7 +73,6 @@ impl LanguageExtractor for RubyResolver {
                 source,
                 path,
                 &symbols,
-                &requires,
                 &module_name,
                 &file_name,
             ) {
@@ -87,23 +82,6 @@ impl LanguageExtractor for RubyResolver {
 
         Ok(docs)
     }
-}
-
-#[derive(Debug)]
-#[allow(dead_code)]
-struct RubyRequire {
-    path: String,
-    kind: RequireKind, // require, require_relative, load
-}
-
-#[derive(Debug)]
-enum RequireKind {
-    Require,
-    RequireRelative,
-    Load,
-    Include,
-    Extend,
-    Prepend,
 }
 
 #[derive(Debug)]
@@ -179,7 +157,6 @@ fn walk_program<'a>(
     source: &str,
     module: &str,
     file_name: &str,
-    requires: &mut Vec<RubyRequire>,
     symbols: &mut Vec<RubySymbol<'a>>,
 ) {
     if !node.is_named() {
@@ -187,11 +164,6 @@ fn walk_program<'a>(
     }
 
     match node.kind() {
-        "call" | "method_call" | "command_call" => {
-            if let Some(req) = parse_require(node, source) {
-                requires.push(req);
-            }
-        }
         "class" | "singleton_class" => {
             parse_class(node, source, module, file_name, symbols);
         }
@@ -212,66 +184,18 @@ fn walk_program<'a>(
         | "elsif" => {
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
-                walk_program(child, source, module, file_name, requires, symbols);
+                walk_program(child, source, module, file_name, symbols);
             }
         }
         _ => {
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
                 if child.is_named() {
-                    walk_program(child, source, module, file_name, requires, symbols);
+                    walk_program(child, source, module, file_name, symbols);
                 }
             }
         }
     }
-}
-
-fn parse_require(node: tree_sitter::Node, source: &str) -> Option<RubyRequire> {
-    // In tree-sitter ruby, method calls are often 'call' with receiver/method fields
-    let text = node_text(node, source).trim();
-    let kind = if text.starts_with("require '")
-        || text.starts_with("require(")
-        || text.starts_with("require_relative ")
-        || text.starts_with("require_relative(")
-    {
-        // Extract method name from the call
-        if text.starts_with("require_relative") {
-            RequireKind::RequireRelative
-        } else if text.starts_with("load") {
-            RequireKind::Load
-        } else {
-            RequireKind::Require
-        }
-    } else if text.starts_with("include ") || text.starts_with("include(") {
-        RequireKind::Include
-    } else if text.starts_with("extend ") || text.starts_with("extend(") {
-        RequireKind::Extend
-    } else if text.starts_with("prepend ") || text.starts_with("prepend(") {
-        RequireKind::Prepend
-    } else {
-        return None;
-    };
-
-    // Extract the string argument
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        if child.kind() == "argument_list" || child.kind() == "arguments" {
-            let mut cc = child.walk();
-            for arg in child.children(&mut cc) {
-                if arg.kind() == "string" || arg.kind() == "string_literal" {
-                    let arg_text = node_text(arg, source);
-                    let path = arg_text.trim_matches('\'').trim_matches('"').to_string();
-                    return Some(RubyRequire { path, kind });
-                }
-            }
-        }
-        if child.kind() == "string" || child.kind() == "string_literal" {
-            let arg_text = node_text(child, source);
-            let path = arg_text.trim_matches('\'').trim_matches('"').to_string();
-            return Some(RubyRequire { path, kind });
-        }
-    }
-    None
 }
 
 fn parse_class<'a>(
@@ -315,7 +239,6 @@ fn parse_class<'a>(
                         source,
                         &format!("{}.{}", module, name),
                         file_name,
-                        &mut Vec::new(),
                         symbols,
                     );
                 }
@@ -359,7 +282,6 @@ fn parse_module<'a>(
                         source,
                         &format!("{}.{}", module, name),
                         file_name,
-                        &mut Vec::new(),
                         symbols,
                     );
                 }
@@ -469,7 +391,6 @@ fn emit_ruby_symbol(
     source: &str,
     path: &Path,
     _all_symbols: &[RubySymbol],
-    _requires: &[RubyRequire],
     module: &str,
     file_name: &str,
 ) -> Option<Document> {

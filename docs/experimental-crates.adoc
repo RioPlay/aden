@@ -17,54 +17,12 @@ This document tracks crates in the aden workspace that are **not yet fully integ
 
 == Experimental Crates (Not Integrated)
 
-These crates are included in the workspace but have **no callers** — zero
-workspace dependents and not wired into any binary. They are **implemented**
-(real function bodies + tests), not empty stubs; they simply have no integration
-path yet (Phase 4-6 roadmap).
-
-=== aden-api
-*Path:* `crates/aden-api/` +
-*Size:* ~5.5KB +
-*Status:* EXPERIMENTAL +
-*Purpose:* REST/gRPC API types for server mode +
-*Why not integrated:* Server mode not yet implemented +
-*Decision needed:* 
-- Integrate into CLI as `aden serve` command?
-- Keep as library for future use?
-- Remove if no plans for server mode?
-
-=== aden-attest
-*Path:* `crates/aden-attest/` +
-*Size:* ~2.5KB +
-*Status:* EXPERIMENTAL +
-*Purpose:* Cryptographic attestation and provenance tracking +
-*Why not integrated:* Supply chain security features not yet prioritized +
-*Decision needed:*
-- Integrate into `aden audit` or `aden ci-check`?
-- Keep for future SBOM/signing features?
-- Remove if out of scope?
-
-=== aden-simulate
-*Path:* `crates/aden-simulate/` +
-*Size:* ~5.8KB +
-*Status:* EXPERIMENTAL +
-*Purpose:* Contract diff simulation and threat modeling +
-*Why not integrated:* Adversarial testing features not yet prioritized +
-*Decision needed:*
-- Integrate into `aden review` command?
-- Keep for security research features?
-- Remove if out of scope?
-
-=== aden-telemetry
-*Path:* `crates/aden-telemetry/` +
-*Size:* ~4.7KB +
-*Status:* EXPERIMENTAL +
-*Purpose:* Token usage tracking, latency monitoring, performance telemetry +
-*Why not integrated:* Performance monitoring not yet prioritized +
-*Decision needed:*
-- Integrate into all commands with `--profile` flag?
-- Keep for future analytics dashboard?
-- Remove in favor of external observability tools?
+None at present. The previously-tracked experimental crates (`aden-api`,
+`aden-attest`, `aden-simulate`, `aden-telemetry`) were **removed** on 2026-06-02:
+they had zero workspace dependents, were not wired into any binary, and existed
+only as roadmap scaffolding (Phase 4-6). Their roadmap intent is still recorded
+in the "Phase 1-6 Crate Map (Planned)" table in `docs/context.adoc`; the code can
+be reconstructed from git history if/when those phases are picked up.
 
 == Standalone Crates (Separate Distribution)
 

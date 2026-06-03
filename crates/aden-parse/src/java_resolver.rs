@@ -1,10 +1,9 @@
 // Copyright (c) 2026 RioPlay <rioplay@rioplay.dev>
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //!
-//! Deep Java resolver — import + call-site analysis.
+//! Deep Java resolver — symbol + call-site analysis.
 //!
 //! Handles:
-//!   • `package`, `import` resolution (single, wildcard, static)
 //!   • Class, interface, enum declarations
 //!   • Method declarations, constructors
 //!   • Field declarations
@@ -57,15 +56,13 @@ impl LanguageExtractor for JavaResolver {
         let module_path = infer_java_package(path, source);
         let file_name = path.file_name().unwrap_or_default().to_string_lossy();
 
-        // Phase 1: collect imports and local symbols
-        let mut imports: Vec<JavaImport> = Vec::new();
+        // Phase 1: collect local symbols
         let mut symbols: Vec<JavaSymbol> = Vec::new();
         walk_compilation_unit(
             tree.root_node(),
             source,
             &module_path,
             &file_name,
-            &mut imports,
             &mut symbols,
         );
 
@@ -77,7 +74,6 @@ impl LanguageExtractor for JavaResolver {
                 source,
                 path,
                 &symbols,
-                &imports,
                 &module_path,
                 &file_name,
             ) {
@@ -87,16 +83,6 @@ impl LanguageExtractor for JavaResolver {
 
         Ok(docs)
     }
-}
-
-/// A Java import declaration.
-#[derive(Debug)]
-#[allow(dead_code)]
-struct JavaImport {
-    package: String, // e.g. "java.util"
-    name: String,    // e.g. "List" or "*"
-    is_static: bool,
-    is_wildcard: bool,
 }
 
 /// Information about a single local symbol.
@@ -240,7 +226,6 @@ fn walk_compilation_unit<'a>(
     source: &str,
     package: &str,
     file_name: &str,
-    imports: &mut Vec<JavaImport>,
     symbols: &mut Vec<JavaSymbol<'a>>,
 ) {
     if !node.is_named() {
@@ -252,9 +237,7 @@ fn walk_compilation_unit<'a>(
             // Already handled by extract_package_from_source
         }
         "import_declaration" => {
-            if let Some(imp) = parse_import(node, source) {
-                imports.push(imp);
-            }
+            // Imports are not consumed; intentionally ignored.
         }
         "class_declaration" | "interface_declaration" | "enum_declaration" => {
             parse_type_declaration(node, source, package, file_name, symbols);
@@ -278,7 +261,7 @@ fn walk_compilation_unit<'a>(
         | "block" => {
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
-                walk_compilation_unit(child, source, package, file_name, imports, symbols);
+                walk_compilation_unit(child, source, package, file_name, symbols);
             }
         }
         _ => {
@@ -286,82 +269,11 @@ fn walk_compilation_unit<'a>(
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
                 if child.is_named() {
-                    walk_compilation_unit(child, source, package, file_name, imports, symbols);
+                    walk_compilation_unit(child, source, package, file_name, symbols);
                 }
             }
         }
     }
-}
-
-fn parse_import(node: tree_sitter::Node, source: &str) -> Option<JavaImport> {
-    let text = node_text(node, source);
-    let is_static = text.contains("import static ") || text.contains("importstatic");
-    let is_wildcard = text.ends_with(".*;") || text.contains(".*");
-
-    // Extract package and name from the import
-    let mut cursor = node.walk();
-    let mut package_parts = Vec::new();
-    let mut name = String::new();
-
-    for child in node.children(&mut cursor) {
-        let kind = child.kind();
-        if kind == "scoped_identifier" || kind == "identifier" {
-            let id_text = node_text(child, source);
-            if is_wildcard && id_text.contains("*") {
-                name = "*".to_string();
-                // Package is everything before the last dot
-                let full = id_text.trim();
-                if let Some(dot_pos) = full.rfind('.') {
-                    package_parts.push(full[..dot_pos].to_string());
-                }
-            } else if is_wildcard || !name.is_empty() {
-                // After finding the class name
-                name = id_text.to_string();
-            } else {
-                package_parts.push(id_text.to_string());
-            }
-        } else if kind == "asterisk" {
-            name = "*".to_string();
-        }
-    }
-
-    // Try to parse from the raw text if tree-sitter structure is unclear
-    let clean = text.trim().trim_end_matches(';');
-    let without_static = if let Some(rest) = clean.strip_prefix("import static ") {
-        rest
-    } else if let Some(rest) = clean.strip_prefix("import ") {
-        rest
-    } else {
-        clean
-    };
-
-    let parts: Vec<&str> = without_static.split('.').collect();
-    if parts.is_empty() {
-        return None;
-    }
-
-    if let Some(pkg) = without_static.strip_suffix(".*") {
-        return Some(JavaImport {
-            package: pkg.to_string(),
-            name: "*".to_string(),
-            is_static,
-            is_wildcard: true,
-        });
-    }
-
-    let class_name = parts.last()?.to_string();
-    let pkg = if parts.len() > 1 {
-        parts[..parts.len() - 1].join(".")
-    } else {
-        String::new()
-    };
-
-    Some(JavaImport {
-        package: pkg,
-        name: class_name,
-        is_static,
-        is_wildcard,
-    })
 }
 
 fn parse_type_declaration<'a>(
@@ -399,14 +311,7 @@ fn parse_type_declaration<'a>(
             let mut cursor = body.walk();
             for child in body.children(&mut cursor) {
                 if child.is_named() {
-                    walk_compilation_unit(
-                        child,
-                        source,
-                        package,
-                        file_name,
-                        &mut Vec::new(),
-                        symbols,
-                    );
+                    walk_compilation_unit(child, source, package, file_name, symbols);
                 }
             }
         }
@@ -421,14 +326,7 @@ fn parse_type_declaration<'a>(
                 let mut cc = child.walk();
                 for grandchild in child.children(&mut cc) {
                     if grandchild.is_named() {
-                        walk_compilation_unit(
-                            grandchild,
-                            source,
-                            package,
-                            file_name,
-                            &mut Vec::new(),
-                            symbols,
-                        );
+                        walk_compilation_unit(grandchild, source, package, file_name, symbols);
                     }
                 }
             }
@@ -565,7 +463,6 @@ fn emit_java_symbol(
     source: &str,
     path: &Path,
     _all_symbols: &[JavaSymbol],
-    _imports: &[JavaImport],
     package: &str,
     file_name: &str,
 ) -> Option<Document> {

@@ -62,13 +62,9 @@ aden ci-check .           # Full CI gates before commit
 | `aden-mcp` | MCP server (OpenCode, Claude, Cursor, Zed, Windsurf) |
 | `aden-cli` | Binary (`aden`) |
 | `aden-policy` | Constitutional directives, precedence |
-| `aden-api` | REST/gRPC types |
-| `aden-attest` | Attestation primitives |
 | `aden-store` | fjall-backed (LSM-tree) graph store (store-first persistence) |
 | `aden-diagnose` | Deterministic knowledge-graph diagnostics |
 | `aden-lsp` | Language Server Protocol integration |
-| `aden-simulate` | Change-impact simulation |
-| `aden-telemetry` | Local telemetry primitives |
 
 ## Documentation
 
