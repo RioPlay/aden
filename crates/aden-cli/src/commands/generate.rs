@@ -289,14 +289,33 @@ enum DropReason {
 /// allocation) and never alters resolution.
 fn classify_drop(callee: &str, name_index: &HashMap<&str, Vec<&str>>) -> DropReason {
     let count = |name: &str| name_index.get(name).map(|c| c.len()).unwrap_or(0);
-    let mut n = count(callee);
-    if n == 0 {
-        let base = callee.rsplit(['.', ':']).next().unwrap_or(callee);
-        if base != callee && !base.is_empty() {
-            n = count(base);
-        }
+    if count(callee) > 0 {
+        // The full (qualified) name itself is defined somewhere — a genuine
+        // internal name collision the locality heuristic couldn't break.
+        return DropReason::Ambiguous;
     }
-    if n == 0 {
+    // Static path call `Qualifier::base` (Rust/C++/PHP `::`): the qualifier names
+    // a *type*. If that type is not a project symbol, the call targets an external
+    // type whose method name merely collides with a project name (e.g. `Vec::new`
+    // colliding with the 24 internal `new`s) — external, not internal ambiguity.
+    if let Some(pos) = callee.rfind("::") {
+        let base = &callee[pos + 2..];
+        // The immediate type segment directly before the called method.
+        let qualifier = callee[..pos].rsplit(['.', ':']).next().unwrap_or("");
+        if base.is_empty() || count(base) == 0 {
+            return DropReason::Unresolved;
+        }
+        return if !qualifier.is_empty() && count(qualifier) == 0 {
+            DropReason::Unresolved
+        } else {
+            DropReason::Ambiguous
+        };
+    }
+    // Receiver call `recv.base`: the qualifier is a *value* whose type we can't
+    // know statically, so we cannot declare it external — fall back to the base
+    // name. A receiver call to a name no project symbol carries is still external.
+    let base = callee.rsplit('.').next().unwrap_or(callee);
+    if base == callee || base.is_empty() || count(base) == 0 {
         DropReason::Unresolved
     } else {
         DropReason::Ambiguous
@@ -1032,7 +1051,9 @@ fn cmd_gen_inner(
         if callee_stats.unresolved > 0 || callee_stats.ambiguous > 0 {
             progress!(
                 silent,
-                "Call sites: {} resolved, {} unresolved, {} ambiguous.",
+                "Call graph: {} internal calls linked, {} external (stdlib/other crate — no \
+                 project symbol), {} polymorphic (name defined in several places, e.g. \
+                 new/from/trait methods — left unlinked to avoid false edges).",
                 callee_stats.resolved,
                 callee_stats.unresolved,
                 callee_stats.ambiguous
@@ -1190,19 +1211,55 @@ mod link_tests {
                 "aden://module/aden-parse/python.rs#node_text",
             ],
         );
-        // Dotted receiver call: `self.node_text` → base `node_text`.
+        // Dotted receiver call: `self.node_text` → base `node_text`. The receiver
+        // is a value of unknown type, so we cannot call it external — the base
+        // collides internally → Ambiguous.
         assert!(
             matches!(classify_drop("self.node_text", &idx), DropReason::Ambiguous),
-            "trailing segment after '.' with >=2 candidates must be Ambiguous"
+            "receiver call whose base has >=2 candidates must be Ambiguous"
         );
-        // Path-qualified call: `Parser::node_text` → base `node_text`.
+        // Path-qualified call to a type NOT in the index: `Parser::node_text`
+        // where `Parser` is external → the method-name collision is incidental,
+        // so this is External (Unresolved), not a true internal ambiguity.
         assert!(
             matches!(
                 classify_drop("Parser::node_text", &idx),
-                DropReason::Ambiguous
+                DropReason::Unresolved
             ),
-            "trailing segment after ':' with >=2 candidates must be Ambiguous"
+            "static call to an unknown type must be External/Unresolved"
         );
+    }
+
+    #[test]
+    fn classify_drop_static_call_to_known_project_type_is_ambiguous() {
+        // `Parser` IS a project type and `node_text` collides across files → a
+        // genuine internal ambiguity the locality heuristic couldn't break.
+        let mut idx: HashMap<&str, Vec<&str>> = HashMap::new();
+        idx.insert("Parser", vec!["aden://module/aden-parse/rust.rs#Parser"]);
+        idx.insert(
+            "node_text",
+            vec![
+                "aden://module/aden-parse/rust.rs#node_text",
+                "aden://module/aden-parse/python.rs#node_text",
+            ],
+        );
+        assert!(matches!(
+            classify_drop("Parser::node_text", &idx),
+            DropReason::Ambiguous
+        ));
+        // `Vec::new`-style external constructor colliding with project `new`s →
+        // External, not ambiguous (the headline reclassification).
+        idx.insert(
+            "new",
+            vec![
+                "aden://module/a/x.rs#Foo::new",
+                "aden://module/b/y.rs#Bar::new",
+            ],
+        );
+        assert!(matches!(
+            classify_drop("Vec::new", &idx),
+            DropReason::Unresolved
+        ));
     }
 
     #[test]
