@@ -128,10 +128,8 @@ fn validate_args(tool: &str, args: &serde_json::Map<String, serde_json::Value>) 
 /// Returns true if `arg` should be passed positionally (no `--` prefix) for `tool`.
 fn is_positional(tool: &str, arg: &str) -> bool {
     match (tool, arg) {
-        // diagnose is the lone command whose `path` is a `--path` flag, not a
-        // positional. Must come before the catch-all `path` rule below.
-        ("diagnose", "path") => false,
-        // path is positional for every other command
+        // path is positional for every command (diagnose was migrated from a
+        // `--path` flag to a positional DIR for consistency).
         (_, "path") => true,
         // ask:   aden ask <QUESTION> [DIR]
         ("ask", "question") => true,

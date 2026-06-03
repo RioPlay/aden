@@ -77,7 +77,10 @@ impl Severity {
         match self {
             Severity::Error => 5.0,
             Severity::Warning => 1.0,
-            Severity::Info => 0.5,
+            // Info is purely advisory (expected metadata, normal orphan docs, etc.)
+            // and must NOT deduct from health — otherwise a large repo's hundreds of
+            // expected-metadata Infos floor the score to 0 and disagree with `status`.
+            Severity::Info => 0.0,
         }
     }
 }
@@ -424,9 +427,14 @@ fn scan_duplicate_anchors(files: &[PathBuf]) -> Vec<Issue> {
     for (anchor, files) in &anchor_to_files {
         if files.len() > 1 {
             let file_paths: Vec<String> = files.iter().map(|p| p.to_string_lossy().to_string()).collect();
+            // A duplicate anchor across prose/doc files (e.g. a template and its
+            // instantiated copy) is reference-material noise, not a code defect, so
+            // it is Info — matching `status`/`check`. A duplicate in a code file is
+            // a real collision (data loss on ingest) and stays a Warning.
+            let all_doc = files.iter().all(|p| is_doc_source(p));
             issues.push(Issue {
                 category: IssueCategory::DuplicateAnchor,
-                severity: Severity::Warning,
+                severity: if all_doc { Severity::Info } else { Severity::Warning },
                 file: Some(file_paths.first().cloned().unwrap_or_default()),
                 line: None,
                 message: format!("Duplicate anchor: [[{}]] declared in {} files", anchor, files.len()),
@@ -569,19 +577,35 @@ fn scan_contract_refs(files: &[PathBuf], rules: &DiagnosticRules) -> Vec<Issue> 
     issues
 }
 
+/// True when a source path is a prose/documentation file (reference material),
+/// as opposed to a code file whose orphaned symbols are actionable. Language-
+/// agnostic: keyed on the file extension, not on any project layout.
+fn is_doc_source(path: &std::path::Path) -> bool {
+    matches!(
+        path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref(),
+        Some("md" | "markdown" | "adoc" | "asciidoc" | "txt" | "rst")
+    )
+}
+
 /// Scan for orphan documents — documents with no edges.
 ///
-/// Documents matching `metadata_prefixes` are flagged as Info (expected orphans)
-/// rather than Warning (unexpected orphans).
+/// Documents matching `metadata_prefixes`, or sourced from a prose/doc file, are
+/// flagged as Info (expected orphans) rather than Warning (unexpected orphans).
 fn scan_orphans(graph: &AdenGraph<DocumentNode, AdenEdge>, rules: &DiagnosticRules) -> Vec<Issue> {
     let mut issues = Vec::new();
     let orphans = graph.orphans();
 
     for anchor in orphans {
         let node = graph.get_node(&anchor);
-        let is_metadata = node.map(|_n| {
-            // Check if the anchor starts with a metadata prefix
+        let is_metadata = node.map(|n| {
+            // Anchor matches a configured metadata prefix (e.g. "adr-", "plan-")…
             rules.metadata_prefixes.iter().any(|prefix| anchor.starts_with(prefix))
+                // …or this is a documentation/prose source file rather than a code
+                // symbol. An orphaned doc (README, NOTICE, an .adoc heading, agent
+                // scaffolding) is reference material with legitimately no edges; only
+                // orphaned *code* symbols are actionable. This mirrors `status`/
+                // `check` (`is_expected_metadata`) so the three tools agree on counts.
+                || is_doc_source(&n.source_path)
         }).unwrap_or(false);
 
         issues.push(Issue {
@@ -674,9 +698,13 @@ fn scan_low_confidence(graph: &AdenGraph<DocumentNode, AdenEdge>) -> Vec<Issue> 
             } else {
                 "low confidence"
             };
+            // Self-references in prose/doc files (scaffolding that defines and
+            // links its own anchor) are expected, not defects — Info, to match
+            // `status`. Low confidence on a code node stays a Warning.
+            let is_doc = is_doc_source(&node.source_path);
             issues.push(Issue {
                 category: IssueCategory::LowConfidence,
-                severity: Severity::Warning,
+                severity: if is_doc { Severity::Info } else { Severity::Warning },
                 file: node.doc.attributes.get("source_file").cloned(),
                 line: None,
                 message: format!(
@@ -837,7 +865,7 @@ mod tests {
         ];
 
         let score = Diagnosis::calc_health_score(&issues);
-        assert!((score - 93.5).abs() < 0.01); // 100 - 5 - 1 - 0.5 = 93.5
+        assert!((score - 94.0).abs() < 0.01); // 100 - 5 (error) - 1 (warning) - 0 (info) = 94.0
     }
 
     #[test]
@@ -1032,13 +1060,16 @@ mod tests {
     #[test]
     fn test_metadata_prefixes() {
         let dir = make_temp_dir("metadata-prefixes");
-        // ADR with no edges — it's an orphan but should be Info (metadata)
+        // ADR with no edges — orphan, Info (matches metadata prefix).
         write_file(
             &dir,
             "adr-001.adoc",
             "[[adr-001]]\n= ADR 001\n\nSome decision.\n",
         );
-        // Regular doc with no edges — it's an orphan and should be Warning
+        // A plain doc with no edges — also Info: an orphaned prose/doc file is
+        // reference material, not actionable dead code. Only orphaned CODE symbols
+        // are Warnings. This keeps `diagnose` aligned with `status`/`check` (which
+        // both treat doc orphans as expected metadata) so their counts can't diverge.
         write_file(
             &dir,
             "doc-b.adoc",
@@ -1056,12 +1087,14 @@ mod tests {
         let orphans = diagnosis.issues.iter().filter(|i| i.category == IssueCategory::OrphanDocument).collect::<Vec<_>>();
         assert!(orphans.len() >= 2, "Expected at least 2 orphans, got: {}", orphans.len());
         for orphan in orphans {
-            if orphan.file.as_deref().map(|f| f.contains("adr-001")).unwrap_or(false) {
-                assert_eq!(orphan.severity, Severity::Info, "ADR should be Info, not {:?}", orphan.severity);
-            }
-            if orphan.file.as_deref().map(|f| f.contains("doc-b")).unwrap_or(false) {
-                assert_eq!(orphan.severity, Severity::Warning, "Regular doc should be Warning, not {:?}", orphan.severity);
-            }
+            // Every orphan here is sourced from an .adoc (prose) file, so all are Info.
+            assert_eq!(
+                orphan.severity,
+                Severity::Info,
+                "Doc/prose orphan should be Info, not {:?} ({:?})",
+                orphan.severity,
+                orphan.file
+            );
         }
     }
 
@@ -1162,7 +1195,7 @@ mod tests {
     fn test_severity_weights() {
         assert_eq!(Severity::Error.weight(), 5.0);
         assert_eq!(Severity::Warning.weight(), 1.0);
-        assert_eq!(Severity::Info.weight(), 0.5);
+        assert_eq!(Severity::Info.weight(), 0.0);
     }
 
     #[test]

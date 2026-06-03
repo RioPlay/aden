@@ -335,12 +335,26 @@ fn link_store_edges<S: GraphStorage>(
     let anchors = storage.get_all_anchors()?;
 
     // Short symbol name -> anchors that define it (borrows from `anchors`).
+    // Member anchors are qualified as `Type::method` (so same-named methods on
+    // different types don't collide in the store). A call site like
+    // `filter.should_skip()` yields the BARE callee `should_skip`, which would
+    // never match the qualified key — leaving most method calls unresolved. So we
+    // also index each member by its trailing `::` segment. Collisions (several
+    // types with the same method name) are disambiguated downstream by
+    // `resolve_callee`'s locality heuristic (caller's file, then crate); genuinely
+    // ambiguous ones stay unlinked rather than producing a wrong edge.
     let mut name_index: HashMap<&str, Vec<&str>> = HashMap::new();
     for anchor in &anchors {
         if let Some(hash) = anchor.rfind('#') {
             let name = &anchor[hash + 1..];
             if !name.is_empty() {
                 name_index.entry(name).or_default().push(anchor.as_str());
+                if let Some(method) = name.rsplit("::").next()
+                    && method != name
+                    && !method.is_empty()
+                {
+                    name_index.entry(method).or_default().push(anchor.as_str());
+                }
             }
         }
     }

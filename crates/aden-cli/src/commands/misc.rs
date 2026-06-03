@@ -1864,6 +1864,24 @@ pub fn cmd_suggest(intent: &str) -> Result<(), Box<dyn std::error::Error>> {
             "Find symbol definition",
         ),
         (
+            vec![
+                "rename", "refactor", "blast", "impact", "before i change",
+                "before i rename", "safe to change", "downstream",
+            ],
+            "understand",
+            "aden understand <symbol>",
+            "One-shot: definition + callers (backlinks) + downstream impact for a symbol",
+        ),
+        (
+            vec![
+                "caller", "callers", "who calls", "called by", "backlink",
+                "references", "used by", "usages", "dependents",
+            ],
+            "query",
+            "aden query . --backlinks <anchor>",
+            "List everything that references a symbol (blast radius)",
+        ),
+        (
             vec!["init", "scaffold", "setup"],
             "init",
             "aden init",

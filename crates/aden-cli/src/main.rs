@@ -621,8 +621,9 @@ enum Commands {
     },
     /// Deterministic diagnostic scanner for knowledge graphs
     Diagnose {
+        // Positional DIR for consistency with check/lint/audit/doctor (previously
+        // the lone command that required `--path`). `aden diagnose .` now works.
         #[arg(
-            long,
             value_name = "DIR",
             default_value = ".",
             value_hint = ValueHint::DirPath,

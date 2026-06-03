@@ -69,13 +69,19 @@ fn print_diagnosis(diagnosis: &aden_diagnose::Diagnosis) {
             .push(issue);
     }
 
+    // Cap how many issues are printed per category so a large repo's expected
+    // metadata (e.g. hundreds of orphan reference docs at Info severity) can't
+    // flood an agent's context past the token cap. The total count is always shown
+    // in the category header; use `--format json` for the complete machine-readable
+    // list. Errors/warnings are never the bulk here, but the cap applies uniformly.
+    const PER_CATEGORY_CAP: usize = 10;
     for (category, issues) in &by_category {
         println!(
             "== {} ({} issues)",
             category.to_uppercase().replace('-', " "),
             issues.len()
         );
-        for issue in issues {
+        for issue in issues.iter().take(PER_CATEGORY_CAP) {
             let file = issue
                 .file
                 .as_deref()
@@ -91,6 +97,12 @@ fn print_diagnosis(diagnosis: &aden_diagnose::Diagnosis) {
             if let Some(suggestion) = &issue.suggestion {
                 println!("    -> {}", suggestion);
             }
+        }
+        if issues.len() > PER_CATEGORY_CAP {
+            println!(
+                "  ... and {} more (use --format json for the full list)",
+                issues.len() - PER_CATEGORY_CAP
+            );
         }
         println!();
     }

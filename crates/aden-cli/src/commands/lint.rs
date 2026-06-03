@@ -320,9 +320,20 @@ fn discover_source_files(
         "kt",
     ];
 
+    // Use the shared path filter (built-in ignores + `.adenignore`) rather than a
+    // hand-rolled exclusion list, so lint prunes exactly what gen/audit/check
+    // prune — including agent-runtime dirs like `.claude/worktrees/`. Pruning at
+    // the directory level (filter_entry) also avoids descending into them.
+    let filter = aden_core::filter::AdenFilter::from_directory(path);
     for entry in walkdir::WalkDir::new(path)
         .follow_links(false)
         .into_iter()
+        .filter_entry(|e| {
+            e.path()
+                .strip_prefix(path)
+                .map(|rel| rel.as_os_str().is_empty() || !filter.should_skip(rel))
+                .unwrap_or(true)
+        })
         .filter_map(|e| e.ok())
     {
         let entry_path = entry.path();
@@ -339,33 +350,10 @@ fn discover_source_files(
             continue;
         }
 
-        if is_excluded(entry_path) {
-            continue;
-        }
-
         files.push(entry_path.to_path_buf());
     }
 
     Ok(files)
-}
-
-fn is_excluded(path: &Path) -> bool {
-    let exclusions = [
-        "target",
-        ".git",
-        "node_modules",
-        ".cargo",
-        ".rustup",
-        "dist",
-        "build",
-    ];
-
-    path.components().any(|c| {
-        c.as_os_str()
-            .to_str()
-            .map(|s| exclusions.contains(&s))
-            .unwrap_or(false)
-    })
 }
 
 fn lint_file(path: &Path, content: &str, ext: &str) -> Vec<LintResult> {
