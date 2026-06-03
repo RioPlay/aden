@@ -197,9 +197,12 @@ fn slim_doc_for_store(doc: &mut aden_core::Document) {
 }
 
 /// Resolve a callee string to a single target anchor, or None if unknown.
-/// Tries the full callee, then the trailing segment after the last `.`/`:` so
-/// receiver/qualified calls link (`c.ExecuteC` → `ExecuteC`, `click.echo` →
-/// `echo`, `Path::new` → `new`). When a name is ambiguous (defined in several
+/// Order: (1) self-receiver calls (`self.foo`, `this.foo`, `$this->foo`,
+/// `Self::foo`) resolve exactly to a method on the caller's own enclosing type —
+/// the one OOP case with zero ambiguity; (2) the full callee; (3) the trailing
+/// segment after the last `.`/`:` so receiver/qualified calls link
+/// (`c.ExecuteC` → `ExecuteC`, `click.echo` → `echo`, `Path::new` → `new`).
+/// When a name is ambiguous (defined in several
 /// places) we disambiguate by locality: prefer a candidate in the caller's own
 /// FILE, then in its crate. Most calls are intra-file/intra-crate, so this
 /// resolves the common case (e.g. a private `node_text` helper copied into every
@@ -238,6 +241,22 @@ fn resolve_callee<'a>(
             }
         }
     };
+    // Self-receiver fast path (exact, zero false-edge risk): a call through the
+    // caller's own instance — `self.foo()`, `this.foo()`, `$this->foo()`,
+    // `Self::foo()` — provably targets a method of the caller's OWN enclosing
+    // type, which we know from the caller anchor. This is precisely the OOP /
+    // method-heavy case that base-name matching cannot disambiguate (e.g. a
+    // `Command.invoke` call colliding with `OptParseCommand.invoke`). We only
+    // handle a direct method (no further `.`/`::`/`->` in the remainder); a
+    // field hop like `self.command.run` has an unknown intermediate type.
+    if let Some(method) = strip_self_receiver(callee)
+        && is_plain_ident(method)
+        && let Some(qualified) = enclosing_qualified(caller, method)
+        && let Some(t) = name_index.get(qualified.as_str())
+        && let Some(r) = pick(t)
+    {
+        return Some(r);
+    }
     if let Some(t) = name_index.get(callee)
         && let Some(r) = pick(t)
     {
@@ -259,6 +278,46 @@ fn resolve_callee<'a>(
 /// caller's own file. Returns `None` for non-module anchors (docs, etc.).
 fn anchor_file(anchor: &str) -> Option<&str> {
     anchor.strip_prefix("aden://module/")?.split('#').next()
+}
+
+/// If `callee` is a call through the current instance (`self.x`, `this.x`,
+/// `$this->x`, `Self::x`), return the part after the receiver. Returns `None`
+/// for everything else, so non-self calls fall through to ordinary resolution.
+fn strip_self_receiver(callee: &str) -> Option<&str> {
+    const PREFIXES: &[&str] = &["self.", "this.", "self::", "Self::", "$this->", "this->"];
+    PREFIXES.iter().find_map(|p| callee.strip_prefix(p))
+}
+
+/// True if `s` is a single bare identifier — no member/path separators. Guards
+/// the self-receiver path to direct method calls (`self.run`), excluding field
+/// hops (`self.inner.run`) whose intermediate type we cannot know.
+fn is_plain_ident(s: &str) -> bool {
+    !s.is_empty() && !s.contains('.') && !s.contains(':') && !s.contains("->")
+}
+
+/// Given a caller anchor and a method name, build the fully-qualified symbol name
+/// of that method ON THE CALLER'S OWN ENCLOSING TYPE, preserving the language's
+/// member separator so it matches how the type's methods are stored:
+/// `…#Command.main` + `invoke` → `Command.invoke` (Python `.`),
+/// `…#FjallStorage::open` + `flush` → `FjallStorage::flush` (Rust `::`).
+/// Returns `None` when the caller symbol is not itself a method (a free function
+/// has no enclosing type, so `self` could not appear anyway).
+fn enclosing_qualified(caller: &str, method: &str) -> Option<String> {
+    let sym = caller.rsplit('#').next()?;
+    let dot = sym.rfind('.');
+    let colon = sym.rfind("::");
+    let (idx, sep) = match (dot, colon) {
+        (Some(d), Some(c)) if d > c => (d, "."),
+        (Some(_), Some(c)) => (c, "::"),
+        (Some(d), None) => (d, "."),
+        (None, Some(c)) => (c, "::"),
+        (None, None) => return None,
+    };
+    let ty = &sym[..idx];
+    if ty.is_empty() {
+        return None;
+    }
+    Some(format!("{ty}{sep}{method}"))
 }
 
 /// Tally of how the call-site callee references fared during resolution. Counts
@@ -1115,6 +1174,70 @@ mod link_tests {
         assert_eq!(
             resolve_callee("foo", "aden://module/c/b.rs#bar", &idx),
             Some("aden://module/c/a.rs#foo")
+        );
+    }
+
+    #[test]
+    fn enclosing_qualified_preserves_member_separator() {
+        // Python dot-methods.
+        assert_eq!(
+            enclosing_qualified("aden://module/p/core.py#Command.main", "invoke"),
+            Some("Command.invoke".to_string())
+        );
+        // Rust path-methods.
+        assert_eq!(
+            enclosing_qualified("aden://module/c/s.rs#FjallStorage::open", "flush"),
+            Some("FjallStorage::flush".to_string())
+        );
+        // A free function has no enclosing type → None (self can't appear).
+        assert_eq!(
+            enclosing_qualified("aden://module/c/s.rs#free_fn", "x"),
+            None
+        );
+    }
+
+    #[test]
+    fn strip_self_receiver_recognizes_instance_calls() {
+        assert_eq!(strip_self_receiver("self.run"), Some("run"));
+        assert_eq!(strip_self_receiver("this.run"), Some("run"));
+        assert_eq!(strip_self_receiver("$this->run"), Some("run"));
+        assert_eq!(strip_self_receiver("Self::run"), Some("run"));
+        assert_eq!(strip_self_receiver("other.run"), None);
+        assert_eq!(strip_self_receiver("run"), None);
+        // Field hop is recognized as self-receiver but rejected by is_plain_ident.
+        assert!(!is_plain_ident(
+            strip_self_receiver("self.inner.run").unwrap()
+        ));
+        assert!(is_plain_ident(strip_self_receiver("self.run").unwrap()));
+    }
+
+    #[test]
+    fn resolve_self_call_targets_callers_own_type() {
+        // `Command.invoke` and a test class's `invoke` collide on the base name,
+        // so base matching is ambiguous; the self path must pick the caller's own
+        // type precisely.
+        let mut idx: HashMap<&str, Vec<&str>> = HashMap::new();
+        idx.insert(
+            "Command.invoke",
+            vec!["aden://module/p/core.py#Command.invoke"],
+        );
+        idx.insert(
+            "invoke",
+            vec![
+                "aden://module/p/core.py#Command.invoke",
+                "aden://module/p/test_commands.py#OptParseCommand.invoke",
+            ],
+        );
+        assert_eq!(
+            resolve_callee("self.invoke", "aden://module/p/core.py#Command.main", &idx),
+            Some("aden://module/p/core.py#Command.invoke")
+        );
+        // A self-call to a method the enclosing type does NOT define (e.g.
+        // inherited) must not be force-linked here; it falls through to base
+        // resolution, which stays ambiguous and yields None.
+        assert_eq!(
+            resolve_callee("self.missing", "aden://module/p/core.py#Command.main", &idx),
+            None
         );
     }
 
