@@ -203,10 +203,8 @@ fn token_boundary_match(haystack: &str, token: &str) -> bool {
     for ch in haystack.chars() {
         if ch.is_ascii_alphanumeric() {
             // camelCase / lower→Upper hump starts a new sub-token.
-            if ch.is_ascii_uppercase() && prev_lower {
-                if !current.is_empty() {
-                    subtokens.push(std::mem::take(&mut current));
-                }
+            if ch.is_ascii_uppercase() && prev_lower && !current.is_empty() {
+                subtokens.push(std::mem::take(&mut current));
             }
             current.push(ch.to_ascii_lowercase());
             prev_lower = ch.is_ascii_lowercase() || ch.is_ascii_digit();

@@ -90,12 +90,13 @@ fn required_args(tool: &str) -> &'static [&'static str] {
 /// Cross-argument validation that a flat JSON-schema `required` list cannot
 /// express (e.g. "at least one of A or B"). Returns `Err(message)` when the
 /// constraint is violated. Runs after schema validation, before shelling out.
-fn validate_args(tool: &str, args: &serde_json::Map<String, serde_json::Value>) -> Result<(), String> {
+fn validate_args(
+    tool: &str,
+    args: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(), String> {
     let present = |k: &str| args.get(k).map(|v| !v.is_null()).unwrap_or(false);
     if tool == "locate" && !present("symbol") && !present("caller_of") {
-        return Err(
-            "locate requires at least one of `symbol` or `caller_of`".to_string(),
-        );
+        return Err("locate requires at least one of `symbol` or `caller_of`".to_string());
     }
     // Type-check declared boolean args: a non-bool value (e.g. the string
     // "true") must be rejected, not silently coerced to false and dropped.
@@ -825,9 +826,9 @@ fn sanitize_error(raw: &str) -> String {
             || lt.starts_with("at ")
             || (lt.chars().take_while(|c| c.is_ascii_digit()).count() > 0
                 && lt.contains(": ")
-                && lt.split_once(": ").is_some_and(|(n, _)| {
-                    !n.is_empty() && n.chars().all(|c| c.is_ascii_digit())
-                }))
+                && lt
+                    .split_once(": ")
+                    .is_some_and(|(n, _)| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit())))
         {
             continue;
         }

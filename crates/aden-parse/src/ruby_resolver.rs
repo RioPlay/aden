@@ -68,14 +68,9 @@ impl LanguageExtractor for RubyResolver {
 
         let mut docs = Vec::new();
         for sym in &symbols {
-            if let Some(doc) = emit_ruby_symbol(
-                sym,
-                source,
-                path,
-                &symbols,
-                &module_name,
-                &file_name,
-            ) {
+            if let Some(doc) =
+                emit_ruby_symbol(sym, source, path, &symbols, &module_name, &file_name)
+            {
                 docs.push(doc);
             }
         }

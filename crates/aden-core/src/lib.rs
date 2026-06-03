@@ -316,9 +316,10 @@ impl AdenConfig {
         let path = dir.join("aden.toml");
         if path.exists()
             && let Ok(text) = std::fs::read_to_string(&path)
-                && let Ok(config) = toml::from_str::<AdenConfig>(&text) {
-                    return config;
-                }
+            && let Ok(config) = toml::from_str::<AdenConfig>(&text)
+        {
+            return config;
+        }
         Self::default()
     }
 
@@ -329,7 +330,12 @@ impl AdenConfig {
         }
         let path_str = path.to_string_lossy();
         // Check private directories
-        if self.profile.private_dirs.iter().any(|d| path_str.contains(d)) {
+        if self
+            .profile
+            .private_dirs
+            .iter()
+            .any(|d| path_str.contains(d))
+        {
             return true;
         }
         // Check private patterns (ADRs, retros, kickoffs, etc.)

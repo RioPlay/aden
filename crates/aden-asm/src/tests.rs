@@ -19,8 +19,8 @@
 //
 #[cfg(test)]
 mod tests {
-    use crate::{preprocess, traverse};
     use crate::traverse::strip_asciidoc_markup;
+    use crate::{preprocess, traverse};
     use std::collections::HashMap;
 
     #[test]
@@ -69,7 +69,10 @@ mod tests {
     fn test_strip_removes_anchor_lines() {
         let input = "[[my-anchor]]\n= Title\n\nSome content.";
         let out = strip_asciidoc_markup(input);
-        assert!(!out.contains("[[my-anchor]]"), "anchor line must be removed");
+        assert!(
+            !out.contains("[[my-anchor]]"),
+            "anchor line must be removed"
+        );
         assert!(out.contains("Title"));
         assert!(out.contains("Some content."));
     }
@@ -78,7 +81,10 @@ mod tests {
     fn test_strip_removes_attribute_lines() {
         let input = ":source_file: foo.rs\n:author: Alice\n\nActual prose.";
         let out = strip_asciidoc_markup(input);
-        assert!(!out.contains(":source_file:"), "attribute line must be removed");
+        assert!(
+            !out.contains(":source_file:"),
+            "attribute line must be removed"
+        );
         assert!(!out.contains(":author:"), "attribute line must be removed");
         assert!(out.contains("Actual prose."));
     }
@@ -96,7 +102,10 @@ mod tests {
     fn test_strip_removes_role_annotations() {
         let input = "[source,rust]\nlet x = 1;\n[NOTE]\nBe careful.";
         let out = strip_asciidoc_markup(input);
-        assert!(!out.contains("[source,rust]"), "role annotation must be removed");
+        assert!(
+            !out.contains("[source,rust]"),
+            "role annotation must be removed"
+        );
         assert!(!out.contains("[NOTE]"), "role annotation must be removed");
         assert!(out.contains("let x = 1;"));
         assert!(out.contains("Be careful."));
@@ -121,13 +130,22 @@ mod tests {
         let input = "|===\n|Property|Value\n|Name|assemble\n|Visibility|Public\n|param graph|graph: &Graph\n|Returns|String\n|===";
         let out = strip_asciidoc_markup(input);
         assert!(!out.contains("|==="), "table delimiter must be removed");
-        assert!(!out.contains("|Property|Value"), "header row must be removed");
+        assert!(
+            !out.contains("|Property|Value"),
+            "header row must be removed"
+        );
         assert!(
             out.contains("assemble(graph: &Graph) -> String"),
             "signature must collapse to one line, got: {out:?}"
         );
-        assert!(!out.contains("name: assemble"), "redundant Name row must be dropped");
-        assert!(!out.to_lowercase().contains("visibility"), "Visibility row must be dropped");
+        assert!(
+            !out.contains("name: assemble"),
+            "redundant Name row must be dropped"
+        );
+        assert!(
+            !out.to_lowercase().contains("visibility"),
+            "Visibility row must be dropped"
+        );
     }
 
     #[test]
@@ -135,19 +153,40 @@ mod tests {
         let input = "|===\n|Callee|Line\n|foo|12\n|bar|34\n|===";
         let out = strip_asciidoc_markup(input);
         assert!(!out.contains("|==="), "table delimiter must be removed");
-        assert!(!out.contains("|Callee|Line"), "callee header must be removed");
-        assert!(out.contains("calls:"), "callee table must produce calls: line");
-        assert!(out.contains("foo(12)"), "callee with line number must be compacted");
-        assert!(out.contains("bar(34)"), "callee with line number must be compacted");
+        assert!(
+            !out.contains("|Callee|Line"),
+            "callee header must be removed"
+        );
+        assert!(
+            out.contains("calls:"),
+            "callee table must produce calls: line"
+        );
+        assert!(
+            out.contains("foo(12)"),
+            "callee with line number must be compacted"
+        );
+        assert!(
+            out.contains("bar(34)"),
+            "callee with line number must be compacted"
+        );
     }
 
     #[test]
     fn test_strip_removes_edge_calls_lines() {
         let input = "Some text.\nedge::calls[Vec::new]\nedge::calls[foo]\nMore text.";
         let out = strip_asciidoc_markup(input);
-        assert!(!out.contains("edge::calls"), "edge::calls lines must be removed");
-        assert!(out.contains("Some text."), "surrounding text must be preserved");
-        assert!(out.contains("More text."), "surrounding text must be preserved");
+        assert!(
+            !out.contains("edge::calls"),
+            "edge::calls lines must be removed"
+        );
+        assert!(
+            out.contains("Some text."),
+            "surrounding text must be preserved"
+        );
+        assert!(
+            out.contains("More text."),
+            "surrounding text must be preserved"
+        );
     }
 
     #[test]
@@ -155,8 +194,14 @@ mod tests {
         let input = "= Top Title\n== Section One\n=== Subsection\n==== Deep";
         let out = strip_asciidoc_markup(input);
         assert!(out.contains("Top Title"), "top-level title must be kept");
-        assert!(out.contains("Section One:"), "section heading must get colon suffix");
-        assert!(out.contains("Subsection:"), "subsection must get colon suffix");
+        assert!(
+            out.contains("Section One:"),
+            "section heading must get colon suffix"
+        );
+        assert!(
+            out.contains("Subsection:"),
+            "subsection must get colon suffix"
+        );
         assert!(out.contains("Deep:"), "deep heading must get colon suffix");
         // No leading '=' characters should remain in heading lines
         for line in out.lines() {
@@ -181,7 +226,10 @@ mod tests {
         let out = strip_asciidoc_markup(input);
         assert!(!out.contains("<<"), "xref syntax must be removed");
         // bare anchor becomes display text with dashes replaced by spaces
-        assert!(out.contains("aden graph"), "dashes in bare xref should become spaces");
+        assert!(
+            out.contains("aden graph"),
+            "dashes in bare xref should become spaces"
+        );
     }
 
     #[test]
@@ -189,7 +237,10 @@ mod tests {
         let input = "First.\n\n\n\nSecond.";
         let out = strip_asciidoc_markup(input);
         // Should have at most one blank line between paragraphs
-        assert!(!out.contains("\n\n\n"), "multiple blanks must be collapsed to one");
+        assert!(
+            !out.contains("\n\n\n"),
+            "multiple blanks must be collapsed to one"
+        );
         assert!(out.contains("First."));
         assert!(out.contains("Second."));
     }

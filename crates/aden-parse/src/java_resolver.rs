@@ -69,14 +69,9 @@ impl LanguageExtractor for JavaResolver {
         // Phase 2: emit Documents with call-site resolution.
         let mut docs = Vec::new();
         for sym in &symbols {
-            if let Some(doc) = emit_java_symbol(
-                sym,
-                source,
-                path,
-                &symbols,
-                &module_path,
-                &file_name,
-            ) {
+            if let Some(doc) =
+                emit_java_symbol(sym, source, path, &symbols, &module_path, &file_name)
+            {
                 docs.push(doc);
             }
         }

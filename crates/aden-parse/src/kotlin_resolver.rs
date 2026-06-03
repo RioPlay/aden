@@ -68,14 +68,9 @@ impl LanguageExtractor for KotlinResolver {
 
         let mut docs = Vec::new();
         for sym in &symbols {
-            if let Some(doc) = emit_kotlin_symbol(
-                sym,
-                source,
-                path,
-                &symbols,
-                &module_path,
-                &file_name,
-            ) {
+            if let Some(doc) =
+                emit_kotlin_symbol(sym, source, path, &symbols, &module_path, &file_name)
+            {
                 docs.push(doc);
             }
         }

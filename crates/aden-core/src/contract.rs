@@ -407,7 +407,10 @@ impl MergeProposal {
 /// Build the `working` layer for a per-anchor merge: the generated `base` plus
 /// any non-generated (durable intent) blocks from an overlay. Generated blocks
 /// in the overlay are ignored — overlays only carry intent, never generated content.
-pub fn overlay_onto(base: &ContractDocument, overlay: Option<&ContractDocument>) -> ContractDocument {
+pub fn overlay_onto(
+    base: &ContractDocument,
+    overlay: Option<&ContractDocument>,
+) -> ContractDocument {
     let mut working = base.clone();
     if let Some(ov) = overlay {
         for block in &ov.blocks {
@@ -515,7 +518,10 @@ fn format_document_blocks(doc: &crate::Document) -> String {
                     let _ = writeln!(out, "* {marker} {}", item.text);
                 }
             }
-            crate::Block::Incomplete { required_fields, hint } => {
+            crate::Block::Incomplete {
+                required_fields,
+                hint,
+            } => {
                 let _ = writeln!(out, "[must-complete]");
                 let _ = writeln!(out, "====");
                 let _ = writeln!(out, "Required fields:");
@@ -920,8 +926,17 @@ mod tests {
             gen_block(Some("foo"), "SHOULD BE IGNORED"),
         ]);
         let working = overlay_onto(&base, Some(&overlay));
-        assert_eq!(working.blocks.len(), 2, "only base gen + human overlay block");
-        assert!(working.blocks.iter().any(|b| b.region == ContractRegion::Human));
+        assert_eq!(
+            working.blocks.len(),
+            2,
+            "only base gen + human overlay block"
+        );
+        assert!(
+            working
+                .blocks
+                .iter()
+                .any(|b| b.region == ContractRegion::Human)
+        );
         assert!(
             working.blocks.iter().filter(|b| b.is_generated()).count() == 1,
             "overlay generated blocks must be dropped"

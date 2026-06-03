@@ -75,10 +75,10 @@ pub fn migrate_legacy_store(root: &Path) {
     if !legacy.is_dir() || central.exists() {
         return;
     }
-    if let Some(parent) = central.parent() {
-        if std::fs::create_dir_all(parent).is_err() {
-            return;
-        }
+    if let Some(parent) = central.parent()
+        && std::fs::create_dir_all(parent).is_err()
+    {
+        return;
     }
     eprintln!(
         "migrating legacy in-tree store {} -> {}",

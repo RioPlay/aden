@@ -70,9 +70,8 @@ impl LanguageExtractor for PhpResolver {
 
         let mut docs = Vec::new();
         for sym in &symbols {
-            if let Some(doc) = emit_php_symbol(
-                sym, source, path, &symbols, &namespace, &file_name,
-            ) {
+            if let Some(doc) = emit_php_symbol(sym, source, path, &symbols, &namespace, &file_name)
+            {
                 docs.push(doc);
             }
         }

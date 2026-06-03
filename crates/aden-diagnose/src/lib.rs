@@ -32,10 +32,10 @@
 //! - `MissingSource` — documents referencing non-existent source files
 //! - `Custom` — user-defined rules
 
+use aden_graph::cycles::find_cycles;
 use aden_graph::graph::AdenGraph;
 use aden_graph::nodes::{AdenEdge, DocumentNode, GraphNode};
 use aden_graph::parser::parse_file;
-use aden_graph::cycles::find_cycles;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -284,7 +284,10 @@ pub fn diagnose(path: &Path) -> Result<Diagnosis, DiagnoseError> {
 }
 
 /// Run a full diagnostic scan with custom rules.
-pub fn diagnose_with_rules(path: &Path, rules: &DiagnosticRules) -> Result<Diagnosis, DiagnoseError> {
+pub fn diagnose_with_rules(
+    path: &Path,
+    rules: &DiagnosticRules,
+) -> Result<Diagnosis, DiagnoseError> {
     let mut issues: Vec<Issue> = Vec::new();
 
     // Build the knowledge graph from the directory.
@@ -348,7 +351,10 @@ pub fn diagnose_json(path: &Path) -> Result<String, DiagnoseError> {
 }
 
 /// Run `diagnose_with_rules` and return JSON-serialised output.
-pub fn diagnose_json_with_rules(path: &Path, rules: &DiagnosticRules) -> Result<String, DiagnoseError> {
+pub fn diagnose_json_with_rules(
+    path: &Path,
+    rules: &DiagnosticRules,
+) -> Result<String, DiagnoseError> {
     let diagnosis = diagnose_with_rules(path, rules)?;
     serde_json::to_string_pretty(&diagnosis).map_err(|e| DiagnoseError::Generic(e.to_string()))
 }
@@ -356,7 +362,11 @@ pub fn diagnose_json_with_rules(path: &Path, rules: &DiagnosticRules) -> Result<
 // ── Individual scanners ───────────────────────────────────────────
 
 /// Scan all `.adoc` files for `<<ref>>` patterns that don't exist in the graph.
-fn scan_unresolved_refs(graph: &AdenGraph<DocumentNode, AdenEdge>, files: &[PathBuf], _rules: &DiagnosticRules) -> Vec<Issue> {
+fn scan_unresolved_refs(
+    graph: &AdenGraph<DocumentNode, AdenEdge>,
+    files: &[PathBuf],
+    _rules: &DiagnosticRules,
+) -> Vec<Issue> {
     let mut issues = Vec::new();
     let anchors: HashSet<&str> = graph.anchor_to_index.keys().map(|s| s.as_str()).collect();
 
@@ -382,7 +392,8 @@ fn scan_unresolved_refs(graph: &AdenGraph<DocumentNode, AdenEdge>, files: &[Path
                     suggestion,
                     raw: serde_json::to_string(&serde_json::json!({
                         "ref": ref_anchor,
-                    })).unwrap_or_default(),
+                    }))
+                    .unwrap_or_default(),
                 });
             }
         }
@@ -412,7 +423,10 @@ fn scan_duplicate_anchors(files: &[PathBuf]) -> Vec<Issue> {
 
     for (anchor, files) in &anchor_to_files {
         if files.len() > 1 {
-            let file_paths: Vec<String> = files.iter().map(|p| p.to_string_lossy().to_string()).collect();
+            let file_paths: Vec<String> = files
+                .iter()
+                .map(|p| p.to_string_lossy().to_string())
+                .collect();
             // A duplicate anchor across prose/doc files (e.g. a template and its
             // instantiated copy) is reference-material noise, not a code defect, so
             // it is Info — matching `status`/`check`. A duplicate in a code file is
@@ -420,10 +434,18 @@ fn scan_duplicate_anchors(files: &[PathBuf]) -> Vec<Issue> {
             let all_doc = files.iter().all(|p| is_doc_source(p));
             issues.push(Issue {
                 category: IssueCategory::DuplicateAnchor,
-                severity: if all_doc { Severity::Info } else { Severity::Warning },
+                severity: if all_doc {
+                    Severity::Info
+                } else {
+                    Severity::Warning
+                },
                 file: Some(file_paths.first().cloned().unwrap_or_default()),
                 line: None,
-                message: format!("Duplicate anchor: [[{}]] declared in {} files", anchor, files.len()),
+                message: format!(
+                    "Duplicate anchor: [[{}]] declared in {} files",
+                    anchor,
+                    files.len()
+                ),
                 suggestion: Some(format!(
                     "Rename one of the anchors. Files: {}",
                     file_paths.join(", ")
@@ -431,7 +453,8 @@ fn scan_duplicate_anchors(files: &[PathBuf]) -> Vec<Issue> {
                 raw: serde_json::to_string(&serde_json::json!({
                     "anchor": anchor,
                     "files": file_paths,
-                })).unwrap_or_default(),
+                }))
+                .unwrap_or_default(),
             });
         }
     }
@@ -444,7 +467,10 @@ fn scan_duplicate_anchors(files: &[PathBuf]) -> Vec<Issue> {
 /// This is a general-purpose scanner that uses the graph's built-in
 /// `validate_typed_edges()` method, which checks that code edges only
 /// connect to code nodes and semantic edges only connect to semantic nodes.
-fn scan_edge_violations(graph: &AdenGraph<DocumentNode, AdenEdge>, _rules: &DiagnosticRules) -> Vec<Issue> {
+fn scan_edge_violations(
+    graph: &AdenGraph<DocumentNode, AdenEdge>,
+    _rules: &DiagnosticRules,
+) -> Vec<Issue> {
     let mut issues = Vec::new();
     let violations = graph.validate_typed_edges();
 
@@ -471,7 +497,11 @@ fn scan_edge_violations(graph: &AdenGraph<DocumentNode, AdenEdge>, _rules: &Diag
 ///
 /// Uses the `stale_ref_patterns` from rules to detect patterns like
 /// "adr-002" when only "adr-001" exists.
-fn scan_stale_refs(graph: &AdenGraph<DocumentNode, AdenEdge>, files: &[PathBuf], rules: &DiagnosticRules) -> Vec<Issue> {
+fn scan_stale_refs(
+    graph: &AdenGraph<DocumentNode, AdenEdge>,
+    files: &[PathBuf],
+    rules: &DiagnosticRules,
+) -> Vec<Issue> {
     let mut issues = Vec::new();
     let anchors: HashSet<&str> = graph.anchor_to_index.keys().map(|s| s.as_str()).collect();
 
@@ -483,9 +513,10 @@ fn scan_stale_refs(graph: &AdenGraph<DocumentNode, AdenEdge>, files: &[PathBuf],
 
         for ref_anchor in parsed.refs.iter() {
             // Check if this ref matches any stale pattern
-            let is_stale_pattern = rules.stale_ref_patterns.iter().any(|pattern| {
-                ref_anchor.starts_with(pattern)
-            });
+            let is_stale_pattern = rules
+                .stale_ref_patterns
+                .iter()
+                .any(|pattern| ref_anchor.starts_with(pattern));
 
             if is_stale_pattern && !anchors.contains(ref_anchor.as_str()) {
                 let suggestion = if rules.stale_ref_suggest_similar {
@@ -507,7 +538,8 @@ fn scan_stale_refs(graph: &AdenGraph<DocumentNode, AdenEdge>, files: &[PathBuf],
                     suggestion,
                     raw: serde_json::to_string(&serde_json::json!({
                         "ref": ref_anchor,
-                    })).unwrap_or_default(),
+                    }))
+                    .unwrap_or_default(),
                 });
             }
         }
@@ -568,7 +600,10 @@ fn scan_contract_refs(files: &[PathBuf], rules: &DiagnosticRules) -> Vec<Issue> 
 /// agnostic: keyed on the file extension, not on any project layout.
 fn is_doc_source(path: &std::path::Path) -> bool {
     matches!(
-        path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref(),
+        path.extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_ascii_lowercase())
+            .as_deref(),
         Some("md" | "markdown" | "adoc" | "asciidoc" | "txt" | "rst")
     )
 }
@@ -583,16 +618,18 @@ fn scan_orphans(graph: &AdenGraph<DocumentNode, AdenEdge>, rules: &DiagnosticRul
 
     for anchor in orphans {
         let node = graph.get_node(&anchor);
-        let is_metadata = node.map(|n| {
-            // Anchor matches a configured metadata prefix (e.g. "adr-", "plan-")…
-            rules.metadata_prefixes.iter().any(|prefix| anchor.starts_with(prefix))
+        let is_metadata = node
+            .map(|n| {
+                // Anchor matches a configured metadata prefix (e.g. "adr-", "plan-")…
+                rules.metadata_prefixes.iter().any(|prefix| anchor.starts_with(prefix))
                 // …or this is a documentation/prose source file rather than a code
                 // symbol. An orphaned doc (README, NOTICE, an .adoc heading, agent
                 // scaffolding) is reference material with legitimately no edges; only
                 // orphaned *code* symbols are actionable. This mirrors `status`/
                 // `check` (`is_expected_metadata`) so the three tools agree on counts.
                 || is_doc_source(&n.source_path)
-        }).unwrap_or(false);
+            })
+            .unwrap_or(false);
 
         issues.push(Issue {
             category: IssueCategory::OrphanDocument,
@@ -604,11 +641,14 @@ fn scan_orphans(graph: &AdenGraph<DocumentNode, AdenEdge>, rules: &DiagnosticRul
             file: node.map(|n| n.source_path.to_string_lossy().to_string()),
             line: None,
             message: format!("Orphan document: [[{}]] has no edges", anchor),
-            suggestion: Some("Add references to or from this document, or verify it should exist.".to_string()),
+            suggestion: Some(
+                "Add references to or from this document, or verify it should exist.".to_string(),
+            ),
             raw: serde_json::to_string(&serde_json::json!({
                 "anchor": anchor,
                 "is_metadata": is_metadata,
-            })).unwrap_or_default(),
+            }))
+            .unwrap_or_default(),
         });
     }
 
@@ -628,11 +668,13 @@ fn scan_include_cycles(graph: &AdenGraph<DocumentNode, AdenEdge>) -> Vec<Issue> 
             file: None,
             line: None,
             message: format!("Include cycle detected: {}", cycle_str),
-            suggestion: Some("Break the circular include chain by removing one of the includes."
-                .to_string()),
+            suggestion: Some(
+                "Break the circular include chain by removing one of the includes.".to_string(),
+            ),
             raw: serde_json::to_string(&serde_json::json!({
                 "cycle": cycle,
-            })).unwrap_or_default(),
+            }))
+            .unwrap_or_default(),
         });
     }
 
@@ -662,7 +704,8 @@ fn scan_missing_source(graph: &AdenGraph<DocumentNode, AdenEdge>) -> Vec<Issue> 
                     raw: serde_json::to_string(&serde_json::json!({
                         "anchor": node.anchor(),
                         "missing_file": source_file,
-                    })).unwrap_or_default(),
+                    }))
+                    .unwrap_or_default(),
                 });
             }
         }
@@ -690,7 +733,11 @@ fn scan_low_confidence(graph: &AdenGraph<DocumentNode, AdenEdge>) -> Vec<Issue> 
             let is_doc = is_doc_source(&node.source_path);
             issues.push(Issue {
                 category: IssueCategory::LowConfidence,
-                severity: if is_doc { Severity::Info } else { Severity::Warning },
+                severity: if is_doc {
+                    Severity::Info
+                } else {
+                    Severity::Warning
+                },
                 file: node.doc.attributes.get("source_file").cloned(),
                 line: None,
                 message: format!(
@@ -704,7 +751,8 @@ fn scan_low_confidence(graph: &AdenGraph<DocumentNode, AdenEdge>) -> Vec<Issue> 
                     "anchor": node.anchor(),
                     "confidence": node.doc.confidence,
                     "reason": reason,
-                })).unwrap_or_default(),
+                }))
+                .unwrap_or_default(),
             });
         }
     }
@@ -730,9 +778,10 @@ fn collect_adoc_files(dir: &Path) -> Vec<PathBuf> {
         if path.is_dir() {
             files.extend(collect_adoc_files(&path));
         } else if let Some(ext) = path.extension().and_then(|e| e.to_str())
-            && ext == "adoc" {
-                files.push(path);
-            }
+            && ext == "adoc"
+        {
+            files.push(path);
+        }
     }
     files.sort();
     files
@@ -856,15 +905,17 @@ mod tests {
 
     #[test]
     fn test_health_score_floor() {
-        let issues: Vec<Issue> = (0..20).map(|_| Issue {
-            category: IssueCategory::UnresolvedRef,
-            severity: Severity::Error,
-            file: None,
-            line: None,
-            message: "test".to_string(),
-            suggestion: None,
-            raw: String::new(),
-        }).collect();
+        let issues: Vec<Issue> = (0..20)
+            .map(|_| Issue {
+                category: IssueCategory::UnresolvedRef,
+                severity: Severity::Error,
+                file: None,
+                line: None,
+                message: "test".to_string(),
+                suggestion: None,
+                raw: String::new(),
+            })
+            .collect();
 
         let score = Diagnosis::calc_health_score(&issues);
         assert_eq!(score, 0.0); // 20 errors * 5 = 100 deduction, floor at 0
@@ -964,8 +1015,16 @@ mod tests {
         assert!(result.is_ok());
         let diagnosis = result.unwrap();
         // Should find at least one unresolved ref
-        let unresolved = diagnosis.issues.iter().filter(|i| i.category == IssueCategory::UnresolvedRef).count();
-        assert!(unresolved > 0, "Expected unresolved ref, got: {:?}", diagnosis.issues);
+        let unresolved = diagnosis
+            .issues
+            .iter()
+            .filter(|i| i.category == IssueCategory::UnresolvedRef)
+            .count();
+        assert!(
+            unresolved > 0,
+            "Expected unresolved ref, got: {:?}",
+            diagnosis.issues
+        );
     }
 
     #[test]
@@ -984,8 +1043,16 @@ mod tests {
         let result = diagnose(&dir);
         assert!(result.is_ok());
         let diagnosis = result.unwrap();
-        let duplicates = diagnosis.issues.iter().filter(|i| i.category == IssueCategory::DuplicateAnchor).count();
-        assert!(duplicates > 0, "Expected duplicate anchor, got: {:?}", diagnosis.issues);
+        let duplicates = diagnosis
+            .issues
+            .iter()
+            .filter(|i| i.category == IssueCategory::DuplicateAnchor)
+            .count();
+        assert!(
+            duplicates > 0,
+            "Expected duplicate anchor, got: {:?}",
+            diagnosis.issues
+        );
     }
 
     #[test]
@@ -1039,7 +1106,11 @@ mod tests {
         let result = diagnose_with_rules(&dir, &rules);
         assert!(result.is_ok());
         let diagnosis = result.unwrap();
-        let custom = diagnosis.issues.iter().filter(|i| i.category == IssueCategory::Custom("test-rule".to_string())).count();
+        let custom = diagnosis
+            .issues
+            .iter()
+            .filter(|i| i.category == IssueCategory::Custom("test-rule".to_string()))
+            .count();
         assert_eq!(custom, 1);
     }
 
@@ -1070,8 +1141,16 @@ mod tests {
         let result = diagnose_with_rules(&dir, &rules);
         assert!(result.is_ok());
         let diagnosis = result.unwrap();
-        let orphans = diagnosis.issues.iter().filter(|i| i.category == IssueCategory::OrphanDocument).collect::<Vec<_>>();
-        assert!(orphans.len() >= 2, "Expected at least 2 orphans, got: {}", orphans.len());
+        let orphans = diagnosis
+            .issues
+            .iter()
+            .filter(|i| i.category == IssueCategory::OrphanDocument)
+            .collect::<Vec<_>>();
+        assert!(
+            orphans.len() >= 2,
+            "Expected at least 2 orphans, got: {}",
+            orphans.len()
+        );
         for orphan in orphans {
             // Every orphan here is sourced from an .adoc (prose) file, so all are Info.
             assert_eq!(
@@ -1107,10 +1186,16 @@ mod tests {
         let result = diagnose_with_rules(&dir, &rules);
         assert!(result.is_ok());
         let diagnosis = result.unwrap();
-        let stale_refs = diagnosis.issues.iter().filter(|i| {
-            i.category == IssueCategory::UnresolvedRef && i.message.contains("adr-999")
-        }).count();
-        assert!(stale_refs > 0, "Expected stale ref, got: {:?}", diagnosis.issues);
+        let stale_refs = diagnosis
+            .issues
+            .iter()
+            .filter(|i| i.category == IssueCategory::UnresolvedRef && i.message.contains("adr-999"))
+            .count();
+        assert!(
+            stale_refs > 0,
+            "Expected stale ref, got: {:?}",
+            diagnosis.issues
+        );
     }
 
     #[test]
@@ -1130,10 +1215,16 @@ mod tests {
         let result = diagnose_with_rules(&dir, &rules);
         assert!(result.is_ok());
         let diagnosis = result.unwrap();
-        let contract_refs = diagnosis.issues.iter().filter(|i| {
-            i.category == IssueCategory::Custom("contract-ref".to_string())
-        }).count();
-        assert!(contract_refs > 0, "Expected contract ref issue, got: {:?}", diagnosis.issues);
+        let contract_refs = diagnosis
+            .issues
+            .iter()
+            .filter(|i| i.category == IssueCategory::Custom("contract-ref".to_string()))
+            .count();
+        assert!(
+            contract_refs > 0,
+            "Expected contract ref issue, got: {:?}",
+            diagnosis.issues
+        );
     }
 
     #[test]
@@ -1159,22 +1250,22 @@ mod tests {
     #[test]
     fn test_orphan_document_detection() {
         let dir = make_temp_dir("orphan");
-        write_file(
-            &dir,
-            "doc-a.adoc",
-            "[[doc-a]]\n= Document A\n\nContent.\n",
-        );
-        write_file(
-            &dir,
-            "doc-b.adoc",
-            "[[doc-b]]\n= Document B\n\nContent.\n",
-        );
+        write_file(&dir, "doc-a.adoc", "[[doc-a]]\n= Document A\n\nContent.\n");
+        write_file(&dir, "doc-b.adoc", "[[doc-b]]\n= Document B\n\nContent.\n");
         let result = diagnose(&dir);
         assert!(result.is_ok());
         let diagnosis = result.unwrap();
-        let orphans = diagnosis.issues.iter().filter(|i| i.category == IssueCategory::OrphanDocument).count();
+        let orphans = diagnosis
+            .issues
+            .iter()
+            .filter(|i| i.category == IssueCategory::OrphanDocument)
+            .count();
         // Both docs are orphans (no edges between them since they don't reference each other)
-        assert!(orphans >= 1, "Expected at least 1 orphan, got: {:?}", diagnosis.issues);
+        assert!(
+            orphans >= 1,
+            "Expected at least 1 orphan, got: {:?}",
+            diagnosis.issues
+        );
     }
 
     #[test]
@@ -1186,13 +1277,31 @@ mod tests {
 
     #[test]
     fn test_issue_category_display() {
-        assert_eq!(format!("{}", IssueCategory::UnresolvedRef), "unresolved-ref");
-        assert_eq!(format!("{}", IssueCategory::DuplicateAnchor), "duplicate-anchor");
-        assert_eq!(format!("{}", IssueCategory::EdgeViolation), "edge-violation");
-        assert_eq!(format!("{}", IssueCategory::OrphanDocument), "orphan-document");
+        assert_eq!(
+            format!("{}", IssueCategory::UnresolvedRef),
+            "unresolved-ref"
+        );
+        assert_eq!(
+            format!("{}", IssueCategory::DuplicateAnchor),
+            "duplicate-anchor"
+        );
+        assert_eq!(
+            format!("{}", IssueCategory::EdgeViolation),
+            "edge-violation"
+        );
+        assert_eq!(
+            format!("{}", IssueCategory::OrphanDocument),
+            "orphan-document"
+        );
         assert_eq!(format!("{}", IssueCategory::IncludeCycle), "include-cycle");
-        assert_eq!(format!("{}", IssueCategory::MissingSource), "missing-source");
-        assert_eq!(format!("{}", IssueCategory::Custom("test".to_string())), "custom-test");
+        assert_eq!(
+            format!("{}", IssueCategory::MissingSource),
+            "missing-source"
+        );
+        assert_eq!(
+            format!("{}", IssueCategory::Custom("test".to_string())),
+            "custom-test"
+        );
     }
 
     #[test]

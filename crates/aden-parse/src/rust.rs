@@ -85,14 +85,7 @@ pub fn extract_documents_inner(path: &Path, source: &str) -> Result<Vec<Document
                 buffered_comments.clear();
             }
             "impl_item" => {
-                extract_impl_methods(
-                    child,
-                    source,
-                    path,
-                    &crate_name,
-                    &file_name,
-                    &mut docs,
-                );
+                extract_impl_methods(child, source, path, &crate_name, &file_name, &mut docs);
                 buffered_comments.clear();
             }
             "const_item" | "static_item" => {
@@ -232,10 +225,7 @@ fn process_line_comment(node: tree_sitter::Node, source: &str) -> Option<String>
 
 fn process_block_comment(node: tree_sitter::Node, source: &str) -> Option<String> {
     let text = node_text(node, source);
-    if let Some(inner) = text
-        .strip_prefix("/**")
-        .and_then(|s| s.strip_suffix("*/"))
-    {
+    if let Some(inner) = text.strip_prefix("/**").and_then(|s| s.strip_suffix("*/")) {
         // `/**/` (len 4) yields inner == "" here — the old `&text[3..len-2]`
         // slice panicked (begin > end) on that untrusted input.
         let lines: Vec<String> = inner
@@ -464,7 +454,13 @@ fn extract_impl_methods(
             }
             "function_item" | "function_signature_item" => {
                 if let Some(doc) = extract_function(
-                    child, source, path, crate_name, file_name, &buffered, type_prefix,
+                    child,
+                    source,
+                    path,
+                    crate_name,
+                    file_name,
+                    &buffered,
+                    type_prefix,
                 ) {
                     docs.push(doc);
                 }
@@ -635,9 +631,9 @@ fn push_type_ident(out: &mut Vec<String>, ident: &str) {
         return;
     }
     const SKIP: &[&str] = &[
-        "String", "Vec", "Option", "Result", "Box", "Rc", "Arc", "HashMap", "HashSet",
-        "BTreeMap", "BTreeSet", "Cow", "Path", "PathBuf", "Self", "Ok", "Err", "Some", "None",
-        "VecDeque", "Cell", "RefCell", "Mutex", "RwLock", "Duration", "Instant",
+        "String", "Vec", "Option", "Result", "Box", "Rc", "Arc", "HashMap", "HashSet", "BTreeMap",
+        "BTreeSet", "Cow", "Path", "PathBuf", "Self", "Ok", "Err", "Some", "None", "VecDeque",
+        "Cell", "RefCell", "Mutex", "RwLock", "Duration", "Instant",
     ];
     if SKIP.contains(&ident) {
         return;
@@ -991,4 +987,3 @@ fn extract_trait(
         confidence: 0.9,
     })
 }
-

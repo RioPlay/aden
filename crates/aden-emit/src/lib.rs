@@ -144,7 +144,10 @@ fn emit_block(out: &mut String, block: &Block) {
                 writeln!(out, "* {marker} {}", item.text).unwrap();
             }
         }
-        Block::Incomplete { required_fields, hint } => {
+        Block::Incomplete {
+            required_fields,
+            hint,
+        } => {
             writeln!(out, "[must-complete]").unwrap();
             writeln!(out, "====").unwrap();
             writeln!(out, "Required fields:").unwrap();
@@ -302,7 +305,10 @@ pub fn emit_adg(doc: &Document) -> Result<String, serde_json::Error> {
             Block::Checklist(items) => AdgBlock::Checklist {
                 item_count: items.len(),
             },
-            Block::Incomplete { required_fields, hint } => AdgBlock::Incomplete {
+            Block::Incomplete {
+                required_fields,
+                hint,
+            } => AdgBlock::Incomplete {
                 field_count: required_fields.len(),
                 hint: hint.clone(),
             },
@@ -397,7 +403,10 @@ fn emit_block_md(out: &mut String, block: &Block) {
                 writeln!(out, "- {checkbox} {}", item.text).unwrap();
             }
         }
-        Block::Incomplete { required_fields, hint } => {
+        Block::Incomplete {
+            required_fields,
+            hint,
+        } => {
             writeln!(out, "**Required fields:**").unwrap();
             for field in required_fields {
                 writeln!(out, "- {field}").unwrap();

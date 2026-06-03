@@ -338,7 +338,12 @@ fn extract_ts_params(node: tree_sitter::Node, source: &str) -> Vec<Parameter> {
                 // be emitted from it. Falls back to "Unknown" for untyped params.
                 let ty = child
                     .child_by_field_name("type")
-                    .map(|t| node_text(t, source).trim_start_matches(':').trim().to_string())
+                    .map(|t| {
+                        node_text(t, source)
+                            .trim_start_matches(':')
+                            .trim()
+                            .to_string()
+                    })
                     .filter(|t| !t.is_empty())
                     .unwrap_or_else(|| "Unknown".to_string());
                 let mut p_cursor = child.walk();
@@ -507,7 +512,11 @@ fn emit_ts_symbol<'a>(
     let mut sig_rows = Vec::new();
     for p in &sym.params {
         // Drop "Unknown" type noise; key already carries the param name.
-        let ty = if p.ty == "Unknown" { String::new() } else { p.ty.clone() };
+        let ty = if p.ty == "Unknown" {
+            String::new()
+        } else {
+            p.ty.clone()
+        };
         sig_rows.push(vec![format!("param {}", p.name), ty]);
     }
     if sym.is_async {

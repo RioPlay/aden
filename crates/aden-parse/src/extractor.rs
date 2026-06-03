@@ -42,12 +42,12 @@ pub(crate) fn build_code_attributes(
 
     let hash_source = if let Some(path) = source_file {
         // Try to read file, skip on binary/invalid UTF-8
-        
+
         std::fs::read_to_string(path).unwrap_or_else(|e| {
             if e.kind() == std::io::ErrorKind::InvalidData {
-                String::new()  // Binary file - use empty for hash
+                String::new() // Binary file - use empty for hash
             } else {
-                source.to_string()  // Other errors - fall back to provided source
+                source.to_string() // Other errors - fall back to provided source
             }
         })
     } else {

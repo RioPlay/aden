@@ -77,7 +77,12 @@ impl crate::extractor::LanguageExtractor for CsvExtractor {
             format!(
                 "CSV with {} columns: {}",
                 headers.len(),
-                headers.iter().take(3).map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
+                headers
+                    .iter()
+                    .take(3)
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
             )
         } else {
             format!("CSV with columns: {}", headers.join(", "))
@@ -87,10 +92,7 @@ impl crate::extractor::LanguageExtractor for CsvExtractor {
             anchor,
             node_type: NodeType::Module,
             attributes: attrs,
-            blocks: vec![
-                Block::Paragraph(description),
-                Block::Table(table),
-            ],
+            blocks: vec![Block::Paragraph(description), Block::Table(table)],
             source_span: None,
             metadata: None,
             confidence: 0.7,

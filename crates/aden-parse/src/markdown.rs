@@ -55,10 +55,7 @@ impl crate::extractor::LanguageExtractor for MarkdownExtractor {
 
             if line.starts_with("```") {
                 if in_code_block {
-                    code_blocks.push((
-                        current_code_lang.clone(),
-                        current_code_lines.join("\n"),
-                    ));
+                    code_blocks.push((current_code_lang.clone(), current_code_lines.join("\n")));
                     current_code_lines.clear();
                     current_code_lang.clear();
                     in_code_block = false;
@@ -69,10 +66,9 @@ impl crate::extractor::LanguageExtractor for MarkdownExtractor {
                 continue;
             }
 
-            if !in_code_block
-                && let Some(link) = extract_markdown_link(line) {
-                    links.push(link);
-                }
+            if !in_code_block && let Some(link) = extract_markdown_link(line) {
+                links.push(link);
+            }
 
             if in_code_block {
                 current_code_lines.push(line.to_string());
@@ -103,7 +99,10 @@ impl crate::extractor::LanguageExtractor for MarkdownExtractor {
                     .map(|h| h.2 - 1)
                     .unwrap_or(body_lines.len());
                 let mut body_text = if body_start < body_end && body_end <= body_lines.len() {
-                    body_lines[body_start..body_end].join("\n").trim().to_string()
+                    body_lines[body_start..body_end]
+                        .join("\n")
+                        .trim()
+                        .to_string()
                 } else {
                     String::new()
                 };
@@ -139,12 +138,7 @@ impl crate::extractor::LanguageExtractor for MarkdownExtractor {
                     start_byte: 0,
                     end_byte: 0,
                 };
-                let attrs = build_code_attributes(
-                    source,
-                    "heading",
-                    Some(path),
-                    Some(&span),
-                );
+                let attrs = build_code_attributes(source, "heading", Some(path), Some(&span));
                 let mut attrs = attrs;
                 attrs.insert("heading_level".to_string(), level.to_string());
                 if !links.is_empty() {
@@ -199,11 +193,7 @@ impl crate::extractor::LanguageExtractor for MarkdownExtractor {
                 node_type: NodeType::Script,
                 attributes: attrs,
                 blocks: vec![Block::Listing {
-                    language: if lang.is_empty() {
-                        None
-                    } else {
-                        Some(lang)
-                    },
+                    language: if lang.is_empty() { None } else { Some(lang) },
                     code,
                 }],
                 source_span: None,
@@ -280,7 +270,13 @@ fn extract_code_references(code: &str, lang: &str) -> Vec<String> {
                 let trimmed = line.trim();
                 if trimmed.starts_with("fn ") {
                     if let Some(name) = trimmed.strip_prefix("fn ") {
-                        let name = name.split('(').next().unwrap_or(name).split('{').next().unwrap_or(name);
+                        let name = name
+                            .split('(')
+                            .next()
+                            .unwrap_or(name)
+                            .split('{')
+                            .next()
+                            .unwrap_or(name);
                         refs.push(format!("fn:{}", name.trim()));
                     }
                 } else if trimmed.starts_with("struct ") {
@@ -349,10 +345,11 @@ fn extract_code_references(code: &str, lang: &str) -> Vec<String> {
                         refs.push(format!("class:{}", name.trim()));
                     }
                 } else if (trimmed.starts_with("interface ") || trimmed.starts_with("type "))
-                    && let Some(name) = trimmed.split_whitespace().nth(1) {
-                        let name = name.split('{').next().unwrap_or(name);
-                        refs.push(format!("type:{}", name));
-                    }
+                    && let Some(name) = trimmed.split_whitespace().nth(1)
+                {
+                    let name = name.split('{').next().unwrap_or(name);
+                    refs.push(format!("type:{}", name));
+                }
             }
         }
         "go" => {
@@ -369,10 +366,11 @@ fn extract_code_references(code: &str, lang: &str) -> Vec<String> {
                         refs.push(format!("type:{}", name));
                     }
                 } else if trimmed.starts_with("import ")
-                    && let Some(name) = trimmed.strip_prefix("import ") {
-                        let name = name.trim_matches('"');
-                        refs.push(format!("use:{}", name));
-                    }
+                    && let Some(name) = trimmed.strip_prefix("import ")
+                {
+                    let name = name.trim_matches('"');
+                    refs.push(format!("use:{}", name));
+                }
             }
         }
         _ => {}
@@ -434,15 +432,16 @@ fn normalize_link_target(url: &str) -> String {
 fn extract_markdown_link(line: &str) -> Option<String> {
     let line = line.trim();
     if line.starts_with('[')
-        && let Some(bracket_end) = line.find("](") {
-            let inner = &line[1..bracket_end];
-            if let Some(paren_start) = line.find("](") {
-                let url_start = paren_start + 2;
-                if let Some(paren_end) = line[url_start..].find(')') {
-                    let url = &line[url_start..url_start + paren_end];
-                    return Some(format!("{}->{}", inner, url));
-                }
+        && let Some(bracket_end) = line.find("](")
+    {
+        let inner = &line[1..bracket_end];
+        if let Some(paren_start) = line.find("](") {
+            let url_start = paren_start + 2;
+            if let Some(paren_end) = line[url_start..].find(')') {
+                let url = &line[url_start..url_start + paren_end];
+                return Some(format!("{}->{}", inner, url));
             }
         }
+    }
     None
 }

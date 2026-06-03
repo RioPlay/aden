@@ -68,9 +68,7 @@ impl LanguageExtractor for CSharpResolver {
 
         let mut docs = Vec::new();
         for sym in &symbols {
-            if let Some(doc) =
-                emit_cs_symbol(sym, source, path, &symbols, &namespace, &file_name)
-            {
+            if let Some(doc) = emit_cs_symbol(sym, source, path, &symbols, &namespace, &file_name) {
                 docs.push(doc);
             }
         }
@@ -301,13 +299,7 @@ fn parse_type_declaration<'a>(
                 let mut cc = child.walk();
                 for grandchild in child.children(&mut cc) {
                     if grandchild.is_named() {
-                        walk_compilation_unit(
-                            grandchild,
-                            source,
-                            namespace,
-                            file_name,
-                            symbols,
-                        );
+                        walk_compilation_unit(grandchild, source, namespace, file_name, symbols);
                     }
                 }
             }

@@ -20,8 +20,8 @@ pub mod java_resolver;
 pub mod kotlin_resolver;
 pub mod markdown;
 pub mod php_resolver;
-mod powershell;
 pub mod plaintext;
+mod powershell;
 pub mod python_resolver;
 pub mod router;
 pub mod ruby_resolver;
@@ -32,7 +32,7 @@ pub mod typescript_resolver;
 
 pub use extractor::LanguageExtractor;
 pub(crate) use extractor::make_anchor;
-pub use router::{supported_extensions, LanguageRouter};
+pub use router::{LanguageRouter, supported_extensions};
 
 #[cfg(test)]
 mod tests;

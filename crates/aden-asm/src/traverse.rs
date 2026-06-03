@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use aden_core::{Block, EdgeType};
-use aden_graph::{AdenGraph, DocumentNode, AdenEdge};
+use aden_graph::{AdenEdge, AdenGraph, DocumentNode};
 use petgraph::Direction;
 use petgraph::graph::NodeIndex;
 use petgraph::visit::EdgeRef;
@@ -128,7 +128,10 @@ impl Default for AssemblyOptions {
 /// attribute lines, block delimiters) so every token carries signal rather
 /// than format noise. Large documents that would exceed the remaining budget
 /// are truncated at a word boundary rather than skipped entirely.
-pub fn assemble(graph: &AdenGraph<DocumentNode, AdenEdge>, opts: &AssemblyOptions) -> Result<String, AssemblyError> {
+pub fn assemble(
+    graph: &AdenGraph<DocumentNode, AdenEdge>,
+    opts: &AssemblyOptions,
+) -> Result<String, AssemblyError> {
     let start_idx = graph
         .get_index(&opts.start_anchor)
         .ok_or_else(|| AssemblyError::AnchorNotFound(opts.start_anchor.clone()))?;
@@ -143,7 +146,11 @@ pub fn assemble(graph: &AdenGraph<DocumentNode, AdenEdge>, opts: &AssemblyOption
     // emitted *between* documents (one per doc after the first), so for any doc
     // that isn't first its preceding separator must fit alongside it; otherwise
     // the joined output overshoots the budget by sep_cost per gap.
-    let separator = if opts.llm_mode { "\n\n---\n\n" } else { "\n<<<\n" };
+    let separator = if opts.llm_mode {
+        "\n\n---\n\n"
+    } else {
+        "\n<<<\n"
+    };
     let sep_cost = estimate_tokens(separator);
 
     queue.push_back((start_idx, 0usize));
@@ -208,7 +215,10 @@ pub fn assemble(graph: &AdenGraph<DocumentNode, AdenEdge>, opts: &AssemblyOption
 }
 
 /// Assemble documents in ADG (compact JSON) format for token-efficient LLM context.
-pub fn assemble_adg(graph: &AdenGraph<DocumentNode, AdenEdge>, opts: &AssemblyOptions) -> Result<String, AssemblyError> {
+pub fn assemble_adg(
+    graph: &AdenGraph<DocumentNode, AdenEdge>,
+    opts: &AssemblyOptions,
+) -> Result<String, AssemblyError> {
     use aden_emit::emit_adg;
 
     let start_idx = graph
@@ -304,7 +314,12 @@ fn document_to_text(
 
     // Check if we should filter by tags
     let has_tag_filter = !include_tags.is_empty() || !exclude_tags.is_empty();
-    let use_tagged_regions = has_tag_filter && doc.parsed.as_ref().map(|p| !p.tagged_regions.is_empty()).unwrap_or(false);
+    let use_tagged_regions = has_tag_filter
+        && doc
+            .parsed
+            .as_ref()
+            .map(|p| !p.tagged_regions.is_empty())
+            .unwrap_or(false);
 
     // If blocks were populated during parsing, emit structured content.
     // Otherwise fall back to the original raw source so the assembled
@@ -320,7 +335,8 @@ fn document_to_text(
         // Anchor + Title
         out.push_str(&format!("[[{}]]\n", doc.doc.anchor));
         let title = doc
-            .doc.anchor
+            .doc
+            .anchor
             .rfind('#')
             .map(|p| &doc.doc.anchor[p + 1..])
             .unwrap_or(&doc.doc.anchor);
@@ -382,7 +398,10 @@ fn document_to_text(
                         out.push_str(&format!("* {marker} {}\n", item.text));
                     }
                 }
-                Block::Incomplete { required_fields, hint } => {
+                Block::Incomplete {
+                    required_fields,
+                    hint,
+                } => {
                     out.push_str("[must-complete]\n");
                     out.push_str("====\n");
                     out.push_str("Required fields:\n");
@@ -395,7 +414,7 @@ fn document_to_text(
             }
         }
 
-// If tag filtering is enabled and we have tagged regions, filter content
+        // If tag filtering is enabled and we have tagged regions, filter content
         if use_tagged_regions {
             let mut filtered_out = String::new();
             let relevant_tags: Vec<_> = doc
@@ -405,8 +424,8 @@ fn document_to_text(
                 .map_or(&[] as &[_], |v| v)
                 .iter()
                 .filter(|t| {
-                    let tag_matches = include_tags.is_empty()
-                        || include_tags.iter().any(|i| i == &t.tag_name);
+                    let tag_matches =
+                        include_tags.is_empty() || include_tags.iter().any(|i| i == &t.tag_name);
                     let not_excluded =
                         exclude_tags.is_empty() || !exclude_tags.iter().any(|e| e == &t.tag_name);
                     tag_matches && not_excluded
@@ -421,7 +440,8 @@ fn document_to_text(
                 filtered_out.push('\n');
                 filtered_out.push_str(&format!("[[{}]]\n", doc.doc.anchor));
                 let title = doc
-                    .doc.anchor
+                    .doc
+                    .anchor
                     .rfind('#')
                     .map(|p| &doc.doc.anchor[p + 1..])
                     .unwrap_or(&doc.doc.anchor);
@@ -438,7 +458,11 @@ fn document_to_text(
 
         // If attributes are set, filter by conditional regions
         let has_attrs = !attributes.is_empty();
-        let has_conditionals = doc.parsed.as_ref().map(|p| !p.conditional_regions.is_empty()).unwrap_or(false);
+        let has_conditionals = doc
+            .parsed
+            .as_ref()
+            .map(|p| !p.conditional_regions.is_empty())
+            .unwrap_or(false);
         if has_attrs && has_conditionals {
             let attr_set: HashSet<_> = attributes.iter().collect();
             let relevant_conditionals: Vec<_> = doc
@@ -463,7 +487,8 @@ fn document_to_text(
                 filtered_out.push('\n');
                 filtered_out.push_str(&format!("[[{}]]\n", doc.doc.anchor));
                 let title = doc
-                    .doc.anchor
+                    .doc
+                    .anchor
                     .rfind('#')
                     .map(|p| &doc.doc.anchor[p + 1..])
                     .unwrap_or(&doc.doc.anchor);
@@ -479,7 +504,10 @@ fn document_to_text(
 
         out
     } else {
-        doc.parsed.as_ref().map(|p| p.raw_content.trim().to_string()).unwrap_or_default()
+        doc.parsed
+            .as_ref()
+            .map(|p| p.raw_content.trim().to_string())
+            .unwrap_or_default()
     }
 }
 
@@ -550,24 +578,25 @@ pub fn strip_asciidoc_markup(text: &str) -> String {
             }
         }
         if let Some(n) = &name
-            && (!params.is_empty() || ret.is_some()) {
-                let mut line = String::new();
-                if is_async {
-                    line.push_str("async ");
-                }
-                if is_unsafe {
-                    line.push_str("unsafe ");
-                }
-                line.push_str(n);
-                line.push('(');
-                line.push_str(&params.join(", "));
-                line.push(')');
-                if let Some(r) = &ret {
-                    line.push_str(" -> ");
-                    line.push_str(r.trim_start_matches("->").trim());
-                }
-                out.push(line);
+            && (!params.is_empty() || ret.is_some())
+        {
+            let mut line = String::new();
+            if is_async {
+                line.push_str("async ");
             }
+            if is_unsafe {
+                line.push_str("unsafe ");
+            }
+            line.push_str(n);
+            line.push('(');
+            line.push_str(&params.join(", "));
+            line.push(')');
+            if let Some(r) = &ret {
+                line.push_str(" -> ");
+                line.push_str(r.trim_start_matches("->").trim());
+            }
+            out.push(line);
+        }
         for (k, v) in extras {
             out.push(format!("{}: {}", k.to_lowercase().replace(' ', "_"), v));
         }
@@ -581,22 +610,25 @@ pub fn strip_asciidoc_markup(text: &str) -> String {
             continue;
         }
 
-
         // --- Skip: :key: value AsciiDoc attribute lines ---
         // Matches ":source_file: foo.rs", ":author: Alice", ":toc:", ":!numbered:"
         if trimmed.starts_with(':')
-            && let Some(rest) = trimmed.strip_prefix(':') {
-                let rest = rest.strip_prefix('!').unwrap_or(rest);
-                if let Some(colon) = rest.find(':') {
-                    let key = &rest[..colon];
-                    if !key.is_empty() && !key.contains(' ') {
-                        continue;
-                    }
+            && let Some(rest) = trimmed.strip_prefix(':')
+        {
+            let rest = rest.strip_prefix('!').unwrap_or(rest);
+            if let Some(colon) = rest.find(':') {
+                let key = &rest[..colon];
+                if !key.is_empty() && !key.contains(' ') {
+                    continue;
                 }
             }
+        }
 
         // --- Skip: block delimiters ---
-        if matches!(trimmed, "----" | "====" | "****" | "____" | "--" | "'''" | "<<<") {
+        if matches!(
+            trimmed,
+            "----" | "====" | "****" | "____" | "--" | "'''" | "<<<"
+        ) {
             continue;
         }
 
@@ -685,7 +717,10 @@ pub fn strip_asciidoc_markup(text: &str) -> String {
         // --- Headings: convert = Title → Title, == Section → Section: ---
         let processed = if let Some(rest) = trimmed.strip_prefix("= ") {
             rest.to_string()
-        } else if trimmed.starts_with("== ") || trimmed.starts_with("=== ") || trimmed.starts_with("==== ") {
+        } else if trimmed.starts_with("== ")
+            || trimmed.starts_with("=== ")
+            || trimmed.starts_with("==== ")
+        {
             let stripped = trimmed.trim_start_matches('=').trim();
             format!("{}:", stripped)
         } else {
@@ -901,8 +936,14 @@ mod tests {
     fn truncate_marks_cut_with_ellipsis() {
         let text = "alpha beta gamma delta epsilon zeta eta theta ".repeat(50);
         let out = truncate_to_tokens(&text, 8);
-        assert!(out.len() < text.len(), "expected truncation to shorten text");
-        assert!(out.ends_with('…'), "truncated text must end with ellipsis: {out:?}");
+        assert!(
+            out.len() < text.len(),
+            "expected truncation to shorten text"
+        );
+        assert!(
+            out.ends_with('…'),
+            "truncated text must end with ellipsis: {out:?}"
+        );
     }
 
     /// When the text already fits the byte budget it is returned verbatim — no
@@ -943,8 +984,14 @@ mod tests {
         let uses = edge_priority(&EdgeType::Uses);
         let documents = edge_priority(&EdgeType::Documents);
         let other = edge_priority(&EdgeType::RelatesTo); // falls into the `_ => 12` arm
-        assert!(calls < uses, "Calls ({calls}) must rank before Uses ({uses})");
-        assert!(uses < documents, "Uses ({uses}) must rank before Documents ({documents})");
+        assert!(
+            calls < uses,
+            "Calls ({calls}) must rank before Uses ({uses})"
+        );
+        assert!(
+            uses < documents,
+            "Uses ({uses}) must rank before Documents ({documents})"
+        );
         assert!(
             documents < other,
             "Documents ({documents}) must rank before other/RelatesTo ({other})"
@@ -968,10 +1015,34 @@ mod tests {
         let uses_n = graph.graph.add_node(node("c-uses"));
         let calls_a = graph.graph.add_node(node("calls-a"));
 
-        graph.graph.add_edge(src, documents_n, AdenEdge { edge_type: EdgeType::Documents });
-        graph.graph.add_edge(src, calls_b, AdenEdge { edge_type: EdgeType::Calls });
-        graph.graph.add_edge(src, uses_n, AdenEdge { edge_type: EdgeType::Uses });
-        graph.graph.add_edge(src, calls_a, AdenEdge { edge_type: EdgeType::Calls });
+        graph.graph.add_edge(
+            src,
+            documents_n,
+            AdenEdge {
+                edge_type: EdgeType::Documents,
+            },
+        );
+        graph.graph.add_edge(
+            src,
+            calls_b,
+            AdenEdge {
+                edge_type: EdgeType::Calls,
+            },
+        );
+        graph.graph.add_edge(
+            src,
+            uses_n,
+            AdenEdge {
+                edge_type: EdgeType::Uses,
+            },
+        );
+        graph.graph.add_edge(
+            src,
+            calls_a,
+            AdenEdge {
+                edge_type: EdgeType::Calls,
+            },
+        );
 
         // edge_types empty => follow all.
         let ordered = ordered_neighbors(&graph, src, &[]);
@@ -997,15 +1068,31 @@ mod tests {
         let src = graph.graph.add_node(node("src"));
         let calls_n = graph.graph.add_node(node("calls-x"));
         let uses_n = graph.graph.add_node(node("uses-y"));
-        graph.graph.add_edge(src, calls_n, AdenEdge { edge_type: EdgeType::Calls });
-        graph.graph.add_edge(src, uses_n, AdenEdge { edge_type: EdgeType::Uses });
+        graph.graph.add_edge(
+            src,
+            calls_n,
+            AdenEdge {
+                edge_type: EdgeType::Calls,
+            },
+        );
+        graph.graph.add_edge(
+            src,
+            uses_n,
+            AdenEdge {
+                edge_type: EdgeType::Uses,
+            },
+        );
 
         let ordered = ordered_neighbors(&graph, src, &[EdgeType::Calls]);
         let anchors: Vec<&str> = ordered
             .iter()
             .map(|&idx| graph.graph[idx].doc.anchor.as_str())
             .collect();
-        assert_eq!(anchors, vec!["calls-x"], "filter must keep only Calls neighbors");
+        assert_eq!(
+            anchors,
+            vec!["calls-x"],
+            "filter must keep only Calls neighbors"
+        );
     }
 
     // ── FIX B: parallel-edge (multigraph) priority folding ────────────────────
@@ -1051,10 +1138,28 @@ mod tests {
         // naive find_edge-based impl would pick whichever it resolves to (often
         // the last-inserted Calls, or the first Documents) and could enqueue the
         // target twice.
-        graph.graph.add_edge(src, tgt, AdenEdge { edge_type: EdgeType::Documents });
-        graph.graph.add_edge(src, tgt, AdenEdge { edge_type: EdgeType::Calls });
+        graph.graph.add_edge(
+            src,
+            tgt,
+            AdenEdge {
+                edge_type: EdgeType::Documents,
+            },
+        );
+        graph.graph.add_edge(
+            src,
+            tgt,
+            AdenEdge {
+                edge_type: EdgeType::Calls,
+            },
+        );
         // A single-edge Documents-only neighbor to verify ranking, not just dedup.
-        graph.graph.add_edge(src, late, AdenEdge { edge_type: EdgeType::Documents });
+        graph.graph.add_edge(
+            src,
+            late,
+            AdenEdge {
+                edge_type: EdgeType::Documents,
+            },
+        );
 
         let ordered = ordered_neighbors(&graph, src, &[]);
         let anchors: Vec<&str> = ordered
@@ -1102,7 +1207,13 @@ mod tests {
         }
         // Fan the hub out to every leaf via Calls edges.
         for &leaf in &leaves {
-            graph.add_edge(hub, leaf, AdenEdge { edge_type: EdgeType::Calls });
+            graph.add_edge(
+                hub,
+                leaf,
+                AdenEdge {
+                    edge_type: EdgeType::Calls,
+                },
+            );
         }
 
         // Several tight budgets across the boundary where docs+separators would
@@ -1137,7 +1248,13 @@ mod tests {
                 &format!("leaf-{i:02}"),
                 "leaf body words consuming a few tokens each",
             ));
-            graph.add_edge(hub, n, AdenEdge { edge_type: EdgeType::Calls });
+            graph.add_edge(
+                hub,
+                n,
+                AdenEdge {
+                    edge_type: EdgeType::Calls,
+                },
+            );
         }
         for &budget in &[16usize, 32, 64, 128] {
             let opts = AssemblyOptions {

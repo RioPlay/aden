@@ -159,7 +159,9 @@ mod tests {
         fold_overlay(&dir, anchor, &mut doc);
 
         assert!(
-            doc.blocks.iter().any(|b| matches!(b, Block::Paragraph(p) if p.contains("Keep this rationale"))),
+            doc.blocks
+                .iter()
+                .any(|b| matches!(b, Block::Paragraph(p) if p.contains("Keep this rationale"))),
             "durable overlay block must be folded into the document"
         );
         let _ = std::fs::remove_dir_all(&dir);
@@ -176,7 +178,10 @@ mod tests {
             ":anchor: aden://module/src/other.rs#x\n\n[human#x]\n----\nwrong.\n----\n",
         )
         .unwrap();
-        assert!(load_overlay(&dir, anchor).is_none(), "mismatched anchor must be ignored");
+        assert!(
+            load_overlay(&dir, anchor).is_none(),
+            "mismatched anchor must be ignored"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

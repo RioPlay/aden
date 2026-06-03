@@ -567,4 +567,3 @@ fn node_text<'a>(node: tree_sitter::Node<'a>, source: &'a str) -> &'a str {
 }
 
 use crate::tree_sitter_common::node_to_span;
-

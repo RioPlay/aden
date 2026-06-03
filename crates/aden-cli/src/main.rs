@@ -820,7 +820,15 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
             json,
             dead_code,
             include_public,
-        } => commands::cmd_lint(&path, &severity, fix, json, dead_code, include_public, false),
+        } => commands::cmd_lint(
+            &path,
+            &severity,
+            fix,
+            json,
+            dead_code,
+            include_public,
+            false,
+        ),
         Commands::Ready { path, fix } => commands::cmd_ready(&path, fix),
         Commands::Understand {
             symbol,
