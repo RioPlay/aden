@@ -57,7 +57,7 @@ const INDEX_CACHE_BASENAME: &str = "index-cache.json";
 /// stop word. v4: `-us`/`-is` guard (status, focus, analysis stay whole).
 /// v5: `-is`/`-es` plural normalization (analyses→analysis) so Greek `-sis`
 /// nouns and their plurals share a stem.
-const CURRENT_INDEX_VERSION: u32 = 5;
+const CURRENT_INDEX_VERSION: u32 = 6;
 
 /// Build an index, using the on-disk cache when possible.
 /// `key` should be a hash of all `.adoc`/`.aden` file paths + mtimes.
@@ -174,29 +174,51 @@ fn stem(word: &str) -> String {
 
 /// Tokenize a string into lowercase, punctuation-stripped, stemmed words.
 pub fn tokenize(text: &str) -> Vec<String> {
-    text.split_whitespace()
-        .map(|w| {
-            w.trim_matches(|c: char| c.is_ascii_punctuation())
-                .to_lowercase()
-        })
-        .filter(|w| !w.is_empty() && !is_stop_word(w))
-        // Stem as the final step so the same normalization lands on the indexed
-        // tokens here and on the query tokens in `Index::query`.
-        .map(|w| stem(&w))
-        .collect()
+    let mut out: Vec<String> = Vec::new();
+    for w in text.split_whitespace() {
+        // Keep the original case here so camelCase humps survive into
+        // `split_subtokens` below; lowercase only for the full-token form.
+        let trimmed = w.trim_matches(|c: char| c.is_ascii_punctuation());
+        let cleaned = trimmed.to_lowercase();
+        if cleaned.is_empty() || is_stop_word(&cleaned) {
+            continue;
+        }
+        // Always index the full (stemmed) form so an exact identifier query —
+        // `dispatch_request`, `url_map` — still matches a single strong posting.
+        let full = stem(&cleaned);
+        out.push(full.clone());
+
+        // For compound identifiers (snake_case, kebab-case, dotted paths,
+        // camelCase) ALSO index each component so a natural-language sub-word
+        // query matches the production symbol that carries it. Without this,
+        // `aden ask "how does dispatching work"` can't see `Flask.dispatch_request`
+        // (indexed only as the whole token) and falls through to whatever stray
+        // test fixture happens to have a bare `dispatch`/`url` param — the
+        // ask-routing-to-tests defect. Plain prose words have a single sub-token
+        // and are unaffected.
+        let subs = split_subtokens(trimmed);
+        if subs.len() > 1 {
+            for sub in subs {
+                if sub.len() < 2 || is_stop_word(&sub) {
+                    continue;
+                }
+                let s = stem(&sub);
+                if s != full && !out.contains(&s) {
+                    out.push(s);
+                }
+            }
+        }
+    }
+    out
 }
 
-/// True if stemmed query token `token` matches `haystack` on a word/token
-/// boundary rather than as a raw substring. `haystack` is split on common
-/// identifier/slug separators (`_`, `-`, `/`, `.`, `:`, whitespace) and on
-/// camelCase humps; `token` matches a sub-token when it equals that sub-token
-/// or is a prefix of it (so a stem matches its inflected surface form, e.g.
-/// `deliv` → `delivery`, but `run` no longer matches `runtime`).
-fn token_boundary_match(haystack: &str, token: &str) -> bool {
-    if token.is_empty() {
-        return false;
-    }
-    // Split into sub-tokens on separators and camelCase boundaries.
+/// Split an identifier-like word into lowercase sub-tokens on the conventional
+/// separators (`_`, `-`, `/`, `.`, `:`, whitespace) and on camelCase humps.
+/// A plain word yields a single element (itself); a compound identifier like
+/// `url_map` or `dispatchRequest` yields its components. Shared by `tokenize`
+/// (posting expansion) and `token_boundary_match` (query matching) so both sides
+/// agree on what a sub-token is.
+fn split_subtokens(haystack: &str) -> Vec<String> {
     let mut subtokens: Vec<String> = Vec::new();
     let mut current = String::new();
     let mut prev_lower = false;
@@ -218,6 +240,21 @@ fn token_boundary_match(haystack: &str, token: &str) -> bool {
     if !current.is_empty() {
         subtokens.push(current);
     }
+    subtokens
+}
+
+/// True if stemmed query token `token` matches `haystack` on a word/token
+/// boundary rather than as a raw substring. `haystack` is split on common
+/// identifier/slug separators (`_`, `-`, `/`, `.`, `:`, whitespace) and on
+/// camelCase humps; `token` matches a sub-token when it equals that sub-token
+/// or is a prefix of it (so a stem matches its inflected surface form, e.g.
+/// `deliv` → `delivery`, but `run` no longer matches `runtime`).
+fn token_boundary_match(haystack: &str, token: &str) -> bool {
+    if token.is_empty() {
+        return false;
+    }
+    // Split into sub-tokens on separators and camelCase boundaries.
+    let subtokens = split_subtokens(haystack);
     // A stem (already lowercased) matches when it equals a sub-token or is a
     // prefix of one. Prefix tolerance keeps inflected forms matching their stem
     // without re-introducing the mid-word substring problem.
@@ -505,6 +542,14 @@ impl Index {
             }
             self.anchor_text.insert(anchor, text);
         }
+    }
+
+    /// Indexed token count for an anchor's document (0 if unknown). A proxy for
+    /// substantiveness: a tiny count means a thin stub (abstract method, shim),
+    /// which `ask` routing should pass over in favour of the symbol that carries
+    /// the real content.
+    pub fn doc_token_count(&self, anchor: &str) -> usize {
+        self.doc_lengths.get(anchor).copied().unwrap_or(0)
     }
 
     /// Recompute the BM25 average document length. Call once after ingestion.
@@ -882,6 +927,34 @@ mod tests {
         assert!(tokens.contains(&"test".to_string()));
         assert!(!tokens.contains(&"a".to_string())); // stop word
         assert!(!tokens.contains(&"is".to_string())); // stop word
+    }
+
+    #[test]
+    fn tokenize_expands_compound_identifiers() {
+        // A snake_case symbol must index its components so a sub-word query
+        // ("dispatch") matches it — the core ask-routing fix. The full token is
+        // kept too so exact identifier queries still hit a strong posting.
+        let tokens = tokenize("dispatch_request");
+        assert!(
+            tokens.contains(&"dispatch_request".to_string()),
+            "full token preserved: {tokens:?}"
+        );
+        assert!(tokens.contains(&"dispatch".to_string()), "{tokens:?}");
+        assert!(tokens.contains(&"request".to_string()), "{tokens:?}");
+
+        // camelCase humps split the same way.
+        let camel = tokenize("dispatchRequest");
+        assert!(camel.contains(&"dispatch".to_string()), "{camel:?}");
+        assert!(camel.contains(&"request".to_string()), "{camel:?}");
+
+        // Dotted qualified names split on '.' too.
+        let dotted = tokenize("Flask.dispatch_request");
+        assert!(dotted.contains(&"dispatch".to_string()), "{dotted:?}");
+        assert!(dotted.contains(&"flask".to_string()), "{dotted:?}");
+
+        // Plain prose words are unchanged: one stem, no spurious sub-tokens.
+        let prose = tokenize("routing");
+        assert_eq!(prose, vec!["rout".to_string()]);
     }
 
     #[test]

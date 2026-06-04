@@ -95,6 +95,34 @@ fn is_test_anchor(anchor: &str) -> bool {
     MARKERS.iter().any(|m| a.contains(m))
 }
 
+/// True if a search result points at a test/spec file, checking BOTH the anchor
+/// AND its real `source_path`. The module-form anchor flattens the directory
+/// (`aden://module/flask/typing_route.py#…` for a file that actually lives at
+/// `tests/type_check/typing_route.py`), so the anchor alone can hide a fixture's
+/// test-ness — the `source_path` is where the `tests/` marker survives. Routing
+/// must use this, not bare `is_test_anchor`, so dir-only test files can't win.
+fn is_test_result(result: &SearchResult) -> bool {
+    if is_test_anchor(&result.anchor) {
+        return true;
+    }
+    // The source_path is relative (`tests/type_check/foo.py`), so prepend a slash
+    // before the marker check — several markers (`/tests/`, `/spec/`) are anchored
+    // on a leading separator that a relative path lacks at its first segment.
+    let src = result.source_path.to_string_lossy();
+    if src.is_empty() {
+        return false;
+    }
+    is_test_anchor(&format!("/{src}"))
+}
+
+/// A result carrying fewer indexed tokens than this is a thin stub (abstract
+/// base method, one-line shim) — real but near-contentless. Routing prefers a
+/// substantive symbol over a thin one within the score noise band so `ask`
+/// lands on the dispatcher that actually does the work, not its 17-token
+/// abstract declaration, before the post-assembly thin-stub guard has to
+/// broaden all the way to `mod-project`.
+const SUBSTANTIVE_TOKEN_FLOOR: usize = 40;
+
 /// Collect up to `max` distinct anchors that sit within [`ANCHOR_NOISE_BAND`] of
 /// the top score and are *not* the already-chosen `primary` (a near-tie set). The
 /// list is in rank order, deduped, and excludes the primary so callers can treat
@@ -109,7 +137,9 @@ fn inband_alternate_candidates(primary: &str, results: &[SearchResult], max: usi
         if (top_score - r.score) > ANCHOR_NOISE_BAND {
             break; // results are score-ordered; nothing past here is in-band
         }
-        if r.anchor == primary || out.contains(&r.anchor) {
+        // Skip the primary, dupes, and test fixtures — alternates seed extra
+        // context, so a dir-only test file shouldn't pad the answer either.
+        if r.anchor == primary || out.contains(&r.anchor) || is_test_result(r) {
             continue;
         }
         out.push(r.anchor.clone());
@@ -137,7 +167,11 @@ fn inband_alternate_candidates(primary: &str, results: &[SearchResult], max: usi
 ///
 /// No hardcoded word→module mappings.  The search index is the source of
 /// truth; this function only applies generic structural preferences on top.
-fn resolve_anchor_fuzzy(query: &str, results: &[SearchResult]) -> String {
+fn resolve_anchor_fuzzy(
+    query: &str,
+    results: &[SearchResult],
+    token_count: impl Fn(&str) -> usize,
+) -> String {
     if results.is_empty() {
         return "readme".to_string();
     }
@@ -176,30 +210,60 @@ fn resolve_anchor_fuzzy(query: &str, results: &[SearchResult]) -> String {
         })
         .collect();
 
-    for result in results.iter().take(20) {
-        // A test-file symbol must not short-circuit routing just because its name
-        // echoes a query word (e.g. a `callback` test fixture for "…invoke the
-        // callback"). Let it fall through to the score-driven pass, which can
-        // still select it via relaxation if nothing better exists.
-        if is_test_anchor(&result.anchor) {
-            continue;
+    // Selection key shared by Step 2 (symbol-token matches) and Step 3 (score
+    // band), most-significant first:
+    //   1. structural pattern (Symbol > Module > …) — a real symbol always beats
+    //      a module overview;
+    //   2. substantiveness — among same-pattern candidates, a symbol with real
+    //      content beats a thin stub (17-token abstract base method), so `ask`
+    //      lands on the dispatcher rather than its abstract declaration.
+    // Candidates are iterated in score-descending order and replaced only on a
+    // strictly-greater key, so the earliest (highest BM25 score) wins ties.
+    let selection_key = |r: &SearchResult| {
+        (
+            AnchorPattern::from_anchor(&r.anchor).tiebreak(),
+            (token_count(&r.anchor) >= SUBSTANTIVE_TOKEN_FLOOR) as u8,
+        )
+    };
+    let pick_best = |best: Option<&SearchResult>, r: &SearchResult| -> bool {
+        match best {
+            // keep existing on tie (earlier == higher score); replace on greater
+            Some(b) => selection_key(r) > selection_key(b),
+            None => true,
         }
-        if let Some(sym) = result.anchor.rsplit('#').next() {
-            if sym.len() < 3 {
-                continue;
-            }
-            let sym_lower = sym.to_lowercase();
-            if SYMBOL_STOP_WORDS.contains(&sym_lower.as_str()) {
-                continue;
-            }
-            // Compare against both the raw symbol name and its stem.
-            let sym_stem = aden_index::tokenize(&sym_lower);
-            if query_tokens.contains(&sym_lower)
-                || sym_stem.iter().any(|st| query_tokens.contains(st))
-            {
-                return result.anchor.clone();
-            }
+    };
+
+    // Step 2 selection: among the (non-test) results whose symbol name matches a
+    // query token, choose by `selection_key` rather than taking the first hit —
+    // otherwise a thin abstract `View.dispatch_request` short-circuits routing
+    // before the substantive `Flask.dispatch_request` is ever considered. A
+    // test-file symbol must not win here just because its name echoes a query
+    // word; it falls through to the relaxation fallback if nothing better exists.
+    let symbol_token_match = |result: &SearchResult| -> bool {
+        if is_test_result(result) {
+            return false;
         }
+        let Some(sym) = result.anchor.rsplit('#').next() else {
+            return false;
+        };
+        if sym.len() < 3 {
+            return false;
+        }
+        let sym_lower = sym.to_lowercase();
+        if SYMBOL_STOP_WORDS.contains(&sym_lower.as_str()) {
+            return false;
+        }
+        let sym_stem = aden_index::tokenize(&sym_lower);
+        query_tokens.contains(&sym_lower) || sym_stem.iter().any(|st| query_tokens.contains(st))
+    };
+    let mut step2_best: Option<&SearchResult> = None;
+    for result in results.iter().take(20).filter(|r| symbol_token_match(r)) {
+        if pick_best(step2_best, result) {
+            step2_best = Some(result);
+        }
+    }
+    if let Some(hit) = step2_best {
+        return hit.anchor.clone();
     }
 
     // Step 3: score-driven selection with structural tiebreaker.
@@ -221,14 +285,20 @@ fn resolve_anchor_fuzzy(query: &str, results: &[SearchResult]) -> String {
         false
     };
 
-    // First pass: pick best within noise band, excluding stop-word symbols and
-    // test-file symbols (which carry a name but little explanatory content).
-    let best = results
+    // First pass: pick best within noise band (by the shared `selection_key`),
+    // excluding stop-word symbols and test-file symbols (which carry a name but
+    // little explanatory content).
+    let mut best: Option<&SearchResult> = None;
+    for r in results
         .iter()
         .filter(|r| (top_score - r.score) <= noise_band)
         .filter(|r| !is_stopword_symbol(&r.anchor))
-        .filter(|r| !is_test_anchor(&r.anchor))
-        .max_by_key(|r| AnchorPattern::from_anchor(&r.anchor).tiebreak());
+        .filter(|r| !is_test_result(r))
+    {
+        if pick_best(best, r) {
+            best = Some(r);
+        }
+    }
 
     // Fallback: if every in-band candidate was a stop-word or test symbol, relax
     // and take the structurally-preferred top result (the query may genuinely be
@@ -388,7 +458,7 @@ pub fn cmd_asm(opts: AsmOptions) -> Result<(), Box<dyn std::error::Error>> {
             if aden_graph::cache::resolve_anchor_in_store(&opts.path, &opts.from).is_some() {
                 opts.from.clone()
             } else {
-                resolve_anchor_fuzzy(&opts.from, &results)
+                resolve_anchor_fuzzy(&opts.from, &results, |a| index.doc_token_count(a))
             };
         if resolved != opts.from {
             eprintln!("INFO: Resolved '{}' → '{}'", opts.from, resolved);
@@ -995,7 +1065,7 @@ pub fn cmd_ask(
             return Ok(());
         }
         let avg: f64 = results.iter().map(|r| r.score).sum::<f64>() / results.len() as f64;
-        let primary = resolve_anchor_fuzzy(question, &results);
+        let primary = resolve_anchor_fuzzy(question, &results, |a| idx.doc_token_count(a));
         // Up to 2 in-band alternates, deduped against the (possibly non-rank-1)
         // primary. Empty ⇒ clear winner ⇒ unchanged single-seed behavior below.
         let alts = inband_alternate_candidates(&primary, &results, 2);
@@ -2817,8 +2887,58 @@ mod tests {
             result("aden://module/p/test_context.py#callback", 30.0),
             result("aden://module/p/core.py#Command", 29.0),
         ];
-        let chosen = resolve_anchor_fuzzy("how does a command invoke the callback", &results);
+        let chosen =
+            resolve_anchor_fuzzy("how does a command invoke the callback", &results, |_| 100);
         assert_eq!(chosen, "aden://module/p/core.py#Command");
+    }
+
+    fn result_with_path(anchor: &str, source: &str, score: f64) -> SearchResult {
+        SearchResult {
+            anchor: anchor.to_string(),
+            source_path: std::path::PathBuf::from(source),
+            score,
+            snippet: String::new(),
+        }
+    }
+
+    #[test]
+    fn ask_routing_skips_dir_only_test_fixture_via_source_path() {
+        // The module-form anchor flattens the directory, so `typing_route.py`
+        // hides that it lives under tests/. With source_path-aware detection the
+        // production symbol must still win even though the fixture scores higher.
+        let results = vec![
+            result_with_path(
+                "aden://module/flask/typing_route.py#View.dispatch_request",
+                "tests/type_check/typing_route.py",
+                30.0,
+            ),
+            result_with_path(
+                "aden://module/flask/app.py#Flask.dispatch_request",
+                "src/flask/app.py",
+                28.0,
+            ),
+        ];
+        let chosen = resolve_anchor_fuzzy("how is dispatching handled", &results, |_| 100);
+        assert_eq!(chosen, "aden://module/flask/app.py#Flask.dispatch_request");
+    }
+
+    #[test]
+    fn ask_routing_prefers_substantive_symbol_over_thin_stub() {
+        // Two production symbols in-band; the thin abstract method scores higher
+        // but the substantive dispatcher (more indexed tokens) must win.
+        let results = vec![
+            result("aden://module/flask/views.py#View.dispatch_request", 30.0),
+            result("aden://module/flask/app.py#Flask.dispatch_request", 28.0),
+        ];
+        let token_count = |a: &str| {
+            if a.contains("app.py") {
+                200
+            } else {
+                10
+            }
+        };
+        let chosen = resolve_anchor_fuzzy("how are views dispatched", &results, token_count);
+        assert_eq!(chosen, "aden://module/flask/app.py#Flask.dispatch_request");
     }
 
     #[test]
@@ -2829,7 +2949,7 @@ mod tests {
             result("aden://module/p/test_a.py#helper", 30.0),
             result("aden://module/p/test_b.py#other", 29.0),
         ];
-        let chosen = resolve_anchor_fuzzy("explain the helper test", &results);
+        let chosen = resolve_anchor_fuzzy("explain the helper test", &results, |_| 100);
         assert!(is_test_anchor(&chosen));
     }
 
