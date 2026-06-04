@@ -11,6 +11,7 @@
 **/.aden/gen-cache.json
 **/.aden/scan-cache.json
 **/.aden/staging/
+**/.aden/project.conf
 # Legacy on-disk contracts (aden is now store-first and emits no .adoc; these
 # remain as a safety net in case an old/in-tree generation ever runs).
 **/contracts/
