@@ -601,7 +601,7 @@ pub fn perform_check(path: &Path) -> Result<Vec<String>, Box<dyn std::error::Err
         }
     }
 
-    let hash_issues = check_hashes(&graph);
+    let hash_issues = check_hashes(&graph, &find_project_root(path));
     if hash_issues.is_empty() {
         messages.push("INFO: All source_hash values valid.".to_string());
     } else {
