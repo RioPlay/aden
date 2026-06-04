@@ -427,7 +427,12 @@ fn link_store_edges<S: GraphStorage>(
             let name = &anchor[hash + 1..];
             if !name.is_empty() {
                 name_index.entry(name).or_default().push(anchor.as_str());
-                if let Some(method) = name.rsplit("::").next()
+                // Also index the trailing member segment after the last `::` OR
+                // `.` so a bare/receiver call resolves to a qualified method:
+                // Rust `Storage::open` and Go/Python `Command.Execute` both also
+                // index `open` / `Execute`. Collisions are disambiguated
+                // downstream by `resolve_callee`'s locality + self/receiver paths.
+                if let Some(method) = name.rsplit(['.', ':']).next()
                     && method != name
                     && !method.is_empty()
                 {

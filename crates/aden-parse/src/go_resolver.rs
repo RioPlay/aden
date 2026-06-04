@@ -196,13 +196,63 @@ fn extract_receiver_type(node: tree_sitter::Node, source: &str) -> Option<String
                 let mut inner = child.walk();
                 for inner_child in child.children(&mut inner) {
                     if inner_child.kind() == "pointer_type" {
-                        // *Point
-                        if let Some(elem) = inner_child.child_by_field_name("type") {
-                            return Some(node_text(elem, source).to_string());
+                        // `*Point` — the pointee type is a child of the
+                        // pointer_type, with no field name in tree-sitter-go, so
+                        // descend to the first type node rather than looking up a
+                        // (nonexistent) "type" field, which silently dropped every
+                        // pointer-receiver method's type qualifier.
+                        if let Some(t) = first_go_type_name(inner_child, source) {
+                            return Some(t);
                         }
-                    } else if inner_child.kind() == "type_identifier" {
-                        return Some(node_text(inner_child, source).to_string());
+                    } else if inner_child.kind() == "type_identifier"
+                        || inner_child.kind() == "generic_type"
+                    {
+                        return first_go_type_name(inner_child, source);
                     }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// The bare type name of a Go type node: a `type_identifier` directly, or the
+/// underlying identifier of a `pointer_type`/`generic_type` (`*Command`,
+/// `Tree[T]` → `Command`, `Tree`). Strips the package qualifier of a
+/// `qualified_type` to the local name.
+fn first_go_type_name(node: tree_sitter::Node, source: &str) -> Option<String> {
+    match node.kind() {
+        "type_identifier" => Some(node_text(node, source).to_string()),
+        _ => {
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                if matches!(
+                    child.kind(),
+                    "type_identifier" | "pointer_type" | "generic_type" | "qualified_type"
+                ) && let Some(t) = first_go_type_name(child, source)
+                {
+                    return Some(t);
+                }
+            }
+            None
+        }
+    }
+}
+
+/// The receiver *variable* name of a method, e.g. `c` in `func (c *Command) M()`.
+/// Mirrors [`extract_receiver_type`] but returns the binding (the plain
+/// `identifier` sibling of the type), which is needed to rewrite calls through
+/// that variable into calls on its type. Returns `None` for plain functions and
+/// for anonymous receivers (`func (*Command) M()`).
+fn extract_receiver_var(node: tree_sitter::Node, source: &str) -> Option<String> {
+    let recv_list = node.child_by_field_name("receiver")?;
+    let mut cursor = recv_list.walk();
+    for child in recv_list.children(&mut cursor) {
+        if child.kind() == "parameter_list" || child.kind() == "parameter_declaration" {
+            let mut inner = child.walk();
+            for inner_child in child.children(&mut inner) {
+                if inner_child.kind() == "identifier" {
+                    return Some(node_text(inner_child, source).to_string());
                 }
             }
         }
@@ -374,7 +424,28 @@ fn emit_go_symbol<'a>(
 
     // Resolve call sites inside the function body
     if let Some(body) = sym.node.child_by_field_name("body") {
-        let calls = resolve_go_call_sites(body, source, all_symbols, imports);
+        let mut calls = resolve_go_call_sites(body, source, all_symbols, imports);
+        // Receiver-variable resolution: inside `func (c *Command) M()`, a call
+        // `c.Other()` targets a method on the receiver's OWN type. We know both
+        // the receiver variable (`c`) and its type (`Command`, the prefix of this
+        // method's qualified name), so rewrite `c.Other` → `Command.Other`. The
+        // linker then resolves it by exact name — the Go analogue of self/this
+        // resolution, with zero false-edge risk (only the actual receiver var is
+        // rewritten; other locals are left for ordinary name-based linking).
+        if let (Some(recv_var), Some((recv_type, _))) = (
+            extract_receiver_var(sym.node, source),
+            sym.name.rsplit_once('.'),
+        ) {
+            let prefix = format!("{}.", recv_var);
+            for call in &mut calls {
+                if let Some(rest) = call.callee.strip_prefix(&prefix)
+                    && !rest.is_empty()
+                    && !rest.contains('.')
+                {
+                    call.callee = format!("{}.{}", recv_type, rest);
+                }
+            }
+        }
         if !calls.is_empty() {
             let call_rows: Vec<Vec<String>> = calls
                 .iter()

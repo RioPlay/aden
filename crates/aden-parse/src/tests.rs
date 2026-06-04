@@ -228,6 +228,52 @@ fn js_exported_function_no_duplicate() {
     );
 }
 
+// ── Go receiver resolution ──────────────────────────────────────
+
+// A pointer-receiver method must be qualified by its type (`Command.Run`), and
+// a call through the receiver variable (`c.Other()`) must be rewritten to the
+// type-qualified form so the linker can resolve it precisely. Pointer receivers
+// previously dropped the type qualifier entirely (stored bare `Run`).
+#[test]
+fn go_pointer_receiver_qualifies_and_rewrites_calls() {
+    let src = r#"
+package cmd
+
+type Command struct{}
+
+func (c *Command) Other() {}
+
+func (c *Command) Run() {
+    c.Other()
+}
+"#;
+    let resolver = crate::go_resolver::GoResolver::new();
+    let docs = resolver
+        .extract_documents(src, Path::new("cmd/command.go"))
+        .expect("parse should succeed");
+    // Methods are qualified by their pointer-receiver type.
+    assert_has_anchor(&docs, "Command.Run");
+    assert_has_anchor(&docs, "Command.Other");
+    // The `c.Other()` call inside Run is rewritten to `Command.Other`.
+    let run = docs
+        .iter()
+        .find(|d| d.anchor.ends_with("Command.Run"))
+        .expect("Command.Run document");
+    let calls: String = run
+        .blocks
+        .iter()
+        .filter_map(|b| match b {
+            aden_core::Block::Listing { code, .. } => Some(code.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        calls.contains("edge::calls[Command.Other]"),
+        "expected `c.Other()` rewritten to Command.Other; got: {calls}"
+    );
+}
+
 // ── Untrusted-input DoS regression ──────────────────────────────
 
 // SECURITY: an empty block comment `/**/` (len 4) used to hit a reverse
