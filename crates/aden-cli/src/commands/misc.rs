@@ -698,7 +698,32 @@ pub fn cmd_ci_check(path: &Path, json: bool) -> Result<(), Box<dyn std::error::E
             if rel_str.contains(".aden/cache") || rel_str.contains("contracts/") {
                 continue;
             }
-            if rel_path.file_name().is_some_and(|n| n == "Cargo.lock") {
+            // Dependency lockfiles across ecosystems are full of package
+            // integrity hashes (sha256/sha512, 32-64 hex chars) that trip the
+            // broad "long hex secret" pattern. They are machine-generated
+            // manifests, not credential stores, so skip the well-known ones —
+            // aden scans any codebase, not just Cargo projects.
+            const LOCKFILES: &[&str] = &[
+                "Cargo.lock",
+                "uv.lock",
+                "poetry.lock",
+                "Pipfile.lock",
+                "pdm.lock",
+                "package-lock.json",
+                "npm-shrinkwrap.json",
+                "yarn.lock",
+                "pnpm-lock.yaml",
+                "go.sum",
+                "composer.lock",
+                "Gemfile.lock",
+                "gradle.lockfile",
+                "flake.lock",
+            ];
+            if rel_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| LOCKFILES.contains(&n))
+            {
                 continue;
             }
             if rel_path
@@ -720,6 +745,17 @@ pub fn cmd_ci_check(path: &Path, json: bool) -> Result<(), Box<dyn std::error::E
             if let Ok(text) = std::fs::read_to_string(p) {
                 for (re, name) in patterns {
                     for cap in re.find_iter(&text) {
+                        // The broad "long hex secret" pattern matches any 32-64
+                        // char alphanumeric run, which also catches long CamelCase
+                        // identifiers like `TemplateContextProcessorCallable`. Real
+                        // API keys / hashes have entropy: they contain at least one
+                        // digit. Require that to drop pure-alphabetic identifiers
+                        // without losing hex/base64 secrets.
+                        if *name == "long hex secret (possible API key)"
+                            && !cap.as_str().bytes().any(|b| b.is_ascii_digit())
+                        {
+                            continue;
+                        }
                         let line_start =
                             text[..cap.start()].rfind('\n').map(|i| i + 1).unwrap_or(0);
                         let line_end = text[cap.end()..]
@@ -2010,6 +2046,23 @@ mod tests {
         assert!(re.is_match(r#"password = "hunter2""#));
         assert!(re.is_match(r#"api_key = 'AKIAIOSFODNN7EXAMPLE'"#));
         assert!(re.is_match(r#"SECRET="s3kr3t-literal-value""#));
+    }
+
+    #[test]
+    fn long_hex_secret_filter_drops_alpha_identifiers_keeps_hex() {
+        // The broad long-token pattern matches both a 32-char CamelCase
+        // identifier and a real hex secret; the digit-entropy guard used in the
+        // secret-scan gate must drop the former and keep the latter.
+        let re = Regex::new(r"\b[0-9a-zA-Z]{32,64}\b").unwrap();
+        let has_digit = |s: &str| s.bytes().any(|b| b.is_ascii_digit());
+
+        let identifier = "TemplateContextProcessorCallable"; // 32 alpha chars
+        let m = re.find(identifier).expect("pattern matches the identifier");
+        assert!(!has_digit(m.as_str()), "identifier has no digit → filtered");
+
+        let hex = "192b9bdd22ab9ed4d12e236c78afcb9a393ec15f71bbf5dc987d54727823bcbf";
+        let m = re.find(hex).expect("pattern matches the hex secret");
+        assert!(has_digit(m.as_str()), "hex secret has digits → kept");
     }
 
     #[test]
