@@ -283,3 +283,44 @@ fn test_additional_commands() {
         .expect("aden binary must be installed");
     assert!(mcp.status.success(), "mcp list should work");
 }
+
+/// `regen` must be a true from-scratch rebuild: a symbol that was renamed
+/// between runs must NOT survive in the store. Previously regen deleted the
+/// gen-cache (which prune needs to detect removed anchors) without clearing the
+/// store, so the old anchor was orphaned forever.
+#[test]
+fn test_regen_prunes_renamed_symbol() {
+    let dir = temp_project::temp_dir();
+    let src = dir.join("m.go");
+    std::fs::write(&dir.join("go.mod"), "module m\n").unwrap();
+    std::fs::write(&src, "package m\ntype Foo struct{}\nfunc (c *Foo) Bar() {}\n").unwrap();
+
+    // Initial gen records Foo.Bar.
+    let gen_out = std::process::Command::new("aden")
+        .args(["gen", &dir.to_string_lossy()])
+        .output()
+        .expect("aden binary must be installed");
+    assert!(gen_out.status.success(), "initial gen should succeed");
+
+    // Rename the method, then regen.
+    std::fs::write(&src, "package m\ntype Foo struct{}\nfunc (c *Foo) Baz() {}\n").unwrap();
+    let regen = std::process::Command::new("aden")
+        .args(["regen", &dir.to_string_lossy()])
+        .output()
+        .expect("aden binary must be installed");
+    assert!(regen.status.success(), "regen should succeed");
+
+    let list = std::process::Command::new("aden")
+        .args(["list", "--unlimited", &dir.to_string_lossy()])
+        .output()
+        .expect("aden binary must be installed");
+    let anchors = String::from_utf8_lossy(&list.stdout);
+    assert!(
+        anchors.contains("Foo.Baz"),
+        "regen should store the renamed symbol Foo.Baz; got: {anchors}"
+    );
+    assert!(
+        !anchors.contains("Foo.Bar"),
+        "regen must prune the stale Foo.Bar anchor; got: {anchors}"
+    );
+}

@@ -783,13 +783,41 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
         } => commands::cmd_init(&path, with_secure_refs),
         Commands::Regen { path } => {
             let root = find_project_root(&path);
-            let gen_cache = aden_paths::gen_cache_file(&root);
-            if gen_cache.exists() {
-                let _ = std::fs::remove_file(&gen_cache);
-            }
-            let graph_cache = aden_paths::cache_dir(&root);
-            if graph_cache.exists() {
-                let _ = std::fs::remove_dir_all(&graph_cache);
+            // True from-scratch rebuild. Clearing only the caches (the old
+            // behavior) was self-defeating: gen's prune step diffs each file's
+            // fresh anchors against the gen-cache to find symbols to remove, so
+            // deleting that cache left renamed/removed anchors (e.g. a method
+            // requalified by a parser change) orphaned in the store forever.
+            // Wipe the whole per-user project dir — store AND caches, all
+            // rebuildable per ADR-003 — so the subsequent gen repopulates a
+            // pristine store with no stale anchors.
+            if std::env::var_os("ADEN_STORE").is_none() {
+                let project = aden_paths::project_dir(&root);
+                if project.exists()
+                    && let Err(e) = std::fs::remove_dir_all(&project)
+                {
+                    eprintln!(
+                        "WARN: regen could not clear {}: {} (falling back to cache clear)",
+                        project.display(),
+                        e
+                    );
+                }
+            } else {
+                // A pinned/shared $ADEN_STORE holds several projects' anchors;
+                // wiping it would destroy the others. Clear only this project's
+                // caches and warn that stale anchors may persist there.
+                eprintln!(
+                    "NOTE: $ADEN_STORE is pinned/shared — regen rebuilds without clearing it; \
+                     renamed or removed symbols may persist. Unset $ADEN_STORE for a full rebuild."
+                );
+                let gen_cache = aden_paths::gen_cache_file(&root);
+                if gen_cache.exists() {
+                    let _ = std::fs::remove_file(&gen_cache);
+                }
+                let graph_cache = aden_paths::cache_dir(&root);
+                if graph_cache.exists() {
+                    let _ = std::fs::remove_dir_all(&graph_cache);
+                }
             }
             commands::cmd_gen(&path, true)
         }
