@@ -19,7 +19,7 @@ pub(crate) const SQL_INJECTION_PATTERN: &str = r#"(?i)\b(SELECT\s+[^;'"]*\bFROM\
 /// templated value — `"${secret}"`, `"{{token}}"`, `"#{api_key}"`, an f-string
 /// `"{key}"` — is NOT flagged: those are derived at runtime, not hardcoded. This
 /// kills the create-t3-app FP on `AUTH_SECRET="${secret}"` (an .env template)
-/// while still catching `password = "hunter2"`.
+/// while still catching `password = "hunter2"`. aden:allow-secret
 pub(crate) const SECRET_ASSIGNMENT_PATTERN: &str =
     r#"(?i)(password|passwd|pwd|secret|token|api_key)\s*=\s*['"][^'"${}]+['"]"#;
 
@@ -253,7 +253,7 @@ pub fn cmd_audit(
         let lang = lang_exts.iter().find(|(e, _)| *e == ext).map(|(_, l)| *l);
 
         // Track `#[cfg(test)]` modules so we can skip them: test code contains
-        // deliberate positive-case fixtures (`password = "hunter2"`, sample SQL,
+        // deliberate positive-case fixtures (`password = "hunter2"`, sample SQL, aden:allow-secret
         // example credentials) that assert the detectors fire — they are not
         // shipped vulnerabilities. We arm on the attribute, enter on the next
         // `mod ... {`, and leave when brace depth returns to the module's start.
@@ -695,6 +695,23 @@ pub fn cmd_ci_check(path: &Path, json: bool) -> Result<(), Box<dyn std::error::E
             ]
         });
 
+        // Common regex constructors across ecosystems. A line that builds a
+        // pattern matcher legitimately contains credential-shaped substrings,
+        // so it must not trip the scanner — in any language, not just Rust.
+        const REGEX_DEF_MARKERS: &[&str] = &[
+            "Regex::new",         // Rust (regex crate)
+            "RegexBuilder",       // Rust
+            "regexp.MustCompile", // Go
+            "regexp.Compile",     // Go
+            "re.compile",         // Python
+            "Pattern.compile",    // Java
+            "new RegExp",         // JS / TS
+            "new Regex",          // .NET
+            "Regexp.new",         // Ruby
+            "preg_match",         // PHP
+            "preg_replace",       // PHP
+        ];
+
         let non_text_exts: std::collections::HashSet<&str> = [
             "png", "jpg", "jpeg", "gif", "svg", "ico", "bmp", "pdf", "zip", "tar", "gz", "bz2",
             "xz", "7z", "rar", "mp3", "mp4", "avi", "mov", "mkv", "wav", "flac", "wasm", "so",
@@ -794,8 +811,26 @@ pub fn cmd_ci_check(path: &Path, json: bool) -> Result<(), Box<dyn std::error::E
                             .map(|i| cap.end() + i)
                             .unwrap_or(text.len());
                         let line = &text[line_start..line_end];
-                        // Skip pattern definitions and test files
-                        if line.contains("Regex::new") {
+                        // Language-agnostic allowlist: any line bearing this
+                        // marker — in a comment of ANY syntax (`//`, `#`, `--`,
+                        // `;`, `<!-- -->`) or none — is intentional sample/fixture
+                        // data, not a live credential. Plain substring match keeps
+                        // it neutral across every codebase aden scans.
+                        if line.contains("aden:allow-secret") {
+                            continue;
+                        }
+                        // AWS's published, non-functional documentation key. It
+                        // satisfies the AKIA pattern by design so docs/tests can
+                        // carry a realistic example; it is never a real credential.
+                        // The pattern still catches every *other* AKIA key.
+                        if line.contains("AKIAIOSFODNN7EXAMPLE") {
+                            continue;
+                        }
+                        // Skip regex/pattern *definition* lines, which embed
+                        // credential-shaped substrings as match patterns rather
+                        // than as secrets. Language-neutral: covers the common
+                        // regex constructors across ecosystems, not just Rust.
+                        if REGEX_DEF_MARKERS.iter().any(|m| line.contains(m)) {
                             continue;
                         }
                         if rel_path.starts_with("tools/") {
@@ -2086,7 +2121,7 @@ mod tests {
         assert!(!re.is_match(r##"api_key = "#{ENV['KEY']}""##));
         assert!(!re.is_match(r#"password = `${pw}`"#)); // backtick template (no straight quotes)
         // Genuine hardcoded literals — must match.
-        assert!(re.is_match(r#"password = "hunter2""#));
+        assert!(re.is_match(r#"password = "hunter2""#)); // aden:allow-secret
         assert!(re.is_match(r#"api_key = 'AKIAIOSFODNN7EXAMPLE'"#));
         assert!(re.is_match(r#"SECRET="s3kr3t-literal-value""#));
     }
@@ -2103,7 +2138,7 @@ mod tests {
         let m = re.find(identifier).expect("pattern matches the identifier");
         assert!(!has_digit(m.as_str()), "identifier has no digit → filtered");
 
-        let hex = "192b9bdd22ab9ed4d12e236c78afcb9a393ec15f71bbf5dc987d54727823bcbf";
+        let hex = "192b9bdd22ab9ed4d12e236c78afcb9a393ec15f71bbf5dc987d54727823bcbf"; // aden:allow-secret
         let m = re.find(hex).expect("pattern matches the hex secret");
         assert!(has_digit(m.as_str()), "hex secret has digits → kept");
     }
