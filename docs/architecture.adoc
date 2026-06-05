@@ -615,6 +615,7 @@ The cleanup of the four removed crates is complete (documented, decided **remove
 
 . <<adr-001>> — AsciiDoc as native substrate
 . <<adr-002>>, <<adr-003>> — Secure-coding standard and store-location decisions
+. <<adr-004>> — Append-only AGENTS.md guidance block
 . <<ai-integration>> — How AI agents use Aden
 . <<user-guide>> — Daily workflows
 . Root entry point: `README.md`; agent workspace: `.agent/context.adoc`
