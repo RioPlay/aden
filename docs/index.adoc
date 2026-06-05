@@ -32,7 +32,8 @@ This is the canonical entry point for all Aden documentation. Read the document 
 |===
 |Document |What You'll Learn |Time
 
-|<<architecture>> |Crate architecture, data flow, pipeline stages; folds in <<philosophy>> (design rationale) and <<project-context>> (crate map, glossary, experimental crates) |30 minutes
+|<<philosophy>> |Why Aden exists: design rationale, token density, the agent-first mindset |15 minutes
+|<<architecture>> |Crate architecture, data flow, pipeline stages, and <<project-context>> (crate map, glossary, experimental crates) |30 minutes
 |===
 
 == Reference

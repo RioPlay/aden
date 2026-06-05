@@ -468,86 +468,9 @@ Extracted and indexed for search.
 |`aden test` |Run tests |`aden test .`
 |===
 
-[[philosophy]]
-== Design Rationale & Use Cases
-
-=== The Core Thesis
-
-The bottleneck in AI-assisted software development is not model intelligence — it is *context*. LLMs reason well but have a finite context window. Dropped into a 100k-line codebase, an agent faces information overload: it does not know which 10 of 500 files matter, or that changing `Database::connect()` will break `QueueWorker::drain()`. Aden solves this by making the *structure of understanding* explicit, machine-readable, and traversable.
-
-Aden is a **referential context compiler**: it compiles source, docs, notes, and plans — in any language — into a traversable knowledge graph where every node is an AsciiDoc document with typed edges. It is *not* a doc generator (Rustdoc/Javadoc produce browsable HTML; Aden produces machine-navigable context for *reasoning*), *not* a static analyzer (clippy/Semgrep find bugs via control flow; Aden finds *semantic relationships* and keeps them synchronized as code evolves), and *not* an IDE replacement — it is a substrate your IDE, agent, or build pipeline queries to understand the system.
-
-=== Why AsciiDoc?
-
-AsciiDoc is simultaneously human-readable and fully scriptable:
-
-. **Human-readable** — any engineer can open a `.adoc`/`.aden` file and understand it without tooling.
-. **Machine-parseable** — the grammar is regular enough for regexes / small state machines, so tools transform it deterministically.
-. **Rich-structured** — attributes (`:key: value`), anchors (`[[name]]`), cross-refs (`<<name>>`), tables, conditionals, and includes map directly to graph nodes and edges.
-. **Version-control-friendly** — plain text diffs cleanly in Git, so contract changes are reviewable in PRs.
-. **Referential by default** — `<<anchor>>` syntax encourages exactly the linking a knowledge graph needs.
-. **Scriptable and repeatable** — `aden gen` regenerates contracts deterministically, `aden workflow` instantiates templates with parameter substitution, and `aden check` validates every reference as a CI gate — impossible with Markdown or Word.
-
-The name *Aden* — "A Dense Referential Context Compiler" — is the mission statement: every token must justify its existence; fluff is the enemy.
-
-=== Why a Graph?
-
-Software is a network, not a directory tree: modules `use` each other, functions `call` each other, ADRs `constrain`/`justify` choices, tests `verify` behavior, plans `supersede` plans. A graph of typed edges lets you ask questions `grep` cannot: what depends on this function? which contracts are stale? what is the blast radius of changing this module? what context must a prompt include for an agent editing this file?
-
-=== Why Token Density?
-
-Every token an LLM consumes costs. A verbose doc may burn 8,000 tokens and bury the signal. `aden asm` performs a budgeted graph traversal — starting from any anchor, walking edges to assemble a prompt within a token budget while preserving the most critical structural relationships. This is the difference between dumping a whole codebase into a prompt and *surgically* selecting needed context.
-
-=== Why Separate Generated and Human Intent?
-
-A contract has two owners with different authority. The *generated* layer (signatures, call edges, structure) is machine-owned: extracted from source, it must track source exactly or the graph drifts. The *intent* layer ("this must stay pure", load-bearing invariants, an agent's design note) is human/agent-owned and must never be silently overwritten.
-
-Aden separates them by home. The generated layer lives in the rebuildable per-user store (`aden store path`; <<adr-003>>) and `aden gen` overwrites it freely. Durable intent lives in sparse, git-tracked overlays (`.aden/overlays/<anchor>.adoc`) — one small file per annotated symbol, authored with `aden overlay <anchor>`. On every `gen`, a per-symbol three-way merge reconciles them: generated updates (no drift), overlay is preserved and folded into the read graph so `asm`/`ask`/`query` surface intent. When an annotated symbol changes, Aden emits a one-time *review notice* (`.aden/proposals/`) — it notifies, it does not block. A block tagged with the symbol's anchor opts into the change notice; an untagged note simply annotates.
-
-[[use-cases]]
-=== Primary Use Cases
-
-**1. AI agent / contractor onboarding.** Instead of scrolling READMEs and Slack, scaffold and assemble:
-[source,bash]
-----
-aden init  # Scaffolds .agent/ with constraints, glossary, and protocol
-aden asm --from context --depth 3 --budget 8192 --edge-types "constrains,justifies,documents"
-----
-The agent gets a token-dense, graph-traversed prompt with exactly the relevant ADRs, constraints, glossary terms, and module contracts.
-
-[[doc-rot]]
-**2. Documentation that stays alive.** Docs rot when signatures change and `.md` files are forgotten. Aden generates contracts from source and continuously detects drift:
-[source,bash]
-----
-aden gen src/lib.rs --auto   # Generate contract from source
-aden heal . --propose        # Detect drift; review .aden/proposals/
-aden heal . --apply <proposal-id>
-----
-Documentation becomes a living, version-controlled artifact tested at CI time.
-
-**3. Architectural safety during refactoring.** See the blast radius *before* committing:
-[source,bash]
-----
-aden query --from module-core --depth 3      # everything reachable via Uses/Calls/Implements
-aden query --backlinks module-core           # everything that references module-core
-----
-
-**4. Cross-team alignment.** An API contract carries typed edges (`ApiContract::Constrains -> ClientModule`). When the API changes, `heal` detects stale downstream hashes and proposes updates to all consumers simultaneously — the constraint is explicit, machine-checkable, and versioned.
-
-**5. Regulatory & compliance documentation.** Policies are `.adoc` docs with `edge::constrains[]` macros linking them to governed functions. `check` verifies every policy edge resolves to a live contract; `heal` flags any change that breaks a policy link. Compliance becomes continuous and testable, not an annual ritual.
-
-**6. Knowledge preservation for solo projects.** Every ADR, plan, API contract, and runbook lives in the same graph as the code. Returning to a module after months, `aden asm --from module-x --depth 2` reassembles the justifying ADR, dependencies, and verifying tests — you never truly forget your own codebase.
-
-=== The Agent-First Mindset
-
-Aden targets the autonomous AI agent, which needs not HTML but: an accurate relationship map (the graph), a way to know when it is stale (`heal`), a way to assemble just-enough context (`asm`), a way to verify work before committing (`check`), and a way to leave breadcrumbs (`session`). When a human reviews an agent's PR, they read the `.aden` contracts, run `aden check`, and verify `session.adoc` explains what changed and why.
-
-=== Security as a First-Class Concern
-
-. **Path traversal prevention** — `include::[]` directives are canonicalized and bounded to the project directory; an agent cannot inline `/etc/passwd`.
-. **Safe execution** — PowerShell discovery avoids cwd resolution to prevent binary-planting; JSON deserialization is bounded and uses `deny_unknown_fields`.
-. **Id & filename sanitization** — proposal IDs are validated against ASCII-safe whitelists before use as filenames.
-. **No `unsafe` code** — zero `unsafe` blocks in application code.
+For the design rationale behind these choices — why AsciiDoc, why a graph, why
+token density, and the generated-vs-intent split — see <<philosophy>>. For the
+concrete workflows Aden enables, see <<use-cases>>.
 
 [[project-context]]
 == Project Context & Crate Map
