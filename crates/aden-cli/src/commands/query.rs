@@ -2081,7 +2081,22 @@ pub fn cmd_locate(
     use serde_json::json;
 
     if !path.is_dir() {
-        return Err("locate requires a directory path".into());
+        // The positional argument is the project DIR (default "."); the symbol
+        // goes in `--symbol`. A user who typed `aden locate myFn` lands here with
+        // a non-directory positional and no flag — point them at the right form
+        // instead of the bare "requires a directory path".
+        if symbol.is_none() && caller_of.is_none() {
+            return Err(format!(
+                "'{}' is not a directory. To find a symbol use:\n  \
+                 aden locate --symbol {} [DIR]\n  \
+                 aden locate --caller-of {} [DIR]",
+                path.display(),
+                path.display(),
+                path.display(),
+            )
+            .into());
+        }
+        return Err(format!("locate: '{}' is not a directory", path.display()).into());
     }
     super::ensure_fresh(path);
 
