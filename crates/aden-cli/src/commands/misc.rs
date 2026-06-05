@@ -1028,6 +1028,7 @@ pub fn cmd_ci_check(path: &Path, json: bool) -> Result<(), Box<dyn std::error::E
                 e,
                 aden_heal::DriftEvent::BrokenReference { .. }
                     | aden_heal::DriftEvent::SignatureMismatch { .. }
+                    | aden_heal::DriftEvent::DocSignatureDivergence { .. }
             )
         };
         let actionable_events: Vec<_> =
@@ -1202,6 +1203,7 @@ pub fn cmd_ready(path: &Path, fix: bool) -> Result<(), Box<dyn std::error::Error
                 e,
                 aden_heal::DriftEvent::BrokenReference { .. }
                     | aden_heal::DriftEvent::SignatureMismatch { .. }
+                    | aden_heal::DriftEvent::DocSignatureDivergence { .. }
             )
         };
         let hard_events: Vec<_> = events.iter().filter(|e| is_hard(e)).cloned().collect();
@@ -1209,7 +1211,7 @@ pub fn cmd_ready(path: &Path, fix: bool) -> Result<(), Box<dyn std::error::Error
         let critical = events.iter().filter(|e| is_hard(e)).count();
         if critical > 0 {
             Err(Box::<dyn std::error::Error>::from(format!(
-                "{} critical drift event(s) (broken refs, orphans, signature mismatch) — run 'aden heal . --fix'",
+                "{} critical drift event(s) (broken refs, signature mismatch, doc/code divergence) — run 'aden heal' to inspect",
                 critical
             )))
         } else if report.overall_score < 0.90 {
@@ -1644,6 +1646,7 @@ pub fn cmd_review_since(
                 aden_heal::DriftEvent::MarkdownDrift { md_path, .. } => md_path,
                 aden_heal::DriftEvent::StaleMarkdown { md_path, .. } => md_path,
                 aden_heal::DriftEvent::MissingMarkdownTemplate { md_path, .. } => md_path,
+                aden_heal::DriftEvent::DocSignatureDivergence { doc_path, .. } => doc_path,
             };
             files.iter().any(|f| target.contains(f))
         })

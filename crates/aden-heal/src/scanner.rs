@@ -266,6 +266,10 @@ impl Scanner {
         // i. Markdown Drift - scan for stale .md files
         events.extend(self.scan_markdown_drift()?);
 
+        // j. Doc/code semantic divergence — fenced code in docs that declares a
+        // function whose parameter arity no longer matches the real symbol.
+        events.extend(self.scan_doc_signature_divergence(&source_entries));
+
         // Persist cache for next incremental scan
         if let Ok(json) = serde_json::to_string_pretty(&new_cache) {
             let _ = std::fs::create_dir_all(self.cache_path.parent().unwrap_or(Path::new(".")));
@@ -378,6 +382,114 @@ impl Scanner {
         }
 
         Ok(events)
+    }
+
+    /// Detect semantic doc/code divergence: a documentation file declares a
+    /// function in a fenced code block whose parameter arity differs from the
+    /// real symbol of the same name in the codebase.
+    ///
+    /// Precision-first by construction:
+    /// - The fence body is parsed with the *real* language parser, so only
+    ///   genuine declarations are matched — call-site usage examples
+    ///   (`foo(a, b)`) are not extracted as functions and never flagged.
+    /// - Only function names that are *unique* in the codebase are checked;
+    ///   overloads / polymorphic names (`new`, `from`, trait methods) are
+    ///   ambiguous and skipped to avoid false positives.
+    fn scan_doc_signature_divergence(
+        &self,
+        source_entries: &[(PathBuf, Document)],
+    ) -> Vec<DriftEvent> {
+        use aden_core::NodeType;
+
+        // Build name -> set of real parameter arities, from code (non-doc) symbols.
+        let mut name_arities: HashMap<String, HashSet<usize>> = HashMap::new();
+        for (path, doc) in source_entries {
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+            if matches!(ext, "md" | "rst" | "adoc" | "aden") {
+                continue; // only real code symbols define the ground truth
+            }
+            if doc.node_type != NodeType::Function {
+                continue;
+            }
+            let Some(name) = bare_symbol_name(&doc.anchor) else {
+                continue;
+            };
+            name_arities
+                .entry(name)
+                .or_default()
+                .insert(extract_sig_from_doc(doc).len());
+        }
+
+        let mut events = Vec::new();
+        let mut doc_paths = Vec::new();
+        let _ = self.collect_doc_files(&self.repo_root, &mut doc_paths);
+
+        for doc_path in &doc_paths {
+            let content = match std::fs::read_to_string(doc_path) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+            for fence in extract_code_fences(&content) {
+                let Some(ext) = fence_lang_to_ext(&fence.lang) else {
+                    continue;
+                };
+                // Parse the fence body as standalone source of that language.
+                let synthetic = PathBuf::from(format!("snippet.{ext}"));
+                let Ok(docs) = aden_parse::parse_file(&synthetic, &fence.body) else {
+                    continue;
+                };
+                for d in docs {
+                    if d.node_type != NodeType::Function {
+                        continue;
+                    }
+                    let Some(name) = bare_symbol_name(&d.anchor) else {
+                        continue;
+                    };
+                    let Some(arities) = name_arities.get(&name) else {
+                        continue; // not a real symbol — nothing to diverge from
+                    };
+                    // Skip ambiguous symbols (overloads / polymorphic names).
+                    if arities.len() != 1 {
+                        continue;
+                    }
+                    let actual = *arities.iter().next().unwrap();
+                    let documented = extract_sig_from_doc(&d).len();
+                    if documented != actual {
+                        events.push(DriftEvent::DocSignatureDivergence {
+                            doc_path: doc_path.to_string_lossy().to_string(),
+                            line: fence.start_line,
+                            symbol_name: name,
+                            documented_params: documented,
+                            actual_params: actual,
+                        });
+                    }
+                }
+            }
+        }
+        events
+    }
+
+    /// Recursively collect documentation files (.md/.adoc/.rst) under `dir`,
+    /// honouring the same exclusion rules as source collection.
+    fn collect_doc_files(&self, dir: &Path, files: &mut Vec<PathBuf>) -> Result<(), HealError> {
+        for entry in std::fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if entry.file_type().map(|ft| ft.is_symlink()).unwrap_or(false) {
+                continue;
+            }
+            if path.is_dir() {
+                if !self.is_excluded_dir(&path) {
+                    self.collect_doc_files(&path, files)?;
+                }
+            } else if path.is_file() {
+                let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                if matches!(ext, "md" | "adoc" | "rst" | "markdown") {
+                    files.push(path);
+                }
+            }
+        }
+        Ok(())
     }
 
     fn collect_source_files(&self, dir: &Path, files: &mut Vec<PathBuf>) -> Result<(), HealError> {
@@ -506,6 +618,130 @@ fn parsed_to_doc(
     }
 }
 
+/// The bare trailing identifier of an anchor — strips the `aden://…#` prefix
+/// and any language qualifier (`mod::fn`, `Class.method`, `ns\fn`) so a doc
+/// fence's plain `build(...)` matches the codebase symbol regardless of how it
+/// is module-qualified. This deliberately collapses qualified overloads to the
+/// same key so the ambiguity guard skips them.
+fn bare_symbol_name(anchor: &str) -> Option<String> {
+    let after_hash = anchor.rsplit('#').next()?;
+    let bare = after_hash
+        .rsplit([':', '.', '\\', '/'])
+        .next()
+        .unwrap_or(after_hash)
+        .trim();
+    if bare.is_empty() {
+        None
+    } else {
+        Some(bare.to_string())
+    }
+}
+
+/// A fenced code block lifted from a documentation file.
+struct CodeFence {
+    /// The info string immediately after the opening fence (e.g. `rust`).
+    lang: String,
+    /// The raw body between the fences.
+    body: String,
+    /// 1-based line number of the opening fence.
+    start_line: usize,
+}
+
+/// Extract fenced code blocks delimited by ``` or ~~~ from markdown/asciidoc.
+/// Also handles AsciiDoc `[source,lang]` + `----` listing blocks.
+fn extract_code_fences(content: &str) -> Vec<CodeFence> {
+    let mut fences = Vec::new();
+    let lines: Vec<&str> = content.lines().collect();
+    let mut i = 0;
+    // Pending language from a preceding AsciiDoc `[source,lang]` attribute line.
+    let mut pending_lang: Option<String> = None;
+    while i < lines.len() {
+        let line = lines[i];
+        let trimmed = line.trim_start();
+
+        // AsciiDoc source attribute: [source,rust] / [source, python]
+        if let Some(rest) = trimmed.strip_prefix("[source") {
+            let lang = rest
+                .trim_start_matches([',', ' '])
+                .trim_end_matches(']')
+                .trim()
+                .to_string();
+            if !lang.is_empty() {
+                pending_lang = Some(lang);
+            }
+            i += 1;
+            continue;
+        }
+
+        let fence_marker = if trimmed.starts_with("```") {
+            Some("```")
+        } else if trimmed.starts_with("~~~") {
+            Some("~~~")
+        } else if trimmed.starts_with("----") {
+            Some("----") // AsciiDoc listing block
+        } else {
+            None
+        };
+
+        if let Some(marker) = fence_marker {
+            let info = trimmed[marker.len()..].trim().to_string();
+            let lang = if !info.is_empty() {
+                info
+            } else {
+                pending_lang.take().unwrap_or_default()
+            };
+            let start_line = i + 1;
+            let mut body = String::new();
+            i += 1;
+            while i < lines.len() && !lines[i].trim_start().starts_with(marker) {
+                body.push_str(lines[i]);
+                body.push('\n');
+                i += 1;
+            }
+            i += 1; // skip closing fence
+            if !lang.is_empty() {
+                fences.push(CodeFence {
+                    lang,
+                    body,
+                    start_line,
+                });
+            }
+            pending_lang = None;
+            continue;
+        }
+
+        // A non-fence, non-attribute line clears any pending source attribute.
+        if !trimmed.is_empty() {
+            pending_lang = None;
+        }
+        i += 1;
+    }
+    fences
+}
+
+/// Map a fenced code-block language tag to a file extension aden can parse.
+/// Returns `None` for languages without a deep parameter-extracting parser, so
+/// the divergence check stays high-precision.
+fn fence_lang_to_ext(lang: &str) -> Option<&'static str> {
+    let l = lang.trim().to_ascii_lowercase();
+    Some(match l.as_str() {
+        "rust" | "rs" => "rs",
+        "python" | "py" => "py",
+        "go" | "golang" => "go",
+        "javascript" | "js" => "js",
+        "typescript" | "ts" => "ts",
+        "tsx" => "tsx",
+        "java" => "java",
+        "c" => "c",
+        "cpp" | "c++" | "cxx" => "cpp",
+        "ruby" | "rb" => "rb",
+        "php" => "php",
+        "csharp" | "cs" | "c#" => "cs",
+        "kotlin" | "kt" => "kt",
+        _ => return None,
+    })
+}
+
 fn extract_sig_from_doc(doc: &Document) -> Vec<String> {
     let mut sig = Vec::new();
     for block in &doc.blocks {
@@ -606,6 +842,126 @@ mod tests {
                 || events
                     .iter()
                     .all(|e| !matches!(e, DriftEvent::StaleHash { .. }))
+        );
+    }
+
+    fn divergence_events(events: &[DriftEvent]) -> Vec<&DriftEvent> {
+        events
+            .iter()
+            .filter(|e| matches!(e, DriftEvent::DocSignatureDivergence { .. }))
+            .collect()
+    }
+
+    #[test]
+    fn doc_divergence_flags_stale_signature_in_docs() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let src = root.join("src");
+        std::fs::create_dir(&src).unwrap();
+        // Code: process now takes THREE params.
+        std::fs::write(
+            src.join("lib.rs"),
+            "pub fn process(input: i32, count: i32, flag: bool) -> bool { flag }",
+        )
+        .unwrap();
+        // Docs: a fenced block shows the OLD two-param signature.
+        std::fs::write(
+            root.join("README.md"),
+            "# Guide\n\n```rust\nfn process(input: i32, count: i32) -> bool {}\n```\n",
+        )
+        .unwrap();
+
+        let events = Scanner::new(root).scan().unwrap();
+        let div = divergence_events(&events);
+        assert_eq!(div.len(), 1, "expected one divergence, got: {:?}", div);
+        match div[0] {
+            DriftEvent::DocSignatureDivergence {
+                symbol_name,
+                documented_params,
+                actual_params,
+                ..
+            } => {
+                assert_eq!(symbol_name, "process");
+                assert_eq!(*documented_params, 2);
+                assert_eq!(*actual_params, 3);
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn doc_divergence_silent_when_signatures_agree() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let src = root.join("src");
+        std::fs::create_dir(&src).unwrap();
+        std::fs::write(
+            src.join("lib.rs"),
+            "pub fn process(input: i32, count: i32) -> bool { true }",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("README.md"),
+            "# Guide\n\n```rust\nfn process(input: i32, count: i32) -> bool {}\n```\n",
+        )
+        .unwrap();
+
+        let events = Scanner::new(root).scan().unwrap();
+        assert!(
+            divergence_events(&events).is_empty(),
+            "matching signatures must not diverge"
+        );
+    }
+
+    #[test]
+    fn doc_divergence_ignores_usage_examples() {
+        // A doc fence that merely *calls* the function with a different arg count
+        // is not a declaration and must never be flagged — the precision guarantee.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let src = root.join("src");
+        std::fs::create_dir(&src).unwrap();
+        std::fs::write(
+            src.join("lib.rs"),
+            "pub fn process(input: i32, count: i32) -> bool { true }",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("README.md"),
+            "# Guide\n\n```rust\nlet r = process(1);\nlet s = process(1, 2, 3, 4);\n```\n",
+        )
+        .unwrap();
+
+        let events = Scanner::new(root).scan().unwrap();
+        assert!(
+            divergence_events(&events).is_empty(),
+            "call-site usage examples must not be flagged as divergence"
+        );
+    }
+
+    #[test]
+    fn doc_divergence_skips_ambiguous_names() {
+        // Two real `build` functions with different arities → ambiguous → skip.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let src = root.join("src");
+        std::fs::create_dir(&src).unwrap();
+        std::fs::write(src.join("a.rs"), "pub fn build(x: i32) -> i32 { x }").unwrap();
+        std::fs::write(
+            src.join("b.rs"),
+            "pub fn build(x: i32, y: i32) -> i32 { x + y }",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("README.md"),
+            "# Guide\n\n```rust\nfn build(a: i32, b: i32, c: i32) {}\n```\n",
+        )
+        .unwrap();
+
+        let events = Scanner::new(root).scan().unwrap();
+        assert!(
+            divergence_events(&events).is_empty(),
+            "ambiguous (overloaded) names must be skipped"
         );
     }
 

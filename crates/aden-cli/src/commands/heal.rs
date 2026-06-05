@@ -61,6 +61,18 @@ fn summarize_drift_event(event: &aden_heal::DriftEvent) -> String {
                 md_path, template_source
             )
         }
+        DocSignatureDivergence {
+            doc_path,
+            line,
+            symbol_name,
+            documented_params,
+            actual_params,
+        } => {
+            format!(
+                "DocSignatureDivergence: {}() documents {} param(s) but code has {} — {}:{}",
+                symbol_name, documented_params, actual_params, doc_path, line
+            )
+        }
     }
 }
 
@@ -77,6 +89,7 @@ fn drift_kind_name(event: &aden_heal::DriftEvent) -> &'static str {
         MarkdownDrift { .. } => "MarkdownDrift",
         StaleMarkdown { .. } => "StaleMarkdown",
         MissingMarkdownTemplate { .. } => "MissingMarkdownTemplate",
+        DocSignatureDivergence { .. } => "DocSignatureDivergence",
     }
 }
 
@@ -125,6 +138,7 @@ pub fn cmd_heal_scan_since(
                 aden_heal::DriftEvent::MarkdownDrift { md_path, .. } => md_path,
                 aden_heal::DriftEvent::StaleMarkdown { md_path, .. } => md_path,
                 aden_heal::DriftEvent::MissingMarkdownTemplate { md_path, .. } => md_path,
+                aden_heal::DriftEvent::DocSignatureDivergence { doc_path, .. } => doc_path,
             };
             files.iter().any(|f| target.contains(f))
         })

@@ -47,6 +47,18 @@ pub enum DriftEvent {
         md_path: String,
         template_source: String,
     },
+    /// A documentation file declares a function in a fenced code block whose
+    /// parameter arity no longer matches the real symbol in the codebase — the
+    /// docs describe a stale API. Detected by parsing the doc's code fences with
+    /// the real language parser, so only genuine *declarations* (not call-site
+    /// usage examples) are considered.
+    DocSignatureDivergence {
+        doc_path: String,
+        line: usize,
+        symbol_name: String,
+        documented_params: usize,
+        actual_params: usize,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -80,6 +92,7 @@ impl DriftEvent {
             DriftEvent::MarkdownDrift { .. } => DriftSeverity::High,
             DriftEvent::StaleMarkdown { .. } => DriftSeverity::Medium,
             DriftEvent::MissingMarkdownTemplate { .. } => DriftSeverity::Medium,
+            DriftEvent::DocSignatureDivergence { .. } => DriftSeverity::High,
         }
     }
 }
