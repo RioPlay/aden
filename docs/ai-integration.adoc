@@ -209,21 +209,23 @@ aden suggest "find all tests in the project"
 
 == Quick Reference: Agent Workflow
 
-| Task | Command |
-|------|---------|
-| Explore structure | `aden ask "what is X"` |
-| Find symbol | `aden locate --symbol X .` |
-| Grep with structure (each hit tagged with its enclosing symbol) | `aden grep "pattern" .` |
-| Who references this symbol (blast radius) | `aden query --backlinks X .` |
-| Find with context | `aden locate --symbol X --show-context 5 .` |
-| Search docs | `aden search "query" .` |
-| Get LLM-dense context (default) | `aden asm --from <anchor> --depth N .` |
-| Raw AsciiDoc context | `aden asm --from <anchor> --format aden --depth N .` |
-| Check health | `aden status .` |
-| Full sync | `aden sync .` |
-| Check + heal | `aden check . && aden heal .` |
-| Validate | `aden ci-check .` |
-| Watch mode | `aden watch . --sync` |
+|===
+|Task |Command
+
+|Explore structure |`aden ask "what is X"`
+|Find symbol |`aden locate --symbol X .`
+|Grep with structure (each hit tagged with its enclosing symbol) |`aden grep "pattern" .`
+|Who references this symbol (blast radius) |`aden query --backlinks X .`
+|Find with context |`aden locate --symbol X --show-context 5 .`
+|Search docs |`aden search "query" .`
+|Get LLM-dense context (default) |`aden asm --from <anchor> --depth N .`
+|Raw AsciiDoc context |`aden asm --from <anchor> --format aden --depth N .`
+|Check health |`aden status .`
+|Full sync |`aden sync .`
+|Check + heal |`aden check . && aden heal .`
+|Validate |`aden ci-check .`
+|Watch mode |`aden watch . --sync`
+|===
 
 == MCP Tools (for AI Platforms)
 
@@ -365,8 +367,7 @@ When an aden MCP tool is available, include this in your system context:
 You have access to Aden, a knowledge graph compiler for codebases.
 
 ## Aden Tools Available:
-- `ask(question)`: Ask natural language questions about the codebase
-- `ask(question)`: Natural-language question — best first tool for exploration
+- `ask(question)`: Natural-language question about the codebase — best first tool for exploration
 - `search(query)`: Full-text search with semantic understanding, --semantics flag for graph edges
 - `asm(from, depth)`: Assemble context from a starting anchor (passed as `from`)
 - `query(anchor, depth)`: Get structured graph neighborhood as JSON
@@ -418,13 +419,13 @@ Aden returns **LLM-dense prose by default** — stripped of AsciiDoc markup nois
 - Headings converted to plain text
 
 **Every token carries signal.**
+----
 
 If you need raw AsciiDoc (e.g. for an IDE renderer), opt in explicitly:
 
 [source]
 ----
 aden asm --from mod-aden-core --format aden .
-----
 ----
 
 == Common Patterns

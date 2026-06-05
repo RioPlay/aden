@@ -70,7 +70,7 @@ file/dir to index or query). No command derives `.aden` from a raw argument.
 
 |Rebuildable graph + caches |`store/`, `cache/`, `gen-cache.json`, `scan-cache.json` |Per-user data dir, keyed per project
 |Durable repo-coupled intent |`overlays/`, `constitution.adoc`, `hooks/` |In-tree, git-tracked
-|Ephemeral temp |per-run scratch (`htmp/`, verify temp) |OS temp dir (`std::env::temp_dir()`)
+|Ephemeral temp |per-run scratch (`tmp/`, verify temp) |OS temp dir (`std::env::temp_dir()`)
 |===
 
 The graph is *never* written into the project tree, so subfolder pollution

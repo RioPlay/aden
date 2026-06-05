@@ -306,7 +306,7 @@ flowchart TD
     end
 
     subgraph heal[aden heal]
-        H[aden-heal] --> PR[aden-propose] --> P[atches]
+        H[aden-heal] --> PR[aden-propose] --> PA[Patches]
     end
 
     subgraph diagnose[aden diagnose]
@@ -475,7 +475,7 @@ concrete workflows Aden enables, see <<use-cases>>.
 [[project-context]]
 == Project Context & Crate Map
 
-NOTE: This section is the canonical shared memory for agent sessions working on Aden. Reference it (rather than the deleted `context.adoc`) at the top of agent prompts.
+NOTE: This section is the canonical shared memory for agent sessions working on Aden. Reference it at the top of agent prompts.
 
 === Language Defaults
 
