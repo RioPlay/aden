@@ -203,7 +203,11 @@ fn has_prefixed_token(content: &str, prefix: &str, min_alnum: usize) -> bool {
             .iter()
             .take_while(|b| b.is_ascii_alphanumeric() || **b == b'_' || **b == b'-')
             .count();
-        if run >= min_alnum {
+        // Skip documentation placeholders: by convention (AWS, RFC examples)
+        // sample keys end in the literal `EXAMPLE`, e.g. the canonical
+        // `AKIAIOSFODNN7EXAMPLE`. A real credential never does.
+        let token_ends_in_example = content[start..start + run].ends_with("EXAMPLE");
+        if run >= min_alnum && !token_ends_in_example {
             return true;
         }
         i = i + off + plen;
@@ -471,9 +475,12 @@ mod tests {
     fn content_secret_detects_real_credentials() {
         // Embedded in an ordinary-looking source/config file the path filter misses.
         // Build test tokens via byte arrays to avoid static pattern detection.
+        // NOTE: the AWS token body must NOT end in `EXAMPLE` — that suffix marks a
+        // documentation placeholder, which the detector deliberately ignores
+        // (see `content_secret_ignores_example_placeholders`). Body: IOSFODNN7REALKEY.
         let aws_key = String::from_utf8_lossy(&[
             123, 32, 34, 97, 119, 115, 95, 107, 101, 121, 34, 58, 32, 34, 65, 75, 73, 65, 73, 79,
-            83, 70, 79, 68, 78, 78, 55, 69, 88, 65, 77, 80, 76, 69, 34, 32, 125,
+            83, 70, 79, 68, 78, 78, 55, 82, 69, 65, 76, 75, 69, 89, 34, 32, 125,
         ]);
         assert!(content_has_high_confidence_secret(&aws_key));
 
@@ -498,6 +505,22 @@ mod tests {
             45, 45, 45,
         ]);
         assert!(content_has_high_confidence_secret(&pem_key));
+    }
+
+    #[test]
+    fn content_secret_ignores_example_placeholders() {
+        // AWS's canonical documentation key `AKIAIOSFODNN7EXAMPLE` (and any
+        // token ending in the `EXAMPLE` convention) is a placeholder, not a
+        // credential — it must not be flagged. Built via bytes to avoid the
+        // file itself tripping the indexing screen.
+        let example_key = String::from_utf8_lossy(&[
+            123, 32, 34, 97, 119, 115, 95, 107, 101, 121, 34, 58, 32, 34, 65, 75, 73, 65, 73, 79,
+            83, 70, 79, 68, 78, 78, 55, 69, 88, 65, 77, 80, 76, 69, 34, 32, 125,
+        ]);
+        assert!(
+            !content_has_high_confidence_secret(&example_key),
+            "AWS EXAMPLE placeholder key must not be treated as a real secret"
+        );
     }
 
     #[test]

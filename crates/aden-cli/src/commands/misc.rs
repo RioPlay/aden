@@ -251,8 +251,38 @@ pub fn cmd_audit(
             .to_lowercase();
         let lang = lang_exts.iter().find(|(e, _)| *e == ext).map(|(_, l)| *l);
 
+        // Track `#[cfg(test)]` modules so we can skip them: test code contains
+        // deliberate positive-case fixtures (`password = "hunter2"`, sample SQL,
+        // example credentials) that assert the detectors fire — they are not
+        // shipped vulnerabilities. We arm on the attribute, enter on the next
+        // `mod ... {`, and leave when brace depth returns to the module's start.
+        let mut cfg_test_armed = false;
+        let mut test_mod_depth: Option<i32> = None;
+        let mut brace_depth: i32 = 0;
+
         for (line_no, line) in text.lines().enumerate() {
             let trimmed = line.trim();
+
+            // Maintain test-module tracking before any skip/continue below.
+            if ext == "rs" {
+                if test_mod_depth.is_none() {
+                    if trimmed.contains("#[cfg(test)]") {
+                        cfg_test_armed = true;
+                    } else if cfg_test_armed && trimmed.starts_with("mod ") {
+                        test_mod_depth = Some(brace_depth);
+                        cfg_test_armed = false;
+                    }
+                }
+                let opens = line.matches('{').count() as i32;
+                let closes = line.matches('}').count() as i32;
+                brace_depth += opens - closes;
+                if let Some(start_depth) = test_mod_depth {
+                    if brace_depth <= start_depth {
+                        test_mod_depth = None; // closed the test module
+                    }
+                    continue; // inside (or just-closed) a #[cfg(test)] module — skip
+                }
+            }
 
             // Skip comment lines and string literals that contain patterns
             if trimmed.starts_with("//")
@@ -985,23 +1015,25 @@ pub fn cmd_ci_check(path: &Path, json: bool) -> Result<(), Box<dyn std::error::E
         use aden_heal::{Scanner, generate};
         let scanner = Scanner::new(path);
         let events = scanner.scan()?;
-        let report = generate(events.clone(), path);
         // Only genuinely actionable drift counts here: broken refs and signature
         // mismatches. OrphanAnchor is overwhelmingly EXPECTED metadata (doc-heading
         // nodes; ADR/plan/use-case docs with no edges), so including it inflated the
         // figure into the thousands and labeled benign drift "critical" in a gate
         // that is non-blocking by design. Broken refs are already a hard failure via
         // the blocking `aden check` gate above; here they are a soft re-surfacing.
-        let actionable_count = events
-            .iter()
-            .filter(|e| {
-                matches!(
-                    e,
-                    aden_heal::DriftEvent::BrokenReference { .. }
-                        | aden_heal::DriftEvent::SignatureMismatch { .. }
-                )
-            })
-            .count();
+        // The score gate below must judge the SAME hard events, else doc-node
+        // MissingContracts crater the score to 0.00 and contradict `diagnose`.
+        let is_actionable = |e: &aden_heal::DriftEvent| {
+            matches!(
+                e,
+                aden_heal::DriftEvent::BrokenReference { .. }
+                    | aden_heal::DriftEvent::SignatureMismatch { .. }
+            )
+        };
+        let actionable_events: Vec<_> =
+            events.iter().filter(|e| is_actionable(e)).cloned().collect();
+        let report = generate(actionable_events, path);
+        let actionable_count = events.iter().filter(|e| is_actionable(e)).count();
         if actionable_count > 0 {
             Err(Box::<dyn std::error::Error>::from(format!(
                 "{} actionable drift event(s) (broken refs / signature mismatch) — run 'aden heal'",
@@ -1155,23 +1187,26 @@ pub fn cmd_ready(path: &Path, fix: bool) -> Result<(), Box<dyn std::error::Error
         }
         let scanner = Scanner::new(path);
         let events = scanner.scan()?;
-        let report = generate(events.clone(), path);
-        let critical = events
-            .iter()
-            .filter(|e| {
-                // Only hard correctness failures block a commit:
-                // - BrokenReference (Critical): a <<ref>> points at a missing anchor
-                // - SignatureMismatch (High): a symbol's signature changed
-                // OrphanAnchor (Medium) and MissingContract (Medium) are maintenance
-                // signals — stale store entries and undocumented symbols — not
-                // pre-commit blockers. Run `aden sync` to clean them up.
-                matches!(
-                    e,
-                    aden_heal::DriftEvent::BrokenReference { .. }
-                        | aden_heal::DriftEvent::SignatureMismatch { .. }
-                )
-            })
-            .count();
+        // Only hard correctness failures matter to this gate:
+        // - BrokenReference (Critical): a <<ref>> points at a missing anchor
+        // - SignatureMismatch (High): a symbol's signature changed
+        // OrphanAnchor (Medium) and MissingContract (Medium) are maintenance
+        // signals — stale store entries and undocumented/metadata doc nodes —
+        // not pre-commit blockers. Run `aden sync` to clean them up. The same
+        // classification that `diagnose`/`status` use to report 100/100 while
+        // hundreds of metadata doc nodes lack contracts; the score gate below
+        // MUST agree, so it judges the score over these hard events only rather
+        // than letting doc-node MissingContracts crater it to 0.00.
+        let is_hard = |e: &aden_heal::DriftEvent| {
+            matches!(
+                e,
+                aden_heal::DriftEvent::BrokenReference { .. }
+                    | aden_heal::DriftEvent::SignatureMismatch { .. }
+            )
+        };
+        let hard_events: Vec<_> = events.iter().filter(|e| is_hard(e)).cloned().collect();
+        let report = generate(hard_events, path);
+        let critical = events.iter().filter(|e| is_hard(e)).count();
         if critical > 0 {
             Err(Box::<dyn std::error::Error>::from(format!(
                 "{} critical drift event(s) (broken refs, orphans, signature mismatch) — run 'aden heal . --fix'",
