@@ -774,12 +774,28 @@ fn scan_low_confidence(graph: &AdenGraph<DocumentNode, AdenEdge>) -> Vec<Issue> 
 
 // ── Helpers ───────────────────────────────────────────────────────
 
-/// Recursively collect `.adoc` files from a directory.
-fn collect_adoc_files(dir: &Path) -> Vec<PathBuf> {
+/// Recursively collect `.adoc` files from a directory, honoring the same
+/// exclusion rules as the rest of aden (`AdenFilter`). Without this, the scan
+/// descended into excluded scaffolding such as `.agent/` (and `.agent/templates/`)
+/// and `.claude/`, producing phantom DuplicateAnchor findings between a generated
+/// file and its template — anchors that never coexist in the real graph.
+fn collect_adoc_files(root: &Path) -> Vec<PathBuf> {
+    let filter = aden_core::filter::AdenFilter::from_directory(root);
     let mut files = Vec::new();
+    collect_adoc_files_inner(root, root, &filter, &mut files);
+    files.sort();
+    files
+}
+
+fn collect_adoc_files_inner(
+    root: &Path,
+    dir: &Path,
+    filter: &aden_core::filter::AdenFilter,
+    files: &mut Vec<PathBuf>,
+) {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
-        Err(_) => return files,
+        Err(_) => return,
     };
     for entry in entries {
         let entry = match entry {
@@ -787,16 +803,17 @@ fn collect_adoc_files(dir: &Path) -> Vec<PathBuf> {
             Err(_) => continue,
         };
         let path = entry.path();
+        // AdenFilter rules are expressed relative to the project root.
+        let rel = path.strip_prefix(root).unwrap_or(&path);
+        if filter.should_skip(rel) {
+            continue;
+        }
         if path.is_dir() {
-            files.extend(collect_adoc_files(&path));
-        } else if let Some(ext) = path.extension().and_then(|e| e.to_str())
-            && ext == "adoc"
-        {
+            collect_adoc_files_inner(root, &path, filter, files);
+        } else if path.extension().and_then(|e| e.to_str()) == Some("adoc") {
             files.push(path);
         }
     }
-    files.sort();
-    files
 }
 
 /// Find anchors similar to the given name using simple string similarity.

@@ -320,10 +320,21 @@ const MAX_COLLECT_DEPTH: usize = 32;
 
 /// Recursively collect knowledge files from a directory.
 fn collect_files(dir: &Path) -> Result<Vec<PathBuf>, GraphError> {
-    collect_files_inner(dir, 0)
+    // Honor the same exclusion rules as the rest of aden. Without this, the
+    // directory graph ingested scaffolding/ignored trees (`.agent/`, `.claude/`,
+    // `.git/`, `target/`, `node_modules/`), polluting every graph consumer
+    // (diagnose, status, check) with phantom orphans and duplicate anchors that
+    // never exist in the gen-built store.
+    let filter = aden_core::filter::AdenFilter::from_directory(dir);
+    collect_files_inner(dir, dir, &filter, 0)
 }
 
-fn collect_files_inner(dir: &Path, depth: usize) -> Result<Vec<PathBuf>, GraphError> {
+fn collect_files_inner(
+    root: &Path,
+    dir: &Path,
+    filter: &aden_core::filter::AdenFilter,
+    depth: usize,
+) -> Result<Vec<PathBuf>, GraphError> {
     let mut files = Vec::new();
     if depth > MAX_COLLECT_DEPTH {
         return Ok(files);
@@ -337,8 +348,13 @@ fn collect_files_inner(dir: &Path, depth: usize) -> Result<Vec<PathBuf>, GraphEr
             continue;
         }
         let path = entry.path();
+        // AdenFilter rules are expressed relative to the project root.
+        let rel = path.strip_prefix(root).unwrap_or(&path);
+        if filter.should_skip(rel) {
+            continue;
+        }
         if path.is_dir() {
-            files.extend(collect_files_inner(&path, depth + 1)?);
+            files.extend(collect_files_inner(root, &path, filter, depth + 1)?);
         } else if let Some(ext) = path.extension().and_then(|e| e.to_str())
             && SUPPORTED_EXTENSIONS.contains(&ext)
         {
@@ -709,4 +725,52 @@ fn detect_node_type(anchor: &str, file_path: &Path) -> NodeType {
         return NodeType::Context;
     }
     NodeType::Module
+}
+
+#[cfg(test)]
+mod collect_files_tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn build_from_directory_excludes_scaffolding_and_vcs() {
+        let base = std::env::temp_dir().join("aden_collect_filter_test");
+        let _ = fs::remove_dir_all(&base);
+        for sub in ["docs", ".agent", ".agent/templates", ".git", "node_modules"] {
+            fs::create_dir_all(base.join(sub)).unwrap();
+        }
+        // A real doc that MUST be collected.
+        fs::write(base.join("docs/real.adoc"), "[[real-doc]]\n= Real\n").unwrap();
+        // Excluded trees that MUST NOT be collected (would otherwise create
+        // phantom orphans / duplicate anchors).
+        fs::write(base.join(".agent/scaf.adoc"), "[[scaf]]\n= Scaffold\n").unwrap();
+        fs::write(
+            base.join(".agent/templates/real.adoc"),
+            "[[real-doc]]\n= Template dup\n",
+        )
+        .unwrap();
+        fs::write(base.join(".git/x.adoc"), "[[git-doc]]\n= Git\n").unwrap();
+        fs::write(base.join("node_modules/y.adoc"), "[[nm]]\n= NM\n").unwrap();
+
+        let files = collect_files(&base).unwrap();
+        let names: Vec<String> = files
+            .iter()
+            .map(|p| p.strip_prefix(&base).unwrap().to_string_lossy().to_string())
+            .collect();
+
+        assert!(names.iter().any(|n| n.ends_with("docs/real.adoc")));
+        assert!(
+            !names.iter().any(|n| n.contains(".agent")),
+            "excluded .agent leaked: {:?}",
+            names
+        );
+        assert!(!names.iter().any(|n| n.contains(".git")), "{:?}", names);
+        assert!(
+            !names.iter().any(|n| n.contains("node_modules")),
+            "{:?}",
+            names
+        );
+
+        let _ = fs::remove_dir_all(&base);
+    }
 }
