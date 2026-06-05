@@ -21,7 +21,6 @@ pub mod kotlin_resolver;
 pub mod markdown;
 pub mod php_resolver;
 pub mod plaintext;
-mod powershell;
 pub mod python_resolver;
 pub mod router;
 pub mod ruby_resolver;
@@ -31,7 +30,6 @@ pub mod tree_sitter_common;
 pub mod typescript_resolver;
 
 pub use extractor::LanguageExtractor;
-pub(crate) use extractor::make_anchor;
 pub use router::{LanguageRouter, supported_extensions};
 
 #[cfg(test)]
@@ -70,13 +68,6 @@ pub fn parse_file(path: &Path, source: &str) -> Result<Vec<Document>> {
 }
 
 fn parse_file_inner(path: &Path, source: &str) -> Result<Vec<Document>> {
-    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-
-    // PowerShell stays on the JSON bridge for now.
-    if matches!(ext, "ps1" | "psm1" | "psd1") {
-        return powershell::extract_documents(path, source);
-    }
-
     get_router().parse_file(path, source)
 }
 

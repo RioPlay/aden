@@ -133,6 +133,40 @@ class World {
     assert_has_node_type(&docs, aden_core::NodeType::Type);
 }
 
+// ── PowerShell ──────────────────────────────────────────────────
+//
+// PowerShell is parsed in-process via the airbus-cert tree-sitter grammar
+// through the GenericExtractor — no external `pwsh`/`Export-AST.ps1` bridge.
+// This guards the PowerShell-specific node kinds taught to the generic
+// walker (`function_statement`, `class_statement`, `class_method_definition`,
+// and the `function_name`/`simple_name` name nodes).
+
+#[cfg(feature = "generic")]
+#[test]
+fn powershell_generic_smoke() {
+    let src = r#"
+function Get-Greeting {
+    param([string]$Name)
+    Write-Output "Hello, $Name"
+}
+
+class Widget {
+    [string]$Label
+    [string] Render() { return $this.Label }
+}
+"#;
+    let extractor = crate::generic::GenericExtractor::new("powershell");
+    let docs = extractor
+        .extract_documents(src, Path::new("src/sample.psm1"))
+        .expect("parse should succeed");
+    assert!(!docs.is_empty(), "expected non-empty document list");
+    assert_has_anchor(&docs, "Get-Greeting");
+    assert_has_anchor(&docs, "Widget");
+    assert_has_anchor(&docs, "Render");
+    assert_has_node_type(&docs, aden_core::NodeType::Function);
+    assert_has_node_type(&docs, aden_core::NodeType::Type);
+}
+
 // ── Ruby ────────────────────────────────────────────────────────
 
 #[test]

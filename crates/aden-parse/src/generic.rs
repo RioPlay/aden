@@ -26,6 +26,9 @@ const FUNCTION_KINDS: &[&str] = &[
     "function",
     "method",
     "singleton_method",
+    // PowerShell (airbus-cert grammar)
+    "function_statement",
+    "class_method_definition",
 ];
 
 /// Node kinds that represent types/classes/structs.
@@ -57,6 +60,8 @@ const TYPE_KINDS: &[&str] = &[
     "object_declaration",
     "union_specifier",
     "component_declaration",
+    // PowerShell (airbus-cert grammar)
+    "class_statement",
 ];
 
 /// Node kinds that represent modules/namespaces/packages.
@@ -217,11 +222,16 @@ fn extract_node_name(node: tree_sitter::Node, source: &str) -> Option<String> {
     }
 
     // Fallback: look for any direct child whose kind contains "identifier"
-    // (type_identifier, field_identifier, property_identifier, etc.).
+    // (type_identifier, field_identifier, property_identifier, etc.), or a
+    // grammar-specific name node (PowerShell: function_name / simple_name).
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         let ck = child.kind();
-        if ck == "identifier" || ck.ends_with("_identifier") {
+        if ck == "identifier"
+            || ck.ends_with("_identifier")
+            || ck == "function_name"
+            || ck == "simple_name"
+        {
             let text = node_text(child, source).trim();
             if !text.is_empty() {
                 return Some(text.to_string());

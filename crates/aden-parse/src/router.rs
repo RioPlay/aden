@@ -354,7 +354,7 @@ fn ext_to_language_pack_id(ext: &str) -> Option<&'static str> {
         // Roc
         "roc" => "roc",
 
-        // PowerShell (ready for when JSON bridge is retired)
+        // PowerShell (parsed in-process via the airbus-cert grammar)
         "ps1" | "psm1" | "psd1" => "powershell",
 
         _ => return None,
@@ -539,7 +539,7 @@ pub const GENERIC_PACK_EXTENSIONS: &[&str] = &[
 pub const GENERIC_PACK_EXTENSIONS: &[&str] = &[];
 
 /// Every file extension Aden can extract symbols from — the union of deep
-/// extractors, the generic language-pack fallback, and the PowerShell bridge.
+/// extractors and the generic language-pack fallback.
 ///
 /// This is the single source of truth used by source-file discovery so that
 /// the set of files Aden *finds* always matches the set it can *parse*. Without
@@ -552,10 +552,6 @@ pub fn supported_extensions() -> Vec<&'static str> {
         set.insert(ext);
     }
     for ext in GENERIC_PACK_EXTENSIONS {
-        set.insert(ext);
-    }
-    // PowerShell is handled by a dedicated bridge in lib.rs, not the router.
-    for ext in ["ps1", "psm1", "psd1"] {
         set.insert(ext);
     }
     set.into_iter().collect()
