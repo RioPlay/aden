@@ -35,7 +35,7 @@ jobs:
         run: echo "$HOME/.cargo/bin" >> $GITHUB_PATH
 
       - name: Test workspace
-        run: cargo test --workspace
+        run: cargo test --workspace --no-fail-fast
 
       - name: Regenerate contracts
         run: cargo run -p aden-cli -- gen .

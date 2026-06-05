@@ -908,6 +908,34 @@ mod tests {
     use super::*;
     use std::io::Write;
 
+    /// Serializes tests that mutate the process-global `ADEN_DATA_DIR`. Without
+    /// it, parallel cache tests interleave set/remove of the env var and resolve
+    /// `save`/`try_load` to different cache dirs (flaky, surfaced on Windows CI).
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Pin `ADEN_DATA_DIR` to an isolated tempdir for the duration of a cache
+    /// test, holding `ENV_LOCK` so no other test mutates it concurrently. The
+    /// returned guard restores the previous value (and releases the lock) on drop.
+    fn isolated_data_dir() -> (tempfile::TempDir, impl Drop) {
+        struct Restore {
+            prev: Option<std::ffi::OsString>,
+            _lock: std::sync::MutexGuard<'static, ()>,
+        }
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                match self.prev.take() {
+                    Some(v) => unsafe { std::env::set_var("ADEN_DATA_DIR", v) },
+                    None => unsafe { std::env::remove_var("ADEN_DATA_DIR") },
+                }
+            }
+        }
+        let lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::var_os("ADEN_DATA_DIR");
+        let data = tempfile::tempdir().unwrap();
+        unsafe { std::env::set_var("ADEN_DATA_DIR", data.path()) };
+        (data, Restore { prev, _lock: lock })
+    }
+
     fn temp_dir_with_files(files: &[(&str, &str)]) -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
         for (name, content) in files {
@@ -1131,10 +1159,9 @@ mod tests {
         // be rejected so the index is rebuilt with the current tokenizer.
         let dir = tempfile::tempdir().unwrap();
         // ADR-003: caches live in the per-user data dir keyed per project. Pin it
-        // to an isolated tempdir so the test neither reads nor pollutes the real
-        // user data dir. (Only this test touches the on-disk cache.)
-        let data = tempfile::tempdir().unwrap();
-        unsafe { std::env::set_var("ADEN_DATA_DIR", data.path()) };
+        // to an isolated tempdir (under ENV_LOCK) so the test neither reads nor
+        // pollutes the real user data dir, and cannot race a parallel cache test.
+        let (_data, _guard) = isolated_data_dir();
         let cache_dir = aden_paths::cache_dir(dir.path());
         std::fs::create_dir_all(&cache_dir).unwrap();
         // Minimal valid Index JSON without a `version` field.
@@ -1157,7 +1184,6 @@ mod tests {
             try_load(dir.path()).is_some(),
             "current-version cache must load"
         );
-        unsafe { std::env::remove_var("ADEN_DATA_DIR") };
     }
 
     #[test]
@@ -1333,6 +1359,10 @@ This mentions exactmatch in the content.
 
     #[test]
     fn test_index_persistence() {
+        // Isolate the on-disk cache from the real data dir and from parallel
+        // tests that mutate ADEN_DATA_DIR (the _data dir and _guard live until
+        // end of scope).
+        let (_data, _guard) = isolated_data_dir();
         let dir = temp_dir_with_files(&[(
             "test.adoc",
             r#"[[test-anchor]]
