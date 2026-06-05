@@ -167,7 +167,9 @@ impl Scanner {
                 if let Some(source_path) = source_path
                     && let Ok(content) = std::fs::read_to_string(&source_path)
                 {
-                    let actual_hash = aden_core::stable_hash(content.as_bytes());
+                    // Normalize line endings so a CRLF checkout on Windows does
+                    // not falsely drift against an LF-generated contract hash.
+                    let actual_hash = aden_core::hash_source(&content);
                     if actual_hash != *expected_hash {
                         events.push(DriftEvent::StaleHash {
                             target_path: format!(".aden/store:{}", anchor),

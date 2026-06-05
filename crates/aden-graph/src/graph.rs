@@ -678,7 +678,11 @@ fn parsed_to_document(parsed: &ParsedDocument, anchor: &str, file_path: &Path) -
 
 /// Heuristically detect node type from anchor and file path.
 fn detect_node_type(anchor: &str, file_path: &Path) -> NodeType {
-    let path_str = file_path.to_string_lossy().to_lowercase();
+    // Normalize separators so `/adr/`-style matches also hold on Windows (`\`).
+    let path_str = file_path
+        .to_string_lossy()
+        .replace('\\', "/")
+        .to_lowercase();
     let anchor_lower = anchor.to_lowercase();
 
     if path_str.ends_with(".adoc")

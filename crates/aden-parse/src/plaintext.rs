@@ -43,7 +43,11 @@ impl crate::extractor::LanguageExtractor for PlainTextExtractor {
         let anchor = make_anchor(&crate_name, &file_name, "document");
         let attrs = build_code_attributes(source, "document", Some(path), None);
 
-        let paragraphs: Vec<Block> = source
+        // Normalize CRLF→LF first: a Windows file's `\r\n\r\n` paragraph break
+        // contains no `\n\n` substring, so without this the whole file would
+        // collapse into a single paragraph.
+        let normalized = source.replace("\r\n", "\n");
+        let paragraphs: Vec<Block> = normalized
             .split("\n\n")
             .filter(|p| !p.trim().is_empty())
             .take(10)

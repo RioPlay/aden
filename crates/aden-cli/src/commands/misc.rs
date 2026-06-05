@@ -231,7 +231,8 @@ pub fn cmd_audit(
         // Skip documentation directories — they contain example vulnerability strings
         // Also skip lint.rs since it contains detection patterns that trigger false positives
         // Also skip init.rs since it uses include_str! with ../ which triggers false positives
-        let path_str = file.to_string_lossy();
+        // Normalize separators so these matches also hold on Windows (`\`).
+        let path_str = crate::util::normalize_sep(file);
         if path_str.contains("/.agent/")
             || path_str.contains("/docs/")
             || path_str.contains("/lint.rs")
@@ -800,7 +801,11 @@ pub fn cmd_ci_check(path: &Path, json: bool) -> Result<(), Box<dyn std::error::E
                         if rel_path.starts_with("tools/") {
                             continue;
                         }
-                        if rel_path.to_string_lossy().contains("/tests/") {
+                        // Component match (not a substring) so it holds on Windows.
+                        if rel_path
+                            .components()
+                            .any(|c| c.as_os_str() == "tests")
+                        {
                             continue;
                         }
                         if *name == "env file" {

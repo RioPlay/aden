@@ -55,7 +55,7 @@ pub(crate) fn build_code_attributes(
     };
     attrs.insert(
         "source_hash".to_string(),
-        aden_core::stable_hash(hash_source.as_bytes()),
+        aden_core::hash_source(&hash_source),
     );
     attrs.insert("last-verified".to_string(), aden_core::rfc3339_now());
     attrs.insert("node-type".to_string(), node_type.to_string());

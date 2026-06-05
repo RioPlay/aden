@@ -52,7 +52,8 @@ impl crate::extractor::LanguageExtractor for AsciiDocExtractor {
         for (line_num, line) in body.lines().enumerate() {
             let line_num = line_num + 1;
 
-            if line == "----" {
+            // trim_end so a CRLF checkout (`----\r`) still matches the fence.
+            if line.trim_end() == "----" {
                 if in_listing_block {
                     code_blocks.push((None, current_code_lines.join("\n")));
                     current_code_lines.clear();
