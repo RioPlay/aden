@@ -697,12 +697,10 @@ pub fn load_or_build_index(path: &Path) -> Result<aden_index::Index, Box<dyn std
 /// (`perform_check`) both route through it so they can never disagree on what
 /// counts as a real orphan.
 pub fn is_expected_metadata(anchor: &str) -> bool {
-    anchor.starts_with("aden://doc/")
-        || anchor.starts_with("adr-")
-        || anchor.starts_with("plan-")
-        || anchor.starts_with("use-case-")
-        || anchor.starts_with("agent-")
-        || anchor == "readme"
+    // Delegate to the shared predicate in aden-heal so the heal scanner and the
+    // CLI's orphan classification can never diverge on what counts as a real,
+    // actionable orphan.
+    aden_heal::drift::is_expected_metadata(anchor)
 }
 
 /// Partition a graph's orphans into `(expected_metadata, actionable)`.

@@ -151,7 +151,7 @@ pub fn cmd_heal_scan_since(
     if propose && !report.events.is_empty() {
         println!("Generating proposals...");
         let proposals_dir = path.join(".aden").join("proposals");
-        std::fs::create_dir_all(&proposals_dir)?;
+        clear_stale_proposals(&proposals_dir)?;
         for event in &report.events {
             let proposal = generate_proposal(event, path)?;
             let store_path = aden_propose::persist(&proposal, path)?;
@@ -470,7 +470,7 @@ pub fn cmd_heal_scan(
             if propose {
                 println!("\n--propose flag set. Generating patches...");
                 let store_dir = path.join(".aden").join("proposals");
-                std::fs::create_dir_all(&store_dir)?;
+                clear_stale_proposals(&store_dir)?;
 
                 for event in &report.events {
                     let proposal = generate_proposal(event, path)?;
@@ -686,6 +686,26 @@ pub fn cmd_heal_watch(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Clear stale proposal patches before a fresh `--propose` run and ensure the
+/// directory exists. Without this, every run appended a new timestamped set and
+/// left the old ones, so the directory grew without bound (2175 files observed).
+/// Each propose run now produces exactly the current drift set.
+fn clear_stale_proposals(proposals_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    std::fs::create_dir_all(proposals_dir)?;
+    for entry in std::fs::read_dir(proposals_dir)? {
+        let entry = entry?;
+        let p = entry.path();
+        if p.extension().and_then(|e| e.to_str()) == Some("adoc")
+            && p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.ends_with(".patch.adoc"))
+        {
+            std::fs::remove_file(&p)?;
+        }
+    }
+    Ok(())
+}
+
 pub fn generate_proposal(
     event: &aden_heal::DriftEvent,
     repo_path: &Path,
@@ -837,9 +857,52 @@ pub fn generate_proposal(
                 patch_asciidoc: patch,
             })
         }
+        aden_heal::DriftEvent::OrphanAnchor {
+            anchor,
+            contract_path,
+        } => {
+            confidence = 0.5;
+            writeln!(
+                rationale,
+                "Orphan anchor: store anchor with no corresponding live source symbol."
+            )
+            .unwrap();
+            writeln!(rationale, "Anchor: {}", anchor).unwrap();
+            writeln!(rationale, "Contract: {}", contract_path).unwrap();
+
+            // Option A: aden stays offline and deterministic. Rather than emit a
+            // body it cannot author (orphan-anchor remediation is prose, not a
+            // template), it emits a structured DRAFT REQUEST that the calling LLM
+            // agent fills in, then submits via `heal --apply`.
+            write_draft_request(
+                &mut patch,
+                "OrphanAnchor",
+                &[("anchor", anchor), ("contract_path", contract_path)],
+                "This store anchor has no live source symbol. Either (1) author the \
+                 documentation prose that should reference it and cite it with \
+                 <<anchor>>, or (2) reply DELETE if the anchor is dead (then run \
+                 `aden heal . --gc`).",
+            );
+
+            Ok(Proposal {
+                id,
+                target_path: target,
+                drift_type: "OrphanAnchorDraft".to_string(),
+                confidence,
+                status: ProposalStatus::PendingReview,
+                rationale,
+                patch_asciidoc: patch,
+            })
+        }
         other => {
             writeln!(rationale, "Drift event detected: {:?}", other).unwrap();
-            writeln!(patch, "// Proposed changes for drift event").unwrap();
+            write_draft_request(
+                &mut patch,
+                drift_kind_name(other),
+                &[("debug", &format!("{:?}", other))],
+                "Aden has no deterministic template for this drift type. An LLM agent \
+                 should draft the appropriate fix below, then submit via `heal --apply`.",
+            );
 
             Ok(Proposal {
                 id,
@@ -852,6 +915,35 @@ pub fn generate_proposal(
             })
         }
     }
+}
+
+/// Emit a structured, LLM-fillable DRAFT REQUEST into a proposal patch body.
+///
+/// Option A of the LLM-drafted-proposals design: aden itself stays offline and
+/// deterministic; instead of writing a body it cannot author, it emits the
+/// context an in-loop LLM agent needs to draft the fix. The agent replaces the
+/// block below the `----` delimiter with the drafted `.adoc` content (or the
+/// literal `DELETE`) and submits it via `heal --apply`.
+fn write_draft_request(
+    patch: &mut String,
+    drift_type: &str,
+    fields: &[(&str, &str)],
+    instruction: &str,
+) {
+    use std::fmt::Write;
+    writeln!(patch, "// === DRAFT REQUEST v1 (LLM-fillable) ===").unwrap();
+    writeln!(patch, "// drift_type: {}", drift_type).unwrap();
+    for (k, v) in fields {
+        writeln!(patch, "// {}: {}", k, v).unwrap();
+    }
+    writeln!(patch, "//").unwrap();
+    writeln!(patch, "// INSTRUCTION: {}", instruction).unwrap();
+    writeln!(
+        patch,
+        "// Replace everything below the delimiter with the drafted content (or DELETE)."
+    )
+    .unwrap();
+    writeln!(patch, "----").unwrap();
 }
 
 /// Garbage-collect stale nodes from the store (store-first).

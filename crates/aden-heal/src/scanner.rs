@@ -15,8 +15,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Default, Serialize, Deserialize)]
 struct SourceCache {
-    /// path relative to repo_root → (mtime_secs, serialized_doc_json)
-    entries: HashMap<String, (u64, String)>,
+    /// path relative to repo_root → (mtime_secs, serialized_doc_json per symbol).
+    /// A single source file emits one Document per symbol, so the value MUST be a
+    /// list — keying a single doc per file collapsed every file to its last
+    /// symbol, making all other symbols read as OrphanAnchor on warm-cache runs.
+    entries: HashMap<String, (u64, Vec<String>)>,
     timestamp_secs: u64,
 }
 
@@ -75,37 +78,52 @@ impl Scanner {
                 let rel_str = rel.to_string_lossy().to_string();
                 let current_mtime = Self::mtime(path);
 
-                // Try cache fast-path: mtime matches and we have a serialized doc
-                if let Some(cached_json) = self.cache.as_ref().and_then(|c| {
-                    let (mt, json) = c.entries.get(&rel_str)?;
+                // Try cache fast-path: mtime matches and we have the file's docs.
+                // The cached value holds ALL of the file's symbol docs, so every
+                // symbol is restored — not just the last one.
+                if let Some(cached_jsons) = self.cache.as_ref().and_then(|c| {
+                    let (mt, jsons) = c.entries.get(&rel_str)?;
                     if *mt == current_mtime {
-                        Some(json.clone())
+                        Some(jsons.clone())
                     } else {
                         None
                     }
-                }) && let Ok(doc) = serde_json::from_str::<Document>(&cached_json)
-                {
-                    return Some((
-                        vec![(rel_str.clone(), (current_mtime, cached_json.clone()))],
-                        vec![(path.clone(), doc)],
-                    ));
+                }) {
+                    let docs: Vec<Document> = cached_jsons
+                        .iter()
+                        .filter_map(|j| serde_json::from_str::<Document>(j).ok())
+                        .collect();
+                    if docs.len() == cached_jsons.len() {
+                        let entries = docs
+                            .into_iter()
+                            .map(|doc| (path.clone(), doc))
+                            .collect::<Vec<_>>();
+                        return Some((
+                            vec![(rel_str.clone(), (current_mtime, cached_jsons))],
+                            entries,
+                        ));
+                    }
                 }
 
-                // Slow path: read & parse
+                // Slow path: read & parse. Cache ALL of the file's symbol docs
+                // under one key so the warm-cache run restores every symbol.
                 if let Ok(content) = std::fs::read_to_string(path)
                     && let Ok(docs) = aden_parse::parse_file(path, &content)
                 {
-                    let mut cache_updates = Vec::new();
+                    let mut jsons = Vec::new();
                     let mut entries = Vec::new();
                     for doc in docs {
                         if let Ok(json) = serde_json::to_string(&doc) {
-                            cache_updates.push((rel_str.clone(), (current_mtime, json)));
+                            jsons.push(json);
                         }
                         entries.push((path.clone(), doc));
                     }
-                    return Some((cache_updates, entries));
+                    return Some((
+                        vec![(rel_str.clone(), (current_mtime, jsons))],
+                        entries,
+                    ));
                 }
-                None::<(Vec<(String, (u64, String))>, Vec<(PathBuf, Document)>)>
+                None::<(Vec<(String, (u64, Vec<String>))>, Vec<(PathBuf, Document)>)>
             })
             .collect();
 
@@ -198,8 +216,16 @@ impl Scanner {
             }
         }
 
-        // e. MissingContract - public source symbols without .aden contract
+        // e. MissingContract - public source symbols without .aden contract.
+        // Only CODE symbols need contracts: documentation files (.md/.adoc/.rst)
+        // ARE the contracts/docs, so their headings and file-level anchors must
+        // not be reported as "missing a contract". They also re-extract with an
+        // unresolved `aden://doc/unknown/...` project segment that can never match
+        // the store, so they would be permanent false positives.
         for (path, doc) in &source_entries {
+            if is_doc_source_file(path) || crate::drift::is_expected_metadata(&doc.anchor) {
+                continue;
+            }
             if is_public_symbol(doc) && !aden_anchors.contains(&doc.anchor) {
                 let symbol_name = doc
                     .anchor
@@ -214,9 +240,16 @@ impl Scanner {
             }
         }
 
-        // f. OrphanAnchor - store anchors without corresponding source symbol
+        // f. OrphanAnchor - store anchors without corresponding source symbol.
+        // Reference docs (doc headings, ADRs, plans, NOTICE/license entries,
+        // code-block snippets) legitimately have no backing source symbol, so
+        // emitting them here floods the report with thousands of non-actionable
+        // events. Gate through `is_expected_metadata` — the same predicate the
+        // CLI's `classify_orphans` uses — so heal agrees with check/status.
         for (anchor, _doc) in &contract_docs {
-            if !anchor_to_source_idx.contains_key(anchor) {
+            if !anchor_to_source_idx.contains_key(anchor)
+                && !crate::drift::is_expected_metadata(anchor)
+            {
                 events.push(DriftEvent::OrphanAnchor {
                     anchor: anchor.clone(),
                     contract_path: format!(".aden/store:{}", anchor),
@@ -756,6 +789,16 @@ fn extract_sig_from_doc(doc: &Document) -> Vec<String> {
         }
     }
     sig
+}
+
+/// Whether a source path is a prose document rather than code. Such files are
+/// the documentation itself, so their anchors must not be treated as code
+/// symbols that need a generated contract (MissingContract).
+fn is_doc_source_file(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|e| e.to_str()),
+        Some("md" | "adoc" | "rst" | "txt" | "aden")
+    )
 }
 
 fn is_public_symbol(doc: &Document) -> bool {
