@@ -6,5 +6,3 @@ authors.workspace = true
 license.workspace = true
 
 [dependencies]
-aden-core = { path = "../aden-core" }
-thiserror = "2.0"

@@ -9,20 +9,27 @@ clean. Removed: `aden-graph` (`blake3`, `serde_json`), `aden-parse` (`fnv`,
 internal workspace edges — `aden-heal → aden-emit`, `aden-propose → aden-emit`,
 `aden-propose → aden-heal`.
 
-- **OPEN — `aden-propose` duplicates `aden-heal` + `aden-emit` instead of
-  depending on them.** The three internal edges above were dead not because the
-  functionality is unwanted but because the code was copy-pasted rather than
-  reused. `aden-propose/src/patch.rs` defines its own 3-variant `DriftEvent`
-  enum — a narrower fork of `aden_heal::DriftEvent` (~11 variants) — and
-  `patch.rs`/`stub.rs` hand-roll AsciiDoc tables (`table_to_asciidoc`,
-  `emit_table`) instead of calling `aden_emit`. The proposal path the CLI
-  actually runs (`aden-cli/src/commands/heal.rs::generate_proposal`) already
-  uses `aden_heal::DriftEvent` + `aden_propose::Proposal`, so propose's own
-  `patch`/`stub` modules are a partially-superseded parallel path. The refactor:
-  delete the local `DriftEvent`, consume `aden_heal::DriftEvent`, and render via
-  `aden_emit`. That work would legitimately reintroduce the `aden-heal` and
-  `aden-emit` deps — earned by use, not left dangling. Deliberately deferred
-  from the dep cleanup so the removal commit stays mechanical and reviewable.
+- **RESOLVED (by deletion) — `aden-propose` carried a dead parallel
+  proposal-rendering path.** Investigation (fan-out read + grep) showed the
+  "duplication" was not live-but-duplicated code: `patch.rs` (`generate_patch` +
+  a local 3-variant `DriftEvent` + `table_to_asciidoc`), `stub.rs`
+  (`generate_stub`/`write_stub`/`emit_table`), `store::apply`, and `ProposeError`
+  had **zero callers** anywhere, and the crate has no tests. The original note's
+  plan — "consume `aden_heal::DriftEvent` and render via `aden_emit`" — was also
+  infeasible: `aden_heal::DriftEvent` (9 variants, path-keyed) flattens
+  signatures to `Vec<String>` and carries no `aden_core::Table`, so it cannot
+  back the current-vs-proposed Table patch the local `DriftEvent` was built for;
+  the two enums are different layers (detect vs. render), not duplicates. And
+  `aden_emit` exposes no public `Table`→AsciiDoc renderer (its `emit_table` is
+  private). The CLI's real path (`aden-cli/src/commands/heal.rs::generate_proposal`)
+  hand-builds `Proposal` structs from `aden_heal::DriftEvent` and uses only
+  `aden_propose::{Proposal, ProposalStatus, persist, load, list}`. So the honest
+  fix was to **delete** the dead path, which also removed the triplicated
+  table-emitter (the surviving copy is `aden_emit`'s private one). `aden-propose`
+  is now a pure-std crate (no `aden-core`/`thiserror` deps). If richer proposals
+  are ever wanted, build them against today's `aden_heal::DriftEvent` in
+  `generate_proposal` (currently hand-rolls `patch_asciidoc` with `writeln!`),
+  with tests — not by reviving the stale fork.
 
 ## 2026-05-30 — MCP rewrite phase 1+2 (contract + structured output)
 

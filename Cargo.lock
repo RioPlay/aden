@@ -189,10 +189,6 @@ dependencies = [
 [[package]]
 name = "aden-propose"
 version = "0.1.0"
-dependencies = [
- "aden-core",
- "thiserror",
-]
 
 [[package]]
 name = "aden-store"

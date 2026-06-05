@@ -66,36 +66,6 @@ pub fn list(store_dir: &Path) -> io::Result<Vec<Proposal>> {
     Ok(proposals)
 }
 
-pub fn apply(proposal: &Proposal) -> io::Result<()> {
-    if !is_safe_id(&proposal.id) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "invalid proposal id",
-        ));
-    }
-
-    // For MissingContract, create the new contract file
-    match proposal.drift_type.as_str() {
-        "MissingContract" => {
-            if let Some(parent) = proposal.target_path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            std::fs::write(&proposal.target_path, &proposal.patch_asciidoc)?;
-        }
-        _ => {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!(
-                    "Drift type '{}' requires manual review before application",
-                    proposal.drift_type
-                ),
-            ));
-        }
-    }
-
-    Ok(())
-}
-
 fn parse_proposal(contents: &str, path: &Path) -> io::Result<Proposal> {
     let id = contents
         .lines()
