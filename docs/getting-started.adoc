@@ -209,7 +209,7 @@ the binary is reachable with `aden-mcp --version`, then **fully restart your AI
 client** so it picks up the new server. Your agent should then list the `aden`
 tools (`grep`, `ask`, `asm`, `query`, `locate`, …).
 
-See `docs/mcp-intro.md` for the full MCP setup guide, <<ai-integration>> for the
+See <<mcp-setup>> for the full MCP setup guide, <<ai-integration>> for the
 agent workflow and recommended system prompt, and <<troubleshooting>> if the
 tools do not appear.
 

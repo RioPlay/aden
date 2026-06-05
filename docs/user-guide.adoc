@@ -61,22 +61,19 @@ aden query --impact "$ANCHOR" --format json | jq '.[] | .anchor'
 aden ask "What breaks if I rename old_function_name?"
 #    (or, anchored:  aden asm --from "$ANCHOR" --depth 4 --budget 8192)
 
-# 4. Make your edits
-# ... (your IDE here) ...
-
-# 5. Regenerate affected contracts
+# 4. Make your edits in your IDE, then regenerate affected contracts
 aden gen src/core/ --auto
 
-# 6. Validate and detect drift
+# 5. Validate and detect drift
 aden check .
 aden heal .
 ----
 
 === Tips for Refactoring
 
-- `aden ask` picks traversal depth automatically from the question's intent (e.g. depth 2 for explain/usage, depth 4 for refactor questions). To set depth explicitly, use `aden asm --from <anchor> --depth 4` when drilling into core modules.
-- Use `aden query --backlinks <anchor>` to find documents that reference a module but do not call it (e.g., ADRs, runbooks).
-- Always run `aden check .` after `aden gen`. If you renamed an anchor, every `<<old-anchor>>` will fail validation and point you to exactly what needs updating.
+- `aden ask` picks traversal depth automatically from the question's intent (depth 2 for explain/usage, depth 4 for refactor). To set depth explicitly, use `aden asm --from <anchor> --depth 4`.
+- Use `aden query --backlinks <anchor>` to find documents that reference a module but do not call it (ADRs, runbooks).
+- Always run `aden check .` after `aden gen`. If you renamed an anchor, every `<<old-anchor>>` fails validation and points you to exactly what needs updating.
 
 == Workflow 3: Keep Documentation Alive
 
@@ -93,12 +90,7 @@ fi
 aden heal . --propose > drift-report.adoc
 ----
 
-=== What Happens
-
-- `aden gen` extracts current signatures from source.
-- `aden check` validates all references.
-- `aden heal` compares emitted contracts to source hashes. If a function signature changed, it emits a `StaleHash` or `SignatureMismatch` event.
-- Proposals are written to `.aden/proposals/` as AsciiDoc patches. Review them before applying.
+`aden gen` extracts current signatures; `aden check` validates references; `aden heal` compares emitted contracts to source hashes and emits `StaleHash`/`SignatureMismatch` events. Proposals are written to `.aden/proposals/` as AsciiDoc patches — review before applying.
 
 == Workflow 4: AI-Assisted Code Review
 
@@ -106,63 +98,39 @@ Before approving a PR, assemble the relevant context for an AI reviewer.
 
 [source,bash]
 ----
-# From the PR branch
 aden gen src/ --auto
 
-# Assemble context from the changed symbols.
-#
-# A file path is NOT an anchor, and there is no string transform from a path to
-# an anchor — you must resolve through the graph. For each symbol you changed,
-# look up its real aden:// anchor with `aden locate` (or `aden grep --json`,
-# whose `anchor` field gives a candidate), then assemble from that anchor:
+# A file path is NOT an anchor and there is no string transform from one to the
+# other — resolve each changed symbol through the graph, then assemble from it.
 for sym in changed_function another_changed_symbol; do
-    anchor=$(aden locate --symbol "$sym" 2>/dev/null \
-             | grep -m1 '^aden://')                       # first matching anchor
+    anchor=$(aden locate --symbol "$sym" 2>/dev/null | grep -m1 '^aden://')
     [ -n "$anchor" ] && aden asm --from "$anchor" --depth 2 --budget 4096 \
         >> review-context.adoc
 done
 
-# Feed review-context.adoc to an LLM with the prompt:
+# Feed review-context.adoc to an LLM:
 # "Review the following changes for safety, correctness, and test coverage."
 ----
 
-=== Why This Works
-
-- The context is bounded by `--budget`, so you never exceed the LLM's window.
-- Depth-limited BFS prevents irrelevant modules from polluting the review.
-- Because the assembled context is AsciiDoc, the LLM can read tables, signatures, and cross-references natively.
+The context is bounded by `--budget` so you never exceed the LLM's window; depth-limited BFS keeps irrelevant modules out; and because the output is AsciiDoc, the LLM reads tables, signatures, and cross-references natively.
 
 == Workflow 5: Create a New Project with Aden Built In
 
-Starting a greenfield project? Scaffold it with Aden from day one.
-
 [source,bash]
 ----
-# Create a new Rust project with Aden scaffolding
 aden new my-project --lang rust .
 cd my-project
-
-# Generate a kickoff document
 aden kickoff --interactive --name my-project
-
-# Generate contracts as you write code
 aden gen src/ --auto
-
-# Validate before every commit
 aden ci-check .
 ----
 
 NOTE: `aden new --lang` only scaffolds **rust**, **go**, or **typescript**
 (aliases: `rs`, `golang`, `ts`/`js`/`javascript`); any other value errors with
 `Language '<x>' not yet supported`. This is the *scaffold* language for a fresh
-project skeleton — it is unrelated to the 300+ languages `aden gen` can *index*.
+skeleton — unrelated to the 300+ languages `aden gen` can *index*.
 
-=== What Gets Scaffolded
-
-- `Cargo.toml` with workspace structure
-- `.agent/` with templates, constraints, and session log
-- `.adenignore` with security-first defaults
-- `docs/kickoff-my-project.adoc` with project goals and acceptance criteria
+Scaffolding produces `Cargo.toml` (workspace structure), `.agent/` (templates, constraints, session log), `.adenignore` (security-first defaults), and `docs/kickoff-my-project.adoc` (goals and acceptance criteria).
 
 == Token Budgeting Strategies
 
@@ -177,12 +145,7 @@ Aden assembles context within a token budget. The default is 4096 for `ask` and 
 | Full onboarding | 8192+ | 4 | All
 |===
 
-=== Budget Warning
-
-If `aden ask` prints `OVER BUDGET` in the summary footer, it stopped early. Either:
-- Raise `--budget`
-- Reduce `--depth`
-- Pin `--from` to a more specific anchor to reduce neighborhood size
+If `aden ask` prints `OVER BUDGET` in the summary footer, it stopped early. Either raise `--budget`, reduce `--depth`, or pin `--from` to a more specific anchor to shrink the neighborhood.
 
 == Common Pitfalls
 
@@ -191,11 +154,146 @@ If `aden ask` prints `OVER BUDGET` in the summary footer, it stopped early. Eith
 
 | `DuplicateAnchor` | Two files declare the same `[[anchor]]` | Rename one anchor
 | `UnresolvedReference` | A `<<ref>>` points to a missing anchor | Create the target doc or fix the typo
-| `Anchor '<name>' not found or ambiguous` | A bare symbol/file name was passed to `asm`/`query` `--from`/`--backlinks`/`--impact` | Resolve it to a real `aden://…` anchor first with `aden grep`, `aden locate --symbol <name>`, or `aden list .`, then pass that URI
+| `Anchor '<name>' not found or ambiguous` | A bare symbol/file name passed to `asm`/`query` `--from`/`--backlinks`/`--impact` | Resolve it to a real `aden://…` anchor first with `aden grep`, `aden locate --symbol <name>`, or `aden list .`
 | `No relevant documents found` | Search keywords do not match anchors | Use `aden search` to discover anchor names
 | Empty `aden ask` output | Token budget exhausted on first node | Lower depth or raise budget
 | Generated contracts have empty signatures | The parser does not recognize the language | Add a language adapter or write manual `.adoc`
 |===
+
+[[troubleshooting]]
+== Troubleshooting
+
+A quick reference to keep alongside the pitfalls table above; this section covers the deeper failure modes.
+
+=== Routing: ask resolves to the wrong anchor
+
+When `aden ask "How does assemble() work?"` returns a module overview instead of the function contract, the search index is usually stale or the query is ambiguous. Use function-call syntax (`func()`) for functions and bare names for structs, rebuild the index, or pin the anchor:
+
+[source,bash]
+----
+# Force index rebuild (cache lives in the per-user data dir, ADR-003)
+rm -rf "$(dirname "$(aden store path)")/cache"
+aden ask "How does assemble() work?"
+
+# Pin the anchor explicitly
+aden ask --from "aden://doc/aden/aden---module-aden-asm-traverse.rs-assemble.adoc/h2signature" "How does it work?"
+
+# Or qualify with crate/module prefix
+aden ask "How does aden_asm::traverse::assemble work?"
+----
+
+Prevention: run `aden sync .` (gen + check + heal) after large refactors.
+
+=== Stale contracts and drift
+
+- **Ghost contracts** for deleted source (`aden status` shows orphans for files removed weeks ago): the store is per-user/central (ADR-003), so rebuild it rather than deleting an in-tree path — `aden regen .`. The pre-commit hook running `aden gen . --quiet` keeps the store in sync; ensure `.git/hooks/pre-commit` is current.
+- **`StaleHash` everywhere** (`aden heal .` flags every contract): you edited source without regenerating — run `aden gen . --auto`.
+
+=== Index sync
+
+`aden search` returning only module docs for a known function means a stale index cache built *before* the last `gen` is missing newly generated symbols. `gen` is store-first; the full-text index merges on-disk `.adoc`/`.aden`/`.txt` files with store-backed contracts, so symbols are normally searchable. Rebuild the index:
+
+[source,bash]
+----
+rm -rf "$(dirname "$(aden store path)")/cache"
+aden sync .
+----
+
+**Orphan documents in status** are often not bugs: module stubs, ADR headers, and architecture docs intentionally have no edges. Use `aden check .` to list the specific orphan anchors (sampled); `adr-*`, `security-model`, `experimental-crates`, etc. are expected metadata.
+
+=== Performance: gen takes too long
+
+Generating contracts for a large project (500+ files) is I/O bound. Use `--quiet` to cut terminal-rendering overhead, or parallelize by crate:
+
+[source,bash]
+----
+aden gen . --auto --quiet
+
+for crate in crates/*; do
+    aden gen "$crate" --auto --quiet &
+done
+wait
+----
+
+=== LLM output and MCP issues
+
+- **`aden asm` outputs raw AsciiDoc instead of stripped prose:** the default `--format` is `llm` (stripped). You get raw AsciiDoc only with `--format aden`; `--format adg` gives compact JSON.
++
+[source,bash]
+----
+aden asm --from readme --depth 2 .                 # default: stripped prose
+aden asm --from readme --format aden --depth 2 .   # explicit raw AsciiDoc
+----
+- **MCP returns INFO/Generated noise lines:** the `aden-mcp` server strips `INFO:`, `Generated`, and `Emitted` lines from stdout before returning JSON. If you still see noise, upgrade `aden-mcp`.
+- **"argument 'X' resolves outside the project directory" / refused:** path confinement rejected an out-of-tree `path`/`out`/`from`. Pass paths inside the project root.
+- **"command timed out after 120s":** a blocking op (`heal --watch`) was invoked over MCP. Run those in a terminal, not via MCP.
+- **"unknown tool":** the tool name is not in the server's set. Check `aden --help` or reinstall the MCP server.
+
+[[use-cases]]
+== Use Cases — Beyond Code
+
+Aden is a **context compiler**: it turns any body of knowledge into a traversable, attributed, token-dense graph.
+
+[IMPORTANT]
+====
+With one exception, the use cases below are **illustrative and aspirational** — they sketch the long-term vision of a general knowledge-graph compiler. The non-software examples reference entities, edge types, and features aden does **not** implement today (e.g. `Supports`/`Contradicts`/`Owns` edges, confidence-degradation tracking, temporal graph slices — see `.agent/glossary.adoc` and `docs/architecture.adoc` for what actually exists). Treat them as product direction. The single **implemented-today** case is *Software Engineering* (#1), whose worked example uses only real commands against this repository.
+====
+
+Every use case follows the same arc: **Ingest** raw material, **Extract** entities and relationships, **Compile** them into a typed graph, **Query** it in natural language, **Drift**-detect when reality and docs diverge, and **Audit** attribution and provenance.
+
+=== 1. Software Engineering (Implemented Today)
+
+Aden extracts symbols, call graphs, and API contracts from source, producing a machine-readable graph that AI agents and humans query without reading every file. The real refactor flow is *find* the symbol, then *assemble* context from its stable `aden://…` anchor — you copy the anchor the tool returns rather than hand-typing it.
+
+[source,bash]
+----
+# 1. Find the symbol (grep is structure-aware: hits tagged with enclosing symbol)
+$ aden grep "fn cmd_asm"
+crates/aden-cli/src/commands/query.rs:231  (cmd_asm): pub fn cmd_asm(opts: AsmOptions) -> ...
+
+# 2. Resolve the name to its stable anchor
+$ aden locate --symbol cmd_asm
+aden://doc/aden/aden---module-aden-cli-query.rs-cmd_asm.adoc/h2signature   heading ...
+
+# 3. Assemble token-dense context (BFS under a budget: signature + referenced symbols)
+$ aden asm --from "aden://doc/aden/aden---module-aden-cli-query.rs-cmd_asm.adoc/h2signature" --depth 1
+Signature: Name cmd_asm  Visibility Private  param opts: AsmOptions  Returns Result<(), ...>
+ensure_fresh, load_or_build_index, resolve_anchor_fuzzy, assemble_adg, ... (callees within budget)
+
+# 4. Blast radius via the graph
+$ aden query --backlinks "aden://module/aden/aden---module-aden-cli-query.rs-cmd_asm.adoc#code_block_3"
+[ { "anchor": "mod-aden", "depth": 1, "node_type": "Module" } ]
+----
+
+Per-symbol assembly is the strongest path today; `--backlinks`/`--impact` quality tracks how densely the target is linked — a thin private helper surfaces only its enclosing module, while a widely-used public API surfaces a large neighborhood.
+
+=== 2–18. Aspirational Domains
+
+The same pattern generalizes. In each, raw material becomes typed nodes and edges, and the differentiating value is automatic impact analysis, drift detection, and immutable attribution.
+
+|===
+| Domain | Example question | Differentiator (aspirational)
+
+| Academic research / lit reviews | "Which papers contradict the central claim of Smith 2024?" | Contradiction edges + confidence degradation; invalidated claims flag downstream papers
+| Legal due diligence | "What obligations under Section 7.3 expire in Q2?" | Cross-contract conflict detection
+| Investigative journalism | "Trace the ownership chain from shell-company-X" (`aden query --from "shell-company-X" --depth 3`) | Immutable source attribution back to PDF page / transcript timestamp
+| Medical protocols | "Patient has X, takes Y — what is the protocol?" | Protocol drift; human sign-off on high-risk conflicts
+| OSINT | "What changed about Org Z between January and March?" | Self-checking cross-reference integrity (`BrokenReference` = missing anchor, not semantic contradiction)
+| Manufacturing / supply chain | "If Supplier A drops Part B, which products can't ship?" | Automatic downstream impact; `SignatureMismatch` on spec changes
+| Financial modeling / audit | "Which portfolio companies breach covenant 4.2?" | Every number traceable to source document and line
+| Game design / worldbuilding | "Unresolved prophecies mentioning Location X?" | Lore-contradiction detection before publication
+| Crisis / incident response | "What symptoms preceded the DB failure but were ignored?" | Post-mortems as live graphs, recalled on recurrence
+| Education / curriculum | "If we remove Course X, which degree paths break?" | Prerequisite drift detection
+| Standards engineering | "Which requirements lack a test assertion?" | Orphan-node coverage; re-certification on `StaleHash`
+| Historical preservation | "Which artifacts have disputed provenance?" | Immutable attribution to archivist, date, source
+| Personal knowledge mgmt | "What did I believe about Y in 2018 vs now?" | Confidence degradation across temporal slices
+| Regulatory compliance | "Which regulations reference outdated standard Z?" | `DeadLink`/`BrokenReference` to deprecated standards
+| Patent / IP research | "What prior art invalidates Claim 3 of Patent X?" | Multi-hop citation chains keyword search misses
+| Environmental / sustainability | "Which species are hit within 3 trophic levels of pollutant P?" | Model drift when field data contradicts the model
+| Architecture / construction | "If we relocate Wall X, which systems need redesign?" | Specification drift vs. the contract
+|===
+
+The common thread across every domain: precise **context assembly**, **drift detection**, immutable **attribution**, **cross-reference integrity**, and **token density**. Aden is not a documentation tool — it is a knowledge integrity system.
 
 == Related Documents
 
@@ -203,3 +301,5 @@ If `aden ask` prints `OVER BUDGET` in the summary footer, it stopped early. Eith
 . <<ai-integration>> --- How AI agents consume assembled context
 . <<philosophy>> --- Why Aden exists and how it was designed
 . <<project-context>> --- Crate map, dependencies, and glossary
+</content>
+</invoke>

@@ -12,6 +12,69 @@ An AI agent has a finite context window. A large codebase does not fit. Aden sol
 
 The answer is assembled dynamically from the knowledge graph, not hard-coded in a prompt.
 
+[[mcp-setup]]
+== MCP Setup
+
+Run Aden as a link:https://modelcontextprotocol.io[Model Context Protocol] server so an AI client (Claude, Cursor, Codex, Zed, Windsurf, opencode, …) queries your codebase graph directly — no copy-pasting CLI output.
+
+`aden-mcp` is a *thin director*: it exposes Aden's CLI as MCP tools, each mapping 1:1 to an `aden` subcommand. There is no separate logic path — calling the `grep` tool runs the same code as `aden grep`, so everything documented for the CLI applies verbatim to the tools. The server operates on the target project you point it at; nothing it returns is specific to Aden's own source.
+
+=== Prerequisites
+
+The MCP server is a separate binary, `aden-mcp`. The repo's `./install.sh` builds and installs *both* `aden` and `aden-mcp` to `~/.local/bin`:
+
+[source,bash]
+----
+./install.sh
+aden --version
+aden-mcp --version
+----
+
+NOTE: `cargo install --path crates/aden-cli` installs only the `aden` CLI and *omits* `aden-mcp`. Use `./install.sh` (or build `crates/aden-mcp` explicitly) for the MCP server.
+
+=== Install into a client
+
+[source,bash]
+----
+aden mcp install --platform <platform>
+----
+
+Supported `<platform>` values: `opencode`, `claude`, `cursor`, `codex`, `zed`, `windsurf`.
+
+Useful flags:
+
+* `--project <PATH>` — pin the project directory the server serves (defaults to CWD).
+* `--binary <PATH>` — point at a specific `aden-mcp` binary if it is not on `PATH`.
+* `--scope <SCOPE>` — `user` (global) or `project` (local). Default: user for Claude Code, project otherwise.
+* `--dry-run` — print what would be written without touching any config.
+* `--all` — install for every supported platform, not just detected ones.
+
+Related: `aden mcp list` (platforms + install status), `aden mcp uninstall --platform <platform>`, `aden mcp serve` (HTTP endpoint for CI/agent integration).
+
+=== Verify it works
+
+1. Confirm the binary is reachable: `aden-mcp --version`.
+2. Check the client config was written: `aden mcp list`.
+3. *Fully restart your AI client* so it loads the new server.
+4. In the client, confirm the `aden` tools appear (e.g. `grep`, `ask`, `asm`, `query`, `locate`). Ask it to `grep` a known string and confirm matches come back tagged with their enclosing symbol.
+
+If the tools do not appear, see <<troubleshooting>>.
+
+=== Argument conventions
+
+* *Use `snake_case` argument names* (`dry_run`, `caller_of`, `show_context`). The server translates them to the CLI's `--kebab-case` flags.
+* *Unknown arguments are rejected* at the schema boundary — a typo like `dept` for `depth` fails fast.
+* *Booleans must be real JSON booleans* (`true`/`false`), not strings.
+* *`locate` requires at least one of `symbol` or `caller_of`*.
+* *Anchors, not bare names.* `asm`/`query` take a full `aden://…` anchor (or a module alias like `mod-<crate>`), not a bare symbol name. Use `grep`/`locate`/`list` to resolve the anchor, then feed it to `asm`/`query` — or use `understand` to skip the chain.
+
+=== Security boundary
+
+* *Path confinement.* Tools operate inside the served project directory; the `path`/`--project` argument defaults to it and the server does not reach outside (including `heal`'s watch target).
+* *Error sanitization.* CLI errors are scrubbed of panic backtraces and absolute paths, and capped in length.
+* *Timeout.* Long-running tools are bounded by a 120-second guard.
+* *`watch` is terminal-only.* The continuous file-watch / live-reindex mode is not exposed over MCP — run `aden watch` in a terminal; use `gen`/`sync` for one-shot updates.
+
 == How `aden ask` Works
 
 `aden ask` is the primary interface for AI agents. It is not a chatbot wrapper around an LLM. It is a **context retrieval engine**.
@@ -237,19 +300,7 @@ JSON envelope automatically — `{total, returned, truncated, ...}` — not the 
 table or "... and N more" footer. The agent reads counts and truncation as data.
 The anchor for `asm`/`query` is passed via `from` (there is no `--anchor` flag).
 
-=== MCP Quick Start
-
-[source,bash]
-----
-# Install MCP for your platform
-aden mcp install --platform opencode
-
-# Or for all supported platforms
-aden mcp install --all
-
-# List configured platforms
-aden mcp list
-----
+For installation and client setup, see <<mcp-setup>>.
 
 == Keeping the Graph Fresh
 
@@ -441,3 +492,4 @@ Template files and instantiated files sometimes share anchors. Rename the instan
 . <<user-guide>> --- Daily workflow reference
 . <<philosophy>> --- Design rationale and token-density principles
 . <<project-context>> --- Crate map, dependencies, glossary
+. <<troubleshooting>> --- When the MCP server or tools do not show up

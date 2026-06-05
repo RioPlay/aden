@@ -42,7 +42,21 @@ Creates:
 |Flag |Description
 
 |--with-secure-refs |Scaffolds CWE Top 25 / OWASP SCP reference stubs under `.agent/secure-coding-refs/`
+|--agents-md |Also seed a short, append-only aden usage block into the repo-root `AGENTS.md` (ADR-004). Idempotent; only ever touches its own marked block
 |===
+
+=== agents-md
+
+Seed or refresh the append-only aden usage block in a repo-root `AGENTS.md`,
+without the full `init` scaffolding (ADR-004). Use this when a repo already has
+an `AGENTS.md` and you just want AI agents to use aden by default. Idempotent:
+it only ever touches its own marked block, so hand-written content around it is
+preserved. Remove the block to opt out.
+
+[source,bash]
+----
+aden agents-md [DIR]
+----
 
 === new
 
@@ -656,6 +670,13 @@ aden review . --since HEAD~5
 
 Validates low-confidence proposals against a token budget.
 
+|===
+|Flag |Description
+
+|--since <REF> |Review only files changed since the given git ref
+|--budget <TOKENS> |Token budget for the review context (default: 2048)
+|===
+
 Example: `aden review . --since HEAD~5` reviews drift proposals for everything
 touched in the last five commits.
 
@@ -729,6 +750,15 @@ aden session --agent-id claude --task "Refactor auth module" --status in_progres
 aden session --agent-id claude --task "Refactor auth module" --status completed
 ----
 
+|===
+|Flag |Description
+
+|--agent-id <ID> |Identifier of the agent (or human) holding the session
+|--task <DESC> |Short description of the work being done
+|--status <STATUS> |Session state, e.g. `in_progress` or `completed`
+|--files <FILES> |Files the session touches, recorded in the lock entry
+|===
+
 Example: start a tracked session, do the work, then close it out with the same
 `--agent-id`/`--task` and `--status completed`.
 
@@ -773,6 +803,19 @@ Each platform reads MCP servers from its own config file and schema. `aden mcp
 install` writes the project-local file when one applies, falling back to the
 user-global path, and merges the `aden` entry into any existing config without
 disturbing other servers.
+
+`install`/`uninstall` flags:
+
+|===
+|Flag |Description
+
+|--platform <PLATFORM> |Target one platform: `opencode`, `claude`, `cursor`, `codex`, `zed`, `windsurf`
+|--all |Apply to all platforms, not just detected ones
+|--scope <SCOPE> |`user` (global) or `project` (local). Default: `user` for Claude Code, `project` otherwise
+|--binary <PATH> |Path to the `aden-mcp` binary to register
+|--project <PATH> |Project directory the server should serve
+|--dry-run |Show what would change without writing files
+|===
 
 |===
 |Platform |Config Path |Format
@@ -1049,8 +1092,9 @@ store, and machine-readable output is available via `--json` where noted above.
 |Old |New |Reason
 
 |`aden graph` |`aden query` |Renamed for clarity
-|`aden ls` |`aden list` |Consistent naming
 |===
+
+NOTE: `aden ls` is *not* deprecated — it remains a live alias for `aden list`.
 
 == Related Documents
 

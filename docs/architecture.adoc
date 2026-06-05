@@ -12,31 +12,15 @@
 
 Aden is a **referential context compiler** — it transforms codebases into traversable knowledge graphs. The goal is making the *structure of understanding* explicit, machine-readable, and queryable by both humans and AI agents.
 
-[ditaa, aden-pipeline, png]
-----
-    +-----------+    +-----------+    +-----------+
-    |   Source  |    |   Aden    |    | Knowledge |
-    |   Code    |--> | Pipeline  |--> |   Graph   |
-    +-----------+    +-----------+    +-----------+
-                            |                |
-                            v                v
-                      +-----------+    +-----------+
-                      | Per-user  |    | aden ask  |
-                      |   Store   |    | aden asm  |
-                      |  (fjall)  |    +-----------+
-                      +-----------+
-----
-
-Or as a flowchart:
-
-[mermaid, aden-flowchart, svg]
+[mermaid, aden-pipeline, svg]
 ----
 flowchart TD
     A[Source Code] --> B[aden-parse]
-    B --> E[aden-graph]
-    E --> F[Knowledge Graph<br/>per-user store]
-    F --> G[aden ask]
-    G --> H[Context for AI]
+    B --> C[aden-graph]
+    C --> D[(Per-user store<br/>fjall)]
+    D --> E[Knowledge Graph]
+    E --> F[aden ask / asm]
+    F --> G[Context for AI]
 ----
 
 == Core Concepts
@@ -484,28 +468,232 @@ Extracted and indexed for search.
 |`aden test` |Run tests |`aden test .`
 |===
 
+[[philosophy]]
+== Design Rationale & Use Cases
+
+=== The Core Thesis
+
+The bottleneck in AI-assisted software development is not model intelligence — it is *context*. LLMs reason well but have a finite context window. Dropped into a 100k-line codebase, an agent faces information overload: it does not know which 10 of 500 files matter, or that changing `Database::connect()` will break `QueueWorker::drain()`. Aden solves this by making the *structure of understanding* explicit, machine-readable, and traversable.
+
+Aden is a **referential context compiler**: it compiles source, docs, notes, and plans — in any language — into a traversable knowledge graph where every node is an AsciiDoc document with typed edges. It is *not* a doc generator (Rustdoc/Javadoc produce browsable HTML; Aden produces machine-navigable context for *reasoning*), *not* a static analyzer (clippy/Semgrep find bugs via control flow; Aden finds *semantic relationships* and keeps them synchronized as code evolves), and *not* an IDE replacement — it is a substrate your IDE, agent, or build pipeline queries to understand the system.
+
+=== Why AsciiDoc?
+
+AsciiDoc is simultaneously human-readable and fully scriptable:
+
+. **Human-readable** — any engineer can open a `.adoc`/`.aden` file and understand it without tooling.
+. **Machine-parseable** — the grammar is regular enough for regexes / small state machines, so tools transform it deterministically.
+. **Rich-structured** — attributes (`:key: value`), anchors (`[[name]]`), cross-refs (`<<name>>`), tables, conditionals, and includes map directly to graph nodes and edges.
+. **Version-control-friendly** — plain text diffs cleanly in Git, so contract changes are reviewable in PRs.
+. **Referential by default** — `<<anchor>>` syntax encourages exactly the linking a knowledge graph needs.
+. **Scriptable and repeatable** — `aden gen` regenerates contracts deterministically, `aden workflow` instantiates templates with parameter substitution, and `aden check` validates every reference as a CI gate — impossible with Markdown or Word.
+
+The name *Aden* — "A Dense Referential Context Compiler" — is the mission statement: every token must justify its existence; fluff is the enemy.
+
+=== Why a Graph?
+
+Software is a network, not a directory tree: modules `use` each other, functions `call` each other, ADRs `constrain`/`justify` choices, tests `verify` behavior, plans `supersede` plans. A graph of typed edges lets you ask questions `grep` cannot: what depends on this function? which contracts are stale? what is the blast radius of changing this module? what context must a prompt include for an agent editing this file?
+
+=== Why Token Density?
+
+Every token an LLM consumes costs. A verbose doc may burn 8,000 tokens and bury the signal. `aden asm` performs a budgeted graph traversal — starting from any anchor, walking edges to assemble a prompt within a token budget while preserving the most critical structural relationships. This is the difference between dumping a whole codebase into a prompt and *surgically* selecting needed context.
+
+=== Why Separate Generated and Human Intent?
+
+A contract has two owners with different authority. The *generated* layer (signatures, call edges, structure) is machine-owned: extracted from source, it must track source exactly or the graph drifts. The *intent* layer ("this must stay pure", load-bearing invariants, an agent's design note) is human/agent-owned and must never be silently overwritten.
+
+Aden separates them by home. The generated layer lives in the rebuildable per-user store (`aden store path`; <<adr-003>>) and `aden gen` overwrites it freely. Durable intent lives in sparse, git-tracked overlays (`.aden/overlays/<anchor>.adoc`) — one small file per annotated symbol, authored with `aden overlay <anchor>`. On every `gen`, a per-symbol three-way merge reconciles them: generated updates (no drift), overlay is preserved and folded into the read graph so `asm`/`ask`/`query` surface intent. When an annotated symbol changes, Aden emits a one-time *review notice* (`.aden/proposals/`) — it notifies, it does not block. A block tagged with the symbol's anchor opts into the change notice; an untagged note simply annotates.
+
+[[use-cases]]
+=== Primary Use Cases
+
+**1. AI agent / contractor onboarding.** Instead of scrolling READMEs and Slack, scaffold and assemble:
+[source,bash]
+----
+aden init  # Scaffolds .agent/ with constraints, glossary, and protocol
+aden asm --from context --depth 3 --budget 8192 --edge-types "constrains,justifies,documents"
+----
+The agent gets a token-dense, graph-traversed prompt with exactly the relevant ADRs, constraints, glossary terms, and module contracts.
+
+[[doc-rot]]
+**2. Documentation that stays alive.** Docs rot when signatures change and `.md` files are forgotten. Aden generates contracts from source and continuously detects drift:
+[source,bash]
+----
+aden gen src/lib.rs --auto   # Generate contract from source
+aden heal . --propose        # Detect drift; review .aden/proposals/
+aden heal . --apply <proposal-id>
+----
+Documentation becomes a living, version-controlled artifact tested at CI time.
+
+**3. Architectural safety during refactoring.** See the blast radius *before* committing:
+[source,bash]
+----
+aden query --from module-core --depth 3      # everything reachable via Uses/Calls/Implements
+aden query --backlinks module-core           # everything that references module-core
+----
+
+**4. Cross-team alignment.** An API contract carries typed edges (`ApiContract::Constrains -> ClientModule`). When the API changes, `heal` detects stale downstream hashes and proposes updates to all consumers simultaneously — the constraint is explicit, machine-checkable, and versioned.
+
+**5. Regulatory & compliance documentation.** Policies are `.adoc` docs with `edge::constrains[]` macros linking them to governed functions. `check` verifies every policy edge resolves to a live contract; `heal` flags any change that breaks a policy link. Compliance becomes continuous and testable, not an annual ritual.
+
+**6. Knowledge preservation for solo projects.** Every ADR, plan, API contract, and runbook lives in the same graph as the code. Returning to a module after months, `aden asm --from module-x --depth 2` reassembles the justifying ADR, dependencies, and verifying tests — you never truly forget your own codebase.
+
+=== The Agent-First Mindset
+
+Aden targets the autonomous AI agent, which needs not HTML but: an accurate relationship map (the graph), a way to know when it is stale (`heal`), a way to assemble just-enough context (`asm`), a way to verify work before committing (`check`), and a way to leave breadcrumbs (`session`). When a human reviews an agent's PR, they read the `.aden` contracts, run `aden check`, and verify `session.adoc` explains what changed and why.
+
+=== Security as a First-Class Concern
+
+. **Path traversal prevention** — `include::[]` directives are canonicalized and bounded to the project directory; an agent cannot inline `/etc/passwd`.
+. **Safe execution** — PowerShell discovery avoids cwd resolution to prevent binary-planting; JSON deserialization is bounded and uses `deny_unknown_fields`.
+. **Id & filename sanitization** — proposal IDs are validated against ASCII-safe whitelists before use as filenames.
+. **No `unsafe` code** — zero `unsafe` blocks in application code.
+
+[[project-context]]
+== Project Context & Crate Map
+
+NOTE: This section is the canonical shared memory for agent sessions working on Aden. Reference it (rather than the deleted `context.adoc`) at the top of agent prompts.
+
+=== Language Defaults
+
+- Rust Edition 2021/2024, latest stable.
+- `thiserror` for all error enums; `serde` for all data interchange.
+- Prefer `std::collections::HashMap` over `BTreeMap` unless order is required.
+- All public APIs `#[derive(Debug)]`; all public API items have doc comments.
+
+=== Project Glossary
+
+Document:: The atomic node in the Aden knowledge graph. Has an anchor, node type, attributes, and blocks.
+Edge:: Typed relationship between two Documents. Enforced by `aden-graph`.
+Contract:: A table block within a Document describing an API surface or behavioral guarantee.
+Block:: A content unit within a Document: table, paragraph, listing, admonition, or description list.
+Symbol:: A named entity extracted from source code (function, type, trait, module).
+Anchor:: A globally unique AsciiDoc identifier matching `^[a-z0-9_-]+$`.
+Emitter:: The `aden-emit` crate that serializes `Document` structs into `.adoc` / `.aden` text.
+Extraction:: Parsing source (Rust, Python, Go, TypeScript, Java, 300+ via tree-sitter) into a `Vec<Document>`.
+ContractRegion:: Semantic region of a contract (`Generated`, `Human`, `Agent`, `Security`, `Contract`, `Constitution`, `Override`, `Proposed`). Determines merge behavior.
+ContractState:: Three-way merge state (`ground`/`base`/`working`) for incremental contract generation.
+Constitution:: A `[constitution]` block of precedence-ranked policy directives — the highest authority in the contract hierarchy.
+Directive:: A policy rule (`Forbid`, `Warn`, `Suggest`, `Allow`) extracted from `[security]` or `[constitution]` blocks.
+Override:: A `[override]` block that bypasses a directive with `:justification:` and `:reviewer:`.
+Staging:: Write-only audit trail in `.aden/staging/` for agent proposals before promotion.
+
+=== Agent Conventions
+
+. Every `.adoc` file declares an anchor immediately before the title.
+. Every table has a header row.
+. Use `agent-note::` blocks for temporal annotations and uncertainty.
+. Use `ifdef::agent[]` to hide human prose from AI context.
+. Never use YAML frontmatter; use AsciiDoc attributes (`:key: value`).
+. Resolve every `<<reference>>` to an existing `[[anchor]]`.
+
+=== Dependencies
+
+|===
+|Crate |Purpose |Version Policy
+
+|tree-sitter |Polyglot parsing |Latest stable
+|clap |CLI argument parsing |Latest stable
+|thiserror |Error ergonomics |Latest stable
+|serde |AST interchange |Latest stable
+|serde_json |JSON consumer for bridges |Latest stable
+|fnv |Stable content hashing |Latest stable
+|petgraph |Graph data structure |Latest stable
+|fjall |LSM-tree backing the per-user project store (<<adr-003>>) |Latest stable
+|postcard |Compact store serialization |Latest stable
+|regex |Lightweight AsciiDoc parsing |Latest stable
+|toml |Configuration parsing |Latest stable
+|===
+
+=== Phase 0 Crate Map (Current)
+
+|===
+|Crate |Purpose |Status
+
+|aden-core |Schema, contract kernel, staging |Shipped Phase 0
+|aden-parse |Language routers and AST extraction |Shipped Phase 0
+|aden-emit |Deterministic AsciiDoc emitter |Shipped Phase 0
+|aden-graph |Backlinks, typed edges, integrity checks |Shipped Phase 0
+|aden-asm |Context assembler (prompt builder) |Shipped Phase 0
+|aden-index |Inverted-index semantic search |Shipped Phase 0
+|aden-heal |Drift detection and health scoring |Shipped Phase 0
+|aden-propose |Patch generation and proposal lifecycle |Shipped Phase 0
+|aden-store |fjall LSM-tree persistence (per-user store, <<adr-003>>) |Shipped Phase 0
+|aden-paths |Per-user, per-project path resolution and project identity (<<adr-003>>) |Shipped Phase 0
+|aden-diagnose |Rule-based diagnostic scanner (backs `aden diagnose`) |Shipped Phase 0
+|aden-mcp |MCP server integration (shells out to the `aden` binary) |Shipped Phase 0
+|aden-lsp |LSP for `.adoc`/`.aden` files |Shipped Phase 0
+|aden-policy |Constitutional policy engine, directives |Shipped Phase 0
+|aden-cli |Binary (`aden`) with all commands |Shipped Phase 0
+|===
+
+=== Phase 1-6 Crate Map (Planned)
+
+|===
+|Crate |Purpose |Status
+
+|aden-retrieval |Tier 1-3 search (structural, semantic, lexical) |Phase 2
+|aden-mcp |Execution-based MCP server |Phase 2
+|aden-a2a |Google A2A agent bridge |Phase 2
+|aden-attest |SPDX, CycloneDX, Ed25519, SLSA, SBOMit |Phase 4
+|aden-telemetry |OTLP ingestion, proposal engine, cost-report |Phase 5
+|aden-simulate |Simulation, history diff, fuzz-contract, threat-model |Phase 5
+|aden-api |REST/gRPC programmatic access |Phase 6
+|Aden PowerShell module |`Invoke-AdenAssemble`, `Test-AdenIntegrity` |Phase 5
+|===
+
+=== Legal & Governance
+
+Project:: Aden — A Dense Referential Context Compiler
+License:: AGPL-3.0-or-later
+Copyright:: 2026 RioPlay <rioplay@rioplay.dev>
+Author:: RioPlay
+Governance:: BDFL model; DCO required for contributions
+Maintainers:: See MAINTAINERS.md
+Contributing:: See CONTRIBUTING.md
+
+[[experimental-crates]]
+== Experimental and Standalone Crates
+
+Tracks crates in the workspace that are not fully integrated into core functionality. Status: `core` (fully integrated), `experimental` (implemented, not integrated), `standalone` (separate tool/binding).
+
+=== Experimental Crates (Not Integrated)
+
+None at present. The previously-tracked experimental crates (`aden-api`,
+`aden-attest`, `aden-simulate`, `aden-telemetry`) were **removed** on 2026-06-03:
+they had zero workspace dependents, were not wired into any binary, and existed
+only as roadmap scaffolding (Phase 4-6). Their roadmap intent is still recorded
+in the "Phase 1-6 Crate Map (Planned)" table above; the code can be reconstructed
+from git history if/when those phases are picked up.
+
+=== Standalone Crates (Separate Distribution)
+
+**aden-lsp** — `crates/aden-lsp/` (~8KB), STANDALONE. Language Server Protocol implementation for IDE integration, distributed as a separate `aden-lsp` binary. Open decision: keep in workspace for convenience, move to an external repo for cleaner separation, or deprecate in favor of MCP-based IDE integration.
+
+=== Core Crates (Fully Integrated)
+
+`aden-core` (schema/types), `aden-parse` (language parsers), `aden-emit` (contract emission), `aden-graph` (knowledge graph), `aden-index` (full-text search), `aden-asm` (context assembly), `aden-cli` (main binary), `aden-mcp` (MCP server), `aden-heal` (self-healing), `aden-propose` (patch generation, used by heal), `aden-policy` (constitutional directives), `aden-store` (fjall LSM-tree per-user store, <<adr-003>>), `aden-diagnose` (deterministic diagnostic scanner, backs `aden diagnose`), `aden-paths` (per-user, per-project path resolution and project identity, <<adr-003>>).
+
+NOTE: `aden-mcp` is integrated but unusual — it has no `aden-*` crate
+dependencies. It shells out to the `aden` binary as a sibling process
+(`resolve_aden_binary` + `tokio::process::Command`) rather than linking the
+core crates directly.
+
+=== Governance
+
+New crates should start as: (1) features in existing crates (preferred), (2) experimental crates with a clear integration path, or (3) standalone crates only with strong justification. Experimental crates older than 12 months without integration plans should be archived to separate repos or removed.
+
+The cleanup of the four removed crates is complete (documented, decided **remove** as declaration-only roadmap scaffolding, and removed on 2026-06-03).
+
+*Last updated:* 2026-06-03 +
+*Next review:* 2026-08-27
+
 == Related Documents
 
-. <<philosophy>> — Design rationale and core thesis
 . <<adr-001>> — AsciiDoc as native substrate
 . <<adr-002>>, <<adr-003>> — Secure-coding standard and store-location decisions
 . <<ai-integration>> — How AI agents use Aden
 . <<user-guide>> — Daily workflows
-== Module Overview
-
-See also:
-- `aden-core`
-- `aden-cli`
-- `aden-parse`
-- `aden-emit`
-- `aden-asm`
-- `aden-graph`
-- `aden-heal`
-- `aden-propose`
-- `aden-policy`
-- `aden-index`
-- `aden-store` — fjall LSM-tree persistence (per-user, per-project store; see <<adr-003>>)
-- `aden-paths` — per-user, per-project path resolution and project identity (see <<adr-003>>)
-- `aden-diagnose` — deterministic diagnostic scanner (backs `aden diagnose`)
-- `aden-lsp`
-- `aden-mcp`
+. Root entry point: `README.md`; agent workspace: `.agent/context.adoc`
+. Quick start: getting-started.adoc (AI agent onboarding)
+. Security scanning: run `aden audit .`

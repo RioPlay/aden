@@ -24,8 +24,7 @@ This is the canonical entry point for all Aden documentation. Read the document 
 |===
 |Document |What You'll Learn |Time
 
-|<<ai-integration>> |How to use `aden ask`, `aden asm`, `aden query`, `aden locate` as an AI agent |20 minutes
-|link:mcp-intro.md[MCP Setup] |Install the Aden MCP server (`aden mcp install --platform <client>`) and verify it |10 minutes
+|<<ai-integration>> |Use `aden ask`, `asm`, `query`, `locate` as an agent; includes <<mcp-setup>> for installing the MCP server |30 minutes
 |===
 
 == For Contributors
@@ -33,9 +32,7 @@ This is the canonical entry point for all Aden documentation. Read the document 
 |===
 |Document |What You'll Learn |Time
 
-|<<architecture>> |Crate architecture, data flow, pipeline stages |30 minutes
-|<<project-context>> |Crate map, dependencies, glossary, conventions |20 minutes
-|<<philosophy>> |Design rationale: why AsciiDoc, why a graph, why token density |20 minutes
+|<<architecture>> |Crate architecture, data flow, pipeline stages; folds in <<philosophy>> (design rationale) and <<project-context>> (crate map, glossary, experimental crates) |30 minutes
 |===
 
 == Reference
@@ -43,9 +40,9 @@ This is the canonical entry point for all Aden documentation. Read the document 
 |===
 |Document |Purpose
 
-|<<troubleshooting>> |Common problems and their fixes
-|<<use-cases>> |Use cases beyond software engineering
-|<<experimental-crates>> |Experimental and standalone crate status
+|<<commands>> |Complete CLI reference with every flag and option
+|<<user-guide>> |Daily workflows, plus <<troubleshooting>> and <<use-cases>>
+|<<security-model>> |Threat model and security boundaries
 |===
 
 == Architecture Decisions
@@ -56,6 +53,7 @@ This is the canonical entry point for all Aden documentation. Read the document 
 |<<adr-001>> |All architecture decisions: AsciiDoc/Rust, AGPL-3.0, Markdown emission, polyglot toolchain, semantic networks
 |<<adr-002>> |Secure-coding standard: CWE Top 25 / OWASP SCP reference model
 |<<adr-003>> |Store location and project identity (centralized per-user store; fixes subfolder pollution)
+|<<adr-004>> |AGENTS.md guidance: append-only aden usage block
 |===
 
 == Quick Reference
@@ -108,8 +106,4 @@ aden ci-check .
 . <<commands>>
 . <<ai-integration>>
 . <<architecture>>
-. <<project-context>>
-. <<philosophy>>
-. <<troubleshooting>>
-. <<use-cases>>
-. <<experimental-crates>>
+. <<security-model>>
