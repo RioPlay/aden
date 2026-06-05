@@ -599,34 +599,75 @@ fn lint_secure_coding_line(line: &str, line_num: usize, ext: &str) -> Vec<LintRe
 /// contain the literal `".to_string().to_string()"` as a string, which must
 /// never be flagged or rewritten.
 pub(crate) fn code_only(line: &str) -> String {
+    let chars: Vec<char> = line.chars().collect();
     let mut out = String::with_capacity(line.len());
-    let mut chars = line.chars().peekable();
-    let mut in_str = false;
-    let mut escaped = false;
-    while let Some(c) = chars.next() {
-        if in_str {
-            // Inside a string literal: blank everything until the closing quote.
-            if escaped {
-                escaped = false;
-                out.push(' ');
-            } else if c == '\\' {
-                escaped = true;
-                out.push(' ');
-            } else if c == '"' {
-                in_str = false;
-                out.push(' ');
-            } else {
-                out.push(' ');
-            }
-        } else if c == '"' {
-            in_str = true;
-            out.push(' ');
-        } else if c == '/' && chars.peek() == Some(&'/') {
-            // Rest of the line is a comment — drop it.
+    let is_ident = |c: char| c.is_alphanumeric() || c == '_';
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+
+        // Line comment — drop the rest.
+        if c == '/' && chars.get(i + 1) == Some(&'/') {
             break;
-        } else {
-            out.push(c);
         }
+
+        // Raw string literal: `r"…"`, `r#"…"#`, `r##"…"##`, … The body may
+        // contain unescaped `"`; it ends at a quote followed by the same number
+        // of `#`. Only treat `r` as a prefix when it starts a token (the
+        // previous char is not an identifier char), so `error`/`for` don't match.
+        if c == 'r' && (i == 0 || !is_ident(chars[i - 1])) {
+            let mut j = i + 1;
+            let mut hashes = 0;
+            while chars.get(j) == Some(&'#') {
+                hashes += 1;
+                j += 1;
+            }
+            if chars.get(j) == Some(&'"') {
+                // Blank the opening delimiter (r, #…, ").
+                for _ in i..=j {
+                    out.push(' ');
+                }
+                let mut k = j + 1;
+                while k < chars.len() {
+                    if chars[k] == '"'
+                        && (0..hashes).all(|h| chars.get(k + 1 + h) == Some(&'#'))
+                    {
+                        for _ in 0..=hashes {
+                            out.push(' '); // closing quote + hashes
+                        }
+                        k += 1 + hashes;
+                        break;
+                    }
+                    out.push(' ');
+                    k += 1;
+                }
+                i = k;
+                continue;
+            }
+        }
+
+        // Regular string literal with `\` escapes.
+        if c == '"' {
+            out.push(' ');
+            i += 1;
+            let mut escaped = false;
+            while i < chars.len() {
+                let ch = chars[i];
+                out.push(' ');
+                i += 1;
+                if escaped {
+                    escaped = false;
+                } else if ch == '\\' {
+                    escaped = true;
+                } else if ch == '"' {
+                    break;
+                }
+            }
+            continue;
+        }
+
+        out.push(c);
+        i += 1;
     }
     out
 }
@@ -637,38 +678,33 @@ fn lint_rust_line(line: &str, line_num: usize) -> Vec<LintResult> {
     // match real code (avoids flagging a pattern quoted inside a string).
     let code = code_only(line);
 
-    // Skip lines that are comments or string-literal definitions — the pattern
-    // may appear as documentation or as a value being matched, not as real usage.
-    let trimmed = line.trim();
-    let is_string_literal_line = trimmed.starts_with("//")
-        || trimmed.starts_with("///")
-        || trimmed.starts_with('"')
-        || trimmed.starts_with("r\"")
-        || trimmed.starts_with("r#");
-
-    if line.contains("unsafe fn") && !is_string_literal_line {
+    // Pattern detection runs against `code` (string/comment text blanked by
+    // code_only above) so a pattern quoted inside a string literal — e.g. the
+    // linter's own rule definitions like `line.contains("unsafe fn")` — is not
+    // flagged as real usage.
+    if code.contains("unsafe fn") {
         results.push(LintResult {
             file: String::new(),
             line: line_num,
-            column: line.find("unsafe fn").unwrap_or(0) + 1,
+            column: code.find("unsafe fn").unwrap_or(0) + 1,
             severity: LintSeverity::Warn,
             rule: "unsafe_fn".to_string(),
             message: "Usage of unsafe fn - review for memory safety".to_string(),
         });
     }
 
-    if line.contains("unwrap()") && !is_string_literal_line {
+    if code.contains("unwrap()") {
         results.push(LintResult {
             file: String::new(),
             line: line_num,
-            column: line.find("unwrap()").unwrap_or(0) + 1,
+            column: code.find("unwrap()").unwrap_or(0) + 1,
             severity: LintSeverity::Suggest,
             rule: "unwrap_used".to_string(),
             message: "unwrap() can panic - consider using ? or expect() with context".to_string(),
         });
     }
 
-    if (line.contains("todo!()") || line.contains("unimplemented!()")) && !is_string_literal_line {
+    if code.contains("todo!()") || code.contains("unimplemented!()") {
         results.push(LintResult {
             file: String::new(),
             line: line_num,
@@ -735,14 +771,18 @@ fn lint_rust_line(line: &str, line_num: usize) -> Vec<LintResult> {
     // legitimate product and `eprintln!` is diagnostic output, so neither is
     // flagged. (The previous rule matched the `println!` substring, which also
     // fired on every `eprintln!` and on all user-facing CLI output.)
+    // Detect the macro on `code` so a quoted macro name (e.g. the linter's own
+    // `find_macro(line, "dbg!")`) is not mistaken for a real invocation. The
+    // `{:?}` check stays on `line` because the debug formatter legitimately
+    // lives inside the format string, which code_only blanks out.
     let has_print_macro =
-        find_macro(line, "println!").is_some() || find_macro(line, "print!").is_some();
+        find_macro(&code, "println!").is_some() || find_macro(&code, "print!").is_some();
     let uses_debug_fmt = line.contains("{:?}") || line.contains("{:#?}");
-    let has_dbg_macro = find_macro(line, "dbg!").is_some();
+    let has_dbg_macro = find_macro(&code, "dbg!").is_some();
     if has_dbg_macro || (has_print_macro && uses_debug_fmt) {
-        let column = find_macro(line, "dbg!")
-            .or_else(|| find_macro(line, "println!"))
-            .or_else(|| find_macro(line, "print!"))
+        let column = find_macro(&code, "dbg!")
+            .or_else(|| find_macro(&code, "println!"))
+            .or_else(|| find_macro(&code, "print!"))
             .map(|i| i + 1)
             .unwrap_or(1);
         results.push(LintResult {
@@ -1362,6 +1402,23 @@ mod tests {
             !code_only(r#"let s = "a \" .to_string().to_string()";"#)
                 .contains(".to_string().to_string()")
         );
+    }
+
+    #[test]
+    fn code_only_blanks_raw_string_literals() {
+        // Pattern inside a hashed raw string is not code (regression: the linter
+        // flagged its own `r#"…unsafe fn…"#` / `r#"…dbg!…"#` test fixtures).
+        let blanked = code_only(r##"let l = r#"unsafe fn dbg!() {:?} todo!()"#;"##);
+        assert!(!blanked.contains("unsafe fn"), "got: {blanked}");
+        assert!(!blanked.contains("dbg!"), "got: {blanked}");
+        assert!(!blanked.contains("todo!()"), "got: {blanked}");
+        // The surrounding real code survives.
+        assert!(blanked.contains("let l ="), "got: {blanked}");
+        // Non-hashed raw string too.
+        assert!(!code_only(r##"x(r"unsafe fn")"##).contains("unsafe fn"));
+        // `r` as part of an identifier must NOT trigger raw-string handling.
+        assert!(code_only("for x in y { foo() }").contains("for x in y"));
+        assert!(code_only("let error = bar();").contains("let error = bar()"));
     }
 
     #[test]
