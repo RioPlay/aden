@@ -758,7 +758,12 @@ mod collect_files_tests {
             .map(|p| p.strip_prefix(&base).unwrap().to_string_lossy().to_string())
             .collect();
 
-        assert!(names.iter().any(|n| n.ends_with("docs/real.adoc")));
+        // Normalize separators so the path check holds on Windows (`\`) too.
+        assert!(
+            names
+                .iter()
+                .any(|n| n.replace('\\', "/").ends_with("docs/real.adoc"))
+        );
         assert!(
             !names.iter().any(|n| n.contains(".agent")),
             "excluded .agent leaked: {:?}",
