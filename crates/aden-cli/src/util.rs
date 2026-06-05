@@ -687,7 +687,6 @@ pub fn load_or_build_index(path: &Path) -> Result<aden_index::Index, Box<dyn std
     Ok(index)
 }
 
-/// Compute a quick health score from drift events (consistent with heal report).
 /// Classify an anchor as *expected* metadata that legitimately has no graph
 /// edges. Doc-heading anchors (`aden://doc/...`) and standalone metadata docs
 /// (ADR/plan/use-case/readme/agent) are reference material, not dead code, so
