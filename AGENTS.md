@@ -1,85 +1,49 @@
 # Agent Manifest: Aden
 
 > **For AI agents** (Claude, Codex, Cursor, OpenCode, etc.) working on this repository.
+> Use the **aden MCP tools** to understand and navigate the code — not raw
+> `grep`/`find`/`cat`-walking. Every aden result is tagged with its enclosing symbol,
+> which is the anchor you feed back into the graph.
 
-## Quick Start
+## The graph is fresh by construction
 
-1. **Read `.agent/onboarding.adoc`** first
-2. Check `.agent/session.adoc` for active sessions
-3. Review `.agent/constraints.adoc` for hard rules
+Read tools (`ask`, `search`, `grep`, `locate`, `query`, `asm`) auto-reindex any file
+that changed since the last run. You do **not** need to run `gen` before a session or
+after your own edits. Only run `gen` after large *external* changes — cloning a new
+repo, a big merge, or generated code appearing outside your edits.
 
-## Important: AsciiDoc Format
+## Which tool, when
 
-This repository uses **AsciiDoc** (`.adoc`), not Markdown.
-- Files declare `[[anchors]]` before titles
-- References use `<<anchor>>` (resolvable cross-references)
-- Run `aden check . --severity Forbid` after editing `.adoc` files
+| Goal | Tool |
+| --- | --- |
+| Structure-aware content search (returns enclosing symbol = anchor) | `grep "pattern"` |
+| Natural-language question over the code/docs | `ask "how does X work?"` |
+| Keyword retrieval of relevant context | `search "keywords"` |
+| Find a symbol's definition + call sites | `locate --symbol <name>` |
+| Assemble a token-budgeted context bundle around an anchor | `asm <anchor>` |
+| Blast radius — what references this (before a refactor) | `query --backlinks <anchor>` |
+| Blast radius — downstream reach | `query --impact <anchor>` |
+| Walk the graph N hops from an anchor | `query --from <anchor> --depth 2` |
 
-## Essential Commands
+**Canonical flow:** `grep` to find the structure → take the enclosing symbol it returns
+→ feed that anchor to `asm`/`query` to traverse → `ask` for an explanation.
 
-### Before Changing Code
-```bash
-aden query --impact <anchor>      # blast radius: downstream reach
-aden query --backlinks <anchor>   # blast radius: what references this anchor
-aden ask "What does X do?" --from <anchor>   # explanation, not blast radius
-aden query --from <anchor> --depth 2
-aden locate --symbol <symbol>
-```
+## Validate, heal, test
 
-### After Writing Code
-```bash
-aden gen <file>           # Index this file into the knowledge graph (per-user store)
-aden check . --severity Forbid  # Validate refs (fails only on critical)
-```
-
-### Testing & Linting
-```bash
-aden lint .               # Lint all languages
-aden test .               # Run tests
-aden ci-check .           # Full CI gates before commit
-```
+- `check . --severity Forbid` — validate `<<anchor>>` refs (fails only on critical)
+- `heal` — detect drift and resync contracts with the code
+- `diagnose` — deterministic knowledge-graph diagnostics
+- `lint .` — lint all languages
+- `test .` — run tests
+- `ci-check .` — full CI gates before commit
 
 ## Conventions
 
-- **Never hand-edit the knowledge graph** — rebuild with `aden gen`
-- **Never commit `.aden/`** — the build artifact (in `.gitignore`)
+- **Never hand-edit the knowledge graph** — rebuild with `gen`
+- **Never commit `.aden/`** — build artifact, in `.gitignore`
 - **Never ignore test failures**
-- **Append your session** to `.agent/session.adoc` before finishing
-- **Never suppress warnings** without `// SAFETY:` or `// REVIEW:`
+- This repo uses **AsciiDoc** (`.adoc`): `[[anchors]]` precede titles, `<<anchor>>`
+  cross-references must resolve. Run `check . --severity Forbid` after editing `.adoc`.
 
-## Architecture
-
-| Crate | Responsibility |
-| --- | --- |
-| `aden-core` | Schema: Document, Block, Edge, Symbol, three-way merge |
-| `aden-parse` | Language routers & AST extraction (Rust, Python, Go, TS/JS, C#, Java, Kotlin, PHP, Ruby, +305 generic) |
-| `aden-emit` | Deterministic AsciiDoc emitter |
-| `aden-graph` | DiGraph, cycle detection, typed edges, integrity |
-| `aden-asm` | Context assembly: BFS traversal, token budgeting |
-| `aden-index` | Full-text search with fuzzy matching |
-| `aden-heal` | Drift detection & health scoring |
-| `aden-propose` | Patch generation & proposals |
-| `aden-mcp` | MCP server (OpenCode, Claude, Cursor, Zed, Windsurf) |
-| `aden-cli` | Binary (`aden`) |
-| `aden-policy` | Constitutional directives, precedence |
-| `aden-store` | fjall-backed (LSM-tree) graph store (store-first persistence) |
-| `aden-diagnose` | Deterministic knowledge-graph diagnostics |
-| `aden-lsp` | Language Server Protocol integration |
-
-## Documentation
-
-| Document | Purpose |
-| --- | --- |
-| `docs/commands.adoc` | Complete CLI reference (every flag) |
-| `docs/getting-started.adoc` | Quick start guide |
-| `docs/architecture.adoc` | System architecture |
-| `docs/context.adoc` | Glossary, conventions |
-| `docs/adr-*.adoc` | Architecture decisions |
-| `docs/use-cases.adoc` | Non-software use cases |
-
----
-
-*Your next step: `.agent/onboarding.adoc`*
-== Modules
-
-See: <<mod-aden-core>>, <<mod-aden-cli>>, <<mod-aden-graph>>
+> Running aden from the shell instead of the MCP tools? Prefix each command with `aden`
+> (e.g. `aden grep "pattern"`). `path` defaults to the project directory.

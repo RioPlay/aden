@@ -48,6 +48,18 @@ enum Commands {
         /// index, with citations) into .agent/secure-coding-refs/
         #[arg(long)]
         with_secure_refs: bool,
+        /// Seed a short, append-only aden usage block into the repo-root
+        /// AGENTS.md so AI agents use aden by default (ADR-004). Idempotent;
+        /// only ever touches its own marked block. Remove the block to opt out.
+        #[arg(long)]
+        agents_md: bool,
+    },
+    /// Seed/refresh the append-only aden usage block in a repo-root AGENTS.md,
+    /// without the full `init` scaffolding (ADR-004). Idempotent; only ever
+    /// touches its own marked block. Remove the block to opt out.
+    AgentsMd {
+        #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
+        path: PathBuf,
     },
     /// Create a new project from a language template with aden scaffolding
     New {
@@ -780,7 +792,9 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Init {
             path,
             with_secure_refs,
-        } => commands::cmd_init(&path, with_secure_refs),
+            agents_md,
+        } => commands::cmd_init(&path, with_secure_refs, agents_md),
+        Commands::AgentsMd { path } => commands::cmd_agents_md(&path),
         Commands::Regen { path } => {
             let root = find_project_root(&path);
             // True from-scratch rebuild. Clearing only the caches (the old

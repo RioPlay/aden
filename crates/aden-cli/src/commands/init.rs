@@ -31,7 +31,9 @@ pub fn cmd_new(name: &str, lang: &str, parent: &Path) -> Result<(), Box<dyn std:
     }
 
     // Run aden init in the new project (refs are opt-in via `aden init`).
-    cmd_init(&project_dir, false)?;
+    // A freshly scaffolded project has no user-owned AGENTS.md to respect, so
+    // seed the guidance block by default (ADR-004).
+    cmd_init(&project_dir, false, true)?;
 
     // Create initial docs directory (hidden under .aden)
     let aden_docs_dir = project_dir.join(".aden").join("docs");
@@ -92,6 +94,88 @@ aden ci-check .
     println!("    aden kickoff --interactive --name {}", name);
     println!("    aden workflow design --from docs/kickoff.adoc");
     Ok(())
+}
+
+// ADR-004: marker sentinels. Aden owns ONLY the text between these; everything
+// else in AGENTS.md belongs to the user and is never touched.
+const AGENTS_BEGIN: &str =
+    "<!-- BEGIN aden:guidance (managed by `aden init` — edit outside this block) -->";
+const AGENTS_END: &str = "<!-- END aden:guidance -->";
+
+/// The short, behavior-changing usage block. Kept minimal on purpose — the deep
+/// reference lives in `.agent/aden-guide.adoc`.
+const AGENTS_GUIDANCE: &str = r#"## Using aden
+
+Use the **aden** MCP tools (or `aden <cmd>` on the shell) to navigate this
+codebase — not raw `grep`/`find`. Every aden result is tagged with its enclosing
+symbol, which is the anchor you feed back into the graph.
+
+**The graph is fresh by construction.** Read tools (`ask`, `search`, `grep`,
+`locate`, `query`, `asm`) auto-reindex any file changed since the last run. You do
+**not** need `gen` before a session or after your own edits — only after large
+*external* changes (cloning, a big merge, generated code).
+
+| Goal | Tool |
+| --- | --- |
+| Structure-aware search (returns enclosing symbol = anchor) | `grep "pattern"` |
+| Natural-language question over the code | `ask "how does X work?"` |
+| Find a symbol's definition + call sites | `locate --symbol <name>` |
+| Token-budgeted context bundle around an anchor | `asm <anchor>` |
+| Blast radius — what references this | `query --backlinks <anchor>` |
+| Blast radius — downstream reach | `query --impact <anchor>` |
+
+**Flow:** `grep` → take the enclosing symbol → `asm`/`query` to traverse → `ask`
+to explain. Validate with `check . --severity Forbid`; resync drift with `heal`.
+
+See `.agent/aden-guide.adoc` for the full reference."#;
+
+/// `aden agents-md [DIR]` — seed/refresh ONLY the append-only aden usage block in
+/// `<DIR>/AGENTS.md`, without the full `init` scaffolding. Used by the installer
+/// prompt and runnable any time against any project (ADR-004).
+pub fn cmd_agents_md(target: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let action = seed_agents_md(target)?;
+    println!("{action}");
+    Ok(())
+}
+
+/// Seed/refresh the append-only aden block in `<target>/AGENTS.md` (ADR-004).
+///
+/// Guest rules: create the file if absent; if the markers already exist, replace
+/// ONLY the text between them; otherwise append the block. Never touch a byte
+/// outside the markers. Returns a human-readable description of what happened.
+fn seed_agents_md(target: &Path) -> Result<String, Box<dyn std::error::Error>> {
+    let path = target.join("AGENTS.md");
+    let block = format!("{AGENTS_BEGIN}\n{AGENTS_GUIDANCE}\n{AGENTS_END}\n");
+
+    if !path.exists() {
+        std::fs::write(&path, &block)?;
+        return Ok(
+            "Wrote AGENTS.md with the aden:guidance block (remove the block to opt out).".into(),
+        );
+    }
+
+    let existing = std::fs::read_to_string(&path)?;
+    match (existing.find(AGENTS_BEGIN), existing.find(AGENTS_END)) {
+        (Some(start), Some(end_marker)) if end_marker > start => {
+            // Replace in place — preserve everything outside the markers verbatim.
+            let end = end_marker + AGENTS_END.len();
+            let mut updated = String::with_capacity(existing.len());
+            updated.push_str(&existing[..start]);
+            updated.push_str(block.trim_end_matches('\n'));
+            updated.push_str(&existing[end..]);
+            if updated == existing {
+                return Ok("AGENTS.md aden:guidance block already current — no change.".into());
+            }
+            std::fs::write(&path, updated)?;
+            Ok("Refreshed the aden:guidance block in AGENTS.md (other content untouched).".into())
+        }
+        _ => {
+            // No (well-formed) markers — append, separated by a blank line.
+            let sep = if existing.ends_with('\n') { "\n" } else { "\n\n" };
+            std::fs::write(&path, format!("{existing}{sep}{block}"))?;
+            Ok("Appended the aden:guidance block to AGENTS.md (remove the block to opt out).".into())
+        }
+    }
 }
 
 fn scaffold_rust(dir: &Path, name: &str) -> Result<(), Box<dyn std::error::Error>> {
@@ -183,7 +267,11 @@ fn scaffold_js(dir: &Path, name: &str) -> Result<(), Box<dyn std::error::Error>>
 /// (`cp target/release/aden ~/.cargo/bin/aden-stable`), then re-run
 /// `aden init` to propagate changes to the local workspace.
 /// See CONTRIBUTING.md for the full stable binary ritual.
-pub fn cmd_init(target: &Path, with_secure_refs: bool) -> Result<(), Box<dyn std::error::Error>> {
+pub fn cmd_init(
+    target: &Path,
+    with_secure_refs: bool,
+    agents_md: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     let agent_dir = target.join(".agent");
     let templates_dir = agent_dir.join("templates");
     std::fs::create_dir_all(&templates_dir)?;
@@ -516,6 +604,14 @@ Always verify that third-party licenses are compatible with your project's licen
         );
     }
     println!("Sample hooks: .aden/hooks/pre-commit, .aden/hooks/pre-push");
+
+    // ADR-004: opt-in, append-only aden guidance block in the repo-root AGENTS.md.
+    if agents_md {
+        match seed_agents_md(target) {
+            Ok(action) => println!("{action}"),
+            Err(e) => eprintln!("Note: could not update AGENTS.md: {e}"),
+        }
+    }
 
     // Compile the project into the knowledge graph (.aden/store)
     println!("\nBuilding the knowledge graph...");

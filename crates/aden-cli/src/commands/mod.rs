@@ -24,7 +24,7 @@ pub use grep::cmd_grep;
 #[cfg(feature = "watch")]
 pub use heal::cmd_heal_watch;
 pub use heal::{cmd_heal_apply, cmd_heal_scan, cmd_heal_scan_since};
-pub use init::{cmd_init, cmd_new};
+pub use init::{cmd_agents_md, cmd_init, cmd_new};
 pub use lint::cmd_lint;
 pub use misc::{
     cmd_audit, cmd_ci_check, cmd_doctor, cmd_emergency, cmd_licenses, cmd_ready, cmd_review,

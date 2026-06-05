@@ -8,6 +8,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+INVOKE_DIR="$(pwd)"   # capture before we cd into the project root
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
 PROJECT_ROOT="${PROJECT_ROOT:-$SCRIPT_DIR}"
 
@@ -60,6 +61,42 @@ else
     echo "Added export to $PROFILE"
     echo "Run this to activate:"
     echo "  source $PROFILE"
+fi
+
+# Offer to seed the append-only aden usage block into a project's AGENTS.md so
+# AI agents use aden by default (ADR-004). Append-only and idempotent — it only
+# ever touches its own marked block. Skipped automatically on non-interactive
+# installs (e.g. piped from curl) so it never blocks or edits a file unprompted.
+if [ -t 0 ]; then
+    echo ""
+    DEFAULT_TARGET="$INVOKE_DIR"
+    # Don't default to aden's own checkout — that AGENTS.md is hand-maintained.
+    if [ "$INVOKE_DIR" = "$PROJECT_ROOT" ]; then
+        DEFAULT_TARGET=""
+    fi
+    echo "Add aden usage guidance to a project's AGENTS.md? (helps AI agents use aden)"
+    if [ -n "$DEFAULT_TARGET" ]; then
+        printf "  Project path [%s], or 'n' to skip: " "$DEFAULT_TARGET"
+    else
+        printf "  Project path (blank to skip): "
+    fi
+    read -r REPLY_TARGET || REPLY_TARGET=""
+
+    # Resolve the answer: empty reply takes the default; 'n'/'N' always skips.
+    TARGET=""
+    case "$REPLY_TARGET" in
+        "")    TARGET="$DEFAULT_TARGET" ;;
+        n|N)   TARGET="" ;;
+        *)     TARGET="$REPLY_TARGET" ;;
+    esac
+
+    if [ -n "$TARGET" ]; then
+        if [ -d "$TARGET" ]; then
+            "$INSTALL_DIR/aden" agents-md "$TARGET" || echo "  (skipped: aden agents-md failed)"
+        else
+            echo "  (skipped: '$TARGET' is not a directory)"
+        fi
+    fi
 fi
 
 echo ""
