@@ -636,9 +636,9 @@ fn scan_orphans(graph: &AdenGraph<DocumentNode, AdenEdge>, rules: &DiagnosticRul
                 // symbol. An orphaned doc (README, NOTICE, an .adoc heading, agent
                 // scaffolding) is reference material with legitimately no edges; only
                 // orphaned *code* symbols are actionable. The metadata/actionable
-                // split mirrors `status`/`check` (`is_expected_metadata`); note those
-                // count per-node and do not dedup, so their orphan totals can exceed
-                // this deduped one when a project has colliding anchors.
+                // split mirrors `status`/`check` (`is_expected_metadata`), which now
+                // apply the same anchor dedup via `classify_orphans`, so all three
+                // tools agree on orphan counts.
                 || is_doc_source(&n.source_path)
             })
             .unwrap_or(false);

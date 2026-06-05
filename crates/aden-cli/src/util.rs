@@ -711,17 +711,28 @@ pub fn is_expected_metadata(anchor: &str) -> bool {
 pub fn classify_orphans(
     graph: &aden_graph::AdenGraph<aden_graph::DocumentNode, aden_graph::AdenEdge>,
 ) -> (Vec<String>, Vec<String>) {
+    // Dedup by anchor first. `orphans()` iterates by node, so when several files
+    // collapse to one anchor (e.g. many `README.md` → `[[README]]`) it repeats
+    // that anchor — which would otherwise emit duplicate orphan lines/counts in
+    // `check`/`status` and over-penalize the health score. Report each distinct
+    // orphan anchor once. (Mirrors aden-diagnose's `scan_orphans`.)
+    let mut seen = std::collections::HashSet::new();
     graph
         .orphans()
         .into_iter()
+        .filter(|a| seen.insert(a.clone()))
         .partition(|a| is_expected_metadata(a))
 }
 
-/// Health = fraction of nodes that are NOT actionable orphans.
+/// Health = fraction of distinct anchors that are NOT actionable orphans.
 pub fn health_score_from_graph(
     graph: &aden_graph::AdenGraph<aden_graph::DocumentNode, aden_graph::AdenEdge>,
 ) -> f64 {
-    let total = graph.graph.node_count();
+    // Count distinct anchors, not raw nodes, so the denominator matches the
+    // anchor-deduped `actionable` numerator from `classify_orphans`. Without
+    // this, a duplicate-anchor collision (itself reported separately) would
+    // inflate the node count and skew the score.
+    let total = graph.anchor_to_index.len();
     if total == 0 {
         return 1.0;
     }
@@ -778,6 +789,51 @@ pub fn generate_proposal_id() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn classify_orphans_dedups_colliding_anchors() {
+        use aden_graph::{AdenEdge, AdenGraph, DocumentNode};
+        let orphan = |src: &str| DocumentNode {
+            doc: aden_core::Document {
+                anchor: "dup".into(),
+                node_type: aden_core::NodeType::Function,
+                attributes: std::collections::HashMap::new(),
+                blocks: vec![],
+                source_span: None,
+                metadata: None,
+                confidence: 1.0,
+            },
+            source_path: std::path::PathBuf::from(src),
+            parsed: None,
+        };
+        // Two distinct files collapse to the same anchor "dup". add_node keeps
+        // both petgraph nodes but anchor_to_index maps "dup" to one — so
+        // orphans() repeats the anchor while get_node() collapses it.
+        let mut graph: AdenGraph<DocumentNode, AdenEdge> = AdenGraph::new();
+        graph.add_node(orphan("a.rs"));
+        graph.add_node(orphan("b.rs"));
+        assert_eq!(
+            graph.orphans().len(),
+            2,
+            "precondition: orphans() yields the colliding anchor once per node"
+        );
+
+        // classify_orphans must report the distinct orphan anchor ONCE.
+        let (_expected, actionable) = classify_orphans(&graph);
+        assert_eq!(
+            actionable,
+            vec!["dup".to_string()],
+            "colliding orphan anchor must be deduped to a single entry"
+        );
+
+        // The health score is anchor-based: one distinct anchor, and it is an
+        // orphan → 0% healthy (node-based counting would wrongly read 0.5).
+        assert_eq!(
+            health_score_from_graph(&graph),
+            0.0,
+            "score must count the collision as one orphan anchor, not two nodes"
+        );
+    }
 
     #[test]
     fn sanitize_terminal_neutralizes_escapes_keeps_text() {
