@@ -311,49 +311,110 @@ static TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "grep",
         description: "Structure-aware content search: find a pattern, each hit tagged with its enclosing symbol. Prefer over plain grep.",
-        args: &[("pattern", "string"), ("path", "string"), ("regex", "boolean"), ("ignore_case", "boolean"), ("symbol_only", "boolean"), ("limit", "integer")],
+        args: &[
+            ("pattern", "string"),
+            ("path", "string"),
+            ("regex", "boolean"),
+            ("ignore_case", "boolean"),
+            ("symbol_only", "boolean"),
+            ("limit", "integer"),
+        ],
         tier: Tier::Core,
     },
     ToolSpec {
         name: "understand",
         description: "One-shot symbol comprehension: resolves a symbol to its anchor, shows its definition location, lists backlinks (callers/references), lists downstream impact, and assembles a context block. Replaces the manual locate → query --backlinks → query --impact → asm chain.",
-        args: &[("symbol", "string"), ("path", "string"), ("budget", "integer"), ("json", "boolean")],
+        args: &[
+            ("symbol", "string"),
+            ("path", "string"),
+            ("budget", "integer"),
+            ("json", "boolean"),
+        ],
         tier: Tier::Core,
     },
     ToolSpec {
         name: "ask",
         description: "Ask a natural-language question. Routes to the best matching anchor.",
-        args: &[("question", "string"), ("budget", "integer"), ("from", "string"), ("model", "string")],
+        args: &[
+            ("question", "string"),
+            ("budget", "integer"),
+            ("from", "string"),
+            ("model", "string"),
+        ],
         tier: Tier::Core,
     },
     ToolSpec {
         name: "search",
         description: "Full-text search with BM25 ranking.",
-        args: &[("query", "string"), ("limit", "integer"), ("offset", "integer"), ("doc_type", "string"), ("semantics", "boolean")],
+        args: &[
+            ("query", "string"),
+            ("limit", "integer"),
+            ("offset", "integer"),
+            ("doc_type", "string"),
+            ("semantics", "boolean"),
+        ],
         tier: Tier::Core,
     },
     ToolSpec {
         name: "locate",
         description: "Find symbol definition and call sites. For JSON output pass format=json.",
-        args: &[("symbol", "string"), ("caller_of", "string"), ("path", "string"), ("limit", "integer"), ("show_context", "integer"), ("format", "string")],
+        args: &[
+            ("symbol", "string"),
+            ("caller_of", "string"),
+            ("path", "string"),
+            ("limit", "integer"),
+            ("show_context", "integer"),
+            ("format", "string"),
+        ],
         tier: Tier::Core,
     },
     ToolSpec {
         name: "asm",
         description: "Assemble a context prompt from the knowledge graph. Pass the anchor via `from`.",
-        args: &[("from", "string"), ("path", "string"), ("depth", "integer"), ("budget", "integer"), ("edge_types", "string"), ("format", "string"), ("inspect", "boolean"), ("out", "string"), ("include_tag", "string"), ("exclude_tag", "string"), ("set_attr", "string"), ("silent", "boolean"), ("auto", "boolean"), ("strict", "boolean")],
+        args: &[
+            ("from", "string"),
+            ("path", "string"),
+            ("depth", "integer"),
+            ("budget", "integer"),
+            ("edge_types", "string"),
+            ("format", "string"),
+            ("inspect", "boolean"),
+            ("out", "string"),
+            ("include_tag", "string"),
+            ("exclude_tag", "string"),
+            ("set_attr", "string"),
+            ("silent", "boolean"),
+            ("auto", "boolean"),
+            ("strict", "boolean"),
+        ],
         tier: Tier::Core,
     },
     ToolSpec {
         name: "query",
         description: "Query the knowledge graph and emit JSON. Use backlinks=<anchor> for blast radius (what references a symbol) or impact=<anchor>.",
-        args: &[("path", "string"), ("from", "string"), ("edge_type", "string"), ("depth", "integer"), ("backlinks", "string"), ("impact", "string"), ("format", "string")],
+        args: &[
+            ("path", "string"),
+            ("from", "string"),
+            ("edge_type", "string"),
+            ("depth", "integer"),
+            ("backlinks", "string"),
+            ("impact", "string"),
+            ("format", "string"),
+        ],
         tier: Tier::Core,
     },
     ToolSpec {
         name: "list",
         description: "List all indexed anchors.",
-        args: &[("path", "string"), ("filter", "string"), ("limit", "integer"), ("verbose", "boolean"), ("semantics", "boolean"), ("offset", "integer"), ("unlimited", "boolean")],
+        args: &[
+            ("path", "string"),
+            ("filter", "string"),
+            ("limit", "integer"),
+            ("verbose", "boolean"),
+            ("semantics", "boolean"),
+            ("offset", "integer"),
+            ("unlimited", "boolean"),
+        ],
         tier: Tier::Core,
     },
     ToolSpec {
@@ -371,19 +432,40 @@ static TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "lint",
         description: "Lint source files. Use dead_code=true to flag symbols with no incoming graph edges (Function/Type nodes with zero callers). Conservative by default — skips entry points and public API; set include_public=true to widen.",
-        args: &[("path", "string"), ("severity", "string"), ("fix", "boolean"), ("json", "boolean"), ("unlimited", "boolean"), ("dead_code", "boolean"), ("include_public", "boolean")],
+        args: &[
+            ("path", "string"),
+            ("severity", "string"),
+            ("fix", "boolean"),
+            ("json", "boolean"),
+            ("unlimited", "boolean"),
+            ("dead_code", "boolean"),
+            ("include_public", "boolean"),
+        ],
         tier: Tier::Core,
     },
     ToolSpec {
         name: "test",
         description: "Discover and run tests.",
-        args: &[("path", "string"), ("scope", "string"), ("filter", "string"), ("list", "boolean")],
+        args: &[
+            ("path", "string"),
+            ("scope", "string"),
+            ("filter", "string"),
+            ("list", "boolean"),
+        ],
         tier: Tier::Core,
     },
     ToolSpec {
         name: "heal",
         description: "Self-healing documentation engine: scan for drift, propose patches, apply reviewed changes.",
-        args: &[("path", "string"), ("fix", "boolean"), ("gc", "boolean"), ("propose", "boolean"), ("since", "string"), ("apply", "string"), ("watch", "string")],
+        args: &[
+            ("path", "string"),
+            ("fix", "boolean"),
+            ("gc", "boolean"),
+            ("propose", "boolean"),
+            ("since", "string"),
+            ("apply", "string"),
+            ("watch", "string"),
+        ],
         tier: Tier::Core,
     },
     ToolSpec {
@@ -395,7 +477,11 @@ static TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "gen",
         description: "Incrementally compile source into the per-user store (store-first: never writes the working tree). A directory indexes the whole project; a single file re-indexes just that file. For a clean cache-clearing rebuild use `regen`; to also prune deleted symbols use `sync`.",
-        args: &[("path", "string"), ("auto", "boolean"), ("quiet", "boolean")],
+        args: &[
+            ("path", "string"),
+            ("auto", "boolean"),
+            ("quiet", "boolean"),
+        ],
         tier: Tier::Core,
     },
     ToolSpec {
@@ -407,7 +493,12 @@ static TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "audit",
         description: "OWASP-aligned security audit: scan source for vulnerabilities.",
-        args: &[("path", "string"), ("lang", "string"), ("format", "string"), ("strict", "boolean")],
+        args: &[
+            ("path", "string"),
+            ("lang", "string"),
+            ("format", "string"),
+            ("strict", "boolean"),
+        ],
         tier: Tier::Core,
     },
     ToolSpec {
@@ -445,31 +536,52 @@ static TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "kickoff",
         description: "Create a structured kickoff document.",
-        args: &[("name", "string"), ("interactive", "boolean"), ("path", "string")],
+        args: &[
+            ("name", "string"),
+            ("interactive", "boolean"),
+            ("path", "string"),
+        ],
         tier: Tier::Extended,
     },
     ToolSpec {
         name: "workflow",
         description: "Instantiate templates with substitutions.",
-        args: &[("template", "string"), ("out", "string"), ("from", "string"), ("path", "string")],
+        args: &[
+            ("template", "string"),
+            ("out", "string"),
+            ("from", "string"),
+            ("path", "string"),
+        ],
         tier: Tier::Extended,
     },
     ToolSpec {
         name: "session",
         description: "Append entry to .agent/session.adoc.",
-        args: &[("agent_id", "string"), ("task", "string"), ("status", "string")],
+        args: &[
+            ("agent_id", "string"),
+            ("task", "string"),
+            ("status", "string"),
+        ],
         tier: Tier::Extended,
     },
     ToolSpec {
         name: "review",
         description: "Semantic review of pending heal proposals. Only meaningful after `heal propose=true` has written proposals.",
-        args: &[("path", "string"), ("since", "string"), ("budget", "integer")],
+        args: &[
+            ("path", "string"),
+            ("since", "string"),
+            ("budget", "integer"),
+        ],
         tier: Tier::Extended,
     },
     ToolSpec {
         name: "complete",
         description: "List contracts missing required documentation. Reports only — automatic LLM filling is NOT implemented; --model just previews the fill prompt. For drift in existing docs use `heal`, not this.",
-        args: &[("path", "string"), ("dry_run", "boolean"), ("model", "string")],
+        args: &[
+            ("path", "string"),
+            ("dry_run", "boolean"),
+            ("model", "string"),
+        ],
         tier: Tier::Extended,
     },
     ToolSpec {
@@ -874,12 +986,12 @@ mod tests {
     fn default_surface_is_core_only_full_surface_is_everything() {
         let core = TOOLS.iter().filter(|t| t.tier == Tier::Core).count();
         let all = TOOLS.len();
-        assert!(core > 0 && core < all, "expected a mix of Core and Extended");
-        // Default list (no ADEN_MCP_FULL) shows Core only; full shows all.
-        assert_eq!(
-            TOOLS.iter().filter(|t| Tier::Core == t.tier).count(),
-            core
+        assert!(
+            core > 0 && core < all,
+            "expected a mix of Core and Extended"
         );
+        // Default list (no ADEN_MCP_FULL) shows Core only; full shows all.
+        assert_eq!(TOOLS.iter().filter(|t| Tier::Core == t.tier).count(), core);
     }
 
     #[test]
