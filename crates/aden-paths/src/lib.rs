@@ -403,7 +403,8 @@ mod tests {
 
     #[test]
     fn env_and_overrides_and_guard() {
-        let root = Path::new("/tmp/aden-fixture");
+        let root_buf = std::env::temp_dir().join("aden-fixture");
+        let root = root_buf.as_path();
 
         with_env("ADEN_DATA_DIR", Some("/custom/data"), || {
             assert_eq!(data_root(), PathBuf::from("/custom/data"));

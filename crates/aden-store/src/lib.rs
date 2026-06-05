@@ -267,8 +267,10 @@ mod tests {
     use std::fs;
 
     fn temp_path() -> String {
-        let path = format!("/tmp/aden-store-test-{}", uuid::Uuid::new_v4());
-        path
+        std::env::temp_dir()
+            .join(format!("aden-store-test-{}", uuid::Uuid::new_v4()))
+            .to_string_lossy()
+            .into_owned()
     }
 
     #[test]

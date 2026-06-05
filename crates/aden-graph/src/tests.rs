@@ -86,7 +86,7 @@ mod tests {
     fn test_typed_edge_validation_valid() {
         let mut graph = AdenGraph::<DocumentNode, AdenEdge>::new();
         let _parsed = parser::ParsedDocument {
-            source_path: "/tmp/a.adoc".to_string(),
+            source_path: "a.adoc".to_string(),
             attributes: HashMap::new(),
             anchors: vec!["mod-a".to_string()],
             refs: Vec::new(),
@@ -120,12 +120,12 @@ mod tests {
         let node1 = DocumentNode {
             doc: doc1.clone(),
             parsed: None,
-            source_path: std::path::PathBuf::from("/tmp/a.adoc"),
+            source_path: std::path::PathBuf::from("a.adoc"),
         };
         let node2 = DocumentNode {
             doc: doc2.clone(),
             parsed: None,
-            source_path: std::path::PathBuf::from("/tmp/b.adoc"),
+            source_path: std::path::PathBuf::from("b.adoc"),
         };
         let idx1 = graph.graph.add_node(node1);
         let idx2 = graph.graph.add_node(node2);
@@ -382,7 +382,7 @@ Closing paragraph.
         let mut graph = AdenGraph::<DocumentNode, AdenEdge>::new();
 
         let parsed = parser::ParsedDocument {
-            source_path: "/tmp/test.adoc".to_string(),
+            source_path: "test.adoc".to_string(),
             attributes: HashMap::new(),
             anchors: vec!["concept-a".to_string()],
             refs: Vec::new(),
@@ -418,12 +418,12 @@ Closing paragraph.
         let node1 = DocumentNode {
             doc: doc1,
             parsed: Some(parsed.clone()),
-            source_path: std::path::PathBuf::from("/tmp/test.adoc"),
+            source_path: std::path::PathBuf::from("test.adoc"),
         };
         let node2 = DocumentNode {
             doc: doc2,
             parsed: Some(parsed),
-            source_path: std::path::PathBuf::from("/tmp/test2.adoc"),
+            source_path: std::path::PathBuf::from("test2.adoc"),
         };
 
         let idx1 = graph.graph.add_node(node1);

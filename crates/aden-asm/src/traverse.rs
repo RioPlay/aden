@@ -896,7 +896,7 @@ mod tests {
                 confidence: 1.0,
             },
             parsed: None,
-            source_path: std::path::PathBuf::from("/tmp/x.adoc"),
+            source_path: std::path::PathBuf::from("x.adoc"),
         }
     }
 
@@ -1113,7 +1113,7 @@ mod tests {
                 confidence: 1.0,
             },
             parsed: None,
-            source_path: std::path::PathBuf::from("/tmp/x.adoc"),
+            source_path: std::path::PathBuf::from("x.adoc"),
         }
     }
 

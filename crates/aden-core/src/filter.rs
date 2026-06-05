@@ -369,7 +369,7 @@ mod tests {
 
     #[test]
     fn test_builtin_skips_target() {
-        let filter = AdenFilter::from_directory(Path::new("/tmp/nonexistent"));
+        let filter = AdenFilter::from_directory(&std::env::temp_dir().join("aden-nonexistent"));
         assert!(filter.should_skip(Path::new("target/debug/incremental")));
         assert!(filter.should_skip(Path::new(".git/hooks/pre-commit")));
         assert!(filter.should_skip(Path::new("node_modules/lodash")));
@@ -380,7 +380,7 @@ mod tests {
 
     #[test]
     fn test_builtin_skips_are_polyglot() {
-        let filter = AdenFilter::from_directory(Path::new("/tmp/nonexistent"));
+        let filter = AdenFilter::from_directory(&std::env::temp_dir().join("aden-nonexistent"));
         // Build/dependency dirs from many ecosystems are excluded by default.
         assert!(filter.should_skip(Path::new("__pycache__/mod.cpython-312.pyc")));
         assert!(filter.should_skip(Path::new(".venv/lib/python3.12/site.py")));
@@ -398,7 +398,7 @@ mod tests {
 
     #[test]
     fn test_builtin_skips_agent_tooling_runtime() {
-        let filter = AdenFilter::from_directory(Path::new("/tmp/nonexistent"));
+        let filter = AdenFilter::from_directory(&std::env::temp_dir().join("aden-nonexistent"));
         // Agent-runtime dirs (and the git-worktree copies inside them) must never
         // be indexed — regression for the .claude/worktrees pollution.
         assert!(filter.should_skip(Path::new(".claude/settings.json")));
