@@ -1,5 +1,29 @@
 # Aden Issues - Future Work
 
+## 2026-06-04 — Dependency hygiene + propose/heal/emit dedup
+
+A `cargo machete` audit (verified by source grep) found ten unused dependencies.
+All were removed; `cargo check --workspace` stays green and machete now reports
+clean. Removed: `aden-graph` (`blake3`, `serde_json`), `aden-parse` (`fnv`,
+`rayon`), `aden-mcp` (`serde`), `aden-diagnose` (`tempfile` dev-dep), and three
+internal workspace edges — `aden-heal → aden-emit`, `aden-propose → aden-emit`,
+`aden-propose → aden-heal`.
+
+- **OPEN — `aden-propose` duplicates `aden-heal` + `aden-emit` instead of
+  depending on them.** The three internal edges above were dead not because the
+  functionality is unwanted but because the code was copy-pasted rather than
+  reused. `aden-propose/src/patch.rs` defines its own 3-variant `DriftEvent`
+  enum — a narrower fork of `aden_heal::DriftEvent` (~11 variants) — and
+  `patch.rs`/`stub.rs` hand-roll AsciiDoc tables (`table_to_asciidoc`,
+  `emit_table`) instead of calling `aden_emit`. The proposal path the CLI
+  actually runs (`aden-cli/src/commands/heal.rs::generate_proposal`) already
+  uses `aden_heal::DriftEvent` + `aden_propose::Proposal`, so propose's own
+  `patch`/`stub` modules are a partially-superseded parallel path. The refactor:
+  delete the local `DriftEvent`, consume `aden_heal::DriftEvent`, and render via
+  `aden_emit`. That work would legitimately reintroduce the `aden-heal` and
+  `aden-emit` deps — earned by use, not left dangling. Deliberately deferred
+  from the dep cleanup so the removal commit stays mechanical and reviewable.
+
 ## 2026-05-30 — MCP rewrite phase 1+2 (contract + structured output)
 
 The MCP server is a thin director that maps each tool 1:1 to a CLI subcommand

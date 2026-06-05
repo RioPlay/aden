@@ -7,6 +7,4 @@ license.workspace = true
 
 [dependencies]
 aden-core = { path = "../aden-core" }
-aden-heal = { path = "../aden-heal" }
-aden-emit = { path = "../aden-emit" }
 thiserror = "2.0"
