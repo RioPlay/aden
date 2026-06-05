@@ -616,7 +616,17 @@ fn scan_orphans(graph: &AdenGraph<DocumentNode, AdenEdge>, rules: &DiagnosticRul
     let mut issues = Vec::new();
     let orphans = graph.orphans();
 
+    // Dedup by anchor: when several files collapse to the same anchor (e.g. every
+    // `README.md` → `[[README]]`, every `LICENSE.txt` → `[[LICENSE]]`), `orphans()`
+    // yields the anchor once per node but `get_node` resolves them all to the same
+    // first node — which would emit identical lines (README ×3) that read as a bug.
+    // One issue per distinct orphan anchor.
+    let mut seen = std::collections::HashSet::new();
+
     for anchor in orphans {
+        if !seen.insert(anchor.clone()) {
+            continue;
+        }
         let node = graph.get_node(&anchor);
         let is_metadata = node
             .map(|n| {
@@ -625,8 +635,10 @@ fn scan_orphans(graph: &AdenGraph<DocumentNode, AdenEdge>, rules: &DiagnosticRul
                 // …or this is a documentation/prose source file rather than a code
                 // symbol. An orphaned doc (README, NOTICE, an .adoc heading, agent
                 // scaffolding) is reference material with legitimately no edges; only
-                // orphaned *code* symbols are actionable. This mirrors `status`/
-                // `check` (`is_expected_metadata`) so the three tools agree on counts.
+                // orphaned *code* symbols are actionable. The metadata/actionable
+                // split mirrors `status`/`check` (`is_expected_metadata`); note those
+                // count per-node and do not dedup, so their orphan totals can exceed
+                // this deduped one when a project has colliding anchors.
                 || is_doc_source(&n.source_path)
             })
             .unwrap_or(false);
@@ -1265,6 +1277,30 @@ mod tests {
             orphans >= 1,
             "Expected at least 1 orphan, got: {:?}",
             diagnosis.issues
+        );
+    }
+
+    #[test]
+    fn test_orphan_dedup_for_colliding_anchors() {
+        // Two distinct files that collapse to the SAME anchor must yield ONE
+        // orphan issue, not one per node. `orphans()` iterates by node (so it
+        // returns the anchor once per colliding node), but `get_node()` resolves
+        // them all to a single node — without the dedup in `scan_orphans` this
+        // emits N identical "[[dup]] has no edges" lines that read as a bug.
+        let dir = make_temp_dir("orphan-dedup");
+        write_file(&dir, "one.adoc", "[[dup]]\n= First\n\nContent.\n");
+        write_file(&dir, "two.adoc", "[[dup]]\n= Second\n\nContent.\n");
+        let diagnosis = diagnose(&dir).expect("diagnose should succeed");
+        let dup_orphans = diagnosis
+            .issues
+            .iter()
+            .filter(|i| i.category == IssueCategory::OrphanDocument)
+            .filter(|i| i.message.contains("[[dup]]"))
+            .count();
+        assert_eq!(
+            dup_orphans, 1,
+            "colliding anchor [[dup]] must produce exactly one orphan issue, got {}: {:?}",
+            dup_orphans, diagnosis.issues
         );
     }
 
