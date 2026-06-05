@@ -55,15 +55,28 @@ context. `locate` finds a symbol's definition and call sites.\n\
 backlinks=<symbol> shows what references that symbol (its blast radius); \
 impact=<symbol> shows the downstream reach.\n\
 4. `check`/`heal` validate and keep contracts in sync with the code.\n\n\
-The `path` argument defaults to the current project directory for every tool.";
+The `path` argument defaults to the current project directory for every tool.\n\
+Setup/admin tools (e.g. `init`, `new`, `federation`, `mcp`) are hidden from this \
+list to keep it focused; set ADEN_MCP_FULL=1 in the server environment to surface them.";
 
 // ── Tool declaration ──────────────────────────────────────────
+
+/// Visibility tier. Core tools lead the surface and are listed by default;
+/// Extended tools stay callable by name but are hidden from `list_tools`
+/// unless `ADEN_MCP_FULL` is set — keeping the per-session surface slim
+/// without stranding setup/admin tools for MCP-only consumers.
+#[derive(PartialEq)]
+enum Tier {
+    Core,
+    Extended,
+}
 
 /// A tool the LLM can invoke.  Zero code per tool — just metadata.
 struct ToolSpec {
     name: &'static str,
     description: &'static str,
     args: &'static [(&'static str, &'static str)], // (arg_name, arg_type: "string"|"boolean"|"integer")
+    tier: Tier,
 }
 
 /// Required argument names per tool (must match the `arg_name` strings in the
@@ -74,7 +87,6 @@ fn required_args(tool: &str) -> &'static [&'static str] {
         "ask" => &["question"],
         "search" => &["query"],
         "grep" => &["pattern"],
-        "suggest" => &["intent"],
         "kickoff" => &["name"],
         "new" => &["name", "lang"],
         "workflow" => &["template"],
@@ -138,8 +150,6 @@ fn is_positional(tool: &str, arg: &str) -> bool {
         ("search", "query") => true,
         // grep:  aden grep <PATTERN> [DIR]
         ("grep", "pattern") => true,
-        // suggest: aden suggest <INTENT>
-        ("suggest", "intent") => true,
         // new:   aden new <NAME> --lang <LANG> [DIR]  (lang is a flag, not positional)
         ("new", "name") => true,
         // workflow: aden workflow <TEMPLATE> [DIR]
@@ -277,299 +287,226 @@ fn tool_from_spec(spec: &ToolSpec) -> Tool {
     Tool::new(spec.name, spec.description, Arc::new(schema))
 }
 
+/// True when the full tool surface (Core + Extended) should be listed.
+/// Default is Core-only, keeping the per-session registry slim; setting
+/// `ADEN_MCP_FULL` to a truthy value (1/true/full/yes) lists everything.
+/// Extended tools stay callable by name regardless — this gates listing only.
+fn surface_is_full() -> bool {
+    parse_full(std::env::var("ADEN_MCP_FULL").ok().as_deref())
+}
+
+/// Pure parse of the `ADEN_MCP_FULL` toggle, split out so it is testable
+/// without mutating process-global environment state.
+fn parse_full(v: Option<&str>) -> bool {
+    matches!(
+        v.map(|s| s.trim().to_ascii_lowercase()).as_deref(),
+        Some("1" | "true" | "full" | "yes")
+    )
+}
+
 /// Every MCP tool maps 1:1 to `aden <name> <args>`.
 static TOOLS: &[ToolSpec] = &[
+    // ── Core: the per-session surface, ordered by how often an agent reaches
+    //    for each (read/comprehend first, then validate, then mutate). ──
     ToolSpec {
-        name: "init",
-        description: "Scaffold .agent/ workspace and templates.",
-        args: &[("path", "string")],
+        name: "grep",
+        description: "Structure-aware content search: find a pattern, each hit tagged with its enclosing symbol. Prefer over plain grep.",
+        args: &[("pattern", "string"), ("path", "string"), ("regex", "boolean"), ("ignore_case", "boolean"), ("symbol_only", "boolean"), ("limit", "integer")],
+        tier: Tier::Core,
     },
     ToolSpec {
-        name: "new",
-        description: "Create a new project from a language template.",
-        args: &[("name", "string"), ("lang", "string"), ("path", "string")],
-    },
-    ToolSpec {
-        name: "kickoff",
-        description: "Create a structured kickoff document.",
-        args: &[
-            ("name", "string"),
-            ("interactive", "boolean"),
-            ("path", "string"),
-        ],
-    },
-    ToolSpec {
-        name: "workflow",
-        description: "Instantiate templates with substitutions.",
-        args: &[
-            ("template", "string"),
-            ("out", "string"),
-            ("from", "string"),
-            ("path", "string"),
-        ],
-    },
-    ToolSpec {
-        name: "gen",
-        description: "Generate contracts from source. Use --auto for whole project.",
-        args: &[
-            ("path", "string"),
-            ("auto", "boolean"),
-            ("quiet", "boolean"),
-        ],
-    },
-    ToolSpec {
-        name: "check",
-        description: "Validate cross-references and graph integrity.",
-        args: &[("path", "string"), ("severity", "string")],
-    },
-    ToolSpec {
-        name: "lint",
-        description: "Lint source files. Use dead_code=true to flag symbols with no incoming graph edges (Function/Type nodes with zero callers). Conservative by default — skips entry points and public API; set include_public=true to widen.",
-        args: &[
-            ("path", "string"),
-            ("severity", "string"),
-            ("fix", "boolean"),
-            ("json", "boolean"),
-            ("unlimited", "boolean"),
-            ("dead_code", "boolean"),
-            ("include_public", "boolean"),
-        ],
-    },
-    ToolSpec {
-        name: "test",
-        description: "Discover and run tests.",
-        args: &[
-            ("path", "string"),
-            ("scope", "string"),
-            ("filter", "string"),
-            ("list", "boolean"),
-        ],
-    },
-    ToolSpec {
-        name: "asm",
-        description: "Assemble a context prompt from the knowledge graph. Pass the anchor via `from`.",
-        args: &[
-            ("from", "string"),
-            ("path", "string"),
-            ("depth", "integer"),
-            ("budget", "integer"),
-            ("edge_types", "string"),
-            ("format", "string"),
-            ("inspect", "boolean"),
-            ("out", "string"),
-            ("include_tag", "string"),
-            ("exclude_tag", "string"),
-            ("set_attr", "string"),
-            ("silent", "boolean"),
-            ("auto", "boolean"),
-            ("strict", "boolean"),
-        ],
-    },
-    ToolSpec {
-        name: "query",
-        description: "Query the knowledge graph and emit JSON. Use backlinks=<anchor> for blast radius (what references a symbol) or impact=<anchor>.",
-        args: &[
-            ("path", "string"),
-            ("from", "string"),
-            ("edge_type", "string"),
-            ("depth", "integer"),
-            ("backlinks", "string"),
-            ("impact", "string"),
-            ("format", "string"),
-        ],
-    },
-    ToolSpec {
-        name: "query-adq",
-        description: "Execute an Aden Query (.adq) script.",
-        args: &[("script", "string"), ("path", "string")],
+        name: "understand",
+        description: "One-shot symbol comprehension: resolves a symbol to its anchor, shows its definition location, lists backlinks (callers/references), lists downstream impact, and assembles a context block. Replaces the manual locate → query --backlinks → query --impact → asm chain.",
+        args: &[("symbol", "string"), ("path", "string"), ("budget", "integer"), ("json", "boolean")],
+        tier: Tier::Core,
     },
     ToolSpec {
         name: "ask",
         description: "Ask a natural-language question. Routes to the best matching anchor.",
-        args: &[
-            ("question", "string"),
-            ("budget", "integer"),
-            ("from", "string"),
-            ("model", "string"),
-        ],
+        args: &[("question", "string"), ("budget", "integer"), ("from", "string"), ("model", "string")],
+        tier: Tier::Core,
     },
     ToolSpec {
         name: "search",
         description: "Full-text search with BM25 ranking.",
-        args: &[
-            ("query", "string"),
-            ("limit", "integer"),
-            ("offset", "integer"),
-            ("doc_type", "string"),
-            ("semantics", "boolean"),
-        ],
-    },
-    ToolSpec {
-        name: "list",
-        description: "List all indexed anchors.",
-        args: &[
-            ("path", "string"),
-            ("filter", "string"),
-            ("limit", "integer"),
-            ("verbose", "boolean"),
-            ("semantics", "boolean"),
-            ("offset", "integer"),
-            ("unlimited", "boolean"),
-        ],
-    },
-    ToolSpec {
-        name: "grep",
-        description: "Structure-aware content search: find a pattern, each hit tagged with its enclosing symbol. Prefer over plain grep.",
-        args: &[
-            ("pattern", "string"),
-            ("path", "string"),
-            ("regex", "boolean"),
-            ("ignore_case", "boolean"),
-            ("symbol_only", "boolean"),
-            ("limit", "integer"),
-        ],
+        args: &[("query", "string"), ("limit", "integer"), ("offset", "integer"), ("doc_type", "string"), ("semantics", "boolean")],
+        tier: Tier::Core,
     },
     ToolSpec {
         name: "locate",
         description: "Find symbol definition and call sites. For JSON output pass format=json.",
-        args: &[
-            ("symbol", "string"),
-            ("caller_of", "string"),
-            ("path", "string"),
-            ("limit", "integer"),
-            ("show_context", "integer"),
-            ("format", "string"),
-        ],
+        args: &[("symbol", "string"), ("caller_of", "string"), ("path", "string"), ("limit", "integer"), ("show_context", "integer"), ("format", "string")],
+        tier: Tier::Core,
     },
     ToolSpec {
-        name: "heal",
-        description: "Self-healing documentation engine: scan for drift, propose patches, apply reviewed changes.",
-        args: &[
-            ("path", "string"),
-            ("fix", "boolean"),
-            ("gc", "boolean"),
-            ("propose", "boolean"),
-            ("since", "string"),
-            ("apply", "string"),
-            ("watch", "string"),
-        ],
+        name: "asm",
+        description: "Assemble a context prompt from the knowledge graph. Pass the anchor via `from`.",
+        args: &[("from", "string"), ("path", "string"), ("depth", "integer"), ("budget", "integer"), ("edge_types", "string"), ("format", "string"), ("inspect", "boolean"), ("out", "string"), ("include_tag", "string"), ("exclude_tag", "string"), ("set_attr", "string"), ("silent", "boolean"), ("auto", "boolean"), ("strict", "boolean")],
+        tier: Tier::Core,
     },
     ToolSpec {
-        name: "status",
-        description: "Show project health status at a glance.",
-        args: &[("path", "string")],
+        name: "query",
+        description: "Query the knowledge graph and emit JSON. Use backlinks=<anchor> for blast radius (what references a symbol) or impact=<anchor>.",
+        args: &[("path", "string"), ("from", "string"), ("edge_type", "string"), ("depth", "integer"), ("backlinks", "string"), ("impact", "string"), ("format", "string")],
+        tier: Tier::Core,
+    },
+    ToolSpec {
+        name: "list",
+        description: "List all indexed anchors.",
+        args: &[("path", "string"), ("filter", "string"), ("limit", "integer"), ("verbose", "boolean"), ("semantics", "boolean"), ("offset", "integer"), ("unlimited", "boolean")],
+        tier: Tier::Core,
     },
     ToolSpec {
         name: "ready",
         description: "Fast pre-commit gate — gen + lint + check + heal drift scan + audit. Aden-only, no external tool dependencies. Use before every commit. Prefer over ci-check for local dev loops.",
         args: &[("path", "string"), ("fix", "boolean")],
+        tier: Tier::Core,
     },
     ToolSpec {
-        name: "understand",
-        description: "One-shot symbol comprehension: resolves a symbol to its anchor, shows its definition location, lists backlinks (callers/references), lists downstream impact, and assembles a context block. Replaces the manual locate → query --backlinks → query --impact → asm chain.",
-        args: &[
-            ("symbol", "string"),
-            ("path", "string"),
-            ("budget", "integer"),
-            ("json", "boolean"),
-        ],
+        name: "check",
+        description: "Validate the graph and gate CI: flags unresolved <<refs>>, circular includes, orphan anchors, typed-edge violations, stale source hashes, and incomplete contracts. severity=Suggest|Warn|Forbid sets the fail threshold and exits non-zero past it. For duplicate-anchor detection and a 0-100 health score, use `diagnose`.",
+        args: &[("path", "string"), ("severity", "string")],
+        tier: Tier::Core,
+    },
+    ToolSpec {
+        name: "lint",
+        description: "Lint source files. Use dead_code=true to flag symbols with no incoming graph edges (Function/Type nodes with zero callers). Conservative by default — skips entry points and public API; set include_public=true to widen.",
+        args: &[("path", "string"), ("severity", "string"), ("fix", "boolean"), ("json", "boolean"), ("unlimited", "boolean"), ("dead_code", "boolean"), ("include_public", "boolean")],
+        tier: Tier::Core,
+    },
+    ToolSpec {
+        name: "test",
+        description: "Discover and run tests.",
+        args: &[("path", "string"), ("scope", "string"), ("filter", "string"), ("list", "boolean")],
+        tier: Tier::Core,
+    },
+    ToolSpec {
+        name: "heal",
+        description: "Self-healing documentation engine: scan for drift, propose patches, apply reviewed changes.",
+        args: &[("path", "string"), ("fix", "boolean"), ("gc", "boolean"), ("propose", "boolean"), ("since", "string"), ("apply", "string"), ("watch", "string")],
+        tier: Tier::Core,
+    },
+    ToolSpec {
+        name: "status",
+        description: "Read-only one-glance dashboard: heal-drift health score plus an orphan breakdown (same classifier as `check`). No fixes, no deep scan — a quick pulse before deciding whether to run `diagnose`/`ready`.",
+        args: &[("path", "string")],
+        tier: Tier::Core,
+    },
+    ToolSpec {
+        name: "gen",
+        description: "Incrementally compile source into the per-user store (store-first: never writes the working tree). A directory indexes the whole project; a single file re-indexes just that file. For a clean cache-clearing rebuild use `regen`; to also prune deleted symbols use `sync`.",
+        args: &[("path", "string"), ("auto", "boolean"), ("quiet", "boolean")],
+        tier: Tier::Core,
     },
     ToolSpec {
         name: "sync",
         description: "Reconcile the store — gen + check + heal with gc (prunes deleted symbols). Use after large merges or file deletions, NOT as a routine pre-commit step (use `ready` for that). Pass no_gc=true to skip garbage-collection.",
         args: &[("path", "string"), ("no_gc", "boolean")],
+        tier: Tier::Core,
+    },
+    ToolSpec {
+        name: "audit",
+        description: "OWASP-aligned security audit: scan source for vulnerabilities.",
+        args: &[("path", "string"), ("lang", "string"), ("format", "string"), ("strict", "boolean")],
+        tier: Tier::Core,
     },
     ToolSpec {
         name: "ci-check",
         description: "Full CI gate suite: aden check, project tests, aden lint, secret scan, attribution check, OWASP audit, merge-conflict-marker scan, insecure-protocol check, cargo clippy, cargo audit, contract freshness. Use before push to remote. For local dev use `ready` instead.",
         args: &[("path", "string")],
+        tier: Tier::Core,
+    },
+    ToolSpec {
+        name: "diagnose",
+        description: "Deterministic structural scan of the graph: stale refs, duplicate anchors, invalid edges, orphans, circular includes, missing source files; emits a 0-100 health score (format=json for machine output). Overlaps `check` but additionally flags duplicate anchors and low-confidence nodes and reports a score; read-only — finds nothing about your environment (that's `doctor`).",
+        args: &[("path", "string"), ("format", "string")],
+        tier: Tier::Core,
     },
     ToolSpec {
         name: "regen",
-        description: "Regenerate all contracts from source (alias: gen . --auto --quiet).",
+        description: "Full from-scratch rebuild: clears the gen/graph caches and (unless $ADEN_STORE is pinned/shared) the per-user store, then regenerates and prunes stale anchors. NOT an alias for `gen` — use after renames/deletions leave stale anchors or after corruption; for routine incremental indexing use `gen`.",
         args: &[("path", "string")],
+        tier: Tier::Core,
+    },
+    // ── Extended: setup / admin / niche. Hidden from list_tools by default
+    //    (set ADEN_MCP_FULL=1 to surface) but always callable by name. ──
+    ToolSpec {
+        name: "new",
+        description: "Create a new project from a language template.",
+        args: &[("name", "string"), ("lang", "string"), ("path", "string")],
+        tier: Tier::Extended,
     },
     ToolSpec {
-        name: "complete",
-        description: "Scan for incomplete contracts and report them. Note: automatic LLM filling is not yet implemented — this currently lists the contracts that need completion and (with --model) previews the prompt.",
-        args: &[
-            ("path", "string"),
-            ("dry_run", "boolean"),
-            ("model", "string"),
-        ],
+        name: "init",
+        description: "Scaffold .agent/ workspace and templates.",
+        args: &[("path", "string")],
+        tier: Tier::Extended,
     },
     ToolSpec {
-        name: "watch",
-        description: "Watch source files and auto-regenerate contracts. WARNING: this is a long-running daemon and is not usable over MCP (the call will time out) — run it from a terminal. Use `gen`/`sync` for one-shot updates.",
-        args: &[
-            ("path", "string"),
-            ("sync", "boolean"),
-            ("graph_sync", "boolean"),
-            ("restore", "boolean"),
-        ],
+        name: "kickoff",
+        description: "Create a structured kickoff document.",
+        args: &[("name", "string"), ("interactive", "boolean"), ("path", "string")],
+        tier: Tier::Extended,
+    },
+    ToolSpec {
+        name: "workflow",
+        description: "Instantiate templates with substitutions.",
+        args: &[("template", "string"), ("out", "string"), ("from", "string"), ("path", "string")],
+        tier: Tier::Extended,
     },
     ToolSpec {
         name: "session",
         description: "Append entry to .agent/session.adoc.",
-        args: &[
-            ("agent_id", "string"),
-            ("task", "string"),
-            ("status", "string"),
-        ],
+        args: &[("agent_id", "string"), ("task", "string"), ("status", "string")],
+        tier: Tier::Extended,
     },
     ToolSpec {
-        name: "federation",
-        description: "List or manage multi-repo workspace.",
-        args: &[("action", "string")],
+        name: "review",
+        description: "Semantic review of pending heal proposals. Only meaningful after `heal propose=true` has written proposals.",
+        args: &[("path", "string"), ("since", "string"), ("budget", "integer")],
+        tier: Tier::Extended,
     },
     ToolSpec {
-        name: "emergency",
-        description: "Downgrade Forbid policies to Warn with justification.",
-        args: &[("reason", "string"), ("path", "string"), ("ttl", "string")],
+        name: "complete",
+        description: "List contracts missing required documentation. Reports only — automatic LLM filling is NOT implemented; --model just previews the fill prompt. For drift in existing docs use `heal`, not this.",
+        args: &[("path", "string"), ("dry_run", "boolean"), ("model", "string")],
+        tier: Tier::Extended,
+    },
+    ToolSpec {
+        name: "query-adq",
+        description: "Execute an Aden Query (.adq) script — multi-step filtered graph traversal (node/incoming/outgoing/where) beyond what `query` expresses in one call. For simple backlinks/impact use `query`.",
+        args: &[("script", "string"), ("path", "string")],
+        tier: Tier::Extended,
     },
     ToolSpec {
         name: "doctor",
-        description: "Environment diagnostics.",
+        description: "Probe the host environment, NOT the graph: git, language toolchains (rustc/cargo, node, python, go), signing keys. Use when a command fails for environmental reasons (missing tool/binary). For graph/content problems use `diagnose`; for reference errors use `check`.",
         args: &[("path", "string")],
-    },
-    ToolSpec {
-        name: "audit",
-        description: "OWASP-aligned security audit: scan source for vulnerabilities.",
-        args: &[
-            ("path", "string"),
-            ("lang", "string"),
-            ("format", "string"),
-            ("strict", "boolean"),
-        ],
-    },
-    ToolSpec {
-        name: "suggest",
-        description: "Get a recommended aden command for your intent.",
-        args: &[("intent", "string")],
+        tier: Tier::Extended,
     },
     ToolSpec {
         name: "licenses",
         description: "Generate third-party dependency attribution.",
         args: &[("path", "string"), ("full", "boolean")],
+        tier: Tier::Extended,
     },
     ToolSpec {
-        name: "review",
-        description: "Semantic review of pending proposals.",
-        args: &[
-            ("path", "string"),
-            ("since", "string"),
-            ("budget", "integer"),
-        ],
+        name: "federation",
+        description: "Manage a multi-repo workspace. action is a subcommand: list, add, remove, config. Over MCP only list/config run (add/remove need a path/name the bridge can't pass — use the CLI). Operates on the federation manifest only; it does not index or query code.",
+        args: &[("action", "string")],
+        tier: Tier::Extended,
+    },
+    ToolSpec {
+        name: "emergency",
+        description: "Downgrade Forbid policies to Warn with justification.",
+        args: &[("reason", "string"), ("path", "string"), ("ttl", "string")],
+        tier: Tier::Extended,
     },
     ToolSpec {
         name: "mcp",
-        description: "MCP (Model Context Protocol) integration management. action is a subcommand: install, uninstall, list.",
+        description: "MCP (Model Context Protocol) integration management. action is a subcommand: install, uninstall, list. Over MCP only `list` runs (install/uninstall are a one-time terminal setup step).",
         args: &[("action", "string")],
-    },
-    ToolSpec {
-        name: "diagnose",
-        description: "Deterministic diagnostic scanner for knowledge graphs.",
-        args: &[("path", "string"), ("format", "string")],
+        tier: Tier::Extended,
     },
 ];
 
@@ -591,7 +528,15 @@ impl ServerHandler for AdenMcpServer {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, McpError> {
-        let tools: Vec<Tool> = TOOLS.iter().map(tool_from_spec).collect();
+        // Default to the Core surface to keep the per-session registry slim;
+        // `ADEN_MCP_FULL` widens it to Core + Extended. Hidden Extended tools
+        // remain callable by name via `call_tool`, so nothing is unreachable.
+        let full = surface_is_full();
+        let tools: Vec<Tool> = TOOLS
+            .iter()
+            .filter(|t| full || t.tier == Tier::Core)
+            .map(tool_from_spec)
+            .collect();
         Ok(ListToolsResult::with_all_items(tools))
     }
 
@@ -902,6 +847,53 @@ mod tests {
     }
 
     #[test]
+    fn removed_tools_are_absent() {
+        // `watch` always times out over MCP; `suggest` was a stale recommender.
+        for dead in ["watch", "suggest"] {
+            assert!(
+                !TOOLS.iter().any(|t| t.name == dead),
+                "{dead} must not be on the MCP surface"
+            );
+        }
+    }
+
+    #[test]
+    fn core_tools_lead_extended_tools() {
+        // Primacy: every Core tool must be declared before any Extended tool,
+        // so the default (Core-only) list is also the highest-value-first list.
+        let first_extended = TOOLS.iter().position(|t| t.tier == Tier::Extended);
+        if let Some(idx) = first_extended {
+            assert!(
+                TOOLS[idx..].iter().all(|t| t.tier == Tier::Extended),
+                "a Core tool is declared after an Extended tool — primacy order broken"
+            );
+        }
+    }
+
+    #[test]
+    fn default_surface_is_core_only_full_surface_is_everything() {
+        let core = TOOLS.iter().filter(|t| t.tier == Tier::Core).count();
+        let all = TOOLS.len();
+        assert!(core > 0 && core < all, "expected a mix of Core and Extended");
+        // Default list (no ADEN_MCP_FULL) shows Core only; full shows all.
+        assert_eq!(
+            TOOLS.iter().filter(|t| Tier::Core == t.tier).count(),
+            core
+        );
+    }
+
+    #[test]
+    fn parse_full_toggle() {
+        for on in ["1", "true", "TRUE", " full ", "yes", "Yes"] {
+            assert!(parse_full(Some(on)), "{on:?} should enable full surface");
+        }
+        for off in ["0", "false", "", "no", "core", "2"] {
+            assert!(!parse_full(Some(off)), "{off:?} should not enable full");
+        }
+        assert!(!parse_full(None), "unset must default to Core-only");
+    }
+
+    #[test]
     fn test_get_tool_finds_all_known_tools() {
         let server = AdenMcpServer::new(PathBuf::from("."));
         for spec in TOOLS.iter() {
@@ -1135,7 +1127,7 @@ mod tests {
 
     #[test]
     fn renamed_snake_case_args_emit_kebab_flags() {
-        // session agent_id → --agent-id; complete dry_run → --dry-run; watch graph_sync → --graph-sync
+        // session agent_id → --agent-id; complete dry_run → --dry-run; lint dead_code → --dead-code
         let mut s = serde_json::Map::new();
         s.insert("agent_id".into(), serde_json::json!("a1"));
         s.insert("task".into(), serde_json::json!("t"));
@@ -1146,9 +1138,9 @@ mod tests {
         c.insert("dry_run".into(), serde_json::json!(true));
         assert!(build_cli_args(spec("complete"), &c, &[]).contains(&"--dry-run".to_string()));
 
-        let mut w = serde_json::Map::new();
-        w.insert("graph_sync".into(), serde_json::json!(true));
-        assert!(build_cli_args(spec("watch"), &w, &[]).contains(&"--graph-sync".to_string()));
+        let mut l = serde_json::Map::new();
+        l.insert("dead_code".into(), serde_json::json!(true));
+        assert!(build_cli_args(spec("lint"), &l, &[]).contains(&"--dead-code".to_string()));
     }
 
     #[test]

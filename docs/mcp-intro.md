@@ -11,11 +11,14 @@ For the full tool/prompt reference and the recommended agent system prompt, see
 ## What the Aden MCP server is
 
 `aden-mcp` is a **thin director**: it exposes Aden's CLI as MCP tools, where
-each tool maps **1:1 to an `aden` subcommand** (~35 tools — `grep`, `ask`,
-`understand`, `asm`, `query`, `locate`, `gen`, `heal`, `check`, `ready`,
-`sync`, `list`, and so on). There is no separate logic path — calling the
-`grep` tool runs the same code as `aden grep` on the command line, so anything
-documented for the CLI applies verbatim to the MCP tools.
+each tool maps **1:1 to an `aden` subcommand**. The surface is tiered — ~20
+*Core* tools (`grep`, `ask`, `understand`, `asm`, `query`, `locate`, `gen`,
+`heal`, `check`, `ready`, `sync`, `list`, and so on) are listed by default,
+ordered most-used first; the remaining *Extended* setup/admin tools are hidden
+to save context but stay callable by name (set `ADEN_MCP_FULL=1` to list them).
+There is no separate logic path — calling the `grep` tool runs the same code as
+`aden grep` on the command line, so anything documented for the CLI applies
+verbatim to the MCP tools.
 
 The server operates on the **target project you point it at** — nothing it
 returns is specific to Aden's own source. Every result is derived from the
@@ -150,9 +153,8 @@ big merge, or generated code appearing outside the agent's own edits.
 - **Timeout.** Long-running tools are bounded by a 120-second guard so a single
   call cannot hang the client indefinitely.
 - **`watch` is terminal-only.** The continuous file-watch / live-reindex mode is
-  a long-running daemon: it is listed as a tool but **is not usable over MCP**
-  (the call will time out) — run `aden watch` in a terminal if you want it, and
-  use `gen`/`sync` for one-shot updates.
+  a long-running daemon, so it is **not exposed over MCP at all** — run `aden
+  watch` in a terminal if you want it, and use `gen`/`sync` for one-shot updates.
 
 ## See also
 

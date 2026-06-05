@@ -165,65 +165,72 @@ aden suggest "find all tests in the project"
 == MCP Tools (for AI Platforms)
 
 When using Aden via MCP (OpenCode, Claude Code, Cursor, etc.), the server exposes
-~35 tools — one per CLI subcommand. They are grouped below by purpose. A few of the
-most-used tools list their key arguments; for the rest, run `aden <tool> --help`.
+its CLI as tools — one per `aden` subcommand. The surface is *tiered* so the
+default tool list stays focused:
 
-.Read / query
+* *Core* — the read/query, validate, and build tools an agent reaches for
+  constantly. Listed by default, ordered most-used first.
+* *Extended* — setup / admin / niche tools. Hidden from the tool list to save
+  context, but still callable by name. Set `ADEN_MCP_FULL=1` in the server
+  environment to list them too.
+
+A few of the most-used tools list their key arguments below; for the rest, run
+`aden <tool> --help`.
+
+=== Core (listed by default)
+
+.Read / comprehend
 |===
 |Tool|Purpose|Key Arguments
+|grep|Structure-aware content search (hit + enclosing symbol)|pattern, regex, ignore_case, symbol_only, limit
+|understand|One-shot symbol comprehension (locate + backlinks + impact + asm)|symbol, budget, json
 |ask|Natural language Q&A|question, budget, from
+|search|Full-text search (BM25)|query, limit, offset, doc_type, semantics
+|locate|Symbol definitions (requires at least one of `symbol`/`caller_of`)|symbol, caller_of, show_context, limit, format
 |asm|Graph-traversed context|from, depth, budget, format (llm = default LLM-dense prose, adg = compact JSON, aden = raw AsciiDoc)
 |query|Structured JSON graph neighborhood|from, depth, backlinks, impact, edge_type (applies to from/backlinks/impact)
-|query-adq|Structured ADQ query|—
-|grep|Structure-aware content search (hit + enclosing symbol)|pattern, regex, ignore_case, symbol_only, limit
-|locate|Symbol definitions (requires at least one of `symbol`/`caller_of`)|symbol, caller_of, show_context, limit, format
-|search|Full-text search|query, limit, offset, doc_type, semantics
 |list|Anchors in graph|filter, limit, semantics
 |===
 
-.Build / maintain
+.Validate / build
 |===
 |Tool|Purpose|Key Arguments
-|gen|Generate contracts|auto, quiet
-|regen|Regenerate contracts|—
-|heal|Drift detection / repair|path, fix, gc, propose, since, apply, watch
-|check|Validate all references|path
-|sync|gen + check + heal|path
-|lint|Lint source|path, severity, fix, json
+|ready|Fast local pre-commit gate (gen + lint + check + heal + audit)|path, fix
+|check|Validate + gate CI: refs, cycles, orphans, edges, hashes, contracts|path, severity
+|lint|Lint source (dead_code flags zero-caller symbols)|path, severity, fix, json, dead_code
 |test|Run tests|path, scope, filter, list
-|ci-check|CI gate (check + heal + tests + secret scan)|—
+|heal|Drift detection / repair|path, fix, gc, propose, since, apply
+|gen|Incremental store-first index|auto, quiet
+|sync|Reconcile store: gen + check + heal + gc|path, no_gc
+|regen|Full from-scratch rebuild (wipes caches, prunes stale anchors)|path
+|ci-check|Full remote pre-push CI gate|path
+|audit|OWASP security scan|path, lang, format, strict
+|status|Health-score glance|path
+|diagnose|Deterministic structural graph scan + health score|path, format
 |===
 
-.Project lifecycle
+=== Extended (hidden — set ADEN_MCP_FULL=1, or call by name)
+
 |===
 |Tool|Purpose
-|init|Initialize an Aden project
-|new|Scaffold a new artifact
+|new|Scaffold a new project from a language template
+|init|Initialize an Aden `.agent/` workspace
 |kickoff|Start a new work session/plan
-|session|Manage work sessions
-|workflow|Run a defined workflow
-|suggest|Suggest next actions
-|review|Review proposed changes
-|complete|Report contracts needing completion
+|workflow|Instantiate a template with substitutions
+|session|Append a work-session journal entry
+|review|Review pending heal proposals
+|complete|Report contracts needing completion (automatic LLM fill not implemented)
+|query-adq|Multi-step ADQ traversal script (beyond a single `query`)
+|doctor|Diagnose the host environment — NOT the graph
+|licenses|Third-party license inventory
+|federation|Multi-repo workspace management
+|emergency|Downgrade Forbid policies to Warn
+|mcp|MCP integration management (only `list` runs over MCP)
 |===
 
-.Ops / meta
-|===
-|Tool|Purpose
-|status|Health score
-|doctor|Diagnose environment/setup
-|diagnose|Diagnose graph/project issues
-|audit|Audit the project
-|licenses|License inventory
-|federation|Cross-project federation
-|emergency|Emergency recovery
-|watch|Watch files and auto-regenerate (terminal-only — see note)
-|mcp|MCP server management (install/list)
-|===
-
-NOTE: The `watch` tool (and `heal --watch`) is a long-running, blocking
-process and is *terminal-only* — it is not usable over MCP. The MCP server
-times out any blocking tool at 120s, so invoke `watch` from a shell, not via MCP.
+NOTE: `watch` (and `heal --watch`) is a long-running, blocking process and is
+*terminal-only* — it is not exposed over MCP at all. The MCP server times out any
+blocking tool at 120s, so run `aden watch` from a shell for file-watching.
 
 NOTE: Over MCP, the search tools (`grep`, `search`, `list`) return a structured
 JSON envelope automatically — `{total, returned, truncated, ...}` — not the human

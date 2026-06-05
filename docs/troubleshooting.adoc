@@ -167,7 +167,7 @@ aden asm --from readme --format aden --depth 2 .
 
 === "command timed out after 120s"
 
-**Cause:** A blocking tool (`watch`, `heal --watch`) was called over MCP.
+**Cause:** A blocking operation (`heal --watch`) was invoked over MCP.
 
 **Fix:** Run those in a terminal, not via MCP.
 
