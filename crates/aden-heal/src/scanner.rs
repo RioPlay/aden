@@ -13,8 +13,19 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// Bump whenever the extraction logic that produces cached Documents changes
+/// (anchor format, symbol set, etc.). The scan cache is otherwise invalidated
+/// only by file mtime, so a parser-logic change would keep serving stale docs
+/// for unchanged files until they happen to be edited. Mirrors the index's
+/// CURRENT_INDEX_VERSION.
+const CACHE_LOGIC_VERSION: u32 = 2;
+
 #[derive(Default, Serialize, Deserialize)]
 struct SourceCache {
+    /// Extraction-logic version this cache was written with. A mismatch on load
+    /// discards the cache so every file re-parses under the current logic.
+    #[serde(default)]
+    version: u32,
     /// path relative to repo_root → (mtime_secs, serialized_doc_json per symbol).
     /// A single source file emits one Document per symbol, so the value MUST be a
     /// list — keying a single doc per file collapsed every file to its last
@@ -36,7 +47,8 @@ impl Scanner {
         let cache_path = aden_paths::scan_cache_file(&root);
         let cache = std::fs::read(&cache_path)
             .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok());
+            .and_then(|b| serde_json::from_slice::<SourceCache>(&b).ok())
+            .filter(|c| c.version == CACHE_LOGIC_VERSION);
         let filter = AdenFilter::from_directory(&root);
         Self {
             repo_root: root,
@@ -58,6 +70,7 @@ impl Scanner {
     pub fn scan(&self) -> Result<Vec<DriftEvent>, HealError> {
         let mut events = Vec::new();
         let mut new_cache = SourceCache {
+            version: CACHE_LOGIC_VERSION,
             timestamp_secs: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()

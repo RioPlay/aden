@@ -5,7 +5,7 @@
 //!
 //! Extracts headings, code blocks, and links from markdown files.
 
-use crate::extractor::{build_code_attributes, make_anchor};
+use crate::extractor::{build_code_attributes, infer_project_name, make_anchor};
 use aden_core::{Block, Document, NodeType, Result, SourceSpan};
 use std::path::Path;
 
@@ -378,20 +378,6 @@ fn extract_code_references(code: &str, lang: &str) -> Vec<String> {
     refs
 }
 
-fn infer_project_name(path: &Path) -> String {
-    path.ancestors()
-        .find(|p| {
-            p.join("Cargo.toml").exists()
-                || p.join("package.json").exists()
-                || p.join("pyproject.toml").exists()
-                || p.join("setup.py").exists()
-                || p.join("go.mod").exists()
-                || p.join("tsconfig.json").exists()
-        })
-        .and_then(|p| p.file_name())
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| "unknown".to_string())
-}
 
 /// Normalize a markdown link target down to a bare anchor name suitable for an
 /// AsciiDoc-style `<<target>>` cross-reference.

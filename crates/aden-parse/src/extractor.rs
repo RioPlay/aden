@@ -31,6 +31,40 @@ pub(crate) fn make_anchor(crate_name: &str, file_name: &str, symbol: &str) -> St
     format!("aden://module/{crate_name}/{file_name}#{symbol}")
 }
 
+/// Infer the owning project name for `path` by walking up to the nearest
+/// language manifest. Shared by every shallow extractor so a file's anchor is
+/// identical no matter which one parses it.
+///
+/// Critically, this resolves the project name consistently whether `path` is
+/// absolute or relative: when the manifest sits at the current directory, the
+/// matched ancestor is `"."`/`""` and `Path::file_name()` is `None`, so we
+/// canonicalize to recover the real directory name. Without this, `gen`
+/// (absolute paths) and the heal scanner (relative paths) produced divergent
+/// `aden://module/{project}/…` anchors for the same file (`aden` vs `unknown`),
+/// double-flagging every such symbol as MissingContract *and* OrphanAnchor.
+pub(crate) fn infer_project_name(path: &Path) -> String {
+    path.ancestors()
+        .find(|p| {
+            p.join("Cargo.toml").exists()
+                || p.join("package.json").exists()
+                || p.join("pyproject.toml").exists()
+                || p.join("setup.py").exists()
+                || p.join("go.mod").exists()
+                || p.join("tsconfig.json").exists()
+        })
+        .and_then(dir_name)
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn dir_name(p: &Path) -> Option<String> {
+    if let Some(name) = p.file_name() {
+        return Some(name.to_string_lossy().to_string());
+    }
+    std::fs::canonicalize(p)
+        .ok()
+        .and_then(|abs| abs.file_name().map(|n| n.to_string_lossy().to_string()))
+}
+
 /// Build mandatory attributes for a code-emitted Document, optionally including source span.
 pub(crate) fn build_code_attributes(
     source: &str,
@@ -72,4 +106,35 @@ pub(crate) fn build_code_attributes(
         attrs.insert("end_byte".to_string(), s.end_byte.to_string());
     }
     attrs
+}
+
+#[cfg(test)]
+mod tests {
+    use super::infer_project_name;
+    use std::fs;
+
+    #[test]
+    fn project_name_is_consistent_for_absolute_and_relative_paths() {
+        // A manifest-bearing dir; a file whose nearest marker is that dir.
+        let base = std::env::temp_dir().join("aden_infer_test_proj");
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(base.join("sub")).unwrap();
+        fs::write(base.join("Cargo.toml"), "[package]\nname=\"x\"\n").unwrap();
+        fs::write(base.join("sub/script.ps1"), "function Foo {}\n").unwrap();
+
+        // Absolute path resolves to the manifest dir's name.
+        let abs = base.join("sub/script.ps1");
+        let from_abs = infer_project_name(&abs);
+        assert_eq!(from_abs, "aden_infer_test_proj");
+
+        // Relative path whose manifest sits at cwd must resolve to the SAME name,
+        // not "unknown" (the M10 regression: gen used absolute, heal used relative).
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&base).unwrap();
+        let from_rel = infer_project_name(std::path::Path::new("./sub/script.ps1"));
+        std::env::set_current_dir(&prev).unwrap();
+        assert_eq!(from_rel, from_abs, "relative path must match absolute");
+
+        let _ = fs::remove_dir_all(&base);
+    }
 }

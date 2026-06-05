@@ -5,7 +5,7 @@
 //!
 //! Extracts headings, code blocks, and links from AsciiDoc files.
 
-use crate::extractor::{build_code_attributes, make_anchor};
+use crate::extractor::{build_code_attributes, infer_project_name, make_anchor};
 use aden_core::{Block, Document, NodeType, Result, SourceSpan};
 use std::path::Path;
 
@@ -271,20 +271,6 @@ fn make_adoc_anchor(crate_name: &str, file_name: &str, title: &str, level: usize
     format!("aden://doc/{}/{}/h{}{}", crate_name, file_name, level, slug)
 }
 
-fn infer_project_name(path: &Path) -> String {
-    path.ancestors()
-        .find(|p| {
-            p.join("Cargo.toml").exists()
-                || p.join("package.json").exists()
-                || p.join("pyproject.toml").exists()
-                || p.join("setup.py").exists()
-                || p.join("go.mod").exists()
-                || p.join("tsconfig.json").exists()
-        })
-        .and_then(|p| p.file_name())
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| "unknown".to_string())
-}
 
 fn extract_code_references(code: &str, lang: &str) -> Vec<String> {
     let mut refs = Vec::new();

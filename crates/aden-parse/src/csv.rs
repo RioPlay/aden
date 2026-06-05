@@ -5,7 +5,7 @@
 //!
 //! Extracts column headers and table structure from CSV files.
 
-use crate::extractor::{build_code_attributes, make_anchor};
+use crate::extractor::{build_code_attributes, infer_project_name, make_anchor};
 use aden_core::{Block, Document, NodeType, Result, Table};
 use std::path::Path;
 
@@ -100,17 +100,3 @@ impl crate::extractor::LanguageExtractor for CsvExtractor {
     }
 }
 
-fn infer_project_name(path: &Path) -> String {
-    path.ancestors()
-        .find(|p| {
-            p.join("Cargo.toml").exists()
-                || p.join("package.json").exists()
-                || p.join("pyproject.toml").exists()
-                || p.join("setup.py").exists()
-                || p.join("go.mod").exists()
-                || p.join("tsconfig.json").exists()
-        })
-        .and_then(|p| p.file_name())
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| "unknown".to_string())
-}

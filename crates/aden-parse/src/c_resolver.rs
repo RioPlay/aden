@@ -9,7 +9,7 @@
 //!   • `#include` resolution (local `"..."` and system `<...>`)
 //!   • Intra-file call-graph edges via `edge::calls[]` macros
 
-use crate::extractor::{LanguageExtractor, build_code_attributes, make_anchor};
+use crate::extractor::{LanguageExtractor, build_code_attributes, infer_project_name, make_anchor};
 use aden_core::{Block, Document, NodeType, Result};
 use std::path::Path;
 
@@ -87,22 +87,6 @@ struct CSymbol<'a> {
     doc_comment: Option<String>,
 }
 
-fn infer_project_name(path: &Path) -> String {
-    path.ancestors()
-        .find(|p| {
-            p.join("Cargo.toml").exists()
-                || p.join("package.json").exists()
-                || p.join("pyproject.toml").exists()
-                || p.join("setup.py").exists()
-                || p.join("go.mod").exists()
-                || p.join("tsconfig.json").exists()
-                || p.join("Makefile").exists()
-                || p.join("CMakeLists.txt").exists()
-        })
-        .and_then(|p| p.file_name())
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| "unknown".to_string())
-}
 
 fn walk_translation_unit<'a>(
     node: tree_sitter::Node<'a>,
