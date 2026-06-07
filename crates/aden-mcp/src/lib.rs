@@ -194,7 +194,7 @@ pub fn arg_is_positional(tool: &str, arg: &str) -> bool {
 fn structured_output_flags(tool: &str) -> &'static [&'static str] {
     match tool {
         // These honor the global `-j/--json` and print a structured envelope.
-        "grep" | "search" | "list" | "test" | "impact-diff" => &["--json"],
+        "grep" | "search" | "list" | "test" | "impact-diff" | "communities" => &["--json"],
         _ => &[],
     }
 }
@@ -352,6 +352,19 @@ static TOOLS: &[ToolSpec] = &[
             ("offset", "integer"),
             ("doc_type", "string"),
             ("semantics", "boolean"),
+        ],
+        tier: Tier::Core,
+    },
+    ToolSpec {
+        name: "communities",
+        description: "Detect functional communities — clusters of symbols that call/use each \
+                      other densely (modularity community detection), independent of the \
+                      directory layout. Good for orienting in a codebase. `min_size` filters \
+                      out small clusters (default 2).",
+        args: &[
+            ("min_size", "integer"),
+            ("limit", "integer"),
+            ("path", "string"),
         ],
         tier: Tier::Core,
     },

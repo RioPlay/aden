@@ -1,6 +1,7 @@
 // Copyright (c) 2026 RioPlay <rioplay@rioplay.dev>
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+pub mod communities;
 pub mod complete;
 pub mod diagnose;
 pub mod federation;
@@ -22,6 +23,7 @@ pub mod test_cmd;
 pub use diagnose::cmd_diagnose;
 pub use federation::cmd_federation;
 pub use generate::{cmd_gen, cmd_gen_opts, ensure_fresh};
+pub use communities::cmd_communities;
 pub use grep::cmd_grep;
 pub use impact_diff::cmd_impact_diff;
 #[cfg(feature = "watch")]

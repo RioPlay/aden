@@ -30,6 +30,7 @@
 pub mod backlinks;
 pub mod bridge;
 pub mod cache;
+pub mod community;
 pub mod cycles;
 pub mod graph;
 pub mod integrity;
