@@ -38,6 +38,7 @@ rayon.workspace = true
 
 [dev-dependencies]
 aden-mcp = { path = "../aden-mcp" }
+tempfile = "3"
 
 [features]
 default = ["watch"]

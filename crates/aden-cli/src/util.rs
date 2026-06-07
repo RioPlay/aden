@@ -628,7 +628,143 @@ pub fn perform_check(path: &Path) -> Result<Vec<String>, Box<dyn std::error::Err
         }
     }
 
+    // Documentation path references: catch prose docs that point at a repo file
+    // which has MOVED or been renamed (the `aden://` anchor case is covered by
+    // typed-edge/BrokenReference checks above; this covers raw path strings).
+    let doc_path_issues = check_doc_path_references(&find_project_root(path));
+    if doc_path_issues.is_empty() {
+        messages.push("INFO: All documentation path references resolve.".to_string());
+    } else {
+        messages.extend(doc_path_issues);
+    }
+
     Ok(messages)
+}
+
+/// Scan prose docs (`.md`/`.adoc`) for *link references* that point at a repo
+/// file which no longer exists — i.e. documentation linking to a file that moved
+/// or was renamed. (References by `aden://` anchor are covered by the typed-edge /
+/// BrokenReference checks above; this covers path links in prose.)
+///
+/// Only genuine LINK constructs are checked — markdown `[text](path)` and adoc
+/// `xref:`/`link:`/`include::` — so an illustrative backtick mention of a path
+/// (e.g. a scaffolded `src/main.rs`, or a command's example `--out` target) is
+/// NOT flagged. A target is resolved relative to the doc's own directory, or to
+/// the repo root when it starts with a real top-level directory. URLs, anchors,
+/// globs, and placeholders are skipped. Lines with `aden:allow-path` are exempt.
+fn check_doc_path_references(root: &Path) -> Vec<String> {
+    use std::collections::HashSet;
+
+    let top_dirs: HashSet<String> = match std::fs::read_dir(root) {
+        Ok(rd) => rd
+            .flatten()
+            .filter(|e| e.path().is_dir())
+            .filter_map(|e| e.file_name().into_string().ok())
+            .filter(|n| !n.starts_with('.') && n != "target" && n != "node_modules")
+            .collect(),
+        Err(_) => return Vec::new(),
+    };
+
+    let doc_exts: HashSet<&'static str> =
+        ["md", "markdown", "adoc", "asciidoc", "asc"].into_iter().collect();
+    let filter = aden_core::filter::AdenFilter::from_directory(root);
+    let mut docs = Vec::new();
+    let _ = walk_supported_files(root, root, &doc_exts, &filter, &mut docs);
+
+    // markdown `](target)`  and  adoc `xref:`/`link:`/`include::` target.
+    let md_link = regex::Regex::new(r"\]\(([^)\s]+)\)").expect("valid regex");
+    let adoc_link = regex::Regex::new(r"(?:xref:|link:|include::)([^\[\s\]]+)").expect("valid regex");
+
+    let mut findings: Vec<String> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    for doc in &docs {
+        let Ok(content) = std::fs::read_to_string(doc) else {
+            continue;
+        };
+        let rel_doc = doc
+            .strip_prefix(root)
+            .unwrap_or(doc)
+            .to_string_lossy()
+            .to_string();
+        let doc_dir = doc.parent().unwrap_or(root);
+        let mut in_fence = false;
+        for (i, line) in content.lines().enumerate() {
+            let t = line.trim_start();
+            if t.starts_with("```") || t == "----" || t == "...." {
+                in_fence = !in_fence;
+                continue;
+            }
+            if in_fence || line.contains("aden:allow-path") {
+                continue;
+            }
+            let targets = md_link
+                .captures_iter(line)
+                .chain(adoc_link.captures_iter(line))
+                .filter_map(|c| c.get(1).map(|m| m.as_str().to_string()));
+            for target in targets {
+                if let Some(resolved) = resolve_doc_link(&target, doc_dir, root, &top_dirs)
+                    && !resolved.exists()
+                {
+                    let key = format!("{rel_doc}|{target}");
+                    if seen.insert(key) {
+                        findings.push(format!(
+                            "ERROR: {}:{} link references missing path '{}' (moved/renamed?)",
+                            rel_doc,
+                            i + 1,
+                            target
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    findings.sort();
+    findings
+}
+
+/// Resolve a doc link target to a filesystem path to existence-check, or `None`
+/// when it isn't a repo-relative file link (URL, anchor-only, glob, placeholder,
+/// extension-less). Root-relative when it starts with a top-level dir; otherwise
+/// relative to the linking doc's directory.
+fn resolve_doc_link(
+    target: &str,
+    doc_dir: &Path,
+    root: &Path,
+    top_dirs: &std::collections::HashSet<String>,
+) -> Option<PathBuf> {
+    // Drop any `#anchor` fragment; an anchor-only link has no file part.
+    let path = target.split('#').next().unwrap_or(target);
+    if path.is_empty()
+        || path.contains("://")
+        || path.starts_with("http")
+        || path.starts_with("mailto:")
+        || path.starts_with('~')
+        || path.starts_with('/')
+        || path.chars().any(|c| "{}$*?<>\"`|".contains(c))
+    {
+        return None;
+    }
+    // Must look like a file (short alphanumeric extension on the last segment).
+    let last = path.rsplit('/').next().unwrap_or(path);
+    let ext_ok = last
+        .rsplit_once('.')
+        .map(|(stem, ext)| {
+            !stem.is_empty()
+                && (1..=8).contains(&ext.len())
+                && ext.chars().all(|c| c.is_ascii_alphanumeric())
+        })
+        .unwrap_or(false);
+    if !ext_ok {
+        return None;
+    }
+    // Root-relative if it starts with a real top-level dir, else relative to the
+    // doc. `..` segments are resolved by the OS during the existence check.
+    let first = path.split('/').next().unwrap_or(path);
+    if top_dirs.contains(first) {
+        Some(root.join(path))
+    } else {
+        Some(doc_dir.join(path))
+    }
 }
 
 /// Collect store-backed contracts as `(synthetic_path, adoc_text)` entries.
@@ -875,6 +1011,62 @@ pub fn generate_proposal_id() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resolve_doc_link_classifies_targets() {
+        let root = Path::new("/repo");
+        let docdir = Path::new("/repo/docs");
+        let tops: std::collections::HashSet<String> =
+            ["docs".to_string(), "crates".to_string()].into_iter().collect();
+
+        // Root-relative (starts with a top dir).
+        assert_eq!(
+            resolve_doc_link("docs/a.adoc", docdir, root, &tops),
+            Some(PathBuf::from("/repo/docs/a.adoc"))
+        );
+        // Doc-relative sibling (not a top dir).
+        assert_eq!(
+            resolve_doc_link("sibling.adoc", docdir, root, &tops),
+            Some(PathBuf::from("/repo/docs/sibling.adoc"))
+        );
+        // Anchor fragment is dropped; file part still resolves.
+        assert_eq!(
+            resolve_doc_link("crates/x/y.rs#frag", docdir, root, &tops),
+            Some(PathBuf::from("/repo/crates/x/y.rs"))
+        );
+        // Not file links: URLs, anchors-only, extensionless, globs.
+        assert_eq!(resolve_doc_link("https://x.com/a.html", docdir, root, &tops), None);
+        assert_eq!(resolve_doc_link("#section", docdir, root, &tops), None);
+        assert_eq!(resolve_doc_link("crates/aden-cli", docdir, root, &tops), None);
+        assert_eq!(resolve_doc_link("src/*.rs", docdir, root, &tops), None);
+    }
+
+    #[test]
+    fn doc_path_gate_flags_broken_link_not_examples() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("docs")).unwrap();
+        std::fs::write(root.join("docs/real.adoc"), "= Real\n").unwrap();
+        std::fs::write(
+            root.join("docs/guide.adoc"),
+            // A valid link, a BROKEN link, an illustrative backtick mention, and a
+            // link inside a code fence — only the broken link must be flagged.
+            "= Guide\n\
+             See xref:docs/real.adoc[real].\n\
+             See xref:docs/missing.adoc[gone].\n\
+             Scaffolding produces `src/main.rs` for you.\n\
+             ----\n\
+             xref:docs/also-not-real.adoc[in a fence]\n\
+             ----\n",
+        )
+        .unwrap();
+
+        let findings = check_doc_path_references(root);
+        assert_eq!(findings.len(), 1, "exactly one broken link expected: {findings:?}");
+        assert!(findings[0].contains("docs/missing.adoc"), "got {findings:?}");
+        assert!(!findings.iter().any(|f| f.contains("src/main.rs")), "backtick mention must not flag");
+        assert!(!findings.iter().any(|f| f.contains("also-not-real")), "fenced link must not flag");
+    }
 
     #[test]
     fn classify_orphans_dedups_colliding_anchors() {
