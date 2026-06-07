@@ -746,6 +746,20 @@ fn dense_embedder() -> Option<&'static aden_index::TractEmbedder> {
         .as_ref()
 }
 
+/// Format a search score for the text table. BM25 scores are large (hundreds to
+/// thousands) and read fine at one decimal, but hybrid RRF fused scores are tiny
+/// (~`1/(60+rank)` ≈ 0.03) and a fixed `{:.1}` floored them to `0.0`. Pick the
+/// precision by magnitude so both are legible.
+pub fn fmt_score(score: f64) -> String {
+    if score == 0.0 {
+        "0".to_string()
+    } else if score.abs() >= 1.0 {
+        format!("{score:.1}")
+    } else {
+        format!("{score:.4}")
+    }
+}
+
 /// Run a search query against the index, using hybrid (dense + BM25 via RRF)
 /// retrieval when embeddings are present and a model is loaded, else pure BM25.
 /// This is the single entry point all `search`/`ask` paths should use so routing

@@ -10,8 +10,8 @@ use aden_store::GraphStorage;
 
 use crate::types::{AnchorPattern, QueryIntent};
 use crate::util::{
-    find_project_root, load_or_build_index, node_to_json, parse_single_edge_type, perform_check,
-    query_index, sanitize_anchor, sanitize_source_file, valid_edge_types,
+    find_project_root, fmt_score, load_or_build_index, node_to_json, parse_single_edge_type,
+    perform_check, query_index, sanitize_anchor, sanitize_source_file, valid_edge_types,
 };
 use aden_index::SearchResult;
 
@@ -1588,7 +1588,7 @@ pub fn cmd_search(
         } else {
             r.snippet.clone()
         };
-        println!("| {} | {:.1} | {} |", r.anchor, r.score, snippet);
+        println!("| {} | {} | {} |", r.anchor, fmt_score(r.score), snippet);
     }
 
     // Print semantic results if any
@@ -2197,7 +2197,7 @@ pub fn cmd_locate(
                     } else {
                         r.snippet.clone()
                     };
-                    println!("| {} | {:.1} | {} |", r.anchor, r.score, snippet);
+                    println!("| {} | {} | {} |", r.anchor, fmt_score(r.score), snippet);
                 }
                 return Ok(());
             }
