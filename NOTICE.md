@@ -2,7 +2,7 @@
 
 **aden** — A Dense Referential Context Compiler.
 
-© RioPlay.
+© 2026 RioPlay <rioplay@rioplay.dev>.
 
 Licensed under AGPL-3.0-or-later (see [LICENSE](LICENSE)).
 
