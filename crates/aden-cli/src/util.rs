@@ -813,7 +813,7 @@ pub fn load_or_build_index(path: &Path) -> Result<aden_index::Index, Box<dyn std
         // A cache built before a model was available carries no embeddings; fill
         // them in now (and re-save) so hybrid retrieval activates without a full
         // rebuild. No-op when the `dense` feature is off or no model is present.
-        if maybe_embed(&mut cached) {
+        if maybe_embed(&mut cached, path) {
             let _ = aden_index::save(&cached, path);
         }
         return Ok(cached);
@@ -825,7 +825,7 @@ pub fn load_or_build_index(path: &Path) -> Result<aden_index::Index, Box<dyn std
         index.ingest(store_entries);
         index.finalize();
     }
-    maybe_embed(&mut index);
+    maybe_embed(&mut index, path);
     let _ = aden_index::save(&index, path);
     Ok(index)
 }
@@ -835,13 +835,17 @@ pub fn load_or_build_index(path: &Path) -> Result<aden_index::Index, Box<dyn std
 /// can persist). A no-op (returns false) otherwise — keeping the default,
 /// model-free build pure BM25.
 #[cfg(feature = "dense")]
-fn maybe_embed(index: &mut aden_index::Index) -> bool {
+fn maybe_embed(index: &mut aden_index::Index, path: &Path) -> bool {
     if index.has_embeddings() {
         return false;
     }
     match dense_embedder() {
         Some(emb) => {
-            index.embed_documents(emb);
+            // Reuse the content-addressed cache that survives `gen`'s cache wipe,
+            // so a reindex re-embeds only changed documents, not the whole corpus.
+            let mut cache = aden_index::load_embedding_cache(path);
+            index.embed_documents_cached(emb, &mut cache);
+            let _ = aden_index::save_embedding_cache(&cache, path);
             index.has_embeddings()
         }
         None => false,
@@ -849,7 +853,7 @@ fn maybe_embed(index: &mut aden_index::Index) -> bool {
 }
 
 #[cfg(not(feature = "dense"))]
-fn maybe_embed(_index: &mut aden_index::Index) -> bool {
+fn maybe_embed(_index: &mut aden_index::Index, _path: &Path) -> bool {
     false
 }
 

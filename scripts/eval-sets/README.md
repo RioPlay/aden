@@ -49,12 +49,17 @@ honest win on natural-language code queries.
 Scale demonstration over **4,114 real kernel `.c` files** (mm, kernel, fs, net,
 block, ipc, security, crypto, lib, init). Iconic-file ground truth.
 
-> **Dense/hybrid does not scale to this corpus yet (a real finding).** The first
-> hybrid query embeds the entire index in one flat (non-ANN) pass. On the 4,114-file
-> subset (tens of thousands of symbols) that one-time embedding had not completed
-> after ~30 min of CPU time, so Linux is reported BM25-only. Hybrid is great on
-> small/medium repos (see T3) but needs **incremental embedding + an ANN index**
-> before it is usable on large codebases — a roadmap item the scale test surfaced.
+> **Why Linux is BM25-only here, and what the scale test fixed.** The *cold*
+> first embed of this subset (tens of thousands of symbols, bge on CPU) runs 30+
+> min — a one-time cost we didn't pay for the published run. The worse problem the
+> test surfaced was that hybrid re-embedded the **entire** corpus on *every*
+> reindex (gen wipes the index cache), so a single edit paid the full cost again.
+> That is now fixed: embeddings are persisted in a content-addressed cache keyed
+> by each symbol's source hash, so a reindex re-embeds only changed symbols
+> (measured: no-op reindex +0 / ~1.4s; one-file edit ~2.5s vs ~71s before). The
+> cold first build remains a one-time cost — parallelism / a smaller model / GPU,
+> or an ANN index for query latency, are separate follow-ons, not the bottleneck
+> incremental embedding addressed.
 
 ## Reproduce
 

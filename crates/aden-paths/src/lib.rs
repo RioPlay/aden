@@ -205,6 +205,15 @@ pub fn scan_cache_file(root: &Path) -> PathBuf {
     project_dir(root).join("scan-cache.json")
 }
 
+/// Content-addressed dense-embedding cache (hybrid retrieval).
+///
+/// Deliberately a sibling of `cache/` (which `gen` wipes on every run) rather
+/// than inside it: embeddings are expensive (bge inference) and content-keyed, so
+/// they must survive an index rebuild. Cleared only on `regen`.
+pub fn embeddings_cache_file(root: &Path) -> PathBuf {
+    project_dir(root).join("embeddings-cache.json")
+}
+
 /// Ephemeral per-run scratch dir (may be wiped on reboot). Not durable.
 pub fn temp_dir() -> PathBuf {
     std::env::temp_dir().join("aden")

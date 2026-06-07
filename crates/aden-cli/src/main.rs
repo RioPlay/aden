@@ -874,6 +874,13 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
                 if graph_cache.exists() {
                     let _ = std::fs::remove_dir_all(&graph_cache);
                 }
+                // The embedding cache lives outside cache/ (it must survive a
+                // normal gen); regen is the one path that should drop it so dense
+                // vectors are recomputed from scratch.
+                let emb_cache = aden_paths::embeddings_cache_file(&root);
+                if emb_cache.exists() {
+                    let _ = std::fs::remove_file(&emb_cache);
+                }
             }
             commands::cmd_gen(&path, true)
         }
