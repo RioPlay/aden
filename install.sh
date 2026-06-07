@@ -21,6 +21,14 @@ echo ""
 # MCP server spawns this same binary, so enabling it here turns on hybrid search
 # for BOTH the CLI and MCP. Fetch the model afterwards: scripts/fetch-bge-model.sh
 cd "$PROJECT_ROOT"
+
+# Activate the repo's git hooks (pre-push CI gate) so code can't be pushed
+# without passing the checks. No-op outside a git checkout.
+if git -C "$PROJECT_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
+  git -C "$PROJECT_ROOT" config core.hooksPath git-hooks
+  echo "Git hooks activated (pre-push CI gate)."
+fi
+
 DENSE="${ADEN_DENSE:-0}"
 [ "${1:-}" = "--dense" ] && DENSE=1
 if [ "$DENSE" = "1" ]; then
