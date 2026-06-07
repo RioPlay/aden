@@ -41,25 +41,35 @@ honest win on natural-language code queries.
 
 ### `linux-subset.queries.tsv` — Linux kernel subsystems (199 queries)
 
+Scale run over **4,114 real kernel `.c` files** (~134,800 symbols across mm,
+kernel, fs, net, block, ipc, security, crypto, lib, init), 199 iconic-file queries.
+
 | Mode | R@1 | R@5 | R@10 | R@20 | MRR@20 |
 |------|-----|-----|------|------|--------|
-| BM25 | 0.367 | 0.472 | 0.543 | 0.588 | 0.418 |
-| Hybrid | n/a (infeasible at this scale — see below) | | | | |
+| BM25 | 0.362 | 0.472 | 0.558 | 0.608 | 0.417 |
+| **Hybrid** | **0.487** | **0.673** | **0.739** | **0.819** | **0.571** |
 
-Scale demonstration over **4,114 real kernel `.c` files** (mm, kernel, fs, net,
-block, ipc, security, crypto, lib, init). Iconic-file ground truth.
+Hybrid's lead *widens* at scale: R@1 +35% relative, R@5 +43%, MRR +37%, and misses
+halve (78→36 of 199). On a large, unfamiliar C codebase, dense recovers a lot of
+queries BM25's exact-term matching misses.
 
-> **Why Linux is BM25-only here, and what the scale test fixed.** The *cold*
-> first embed of this subset (tens of thousands of symbols, bge on CPU) runs 30+
-> min — a one-time cost we didn't pay for the published run. The worse problem the
-> test surfaced was that hybrid re-embedded the **entire** corpus on *every*
-> reindex (gen wipes the index cache), so a single edit paid the full cost again.
-> That is now fixed: embeddings are persisted in a content-addressed cache keyed
-> by each symbol's source hash, so a reindex re-embeds only changed symbols
-> (measured: no-op reindex +0 / ~1.4s; one-file edit ~2.5s vs ~71s before). The
-> cold first build remains a one-time cost — parallelism / a smaller model / GPU,
-> or an ANN index for query latency, are separate follow-ons, not the bottleneck
-> incremental embedding addressed.
+> **Read these as a lower bound, not a leaderboard.** Ground truth is
+> *single-target* (exactly one expected file per query), so a result that surfaces
+> an equally-valid sibling file counts as a miss — real usefulness is higher than
+> the raw recall. The numbers are *self-run on one corpus with labels we authored*:
+> indicative of how dense compares to BM25 here, **not** a standardized benchmark,
+> and your repo will differ. The point of shipping the harness + query sets is so
+> you can measure the BM25-vs-hybrid trade-off **on your own codebase** (see
+> Reproduce) rather than trust ours. Retrieval is also file-level routing, not
+> end-to-end task success.
+>
+> **Cost to be aware of.** Hybrid needs a one-time cold embed of the corpus
+> (~24 min for this 4,114-file subset on CPU via the pure-Rust `tract` runtime).
+> After that it is incremental: a reindex re-embeds only changed symbols (no-op
+> reindex +0 / ~1.4s; one-file edit ~2.5s), because embeddings persist in a
+> content-addressed cache keyed by each symbol's source hash. Speeding up the cold
+> build (smaller model / GPU / a faster runtime) and an ANN index for query latency
+> are separate follow-ons.
 
 ## Reproduce
 
