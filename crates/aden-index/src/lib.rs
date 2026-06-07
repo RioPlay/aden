@@ -56,6 +56,12 @@ pub struct Index {
     /// check anyway and rebuilt).
     #[serde(default)]
     embeddings: HashMap<String, Vec<f32>>,
+    /// anchor -> content hash of the text that produced the stored embedding.
+    /// Lets [`Index::embed_documents`] re-embed only documents whose text changed
+    /// (incremental embedding) instead of the whole corpus every time. `serde(default)`
+    /// so older caches deserialize; the version bump rebuilds them once.
+    #[serde(default)]
+    embedding_hashes: HashMap<String, u64>,
 }
 
 /// BM25 parameters
@@ -84,7 +90,10 @@ const INDEX_CACHE_BASENAME: &str = "index-cache.json";
 /// v6: identifier sub-token expansion in [`tokenize`] (camelCase / `_-/.:`).
 /// v7: per-anchor dense embeddings stored for hybrid retrieval (new `embeddings`
 /// field on [`Index`]). The stored format changed, so older caches rebuild.
-const CURRENT_INDEX_VERSION: u32 = 7;
+/// v8: per-anchor embedding content hashes (`embedding_hashes`) for *incremental*
+/// embedding — re-embed only changed docs. Bumped so v7 caches (which carry no
+/// hashes) rebuild once cleanly rather than trusting vectors of unknown freshness.
+const CURRENT_INDEX_VERSION: u32 = 8;
 
 /// Reciprocal Rank Fusion constant — Cormack, Clarke & Buettcher, SIGIR 2009 use
 /// 60. Damps the contribution of low-ranked items so a top hit in either
@@ -115,6 +124,30 @@ pub fn save(index: &Index, dir: &std::path::Path) -> Result<(), Box<dyn std::err
     let index_path = cache_dir.join(INDEX_CACHE_BASENAME);
     let json = serde_json::to_string_pretty(index)?;
     std::fs::write(&index_path, json)?;
+    Ok(())
+}
+
+/// Load the content-addressed embedding cache (hash → vector) for `dir`, or an
+/// empty map if none exists yet. Lives outside the gen-wiped `cache/` dir (see
+/// [`aden_paths::embeddings_cache_file`]) so vectors survive index rebuilds.
+pub fn load_embedding_cache(dir: &std::path::Path) -> HashMap<String, Vec<f32>> {
+    let path = aden_paths::embeddings_cache_file(dir);
+    std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default()
+}
+
+/// Persist the content-addressed embedding cache for `dir`.
+pub fn save_embedding_cache(
+    cache: &HashMap<String, Vec<f32>>,
+    dir: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let path = aden_paths::embeddings_cache_file(dir);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&path, serde_json::to_string(cache)?)?;
     Ok(())
 }
 
@@ -525,6 +558,76 @@ pub trait EmbeddingProvider: Sync {
     fn embed(&self, text: &str) -> Vec<f32>;
     /// The dimensionality of the vectors this provider produces.
     fn dim(&self) -> usize;
+}
+
+/// Project a document's text to the part that determines its *meaning*, dropping
+/// provenance/location attribute lines that gen rewrites on every run without a
+/// semantic change: the `:last-verified:` timestamp (changes every gen), the
+/// `:start_line:`/`:end_line:`/`:start_byte:`/`:end_byte:` span (shifts when
+/// unrelated code above it moves), and the per-file `:source_hash:`. Embedding and
+/// hashing this stable projection — rather than the raw text — is what lets the
+/// content-addressed embedding cache actually hit across gens: without it every
+/// symbol's hash changes on every reindex and the whole corpus re-embeds.
+fn stable_embed_text(text: &str) -> String {
+    const VOLATILE_ATTRS: &[&str] = &[
+        ":last-verified:",
+        ":start_line:",
+        ":end_line:",
+        ":start_byte:",
+        ":end_byte:",
+        ":source_hash:",
+    ];
+    let mut out = String::with_capacity(text.len());
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if VOLATILE_ATTRS.iter().any(|attr| trimmed.starts_with(attr)) {
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
+}
+
+/// The value of a `:attr:` line in a document, if present (first match).
+fn doc_attr<'a>(text: &'a str, attr: &str) -> Option<&'a str> {
+    text.lines()
+        .find_map(|l| l.trim_start().strip_prefix(attr))
+        .map(str::trim)
+}
+
+/// Stable cache key for a document's embedding.
+///
+/// For code symbols, key on the symbol's `:source_hash:` (a hash of the actual
+/// source, so it changes only when the code changes) plus the anchor (per-symbol
+/// identity). This is immune to the noise that makes the rendered contract text
+/// differ between otherwise-identical gens — the `:last-verified:` timestamp and
+/// HashMap-ordered include/edge tables — which would otherwise bust the cache for
+/// thousands of unchanged symbols on every reindex. Documents without a source
+/// hash (prose: Markdown/AsciiDoc/`.txt`) fall back to hashing their stable text
+/// projection.
+fn embed_key(anchor: &str, text: &str) -> u64 {
+    match doc_attr(text, ":source_hash:") {
+        Some(source_hash) => text_hash(&format!("{source_hash}\u{1f}{anchor}")),
+        None => text_hash(&stable_embed_text(text)),
+    }
+}
+
+/// Stable 64-bit content hash (FNV-1a) used to detect whether a document's text
+/// changed since its embedding was computed. Pure arithmetic, so it is
+/// deterministic across runs and platforms — required for the reproducible,
+/// incremental embedding path in [`Index::embed_documents`]. Not cryptographic;
+/// a collision would at worst skip re-embedding a changed doc, which is
+/// astronomically unlikely at 64 bits for this corpus scale.
+fn text_hash(text: &str) -> u64 {
+    const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+    const FNV_PRIME: u64 = 0x100000001b3;
+    let mut hash = FNV_OFFSET;
+    for byte in text.as_bytes() {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    hash
 }
 
 /// Cosine similarity of two equal-length vectors, in `[-1.0, 1.0]`. Returns
@@ -1034,18 +1137,98 @@ impl Index {
     }
 
     /// Populate per-anchor dense embeddings from each document's text using the
-    /// given provider. Run once after [`Index::ingest`]; the vectors are stored
-    /// (and serialized) so queries don't re-embed the corpus. Idempotent —
-    /// re-running overwrites. Without this, [`Index::hybrid_query`] has no dense
-    /// signal and degrades to pure BM25.
+    /// given provider. The vectors are stored (and serialized) so queries don't
+    /// re-embed the corpus.
+    ///
+    /// *Incremental*: only documents whose text changed since their stored vector
+    /// was computed are (re)embedded — tracked by a per-anchor content hash
+    /// ([`Index::embedding_hashes`]). Unchanged docs keep their vector; removed
+    /// anchors are dropped. This is what keeps the reindex-on-read path cheap:
+    /// editing one file in a large repo re-embeds one document, not the whole
+    /// corpus (embedding is by far the dominant cost — bge inference on CPU runs
+    /// into tens of minutes for tens of thousands of symbols). The first build on
+    /// a fresh index still embeds everything; subsequent runs are proportional to
+    /// the edit. Without this, [`Index::hybrid_query`] degrades to pure BM25.
     pub fn embed_documents(&mut self, provider: &dyn EmbeddingProvider) {
         use rayon::prelude::*;
-        // Parallel: embedding is the dominant cost of the first index build.
-        self.embeddings = self
+        // Documents needing (re)embedding: no stored vector, or text changed since
+        // the stored vector was computed. A vector with no recorded hash (a v7
+        // cache loaded before the version bump) is trusted as current — but the
+        // version bump means that case does not arise in practice.
+        let stale: Vec<(String, String)> = self
             .anchor_text
+            .iter()
+            .filter(|(anchor, text)| match self.embedding_hashes.get(*anchor) {
+                Some(stored) => *stored != embed_key(anchor, text),
+                None => !self.embeddings.contains_key(*anchor),
+            })
+            .map(|(a, t)| (a.clone(), stable_embed_text(t)))
+            .collect();
+
+        // Embed only the stale set, in parallel (the dominant cost).
+        let fresh: HashMap<String, Vec<f32>> = stale
             .par_iter()
             .map(|(anchor, text)| (anchor.clone(), provider.embed(text)))
             .collect();
+
+        // Rebuild over the CURRENT doc set: take a fresh vector if we just made
+        // one, else reuse the stored vector; anchors absent from `anchor_text`
+        // (deleted symbols) fall out. Record each kept vector's stable key.
+        let mut embeddings = HashMap::with_capacity(self.anchor_text.len());
+        let mut hashes = HashMap::with_capacity(self.anchor_text.len());
+        for (anchor, text) in &self.anchor_text {
+            if let Some(vec) = fresh.get(anchor).or_else(|| self.embeddings.get(anchor)) {
+                embeddings.insert(anchor.clone(), vec.clone());
+                hashes.insert(anchor.clone(), embed_key(anchor, text));
+            }
+        }
+        self.embeddings = embeddings;
+        self.embedding_hashes = hashes;
+    }
+
+    /// Like [`Index::embed_documents`], but reuses a *content-addressed* embedding
+    /// cache that survives index rebuilds.
+    ///
+    /// `gen` wipes the index cache on every run, which would otherwise force a full
+    /// re-embed of the corpus on the next query (catastrophic on large repos — tens
+    /// of minutes). This keeps the expensive vectors in a separate cache keyed by
+    /// the document's content hash, so a rebuild (or even a renamed anchor) reuses
+    /// every vector whose text is unchanged and embeds only what is genuinely new.
+    /// Newly computed vectors are added to `cache` for the caller to persist.
+    pub fn embed_documents_cached(
+        &mut self,
+        provider: &dyn EmbeddingProvider,
+        cache: &mut HashMap<String, Vec<f32>>,
+    ) {
+        use rayon::prelude::*;
+        // Distinct content hashes not yet in the cache → the only texts to embed.
+        // Dedup by hash so identical content (common for boilerplate) embeds once.
+        let mut seen = std::collections::HashSet::new();
+        let missing: Vec<(String, String)> = self
+            .anchor_text
+            .iter()
+            .map(|(anchor, text)| (embed_key(anchor, text).to_string(), stable_embed_text(text)))
+            .filter(|(key, _)| !cache.contains_key(key) && seen.insert(key.clone()))
+            .collect();
+
+        let fresh: Vec<(String, Vec<f32>)> = missing
+            .par_iter()
+            .map(|(key, text)| (key.clone(), provider.embed(text)))
+            .collect();
+        cache.extend(fresh);
+
+        // Project the cache onto the current anchors by each symbol's stable key.
+        let mut embeddings = HashMap::with_capacity(self.anchor_text.len());
+        let mut hashes = HashMap::with_capacity(self.anchor_text.len());
+        for (anchor, text) in &self.anchor_text {
+            let key = embed_key(anchor, text);
+            if let Some(vec) = cache.get(&key.to_string()) {
+                embeddings.insert(anchor.clone(), vec.clone());
+                hashes.insert(anchor.clone(), key);
+            }
+        }
+        self.embeddings = embeddings;
+        self.embedding_hashes = hashes;
     }
 
     /// Whether dense embeddings are available (i.e. [`Index::embed_documents`]
@@ -1194,6 +1377,138 @@ mod tests {
     fn build_snippet_short_line_unchanged() {
         let snippet = build_snippet("a short → line", &["short".to_string()]);
         assert_eq!(snippet, "a short → line");
+    }
+
+    /// An [`EmbeddingProvider`] that counts how many times it embeds, so a test can
+    /// assert that re-embedding only touches changed documents.
+    struct CountingEmbedder {
+        calls: std::sync::atomic::AtomicUsize,
+    }
+    impl CountingEmbedder {
+        fn new() -> Self {
+            Self {
+                calls: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+        fn count(&self) -> usize {
+            self.calls.load(std::sync::atomic::Ordering::Relaxed)
+        }
+    }
+    impl EmbeddingProvider for CountingEmbedder {
+        fn embed(&self, text: &str) -> Vec<f32> {
+            self.calls
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            // Deterministic 4-d vector derived from the text's content hash.
+            let h = text_hash(text);
+            (0..4).map(|i| ((h >> (i * 8)) & 0xff) as f32 / 255.0).collect()
+        }
+        fn dim(&self) -> usize {
+            4
+        }
+    }
+
+    #[test]
+    fn embed_documents_only_reembeds_changed_docs() {
+        let mut index = Index::default();
+        index.ingest(vec![
+            (PathBuf::from("a.adoc"), "[[a]]\nalpha text".to_string()),
+            (PathBuf::from("b.adoc"), "[[b]]\nbeta text".to_string()),
+            (PathBuf::from("c.adoc"), "[[c]]\ngamma text".to_string()),
+        ]);
+        index.finalize();
+        let emb = CountingEmbedder::new();
+
+        // First build embeds every document.
+        index.embed_documents(&emb);
+        assert_eq!(emb.count(), 3, "first build embeds all docs");
+        assert_eq!(index.embeddings.len(), 3);
+        assert_eq!(index.embedding_hashes.len(), 3);
+
+        // Re-embedding an unchanged corpus does zero work (the regression this
+        // whole change exists to prevent: a full re-embed on every read).
+        index.embed_documents(&emb);
+        assert_eq!(emb.count(), 3, "unchanged corpus must not re-embed");
+
+        // Change one document's text -> exactly one re-embed; its vector updates.
+        let old_a = index.embeddings["a"].clone();
+        index
+            .anchor_text
+            .insert("a".to_string(), "alpha text CHANGED".to_string());
+        index.embed_documents(&emb);
+        assert_eq!(emb.count(), 4, "one changed doc -> one re-embed");
+        assert_ne!(index.embeddings["a"], old_a, "changed doc got a fresh vector");
+        assert_eq!(index.embeddings.len(), 3);
+
+        // Removing a document drops its vector and embeds nothing.
+        index.anchor_text.remove("b");
+        index.embed_documents(&emb);
+        assert_eq!(emb.count(), 4, "removal embeds nothing");
+        assert!(!index.embeddings.contains_key("b"));
+        assert!(!index.embedding_hashes.contains_key("b"));
+        assert_eq!(index.embeddings.len(), 2);
+    }
+
+    #[test]
+    fn embed_documents_cached_reuses_across_rebuilds() {
+        // Simulate the real CLI path: `gen` wipes the index, so each query rebuilds
+        // a fresh Index. The content-addressed cache must let the rebuild reuse
+        // every vector whose source is unchanged, embedding only what's new.
+        let docs = vec![
+            (
+                PathBuf::from("a.adoc"),
+                ":source_hash: AAA\n[[a]]\nalpha".to_string(),
+            ),
+            (
+                PathBuf::from("b.adoc"),
+                ":source_hash: BBB\n[[b]]\nbeta".to_string(),
+            ),
+        ];
+        let emb = CountingEmbedder::new();
+        let mut cache = HashMap::new();
+
+        let mut idx1 = Index::default();
+        idx1.ingest(docs.clone());
+        idx1.finalize();
+        idx1.embed_documents_cached(&emb, &mut cache);
+        assert_eq!(emb.count(), 2, "cold cache embeds both");
+        assert_eq!(idx1.embeddings.len(), 2);
+
+        // A noisy re-render of the SAME sources: the volatile `:last-verified:`
+        // timestamp differs, the source hashes do not. A from-scratch rebuild must
+        // reuse both vectors via the cache (zero new embeds) — the whole point.
+        let rerendered = vec![
+            (
+                PathBuf::from("a.adoc"),
+                ":last-verified: 2026-01-02T00:00:00Z\n:source_hash: AAA\n[[a]]\nalpha".to_string(),
+            ),
+            (
+                PathBuf::from("b.adoc"),
+                ":last-verified: 2026-09-09T09:09:09Z\n:source_hash: BBB\n[[b]]\nbeta".to_string(),
+            ),
+        ];
+        let mut idx2 = Index::default();
+        idx2.ingest(rerendered);
+        idx2.finalize();
+        idx2.embed_documents_cached(&emb, &mut cache);
+        assert_eq!(emb.count(), 2, "rebuild with unchanged sources re-embeds nothing");
+        assert_eq!(idx2.embeddings.len(), 2);
+
+        // One source actually changes (new source hash) -> exactly one new embed.
+        let changed = vec![
+            (
+                PathBuf::from("a.adoc"),
+                ":source_hash: AAA2\n[[a]]\nalpha rewritten".to_string(),
+            ),
+            (
+                PathBuf::from("b.adoc"),
+                ":source_hash: BBB\n[[b]]\nbeta".to_string(),
+            ),
+        ];
+        let mut idx3 = Index::default();
+        idx3.ingest(changed);
+        idx3.finalize();
+        idx3.embed_documents_cached(&emb, &mut cache);
+        assert_eq!(emb.count(), 3, "only the changed source re-embeds");
     }
 
     #[test]
