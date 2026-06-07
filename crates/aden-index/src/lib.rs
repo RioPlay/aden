@@ -14,6 +14,13 @@ use aden_core::filter::AdenFilter;
 use rayon::prelude::*;
 use rust_stemmers::{Algorithm, Stemmer};
 
+/// Local ONNX dense-embedding provider (hybrid retrieval). Behind the `dense`
+/// feature so the default build carries no ML dependencies.
+#[cfg(feature = "dense")]
+mod dense;
+#[cfg(feature = "dense")]
+pub use dense::TractEmbedder;
+
 /// A single search result.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SearchResult {
@@ -510,7 +517,7 @@ fn build_snippet(text: &str, query_tokens: &[String]) -> String {
 /// implementation will wrap a bundled, offline embedding model; tests use a
 /// small hand-crafted provider. Kept as a trait so the heavy model dependency
 /// stays out of the fusion core and can be swapped without touching callers.
-pub trait EmbeddingProvider {
+pub trait EmbeddingProvider: Sync {
     /// Embed a single text into a fixed-length vector.
     fn embed(&self, text: &str) -> Vec<f32>;
     /// The dimensionality of the vectors this provider produces.
@@ -1029,9 +1036,11 @@ impl Index {
     /// re-running overwrites. Without this, [`Index::hybrid_query`] has no dense
     /// signal and degrades to pure BM25.
     pub fn embed_documents(&mut self, provider: &dyn EmbeddingProvider) {
+        use rayon::prelude::*;
+        // Parallel: embedding is the dominant cost of the first index build.
         self.embeddings = self
             .anchor_text
-            .iter()
+            .par_iter()
             .map(|(anchor, text)| (anchor.clone(), provider.embed(text)))
             .collect();
     }

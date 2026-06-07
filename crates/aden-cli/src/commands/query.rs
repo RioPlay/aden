@@ -11,7 +11,7 @@ use aden_store::GraphStorage;
 use crate::types::{AnchorPattern, QueryIntent};
 use crate::util::{
     find_project_root, load_or_build_index, node_to_json, parse_single_edge_type, perform_check,
-    sanitize_anchor, sanitize_source_file, valid_edge_types,
+    query_index, sanitize_anchor, sanitize_source_file, valid_edge_types,
 };
 use aden_index::SearchResult;
 
@@ -446,7 +446,7 @@ pub fn cmd_asm(opts: AsmOptions) -> Result<(), Box<dyn std::error::Error>> {
 
     let (from_anchor, effective_budget) = if opts.auto && !opts.strict {
         let index = load_or_build_index(&opts.path)?;
-        let results = index.query(&opts.from);
+        let results = query_index(&index, &opts.from);
         // Exact-first: if the user passed an anchor that already resolves
         // exactly in the store, keep it. `--auto` must not fuzzy-re-resolve a
         // valid anchor onto a thinner doc-shell node — the non-auto path would
@@ -1056,7 +1056,7 @@ pub fn cmd_ask(
         (anchor.to_string(), None, Vec::new())
     } else {
         let idx = load_or_build_index(path)?;
-        let results = idx.query(question);
+        let results = query_index(&idx, question);
         if results.is_empty() {
             println!("No relevant documents found for: {}", question);
             println!(
@@ -1474,7 +1474,7 @@ pub fn cmd_search(
     let config = AdenConfig::load(path);
 
     let index = load_or_build_index(path)?;
-    let mut results = index.query(query);
+    let mut results = query_index(&index, query);
 
     // Filter out private anchors (ADRs, retros, kickoffs, etc.) in public mode
     let is_public = matches!(config.profile.mode, aden_core::ProfileMode::Public);
@@ -2171,7 +2171,7 @@ pub fn cmd_locate(
         if hits.is_empty() {
             // Fall back to the full-text search index.
             let index = load_or_build_index(path)?;
-            let search_results = index.query(sym);
+            let search_results = query_index(&index, sym);
             if want_json {
                 // Machine-readable: emit the (possibly empty) full-text hits as a
                 // JSON array, never the human "Found … / No symbol found" prose.

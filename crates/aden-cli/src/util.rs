@@ -673,7 +673,13 @@ fn collect_store_entries(path: &Path) -> Vec<(PathBuf, String)> {
 /// the fjall store, so language-agnostic `gen --auto` output (which is
 /// store-first) is fully searchable.
 pub fn load_or_build_index(path: &Path) -> Result<aden_index::Index, Box<dyn std::error::Error>> {
-    if let Some(cached) = aden_index::try_load(path) {
+    if let Some(mut cached) = aden_index::try_load(path) {
+        // A cache built before a model was available carries no embeddings; fill
+        // them in now (and re-save) so hybrid retrieval activates without a full
+        // rebuild. No-op when the `dense` feature is off or no model is present.
+        if maybe_embed(&mut cached) {
+            let _ = aden_index::save(&cached, path);
+        }
         return Ok(cached);
     }
     let mut index = aden_index::Index::from_directory(path)?;
@@ -683,8 +689,77 @@ pub fn load_or_build_index(path: &Path) -> Result<aden_index::Index, Box<dyn std
         index.ingest(store_entries);
         index.finalize();
     }
+    maybe_embed(&mut index);
     let _ = aden_index::save(&index, path);
     Ok(index)
+}
+
+/// Populate dense embeddings on the index when the `dense` feature is enabled and
+/// a local model is available. Returns whether anything was added (so the caller
+/// can persist). A no-op (returns false) otherwise — keeping the default,
+/// model-free build pure BM25.
+#[cfg(feature = "dense")]
+fn maybe_embed(index: &mut aden_index::Index) -> bool {
+    if index.has_embeddings() {
+        return false;
+    }
+    match dense_embedder() {
+        Some(emb) => {
+            index.embed_documents(emb);
+            index.has_embeddings()
+        }
+        None => false,
+    }
+}
+
+#[cfg(not(feature = "dense"))]
+fn maybe_embed(_index: &mut aden_index::Index) -> bool {
+    false
+}
+
+/// Lazily construct and cache the local embedding model (loaded once per process).
+/// Reads `ADEN_BGE_MODEL_DIR`, else `~/.cache/aden-models/bge-small-en-v1.5`.
+/// Returns `None` (degrading to BM25) when the model is absent or fails to load.
+#[cfg(feature = "dense")]
+fn dense_embedder() -> Option<&'static aden_index::TractEmbedder> {
+    use std::sync::OnceLock;
+    static EMBEDDER: OnceLock<Option<aden_index::TractEmbedder>> = OnceLock::new();
+    EMBEDDER
+        .get_or_init(|| {
+            let dir = std::env::var("ADEN_BGE_MODEL_DIR")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|_| {
+                    std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default())
+                        .join(".cache/aden-models/bge-small-en-v1.5")
+                });
+            if !dir.join("model.onnx").exists() {
+                return None;
+            }
+            match aden_index::TractEmbedder::from_dir(&dir) {
+                Ok(e) => Some(e),
+                Err(e) => {
+                    eprintln!("aden: dense embeddings unavailable ({e}); using BM25");
+                    None
+                }
+            }
+        })
+        .as_ref()
+}
+
+/// Run a search query against the index, using hybrid (dense + BM25 via RRF)
+/// retrieval when embeddings are present and a model is loaded, else pure BM25.
+/// This is the single entry point all `search`/`ask` paths should use so routing
+/// stays consistent.
+pub fn query_index(index: &aden_index::Index, query: &str) -> Vec<aden_index::SearchResult> {
+    #[cfg(feature = "dense")]
+    {
+        if index.has_embeddings()
+            && let Some(emb) = dense_embedder()
+        {
+            return index.hybrid_query(query, emb);
+        }
+    }
+    index.query(query)
 }
 
 /// Classify an anchor as *expected* metadata that legitimately has no graph
