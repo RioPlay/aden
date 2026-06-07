@@ -54,6 +54,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "tempfile",
  "toml_edit",
  "ureq 2.12.1",
  "walkdir",
