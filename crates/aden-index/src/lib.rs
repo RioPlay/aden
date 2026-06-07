@@ -495,8 +495,11 @@ fn build_snippet(text: &str, query_tokens: &[String]) -> String {
         for token in query_tokens {
             if line_lower.contains(token) {
                 let snippet = line.trim();
-                if snippet.len() > 200 {
-                    return format!("{}...", &snippet[..200]);
+                // Truncate by chars, not bytes: a raw `&snippet[..200]` byte slice
+                // panics when byte 200 falls inside a multi-byte UTF-8 char (e.g. `→`).
+                if snippet.chars().count() > 200 {
+                    let truncated: String = snippet.chars().take(200).collect();
+                    return format!("{truncated}...");
                 }
                 return snippet.to_string();
             }
@@ -1170,6 +1173,27 @@ mod tests {
             file.write_all(content.as_bytes()).unwrap();
         }
         dir
+    }
+
+    #[test]
+    fn build_snippet_truncates_multibyte_without_panicking() {
+        // Regression: a raw `&snippet[..200]` byte slice panicked when byte 200
+        // landed inside a multi-byte UTF-8 char. Build a long line whose 200th
+        // char boundary is straddled by `→` (3 bytes) and assert no panic.
+        let mut line = "x".repeat(199);
+        line.push('→'); // char #200 is multi-byte, its bytes span the old cut point
+        line.push_str(&"y".repeat(50));
+        let snippet = build_snippet(&line, &["x".to_string()]);
+        assert!(snippet.ends_with("..."));
+        // 200 chars kept + "..."; must be valid UTF-8 (String guarantees it).
+        assert_eq!(snippet.chars().filter(|c| *c != '.').count(), 200);
+        assert!(snippet.contains('→'));
+    }
+
+    #[test]
+    fn build_snippet_short_line_unchanged() {
+        let snippet = build_snippet("a short → line", &["short".to_string()]);
+        assert_eq!(snippet, "a short → line");
     }
 
     #[test]

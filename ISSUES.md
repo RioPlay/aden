@@ -1,5 +1,24 @@
 # Aden Issues - Future Work
 
+## 2026-06-07 — `build_snippet` panics on non-ASCII (char-boundary slice)
+
+- **FIXED — `aden search`/`ask` panicked on any doc containing a multi-byte
+  UTF-8 character near a snippet boundary.** `build_snippet` in
+  `crates/aden-index/src/lib.rs` truncated a long match line with a *byte*
+  slice: `format!("{}...", &snippet[..200])`. Rust's `str` indexing panics when
+  byte index 200 falls in the middle of a multi-byte char, so a snippet whose
+  byte 200 landed inside e.g. `→` (U+2192, 3 bytes), an em-dash, or any accented
+  letter crashed the whole query instead of returning results. Hit in practice
+  while indexing prose containing arrows.
+  - **Fix shipped:** truncate by chars, not bytes —
+    `snippet.chars().take(200).collect::<String>()`. The 200 limit is cosmetic,
+    so char-vs-byte length is immaterial. Two regression tests added
+    (`build_snippet_truncates_multibyte_without_panicking`,
+    `build_snippet_short_line_unchanged`); the first straddles byte 200 with `→`
+    and would have panicked under the old slice.
+  - **Audit confirmed clean:** this was the only `&str[..N]` byte-slice on
+    source/user text in `aden-index` (grep verified).
+
 ## 2026-06-04 — Dependency hygiene + propose/heal/emit dedup
 
 A `cargo machete` audit (verified by source grep) found ten unused dependencies.
