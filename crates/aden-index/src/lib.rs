@@ -48,6 +48,16 @@ pub struct Index {
 const BM25_K1: f64 = 1.5;
 const BM25_B: f64 = 0.75;
 
+/// Multi-token coverage boost weight (M14). A document matching `k` distinct
+/// query terms is scaled by `1 + COVERAGE_WEIGHT*(k-1)`. At `1.0` the multiplier
+/// *equals the coordination level* `k` (2 matched terms → 2×, 3 → 3×) — a
+/// principled, non-arbitrary model rather than a tuned magic number: matching
+/// twice as many distinct query concepts roughly doubles relevance confidence.
+/// This is what keeps a single rare high-IDF term from outranking a document
+/// that covers more of the query. Validated against the retrieval eval harness
+/// (`crates/aden-index/tests/eval.rs`); see [`Index::query`].
+const COVERAGE_WEIGHT: f64 = 1.0;
+
 const INDEX_CACHE_BASENAME: &str = "index-cache.json";
 
 /// Current tokenizer/format version. Bumped on ANY change to how tokens are
@@ -620,7 +630,18 @@ impl Index {
     }
 
     /// Helper: Add BM25 scores for a single token.
-    fn add_bm25_scores(&self, token: &str, n: f64, scores: &mut HashMap<String, f64>) {
+    ///
+    /// Also records, in `coverage`, that this (distinct) query token matched the
+    /// anchor — i.e. the per-document *coordination level*. The coverage count
+    /// feeds the multi-token boost in [`Index::query`], which keeps a single rare
+    /// high-IDF term from dominating a document that covers more of the query.
+    fn add_bm25_scores(
+        &self,
+        token: &str,
+        n: f64,
+        scores: &mut HashMap<String, f64>,
+        coverage: &mut HashMap<String, usize>,
+    ) {
         if let Some(postings) = self.inverted.get(token) {
             let df = postings.len() as f64;
             let idf = ((n - df + 0.5) / (df + 0.5) + 1.0).ln().max(0.0);
@@ -631,6 +652,10 @@ impl Index {
                     / (*tf as f64
                         + BM25_K1 * (1.0 - BM25_B + BM25_B * doc_len as f64 / self.avg_doc_length));
                 *scores.entry(anchor.clone()).or_insert(0.0) += idf * tf_normalized;
+                // One increment per distinct query token (postings hold each
+                // anchor once per token), so this is the count of distinct query
+                // terms the document matches.
+                *coverage.entry(anchor.clone()).or_insert(0) += 1;
             }
         }
     }
@@ -691,10 +716,33 @@ impl Index {
         }
 
         let mut scores: HashMap<String, f64> = HashMap::new();
+        // anchor -> number of DISTINCT query tokens it matched (coordination level).
+        let mut coverage: HashMap<String, usize> = HashMap::new();
 
         // Phase 1: Direct BM25 scoring (already includes normalized forms)
         for token in &tokens {
-            self.add_bm25_scores(token, n, &mut scores);
+            self.add_bm25_scores(token, n, &mut scores, &mut coverage);
+        }
+
+        // M14 fix — multi-token coverage boost. Pure BM25 sums per-term scores,
+        // so a single RARE term (high IDF) can outrank a document that matches
+        // MORE of the query with common terms. Example: "detect orphan anchors"
+        // routed to `detect_node_type` (matches only the rare verb "detect")
+        // over `scan_orphans` (matches the subject nouns orphan + anchor). This
+        // is the classic "coordination level" signal from IR: reward a document
+        // for covering more DISTINCT query terms. The boost is multiplicative and
+        // gentle — a doc matching k distinct terms is scaled by
+        // 1 + COVERAGE_WEIGHT*(k-1), so a single-term match is unchanged (no
+        // penalty to genuine single-target queries) while broader coverage wins
+        // ties against a lone rare term. Deterministic; validated by the
+        // retrieval eval harness (`crates/aden-index/tests/eval.rs`).
+        if tokens.len() > 1 {
+            for (anchor, score) in scores.iter_mut() {
+                let matched = coverage.get(anchor).copied().unwrap_or(1);
+                if matched > 1 {
+                    *score *= 1.0 + COVERAGE_WEIGHT * (matched - 1) as f64;
+                }
+            }
         }
 
         // Apply title/anchor boosts
