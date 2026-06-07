@@ -203,8 +203,10 @@ A read command like `aden ask "How does auth work?"` runs end to end as:
    `aden gen` required).
 2. **Store lookup / rehydrate** — the compiled graph is loaded from the per-user
    store (fjall + postcard); if absent it is rebuilt from source.
-3. **Search (aden-index)** — the question is matched against the inverted index
-   (BM25) to find the best entry-point anchors.
+3. **Search (aden-index)** — the question is matched to find the best
+   entry-point anchors. BM25 by default; when the `dense` feature is built and a
+   local model is present, this is a hybrid search (BM25 + dense embeddings fused
+   via Reciprocal Rank Fusion).
 4. **Assemble (aden-asm)** — a BFS traversal walks outward from those anchors
    along selected edge types, estimating tokens per document with the
    bytes ÷ 4 heuristic. `ask` boosts its base `--budget` (default 4096) by the
@@ -241,7 +243,7 @@ flowchart TB
     end
 
     subgraph index[Search]
-        I[aden-index<br/>Full-text]
+        I[aden-index<br/>BM25 + optional dense<br/>hybrid RRF]
     end
 
     subgraph heal[Healing]
@@ -302,7 +304,7 @@ flowchart TD
     end
 
     subgraph ask[aden ask]
-        I[aden-index] --> A[aden-asm] --> CP[Context Prompt]
+        I[aden-index<br/>BM25 + optional dense<br/>hybrid RRF] --> A[aden-asm] --> CP[Context Prompt]
     end
 
     subgraph heal[aden heal]
@@ -433,6 +435,45 @@ Document-level metadata:
 
 Extracted and indexed for search.
 
+=== Hybrid Retrieval
+
+Retrieval is BM25 by default. With the optional `dense` cargo feature (off by
+default), `search` and `ask` *also* run local dense embeddings and fuse them with
+BM25 via Reciprocal Rank Fusion (RRF; Cormack, Clarke & Buettcher, SIGIR 2009,
+`RRF_K=60`). Embeddings use a pure-Rust `tract` ONNX runtime with
+BAAI/bge-small-en-v1.5 (384-dim, CLS-pooled, L2-normalized). The whole path is
+fully offline and deterministic, and it degrades cleanly to pure BM25 when the
+feature is off or the model is absent.
+
+The model is **fetch-on-demand** (not bundled): run
+`scripts/fetch-bge-model.sh` to download it (~127 MB fp32) into
+`~/.cache/aden-models`.
+
+|===
+|Component |Detail
+
+|Lexical |BM25 over the inverted index
+|Dense |bge-small-en-v1.5 via `tract` ONNX (384-dim, CLS-pooled, L2-normalized)
+|Fusion |Reciprocal Rank Fusion (`RRF_K=60`)
+|Feature flag |`dense` (off by default)
+|Model |Fetched via `scripts/fetch-bge-model.sh` into `~/.cache/aden-models`
+|===
+
+Code: `crates/aden-index/src/lib.rs` (`rrf_fuse`, `hybrid_query`,
+`dense_query`, `EmbeddingProvider`, `RRF_K`) and
+`crates/aden-index/src/dense.rs` (`TractEmbedder`).
+
+=== Community Detection & Blast Radius
+
+`aden communities` clusters the graph into functional groups using deterministic
+multi-level Louvain modularity (`crates/aden-graph/src/community.rs`). When
+`ask` falls back to a thin stub, it now broadens to the enclosing functional
+*community* rather than the module/project root.
+
+`aden impact-diff` reports the blast radius of a git diff by reusing the impact
+traversal (`crates/aden-cli/src/commands/impact_diff.rs`), so you can see what a
+set of changes reaches downstream.
+
 == Security Posture
 
 - The knowledge-graph store is a rebuildable build artifact that lives outside the working tree (per-user, per-project) — see <<adr-003>>; legacy in-tree `.aden/store`/cache paths are auto-ignored in `.gitignore`, while durable intent under `.aden/` (overlays, constitution, hooks) is git-tracked
@@ -456,6 +497,10 @@ Extracted and indexed for search.
 |`aden asm` |Assemble context |`aden asm --from mod-aden-core --depth 2`
 
 |`aden query` |Graph queries |`aden query --from mod-aden-core --depth 2`
+
+|`aden communities` |Detect functional clusters |`aden communities .`
+
+|`aden impact-diff` |Blast radius of a git diff |`aden impact-diff --since HEAD~1`
 
 |`aden search` |Full-text search |`aden search "token budget"`
 
@@ -526,6 +571,8 @@ Staging:: Write-only audit trail in `.aden/staging/` for agent proposals before 
 |postcard |Compact store serialization |Latest stable
 |regex |Lightweight AsciiDoc parsing |Latest stable
 |toml |Configuration parsing |Latest stable
+|tract-onnx |Dense embedding inference (behind `dense` feature; AGPL-compatible per NOTICE.md) |Latest stable
+|tokenizers |Tokenization for dense embeddings (behind `dense` feature, fancy-regex backend; AGPL-compatible per NOTICE.md) |Latest stable
 |===
 
 === Phase 0 Crate Map (Current)
@@ -536,9 +583,9 @@ Staging:: Write-only audit trail in `.aden/staging/` for agent proposals before 
 |aden-core |Schema, contract kernel, staging |Shipped Phase 0
 |aden-parse |Language routers and AST extraction |Shipped Phase 0
 |aden-emit |Deterministic AsciiDoc emitter |Shipped Phase 0
-|aden-graph |Backlinks, typed edges, integrity checks |Shipped Phase 0
+|aden-graph |Backlinks, typed edges, integrity checks, community detection |Shipped Phase 0
 |aden-asm |Context assembler (prompt builder) |Shipped Phase 0
-|aden-index |Inverted-index semantic search |Shipped Phase 0
+|aden-index |BM25 + optional dense hybrid (RRF) search |Shipped Phase 0
 |aden-heal |Drift detection and health scoring |Shipped Phase 0
 |aden-propose |Patch generation and proposal lifecycle |Shipped Phase 0
 |aden-store |fjall LSM-tree persistence (per-user store, <<adr-003>>) |Shipped Phase 0
@@ -555,7 +602,7 @@ Staging:: Write-only audit trail in `.aden/staging/` for agent proposals before 
 |===
 |Crate |Purpose |Status
 
-|aden-retrieval |Tier 1-3 search (structural, semantic, lexical) |Phase 2
+|aden-retrieval |Tier 1-3 search (structural, semantic, lexical) — NOTE: hybrid semantic + lexical retrieval has already LANDED inside `aden-index` (BM25 + dense via RRF, see <<architecture>> Hybrid Retrieval); a dedicated crate is no longer required for that |Phase 2 (partially superseded)
 |aden-mcp |Execution-based MCP server |Phase 2
 |aden-a2a |Google A2A agent bridge |Phase 2
 |aden-attest |SPDX, CycloneDX, Ed25519, SLSA, SBOMit |Phase 4
@@ -595,7 +642,7 @@ from git history if/when those phases are picked up.
 
 === Core Crates (Fully Integrated)
 
-`aden-core` (schema/types), `aden-parse` (language parsers), `aden-emit` (contract emission), `aden-graph` (knowledge graph), `aden-index` (full-text search), `aden-asm` (context assembly), `aden-cli` (main binary), `aden-mcp` (MCP server), `aden-heal` (self-healing), `aden-propose` (patch generation, used by heal), `aden-policy` (constitutional directives), `aden-store` (fjall LSM-tree per-user store, <<adr-003>>), `aden-diagnose` (deterministic diagnostic scanner, backs `aden diagnose`), `aden-paths` (per-user, per-project path resolution and project identity, <<adr-003>>).
+`aden-core` (schema/types), `aden-parse` (language parsers), `aden-emit` (contract emission), `aden-graph` (knowledge graph, community detection), `aden-index` (BM25 + optional dense hybrid (RRF) search), `aden-asm` (context assembly), `aden-cli` (main binary), `aden-mcp` (MCP server), `aden-heal` (self-healing), `aden-propose` (patch generation, used by heal), `aden-policy` (constitutional directives), `aden-store` (fjall LSM-tree per-user store, <<adr-003>>), `aden-diagnose` (deterministic diagnostic scanner, backs `aden diagnose`), `aden-paths` (per-user, per-project path resolution and project identity, <<adr-003>>).
 
 NOTE: `aden-mcp` is integrated but unusual — it has no `aden-*` crate
 dependencies. It shells out to the `aden` binary as a sibling process

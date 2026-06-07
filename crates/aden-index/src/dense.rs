@@ -7,8 +7,9 @@
 //! (MIT-licensed, 384-dim). Everything runs on CPU with no network access and no
 //! native runtime — `tract` is self-contained Rust, chosen for determinism and
 //! footprint (see the embedding-stack decision in the devlog). The model file is
-//! loaded from a directory (bundled with the binary in production); nothing is
-//! downloaded at runtime.
+//! loaded from a directory and is FETCHED ON DEMAND (a one-time `setup` step via
+//! `scripts/fetch-bge-model.sh`, into `~/.cache/aden-models`), not bundled in the
+//! binary; nothing is downloaded at query time, so retrieval stays fully offline.
 //!
 //! Pooling note: bge-small uses **CLS-token pooling** (confirmed from the model's
 //! `1_Pooling/config.json`: `pooling_mode_cls_token: true`), i.e. the first
