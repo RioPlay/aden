@@ -26,11 +26,11 @@ use tract_onnx::prelude::*;
 
 /// bge-small-en-v1.5 embedding dimension.
 const EMBED_DIM: usize = 384;
-/// Fixed padded sequence length. BERT's max is 512, but aden's documents are
-/// mostly short symbol signatures + a doc line, so 128 tokens captures the gist
-/// while keeping each forward ~4x cheaper than 512 (the full-corpus embed at 512
-/// was prohibitively slow). Longer docs truncate. The graph optimizes once for
-/// this fixed shape. (Future: bucket lengths or use symbolic dims.)
+/// Truncation cap. The model is built with a SYMBOLIC sequence dimension (see
+/// `from_dir`), so each text runs at its OWN token count with NO padding — a
+/// short symbol doc does a short forward, not a fixed-128 one. This cap bounds
+/// long docs (BERT supports up to 512; 128 keeps the per-forward cost low and
+/// covers a symbol signature + doc comment, which is what we embed).
 const MAX_SEQ: usize = 128;
 
 type Runnable = RunnableModel<TypedFact, Box<dyn TypedOp>>;
@@ -55,17 +55,24 @@ impl TractEmbedder {
             .map_err(|e| format!("loading tokenizer {}: {e}", tokenizer_path.display()))?;
 
         // Load the inference model, capture its input order, then pin every input
-        // to a fixed [1, MAX_SEQ] i64 shape so the graph can be optimized.
+        // to shape [1, S] where S is a SYMBOLIC sequence length. One optimized
+        // graph then runs any length, so each text embeds at its actual token
+        // count with no padding waste (the fixed-128 shape paid for 128 tokens
+        // even on a 10-token doc — the dominant first-build cost).
         let mut model = tract_onnx::onnx().model_for_path(&model_path)?;
         let input_order: Vec<String> = model
             .input_outlets()?
             .iter()
             .map(|o| model.node(o.node).name.clone())
             .collect();
+        let seq = model.symbols.sym("S");
         for i in 0..input_order.len() {
             model = model.with_input_fact(
                 i,
-                InferenceFact::dt_shape(i64::datum_type(), tvec!(1, MAX_SEQ)),
+                InferenceFact::dt_shape(
+                    i64::datum_type(),
+                    tvec!(TDim::from(1), TDim::from(seq.clone())),
+                ),
             )?;
         }
         // `into_runnable()` already yields an `Arc<SimplePlan>` in tract 0.23.
@@ -78,8 +85,9 @@ impl TractEmbedder {
         })
     }
 
-    /// Encode `text` into the three fixed-length i64 input tensors
-    /// (input_ids, attention_mask, token_type_ids), padded/truncated to MAX_SEQ.
+    /// Encode `text` into the three i64 input tensors (input_ids,
+    /// attention_mask, token_type_ids) at the text's actual token length
+    /// (truncated to MAX_SEQ). No padding — the symbolic graph runs this length.
     fn encode(&self, text: &str) -> Result<HashMap<String, Tensor>, Box<dyn std::error::Error>> {
         let enc = self
             .tokenizer
@@ -88,18 +96,14 @@ impl TractEmbedder {
 
         let ids = enc.get_ids();
         let mask = enc.get_attention_mask();
-        let n = ids.len().min(MAX_SEQ);
+        let n = ids.len().clamp(1, MAX_SEQ);
 
-        let mut input_ids = vec![0i64; MAX_SEQ];
-        let mut attention_mask = vec![0i64; MAX_SEQ];
-        let token_type_ids = vec![0i64; MAX_SEQ];
-        for i in 0..n {
-            input_ids[i] = ids[i] as i64;
-            attention_mask[i] = mask[i] as i64;
-        }
+        let input_ids: Vec<i64> = (0..n).map(|i| ids[i] as i64).collect();
+        let attention_mask: Vec<i64> = (0..n).map(|i| mask[i] as i64).collect();
+        let token_type_ids = vec![0i64; n];
 
         let mk = |v: Vec<i64>| -> Result<Tensor, Box<dyn std::error::Error>> {
-            Ok(Tensor::from_shape(&[1, MAX_SEQ], &v)?)
+            Ok(Tensor::from_shape(&[1, n], &v)?)
         };
         let mut map = HashMap::new();
         map.insert("input_ids".to_string(), mk(input_ids)?);
