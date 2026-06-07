@@ -545,7 +545,7 @@ enum Commands {
         #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
         path: PathBuf,
     },
-    /// Generate third-party accreditation report from Cargo.lock
+    /// Generate third-party accreditation report (Cargo, npm, PyPI, Go)
     Licenses {
         #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
         path: PathBuf,
@@ -555,7 +555,10 @@ enum Commands {
             help = "Write output to file instead of stdout"
         )]
         out: Option<PathBuf>,
-        #[arg(long, help = "Fetch license info from crates.io and group by license")]
+        #[arg(
+            long,
+            help = "Resolve licenses (local install first, registry fallback) and group by license"
+        )]
         full: bool,
     },
     /// Multi-repository workspace management
