@@ -386,3 +386,93 @@ fn coverage_boost_does_not_break_single_target_queries() {
         "a query that genuinely targets detect_node_type must still route there"
     );
 }
+
+/// Real-model hybrid eval: runs the SAME query set through `hybrid_query` using
+/// the actual bge-small embedder over the fixture corpus, and reports BM25 vs
+/// hybrid metrics side by side. This is the measurement substrate for tuning RRF
+/// fusion. Runs only with `--features dense` and when the model is present
+/// (`ADEN_BGE_MODEL_DIR` or `~/.cache/aden-models/bge-small-en-v1.5`); otherwise
+/// it prints a skip notice.
+///
+/// Run: `cargo test -p aden-index --features dense --test eval -- --nocapture`
+#[cfg(feature = "dense")]
+#[test]
+fn hybrid_retrieval_eval_with_real_model() {
+    use aden_index::TractEmbedder;
+
+    let dir = std::env::var("ADEN_BGE_MODEL_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            PathBuf::from(std::env::var("HOME").unwrap_or_default())
+                .join(".cache/aden-models/bge-small-en-v1.5")
+        });
+    if !dir.join("model.onnx").exists() {
+        eprintln!("SKIP: bge model not found (set ADEN_BGE_MODEL_DIR); skipping hybrid eval");
+        return;
+    }
+    let embedder = TractEmbedder::from_dir(&dir).expect("load bge model");
+
+    let mut index = Index::default();
+    index.ingest(corpus());
+    index.finalize();
+    index.embed_documents(&embedder);
+
+    let cases = query_set();
+    let mut bm25_top1 = 0usize;
+    let mut hybrid_top1 = 0usize;
+    let mut bm25_rr = 0.0;
+    let mut hybrid_rr = 0.0;
+
+    println!("\n=== BM25 vs HYBRID (real bge model) — {} queries ===", cases.len());
+    for case in &cases {
+        let b = rank_of(&index.query(case.query), case.expect_top);
+        let h = rank_of(&index.hybrid_query(case.query, &embedder), case.expect_top);
+        if b == Some(1) {
+            bm25_top1 += 1;
+        }
+        if h == Some(1) {
+            hybrid_top1 += 1;
+        }
+        bm25_rr += b.map(|r| 1.0 / r as f64).unwrap_or(0.0);
+        hybrid_rr += h.map(|r| 1.0 / r as f64).unwrap_or(0.0);
+        let flag = if h == Some(1) && b != Some(1) {
+            " <- hybrid wins"
+        } else if b == Some(1) && h != Some(1) {
+            " <- hybrid REGRESSED"
+        } else {
+            ""
+        };
+        println!(
+            "  bm25={:<5?} hybrid={:<5?} want {}{flag}",
+            b, h, case.expect_top
+        );
+    }
+    let n = cases.len() as f64;
+    println!(
+        "  R@1: bm25 {:.3} -> hybrid {:.3}   MRR: bm25 {:.3} -> hybrid {:.3}",
+        bm25_top1 as f64 / n,
+        hybrid_top1 as f64 / n,
+        bm25_rr / n,
+        hybrid_rr / n,
+    );
+
+    // M14 gate: hybrid must rank the orphan-handling doc above the rare-verb
+    // distractor — the case pure BM25 cannot fix (the BM25-only
+    // `m14_rare_verb_does_not_dominate` test stays #[ignore]d as the documented
+    // limitation; THIS is where M14 is proven resolved).
+    let m14 = index.hybrid_query("detect orphan anchors", &embedder);
+    let scan = rank_of(&m14, "scan_orphans");
+    let detect = rank_of(&m14, "detect_node_type");
+    println!("  M14 'detect orphan anchors': scan_orphans @ {scan:?}, detect_node_type @ {detect:?}");
+    assert_eq!(
+        scan,
+        Some(1),
+        "hybrid must resolve M14: scan_orphans #1 (detect_node_type @ {detect:?})"
+    );
+
+    // Hybrid must not regress overall ranking versus BM25.
+    assert!(
+        hybrid_top1 >= bm25_top1,
+        "hybrid R@1 regressed below BM25: {hybrid_top1} < {bm25_top1}"
+    );
+}
