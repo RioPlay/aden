@@ -401,6 +401,19 @@ enum Commands {
         #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
         path: PathBuf,
     },
+    /// Map a git diff to the symbols it touches and report the blast radius
+    ImpactDiff {
+        #[arg(
+            long,
+            value_name = "REV",
+            help = "Diff against this git ref (e.g. HEAD~1, main) instead of the working tree"
+        )]
+        since: Option<String>,
+        #[arg(long, help = "Analyze staged changes (git diff --cached)")]
+        staged: bool,
+        #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
+        path: PathBuf,
+    },
     Locate {
         #[arg(long, value_name = "SYMBOL", help = "Find definition of this symbol")]
         symbol: Option<String>,
@@ -1032,6 +1045,11 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
                 cli.json,
             )
         }
+        Commands::ImpactDiff {
+            since,
+            staged,
+            path,
+        } => commands::cmd_impact_diff(&path, since.as_deref(), staged, cli.json),
         Commands::Locate {
             symbol,
             caller_of,

@@ -28,10 +28,11 @@ struct Match {
 }
 
 /// Span of a stored symbol within a file, used to locate the enclosing symbol.
-struct Span {
-    anchor: String,
-    start: usize,
-    end: usize,
+/// Shared with `impact_diff` (git-diff → enclosing-symbol resolution).
+pub(crate) struct Span {
+    pub(crate) anchor: String,
+    pub(crate) start: usize,
+    pub(crate) end: usize,
 }
 
 pub fn cmd_grep(
@@ -137,7 +138,7 @@ pub fn cmd_grep(
 
 /// Load `source_file -> [span]` from the store so each match can be attributed
 /// to the symbol that encloses it.
-fn load_symbol_spans(root: &Path) -> HashMap<String, Vec<Span>> {
+pub(crate) fn load_symbol_spans(root: &Path) -> HashMap<String, Vec<Span>> {
     use aden_store::{GraphStorage, Storage};
 
     let mut by_file: HashMap<String, Vec<Span>> = HashMap::new();
@@ -180,7 +181,7 @@ fn load_symbol_spans(root: &Path) -> HashMap<String, Vec<Span>> {
 
 /// The most specific symbol whose span contains `line` (smallest enclosing
 /// span wins, so a method beats the file-level node it sits in).
-fn enclosing_symbol(spans: &[Span], line: usize) -> Option<&Span> {
+pub(crate) fn enclosing_symbol(spans: &[Span], line: usize) -> Option<&Span> {
     spans
         .iter()
         .filter(|s| s.start <= line && line <= s.end)
