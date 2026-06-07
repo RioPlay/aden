@@ -91,13 +91,6 @@ const CURRENT_INDEX_VERSION: u32 = 7;
 /// retriever dominates a long tail in the other.
 const RRF_K: f64 = 60.0;
 
-/// Weight of the dense (semantic) retriever relative to BM25 (implicitly 1.0) in
-/// the hybrid fusion. Dense is trusted more because it captures query *intent*,
-/// whereas BM25 over-rewards a single common term shared by off-topic symbols
-/// (e.g. "anchor" matching `is_test_anchor`/`AnchorPattern` for an orphan query).
-/// Tuned on the real-corpus eval; see [`Index::hybrid_query`].
-const DENSE_RRF_WEIGHT: f64 = 3.0;
-
 /// Build an index, using the on-disk cache when possible.
 /// `key` should be a hash of all `.adoc`/`.aden` file paths + mtimes.
 pub fn try_load(dir: &std::path::Path) -> Option<Index> {
@@ -562,20 +555,11 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 /// the rank order matters. Output is sorted by fused score descending, ties
 /// broken by item id, so the result is fully deterministic.
 pub fn rrf_fuse(rankings: &[Vec<String>], k: f64) -> Vec<(String, f64)> {
-    let weighted: Vec<(&[String], f64)> = rankings.iter().map(|r| (r.as_slice(), 1.0)).collect();
-    rrf_fuse_weighted(&weighted, k)
-}
-
-/// Weighted Reciprocal Rank Fusion: like [`rrf_fuse`] but each ranking carries a
-/// weight, so a more trustworthy retriever contributes proportionally more
-/// (`weight / (k + rank)`). Used by [`Index::hybrid_query`] to weight the dense
-/// retriever above BM25. Still rank-based and deterministic (ties broken by id).
-pub fn rrf_fuse_weighted(rankings: &[(&[String], f64)], k: f64) -> Vec<(String, f64)> {
     let mut fused: HashMap<String, f64> = HashMap::new();
-    for (ranking, weight) in rankings {
+    for ranking in rankings {
         for (idx, item) in ranking.iter().enumerate() {
             let rank = (idx + 1) as f64;
-            *fused.entry(item.clone()).or_insert(0.0) += weight / (k + rank);
+            *fused.entry(item.clone()).or_insert(0.0) += 1.0 / (k + rank);
         }
     }
     let mut out: Vec<(String, f64)> = fused.into_iter().collect();
@@ -1118,12 +1102,7 @@ impl Index {
 
         let bm25_ranks: Vec<String> = bm25.iter().map(|r| r.anchor.clone()).collect();
         let dense_ranks: Vec<String> = dense.iter().map(|r| r.anchor.clone()).collect();
-        // Weight dense above BM25 (see DENSE_RRF_WEIGHT): intent beats a single
-        // common-term match.
-        let fused = rrf_fuse_weighted(
-            &[(&bm25_ranks, 1.0), (&dense_ranks, DENSE_RRF_WEIGHT)],
-            RRF_K,
-        );
+        let fused = rrf_fuse(&[bm25_ranks, dense_ranks], RRF_K);
 
         // Re-attach source path + snippet by anchor; carry the fused RRF score.
         let by_anchor: HashMap<&str, &SearchResult> = bm25
