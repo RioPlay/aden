@@ -147,22 +147,50 @@ fn extract_uses(doc: &aden_core::Document) -> Vec<String> {
 
 /// Append `<<target>>` cross-reference targets found in `text` to `out`.
 fn collect_xrefs(text: &str, out: &mut Vec<String>) {
-    let mut rest = text;
-    while let Some(s) = rest.find("<<") {
-        let after = &rest[s + 2..];
-        let Some(e) = after.find(">>") else { break };
-        let inner = &after[..e];
-        let target = inner.split(',').next().unwrap_or(inner).trim();
-        if !target.is_empty() && !target.contains('{') {
-            out.push(target.to_string());
+    // <<target>> and <<target,text>> shorthand cross-references.
+    {
+        let mut rest = text;
+        while let Some(s) = rest.find("<<") {
+            let after = &rest[s + 2..];
+            let Some(e) = after.find(">>") else { break };
+            let inner = &after[..e];
+            let target = inner.split(',').next().unwrap_or(inner).trim();
+            // A file-qualified ref (`<<sources.adoc#anchor>>`) carries a `file#`
+            // prefix; reduce it to the trailing fragment so it matches the
+            // fragment-keyed name index. A bare ref (`<<deep-dive>>`) is kept
+            // verbatim. The full-path form would never resolve otherwise.
+            let target = match target.rsplit_once('#') {
+                Some((_, frag)) => frag.trim(),
+                None => target,
+            };
+            if !target.is_empty() && !target.contains('{') {
+                out.push(target.to_string());
+            }
+            rest = &after[e + 2..];
         }
-        rest = &after[e + 2..];
+    }
+    // xref:path#anchor[text] and xref:path[text] — extract the anchor fragment.
+    // File-level refs (no `#`) are skipped; only named fragment targets become edges.
+    {
+        let mut rest = text;
+        while let Some(s) = rest.find("xref:") {
+            rest = &rest[s + 5..];
+            let Some(bracket) = rest.find('[') else { break };
+            let target_part = &rest[..bracket];
+            if let Some(hash_pos) = target_part.rfind('#') {
+                let fragment = target_part[hash_pos + 1..].trim();
+                if !fragment.is_empty() && !fragment.contains('{') && !fragment.contains(' ') && fragment.len() < 80 {
+                    out.push(fragment.to_string());
+                }
+            }
+            rest = &rest[bracket + 1..];
+        }
     }
 }
 
-/// Cross-references a document makes via `<<target>>` macros in its prose. These
-/// become graph edges so documentation is connected to what it references (docs
-/// were previously hollow, unlinked islands).
+/// Cross-references a document makes via `<<target>>` and `xref:path#anchor[text]`
+/// macros in its prose. These become graph edges so documentation is connected to
+/// what it references (docs were previously hollow, unlinked islands).
 fn extract_doc_refs(doc: &aden_core::Document) -> Vec<String> {
     use aden_core::Block;
     let mut refs = Vec::new();
@@ -437,6 +465,19 @@ fn link_store_edges<S: GraphStorage>(
                     && !method.is_empty()
                 {
                     name_index.entry(method).or_default().push(anchor.as_str());
+                }
+            }
+        } else if anchor.starts_with("aden://doc/") {
+            // Doc section anchors carry no `#` — they end in `/<fragment>`
+            // (e.g. `…/guide.adoc/_configuration` or `…/guide.adoc/h2configuration`).
+            // Index by that trailing fragment so an `xref:file.adoc#_configuration`
+            // (whose fragment is captured by `collect_xrefs`) resolves to the
+            // section node. Asciidoctor `:sectanchors:` aliases (`_slug`) and aden's
+            // own `h<level>slug` form both become resolvable targets this way.
+            if let Some(slash) = anchor.rfind('/') {
+                let fragment = &anchor[slash + 1..];
+                if !fragment.is_empty() {
+                    name_index.entry(fragment).or_default().push(anchor.as_str());
                 }
             }
         }
@@ -1170,6 +1211,36 @@ mod link_tests {
             Some("aden-parse/rust.rs")
         );
         assert_eq!(anchor_file("aden://doc/x/y.md/h1foo"), None);
+    }
+
+    #[test]
+    fn collect_xrefs_handles_shorthand_and_macro_forms() {
+        let mut out = Vec::new();
+        collect_xrefs(
+            "Bare <<deep-dive>> and file-qualified <<sources.adoc#kit-pricing,Kit>> \
+             plus xref:guide.adoc#_configuration[config] and xref:index.adoc[nav only].",
+            &mut out,
+        );
+        // Bare shorthand kept verbatim.
+        assert!(out.contains(&"deep-dive".to_string()), "bare <<>>; got {:?}", out);
+        // File-qualified shorthand reduced to its fragment so it can resolve.
+        assert!(
+            out.contains(&"kit-pricing".to_string()),
+            "file-qualified <<file#frag>> must reduce to fragment; got {:?}",
+            out
+        );
+        // xref macro reduced to its anchor fragment.
+        assert!(
+            out.contains(&"_configuration".to_string()),
+            "xref:file#frag[text]; got {:?}",
+            out
+        );
+        // File-level xref with no fragment produces no edge.
+        assert!(
+            !out.iter().any(|s| s.contains("index")),
+            "file-level xref (no #fragment) must be skipped; got {:?}",
+            out
+        );
     }
 
     #[test]
