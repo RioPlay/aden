@@ -31,3 +31,6 @@ crates/aden-index/tests/corpus/
 # OS files
 .DS_Store
 Thumbs.db
+
+# Real-repo eval sets/docs (about external repos, not aden source).
+scripts/eval-sets/
