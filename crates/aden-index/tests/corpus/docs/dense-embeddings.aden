@@ -1,0 +1,14 @@
+[[dense-embeddings]]
+Dense embeddings and semantic search
+
+A dense embedding maps a chunk of text to a fixed-length vector of floating point
+numbers so that passages with similar meaning land near each other in the vector
+space. Retrieval then becomes a nearest-neighbour problem: embed the question once,
+and return the stored vectors closest to it, usually measured by cosine similarity.
+
+The strength of this approach is that it finds passages by intent rather than by
+surface form. A search for "where is the login handled" can surface an authentication
+routine that never uses the word "login", because the model has learned that the two
+ideas are related. The weakness is the mirror image: similarity captures conceptual
+closeness, not structural dependency, so it will not reliably connect a function to
+the distant code that calls it.
