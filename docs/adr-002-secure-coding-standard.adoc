@@ -60,7 +60,7 @@ We will split "secure coding as a standard" into two cleanly-licensed layers:
   `aden init --with-secure-refs` writes
   them into the target project as separate, separately-licensed data files that
   aden parses. They are NEVER compiled into the AGPL binary. The aden-authored
-  constitution `<<refs>>` these reference docs when present, giving the graph
+  constitution references these reference docs when present, giving the graph
   linkage without mixing licenses.
 
 [[adr-002-audit]]
