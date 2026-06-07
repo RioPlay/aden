@@ -24,6 +24,10 @@ node_modules/
 dist/
 build/
 
+# Eval fixtures — sample docs for the retrieval eval harness, not aden's own
+# source/docs; keep them out of aden's self-graph and contract checks.
+crates/aden-index/tests/corpus/
+
 # OS files
 .DS_Store
 Thumbs.db

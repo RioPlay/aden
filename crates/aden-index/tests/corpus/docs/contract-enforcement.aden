@@ -1,0 +1,16 @@
+[[contract-enforcement]]
+Contract enforcement and drift
+
+A contract is a declared promise about code — an interface, a schema, a documented
+parameter list — that lives alongside the implementation. Drift is what happens when
+the code changes and the promise does not: a function gains an argument but its
+documentation still describes the old signature, or a struct loses a field a design
+note still references. Left unchecked, drift quietly turns documentation into a
+liability.
+
+Enforcement closes the loop in two steps. A validation pass checks that the code still
+satisfies every declared contract and flags the mismatches it finds; a repair pass
+then updates the documentation or the contract to match what the code actually does,
+or surfaces the conflict for a human to resolve. Because the documentation lives in
+the same graph as the code, a changed signature can be traced directly to the prose
+that has gone stale.
