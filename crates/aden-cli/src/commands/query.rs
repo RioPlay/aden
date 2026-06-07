@@ -1023,6 +1023,47 @@ pub fn block_filter_for_intent(intent: &QueryIntent) -> Vec<aden_asm::traverse::
 /// broadens to `mod-project` when this threshold is not met.
 const THIN_STUB_TOKEN_THRESHOLD: usize = 150;
 
+/// For a thin-routed anchor, find its functional community and return a richer
+/// seed to broaden to: `(hub_anchor, label, member_count)`. The hub is the
+/// highest-degree member of the community (its center of gravity). Returns
+/// `None` when the anchor isn't in a multi-member community — the caller then
+/// falls back to `mod-project`. This makes the `ask` fallback land on a focused
+/// functional cluster instead of the flat project-root hub dump.
+fn community_seed_for(path: &Path, anchor: &str) -> Option<(String, String, usize)> {
+    let graph = aden_graph::cache::build_from_directory_cached(path).ok()?;
+    let communities = aden_graph::community::detect_communities(&graph, 1.0);
+    let group = communities.into_iter().find(|c| c.iter().any(|a| a == anchor))?;
+    if group.len() < 2 {
+        return None;
+    }
+    // Hub = highest (undirected) degree member, but skip the synthetic `mod-*`
+    // module nodes — they connect to everything by construction and would just
+    // reproduce the crate overview. Prefer a real symbol for richer content;
+    // fall back to the full group only if a community is somehow all hubs.
+    let real: Vec<&String> = group.iter().filter(|a| !a.starts_with("mod-")).collect();
+    let pool: Vec<&String> = if real.is_empty() {
+        group.iter().collect()
+    } else {
+        real
+    };
+    let seed = pool
+        .into_iter()
+        .max_by(|a, b| {
+            let da = graph
+                .get_index(a)
+                .map(|i| graph.graph.neighbors_undirected(i).count())
+                .unwrap_or(0);
+            let db = graph
+                .get_index(b)
+                .map(|i| graph.graph.neighbors_undirected(i).count())
+                .unwrap_or(0);
+            da.cmp(&db).then_with(|| b.cmp(a))
+        })?
+        .clone();
+    let label = crate::commands::communities::dominant_module(&group);
+    Some((seed, label, group.len()))
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn cmd_ask(
     path: &Path,
@@ -1222,13 +1263,33 @@ pub fn cmd_ask(
             && start_anchor != "mod-project"
             && aden_graph::cache::resolve_anchor_in_store(path, "mod-project").is_some()
         {
-            eprintln!(
-                "NOTE: '{}' is a thin stub (~{} tokens); broadening to 'mod-project'.",
-                start_anchor, est
-            );
-            match assemble_seed("mod-project", depth.min(1), effective_budget) {
-                Ok(fb) => (fb, "mod-project".to_string()),
-                Err(_) => (assembled, start_anchor),
+            // Prefer broadening to the resolved symbol's functional COMMUNITY (a
+            // focused cluster of related symbols) over the flat `mod-project` hub
+            // dump — a far more useful terminal when routing lands on a thin stub.
+            let community = community_seed_for(path, &start_anchor).and_then(|(seed, label, n)| {
+                let body = assemble_seed(&seed, depth.min(2), effective_budget).ok()?;
+                if body.trim().is_empty() {
+                    return None;
+                }
+                eprintln!(
+                    "NOTE: '{}' is thin (~{} tokens); broadening to community '{}' ({} symbols, hub [[{}]]).",
+                    start_anchor, est, label, n, seed
+                );
+                let header = format!("// Functional community: {} ({} symbols)\n\n", label, n);
+                Some((format!("{header}{body}"), seed))
+            });
+            match community {
+                Some(pair) => pair,
+                None => {
+                    eprintln!(
+                        "NOTE: '{}' is a thin stub (~{} tokens); broadening to 'mod-project'.",
+                        start_anchor, est
+                    );
+                    match assemble_seed("mod-project", depth.min(1), effective_budget) {
+                        Ok(fb) => (fb, "mod-project".to_string()),
+                        Err(_) => (assembled, start_anchor),
+                    }
+                }
             }
         } else {
             (assembled, start_anchor)

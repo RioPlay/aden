@@ -79,7 +79,7 @@ pub fn cmd_communities(
 /// cluster. Directory-based so it is meaningful for ANY language — a Rust
 /// workspace (`crates/aden-index/src`), a Python package (`src/retrieval`), a JS
 /// app (`app/api`) — not just multi-crate repos. Falls back to "mixed".
-fn dominant_module(members: &[String]) -> String {
+pub(crate) fn dominant_module(members: &[String]) -> String {
     let mut counts: BTreeMap<String, usize> = BTreeMap::new();
     for m in members {
         *counts.entry(area_of(m)).or_default() += 1;
