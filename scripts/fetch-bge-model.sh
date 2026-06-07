@@ -24,9 +24,11 @@ DEST="${ADEN_BGE_MODEL_DIR:-$HOME/.cache/aden-models/bge-small-en-v1.5}"
 BASE="https://huggingface.co/BAAI/bge-small-en-v1.5/resolve/main"
 
 # (filename, url-path, sha256) — pinned for integrity + reproducibility.
+# The sha256 values are PUBLIC file checksums, not credentials. The trailing
+# `aden:allow-secret` marks them so the secret scanner doesn't flag the long-hex.
 FILES=(
-  "model.onnx|onnx/model.onnx|828e1496d7fabb79cfa4dcd84fa38625c0d3d21da474a00f08db0f559940cf35"
-  "tokenizer.json|tokenizer.json|d241a60d5e8f04cc1b2b3e9ef7a4921b27bf526d9f6050ab90f9267a1f9e5c66"
+  "model.onnx|onnx/model.onnx|828e1496d7fabb79cfa4dcd84fa38625c0d3d21da474a00f08db0f559940cf35" # aden:allow-secret
+  "tokenizer.json|tokenizer.json|d241a60d5e8f04cc1b2b3e9ef7a4921b27bf526d9f6050ab90f9267a1f9e5c66" # aden:allow-secret
 )
 
 sha256_of() {
