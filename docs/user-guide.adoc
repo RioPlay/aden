@@ -25,7 +25,10 @@ aden check .
 aden ask "What is the main entry point?"
 aden ask "Which modules handle authentication?"
 
-# 5. Drill into a specific module
+# 5. See the codebase's functional clusters (subsystems), independent of folders
+aden communities --min-size 5
+
+# 6. Drill into a specific module
 #    First resolve a name to a real anchor, then traverse from it:
 aden locate --symbol authenticate          # copy an aden://… line from the output
 aden query --from "aden://module/<crate>/<module-doc>.adoc#code_block_3" --depth 2
@@ -50,6 +53,11 @@ You want to rename a function. You need to know the blast radius.
 
 [source,bash]
 ----
+# 0. Quick blast radius of changes you've ALREADY made (working tree / staged /
+#    vs a ref) — maps the diff to touched symbols + downstream reach + risk tier:
+aden impact-diff                 # uncommitted changes
+aden impact-diff --since HEAD~1  # or against a ref
+
 # 1. Locate the symbol — this prints the real aden:// anchors for it
 aden locate --symbol old_function_name
 #    -> copy an `aden://…` line from the output; that is your ANCHOR

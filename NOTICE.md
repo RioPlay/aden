@@ -22,6 +22,16 @@ AGPL-compatible terms:
 - **`option-ext`** — `MPL-2.0`. MPL is a file-level (weak) copyleft and is
   compatible with (A)GPL-licensed projects; it is consumed unmodified as an
   upstream crate.
+- **`dyn-eq`** — `MPL-2.0`. Same weak-copyleft terms as `option-ext`; pulled
+  (unmodified) only by the optional `dense` feature's `tract` ONNX stack.
+
+The optional **`dense`** feature (local hybrid-retrieval embeddings, off by
+default) additionally builds against `tract` / `tract-onnx` (`Apache-2.0 OR
+MIT`), HuggingFace `tokenizers` (`Apache-2.0`), and `fancy-regex` (`MIT`) — all
+permissive and AGPL-compatible. The embedding model for this feature, the
+MIT-licensed BAAI/bge-small-en-v1.5, is **fetched on demand** by the user
+(`scripts/fetch-bge-model.sh`) rather than bundled; it is used under its own MIT
+terms, with the license recorded alongside the downloaded files.
 
 ## Bundled reference material
 

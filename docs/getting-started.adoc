@@ -40,6 +40,31 @@ certainty.
 aden --version
 ----
 
+`install.sh` also activates the repo's pre-push git hook (the local CI gate), so
+changes can't be pushed without passing the checks.
+
+=== Optional: hybrid (dense) search
+
+By default `search`/`ask` use BM25 (lexical) ranking. The optional `dense` feature
+adds *local semantic embeddings* fused with BM25 via Reciprocal Rank Fusion — it
+finds code by meaning, not just shared terms, and stays fully offline and
+deterministic (pure-Rust `tract` ONNX runtime + the MIT-licensed
+BAAI/bge-small-en-v1.5 model). Two steps:
+
+[source,bash]
+----
+# 1. Build aden with hybrid search enabled (the only thing that touches the
+#    network is the model fetch below — aden itself never does).
+ADEN_DENSE=1 ./install.sh          # or:  ./install.sh --dense
+
+# 2. Fetch the embedding model once (~127 MB) into ~/.cache/aden-models.
+scripts/fetch-bge-model.sh
+----
+
+With the feature off (the default), nothing changes and no extra dependencies are
+built. Air-gapped? Place `model.onnx` + `tokenizer.json` from
+BAAI/bge-small-en-v1.5 into the cache dir by hand instead of running the script.
+
 == 1. Index your codebase
 
 [source,bash]
@@ -216,8 +241,10 @@ tools do not appear.
 == What Aden is great at — and where it stops
 
 **Great at:** fast, offline, language-agnostic indexing; dense LLM-ready
-context; structure-aware search; call-graph navigation and blast-radius queries;
-staying fresh automatically.
+context; structure-aware search (BM25, or hybrid BM25+embedding with the `dense`
+feature); call-graph navigation and blast-radius queries; mapping a `git diff` to
+its blast radius (`aden impact-diff`); surfacing functional clusters
+(`aden communities`); staying fresh automatically.
 
 **Honest limits:**
 

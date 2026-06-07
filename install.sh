@@ -15,10 +15,30 @@ PROJECT_ROOT="${PROJECT_ROOT:-$SCRIPT_DIR}"
 echo "=== Aden Installer ==="
 echo ""
 
-# Build release binaries
-echo "Building release binaries..."
+# Build release binaries.
+# Opt into local hybrid (dense) search with `ADEN_DENSE=1 ./install.sh` (or pass
+# `--dense`). It adds the tract + bge embedding stack to the `aden` binary; the
+# MCP server spawns this same binary, so enabling it here turns on hybrid search
+# for BOTH the CLI and MCP. Fetch the model afterwards: scripts/fetch-bge-model.sh
 cd "$PROJECT_ROOT"
-cargo build --release -p aden-cli -p aden-mcp 2>&1 | tail -3
+
+# Activate the repo's git hooks (pre-push CI gate) so code can't be pushed
+# without passing the checks. No-op outside a git checkout.
+if git -C "$PROJECT_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
+  git -C "$PROJECT_ROOT" config core.hooksPath git-hooks
+  echo "Git hooks activated (pre-push CI gate)."
+fi
+
+DENSE="${ADEN_DENSE:-0}"
+[ "${1:-}" = "--dense" ] && DENSE=1
+if [ "$DENSE" = "1" ]; then
+  echo "Building release binaries (with dense/hybrid search)..."
+  cargo build --release -p aden-cli --features dense 2>&1 | tail -3
+  cargo build --release -p aden-mcp 2>&1 | tail -3
+else
+  echo "Building release binaries..."
+  cargo build --release -p aden-cli -p aden-mcp 2>&1 | tail -3
+fi
 
 # Ensure install directory exists
 mkdir -p "$INSTALL_DIR"

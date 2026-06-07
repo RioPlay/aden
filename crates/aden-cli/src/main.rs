@@ -401,6 +401,45 @@ enum Commands {
         #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
         path: PathBuf,
     },
+    /// Detect functional communities (clusters of densely-connected symbols)
+    Communities {
+        #[arg(
+            long,
+            value_name = "N",
+            default_value = "2",
+            help = "Only show communities with at least N members (1 includes singletons)"
+        )]
+        min_size: usize,
+        #[arg(
+            long,
+            value_name = "N",
+            default_value = "30",
+            help = "Limit number of communities shown"
+        )]
+        limit: usize,
+        #[arg(
+            long,
+            value_name = "G",
+            default_value = "1.0",
+            help = "Resolution (>1.0 = more, smaller clusters; 1.0 = standard modularity)"
+        )]
+        resolution: f64,
+        #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
+        path: PathBuf,
+    },
+    /// Map a git diff to the symbols it touches and report the blast radius
+    ImpactDiff {
+        #[arg(
+            long,
+            value_name = "REV",
+            help = "Diff against this git ref (e.g. HEAD~1, main) instead of the working tree"
+        )]
+        since: Option<String>,
+        #[arg(long, help = "Analyze staged changes (git diff --cached)")]
+        staged: bool,
+        #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
+        path: PathBuf,
+    },
     Locate {
         #[arg(long, value_name = "SYMBOL", help = "Find definition of this symbol")]
         symbol: Option<String>,
@@ -545,7 +584,7 @@ enum Commands {
         #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
         path: PathBuf,
     },
-    /// Generate third-party accreditation report from Cargo.lock
+    /// Generate third-party accreditation report (Cargo, npm, PyPI, Go)
     Licenses {
         #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
         path: PathBuf,
@@ -555,7 +594,10 @@ enum Commands {
             help = "Write output to file instead of stdout"
         )]
         out: Option<PathBuf>,
-        #[arg(long, help = "Fetch license info from crates.io and group by license")]
+        #[arg(
+            long,
+            help = "Resolve licenses (local install first, registry fallback) and group by license"
+        )]
         full: bool,
     },
     /// Multi-repository workspace management
@@ -1029,6 +1071,20 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
                 cli.json,
             )
         }
+        Commands::Communities {
+            min_size,
+            limit,
+            resolution,
+            path,
+        } => {
+            let effective_limit = if cli.unlimited { usize::MAX } else { limit };
+            commands::cmd_communities(&path, min_size, effective_limit, resolution, cli.json)
+        }
+        Commands::ImpactDiff {
+            since,
+            staged,
+            path,
+        } => commands::cmd_impact_diff(&path, since.as_deref(), staged, cli.json),
         Commands::Locate {
             symbol,
             caller_of,

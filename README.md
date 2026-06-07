@@ -73,6 +73,27 @@ The graph is **fresh by construction**: read commands (`ask`/`asm`/`query`/
 `locate`/`grep`) detect changed source and re-index it automatically, so you
 rarely need to run `gen` by hand.
 
+## Hybrid (dense) search — optional
+
+By default `search`/`ask` use BM25 (lexical) ranking over the graph. The optional
+`dense` feature adds **local semantic embeddings** fused with BM25 via Reciprocal
+Rank Fusion, which improves natural-language queries (it finds code by *meaning*,
+not just shared terms). It stays fully offline and deterministic — a pure-Rust
+ONNX model (`tract` + BAAI/bge-small-en-v1.5, MIT), no network at query time.
+
+```bash
+# One-time: fetch the embedding model into ~/.cache/aden-models (the only step
+# that touches the network; aden itself never does). ~127 MB.
+scripts/fetch-bge-model.sh
+
+# Build aden with hybrid search enabled
+cargo build -p aden-cli --features dense
+```
+
+With the feature off (the default), nothing changes and no extra dependencies are
+built. Air-gapped? Place `model.onnx` + `tokenizer.json` from BAAI/bge-small-en-v1.5
+into the cache dir by hand instead of running the script.
+
 ## Core Commands
 
 | Command | Purpose |

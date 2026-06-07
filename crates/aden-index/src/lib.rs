@@ -14,6 +14,13 @@ use aden_core::filter::AdenFilter;
 use rayon::prelude::*;
 use rust_stemmers::{Algorithm, Stemmer};
 
+/// Local ONNX dense-embedding provider (hybrid retrieval). Behind the `dense`
+/// feature so the default build carries no ML dependencies.
+#[cfg(feature = "dense")]
+mod dense;
+#[cfg(feature = "dense")]
+pub use dense::TractEmbedder;
+
 /// A single search result.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SearchResult {
@@ -42,11 +49,28 @@ pub struct Index {
     doc_lengths: HashMap<String, usize>,
     /// Average document length across all documents
     avg_doc_length: f64,
+    /// anchor -> dense embedding vector (for hybrid retrieval). Empty unless an
+    /// [`EmbeddingProvider`] has been run via [`Index::embed_documents`]; when
+    /// empty, [`Index::hybrid_query`] degrades to pure BM25. `serde(default)` so
+    /// a pre-embedding cache still deserializes (it is rejected by the version
+    /// check anyway and rebuilt).
+    #[serde(default)]
+    embeddings: HashMap<String, Vec<f32>>,
 }
 
 /// BM25 parameters
 const BM25_K1: f64 = 1.5;
 const BM25_B: f64 = 0.75;
+
+/// Multi-token coverage boost weight (M14). A document matching `k` distinct
+/// query terms is scaled by `1 + COVERAGE_WEIGHT*(k-1)`. At `1.0` the multiplier
+/// *equals the coordination level* `k` (2 matched terms → 2×, 3 → 3×) — a
+/// principled, non-arbitrary model rather than a tuned magic number: matching
+/// twice as many distinct query concepts roughly doubles relevance confidence.
+/// This is what keeps a single rare high-IDF term from outranking a document
+/// that covers more of the query. Validated against the retrieval eval harness
+/// (`crates/aden-index/tests/eval.rs`); see [`Index::query`].
+const COVERAGE_WEIGHT: f64 = 1.0;
 
 const INDEX_CACHE_BASENAME: &str = "index-cache.json";
 
@@ -57,7 +81,15 @@ const INDEX_CACHE_BASENAME: &str = "index-cache.json";
 /// stop word. v4: `-us`/`-is` guard (status, focus, analysis stay whole).
 /// v5: `-is`/`-es` plural normalization (analyses→analysis) so Greek `-sis`
 /// nouns and their plurals share a stem.
-const CURRENT_INDEX_VERSION: u32 = 6;
+/// v6: identifier sub-token expansion in [`tokenize`] (camelCase / `_-/.:`).
+/// v7: per-anchor dense embeddings stored for hybrid retrieval (new `embeddings`
+/// field on [`Index`]). The stored format changed, so older caches rebuild.
+const CURRENT_INDEX_VERSION: u32 = 7;
+
+/// Reciprocal Rank Fusion constant — Cormack, Clarke & Buettcher, SIGIR 2009 use
+/// 60. Damps the contribution of low-ranked items so a top hit in either
+/// retriever dominates a long tail in the other.
+const RRF_K: f64 = 60.0;
 
 /// Build an index, using the on-disk cache when possible.
 /// `key` should be a hash of all `.adoc`/`.aden` file paths + mtimes.
@@ -478,6 +510,67 @@ fn build_snippet(text: &str, query_tokens: &[String]) -> String {
         .to_string()
 }
 
+/// A source of text embeddings for dense (semantic) retrieval.
+///
+/// Implementations MUST be deterministic — the same input text always yields the
+/// same vector — to preserve aden's reproducibility guarantee. The production
+/// implementation will wrap a bundled, offline embedding model; tests use a
+/// small hand-crafted provider. Kept as a trait so the heavy model dependency
+/// stays out of the fusion core and can be swapped without touching callers.
+pub trait EmbeddingProvider: Sync {
+    /// Embed a single text into a fixed-length vector.
+    fn embed(&self, text: &str) -> Vec<f32>;
+    /// The dimensionality of the vectors this provider produces.
+    fn dim(&self) -> usize;
+}
+
+/// Cosine similarity of two equal-length vectors, in `[-1.0, 1.0]`. Returns
+/// `0.0` for a length mismatch or a zero-magnitude vector (no direction).
+pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
+    if a.len() != b.len() || a.is_empty() {
+        return 0.0;
+    }
+    let mut dot = 0.0f32;
+    let mut na = 0.0f32;
+    let mut nb = 0.0f32;
+    for i in 0..a.len() {
+        dot += a[i] * b[i];
+        na += a[i] * a[i];
+        nb += b[i] * b[i];
+    }
+    if na == 0.0 || nb == 0.0 {
+        return 0.0;
+    }
+    dot / (na.sqrt() * nb.sqrt())
+}
+
+/// Reciprocal Rank Fusion — Cormack, Clarke & Buettcher, SIGIR 2009
+/// ("Reciprocal rank fusion outperforms condorcet and individual rank learning
+/// methods"). Fuses several ranked lists by summing `1 / (k + rank)` for each
+/// item across the lists, where `rank` is 1-based.
+///
+/// RRF uses only *ranks*, never the underlying scores, so it combines retrievers
+/// on different score scales (BM25 vs. cosine) without normalization — and is
+/// robust to small cross-platform float drift in the dense scores, since only
+/// the rank order matters. Output is sorted by fused score descending, ties
+/// broken by item id, so the result is fully deterministic.
+pub fn rrf_fuse(rankings: &[Vec<String>], k: f64) -> Vec<(String, f64)> {
+    let mut fused: HashMap<String, f64> = HashMap::new();
+    for ranking in rankings {
+        for (idx, item) in ranking.iter().enumerate() {
+            let rank = (idx + 1) as f64;
+            *fused.entry(item.clone()).or_insert(0.0) += 1.0 / (k + rank);
+        }
+    }
+    let mut out: Vec<(String, f64)> = fused.into_iter().collect();
+    out.sort_by(|a, b| {
+        b.1.partial_cmp(&a.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.0.cmp(&b.0))
+    });
+    out
+}
+
 impl Index {
     /// Build an index from all `.adoc` and `.aden` files under `dir`.
     pub fn from_directory(dir: &Path) -> Result<Self, std::io::Error> {
@@ -620,7 +713,18 @@ impl Index {
     }
 
     /// Helper: Add BM25 scores for a single token.
-    fn add_bm25_scores(&self, token: &str, n: f64, scores: &mut HashMap<String, f64>) {
+    ///
+    /// Also records, in `coverage`, that this (distinct) query token matched the
+    /// anchor — i.e. the per-document *coordination level*. The coverage count
+    /// feeds the multi-token boost in [`Index::query`], which keeps a single rare
+    /// high-IDF term from dominating a document that covers more of the query.
+    fn add_bm25_scores(
+        &self,
+        token: &str,
+        n: f64,
+        scores: &mut HashMap<String, f64>,
+        coverage: &mut HashMap<String, usize>,
+    ) {
         if let Some(postings) = self.inverted.get(token) {
             let df = postings.len() as f64;
             let idf = ((n - df + 0.5) / (df + 0.5) + 1.0).ln().max(0.0);
@@ -631,6 +735,10 @@ impl Index {
                     / (*tf as f64
                         + BM25_K1 * (1.0 - BM25_B + BM25_B * doc_len as f64 / self.avg_doc_length));
                 *scores.entry(anchor.clone()).or_insert(0.0) += idf * tf_normalized;
+                // One increment per distinct query token (postings hold each
+                // anchor once per token), so this is the count of distinct query
+                // terms the document matches.
+                *coverage.entry(anchor.clone()).or_insert(0) += 1;
             }
         }
     }
@@ -691,10 +799,33 @@ impl Index {
         }
 
         let mut scores: HashMap<String, f64> = HashMap::new();
+        // anchor -> number of DISTINCT query tokens it matched (coordination level).
+        let mut coverage: HashMap<String, usize> = HashMap::new();
 
         // Phase 1: Direct BM25 scoring (already includes normalized forms)
         for token in &tokens {
-            self.add_bm25_scores(token, n, &mut scores);
+            self.add_bm25_scores(token, n, &mut scores, &mut coverage);
+        }
+
+        // M14 fix — multi-token coverage boost. Pure BM25 sums per-term scores,
+        // so a single RARE term (high IDF) can outrank a document that matches
+        // MORE of the query with common terms. Example: "detect orphan anchors"
+        // routed to `detect_node_type` (matches only the rare verb "detect")
+        // over `scan_orphans` (matches the subject nouns orphan + anchor). This
+        // is the classic "coordination level" signal from IR: reward a document
+        // for covering more DISTINCT query terms. The boost is multiplicative and
+        // gentle — a doc matching k distinct terms is scaled by
+        // 1 + COVERAGE_WEIGHT*(k-1), so a single-term match is unchanged (no
+        // penalty to genuine single-target queries) while broader coverage wins
+        // ties against a lone rare term. Deterministic; validated by the
+        // retrieval eval harness (`crates/aden-index/tests/eval.rs`).
+        if tokens.len() > 1 {
+            for (anchor, score) in scores.iter_mut() {
+                let matched = coverage.get(anchor).copied().unwrap_or(1);
+                if matched > 1 {
+                    *score *= 1.0 + COVERAGE_WEIGHT * (matched - 1) as f64;
+                }
+            }
         }
 
         // Apply title/anchor boosts
@@ -894,6 +1025,100 @@ impl Index {
                     source_path,
                     score,
                     snippet,
+                })
+            })
+            .collect()
+    }
+
+    /// Populate per-anchor dense embeddings from each document's text using the
+    /// given provider. Run once after [`Index::ingest`]; the vectors are stored
+    /// (and serialized) so queries don't re-embed the corpus. Idempotent —
+    /// re-running overwrites. Without this, [`Index::hybrid_query`] has no dense
+    /// signal and degrades to pure BM25.
+    pub fn embed_documents(&mut self, provider: &dyn EmbeddingProvider) {
+        use rayon::prelude::*;
+        // Parallel: embedding is the dominant cost of the first index build.
+        self.embeddings = self
+            .anchor_text
+            .par_iter()
+            .map(|(anchor, text)| (anchor.clone(), provider.embed(text)))
+            .collect();
+    }
+
+    /// Whether dense embeddings are available (i.e. [`Index::embed_documents`]
+    /// has been run). When false, hybrid retrieval is pure BM25.
+    pub fn has_embeddings(&self) -> bool {
+        !self.embeddings.is_empty()
+    }
+
+    /// Dense (semantic) ranking of indexed anchors for `query`, by cosine
+    /// similarity against the stored embeddings. A flat scan — deterministic and
+    /// dependency-free, with no ANN structure (fine up to tens of thousands of
+    /// anchors; revisit with HNSW only if a corpus demands it). Empty when no
+    /// embeddings are stored.
+    pub fn dense_query(&self, query: &str, provider: &dyn EmbeddingProvider) -> Vec<SearchResult> {
+        if self.embeddings.is_empty() {
+            return Vec::new();
+        }
+        let q = provider.embed(query);
+        let query_tokens = tokenize(query);
+        let mut scored: Vec<(String, f32)> = self
+            .embeddings
+            .iter()
+            .map(|(anchor, vec)| (anchor.clone(), cosine_similarity(&q, vec)))
+            .collect();
+        scored.sort_by(|a, b| {
+            b.1.partial_cmp(&a.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.0.cmp(&b.0))
+        });
+        scored
+            .into_iter()
+            .filter_map(|(anchor, score)| {
+                let source_path = self.anchor_paths.get(&anchor)?.clone();
+                let text = self.anchor_text.get(&anchor)?;
+                let snippet = build_snippet(text, &query_tokens);
+                Some(SearchResult {
+                    anchor,
+                    source_path,
+                    score: score as f64,
+                    snippet,
+                })
+            })
+            .collect()
+    }
+
+    /// Hybrid retrieval: fuse the BM25 and dense rankings with Reciprocal Rank
+    /// Fusion (see [`rrf_fuse`]). The two retrievers are complementary — BM25
+    /// nails exact identifiers and rare terms, dense captures meaning and
+    /// paraphrase — and RRF combines them with no score normalization. Degrades
+    /// to pure BM25 when no embeddings are stored, so it is always safe to call.
+    pub fn hybrid_query(&self, query: &str, provider: &dyn EmbeddingProvider) -> Vec<SearchResult> {
+        let bm25 = self.query(query);
+        if self.embeddings.is_empty() {
+            return bm25;
+        }
+        let dense = self.dense_query(query, provider);
+
+        let bm25_ranks: Vec<String> = bm25.iter().map(|r| r.anchor.clone()).collect();
+        let dense_ranks: Vec<String> = dense.iter().map(|r| r.anchor.clone()).collect();
+        let fused = rrf_fuse(&[bm25_ranks, dense_ranks], RRF_K);
+
+        // Re-attach source path + snippet by anchor; carry the fused RRF score.
+        let by_anchor: HashMap<&str, &SearchResult> = bm25
+            .iter()
+            .chain(dense.iter())
+            .map(|r| (r.anchor.as_str(), r))
+            .collect();
+        fused
+            .into_iter()
+            .filter_map(|(anchor, score)| {
+                let base = by_anchor.get(anchor.as_str())?;
+                Some(SearchResult {
+                    anchor: anchor.clone(),
+                    source_path: base.source_path.clone(),
+                    score,
+                    snippet: base.snippet.clone(),
                 })
             })
             .collect()

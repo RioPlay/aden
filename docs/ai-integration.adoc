@@ -88,7 +88,7 @@ aden ask "How does the authentication flow work?"
 
 What happens internally:
 
-1. **Search**: The question is tokenized and searched against the in-memory inverted index built from all `.adoc` / `.aden` contracts.
+1. **Search**: The question is tokenized and searched against the in-memory inverted index built from all `.adoc` / `.aden` contracts. Ranking is BM25 by default; when built with the `dense` cargo feature (and the local embedding model is present), it becomes hybrid — BM25 plus offline, deterministic local dense embeddings fused via Reciprocal Rank Fusion (RRF).
 2. **Anchor resolution**: The top-ranked document anchor becomes the starting node (or you pin it with `--from`).
 3. **Intent classification**: The question is classified into one of nine intents (the per-intent code edges below; every intent additionally traverses the semantic edges IsA, RelatesTo, SimilarTo, AssociatedWith, Explains, and `Calls` is always included):
    - `Debug` --- "Why does X fail?" → depth 3, edges: Constrains, Documents, Calls, Invokes, Requires
@@ -250,11 +250,18 @@ A few of the most-used tools list their key arguments below; for the rest, run
 |grep|Structure-aware content search (hit + enclosing symbol)|pattern, regex, ignore_case, symbol_only, limit
 |understand|One-shot symbol comprehension (locate + backlinks + impact + asm)|symbol, budget, json
 |ask|Natural language Q&A|question, budget, from
-|search|Full-text search (BM25)|query, limit, offset, doc_type, semantics
+|search|Full-text search (BM25; hybrid BM25+dense via RRF when the `dense` feature is built)|query, limit, offset, doc_type, semantics
 |locate|Symbol definitions (requires at least one of `symbol`/`caller_of`)|symbol, caller_of, show_context, limit, format
 |asm|Graph-traversed context|from, depth, budget, format (llm = default LLM-dense prose, adg = compact JSON, aden = raw AsciiDoc)
 |query|Structured JSON graph neighborhood|from, depth, backlinks, impact, edge_type (applies to from/backlinks/impact)
 |list|Anchors in graph|filter, limit, semantics
+|===
+
+.Graph analysis
+|===
+|Tool|Purpose|Key Arguments
+|communities|Functional clusters via Louvain modularity (call/use density, independent of directory layout)|min_size, limit, path
+|impact-diff|Git-diff blast radius — maps a diff to touched symbols and their downstream impact|since, staged, path
 |===
 
 .Validate / build
@@ -368,13 +375,15 @@ You have access to Aden, a knowledge graph compiler for codebases.
 
 ## Aden Tools Available:
 - `ask(question)`: Natural-language question about the codebase — best first tool for exploration
-- `search(query)`: Full-text search with semantic understanding, --semantics flag for graph edges
+- `search(query)`: Full-text search (BM25; hybrid BM25+dense via RRF when built with the `dense` feature). The `--semantics` flag is separate — it expands results along knowledge-graph edges, not dense embeddings.
 - `asm(from, depth)`: Assemble context from a starting anchor (passed as `from`)
 - `query(anchor, depth)`: Get structured graph neighborhood as JSON
 - `locate(symbol)`: Find symbol definitions and call sites, --show-context N for surrounding code
 - `understand(symbol)`: One-shot comprehension — definition + backlinks + impact + context in one call; replaces locate + query --backlinks + query --impact + asm
 - `list()`: List all available anchors, --semantics for semantic nodes
 - `grep(pattern)`: Structure-aware search — every hit tagged with its enclosing symbol
+- `communities(min_size, limit)`: Detect functional clusters of densely-connected symbols (Louvain modularity), independent of directory layout
+- `impact_diff(since, staged)`: Map a git diff to the symbols it touches and report the downstream blast radius before committing
 - `heal()`: Check documentation health, --fix for auto-fix, --gc for orphan cleanup
 - `status()`: Get health score and actionable orphan count
 - `ready()`: Fast pre-commit gate — gen + lint + check + heal drift + audit (aden-only, no external tools)

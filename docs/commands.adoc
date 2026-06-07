@@ -134,8 +134,13 @@ Validates:
 - Every cross-reference resolves
 - No include cycles
 - No duplicate anchors
-- Source hash integrity
-- Typed edges valid
+- Source hash integrity (a doc describing code that has changed is flagged stale)
+- Typed edges valid (a doc referencing a moved/renamed symbol — whose `aden://`
+  anchor no longer exists — is flagged as a broken reference)
+- *Documentation path links* — markdown `[text](path)` and adoc
+  `xref:`/`link:`/`include::` whose repo-relative target file no longer exists
+  (moved or renamed). Illustrative backtick mentions and fenced code blocks are
+  not checked; a line bearing `aden:allow-path` is exempt.
 
 |===
 |Severity |Behavior
@@ -144,6 +149,11 @@ Validates:
 |Warn |Surfaces in output
 |Forbid |Fails CI gate
 |===
+
+This is the documentation-accuracy gate: CI runs `aden check . --severity Forbid`
+(and it is part of `ci-check` / the pre-push hook), so a doc that drifts from the
+code — a stale signature, a reference to a relocated symbol, or a link to a moved
+file — fails the build. `--json` emits `{ok, errors, warnings, info}`.
 
 === lint
 
@@ -340,8 +350,14 @@ aden ask "Explain the parser" --edge-types "Calls,Uses"
 aden ask "Explain the parser" --model ollama:llama3
 ----
 
+NOTE: When built with the `dense` feature, `ask`'s anchor routing uses hybrid
+(BM25 + dense embedding) retrieval — see the note under xref:commands.adoc#_search[search].
+A question that resolves to a thin stub broadens to the resolved symbol's
+*functional community* (see xref:commands.adoc#_communities[communities]) rather
+than the whole project root.
+
 Internally:
-1. Search the inverted index for matching keywords
+1. Search the index (BM25, or hybrid BM25+dense when the `dense` feature is built)
 2. Classify intent by keyword/phrase scoring (highest-scoring intent wins):
    Explain, Usage, Refactor, Impact, Debug, List, Compare, Count, General
 3. Select edge types and depth from the intent — override with
@@ -400,6 +416,19 @@ With `--json` (or the global `-j`), `search` emits an envelope carrying explicit
 counts and pagination so a caller never has to parse the table or guess whether
 more results exist: `{total, returned, offset, truncated, results: [{anchor,
 score, snippet}], semantic: [...]}`.
+
+[NOTE]
+====
+*Hybrid (dense) retrieval — optional.* By default `search` and `ask` rank with
+BM25 (lexical). Built with the `dense` cargo feature (`./install.sh --dense`),
+they additionally run a local semantic-embedding search and fuse it with BM25 via
+*Reciprocal Rank Fusion* — better natural-language matching while staying fully
+offline and deterministic (pure-Rust `tract` ONNX runtime + the MIT-licensed
+BAAI/bge-small-en-v1.5 model, fetched once via `scripts/fetch-bge-model.sh`).
+Without the feature, retrieval is pure BM25. See xref:getting-started.adoc[Getting
+Started] for setup. (`--semantics` is *unrelated* — it expands results along the
+knowledge-graph edges, not via embeddings.)
+====
 
 === list
 
@@ -505,6 +534,60 @@ aden locate --symbol Error --limit 10
 |--show-context |Include N lines of context |—
 |--limit |Max results |50
 |===
+
+=== communities
+
+Detect *functional communities* — clusters of symbols that call/use/reference
+each other densely — from the knowledge graph, independent of the directory
+layout. Useful for orienting in an unfamiliar codebase and as `ask` routing
+targets. Language-agnostic (operates on the graph aden builds for any language).
+
+[source,bash]
+----
+aden communities                      # clusters in the current project
+aden communities --min-size 5         # hide small clusters (default min 2)
+aden communities --resolution 2.5     # finer, smaller clusters (default 1.0)
+aden communities --limit 10 --json    # cap output; machine-readable
+----
+
+|===
+|Flag |Description |Default
+
+|--min-size |Only show communities with at least N members |2
+|--limit |Max communities shown |30
+|--resolution |Granularity (>1.0 = more, smaller clusters) |1.0
+|--json |Structured output instead of the human list |false
+|===
+
+Algorithm: deterministic multi-level modularity optimization (Louvain). Also
+available as the MCP `communities` tool.
+
+=== impact-diff
+
+Map a `git diff` to the symbols it touches and report the *blast radius* — every
+symbol reachable downstream — before you commit. Reuses the same impact traversal
+as `query --impact`; only the diff→symbol mapping is new.
+
+[source,bash]
+----
+aden impact-diff                   # uncommitted working-tree changes
+aden impact-diff --staged          # staged changes (git diff --cached)
+aden impact-diff --since HEAD~1    # changes vs a ref (HEAD~1, main, a tag…)
+aden impact-diff --since main -j   # machine-readable
+----
+
+|===
+|Flag |Description |Default
+
+|--since |Diff against this git ref instead of the working tree |working tree
+|--staged |Analyze staged changes |false
+|--json |Structured output (touched symbols, blast radius, risk) |false
+|===
+
+Reports each touched symbol's downstream count, the union blast radius, and a
+heuristic risk tier (downstream breadth: 0 none / ≤5 low / ≤20 medium / else
+high). A changed line that falls inside no known symbol (docs, comments, new
+files) contributes nothing. Also available as the MCP `impact-diff` tool.
 
 === overlay
 
@@ -695,7 +778,7 @@ aden audit . --strict
 |===
 |Flag |Description |Default
 
-|--lang |Filter by language |Auto-detect
+|--lang |Restrict to one language: `rust`, `python`, `go`, `ts`, `php` |Auto-detect
 |--format |Output: `text`, `json`, `adoc` |text
 |--strict |Exit non-zero on any finding |false
 |===
@@ -868,14 +951,23 @@ from the ADR template.
 
 === licenses
 
-Generate third-party accreditation report.
+Generate a third-party dependency accreditation report. Polyglot — detects every
+ecosystem present in the repo (Cargo, npm, PyPI, Go) and parses each lockfile.
 
 [source,bash]
 ----
-aden licenses
-aden licenses --out NOTICE.md
-aden licenses --full
+aden licenses                  # list dependencies per ecosystem
+aden licenses --out NOTICE.md  # write the report to a file
+aden licenses --full           # resolve each license (local install first,
+                               # registry fallback) and group by license
 ----
+
+|===
+|Flag |Description |Default
+
+|--out |Write the report to a file instead of stdout |stdout
+|--full |Resolve licenses (local-first, then registry) and group by license |false
+|===
 
 === complete
 

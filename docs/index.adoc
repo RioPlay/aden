@@ -94,6 +94,7 @@ aden ci-check .
 
 |Core |`init`, `new`, `gen`, `check`
 |Query |`ask`, `search`, `list`, `locate`, `asm`, `query`, `query-adq`
+|Graph analysis |`communities`, `impact-diff`
 |Healing |`heal`, `review`, `sync`, `watch`
 |CI/Security |`ci-check`, `audit`, `emergency`
 |Tooling |`doctor`, `licenses`, `session`, `suggest`, `complete`

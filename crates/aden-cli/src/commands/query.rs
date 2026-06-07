@@ -10,8 +10,8 @@ use aden_store::GraphStorage;
 
 use crate::types::{AnchorPattern, QueryIntent};
 use crate::util::{
-    find_project_root, load_or_build_index, node_to_json, parse_single_edge_type, perform_check,
-    sanitize_anchor, sanitize_source_file, valid_edge_types,
+    find_project_root, fmt_score, load_or_build_index, node_to_json, parse_single_edge_type,
+    perform_check, query_index, sanitize_anchor, sanitize_source_file, valid_edge_types,
 };
 use aden_index::SearchResult;
 
@@ -446,7 +446,7 @@ pub fn cmd_asm(opts: AsmOptions) -> Result<(), Box<dyn std::error::Error>> {
 
     let (from_anchor, effective_budget) = if opts.auto && !opts.strict {
         let index = load_or_build_index(&opts.path)?;
-        let results = index.query(&opts.from);
+        let results = query_index(&index, &opts.from);
         // Exact-first: if the user passed an anchor that already resolves
         // exactly in the store, keep it. `--auto` must not fuzzy-re-resolve a
         // valid anchor onto a thinner doc-shell node — the non-auto path would
@@ -1023,6 +1023,47 @@ pub fn block_filter_for_intent(intent: &QueryIntent) -> Vec<aden_asm::traverse::
 /// broadens to `mod-project` when this threshold is not met.
 const THIN_STUB_TOKEN_THRESHOLD: usize = 150;
 
+/// For a thin-routed anchor, find its functional community and return a richer
+/// seed to broaden to: `(hub_anchor, label, member_count)`. The hub is the
+/// highest-degree member of the community (its center of gravity). Returns
+/// `None` when the anchor isn't in a multi-member community — the caller then
+/// falls back to `mod-project`. This makes the `ask` fallback land on a focused
+/// functional cluster instead of the flat project-root hub dump.
+fn community_seed_for(path: &Path, anchor: &str) -> Option<(String, String, usize)> {
+    let graph = aden_graph::cache::build_from_directory_cached(path).ok()?;
+    let communities = aden_graph::community::detect_communities(&graph, 1.0);
+    let group = communities.into_iter().find(|c| c.iter().any(|a| a == anchor))?;
+    if group.len() < 2 {
+        return None;
+    }
+    // Hub = highest (undirected) degree member, but skip the synthetic `mod-*`
+    // module nodes — they connect to everything by construction and would just
+    // reproduce the crate overview. Prefer a real symbol for richer content;
+    // fall back to the full group only if a community is somehow all hubs.
+    let real: Vec<&String> = group.iter().filter(|a| !a.starts_with("mod-")).collect();
+    let pool: Vec<&String> = if real.is_empty() {
+        group.iter().collect()
+    } else {
+        real
+    };
+    let seed = pool
+        .into_iter()
+        .max_by(|a, b| {
+            let da = graph
+                .get_index(a)
+                .map(|i| graph.graph.neighbors_undirected(i).count())
+                .unwrap_or(0);
+            let db = graph
+                .get_index(b)
+                .map(|i| graph.graph.neighbors_undirected(i).count())
+                .unwrap_or(0);
+            da.cmp(&db).then_with(|| b.cmp(a))
+        })?
+        .clone();
+    let label = crate::commands::communities::dominant_module(&group);
+    Some((seed, label, group.len()))
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn cmd_ask(
     path: &Path,
@@ -1056,7 +1097,7 @@ pub fn cmd_ask(
         (anchor.to_string(), None, Vec::new())
     } else {
         let idx = load_or_build_index(path)?;
-        let results = idx.query(question);
+        let results = query_index(&idx, question);
         if results.is_empty() {
             println!("No relevant documents found for: {}", question);
             println!(
@@ -1222,13 +1263,33 @@ pub fn cmd_ask(
             && start_anchor != "mod-project"
             && aden_graph::cache::resolve_anchor_in_store(path, "mod-project").is_some()
         {
-            eprintln!(
-                "NOTE: '{}' is a thin stub (~{} tokens); broadening to 'mod-project'.",
-                start_anchor, est
-            );
-            match assemble_seed("mod-project", depth.min(1), effective_budget) {
-                Ok(fb) => (fb, "mod-project".to_string()),
-                Err(_) => (assembled, start_anchor),
+            // Prefer broadening to the resolved symbol's functional COMMUNITY (a
+            // focused cluster of related symbols) over the flat `mod-project` hub
+            // dump — a far more useful terminal when routing lands on a thin stub.
+            let community = community_seed_for(path, &start_anchor).and_then(|(seed, label, n)| {
+                let body = assemble_seed(&seed, depth.min(2), effective_budget).ok()?;
+                if body.trim().is_empty() {
+                    return None;
+                }
+                eprintln!(
+                    "NOTE: '{}' is thin (~{} tokens); broadening to community '{}' ({} symbols, hub [[{}]]).",
+                    start_anchor, est, label, n, seed
+                );
+                let header = format!("// Functional community: {} ({} symbols)\n\n", label, n);
+                Some((format!("{header}{body}"), seed))
+            });
+            match community {
+                Some(pair) => pair,
+                None => {
+                    eprintln!(
+                        "NOTE: '{}' is a thin stub (~{} tokens); broadening to 'mod-project'.",
+                        start_anchor, est
+                    );
+                    match assemble_seed("mod-project", depth.min(1), effective_budget) {
+                        Ok(fb) => (fb, "mod-project".to_string()),
+                        Err(_) => (assembled, start_anchor),
+                    }
+                }
             }
         } else {
             (assembled, start_anchor)
@@ -1474,7 +1535,7 @@ pub fn cmd_search(
     let config = AdenConfig::load(path);
 
     let index = load_or_build_index(path)?;
-    let mut results = index.query(query);
+    let mut results = query_index(&index, query);
 
     // Filter out private anchors (ADRs, retros, kickoffs, etc.) in public mode
     let is_public = matches!(config.profile.mode, aden_core::ProfileMode::Public);
@@ -1588,7 +1649,7 @@ pub fn cmd_search(
         } else {
             r.snippet.clone()
         };
-        println!("| {} | {:.1} | {} |", r.anchor, r.score, snippet);
+        println!("| {} | {} | {} |", r.anchor, fmt_score(r.score), snippet);
     }
 
     // Print semantic results if any
@@ -2171,7 +2232,7 @@ pub fn cmd_locate(
         if hits.is_empty() {
             // Fall back to the full-text search index.
             let index = load_or_build_index(path)?;
-            let search_results = index.query(sym);
+            let search_results = query_index(&index, sym);
             if want_json {
                 // Machine-readable: emit the (possibly empty) full-text hits as a
                 // JSON array, never the human "Found … / No symbol found" prose.
@@ -2197,7 +2258,7 @@ pub fn cmd_locate(
                     } else {
                         r.snippet.clone()
                     };
-                    println!("| {} | {:.1} | {} |", r.anchor, r.score, snippet);
+                    println!("| {} | {} | {} |", r.anchor, fmt_score(r.score), snippet);
                 }
                 return Ok(());
             }

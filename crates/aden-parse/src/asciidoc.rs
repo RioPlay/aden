@@ -7,6 +7,7 @@
 
 use crate::extractor::{build_code_attributes, infer_project_name, make_anchor};
 use aden_core::{Block, Document, NodeType, Result, SourceSpan};
+use std::collections::HashMap;
 use std::path::Path;
 
 pub struct AsciiDocExtractor;
@@ -41,7 +42,8 @@ impl crate::extractor::LanguageExtractor for AsciiDocExtractor {
 
         let crate_name = infer_project_name(path);
 
-        let (attributes, body) = parse_document_attributes(source);
+        let (attributes, custom_attrs, body) = parse_document_attributes(source);
+        let has_sectanchors = custom_attrs.contains_key("sectanchors");
         let body_lines: Vec<&str> = body.lines().collect();
         let mut headings = Vec::new();
         let mut code_blocks = Vec::new();
@@ -144,6 +146,10 @@ impl crate::extractor::LanguageExtractor for AsciiDocExtractor {
                     end_byte: 0,
                 };
                 let mut attrs = build_code_attributes(source, "heading", Some(path), Some(&span));
+                // Merge document-level custom attributes (tags, status, updated, etc.)
+                for (k, v) in &custom_attrs {
+                    attrs.insert(k.clone(), v.clone());
+                }
                 if level > 0 {
                     attrs.insert("heading_level".to_string(), level.to_string());
                 }
@@ -154,18 +160,40 @@ impl crate::extractor::LanguageExtractor for AsciiDocExtractor {
                 }
 
                 docs.push(Document {
-                    anchor,
+                    anchor: anchor.clone(),
                     node_type: NodeType::Module,
-                    attributes: attrs,
-                    blocks,
-                    source_span: Some(span),
+                    attributes: attrs.clone(),
+                    blocks: blocks.clone(),
+                    source_span: Some(span.clone()),
                     metadata: attributes.clone(),
                     confidence: 0.9,
                 });
+
+                // When :sectanchors: is set, also emit an Asciidoctor-compatible
+                // alias anchor (_slug format) so xref:file#_heading links resolve.
+                if has_sectanchors && level > 0 {
+                    let alias = make_sectanchors_anchor(&crate_name, &file_name, title);
+                    if alias != anchor {
+                        let mut alias_attrs = attrs.clone();
+                        alias_attrs.insert("alias_of".to_string(), anchor.clone());
+                        docs.push(Document {
+                            anchor: alias,
+                            node_type: NodeType::Module,
+                            attributes: alias_attrs,
+                            blocks: blocks.clone(),
+                            source_span: Some(span),
+                            metadata: attributes.clone(),
+                            confidence: 0.8,
+                        });
+                    }
+                }
             }
         } else {
             let anchor = make_anchor(&crate_name, &file_name, "document");
-            let attrs = build_code_attributes(source, "document", Some(path), None);
+            let mut attrs = build_code_attributes(source, "document", Some(path), None);
+            for (k, v) in &custom_attrs {
+                attrs.insert(k.clone(), v.clone());
+            }
             docs.push(Document {
                 anchor,
                 node_type: NodeType::Module,
@@ -210,52 +238,125 @@ impl crate::extractor::LanguageExtractor for AsciiDocExtractor {
     }
 }
 
-fn parse_document_attributes(source: &str) -> (Option<aden_core::DocumentMetadata>, String) {
-    if !source.starts_with(":") {
-        return (None, source.to_string());
-    }
-
+/// Parse the AsciiDoc document header and return extracted metadata, custom
+/// attributes, and the remaining body text.
+///
+/// AsciiDoc header format:
+/// ```text
+/// = Document Title
+/// Optional Author Name <email@example.com>
+/// :attribute-key: attribute value
+/// :boolean-attribute:
+/// :!unset-attribute:
+///
+/// Body starts after the first blank line.
+/// ```
+///
+/// All standard metadata fields are captured into `DocumentMetadata`. Every
+/// other attribute (`:tags:`, `:status:`, `:updated:`, `:sectanchors:`, etc.)
+/// is stored in the returned `HashMap` so callers can insert them into
+/// `Document.attributes` for search and filtering.
+fn parse_document_attributes(
+    source: &str,
+) -> (
+    Option<aden_core::DocumentMetadata>,
+    HashMap<String, String>,
+    String,
+) {
     let mut metadata = aden_core::DocumentMetadata::default();
-    let mut end_line = 0;
+    let mut custom_attrs: HashMap<String, String> = HashMap::new();
+    let mut title_seen = false;
+    let mut any_attr_seen = false;
+    let mut header_end_line = 0usize;
 
-    for (i, line) in source.lines().enumerate() {
-        if i == 0 && !line.starts_with(':') {
+    let all_lines: Vec<&str> = source.lines().collect();
+
+    for (i, &line) in all_lines.iter().enumerate() {
+        if line.is_empty() {
+            // Blank line terminates the header block.
+            header_end_line = i + 1;
             break;
         }
-        if line.starts_with(':') && line.contains(':') {
-            let content = line.trim_start_matches(':').trim_end_matches(':');
-            if let Some((key, value)) = content.split_once(':') {
-                let key = key.trim();
-                let value = value.trim();
-                match key {
-                    "title" => metadata.version = Some(value.to_string()),
-                    "author" => metadata.author = Some(value.to_string()),
-                    "email" => metadata.email = Some(value.to_string()),
-                    "revdate" => metadata.date = Some(value.to_string()),
-                    "version" => metadata.version = Some(value.to_string()),
-                    "revision" => metadata.revision = Some(value.to_string()),
-                    "copyright" => metadata.copyright = Some(value.to_string()),
-                    "license" => metadata.license = Some(value.to_string()),
-                    _ => {}
+
+        // Document title line(s) — `= Title`, `== Embedded`, etc.
+        if line.starts_with("= ") || line == "=" {
+            title_seen = true;
+            header_end_line = i + 1;
+            continue;
+        }
+
+        if let Some(rest) = line.strip_prefix(':') {
+            // Attribute entry: `:key: value` (or `:key:` for boolean, `:!key:` to unset).
+            if let Some(colon_pos) = rest.find(':') {
+                let raw_key = rest[..colon_pos].trim();
+                // Strip the `!` unset prefix; we just capture the key/value as-is.
+                let key = raw_key.trim_start_matches('!');
+                let value = rest[colon_pos + 1..].trim();
+                if !key.is_empty() {
+                    any_attr_seen = true;
+                    match key {
+                        "author" => metadata.author = Some(value.to_string()),
+                        "email" => metadata.email = Some(value.to_string()),
+                        "revdate" | "date" | "updated" => {
+                            metadata.date = Some(value.to_string())
+                        }
+                        "version" | "revnumber" => metadata.version = Some(value.to_string()),
+                        "revision" => metadata.revision = Some(value.to_string()),
+                        "copyright" => metadata.copyright = Some(value.to_string()),
+                        "license" => metadata.license = Some(value.to_string()),
+                        _ => {
+                            custom_attrs.insert(key.to_string(), value.to_string());
+                        }
+                    }
                 }
             }
-            end_line = i;
-        } else {
-            break;
+            header_end_line = i + 1;
+            continue;
         }
+
+        // The implicit author/revision line is only valid immediately after a
+        // document title and before any attributes. Guard on `title_seen` so
+        // plain-content files (no `= Title`) are never misidentified as headers.
+        if title_seen && !any_attr_seen && metadata.author.is_none() {
+            if let (Some(lt), Some(gt)) = (line.find('<'), line.find('>')) {
+                if lt < gt {
+                    let name = line[..lt].trim();
+                    let email = line[lt + 1..gt].trim();
+                    if !name.is_empty() {
+                        metadata.author = Some(name.to_string());
+                    }
+                    if !email.is_empty() {
+                        metadata.email = Some(email.to_string());
+                    }
+                }
+            } else {
+                metadata.author = Some(line.trim().to_string());
+            }
+            header_end_line = i + 1;
+            continue;
+        }
+
+        // Non-blank, non-title, non-attribute line after attributes were seen
+        // (or with no title) — the header is over.
+        break;
     }
 
-    let body = if end_line > 0 {
-        source
-            .lines()
-            .skip(end_line + 1)
-            .collect::<Vec<_>>()
-            .join("\n")
-    } else {
-        source.to_string()
-    };
+    let body = all_lines[header_end_line..].join("\n");
 
-    (Some(metadata), body)
+    let has_metadata = metadata.author.is_some()
+        || metadata.email.is_some()
+        || metadata.date.is_some()
+        || metadata.version.is_some()
+        || metadata.revision.is_some()
+        || metadata.copyright.is_some()
+        || metadata.license.is_some()
+        || !custom_attrs.is_empty();
+
+    (
+        if has_metadata { Some(metadata) } else { None },
+        custom_attrs,
+        body,
+    )
 }
 
 fn make_adoc_anchor(crate_name: &str, file_name: &str, title: &str, level: usize) -> String {
@@ -269,6 +370,28 @@ fn make_adoc_anchor(crate_name: &str, file_name: &str, title: &str, level: usize
         })
         .collect();
     format!("aden://doc/{}/{}/h{}{}", crate_name, file_name, level, slug)
+}
+
+/// Build an Asciidoctor `:sectanchors:`-compatible anchor for a heading.
+///
+/// Asciidoctor generates `_slug` format: lowercase, non-alphanumeric → `_`,
+/// collapse repeated `_`, prefix with `_`. This lets xrefs like
+/// `xref:file.adoc#_core_concepts` resolve to the correct graph node.
+fn make_sectanchors_anchor(crate_name: &str, file_name: &str, title: &str) -> String {
+    let raw: String = title
+        .chars()
+        .map(|c| match c {
+            'a'..='z' | '0'..='9' => c,
+            'A'..='Z' => c.to_ascii_lowercase(),
+            _ => '_',
+        })
+        .collect();
+    let slug: String = raw
+        .split('_')
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("_");
+    format!("aden://doc/{}/{}/_{}", crate_name, file_name, slug)
 }
 
 
@@ -405,5 +528,105 @@ mod tests {
             .extract_documents(src, Path::new("doc.adoc"))
             .expect("malformed anchor line must not error");
         assert!(!docs.is_empty());
+    }
+
+    #[test]
+    fn parse_document_attributes_captures_custom_attrs() {
+        let src = "\
+= AsciiDoc Mastery
+:docinfo: shared
+:tags: asciidoc, aden, knowledge-graph
+:status: draft
+:updated: 2026-06-07
+:sectanchors:
+:toc: left
+
+== First Section
+
+Content here.
+";
+        let (meta, custom, body) = parse_document_attributes(src);
+
+        // Standard metadata
+        assert!(meta.is_some());
+        let m = meta.unwrap();
+        assert_eq!(m.date.as_deref(), Some("2026-06-07"));
+
+        // Custom attributes captured
+        assert_eq!(custom.get("tags").map(|s| s.as_str()), Some("asciidoc, aden, knowledge-graph"));
+        assert_eq!(custom.get("status").map(|s| s.as_str()), Some("draft"));
+        assert_eq!(custom.get("docinfo").map(|s| s.as_str()), Some("shared"));
+        assert!(custom.contains_key("sectanchors"), "sectanchors must be captured");
+        assert_eq!(custom.get("toc").map(|s| s.as_str()), Some("left"));
+
+        // Body does not include header lines
+        assert!(!body.contains(":tags:"), "body must not contain attribute lines");
+        assert!(body.contains("== First Section"), "body must contain section headings");
+    }
+
+    #[test]
+    fn parse_document_attributes_empty_when_no_header() {
+        let src = "Just plain content\nwith no header.\n";
+        let (meta, custom, body) = parse_document_attributes(src);
+        assert!(meta.is_none());
+        assert!(custom.is_empty());
+        // Body is the full source when no header is detected
+        assert!(body.contains("Just plain content"));
+    }
+
+    #[test]
+    fn extract_documents_propagates_tags_into_attributes() {
+        let ext = AsciiDocExtractor::new();
+        let src = "\
+= My Doc
+:tags: aden, graph
+:status: draft
+
+== Section One
+
+Body text.
+";
+        let docs = ext
+            .extract_documents(src, Path::new("test.adoc"))
+            .expect("extraction must succeed");
+        assert!(!docs.is_empty());
+        let first = &docs[0];
+        assert_eq!(first.attributes.get("tags").map(|s| s.as_str()), Some("aden, graph"));
+        assert_eq!(first.attributes.get("status").map(|s| s.as_str()), Some("draft"));
+    }
+
+    #[test]
+    fn sectanchors_alias_generated_alongside_primary() {
+        let ext = AsciiDocExtractor::new();
+        let src = "\
+= My Doc
+:sectanchors:
+
+== Core Concepts
+
+Explanation here.
+";
+        let docs = ext
+            .extract_documents(src, Path::new("guide.adoc"))
+            .expect("extraction must succeed");
+
+        // Should have both h2core-concepts and _core_concepts anchors
+        let anchors: Vec<&str> = docs.iter().map(|d| d.anchor.as_str()).collect();
+        let has_primary = anchors.iter().any(|a| a.contains("h2core-concepts"));
+        let has_alias = anchors.iter().any(|a| a.ends_with("_core_concepts"));
+        assert!(has_primary, "primary h2 anchor must be present; got: {:?}", anchors);
+        assert!(has_alias, "sectanchors alias _core_concepts must be present; got: {:?}", anchors);
+    }
+
+    #[test]
+    fn make_sectanchors_anchor_matches_asciidoctor_format() {
+        let a = make_sectanchors_anchor("proj", "file.adoc", "Core Concepts");
+        assert_eq!(a, "aden://doc/proj/file.adoc/_core_concepts");
+
+        let b = make_sectanchors_anchor("proj", "file.adoc", "Why AsciiDoc?");
+        assert_eq!(b, "aden://doc/proj/file.adoc/_why_asciidoc");
+
+        let c = make_sectanchors_anchor("proj", "file.adoc", "BM25 & Vector Search");
+        assert_eq!(c, "aden://doc/proj/file.adoc/_bm25_vector_search");
     }
 }
