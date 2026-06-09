@@ -167,6 +167,11 @@ Hybrid (`--release --features dense` + bge-small). Validated (spot-checked) sets
 
 ## Caveats
 
+- **`aden gen` is not yet deterministic** (found 2026-06-09 by `bench.py`): parallel file order
+  perturbs per-file aggregate doc lengths / BM25 `avg_doc_length`, so recall varies ~±0.05 run-to-run.
+  search/ranking ARE deterministic for a fixed index. Treat the numbers above as ±0.05 until gen is
+  fixed (see research `gen-determinism-defect.adoc`). The BM25→hybrid *gap* is robust to this; the
+  absolute decimals are not.
 - uno used basename matching against an isolated sub-tree copy (6 platform-variant basenames collide →
   slightly lenient for those rows).
 - Ground truth is single-target: each query has exactly one expected file. Real code
