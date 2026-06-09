@@ -202,6 +202,21 @@ function panelBack() {
   if (prev == null) return;
   const n = byId[prev]; if (n) goNode(n);   // goNode (no push) so we don't re-record
 }
+// Live preview: hovering/arrow-selecting a neighbour row lights that node up in the
+// graph in real time — no panel change, no history. `center` pans gently to it.
+function previewNode(id, center) {
+  const n = byId[id]; if (!n) return;
+  highlightNodes.clear(); highlightLinks.clear();
+  highlightNodes.add(n); (n.neighbors || []).forEach(x => highlightNodes.add(x)); (n.adj || []).forEach(l => highlightLinks.add(l));
+  hoverNode = n;
+  if (center && n.x != null) Graph.centerAt(n.x, n.y, 350);
+}
+function restoreFocus() {   // back to the panel's current node when the mouse leaves the list
+  const n = panelCur && byId[panelCur]; if (!n) return;
+  highlightNodes.clear(); highlightLinks.clear();
+  highlightNodes.add(n); (n.neighbors || []).forEach(x => highlightNodes.add(x)); (n.adj || []).forEach(l => highlightLinks.add(l));
+  hoverNode = n;
+}
 
 function showPanel(n) {
   const rows = [];
@@ -218,7 +233,7 @@ function showPanel(n) {
   });
   panelNbs = nbList.map(x => x.id); nbSel = -1;
   const nbs = nbList.slice(0, 40).map((x, i) =>
-    `<div class="row nb" id="nb-${i}" onclick="focusNode('${x.id}')">${x.dir} ${esc(shortName(byId[x.id] || { id: x.id }))} <span class="k">${esc(x.type)}</span></div>`);
+    `<div class="row nb" id="nb-${i}" onclick="focusNode('${x.id}')" onmouseenter="previewNode('${x.id}', false)">${x.dir} ${esc(shortName(byId[x.id] || { id: x.id }))} <span class="k">${esc(x.type)}</span></div>`);
   const ed = editorUrl(n);
   document.getElementById('p-title').textContent = shortName(n);
   document.getElementById('p-body').innerHTML =
@@ -268,6 +283,7 @@ function syncSearch() { if (qEl) { qEl.value = ''; resEl.classList.remove('open'
 function selNb() {
   for (let i = 0; i < 40; i++) { const r = document.getElementById('nb-' + i); if (r) r.classList.toggle('sel', i === nbSel); }
   const cur = document.getElementById('nb-' + nbSel); if (cur) cur.scrollIntoView({ block: 'nearest' });
+  if (panelNbs[nbSel]) previewNode(panelNbs[nbSel], true);   // live: pan/light the node
 }
 addEventListener('keydown', e => {
   if (document.activeElement === qEl) return;          // search owns keys when focused
@@ -282,6 +298,8 @@ addEventListener('keydown', e => {
   else if (e.key === 'ArrowUp' || e.key === 'k') { nbSel = nbSel < 0 ? 0 : Math.max(nbSel - 1, 0); selNb(); e.preventDefault(); }
   else if (e.key === 'Enter' && nbSel >= 0) { focusNode(panelNbs[nbSel]); e.preventDefault(); }
 });
+
+document.getElementById('panel').addEventListener('mouseleave', restoreFocus);
 
 showOverview();
 if (hasDrill) document.getElementById('hint').textContent = 'click a community to expand · ← to go back · drag/scroll to navigate';
