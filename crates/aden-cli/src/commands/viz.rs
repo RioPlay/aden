@@ -90,6 +90,45 @@ pub fn cmd_viz(
 const MAX_COMMUNITIES: usize = 12;
 const MEMBER_CAP: usize = 12;
 
+/// Produce the JSON slice for `aden view` — reuses the exact same slices + JSON
+/// renderers as `viz`, so the viewer and the text formats can never diverge.
+#[cfg(feature = "view")]
+pub(crate) fn viz_json_for(
+    path: &Path,
+    anchor: Option<&str>,
+    mode: &str,
+    depth: usize,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let root = find_project_root(path);
+    super::ensure_fresh(&root);
+    let graph = aden_graph::cache::build_from_directory_cached(&root)?;
+    match mode {
+        "communities" => {
+            let (comms, edges) = communities_slice(&graph, 2, 1.0, MAX_COMMUNITIES, MEMBER_CAP);
+            if comms.is_empty() {
+                return Err("no communities of size >= 2 found (try `aden communities`)".into());
+            }
+            Ok(render_communities_json(&comms, &edges))
+        }
+        "blast" | "connectivity" => {
+            let anchor = anchor.ok_or_else(|| -> Box<dyn std::error::Error> {
+                format!("--mode {mode} needs an ANCHOR (a symbol or full aden:// anchor)").into()
+            })?;
+            let root_anchor = resolve_anchor(&graph, anchor)?;
+            let (nodes, edges) = if mode == "connectivity" {
+                connectivity_slice(&graph, &root_anchor, depth)
+            } else {
+                blast_slice(&graph, &root_anchor, depth)
+            };
+            Ok(render_json(&root_anchor, &nodes, &edges))
+        }
+        other => Err(format!(
+            "unknown --mode '{other}' (expected blast, connectivity, or communities)"
+        )
+        .into()),
+    }
+}
+
 /// Blast radius: BFS *outgoing* over impact edges from `root_anchor`, depth-capped.
 fn blast_slice(graph: &Graph, root_anchor: &str, depth: usize) -> Slice {
     let impact = impact_edge_types();

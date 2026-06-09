@@ -458,6 +458,42 @@ enum Commands {
         #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
         path: PathBuf,
     },
+    /// Render a graph slice in the browser — interactive + offline (needs the `view` feature).
+    #[cfg(feature = "view")]
+    View {
+        #[arg(
+            value_name = "ANCHOR",
+            help = "Symbol to center on (name or full aden:// anchor; omit for --mode communities)"
+        )]
+        anchor: Option<String>,
+        #[arg(
+            long,
+            value_name = "MODE",
+            default_value = "blast",
+            help = "View: blast (downstream impact) | connectivity (both directions) | communities"
+        )]
+        mode: String,
+        #[arg(
+            long,
+            value_name = "N",
+            default_value = "2",
+            help = "Max hops to include (blast/connectivity)"
+        )]
+        depth: usize,
+        #[arg(long = "3d", help = "Use the 3D \"brain\" force graph (follow-up; 2D for now)")]
+        three_d: bool,
+        #[arg(long = "no-open", help = "Write the HTML but do not open a browser")]
+        no_open: bool,
+        #[arg(
+            long,
+            value_name = "FILE",
+            value_hint = ValueHint::FilePath,
+            help = "Output HTML path (default: a temp file)"
+        )]
+        out: Option<PathBuf>,
+        #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
+        path: PathBuf,
+    },
     /// Map a git diff to the symbols it touches and report the blast radius
     ImpactDiff {
         #[arg(
@@ -1130,6 +1166,24 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
             format,
             path,
         } => commands::cmd_viz(&path, anchor.as_deref(), depth, &format, &mode, cli.json),
+        #[cfg(feature = "view")]
+        Commands::View {
+            anchor,
+            mode,
+            depth,
+            three_d,
+            no_open,
+            out,
+            path,
+        } => commands::cmd_view(
+            &path,
+            anchor.as_deref(),
+            &mode,
+            depth,
+            three_d,
+            !no_open,
+            out.as_deref(),
+        ),
         Commands::Locate {
             symbol,
             caller_of,

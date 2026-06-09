@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>aden · graph</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin: 0; height: 100%; overflow: hidden;
+    background: radial-gradient(1200px 800px at 70% -10%, #141a26 0%, #0b0e14 60%);
+    color: #cdd6f4; font: 13px/1.45 ui-sans-serif, system-ui, -apple-system, sans-serif; }
+  #graph { position: fixed; inset: 0; }
+  #hdr { position: fixed; left: 14px; top: 12px; font-weight: 600; letter-spacing: .04em;
+    color: #b4befe; text-shadow: 0 0 18px rgba(137,180,250,.35); pointer-events: none; }
+  #hdr small { color: #6c7086; font-weight: 400; letter-spacing: 0; }
+  #hint { position: fixed; left: 14px; bottom: 12px; color: #585b70; pointer-events: none; }
+  #panel { position: fixed; top: 0; right: 0; width: 330px; max-height: 100%; overflow: auto;
+    background: rgba(17,21,30,.90); border-left: 1px solid #1f2430; padding: 16px 18px;
+    backdrop-filter: blur(8px); transform: translateX(102%); transition: transform .26s cubic-bezier(.2,.7,.2,1);
+    box-shadow: -20px 0 60px rgba(0,0,0,.35); }
+  #panel.open { transform: none; }
+  #panel h2 { margin: 0 0 10px; font-size: 14px; color: #89b4fa; word-break: break-all; line-height: 1.3; }
+  #panel .k { color: #6c7086; }
+  #panel .row { margin: 5px 0; word-break: break-all; }
+  #panel .sec { margin-top: 12px; color: #9399b2; font-weight: 600; border-top: 1px solid #1f2430; padding-top: 10px; }
+  #panel .nb { color: #a6adc8; }
+</style>
+</head>
+<body>
+<div id="hdr">aden <small>· graph</small></div>
+<div id="graph"></div>
+<div id="panel"><h2 id="p-title"></h2><div id="p-body"></div></div>
+<div id="hint">drag to pan · scroll to zoom · click a node · click background to close</div>
+<script>/*FORCE_GRAPH_LIB*/</script>
+<script>
+const DATA = /*ADEN_DATA*/;
+
+// Adapt aden's JSON (nodes[{id,anchor,label,kind,community,root}], edges[{from,to,type}])
+// to force-graph's {nodes, links}.
+const byId = {};
+const nodes = (DATA.nodes || []).map(n => { const c = { ...n }; byId[n.id] = c; return c; });
+const links = (DATA.edges || []).map(e => ({ source: e.from, target: e.to, type: e.type }));
+
+// Degree → node size (importance reads at a glance).
+const deg = {};
+links.forEach(l => { deg[l.source] = (deg[l.source] || 0) + 1; deg[l.target] = (deg[l.target] || 0) + 1; });
+nodes.forEach(n => n.deg = deg[n.id] || 0);
+
+// Perceptually-spaced community palette; root/non-root fallback for anchor views.
+const palette = ['#89b4fa','#f38ba8','#a6e3a1','#fab387','#cba6f7','#94e2d5',
+                 '#f9e2af','#eba0ac','#74c7ec','#b4befe','#f5c2e7','#a6e3a1'];
+function colorOf(n) {
+  if (n.community != null) return palette[n.community % palette.length];
+  if (n.root) return '#f38ba8';
+  return '#89b4fa';
+}
+const idOf = e => (e && e.id != null) ? e.id : e;
+
+const el = document.getElementById('graph');
+const Graph = ForceGraph()(el)
+  .backgroundColor('rgba(0,0,0,0)')
+  .graphData({ nodes, links })
+  .nodeId('id')
+  .nodeLabel(n => n.anchor || n.label || n.id)
+  .nodeRelSize(4)
+  .nodeVal(n => 1 + n.deg)
+  .nodeColor(colorOf)
+  .nodeCanvasObjectMode(() => 'after')
+  .nodeCanvasObject((n, ctx, scale) => {
+    if (n.deg >= 4 || scale > 2.2) {                 // de-clutter: label only hubs / when zoomed
+      const t = n.label || n.id, fs = 11 / scale;
+      ctx.font = `${fs}px ui-sans-serif, sans-serif`;
+      ctx.fillStyle = 'rgba(205,214,244,.85)';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+      ctx.fillText(t, n.x, n.y + (4 + Math.sqrt(1 + n.deg) * 2) / scale + 1);
+    }
+  })
+  .linkColor(() => 'rgba(120,130,170,.30)')
+  .linkWidth(1)
+  .linkDirectionalArrowLength(3.5)
+  .linkDirectionalArrowRelPos(1)
+  .linkLabel(l => l.type)
+  .linkDirectionalParticles(0)
+  .onNodeHover(n => { el.style.cursor = n ? 'pointer' : 'default'; })
+  .onNodeClick(showPanel)
+  .onBackgroundClick(() => document.getElementById('panel').classList.remove('open'));
+
+function fit() { Graph.width(innerWidth).height(innerHeight); }
+addEventListener('resize', fit); fit();
+setTimeout(() => Graph.zoomToFit(500, 60), 400);
+
+function esc(s) { return String(s).replace(/[&<>]/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;' }[c])); }
+function row(k, v) { return `<div class="row"><span class="k">${k}:</span> ${esc(v)}</div>`; }
+
+function showPanel(n) {
+  const rows = [];
+  if (n.label) rows.push(row('label', n.label));
+  if (n.kind) rows.push(row('kind', n.kind));
+  if (n.community != null) rows.push(row('community', n.community));
+  rows.push(row('degree', n.deg));
+  const nbs = links
+    .filter(l => idOf(l.source) === n.id || idOf(l.target) === n.id)
+    .map(l => {
+      const o = idOf(l.source) === n.id ? idOf(l.target) : idOf(l.source);
+      const dir = idOf(l.source) === n.id ? '→' : '←';
+      return `<div class="row nb">${dir} ${esc((byId[o] || {}).label || o)} <span class="k">${esc(l.type)}</span></div>`;
+    });
+  document.getElementById('p-title').textContent = n.anchor || n.id;
+  document.getElementById('p-body').innerHTML =
+    rows.join('') +
+    `<div class="sec">neighbours (${nbs.length})</div>` +
+    nbs.slice(0, 40).join('');
+  document.getElementById('panel').classList.add('open');
+}
+</script>
+</body>
+</html>

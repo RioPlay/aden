@@ -33,6 +33,13 @@ MIT-licensed BAAI/bge-small-en-v1.5, is **fetched on demand** by the user
 (`scripts/fetch-bge-model.sh`) rather than bundled; it is used under its own MIT
 terms, with the license recorded alongside the downloaded files.
 
+The optional **`view`** feature (browser graph viewer, off by default) embeds one
+vendored frontend asset: **`force-graph`** (vasturiano), **MIT**, pinned at
+v1.51.4 and recorded with a sha256 in
+[`crates/aden-cli/assets/CHECKSUMS`](crates/aden-cli/assets/CHECKSUMS). It is the
+pre-built minified UMD bundle, inlined into the generated HTML so the page is fully
+offline (no CDN, no runtime network). aden's build never runs npm.
+
 ## Bundled reference material
 
 The repository also contains third-party *reference material* used to inform

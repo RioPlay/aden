@@ -18,6 +18,8 @@ pub mod query;
 pub mod session;
 pub mod store;
 pub mod test_cmd;
+#[cfg(feature = "view")]
+pub mod view;
 pub mod viz;
 
 // Re-export all command functions so main.rs can use `commands::cmd_init(...)` etc.
@@ -46,4 +48,6 @@ pub use query::{
 pub use session::{cmd_kickoff, cmd_session, cmd_workflow};
 pub use store::{cmd_store_list, cmd_store_migrate, cmd_store_path, cmd_store_prune};
 pub use test_cmd::cmd_test;
+#[cfg(feature = "view")]
+pub use view::cmd_view;
 pub use viz::cmd_viz;
