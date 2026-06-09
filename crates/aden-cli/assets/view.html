@@ -132,6 +132,8 @@ let depthLimit = null, maxHop = 0;            // live depth: hop distance from t
 // Activity replay: pulse nodes as an agent "touches" them.
 let playing = false, actSeq = [], actIdx = 0, playTimer = null, pulseRAF = null;
 let synapse = false, fireTimer = null;   // synapse mode: neurons fire + signals travel the axons
+let frameOff = 0, fitTick = 0;           // replay: reveal big commits in bounded sub-batches (smooth growth)
+const REVEAL_BUDGET = 22;                // max nodes revealed per tick — decouples pacing from commit lumpiness
 let anchorToId = {};           // map a real activity log's anchors → current node ids
 let growMode = false, stepMs = 600;   // replay grows the graph; nodes revealed as touched
 const pulses = new Map();      // node id → pulse strength (1 → 0, fading glow)
@@ -299,9 +301,14 @@ addEventListener('resize', fit); fit();
 function show(rawNodes, rawEdges) {
   fitPending = true;
   panelStack = []; panelCur = null;
-  stopPlay(); pulses.clear(); actSeq = []; actIdx = 0; growMode = false; revealed.clear();
-  densityFrac = 1; densityVisible = null;
-  const dEl = document.getElementById('density'); if (dEl) dEl.value = 100;
+  stopPlay(); pulses.clear(); actSeq = []; actIdx = 0; frameOff = 0; fitTick = 0; growMode = false; revealed.clear();
+  // Scale the opening level-of-detail to graph size: a large graph opens showing its
+  // most-connected core (so it never lags on load), and the density slider dials the
+  // rest in on demand. Small/rooted views (blast, drill) still show everything.
+  const LOD = 360, nN = (rawNodes || []).length;
+  densityFrac = nN > LOD ? Math.max(0.06, LOD / nN) : 1;
+  densityVisible = null;
+  const dEl = document.getElementById('density'); if (dEl) dEl.value = Math.round(densityFrac * 100);
   document.getElementById('act').style.display = 'none';
   document.getElementById('scrub').value = 0;
   document.getElementById('rcount').textContent = '';
@@ -314,7 +321,7 @@ function show(rawNodes, rawEdges) {
   }
   syncSearch();
   syncFilter();
-  refreshViz();
+  applyDensity();   // honours the opening level-of-detail (calls refreshViz)
 }
 function showOverview() {
   level = 'overview';
@@ -574,12 +581,17 @@ function startPulseAnim() {
 // post-synaptic neighbours fire in turn after the signal arrives — a cascade that
 // dies out probabilistically (so it never runs away). A scheduler keeps seeding new
 // firings so the whole brain stays alive. Purely cosmetic; toggled with the ⚡ button / `b`.
+const SYN_FAN = 4;        // max axons a single firing lights up — a 700-degree hub must
+                          // NOT emit 700 particles in one frame (that was the lag spike)
 function fireNode(n, depth) {
   if (!synapse || !n) return;
   pulses.set(n.id, 1); startPulseAnim();
   const p = depth === 0 ? 0.85 : 0.4;        // signal weakens as it propagates outward
-  (n.adj || []).forEach(l => {
-    if (!(isMeta(l) || activeTypes.has(l.type))) return;   // only fire along visible edges
+  // Only fire along visible edges, and cap fan-out so cost is bounded by SYN_FAN,
+  // not by node degree — this is what makes synapse mode scale to big hubs.
+  let edges = (n.adj || []).filter(l => (isMeta(l) || activeTypes.has(l.type)) && idVisible(idOf(l.source)) && idVisible(idOf(l.target)));
+  if (edges.length > SYN_FAN) edges = sample(edges, SYN_FAN);
+  edges.forEach(l => {
     if (Math.random() > p) return;
     try { Graph.emitParticle(l); } catch (e) {}            // the action potential, travelling
     if (depth >= 4) return;                                 // hard cap on cascade depth
@@ -587,6 +599,15 @@ function fireNode(n, depth) {
     const nb = byId[otherId];
     if (nb && idVisible(nb.id)) setTimeout(() => fireNode(nb, depth + 1), 360 + Math.random() * 280);
   });
+}
+// Pick k distinct random items (partial Fisher–Yates) — used to cap synapse fan-out.
+function sample(arr, k) {
+  const a = arr.slice();
+  for (let i = 0; i < k && i < a.length; i++) {
+    const j = i + Math.floor(Math.random() * (a.length - i));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a.slice(0, k);
 }
 function seedFire() {
   if (!synapse) return;
@@ -617,7 +638,7 @@ function toggleSynapse() {
 function isMeta(l) { return l.member || /\bedges$/.test(l.type || ''); }
 function idVisible(id) {
   const n = byId[id];
-  if (growMode && !revealed.has(id)) return false;
+  if (growMode) return revealed.has(id);   // replay: reveal order is the only gate (density/depth don't apply)
   if (densityVisible && !densityVisible.has(id)) return false;
   if (depthLimit != null && n && n.hop != null && n.hop > depthLimit) return false;
   return true;
@@ -649,31 +670,37 @@ function readout(f) {
   document.getElementById('rcount').textContent = revealed.size + ' / ' + Object.keys(byId).length + ' items';
   document.getElementById('scrub').value = actIdx;
 }
-function applyFrame(f) {            // reveal + pulse the frame's nodes, highlight them
+function revealBatch(ids, f) {     // reveal + pulse a BOUNDED set of nodes, highlight them
   highlightNodes.clear(); highlightLinks.clear();
-  f.ids.forEach(id => {
+  ids.forEach(id => {
     revealed.add(id); pulses.set(id, 1);
     const n = byId[id]; if (n) { highlightNodes.add(n); (n.neighbors || []).forEach(x => highlightNodes.add(x)); (n.adj || []).forEach(l => highlightLinks.add(l)); }
   });
   startPulseAnim();
-  const first = byId[f.ids[0]];
+  const first = byId[ids[0]];
   if (first) hoverNode = first;
-  // Dynamic zoom: frame everything revealed so far, so the camera follows the
-  // build outward as time moves (instead of jumping to a single node).
-  Graph.zoomToFit(Math.min(stepMs * 0.9, 700), 55, n => revealed.has(n.id));
+  // Dynamic zoom follows the build outward — but refitting every tick is costly, so
+  // throttle to every 3rd batch (the camera still tracks growth, far cheaper).
+  if ((fitTick++ % 3) === 0) Graph.zoomToFit(Math.min(stepMs * 0.9, 600), 55, n => revealed.has(n.id));
 }
 function step() {
   if (!playing) return;
   if (actIdx >= actSeq.length) { Object.keys(byId).forEach(id => revealed.add(id)); refreshViz(); stopPlay(); return; }
-  const f = actSeq[actIdx++];
-  applyFrame(f); refreshViz(); readout(f);
+  const f = actSeq[actIdx];
+  // Reveal at most REVEAL_BUDGET of this commit's nodes per tick; a 200-node commit
+  // grows smoothly over several ticks instead of a single lurch + lag spike.
+  const batch = f.ids.slice(frameOff, frameOff + REVEAL_BUDGET);
+  revealBatch(batch, f);
+  frameOff += batch.length;
+  if (frameOff >= f.ids.length) { actIdx++; frameOff = 0; }   // commit drained → advance
+  refreshViz(); readout(f);
   playTimer = setTimeout(step, stepMs);
 }
 function startPlay() {
   if (playing) return;
   if (!actSeq.length) actSeq = buildActivitySeq();
   if (!actSeq.length) return;
-  if (actIdx >= actSeq.length) { revealed.clear(); actIdx = 0; }   // restart if finished
+  if (actIdx >= actSeq.length) { revealed.clear(); actIdx = 0; frameOff = 0; }   // restart if finished
   growMode = true; playing = true;
   document.getElementById('scrub').max = actSeq.length;
   document.getElementById('play').textContent = '⏸ pause';
@@ -690,7 +717,7 @@ function scrubTo(v) {                                              // seek: rebu
   stopPlay();
   if (!actSeq.length) actSeq = buildActivitySeq();
   if (!actSeq.length) return;
-  growMode = true; actIdx = Math.max(0, Math.min(v, actSeq.length));
+  growMode = true; actIdx = Math.max(0, Math.min(v, actSeq.length)); frameOff = 0;
   revealed.clear();
   for (let i = 0; i < actIdx; i++) actSeq[i].ids.forEach(id => revealed.add(id));
   refreshViz(); readout(actSeq[Math.max(0, actIdx - 1)]);
