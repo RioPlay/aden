@@ -41,10 +41,12 @@ pub fn cmd_view(
         );
     }
 
-    // A bare `aden view` (no anchor, default mode) opens the whole-project sphere
-    // overview rather than erroring for a missing anchor.
+    // A bare `aden view` (no anchor, default mode) opens the whole-graph view — the full
+    // importance-ranked graph, which also carries the git-history activity log so replay
+    // walks the entire project populating piece by piece. (Was the communities overview;
+    // the whole-graph view is the richer canonical surface.)
     let mode = if !replay && anchor.is_none() && mode == "blast" {
-        "communities"
+        "graph"
     } else {
         mode
     };
@@ -72,7 +74,28 @@ pub fn cmd_view(
             Err(_) => base,
         }
     } else {
-        super::viz::viz_json_for(path, anchor, mode, depth)?
+        let base = super::viz::viz_json_for(path, anchor, mode, depth)?;
+        // The whole-graph view is also the canonical *replay* surface: attach the full
+        // git-history activity log so the viewer can play the entire project populating,
+        // piece by piece, across every commit — over the real 800-node graph rather than
+        // a synthetic walk. (Touched anchors not in the importance cap simply don't light;
+        // the lens reveals the kept graph in commit order.)
+        if mode == "graph" {
+            let root = crate::util::find_project_root(path);
+            let activity = git_activity(&root, max);
+            if !activity.is_empty() {
+                if let Ok(mut v) = serde_json::from_str::<serde_json::Value>(&base) {
+                    v["activity"] = serde_json::Value::Array(activity);
+                    serde_json::to_string_pretty(&v).unwrap_or(base)
+                } else {
+                    base
+                }
+            } else {
+                base
+            }
+        } else {
+            base
+        }
     };
     let html = VIEW_HTML
         .replace("/*FORCE_GRAPH_LIB*/", FORCE_GRAPH_JS)

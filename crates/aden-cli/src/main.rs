@@ -496,8 +496,8 @@ enum Commands {
         #[arg(
             long,
             value_name = "N",
-            default_value = "80",
-            help = "Replay: max commits to include (oldest→newest)"
+            default_value = "0",
+            help = "Replay: max commits to include, oldest→newest (0 = entire history)"
         )]
         max: usize,
         #[arg(

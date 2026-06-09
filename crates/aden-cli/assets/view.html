@@ -557,7 +557,7 @@ function buildActivitySeq() {
   if (!all.length) return [];
   let cur = all.find(n => n.root) || all.slice().sort((a, b) => b.deg - a.deg)[0];
   const seq = [], visited = new Set(), kinds = ['read', 'query', 'edit', 'read'];
-  for (let i = 0; i < Math.min(all.length, 80) && cur; i++) {
+  for (let i = 0; i < Math.min(all.length, 400) && cur; i++) {
     seq.push({ label: kinds[i % 4] + ' · ' + shortName(cur), ids: [cur.id] });
     visited.add(cur.id);
     const nbrs = cur.neighbors || [], fresh = nbrs.filter(x => !visited.has(x.id));
