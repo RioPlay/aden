@@ -24,6 +24,12 @@ node_modules/
 dist/
 build/
 
+# Vendored / minified frontend assets — third-party bundles, not aden source.
+# Indexing a minified bundle floods the graph with meaningless single-letter
+# symbols (e.g. force-graph.min.js#A) that bucket into a giant `unknown` hub.
+*.min.js
+*.min.css
+
 # Eval fixtures — sample docs for the retrieval eval harness, not aden's own
 # source/docs; keep them out of aden's self-graph and contract checks.
 crates/aden-index/tests/corpus/
