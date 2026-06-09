@@ -45,6 +45,13 @@ enum WorkItem {
         source_mtime: u64,
         source_path: String,
         symbols: Vec<EmittedSymbol>,
+        /// Slimmed documents to write to the store. Carried out of the parallel
+        /// pass so the actual `put_document` happens *sequentially in sorted
+        /// source order* in Phase 2 — otherwise two files sharing a basename
+        /// anchor (e.g. `openapi2/helpers.go` + `openapi3/helpers.go` →
+        /// `helpers.go#copyURI`) race, and the collision winner (hence the index)
+        /// is non-deterministic. Empty on a `--propose` dry-run.
+        docs: Vec<aden_core::Document>,
         /// Anchors whose freshly-generated content collided with durable
         /// `[human]`/`[agent]` overlay intent. Surfaced as proposals; the
         /// stored document is left untouched for these.
@@ -819,7 +826,7 @@ fn cmd_gen_inner(
         let overlay_slugs = crate::commands::overlay::overlay_slugs(&root);
 
         // Phase 1: Parallel file processing — read, parse, write to store
-        let work_items: Vec<_> = sources
+        let mut work_items: Vec<_> = sources
             .par_iter()
             .filter_map(|src_path| {
                 let src_mtime = src_path
@@ -892,9 +899,12 @@ fn cmd_gen_inner(
                     }
                 };
 
-                // Write each document to store
+                // Parse documents; the actual store write is deferred to Phase 2
+                // (sequential, sorted) so basename-anchor collisions resolve
+                // deterministically instead of racing across worker threads.
                 let mut emitted = Vec::new();
                 let mut conflicts: Vec<(String, aden_core::contract::MergeProposal)> = Vec::new();
+                let mut docs_local: Vec<aden_core::Document> = Vec::new();
                 for doc in docs {
                     let mut doc_clone = doc.clone();
                     sanitize_source_file(&mut doc_clone, &root);
@@ -940,25 +950,17 @@ fn cmd_gen_inner(
                         }
                     }
 
-                    let mut wrote = false;
-                    if write {
-                        if let Err(e) = storage.put_document(&doc_clone) {
-                            eprintln!("WARN: Failed to store {}: {}", doc_clone.anchor, e);
-                            continue;
-                        }
-                        wrote = true;
-                        if !quiet {
-                            progress!(quiet, "Stored {}", doc_clone.anchor);
-                        }
-                    }
-
                     emitted.push(EmittedSymbol {
                         anchor: doc_clone.anchor.clone(),
                         callees,
                         uses,
                         refs,
-                        wrote,
+                        wrote: write,
                     });
+                    // Defer the write — Phase 2 stores these in sorted source order.
+                    if write {
+                        docs_local.push(doc_clone);
+                    }
                 }
 
                 // Always report a reindexed file — even with zero symbols — so
@@ -968,6 +970,7 @@ fn cmd_gen_inner(
                     source_mtime: mtime_secs,
                     source_path: src_path.to_string_lossy().to_string(),
                     symbols: emitted,
+                    docs: docs_local,
                     conflicts,
                 })
             })
@@ -982,6 +985,17 @@ fn cmd_gen_inner(
         let mut stale_anchors: Vec<String> = Vec::new();
         // Merge conflicts surfaced by the reconcile gate, written as proposals.
         let mut merge_conflicts: Vec<(String, aden_core::contract::MergeProposal)> = Vec::new();
+        // Deterministic store writes: order work by source path so that when two
+        // files share a basename anchor, the collision winner is the same every run
+        // (last sorted source wins) — making the store, and the index built from it,
+        // reproducible. The parallel pass deferred every `put_document` to here.
+        fn work_key(w: &WorkItem) -> &str {
+            match w {
+                WorkItem::Reindexed { source_path, .. } => source_path.as_str(),
+                WorkItem::Skip => "",
+            }
+        }
+        work_items.sort_by(|a, b| work_key(a).cmp(work_key(b)));
         for item in work_items {
             match item {
                 WorkItem::Skip => skipped += 1,
@@ -990,8 +1004,14 @@ fn cmd_gen_inner(
                     source_mtime,
                     source_path,
                     symbols,
+                    docs,
                     conflicts,
                 } => {
+                    for d in &docs {
+                        if let Err(e) = storage.put_document(d) {
+                            eprintln!("WARN: Failed to store {}: {}", d.anchor, e);
+                        }
+                    }
                     merge_conflicts.extend(conflicts);
                     let fresh: Vec<String> = symbols.iter().map(|s| s.anchor.clone()).collect();
                     // Diff against what this file contributed last time: any
