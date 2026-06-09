@@ -107,9 +107,9 @@
 <div id="graph"></div>
 <div id="act"></div>
 <div id="replaybar">
-  <span id="play" onclick="togglePlay()">▶ replay</span>
-  <input id="scrub" type="range" min="0" max="0" value="0" oninput="scrubTo(+this.value)" title="scrub history">
-  <input id="speed" type="range" min="1" max="12" value="6" oninput="setSpeed(+this.value)" title="replay speed">
+  <span id="play" onclick="togglePlay()">▶ replay history</span>
+  <input id="scrub" type="range" min="0" max="0" value="0" oninput="scrubTo(+this.value)" title="scrub history" style="display:none">
+  <input id="speed" type="range" min="1" max="12" value="6" oninput="setSpeed(+this.value)" title="replay speed" style="display:none">
   <span id="rcount"></span>
 </div>
 <div id="filter"></div>
@@ -310,6 +310,9 @@ function show(rawNodes, rawEdges) {
   densityVisible = null;
   const dEl = document.getElementById('density'); if (dEl) dEl.value = Math.round(densityFrac * 100);
   document.getElementById('act').style.display = 'none';
+  // Default to the clean "current day" graph: timeline controls hidden until ▶ replay.
+  document.getElementById('scrub').style.display = 'none';
+  document.getElementById('speed').style.display = 'none';
   document.getElementById('scrub').value = 0;
   document.getElementById('rcount').textContent = '';
   Graph.graphData(buildData(rawNodes, rawEdges));
@@ -702,6 +705,10 @@ function startPlay() {
   if (!actSeq.length) return;
   if (actIdx >= actSeq.length) { revealed.clear(); actIdx = 0; frameOff = 0; }   // restart if finished
   growMode = true; playing = true;
+  // Entering replay view: reveal the timeline controls (hidden in the default
+  // "current day" graph so it reads as the present state, not a timeline tool).
+  document.getElementById('scrub').style.display = '';
+  document.getElementById('speed').style.display = '';
   document.getElementById('scrub').max = actSeq.length;
   document.getElementById('play').textContent = '⏸ pause';
   refreshViz();
@@ -709,7 +716,7 @@ function startPlay() {
 }
 function stopPlay() {
   playing = false; clearTimeout(playTimer);
-  document.getElementById('play').textContent = '▶ replay';
+  document.getElementById('play').textContent = '▶ replay history';
 }
 function togglePlay() { playing ? stopPlay() : startPlay(); }
 function setSpeed(v) { stepMs = Math.round(1500 / v); }            // 1..12 → ~1500..125 ms
