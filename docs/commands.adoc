@@ -584,7 +584,7 @@ The first argument is a symbol — a bare name like `cmd_understand` or a full
 |===
 |Flag |Description |Default
 
-|--mode |View: `blast` (downstream impact), `connectivity` (both directions), or `communities` (clusters) |blast
+|--mode |View: `blast` (downstream impact), `connectivity` (both directions), `communities` (clusters), or `graph` (whole-graph view model, JSON-only) |blast
 |--depth |Max hops to include (blast/connectivity) |2
 |--format |Output: `mermaid`, `dot`, `asciidoc`, or `json` |mermaid
 |-j/--json |Alias for `--format json` |false
@@ -594,6 +594,13 @@ Blast-radius uses the same impact-edge set as the `impact-diff` command; the
 `communities` view reuses `aden communities` and renders DOT `cluster_*` boxes (the
 layout best suited to grouping). The `asciidoc` format wraps the Mermaid source in a
 `[mermaid]` block so it renders inline in an AsciiDoc site.
+
+`--mode graph` (JSON-only) emits the *whole-graph view model* — every node with its
+full attributes `{anchor, label, group, community, kind, degree, file, line}` and every
+typed edge among the kept nodes (including the code↔prose `Documents`/`PartOf` edges).
+Nodes are ranked by total degree (importance) and capped (default 800) so large
+projects stay manageable; `total_nodes`/`shown_nodes` report the cap. This is the single
+payload the interactive viewer slices client-side for its lenses.
 
 === view
 

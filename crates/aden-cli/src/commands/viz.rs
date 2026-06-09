@@ -97,6 +97,18 @@ pub fn cmd_viz(
                 render_communities(&comms, &edges, format)?
             }
         }
+        // Whole-graph view model — the comprehensive payload the interactive viewer's
+        // lenses slice. JSON-only: a mermaid/dot of the entire project is unreadable.
+        "graph" => {
+            if format != "json" {
+                return Err(
+                    "--mode graph is JSON-only (the whole-graph view model for `aden view`); \
+                     pass `-j`/`--format json`."
+                        .into(),
+                );
+            }
+            render_whole_graph_json(&graph, &root, GRAPH_CAP)
+        }
         // Anchor-centred views.
         "blast" | "connectivity" => {
             let anchor = anchor.ok_or_else(|| -> Box<dyn std::error::Error> {
@@ -116,7 +128,7 @@ pub fn cmd_viz(
         }
         other => {
             return Err(format!(
-                "unknown --mode '{other}' (expected 'blast', 'connectivity', or 'communities')"
+                "unknown --mode '{other}' (expected 'blast', 'connectivity', 'communities', or 'graph')"
             )
             .into());
         }
@@ -149,6 +161,7 @@ pub(crate) fn viz_json_for(
     super::ensure_fresh(&root);
     let graph = aden_graph::cache::build_from_directory_cached(&root)?;
     match mode {
+        "graph" => Ok(render_whole_graph_json(&graph, &root, GRAPH_CAP)),
         "communities" => render_communities_view_json(&graph, &root, 2, 1.0, MAX_COMMUNITIES, DRILL_CAP),
         "blast" | "connectivity" => {
             let anchor = anchor.ok_or_else(|| -> Box<dyn std::error::Error> {
@@ -164,7 +177,7 @@ pub(crate) fn viz_json_for(
             Ok(render_json(&root_anchor, &nodes, &edges, &src))
         }
         other => Err(format!(
-            "unknown --mode '{other}' (expected blast, connectivity, or communities)"
+            "unknown --mode '{other}' (expected blast, connectivity, communities, or graph)"
         )
         .into()),
     }
@@ -228,6 +241,124 @@ pub(crate) fn anchors_json(
     }
     let src = build_src_map(&root);
     Ok(render_json("", &nodes, &edges, &src))
+}
+
+/// Default cap on the whole-graph export — keep the most *important* (highest total
+/// degree) nodes so a large project stays renderable in the browser. `--full` (cap 0)
+/// emits everything. Generous: the viewer lenses slice this down client-side.
+const GRAPH_CAP: usize = 800;
+
+/// Whole-graph JSON — the single comprehensive payload the interactive viewer's
+/// client-side *lenses* (overview / neighborhood / impact / replay) slice, so a view
+/// switch or re-root never re-calls aden. Every node carries the full "view model":
+/// `{id, anchor, label, group, community, kind, degree, file, line}`; every typed edge
+/// among the kept nodes is emitted in its true orientation. Nodes are ranked by total
+/// degree (importance) and capped at `cap` (0 = full) so big projects stay renderable.
+///
+/// This is the export the architecture note (research: viewer-unified-explorer) calls
+/// for: aden computes the rich, whole-graph, code+prose view model *once* and any
+/// consumer (viewer, agent, CI gate) lenses it, instead of each re-deriving it.
+fn render_whole_graph_json(graph: &Graph, root: &Path, cap: usize) -> String {
+    // Total (in+out) degree per node — the importance signal the cap ranks on, and a
+    // first-class field every consumer wants (centrality without a re-derivation).
+    let mut degree: BTreeMap<String, usize> = BTreeMap::new();
+    for idx in graph.graph.node_indices() {
+        let a = graph.graph[idx].doc.anchor.clone();
+        let out = graph.graph.neighbors_directed(idx, Direction::Outgoing).count();
+        let inc = graph.graph.neighbors_directed(idx, Direction::Incoming).count();
+        degree.insert(a, out + inc);
+    }
+
+    // Community of every member + a human label per community (the most common group).
+    let comms = aden_graph::community::detect_communities(graph, 1.0);
+    let mut comm_of: BTreeMap<String, usize> = BTreeMap::new();
+    let mut comm_meta: Vec<serde_json::Value> = Vec::new();
+    for (i, members) in comms.iter().enumerate() {
+        for m in members {
+            comm_of.insert(m.clone(), i);
+        }
+        if members.len() >= 2 {
+            comm_meta.push(serde_json::json!({
+                "id": i, "label": community_label(members), "size": members.len(),
+            }));
+        }
+    }
+
+    // Rank all nodes by degree (desc), tiebreak anchor (asc, deterministic), cap.
+    let mut ranked: Vec<String> = degree.keys().cloned().collect();
+    ranked.sort_by(|a, b| {
+        degree.get(b).unwrap_or(&0).cmp(degree.get(a).unwrap_or(&0)).then_with(|| a.cmp(b))
+    });
+    let total = ranked.len();
+    if cap > 0 && ranked.len() > cap {
+        ranked.truncate(cap);
+    }
+    let kept: BTreeSet<String> = ranked.into_iter().collect();
+    let ids: BTreeMap<&str, String> = kept
+        .iter()
+        .enumerate()
+        .map(|(i, a)| (a.as_str(), format!("n{i}")))
+        .collect();
+
+    let src = build_src_map(root);
+    let nodes_json: Vec<serde_json::Value> = kept
+        .iter()
+        .map(|a| {
+            let idx = graph.get_index(a);
+            let kind = idx
+                .map(|i| format!("{:?}", graph.graph[i].doc.node_type))
+                .unwrap_or_else(|| "Note".to_string());
+            let mut obj = serde_json::json!({
+                "id": ids[a.as_str()],
+                "anchor": a,
+                "label": label(a),
+                "group": group_of(a),
+                "kind": kind,
+                "degree": degree.get(a).copied().unwrap_or(0),
+            });
+            if let Some(&c) = comm_of.get(a) {
+                obj["community"] = serde_json::json!(c);
+            }
+            if let Some((file, line)) = src.get(a) {
+                obj["file"] = serde_json::json!(file);
+                obj["line"] = serde_json::json!(line);
+            }
+            obj
+        })
+        .collect();
+
+    // Every typed edge among kept nodes, oriented source→target.
+    let mut edge_set: BTreeSet<(String, String, String)> = BTreeSet::new();
+    for a in &kept {
+        let Some(idx) = graph.get_index(a) else { continue };
+        for nb in graph.graph.neighbors_directed(idx, Direction::Outgoing) {
+            let to = graph.graph[nb].doc.anchor.clone();
+            if !kept.contains(&to) {
+                continue;
+            }
+            if let Some(e) = graph.graph.edges_connecting(idx, nb).next() {
+                edge_set.insert((
+                    ids[a.as_str()].clone(),
+                    ids[to.as_str()].clone(),
+                    format!("{:?}", e.weight().edge_type),
+                ));
+            }
+        }
+    }
+    let edges_json: Vec<serde_json::Value> = edge_set
+        .iter()
+        .map(|(f, t, ty)| serde_json::json!({ "from": f, "to": t, "type": ty }))
+        .collect();
+
+    serde_json::to_string_pretty(&serde_json::json!({
+        "mode": "graph",
+        "nodes": nodes_json,
+        "edges": edges_json,
+        "communities": comm_meta,
+        "total_nodes": total,
+        "shown_nodes": kept.len(),
+    }))
+    .unwrap_or_else(|_| "{}".to_string())
 }
 
 /// Blast radius: BFS *outgoing* over impact edges from `root_anchor`, depth-capped
