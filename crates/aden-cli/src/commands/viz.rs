@@ -677,17 +677,24 @@ fn group_of(anchor: &str) -> &str {
         .unwrap_or("?")
 }
 
-/// A human label for a community: the most common group among its members.
+/// A human label for a community: the dominant subsystem among its members — but
+/// "mixed" when no subsystem holds a majority. A low-purity community is a Louvain
+/// "misc" merge of small peripheral modules (e.g. aden-mcp + aden-lsp + benches with
+/// no edges between them); labelling it with one crate name is misleading, so be honest.
 fn community_label(members: &[String]) -> String {
     let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
     for m in members {
         *counts.entry(group_of(m)).or_default() += 1;
     }
-    counts
-        .into_iter()
-        .max_by_key(|(_, n)| *n)
-        .map(|(g, _)| g.to_string())
-        .unwrap_or_else(|| "mixed".to_string())
+    // Deterministic: ties resolve to the alphabetically-first group (BTreeMap order).
+    let Some((top, n)) = counts.into_iter().max_by(|a, b| a.1.cmp(&b.1).then(b.0.cmp(a.0)))
+    else {
+        return "mixed".to_string();
+    };
+    if (n as f64) < 0.6 * members.len() as f64 {
+        return "mixed".to_string();
+    }
+    top.to_string()
 }
 
 /// Dispatch a flat (blast/connectivity) slice to the requested format.
@@ -1113,7 +1120,15 @@ mod tests {
             "aden://module/aden-cli/b#y".to_string(),
             "aden://module/aden-core/c#z".to_string(),
         ];
+        // aden-cli is 2/3 (≥60%) → dominant.
         assert_eq!(community_label(&members), "aden-cli");
+        // No subsystem holds a majority → honest "mixed" (the low-purity-merge case).
+        let mixed = vec![
+            "aden://module/aden-mcp/a#x".to_string(),
+            "aden://module/aden-lsp/b#y".to_string(),
+            "aden://module/benches/c#z".to_string(),
+        ];
+        assert_eq!(community_label(&mixed), "mixed");
     }
 
     #[test]
