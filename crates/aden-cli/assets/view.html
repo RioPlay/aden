@@ -14,6 +14,9 @@
     color: #b4befe; text-shadow: 0 0 18px rgba(137,180,250,.35); pointer-events: none; }
   #hdr small { color: #6c7086; font-weight: 400; letter-spacing: 0; }
   #hint { position: fixed; left: 14px; bottom: 12px; color: #585b70; pointer-events: none; }
+  #back { position: fixed; left: 14px; top: 34px; display: none; cursor: pointer; color: #89b4fa;
+    background: rgba(17,21,30,.7); border: 1px solid #313244; border-radius: 6px; padding: 3px 10px; }
+  #back:hover { background: rgba(137,180,250,.14); }
   #panel { position: fixed; top: 0; right: 0; width: 330px; max-height: 100%; overflow: auto;
     background: rgba(17,21,30,.90); border-left: 1px solid #1f2430; padding: 16px 18px;
     backdrop-filter: blur(8px); transform: translateX(102%); transition: transform .26s cubic-bezier(.2,.7,.2,1);
@@ -33,23 +36,15 @@
 </head>
 <body>
 <div id="hdr">aden <small>· graph</small></div>
+<div id="back" onclick="showOverview()">← communities</div>
 <div id="graph"></div>
 <div id="panel"><h2 id="p-title"></h2><div id="p-body"></div></div>
 <div id="hint">drag to pan · scroll to zoom · click a node · click background to close</div>
 <script>/*FORCE_GRAPH_LIB*/</script>
 <script>
 const DATA = /*ADEN_DATA*/;
-
-// Adapt aden's JSON (nodes[{id,anchor,label,kind,community,root}], edges[{from,to,type}])
-// to force-graph's {nodes, links}.
-const byId = {};
-const nodes = (DATA.nodes || []).map(n => { const c = { ...n }; byId[n.id] = c; return c; });
-const links = (DATA.edges || []).map(e => ({ source: e.from, target: e.to, type: e.type }));
-
-// Degree → node size (importance reads at a glance).
-const deg = {};
-links.forEach(l => { deg[l.source] = (deg[l.source] || 0) + 1; deg[l.target] = (deg[l.target] || 0) + 1; });
-nodes.forEach(n => n.deg = deg[n.id] || 0);
+const hasDrill = !!(DATA.drill && Object.keys(DATA.drill).length);
+let byId = {}, curLinks = [], level = 'overview';
 
 // Perceptually-spaced community palette; root/non-root fallback for anchor views.
 const palette = ['#89b4fa','#f38ba8','#a6e3a1','#fab387','#cba6f7','#94e2d5',
@@ -60,11 +55,28 @@ function colorOf(n) {
   return '#89b4fa';
 }
 const idOf = e => (e && e.id != null) ? e.id : e;
+function esc(s) { return String(s).replace(/[&<>]/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;' }[c])); }
+function row(k, v) { return `<div class="row"><span class="k">${k}:</span> ${esc(v)}</div>`; }
+// The "actual call" / original function name — the symbol, truncated from its anchor.
+function shortName(n) { const a = n.label || n.anchor || n.id || ''; return String(a).split('#').pop().split('/').pop(); }
+// File/group context (everything before the symbol) for the tooltip subtitle.
+function context(n) { if (n.size != null) return n.size + ' symbols'; const a = n.anchor || ''; const h = a.indexOf('#'); return (h >= 0 ? a.slice(0, h) : '').split('/').pop(); }
+
+// Adapt aden's {nodes, edges} to force-graph {nodes, links} + per-view degree/index.
+function buildData(rawNodes, rawEdges) {
+  byId = {};
+  const nodes = (rawNodes || []).map(n => { const c = { ...n }; byId[n.id] = c; return c; });
+  const links = (rawEdges || []).map(e => ({ source: e.from, target: e.to, type: e.type }));
+  const deg = {};
+  links.forEach(l => { deg[l.source] = (deg[l.source] || 0) + 1; deg[l.target] = (deg[l.target] || 0) + 1; });
+  nodes.forEach(n => n.deg = deg[n.id] || 0);
+  curLinks = links;
+  return { nodes, links };
+}
 
 const el = document.getElementById('graph');
 const Graph = ForceGraph()(el)
   .backgroundColor('rgba(0,0,0,0)')
-  .graphData({ nodes, links })
   .nodeId('id')
   .nodeLabel(n => `<b>${esc(shortName(n))}</b>${context(n) ? ` <span style="color:#6c7086">${esc(context(n))}</span>` : ''}`)
   .nodeRelSize(3)
@@ -75,24 +87,42 @@ const Graph = ForceGraph()(el)
   .linkDirectionalArrowLength(3.5)
   .linkDirectionalArrowRelPos(1)
   .linkLabel(l => l.type)
-  .linkDirectionalParticles(0)
   .onNodeHover(n => { el.style.cursor = n ? 'pointer' : 'default'; })
-  .onNodeClick(showPanel)
+  .onNodeClick(onClick)
   .onBackgroundClick(() => document.getElementById('panel').classList.remove('open'));
 
-function fit() { Graph.width(innerWidth).height(innerHeight); }
-addEventListener('resize', fit); fit();
-// Spread nodes apart so they don't blob together.
 Graph.d3Force('charge').strength(-140);
 const _lf = Graph.d3Force('link'); if (_lf) _lf.distance(38);
-setTimeout(() => Graph.zoomToFit(600, 70), 500);
+function fit() { Graph.width(innerWidth).height(innerHeight); }
+addEventListener('resize', fit); fit();
 
-function esc(s) { return String(s).replace(/[&<>]/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;' }[c])); }
-function row(k, v) { return `<div class="row"><span class="k">${k}:</span> ${esc(v)}</div>`; }
-// The "actual call" / original function name — the symbol, truncated from its anchor.
-function shortName(n) { const a = n.label || n.anchor || n.id || ''; return String(a).split('#').pop().split('/').pop(); }
-// File/group context (everything before the symbol) for the tooltip subtitle.
-function context(n) { if (n.size != null) return n.size + ' symbols'; const a = n.anchor || ''; const h = a.indexOf('#'); return (h >= 0 ? a.slice(0, h) : '').split('/').pop(); }
+function show(rawNodes, rawEdges) {
+  Graph.graphData(buildData(rawNodes, rawEdges));
+  setTimeout(() => Graph.zoomToFit(600, 70), 450);
+}
+function showOverview() {
+  level = 'overview';
+  document.getElementById('back').style.display = 'none';
+  document.getElementById('panel').classList.remove('open');
+  show(DATA.nodes, DATA.edges);
+}
+function showCommunity(cid, lbl) {
+  const d = DATA.drill[cid];
+  if (!d) return;
+  level = 'community';
+  const b = document.getElementById('back');
+  b.textContent = '← ' + (lbl || 'communities'); b.style.display = 'block';
+  document.getElementById('panel').classList.remove('open');
+  show(d.nodes, d.edges);
+}
+function onClick(n) {
+  // In the communities overview, a click drills into that community's members.
+  if (hasDrill && level === 'overview' && DATA.drill['c' + n.community]) {
+    showCommunity('c' + n.community, shortName(n));
+    return;
+  }
+  showPanel(n);
+}
 
 function showPanel(n) {
   const rows = [];
@@ -100,7 +130,7 @@ function showPanel(n) {
   if (n.kind) rows.push(row('kind', n.kind));
   if (n.community != null) rows.push(row('community', n.community));
   rows.push(row('degree', n.deg));
-  const nbs = links
+  const nbs = curLinks
     .filter(l => idOf(l.source) === n.id || idOf(l.target) === n.id)
     .map(l => {
       const o = idOf(l.source) === n.id ? idOf(l.target) : idOf(l.source);
@@ -115,6 +145,9 @@ function showPanel(n) {
     nbs.slice(0, 40).join('');
   document.getElementById('panel').classList.add('open');
 }
+
+showOverview();
+if (hasDrill) document.getElementById('hint').textContent = 'click a community to expand · ← to go back · drag/scroll to navigate';
 </script>
 </body>
 </html>

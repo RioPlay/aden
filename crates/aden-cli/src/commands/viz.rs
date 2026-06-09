@@ -55,11 +55,7 @@ pub fn cmd_viz(
             // JSON / viewer uses the collapsed super-node overview (connected and
             // legible); the static formats keep member cluster-boxes.
             if format == "json" {
-                let (supers, weights) = communities_overview(&graph, 2, 1.0, MAX_COMMUNITIES);
-                if supers.is_empty() {
-                    return Err("no communities of size >= 2 found (try `aden communities`)".into());
-                }
-                render_communities_overview_json(&supers, &weights)
+                render_communities_view_json(&graph, 2, 1.0, MAX_COMMUNITIES, DRILL_CAP)?
             } else {
                 let (comms, edges) = communities_slice(&graph, 2, 1.0, MAX_COMMUNITIES, MEMBER_CAP);
                 if comms.is_empty() {
@@ -102,6 +98,9 @@ const MEMBER_CAP: usize = 12;
 /// Cap on nodes in a blast/connectivity slice — reduce *before* emit so the view
 /// stays legible (hubs at depth 2 can otherwise pull in hundreds of nodes).
 const NODE_CAP: usize = 60;
+/// Members shown when drilling into a community (the connected core, ranked by
+/// intra-community degree).
+const DRILL_CAP: usize = 30;
 
 /// Produce the JSON slice for `aden view` — reuses the exact same slices + JSON
 /// renderers as `viz`, so the viewer and the text formats can never diverge.
@@ -116,13 +115,7 @@ pub(crate) fn viz_json_for(
     super::ensure_fresh(&root);
     let graph = aden_graph::cache::build_from_directory_cached(&root)?;
     match mode {
-        "communities" => {
-            let (supers, weights) = communities_overview(&graph, 2, 1.0, MAX_COMMUNITIES);
-            if supers.is_empty() {
-                return Err("no communities of size >= 2 found (try `aden communities`)".into());
-            }
-            Ok(render_communities_overview_json(&supers, &weights))
-        }
+        "communities" => render_communities_view_json(&graph, 2, 1.0, MAX_COMMUNITIES, DRILL_CAP),
         "blast" | "connectivity" => {
             let anchor = anchor.ok_or_else(|| -> Box<dyn std::error::Error> {
                 format!("--mode {mode} needs an ANCHOR (a symbol or full aden:// anchor)").into()
@@ -295,69 +288,149 @@ fn communities_slice(
     (comms, edges)
 }
 
-/// A collapsed *overview* of the community structure: one super-node per community
-/// (sized by membership) + aggregated inter-community edge weights. Far more legible
-/// in a force layout than capped individual members (which float as disconnected
-/// dots), so it is what the JSON / `aden view` communities view renders.
-fn communities_overview(
+/// Hierarchical JSON for the communities view: a super-node *overview* (one node per
+/// community, sized by membership, + aggregated inter-community edges) PLUS a
+/// per-community *drill* subgraph (capped members + intra-community edges). The
+/// interactive viewer shows the overview and expands a community on click — restoring
+/// the per-symbol detail that the collapse hides — without re-calling aden.
+fn render_communities_view_json(
     graph: &Graph,
     min_size: usize,
     resolution: f64,
     max_comms: usize,
-) -> (Vec<(String, usize)>, BTreeMap<(usize, usize), usize>) {
+    member_cap: usize,
+) -> Result<String, Box<dyn std::error::Error>> {
     let kept: Vec<Vec<String>> = aden_graph::community::detect_communities(graph, resolution)
         .into_iter()
         .filter(|c| c.len() >= min_size)
         .take(max_comms)
         .collect();
+    if kept.is_empty() {
+        return Err("no communities of size >= 2 found (try `aden communities`)".into());
+    }
+
+    // community index of every member (for inter-community edge aggregation)
     let mut comm_of: BTreeMap<String, usize> = BTreeMap::new();
-    let mut supers: Vec<(String, usize)> = Vec::new();
     for (i, members) in kept.iter().enumerate() {
-        supers.push((community_label(members), members.len()));
         for m in members {
             comm_of.insert(m.clone(), i);
         }
     }
-    // Aggregate edges that cross community boundaries into weighted super-edges.
+
+    // overview super-nodes (sized by membership)
+    let super_nodes: Vec<serde_json::Value> = kept
+        .iter()
+        .enumerate()
+        .map(|(i, members)| {
+            serde_json::json!({
+                "id": format!("c{i}"),
+                "label": community_label(members),
+                "community": i,
+                "size": members.len(),
+            })
+        })
+        .collect();
+
+    // inter-community weighted edges
     let mut weights: BTreeMap<(usize, usize), usize> = BTreeMap::new();
     for (anchor, &ca) in &comm_of {
         let Some(idx) = graph.get_index(anchor) else {
             continue;
         };
         for nb in graph.graph.neighbors_directed(idx, Direction::Outgoing) {
-            if let Some(&cb) = comm_of.get(&graph.graph[nb].doc.anchor) {
-                if ca != cb {
-                    let key = if ca < cb { (ca, cb) } else { (cb, ca) };
-                    *weights.entry(key).or_default() += 1;
-                }
+            let Some(&cb) = comm_of.get(&graph.graph[nb].doc.anchor) else {
+                continue;
+            };
+            if ca == cb {
+                continue;
             }
+            let key = if ca < cb { (ca, cb) } else { (cb, ca) };
+            *weights.entry(key).or_default() += 1;
         }
     }
-    (supers, weights)
-}
-
-/// JSON for the collapsed communities overview (super-nodes + weighted super-edges).
-fn render_communities_overview_json(
-    supers: &[(String, usize)],
-    weights: &BTreeMap<(usize, usize), usize>,
-) -> String {
-    let nodes: Vec<serde_json::Value> = supers
-        .iter()
-        .enumerate()
-        .map(|(i, (label, size))| {
-            serde_json::json!({ "id": format!("c{i}"), "label": label, "community": i, "size": size })
-        })
-        .collect();
-    let edges: Vec<serde_json::Value> = weights
+    let super_edges: Vec<serde_json::Value> = weights
         .iter()
         .map(|(&(a, b), &w)| {
             serde_json::json!({ "from": format!("c{a}"), "to": format!("c{b}"), "type": format!("{w} edges") })
         })
         .collect();
-    serde_json::to_string_pretty(&serde_json::json!({
-        "mode": "communities", "nodes": nodes, "edges": edges,
+
+    // per-community drill subgraph: the most intra-connected members + their edges
+    let mut drill = serde_json::Map::new();
+    for (i, members) in kept.iter().enumerate() {
+        let member_set: BTreeSet<&str> = members.iter().map(|s| s.as_str()).collect();
+        // Rank members by *intra-community* degree so the drill shows the connected
+        // core — alphabetical-first members are usually mutually unconnected.
+        let mut degree: BTreeMap<String, usize> = BTreeMap::new();
+        for m in members {
+            let Some(idx) = graph.get_index(m) else {
+                continue;
+            };
+            for nb in graph.graph.neighbors_directed(idx, Direction::Outgoing) {
+                let to = graph.graph[nb].doc.anchor.clone();
+                if member_set.contains(to.as_str()) {
+                    *degree.entry(m.clone()).or_default() += 1;
+                    *degree.entry(to).or_default() += 1;
+                }
+            }
+        }
+        let mut ranked: Vec<String> = members.clone();
+        ranked.sort_by(|a, b| {
+            degree
+                .get(b)
+                .unwrap_or(&0)
+                .cmp(degree.get(a).unwrap_or(&0))
+                .then_with(|| a.cmp(b))
+        });
+        let shown: Vec<String> = ranked.into_iter().take(member_cap).collect();
+        let local: BTreeMap<&str, String> = shown
+            .iter()
+            .enumerate()
+            .map(|(j, m)| (m.as_str(), format!("m{j}")))
+            .collect();
+        let shown_set: BTreeSet<&str> = shown.iter().map(|s| s.as_str()).collect();
+        let nodes: Vec<serde_json::Value> = shown
+            .iter()
+            .map(|m| {
+                serde_json::json!({ "id": local[m.as_str()], "anchor": m, "label": label(m), "community": i })
+            })
+            .collect();
+        let mut edge_set: BTreeSet<(String, String, String)> = BTreeSet::new();
+        for m in &shown {
+            let Some(idx) = graph.get_index(m) else {
+                continue;
+            };
+            for nb in graph.graph.neighbors_directed(idx, Direction::Outgoing) {
+                let to = graph.graph[nb].doc.anchor.clone();
+                if !shown_set.contains(to.as_str()) {
+                    continue;
+                }
+                if let Some(e) = graph.graph.edges_connecting(idx, nb).next() {
+                    edge_set.insert((
+                        local[m.as_str()].clone(),
+                        local[to.as_str()].clone(),
+                        format!("{:?}", e.weight().edge_type),
+                    ));
+                }
+            }
+        }
+        let edges: Vec<serde_json::Value> = edge_set
+            .iter()
+            .map(|(f, t, ty)| serde_json::json!({ "from": f, "to": t, "type": ty }))
+            .collect();
+        drill.insert(
+            format!("c{i}"),
+            serde_json::json!({ "nodes": nodes, "edges": edges }),
+        );
+    }
+
+    Ok(serde_json::to_string_pretty(&serde_json::json!({
+        "mode": "communities",
+        "nodes": super_nodes,
+        "edges": super_edges,
+        "drill": serde_json::Value::Object(drill),
     }))
-    .unwrap_or_else(|_| "{}".to_string())
+    .unwrap_or_else(|_| "{}".to_string()))
 }
 
 /// The group segment (crate/dir) of an anchor: `aden://module/aden-cli/x#y` → `aden-cli`.
