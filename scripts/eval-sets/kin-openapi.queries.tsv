@@ -1,0 +1,32 @@
+# Auto-generated candidate queries (M6 Stage 1: commit -> single file).
+# UNVALIDATED: spot-check before publishing recall. query<TAB>expected_path<TAB>note
+# [spot-check: weak label — subject describes effect elsewhere] Fix wrong `Found unresolved ref` error when converting from Swagger/OpenAPIv2 spec	openapi3/components.go	commit 62affaa
+# [spot-check: weak label — subject describes effect elsewhere] Add content-type wildcard support to validation	openapi3/content.go	commit 90a7df0
+# [spot-check: weak label — subject describes effect elsewhere] Use map[string]string for mapping	openapi3/discriminator.go	commit 2bd8728
+Rework convertError Example code to show query schema error	openapi3/errors.go	commit 8588ab8
+# [spot-check: weak label — subject describes effect elsewhere] Fix validating extra siblings in remote refs	openapi3/extension.go	commit 4305869
+Add strict marshal/unmarshal to ExternalDocs	openapi3/external_docs.go	commit fdd7442
+Fix format error when Header marshal to YAML	openapi3/header.go	commit 91659ae
+Internalize parameter references in the path as well	openapi3/internalize_refs.go	commit c35b46e
+Fix (License) MarshalYAML()	openapi3/license.go	commit 5fd876c
+Make link.Headers use HeaderRef	openapi3/link.go	commit e077c5d
+Fix `resolveSchemaRef()` to load correctly an other spec. file referenced by `$ref`	openapi3/loader.go	commit 8154829
+# [spot-check: weak label — subject describes effect elsewhere] Resolve Snyk security warning with path traversal	openapi3/loader_uri_reader.go	commit bf26c56
+Add Delete operation to maplike structs	openapi3/maplike.go	commit 529285c
+# [spot-check: weak label — subject describes effect elsewhere] Use location.String() instead of location.Path for origin file tracking	openapi3/marsh.go	commit a54fb71
+OpenAPI3 template T class add server helper function	openapi3/openapi3.go	commit a53cd59
+Openapi3 operation AddResponse nil pointer	openapi3/operation.go	commit ee0592e
+Strip __origin__ from slices in example values	openapi3/origin.go	commit c132e59
+Fix openapi3 validation: path param must be required	openapi3/parameter.go	commit 7027e1b
+# [spot-check: weak label — subject describes effect elsewhere] Add the one missing HTTP method: CONNECT	openapi3/path_item.go	commit 1e76a00
+Fix OpenAPI 3 validation: operationId must be unique	openapi3/paths.go	commit 1013da3
+# [spot-check: weak label — subject describes effect elsewhere] Remove map-iteration order leaks causing flaky tests	openapi3/refs.go	commit 5a0a337
+Fix OpenAPI 3 validation: request body content is required	openapi3/request_body.go	commit 1f72b37
+Stop injecting contentless default in NewResponses()	openapi3/response.go	commit 8fac088
+Fixing the schema error to state the value as the type passed in and in the reason state what the type should have been.	openapi3/schema.go	commit 0a3743a
+Add support for RFC 3339 time-secfrac to the date-time regex	openapi3/schema_formats.go	commit 27f3ea7
+Recurse into OpenAPI 3.1 fields in transformOpenAPIToJSONSchema	openapi3/schema_jsonschema_validator.go	commit 7396556
+Fix ineffectual caching of compiled regexps	openapi3/schema_pattern.go	commit 783206b
+Encode security requirements correctly	openapi3/security_requirements.go	commit 9ae9769
+Fix securitySchema.flow is correctly flows and validation	openapi3/security_scheme.go	commit 8eadbfc
+Allow variables in schemes in gorillamux router + better server variables validation	openapi3/server.go	commit 349fb58

@@ -105,6 +105,33 @@ python3 scripts/eval_corpus.py --bin ./target/release/aden \
   --repo /tmp/linux-subset --queries scripts/eval-sets/linux-subset.queries.tsv --gen
 ```
 
+### `kin-openapi.queries.tsv` — getkin/kin-openapi, `openapi3/` (M6 pilot, 2026-06-09)
+
+First repo from the M6 breadth corpus, and the first to use **semi-automated query
+authoring** (`../gen_queries.py`: commit-message → single touched file) followed by the
+**manual spot-check gate**. 30 candidate labels were generated; spot-check excluded 8
+whose commit subject describes a cross-cutting *effect* that lives in another file (not
+the touched file) — a **73% spot-check pass rate**, published here next to the number.
+
+```bash
+git clone --depth 1000 https://github.com/getkin/kin-openapi.git ~/Projects/eval-repos/kin-openapi
+python3 scripts/gen_queries.py --repo ~/Projects/eval-repos/kin-openapi --scope openapi3 \
+  --ext .go --max 30 --out scripts/eval-sets/kin-openapi.queries.tsv      # then spot-check by hand
+python3 scripts/eval_corpus.py --bin ./target/debug/aden \
+  --repo ~/Projects/eval-repos/kin-openapi --queries scripts/eval-sets/kin-openapi.queries.tsv --gen
+```
+
+| Set | Mode | R@1 | R@5 | R@10 | R@20 | MRR@20 |
+|-----|------|-----|-----|------|------|--------|
+| 30 candidates (pre-spot-check) | BM25 | 0.200 | 0.233 | 0.267 | 0.367 | 0.231 |
+| **22 validated (spot-checked)** | BM25 | **0.273** | **0.318** | **0.364** | **0.500** | **0.314** |
+
+The gate lifting R@1 0.20 → 0.27 (and R@20 0.37 → 0.50) by removing 8 noisy labels is the
+point: *raw auto-generated labels are not publishable; the spot-check is load-bearing.*
+The validated BM25 R@1 (0.273) is in line with the t3-cli BM25 baseline (0.229). **Hybrid
+not yet run** for this set (needs the `--features dense` build + bge model) — the BM25→hybrid
+lift is the next step.
+
 ## Caveats
 
 - Ground truth is single-target: each query has exactly one expected file. Real code
