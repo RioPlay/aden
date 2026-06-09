@@ -111,12 +111,16 @@ function hexA(hex, a) { const m = hex.replace('#',''); return `rgba(${parseInt(m
 function editorUrl(n) { return (n && n.file) ? EDITOR.replace('{file}', n.file).replace('{line}', n.line || 1) : null; }
 function openEditor(n) { const u = editorUrl(n); if (u) window.location.href = u; }
 
-// Perceptually-spaced community palette; root/non-root fallback for anchor views.
-const palette = ['#89b4fa','#f38ba8','#a6e3a1','#fab387','#cba6f7','#94e2d5',
-                 '#f9e2af','#eba0ac','#74c7ec','#b4befe','#f5c2e7','#a6e3a1'];
+// Perceptually-spaced palette (Catppuccin). Nodes are coloured by subsystem
+// (module/crate) for instant structure, communities for the overview.
+const palette = ['#89b4fa','#a6e3a1','#fab387','#cba6f7','#94e2d5','#f9e2af',
+                 '#eba0ac','#74c7ec','#b4befe','#f5c2e7','#f2cdcd','#f38ba8',
+                 '#89dceb','#a6e3a1','#fab387'];
+let groupIdx = {};   // subsystem name → stable palette index (set in buildData)
 function colorOf(n) {
-  if (n.community != null) return palette[n.community % palette.length];
-  if (n.root) return '#f38ba8';
+  if (n.root) return '#f38ba8';                                           // the focused node
+  if (n.group != null && n.group in groupIdx) return palette[groupIdx[n.group] % palette.length];
+  if (n.community != null) return palette[n.community % palette.length];  // overview super-nodes
   return '#89b4fa';
 }
 const idOf = e => (e && e.id != null) ? e.id : e;
@@ -139,6 +143,9 @@ function buildData(rawNodes, rawEdges) {
   });
   nodes.forEach(n => n.deg = n.adj.length);
   anchorToId = {}; nodes.forEach(n => { if (n.anchor) anchorToId[n.anchor] = n.id; });
+  // stable subsystem → colour index (sorted, so colours don't shuffle per run)
+  const gs = [...new Set(nodes.map(n => n.group).filter(g => g != null))].sort();
+  groupIdx = {}; gs.forEach((g, i) => { groupIdx[g] = i; });
   highlightNodes.clear(); highlightLinks.clear(); hoverNode = null;
   activeTypes = new Set(links.map(l => l.type));   // all edge types visible by default
   curLinks = links;
@@ -156,9 +163,14 @@ const Graph = ForceGraph()(el)
   // Dim non-highlighted nodes when something is focused (focus + context).
   // Gentle de-emphasis (no harsh blackout) so the focus change isn't a flash.
   .nodeColor(n => (highlightNodes.size && !highlightNodes.has(n)) ? hexA(colorOf(n), .34) : colorOf(n))
-  .nodeCanvasObjectMode(n => (n === hoverNode || pulses.has(n.id)) ? 'before' : undefined)
+  .nodeCanvasObjectMode(() => 'before')
   .nodeCanvasObject((n, ctx) => {
     const base = REL * Math.sqrt(nodeSize(n));
+    const dim = highlightNodes.size && !highlightNodes.has(n);
+    if (!dim) {                           // soft colour glow behind each node (premium look)
+      ctx.beginPath(); ctx.arc(n.x, n.y, base * 2.1, 0, 2 * Math.PI);
+      ctx.fillStyle = hexA(colorOf(n), 0.10); ctx.fill();
+    }
     const p = pulses.get(n.id);
     if (p > 0) {                          // expanding fading glow = "being touched"
       ctx.beginPath(); ctx.arc(n.x, n.y, base * (1.5 + (1 - p) * 3), 0, 2 * Math.PI);
@@ -167,7 +179,7 @@ const Graph = ForceGraph()(el)
     }
     if (n === hoverNode) {                // steady focus halo
       ctx.beginPath(); ctx.arc(n.x, n.y, base * 1.7, 0, 2 * Math.PI);
-      ctx.fillStyle = 'rgba(137,180,250,.20)'; ctx.fill();
+      ctx.fillStyle = 'rgba(137,180,250,.22)'; ctx.fill();
     }
   })
   .linkColor(l => highlightLinks.has(l) ? 'rgba(170,180,215,.5)' : (highlightNodes.size ? 'rgba(120,130,170,.12)' : 'rgba(120,130,170,.26)'))

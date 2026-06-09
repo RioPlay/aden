@@ -489,7 +489,7 @@ fn render_communities_view_json(
         let nodes: Vec<serde_json::Value> = shown
             .iter()
             .map(|m| {
-                let mut obj = serde_json::json!({ "id": local[m.as_str()], "anchor": m, "label": label(m), "community": i });
+                let mut obj = serde_json::json!({ "id": local[m.as_str()], "anchor": m, "label": label(m), "community": i, "group": group_of(m) });
                 if let Some((file, line)) = src.get(m) {
                     obj["file"] = serde_json::json!(file);
                     obj["line"] = serde_json::json!(line);
@@ -864,6 +864,7 @@ fn render_json(
                 "id": ids[a.as_str()],
                 "anchor": a,
                 "label": label(a),
+                "group": group_of(a),
                 "root": a == root,
             });
             if let Some((file, line)) = src.get(a) {
