@@ -77,6 +77,15 @@ The graph is *never* written into the project tree, so subfolder pollution
 becomes impossible by construction. The in-tree `.aden/` shrinks to a small,
 git-tracked directory holding only durable intent.
 
+[NOTE]
+====
+*Superseded in part by <<adr-005>>.* This ADR decided that durable intent is
+*committed by default*. ADR-005 reverses that default: `.aden/` is ignored by
+default and committing it ("`git.track`") becomes an explicit opt-in at
+`aden init`. The data-class split above (rebuildable vs. durable vs. ephemeral)
+still stands; only the commit-by-default decision changed.
+====
+
 === 3. Per-user data directory (cross-platform)
 
 Resolved via the `dirs` crate (already a dependency):
@@ -160,5 +169,6 @@ boundary).
 == Related Documents
 
 . <<adr-001>> — Foundational architecture decisions
+. <<adr-005>> — Project-tree footprint and opt-in tracking (supersedes the commit-by-default decision here)
 . <<architecture>> — Pipeline and graph-build stages
 . <<commands>> — CLI reference (store-affecting commands: `gen`, `regen`, `heal`, `sync`)
