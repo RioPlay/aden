@@ -124,13 +124,21 @@ python3 scripts/eval_corpus.py --bin ./target/debug/aden \
 | Set | Mode | R@1 | R@5 | R@10 | R@20 | MRR@20 |
 |-----|------|-----|-----|------|------|--------|
 | 30 candidates (pre-spot-check) | BM25 | 0.200 | 0.233 | 0.267 | 0.367 | 0.231 |
-| **22 validated (spot-checked)** | BM25 | **0.273** | **0.318** | **0.364** | **0.500** | **0.314** |
+| 22 validated (spot-checked) | BM25 | 0.273 | 0.318 | 0.364 | 0.500 | 0.314 |
+| **22 validated** | **Hybrid** | **0.364** | **0.455** | **0.545** | **0.636** | **0.404** |
 
-The gate lifting R@1 0.20 → 0.27 (and R@20 0.37 → 0.50) by removing 8 noisy labels is the
-point: *raw auto-generated labels are not publishable; the spot-check is load-bearing.*
-The validated BM25 R@1 (0.273) is in line with the t3-cli BM25 baseline (0.229). **Hybrid
-not yet run** for this set (needs the `--features dense` build + bge model) — the BM25→hybrid
-lift is the next step.
+Two findings, both honest:
+
+1. **The spot-check gate is load-bearing.** Removing 8 cross-cutting-effect labels lifts BM25
+   R@1 0.20 → 0.27 (and R@20 0.37 → 0.50). Raw auto-generated labels are *not* publishable;
+   the manual gate (73% pass) is the difference between noise and a real number.
+2. **Hybrid beats BM25 on this new corpus too:** R@1 +33% rel (0.273 → 0.364), R@5 +43%,
+   R@10 +50%, MRR +29%, misses 11 → 8 — consistent with t3-cli (R@1 +62%) and Linux (+35%).
+   The dense lift generalises to a third, independent repo.
+
+Validated BM25 R@1 (0.273) is in line with the t3-cli BM25 baseline (0.229). Hybrid run with
+`target/release/aden` (`--features dense`) + bge-small; `gen` re-run per mode (each binary writes
+the index in its own mode).
 
 ## Caveats
 
