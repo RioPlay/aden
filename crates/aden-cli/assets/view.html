@@ -270,13 +270,34 @@ function onClick(n) {
   navTo(n);
 }
 
-// Focus a node: highlight + centre + panel. Shared primitive (no history).
+// Expand: fan a node's neighbours into a ring around it, then release so the
+// layout relaxes (collision keeps them spread). Makes "expanding" read as unfolding.
+let fanTimer = null;
+function fanOut(n) {
+  const nbrs = n.neighbors || [];
+  if (nbrs.length < 2 || n.x == null) return;
+  clearTimeout(fanTimer);
+  n.fx = n.x; n.fy = n.y;
+  const R = 60 + nbrs.length * 5;
+  nbrs.forEach((m, i) => {
+    const ang = (i / nbrs.length) * 2 * Math.PI - Math.PI / 2;
+    m.fx = n.x + R * Math.cos(ang);
+    m.fy = n.y + R * Math.sin(ang);
+  });
+  Graph.d3ReheatSimulation();
+  fanTimer = setTimeout(() => {
+    n.fx = null; n.fy = null;
+    nbrs.forEach(m => { m.fx = null; m.fy = null; });
+  }, 1700);
+}
+// Focus a node: highlight + centre + fan-out + panel. Shared primitive (no history).
 function goNode(n) {
   panelCur = n.id;
   highlightNodes.clear(); highlightLinks.clear();
   highlightNodes.add(n); (n.neighbors || []).forEach(x => highlightNodes.add(x)); (n.adj || []).forEach(l => highlightLinks.add(l));
   hoverNode = n;
   if (n.x != null) Graph.centerAt(n.x, n.y, 600);
+  fanOut(n);
   showPanel(n);
 }
 // Navigate to a node, recording history — so ← back / Backspace returns. Used by
