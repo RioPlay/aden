@@ -75,7 +75,7 @@ enum Tier {
 struct ToolSpec {
     name: &'static str,
     description: &'static str,
-    args: &'static [(&'static str, &'static str)], // (arg_name, arg_type: "string"|"boolean"|"integer")
+    args: &'static [(&'static str, &'static str)], // (arg_name, arg_type: "string"|"boolean"|"integer"|"number")
     tier: Tier,
 }
 
@@ -109,6 +109,18 @@ fn validate_args(
     let present = |k: &str| args.get(k).map(|v| !v.is_null()).unwrap_or(false);
     if tool == "locate" && !present("symbol") && !present("caller_of") {
         return Err("locate requires at least one of `symbol` or `caller_of`".to_string());
+    }
+    // viz has TWO optional positionals (`aden viz [ANCHOR] [DIR]`). If `path`
+    // is supplied without `anchor`, clap would bind the path to the ANCHOR
+    // slot and silently visualize a nonsense symbol — reject the combination
+    // instead. (Same ambiguity exists for direct CLI users; here we can catch
+    // it at the boundary.)
+    if tool == "viz" && present("path") && !present("anchor") {
+        return Err(
+            "viz: `path` cannot be passed without `anchor` (the CLI parses the first \
+             positional as ANCHOR); supply `anchor`, or omit `path` to use the project root"
+                .to_string(),
+        );
     }
     // Type-check declared boolean args: a non-bool value (e.g. the string
     // "true") must be rejected, not silently coerced to false and dropped.
@@ -158,6 +170,8 @@ fn is_positional(tool: &str, arg: &str) -> bool {
         ("query-adq", "script") => true,
         // understand: aden understand <SYMBOL> [DIR]
         ("understand", "symbol") => true,
+        // viz:   aden viz [ANCHOR] [DIR]
+        ("viz", "anchor") => true,
         // federation/mcp dispatch on a positional subcommand token (list, add, …)
         ("federation" | "mcp", "action") => true,
         _ => false,
@@ -227,12 +241,16 @@ fn build_cli_args(
             "boolean" if val.as_bool().unwrap_or(false) => {
                 cmd_args.push(flag);
             }
-            "string" | "integer" => {
+            "string" | "integer" | "number" => {
                 let s = match arg_type {
                     "integer" => val
                         .as_u64()
                         .map(|n| n.to_string())
                         .or_else(|| val.as_i64().map(|n| n.to_string())),
+                    // JSON "number" (e.g. communities --resolution 1.5): accept
+                    // both integral and fractional values; `{}` on f64 renders
+                    // 2.0 as "2", which clap's f64 parser accepts fine.
+                    "number" => val.as_f64().map(|n| n.to_string()),
                     _ => val.as_str().map(|s| s.to_string()),
                 };
                 if let Some(s) = s {
@@ -335,19 +353,30 @@ static TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "ask",
         description: "Ask a natural-language question. Routes to the best matching anchor.",
+        // `path` is a CLI positional ([DIR], second after QUESTION) — it was
+        // missing here historically, not unsupported. Declaration order matters:
+        // positionals are emitted in spec order, so question must precede path.
         args: &[
             ("question", "string"),
+            ("path", "string"),
             ("budget", "integer"),
             ("from", "string"),
             ("model", "string"),
+            ("intent", "string"),
+            ("depth", "integer"),
+            ("edge_types", "string"),
+            ("strict", "boolean"),
         ],
         tier: Tier::Core,
     },
     ToolSpec {
         name: "search",
         description: "Full-text search with BM25 ranking.",
+        // query (positional) must precede path (positional [DIR]) — spec order
+        // is emission order.
         args: &[
             ("query", "string"),
+            ("path", "string"),
             ("limit", "integer"),
             ("offset", "integer"),
             ("doc_type", "string"),
@@ -364,6 +393,29 @@ static TOOLS: &[ToolSpec] = &[
         args: &[
             ("min_size", "integer"),
             ("limit", "integer"),
+            ("resolution", "number"),
+            ("path", "string"),
+        ],
+        tier: Tier::Core,
+    },
+    // Core, like the other read/export tools (locate/communities/query): viz is
+    // the non-interactive graph-slice exporter (text Mermaid/DOT/AsciiDoc/JSON),
+    // so it is MCP-suitable — unlike its interactive sibling `view` (browser,
+    // long-running) which stays off the surface.
+    ToolSpec {
+        name: "viz",
+        description: "Export a graph slice as a text diagram (Mermaid/DOT/AsciiDoc/JSON) for docs, \
+                      PRs, or CI. mode=blast (downstream impact, default) | connectivity (both \
+                      directions) | communities (clusters; anchor not needed). Non-interactive \
+                      sibling of the browser `view` command.",
+        // Both positionals: anchor must precede path (spec order is emission
+        // order, matching `aden viz [ANCHOR] [DIR]`).
+        args: &[
+            ("anchor", "string"),
+            ("mode", "string"),
+            ("depth", "integer"),
+            ("format", "string"),
+            ("full", "boolean"),
             ("path", "string"),
         ],
         tier: Tier::Core,
@@ -371,7 +423,7 @@ static TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "impact-diff",
         description: "Map a git diff to the symbols it touches and report the blast radius \
-                      (downstream impact) before committing. `since` diffs against a ref \
+                      (transitive dependents at risk) before committing. `since` diffs against a ref \
                       (e.g. HEAD~1, main); `staged` analyzes staged changes; default is the \
                       working tree.",
         args: &[
@@ -507,6 +559,8 @@ static TOOLS: &[ToolSpec] = &[
             ("path", "string"),
             ("auto", "boolean"),
             ("quiet", "boolean"),
+            ("propose", "boolean"),
+            ("force_regen", "boolean"),
         ],
         tier: Tier::Core,
     },
@@ -556,7 +610,11 @@ static TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "init",
         description: "Scaffold .agent/ workspace and templates.",
-        args: &[("path", "string")],
+        args: &[
+            ("path", "string"),
+            ("with_secure_refs", "boolean"),
+            ("agents_md", "boolean"),
+        ],
         tier: Tier::Extended,
     },
     ToolSpec {
@@ -586,7 +644,9 @@ static TOOLS: &[ToolSpec] = &[
         args: &[
             ("agent_id", "string"),
             ("task", "string"),
+            ("files", "string"),
             ("status", "string"),
+            ("path", "string"),
         ],
         tier: Tier::Extended,
     },
@@ -625,7 +685,7 @@ static TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "licenses",
         description: "Generate third-party dependency attribution.",
-        args: &[("path", "string"), ("full", "boolean")],
+        args: &[("path", "string"), ("out", "string"), ("full", "boolean")],
         tier: Tier::Extended,
     },
     ToolSpec {
@@ -756,6 +816,8 @@ fn confine_path_args(
         // `heal --watch <DIR>` names a directory to monitor; confine it so a
         // client cannot point the watcher at an out-of-tree path like `/etc`.
         "heal" => &["path", "watch"],
+        // `licenses --out <FILE>` is a write target.
+        "licenses" => &["path", "out"],
         _ => &["path"],
     };
     for key in path_args {
@@ -1279,6 +1341,76 @@ mod tests {
         let mut l = serde_json::Map::new();
         l.insert("dead_code".into(), serde_json::json!(true));
         assert!(build_cli_args(spec("lint"), &l, &[]).contains(&"--dead-code".to_string()));
+    }
+
+    #[test]
+    fn number_args_render_as_value_flags() {
+        // communities --resolution is an f64: both fractional and integral JSON
+        // numbers must flow through.
+        let mut args = serde_json::Map::new();
+        args.insert("resolution".into(), serde_json::json!(1.5));
+        let out = build_cli_args(spec("communities"), &args, &[]);
+        assert_eq!(out, vec!["communities", "--resolution", "1.5"]);
+
+        let mut int = serde_json::Map::new();
+        int.insert("resolution".into(), serde_json::json!(2));
+        let out = build_cli_args(spec("communities"), &int, &[]);
+        assert_eq!(out, vec!["communities", "--resolution", "2"]);
+    }
+
+    #[test]
+    fn viz_positionals_emit_anchor_before_path() {
+        // `aden viz [ANCHOR] [DIR]` — anchor must be the first positional.
+        let mut args = serde_json::Map::new();
+        args.insert("anchor".into(), serde_json::json!("build_cli_args"));
+        args.insert("path".into(), serde_json::json!("."));
+        args.insert("format".into(), serde_json::json!("dot"));
+        let out = build_cli_args(spec("viz"), &args, &[]);
+        let a = out.iter().position(|x| x == "build_cli_args").unwrap();
+        let p = out.iter().position(|x| x == ".").unwrap();
+        let dd = out.iter().position(|x| x == "--").unwrap();
+        assert!(dd < a && a < p, "expected -- anchor path order: {out:?}");
+        assert!(out.contains(&"--format".to_string()));
+    }
+
+    #[test]
+    fn viz_path_without_anchor_is_rejected() {
+        // Two optional positionals: a lone path would bind to the ANCHOR slot.
+        let mut args = serde_json::Map::new();
+        args.insert("path".into(), serde_json::json!("crates"));
+        assert!(validate_args("viz", &args).is_err());
+        // anchor alone, or anchor+path, or neither, are all fine.
+        assert!(validate_args("viz", &serde_json::Map::new()).is_ok());
+        let mut ok = serde_json::Map::new();
+        ok.insert("anchor".into(), serde_json::json!("foo"));
+        assert!(validate_args("viz", &ok).is_ok());
+        ok.insert("path".into(), serde_json::json!("crates"));
+        assert!(validate_args("viz", &ok).is_ok());
+    }
+
+    #[test]
+    fn ask_path_is_second_positional() {
+        // ask gained `path` ([DIR] after QUESTION): question first, path second.
+        let mut args = serde_json::Map::new();
+        args.insert("question".into(), serde_json::json!("what is X"));
+        args.insert("path".into(), serde_json::json!("src"));
+        args.insert("strict".into(), serde_json::json!(true));
+        let out = build_cli_args(spec("ask"), &args, &[]);
+        let q = out.iter().position(|x| x == "what is X").unwrap();
+        let p = out.iter().position(|x| x == "src").unwrap();
+        assert!(q < p, "question must precede path: {out:?}");
+        assert!(out.contains(&"--strict".to_string()));
+    }
+
+    #[test]
+    fn licenses_out_is_confined() {
+        let proj = std::env::temp_dir();
+        let mut esc = serde_json::Map::new();
+        esc.insert("out".into(), serde_json::json!("/etc/aden-pwned"));
+        assert!(
+            confine_path_args("licenses", &esc, &proj).is_err(),
+            "licenses out=/etc must be refused"
+        );
     }
 
     #[test]
