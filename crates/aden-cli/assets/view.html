@@ -48,6 +48,10 @@
   #results .r { padding: 6px 12px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #results .r:hover, #results .r.sel { background: rgba(137,180,250,.16); }
   #results .r .k { color: #6c7086; }
+  #filter { position: fixed; left: 14px; bottom: 36px; display: flex; flex-wrap: wrap; gap: 5px; max-width: 56%; z-index: 4; }
+  #filter .chip { font-size: 11px; padding: 3px 9px; border-radius: 999px; cursor: pointer; user-select: none;
+    background: rgba(17,21,30,.85); border: 1px solid #313244; color: #9399b2; }
+  #filter .chip.on { color: #cdd6f4; border-color: #89b4fa; background: rgba(137,180,250,.14); }
   /* dark, consistent hover tooltip (force-graph injects .graph-tooltip) */
   .graph-tooltip { background: rgba(17,21,30,.96) !important; color: #cdd6f4 !important;
     border: 1px solid #313244; border-radius: 6px; padding: 5px 9px !important;
@@ -60,6 +64,7 @@
 <div id="back" onclick="showOverview()">← communities</div>
 <div id="search"><input id="q" type="text" placeholder="search symbols…  ( / )" autocomplete="off" spellcheck="false"><div id="results"></div></div>
 <div id="graph"></div>
+<div id="filter"></div>
 <div id="panel"><div id="pback" onclick="panelBack()">← back</div><h2 id="p-title"></h2><div id="p-body"></div></div>
 <div id="hint">/ search · ↑↓ + enter walk neighbours · backspace back · o open in editor · right-click node = editor</div>
 <script>/*FORCE_GRAPH_LIB*/</script>
@@ -73,6 +78,7 @@ const highlightNodes = new Set(), highlightLinks = new Set();
 let hoverNode = null;
 // Panel navigation history (walk node→node, ← back / Backspace to return).
 let panelStack = [], panelCur = null, panelNbs = [], nbSel = -1;
+let activeTypes = new Set();   // visible edge types (filter chips)
 const REL = 3;
 function nodeSize(n) { return n.size != null ? Math.min(2 + Math.sqrt(n.size), 12) : 1 + Math.min(Math.sqrt(n.deg), 3); }
 function hexA(hex, a) { const m = hex.replace('#',''); return `rgba(${parseInt(m.slice(0,2),16)},${parseInt(m.slice(2,4),16)},${parseInt(m.slice(4,6),16)},${a})`; }
@@ -108,6 +114,7 @@ function buildData(rawNodes, rawEdges) {
   });
   nodes.forEach(n => n.deg = n.adj.length);
   highlightNodes.clear(); highlightLinks.clear(); hoverNode = null;
+  activeTypes = new Set(links.map(l => l.type));   // all edge types visible by default
   curLinks = links;
   return { nodes, links };
 }
@@ -132,6 +139,7 @@ const Graph = ForceGraph()(el)
   })
   .linkColor(l => highlightLinks.has(l) ? 'rgba(170,180,215,.5)' : (highlightNodes.size ? 'rgba(120,130,170,.12)' : 'rgba(120,130,170,.26)'))
   .linkWidth(l => highlightLinks.has(l) ? 2 : 1)
+  .linkVisibility(l => activeTypes.has(l.type))
   .linkDirectionalArrowLength(3.5)
   .linkDirectionalArrowRelPos(1)
   .linkLabel(l => l.type)
@@ -162,6 +170,7 @@ function show(rawNodes, rawEdges) {
   panelStack = []; panelCur = null;
   Graph.graphData(buildData(rawNodes, rawEdges));
   syncSearch();
+  syncFilter();
 }
 function showOverview() {
   level = 'overview';
@@ -284,6 +293,19 @@ qEl.addEventListener('keydown', e => {
   else if (e.key === 'Enter') { pickResult(selIdx); e.preventDefault(); }
 });
 function syncSearch() { if (qEl) { qEl.value = ''; resEl.classList.remove('open'); matches = []; } }
+
+// ── Filter by edge type (chips). Toggling hides/shows those edges live. ──
+const filterEl = document.getElementById('filter');
+function syncFilter() {
+  const types = [...new Set(curLinks.map(l => l.type))].sort();   // activeTypes set in buildData
+  filterEl.innerHTML = types.map(t => `<span class="chip${activeTypes.has(t) ? ' on' : ''}" data-t="${esc(t)}" onclick="toggleType('${esc(t)}')">${esc(t)}</span>`).join('');
+}
+function toggleType(t) {
+  if (activeTypes.has(t)) activeTypes.delete(t); else activeTypes.add(t);
+  const chip = [...filterEl.children].find(c => c.dataset.t === t);
+  if (chip) chip.classList.toggle('on', activeTypes.has(t));
+  Graph.linkVisibility(l => activeTypes.has(l.type));   // re-apply → live update
+}
 
 // ── Keyboard-centric navigation (when not typing in the search box) ──
 function selNb() {
