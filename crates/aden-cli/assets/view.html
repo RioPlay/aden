@@ -647,8 +647,8 @@ function toggleSynapse() {
 function isMeta(l) { return l.member || /\bedges$/.test(l.type || ''); }
 function idVisible(id) {
   const n = byId[id];
-  if (growMode) return revealed.has(id);   // replay: reveal order is the only gate (density/depth don't apply)
-  if (densityVisible && !densityVisible.has(id)) return false;
+  if (growMode && !revealed.has(id)) return false;   // replay: hide nodes not yet revealed…
+  if (densityVisible && !densityVisible.has(id)) return false;   // …but density still applies (live in replay too)
   if (depthLimit != null && n && n.hop != null && n.hop > depthLimit) return false;
   return true;
 }
