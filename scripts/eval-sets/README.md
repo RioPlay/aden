@@ -140,8 +140,35 @@ Validated BM25 R@1 (0.273) is in line with the t3-cli BM25 baseline (0.229). Hyb
 `target/release/aden` (`--features dense`) + bge-small; `gen` re-run per mode (each binary writes
 the index in its own mode).
 
+### M6 pilot summary — 3 repos, 3 languages (2026-06-09)
+
+All three via `gen_queries.py` (commit→single-file) + manual spot-check, BM25 (debug bin) vs
+Hybrid (`--release --features dense` + bge-small). Validated (spot-checked) sets:
+
+| Repo | Lang | Scope | N | BM25 R@1 / R@20 | Hybrid R@1 / R@20 | Δ R@1 |
+|------|------|-------|---|-----------------|-------------------|-------|
+| getkin/kin-openapi | Go | `openapi3/` | 22 | 0.273 / 0.500 | **0.364 / 0.636** | +33% |
+| rust-lang/rustfmt | Rust | `src/` | 21 | 0.095 / 0.238 | **0.191 / 0.286** | +100% |
+| unoplatform/uno | C# | `src/Uno.UI/Controls` | 20 | 0.150 / 0.200 | **0.150 / 0.300** | flat (R@20 +50%) |
+
+**Findings (the pilot's job — surface these before scaling to 24 repos):**
+
+1. **Hybrid ≥ BM25 on every repo** — the dense lift reproduces across Go/Rust/C# (and t3/Linux),
+   though magnitude varies. Strongest where BM25 is weakest (rustfmt R@1 +100%).
+2. **Absolute recall tracks corpus/method fit, not just aden.** The commit→file query method shines
+   when files are named by *domain* (kin-openapi: `schema.go`, `parameter.go` ↔ subjects that name
+   the type) and struggles when files are named by *platform/concern* with churny cleanup commits
+   (uno Controls: platform renderers + ambiguous `.iOS`/`.Android` variants; rustfmt: behavioural
+   subjects ↔ generic `expr.rs`/`chains.rs`). **Sub-tree selection matters** — pick logic-dense,
+   domain-named modules; uno Controls was a poor pick (a logic module like `DataBinding` likely fares
+   better).
+3. **The spot-check gate is non-negotiable and corpus-dependent** — pass rates ran 73% (kin-openapi),
+   66% (rustfmt), 67% (uno). Raw auto-labels are never publishable.
+
 ## Caveats
 
+- uno used basename matching against an isolated sub-tree copy (6 platform-variant basenames collide →
+  slightly lenient for those rows).
 - Ground truth is single-target: each query has exactly one expected file. Real code
   retrieval often has several acceptable answers, so these recall numbers are a
   **lower bound** on usefulness.
