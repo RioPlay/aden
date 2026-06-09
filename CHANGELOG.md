@@ -7,11 +7,10 @@ All notable changes to aden are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/); this project uses
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.2.0] — 2026-06-09
 
-The interactive graph + reproducible-retrieval release. (Version bump pending:
-recommend **0.2.0** — new features, no breaking CLI changes; `release.yml` tags
-trigger the build.)
+The interactive graph + reproducible-retrieval release. New features, no breaking
+CLI changes. Tag `v0.2.0` to trigger the release build (`release.yml`).
 
 ### Added
 - **`aden viz`** — export a graph slice as a text diagram (Mermaid / Graphviz DOT /
