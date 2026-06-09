@@ -23,6 +23,11 @@
     background: rgba(17,21,30,.9); border: 1px solid #313244; border-radius: 8px; padding: 4px 11px;
     color: #a6adc8; font-size: 12px; }
   #fit:hover { border-color: #89b4fa; color: #cdd6f4; }
+  #syn { position: fixed; left: 198px; top: 9px; z-index: 6; cursor: pointer; user-select: none;
+    background: rgba(17,21,30,.9); border: 1px solid #313244; border-radius: 8px; padding: 4px 11px;
+    color: #a6adc8; font-size: 12px; transition: border-color .2s, color .2s, box-shadow .2s; }
+  #syn:hover { border-color: #89dceb; color: #cdd6f4; }
+  #syn.on { border-color: #89dceb; color: #89dceb; box-shadow: 0 0 10px rgba(137,220,235,.5); }
   #controls { position: fixed; left: 14px; top: 40px; z-index: 5; display: flex; align-items: center; gap: 9px;
     background: rgba(17,21,30,.85); border: 1px solid #313244; border-radius: 8px; padding: 5px 12px; }
   #controls .lbl { color: #9399b2; font-size: 11px; }
@@ -30,7 +35,7 @@
   #depth-wrap { display: none; align-items: center; gap: 9px; }
   #depth-wrap input[type=range] { width: 84px; }
   /* 'h' hides all chrome for a clean graph */
-  body.hideui #hdr, body.hideui #fit, body.hideui #controls, body.hideui #search, body.hideui #replaybar,
+  body.hideui #hdr, body.hideui #fit, body.hideui #syn, body.hideui #controls, body.hideui #search, body.hideui #replaybar,
   body.hideui #filter, body.hideui #hint, body.hideui #back, body.hideui #panel {
     opacity: 0 !important; pointer-events: none; }
   /* collapsible side panel */
@@ -95,6 +100,7 @@
 <body>
 <div id="hdr">aden <small>· graph</small></div>
 <div id="fit" onclick="fitAll()" title="fit full view (f / esc / click empty space)">⊙ fit</div>
+<div id="syn" onclick="toggleSynapse()" title="synapse mode — watch the graph fire like a neural net (b)">⚡ synapse</div>
 <div id="controls"><span class="lbl">density</span><input id="density" type="range" min="6" max="100" value="100" oninput="setDensity(+this.value)" title="show fewer (hubs only) → more nodes"><span id="depth-wrap"><span class="lbl">depth</span><input id="depth" type="range" min="1" max="3" value="3" oninput="setDepth(+this.value)" title="hops from the focused symbol"></span></div>
 <div id="back" onclick="showOverview()">← communities</div>
 <div id="search"><input id="q" type="text" placeholder="search symbols…  ( / )" autocomplete="off" spellcheck="false"><div id="results"></div></div>
@@ -108,7 +114,7 @@
 </div>
 <div id="filter"></div>
 <div id="panel"><span id="pcollapse" onclick="togglePanel()" title="collapse / expand">▾</span><div id="pback" onclick="panelBack()">← back</div><h2 id="p-title"></h2><div id="p-body"></div></div>
-<div id="hint">/ search · ↑↓+enter walk · backspace back · f fit · h hide UI · o open in editor · right-click = editor</div>
+<div id="hint">/ search · ↑↓+enter walk · backspace back · f fit · b synapse · h hide UI · o open in editor · right-click = editor</div>
 <script>/*FORCE_GRAPH_LIB*/</script>
 <script>
 const DATA = /*ADEN_DATA*/;
@@ -125,6 +131,7 @@ let densityFrac = 1, densityVisible = null;   // live density: show top fraction
 let depthLimit = null, maxHop = 0;            // live depth: hop distance from the root
 // Activity replay: pulse nodes as an agent "touches" them.
 let playing = false, actSeq = [], actIdx = 0, playTimer = null, pulseRAF = null;
+let synapse = false, fireTimer = null;   // synapse mode: neurons fire + signals travel the axons
 let anchorToId = {};           // map a real activity log's anchors → current node ids
 let growMode = false, stepMs = 600;   // replay grows the graph; nodes revealed as touched
 const pulses = new Map();      // node id → pulse strength (1 → 0, fading glow)
@@ -212,9 +219,9 @@ const Graph = ForceGraph()(el)
       ctx.fillStyle = hexA(colorOf(n), 0.10); ctx.fill();
     }
     const p = pulses.get(n.id);
-    if (p > 0) {                          // expanding fading glow = "being touched"
+    if (p > 0) {                          // expanding fading glow = "being touched" / a neuron firing
       ctx.beginPath(); ctx.arc(n.x, n.y, base * (1.5 + (1 - p) * 3), 0, 2 * Math.PI);
-      ctx.fillStyle = `rgba(166,227,161,${0.4 * p})`;
+      ctx.fillStyle = synapse ? `rgba(137,220,235,${0.5 * p})` : `rgba(166,227,161,${0.4 * p})`;
       ctx.fill();
     }
     if (n === hoverNode) {                // steady focus halo
@@ -561,6 +568,49 @@ function startPulseAnim() {
   };
   pulseRAF = requestAnimationFrame(tick);
 }
+
+// ── Synapse mode: the graph as a neural net. A neuron "fires" (glows), shoots an
+// action potential along its axons (a travelling particle per edge), and its
+// post-synaptic neighbours fire in turn after the signal arrives — a cascade that
+// dies out probabilistically (so it never runs away). A scheduler keeps seeding new
+// firings so the whole brain stays alive. Purely cosmetic; toggled with the ⚡ button / `b`.
+function fireNode(n, depth) {
+  if (!synapse || !n) return;
+  pulses.set(n.id, 1); startPulseAnim();
+  const p = depth === 0 ? 0.85 : 0.4;        // signal weakens as it propagates outward
+  (n.adj || []).forEach(l => {
+    if (!(isMeta(l) || activeTypes.has(l.type))) return;   // only fire along visible edges
+    if (Math.random() > p) return;
+    try { Graph.emitParticle(l); } catch (e) {}            // the action potential, travelling
+    if (depth >= 4) return;                                 // hard cap on cascade depth
+    const otherId = idOf(l.source) === n.id ? idOf(l.target) : idOf(l.source);
+    const nb = byId[otherId];
+    if (nb && idVisible(nb.id)) setTimeout(() => fireNode(nb, depth + 1), 360 + Math.random() * 280);
+  });
+}
+function seedFire() {
+  if (!synapse) return;
+  const ids = curLinks.length ? [...new Set(curLinks.flatMap(l => [idOf(l.source), idOf(l.target)]))] : Object.keys(byId);
+  const pick = ids.filter(id => idVisible(id));
+  if (pick.length) fireNode(byId[pick[Math.floor(Math.random() * pick.length)]], 0);
+}
+function toggleSynapse() {
+  synapse = !synapse;
+  const btn = document.getElementById('syn');
+  if (synapse) {
+    btn.classList.add('on');
+    Graph.linkDirectionalParticleSpeed(0.014)
+         .linkDirectionalParticleWidth(2.4)
+         .linkDirectionalParticleColor(l => hexA(typeColor[l.type] || '#89dceb', .95));
+    seedFire(); seedFire();
+    fireTimer = setInterval(seedFire, 620);
+  } else {
+    btn.classList.remove('on');
+    clearInterval(fireTimer); fireTimer = null;
+    Graph.linkDirectionalParticles(0);   // let in-flight particles finish, stop new continuous ones
+    pulses.clear();
+  }
+}
 // A node is shown if it passes the replay reveal AND the density filter.
 // Meta links (membership · super-edge "N edges" aggregates) aren't real relationship
 // types — keep them out of the legend/filter and colour them neutrally.
@@ -661,6 +711,7 @@ addEventListener('keydown', e => {
   if (e.key === 'Escape') { document.getElementById('panel').classList.remove('open'); fitAll(); return; }
   if (e.key === 'f' || e.key === 'F') { fitAll(); return; }   // fit / full view
   if (e.key === 'h' || e.key === 'H') { document.body.classList.toggle('hideui'); return; }   // hide chrome
+  if (e.key === 'b' || e.key === 'B') { toggleSynapse(); return; }   // synapse (brain) mode
   if ((e.key === 'o' || e.key === 'O') && panelCur && byId[panelCur]) { openEditor(byId[panelCur]); return; }
   const open = document.getElementById('panel').classList.contains('open');
   const max = Math.min(panelNbs.length, 40);
