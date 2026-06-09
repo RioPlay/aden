@@ -23,8 +23,12 @@
     background: rgba(17,21,30,.9); border: 1px solid #313244; border-radius: 8px; padding: 4px 11px;
     color: #a6adc8; font-size: 12px; }
   #fit:hover { border-color: #89b4fa; color: #cdd6f4; }
+  #controls { position: fixed; left: 14px; top: 40px; z-index: 5; display: flex; align-items: center; gap: 9px;
+    background: rgba(17,21,30,.85); border: 1px solid #313244; border-radius: 8px; padding: 5px 12px; }
+  #controls .lbl { color: #9399b2; font-size: 11px; }
+  #controls input[type=range] { width: 120px; }
   /* 'h' hides all chrome for a clean graph */
-  body.hideui #hdr, body.hideui #fit, body.hideui #search, body.hideui #replaybar,
+  body.hideui #hdr, body.hideui #fit, body.hideui #controls, body.hideui #search, body.hideui #replaybar,
   body.hideui #filter, body.hideui #hint, body.hideui #back, body.hideui #panel {
     opacity: 0 !important; pointer-events: none; }
   /* collapsible side panel */
@@ -89,6 +93,7 @@
 <body>
 <div id="hdr">aden <small>· graph</small></div>
 <div id="fit" onclick="fitAll()" title="fit full view (f / esc / click empty space)">⊙ fit</div>
+<div id="controls"><span class="lbl">density</span><input id="density" type="range" min="6" max="100" value="100" oninput="setDensity(+this.value)" title="show fewer (hubs only) → more nodes"></div>
 <div id="back" onclick="showOverview()">← communities</div>
 <div id="search"><input id="q" type="text" placeholder="search symbols…  ( / )" autocomplete="off" spellcheck="false"><div id="results"></div></div>
 <div id="graph"></div>
@@ -114,6 +119,7 @@ let hoverNode = null;
 // Panel navigation history (walk node→node, ← back / Backspace to return).
 let panelStack = [], panelCur = null, panelNbs = [], nbSel = -1;
 let activeTypes = new Set();   // visible edge types (filter chips)
+let densityFrac = 1, densityVisible = null;   // live density: show top fraction by degree
 // Activity replay: pulse nodes as an agent "touches" them.
 let playing = false, actSeq = [], actIdx = 0, playTimer = null, pulseRAF = null;
 let anchorToId = {};           // map a real activity log's anchors → current node ids
@@ -276,6 +282,8 @@ function show(rawNodes, rawEdges) {
   fitPending = true;
   panelStack = []; panelCur = null;
   stopPlay(); pulses.clear(); actSeq = []; actIdx = 0; growMode = false; revealed.clear();
+  densityFrac = 1; densityVisible = null;
+  const dEl = document.getElementById('density'); if (dEl) dEl.value = 100;
   document.getElementById('act').style.display = 'none';
   document.getElementById('scrub').value = 0;
   document.getElementById('rcount').textContent = '';
@@ -325,7 +333,7 @@ function applyExplore() {              // reuses existing node objects → posit
   rebuildAdj(nodes, curLinks);
   recolorMaps(nodes, curLinks);
   Graph.graphData({ nodes, links: curLinks });
-  syncFilter(); refreshViz();
+  syncFilter(); applyDensity();
   Graph.d3ReheatSimulation();
 }
 function expandCommunity(cid) {
@@ -514,11 +522,32 @@ function startPulseAnim() {
   };
   pulseRAF = requestAnimationFrame(tick);
 }
-// Re-apply visibility so revealed/filter changes show immediately.
-function refreshViz() {
-  Graph.nodeVisibility(n => !growMode || revealed.has(n.id));
-  Graph.linkVisibility(l => activeTypes.has(l.type) && (!growMode || (revealed.has(idOf(l.source)) && revealed.has(idOf(l.target)))));
+// A node is shown if it passes the replay reveal AND the density filter.
+function idVisible(id) {
+  if (growMode && !revealed.has(id)) return false;
+  if (densityVisible && !densityVisible.has(id)) return false;
+  return true;
 }
+// Re-apply visibility so reveal/density/type changes show immediately.
+function refreshViz() {
+  Graph.nodeVisibility(n => idVisible(n.id));
+  Graph.linkVisibility(l => (l.member || activeTypes.has(l.type)) && idVisible(idOf(l.source)) && idVisible(idOf(l.target)));
+}
+// Live density: keep the top fraction of nodes by degree (hubs first); always
+// keep the focused/hovered node. No re-run — pure client filter on the current view.
+function applyDensity() {
+  const nodes = Object.values(byId);
+  if (densityFrac >= 0.999 || !nodes.length) { densityVisible = null; }
+  else {
+    const sorted = nodes.slice().sort((a, b) => b.deg - a.deg);
+    const k = Math.max(2, Math.round(nodes.length * densityFrac));
+    densityVisible = new Set(sorted.slice(0, k).map(n => n.id));
+    if (panelCur) densityVisible.add(panelCur);
+    if (hoverNode) densityVisible.add(hoverNode.id);
+  }
+  refreshViz();
+}
+function setDensity(v) { densityFrac = v / 100; applyDensity(); }
 function readout(f) {
   const a = document.getElementById('act');
   a.textContent = `[${actIdx}/${actSeq.length}] ${f ? (f.date ? f.date + ' · ' : '') + f.label : ''}`; a.style.display = 'block';
