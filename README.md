@@ -65,6 +65,11 @@ aden asm --from "aden://module/<crate>/<module-doc>.adoc#code_block_3" --depth 1
 # Before every commit (fast, aden-only gates)
 aden ready .
 
+# Visualise the graph — text (mermaid/dot/json) or an interactive offline browser view
+aden viz --mode communities --format mermaid     # text diagram for a PR/README
+aden view                                         # whole graph in the browser, with
+                                                  # git-history replay (on by default)
+
 # Expose Aden's commands to your AI client as MCP tools
 aden mcp install --platform claude   # see docs/mcp-intro.md
 ```

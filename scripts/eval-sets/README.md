@@ -174,6 +174,11 @@ so they are reproducible run-to-run (verified: 5 fresh gens → identical recall
 
 ## Caveats
 
+- **Attribution / licensing.** The corpus repos are **not vendored** — you clone them yourself; only
+  the small `.tsv` query sets live here, and each row's query text is a short, verbatim *commit subject*
+  drawn from that repo's public git history (used as a factual retrieval label, not redistributed
+  source). Source repos and their licenses: getkin/kin-openapi (MIT), rust-lang/rustfmt (Apache-2.0 OR
+  MIT), unoplatform/uno (Apache-2.0), pallets/flask (BSD-3-Clause), TanStack/query (MIT).
 - **Retrieval is deterministic** as of commit `9da0bcf`. `bench.py` originally found `aden gen`
   non-reproducible; that was fixed end-to-end (five causes: a wall-clock timestamp in the indexed text,
   two HashMap-iteration orders, a parallel store-write anchor-collision race, and `emit_document`

@@ -842,10 +842,11 @@ pub fn run_http_server(_project_dir: &Path, port: u16) -> Result<(), Box<dyn std
     );
     println!("Endpoints:");
     println!("  GET  /health          - Health check");
-    println!("  POST /api/check      - Run aden check");
-    println!("  POST /api/heal       - Run aden heal");
-    println!("  POST /api/asm        - Assemble context");
-    println!("  POST /api/query      - Query graph");
+    println!("  GET  /api             - Service + version discovery");
+    println!();
+    println!("Note: this is a health/discovery server only. Tool access (check/heal/");
+    println!("asm/query) is provided over the supported stdio MCP transport — run");
+    println!("`aden mcp` and connect your MCP client to it.");
     println!();
 
     for stream in listener.incoming() {
@@ -864,7 +865,7 @@ pub fn run_http_server(_project_dir: &Path, port: u16) -> Result<(), Box<dyn std
                 ("GET", "/") | ("GET", "/api") => (
                     "200 OK",
                     format!(
-                        r#"{{"service":"aden","version":"{}","endpoints":["/health","/api/check","/api/heal","/api/asm","/api/query"]}}"#,
+                        r#"{{"service":"aden","version":"{}","endpoints":["/health","/api"],"tools":"use the stdio MCP transport (`aden mcp`)"}}"#,
                         env!("CARGO_PKG_VERSION")
                     ),
                 ),
