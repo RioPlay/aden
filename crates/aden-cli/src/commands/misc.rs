@@ -811,6 +811,19 @@ pub fn cmd_ci_check(path: &Path, json: bool) -> Result<(), Box<dyn std::error::E
                             .map(|i| cap.end() + i)
                             .unwrap_or(text.len());
                         let line = &text[line_start..line_end];
+                        // A bare checksum-manifest entry (`<hash>  filename`, as in
+                        // CHECKSUMS / `*.sha256` files) is integrity data, not a secret:
+                        // exactly two whitespace-separated tokens, the first being the
+                        // matched hex itself. Skip it for the hex-secret rule only.
+                        if *name == "long hex secret (possible API key)" {
+                            let mut toks = line.split_whitespace();
+                            if toks.next() == Some(cap.as_str())
+                                && toks.next().is_some()
+                                && toks.next().is_none()
+                            {
+                                continue;
+                            }
+                        }
                         // Language-agnostic allowlist: any line bearing this
                         // marker — in a comment of ANY syntax (`//`, `#`, `--`,
                         // `;`, `<!-- -->`) or none — is intentional sample/fixture

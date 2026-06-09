@@ -103,7 +103,7 @@ def timed_gen(binary, repo):
     return round(time.time() - t0, 1)
 
 
-def run_eval(binary, repo, queries):
+def run_recall(binary, repo, queries):
     out = subprocess.run([sys.executable, EVAL, "--bin", binary, "--repo", repo,
                           "--queries", queries, "--json", "--quiet"],
                          capture_output=True, text=True)
@@ -132,7 +132,7 @@ def bench_corpus(name, cfg, modes, bins):
         gen_t = timed_gen(binary, cfg["repo"])
         rec["gen_time_sec"]["hybrid_cold" if mode == "hybrid" else mode] = gen_t
         print(f"  [{name}] {mode}: eval ({pub} queries) …", file=sys.stderr)
-        m = run_eval(binary, cfg["repo"], cfg["queries"])
+        m = run_recall(binary, cfg["repo"], cfg["queries"])
         rec["accurate"][mode] = m or {"error": "eval failed"}
     return rec
 
