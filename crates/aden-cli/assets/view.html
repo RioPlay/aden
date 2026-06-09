@@ -49,6 +49,7 @@
     background: rgba(17,21,30,.7); border: 1px solid #313244; border-radius: 6px; padding: 3px 10px; }
   #back:hover { background: rgba(137,180,250,.14); }
   #panel { position: fixed; top: 0; right: 0; width: 330px; max-height: 100%; overflow: auto;
+    z-index: 8;
     background: rgba(17,21,30,.90); border-left: 1px solid #1f2430; padding: 16px 18px;
     backdrop-filter: blur(8px); transform: translateX(102%); transition: transform .26s cubic-bezier(.2,.7,.2,1);
     box-shadow: -20px 0 60px rgba(0,0,0,.35); }
@@ -124,6 +125,7 @@ let byId = {}, curLinks = [], level = 'overview';
 // Hover/focus highlight state (node + its neighbours + their links).
 const highlightNodes = new Set(), highlightLinks = new Set();
 let hoverNode = null;
+let overUI = false;   // pointer is over a UI overlay (panel/controls/search/…) — graph ignores hover/click
 // Panel navigation history (walk node→node, ← back / Backspace to return).
 let panelStack = [], panelCur = null, panelNbs = [], nbSel = -1;
 let activeTypes = new Set();   // visible edge types (filter chips)
@@ -257,6 +259,9 @@ const Graph = ForceGraph()(el)
     // Sticky highlight: only react to a *genuinely new* node. Ignoring the
     // null/gaps between dense nodes removes the rapid on-off strobing entirely
     // (no animation, no flashing — important on OLED).
+    // When the pointer is over a UI overlay (panel/controls/search…), don't let the
+    // graph hijack the highlight — fixes the focus "snap" while moving to the panel.
+    if (overUI) { el.style.cursor = 'default'; return; }
     el.style.cursor = n ? 'pointer' : 'default';
     if (!n || n === hoverNode) return;
     highlightNodes.clear(); highlightLinks.clear();
@@ -342,6 +347,7 @@ function showCommunity(cid, lbl) {
   show(d.nodes, d.edges);
 }
 function onClick(n) {
+  if (overUI) return;   // click landed on a UI overlay, not the graph — don't select underneath
   // A sphere (community super-node: no anchor, has a drill) expands/collapses IN PLACE.
   if (hasDrill && n.anchor == null && DATA.drill[n.id]) { toggleCommunity(n.id); return; }
   navTo(n);
@@ -756,6 +762,15 @@ addEventListener('keydown', e => {
 });
 
 document.getElementById('panel').addEventListener('mouseleave', restoreFocus);
+
+// While the pointer is over any UI overlay, the graph must not react to it (no
+// hover-highlight hijack, no click-through selection of nodes beneath the panel).
+['panel', 'controls', 'search', 'replaybar', 'filter', 'fit', 'syn', 'back', 'act'].forEach(id => {
+  const e = document.getElementById(id);
+  if (!e) return;
+  e.addEventListener('pointerenter', () => { overUI = true; });
+  e.addEventListener('pointerleave', () => { overUI = false; });
+});
 
 showOverview();
 if (hasDrill) document.getElementById('hint').textContent = 'click a community to expand · ← to go back · drag/scroll to navigate';
