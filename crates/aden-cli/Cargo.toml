@@ -17,14 +17,14 @@ aden-emit = { path = "../aden-emit" }
 clap = { version = "4.5", features = ["derive"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-aden-graph = { version = "0.1.0", path = "../aden-graph" }
-aden-asm = { version = "0.1.0", path = "../aden-asm" }
+aden-graph = { version = "0.2.0", path = "../aden-graph" }
+aden-asm = { version = "0.2.0", path = "../aden-asm" }
 aden-index = { path = "../aden-index" }
 notify = { version = "8.2.0", optional = true }
 ctrlc = "3.2"
-aden-heal = { version = "0.1.0", path = "../aden-heal" }
-aden-propose = { version = "0.1.0", path = "../aden-propose" }
-aden-policy = { version = "0.1.0", path = "../aden-policy" }
+aden-heal = { version = "0.2.0", path = "../aden-heal" }
+aden-propose = { version = "0.2.0", path = "../aden-propose" }
+aden-policy = { version = "0.2.0", path = "../aden-policy" }
 regex = "1.11"
 dirs = "6"
 toml_edit = "0.22"

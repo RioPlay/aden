@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "aden"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aden-asm",
  "aden-core",
@@ -16,7 +16,7 @@ dependencies = [
 
 [[package]]
 name = "aden-asm"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aden-core",
  "aden-emit",
@@ -29,7 +29,7 @@ dependencies = [
 
 [[package]]
 name = "aden-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aden-asm",
  "aden-core",
@@ -62,7 +62,7 @@ dependencies = [
 
 [[package]]
 name = "aden-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "fnv",
  "serde",
@@ -73,7 +73,7 @@ dependencies = [
 
 [[package]]
 name = "aden-diagnose"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aden-core",
  "aden-graph",
@@ -84,7 +84,7 @@ dependencies = [
 
 [[package]]
 name = "aden-emit"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aden-core",
  "regex",
@@ -94,7 +94,7 @@ dependencies = [
 
 [[package]]
 name = "aden-graph"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aden-core",
  "aden-paths",
@@ -109,7 +109,7 @@ dependencies = [
 
 [[package]]
 name = "aden-heal"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aden-core",
  "aden-graph",
@@ -125,7 +125,7 @@ dependencies = [
 
 [[package]]
 name = "aden-index"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aden-core",
  "aden-paths",
@@ -141,7 +141,7 @@ dependencies = [
 
 [[package]]
 name = "aden-lsp"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aden-core",
  "aden-graph",
@@ -151,7 +151,7 @@ dependencies = [
 
 [[package]]
 name = "aden-mcp"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "rmcp",
@@ -161,7 +161,7 @@ dependencies = [
 
 [[package]]
 name = "aden-parse"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aden-core",
  "serde",
@@ -172,7 +172,7 @@ dependencies = [
 
 [[package]]
 name = "aden-paths"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "dirs",
  "serde",
@@ -183,7 +183,7 @@ dependencies = [
 
 [[package]]
 name = "aden-policy"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aden-core",
  "serde",
@@ -191,11 +191,11 @@ dependencies = [
 
 [[package]]
 name = "aden-propose"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "aden-store"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aden-core",
  "fjall",

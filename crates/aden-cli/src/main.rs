@@ -16,7 +16,7 @@ use std::path::PathBuf;
 #[derive(Parser)]
 #[command(
     name = "aden",
-    version = "0.1.0",
+    version = env!("CARGO_PKG_VERSION"),
     about = "Aden — A Dense Referential Context Compiler"
 )]
 struct Cli {
