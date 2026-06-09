@@ -791,7 +791,18 @@ fn collect_store_entries(path: &Path) -> Vec<(PathBuf, String)> {
     let Ok(docs) = storage.get_all_documents() else {
         return Vec::new();
     };
-    docs.into_values()
+    // `get_all_documents` returns a HashMap → `into_values()` yields a NON-deterministic
+    // order. That order feeds the index build and decides anchor-collision winners (two
+    // files can share a basename-anchor, e.g. `router_test.go#TestRouter`), perturbing
+    // the index and making retrieval non-reproducible. Sort by (anchor, source_file) so
+    // the build — and the collision winner — is identical regardless of store order.
+    let mut docs: Vec<_> = docs.into_values().collect();
+    docs.sort_by(|a, b| {
+        a.anchor
+            .cmp(&b.anchor)
+            .then_with(|| a.attributes.get("source_file").cmp(&b.attributes.get("source_file")))
+    });
+    docs.into_iter()
         .map(|doc| {
             // Use the recorded source file as the synthetic path when available
             // so snippets and locate-style lookups point at the real code.
@@ -800,9 +811,22 @@ fn collect_store_entries(path: &Path) -> Vec<(PathBuf, String)> {
                 .get("source_file")
                 .cloned()
                 .unwrap_or_else(|| doc.anchor.clone());
-            (PathBuf::from(synthetic), aden_emit::emit_document(&doc))
+            (PathBuf::from(synthetic), index_text(&doc))
         })
         .collect()
+}
+
+/// Emit a store `Document` as AsciiDoc for the search index, with *volatile* metadata
+/// stripped so the index is reproducible. `:last-verified:` carries a wall-clock
+/// timestamp that differs every run; indexing it both pollutes retrieval with date
+/// tokens and makes the index non-deterministic. (It stays in the on-disk/store
+/// contract — this only affects what gets tokenised into the index.)
+fn index_text(doc: &aden_core::Document) -> String {
+    aden_emit::emit_document(doc)
+        .lines()
+        .filter(|l| !l.trim_start().starts_with(":last-verified:"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Load the search index from disk cache, or build and cache it.

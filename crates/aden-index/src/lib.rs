@@ -721,10 +721,19 @@ impl Index {
     /// Call [`Index::finalize`] once after all `ingest` calls to recompute the
     /// BM25 average document length.
     pub fn ingest(&mut self, entries: Vec<(PathBuf, String)>) {
-        let parsed: Vec<_> = entries
+        let mut parsed: Vec<_> = entries
             .into_par_iter()
             .filter_map(|(path, text)| parse_adoc(&path, &text).map(|p| (p, text)))
             .collect();
+
+        // Determinism: the dedup below is "first occurrence wins", and `entries` may
+        // arrive in non-deterministic parallel order (file walk / store iteration). If
+        // an anchor appears more than once with differing token counts, which copy wins
+        // — and thus `doc_lengths`/`avg_doc_length` and every downstream BM25 score —
+        // would otherwise vary run-to-run. Sort by (anchor, source_path) so the index is
+        // byte-identical regardless of collection order. (Same class as the
+        // `detect_communities` sort-before-Louvain determinism fix.)
+        parsed.sort_by(|a, b| a.0 .0.cmp(&b.0 .0).then_with(|| a.0 .1.cmp(&b.0 .1)));
 
         for ((anchor, source_path, counts), text) in parsed {
             if self.doc_lengths.contains_key(&anchor) {
