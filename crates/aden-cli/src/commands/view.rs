@@ -41,6 +41,13 @@ pub fn cmd_view(
         );
     }
 
+    // A bare `aden view` (no anchor, default mode) opens the whole-project sphere
+    // overview rather than erroring for a missing anchor.
+    let mode = if !replay && anchor.is_none() && mode == "blast" {
+        "communities"
+    } else {
+        mode
+    };
     // `--replay`: the graph IS the project's git-history surface — the union of all
     // symbols touched across `max` commits — and `DATA.activity` carries each commit's
     // touched anchors so the viewer plays the project *populating* over time.

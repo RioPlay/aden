@@ -187,7 +187,7 @@ const Graph = ForceGraph()(el)
   // Gentle de-emphasis (no harsh blackout) so the focus change isn't a flash.
   .nodeColor(n => (highlightNodes.size && !highlightNodes.has(n)) ? hexA(colorOf(n), .34) : colorOf(n))
   .nodeCanvasObjectMode(() => 'before')
-  .nodeCanvasObject((n, ctx) => {
+  .nodeCanvasObject((n, ctx, scale) => {
     const base = REL * Math.sqrt(nodeSize(n));
     const dim = highlightNodes.size && !highlightNodes.has(n);
     if (!dim) {                           // soft colour glow behind each node (premium look)
@@ -203,6 +203,15 @@ const Graph = ForceGraph()(el)
     if (n === hoverNode) {                // steady focus halo
       ctx.beginPath(); ctx.arc(n.x, n.y, base * 1.7, 0, 2 * Math.PI);
       ctx.fillStyle = 'rgba(137,180,250,.22)'; ctx.fill();
+    }
+    // Always label spheres + hubs (and the hovered node), so the map is readable
+    // without hovering everything. Others stay tooltip-only to avoid clutter.
+    if (!dim && (n.size != null || n === hoverNode || (scale > 1.6 && n.deg >= 5))) {
+      const fs = Math.max(11 / scale, 1.5);
+      ctx.font = `${fs}px ui-sans-serif, system-ui, sans-serif`;
+      ctx.fillStyle = (n.size != null) ? 'rgba(205,214,244,.92)' : 'rgba(186,194,222,.8)';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+      ctx.fillText(shortName(n), n.x, n.y + base + 3 / scale);
     }
   })
   .linkColor(l => {
