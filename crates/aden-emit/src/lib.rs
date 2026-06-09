@@ -69,8 +69,13 @@ mod tests;
 /// Emit a single Document as an AsciiDoc string.
 pub fn emit_document(doc: &Document) -> String {
     let mut out = String::new();
-    // Attributes
-    for (key, value) in &doc.attributes {
+    // Attributes — sorted by key so the emitted text is byte-stable. `attributes`
+    // is a HashMap, so iterating it directly yields a non-deterministic order; the
+    // search index ingests this text, and an unstable order makes the index cache
+    // (and snippets) differ run-to-run. Sorting makes it reproducible.
+    let mut attrs: Vec<_> = doc.attributes.iter().collect();
+    attrs.sort_by(|a, b| a.0.cmp(b.0));
+    for (key, value) in attrs {
         writeln!(out, ":{key}: {value}").unwrap();
     }
     writeln!(out).unwrap();
@@ -225,11 +230,12 @@ fn emit_region_block(out: &mut String, block: &RegionBlock) {
     // Write region header with attributes
     write!(out, "[{region_tag}]").unwrap();
     if !block.attributes.is_empty() {
-        let attrs: Vec<String> = block
+        let mut attrs: Vec<String> = block
             .attributes
             .iter()
             .map(|(k, v)| format!(" :{k}: {v}"))
             .collect();
+        attrs.sort(); // HashMap order is non-deterministic; sort for byte-stable output
         write!(out, "{}", attrs.join("")).unwrap();
     }
     writeln!(out).unwrap();
