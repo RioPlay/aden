@@ -242,8 +242,8 @@ const Graph = ForceGraph()(el)
   .onBackgroundClick(() => { document.getElementById('panel').classList.remove('open'); fitAll(); });
 el.addEventListener('contextmenu', e => e.preventDefault()); // right-click = open in editor
 
-Graph.d3Force('charge').strength(-160);
-const _lf = Graph.d3Force('link'); if (_lf) _lf.distance(l => l.member ? 26 : 42);
+Graph.d3Force('charge').strength(-110).distanceMax(300);   // localised repulsion → no long-range stretch
+const _lf = Graph.d3Force('link'); if (_lf) _lf.distance(l => l.member ? 24 : 34).strength(0.5);
 // Lightweight collision so nodes don't overlap (no d3 dep; O(n²) is fine ≤ a few hundred).
 function collideForce(radius, strength) {
   let nodes = [];
@@ -266,7 +266,7 @@ function collideForce(radius, strength) {
   f.initialize = n => { nodes = n; };
   return f;
 }
-Graph.d3Force('collide', collideForce(n => REL * Math.sqrt(nodeSize(n)) + 4, 0.75));
+Graph.d3Force('collide', collideForce(n => REL * Math.sqrt(nodeSize(n)) * 1.5 + 6, 1));
 let fitPending = false;
 Graph.onEngineStop(() => { if (fitPending) { Graph.zoomToFit(600, 70); fitPending = false; } });
 function fit() { Graph.width(innerWidth).height(innerHeight); }
