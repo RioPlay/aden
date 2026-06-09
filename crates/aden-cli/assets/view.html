@@ -192,8 +192,31 @@ const Graph = ForceGraph()(el)
   .onBackgroundClick(() => { highlightNodes.clear(); highlightLinks.clear(); hoverNode = null; document.getElementById('panel').classList.remove('open'); });
 el.addEventListener('contextmenu', e => e.preventDefault()); // right-click = open in editor
 
-Graph.d3Force('charge').strength(-150);
-const _lf = Graph.d3Force('link'); if (_lf) _lf.distance(40);
+Graph.d3Force('charge').strength(-160);
+const _lf = Graph.d3Force('link'); if (_lf) _lf.distance(42);
+// Lightweight collision so nodes don't overlap (no d3 dep; O(n²) is fine ≤ a few hundred).
+function collideForce(radius, strength) {
+  let nodes = [];
+  const f = (alpha) => {
+    const s = strength == null ? 0.8 : strength;
+    for (let i = 0; i < nodes.length; i++) {
+      const a = nodes[i];
+      for (let j = i + 1; j < nodes.length; j++) {
+        const b = nodes[j];
+        let dx = b.x - a.x, dy = b.y - a.y, d2 = dx * dx + dy * dy;
+        const rr = radius(a) + radius(b);
+        if (d2 < rr * rr) {
+          if (d2 < 1e-6) { dx = Math.random() - 0.5; dy = Math.random() - 0.5; d2 = dx * dx + dy * dy; }
+          const d = Math.sqrt(d2), push = (rr - d) / d * s * alpha;
+          a.vx -= dx * push; a.vy -= dy * push; b.vx += dx * push; b.vy += dy * push;
+        }
+      }
+    }
+  };
+  f.initialize = n => { nodes = n; };
+  return f;
+}
+Graph.d3Force('collide', collideForce(n => REL * Math.sqrt(nodeSize(n)) + 4, 0.75));
 let fitPending = false;
 Graph.onEngineStop(() => { if (fitPending) { Graph.zoomToFit(600, 70); fitPending = false; } });
 function fit() { Graph.width(innerWidth).height(innerHeight); }
@@ -396,7 +419,10 @@ function applyFrame(f) {            // reveal + pulse the frame's nodes, highlig
   });
   startPulseAnim();
   const first = byId[f.ids[0]];
-  if (first && first.x != null) { hoverNode = first; Graph.centerAt(first.x, first.y, 450); }
+  if (first) hoverNode = first;
+  // Dynamic zoom: frame everything revealed so far, so the camera follows the
+  // build outward as time moves (instead of jumping to a single node).
+  Graph.zoomToFit(Math.min(stepMs * 0.9, 700), 55, n => revealed.has(n.id));
 }
 function step() {
   if (!playing) return;
@@ -430,6 +456,7 @@ function scrubTo(v) {                                              // seek: rebu
   revealed.clear();
   for (let i = 0; i < actIdx; i++) actSeq[i].ids.forEach(id => revealed.add(id));
   refreshViz(); readout(actSeq[Math.max(0, actIdx - 1)]);
+  Graph.zoomToFit(400, 55, n => revealed.has(n.id));
 }
 
 // ── Keyboard-centric navigation (when not typing in the search box) ──
