@@ -978,6 +978,12 @@ pub fn edge_types_for_intent(intent: &QueryIntent) -> Vec<aden_core::EdgeType> {
             .chain(semantic)
             .collect(),
     };
+    // Module containment used to ride on `Documents` edges (module→symbol); those are
+    // now typed `Contains`. Any intent that traversed `Documents` to reach a module's
+    // members must also traverse `Contains`, or top-down overviews would go dark.
+    if edges.contains(&Documents) && !edges.contains(&Contains) {
+        edges.push(Contains);
+    }
     // The call graph is the densest, most useful relationship for code questions,
     // so it must be traversable for EVERY intent — not just Explain/Refactor.
     if !edges.contains(&Calls) {

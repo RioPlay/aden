@@ -491,7 +491,7 @@ fn link_store_edges<S: GraphStorage>(
         if let Some(krate) = crate_from_anchor(anchor) {
             let module_anchor = format!("mod-{}", krate);
             modules.insert(krate);
-            edges.push((module_anchor.clone(), anchor.clone(), EdgeType::Documents));
+            edges.push((module_anchor.clone(), anchor.clone(), EdgeType::Contains));
             edges.push((anchor.clone(), module_anchor, EdgeType::PartOf));
         }
     }
@@ -600,7 +600,7 @@ fn link_store_edges<S: GraphStorage>(
             edges.push((
                 project.to_string(),
                 module_anchor.clone(),
-                EdgeType::Documents,
+                EdgeType::Contains,
             ));
             edges.push((module_anchor, project.to_string(), EdgeType::PartOf));
         }

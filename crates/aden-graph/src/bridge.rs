@@ -71,6 +71,7 @@ impl GraphBridge {
             EdgeType::Implements,
             EdgeType::Tests,
             EdgeType::Documents,
+            EdgeType::Contains,
             EdgeType::Constrains,
             EdgeType::Justifies,
             EdgeType::Invokes,

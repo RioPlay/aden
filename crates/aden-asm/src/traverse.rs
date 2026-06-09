@@ -26,6 +26,9 @@ fn edge_priority(et: &EdgeType) -> u8 {
         EdgeType::Tests => 9,
         EdgeType::Verifies => 10,
         EdgeType::Documents => 11,
+        // Containment ranks exactly where these edges ranked as `Documents` before
+        // the split, so top-down module→symbol traversal order is unchanged.
+        EdgeType::Contains => 11,
         _ => 12, // everything else
     }
 }

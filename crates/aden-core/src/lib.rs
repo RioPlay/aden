@@ -564,6 +564,10 @@ pub enum EdgeType {
     Implements,
     Tests,
     Documents,
+    /// Structural containment (a module CONTAINS its symbols; the project CONTAINS
+    /// its modules). Kept distinct from `Documents` (which is prose→code) so the
+    /// documentation signal isn't diluted by membership. The inverse is `PartOf`.
+    Contains,
     Constrains,
     Justifies,
     Invokes,
@@ -648,6 +652,9 @@ impl EdgeType {
             EdgeType::Tests => 0.6,
             EdgeType::Verifies => 0.6,
             EdgeType::Documents => 0.5,
+            // Containment inherits the forward edges' prior weight (they were
+            // `Documents` before the split) so traversal behaviour is unchanged.
+            EdgeType::Contains => 0.5,
             EdgeType::Constrains => 0.7,
             EdgeType::Justifies => 0.5,
             EdgeType::Invokes => 0.7,

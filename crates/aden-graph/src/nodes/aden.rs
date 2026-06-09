@@ -51,6 +51,7 @@ impl GraphEdge for AdenEdge {
             EdgeType::Implements => "Implements",
             EdgeType::Tests => "Tests",
             EdgeType::Documents => "Documents",
+            EdgeType::Contains => "Contains",
             EdgeType::Constrains => "Constrains",
             EdgeType::Justifies => "Justifies",
             EdgeType::Invokes => "Invokes",
