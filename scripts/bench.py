@@ -51,6 +51,18 @@ CORPORA = {
         "queries": f"{HERE}/eval-sets/uno-controls.queries.tsv",
         "repo_url": "https://github.com/unoplatform/uno",
     },
+    "flask": {
+        "repo": f"{HOME}/Projects/eval-repos/flask", "lang": "Python",
+        "scope": "src/flask/", "memo_risk": "high",
+        "queries": f"{HERE}/eval-sets/flask.queries.tsv",
+        "repo_url": "https://github.com/pallets/flask",
+    },
+    "tanstack-query": {
+        "repo": f"{HOME}/Projects/eval-repos/query", "lang": "TypeScript",
+        "scope": "packages/query-core/src", "memo_risk": "med",
+        "queries": f"{HERE}/eval-sets/tanstack-query.queries.tsv",
+        "repo_url": "https://github.com/TanStack/query",
+    },
 }
 
 CAVEATS = [

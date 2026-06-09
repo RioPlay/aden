@@ -140,7 +140,7 @@ Validated BM25 R@1 (0.273) is in line with the t3-cli BM25 baseline (0.229). Hyb
 `target/release/aden` (`--features dense`) + bge-small; `gen` re-run per mode (each binary writes
 the index in its own mode).
 
-### M6 pilot summary — 3 repos, 3 languages (2026-06-09)
+### M6 corpus — 5 repos, 5 languages (2026-06-09)
 
 All three via `gen_queries.py` (commit→single-file) + manual spot-check, BM25 (debug bin) vs
 Hybrid (`--release --features dense` + bge-small). Validated (spot-checked) sets:
@@ -153,11 +153,15 @@ so they are reproducible run-to-run (verified: 5 fresh gens → identical recall
 | getkin/kin-openapi | Go | `openapi3/` | 22 | 0.273 / 0.455 | **0.409 / 0.591** | R@1 +50% |
 | rust-lang/rustfmt | Rust | `src/` | 21 | 0.095 / 0.191 | **0.095 / 0.238** | R@5 +67% |
 | unoplatform/uno | C# | `src/Uno.UI/Controls` | 20 | 0.150 / 0.150 | **0.150 / 0.300** | R@20 +100% |
+| pallets/flask | Python | `src/flask/` | 17 | 0.176 / 0.235 | **0.176 / 0.294** | R@20 +25% |
+| TanStack/query | TypeScript | `packages/query-core/src` | 11 | 0.091 / 0.182 | **0.182 / 0.364** | R@1 +100% |
 
 **Findings (the pilot's job — surface these before scaling to 24 repos):**
 
-1. **Hybrid ≥ BM25 on every repo** — the dense lift reproduces across Go/Rust/C# (and t3/Linux),
-   though magnitude varies. Strongest where BM25 is weakest (rustfmt R@1 +100%).
+1. **Hybrid ≥ BM25 on every repo** — the dense lift reproduces across all five languages
+   (Go, Rust, C#, Python, TypeScript) plus the earlier t3/Linux runs. R@20 improves on every corpus;
+   R@1 ties or improves. Magnitude varies; strongest on TanStack (R@1 +100%, R@20 +100%) and uno
+   (R@20 +100%). A clean, reproducible cross-language result.
 2. **Absolute recall tracks corpus/method fit, not just aden.** The commit→file query method shines
    when files are named by *domain* (kin-openapi: `schema.go`, `parameter.go` ↔ subjects that name
    the type) and struggles when files are named by *platform/concern* with churny cleanup commits
