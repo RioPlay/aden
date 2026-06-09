@@ -26,7 +26,8 @@
   #panel .k { color: #6c7086; }
   #panel .row { margin: 5px 0; word-break: break-all; }
   #panel .sec { margin-top: 12px; color: #9399b2; font-weight: 600; border-top: 1px solid #1f2430; padding-top: 10px; }
-  #panel .nb { color: #a6adc8; }
+  #panel .nb { color: #a6adc8; cursor: pointer; border-radius: 4px; padding: 2px 5px; margin: 1px -5px; }
+  #panel .nb:hover { background: rgba(137,180,250,.13); color: #cdd6f4; }
   /* dark, consistent hover tooltip (force-graph injects .graph-tooltip) */
   .graph-tooltip { background: rgba(17,21,30,.96) !important; color: #cdd6f4 !important;
     border: 1px solid #313244; border-radius: 6px; padding: 5px 9px !important;
@@ -46,6 +47,12 @@ const DATA = /*ADEN_DATA*/;
 const EDITOR = "/*EDITOR*/";
 const hasDrill = !!(DATA.drill && Object.keys(DATA.drill).length);
 let byId = {}, curLinks = [], level = 'overview';
+// Hover/focus highlight state (node + its neighbours + their links).
+const highlightNodes = new Set(), highlightLinks = new Set();
+let hoverNode = null;
+const REL = 3;
+function nodeSize(n) { return n.size != null ? Math.min(2 + Math.sqrt(n.size), 12) : 1 + Math.min(Math.sqrt(n.deg), 3); }
+function hexA(hex, a) { const m = hex.replace('#',''); return `rgba(${parseInt(m.slice(0,2),16)},${parseInt(m.slice(2,4),16)},${parseInt(m.slice(4,6),16)},${a})`; }
 // "Open in editor": a custom-scheme URI the OS routes to the desktop app.
 function editorUrl(n) { return (n && n.file) ? EDITOR.replace('{file}', n.file).replace('{line}', n.line || 1) : null; }
 function openEditor(n) { const u = editorUrl(n); if (u) window.location.href = u; }
@@ -69,11 +76,15 @@ function context(n) { if (n.size != null) return n.size + ' symbols'; const a = 
 // Adapt aden's {nodes, edges} to force-graph {nodes, links} + per-view degree/index.
 function buildData(rawNodes, rawEdges) {
   byId = {};
-  const nodes = (rawNodes || []).map(n => { const c = { ...n }; byId[n.id] = c; return c; });
+  const nodes = (rawNodes || []).map(n => { const c = { ...n, neighbors: [], adj: [] }; byId[n.id] = c; return c; });
   const links = (rawEdges || []).map(e => ({ source: e.from, target: e.to, type: e.type }));
-  const deg = {};
-  links.forEach(l => { deg[l.source] = (deg[l.source] || 0) + 1; deg[l.target] = (deg[l.target] || 0) + 1; });
-  nodes.forEach(n => n.deg = deg[n.id] || 0);
+  // Pre-compute neighbours + incident links per node (for hover highlighting).
+  links.forEach(l => {
+    const a = byId[l.source], b = byId[l.target];
+    if (a && b) { a.neighbors.push(b); b.neighbors.push(a); a.adj.push(l); b.adj.push(l); }
+  });
+  nodes.forEach(n => n.deg = n.adj.length);
+  highlightNodes.clear(); highlightLinks.clear(); hoverNode = null;
   curLinks = links;
   return { nodes, links };
 }
@@ -82,29 +93,50 @@ const el = document.getElementById('graph');
 const Graph = ForceGraph()(el)
   .backgroundColor('rgba(0,0,0,0)')
   .nodeId('id')
+  .autoPauseRedraw(false)                 // keep repainting so hover highlight is live
   .nodeLabel(n => `<b>${esc(shortName(n))}</b>${context(n) ? ` <span style="color:#6c7086">${esc(context(n))}</span>` : ''}`)
-  .nodeRelSize(3)
-  .nodeVal(n => n.size != null ? Math.min(2 + Math.sqrt(n.size), 12) : 1 + Math.min(Math.sqrt(n.deg), 3))
-  .nodeColor(colorOf)
-  .linkColor(() => 'rgba(120,130,170,.30)')
-  .linkWidth(1)
+  .nodeRelSize(REL)
+  .nodeVal(nodeSize)
+  // Dim non-highlighted nodes when something is focused (focus + context).
+  // Gentle de-emphasis (no harsh blackout) so the focus change isn't a flash.
+  .nodeColor(n => (highlightNodes.size && !highlightNodes.has(n)) ? hexA(colorOf(n), .34) : colorOf(n))
+  .nodeCanvasObjectMode(n => (n === hoverNode) ? 'before' : undefined)
+  .nodeCanvasObject((n, ctx) => {         // a single soft halo on the focused node only
+    const r = REL * Math.sqrt(nodeSize(n)) * 1.7;
+    ctx.beginPath(); ctx.arc(n.x, n.y, r, 0, 2 * Math.PI);
+    ctx.fillStyle = 'rgba(137,180,250,.20)';
+    ctx.fill();
+  })
+  .linkColor(l => highlightLinks.has(l) ? 'rgba(170,180,215,.5)' : (highlightNodes.size ? 'rgba(120,130,170,.12)' : 'rgba(120,130,170,.26)'))
+  .linkWidth(l => highlightLinks.has(l) ? 2 : 1)
   .linkDirectionalArrowLength(3.5)
   .linkDirectionalArrowRelPos(1)
   .linkLabel(l => l.type)
-  .onNodeHover(n => { el.style.cursor = n ? 'pointer' : 'default'; })
+  .onNodeHover(n => {
+    // Sticky highlight: only react to a *genuinely new* node. Ignoring the
+    // null/gaps between dense nodes removes the rapid on-off strobing entirely
+    // (no animation, no flashing — important on OLED).
+    el.style.cursor = n ? 'pointer' : 'default';
+    if (!n || n === hoverNode) return;
+    highlightNodes.clear(); highlightLinks.clear();
+    highlightNodes.add(n); (n.neighbors || []).forEach(x => highlightNodes.add(x)); (n.adj || []).forEach(l => highlightLinks.add(l));
+    hoverNode = n;
+  })
   .onNodeClick(onClick)
   .onNodeRightClick(n => openEditor(n))
-  .onBackgroundClick(() => document.getElementById('panel').classList.remove('open'));
+  .onBackgroundClick(() => { highlightNodes.clear(); highlightLinks.clear(); hoverNode = null; document.getElementById('panel').classList.remove('open'); });
 el.addEventListener('contextmenu', e => e.preventDefault()); // right-click = open in editor
 
-Graph.d3Force('charge').strength(-140);
-const _lf = Graph.d3Force('link'); if (_lf) _lf.distance(38);
+Graph.d3Force('charge').strength(-150);
+const _lf = Graph.d3Force('link'); if (_lf) _lf.distance(40);
+let fitPending = false;
+Graph.onEngineStop(() => { if (fitPending) { Graph.zoomToFit(600, 70); fitPending = false; } });
 function fit() { Graph.width(innerWidth).height(innerHeight); }
 addEventListener('resize', fit); fit();
 
 function show(rawNodes, rawEdges) {
+  fitPending = true;
   Graph.graphData(buildData(rawNodes, rawEdges));
-  setTimeout(() => Graph.zoomToFit(600, 70), 450);
 }
 function showOverview() {
   level = 'overview';
@@ -127,6 +159,18 @@ function onClick(n) {
     showCommunity('c' + n.community, shortName(n));
     return;
   }
+  Graph.centerAt(n.x, n.y, 600);          // gently focus the clicked symbol
+  showPanel(n);
+}
+
+// Clicking a neighbour in the panel focuses that node (highlight + centre + details).
+function focusNode(id) {
+  const n = byId[id];
+  if (!n) return;
+  highlightNodes.clear(); highlightLinks.clear();
+  highlightNodes.add(n); (n.neighbors || []).forEach(x => highlightNodes.add(x)); (n.adj || []).forEach(l => highlightLinks.add(l));
+  hoverNode = n;
+  if (n.x != null) Graph.centerAt(n.x, n.y, 600);
   showPanel(n);
 }
 
@@ -141,7 +185,7 @@ function showPanel(n) {
     .map(l => {
       const o = idOf(l.source) === n.id ? idOf(l.target) : idOf(l.source);
       const dir = idOf(l.source) === n.id ? '→' : '←';
-      return `<div class="row nb">${dir} ${esc(shortName(byId[o] || { id: o }))} <span class="k">${esc(l.type)}</span></div>`;
+      return `<div class="row nb" onclick="focusNode('${o}')">${dir} ${esc(shortName(byId[o] || { id: o }))} <span class="k">${esc(l.type)}</span></div>`;
     });
   const ed = editorUrl(n);
   document.getElementById('p-title').textContent = shortName(n);
