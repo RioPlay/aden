@@ -63,9 +63,10 @@
   #results .r:hover, #results .r.sel { background: rgba(137,180,250,.16); }
   #results .r .k { color: #6c7086; }
   #filter { position: fixed; left: 14px; bottom: 36px; display: flex; flex-wrap: wrap; gap: 5px; max-width: 56%; z-index: 4; }
-  #filter .chip { font-size: 11px; padding: 3px 9px; border-radius: 999px; cursor: pointer; user-select: none;
+  #filter .chip { font-size: 11px; padding: 3px 9px 3px 8px; border-radius: 999px; cursor: pointer; user-select: none;
     background: rgba(17,21,30,.85); border: 1px solid #313244; color: #9399b2; }
-  #filter .chip.on { color: #cdd6f4; border-color: #89b4fa; background: rgba(137,180,250,.14); }
+  #filter .chip.on { color: #cdd6f4; background: rgba(255,255,255,.05); }
+  #filter .chip .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
   #replaybar { position: fixed; bottom: 30px; left: 50%; transform: translateX(-50%); z-index: 5;
     display: flex; align-items: center; gap: 11px; background: rgba(17,21,30,.92); border: 1px solid #313244;
     border-radius: 999px; padding: 7px 16px; box-shadow: 0 8px 24px rgba(0,0,0,.35); }
@@ -132,6 +133,10 @@ const palette = ['#89b4fa','#a6e3a1','#fab387','#cba6f7','#94e2d5','#f9e2af',
                  '#eba0ac','#74c7ec','#b4befe','#f5c2e7','#f2cdcd','#f38ba8',
                  '#89dceb','#a6e3a1','#fab387'];
 let groupIdx = {};   // subsystem name → stable palette index (set in buildData)
+let typeColor = {};  // edge relationship type → colour (set in buildData)
+// Distinct edge palette (kept separate from the node hues so lines ≠ nodes).
+const edgePalette = ['#89b4fa','#f38ba8','#a6e3a1','#fab387','#cba6f7','#94e2d5',
+                     '#f9e2af','#74c7ec','#eba0ac','#b4befe','#f5c2e7','#89dceb'];
 function colorOf(n) {
   if (n.root) return '#f38ba8';                                           // the focused node
   if (n.group != null && n.group in groupIdx) return palette[groupIdx[n.group] % palette.length];
@@ -161,6 +166,9 @@ function buildData(rawNodes, rawEdges) {
   // stable subsystem → colour index (sorted, so colours don't shuffle per run)
   const gs = [...new Set(nodes.map(n => n.group).filter(g => g != null))].sort();
   groupIdx = {}; gs.forEach((g, i) => { groupIdx[g] = i; });
+  // stable relationship-type → colour (sorted, so the legend is consistent)
+  const ets = [...new Set(links.map(l => l.type))].sort();
+  typeColor = {}; ets.forEach((t, i) => { typeColor[t] = edgePalette[i % edgePalette.length]; });
   highlightNodes.clear(); highlightLinks.clear(); hoverNode = null;
   activeTypes = new Set(links.map(l => l.type));   // all edge types visible by default
   curLinks = links;
@@ -197,7 +205,12 @@ const Graph = ForceGraph()(el)
       ctx.fillStyle = 'rgba(137,180,250,.22)'; ctx.fill();
     }
   })
-  .linkColor(l => highlightLinks.has(l) ? 'rgba(170,180,215,.5)' : (highlightNodes.size ? 'rgba(120,130,170,.12)' : 'rgba(120,130,170,.26)'))
+  .linkColor(l => {
+    const c = typeColor[l.type] || '#8088aa';
+    if (highlightLinks.has(l)) return hexA(c, .9);
+    if (highlightNodes.size) return hexA(c, .06);
+    return hexA(c, .4);
+  })
   .linkWidth(l => highlightLinks.has(l) ? 2 : 1)
   .nodeVisibility(n => !growMode || revealed.has(n.id))
   .linkVisibility(l => activeTypes.has(l.type) && (!growMode || (revealed.has(idOf(l.source)) && revealed.has(idOf(l.target)))))
@@ -397,15 +410,20 @@ function syncSearch() { if (qEl) { qEl.value = ''; resEl.classList.remove('open'
 
 // ── Filter by edge type (chips). Toggling hides/shows those edges live. ──
 const filterEl = document.getElementById('filter');
+let filterTypes = [];
+function renderChips() {                       // chips double as a colour legend for edge types
+  filterEl.innerHTML = filterTypes.map(t => {
+    const c = typeColor[t] || '#8088aa', on = activeTypes.has(t);
+    return `<span class="chip${on ? ' on' : ''}" data-t="${esc(t)}" style="${on ? `border-color:${c}` : ''}" onclick="toggleType('${esc(t)}')"><span class="dot" style="background:${on ? c : '#45475a'}"></span>${esc(t)}</span>`;
+  }).join('');
+}
 function syncFilter() {
-  const types = [...new Set(curLinks.map(l => l.type))].sort();   // activeTypes set in buildData
-  filterEl.innerHTML = types.map(t => `<span class="chip${activeTypes.has(t) ? ' on' : ''}" data-t="${esc(t)}" onclick="toggleType('${esc(t)}')">${esc(t)}</span>`).join('');
+  filterTypes = [...new Set(curLinks.map(l => l.type))].sort();
+  renderChips();
 }
 function toggleType(t) {
   if (activeTypes.has(t)) activeTypes.delete(t); else activeTypes.add(t);
-  const chip = [...filterEl.children].find(c => c.dataset.t === t);
-  if (chip) chip.classList.toggle('on', activeTypes.has(t));
-  refreshViz();   // re-apply (respects active types + replay reveal)
+  renderChips(); refreshViz();
 }
 
 // ── Activity replay: pulse nodes as they're "touched", in sequence ──
