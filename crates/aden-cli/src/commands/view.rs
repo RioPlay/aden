@@ -48,6 +48,8 @@ pub fn cmd_view(
     } else {
         mode
     };
+    // Emit a bit deeper than asked so the viewer's depth slider has range to dial.
+    let depth = if replay { depth } else { depth.max(3) };
     // `--replay`: the graph IS the project's git-history surface — the union of all
     // symbols touched across `max` commits — and `DATA.activity` carries each commit's
     // touched anchors so the viewer plays the project *populating* over time.

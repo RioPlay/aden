@@ -27,6 +27,8 @@
     background: rgba(17,21,30,.85); border: 1px solid #313244; border-radius: 8px; padding: 5px 12px; }
   #controls .lbl { color: #9399b2; font-size: 11px; }
   #controls input[type=range] { width: 120px; }
+  #depth-wrap { display: none; align-items: center; gap: 9px; }
+  #depth-wrap input[type=range] { width: 84px; }
   /* 'h' hides all chrome for a clean graph */
   body.hideui #hdr, body.hideui #fit, body.hideui #controls, body.hideui #search, body.hideui #replaybar,
   body.hideui #filter, body.hideui #hint, body.hideui #back, body.hideui #panel {
@@ -93,7 +95,7 @@
 <body>
 <div id="hdr">aden <small>· graph</small></div>
 <div id="fit" onclick="fitAll()" title="fit full view (f / esc / click empty space)">⊙ fit</div>
-<div id="controls"><span class="lbl">density</span><input id="density" type="range" min="6" max="100" value="100" oninput="setDensity(+this.value)" title="show fewer (hubs only) → more nodes"></div>
+<div id="controls"><span class="lbl">density</span><input id="density" type="range" min="6" max="100" value="100" oninput="setDensity(+this.value)" title="show fewer (hubs only) → more nodes"><span id="depth-wrap"><span class="lbl">depth</span><input id="depth" type="range" min="1" max="3" value="3" oninput="setDepth(+this.value)" title="hops from the focused symbol"></span></div>
 <div id="back" onclick="showOverview()">← communities</div>
 <div id="search"><input id="q" type="text" placeholder="search symbols…  ( / )" autocomplete="off" spellcheck="false"><div id="results"></div></div>
 <div id="graph"></div>
@@ -120,6 +122,7 @@ let hoverNode = null;
 let panelStack = [], panelCur = null, panelNbs = [], nbSel = -1;
 let activeTypes = new Set();   // visible edge types (filter chips)
 let densityFrac = 1, densityVisible = null;   // live density: show top fraction by degree
+let depthLimit = null, maxHop = 0;            // live depth: hop distance from the root
 // Activity replay: pulse nodes as an agent "touches" them.
 let playing = false, actSeq = [], actIdx = 0, playTimer = null, pulseRAF = null;
 let anchorToId = {};           // map a real activity log's anchors → current node ids
@@ -168,6 +171,14 @@ function buildData(rawNodes, rawEdges) {
     if (a && b) { a.neighbors.push(b); b.neighbors.push(a); a.adj.push(l); b.adj.push(l); }
   });
   nodes.forEach(n => n.deg = n.adj.length);
+  // hop distance from the root (anchor views) → drives the live depth slider
+  nodes.forEach(n => n.hop = undefined);
+  const rootN = nodes.find(n => n.root);
+  if (rootN) {
+    rootN.hop = 0; const q = [rootN];
+    while (q.length) { const c = q.shift(); (c.neighbors || []).forEach(nb => { if (nb.hop === undefined) { nb.hop = c.hop + 1; q.push(nb); } }); }
+  }
+  maxHop = rootN ? nodes.reduce((m, n) => Math.max(m, n.hop || 0), 0) : 0;
   anchorToId = {}; nodes.forEach(n => { if (n.anchor) anchorToId[n.anchor] = n.id; });
   // stable subsystem → colour index (sorted, so colours don't shuffle per run)
   const gs = [...new Set(nodes.map(n => n.group).filter(g => g != null))].sort();
@@ -221,7 +232,7 @@ const Graph = ForceGraph()(el)
     }
   })
   .linkColor(l => {
-    if (l.member) return highlightLinks.has(l) ? 'rgba(180,190,220,.35)' : 'rgba(120,130,170,.10)';
+    if (isMeta(l)) return highlightLinks.has(l) ? 'rgba(180,190,220,.4)' : 'rgba(120,130,170,.12)';
     const c = typeColor[l.type] || '#8088aa';
     if (highlightLinks.has(l)) return hexA(c, .9);
     if (highlightNodes.size) return hexA(c, .06);
@@ -229,7 +240,7 @@ const Graph = ForceGraph()(el)
   })
   .linkWidth(l => highlightLinks.has(l) ? 2 : 1)
   .nodeVisibility(n => !growMode || revealed.has(n.id))
-  .linkVisibility(l => (l.member || activeTypes.has(l.type)) && (!growMode || (revealed.has(idOf(l.source)) && revealed.has(idOf(l.target)))))
+  .linkVisibility(l => (isMeta(l) || activeTypes.has(l.type)) && (!growMode || (revealed.has(idOf(l.source)) && revealed.has(idOf(l.target)))))
   .linkDirectionalArrowLength(3.5)
   .linkDirectionalArrowRelPos(1)
   .linkLabel(l => l.type)
@@ -288,6 +299,12 @@ function show(rawNodes, rawEdges) {
   document.getElementById('scrub').value = 0;
   document.getElementById('rcount').textContent = '';
   Graph.graphData(buildData(rawNodes, rawEdges));
+  depthLimit = maxHop || null;          // depth slider: only for rooted (anchor) views
+  const dw = document.getElementById('depth-wrap');
+  if (dw) {
+    dw.style.display = maxHop > 1 ? 'inline-flex' : 'none';
+    const sl = document.getElementById('depth'); if (sl) { sl.max = maxHop; sl.value = maxHop; }
+  }
   syncSearch();
   syncFilter();
   refreshViz();
@@ -443,24 +460,46 @@ function showPanel(n) {
 // ── Search within the current view: highlight matches, jump to one ──
 const qEl = document.getElementById('q'), resEl = document.getElementById('results');
 let matches = [], selIdx = 0;
+// Search across the current view AND (in the sphere view) every function in every
+// sphere — even collapsed ones — by name, label, anchor, or FILE.
+function searchCandidates() {
+  const list = [], seen = new Set();
+  Object.values(byId).forEach(n => { list.push(n); seen.add(n.id); });
+  if (hasDrill && DATA.drill) {
+    Object.keys(DATA.drill).forEach(cid => DATA.drill[cid].nodes.forEach(m => {
+      const id = cid + ':' + m.id;
+      if (!seen.has(id)) { list.push({ ...m, id, _cid: cid }); seen.add(id); }
+    }));
+  }
+  return list;
+}
+function resultCtx(n) {
+  if (n.file) return n.file.split('/').pop();          // show the file name
+  if (n.label && n.label !== shortName(n)) return n.label;
+  return n.group || '';
+}
 function runSearch() {
   const q = qEl.value.trim().toLowerCase();
   highlightNodes.clear(); highlightLinks.clear(); hoverNode = null;
-  if (!q) { matches = []; resEl.classList.remove('open'); resEl.innerHTML = ''; return; }
-  matches = Object.values(byId)
-    .filter(n => (shortName(n) + ' ' + (n.anchor || '')).toLowerCase().includes(q))
+  if (!q) { matches = []; resEl.classList.remove('open'); resEl.innerHTML = ''; refreshViz(); return; }
+  matches = searchCandidates()
+    .filter(n => (shortName(n) + ' ' + (n.label || '') + ' ' + (n.anchor || '') + ' ' + (n.file || '')).toLowerCase().includes(q))
     .sort((a, b) => shortName(a).length - shortName(b).length)
-    .slice(0, 12);
+    .slice(0, 14);
   selIdx = 0;
   resEl.innerHTML = matches.map((n, i) =>
-    `<div class="r${i === 0 ? ' sel' : ''}" onclick="pickResult(${i})">${esc(shortName(n))} <span class="k">${esc(context(n) || '')}</span></div>`).join('');
+    `<div class="r${i === 0 ? ' sel' : ''}" onclick="pickResult(${i})">${esc(shortName(n))} <span class="k">${esc(resultCtx(n))}</span></div>`).join('');
   resEl.classList.toggle('open', matches.length > 0);
-  matches.forEach(n => highlightNodes.add(n));   // light up matches, dim the rest
+  matches.forEach(n => { if (byId[n.id]) highlightNodes.add(byId[n.id]); });
+  refreshViz();
 }
 function pickResult(i) {
   const n = matches[i]; if (!n) return;
   qEl.value = ''; resEl.classList.remove('open'); matches = [];
-  navTo(n);
+  if (n._cid && !byId[n.id]) expandCommunity(n._cid);    // its sphere is collapsed → unfold it first
+  const real = byId[n.id] || n;
+  if (hasDrill && real.anchor == null && DATA.drill[real.id]) { toggleCommunity(real.id); return; }  // a sphere → expand
+  navTo(real);
 }
 function updateSel() { [...resEl.children].forEach((c, i) => c.classList.toggle('sel', i === selIdx)); }
 qEl.addEventListener('input', runSearch);
@@ -483,7 +522,7 @@ function renderChips() {                       // chips double as a colour legen
   }).join('');
 }
 function syncFilter() {
-  filterTypes = [...new Set(curLinks.filter(l => !l.member).map(l => l.type))].sort();
+  filterTypes = [...new Set(curLinks.filter(l => !isMeta(l)).map(l => l.type))].sort();
   renderChips();
 }
 function toggleType(t) {
@@ -523,15 +562,21 @@ function startPulseAnim() {
   pulseRAF = requestAnimationFrame(tick);
 }
 // A node is shown if it passes the replay reveal AND the density filter.
+// Meta links (membership · super-edge "N edges" aggregates) aren't real relationship
+// types — keep them out of the legend/filter and colour them neutrally.
+function isMeta(l) { return l.member || /\bedges$/.test(l.type || ''); }
 function idVisible(id) {
+  const n = byId[id];
   if (growMode && !revealed.has(id)) return false;
   if (densityVisible && !densityVisible.has(id)) return false;
+  if (depthLimit != null && n && n.hop != null && n.hop > depthLimit) return false;
   return true;
 }
+function setDepth(v) { depthLimit = v; refreshViz(); }
 // Re-apply visibility so reveal/density/type changes show immediately.
 function refreshViz() {
   Graph.nodeVisibility(n => idVisible(n.id));
-  Graph.linkVisibility(l => (l.member || activeTypes.has(l.type)) && idVisible(idOf(l.source)) && idVisible(idOf(l.target)));
+  Graph.linkVisibility(l => (isMeta(l) || activeTypes.has(l.type)) && idVisible(idOf(l.source)) && idVisible(idOf(l.target)));
 }
 // Live density: keep the top fraction of nodes by degree (hubs first); always
 // keep the focused/hovered node. No re-run — pure client filter on the current view.
