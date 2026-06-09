@@ -1885,6 +1885,28 @@ fn pick_symbol_anchor(symbol: &str, anchors: &[String]) -> Option<String> {
         .map(|a| (*a).clone())
 }
 
+/// Backlinks of `anchor` (incoming references) as JSON nodes, one entry per
+/// distinct referencer in iteration order. petgraph is a multigraph, so
+/// `neighbors_directed` yields a neighbor once per parallel edge (e.g. a module
+/// that both Contains and Calls the symbol); without the dedup `understand`
+/// listed the same backlink multiple times.
+fn collect_unique_backlinks(
+    graph: &aden_graph::AdenGraph<aden_graph::DocumentNode, aden_graph::AdenEdge>,
+    anchor: &str,
+) -> Vec<serde_json::Value> {
+    let mut out: Vec<serde_json::Value> = Vec::new();
+    let Some(idx) = graph.get_index(anchor) else {
+        return out;
+    };
+    let mut seen = HashSet::new();
+    for neighbor in graph.graph.neighbors_directed(idx, Direction::Incoming) {
+        if seen.insert(neighbor) {
+            out.push(node_to_json(&graph.graph[neighbor], 1));
+        }
+    }
+    out
+}
+
 /// `aden understand <symbol>` — one-shot symbol comprehension.
 ///
 /// Bundles what previously took four separate invocations (`locate`,
@@ -1974,10 +1996,7 @@ pub fn cmd_understand(
     };
 
     // Step 2: backlinks — incoming references (mirrors `query --backlinks`).
-    let mut backlinks: Vec<serde_json::Value> = Vec::new();
-    for neighbor in graph.graph.neighbors_directed(idx, Direction::Incoming) {
-        backlinks.push(node_to_json(&graph.graph[neighbor], 1));
-    }
+    let backlinks = collect_unique_backlinks(&graph, &anchor);
 
     // Step 3: downstream impact — outgoing reach over impact edge types
     // (mirrors `query --impact`).
@@ -2661,6 +2680,73 @@ pub fn cmd_watch(
 mod tests {
     use super::*;
     use crate::types::QueryIntent;
+
+    // ---- understand: backlink listing dedups parallel-edge referencers.
+
+    fn backlink_fixture_node(anchor: &str) -> aden_graph::DocumentNode {
+        aden_graph::DocumentNode {
+            doc: aden_core::Document {
+                anchor: anchor.to_string(),
+                node_type: aden_core::NodeType::Function,
+                attributes: std::collections::HashMap::new(),
+                blocks: Vec::new(),
+                source_span: None,
+                metadata: None,
+                confidence: 0.9,
+            },
+            parsed: None,
+            source_path: PathBuf::from(format!("{anchor}.adoc")),
+        }
+    }
+
+    /// Regression: `understand` printed the same backlink once per parallel
+    /// edge (observed: `mod-aden-mcp` listed twice). A referencer connected by
+    /// several edge types (Contains + Calls + Uses) must appear exactly once,
+    /// and distinct referencers must all survive the dedup.
+    #[test]
+    fn understand_backlinks_dedup_parallel_edges() {
+        let mut g = aden_graph::AdenGraph::<aden_graph::DocumentNode, aden_graph::AdenEdge>::new();
+        let target = g.add_node(backlink_fixture_node("target"));
+        let module = g.add_node(backlink_fixture_node("mod-caller"));
+        let other = g.add_node(backlink_fixture_node("other-caller"));
+        // Use raw petgraph add_edge: AdenGraph::add_edge skips duplicates, but
+        // real builds create parallel edges of different types directly.
+        for et in [
+            aden_core::EdgeType::Contains,
+            aden_core::EdgeType::Calls,
+            aden_core::EdgeType::Uses,
+        ] {
+            g.graph
+                .add_edge(module, target, aden_graph::AdenEdge { edge_type: et });
+        }
+        g.graph.add_edge(
+            other,
+            target,
+            aden_graph::AdenEdge {
+                edge_type: aden_core::EdgeType::Calls,
+            },
+        );
+
+        let backlinks = collect_unique_backlinks(&g, "target");
+        let anchors: Vec<&str> = backlinks
+            .iter()
+            .map(|b| b["anchor"].as_str().unwrap_or(""))
+            .collect();
+        assert_eq!(
+            anchors.len(),
+            2,
+            "each referencer must appear exactly once, got {anchors:?}"
+        );
+        assert!(anchors.contains(&"mod-caller"), "got {anchors:?}");
+        assert!(anchors.contains(&"other-caller"), "got {anchors:?}");
+    }
+
+    /// An anchor missing from the graph yields no backlinks (and no panic).
+    #[test]
+    fn understand_backlinks_unknown_anchor_is_empty() {
+        let g = aden_graph::AdenGraph::<aden_graph::DocumentNode, aden_graph::AdenEdge>::new();
+        assert!(collect_unique_backlinks(&g, "nope").is_empty());
+    }
 
     // ---- classify_intent: previously-misrouting phrasings now route correctly.
 
