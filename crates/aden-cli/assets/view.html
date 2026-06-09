@@ -24,6 +24,11 @@
   #panel .row { margin: 5px 0; word-break: break-all; }
   #panel .sec { margin-top: 12px; color: #9399b2; font-weight: 600; border-top: 1px solid #1f2430; padding-top: 10px; }
   #panel .nb { color: #a6adc8; }
+  /* dark, consistent hover tooltip (force-graph injects .graph-tooltip) */
+  .graph-tooltip { background: rgba(17,21,30,.96) !important; color: #cdd6f4 !important;
+    border: 1px solid #313244; border-radius: 6px; padding: 5px 9px !important;
+    font: 12px ui-sans-serif, system-ui, sans-serif !important; box-shadow: 0 8px 24px rgba(0,0,0,.45); }
+  .graph-tooltip b { color: #89b4fa; }
 </style>
 </head>
 <body>
@@ -61,20 +66,10 @@ const Graph = ForceGraph()(el)
   .backgroundColor('rgba(0,0,0,0)')
   .graphData({ nodes, links })
   .nodeId('id')
-  .nodeLabel(n => n.anchor || n.label || n.id)
-  .nodeRelSize(4)
-  .nodeVal(n => 1 + n.deg)
+  .nodeLabel(n => `<b>${esc(shortName(n))}</b>${context(n) ? ` <span style="color:#6c7086">${esc(context(n))}</span>` : ''}`)
+  .nodeRelSize(3)
+  .nodeVal(n => n.size != null ? Math.min(2 + Math.sqrt(n.size), 12) : 1 + Math.min(Math.sqrt(n.deg), 3))
   .nodeColor(colorOf)
-  .nodeCanvasObjectMode(() => 'after')
-  .nodeCanvasObject((n, ctx, scale) => {
-    if (n.deg >= 4 || scale > 2.2) {                 // de-clutter: label only hubs / when zoomed
-      const t = n.label || n.id, fs = 11 / scale;
-      ctx.font = `${fs}px ui-sans-serif, sans-serif`;
-      ctx.fillStyle = 'rgba(205,214,244,.85)';
-      ctx.textAlign = 'center'; ctx.textBaseline = 'top';
-      ctx.fillText(t, n.x, n.y + (4 + Math.sqrt(1 + n.deg) * 2) / scale + 1);
-    }
-  })
   .linkColor(() => 'rgba(120,130,170,.30)')
   .linkWidth(1)
   .linkDirectionalArrowLength(3.5)
@@ -87,14 +82,21 @@ const Graph = ForceGraph()(el)
 
 function fit() { Graph.width(innerWidth).height(innerHeight); }
 addEventListener('resize', fit); fit();
-setTimeout(() => Graph.zoomToFit(500, 60), 400);
+// Spread nodes apart so they don't blob together.
+Graph.d3Force('charge').strength(-140);
+const _lf = Graph.d3Force('link'); if (_lf) _lf.distance(38);
+setTimeout(() => Graph.zoomToFit(600, 70), 500);
 
 function esc(s) { return String(s).replace(/[&<>]/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;' }[c])); }
 function row(k, v) { return `<div class="row"><span class="k">${k}:</span> ${esc(v)}</div>`; }
+// The "actual call" / original function name — the symbol, truncated from its anchor.
+function shortName(n) { const a = n.label || n.anchor || n.id || ''; return String(a).split('#').pop().split('/').pop(); }
+// File/group context (everything before the symbol) for the tooltip subtitle.
+function context(n) { if (n.size != null) return n.size + ' symbols'; const a = n.anchor || ''; const h = a.indexOf('#'); return (h >= 0 ? a.slice(0, h) : '').split('/').pop(); }
 
 function showPanel(n) {
   const rows = [];
-  if (n.label) rows.push(row('label', n.label));
+  if (n.size != null) rows.push(row('symbols', n.size));
   if (n.kind) rows.push(row('kind', n.kind));
   if (n.community != null) rows.push(row('community', n.community));
   rows.push(row('degree', n.deg));
@@ -103,10 +105,11 @@ function showPanel(n) {
     .map(l => {
       const o = idOf(l.source) === n.id ? idOf(l.target) : idOf(l.source);
       const dir = idOf(l.source) === n.id ? '→' : '←';
-      return `<div class="row nb">${dir} ${esc((byId[o] || {}).label || o)} <span class="k">${esc(l.type)}</span></div>`;
+      return `<div class="row nb">${dir} ${esc(shortName(byId[o] || { id: o }))} <span class="k">${esc(l.type)}</span></div>`;
     });
-  document.getElementById('p-title').textContent = n.anchor || n.id;
+  document.getElementById('p-title').textContent = shortName(n);
   document.getElementById('p-body').innerHTML =
+    (n.anchor ? `<div class="row" style="color:#6c7086; word-break:break-all">${esc(n.anchor)}</div>` : '') +
     rows.join('') +
     `<div class="sec">neighbours (${nbs.length})</div>` +
     nbs.slice(0, 40).join('');

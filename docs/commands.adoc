@@ -590,10 +590,10 @@ The first argument is a symbol — a bare name like `cmd_understand` or a full
 |-j/--json |Alias for `--format json` |false
 |===
 
-Blast-radius uses the same impact-edge set as <<impact-diff>>; the `communities`
-view reuses <<communities>> and renders DOT `cluster_*` boxes (the layout best
-suited to grouping). The `asciidoc` format wraps the Mermaid source in a `[mermaid]`
-block so it renders inline in an AsciiDoc site.
+Blast-radius uses the same impact-edge set as the `impact-diff` command; the
+`communities` view reuses `aden communities` and renders DOT `cluster_*` boxes (the
+layout best suited to grouping). The `asciidoc` format wraps the Mermaid source in a
+`[mermaid]` block so it renders inline in an AsciiDoc site.
 
 === impact-diff
 

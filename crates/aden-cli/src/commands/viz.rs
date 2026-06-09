@@ -52,11 +52,21 @@ pub fn cmd_viz(
         // Whole-graph functional clusters → DOT `cluster_*` is the right default
         // (see research: viz-design). Anchor (if any) is ignored here.
         "communities" => {
-            let (comms, edges) = communities_slice(&graph, 2, 1.0, MAX_COMMUNITIES, MEMBER_CAP);
-            if comms.is_empty() {
-                return Err("no communities of size >= 2 found (try `aden communities`)".into());
+            // JSON / viewer uses the collapsed super-node overview (connected and
+            // legible); the static formats keep member cluster-boxes.
+            if format == "json" {
+                let (supers, weights) = communities_overview(&graph, 2, 1.0, MAX_COMMUNITIES);
+                if supers.is_empty() {
+                    return Err("no communities of size >= 2 found (try `aden communities`)".into());
+                }
+                render_communities_overview_json(&supers, &weights)
+            } else {
+                let (comms, edges) = communities_slice(&graph, 2, 1.0, MAX_COMMUNITIES, MEMBER_CAP);
+                if comms.is_empty() {
+                    return Err("no communities of size >= 2 found (try `aden communities`)".into());
+                }
+                render_communities(&comms, &edges, format)?
             }
-            render_communities(&comms, &edges, format)?
         }
         // Anchor-centred views.
         "blast" | "connectivity" => {
@@ -68,9 +78,9 @@ pub fn cmd_viz(
             })?;
             let root_anchor = resolve_anchor(&graph, anchor)?;
             let (nodes, edges) = if mode == "connectivity" {
-                connectivity_slice(&graph, &root_anchor, depth)
+                connectivity_slice(&graph, &root_anchor, depth, NODE_CAP)
             } else {
-                blast_slice(&graph, &root_anchor, depth)
+                blast_slice(&graph, &root_anchor, depth, NODE_CAP)
             };
             render_flat(&root_anchor, &nodes, &edges, format)?
         }
@@ -89,6 +99,9 @@ pub fn cmd_viz(
 /// reduce before emit). Generous enough to be useful, small enough to render.
 const MAX_COMMUNITIES: usize = 12;
 const MEMBER_CAP: usize = 12;
+/// Cap on nodes in a blast/connectivity slice — reduce *before* emit so the view
+/// stays legible (hubs at depth 2 can otherwise pull in hundreds of nodes).
+const NODE_CAP: usize = 60;
 
 /// Produce the JSON slice for `aden view` — reuses the exact same slices + JSON
 /// renderers as `viz`, so the viewer and the text formats can never diverge.
@@ -104,11 +117,11 @@ pub(crate) fn viz_json_for(
     let graph = aden_graph::cache::build_from_directory_cached(&root)?;
     match mode {
         "communities" => {
-            let (comms, edges) = communities_slice(&graph, 2, 1.0, MAX_COMMUNITIES, MEMBER_CAP);
-            if comms.is_empty() {
+            let (supers, weights) = communities_overview(&graph, 2, 1.0, MAX_COMMUNITIES);
+            if supers.is_empty() {
                 return Err("no communities of size >= 2 found (try `aden communities`)".into());
             }
-            Ok(render_communities_json(&comms, &edges))
+            Ok(render_communities_overview_json(&supers, &weights))
         }
         "blast" | "connectivity" => {
             let anchor = anchor.ok_or_else(|| -> Box<dyn std::error::Error> {
@@ -116,9 +129,9 @@ pub(crate) fn viz_json_for(
             })?;
             let root_anchor = resolve_anchor(&graph, anchor)?;
             let (nodes, edges) = if mode == "connectivity" {
-                connectivity_slice(&graph, &root_anchor, depth)
+                connectivity_slice(&graph, &root_anchor, depth, NODE_CAP)
             } else {
-                blast_slice(&graph, &root_anchor, depth)
+                blast_slice(&graph, &root_anchor, depth, NODE_CAP)
             };
             Ok(render_json(&root_anchor, &nodes, &edges))
         }
@@ -129,8 +142,9 @@ pub(crate) fn viz_json_for(
     }
 }
 
-/// Blast radius: BFS *outgoing* over impact edges from `root_anchor`, depth-capped.
-fn blast_slice(graph: &Graph, root_anchor: &str, depth: usize) -> Slice {
+/// Blast radius: BFS *outgoing* over impact edges from `root_anchor`, depth-capped
+/// and node-capped at `cap` (closest-first, so the cap keeps the nearest reach).
+fn blast_slice(graph: &Graph, root_anchor: &str, depth: usize, cap: usize) -> Slice {
     let impact = impact_edge_types();
     let mut nodes: BTreeSet<String> = BTreeSet::new();
     nodes.insert(root_anchor.to_string());
@@ -154,8 +168,13 @@ fn blast_slice(graph: &Graph, root_anchor: &str, depth: usize) -> Slice {
                 .find(|e| impact.contains(&e.weight().edge_type))
                 .map(|e| format!("{:?}", e.weight().edge_type));
             let Some(et) = etype else { continue };
-            let from = graph.graph[node].doc.anchor.clone();
             let to = graph.graph[neighbor].doc.anchor.clone();
+            // Respect the cap: only introduce a *new* node while under it (edges to
+            // already-kept nodes still count, so the shown subgraph stays connected).
+            if !nodes.contains(&to) && nodes.len() >= cap {
+                continue;
+            }
+            let from = graph.graph[node].doc.anchor.clone();
             nodes.insert(to.clone());
             edges.insert((from, to, et));
             if visited.insert(neighbor) {
@@ -169,7 +188,7 @@ fn blast_slice(graph: &Graph, root_anchor: &str, depth: usize) -> Slice {
 /// Connectivity: BFS in *both* directions over *all* edge types, depth-capped —
 /// the symbol's neighbourhood (what it reaches AND what reaches it), each edge
 /// recorded in its true orientation.
-fn connectivity_slice(graph: &Graph, root_anchor: &str, depth: usize) -> Slice {
+fn connectivity_slice(graph: &Graph, root_anchor: &str, depth: usize, cap: usize) -> Slice {
     let mut nodes: BTreeSet<String> = BTreeSet::new();
     nodes.insert(root_anchor.to_string());
     let mut edges: BTreeSet<(String, String, String)> = BTreeSet::new();
@@ -187,6 +206,10 @@ fn connectivity_slice(graph: &Graph, root_anchor: &str, depth: usize) -> Slice {
         }
         for dir in [Direction::Outgoing, Direction::Incoming] {
             for neighbor in graph.graph.neighbors_directed(node, dir) {
+                let nb_anchor = graph.graph[neighbor].doc.anchor.clone();
+                if !nodes.contains(&nb_anchor) && nodes.len() >= cap {
+                    continue;
+                }
                 // Orient the edge source→target regardless of traversal direction.
                 let (from_idx, to_idx) = match dir {
                     Direction::Outgoing => (node, neighbor),
@@ -202,7 +225,7 @@ fn connectivity_slice(graph: &Graph, root_anchor: &str, depth: usize) -> Slice {
                 };
                 let from = graph.graph[from_idx].doc.anchor.clone();
                 let to = graph.graph[to_idx].doc.anchor.clone();
-                nodes.insert(graph.graph[neighbor].doc.anchor.clone());
+                nodes.insert(nb_anchor);
                 edges.insert((from, to, et));
                 if visited.insert(neighbor) {
                     queue.push_back((neighbor, d + 1));
@@ -270,6 +293,71 @@ fn communities_slice(
         }
     }
     (comms, edges)
+}
+
+/// A collapsed *overview* of the community structure: one super-node per community
+/// (sized by membership) + aggregated inter-community edge weights. Far more legible
+/// in a force layout than capped individual members (which float as disconnected
+/// dots), so it is what the JSON / `aden view` communities view renders.
+fn communities_overview(
+    graph: &Graph,
+    min_size: usize,
+    resolution: f64,
+    max_comms: usize,
+) -> (Vec<(String, usize)>, BTreeMap<(usize, usize), usize>) {
+    let kept: Vec<Vec<String>> = aden_graph::community::detect_communities(graph, resolution)
+        .into_iter()
+        .filter(|c| c.len() >= min_size)
+        .take(max_comms)
+        .collect();
+    let mut comm_of: BTreeMap<String, usize> = BTreeMap::new();
+    let mut supers: Vec<(String, usize)> = Vec::new();
+    for (i, members) in kept.iter().enumerate() {
+        supers.push((community_label(members), members.len()));
+        for m in members {
+            comm_of.insert(m.clone(), i);
+        }
+    }
+    // Aggregate edges that cross community boundaries into weighted super-edges.
+    let mut weights: BTreeMap<(usize, usize), usize> = BTreeMap::new();
+    for (anchor, &ca) in &comm_of {
+        let Some(idx) = graph.get_index(anchor) else {
+            continue;
+        };
+        for nb in graph.graph.neighbors_directed(idx, Direction::Outgoing) {
+            if let Some(&cb) = comm_of.get(&graph.graph[nb].doc.anchor) {
+                if ca != cb {
+                    let key = if ca < cb { (ca, cb) } else { (cb, ca) };
+                    *weights.entry(key).or_default() += 1;
+                }
+            }
+        }
+    }
+    (supers, weights)
+}
+
+/// JSON for the collapsed communities overview (super-nodes + weighted super-edges).
+fn render_communities_overview_json(
+    supers: &[(String, usize)],
+    weights: &BTreeMap<(usize, usize), usize>,
+) -> String {
+    let nodes: Vec<serde_json::Value> = supers
+        .iter()
+        .enumerate()
+        .map(|(i, (label, size))| {
+            serde_json::json!({ "id": format!("c{i}"), "label": label, "community": i, "size": size })
+        })
+        .collect();
+    let edges: Vec<serde_json::Value> = weights
+        .iter()
+        .map(|(&(a, b), &w)| {
+            serde_json::json!({ "from": format!("c{a}"), "to": format!("c{b}"), "type": format!("{w} edges") })
+        })
+        .collect();
+    serde_json::to_string_pretty(&serde_json::json!({
+        "mode": "communities", "nodes": nodes, "edges": edges,
+    }))
+    .unwrap_or_else(|_| "{}".to_string())
 }
 
 /// The group segment (crate/dir) of an anchor: `aden://module/aden-cli/x#y` → `aden-cli`.
