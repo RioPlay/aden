@@ -427,18 +427,25 @@ enum Commands {
         #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
         path: PathBuf,
     },
-    /// Export a graph slice as a text diagram (Mermaid/DOT) for docs, PRs, or CI.
+    /// Export a graph slice as a text diagram (Mermaid/DOT/JSON) for docs, PRs, or CI.
     Viz {
         #[arg(
             value_name = "ANCHOR",
-            help = "Symbol to center the blast-radius view on (a name like `cmd_understand`, or a full `aden://…` anchor)"
+            help = "Symbol to center blast/connectivity on (name or full aden:// anchor; omit for --mode communities)"
         )]
-        anchor: String,
+        anchor: Option<String>,
+        #[arg(
+            long,
+            value_name = "MODE",
+            default_value = "blast",
+            help = "View: blast (downstream impact) | connectivity (both directions) | communities (clusters)"
+        )]
+        mode: String,
         #[arg(
             long,
             value_name = "N",
             default_value = "2",
-            help = "Max downstream hops to include"
+            help = "Max hops to include (blast/connectivity)"
         )]
         depth: usize,
         #[arg(
@@ -1118,10 +1125,11 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
         } => commands::cmd_impact_diff(&path, since.as_deref(), staged, cli.json),
         Commands::Viz {
             anchor,
+            mode,
             depth,
             format,
             path,
-        } => commands::cmd_viz(&path, &anchor, depth, &format, cli.json),
+        } => commands::cmd_viz(&path, anchor.as_deref(), depth, &format, &mode, cli.json),
         Commands::Locate {
             symbol,
             caller_of,

@@ -562,6 +562,39 @@ aden communities --limit 10 --json    # cap output; machine-readable
 Algorithm: deterministic multi-level modularity optimization (Louvain). Also
 available as the MCP `communities` tool.
 
+=== viz
+
+Export a slice of the knowledge graph as a *text diagram* — Mermaid, Graphviz DOT,
+an asciidoctor-diagram block, or JSON — for docs, PR comments, or CI. aden emits the
+diagram *source* and never bundles a renderer: you (or asciidoctor / graphviz /
+mermaid) render it, which keeps aden offline and deterministic. Language-agnostic.
+
+[source,bash]
+----
+aden viz cmd_understand                        # blast radius (downstream impact), Mermaid
+aden viz cmd_understand --mode connectivity    # both directions (callers + callees)
+aden viz --mode communities --format dot       # functional clusters as DOT cluster_* boxes
+aden viz cmd_understand --depth 3 --format dot # deeper view, Graphviz DOT
+aden viz cmd_understand -j                      # JSON seam (-j aliases --format json)
+----
+
+The first argument is a symbol — a bare name like `cmd_understand` or a full
+`aden://…` anchor; omit it for `--mode communities` (a whole-graph view).
+
+|===
+|Flag |Description |Default
+
+|--mode |View: `blast` (downstream impact), `connectivity` (both directions), or `communities` (clusters) |blast
+|--depth |Max hops to include (blast/connectivity) |2
+|--format |Output: `mermaid`, `dot`, `asciidoc`, or `json` |mermaid
+|-j/--json |Alias for `--format json` |false
+|===
+
+Blast-radius uses the same impact-edge set as <<impact-diff>>; the `communities`
+view reuses <<communities>> and renders DOT `cluster_*` boxes (the layout best
+suited to grouping). The `asciidoc` format wraps the Mermaid source in a `[mermaid]`
+block so it renders inline in an AsciiDoc site.
+
 === impact-diff
 
 Map a `git diff` to the symbols it touches and report the *blast radius* — every

@@ -26,11 +26,18 @@ fn impact_edge_types() -> [aden_core::EdgeType; 6] {
     ]
 }
 
+/// The concrete graph type the cache yields — aliased to keep slice signatures short.
+type Graph = aden_graph::AdenGraph<aden_graph::DocumentNode, aden_graph::AdenEdge>;
+
+/// A typed node/edge slice: a flat set of anchors + the edges among them.
+type Slice = (BTreeSet<String>, BTreeSet<(String, String, String)>);
+
 pub fn cmd_viz(
     path: &Path,
-    anchor: &str,
+    anchor: Option<&str>,
     depth: usize,
     format: &str,
+    mode: &str,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // The global `-j/--json` flag is an alias for `--format json`, so it never
@@ -41,17 +48,57 @@ pub fn cmd_viz(
     super::ensure_fresh(&root);
     let graph = aden_graph::cache::build_from_directory_cached(&root)?;
 
-    let root_anchor = resolve_anchor(&graph, anchor)?;
-    let start = graph
-        .get_index(&root_anchor)
-        .expect("resolved anchor is present in the graph");
+    let diagram = match mode {
+        // Whole-graph functional clusters → DOT `cluster_*` is the right default
+        // (see research: viz-design). Anchor (if any) is ignored here.
+        "communities" => {
+            let (comms, edges) = communities_slice(&graph, 2, 1.0, MAX_COMMUNITIES, MEMBER_CAP);
+            if comms.is_empty() {
+                return Err("no communities of size >= 2 found (try `aden communities`)".into());
+            }
+            render_communities(&comms, &edges, format)?
+        }
+        // Anchor-centred views.
+        "blast" | "connectivity" => {
+            let anchor = anchor.ok_or_else(|| -> Box<dyn std::error::Error> {
+                format!(
+                    "--mode {mode} needs an ANCHOR (a symbol like `cmd_understand` or a full aden:// anchor)"
+                )
+                .into()
+            })?;
+            let root_anchor = resolve_anchor(&graph, anchor)?;
+            let (nodes, edges) = if mode == "connectivity" {
+                connectivity_slice(&graph, &root_anchor, depth)
+            } else {
+                blast_slice(&graph, &root_anchor, depth)
+            };
+            render_flat(&root_anchor, &nodes, &edges, format)?
+        }
+        other => {
+            return Err(format!(
+                "unknown --mode '{other}' (expected 'blast', 'connectivity', or 'communities')"
+            )
+            .into());
+        }
+    };
+    println!("{diagram}");
+    Ok(())
+}
 
-    // BFS outgoing over impact edges, capped at `depth` hops. Collect the node set
-    // and the typed edges so the renderer is pure (and unit-testable).
+/// Default caps for the communities view, keeping output legible (see viz-design:
+/// reduce before emit). Generous enough to be useful, small enough to render.
+const MAX_COMMUNITIES: usize = 12;
+const MEMBER_CAP: usize = 12;
+
+/// Blast radius: BFS *outgoing* over impact edges from `root_anchor`, depth-capped.
+fn blast_slice(graph: &Graph, root_anchor: &str, depth: usize) -> Slice {
     let impact = impact_edge_types();
     let mut nodes: BTreeSet<String> = BTreeSet::new();
+    nodes.insert(root_anchor.to_string());
     let mut edges: BTreeSet<(String, String, String)> = BTreeSet::new();
-    nodes.insert(root_anchor.clone());
+    let Some(start) = graph.get_index(root_anchor) else {
+        return (nodes, edges);
+    };
 
     let mut visited: HashSet<_> = HashSet::new();
     visited.insert(start);
@@ -77,26 +124,314 @@ pub fn cmd_viz(
             }
         }
     }
+    (nodes, edges)
+}
 
-    let diagram = match format {
-        "dot" => render_dot(&root_anchor, &nodes, &edges),
-        "mermaid" => render_mermaid(&root_anchor, &nodes, &edges),
-        // AsciiDoc wraps the Mermaid source in an asciidoctor-diagram block so it
-        // drops straight into an `.adoc` and renders to SVG/PNG in the user's
-        // existing asciidoctor pipeline — aden emits the source, never the renderer.
-        "asciidoc" | "adoc" => render_asciidoc(&root_anchor, &nodes, &edges),
-        // JSON is the machine-readable seam for a future interactive/3D viewer:
-        // the same node/edge slice, ids matching the other formats.
-        "json" => render_json(&root_anchor, &nodes, &edges),
+/// Connectivity: BFS in *both* directions over *all* edge types, depth-capped —
+/// the symbol's neighbourhood (what it reaches AND what reaches it), each edge
+/// recorded in its true orientation.
+fn connectivity_slice(graph: &Graph, root_anchor: &str, depth: usize) -> Slice {
+    let mut nodes: BTreeSet<String> = BTreeSet::new();
+    nodes.insert(root_anchor.to_string());
+    let mut edges: BTreeSet<(String, String, String)> = BTreeSet::new();
+    let Some(start) = graph.get_index(root_anchor) else {
+        return (nodes, edges);
+    };
+
+    let mut visited: HashSet<_> = HashSet::new();
+    visited.insert(start);
+    let mut queue: VecDeque<(_, usize)> = VecDeque::new();
+    queue.push_back((start, 0usize));
+    while let Some((node, d)) = queue.pop_front() {
+        if d >= depth {
+            continue;
+        }
+        for dir in [Direction::Outgoing, Direction::Incoming] {
+            for neighbor in graph.graph.neighbors_directed(node, dir) {
+                // Orient the edge source→target regardless of traversal direction.
+                let (from_idx, to_idx) = match dir {
+                    Direction::Outgoing => (node, neighbor),
+                    Direction::Incoming => (neighbor, node),
+                };
+                let Some(et) = graph
+                    .graph
+                    .edges_connecting(from_idx, to_idx)
+                    .next()
+                    .map(|e| format!("{:?}", e.weight().edge_type))
+                else {
+                    continue;
+                };
+                let from = graph.graph[from_idx].doc.anchor.clone();
+                let to = graph.graph[to_idx].doc.anchor.clone();
+                nodes.insert(graph.graph[neighbor].doc.anchor.clone());
+                edges.insert((from, to, et));
+                if visited.insert(neighbor) {
+                    queue.push_back((neighbor, d + 1));
+                }
+            }
+        }
+    }
+    (nodes, edges)
+}
+
+/// A functional cluster: a label, its true size, the (capped) members shown, and
+/// how many were elided.
+struct Community {
+    label: String,
+    size: usize,
+    members: Vec<String>,
+    overflow: usize,
+}
+
+/// Detect communities, keep the largest `max_comms` of size >= `min_size`, cap each
+/// to `member_cap` members, and collect the edges that run between shown members.
+fn communities_slice(
+    graph: &Graph,
+    min_size: usize,
+    resolution: f64,
+    max_comms: usize,
+    member_cap: usize,
+) -> (Vec<Community>, BTreeSet<(String, String, String)>) {
+    let all = aden_graph::community::detect_communities(graph, resolution);
+    let mut comms = Vec::new();
+    let mut shown: BTreeSet<String> = BTreeSet::new();
+    for members in all
+        .into_iter()
+        .filter(|c| c.len() >= min_size)
+        .take(max_comms)
+    {
+        let label = community_label(&members);
+        let size = members.len();
+        let overflow = size.saturating_sub(member_cap);
+        let kept: Vec<String> = members.into_iter().take(member_cap).collect();
+        for m in &kept {
+            shown.insert(m.clone());
+        }
+        comms.push(Community {
+            label,
+            size,
+            members: kept,
+            overflow,
+        });
+    }
+
+    let mut edges: BTreeSet<(String, String, String)> = BTreeSet::new();
+    for a in &shown {
+        let Some(idx) = graph.get_index(a) else {
+            continue;
+        };
+        for nb in graph.graph.neighbors_directed(idx, Direction::Outgoing) {
+            let to = graph.graph[nb].doc.anchor.clone();
+            if !shown.contains(&to) {
+                continue;
+            }
+            if let Some(e) = graph.graph.edges_connecting(idx, nb).next() {
+                edges.insert((a.clone(), to, format!("{:?}", e.weight().edge_type)));
+            }
+        }
+    }
+    (comms, edges)
+}
+
+/// The group segment (crate/dir) of an anchor: `aden://module/aden-cli/x#y` → `aden-cli`.
+fn group_of(anchor: &str) -> &str {
+    anchor
+        .strip_prefix("aden://")
+        .unwrap_or(anchor)
+        .split('/')
+        .nth(1)
+        .unwrap_or("?")
+}
+
+/// A human label for a community: the most common group among its members.
+fn community_label(members: &[String]) -> String {
+    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+    for m in members {
+        *counts.entry(group_of(m)).or_default() += 1;
+    }
+    counts
+        .into_iter()
+        .max_by_key(|(_, n)| *n)
+        .map(|(g, _)| g.to_string())
+        .unwrap_or_else(|| "mixed".to_string())
+}
+
+/// Dispatch a flat (blast/connectivity) slice to the requested format.
+fn render_flat(
+    root: &str,
+    nodes: &BTreeSet<String>,
+    edges: &BTreeSet<(String, String, String)>,
+    format: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    Ok(match format {
+        "dot" => render_dot(root, nodes, edges),
+        "mermaid" => render_mermaid(root, nodes, edges),
+        "asciidoc" | "adoc" => render_asciidoc(root, nodes, edges),
+        "json" => render_json(root, nodes, edges),
         other => {
             return Err(format!(
                 "unknown --format '{other}' (expected 'mermaid', 'dot', 'asciidoc', or 'json')"
             )
             .into());
         }
-    };
-    println!("{diagram}");
-    Ok(())
+    })
+}
+
+/// Dispatch a communities view to the requested format.
+fn render_communities(
+    comms: &[Community],
+    edges: &BTreeSet<(String, String, String)>,
+    format: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    Ok(match format {
+        "dot" => render_communities_dot(comms, edges),
+        "mermaid" => render_communities_mermaid(comms, edges),
+        "asciidoc" | "adoc" => format!(
+            ".Communities\n[mermaid]\n....\n{}....\n",
+            render_communities_mermaid(comms, edges)
+        ),
+        "json" => render_communities_json(comms, edges),
+        other => {
+            return Err(format!(
+                "unknown --format '{other}' (expected 'mermaid', 'dot', 'asciidoc', or 'json')"
+            )
+            .into());
+        }
+    })
+}
+
+/// Stable `n0,n1,…` ids over every shown community member, in sorted order.
+fn community_ids(comms: &[Community]) -> BTreeMap<&str, String> {
+    let mut all: BTreeSet<&str> = BTreeSet::new();
+    for c in comms {
+        for m in &c.members {
+            all.insert(m.as_str());
+        }
+    }
+    all.iter()
+        .enumerate()
+        .map(|(i, a)| (*a, format!("n{i}")))
+        .collect()
+}
+
+fn render_communities_dot(
+    comms: &[Community],
+    edges: &BTreeSet<(String, String, String)>,
+) -> String {
+    let ids = community_ids(comms);
+    let palette = ["#eef6ff", "#fff0f0", "#f0fff0", "#fffbe6", "#f5f0ff", "#f0ffff"];
+    let mut out = String::from("digraph communities {\n  rankdir=LR;\n  node [shape=box];\n  compound=true;\n");
+    for (i, c) in comms.iter().enumerate() {
+        out.push_str(&format!(
+            "  subgraph cluster_{i} {{\n    label=\"{} ({})\";\n    style=filled;\n    color=\"{}\";\n",
+            c.label.replace('"', "'"),
+            c.size,
+            palette[i % palette.len()]
+        ));
+        for m in &c.members {
+            out.push_str(&format!(
+                "    {} [label=\"{}\"];\n",
+                ids[m.as_str()],
+                label(m).replace('"', "\\\"")
+            ));
+        }
+        if c.overflow > 0 {
+            out.push_str(&format!(
+                "    more_{i} [label=\"+{} more\", shape=note, style=dashed];\n",
+                c.overflow
+            ));
+        }
+        out.push_str("  }\n");
+    }
+    for (from, to, et) in edges {
+        out.push_str(&format!(
+            "  {} -> {} [label=\"{}\"];\n",
+            ids[from.as_str()],
+            ids[to.as_str()],
+            et
+        ));
+    }
+    out.push_str("}\n");
+    out
+}
+
+fn render_communities_mermaid(
+    comms: &[Community],
+    edges: &BTreeSet<(String, String, String)>,
+) -> String {
+    let ids = community_ids(comms);
+    let mut out = String::from("flowchart LR\n");
+    for (i, c) in comms.iter().enumerate() {
+        out.push_str(&format!(
+            "  subgraph g{i}[\"{} ({})\"]\n",
+            c.label.replace('"', "'"),
+            c.size
+        ));
+        for m in &c.members {
+            out.push_str(&format!(
+                "    {}[\"{}\"]\n",
+                ids[m.as_str()],
+                label(m).replace('"', "'")
+            ));
+        }
+        if c.overflow > 0 {
+            out.push_str(&format!("    more{i}[\"+{} more\"]\n", c.overflow));
+        }
+        out.push_str("  end\n");
+    }
+    for (from, to, et) in edges {
+        out.push_str(&format!(
+            "  {} -->|{}| {}\n",
+            ids[from.as_str()],
+            et,
+            ids[to.as_str()]
+        ));
+    }
+    out
+}
+
+fn render_communities_json(
+    comms: &[Community],
+    edges: &BTreeSet<(String, String, String)>,
+) -> String {
+    let ids = community_ids(comms);
+    let comms_json: Vec<serde_json::Value> = comms
+        .iter()
+        .enumerate()
+        .map(|(i, c)| {
+            serde_json::json!({
+                "id": i,
+                "label": c.label,
+                "size": c.size,
+                "shown": c.members.len(),
+                "members": c.members.iter().map(|m| ids[m.as_str()].clone()).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+    let mut nodes_json: Vec<serde_json::Value> = Vec::new();
+    for (i, c) in comms.iter().enumerate() {
+        for m in &c.members {
+            nodes_json.push(serde_json::json!({
+                "id": ids[m.as_str()],
+                "anchor": m,
+                "label": label(m),
+                "community": i,
+            }));
+        }
+    }
+    let edges_json: Vec<serde_json::Value> = edges
+        .iter()
+        .map(|(from, to, et)| {
+            serde_json::json!({ "from": ids[from.as_str()], "to": ids[to.as_str()], "type": et })
+        })
+        .collect();
+    serde_json::to_string_pretty(&serde_json::json!({
+        "mode": "communities",
+        "communities": comms_json,
+        "nodes": nodes_json,
+        "edges": edges_json,
+    }))
+    .unwrap_or_else(|_| "{}".to_string())
 }
 
 /// Resolve a user-supplied anchor to its canonical graph anchor: exact match
@@ -312,6 +647,67 @@ mod tests {
         assert!(a.trim_end().ends_with("...."));
         // The Mermaid body is preserved verbatim inside the block.
         assert!(a.contains("n0 -->|Calls| n1"));
+    }
+
+    fn comm_sample() -> (Vec<Community>, BTreeSet<(String, String, String)>) {
+        let a = "aden://module/x/a.rs#a".to_string();
+        let b = "aden://module/x/b.rs#b".to_string();
+        let c = "aden://module/y/c.rs#c".to_string();
+        let comms = vec![
+            Community { label: "x".into(), size: 3, members: vec![a.clone(), b.clone()], overflow: 1 },
+            Community { label: "y".into(), size: 1, members: vec![c.clone()], overflow: 0 },
+        ];
+        // ids are assigned in sorted-anchor order: a=n0, b=n1, c=n2
+        let edges = BTreeSet::from([(a, c, "Calls".to_string())]);
+        (comms, edges)
+    }
+
+    #[test]
+    fn group_and_label() {
+        assert_eq!(group_of("aden://module/aden-cli/query.rs#cmd_understand"), "aden-cli");
+        assert_eq!(group_of("aden://doc/aden/file.adoc#h"), "aden");
+        let members = vec![
+            "aden://module/aden-cli/a#x".to_string(),
+            "aden://module/aden-cli/b#y".to_string(),
+            "aden://module/aden-core/c#z".to_string(),
+        ];
+        assert_eq!(community_label(&members), "aden-cli");
+    }
+
+    #[test]
+    fn communities_dot_has_clusters_overflow_and_edges() {
+        let (comms, edges) = comm_sample();
+        let d = render_communities_dot(&comms, &edges);
+        assert!(d.starts_with("digraph communities {\n"));
+        assert!(d.contains("subgraph cluster_0 {"));
+        assert!(d.contains("label=\"x (3)\""));
+        assert!(d.contains("more_0 [label=\"+1 more\"")); // overflow node
+        assert!(d.contains("n0 -> n2 [label=\"Calls\"];")); // a→c
+        assert!(d.trim_end().ends_with('}'));
+    }
+
+    #[test]
+    fn communities_mermaid_has_subgraphs_and_edges() {
+        let (comms, edges) = comm_sample();
+        let m = render_communities_mermaid(&comms, &edges);
+        assert!(m.starts_with("flowchart LR\n"));
+        assert!(m.contains("subgraph g0[\"x (3)\"]"));
+        assert!(m.contains("more0[\"+1 more\"]"));
+        assert!(m.contains("n0 -->|Calls| n2"));
+        assert!(m.contains("  end\n"));
+    }
+
+    #[test]
+    fn communities_json_carries_membership() {
+        let (comms, edges) = comm_sample();
+        let v: serde_json::Value =
+            serde_json::from_str(&render_communities_json(&comms, &edges)).expect("valid JSON");
+        assert_eq!(v["mode"], "communities");
+        assert_eq!(v["communities"][0]["size"], 3);
+        assert_eq!(v["communities"][0]["shown"], 2);
+        assert_eq!(v["nodes"][0]["community"], 0);
+        assert_eq!(v["edges"][0]["from"], "n0");
+        assert_eq!(v["edges"][0]["to"], "n2");
     }
 
     #[test]

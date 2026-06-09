@@ -14,9 +14,11 @@
 //! *guarantees* each community is internally connected, is a planned enhancement
 //! on top of this.
 //!
-//! Determinism (aden's guarantee): nodes are processed in `NodeIndex` order,
-//! candidate communities are accumulated in a `BTreeMap`, and ties are broken by
-//! lowest community id — so the partition is identical run-to-run, no RNG.
+//! Determinism (aden's guarantee): nodes are processed in *anchor-sorted* order
+//! (NOT raw `NodeIndex` order — graph construction inserts in HashMap-iteration
+//! order, which differs per process), candidate communities are accumulated in a
+//! `BTreeMap`, and ties are broken by lowest community id — so the partition is
+//! identical run-to-run, no RNG.
 
 use crate::graph::AdenGraph;
 use crate::nodes::{AdenEdge, DocumentNode, GraphNode};
@@ -35,7 +37,12 @@ pub fn detect_communities(
     graph: &AdenGraph<DocumentNode, AdenEdge>,
     resolution: f64,
 ) -> Vec<Vec<String>> {
-    let nodes: Vec<NodeIndex> = graph.graph.node_indices().collect();
+    // Louvain is order-sensitive, and `node_indices()` order follows graph
+    // construction (which inserts in HashMap-iteration order — non-deterministic
+    // across process runs). Sort by anchor to give the algorithm a *canonical*
+    // node order, so communities are reproducible run-to-run (aden's guarantee).
+    let mut nodes: Vec<NodeIndex> = graph.graph.node_indices().collect();
+    nodes.sort_by(|&a, &b| graph.graph[a].anchor().cmp(graph.graph[b].anchor()));
     let n = nodes.len();
     if n == 0 {
         return Vec::new();
