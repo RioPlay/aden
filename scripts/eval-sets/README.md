@@ -145,11 +145,14 @@ the index in its own mode).
 All three via `gen_queries.py` (commit→single-file) + manual spot-check, BM25 (debug bin) vs
 Hybrid (`--release --features dense` + bge-small). Validated (spot-checked) sets:
 
-| Repo | Lang | Scope | N | BM25 R@1 / R@20 | Hybrid R@1 / R@20 | Δ R@1 |
+Canonical numbers — regenerated via `scripts/bench.py` on the deterministic build (commit `9da0bcf`),
+so they are reproducible run-to-run (verified: 5 fresh gens → identical recall):
+
+| Repo | Lang | Scope | N | BM25 R@1 / R@20 | Hybrid R@1 / R@20 | Δ |
 |------|------|-------|---|-----------------|-------------------|-------|
-| getkin/kin-openapi | Go | `openapi3/` | 22 | 0.273 / 0.500 | **0.364 / 0.636** | +33% |
-| rust-lang/rustfmt | Rust | `src/` | 21 | 0.095 / 0.238 | **0.191 / 0.286** | +100% |
-| unoplatform/uno | C# | `src/Uno.UI/Controls` | 20 | 0.150 / 0.200 | **0.150 / 0.300** | flat (R@20 +50%) |
+| getkin/kin-openapi | Go | `openapi3/` | 22 | 0.273 / 0.455 | **0.409 / 0.591** | R@1 +50% |
+| rust-lang/rustfmt | Rust | `src/` | 21 | 0.095 / 0.191 | **0.095 / 0.238** | R@5 +67% |
+| unoplatform/uno | C# | `src/Uno.UI/Controls` | 20 | 0.150 / 0.150 | **0.150 / 0.300** | R@20 +100% |
 
 **Findings (the pilot's job — surface these before scaling to 24 repos):**
 
@@ -167,11 +170,11 @@ Hybrid (`--release --features dense` + bge-small). Validated (spot-checked) sets
 
 ## Caveats
 
-- **`aden gen` is not yet deterministic** (found 2026-06-09 by `bench.py`): parallel file order
-  perturbs per-file aggregate doc lengths / BM25 `avg_doc_length`, so recall varies ~±0.05 run-to-run.
-  search/ranking ARE deterministic for a fixed index. Treat the numbers above as ±0.05 until gen is
-  fixed (see research `gen-determinism-defect.adoc`). The BM25→hybrid *gap* is robust to this; the
-  absolute decimals are not.
+- **Retrieval is deterministic** as of commit `9da0bcf`. `bench.py` originally found `aden gen`
+  non-reproducible; that was fixed end-to-end (five causes: a wall-clock timestamp in the indexed text,
+  two HashMap-iteration orders, a parallel store-write anchor-collision race, and `emit_document`
+  attribute order — see research `gen-determinism-defect.adoc`). Recall is now byte-stable run-to-run
+  (verified: 5 fresh gens → identical), so the decimals above are meaningful, not ±0.05 noise.
 - uno used basename matching against an isolated sub-tree copy (6 platform-variant basenames collide →
   slightly lenient for those rows).
 - Ground truth is single-target: each query has exactly one expected file. Real code

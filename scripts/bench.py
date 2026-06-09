@@ -60,10 +60,9 @@ CAVEATS = [
     "retrieval params (BM25 k1/b, RRF k) are hardcoded per ADR-005, never tuned to these labels",
     "cold index build and warm query are SEPARATE rows; hybrid_cold includes one-time dense embed",
     "self-run on these corpora — indicative, not a standardized leaderboard",
-    "KNOWN DEFECT (2026-06-09): `aden gen` is NOT yet deterministic — parallel file order perturbs "
-    "per-file aggregate doc lengths and BM25 avg_doc_length, so recall varies ~±0.05 run-to-run. "
-    "search/ranking ARE deterministic for a fixed index. Until gen is made deterministic, treat these "
-    "as ±0.05 and re-run/average; do not over-read a single decimal.",
+    "retrieval is deterministic as of commit 9da0bcf (gen/index/emit determinism fixed): these recall "
+    "numbers are byte-stable run-to-run, so a single decimal is meaningful here (verified: 5 fresh gens "
+    "give identical recall).",
 ]
 
 
