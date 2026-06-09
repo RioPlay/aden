@@ -97,6 +97,12 @@ pub fn cmd_view(
             base
         }
     };
+    // The data is inlined into a <script> tag, so any `</script>` (or `</`) inside a
+    // symbol name / doc string from the target codebase would otherwise terminate the
+    // script element and allow HTML/script injection when viewing an untrusted repo.
+    // `<\/` is an identical JSON escape for `/` (parses to the same value) but does not
+    // match the HTML end-tag tokenizer — the standard JSON-in-<script> hardening.
+    let data = data.replace("</", "<\\/");
     let html = VIEW_HTML
         .replace("/*FORCE_GRAPH_LIB*/", FORCE_GRAPH_JS)
         .replace("/*EDITOR*/", &editor_template(editor))

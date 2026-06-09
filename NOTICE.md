@@ -33,12 +33,32 @@ MIT-licensed BAAI/bge-small-en-v1.5, is **fetched on demand** by the user
 (`scripts/fetch-bge-model.sh`) rather than bundled; it is used under its own MIT
 terms, with the license recorded alongside the downloaded files.
 
-The optional **`view`** feature (browser graph viewer, off by default) embeds one
+The **`view`** feature (browser graph viewer, **on by default**) embeds one
 vendored frontend asset: **`force-graph`** (vasturiano), **MIT**, pinned at
 v1.51.4 and recorded with a sha256 in
 [`crates/aden-cli/assets/CHECKSUMS`](crates/aden-cli/assets/CHECKSUMS). It is the
 pre-built minified UMD bundle, inlined into the generated HTML so the page is fully
-offline (no CDN, no runtime network). aden's build never runs npm.
+offline (no CDN, no runtime network). aden's build never runs npm. Because the
+bundle is redistributed in the binary, its MIT notice is reproduced in full:
+
+> Copyright (c) 2018 Vasco Asturiano
+>
+> Permission is hereby granted, free of charge, to any person obtaining a copy of
+> this software and associated documentation files (the "Software"), to deal in the
+> Software without restriction, including without limitation the rights to use, copy,
+> modify, merge, publish, distribute, sublicense, and/or sell copies of the Software,
+> and to permit persons to whom the Software is furnished to do so, subject to the
+> following conditions:
+>
+> The above copyright notice and this permission notice shall be included in all
+> copies or substantial portions of the Software.
+>
+> THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+> INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+> PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+> HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF
+> CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE
+> OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ## Bundled reference material
 
