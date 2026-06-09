@@ -599,15 +599,16 @@ layout best suited to grouping). The `asciidoc` format wraps the Mermaid source 
 
 Render a graph slice as an *interactive, offline* browser page and open it. Reuses
 `viz`'s JSON slice, inlines it plus a vendored graph library into one self-contained
-HTML (no CDN, no runtime network), and opens it in your default browser. Requires a
-build with the opt-in `view` feature (`cargo build -p aden-cli --features view` /
-`install.sh --view`).
+HTML (no CDN, no runtime network), and opens it in your default browser. Built in by
+default (the `view` cargo feature is on); disable with `--no-default-features`.
 
 [source,bash]
 ----
 aden view cmd_understand                        # blast radius, opens in the browser
 aden view --mode communities                    # community overview → click to drill in
 aden view cmd_understand --mode connectivity    # callers + callees
+aden view --replay                              # watch the project populate over git history
+aden view --replay --max 0                      # …across the ENTIRE history (0 = all commits)
 aden view cmd_understand --no-open --out g.html  # just write the file (CI / remote)
 aden view cmd_understand --editor zed            # 'open in editor' uses Zed
 ----
@@ -617,6 +618,8 @@ aden view cmd_understand --editor zed            # 'open in editor' uses Zed
 
 |--mode |`blast`, `connectivity`, or `communities` (overview with click-to-drill) |blast
 |--depth |Max hops (blast/connectivity) |2
+|--replay |Graph the git history: the graph is the symbols touched across commits, and a ▶ replay (scrubber, speed, date, item count) plays the project *populating* over time — nodes appear as commits introduce them |false
+|--max |Replay: commits to include, oldest→newest (`0` = entire history) |80
 |--editor |Editor for "open in editor" links: `vscode`, `cursor`, `vscodium`, `zed`, `idea`, or a custom `{file}`/`{line}` URI template |vscode
 |--no-open |Write the HTML but do not open a browser |false
 |--out |Output HTML path |a temp file

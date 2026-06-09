@@ -170,6 +170,66 @@ pub(crate) fn viz_json_for(
     }
 }
 
+/// Build a graph JSON from an explicit *set of anchors* (the union of symbols
+/// touched across git history, for `--replay`): nodes are those anchors present in
+/// the graph (capped), edges are the graph edges among them. No single root.
+#[cfg(feature = "view")]
+pub(crate) fn anchors_json(
+    path: &Path,
+    anchors: &BTreeSet<String>,
+    cap: usize,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let root = find_project_root(path);
+    super::ensure_fresh(&root);
+    let graph = aden_graph::cache::build_from_directory_cached(&root)?;
+    // Candidates present in the graph, ranked by *intra-set* degree so the cap keeps
+    // the connected core (not an arbitrary alphabetical slice with no edges).
+    let cand: Vec<String> = anchors
+        .iter()
+        .filter(|a| graph.get_index(a).is_some())
+        .cloned()
+        .collect();
+    let cand_set: BTreeSet<&str> = cand.iter().map(|s| s.as_str()).collect();
+    let mut deg: BTreeMap<String, usize> = BTreeMap::new();
+    for a in &cand {
+        let Some(idx) = graph.get_index(a) else {
+            continue;
+        };
+        for nb in graph.graph.neighbors_directed(idx, Direction::Outgoing) {
+            let to = graph.graph[nb].doc.anchor.clone();
+            if cand_set.contains(to.as_str()) {
+                *deg.entry(a.clone()).or_default() += 1;
+                *deg.entry(to).or_default() += 1;
+            }
+        }
+    }
+    let mut ranked = cand;
+    ranked.sort_by(|a, b| {
+        deg.get(b)
+            .unwrap_or(&0)
+            .cmp(deg.get(a).unwrap_or(&0))
+            .then_with(|| a.cmp(b))
+    });
+    let nodes: BTreeSet<String> = ranked.into_iter().take(cap).collect();
+    let mut edges: BTreeSet<(String, String, String)> = BTreeSet::new();
+    for a in &nodes {
+        let Some(idx) = graph.get_index(a) else {
+            continue;
+        };
+        for nb in graph.graph.neighbors_directed(idx, Direction::Outgoing) {
+            let to = graph.graph[nb].doc.anchor.clone();
+            if !nodes.contains(&to) {
+                continue;
+            }
+            if let Some(e) = graph.graph.edges_connecting(idx, nb).next() {
+                edges.insert((a.clone(), to, format!("{:?}", e.weight().edge_type)));
+            }
+        }
+    }
+    let src = build_src_map(&root);
+    Ok(render_json("", &nodes, &edges, &src))
+}
+
 /// Blast radius: BFS *outgoing* over impact edges from `root_anchor`, depth-capped
 /// and node-capped at `cap` (closest-first, so the cap keeps the nearest reach).
 fn blast_slice(graph: &Graph, root_anchor: &str, depth: usize, cap: usize) -> Slice {

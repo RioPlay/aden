@@ -52,13 +52,18 @@
   #filter .chip { font-size: 11px; padding: 3px 9px; border-radius: 999px; cursor: pointer; user-select: none;
     background: rgba(17,21,30,.85); border: 1px solid #313244; color: #9399b2; }
   #filter .chip.on { color: #cdd6f4; border-color: #89b4fa; background: rgba(137,180,250,.14); }
-  #play { position: fixed; bottom: 34px; left: 50%; transform: translateX(-50%); z-index: 5; cursor: pointer;
-    background: rgba(17,21,30,.9); border: 1px solid #313244; border-radius: 999px; padding: 6px 16px;
-    color: #a6e3a1; font-size: 12px; user-select: none; }
-  #play:hover { border-color: #a6e3a1; }
-  #act { position: fixed; bottom: 72px; left: 50%; transform: translateX(-50%); z-index: 5; display: none;
+  #replaybar { position: fixed; bottom: 30px; left: 50%; transform: translateX(-50%); z-index: 5;
+    display: flex; align-items: center; gap: 11px; background: rgba(17,21,30,.92); border: 1px solid #313244;
+    border-radius: 999px; padding: 7px 16px; box-shadow: 0 8px 24px rgba(0,0,0,.35); }
+  #play { cursor: pointer; color: #a6e3a1; font-size: 12px; user-select: none; white-space: nowrap; }
+  #play:hover { color: #b9f0b0; }
+  #scrub { width: 230px; }
+  #speed { width: 74px; }
+  #rcount { color: #9399b2; font: 11px ui-monospace, monospace; min-width: 92px; white-space: nowrap; text-align: right; }
+  input[type=range] { accent-color: #89b4fa; cursor: pointer; height: 4px; }
+  #act { position: fixed; bottom: 74px; left: 50%; transform: translateX(-50%); z-index: 5; display: none;
     color: #cdd6f4; font: 12px ui-monospace, monospace; background: rgba(17,21,30,.88); padding: 5px 13px;
-    border: 1px solid #313244; border-radius: 7px; white-space: nowrap; }
+    border: 1px solid #313244; border-radius: 7px; white-space: nowrap; max-width: 70vw; overflow: hidden; text-overflow: ellipsis; }
   /* dark, consistent hover tooltip (force-graph injects .graph-tooltip) */
   .graph-tooltip { background: rgba(17,21,30,.96) !important; color: #cdd6f4 !important;
     border: 1px solid #313244; border-radius: 6px; padding: 5px 9px !important;
@@ -72,7 +77,12 @@
 <div id="search"><input id="q" type="text" placeholder="search symbols…  ( / )" autocomplete="off" spellcheck="false"><div id="results"></div></div>
 <div id="graph"></div>
 <div id="act"></div>
-<div id="play" onclick="togglePlay()">▶ replay</div>
+<div id="replaybar">
+  <span id="play" onclick="togglePlay()">▶ replay</span>
+  <input id="scrub" type="range" min="0" max="0" value="0" oninput="scrubTo(+this.value)" title="scrub history">
+  <input id="speed" type="range" min="1" max="12" value="6" oninput="setSpeed(+this.value)" title="replay speed">
+  <span id="rcount"></span>
+</div>
 <div id="filter"></div>
 <div id="panel"><div id="pback" onclick="panelBack()">← back</div><h2 id="p-title"></h2><div id="p-body"></div></div>
 <div id="hint">/ search · ↑↓ + enter walk neighbours · backspace back · o open in editor · right-click node = editor</div>
@@ -91,7 +101,9 @@ let activeTypes = new Set();   // visible edge types (filter chips)
 // Activity replay: pulse nodes as an agent "touches" them.
 let playing = false, actSeq = [], actIdx = 0, playTimer = null, pulseRAF = null;
 let anchorToId = {};           // map a real activity log's anchors → current node ids
+let growMode = false, stepMs = 600;   // replay grows the graph; nodes revealed as touched
 const pulses = new Map();      // node id → pulse strength (1 → 0, fading glow)
+const revealed = new Set();    // node ids made visible so far during replay
 const REL = 3;
 function nodeSize(n) { return n.size != null ? Math.min(2 + Math.sqrt(n.size), 12) : 1 + Math.min(Math.sqrt(n.deg), 3); }
 function hexA(hex, a) { const m = hex.replace('#',''); return `rgba(${parseInt(m.slice(0,2),16)},${parseInt(m.slice(2,4),16)},${parseInt(m.slice(4,6),16)},${a})`; }
@@ -160,7 +172,8 @@ const Graph = ForceGraph()(el)
   })
   .linkColor(l => highlightLinks.has(l) ? 'rgba(170,180,215,.5)' : (highlightNodes.size ? 'rgba(120,130,170,.12)' : 'rgba(120,130,170,.26)'))
   .linkWidth(l => highlightLinks.has(l) ? 2 : 1)
-  .linkVisibility(l => activeTypes.has(l.type))
+  .nodeVisibility(n => !growMode || revealed.has(n.id))
+  .linkVisibility(l => activeTypes.has(l.type) && (!growMode || (revealed.has(idOf(l.source)) && revealed.has(idOf(l.target)))))
   .linkDirectionalArrowLength(3.5)
   .linkDirectionalArrowRelPos(1)
   .linkLabel(l => l.type)
@@ -189,11 +202,14 @@ addEventListener('resize', fit); fit();
 function show(rawNodes, rawEdges) {
   fitPending = true;
   panelStack = []; panelCur = null;
-  stopPlay(); pulses.clear(); actSeq = [];
+  stopPlay(); pulses.clear(); actSeq = []; actIdx = 0; growMode = false; revealed.clear();
   document.getElementById('act').style.display = 'none';
+  document.getElementById('scrub').value = 0;
+  document.getElementById('rcount').textContent = '';
   Graph.graphData(buildData(rawNodes, rawEdges));
   syncSearch();
   syncFilter();
+  refreshViz();
 }
 function showOverview() {
   level = 'overview';
@@ -327,7 +343,7 @@ function toggleType(t) {
   if (activeTypes.has(t)) activeTypes.delete(t); else activeTypes.add(t);
   const chip = [...filterEl.children].find(c => c.dataset.t === t);
   if (chip) chip.classList.toggle('on', activeTypes.has(t));
-  Graph.linkVisibility(l => activeTypes.has(l.type));   // re-apply → live update
+  refreshViz();   // re-apply (respects active types + replay reveal)
 }
 
 // ── Activity replay: pulse nodes as they're "touched", in sequence ──
@@ -336,7 +352,7 @@ function toggleType(t) {
 function buildActivitySeq() {
   if (Array.isArray(DATA.activity) && DATA.activity.length) {
     return DATA.activity
-      .map(f => ({ label: f.label || '', ids: (f.anchors || []).map(a => anchorToId[a]).filter(Boolean) }))
+      .map(f => ({ label: f.label || '', date: f.date || '', ids: (f.anchors || []).map(a => anchorToId[a]).filter(Boolean) }))
       .filter(f => f.ids.length);
   }
   const all = Object.values(byId);
@@ -361,28 +377,43 @@ function startPulseAnim() {
   };
   pulseRAF = requestAnimationFrame(tick);
 }
-function step() {
-  if (!playing) return;
-  if (actIdx >= actSeq.length) { stopPlay(); return; }
-  const f = actSeq[actIdx++];
+// Re-apply visibility so revealed/filter changes show immediately.
+function refreshViz() {
+  Graph.nodeVisibility(n => !growMode || revealed.has(n.id));
+  Graph.linkVisibility(l => activeTypes.has(l.type) && (!growMode || (revealed.has(idOf(l.source)) && revealed.has(idOf(l.target)))));
+}
+function readout(f) {
+  const a = document.getElementById('act');
+  a.textContent = `[${actIdx}/${actSeq.length}] ${f ? (f.date ? f.date + ' · ' : '') + f.label : ''}`; a.style.display = 'block';
+  document.getElementById('rcount').textContent = revealed.size + ' / ' + Object.keys(byId).length + ' items';
+  document.getElementById('scrub').value = actIdx;
+}
+function applyFrame(f) {            // reveal + pulse the frame's nodes, highlight them
   highlightNodes.clear(); highlightLinks.clear();
   f.ids.forEach(id => {
-    pulses.set(id, 1);
+    revealed.add(id); pulses.set(id, 1);
     const n = byId[id]; if (n) { highlightNodes.add(n); (n.neighbors || []).forEach(x => highlightNodes.add(x)); (n.adj || []).forEach(l => highlightLinks.add(l)); }
   });
   startPulseAnim();
   const first = byId[f.ids[0]];
-  if (first) { hoverNode = first; if (first.x != null) Graph.centerAt(first.x, first.y, 500); }
-  const a = document.getElementById('act');
-  a.textContent = `[${actIdx}/${actSeq.length}] ${f.label}`; a.style.display = 'block';
-  playTimer = setTimeout(step, 750);
+  if (first && first.x != null) { hoverNode = first; Graph.centerAt(first.x, first.y, 450); }
+}
+function step() {
+  if (!playing) return;
+  if (actIdx >= actSeq.length) { Object.keys(byId).forEach(id => revealed.add(id)); refreshViz(); stopPlay(); return; }
+  const f = actSeq[actIdx++];
+  applyFrame(f); refreshViz(); readout(f);
+  playTimer = setTimeout(step, stepMs);
 }
 function startPlay() {
   if (playing) return;
-  actSeq = buildActivitySeq();
+  if (!actSeq.length) actSeq = buildActivitySeq();
   if (!actSeq.length) return;
-  actIdx = 0; playing = true;
+  if (actIdx >= actSeq.length) { revealed.clear(); actIdx = 0; }   // restart if finished
+  growMode = true; playing = true;
+  document.getElementById('scrub').max = actSeq.length;
   document.getElementById('play').textContent = '⏸ pause';
+  refreshViz();
   step();
 }
 function stopPlay() {
@@ -390,6 +421,16 @@ function stopPlay() {
   document.getElementById('play').textContent = '▶ replay';
 }
 function togglePlay() { playing ? stopPlay() : startPlay(); }
+function setSpeed(v) { stepMs = Math.round(1500 / v); }            // 1..12 → ~1500..125 ms
+function scrubTo(v) {                                              // seek: rebuild revealed up to v
+  stopPlay();
+  if (!actSeq.length) actSeq = buildActivitySeq();
+  if (!actSeq.length) return;
+  growMode = true; actIdx = Math.max(0, Math.min(v, actSeq.length));
+  revealed.clear();
+  for (let i = 0; i < actIdx; i++) actSeq[i].ids.forEach(id => revealed.add(id));
+  refreshViz(); readout(actSeq[Math.max(0, actIdx - 1)]);
+}
 
 // ── Keyboard-centric navigation (when not typing in the search box) ──
 function selNb() {

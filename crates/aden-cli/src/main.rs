@@ -458,7 +458,7 @@ enum Commands {
         #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
         path: PathBuf,
     },
-    /// Render a graph slice in the browser — interactive + offline (needs the `view` feature).
+    /// Render a graph slice in the browser — interactive, offline, with git-history replay.
     #[cfg(feature = "view")]
     View {
         #[arg(
@@ -491,6 +491,15 @@ enum Commands {
             help = "Editor for 'open in editor' links: vscode | cursor | vscodium | zed | idea | <uri-template with {file}/{line}>"
         )]
         editor: String,
+        #[arg(long, help = "Replay git history — watch the project populate commit-by-commit")]
+        replay: bool,
+        #[arg(
+            long,
+            value_name = "N",
+            default_value = "80",
+            help = "Replay: max commits to include (oldest→newest)"
+        )]
+        max: usize,
         #[arg(
             long,
             value_name = "FILE",
@@ -1183,6 +1192,8 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
             out,
             path,
             editor,
+            replay,
+            max,
         } => commands::cmd_view(
             &path,
             anchor.as_deref(),
@@ -1192,6 +1203,8 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
             !no_open,
             out.as_deref(),
             &editor,
+            replay,
+            max,
         ),
         Commands::Locate {
             symbol,

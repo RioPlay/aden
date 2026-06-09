@@ -30,6 +30,8 @@ pub fn cmd_view(
     open: bool,
     out: Option<&Path>,
     editor: &str,
+    replay: bool,
+    max: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if threed {
         return Err(
@@ -39,7 +41,30 @@ pub fn cmd_view(
         );
     }
 
-    let data = super::viz::viz_json_for(path, anchor, mode, depth)?;
+    // `--replay`: the graph IS the project's git-history surface — the union of all
+    // symbols touched across `max` commits — and `DATA.activity` carries each commit's
+    // touched anchors so the viewer plays the project *populating* over time.
+    // Otherwise it's the normal `viz` slice.
+    let data = if replay {
+        let root = crate::util::find_project_root(path);
+        let activity = git_activity(&root, max);
+        let touched: std::collections::BTreeSet<String> = activity
+            .iter()
+            .filter_map(|f| f["anchors"].as_array())
+            .flatten()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect();
+        let base = super::viz::anchors_json(path, &touched, 250)?;
+        match serde_json::from_str::<serde_json::Value>(&base) {
+            Ok(mut v) => {
+                v["activity"] = serde_json::Value::Array(activity);
+                serde_json::to_string_pretty(&v).unwrap_or(base)
+            }
+            Err(_) => base,
+        }
+    } else {
+        super::viz::viz_json_for(path, anchor, mode, depth)?
+    };
     let html = VIEW_HTML
         .replace("/*FORCE_GRAPH_LIB*/", FORCE_GRAPH_JS)
         .replace("/*EDITOR*/", &editor_template(editor))
@@ -59,6 +84,67 @@ pub fn cmd_view(
         }
     }
     Ok(())
+}
+
+/// Build a per-commit activity log from git history (oldest → newest): each frame is
+/// `{label: subject, anchors: [symbols in the files that commit changed]}`. Symbols
+/// resolve via the store's per-file spans (same source as "open in editor"). The
+/// viewer plays these back, pulsing the touched nodes — the project being built.
+fn git_activity(root: &Path, max: usize) -> Vec<serde_json::Value> {
+    use std::collections::{BTreeSet, HashMap};
+    // file (repo-relative) → anchors defined in it
+    let mut file_anchors: HashMap<String, Vec<String>> = HashMap::new();
+    for (file, spans) in super::grep::load_symbol_spans(root) {
+        let e = file_anchors.entry(file).or_default();
+        for sp in spans {
+            e.push(sp.anchor);
+        }
+    }
+    let run = |args: &[&str]| -> Option<String> {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .output()
+            .ok()?;
+        out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+    };
+    let max_s = max.to_string();
+    let mut args = vec!["log", "--reverse", "--no-merges", "--format=%H%x1f%s%x1f%cs"];
+    if max > 0 {
+        args.push("-n");
+        args.push(&max_s); // `--max 0` → entire history
+    }
+    let Some(log) = run(&args) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for line in log.lines() {
+        let mut it = line.splitn(3, '\u{1f}');
+        let hash = it.next().unwrap_or("");
+        let subject = it.next().unwrap_or("");
+        let date = it.next().unwrap_or("");
+        if hash.is_empty() {
+            continue;
+        }
+        let Some(files) = run(&["show", "--name-only", "--pretty=format:", hash]) else {
+            continue;
+        };
+        let mut anchors: BTreeSet<String> = BTreeSet::new();
+        for f in files.lines().map(str::trim).filter(|s| !s.is_empty()) {
+            if let Some(list) = file_anchors.get(f) {
+                anchors.extend(list.iter().cloned());
+            }
+        }
+        if anchors.is_empty() {
+            continue;
+        }
+        out.push(serde_json::json!({
+            "label": subject,
+            "date": date,
+            "anchors": anchors.into_iter().collect::<Vec<_>>(),
+        }));
+    }
+    out
 }
 
 /// Map an editor alias (or a custom `{file}`/`{line}` URI template) to the template

@@ -41,7 +41,7 @@ aden-mcp = { path = "../aden-mcp" }
 tempfile = "3"
 
 [features]
-default = ["watch"]
+default = ["watch", "view"]
 watch = ["notify"]
 # Local dense embeddings for hybrid retrieval (search/ask). Off by default — opt
 # in with `--features dense`. Pulls the tract + tokenizers stack via aden-index.
