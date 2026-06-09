@@ -28,6 +28,19 @@
   #panel .sec { margin-top: 12px; color: #9399b2; font-weight: 600; border-top: 1px solid #1f2430; padding-top: 10px; }
   #panel .nb { color: #a6adc8; cursor: pointer; border-radius: 4px; padding: 2px 5px; margin: 1px -5px; }
   #panel .nb:hover { background: rgba(137,180,250,.13); color: #cdd6f4; }
+  #pback { display: none; cursor: pointer; color: #89b4fa; font-size: 12px; margin-bottom: 8px; }
+  #pback:hover { text-decoration: underline; }
+  #search { position: fixed; top: 12px; left: 50%; transform: translateX(-50%); width: 340px; z-index: 5; }
+  #q { width: 100%; box-sizing: border-box; background: rgba(17,21,30,.92); border: 1px solid #313244;
+    border-radius: 8px; padding: 8px 12px; color: #cdd6f4; font: 13px ui-sans-serif, system-ui, sans-serif;
+    outline: none; box-shadow: 0 8px 24px rgba(0,0,0,.35); }
+  #q:focus { border-color: #89b4fa; }
+  #results { margin-top: 5px; background: rgba(17,21,30,.97); border: 1px solid #313244; border-radius: 8px;
+    overflow: hidden; display: none; box-shadow: 0 12px 32px rgba(0,0,0,.45); }
+  #results.open { display: block; }
+  #results .r { padding: 6px 12px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #results .r:hover, #results .r.sel { background: rgba(137,180,250,.16); }
+  #results .r .k { color: #6c7086; }
   /* dark, consistent hover tooltip (force-graph injects .graph-tooltip) */
   .graph-tooltip { background: rgba(17,21,30,.96) !important; color: #cdd6f4 !important;
     border: 1px solid #313244; border-radius: 6px; padding: 5px 9px !important;
@@ -38,8 +51,9 @@
 <body>
 <div id="hdr">aden <small>· graph</small></div>
 <div id="back" onclick="showOverview()">← communities</div>
+<div id="search"><input id="q" type="text" placeholder="search symbols…  ( / )" autocomplete="off" spellcheck="false"><div id="results"></div></div>
 <div id="graph"></div>
-<div id="panel"><h2 id="p-title"></h2><div id="p-body"></div></div>
+<div id="panel"><div id="pback" onclick="panelBack()">← back</div><h2 id="p-title"></h2><div id="p-body"></div></div>
 <div id="hint">drag to pan · scroll to zoom · click a node · right-click to open in editor</div>
 <script>/*FORCE_GRAPH_LIB*/</script>
 <script>
@@ -50,6 +64,8 @@ let byId = {}, curLinks = [], level = 'overview';
 // Hover/focus highlight state (node + its neighbours + their links).
 const highlightNodes = new Set(), highlightLinks = new Set();
 let hoverNode = null;
+// Panel navigation history (walk neighbour→neighbour, ← back to return).
+let panelStack = [], panelCur = null;
 const REL = 3;
 function nodeSize(n) { return n.size != null ? Math.min(2 + Math.sqrt(n.size), 12) : 1 + Math.min(Math.sqrt(n.deg), 3); }
 function hexA(hex, a) { const m = hex.replace('#',''); return `rgba(${parseInt(m.slice(0,2),16)},${parseInt(m.slice(2,4),16)},${parseInt(m.slice(4,6),16)},${a})`; }
@@ -136,7 +152,9 @@ addEventListener('resize', fit); fit();
 
 function show(rawNodes, rawEdges) {
   fitPending = true;
+  panelStack = []; panelCur = null;
   Graph.graphData(buildData(rawNodes, rawEdges));
+  syncSearch();
 }
 function showOverview() {
   level = 'overview';
@@ -159,19 +177,29 @@ function onClick(n) {
     showCommunity('c' + n.community, shortName(n));
     return;
   }
-  Graph.centerAt(n.x, n.y, 600);          // gently focus the clicked symbol
-  showPanel(n);
+  panelStack = []; panelCur = null;       // a graph-node click starts a fresh trail
+  goNode(n);
 }
 
-// Clicking a neighbour in the panel focuses that node (highlight + centre + details).
-function focusNode(id) {
-  const n = byId[id];
-  if (!n) return;
+// Focus a node: highlight + centre + panel. Shared primitive.
+function goNode(n) {
+  panelCur = n.id;
   highlightNodes.clear(); highlightLinks.clear();
   highlightNodes.add(n); (n.neighbors || []).forEach(x => highlightNodes.add(x)); (n.adj || []).forEach(l => highlightLinks.add(l));
   hoverNode = n;
   if (n.x != null) Graph.centerAt(n.x, n.y, 600);
   showPanel(n);
+}
+// Clicking a panel neighbour walks to it AND records history (← back returns).
+function focusNode(id) {
+  const n = byId[id]; if (!n) return;
+  if (panelCur && panelCur !== id) panelStack.push(panelCur);
+  goNode(n);
+}
+function panelBack() {
+  const prev = panelStack.pop();
+  if (prev == null) return;
+  const n = byId[prev]; if (n) goNode(n);
 }
 
 function showPanel(n) {
@@ -195,8 +223,44 @@ function showPanel(n) {
     (ed ? `<div class="row"><a href="${ed}">open in editor →</a></div>` : '') +
     `<div class="sec">neighbours (${nbs.length})</div>` +
     nbs.slice(0, 40).join('');
+  document.getElementById('pback').style.display = panelStack.length ? 'block' : 'none';
   document.getElementById('panel').classList.add('open');
 }
+
+// ── Search within the current view: highlight matches, jump to one ──
+const qEl = document.getElementById('q'), resEl = document.getElementById('results');
+let matches = [], selIdx = 0;
+function runSearch() {
+  const q = qEl.value.trim().toLowerCase();
+  highlightNodes.clear(); highlightLinks.clear(); hoverNode = null;
+  if (!q) { matches = []; resEl.classList.remove('open'); resEl.innerHTML = ''; return; }
+  matches = Object.values(byId)
+    .filter(n => (shortName(n) + ' ' + (n.anchor || '')).toLowerCase().includes(q))
+    .sort((a, b) => shortName(a).length - shortName(b).length)
+    .slice(0, 12);
+  selIdx = 0;
+  resEl.innerHTML = matches.map((n, i) =>
+    `<div class="r${i === 0 ? ' sel' : ''}" onclick="pickResult(${i})">${esc(shortName(n))} <span class="k">${esc(context(n) || '')}</span></div>`).join('');
+  resEl.classList.toggle('open', matches.length > 0);
+  matches.forEach(n => highlightNodes.add(n));   // light up matches, dim the rest
+}
+function pickResult(i) {
+  const n = matches[i]; if (!n) return;
+  qEl.value = ''; resEl.classList.remove('open'); matches = [];
+  panelStack = []; panelCur = null;
+  goNode(n);
+}
+function updateSel() { [...resEl.children].forEach((c, i) => c.classList.toggle('sel', i === selIdx)); }
+qEl.addEventListener('input', runSearch);
+qEl.addEventListener('keydown', e => {
+  if (e.key === 'Escape') { qEl.value = ''; runSearch(); qEl.blur(); return; }
+  if (!matches.length) return;
+  if (e.key === 'ArrowDown') { selIdx = Math.min(selIdx + 1, matches.length - 1); updateSel(); e.preventDefault(); }
+  else if (e.key === 'ArrowUp') { selIdx = Math.max(selIdx - 1, 0); updateSel(); e.preventDefault(); }
+  else if (e.key === 'Enter') { pickResult(selIdx); e.preventDefault(); }
+});
+function syncSearch() { if (qEl) { qEl.value = ''; resEl.classList.remove('open'); matches = []; } }
+addEventListener('keydown', e => { if (e.key === '/' && document.activeElement !== qEl) { e.preventDefault(); qEl.focus(); } });
 
 showOverview();
 if (hasDrill) document.getElementById('hint').textContent = 'click a community to expand · ← to go back · drag/scroll to navigate';
