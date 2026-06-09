@@ -18,6 +18,9 @@ const FORCE_GRAPH_JS: &str = include_str!("../../assets/force-graph.min.js");
 /// placeholders (string-replaced, not `format!`, to avoid brace conflicts).
 const VIEW_HTML: &str = include_str!("../../assets/view.html");
 
+// A CLI command handler — its parameters mirror the subcommand's flags 1:1, so a
+// bundle struct would only add indirection.
+#[allow(clippy::too_many_arguments)]
 pub fn cmd_view(
     path: &Path,
     anchor: Option<&str>,
@@ -26,6 +29,7 @@ pub fn cmd_view(
     threed: bool,
     open: bool,
     out: Option<&Path>,
+    editor: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if threed {
         return Err(
@@ -38,6 +42,7 @@ pub fn cmd_view(
     let data = super::viz::viz_json_for(path, anchor, mode, depth)?;
     let html = VIEW_HTML
         .replace("/*FORCE_GRAPH_LIB*/", FORCE_GRAPH_JS)
+        .replace("/*EDITOR*/", &editor_template(editor))
         .replace("/*ADEN_DATA*/", &data);
 
     let out_path: PathBuf = match out {
@@ -54,6 +59,22 @@ pub fn cmd_view(
         }
     }
     Ok(())
+}
+
+/// Map an editor alias (or a custom `{file}`/`{line}` URI template) to the template
+/// the viewer uses for "open in editor" links. Browsers route the registered custom
+/// scheme straight to the desktop app, so no server is involved.
+fn editor_template(editor: &str) -> String {
+    match editor {
+        "vscode" | "code" => "vscode://file{file}:{line}",
+        "vscodium" | "codium" => "vscodium://file{file}:{line}",
+        "cursor" => "cursor://file{file}:{line}",
+        "zed" => "zed://file{file}:{line}",
+        "idea" | "jetbrains" => "idea://open?file={file}&line={line}",
+        custom if custom.contains("{file}") => custom,
+        _ => "vscode://file{file}:{line}",
+    }
+    .to_string()
 }
 
 /// Best-effort: open a path in the OS default browser. Never blocks; a missing

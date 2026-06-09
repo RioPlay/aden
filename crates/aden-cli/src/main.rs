@@ -486,6 +486,13 @@ enum Commands {
         no_open: bool,
         #[arg(
             long,
+            value_name = "ED",
+            default_value = "vscode",
+            help = "Editor for 'open in editor' links: vscode | cursor | vscodium | zed | idea | <uri-template with {file}/{line}>"
+        )]
+        editor: String,
+        #[arg(
+            long,
             value_name = "FILE",
             value_hint = ValueHint::FilePath,
             help = "Output HTML path (default: a temp file)"
@@ -1175,6 +1182,7 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
             no_open,
             out,
             path,
+            editor,
         } => commands::cmd_view(
             &path,
             anchor.as_deref(),
@@ -1183,6 +1191,7 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
             three_d,
             !no_open,
             out.as_deref(),
+            &editor,
         ),
         Commands::Locate {
             symbol,

@@ -595,6 +595,41 @@ Blast-radius uses the same impact-edge set as the `impact-diff` command; the
 layout best suited to grouping). The `asciidoc` format wraps the Mermaid source in a
 `[mermaid]` block so it renders inline in an AsciiDoc site.
 
+=== view
+
+Render a graph slice as an *interactive, offline* browser page and open it. Reuses
+`viz`'s JSON slice, inlines it plus a vendored graph library into one self-contained
+HTML (no CDN, no runtime network), and opens it in your default browser. Requires a
+build with the opt-in `view` feature (`cargo build -p aden-cli --features view` /
+`install.sh --view`).
+
+[source,bash]
+----
+aden view cmd_understand                        # blast radius, opens in the browser
+aden view --mode communities                    # community overview → click to drill in
+aden view cmd_understand --mode connectivity    # callers + callees
+aden view cmd_understand --no-open --out g.html  # just write the file (CI / remote)
+aden view cmd_understand --editor zed            # 'open in editor' uses Zed
+----
+
+|===
+|Flag |Description |Default
+
+|--mode |`blast`, `connectivity`, or `communities` (overview with click-to-drill) |blast
+|--depth |Max hops (blast/connectivity) |2
+|--editor |Editor for "open in editor" links: `vscode`, `cursor`, `vscodium`, `zed`, `idea`, or a custom `{file}`/`{line}` URI template |vscode
+|--no-open |Write the HTML but do not open a browser |false
+|--out |Output HTML path |a temp file
+|===
+
+The page is dark, community-coloured, and degree-sized; hover for the short symbol
+name, click for details, and *right-click a node* (or use the panel link) to open its
+source at the right line in your editor via a `vscode://file…`-style URI — the browser
+routes the scheme to the desktop app, so no server is involved. The community view is
+*hierarchical*: clicking a cluster expands into its connected core, with a `← back`
+control. Cross-platform: the browser opener and editor URIs work on Linux, macOS, and
+Windows.
+
 === impact-diff
 
 Map a `git diff` to the symbols it touches and report the *blast radius* — every

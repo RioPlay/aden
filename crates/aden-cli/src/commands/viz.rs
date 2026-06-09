@@ -32,6 +32,39 @@ type Graph = aden_graph::AdenGraph<aden_graph::DocumentNode, aden_graph::AdenEdg
 /// A typed node/edge slice: a flat set of anchors + the edges among them.
 type Slice = (BTreeSet<String>, BTreeSet<(String, String, String)>);
 
+/// Anchor → (absolute source file, 1-based line), for "open in editor" links.
+type SrcMap = BTreeMap<String, (String, usize)>;
+
+/// Make a (possibly relative) source path URI-ready for `vscode://file{file}` on
+/// every OS: absolute, forward slashes, leading slash (Windows `C:\x` → `/C:/x`).
+fn uri_path(root: &Path, file: &str) -> String {
+    let abs = if Path::new(file).is_absolute() {
+        file.to_string()
+    } else {
+        root.join(file).to_string_lossy().into_owned()
+    };
+    let s = abs.replace('\\', "/");
+    if s.starts_with('/') {
+        s
+    } else {
+        format!("/{s}")
+    }
+}
+
+/// Build anchor → (URI-ready file, 1-based line) from the store's symbol spans —
+/// the same source `impact-diff` uses — for "open in editor" links. (A graph node's
+/// own `source_span` is empty for symbols; the spans live in the store.)
+fn build_src_map(root: &Path) -> SrcMap {
+    let mut m: SrcMap = BTreeMap::new();
+    for (file, spans) in super::grep::load_symbol_spans(root) {
+        let uri = uri_path(root, &file);
+        for sp in spans {
+            m.entry(sp.anchor).or_insert_with(|| (uri.clone(), sp.start));
+        }
+    }
+    m
+}
+
 pub fn cmd_viz(
     path: &Path,
     anchor: Option<&str>,
@@ -55,7 +88,7 @@ pub fn cmd_viz(
             // JSON / viewer uses the collapsed super-node overview (connected and
             // legible); the static formats keep member cluster-boxes.
             if format == "json" {
-                render_communities_view_json(&graph, 2, 1.0, MAX_COMMUNITIES, DRILL_CAP)?
+                render_communities_view_json(&graph, &root, 2, 1.0, MAX_COMMUNITIES, DRILL_CAP)?
             } else {
                 let (comms, edges) = communities_slice(&graph, 2, 1.0, MAX_COMMUNITIES, MEMBER_CAP);
                 if comms.is_empty() {
@@ -78,7 +111,8 @@ pub fn cmd_viz(
             } else {
                 blast_slice(&graph, &root_anchor, depth, NODE_CAP)
             };
-            render_flat(&root_anchor, &nodes, &edges, format)?
+            let src = build_src_map(&root);
+            render_flat(&root_anchor, &nodes, &edges, format, &src)?
         }
         other => {
             return Err(format!(
@@ -115,7 +149,7 @@ pub(crate) fn viz_json_for(
     super::ensure_fresh(&root);
     let graph = aden_graph::cache::build_from_directory_cached(&root)?;
     match mode {
-        "communities" => render_communities_view_json(&graph, 2, 1.0, MAX_COMMUNITIES, DRILL_CAP),
+        "communities" => render_communities_view_json(&graph, &root, 2, 1.0, MAX_COMMUNITIES, DRILL_CAP),
         "blast" | "connectivity" => {
             let anchor = anchor.ok_or_else(|| -> Box<dyn std::error::Error> {
                 format!("--mode {mode} needs an ANCHOR (a symbol or full aden:// anchor)").into()
@@ -126,7 +160,8 @@ pub(crate) fn viz_json_for(
             } else {
                 blast_slice(&graph, &root_anchor, depth, NODE_CAP)
             };
-            Ok(render_json(&root_anchor, &nodes, &edges))
+            let src = build_src_map(&root);
+            Ok(render_json(&root_anchor, &nodes, &edges, &src))
         }
         other => Err(format!(
             "unknown --mode '{other}' (expected blast, connectivity, or communities)"
@@ -295,6 +330,7 @@ fn communities_slice(
 /// the per-symbol detail that the collapse hides — without re-calling aden.
 fn render_communities_view_json(
     graph: &Graph,
+    root: &Path,
     min_size: usize,
     resolution: f64,
     max_comms: usize,
@@ -356,6 +392,7 @@ fn render_communities_view_json(
         .collect();
 
     // per-community drill subgraph: the most intra-connected members + their edges
+    let src = build_src_map(root);
     let mut drill = serde_json::Map::new();
     for (i, members) in kept.iter().enumerate() {
         let member_set: BTreeSet<&str> = members.iter().map(|s| s.as_str()).collect();
@@ -392,7 +429,12 @@ fn render_communities_view_json(
         let nodes: Vec<serde_json::Value> = shown
             .iter()
             .map(|m| {
-                serde_json::json!({ "id": local[m.as_str()], "anchor": m, "label": label(m), "community": i })
+                let mut obj = serde_json::json!({ "id": local[m.as_str()], "anchor": m, "label": label(m), "community": i });
+                if let Some((file, line)) = src.get(m) {
+                    obj["file"] = serde_json::json!(file);
+                    obj["line"] = serde_json::json!(line);
+                }
+                obj
             })
             .collect();
         let mut edge_set: BTreeSet<(String, String, String)> = BTreeSet::new();
@@ -462,12 +504,13 @@ fn render_flat(
     nodes: &BTreeSet<String>,
     edges: &BTreeSet<(String, String, String)>,
     format: &str,
+    src: &SrcMap,
 ) -> Result<String, Box<dyn std::error::Error>> {
     Ok(match format {
         "dot" => render_dot(root, nodes, edges),
         "mermaid" => render_mermaid(root, nodes, edges),
         "asciidoc" | "adoc" => render_asciidoc(root, nodes, edges),
-        "json" => render_json(root, nodes, edges),
+        "json" => render_json(root, nodes, edges, src),
         other => {
             return Err(format!(
                 "unknown --format '{other}' (expected 'mermaid', 'dot', 'asciidoc', or 'json')"
@@ -751,17 +794,23 @@ fn render_json(
     root: &str,
     nodes: &BTreeSet<String>,
     edges: &BTreeSet<(String, String, String)>,
+    src: &SrcMap,
 ) -> String {
     let ids = id_map(nodes);
     let nodes_json: Vec<serde_json::Value> = nodes
         .iter()
         .map(|a| {
-            serde_json::json!({
+            let mut obj = serde_json::json!({
                 "id": ids[a.as_str()],
                 "anchor": a,
                 "label": label(a),
                 "root": a == root,
-            })
+            });
+            if let Some((file, line)) = src.get(a) {
+                obj["file"] = serde_json::json!(file);
+                obj["line"] = serde_json::json!(line);
+            }
+            obj
         })
         .collect();
     let edges_json: Vec<serde_json::Value> = edges
@@ -913,7 +962,7 @@ mod tests {
     #[test]
     fn json_has_root_blast_radius_nodes_and_edges() {
         let (root, nodes, edges) = sample();
-        let j = render_json(&root, &nodes, &edges);
+        let j = render_json(&root, &nodes, &edges, &SrcMap::new());
         let v: serde_json::Value = serde_json::from_str(&j).expect("valid JSON");
         assert_eq!(v["root"], "aden://module/x/a.rs#root");
         assert_eq!(v["blast_radius"], 1); // one downstream node (child)

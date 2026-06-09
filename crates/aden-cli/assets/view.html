@@ -39,12 +39,16 @@
 <div id="back" onclick="showOverview()">← communities</div>
 <div id="graph"></div>
 <div id="panel"><h2 id="p-title"></h2><div id="p-body"></div></div>
-<div id="hint">drag to pan · scroll to zoom · click a node · click background to close</div>
+<div id="hint">drag to pan · scroll to zoom · click a node · right-click to open in editor</div>
 <script>/*FORCE_GRAPH_LIB*/</script>
 <script>
 const DATA = /*ADEN_DATA*/;
+const EDITOR = "/*EDITOR*/";
 const hasDrill = !!(DATA.drill && Object.keys(DATA.drill).length);
 let byId = {}, curLinks = [], level = 'overview';
+// "Open in editor": a custom-scheme URI the OS routes to the desktop app.
+function editorUrl(n) { return (n && n.file) ? EDITOR.replace('{file}', n.file).replace('{line}', n.line || 1) : null; }
+function openEditor(n) { const u = editorUrl(n); if (u) window.location.href = u; }
 
 // Perceptually-spaced community palette; root/non-root fallback for anchor views.
 const palette = ['#89b4fa','#f38ba8','#a6e3a1','#fab387','#cba6f7','#94e2d5',
@@ -89,7 +93,9 @@ const Graph = ForceGraph()(el)
   .linkLabel(l => l.type)
   .onNodeHover(n => { el.style.cursor = n ? 'pointer' : 'default'; })
   .onNodeClick(onClick)
+  .onNodeRightClick(n => openEditor(n))
   .onBackgroundClick(() => document.getElementById('panel').classList.remove('open'));
+el.addEventListener('contextmenu', e => e.preventDefault()); // right-click = open in editor
 
 Graph.d3Force('charge').strength(-140);
 const _lf = Graph.d3Force('link'); if (_lf) _lf.distance(38);
@@ -137,10 +143,12 @@ function showPanel(n) {
       const dir = idOf(l.source) === n.id ? '→' : '←';
       return `<div class="row nb">${dir} ${esc(shortName(byId[o] || { id: o }))} <span class="k">${esc(l.type)}</span></div>`;
     });
+  const ed = editorUrl(n);
   document.getElementById('p-title').textContent = shortName(n);
   document.getElementById('p-body').innerHTML =
     (n.anchor ? `<div class="row" style="color:#6c7086; word-break:break-all">${esc(n.anchor)}</div>` : '') +
     rows.join('') +
+    (ed ? `<div class="row"><a href="${ed}">open in editor →</a></div>` : '') +
     `<div class="sec">neighbours (${nbs.length})</div>` +
     nbs.slice(0, 40).join('');
   document.getElementById('panel').classList.add('open');
