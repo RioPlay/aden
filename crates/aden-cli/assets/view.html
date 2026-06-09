@@ -19,6 +19,20 @@
   #hdr { position: fixed; left: 14px; top: 12px; font-weight: 600; letter-spacing: .04em;
     color: #b4befe; text-shadow: 0 0 18px rgba(137,180,250,.35); pointer-events: none; }
   #hdr small { color: #6c7086; font-weight: 400; letter-spacing: 0; }
+  #fit { position: fixed; left: 132px; top: 9px; z-index: 6; cursor: pointer; user-select: none;
+    background: rgba(17,21,30,.9); border: 1px solid #313244; border-radius: 8px; padding: 4px 11px;
+    color: #a6adc8; font-size: 12px; }
+  #fit:hover { border-color: #89b4fa; color: #cdd6f4; }
+  /* 'h' hides all chrome for a clean graph */
+  body.hideui #hdr, body.hideui #fit, body.hideui #search, body.hideui #replaybar,
+  body.hideui #filter, body.hideui #hint, body.hideui #back, body.hideui #panel {
+    opacity: 0 !important; pointer-events: none; }
+  /* collapsible side panel */
+  #pcollapse { float: right; cursor: pointer; color: #6c7086; font-size: 13px; line-height: 1; padding: 2px 4px; }
+  #pcollapse:hover { color: #cdd6f4; }
+  #panel.collapsed { padding-bottom: 12px; }
+  #panel.collapsed #p-body, #panel.collapsed #pback { display: none; }
+  #panel.collapsed #p-title { margin-bottom: 0; }
   #hint { position: fixed; left: 14px; bottom: 12px; color: #585b70; pointer-events: none; }
   #back { position: fixed; left: 14px; top: 34px; display: none; cursor: pointer; color: #89b4fa;
     background: rgba(17,21,30,.7); border: 1px solid #313244; border-radius: 6px; padding: 3px 10px; }
@@ -73,6 +87,7 @@
 </head>
 <body>
 <div id="hdr">aden <small>· graph</small></div>
+<div id="fit" onclick="fitAll()" title="fit full view (f / esc / click empty space)">⊙ fit</div>
 <div id="back" onclick="showOverview()">← communities</div>
 <div id="search"><input id="q" type="text" placeholder="search symbols…  ( / )" autocomplete="off" spellcheck="false"><div id="results"></div></div>
 <div id="graph"></div>
@@ -84,8 +99,8 @@
   <span id="rcount"></span>
 </div>
 <div id="filter"></div>
-<div id="panel"><div id="pback" onclick="panelBack()">← back</div><h2 id="p-title"></h2><div id="p-body"></div></div>
-<div id="hint">/ search · ↑↓ + enter walk neighbours · backspace back · o open in editor · right-click node = editor</div>
+<div id="panel"><span id="pcollapse" onclick="togglePanel()" title="collapse / expand">▾</span><div id="pback" onclick="panelBack()">← back</div><h2 id="p-title"></h2><div id="p-body"></div></div>
+<div id="hint">/ search · ↑↓+enter walk · backspace back · f fit · h hide UI · o open in editor · right-click = editor</div>
 <script>/*FORCE_GRAPH_LIB*/</script>
 <script>
 const DATA = /*ADEN_DATA*/;
@@ -201,7 +216,7 @@ const Graph = ForceGraph()(el)
   })
   .onNodeClick(onClick)
   .onNodeRightClick(n => openEditor(n))
-  .onBackgroundClick(() => { highlightNodes.clear(); highlightLinks.clear(); hoverNode = null; document.getElementById('panel').classList.remove('open'); });
+  .onBackgroundClick(() => { document.getElementById('panel').classList.remove('open'); fitAll(); });
 el.addEventListener('contextmenu', e => e.preventDefault()); // right-click = open in editor
 
 Graph.d3Force('charge').strength(-160);
@@ -270,34 +285,25 @@ function onClick(n) {
   navTo(n);
 }
 
-// Expand: fan a node's neighbours into a ring around it, then release so the
-// layout relaxes (collision keeps them spread). Makes "expanding" read as unfolding.
-let fanTimer = null;
-function fanOut(n) {
-  const nbrs = n.neighbors || [];
-  if (nbrs.length < 2 || n.x == null) return;
-  clearTimeout(fanTimer);
-  n.fx = n.x; n.fy = n.y;
-  const R = 60 + nbrs.length * 5;
-  nbrs.forEach((m, i) => {
-    const ang = (i / nbrs.length) * 2 * Math.PI - Math.PI / 2;
-    m.fx = n.x + R * Math.cos(ang);
-    m.fy = n.y + R * Math.sin(ang);
-  });
-  Graph.d3ReheatSimulation();
-  fanTimer = setTimeout(() => {
-    n.fx = null; n.fy = null;
-    nbrs.forEach(m => { m.fx = null; m.fy = null; });
-  }, 1700);
+function togglePanel() {
+  const p = document.getElementById('panel');
+  p.classList.toggle('collapsed');
+  document.getElementById('pcollapse').textContent = p.classList.contains('collapsed') ? '▸' : '▾';
 }
-// Focus a node: highlight + centre + fan-out + panel. Shared primitive (no history).
+// Snap back to the full view (frame everything visible).
+function fitAll() {
+  highlightNodes.clear(); highlightLinks.clear(); hoverNode = null;
+  Graph.zoomToFit(600, 60, n => !growMode || revealed.has(n.id));
+}
+// Focus a node: highlight + zoom to *frame its cluster* + panel. The layout itself
+// is never disturbed — we only move the camera, so it's clean and reversible.
 function goNode(n) {
   panelCur = n.id;
   highlightNodes.clear(); highlightLinks.clear();
   highlightNodes.add(n); (n.neighbors || []).forEach(x => highlightNodes.add(x)); (n.adj || []).forEach(l => highlightLinks.add(l));
   hoverNode = n;
-  if (n.x != null) Graph.centerAt(n.x, n.y, 600);
-  fanOut(n);
+  const ids = new Set([n.id, ...(n.neighbors || []).map(x => x.id)]);
+  Graph.zoomToFit(600, 90, x => ids.has(x.id));   // frame just this cluster
   showPanel(n);
 }
 // Navigate to a node, recording history — so ← back / Backspace returns. Used by
@@ -503,7 +509,9 @@ addEventListener('keydown', e => {
   if (e.key === '/') { e.preventDefault(); qEl.focus(); return; }
   if (e.key === ' ') { e.preventDefault(); togglePlay(); return; }
   if (e.key === 'Backspace' || (e.altKey && e.key === 'ArrowLeft')) { e.preventDefault(); panelBack(); return; }
-  if (e.key === 'Escape') { highlightNodes.clear(); highlightLinks.clear(); hoverNode = null; document.getElementById('panel').classList.remove('open'); return; }
+  if (e.key === 'Escape') { document.getElementById('panel').classList.remove('open'); fitAll(); return; }
+  if (e.key === 'f' || e.key === 'F') { fitAll(); return; }   // fit / full view
+  if (e.key === 'h' || e.key === 'H') { document.body.classList.toggle('hideui'); return; }   // hide chrome
   if ((e.key === 'o' || e.key === 'O') && panelCur && byId[panelCur]) { openEditor(byId[panelCur]); return; }
   const open = document.getElementById('panel').classList.contains('open');
   const max = Math.min(panelNbs.length, 40);
