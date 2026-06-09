@@ -206,6 +206,7 @@ const Graph = ForceGraph()(el)
     }
   })
   .linkColor(l => {
+    if (l.member) return highlightLinks.has(l) ? 'rgba(180,190,220,.35)' : 'rgba(120,130,170,.10)';
     const c = typeColor[l.type] || '#8088aa';
     if (highlightLinks.has(l)) return hexA(c, .9);
     if (highlightNodes.size) return hexA(c, .06);
@@ -213,7 +214,7 @@ const Graph = ForceGraph()(el)
   })
   .linkWidth(l => highlightLinks.has(l) ? 2 : 1)
   .nodeVisibility(n => !growMode || revealed.has(n.id))
-  .linkVisibility(l => activeTypes.has(l.type) && (!growMode || (revealed.has(idOf(l.source)) && revealed.has(idOf(l.target)))))
+  .linkVisibility(l => (l.member || activeTypes.has(l.type)) && (!growMode || (revealed.has(idOf(l.source)) && revealed.has(idOf(l.target)))))
   .linkDirectionalArrowLength(3.5)
   .linkDirectionalArrowRelPos(1)
   .linkLabel(l => l.type)
@@ -233,7 +234,7 @@ const Graph = ForceGraph()(el)
 el.addEventListener('contextmenu', e => e.preventDefault()); // right-click = open in editor
 
 Graph.d3Force('charge').strength(-160);
-const _lf = Graph.d3Force('link'); if (_lf) _lf.distance(42);
+const _lf = Graph.d3Force('link'); if (_lf) _lf.distance(l => l.member ? 26 : 42);
 // Lightweight collision so nodes don't overlap (no d3 dep; O(n²) is fine ≤ a few hundred).
 function collideForce(radius, strength) {
   let nodes = [];
@@ -290,12 +291,59 @@ function showCommunity(cid, lbl) {
   show(d.nodes, d.edges);
 }
 function onClick(n) {
-  // In the communities overview, a click drills into that community's members.
-  if (hasDrill && level === 'overview' && DATA.drill['c' + n.community]) {
-    showCommunity('c' + n.community, shortName(n));
-    return;
-  }
+  // A sphere (community super-node: no anchor, has a drill) expands/collapses IN PLACE.
+  if (hasDrill && n.anchor == null && DATA.drill[n.id]) { toggleCommunity(n.id); return; }
   navTo(n);
+}
+
+// ── Nested view: expand/collapse a sphere into its functions, in place ──
+function rebuildAdj(nodes, links) {
+  byId = {};
+  nodes.forEach(n => { n.neighbors = []; n.adj = []; byId[n.id] = n; });
+  links.forEach(l => { const a = byId[idOf(l.source)], b = byId[idOf(l.target)]; if (a && b) { a.neighbors.push(b); b.neighbors.push(a); a.adj.push(l); b.adj.push(l); } });
+  nodes.forEach(n => n.deg = n.adj.length);
+}
+function recolorMaps(nodes, links) {
+  const gs = [...new Set(nodes.map(n => n.group).filter(g => g != null))].sort();
+  groupIdx = {}; gs.forEach((g, i) => { groupIdx[g] = i; });
+  const ets = [...new Set(links.map(l => l.type).filter(t => t && t !== '·'))].sort();
+  typeColor = {}; ets.forEach((t, i) => { typeColor[t] = edgePalette[i % edgePalette.length]; });
+  activeTypes = new Set(ets);
+  anchorToId = {}; nodes.forEach(n => { if (n.anchor) anchorToId[n.anchor] = n.id; });
+}
+function applyExplore() {              // reuses existing node objects → positions persist
+  const nodes = Object.values(byId);
+  rebuildAdj(nodes, curLinks);
+  recolorMaps(nodes, curLinks);
+  Graph.graphData({ nodes, links: curLinks });
+  syncFilter(); refreshViz();
+  Graph.d3ReheatSimulation();
+}
+function expandCommunity(cid) {
+  const core = byId[cid], d = DATA.drill[cid];
+  if (!core || !d) return;
+  core.expanded = true;
+  const N = d.nodes.length;
+  d.nodes.forEach((m, i) => {           // members born in a ring around the sphere, then fan via force
+    const id = cid + ':' + m.id;
+    if (byId[id]) return;
+    const ang = (i / N) * 2 * Math.PI;
+    byId[id] = { ...m, id, x: (core.x || 0) + 30 * Math.cos(ang), y: (core.y || 0) + 30 * Math.sin(ang), neighbors: [], adj: [] };
+  });
+  d.nodes.forEach(m => curLinks.push({ source: cid, target: cid + ':' + m.id, type: '·', member: true }));
+  d.edges.forEach(e => curLinks.push({ source: cid + ':' + e.from, target: cid + ':' + e.to, type: e.type }));
+  applyExplore();
+}
+function collapseCommunity(cid) {
+  const core = byId[cid]; if (core) core.expanded = false;
+  const pre = cid + ':';
+  Object.keys(byId).forEach(id => { if (id.startsWith(pre)) delete byId[id]; });
+  curLinks = curLinks.filter(l => !(String(idOf(l.source)).startsWith(pre) || String(idOf(l.target)).startsWith(pre)));
+  applyExplore();
+}
+function toggleCommunity(cid) {
+  const core = byId[cid];
+  if (core && core.expanded) collapseCommunity(cid); else expandCommunity(cid);
 }
 
 function togglePanel() {
@@ -418,7 +466,7 @@ function renderChips() {                       // chips double as a colour legen
   }).join('');
 }
 function syncFilter() {
-  filterTypes = [...new Set(curLinks.map(l => l.type))].sort();
+  filterTypes = [...new Set(curLinks.filter(l => !l.member).map(l => l.type))].sort();
   renderChips();
 }
 function toggleType(t) {
