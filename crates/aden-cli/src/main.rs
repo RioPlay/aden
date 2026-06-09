@@ -427,6 +427,30 @@ enum Commands {
         #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
         path: PathBuf,
     },
+    /// Export a graph slice as a text diagram (Mermaid/DOT) for docs, PRs, or CI.
+    Viz {
+        #[arg(
+            value_name = "ANCHOR",
+            help = "Symbol to center the blast-radius view on (a name like `cmd_understand`, or a full `aden://…` anchor)"
+        )]
+        anchor: String,
+        #[arg(
+            long,
+            value_name = "N",
+            default_value = "2",
+            help = "Max downstream hops to include"
+        )]
+        depth: usize,
+        #[arg(
+            long,
+            value_name = "FMT",
+            default_value = "mermaid",
+            help = "Output format: mermaid | dot | asciidoc | json (or use -j for json)"
+        )]
+        format: String,
+        #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
+        path: PathBuf,
+    },
     /// Map a git diff to the symbols it touches and report the blast radius
     ImpactDiff {
         #[arg(
@@ -1092,6 +1116,12 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
             staged,
             path,
         } => commands::cmd_impact_diff(&path, since.as_deref(), staged, cli.json),
+        Commands::Viz {
+            anchor,
+            depth,
+            format,
+            path,
+        } => commands::cmd_viz(&path, &anchor, depth, &format, cli.json),
         Commands::Locate {
             symbol,
             caller_of,
