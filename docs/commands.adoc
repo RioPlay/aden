@@ -587,6 +587,7 @@ The first argument is a symbol — a bare name like `cmd_understand` or a full
 |--mode |View: `blast` (downstream impact), `connectivity` (both directions), `communities` (clusters), or `graph` (whole-graph view model, JSON-only) |blast
 |--depth |Max hops to include (blast/connectivity) |2
 |--format |Output: `mermaid`, `dot`, `asciidoc`, or `json` |mermaid
+|--full |For `--mode graph`: emit the whole graph with no importance cap |false
 |-j/--json |Alias for `--format json` |false
 |===
 
@@ -597,10 +598,11 @@ layout best suited to grouping). The `asciidoc` format wraps the Mermaid source 
 
 `--mode graph` (JSON-only) emits the *whole-graph view model* — every node with its
 full attributes `{anchor, label, group, community, kind, degree, file, line}` and every
-typed edge among the kept nodes (including the code↔prose `Documents`/`PartOf` edges).
-Nodes are ranked by total degree (importance) and capped (default 800) so large
-projects stay manageable; `total_nodes`/`shown_nodes` report the cap. This is the single
-payload the interactive viewer slices client-side for its lenses.
+typed edge among the kept nodes (containment `Contains`/`PartOf`, the genuine code↔prose
+`Documents`, calls, etc.). Nodes are ranked by total degree (importance) and capped
+(default 800) so large projects stay manageable; `total_nodes`/`shown_nodes` report the
+cap, and `--full` emits the whole graph uncapped. This is the single payload the
+interactive viewer slices client-side for its lenses.
 
 === view
 
@@ -611,34 +613,44 @@ default (the `view` cargo feature is on); disable with `--no-default-features`.
 
 [source,bash]
 ----
-aden view cmd_understand                        # blast radius, opens in the browser
+aden view                                       # the WHOLE graph + full git-history replay
+aden view cmd_understand                        # blast radius centred on a symbol
 aden view --mode communities                    # community overview → click to drill in
 aden view cmd_understand --mode connectivity    # callers + callees
-aden view --replay                              # watch the project populate over git history
-aden view --replay --max 0                      # …across the ENTIRE history (0 = all commits)
+aden view --replay --max 200                     # cap the replay to the last 200 commits
 aden view cmd_understand --no-open --out g.html  # just write the file (CI / remote)
 aden view cmd_understand --editor zed            # 'open in editor' uses Zed
 ----
 
+A bare `aden view` (no anchor) opens the *whole-graph* view — the full importance-ranked
+graph — which also carries the git-history activity log, so ▶ replay walks the entire
+project populating from the first commit. Big commits reveal in bounded batches so growth
+stays smooth, and a level-of-detail filter keeps large graphs responsive (the density
+slider dials the rest in).
+
 |===
 |Flag |Description |Default
 
-|--mode |`blast`, `connectivity`, or `communities` (overview with click-to-drill) |blast
+|--mode |`graph` (whole graph; the bare-`view` default), `blast`, `connectivity`, or `communities` (overview with click-to-drill) |blast¹
 |--depth |Max hops (blast/connectivity) |2
 |--replay |Graph the git history: the graph is the symbols touched across commits, and a ▶ replay (scrubber, speed, date, item count) plays the project *populating* over time — nodes appear as commits introduce them |false
-|--max |Replay: commits to include, oldest→newest (`0` = entire history) |80
+|--max |Replay: commits to include, oldest→newest (`0` = entire history) |0
 |--editor |Editor for "open in editor" links: `vscode`, `cursor`, `vscodium`, `zed`, `idea`, or a custom `{file}`/`{line}` URI template |vscode
 |--no-open |Write the HTML but do not open a browser |false
 |--out |Output HTML path |a temp file
 |===
+
+¹ The `--mode` flag defaults to `blast`, but a bare `aden view` with no anchor opens the
+whole-graph view (it has no single symbol to centre on).
 
 The page is dark, community-coloured, and degree-sized; hover for the short symbol
 name, click for details, and *right-click a node* (or use the panel link) to open its
 source at the right line in your editor via a `vscode://file…`-style URI — the browser
 routes the scheme to the desktop app, so no server is involved. The community view is
 *hierarchical*: clicking a cluster expands into its connected core, with a `← back`
-control. Cross-platform: the browser opener and editor URIs work on Linux, macOS, and
-Windows.
+control. Keyboard: `/` search, space play/pause, `f` fit, `b` *synapse mode* (the graph
+fires like a neural net — signals travel the edges), `h` hide UI, `o` open in editor.
+Cross-platform: the browser opener and editor URIs work on Linux, macOS, and Windows.
 
 === impact-diff
 

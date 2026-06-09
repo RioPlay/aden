@@ -154,7 +154,8 @@ which breaks offline and air-gapped use. See CONTRIBUTING.md.
 Builds a directed graph (`DiGraph`) from all contracts + documentation + <<adr-001>> + <<project-context>>.
 
 - Nodes: anchors (`[[name]]`)
-- Edges: typed relationships (`Uses`, `Calls`, `Constrains`, `Documents`, etc.)
+- Edges: typed relationships (`Uses`, `Calls`, `Constrains`, `Contains`/`PartOf`
+  for containment, `Documents` for prose→code, etc.)
 - Validation: cycle detection, orphan detection, reference resolution
 
 === 3. Validate (aden check)

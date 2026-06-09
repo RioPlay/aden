@@ -455,6 +455,11 @@ enum Commands {
             help = "Output format: mermaid | dot | asciidoc | json (or use -j for json)"
         )]
         format: String,
+        #[arg(
+            long,
+            help = "For --mode graph: emit the WHOLE graph (no importance cap)"
+        )]
+        full: bool,
         #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
         path: PathBuf,
     },
@@ -1180,8 +1185,9 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
             mode,
             depth,
             format,
+            full,
             path,
-        } => commands::cmd_viz(&path, anchor.as_deref(), depth, &format, &mode, cli.json),
+        } => commands::cmd_viz(&path, anchor.as_deref(), depth, &format, &mode, cli.json, full),
         #[cfg(feature = "view")]
         Commands::View {
             anchor,

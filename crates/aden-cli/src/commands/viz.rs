@@ -72,6 +72,7 @@ pub fn cmd_viz(
     format: &str,
     mode: &str,
     json: bool,
+    full: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // The global `-j/--json` flag is an alias for `--format json`, so it never
     // becomes a silent no-op the way an ignored global flag would.
@@ -107,7 +108,7 @@ pub fn cmd_viz(
                         .into(),
                 );
             }
-            render_whole_graph_json(&graph, &root, GRAPH_CAP)
+            render_whole_graph_json(&graph, &root, if full { 0 } else { GRAPH_CAP })
         }
         // Anchor-centred views.
         "blast" | "connectivity" => {

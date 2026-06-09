@@ -14,8 +14,9 @@ Aden compiles a codebase (and its docs) into a **knowledge graph** and serves
 a large codebase without reading every file.
 
 - **Nodes**: every function, type, module, and documentation heading.
-- **Edges**: `Calls` (resolved call sites), `Documents`/`PartOf` (a module
-  contains its symbols), and `RelatesTo` (doc `<<cross-references>>`).
+- **Edges**: `Calls` (resolved call sites), `Contains`/`PartOf` (a module
+  contains its symbols, and the inverse), `Documents` (prose that documents a
+  code symbol), and `RelatesTo` (doc `<<cross-references>>`).
 - **Language-agnostic**: deep extraction for Rust, Python, Go, TypeScript/JS,
   Java, C#, C, Ruby, PHP, Kotlin; generic symbol extraction for 300+ more — all
   via tree-sitter grammars compiled into the binary (fully offline).
@@ -25,7 +26,7 @@ a large codebase without reading every file.
 Reach for Aden when you need **structure-aware** answers: "what calls this?",
 "what is the blast radius of this change?", "give me the connected neighborhood
 of this symbol as LLM context." Aden tags every hit with its enclosing symbol and
-walks typed edges (`Calls`, `Documents`, `RelatesTo`).
+walks typed edges (`Calls`, `Contains`, `Documents`, `RelatesTo`).
 
 Reach for plain `grep`/`rg` when you just need a quick literal string match and do
 not care about relationships. The two compose well — Aden's call resolution is
