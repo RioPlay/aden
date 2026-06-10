@@ -235,8 +235,14 @@ pub(crate) fn anchors_json(
             if !nodes.contains(&to) {
                 continue;
             }
-            if let Some(e) = graph.graph.edges_connecting(idx, nb).next() {
-                edges.insert((a.clone(), to, format!("{:?}", e.weight().edge_type)));
+            // ALL typed edges between the pair — parallel types are real data
+            // (a test's call is both `Calls` and `Tests` since Wave 1).
+            for e in graph.graph.edges_connecting(idx, nb) {
+                edges.insert((
+                    a.clone(),
+                    to.clone(),
+                    format!("{:?}", e.weight().edge_type),
+                ));
             }
         }
     }
@@ -337,7 +343,10 @@ fn render_whole_graph_json(graph: &Graph, root: &Path, cap: usize) -> String {
             if !kept.contains(&to) {
                 continue;
             }
-            if let Some(e) = graph.graph.edges_connecting(idx, nb).next() {
+            // ALL typed edges between the pair — collapsing to the first one
+            // hid co-emitted types (e.g. `Tests` alongside `Calls`) from the
+            // census this JSON feeds.
+            for e in graph.graph.edges_connecting(idx, nb) {
                 edge_set.insert((
                     ids[a.as_str()].clone(),
                     ids[to.as_str()].clone(),
@@ -435,18 +444,22 @@ fn connectivity_slice(graph: &Graph, root_anchor: &str, depth: usize, cap: usize
                     Direction::Outgoing => (node, neighbor),
                     Direction::Incoming => (neighbor, node),
                 };
-                let Some(et) = graph
+                // ALL typed edges between the pair (parallel types are real
+                // data — e.g. `Tests` co-emitted with `Calls`).
+                let ets: Vec<String> = graph
                     .graph
                     .edges_connecting(from_idx, to_idx)
-                    .next()
                     .map(|e| format!("{:?}", e.weight().edge_type))
-                else {
+                    .collect();
+                if ets.is_empty() {
                     continue;
-                };
+                }
                 let from = graph.graph[from_idx].doc.anchor.clone();
                 let to = graph.graph[to_idx].doc.anchor.clone();
                 nodes.insert(nb_anchor);
-                edges.insert((from, to, et));
+                for et in ets {
+                    edges.insert((from.clone(), to.clone(), et));
+                }
                 if visited.insert(neighbor) {
                     queue.push_back((neighbor, d + 1));
                 }
@@ -507,8 +520,13 @@ fn communities_slice(
             if !shown.contains(&to) {
                 continue;
             }
-            if let Some(e) = graph.graph.edges_connecting(idx, nb).next() {
-                edges.insert((a.clone(), to, format!("{:?}", e.weight().edge_type)));
+            // ALL typed edges between the pair, not just the first.
+            for e in graph.graph.edges_connecting(idx, nb) {
+                edges.insert((
+                    a.clone(),
+                    to.clone(),
+                    format!("{:?}", e.weight().edge_type),
+                ));
             }
         }
     }
@@ -639,7 +657,8 @@ fn render_communities_view_json(
                 if !shown_set.contains(to.as_str()) {
                     continue;
                 }
-                if let Some(e) = graph.graph.edges_connecting(idx, nb).next() {
+                // ALL typed edges between the pair, not just the first.
+                for e in graph.graph.edges_connecting(idx, nb) {
                     edge_set.insert((
                         local[m.as_str()].clone(),
                         local[to.as_str()].clone(),

@@ -110,7 +110,16 @@ impl<N: GraphNode, E: GraphEdge> AdenGraph<N, E> {
                 GraphError::UnresolvedReference(tgt_anchor.to_string(), "not found".to_string())
             })?;
 
-        if !self.graph.contains_edge(src_idx, tgt_idx) {
+        // Dedupe on (pair, edge value), not the pair alone: the store keys
+        // edges by (src, dst, edge_type), so two DIFFERENT edge types between
+        // the same nodes are real data (e.g. a test's call is both `Calls`
+        // and `Tests` since Wave 1 — pair-level dedup silently dropped
+        // whichever type loaded second).
+        let duplicate = self
+            .graph
+            .edges_connecting(src_idx, tgt_idx)
+            .any(|e| *e.weight() == edge);
+        if !duplicate {
             self.graph.add_edge(src_idx, tgt_idx, edge);
             self.backlinks_cache = None;
         }

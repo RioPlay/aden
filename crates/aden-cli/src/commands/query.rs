@@ -76,7 +76,7 @@ const ANCHOR_NOISE_BAND: f64 = 5.0;
 /// across Python, Go, JS/TS, Rust, Java, Ruby, etc. The match is gated so that a
 /// query genuinely about the test suite can still reach these via the relaxation
 /// fallback when *every* candidate is a test symbol.
-fn is_test_anchor(anchor: &str) -> bool {
+pub(crate) fn is_test_anchor(anchor: &str) -> bool {
     let a = anchor.to_lowercase();
     const MARKERS: &[&str] = &[
         "/test/",
@@ -84,6 +84,11 @@ fn is_test_anchor(anchor: &str) -> bool {
         "/spec/",
         "/specs/",
         "/__tests__/",
+        // A file literally named `tests.<ext>` (Rust's conventional split-out
+        // test module, `src/tests.rs`) — matched with the leading separator so
+        // a `my_tests.rs` production file is NOT swept in (that case is the
+        // `_tests.` marker's, which requires the underscore).
+        "/tests.",
         "test_",
         "_test.",
         "_tests.",
@@ -93,6 +98,18 @@ fn is_test_anchor(anchor: &str) -> bool {
         "spec_",
     ];
     MARKERS.iter().any(|m| a.contains(m))
+}
+
+/// True if a root-relative source path is a test/spec file, by the same
+/// conventional markers as [`is_test_anchor`]. The path is relative
+/// (`tests/type_check/foo.py`), so a slash is prepended before the marker
+/// check — several markers (`/tests/`, `/spec/`) are anchored on a leading
+/// separator that a relative path lacks at its first segment. `gen` uses this
+/// to classify a symbol's call sites as `Tests` edges (graph-type roadmap
+/// Wave 1): the module-form anchor flattens the directory, so test-ness must
+/// be derived from the real source path, exactly as in [`is_test_result`].
+pub(crate) fn is_test_source_path(rel_path: &str) -> bool {
+    !rel_path.is_empty() && is_test_anchor(&format!("/{rel_path}"))
 }
 
 /// True if a search result points at a test/spec file, checking BOTH the anchor
@@ -3088,6 +3105,23 @@ mod tests {
         ];
         let chosen = resolve_anchor_fuzzy("how is dispatching handled", &results, |_| 100);
         assert_eq!(chosen, "aden://module/flask/app.py#Flask.dispatch_request");
+    }
+
+    /// Wave 1 (`Tests` edges): gen classifies a symbol's source file with the
+    /// SAME markers ask-routing uses — relative paths gain a leading slash so
+    /// the first segment can match `/tests/`-style markers.
+    #[test]
+    fn test_source_path_matches_relative_first_segment() {
+        assert!(is_test_source_path("tests/greeter_test.rs"));
+        assert!(is_test_source_path("crates/aden-cli/tests/mcp_flag_parity.rs"));
+        assert!(is_test_source_path("src/__tests__/app.spec.ts"));
+        // Rust's conventional split-out test module file.
+        assert!(is_test_source_path("crates/aden-parse/src/tests.rs"));
+        assert!(is_test_source_path("tests.rs"));
+        assert!(!is_test_source_path("src/lib.rs"));
+        // A production file that merely ENDS in "tests" must not be swept in.
+        assert!(!is_test_source_path("src/mytests.rs"));
+        assert!(!is_test_source_path(""));
     }
 
     #[test]

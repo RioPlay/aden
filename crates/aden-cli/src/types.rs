@@ -4,9 +4,24 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+/// Logic version of the gen emission pipeline. The gen cache skips files by
+/// mtime, so a change to WHAT gen emits (parser edge macros, linker edge
+/// types) would otherwise never reach symbols whose source did not change.
+/// Bump this whenever emission logic changes; a stale cache is discarded
+/// wholesale and every file reparses once. Same invalidation pattern as
+/// `CURRENT_INDEX_VERSION` (aden-index) and `CACHE_LOGIC_VERSION` (aden-heal).
+///
+/// 2: Wave 1 graph types — `Tests`/`Implements`/`Mutates` emission
+///    (graph-type-roadmap). Caches written before this field existed
+///    deserialize as version 0 and are invalidated.
+pub const GEN_LOGIC_VERSION: u32 = 2;
+
 /// Incremental generation cache: maps contract file path → metadata.
 #[derive(Default, Serialize, Deserialize)]
 pub struct GenCache {
+    /// See [`GEN_LOGIC_VERSION`]. `default` (0) marks pre-versioning caches.
+    #[serde(default)]
+    pub version: u32,
     pub entries: std::collections::HashMap<String, GenCacheEntry>,
 }
 

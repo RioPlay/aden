@@ -25,6 +25,12 @@ struct EmittedSymbol {
     /// `<<target>>` cross-references found in the document body (docs link to
     /// other docs / code via these).
     refs: Vec<String>,
+    /// `edge::implements[Trait::method]` references (trait impls) — linked as
+    /// `Implements` edges so blast radius reaches implementors (Wave 1).
+    implements: Vec<String>,
+    /// `edge::mutates[Type]` references (`&mut self` receivers) — linked as
+    /// `Mutates` edges from a method to the type whose state it writes.
+    mutates: Vec<String>,
     /// Whether this symbol's generated document was actually written to the
     /// store. False when the merge gate held it back (overlay conflict) or on a
     /// dry-run — so the summary count reflects real writes, not just processing.
@@ -152,6 +158,30 @@ fn extract_uses(doc: &aden_core::Document) -> Vec<String> {
     uses
 }
 
+/// Targets of one `edge::<kind>[...]` macro family in a document's listing
+/// blocks, sorted + deduped. Shared reader for the Wave-1 edge macros
+/// (`implements`, `mutates`) — same format `extract_uses` reads for `uses`.
+fn extract_edge_macro(doc: &aden_core::Document, kind: &str) -> Vec<String> {
+    use aden_core::Block;
+    let prefix = format!("edge::{kind}[");
+    let mut out = Vec::new();
+    for block in &doc.blocks {
+        if let Block::Listing { code, .. } = block {
+            for line in code.lines() {
+                if let Some(rest) = line.trim().strip_prefix(prefix.as_str())
+                    && let Some(t) = rest.strip_suffix(']')
+                    && !t.is_empty()
+                {
+                    out.push(t.to_string());
+                }
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
 /// Append `<<target>>` cross-reference targets found in `text` to `out`.
 fn collect_xrefs(text: &str, out: &mut Vec<String>) {
     // <<target>> and <<target,text>> shorthand cross-references.
@@ -250,32 +280,7 @@ fn resolve_callee<'a>(
 ) -> Option<&'a str> {
     let caller_file = anchor_file(caller);
     let caller_crate = crate_from_anchor(caller);
-    let pick = |cands: &[&'a str]| -> Option<&'a str> {
-        match cands {
-            [] => None,
-            [one] => Some(*one),
-            many => {
-                // Ambiguous: prefer the caller's own file, then its crate.
-                if let Some(cf) = caller_file {
-                    let same: Vec<&'a str> = many
-                        .iter()
-                        .copied()
-                        .filter(|a| anchor_file(a) == Some(cf))
-                        .collect();
-                    if same.len() == 1 {
-                        return Some(same[0]);
-                    }
-                }
-                let cc = caller_crate.as_deref()?;
-                let same: Vec<&'a str> = many
-                    .iter()
-                    .copied()
-                    .filter(|a| crate_from_anchor(a).as_deref() == Some(cc))
-                    .collect();
-                if same.len() == 1 { Some(same[0]) } else { None }
-            }
-        }
-    };
+    let pick = |cands: &[&'a str]| pick_local(cands, caller_file, caller_crate.as_deref());
     // Self-receiver fast path (exact, zero false-edge risk): a call through the
     // caller's own instance — `self.foo()`, `this.foo()`, `$this->foo()`,
     // `Self::foo()` — provably targets a method of the caller's OWN enclosing
@@ -304,6 +309,91 @@ fn resolve_callee<'a>(
         && let Some(r) = pick(t)
     {
         return Some(r);
+    }
+    None
+}
+
+/// Disambiguate candidate anchors by locality: a unique candidate wins
+/// outright; among several, prefer the caller's own file, then its crate;
+/// otherwise give up (no edge beats a wrong edge). Extracted from
+/// `resolve_callee` so the Wave-1 `Implements`/`Mutates` resolution shares
+/// exactly the same tiebreak.
+fn pick_local<'a>(
+    cands: &[&'a str],
+    caller_file: Option<&str>,
+    caller_crate: Option<&str>,
+) -> Option<&'a str> {
+    match cands {
+        [] => None,
+        [one] => Some(*one),
+        many => {
+            // Ambiguous: prefer the caller's own file, then its crate.
+            if let Some(cf) = caller_file {
+                let same: Vec<&'a str> = many
+                    .iter()
+                    .copied()
+                    .filter(|a| anchor_file(a) == Some(cf))
+                    .collect();
+                if same.len() == 1 {
+                    return Some(same[0]);
+                }
+            }
+            let cc = caller_crate?;
+            let same: Vec<&'a str> = many
+                .iter()
+                .copied()
+                .filter(|a| crate_from_anchor(a).as_deref() == Some(cc))
+                .collect();
+            if same.len() == 1 { Some(same[0]) } else { None }
+        }
+    }
+}
+
+/// Exact-name resolution with the locality tiebreak — deliberately NO
+/// trailing-segment fallback (unlike `resolve_callee`): for `Implements`/
+/// `Mutates` targets a bare-method fallback could forge an edge to an
+/// unrelated same-named symbol, which is worse than no edge.
+fn resolve_exact<'a>(
+    name: &str,
+    caller: &str,
+    name_index: &HashMap<&str, Vec<&'a str>>,
+) -> Option<&'a str> {
+    let cands = name_index.get(name)?;
+    pick_local(
+        cands,
+        anchor_file(caller),
+        crate_from_anchor(caller).as_deref(),
+    )
+}
+
+/// Resolve an `edge::implements[...]` target, emitted by the parser as
+/// `Trait::method` (possibly path-scoped: `path::Trait::method`). Preference
+/// order — method-level edges are strictly better for blast radius, but only
+/// when the trait method is actually a stored symbol:
+/// 1. the full qualified name (`Trait::method`) — today trait-body method
+///    declarations are not extracted as symbols, so this is forward-compat;
+/// 2. the trait itself (the qualified name minus its `::method` segment);
+/// 3. the trait's bare name (last path segment) for scoped references.
+/// Every step is an EXACT lookup via [`resolve_exact`]; an external trait
+/// (`fmt::Display`) simply resolves nowhere and produces no edge.
+fn resolve_implements<'a>(
+    target: &str,
+    caller: &str,
+    name_index: &HashMap<&str, Vec<&'a str>>,
+) -> Option<&'a str> {
+    if let Some(hit) = resolve_exact(target, caller, name_index) {
+        return Some(hit);
+    }
+    let trait_part = &target[..target.rfind("::")?];
+    if trait_part.is_empty() {
+        return None;
+    }
+    if let Some(hit) = resolve_exact(trait_part, caller, name_index) {
+        return Some(hit);
+    }
+    let bare = trait_part.rsplit("::").next().unwrap_or(trait_part);
+    if bare != trait_part && !bare.is_empty() {
+        return resolve_exact(bare, caller, name_index);
     }
     None
 }
@@ -434,12 +524,23 @@ fn classify_drop(callee: &str, name_index: &HashMap<&str, Vec<&str>>) -> DropRea
 /// - Containment: `mod-<crate>` --Documents--> symbol, symbol --PartOf-->
 ///   `mod-<crate>`, `mod-project` --Documents--> each module. Module nodes are
 ///   synthesized here (they otherwise live only in ignored `.adoc` files).
-/// - Calls: each resolved callee becomes a `Calls` edge.
+/// - Calls: each resolved callee becomes a `Calls` edge. When the CALLER is a
+///   test symbol (`test_anchors`), the same resolved call is ALSO emitted as a
+///   `Tests` edge — reclassification, not new analysis (graph-type roadmap
+///   Wave 1). The `Calls` edge is kept so call-graph consumers see no change.
+/// - Implements: `edge::implements[Trait::method]` records become implementor
+///   --Implements--> trait(-method) edges, so the Incoming blast-radius
+///   traversal from a changed trait reaches its implementors.
+/// - Mutates: `edge::mutates[Type]` records (`&mut self` receivers) become
+///   method --Mutates--> parent-type edges.
 fn link_store_edges<S: GraphStorage>(
     storage: &S,
     link_records: &[(String, Vec<String>)],
     use_records: &[(String, Vec<String>)],
     ref_records: &[(String, Vec<String>)],
+    impl_records: &[(String, Vec<String>)],
+    mutates_records: &[(String, Vec<String>)],
+    test_anchors: &std::collections::HashSet<String>,
 ) -> Result<CalleeStats, Box<dyn std::error::Error>> {
     use aden_core::{Block, Document, EdgeType, NodeType};
     use std::collections::HashSet;
@@ -512,6 +613,12 @@ fn link_store_edges<S: GraphStorage>(
                 Some(target) if target != anchor.as_str() => {
                     callee_stats.resolved += 1;
                     edges.push((anchor.clone(), target.to_string(), EdgeType::Calls));
+                    // Wave 1: a resolved call FROM a test symbol is also a
+                    // `Tests` edge (test → tested symbol). Emitted in addition
+                    // to — never instead of — the `Calls` edge.
+                    if test_anchors.contains(anchor.as_str()) {
+                        edges.push((anchor.clone(), target.to_string(), EdgeType::Tests));
+                    }
                 }
                 // A self-call resolves but builds no edge (we skip self-loops);
                 // count it as resolved so it isn't mistaken for a dropped edge.
@@ -533,6 +640,34 @@ fn link_store_edges<S: GraphStorage>(
                 && target != anchor.as_str()
             {
                 edges.push((anchor.clone(), target.to_string(), EdgeType::Uses));
+            }
+        }
+    }
+
+    // Implements edges (Wave 1): implementor method —Implements→ trait (or
+    // trait method, when that is a stored symbol). Direction matters: the
+    // blast-radius traversal walks Incoming edges, so a change to a trait
+    // reaches its implementors' methods — closing the silent truncation
+    // across trait-object dispatch.
+    for (anchor, targets) in impl_records {
+        for t in targets {
+            if let Some(target) = resolve_implements(t, anchor, &name_index)
+                && target != anchor.as_str()
+            {
+                edges.push((anchor.clone(), target.to_string(), EdgeType::Implements));
+            }
+        }
+    }
+
+    // Mutates edges (Wave 1): a `&mut self` method —Mutates→ its parent type.
+    // Exact resolution only — a fuzzy fallback could attach the edge to an
+    // unrelated same-named type.
+    for (anchor, targets) in mutates_records {
+        for t in targets {
+            if let Some(target) = resolve_exact(t, anchor, &name_index)
+                && target != anchor.as_str()
+            {
+                edges.push((anchor.clone(), target.to_string(), EdgeType::Mutates));
             }
         }
     }
@@ -916,6 +1051,8 @@ fn cmd_gen_inner(
                     let callees = extract_callees(&doc_clone);
                     let uses = extract_uses(&doc_clone);
                     let refs = extract_doc_refs(&doc_clone);
+                    let implements = extract_edge_macro(&doc_clone, "implements");
+                    let mutates = extract_edge_macro(&doc_clone, "mutates");
                     slim_doc_for_store(&mut doc_clone);
 
                     // Three-way merge gate. A conflict can only arise when the
@@ -955,6 +1092,8 @@ fn cmd_gen_inner(
                         callees,
                         uses,
                         refs,
+                        implements,
+                        mutates,
                         wrote: write,
                     });
                     // Defer the write — Phase 2 stores these in sorted source order.
@@ -981,6 +1120,13 @@ fn cmd_gen_inner(
         let mut link_records: Vec<(String, Vec<String>)> = Vec::new();
         let mut use_records: Vec<(String, Vec<String>)> = Vec::new();
         let mut ref_records: Vec<(String, Vec<String>)> = Vec::new();
+        let mut impl_records: Vec<(String, Vec<String>)> = Vec::new();
+        let mut mutates_records: Vec<(String, Vec<String>)> = Vec::new();
+        // Anchors whose SOURCE FILE is a test/spec file (conventional path
+        // markers, shared with ask-routing's `is_test_result`). Their resolved
+        // calls are additionally emitted as `Tests` edges. Lookup-only — never
+        // iterated — so it cannot perturb emission order (determinism).
+        let mut test_anchors: std::collections::HashSet<String> = std::collections::HashSet::new();
         // Anchors to prune: symbols a reindexed file no longer defines.
         let mut stale_anchors: Vec<String> = Vec::new();
         // Merge conflicts surfaced by the reconcile gate, written as proposals.
@@ -1013,6 +1159,11 @@ fn cmd_gen_inner(
                         }
                     }
                     merge_conflicts.extend(conflicts);
+                    // The module-form anchor flattens the directory, so
+                    // test-ness comes from the real (root-relative) source
+                    // path — the same rule ask-routing applies at query time.
+                    let from_test_file =
+                        crate::commands::query::is_test_source_path(&cache_key);
                     let fresh: Vec<String> = symbols.iter().map(|s| s.anchor.clone()).collect();
                     // Diff against what this file contributed last time: any
                     // previously-recorded anchor not in the fresh set is a
@@ -1043,6 +1194,15 @@ fn cmd_gen_inner(
                         }
                         if !sym.uses.is_empty() {
                             use_records.push((sym.anchor.clone(), sym.uses));
+                        }
+                        if !sym.implements.is_empty() {
+                            impl_records.push((sym.anchor.clone(), sym.implements));
+                        }
+                        if !sym.mutates.is_empty() {
+                            mutates_records.push((sym.anchor.clone(), sym.mutates));
+                        }
+                        if from_test_file {
+                            test_anchors.insert(sym.anchor.clone());
                         }
                         if !sym.callees.is_empty() {
                             link_records.push((sym.anchor, sym.callees));
@@ -1118,14 +1278,21 @@ fn cmd_gen_inner(
 
         // Connect the graph: persist module<->symbol containment and call edges
         // so the store-first graph used by asm/ask/query is actually traversable.
-        let callee_stats =
-            match link_store_edges(&storage, &link_records, &use_records, &ref_records) {
-                Ok(stats) => stats,
-                Err(e) => {
-                    eprintln!("WARN: Failed to link graph edges: {}", e);
-                    CalleeStats::default()
-                }
-            };
+        let callee_stats = match link_store_edges(
+            &storage,
+            &link_records,
+            &use_records,
+            &ref_records,
+            &impl_records,
+            &mutates_records,
+            &test_anchors,
+        ) {
+            Ok(stats) => stats,
+            Err(e) => {
+                eprintln!("WARN: Failed to link graph edges: {}", e);
+                CalleeStats::default()
+            }
+        };
 
         save_gen_cache(&cache_path, &cache)?;
 
@@ -1479,6 +1646,151 @@ mod link_tests {
             classify_drop("Vec::new", &idx),
             DropReason::Unresolved
         ));
+    }
+
+    /// Wave 1 (`Implements`) resolution order: method-level when the trait
+    /// method is a stored symbol, else the trait itself, else the bare trait
+    /// name of a scoped path — and NEVER a bare-method fallback (which would
+    /// forge an edge to an unrelated same-named symbol).
+    #[test]
+    fn resolve_implements_prefers_method_then_trait_never_bare_method() {
+        let caller = "aden://module/c/greeter.rs#English::greet";
+        let mut idx: HashMap<&str, Vec<&str>> = HashMap::new();
+        idx.insert("Greeter", vec!["aden://module/c/greeter.rs#Greeter"]);
+        // Trait method not stored → trait-level fallback.
+        assert_eq!(
+            resolve_implements("Greeter::greet", caller, &idx),
+            Some("aden://module/c/greeter.rs#Greeter")
+        );
+        // Trait method stored → method-level wins.
+        idx.insert(
+            "Greeter::greet",
+            vec!["aden://module/c/greeter.rs#Greeter::greet"],
+        );
+        assert_eq!(
+            resolve_implements("Greeter::greet", caller, &idx),
+            Some("aden://module/c/greeter.rs#Greeter::greet")
+        );
+        // Scoped reference resolves through the bare trait name.
+        let mut idx2: HashMap<&str, Vec<&str>> = HashMap::new();
+        idx2.insert("Extractor", vec!["aden://module/c/x.rs#Extractor"]);
+        assert_eq!(
+            resolve_implements("parse::Extractor::run", caller, &idx2),
+            Some("aden://module/c/x.rs#Extractor")
+        );
+        // External trait (`Display::fmt`): nothing resolves → no edge.
+        assert_eq!(
+            resolve_implements("Display::fmt", caller, &HashMap::new()),
+            None
+        );
+        // CRITICAL: a same-named method elsewhere must not be picked up.
+        let mut idx3: HashMap<&str, Vec<&str>> = HashMap::new();
+        idx3.insert("greet", vec!["aden://module/c/other.rs#Other::greet"]);
+        assert_eq!(resolve_implements("Greeter::greet", caller, &idx3), None);
+    }
+
+    /// Wave 1 (`Tests`): a resolved call whose source anchor is in the
+    /// test-anchor set is emitted as BOTH a `Calls` and a `Tests` edge; a
+    /// non-test caller emits `Calls` only. Exercised through the real store
+    /// so the bulk write path is covered too.
+    #[test]
+    fn test_callers_emit_tests_edges_alongside_calls() {
+        use aden_core::{Block, Document, EdgeType, NodeType};
+        let dir = tempfile::tempdir().unwrap();
+        let storage = Storage::new(dir.path().to_str().unwrap()).unwrap();
+        let mk = |anchor: &str| Document {
+            anchor: anchor.into(),
+            node_type: NodeType::Function,
+            attributes: Default::default(),
+            blocks: vec![Block::Paragraph("body".into())],
+            source_span: None,
+            metadata: None,
+            confidence: 1.0,
+        };
+        let target = "aden://module/c/lib.rs#target";
+        let test_fn = "aden://module/c/parity.rs#test_target";
+        let caller = "aden://module/c/lib.rs#caller";
+        for a in [target, test_fn, caller] {
+            storage.put_document(&mk(a)).unwrap();
+        }
+        storage.flush().unwrap();
+
+        let link_records = vec![
+            (test_fn.to_string(), vec!["target".to_string()]),
+            (caller.to_string(), vec!["target".to_string()]),
+        ];
+        // test-ness comes from the SOURCE PATH at collection time (the anchor
+        // alone can hide it), modeled here by membership in the set.
+        let test_anchors: std::collections::HashSet<String> =
+            std::collections::HashSet::from([test_fn.to_string()]);
+        link_store_edges(&storage, &link_records, &[], &[], &[], &[], &test_anchors).unwrap();
+
+        let out_test = storage.get_outgoing_edges(test_fn).unwrap();
+        assert!(
+            out_test.contains(&(target.to_string(), EdgeType::Calls)),
+            "the Calls edge must be kept (reclassify ADDS, never replaces); got {out_test:?}"
+        );
+        assert!(
+            out_test.contains(&(target.to_string(), EdgeType::Tests)),
+            "a test source's resolved call must also be a Tests edge; got {out_test:?}"
+        );
+        let out_caller = storage.get_outgoing_edges(caller).unwrap();
+        assert!(
+            out_caller.contains(&(target.to_string(), EdgeType::Calls)),
+            "non-test caller keeps its Calls edge; got {out_caller:?}"
+        );
+        assert!(
+            !out_caller.iter().any(|(_, et)| *et == EdgeType::Tests),
+            "non-test caller must NOT gain a Tests edge; got {out_caller:?}"
+        );
+    }
+
+    /// Wave 1 (`Implements`/`Mutates`) through the store: impl/mutates
+    /// records become edges with the documented direction.
+    #[test]
+    fn implements_and_mutates_records_become_edges() {
+        use aden_core::{Block, Document, EdgeType, NodeType};
+        let dir = tempfile::tempdir().unwrap();
+        let storage = Storage::new(dir.path().to_str().unwrap()).unwrap();
+        let mk = |anchor: &str| Document {
+            anchor: anchor.into(),
+            node_type: NodeType::Type,
+            attributes: Default::default(),
+            blocks: vec![Block::Paragraph("body".into())],
+            source_span: None,
+            metadata: None,
+            confidence: 1.0,
+        };
+        let trait_a = "aden://module/c/greeter.rs#Greeter";
+        let ty = "aden://module/c/greeter.rs#English";
+        let method = "aden://module/c/greeter.rs#English::greet";
+        for a in [trait_a, ty, method] {
+            storage.put_document(&mk(a)).unwrap();
+        }
+        storage.flush().unwrap();
+
+        let impl_records = vec![(method.to_string(), vec!["Greeter::greet".to_string()])];
+        let mutates_records = vec![(method.to_string(), vec!["English".to_string()])];
+        link_store_edges(
+            &storage,
+            &[],
+            &[],
+            &[],
+            &impl_records,
+            &mutates_records,
+            &std::collections::HashSet::new(),
+        )
+        .unwrap();
+
+        let out = storage.get_outgoing_edges(method).unwrap();
+        assert!(
+            out.contains(&(trait_a.to_string(), EdgeType::Implements)),
+            "implementor method —Implements→ trait (trait-level fallback); got {out:?}"
+        );
+        assert!(
+            out.contains(&(ty.to_string(), EdgeType::Mutates)),
+            "&mut self method —Mutates→ parent type; got {out:?}"
+        );
     }
 
     #[test]

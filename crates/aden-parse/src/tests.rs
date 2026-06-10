@@ -332,3 +332,125 @@ fn empty_block_comment_does_not_panic() {
         );
     }
 }
+
+// ── Wave 1 graph types: Implements / Mutates emission (Rust) ────
+//
+// Eval-first tests for the graph-type roadmap Wave 1 (see
+// research/topics/aden-roadmap/graph-type-roadmap.adoc). A trait impl's
+// methods must carry an `edge::implements[Trait::method]` macro so the
+// linker can connect implementor → trait (method-level when the trait
+// method anchor exists, trait-level fallback otherwise). A `&mut self`
+// receiver must carry `edge::mutates[Type]`.
+
+/// All Listing-block text of the doc whose anchor ends with `suffix`.
+fn listing_text(docs: &[aden_core::Document], suffix: &str) -> String {
+    let doc = docs
+        .iter()
+        .find(|d| d.anchor.ends_with(suffix))
+        .unwrap_or_else(|| {
+            panic!(
+                "no document with anchor suffix '{}'; got: {:?}",
+                suffix,
+                docs.iter().map(|d| &d.anchor).collect::<Vec<_>>()
+            )
+        });
+    doc.blocks
+        .iter()
+        .filter_map(|b| match b {
+            aden_core::Block::Listing { code, .. } => Some(code.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+const RUST_TRAIT_FIXTURE: &str = r#"
+pub trait Greeter {
+    fn greet(&self) -> String;
+}
+
+pub struct English;
+
+impl Greeter for English {
+    fn greet(&self) -> String {
+        make_greeting("hello")
+    }
+}
+
+impl English {
+    pub fn shout(&mut self) {
+        make_greeting("HELLO");
+    }
+    pub fn whisper(&self) {}
+}
+
+// A generic-args trait must still link by its base name.
+impl From<u8> for English {
+    fn from(_v: u8) -> Self {
+        English
+    }
+}
+
+pub fn make_greeting(word: &str) -> String {
+    word.to_uppercase()
+}
+"#;
+
+#[test]
+fn rust_trait_impl_emits_implements_macro() {
+    let docs = crate::rust::extract_documents_inner(
+        std::path::Path::new("src/greeter.rs"),
+        RUST_TRAIT_FIXTURE,
+    )
+    .expect("parse should succeed");
+    let greet = listing_text(&docs, "English::greet");
+    assert!(
+        greet.contains("edge::implements[Greeter::greet]"),
+        "trait-impl method must emit a method-qualified implements macro; got: {greet}"
+    );
+    // Generic args on the trait are stripped so the base name can resolve.
+    let from = listing_text(&docs, "English::from");
+    assert!(
+        from.contains("edge::implements[From::from]"),
+        "generic trait `From<u8>` must emit its base name; got: {from}"
+    );
+}
+
+#[test]
+fn rust_inherent_impl_emits_no_implements_macro() {
+    let docs = crate::rust::extract_documents_inner(
+        std::path::Path::new("src/greeter.rs"),
+        RUST_TRAIT_FIXTURE,
+    )
+    .expect("parse should succeed");
+    let shout = listing_text(&docs, "English::shout");
+    assert!(
+        !shout.contains("edge::implements["),
+        "inherent-impl method must NOT emit implements; got: {shout}"
+    );
+}
+
+#[test]
+fn rust_mut_self_receiver_emits_mutates_macro() {
+    let docs = crate::rust::extract_documents_inner(
+        std::path::Path::new("src/greeter.rs"),
+        RUST_TRAIT_FIXTURE,
+    )
+    .expect("parse should succeed");
+    let shout = listing_text(&docs, "English::shout");
+    assert!(
+        shout.contains("edge::mutates[English]"),
+        "`&mut self` method must emit edge::mutates[Type]; got: {shout}"
+    );
+    // Shared-reference receiver must not claim mutation.
+    let whisper = listing_text(&docs, "English::whisper");
+    assert!(
+        !whisper.contains("edge::mutates["),
+        "`&self` method must NOT emit mutates; got: {whisper}"
+    );
+    let greet = listing_text(&docs, "English::greet");
+    assert!(
+        !greet.contains("edge::mutates["),
+        "`&self` trait method must NOT emit mutates; got: {greet}"
+    );
+}

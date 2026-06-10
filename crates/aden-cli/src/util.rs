@@ -371,11 +371,19 @@ pub fn parse_edge_types_validated(
 }
 
 /// Load the generation cache from disk, returning a default on any error.
+/// A cache written by a different emission-logic version is discarded
+/// wholesale (see [`crate::types::GEN_LOGIC_VERSION`]) so every file
+/// reparses once and the store picks up newly-emitted edge kinds. The
+/// returned cache is always stamped with the current version, so a
+/// subsequent `save_gen_cache` persists it.
 pub fn load_gen_cache(path: &Path) -> GenCache {
-    std::fs::read_to_string(path)
+    let mut cache = std::fs::read_to_string(path)
         .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+        .and_then(|s| serde_json::from_str::<GenCache>(&s).ok())
+        .filter(|c| c.version == crate::types::GEN_LOGIC_VERSION)
+        .unwrap_or_default();
+    cache.version = crate::types::GEN_LOGIC_VERSION;
+    cache
 }
 
 /// Persist the generation cache to disk.

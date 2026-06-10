@@ -411,10 +411,45 @@ fn extract_function(
     })
 }
 
+/// Strip generic arguments from a type/trait reference so the base name can
+/// match a stored symbol anchor: `From<u8>` → `From`,
+/// `AdenGraph<DocumentNode, AdenEdge>` → `AdenGraph`. Scoped paths
+/// (`fmt::Display`) are kept — the linker's implements resolution falls back
+/// segment-by-segment, and an external path simply fails to resolve (no edge,
+/// no false edge).
+fn strip_generic_args(text: &str) -> &str {
+    text.split('<').next().unwrap_or(text).trim()
+}
+
+/// True when the function's receiver is `&mut self` (incl. `&'a mut self`) —
+/// the cheap, honest "this method mutates its parent type's state" signal the
+/// graph-type roadmap sanctions for `Mutates` emission. By-value `mut self`
+/// (consuming) and `&self` receivers do not qualify.
+fn has_mut_self_receiver(node: tree_sitter::Node, source: &str) -> bool {
+    let Some(params) = node.child_by_field_name("parameters") else {
+        return false;
+    };
+    let mut pc = params.walk();
+    for p in params.children(&mut pc) {
+        if p.kind() == "self_parameter" {
+            let t = node_text(p, source);
+            return t.starts_with('&') && t.contains("mut");
+        }
+    }
+    false
+}
+
 /// Walk an `impl T { ... }` block and emit a Document for each associated fn /
 /// method. The top-level loop does not recurse, so without this these symbols
 /// were invisible. Anchors are qualified with the impl type (`T::method`) so
 /// same-named methods across different impls don't collide.
+///
+/// Wave 1 (graph-type roadmap): each method additionally carries typed edge
+/// macros for graph linking —
+/// * `edge::implements[Trait::method]` when the impl is `impl Trait for T`
+///   (method-level preferred; the linker falls back to the trait itself when
+///   the trait method is not a stored symbol), and
+/// * `edge::mutates[T]` when the receiver is `&mut self`.
 fn extract_impl_methods(
     node: tree_sitter::Node,
     source: &str,
@@ -434,6 +469,20 @@ fn extract_impl_methods(
         })
         .map(|n| node_text(n, source).to_string());
     let type_prefix = type_name.as_deref();
+    // The trait being implemented (`impl Trait for T` → `Trait`); None for an
+    // inherent impl. Generic args are stripped so `From<u8>` links as `From`.
+    let trait_name: Option<String> = node
+        .child_by_field_name("trait")
+        .map(|n| strip_generic_args(node_text(n, source)).to_string())
+        .filter(|t| !t.is_empty());
+    // Mutates targets the parent type's stored anchor, which uses the bare
+    // name (`Foo`, not `Foo<T>` or `path::Foo`).
+    let mutates_target: Option<String> = type_name
+        .as_deref()
+        .map(strip_generic_args)
+        .and_then(|t| t.rsplit("::").next())
+        .map(str::to_string)
+        .filter(|t| !t.is_empty());
 
     let Some(body) = node.child_by_field_name("body") else {
         return;
@@ -453,7 +502,7 @@ fn extract_impl_methods(
                 }
             }
             "function_item" | "function_signature_item" => {
-                if let Some(doc) = extract_function(
+                if let Some(mut doc) = extract_function(
                     child,
                     source,
                     path,
@@ -462,6 +511,26 @@ fn extract_impl_methods(
                     &buffered,
                     type_prefix,
                 ) {
+                    let mut edge_lines: Vec<String> = Vec::new();
+                    if let Some(trait_base) = trait_name.as_deref()
+                        && let Some(method) = child.child_by_field_name("name")
+                    {
+                        edge_lines.push(format!(
+                            "edge::implements[{trait_base}::{}]",
+                            node_text(method, source)
+                        ));
+                    }
+                    if let Some(target) = mutates_target.as_deref()
+                        && has_mut_self_receiver(child, source)
+                    {
+                        edge_lines.push(format!("edge::mutates[{target}]"));
+                    }
+                    if !edge_lines.is_empty() {
+                        doc.blocks.push(Block::Listing {
+                            language: None,
+                            code: edge_lines.join("\n"),
+                        });
+                    }
                     docs.push(doc);
                 }
                 buffered.clear();

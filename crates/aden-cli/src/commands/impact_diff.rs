@@ -22,6 +22,13 @@ use std::path::Path;
 /// it through one of these. Mirrors `cmd_query`'s `--impact` edge SET so the two
 /// agree on which edge kinds carry breakage (the traversal direction differs:
 /// blast radius walks incoming/dependents, `--impact` walks outgoing/reach).
+///
+/// Emitter status (graph-type roadmap Wave 1): `Implements` (trait impls) and
+/// `Mutates` (`&mut self` receivers) are live since Wave 1; `Constrains` and
+/// `Invokes` still have no emitter and are inert until one lands. `Tests` is
+/// deliberately NOT in this set: every `Tests` edge is co-emitted with a
+/// `Calls` edge, so the dependent traversal already reaches test symbols —
+/// they are surfaced separately via [`affected_tests`].
 fn impact_edge_types() -> [aden_core::EdgeType; 6] {
     [
         aden_core::EdgeType::Uses,
@@ -31,6 +38,38 @@ fn impact_edge_types() -> [aden_core::EdgeType; 6] {
         aden_core::EdgeType::Implements,
         aden_core::EdgeType::Mutates,
     ]
+}
+
+/// The test symbols covering a blast set: every source of a `Tests` edge into
+/// any member of `seeds` (the touched symbols plus their transitive
+/// dependents). Because gen co-emits a `Tests` edge alongside every resolved
+/// call FROM a test symbol, a test reaching a touched symbol through helpers
+/// still Tests the helper that sits in the dependent set — so one direct hop
+/// here covers transitive coverage without a second traversal.
+fn affected_tests(
+    graph: &aden_graph::AdenGraph<aden_graph::DocumentNode, aden_graph::AdenEdge>,
+    seeds: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    let mut tests: BTreeSet<String> = BTreeSet::new();
+    for anchor in seeds {
+        let Some(node) = graph.get_index(anchor) else {
+            continue;
+        };
+        for neighbor in graph.graph.neighbors_directed(node, Direction::Incoming) {
+            // Incoming neighbor: the connecting edge runs neighbor → node.
+            let is_test_edge = graph
+                .graph
+                .edges_connecting(neighbor, node)
+                .any(|e| e.weight().edge_type == aden_core::EdgeType::Tests);
+            if is_test_edge {
+                let a = &graph.graph[neighbor].doc.anchor;
+                if a != anchor {
+                    tests.insert(a.clone());
+                }
+            }
+        }
+    }
+    tests
 }
 
 pub fn cmd_impact_diff(
@@ -52,7 +91,7 @@ pub fn cmd_impact_diff(
                 "{}",
                 serde_json::json!({
                     "changed_files": 0, "touched": [], "blast_radius": 0,
-                    "impacted": [], "risk": "none"
+                    "impacted": [], "affected_tests": [], "risk": "none"
                 })
             );
         } else {
@@ -90,6 +129,12 @@ pub fn cmd_impact_diff(
     let blast = union.len();
     let risk = risk_tier(blast);
 
+    // Always-on test selection ("you changed X — run these tests"): the test
+    // symbols with a `Tests` edge into anything touched or at risk.
+    let mut seeds = union.clone();
+    seeds.extend(touched.iter().cloned());
+    let tests = affected_tests(&graph, &seeds);
+
     if json {
         let touched_json: Vec<serde_json::Value> = per_symbol
             .iter()
@@ -108,6 +153,7 @@ pub fn cmd_impact_diff(
                 "touched": touched_json,
                 "blast_radius": blast,
                 "impacted": union.iter().collect::<Vec<_>>(),
+                "affected_tests": tests.iter().collect::<Vec<_>>(),
                 "risk": risk,
             })
         );
@@ -137,6 +183,17 @@ pub fn cmd_impact_diff(
         println!(
             "  (risk is a heuristic on dependent breadth: 0=none, ≤5 low, ≤20 medium, else high)"
         );
+        if tests.is_empty() {
+            println!("\nAffected tests: none found (no Tests edge reaches the blast set).");
+        } else {
+            println!("\nAffected tests ({} — run these):", tests.len());
+            for t in tests.iter().take(20) {
+                println!("  {}", short(t));
+            }
+            if tests.len() > 20 {
+                println!("  ... and {} more (see --json affected_tests)", tests.len() - 20);
+            }
+        }
     }
     Ok(())
 }
@@ -390,6 +447,65 @@ mod tests {
         assert!(
             blast.is_empty(),
             "Documents edge is not an impact edge; got {blast:?}"
+        );
+    }
+
+    /// Wave 1 (`Tests`): the affected-tests set is exactly the sources of
+    /// `Tests` edges into the blast seeds (touched + dependents). Direct
+    /// coverage and coverage through a helper both count; a plain (non-test)
+    /// caller never appears.
+    #[test]
+    fn affected_tests_are_tests_edge_sources_into_blast() {
+        let g = fixture_graph(
+            &[
+                "test_direct",
+                "test_via_helper",
+                "helper",
+                "plain_caller",
+                "changed",
+            ],
+            &[
+                // gen co-emits Tests alongside Calls for test sources.
+                ("test_direct", "changed", aden_core::EdgeType::Calls),
+                ("test_direct", "changed", aden_core::EdgeType::Tests),
+                ("helper", "changed", aden_core::EdgeType::Calls),
+                ("test_via_helper", "helper", aden_core::EdgeType::Calls),
+                ("test_via_helper", "helper", aden_core::EdgeType::Tests),
+                ("plain_caller", "changed", aden_core::EdgeType::Calls),
+            ],
+        );
+        let mut seeds = dependents_of(&g, "changed", &impact_edge_types());
+        seeds.insert("changed".to_string());
+        let tests = affected_tests(&g, &seeds);
+        assert_eq!(
+            tests,
+            BTreeSet::from(["test_direct".to_string(), "test_via_helper".to_string()]),
+            "covering tests (direct and via helper) and nothing else"
+        );
+    }
+
+    /// Wave 1 (`Implements`): blast radius of a trait must reach the
+    /// implementors' methods (Implements edges run implementor → trait, and
+    /// the dependents walk is Incoming) and, transitively, their callers.
+    #[test]
+    fn trait_blast_reaches_implementors_via_implements() {
+        let g = fixture_graph(
+            &["Greeter", "English::greet", "French::greet", "caller"],
+            &[
+                ("English::greet", "Greeter", aden_core::EdgeType::Implements),
+                ("French::greet", "Greeter", aden_core::EdgeType::Implements),
+                ("caller", "English::greet", aden_core::EdgeType::Calls),
+            ],
+        );
+        let blast = dependents_of(&g, "Greeter", &impact_edge_types());
+        assert_eq!(
+            blast,
+            BTreeSet::from([
+                "English::greet".to_string(),
+                "French::greet".to_string(),
+                "caller".to_string(),
+            ]),
+            "a changed trait must put implementor methods and their callers at risk"
         );
     }
 
