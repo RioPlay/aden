@@ -190,6 +190,7 @@ fn git_activity(root: &Path, max: usize) -> Vec<serde_json::Value> {
 /// scheme straight to the desktop app, so no server is involved.
 fn editor_template(editor: &str) -> String {
     match editor {
+        "auto" => return detect_editor_template(),
         "vscode" | "code" => "vscode://file{file}:{line}",
         "vscodium" | "codium" => "vscodium://file{file}:{line}",
         "cursor" => "cursor://file{file}:{line}",
@@ -199,6 +200,43 @@ fn editor_template(editor: &str) -> String {
         _ => "vscode://file{file}:{line}",
     }
     .to_string()
+}
+
+/// Pick the URI scheme of an editor that is actually installed, so the default
+/// "open in editor" link lands somewhere. A hardcoded `vscode://` default goes
+/// nowhere on machines running only VSCodium/Cursor/Zed (no handler for the
+/// scheme registers, so clicks are silently dropped by the OS). Probed in
+/// VS-Code-first order via PATH lookup — deterministic per machine; an explicit
+/// `--editor` always wins by never reaching this.
+fn detect_editor_template() -> String {
+    for (bin, alias) in [
+        ("code", "vscode"),
+        ("codium", "codium"),
+        ("cursor", "cursor"),
+        ("zed", "zed"),
+        ("idea", "idea"),
+    ] {
+        if binary_on_path(bin) {
+            return editor_template(alias);
+        }
+    }
+    editor_template("vscode")
+}
+
+/// True if `bin` resolves to an executable on PATH (the same probe a shell does).
+fn binary_on_path(bin: &str) -> bool {
+    let Some(paths) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&paths).any(|dir| {
+        let p = dir.join(bin);
+        let exe = if cfg!(windows) {
+            dir.join(format!("{bin}.exe")).is_file()
+        } else {
+            false
+        };
+        exe || p.is_file()
+    })
 }
 
 /// Best-effort: open a path in the OS default browser. Never blocks; a missing
