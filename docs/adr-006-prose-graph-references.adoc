@@ -65,7 +65,7 @@ The split that keeps the design polyglot:
   backtick state. Each parser fills a `doc_refs` document attribute with `ref:<fragment>`
   entries:
   ** AsciiDoc (`aden-parse::asciidoc`): `<<target>>`, `<<target,label>>`,
-     `xref:file.adoc#fragment[...]`.
+     `xref:file.adoc#fragment[...]`. // aden:allow-path
   ** Markdown (`aden-parse::markdown`): `[text](#fragment)` heading-slug links.
   ** A `<<x>>` / `[x](#y)` inside a code listing or backticks is *not* a reference.
 * *Resolution* lives in `link_store_edges` (`aden-cli::generate`) and is format-neutral:

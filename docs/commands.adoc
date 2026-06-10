@@ -348,7 +348,23 @@ aden ask "Explain the parser" --edge-types "Calls,Uses"
 
 # Custom model
 aden ask "Explain the parser" --model ollama:llama3
+
+# Routing transparency: top candidates, scores, tiebreak, intent, fallback
+aden ask "How does the parser work?" --explain
 ----
+
+|===
+|Flag |Description |Default
+
+|--from |Pin starting anchor |—
+|--budget |Base budget in bytes (boosted by relevance unless --strict) |4096
+|--strict |Use --budget as an exact cap; no boost |false
+|--intent |Override intent classification (`debug`, `usage`, `explain`, `refactor`, `impact`, `list`, `compare`, `count`, `general`) |auto
+|--depth |Override BFS traversal depth |intent-driven
+|--edge-types |Override edge types (comma-separated) |intent-driven
+|--model |Custom LLM model string (e.g. `ollama:llama3`) |—
+|--explain |Print routing transparency: top candidates with scores, the tiebreak decision, intent, overview signal, and any fallback swap |false
+|===
 
 NOTE: When built with the `dense` feature, `ask`'s anchor routing uses hybrid
 (BM25 + dense embedding) retrieval — see the note under xref:commands.adoc#_search[search].
@@ -678,6 +694,11 @@ Reports each touched symbol's downstream count, the union blast radius, and a
 heuristic risk tier (downstream breadth: 0 none / ≤5 low / ≤20 medium / else
 high). A changed line that falls inside no known symbol (docs, comments, new
 files) contributes nothing. Also available as the MCP `impact-diff` tool.
+
+`--json` includes an `affected_tests` array: test-source anchors that have
+`Tests` edges into the touched symbols or their downstream reach — so you see
+at a glance which test files exercise the changed code. Human output shows up
+to 20 entries; use `--json` for the full list.
 
 === overlay
 

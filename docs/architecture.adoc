@@ -154,8 +154,14 @@ which breaks offline and air-gapped use. See CONTRIBUTING.md.
 Builds a directed graph (`DiGraph`) from all contracts + documentation + <<adr-001>> + <<project-context>>.
 
 - Nodes: anchors (`[[name]]`)
-- Edges: typed relationships (`Uses`, `Calls`, `Constrains`, `Contains`/`PartOf`
-  for containment, `Documents` for prose→code, etc.)
+- Edges: typed relationships — active types (emitter + consumer + eval verified):
+  `Uses`, `Calls`, `Constrains`, `Contains`/`PartOf` (containment),
+  `Documents` (prose→code), `IsA`, `RelatesTo`, `Tests`, `Implements`, `Mutates`.
+  `RelatesTo` edges also connect prose: cross-document `<<anchor>>`, `xref:`, and
+  markdown `[text](#frag)` references become bidirectional `RelatesTo` edges on
+  `gen`, so docs are first-class graph citizens (<<adr-006>>). The typed-edge
+  activation policy (emitter + consumer + eval required before an edge type is
+  considered live) is codified in <<adr-007>>.
 - Validation: cycle detection, orphan detection, reference resolution
 
 === 3. Validate (aden check)
@@ -207,14 +213,21 @@ A read command like `aden ask "How does auth work?"` runs end to end as:
 3. **Search (aden-index)** — the question is matched to find the best
    entry-point anchors. BM25 by default; when the `dense` feature is built and a
    local model is present, this is a hybrid search (BM25 + dense embeddings fused
-   via Reciprocal Rank Fusion).
+   via Reciprocal Rank Fusion). Broad conceptual questions ("What is Aden?",
+   philosophy, architecture) are detected and routed to curated prose anchors
+   via `RelatesTo`/`Documents` in-degree rather than code symbols, so project-
+   identity queries land in entry docs instead of implementation internals.
 4. **Assemble (aden-asm)** — a BFS traversal walks outward from those anchors
    along selected edge types, estimating tokens per document with the
    bytes ÷ 4 heuristic. `ask` boosts its base `--budget` (default 4096) by the
    match relevance by default — up to ~4x, capped at 32k — so a strong match
-   gets more context; pass `ask --strict` for an exact cap.
+   gets more context; pass `ask --strict` for an exact cap. Source lines are
+   hydrated into responses when budget allows (source hash verified; stale spans
+   emit a note rather than stale content).
 5. **Result** — the selected documents are concatenated into a single assembled
-   prompt context.
+   prompt context. `--explain` prints the routing decision transparently: top
+   anchor candidates with scores, the tiebreak, intent classification, and any
+   fallback swap.
 
 == Crate Architecture
 
@@ -664,6 +677,8 @@ The cleanup of the four removed crates is complete (documented, decided **remove
 . <<adr-001>> — AsciiDoc as native substrate
 . <<adr-002>>, <<adr-003>> — Secure-coding standard and store-location decisions
 . <<adr-004>> — Append-only AGENTS.md guidance block
+. <<adr-006>> — Prose as a first-class graph citizen (RelatesTo edges from prose refs)
+. <<adr-007>> — Typed-edge activation policy (emitter + consumer + eval)
 . <<ai-integration>> — How AI agents use Aden
 . <<user-guide>> — Daily workflows
 . Root entry point: `README.md`; agent workspace: `.agent/context.adoc`

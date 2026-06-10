@@ -7,6 +7,81 @@ All notable changes to aden are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/); this project uses
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+Post-0.2.0 work on main — not yet tagged.
+
+### Added
+- **Wave 1 typed edges — `Tests`, `Implements`, `Mutates`** — three new live edge
+  types (each requires an emitter, a consumer, and an eval gate before activation —
+  the ADR-007 policy applied). Census on aden's own repo: Tests 138, Implements 75,
+  Mutates 16, deterministic across regens. `impact-diff` gains an always-on
+  `affected_tests` section (`--json affected_tests` array): test-source anchors with
+  `Tests` edges into the touched symbols or their blast radius, so you see which test
+  files cover the changed code before you push. `Implements` blast radius now reaches
+  implementor methods — previously a trait's blast radius was silently truncated at
+  the trait level without descending into its `impl` blocks.
+- **Prose graph references — `RelatesTo` edges (ADR-006)** — cross-document
+  `<<anchor>>`, `xref:file#fragment`, and markdown `[text](#heading)` references
+  become bidirectional `RelatesTo` edges on `gen`. The design makes prose a
+  first-class graph citizen: edges derived from refs the author explicitly wrote, not
+  inferred mentions — so check's false-positive rate on real docs drops to zero. On
+  the aden docs repo itself, this went from 58 unresolved refs → 0. `query --backlinks`
+  now reaches prose nodes; `GEN_LOGIC_VERSION` bumped to 3 so mtime-skipped docs
+  re-emit their refs on upgrade.
+- **`aden ask --explain`** — routing transparency flag: prints the top anchor
+  candidates with scores and token patterns, the tiebreak decision, intent
+  classification, overview signal, and any fallback swap. Useful for diagnosing
+  why a question routes where it does and for writing eval harness assertions.
+- **`ask` conceptual routing** — broad questions ("What is Aden?", philosophy,
+  architecture, getting started) now route to curated prose/entry-doc anchors via
+  `RelatesTo`/`Documents` in-degree rather than implementation symbols. Root causes
+  were AnchorPattern collapsing every `#`-anchor to `Symbol`, a token-split on
+  non-alphanumerics fragmenting multi-word doc anchors, and a bare-token fallback
+  hijacking correctly-chosen doc anchors to hubs. Golden-set accuracy 5/10 → 10/10;
+  byte-identical output on the three narrow-scoped controls.
+- **`ask` density/immediacy** — `ask` was routing correctly but assembling almost
+  nothing: a 4115-token budget could return 22 tokens (0.5% density). Three-layer fix:
+  (F1) render fixes — signature tables get a fallback name, leading docstrings and
+  signature tables are exempt from intent block-filters, callee tables capped at 12
+  so hubs don't burn budget on scaffolding; (F2) budget-aware source-span hydration
+  packs included nodes with their actual source lines when budget allows (source hash
+  verified; stale store → a note, never stale source), callers fold in as a depth-1
+  frontier; (F3) three-rung escalation ladder for underfull anchors (re-render without
+  intent filter → fold callers → depth +1) fires *before* community broadening, which
+  now ranks members by BM25 query-relevance instead of degree. Eval gates: mean
+  density ≥ 0.50, per-query floor ≥ 0.15, immediacy ≥ 12/15, budget-honesty 15/15,
+  anchor-hit ≥ 12/15.
+- **MCP ↔ CLI parity** — `viz` tool added to MCP surface; reverse parity tests
+  ensure every CLI capability has an MCP counterpart and vice versa, so the two
+  surfaces can't silently diverge.
+- **ADR-005** (`docs/adr-005-footprint-opt-in-tracking.adoc`) — accepted via PR #18.
+  Decides: only `.aden/` at the project root (folds `.agent/`, `.adenignore`);
+  `.aden/config.toml` as the single config file; opt-in tracking (`git.track = false`
+  by default, via a generated `.aden/.gitignore` that never edits the repo-root
+  `.gitignore`). Resolves the ADR-003/AGENTS.md contradiction: "`.aden/` is ignored"
+  is now the default truth; "intent travels with the repo" is the opt-in. Implementation
+  unblocked by acceptance.
+- **ADR-006** (`docs/adr-006-prose-graph-references.adoc`) — design record for
+  prose as a first-class graph citizen (the RelatesTo edge work above).
+- **ADR-007** (`docs/adr-007-typed-edge-model.adoc`) — typed-edge activation
+  policy: an edge type is real only when it has an emitter, a consumer, and an eval
+  gate. Documents the wave-1 activation and the blast-radius = transitive-dependents
+  decision.
+
+### Fixed
+- **`impact-diff` blast radius direction** — the blast radius was traversing
+  *dependencies* (what the changed code calls out to) instead of *dependents* (what
+  calls the changed code). This is a correctness bug in a shipped feature: "what
+  breaks if I change this" is the reverse direction. Traversal now walks incoming
+  edges via the impact-edge set, matching `query --impact` semantics.
+
+### Legal
+- **CLA v1.0** (`CLA.md`) — Contributor License Agreement adversarially reviewed
+  (§5 covenant-not-condition confirmed). `CONTRIBUTING.md` and `LICENSE` aligned.
+
+---
+
 ## [0.2.0] — 2026-06-09
 
 The interactive graph + reproducible-retrieval release. New features, no breaking
@@ -42,6 +117,13 @@ CLI changes. Tag `v0.2.0` to trigger the release build (`release.yml`).
   text, two `HashMap`-iteration orders (`collect_store_entries`, `ingest` dedup), the
   parallel store-write anchor-collision race, and `emit_document` attribute order.
 - `detect_communities` determinism (canonical node order before Louvain).
+- **`aden view` density slider during replay** — the `idVisible()` reveal gate was
+  short-circuiting the density filter in `growMode`; density now composes with the
+  reveal gate so the slider is live during replay (bypassed only at 100%).
+- **`aden view` panel pointer-event leak** — clicking or hovering the side panel was
+  selecting nodes beneath it. `#panel` now has `z-index 8`; an `overUI` flag
+  (set on `pointerenter`/`leave` of panel, controls, search, replay bar, filter,
+  and action buttons) guards all `onNodeHover`/`onClick` paths.
 
 ### Security
 - `aden view` hardened against `<script>` injection — target-codebase data inlined
