@@ -406,9 +406,10 @@ static TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "viz",
         description: "Export a graph slice as a text diagram (Mermaid/DOT/AsciiDoc/JSON) for docs, \
-                      PRs, or CI. mode=blast (downstream impact, default) | connectivity (both \
-                      directions) | communities (clusters; anchor not needed). Non-interactive \
-                      sibling of the browser `view` command.",
+                      PRs, or CI. mode=blast (dependents at risk if the anchor changes, default) | \
+                      reach (dependencies it relies on) | connectivity (both directions) | \
+                      communities (clusters; anchor not needed). Non-interactive sibling of the \
+                      browser `view` command.",
         // Both positionals: anchor must precede path (spec order is emission
         // order, matching `aden viz [ANCHOR] [DIR]`).
         args: &[

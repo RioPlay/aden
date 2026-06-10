@@ -5,26 +5,16 @@
 //! straight into AsciiDoc/Markdown, a PR comment, or CI, with zero runtime and no
 //! interactive UI (ADR/roadmap M1 — the interactive viewer is deferred).
 //!
-//! First slice: the *blast-radius* subgraph around an anchor — the same outgoing
-//! "impact" edge set as `impact-diff` / `query --impact`, BFS-limited by `--depth`.
+//! Anchor-centred slices share `impact-diff` / `query --impact`'s edge SET but
+//! split by direction, named honestly (ADR-007 §2): *blast* walks incoming
+//! dependents (who breaks if this changes — agrees with `impact-diff`), *reach*
+//! walks outgoing dependencies (what this relies on — agrees with
+//! `query --impact`), *connectivity* walks both. All BFS-limited by `--depth`.
 
-use crate::util::find_project_root;
+use crate::util::{find_project_root, impact_edge_types};
 use aden_graph::Direction;
 use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::path::Path;
-
-/// Downstream (impact) edge types — mirrors `impact_diff` / `cmd_query --impact`
-/// so every blast-radius view in aden agrees on what "downstream" means.
-fn impact_edge_types() -> [aden_core::EdgeType; 6] {
-    [
-        aden_core::EdgeType::Uses,
-        aden_core::EdgeType::Calls,
-        aden_core::EdgeType::Constrains,
-        aden_core::EdgeType::Invokes,
-        aden_core::EdgeType::Implements,
-        aden_core::EdgeType::Mutates,
-    ]
-}
 
 /// The concrete graph type the cache yields — aliased to keep slice signatures short.
 type Graph = aden_graph::AdenGraph<aden_graph::DocumentNode, aden_graph::AdenEdge>;
@@ -111,7 +101,7 @@ pub fn cmd_viz(
             render_whole_graph_json(&graph, &root, if full { 0 } else { GRAPH_CAP })
         }
         // Anchor-centred views.
-        "blast" | "connectivity" => {
+        "blast" | "reach" | "connectivity" => {
             let anchor = anchor.ok_or_else(|| -> Box<dyn std::error::Error> {
                 format!(
                     "--mode {mode} needs an ANCHOR (a symbol like `cmd_understand` or a full aden:// anchor)"
@@ -119,17 +109,17 @@ pub fn cmd_viz(
                 .into()
             })?;
             let root_anchor = resolve_anchor(&graph, anchor)?;
-            let (nodes, edges) = if mode == "connectivity" {
-                connectivity_slice(&graph, &root_anchor, depth, NODE_CAP)
-            } else {
-                blast_slice(&graph, &root_anchor, depth, NODE_CAP)
+            let (nodes, edges) = match mode {
+                "connectivity" => connectivity_slice(&graph, &root_anchor, depth, NODE_CAP),
+                "reach" => reach_slice(&graph, &root_anchor, depth, NODE_CAP),
+                _ => blast_slice(&graph, &root_anchor, depth, NODE_CAP),
             };
             let src = build_src_map(&root);
             render_flat(&root_anchor, &nodes, &edges, format, &src)?
         }
         other => {
             return Err(format!(
-                "unknown --mode '{other}' (expected 'blast', 'connectivity', 'communities', or 'graph')"
+                "unknown --mode '{other}' (expected 'blast', 'reach', 'connectivity', 'communities', or 'graph')"
             )
             .into());
         }
@@ -164,21 +154,21 @@ pub(crate) fn viz_json_for(
     match mode {
         "graph" => Ok(render_whole_graph_json(&graph, &root, GRAPH_CAP)),
         "communities" => render_communities_view_json(&graph, &root, 2, 1.0, MAX_COMMUNITIES, DRILL_CAP),
-        "blast" | "connectivity" => {
+        "blast" | "reach" | "connectivity" => {
             let anchor = anchor.ok_or_else(|| -> Box<dyn std::error::Error> {
                 format!("--mode {mode} needs an ANCHOR (a symbol or full aden:// anchor)").into()
             })?;
             let root_anchor = resolve_anchor(&graph, anchor)?;
-            let (nodes, edges) = if mode == "connectivity" {
-                connectivity_slice(&graph, &root_anchor, depth, NODE_CAP)
-            } else {
-                blast_slice(&graph, &root_anchor, depth, NODE_CAP)
+            let (nodes, edges) = match mode {
+                "connectivity" => connectivity_slice(&graph, &root_anchor, depth, NODE_CAP),
+                "reach" => reach_slice(&graph, &root_anchor, depth, NODE_CAP),
+                _ => blast_slice(&graph, &root_anchor, depth, NODE_CAP),
             };
             let src = build_src_map(&root);
             Ok(render_json(&root_anchor, &nodes, &edges, &src))
         }
         other => Err(format!(
-            "unknown --mode '{other}' (expected blast, connectivity, communities, or graph)"
+            "unknown --mode '{other}' (expected blast, reach, connectivity, communities, or graph)"
         )
         .into()),
     }
@@ -373,7 +363,30 @@ fn render_whole_graph_json(graph: &Graph, root: &Path, cap: usize) -> String {
 
 /// Blast radius: BFS *outgoing* over impact edges from `root_anchor`, depth-capped
 /// and node-capped at `cap` (closest-first, so the cap keeps the nearest reach).
+/// Blast radius: BFS *incoming* over impact edges from `root_anchor` — the
+/// transitive dependents (callers/referencers) at risk if the anchor changes.
+/// Same direction as `impact-diff`'s `dependents_of` (ADR-007 §2). Edges are
+/// stored referencer→referencee, so the connecting edge runs neighbor→node and
+/// is rendered that way (arrows keep pointing at what gets used). Depth-capped
+/// and node-capped at `cap` (closest-first, so the cap keeps the nearest
+/// dependents).
 fn blast_slice(graph: &Graph, root_anchor: &str, depth: usize, cap: usize) -> Slice {
+    directed_slice(graph, root_anchor, depth, cap, Direction::Incoming)
+}
+
+/// Downstream reach: BFS *outgoing* over impact edges — the transitive
+/// dependencies `root_anchor` relies on. Same direction as `query --impact`.
+fn reach_slice(graph: &Graph, root_anchor: &str, depth: usize, cap: usize) -> Slice {
+    directed_slice(graph, root_anchor, depth, cap, Direction::Outgoing)
+}
+
+fn directed_slice(
+    graph: &Graph,
+    root_anchor: &str,
+    depth: usize,
+    cap: usize,
+    dir: Direction,
+) -> Slice {
     let impact = impact_edge_types();
     let mut nodes: BTreeSet<String> = BTreeSet::new();
     nodes.insert(root_anchor.to_string());
@@ -390,21 +403,28 @@ fn blast_slice(graph: &Graph, root_anchor: &str, depth: usize, cap: usize) -> Sl
         if d >= depth {
             continue;
         }
-        for neighbor in graph.graph.neighbors_directed(node, Direction::Outgoing) {
+        for neighbor in graph.graph.neighbors_directed(node, dir) {
+            // The stored edge runs source→target regardless of which side we
+            // walked in from; keep that orientation in the rendered slice.
+            let (src, dst) = match dir {
+                Direction::Outgoing => (node, neighbor),
+                Direction::Incoming => (neighbor, node),
+            };
             let etype = graph
                 .graph
-                .edges_connecting(node, neighbor)
+                .edges_connecting(src, dst)
                 .find(|e| impact.contains(&e.weight().edge_type))
                 .map(|e| format!("{:?}", e.weight().edge_type));
             let Some(et) = etype else { continue };
-            let to = graph.graph[neighbor].doc.anchor.clone();
+            let nb_anchor = graph.graph[neighbor].doc.anchor.clone();
             // Respect the cap: only introduce a *new* node while under it (edges to
             // already-kept nodes still count, so the shown subgraph stays connected).
-            if !nodes.contains(&to) && nodes.len() >= cap {
+            if !nodes.contains(&nb_anchor) && nodes.len() >= cap {
                 continue;
             }
-            let from = graph.graph[node].doc.anchor.clone();
-            nodes.insert(to.clone());
+            let from = graph.graph[src].doc.anchor.clone();
+            let to = graph.graph[dst].doc.anchor.clone();
+            nodes.insert(nb_anchor);
             edges.insert((from, to, et));
             if visited.insert(neighbor) {
                 queue.push_back((neighbor, d + 1));

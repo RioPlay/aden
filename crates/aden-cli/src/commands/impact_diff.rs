@@ -13,32 +13,10 @@
 //! hunk headers into changed line ranges.
 
 use crate::commands::grep::{enclosing_symbol, load_symbol_spans};
-use crate::util::find_project_root;
+use crate::util::{find_project_root, impact_edge_types};
 use aden_graph::Direction;
 use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::path::Path;
-
-/// Impact edge types — a change to a symbol can break anything that references
-/// it through one of these. Mirrors `cmd_query`'s `--impact` edge SET so the two
-/// agree on which edge kinds carry breakage (the traversal direction differs:
-/// blast radius walks incoming/dependents, `--impact` walks outgoing/reach).
-///
-/// Emitter status (graph-type roadmap Wave 1): `Implements` (trait impls) and
-/// `Mutates` (`&mut self` receivers) are live since Wave 1; `Constrains` and
-/// `Invokes` still have no emitter and are inert until one lands. `Tests` is
-/// deliberately NOT in this set: every `Tests` edge is co-emitted with a
-/// `Calls` edge, so the dependent traversal already reaches test symbols —
-/// they are surfaced separately via [`affected_tests`].
-fn impact_edge_types() -> [aden_core::EdgeType; 6] {
-    [
-        aden_core::EdgeType::Uses,
-        aden_core::EdgeType::Calls,
-        aden_core::EdgeType::Constrains,
-        aden_core::EdgeType::Invokes,
-        aden_core::EdgeType::Implements,
-        aden_core::EdgeType::Mutates,
-    ]
-}
 
 /// The test symbols covering a blast set: every source of a `Tests` edge into
 /// any member of `seeds` (the touched symbols plus their transitive

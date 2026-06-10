@@ -436,14 +436,14 @@ enum Commands {
     Viz {
         #[arg(
             value_name = "ANCHOR",
-            help = "Symbol to center blast/connectivity on (name or full aden:// anchor; omit for --mode communities)"
+            help = "Symbol to center blast/reach/connectivity on (name or full aden:// anchor; omit for --mode communities)"
         )]
         anchor: Option<String>,
         #[arg(
             long,
             value_name = "MODE",
             default_value = "blast",
-            help = "View: blast (downstream impact) | connectivity (both directions) | communities (clusters)"
+            help = "View: blast (dependents at risk if the anchor changes) | reach (dependencies it relies on) | connectivity (both directions) | communities (clusters)"
         )]
         mode: String,
         #[arg(
@@ -497,8 +497,8 @@ enum Commands {
         #[arg(
             long,
             value_name = "ED",
-            default_value = "vscode",
-            help = "Editor for 'open in editor' links: vscode | cursor | vscodium | zed | idea | <uri-template with {file}/{line}>"
+            default_value = "auto",
+            help = "Editor for 'open in editor' links: auto (detect installed) | vscode | cursor | vscodium | zed | idea | <uri-template with {file}/{line}>"
         )]
         editor: String,
         #[arg(long, help = "Replay git history — watch the project populate commit-by-commit")]
