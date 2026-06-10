@@ -2,7 +2,7 @@
 
 ## Developer Certificate of Origin (DCO)
 
-By contributing to this project, you agree that your contributions are made under the terms of the GNU Affero General Public License v3.0 (AGPL-3.0-or-later).
+By contributing to this project, you agree that your contributions are licensed to the Maintainer under the terms of the [Contributor License Agreement (CLA)](CLA.md), and that each contribution, as incorporated into a published open release of the Project, is made available to the public under the GNU Affero General Public License v3.0 (AGPL-3.0-or-later) or another FSF/OSI-recognized open source license, as provided in CLA Section 5. To the extent of any conflict between the DCO sign-off and the CLA, the CLA prevails (CLA Section 11).
 
 All commits must include a `Signed-off-by` line in the commit message:
 
@@ -12,20 +12,23 @@ Signed-off-by: Your Legal Name <your@email.com>
 
 This line attests that you have the right to submit the code under the AGPL license and that you agree to the Developer Certificate of Origin: https://developercertificate.org/
 
-## Copyright
+## Copyright and Contributor License Agreement
 
-Project copyright is held by RioPlay <rioplay@rioplay.dev>.
+The Project's principal copyright holder is RioPlay <rioplay@rioplay.dev>; contributors retain copyright in their own contributions, licensed to the Maintainer under the CLA below.
 
-Contributions are received under the AGPL license. The BDFL (RioPlay) retains the right to manage dual-licensing arrangements.
+All contributions are made under the terms of the [Contributor License Agreement (CLA)](CLA.md). By contributing, you agree to the CLA, which grants the Maintainer a broad license to your contributions — including the right to relicense them under commercial terms — while you retain ownership of your work. In return, the CLA commits the Maintainer to keeping every contribution, as incorporated into a published open release of the Project, publicly available under the AGPL or another FSF/OSI-recognized open source license (CLA Section 5).
+
+The BDFL, RioPlay, retains the right to manage dual-licensing arrangements for the Project.
 
 ## Process
 
 1. Read `.agent/onboarding.adoc` before starting work.
-2. Run `aden check .` before submitting.
-3. Run `cargo clippy --workspace` to catch style issues.
-4. Ensure all `<<refs>>` resolve to existing `[[anchors]]`.
-5. Include a `Signed-off-by` line on every commit.
-6. Open a pull request with a clear description of changes.
+2. Read the [Contributor License Agreement (CLA)](CLA.md).
+3. Run `aden check .` before submitting.
+4. Run `cargo clippy --workspace` to catch style issues.
+5. Ensure all `<<refs>>` resolve to existing `[[anchors]]`.
+6. Include a `Signed-off-by` line on every commit.
+7. Open a pull request with a clear description of changes, including the exact statement: "I have read and agree to the Contributor License Agreement (CLA) for Aden."
 
 ## Before Every Commit
 
