@@ -12,6 +12,28 @@ All notable changes to aden are documented here. Format follows
 Post-0.2.0 work on main — not yet tagged.
 
 ### Added
+- **Wave 2 typed edges — `Mentions`, `Demonstrates`** (2026-06-10) — two new live
+  edge types under the same ADR-007 emitter+consumer+eval policy. `Mentions`:
+  unmarked prose that names a symbol in backticks gets a doc→code edge, deliberately
+  weaker than `Documents` so intentional contracts stay undiluted; extraction is
+  per-format (markdown + asciidoc fill a `doc_mentions` attribute, fence-aware like
+  `doc_refs`), resolution is format-neutral and links only names ≥4 chars resolving
+  to exactly ONE code anchor. `Demonstrates`: a doc code listing that references a
+  symbol links listing→code, turning `code_block_*` anchors from orphan noise into
+  "show me a working example of X" answers — a new language-neutral call-token scan
+  feeds the existing `symbol_references` attribute. Consumers: `ask` traverses both
+  (Demonstrates on usage/explain intents; a symbol's demonstrating listings fold
+  into assembly alongside its callers), `query --edge-type mentions|demonstrates`.
+  Census on aden's own repo: Mentions 172, Demonstrates 12 — live edge types 9 → 11.
+  Term nodes + `DefinesTerm` (the glossary half of the roadmap item) are deferred.
+- **`aden viz --mode reach`** (2026-06-10) — the outgoing dependencies view (what
+  the anchor relies on), matching `query --impact` semantics, split out of the old
+  mislabeled `blast` (see Fixed).
+- **`aden view --editor auto`** (2026-06-10, new default) — "open in editor" links
+  now probe PATH for code/codium/cursor/zed/idea and emit a URI scheme that actually
+  has a handler on the machine. The hardcoded `vscode://` default went nowhere on
+  VSCodium/Cursor/Zed-only machines (the OS silently drops a click on an
+  unregistered scheme). Explicit `--editor` values are unchanged.
 - **Wave 1 typed edges — `Tests`, `Implements`, `Mutates`** — three new live edge
   types (each requires an emitter, a consumer, and an eval gate before activation —
   the ADR-007 policy applied). Census on aden's own repo: Tests 138, Implements 75,
@@ -70,6 +92,21 @@ Post-0.2.0 work on main — not yet tagged.
   decision.
 
 ### Fixed
+- **`viz --mode blast` traversed the wrong direction** (2026-06-10) — it claimed to
+  mirror `impact-diff` but BFS'd outgoing edges, showing the anchor's *dependencies*
+  under a *blast radius* label — the same inversion fixed in impact-diff (ADR-007
+  §2), one surface over. `blast` now walks incoming impact edges (the dependents at
+  risk if the anchor changes); rendered edges keep their stored caller→callee
+  orientation in every mode. The impact edge SET is now defined once
+  (`util::impact_edge_types`) and shared by impact-diff and viz so the two cannot
+  drift again. Regression evals in `tests/viz_direction.rs`; `aden view`'s blast
+  lens inherits the fix (it reuses the same slices).
+- **Graph bridge silently dropped edges of unlisted types** (2026-06-10) — the
+  store load path enumerated edge types from a local hand-written list, so edges of
+  any newer type were written to the store but never loaded into the graph (Wave
+  2's Mentions/Demonstrates surfaced this; it is exactly the drift class ADR-007 §1
+  warns about). `EdgeType::ALL` is now the single canonical variant list and the
+  bridge uses it.
 - **`impact-diff` blast radius direction** — the blast radius was traversing
   *dependencies* (what the changed code calls out to) instead of *dependents* (what
   calls the changed code). This is a correctness bug in a shipped feature: "what

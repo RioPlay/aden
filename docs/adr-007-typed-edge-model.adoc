@@ -95,12 +95,29 @@ Negative / costs (with mitigations):
 
 == Status
 
-Accepted and implemented (Wave 1). `Tests`/`Implements`/`Mutates` are emitted and
-census-verified; `impact-diff` traverses dependents (`dependents_of`, incoming) and
-reports affected tests; `query --impact` retains outgoing reach. Covered by
-`crates/aden-cli/tests/wave1_edges.rs` and the impact-diff regression tests. The full
-roadmap (census discipline, Wave 2 types, the prune-or-repurpose decision for the
-semantic set) lives in the research topic `aden-roadmap/graph-type-roadmap`.
+Accepted and implemented (Waves 1 and 2). `Tests`/`Implements`/`Mutates` are emitted
+and census-verified; `impact-diff` traverses dependents (`dependents_of`, incoming)
+and reports affected tests; `query --impact` retains outgoing reach. Covered by
+`crates/aden-cli/tests/wave1_edges.rs` and the impact-diff regression tests.
+
+Wave 2 (2026-06-10) activated `Mentions` (backtick prose naming a symbol → doc—Mentions→code,
+weaker than `Documents` by design) and `Demonstrates` (doc code listing → the symbols it
+exercises), both under the §1 policy: per-format extraction in the parsers, format-neutral
+resolution that links only unambiguous names ≥4 chars. Census on aden's own repo:
+Mentions 172, Demonstrates 12 — 11 live edge types. Evals in
+`crates/aden-cli/tests/wave2_edges.rs` (both formats, plus ambiguity/length negative
+guards). Term nodes + `DefinesTerm` (the glossary half of the same roadmap slot) are
+deferred, not silently dropped.
+
+Two §2/§1 violations were found and closed in the same wave: `viz --mode blast` still
+BFS'd *outgoing* edges while claiming to mirror impact-diff (fixed to incoming; the
+outgoing view survives honestly as `--mode reach`, and the impact edge SET is now a
+single shared definition), and the graph bridge loaded edges from a local hand-written
+type list — so edges of any newer type were stored but silently never loaded.
+`EdgeType::ALL` is now the canonical variant list every enumerator must use.
+
+The full roadmap (census discipline, remaining Wave 2 items, the prune-or-repurpose
+decision for the semantic set) lives in the research topic `aden-roadmap/graph-type-roadmap`.
 
 == Related Documents
 

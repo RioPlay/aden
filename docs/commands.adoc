@@ -587,7 +587,8 @@ mermaid) render it, which keeps aden offline and deterministic. Language-agnosti
 
 [source,bash]
 ----
-aden viz cmd_understand                        # blast radius (downstream impact), Mermaid
+aden viz cmd_understand                        # blast radius (dependents at risk), Mermaid
+aden viz cmd_understand --mode reach           # dependencies it relies on (downstream reach)
 aden viz cmd_understand --mode connectivity    # both directions (callers + callees)
 aden viz --mode communities --format dot       # functional clusters as DOT cluster_* boxes
 aden viz cmd_understand --depth 3 --format dot # deeper view, Graphviz DOT
@@ -600,14 +601,16 @@ The first argument is a symbol — a bare name like `cmd_understand` or a full
 |===
 |Flag |Description |Default
 
-|--mode |View: `blast` (downstream impact), `connectivity` (both directions), `communities` (clusters), or `graph` (whole-graph view model, JSON-only) |blast
-|--depth |Max hops to include (blast/connectivity) |2
+|--mode |View: `blast` (dependents at risk if the anchor changes — agrees with `impact-diff`), `reach` (dependencies it relies on — agrees with `query --impact`), `connectivity` (both directions), `communities` (clusters), or `graph` (whole-graph view model, JSON-only) |blast
+|--depth |Max hops to include (blast/reach/connectivity) |2
 |--format |Output: `mermaid`, `dot`, `asciidoc`, or `json` |mermaid
 |--full |For `--mode graph`: emit the whole graph with no importance cap |false
 |-j/--json |Alias for `--format json` |false
 |===
 
-Blast-radius uses the same impact-edge set as the `impact-diff` command; the
+`blast` and `reach` use the same impact-edge set as the `impact-diff` command and
+differ only in direction (ADR-007 §2: blast radius walks incoming dependents, reach
+walks outgoing dependencies — named honestly, never conflated); the
 `communities` view reuses `aden communities` and renders DOT `cluster_*` boxes (the
 layout best suited to grouping). The `asciidoc` format wraps the Mermaid source in a
 `[mermaid]` block so it renders inline in an AsciiDoc site.
@@ -647,11 +650,11 @@ slider dials the rest in).
 |===
 |Flag |Description |Default
 
-|--mode |`graph` (whole graph; the bare-`view` default), `blast`, `connectivity`, or `communities` (overview with click-to-drill) |blast¹
-|--depth |Max hops (blast/connectivity) |2
+|--mode |`graph` (whole graph; the bare-`view` default), `blast` (dependents at risk), `reach` (dependencies), `connectivity`, or `communities` (overview with click-to-drill) |blast¹
+|--depth |Max hops (blast/reach/connectivity) |2
 |--replay |Graph the git history: the graph is the symbols touched across commits, and a ▶ replay (scrubber, speed, date, item count) plays the project *populating* over time — nodes appear as commits introduce them |false
 |--max |Replay: commits to include, oldest→newest (`0` = entire history) |0
-|--editor |Editor for "open in editor" links: `vscode`, `cursor`, `vscodium`, `zed`, `idea`, or a custom `{file}`/`{line}` URI template |vscode
+|--editor |Editor for "open in editor" links: `auto` (probe PATH for code/codium/cursor/zed/idea and use the first installed), `vscode`, `cursor`, `vscodium`, `zed`, `idea`, or a custom `{file}`/`{line}` URI template |auto
 |--no-open |Write the HTML but do not open a browser |false
 |--out |Output HTML path |a temp file
 |===
