@@ -106,8 +106,16 @@ exercises), both under the §1 policy: per-format extraction in the parsers, for
 resolution that links only unambiguous names ≥4 chars. Census on aden's own repo:
 Mentions 172, Demonstrates 12 — 11 live edge types. Evals in
 `crates/aden-cli/tests/wave2_edges.rs` (both formats, plus ambiguity/length negative
-guards). Term nodes + `DefinesTerm` (the glossary half of the same roadmap slot) are
-deferred, not silently dropped.
+guards).
+
+The glossary half landed the same day: Term nodes (`aden://term/<project>/<slug>`,
+`NodeType::Term`) + `DefinesTerm` edges, extracted from glossary-titled
+sections/documents (AsciiDoc description lists incl. the `[[anchor]]Name::` idiom;
+Markdown bold-term bullets), with the term's definition linking to code through the
+existing unambiguous-only `Mentions` channel. Census after: 14 Term nodes / 14
+DefinesTerm on aden's repo — *12 live edge types*. The §1 policy was also enforced
+retroactively: `Constrains`/`Invokes` (no emitter, ever) were REMOVED from
+`impact_edge_types` and the ask intent sets rather than left as no-op filter entries.
 
 Two §2/§1 violations were found and closed in the same wave: `viz --mode blast` still
 BFS'd *outgoing* edges while claiming to mirror impact-diff (fixed to incoming; the

@@ -12,6 +12,16 @@ All notable changes to aden are documented here. Format follows
 Post-0.2.0 work on main — not yet tagged.
 
 ### Added
+- **Term nodes + `DefinesTerm` edges** (2026-06-10) — glossaries become graph
+  citizens, completing Wave 2. Glossary entries (AsciiDoc `Name:: def` description
+  lists — including the `[[anchor]]Name::` multi-line idiom — and Markdown
+  `- **Term**: def` bullets) become `aden://term/<project>/<slug>` nodes
+  (`NodeType::Term`) with section→term `DefinesTerm` edges. Gated to
+  glossary-titled sections/documents so ordinary description lists stay prose. A
+  term's definition links to the code it names through the existing
+  unambiguous-only Mentions channel. Census: 14 Term nodes on aden's own repo —
+  12 live edge types; `ask "what is reciprocal rank fusion"` on the research KB
+  returns the glossary definition verbatim.
 - **Wave 2 typed edges — `Mentions`, `Demonstrates`** (2026-06-10) — two new live
   edge types under the same ADR-007 emitter+consumer+eval policy. `Mentions`:
   unmarked prose that names a symbol in backticks gets a doc→code edge, deliberately
@@ -91,7 +101,24 @@ Post-0.2.0 work on main — not yet tagged.
   gate. Documents the wave-1 activation and the blast-radius = transitive-dependents
   decision.
 
+### Changed
+- **Impact/intent filters no longer name emitter-less edge types** (2026-06-10) —
+  `Constrains` and `Invokes` were removed from `impact_edge_types` and every ask
+  intent edge set (ADR-007 §1: a filter naming a type with zero live edges filters
+  nothing while reading like coverage). Behaviorally a no-op today; the enum
+  variants and `--edge-type` parser entries remain, to be re-added to filters WITH
+  an emitter. `query --impact` and `understand` now use the one shared set —
+  `understand`'s local copy had silently drifted (missing `Implements`/`Mutates`,
+  truncating its impact view at trait boundaries `query --impact` crossed).
+- **`extract_code_references` deduplicated** (2026-06-10) — the markdown and
+  asciidoc parsers each carried a byte-identical 116-line copy; now one shared
+  implementation in `aden-parse::extractor`.
+
 ### Fixed
+- **viz/view positional trap** (2026-06-10) — a directory path in the ANCHOR slot
+  (`aden viz <path> --mode graph`, `aden view .`) now errors with guidance instead
+  of silently visualizing the current working directory (the modes that ignore
+  ANCHOR made the misplaced path invisible). Regression test included.
 - **`viz --mode blast` traversed the wrong direction** (2026-06-10) — it claimed to
   mirror `impact-diff` but BFS'd outgoing edges, showing the anchor's *dependencies*
   under a *blast radius* label — the same inversion fixed in impact-diff (ADR-007
