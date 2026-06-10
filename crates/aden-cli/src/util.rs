@@ -300,22 +300,22 @@ pub fn sanitize_anchor(anchor: &str) -> String {
 
 /// Impact edge types — a change to a symbol can break anything that references
 /// it through one of these. The single shared SET behind every blast/impact
-/// surface (`impact-diff`, `viz --mode blast|reach`, `query --impact`) so they
-/// can never drift; only the traversal DIRECTION differs per consumer (blast
-/// radius walks incoming/dependents, reach walks outgoing/dependencies).
+/// surface (`impact-diff`, `viz --mode blast|reach`, `query --impact`,
+/// `understand`) so they can never drift; only the traversal DIRECTION differs
+/// per consumer (blast radius walks incoming/dependents, reach walks
+/// outgoing/dependencies).
 ///
-/// Emitter status (graph-type roadmap Wave 1): `Implements` (trait impls) and
-/// `Mutates` (`&mut self` receivers) are live since Wave 1; `Constrains` and
-/// `Invokes` still have no emitter and are inert until one lands. `Tests` is
-/// deliberately NOT in this set: every `Tests` edge is co-emitted with a
-/// `Calls` edge, so the dependent traversal already reaches test symbols —
-/// they are surfaced separately via `impact-diff`'s affected-tests section.
-pub fn impact_edge_types() -> [aden_core::EdgeType; 6] {
+/// Every member has a live emitter (ADR-007 §1: a filter must not name an
+/// edge type that is never emitted — it reads like coverage while filtering
+/// nothing). `Constrains` and `Invokes` were removed on those grounds; re-add
+/// them WITH their emitter if one ever lands. `Tests` is deliberately NOT in
+/// this set: every `Tests` edge is co-emitted with a `Calls` edge, so the
+/// dependent traversal already reaches test symbols — they are surfaced
+/// separately via `impact-diff`'s affected-tests section.
+pub fn impact_edge_types() -> [aden_core::EdgeType; 4] {
     [
         aden_core::EdgeType::Uses,
         aden_core::EdgeType::Calls,
-        aden_core::EdgeType::Constrains,
-        aden_core::EdgeType::Invokes,
         aden_core::EdgeType::Implements,
         aden_core::EdgeType::Mutates,
     ]

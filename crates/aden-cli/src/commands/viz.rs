@@ -55,6 +55,27 @@ fn build_src_map(root: &Path) -> SrcMap {
     m
 }
 
+/// Reject a directory path passed in the ANCHOR position. The positional
+/// order is `viz [ANCHOR] [DIR]`, so `aden viz <path>` puts the path in
+/// ANCHOR — and the modes that ignore ANCHOR (graph/communities) would then
+/// silently visualize the CWD instead of the intended project. A real symbol
+/// is never also an existing directory; when both could be meant, the full
+/// `aden://…` anchor form disambiguates.
+fn reject_directory_anchor(anchor: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(a) = anchor
+        && !a.starts_with("aden://")
+        && Path::new(a).is_dir()
+    {
+        return Err(format!(
+            "'{a}' is a directory, but the first positional is ANCHOR (a symbol or aden:// \
+             anchor) — the project directory comes last: `aden viz [ANCHOR] {a}` or \
+             `aden viz --mode communities {a}`."
+        )
+        .into());
+    }
+    Ok(())
+}
+
 pub fn cmd_viz(
     path: &Path,
     anchor: Option<&str>,
@@ -64,6 +85,7 @@ pub fn cmd_viz(
     json: bool,
     full: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    reject_directory_anchor(anchor)?;
     // The global `-j/--json` flag is an alias for `--format json`, so it never
     // becomes a silent no-op the way an ignored global flag would.
     let format = if json { "json" } else { format };
@@ -148,6 +170,8 @@ pub(crate) fn viz_json_for(
     mode: &str,
     depth: usize,
 ) -> Result<String, Box<dyn std::error::Error>> {
+    // `view` shares the positional trap (`aden view .`): same guard.
+    reject_directory_anchor(anchor)?;
     let root = find_project_root(path);
     super::ensure_fresh(&root);
     let graph = aden_graph::cache::build_from_directory_cached(&root)?;

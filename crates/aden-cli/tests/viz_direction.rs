@@ -155,6 +155,31 @@ fn blast_excludes_dependencies() {
     );
 }
 
+/// Guard (positional trap): a directory path in the ANCHOR position must be
+/// an error with guidance, not a silent census of the CWD — `aden viz <path>
+/// --mode graph` used to ignore the misplaced "anchor" and visualize whatever
+/// directory the command happened to run from.
+#[test]
+fn directory_in_anchor_position_errors_with_guidance() {
+    let (project, data) = scaffold();
+    let out = Command::new(env!("CARGO_BIN_EXE_aden"))
+        .args(["viz"])
+        .arg(&project) // the foot-gun: project path as the first positional
+        .args(["--mode", "graph", "--format", "json"])
+        .env("ADEN_DATA_DIR", &data)
+        .output()
+        .expect("aden binary must run");
+    assert!(
+        !out.status.success(),
+        "a directory in ANCHOR position must be rejected, not silently visualize the cwd"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("directory") && stderr.contains("ANCHOR"),
+        "error must explain the positional order; got: {stderr}"
+    );
+}
+
 /// Eval: reach of the caller is the outgoing dependencies view (`query
 /// --impact` semantics) and must include the callee.
 #[test]

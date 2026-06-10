@@ -1009,15 +1009,9 @@ pub fn cmd_query(
                 anchor
             )
         })?;
-        let impact_types = [
-            aden_core::EdgeType::Uses,
-            aden_core::EdgeType::Calls,
-            aden_core::EdgeType::Constrains,
-            aden_core::EdgeType::Invokes,
-            // Implements and Mutates are direct downstream impact edges too.
-            aden_core::EdgeType::Implements,
-            aden_core::EdgeType::Mutates,
-        ];
+        // The one shared impact SET (util.rs) — local copies of this list have
+        // drifted twice (viz, understand); never inline it again.
+        let impact_types = crate::util::impact_edge_types();
 
         let mut visited = HashSet::new();
         let mut queue = VecDeque::new();
@@ -1259,13 +1253,16 @@ pub fn edge_types_for_intent(intent: &QueryIntent) -> Vec<aden_core::EdgeType> {
     // Mentions there).
     let semantic = vec![IsA, RelatesTo, SimilarTo, AssociatedWith, Explains, Mentions];
     let mut edges: Vec<aden_core::EdgeType> = match intent {
-        QueryIntent::Debug => vec![Constrains, Documents, Calls, Invokes, Requires]
+        // Emitter-less edge types (Constrains/Invokes) were trimmed from every
+        // intent set (ADR-007 §1): naming a type with zero live edges filters
+        // nothing and reads like coverage.
+        QueryIntent::Debug => vec![Documents, Calls, Requires]
             .into_iter()
             .chain(semantic.clone())
             .collect(),
         // `Demonstrates` on usage/explain intents pulls a doc listing that
         // exercises the symbol into context — the "working example" payoff.
-        QueryIntent::Usage => vec![Uses, Invokes, Requires, Documents, Demonstrates]
+        QueryIntent::Usage => vec![Uses, Requires, Documents, Demonstrates]
             .into_iter()
             .chain(semantic.clone())
             .collect(),
@@ -1277,7 +1274,7 @@ pub fn edge_types_for_intent(intent: &QueryIntent) -> Vec<aden_core::EdgeType> {
             .into_iter()
             .chain(semantic.clone())
             .collect(),
-        QueryIntent::Impact => vec![Uses, Calls, Constrains]
+        QueryIntent::Impact => vec![Uses, Calls]
             .into_iter()
             .chain(semantic.clone())
             .collect(),
@@ -1285,7 +1282,7 @@ pub fn edge_types_for_intent(intent: &QueryIntent) -> Vec<aden_core::EdgeType> {
             .into_iter()
             .chain(semantic.clone())
             .collect(),
-        QueryIntent::Compare => vec![Uses, Documents, Constrains]
+        QueryIntent::Compare => vec![Uses, Documents]
             .into_iter()
             .chain(semantic.clone())
             .collect(),
@@ -1293,7 +1290,7 @@ pub fn edge_types_for_intent(intent: &QueryIntent) -> Vec<aden_core::EdgeType> {
             .into_iter()
             .chain(semantic.clone())
             .collect(),
-        QueryIntent::General => vec![Uses, Documents, Constrains]
+        QueryIntent::General => vec![Uses, Documents]
             .into_iter()
             .chain(semantic)
             .collect(),
@@ -2646,7 +2643,7 @@ fn collect_unique_backlinks(
 ///
 /// 1. resolve the symbol to its store anchor + definition location,
 /// 2. list backlinks (incoming references — who calls/references it),
-/// 3. list downstream impact (outgoing Uses/Calls/Constrains/Invokes reach),
+/// 3. list downstream impact (outgoing reach over the shared impact edge set),
 /// 4. assemble a context block from that anchor within `budget` tokens.
 ///
 /// Reuses the shared `resolve_anchor_in_store` resolution and the same graph
@@ -2731,13 +2728,10 @@ pub fn cmd_understand(
     let backlinks = collect_unique_backlinks(&graph, &anchor);
 
     // Step 3: downstream impact — outgoing reach over impact edge types
-    // (mirrors `query --impact`).
-    let impact_types = [
-        aden_core::EdgeType::Uses,
-        aden_core::EdgeType::Calls,
-        aden_core::EdgeType::Constrains,
-        aden_core::EdgeType::Invokes,
-    ];
+    // (mirrors `query --impact`). Uses the one shared SET: this local copy had
+    // silently drifted (it was missing Implements/Mutates, so understand's
+    // impact view truncated at trait boundaries that `query --impact` crossed).
+    let impact_types = crate::util::impact_edge_types();
     let mut impact: Vec<serde_json::Value> = Vec::new();
     let mut visited = HashSet::new();
     let mut queue = VecDeque::new();

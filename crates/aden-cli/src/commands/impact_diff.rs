@@ -387,7 +387,9 @@ mod tests {
             &[
                 ("c1", "leaf", aden_core::EdgeType::Calls),
                 ("c2", "leaf", aden_core::EdgeType::Uses),
-                ("c3", "leaf", aden_core::EdgeType::Invokes),
+                // Implements, not Invokes: the impact set holds only edge
+                // types with live emitters (ADR-007 §1).
+                ("c3", "leaf", aden_core::EdgeType::Implements),
             ],
         );
         let blast = dependents_of(&g, "leaf", &impact_edge_types());

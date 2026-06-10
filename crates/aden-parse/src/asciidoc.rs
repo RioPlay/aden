@@ -5,7 +5,7 @@
 //!
 //! Extracts headings, code blocks, and links from AsciiDoc files.
 
-use crate::extractor::{build_code_attributes, infer_project_name, make_anchor};
+use crate::extractor::{build_code_attributes, extract_code_references, infer_project_name, make_anchor};
 use aden_core::{Block, Document, NodeType, Result, SourceSpan};
 use std::collections::HashMap;
 use std::path::Path;
@@ -547,122 +547,6 @@ fn collect_prose_refs(line: &str, line_idx: usize, out: &mut Vec<(usize, String)
     }
 }
 
-fn extract_code_references(code: &str, lang: &str) -> Vec<String> {
-    let mut refs = Vec::new();
-    let lang_lower = lang.to_lowercase();
-    match lang_lower.as_str() {
-        "rust" => {
-            for line in code.lines() {
-                let trimmed = line.trim();
-                if trimmed.starts_with("fn ") {
-                    if let Some(name) = trimmed.strip_prefix("fn ") {
-                        let name = name
-                            .split('(')
-                            .next()
-                            .unwrap_or(name)
-                            .split('{')
-                            .next()
-                            .unwrap_or(name);
-                        refs.push(format!("fn:{}", name.trim()));
-                    }
-                } else if trimmed.starts_with("struct ") {
-                    if let Some(name) = trimmed.strip_prefix("struct ") {
-                        let name = name.split_whitespace().next().unwrap_or(name);
-                        refs.push(format!("struct:{}", name));
-                    }
-                } else if trimmed.starts_with("enum ") {
-                    if let Some(name) = trimmed.strip_prefix("enum ") {
-                        let name = name.split_whitespace().next().unwrap_or(name);
-                        refs.push(format!("enum:{}", name));
-                    }
-                } else if trimmed.starts_with("impl ") || trimmed.starts_with("trait ") {
-                    if let Some(name) = trimmed.split_whitespace().nth(1) {
-                        refs.push(format!("type:{}", name));
-                    }
-                } else if trimmed.starts_with("use ") {
-                    if let Some(name) = trimmed.strip_prefix("use ") {
-                        let name = name.split_whitespace().next().unwrap_or(name);
-                        let name = name.trim_end_matches(';');
-                        refs.push(format!("use:{}", name));
-                    }
-                } else if trimmed.contains("::") {
-                    let parts: Vec<&str> = trimmed.split("::").collect();
-                    if parts.len() >= 2 {
-                        refs.push(format!("mod:{}", parts[0]));
-                    }
-                }
-            }
-        }
-        "python" => {
-            for line in code.lines() {
-                let trimmed = line.trim();
-                if trimmed.starts_with("def ") {
-                    if let Some(name) = trimmed.strip_prefix("def ") {
-                        let name = name.split('(').next().unwrap_or(name);
-                        refs.push(format!("fn:{}", name.trim()));
-                    }
-                } else if trimmed.starts_with("class ") {
-                    if let Some(name) = trimmed.strip_prefix("class ") {
-                        let name = name.split('(').next().unwrap_or(name);
-                        refs.push(format!("class:{}", name.trim()));
-                    }
-                } else if trimmed.starts_with("import ") || trimmed.starts_with("from ") {
-                    let name = trimmed.split_whitespace().nth(1).unwrap_or(trimmed);
-                    refs.push(format!("use:{}", name));
-                }
-            }
-        }
-        "javascript" | "typescript" | "js" | "ts" => {
-            for line in code.lines() {
-                let trimmed = line.trim();
-                if trimmed.starts_with("function ") {
-                    if let Some(name) = trimmed.strip_prefix("function ") {
-                        let name = name.split('(').next().unwrap_or(name);
-                        refs.push(format!("fn:{}", name.trim()));
-                    }
-                } else if trimmed.starts_with("const ") && trimmed.contains("=>") {
-                    if let Some(name) = trimmed.strip_prefix("const ") {
-                        let name = name.split('=').next().unwrap_or(name);
-                        refs.push(format!("fn:{}", name.trim()));
-                    }
-                } else if trimmed.starts_with("class ") {
-                    if let Some(name) = trimmed.strip_prefix("class ") {
-                        let name = name.split('{').next().unwrap_or(name);
-                        refs.push(format!("class:{}", name.trim()));
-                    }
-                } else if (trimmed.starts_with("interface ") || trimmed.starts_with("type "))
-                    && let Some(name) = trimmed.split_whitespace().nth(1)
-                {
-                    let name = name.split('{').next().unwrap_or(name);
-                    refs.push(format!("type:{}", name));
-                }
-            }
-        }
-        "go" => {
-            for line in code.lines() {
-                let trimmed = line.trim();
-                if trimmed.starts_with("func ") {
-                    if let Some(name) = trimmed.strip_prefix("func ") {
-                        let name = name.split('(').next().unwrap_or(name);
-                        refs.push(format!("fn:{}", name.trim()));
-                    }
-                } else if trimmed.starts_with("type ") {
-                    if let Some(name) = trimmed.strip_prefix("type ") {
-                        let name = name.split_whitespace().next().unwrap_or(name);
-                        refs.push(format!("type:{}", name));
-                    }
-                } else if trimmed.starts_with("import ")
-                    && let Some(name) = trimmed.strip_prefix("import ")
-                {
-                    let name = name.trim_matches('"');
-                    refs.push(format!("use:{}", name));
-                }
-            }
-        }
-        _ => {}
-    }
-    refs
-}
 
 #[cfg(test)]
 mod tests {
