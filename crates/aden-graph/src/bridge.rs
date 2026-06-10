@@ -51,9 +51,9 @@ impl GraphBridge {
         let docs = storage.get_all_documents()?;
         let mut edges = Vec::new();
 
-        // Get all edge types
-        let edge_types = Self::all_edge_types();
-        for edge_type in &edge_types {
+        // The canonical variant list — a local copy here silently dropped
+        // every edge of a forgotten type on load (Wave 2 regression).
+        for edge_type in &EdgeType::ALL {
             let typed_edges = storage.get_edges_by_type(edge_type)?;
             for (src, dst) in typed_edges {
                 edges.push((src, dst, *edge_type));
@@ -61,39 +61,6 @@ impl GraphBridge {
         }
 
         Ok((docs, edges))
-    }
-
-    /// Get all edge types.
-    fn all_edge_types() -> Vec<EdgeType> {
-        vec![
-            EdgeType::Uses,
-            EdgeType::UsedBy,
-            EdgeType::Implements,
-            EdgeType::Tests,
-            EdgeType::Documents,
-            EdgeType::Contains,
-            EdgeType::Constrains,
-            EdgeType::Justifies,
-            EdgeType::Invokes,
-            EdgeType::Requires,
-            EdgeType::Mutates,
-            EdgeType::Calls,
-            EdgeType::Supersedes,
-            EdgeType::Amends,
-            EdgeType::Verifies,
-            EdgeType::IsA,
-            EdgeType::PartOf,
-            EdgeType::RelatesTo,
-            EdgeType::SimilarTo,
-            EdgeType::Causes,
-            EdgeType::Implies,
-            EdgeType::SynonymOf,
-            EdgeType::AntonymOf,
-            EdgeType::AssociatedWith,
-            EdgeType::PrerequisiteFor,
-            EdgeType::Explains,
-            EdgeType::IsEquivalentTo,
-        ]
     }
 
     /// Save metadata to storage.

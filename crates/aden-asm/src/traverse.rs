@@ -29,7 +29,9 @@ fn edge_priority(et: &EdgeType) -> u8 {
         // Containment ranks exactly where these edges ranked as `Documents` before
         // the split, so top-down module→symbol traversal order is unchanged.
         EdgeType::Contains => 11,
-        _ => 12, // everything else
+        // A listing that exercises the symbol is as valuable as its docs.
+        EdgeType::Demonstrates => 11,
+        _ => 12, // everything else (incl. Mentions — a hint, not a contract)
     }
 }
 

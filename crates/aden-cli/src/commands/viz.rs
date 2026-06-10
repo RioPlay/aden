@@ -361,8 +361,6 @@ fn render_whole_graph_json(graph: &Graph, root: &Path, cap: usize) -> String {
     .unwrap_or_else(|_| "{}".to_string())
 }
 
-/// Blast radius: BFS *outgoing* over impact edges from `root_anchor`, depth-capped
-/// and node-capped at `cap` (closest-first, so the cap keeps the nearest reach).
 /// Blast radius: BFS *incoming* over impact edges from `root_anchor` — the
 /// transitive dependents (callers/referencers) at risk if the anchor changes.
 /// Same direction as `impact-diff`'s `dependents_of` (ADR-007 §2). Edges are

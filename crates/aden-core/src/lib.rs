@@ -577,6 +577,15 @@ pub enum EdgeType {
     Supersedes,
     Amends,
     Verifies,
+    /// A doc code listing references a symbol (listing DEMONSTRATES code) —
+    /// the "show me a working example of X" edge. Wave 2: resolved through
+    /// the same name index as call sites, only for unambiguous names.
+    Demonstrates,
+    /// Unmarked prose names a symbol (doc MENTIONS code). Deliberately weaker
+    /// than `Documents`, which stays reserved for intentional contracts so the
+    /// documentation signal is not diluted (Wave 2; same reasoning as the
+    /// 0.2.0 `Contains` split).
+    Mentions,
     // === Semantic Edges (conceptual/brain-like) ===
     /// Inheritance/subsumption (dog IS-A animal)
     IsA,
@@ -605,12 +614,53 @@ pub enum EdgeType {
 }
 
 impl EdgeType {
+    /// Every variant, in declaration order — THE canonical list. Anything that
+    /// enumerates edge types (the store load path, censuses, filters) must use
+    /// this instead of a hand-written copy: a local list silently drops every
+    /// edge of a type it forgot (Wave 2's `Mentions`/`Demonstrates` were
+    /// written to the store but never loaded, because the graph bridge kept
+    /// its own list). The exhaustive `match` in `aden-graph`'s `GraphEdge`
+    /// impl breaks the build when a variant is added, and its fix points
+    /// here; `all_variants_listed_in_all` asserts the two stay in sync.
+    pub const ALL: [EdgeType; 29] = [
+        EdgeType::Uses,
+        EdgeType::UsedBy,
+        EdgeType::Implements,
+        EdgeType::Tests,
+        EdgeType::Documents,
+        EdgeType::Contains,
+        EdgeType::Constrains,
+        EdgeType::Justifies,
+        EdgeType::Invokes,
+        EdgeType::Requires,
+        EdgeType::Mutates,
+        EdgeType::Calls,
+        EdgeType::Supersedes,
+        EdgeType::Amends,
+        EdgeType::Verifies,
+        EdgeType::Demonstrates,
+        EdgeType::Mentions,
+        EdgeType::IsA,
+        EdgeType::PartOf,
+        EdgeType::RelatesTo,
+        EdgeType::SimilarTo,
+        EdgeType::Causes,
+        EdgeType::Implies,
+        EdgeType::SynonymOf,
+        EdgeType::AntonymOf,
+        EdgeType::AssociatedWith,
+        EdgeType::PrerequisiteFor,
+        EdgeType::Explains,
+        EdgeType::IsEquivalentTo,
+    ];
+
     /// Returns true if this is a semantic (conceptual) edge type.
     pub fn is_semantic(&self) -> bool {
         matches!(
             self,
             EdgeType::IsA
                 | EdgeType::PartOf
+                | EdgeType::Mentions
                 | EdgeType::RelatesTo
                 | EdgeType::SimilarTo
                 | EdgeType::Causes
@@ -652,6 +702,10 @@ impl EdgeType {
             EdgeType::Tests => 0.6,
             EdgeType::Verifies => 0.6,
             EdgeType::Documents => 0.5,
+            EdgeType::Demonstrates => 0.5,
+            // Weaker than Documents/RelatesTo: an unmarked prose mention is a
+            // hint, not a contract.
+            EdgeType::Mentions => 0.3,
             // Containment inherits the forward edges' prior weight (they were
             // `Documents` before the split) so traversal behaviour is unchanged.
             EdgeType::Contains => 0.5,
@@ -743,5 +797,23 @@ mod crlf_tests {
     #[test]
     fn hash_source_still_detects_real_changes() {
         assert_ne!(hash_source("fn a() {}"), hash_source("fn b() {}"));
+    }
+}
+
+#[cfg(test)]
+mod edge_type_tests {
+    use super::EdgeType;
+
+    /// `EdgeType::ALL` must be duplicate-free. (Completeness is enforced at
+    /// compile time: the exhaustive `kind()` match in `aden-graph` breaks the
+    /// build when a variant is added, and the fix path includes extending
+    /// `ALL` — see the const's doc.)
+    #[test]
+    fn all_is_duplicate_free() {
+        let mut seen = std::collections::HashSet::new();
+        for e in EdgeType::ALL {
+            assert!(seen.insert(format!("{e:?}")), "duplicate {e:?} in EdgeType::ALL");
+        }
+        assert_eq!(seen.len(), EdgeType::ALL.len());
     }
 }

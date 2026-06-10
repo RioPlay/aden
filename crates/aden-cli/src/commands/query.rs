@@ -1253,17 +1253,23 @@ pub fn edge_types_for_intent(intent: &QueryIntent) -> Vec<aden_core::EdgeType> {
     // drags in all sibling symbols (and their doc code-blocks), flooding the
     // context. Module-level overviews are still available via
     // `aden asm --from mod-<name>` (which traverses all edges by default).
-    let semantic = vec![IsA, RelatesTo, SimilarTo, AssociatedWith, Explains];
+    // `Mentions` rides with the semantic set: from a prose anchor it hops to
+    // the code symbols the prose names (Wave 2) — exactly the doc→code bridge
+    // conceptual answers need, and harmless from code anchors (no outgoing
+    // Mentions there).
+    let semantic = vec![IsA, RelatesTo, SimilarTo, AssociatedWith, Explains, Mentions];
     let mut edges: Vec<aden_core::EdgeType> = match intent {
         QueryIntent::Debug => vec![Constrains, Documents, Calls, Invokes, Requires]
             .into_iter()
             .chain(semantic.clone())
             .collect(),
-        QueryIntent::Usage => vec![Uses, Invokes, Requires, Documents]
+        // `Demonstrates` on usage/explain intents pulls a doc listing that
+        // exercises the symbol into context — the "working example" payoff.
+        QueryIntent::Usage => vec![Uses, Invokes, Requires, Documents, Demonstrates]
             .into_iter()
             .chain(semantic.clone())
             .collect(),
-        QueryIntent::Explain => vec![Uses, Calls, Implements, Documents]
+        QueryIntent::Explain => vec![Uses, Calls, Implements, Documents, Demonstrates]
             .into_iter()
             .chain(semantic.clone())
             .collect(),
@@ -1699,7 +1705,17 @@ pub fn cmd_ask(
                 seed,
                 seed_depth,
                 &edge_types,
-                &[aden_core::EdgeType::Calls, aden_core::EdgeType::Uses],
+                // Incoming context worth folding in: callers/users, plus doc
+                // listings that exercise the seed (Demonstrates runs
+                // listing→symbol, so a symbol's working examples sit on its
+                // incoming side — Wave 2's "show me an example" payoff).
+                // `Mentions` is deliberately NOT folded: a prose name-drop is
+                // a hint, and 16 caller slots are better spent on real code.
+                &[
+                    aden_core::EdgeType::Calls,
+                    aden_core::EdgeType::Uses,
+                    aden_core::EdgeType::Demonstrates,
+                ],
                 // Test fixtures assert, they don't explain — same policy that
                 // keeps them from winning routing, judged by BOTH the anchor
                 // and the real source path (anchors flatten `tests/` away).

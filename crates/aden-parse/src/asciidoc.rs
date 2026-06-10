@@ -55,6 +55,9 @@ impl crate::extractor::LanguageExtractor for AsciiDocExtractor {
         // attributed below to the enclosing section node — never from inside a
         // delimited block, where `<<x>>` is a code example, not a reference.
         let mut line_refs: Vec<(usize, String)> = Vec::new();
+        // Backtick symbol mentions (Wave-2 `Mentions` channel), same shape and
+        // same fence discipline as `line_refs`.
+        let mut line_mentions: Vec<(usize, String)> = Vec::new();
 
         for (line_num, line) in body.lines().enumerate() {
             let line_num = line_num + 1;
@@ -85,6 +88,7 @@ impl crate::extractor::LanguageExtractor for AsciiDocExtractor {
             }
 
             collect_prose_refs(line, line_num - 1, &mut line_refs);
+            crate::extractor::collect_backtick_mentions(line, line_num - 1, &mut line_mentions);
 
             if let Some(rest) = line.strip_prefix("= ") {
                 let title = rest.trim().to_string();
@@ -187,6 +191,17 @@ impl crate::extractor::LanguageExtractor for AsciiDocExtractor {
                 if !section_refs.is_empty() {
                     attrs.insert("doc_refs".to_string(), section_refs.join(","));
                 }
+                // Same attribution rule for prose mentions (Wave-2 Mentions).
+                let mut section_mentions: Vec<String> = line_mentions
+                    .iter()
+                    .filter(|(idx, _)| *idx >= ref_start && *idx < body_end)
+                    .map(|(_, m)| m.clone())
+                    .collect();
+                section_mentions.sort();
+                section_mentions.dedup();
+                if !section_mentions.is_empty() {
+                    attrs.insert("doc_mentions".to_string(), section_mentions.join(","));
+                }
 
                 let mut blocks = vec![Block::Paragraph(title.clone())];
                 if !body_text.is_empty() {
@@ -211,8 +226,9 @@ impl crate::extractor::LanguageExtractor for AsciiDocExtractor {
                         let mut alias_attrs = attrs.clone();
                         alias_attrs.insert("alias_of".to_string(), anchor.clone());
                         // The alias points at the SAME section; duplicating its
-                        // doc_refs would emit every RelatesTo edge twice.
+                        // doc_refs/doc_mentions would emit every edge twice.
                         alias_attrs.remove("doc_refs");
+                        alias_attrs.remove("doc_mentions");
                         docs.push(Document {
                             anchor: alias,
                             node_type: NodeType::Module,
@@ -238,6 +254,13 @@ impl crate::extractor::LanguageExtractor for AsciiDocExtractor {
             if !all_refs.is_empty() {
                 attrs.insert("doc_refs".to_string(), all_refs.join(","));
             }
+            let mut all_mentions: Vec<String> =
+                line_mentions.iter().map(|(_, m)| m.clone()).collect();
+            all_mentions.sort();
+            all_mentions.dedup();
+            if !all_mentions.is_empty() {
+                attrs.insert("doc_mentions".to_string(), all_mentions.join(","));
+            }
             docs.push(Document {
                 anchor,
                 node_type: NodeType::Module,
@@ -259,7 +282,16 @@ impl crate::extractor::LanguageExtractor for AsciiDocExtractor {
                 &format!("code_block_{}", docs.len()),
             );
             let lang_str = lang.as_deref().unwrap_or("");
-            let references = extract_code_references(&code, lang_str);
+            let mut references = extract_code_references(&code, lang_str);
+            // Language-neutral call-shaped tokens (Wave-2 Demonstrates): the
+            // per-language declaration scan above misses what a listing CALLS,
+            // which is exactly what it demonstrates.
+            references.extend(
+                crate::extractor::listing_call_tokens(&code)
+                    .into_iter()
+                    .map(|t| format!("call:{t}")),
+            );
+            references.dedup();
             let mut attrs = build_code_attributes(&code, "code", Some(path), None);
             if !references.is_empty() {
                 attrs.insert("symbol_references".to_string(), references.join(","));

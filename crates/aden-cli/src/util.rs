@@ -339,6 +339,8 @@ pub fn parse_single_edge_type(s: &str) -> Option<aden_core::EdgeType> {
         "supersedes" => Some(aden_core::EdgeType::Supersedes),
         "amends" => Some(aden_core::EdgeType::Amends),
         "verifies" => Some(aden_core::EdgeType::Verifies),
+        "demonstrates" => Some(aden_core::EdgeType::Demonstrates),
+        "mentions" => Some(aden_core::EdgeType::Mentions),
         _ => None,
     }
 }
@@ -360,6 +362,8 @@ pub fn valid_edge_types() -> Vec<&'static str> {
         "supersedes",
         "amends",
         "verifies",
+        "demonstrates",
+        "mentions",
     ]
 }
 

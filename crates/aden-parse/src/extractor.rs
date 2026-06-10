@@ -108,10 +108,126 @@ pub(crate) fn build_code_attributes(
     attrs
 }
 
+/// Floor on mention/call-token name length: below this, prose words and
+/// generic identifiers (`new`, `get`, `run`) flood the channel with noise.
+pub(crate) const MENTION_MIN_LEN: usize = 4;
+
+/// Collect backtick-span symbol mentions from one PROSE line, as
+/// (0-based line index, name) pairs — the per-format half of the Wave-2
+/// `Mentions` channel (graph-type roadmap). Callers are the doc parsers'
+/// line loops, which know listing/literal fence state, so a backtick span
+/// inside a code example never reaches here (the same division of labor as
+/// `doc_refs`: extraction per-format, resolution format-neutral in the
+/// linker).
+///
+/// Precision guards live on both sides. Here: the span must be
+/// identifier-shaped (starts `[A-Za-z_]`, only `[A-Za-z0-9_:.]` after an
+/// optional trailing `()`), at least `MENTION_MIN_LEN` chars, and a single
+/// token (no spaces — `aden gen .` is a command, not a symbol). At link
+/// time: the name must resolve to exactly ONE code anchor.
+pub(crate) fn collect_backtick_mentions(line: &str, idx: usize, out: &mut Vec<(usize, String)>) {
+    let bytes = line.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != b'`' {
+            i += 1;
+            continue;
+        }
+        let Some(close) = line[i + 1..].find('`') else {
+            return;
+        };
+        let span = &line[i + 1..i + 1 + close];
+        i += close + 2;
+        if let Some(name) = mention_candidate(span) {
+            out.push((idx, name.to_string()));
+        }
+    }
+}
+
+/// The identifier-shaped core of a backtick span, or None if the span is not
+/// a plausible symbol mention (commands, flags, paths, prose).
+fn mention_candidate(span: &str) -> Option<&str> {
+    let name = span.trim().trim_end_matches("()");
+    if name.len() < MENTION_MIN_LEN {
+        return None;
+    }
+    let mut chars = name.chars();
+    let first = chars.next()?;
+    if !(first.is_ascii_alphabetic() || first == '_') {
+        return None;
+    }
+    if !chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | ':' | '.')) {
+        return None;
+    }
+    Some(name)
+}
+
+/// Call-shaped identifiers in a doc code listing — the language-NEUTRAL half
+/// of the Wave-2 `Demonstrates` channel: any `[A-Za-z_][A-Za-z0-9_]*` token
+/// immediately followed by `(`, at least `MENTION_MIN_LEN` chars, minus
+/// universal keywords. Works for every language the listing might hold (the
+/// per-language `extract_code_references` declarations remain a parallel,
+/// richer signal where the language is known). Deduped + sorted for
+/// deterministic attribute output.
+pub(crate) fn listing_call_tokens(code: &str) -> Vec<String> {
+    const KEYWORDS: &[&str] = &[
+        "if", "for", "while", "match", "switch", "return", "catch", "print", "println",
+        "assert", "panic", "format", "main",
+    ];
+    let mut out: Vec<String> = Vec::new();
+    for line in code.lines() {
+        let bytes = line.as_bytes();
+        let mut start: Option<usize> = None;
+        for (i, &b) in bytes.iter().enumerate() {
+            let is_ident = b.is_ascii_alphanumeric() || b == b'_';
+            match (start, is_ident) {
+                (None, true) if b.is_ascii_alphabetic() || b == b'_' => start = Some(i),
+                (Some(s), false) => {
+                    if b == b'(' {
+                        let tok = &line[s..i];
+                        if tok.len() >= MENTION_MIN_LEN && !KEYWORDS.contains(&tok) {
+                            out.push(tok.to_string());
+                        }
+                    }
+                    start = None;
+                }
+                _ => {}
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::infer_project_name;
+    use super::{collect_backtick_mentions, listing_call_tokens};
     use std::fs;
+
+    #[test]
+    fn backtick_mentions_extract_identifiers_only() {
+        let mut out = Vec::new();
+        collect_backtick_mentions(
+            "The `helper_fn` routine (also `Type::method()` and `pkg.attr`) beats `aden gen .`, `--fix`, and `ab`.",
+            7,
+            &mut out,
+        );
+        let names: Vec<&str> = out.iter().map(|(_, n)| n.as_str()).collect();
+        assert_eq!(names, vec!["helper_fn", "Type::method", "pkg.attr"]);
+        assert!(out.iter().all(|(i, _)| *i == 7));
+    }
+
+    #[test]
+    fn call_tokens_are_neutral_and_guarded() {
+        let toks = listing_call_tokens(
+            "let s = helper_fn(\"hi\");\nif check(x) { obj.method_name(1) }\nfor(;;) {}\nab(1);",
+        );
+        // `check` passes (>=4, not a keyword); `if`/`for` keywords and the
+        // short `ab` do not; method calls extract their bare name.
+        assert_eq!(toks, vec!["check", "helper_fn", "method_name"]);
+    }
 
     #[test]
     fn project_name_is_consistent_for_absolute_and_relative_paths() {

@@ -33,6 +33,15 @@ struct EmittedSymbol {
     /// `edge::mutates[Type]` references (`&mut self` receivers) — linked as
     /// `Mutates` edges from a method to the type whose state it writes.
     mutates: Vec<String>,
+    /// Backtick symbol names from the parser-filled `doc_mentions` attribute
+    /// (prose only — the parsers' fence state keeps listings out). Linked as
+    /// `Mentions` edges when the name resolves to exactly one code symbol
+    /// (Wave 2).
+    mentions: Vec<String>,
+    /// `kind:name` entries from the parser-filled `symbol_references`
+    /// attribute on doc code listings. Linked as `Demonstrates` edges under
+    /// the same unambiguous-only rule (Wave 2).
+    demonstrates: Vec<String>,
     /// Whether this symbol's generated document was actually written to the
     /// store. False when the merge gate held it back (overlay conflict) or on a
     /// dry-run — so the summary count reflects real writes, not just processing.
@@ -193,17 +202,38 @@ fn extract_edge_macro(doc: &aden_core::Document, kind: &str) -> Vec<String> {
 /// document BLOCKS here with no fence/backtick awareness, which also picked up
 /// `a << b >> c` shift expressions from embedded code listings.
 fn extract_doc_refs(doc: &aden_core::Document) -> Vec<String> {
-    let Some(joined) = doc.attributes.get("doc_refs") else {
+    extract_joined_attribute(doc, "doc_refs")
+}
+
+/// Backtick prose mentions, read from the `doc_mentions` attribute the format
+/// parsers fill (Wave 2). Same division of labor as `doc_refs`: the parser
+/// knows fence/backtick state; resolution in [`link_store_edges`] is
+/// format-neutral and links only unambiguous names.
+fn extract_doc_mentions(doc: &aden_core::Document) -> Vec<String> {
+    extract_joined_attribute(doc, "doc_mentions")
+}
+
+/// `kind:name` references a doc code listing makes, read from the
+/// `symbol_references` attribute the format parsers fill on `code_block_*`
+/// docs (declaration scan + language-neutral call-token scan). Linked as
+/// `Demonstrates` edges (Wave 2).
+fn extract_demonstrates(doc: &aden_core::Document) -> Vec<String> {
+    extract_joined_attribute(doc, "symbol_references")
+}
+
+/// A comma-joined doc attribute as a sorted, deduped list.
+fn extract_joined_attribute(doc: &aden_core::Document, key: &str) -> Vec<String> {
+    let Some(joined) = doc.attributes.get(key) else {
         return Vec::new();
     };
-    let mut refs: Vec<String> = joined
+    let mut vals: Vec<String> = joined
         .split(',')
         .filter(|s| !s.is_empty())
         .map(str::to_string)
         .collect();
-    refs.sort();
-    refs.dedup();
-    refs
+    vals.sort();
+    vals.dedup();
+    vals
 }
 
 /// Slim a document before storing it. Drops the `edge::calls[...]` listing
@@ -310,6 +340,61 @@ fn pick_local<'a>(
             if same.len() == 1 { Some(same[0]) } else { None }
         }
     }
+}
+
+/// Minimum name length for the Wave-2 prose-mention / listing-reference
+/// channels (mirrors the parsers' extraction floor — short generic names like
+/// `new`/`get`/`run` would flood the graph with wrong edges).
+const UNAMBIGUOUS_NAME_FLOOR: usize = 4;
+
+/// Strictest resolver in the linker, for the Wave-2 `Mentions`/`Demonstrates`
+/// channels: a name links only when it resolves to exactly ONE code symbol.
+/// No locality tiebreak — prose and listings have no meaningful "caller
+/// locality", so a collision is genuine ambiguity and stays unlinked (the
+/// false-positive guard validated in the prose-mention-autolink research).
+/// Candidates are filtered to code-backed module anchors first, so a doc
+/// heading that happens to share the name cannot create ambiguity.
+fn resolve_unambiguous_code<'a>(
+    name: &str,
+    name_index: &HashMap<&str, Vec<&'a str>>,
+) -> Option<&'a str> {
+    let lookup = |key: &str| -> Option<&'a str> {
+        if key.len() < UNAMBIGUOUS_NAME_FLOOR {
+            return None;
+        }
+        let mut code_cands = name_index
+            .get(key)?
+            .iter()
+            .copied()
+            .filter(|a| is_code_module_anchor(a));
+        let first = code_cands.next()?;
+        // Qualified names index under both the full key and the trailing
+        // segment, so the same anchor can appear twice — only a DIFFERENT
+        // second anchor is real ambiguity.
+        code_cands.all(|a| a == first).then_some(first)
+    };
+    // Exact name first (`Type::method` is an index key), then the trailing
+    // member segment for qualified forms.
+    lookup(name).or_else(|| {
+        let segment = name.rsplit(['.', ':']).next()?;
+        (segment != name).then(|| lookup(segment)).flatten()
+    })
+}
+
+/// True for module anchors backed by CODE (not prose): doc files also emit
+/// `aden://module/...` anchors (e.g. `…/guide.adoc#document`), which must not
+/// be Mentions/Demonstrates targets.
+fn is_code_module_anchor(anchor: &str) -> bool {
+    let Some(rest) = anchor.strip_prefix("aden://module/") else {
+        return false;
+    };
+    let path = rest.split('#').next().unwrap_or(rest);
+    let lower = path.to_lowercase();
+    !(lower.ends_with(".md")
+        || lower.ends_with(".adoc")
+        || lower.ends_with(".rst")
+        || lower.ends_with(".txt")
+        || lower.ends_with(".aden"))
 }
 
 /// Exact-name resolution with the locality tiebreak — deliberately NO
@@ -550,6 +635,12 @@ fn classify_drop(callee: &str, name_index: &HashMap<&str, Vec<&str>>) -> DropRea
 ///   traversal from a changed trait reaches its implementors.
 /// - Mutates: `edge::mutates[Type]` records (`&mut self` receivers) become
 ///   method --Mutates--> parent-type edges.
+/// - Mentions (Wave 2): backtick prose mentions (`doc_mentions` records)
+///   become doc --Mentions--> symbol edges, only when the name resolves to
+///   exactly ONE code symbol.
+/// - Demonstrates (Wave 2): `symbol_references` records on doc code listings
+///   become listing --Demonstrates--> symbol edges, same unambiguous-only rule.
+#[allow(clippy::too_many_arguments)] // compact per-kind record slices, all one shape
 fn link_store_edges<S: GraphStorage>(
     storage: &S,
     link_records: &[(String, Vec<String>)],
@@ -557,6 +648,8 @@ fn link_store_edges<S: GraphStorage>(
     ref_records: &[(String, Vec<String>)],
     impl_records: &[(String, Vec<String>)],
     mutates_records: &[(String, Vec<String>)],
+    mention_records: &[(String, Vec<String>)],
+    demo_records: &[(String, Vec<String>)],
     test_anchors: &std::collections::HashSet<String>,
 ) -> Result<CalleeStats, Box<dyn std::error::Error>> {
     use aden_core::{Block, Document, EdgeType, NodeType};
@@ -756,6 +849,37 @@ fn link_store_edges<S: GraphStorage>(
             {
                 edges.push((anchor.clone(), target.to_string(), EdgeType::RelatesTo));
                 edges.push((target.to_string(), anchor.clone(), EdgeType::RelatesTo));
+            }
+        }
+    }
+
+    // Mentions edges (Wave 2): unmarked prose that names a symbol in backticks
+    // gets a doc —Mentions→ code edge — deliberately weaker than `Documents`
+    // so the intentional-contract signal stays undiluted. Precision over
+    // recall: only names that resolve to exactly ONE code symbol link;
+    // ambiguous and unknown names stay unlinked rather than guessing.
+    for (anchor, names) in mention_records {
+        for name in names {
+            if let Some(target) = resolve_unambiguous_code(name, &name_index)
+                && target != anchor.as_str()
+            {
+                edges.push((anchor.clone(), target.to_string(), EdgeType::Mentions));
+            }
+        }
+    }
+
+    // Demonstrates edges (Wave 2): a doc code listing that references a symbol
+    // demonstrates it — turning `code_block_*` anchors from orphan noise into
+    // the answer to "show me a working example of X". Records are `kind:name`
+    // entries (declaration scan + neutral call-token scan); the same
+    // unambiguous-only rule applies.
+    for (anchor, entries) in demo_records {
+        for entry in entries {
+            let name = entry.split_once(':').map(|(_, n)| n).unwrap_or(entry);
+            if let Some(target) = resolve_unambiguous_code(name, &name_index)
+                && target != anchor.as_str()
+            {
+                edges.push((anchor.clone(), target.to_string(), EdgeType::Demonstrates));
             }
         }
     }
@@ -1128,6 +1252,8 @@ fn cmd_gen_inner(
                     let refs = extract_doc_refs(&doc_clone);
                     let implements = extract_edge_macro(&doc_clone, "implements");
                     let mutates = extract_edge_macro(&doc_clone, "mutates");
+                    let mentions = extract_doc_mentions(&doc_clone);
+                    let demonstrates = extract_demonstrates(&doc_clone);
                     slim_doc_for_store(&mut doc_clone);
 
                     // Three-way merge gate. A conflict can only arise when the
@@ -1169,6 +1295,8 @@ fn cmd_gen_inner(
                         refs,
                         implements,
                         mutates,
+                        mentions,
+                        demonstrates,
                         wrote: write,
                     });
                     // Defer the write — Phase 2 stores these in sorted source order.
@@ -1197,6 +1325,8 @@ fn cmd_gen_inner(
         let mut ref_records: Vec<(String, Vec<String>)> = Vec::new();
         let mut impl_records: Vec<(String, Vec<String>)> = Vec::new();
         let mut mutates_records: Vec<(String, Vec<String>)> = Vec::new();
+        let mut mention_records: Vec<(String, Vec<String>)> = Vec::new();
+        let mut demo_records: Vec<(String, Vec<String>)> = Vec::new();
         // Anchors whose SOURCE FILE is a test/spec file (conventional path
         // markers, shared with ask-routing's `is_test_result`). Their resolved
         // calls are additionally emitted as `Tests` edges. Lookup-only — never
@@ -1275,6 +1405,12 @@ fn cmd_gen_inner(
                         }
                         if !sym.mutates.is_empty() {
                             mutates_records.push((sym.anchor.clone(), sym.mutates));
+                        }
+                        if !sym.mentions.is_empty() {
+                            mention_records.push((sym.anchor.clone(), sym.mentions));
+                        }
+                        if !sym.demonstrates.is_empty() {
+                            demo_records.push((sym.anchor.clone(), sym.demonstrates));
                         }
                         if from_test_file {
                             test_anchors.insert(sym.anchor.clone());
@@ -1360,6 +1496,8 @@ fn cmd_gen_inner(
             &ref_records,
             &impl_records,
             &mutates_records,
+            &mention_records,
+            &demo_records,
             &test_anchors,
         ) {
             Ok(stats) => stats,
@@ -1768,7 +1906,10 @@ mod link_tests {
         // alone can hide it), modeled here by membership in the set.
         let test_anchors: std::collections::HashSet<String> =
             std::collections::HashSet::from([test_fn.to_string()]);
-        link_store_edges(&storage, &link_records, &[], &[], &[], &[], &test_anchors).unwrap();
+        link_store_edges(
+            &storage, &link_records, &[], &[], &[], &[],
+            &[],
+            &[], &test_anchors).unwrap();
 
         let out_test = storage.get_outgoing_edges(test_fn).unwrap();
         assert!(
@@ -1823,6 +1964,8 @@ mod link_tests {
             &[],
             &impl_records,
             &mutates_records,
+            &[],
+            &[],
             &std::collections::HashSet::new(),
         )
         .unwrap();
@@ -1881,6 +2024,8 @@ mod link_tests {
             &[],
             &[],
             &ref_records,
+            &[],
+            &[],
             &[],
             &[],
             &std::collections::HashSet::new(),
@@ -1944,6 +2089,8 @@ mod link_tests {
             &ref_records,
             &[],
             &[],
+            &[],
+            &[],
             &std::collections::HashSet::new(),
         )
         .unwrap();
@@ -1998,6 +2145,8 @@ mod link_tests {
             &[],
             &[],
             &ref_records,
+            &[],
+            &[],
             &[],
             &[],
             &std::collections::HashSet::new(),
