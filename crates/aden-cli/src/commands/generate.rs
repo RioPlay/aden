@@ -42,6 +42,10 @@ struct EmittedSymbol {
     /// attribute on doc code listings. Linked as `Demonstrates` edges under
     /// the same unambiguous-only rule (Wave 2).
     demonstrates: Vec<String>,
+    /// Full `aden://term/…` anchors from the parser-filled `doc_terms`
+    /// attribute on glossary sections. Linked as `DefinesTerm` edges by exact
+    /// anchor match (the parser constructed both ends, so no fuzzing).
+    defines_terms: Vec<String>,
     /// Whether this symbol's generated document was actually written to the
     /// store. False when the merge gate held it back (overlay conflict) or on a
     /// dry-run — so the summary count reflects real writes, not just processing.
@@ -219,6 +223,13 @@ fn extract_doc_mentions(doc: &aden_core::Document) -> Vec<String> {
 /// `Demonstrates` edges (Wave 2).
 fn extract_demonstrates(doc: &aden_core::Document) -> Vec<String> {
     extract_joined_attribute(doc, "symbol_references")
+}
+
+/// Term anchors a glossary section defines, read from the `doc_terms`
+/// attribute the format parsers fill (Wave 2 remainder). Values are full
+/// `aden://term/…` anchors, so linking is exact-match only.
+fn extract_doc_terms(doc: &aden_core::Document) -> Vec<String> {
+    extract_joined_attribute(doc, "doc_terms")
 }
 
 /// A comma-joined doc attribute as a sorted, deduped list.
@@ -650,6 +661,7 @@ fn link_store_edges<S: GraphStorage>(
     mutates_records: &[(String, Vec<String>)],
     mention_records: &[(String, Vec<String>)],
     demo_records: &[(String, Vec<String>)],
+    term_records: &[(String, Vec<String>)],
     test_anchors: &std::collections::HashSet<String>,
 ) -> Result<CalleeStats, Box<dyn std::error::Error>> {
     use aden_core::{Block, Document, EdgeType, NodeType};
@@ -907,6 +919,18 @@ fn link_store_edges<S: GraphStorage>(
         }
         edges.push((anchor.clone(), code_anchor.to_string(), EdgeType::Documents));
         edges.push((code_anchor.to_string(), anchor.clone(), EdgeType::PartOf));
+    }
+
+    // DefinesTerm edges (Wave 2 remainder): glossary section —DefinesTerm→
+    // term node. Both anchors were constructed by the same parser pass, so
+    // this is exact-match only — a record whose term node is missing from the
+    // store (e.g. held back by the merge gate) simply emits no edge.
+    for (anchor, targets) in term_records {
+        for t in targets {
+            if anchor_set.contains(t.as_str()) && t != anchor {
+                edges.push((anchor.clone(), t.clone(), EdgeType::DefinesTerm));
+            }
+        }
     }
 
     // Synthesize module nodes + project root, and connect the project to each.
@@ -1254,6 +1278,7 @@ fn cmd_gen_inner(
                     let mutates = extract_edge_macro(&doc_clone, "mutates");
                     let mentions = extract_doc_mentions(&doc_clone);
                     let demonstrates = extract_demonstrates(&doc_clone);
+                    let defines_terms = extract_doc_terms(&doc_clone);
                     slim_doc_for_store(&mut doc_clone);
 
                     // Three-way merge gate. A conflict can only arise when the
@@ -1297,6 +1322,7 @@ fn cmd_gen_inner(
                         mutates,
                         mentions,
                         demonstrates,
+                        defines_terms,
                         wrote: write,
                     });
                     // Defer the write — Phase 2 stores these in sorted source order.
@@ -1327,6 +1353,7 @@ fn cmd_gen_inner(
         let mut mutates_records: Vec<(String, Vec<String>)> = Vec::new();
         let mut mention_records: Vec<(String, Vec<String>)> = Vec::new();
         let mut demo_records: Vec<(String, Vec<String>)> = Vec::new();
+        let mut term_records: Vec<(String, Vec<String>)> = Vec::new();
         // Anchors whose SOURCE FILE is a test/spec file (conventional path
         // markers, shared with ask-routing's `is_test_result`). Their resolved
         // calls are additionally emitted as `Tests` edges. Lookup-only — never
@@ -1411,6 +1438,9 @@ fn cmd_gen_inner(
                         }
                         if !sym.demonstrates.is_empty() {
                             demo_records.push((sym.anchor.clone(), sym.demonstrates));
+                        }
+                        if !sym.defines_terms.is_empty() {
+                            term_records.push((sym.anchor.clone(), sym.defines_terms));
                         }
                         if from_test_file {
                             test_anchors.insert(sym.anchor.clone());
@@ -1498,6 +1528,7 @@ fn cmd_gen_inner(
             &mutates_records,
             &mention_records,
             &demo_records,
+            &term_records,
             &test_anchors,
         ) {
             Ok(stats) => stats,
@@ -1909,6 +1940,7 @@ mod link_tests {
         link_store_edges(
             &storage, &link_records, &[], &[], &[], &[],
             &[],
+            &[],
             &[], &test_anchors).unwrap();
 
         let out_test = storage.get_outgoing_edges(test_fn).unwrap();
@@ -1964,6 +1996,7 @@ mod link_tests {
             &[],
             &impl_records,
             &mutates_records,
+            &[],
             &[],
             &[],
             &std::collections::HashSet::new(),
@@ -2024,6 +2057,7 @@ mod link_tests {
             &[],
             &[],
             &ref_records,
+            &[],
             &[],
             &[],
             &[],
@@ -2091,6 +2125,7 @@ mod link_tests {
             &[],
             &[],
             &[],
+            &[],
             &std::collections::HashSet::new(),
         )
         .unwrap();
@@ -2145,6 +2180,7 @@ mod link_tests {
             &[],
             &[],
             &ref_records,
+            &[],
             &[],
             &[],
             &[],

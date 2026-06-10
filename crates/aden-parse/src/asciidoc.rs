@@ -58,6 +58,10 @@ impl crate::extractor::LanguageExtractor for AsciiDocExtractor {
         // Backtick symbol mentions (Wave-2 `Mentions` channel), same shape and
         // same fence discipline as `line_refs`.
         let mut line_mentions: Vec<(usize, String)> = Vec::new();
+        // Description-list term lines `(idx, explicit_anchor, name, same-line
+        // def)` — Term-node candidates; only those inside glossary-gated
+        // sections are promoted below.
+        let mut term_lines: Vec<(usize, Option<String>, String, String)> = Vec::new();
 
         for (line_num, line) in body.lines().enumerate() {
             let line_num = line_num + 1;
@@ -89,6 +93,9 @@ impl crate::extractor::LanguageExtractor for AsciiDocExtractor {
 
             collect_prose_refs(line, line_num - 1, &mut line_refs);
             crate::extractor::collect_backtick_mentions(line, line_num - 1, &mut line_mentions);
+            if let Some((explicit, name, def)) = parse_dlist_term(line) {
+                term_lines.push((line_num - 1, explicit, name, def));
+            }
 
             if let Some(rest) = line.strip_prefix("= ") {
                 let title = rest.trim().to_string();
@@ -129,6 +136,17 @@ impl crate::extractor::LanguageExtractor for AsciiDocExtractor {
                 }
             }
         }
+
+        // Term docs are appended AFTER the code-block loop so the historical
+        // `code_block_{docs.len()}` numbering never shifts under existing stores.
+        let mut term_docs: Vec<Document> = Vec::new();
+        // Glossary gate, document level: a glossary-titled doc promotes terms
+        // in EVERY section; otherwise only glossary-titled sections do.
+        let is_glossary_doc = headings
+            .iter()
+            .find(|(level, ..)| *level == 1)
+            .map(|(_, t, _)| crate::extractor::is_glossary_title(t))
+            .unwrap_or_else(|| crate::extractor::is_glossary_title(&file_name));
 
         if !headings.is_empty() {
             for hi in 0..headings.len() {
@@ -275,6 +293,96 @@ impl crate::extractor::LanguageExtractor for AsciiDocExtractor {
             });
         }
 
+        // Glossary post-pass over REAL (level>0) headings: inline `[[x]]`
+        // declarations register as level-0 pseudo-headings and would otherwise
+        // split a glossary section's range, orphaning every entry below the
+        // first explicitly-anchored term. Term anchors are recorded on the
+        // already-pushed section doc (`doc_terms`) for the linker's
+        // section —DefinesTerm→ term edges.
+        let real_headings: Vec<(usize, &String, usize)> = headings
+            .iter()
+            .filter(|(l, ..)| *l > 0)
+            .map(|(l, t, n)| (*l, t, *n))
+            .collect();
+        for (i, (level, title, line_num)) in real_headings.iter().enumerate() {
+            if !(is_glossary_doc || crate::extractor::is_glossary_title(title)) {
+                continue;
+            }
+            let start = *line_num; // 0-based index of the first body line
+            let end = real_headings[i + 1..]
+                .first()
+                .map(|(.., n)| n.saturating_sub(1))
+                .unwrap_or(body_lines.len());
+            let mut term_anchors: Vec<String> = Vec::new();
+            for (idx, explicit, name, def) in term_lines
+                .iter()
+                .filter(|(idx, ..)| *idx >= start && *idx < end)
+            {
+                let definition = if def.is_empty() {
+                    following_definition_lines(&body_lines, *idx)
+                } else {
+                    def.clone()
+                };
+                let slug = explicit
+                    .clone()
+                    .unwrap_or_else(|| crate::extractor::term_slug(name));
+                if slug.is_empty() {
+                    continue;
+                }
+                let entry = crate::extractor::GlossaryEntry {
+                    name: name.clone(),
+                    slug,
+                    definition,
+                };
+                let term = crate::extractor::build_term_document(&crate_name, path, &entry);
+                term_anchors.push(term.anchor.clone());
+                term_docs.push(term);
+            }
+            term_anchors.sort();
+            term_anchors.dedup();
+            if !term_anchors.is_empty() {
+                let section_anchor = make_adoc_anchor(&crate_name, &file_name, title, *level);
+                if let Some(d) = docs.iter_mut().find(|d| d.anchor == section_anchor) {
+                    d.attributes
+                        .insert("doc_terms".to_string(), term_anchors.join(","));
+                }
+            }
+        }
+        // Whole-file glossaries with no headings at all (rare): the single
+        // document node owns every term.
+        if headings.is_empty() && crate::extractor::is_glossary_title(&file_name) {
+            let mut term_anchors: Vec<String> = Vec::new();
+            for (idx, explicit, name, def) in &term_lines {
+                let definition = if def.is_empty() {
+                    following_definition_lines(&body_lines, *idx)
+                } else {
+                    def.clone()
+                };
+                let slug = explicit
+                    .clone()
+                    .unwrap_or_else(|| crate::extractor::term_slug(name));
+                if slug.is_empty() {
+                    continue;
+                }
+                let entry = crate::extractor::GlossaryEntry {
+                    name: name.clone(),
+                    slug,
+                    definition,
+                };
+                let term = crate::extractor::build_term_document(&crate_name, path, &entry);
+                term_anchors.push(term.anchor.clone());
+                term_docs.push(term);
+            }
+            term_anchors.sort();
+            term_anchors.dedup();
+            if !term_anchors.is_empty()
+                && let Some(d) = docs.last_mut()
+            {
+                d.attributes
+                    .insert("doc_terms".to_string(), term_anchors.join(","));
+            }
+        }
+
         for (lang, code) in code_blocks {
             let anchor = make_anchor(
                 &crate_name,
@@ -310,8 +418,64 @@ impl crate::extractor::LanguageExtractor for AsciiDocExtractor {
             });
         }
 
+        docs.extend(term_docs);
+
         Ok(docs)
     }
+}
+
+/// Parse one description-list term line: `Name:: def` or
+/// `[[anchor]]Name::` (definition on the following lines). Returns
+/// `(explicit_anchor, name, same_line_def)`. The `::` must sit at a word
+/// boundary (followed by a space or end-of-line) so Rust paths like
+/// `foo::bar` never match; indented lines are dlist *continuations*, not
+/// terms.
+fn parse_dlist_term(line: &str) -> Option<(Option<String>, String, String)> {
+    if line.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let (explicit, rest) = if let Some(after) = line.strip_prefix("[[") {
+        let close = after.find("]]")?;
+        (Some(after[..close].to_string()), &after[close + 2..])
+    } else {
+        (None, line)
+    };
+    // The FIRST `::` followed by space/EOL ends the name.
+    let mut search = 0;
+    let sep = loop {
+        let off = rest[search..].find("::")?;
+        let pos = search + off;
+        match rest.as_bytes().get(pos + 2) {
+            None | Some(b' ') => break pos,
+            _ => search = pos + 2,
+        }
+    };
+    let name = rest[..sep].trim();
+    if name.is_empty() || name.len() > 64 || name.contains('`') {
+        return None;
+    }
+    let def = rest[sep + 2..].trim().to_string();
+    Some((explicit, name.to_string(), def))
+}
+
+/// Definition text for a `Name::` entry whose definition starts on the next
+/// line: subsequent lines up to a blank line, a lone `+` continuation marker,
+/// the next term, or a heading — capped so a malformed glossary cannot swallow
+/// the document.
+fn following_definition_lines(body_lines: &[&str], term_idx: usize) -> String {
+    let mut out: Vec<&str> = Vec::new();
+    for line in body_lines.iter().skip(term_idx + 1).take(8) {
+        let trimmed = line.trim();
+        if trimmed.is_empty()
+            || trimmed == "+"
+            || line.starts_with('=')
+            || parse_dlist_term(line).is_some()
+        {
+            break;
+        }
+        out.push(trimmed);
+    }
+    out.join("\n")
 }
 
 /// Parse the AsciiDoc document header and return extracted metadata, custom

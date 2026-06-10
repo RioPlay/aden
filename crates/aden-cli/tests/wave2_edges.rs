@@ -48,6 +48,10 @@ short `shr` name must stay unlinked.
 ```rust
 let s = helper_fn("hi");
 ```
+
+## Glossary
+
+- **caller_fn**: the entry point of the greeting flow.
 "#;
 
 const GUIDE_ADOC: &str = r#"= Adoc Guide
@@ -59,6 +63,14 @@ The `caller_fn` entry point drives the greeting flow.
 ----
 caller_fn();
 ----
+
+random_thing:: prose dlist outside a glossary section must NOT become a Term.
+
+== Glossary
+
+helper_fn:: The greeting helper, see `helper_fn` in chain.rs.
+[[widget-factory]]Widget Factory (WF)::
+Makes widgets from greetings.
 "#;
 
 fn unique_dir(label: &str) -> PathBuf {
@@ -216,6 +228,83 @@ fn markdown_listing_demonstrates_symbol() {
             && f.contains("code_block")
             && t.ends_with("#helper_fn")),
         "README listing must Demonstrate helper_fn; Demonstrates edges: {demos:?}"
+    );
+}
+
+/// All node anchors present in the census.
+fn census_anchors(edges_unused: &Path, data: &Path) -> Vec<String> {
+    let out = Command::new(env!("CARGO_BIN_EXE_aden"))
+        .args(["viz", "--mode", "graph", "--full", "--format", "json"])
+        .current_dir(edges_unused)
+        .env("ADEN_DATA_DIR", data)
+        .output()
+        .expect("aden binary must run");
+    let json: serde_json::Value =
+        serde_json::from_str(&String::from_utf8_lossy(&out.stdout)).expect("census JSON");
+    json["nodes"]
+        .as_array()
+        .expect("nodes array")
+        .iter()
+        .map(|n| n["anchor"].as_str().unwrap_or_default().to_string())
+        .collect()
+}
+
+/// Eval (Term nodes, AsciiDoc): a glossary dlist entry becomes a Term node
+/// (`aden://term/…`) with a doc —DefinesTerm→ term edge; a term whose name is
+/// an unambiguous symbol also gets term —Mentions→ code (the definition links
+/// back to what it defines). The explicit `[[anchor]]` form keeps its slug.
+#[test]
+fn asciidoc_glossary_entries_become_term_nodes() {
+    let (project, data) = scaffold();
+    let edges = census_edges(&project, &data);
+    let defines = edges_of_type(&edges, "DefinesTerm");
+    assert!(
+        defines.iter().any(|(f, t, _)| f.contains("GUIDE.adoc")
+            && t.starts_with("aden://term/")
+            && t.ends_with("/helper-fn")),
+        "glossary section must DefinesTerm the helper_fn term; got: {defines:?}"
+    );
+    assert!(
+        defines
+            .iter()
+            .any(|(_, t, _)| t.starts_with("aden://term/") && t.ends_with("/widget-factory")),
+        "explicit [[widget-factory]] anchor must keep its slug; got: {defines:?}"
+    );
+    let mentions = edges_of_type(&edges, "Mentions");
+    assert!(
+        mentions.iter().any(|(f, t, _)| f.starts_with("aden://term/")
+            && f.ends_with("/helper-fn")
+            && t.ends_with("#helper_fn")),
+        "term helper_fn must Mention the code symbol it names; got: {mentions:?}"
+    );
+}
+
+/// Eval (Term nodes, Markdown): `- **term**: def` bullets under a glossary
+/// heading become Term nodes with DefinesTerm edges.
+#[test]
+fn markdown_glossary_entries_become_term_nodes() {
+    let (project, data) = scaffold();
+    let edges = census_edges(&project, &data);
+    let defines = edges_of_type(&edges, "DefinesTerm");
+    assert!(
+        defines.iter().any(|(f, t, _)| f.contains("README.md")
+            && t.starts_with("aden://term/")
+            && t.ends_with("/caller-fn")),
+        "markdown glossary must DefinesTerm the caller_fn term; got: {defines:?}"
+    );
+}
+
+/// Eval (Term nodes, negative): a description-list line OUTSIDE a glossary
+/// section/document must not become a Term node.
+#[test]
+fn non_glossary_dlist_is_not_a_term() {
+    let (project, data) = scaffold();
+    let anchors = census_anchors(&project, &data);
+    assert!(
+        !anchors
+            .iter()
+            .any(|a| a.starts_with("aden://term/") && a.contains("random-thing")),
+        "dlist entries outside glossary sections must stay plain prose; got: {anchors:?}"
     );
 }
 

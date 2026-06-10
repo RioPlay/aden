@@ -53,6 +53,9 @@ impl crate::extractor::LanguageExtractor for MarkdownExtractor {
         // Backtick symbol mentions (Wave-2 `Mentions` channel), same shape and
         // same fence discipline as `line_refs`.
         let mut line_mentions: Vec<(usize, String)> = Vec::new();
+        // Glossary bullet entries `(idx, name, def)` — Term-node candidates;
+        // only those inside glossary-gated sections are promoted below.
+        let mut term_lines: Vec<(usize, String, String)> = Vec::new();
         let mut in_code_block = false;
         let mut current_code_lang = String::new();
         let mut current_code_lines = Vec::new();
@@ -84,6 +87,9 @@ impl crate::extractor::LanguageExtractor for MarkdownExtractor {
                     line_num - 1,
                     &mut line_mentions,
                 );
+                if let Some((name, def)) = parse_glossary_bullet(line) {
+                    term_lines.push((line_num - 1, name, def));
+                }
             }
 
             if in_code_block {
@@ -99,6 +105,16 @@ impl crate::extractor::LanguageExtractor for MarkdownExtractor {
                 }
             }
         }
+
+        // Term docs are appended AFTER the code-block loop so the historical
+        // `code_block_{docs.len()}` numbering never shifts under existing stores.
+        let mut term_docs: Vec<Document> = Vec::new();
+        // Glossary gate, document level (same rule as the AsciiDoc parser).
+        let is_glossary_doc = headings
+            .iter()
+            .find(|(level, ..)| *level == 1)
+            .map(|(_, t, _)| crate::extractor::is_glossary_title(t))
+            .unwrap_or_else(|| crate::extractor::is_glossary_title(&file_name));
 
         if !headings.is_empty() {
             for hi in 0..headings.len() {
@@ -187,6 +203,34 @@ impl crate::extractor::LanguageExtractor for MarkdownExtractor {
                     attrs.insert("doc_mentions".to_string(), section_mentions.join(","));
                 }
 
+                // Glossary gate: promote this section's `- **term**: def`
+                // bullets to Term nodes (same rule as the AsciiDoc parser).
+                if is_glossary_doc || crate::extractor::is_glossary_title(title) {
+                    let mut term_anchors: Vec<String> = Vec::new();
+                    for (_, name, def) in term_lines
+                        .iter()
+                        .filter(|(idx, ..)| *idx >= ref_start && *idx < body_end)
+                    {
+                        let slug = crate::extractor::term_slug(name);
+                        if slug.is_empty() {
+                            continue;
+                        }
+                        let entry = crate::extractor::GlossaryEntry {
+                            name: name.clone(),
+                            slug,
+                            definition: def.clone(),
+                        };
+                        let term = crate::extractor::build_term_document(&crate_name, path, &entry);
+                        term_anchors.push(term.anchor.clone());
+                        term_docs.push(term);
+                    }
+                    term_anchors.sort();
+                    term_anchors.dedup();
+                    if !term_anchors.is_empty() {
+                        attrs.insert("doc_terms".to_string(), term_anchors.join(","));
+                    }
+                }
+
                 let mut blocks = vec![Block::Paragraph(title.clone())];
                 if !body_text.is_empty() {
                     blocks.push(Block::Paragraph(body_text));
@@ -267,8 +311,34 @@ impl crate::extractor::LanguageExtractor for MarkdownExtractor {
             });
         }
 
+        docs.extend(term_docs);
+
         Ok(docs)
     }
+}
+
+/// Parse one markdown glossary bullet: `- **Term**: definition` (also `*`
+/// bullets and an em/en dash separator). The bold marker is the term-ness
+/// signal — plain bullets stay prose.
+fn parse_glossary_bullet(line: &str) -> Option<(String, String)> {
+    let rest = line
+        .trim_start()
+        .strip_prefix("- ")
+        .or_else(|| line.trim_start().strip_prefix("* "))?;
+    let rest = rest.trim_start().strip_prefix("**")?;
+    let close = rest.find("**")?;
+    let name = rest[..close].trim();
+    if name.is_empty() || name.len() > 64 || name.contains('`') {
+        return None;
+    }
+    let def = rest[close + 2..]
+        .trim_start()
+        .trim_start_matches([':', '—', '–', '-'])
+        .trim();
+    if def.is_empty() {
+        return None;
+    }
+    Some((name.to_string(), def.to_string()))
 }
 
 fn parse_frontmatter(source: &str) -> (Option<aden_core::DocumentMetadata>, &str) {

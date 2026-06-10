@@ -406,6 +406,9 @@ pub enum NodeType {
     Manifest,
     Spec,
     Note,
+    /// A glossary term (`aden://term/<project>/<slug>`): the definition of a
+    /// concept, extracted from glossary description lists (Wave 2 remainder).
+    Term,
 }
 
 /// A content block inside a Document.
@@ -586,6 +589,10 @@ pub enum EdgeType {
     /// documentation signal is not diluted (Wave 2; same reasoning as the
     /// 0.2.0 `Contains` split).
     Mentions,
+    /// A glossary entry defines a term (doc section DEFINES-TERM term node).
+    /// Wave 2 remainder: emitted only inside glossary-titled sections or
+    /// glossary-titled documents, so ordinary description lists stay prose.
+    DefinesTerm,
     // === Semantic Edges (conceptual/brain-like) ===
     /// Inheritance/subsumption (dog IS-A animal)
     IsA,
@@ -622,7 +629,7 @@ impl EdgeType {
     /// its own list). The exhaustive `match` in `aden-graph`'s `GraphEdge`
     /// impl breaks the build when a variant is added, and its fix points
     /// here; `all_variants_listed_in_all` asserts the two stay in sync.
-    pub const ALL: [EdgeType; 29] = [
+    pub const ALL: [EdgeType; 30] = [
         EdgeType::Uses,
         EdgeType::UsedBy,
         EdgeType::Implements,
@@ -640,6 +647,7 @@ impl EdgeType {
         EdgeType::Verifies,
         EdgeType::Demonstrates,
         EdgeType::Mentions,
+        EdgeType::DefinesTerm,
         EdgeType::IsA,
         EdgeType::PartOf,
         EdgeType::RelatesTo,
@@ -706,6 +714,8 @@ impl EdgeType {
             // Weaker than Documents/RelatesTo: an unmarked prose mention is a
             // hint, not a contract.
             EdgeType::Mentions => 0.3,
+            // Definitional: a glossary entry is authored intent, like Documents.
+            EdgeType::DefinesTerm => 0.6,
             // Containment inherits the forward edges' prior weight (they were
             // `Documents` before the split) so traversal behaviour is unchanged.
             EdgeType::Contains => 0.5,

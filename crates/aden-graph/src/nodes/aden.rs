@@ -63,6 +63,7 @@ impl GraphEdge for AdenEdge {
             EdgeType::Verifies => "Verifies",
             EdgeType::Demonstrates => "Demonstrates",
             EdgeType::Mentions => "Mentions",
+            EdgeType::DefinesTerm => "DefinesTerm",
             EdgeType::IsA => "IsA",
             EdgeType::PartOf => "PartOf",
             EdgeType::RelatesTo => "RelatesTo",

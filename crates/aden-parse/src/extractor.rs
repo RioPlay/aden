@@ -267,9 +267,87 @@ pub(crate) fn collect_backtick_mentions(line: &str, idx: usize, out: &mut Vec<(u
     }
 }
 
+/// A glossary entry found by a format parser: the per-format half of Term
+/// extraction. `slug` is the explicit `[[anchor]]` when the author declared
+/// one, else `term_slug(name)`.
+pub(crate) struct GlossaryEntry {
+    pub name: String,
+    pub slug: String,
+    pub definition: String,
+}
+
+/// Build the Term node for a glossary entry — the format-neutral half. The
+/// term's own `doc_mentions` attribute carries the term name (when
+/// identifier-shaped) plus any backticked names in the definition, so terms
+/// link to the code they define through the ordinary Mentions channel with
+/// its unambiguous-only guard — no new resolution machinery.
+pub(crate) fn build_term_document(
+    project: &str,
+    path: &Path,
+    entry: &GlossaryEntry,
+) -> Document {
+    let mut attrs = build_code_attributes(&entry.definition, "term", Some(path), None);
+    attrs.insert("term_name".to_string(), entry.name.clone());
+    let mut mentions: Vec<(usize, String)> = Vec::new();
+    if let Some(n) = mention_candidate(&entry.name) {
+        mentions.push((0, n.to_string()));
+    }
+    for (i, line) in entry.definition.lines().enumerate() {
+        collect_backtick_mentions(line, i, &mut mentions);
+    }
+    let mut names: Vec<String> = mentions.into_iter().map(|(_, n)| n).collect();
+    names.sort();
+    names.dedup();
+    if !names.is_empty() {
+        attrs.insert("doc_mentions".to_string(), names.join(","));
+    }
+    Document {
+        anchor: make_term_anchor(project, &entry.slug),
+        node_type: aden_core::NodeType::Term,
+        attributes: attrs,
+        blocks: vec![
+            aden_core::Block::Paragraph(entry.name.clone()),
+            aden_core::Block::Paragraph(entry.definition.clone()),
+        ],
+        source_span: None,
+        metadata: None,
+        confidence: 0.9,
+    }
+}
+
+/// True when a title marks glossary content — the gate for Term-node
+/// extraction (Wave 2 remainder). Ordinary description lists are prose; only
+/// a glossary-titled section, or any section of a glossary-titled document,
+/// emits `aden://term/` nodes.
+pub(crate) fn is_glossary_title(title: &str) -> bool {
+    title.to_lowercase().contains("glossary")
+}
+
+/// Slug for a term anchor: lowercase, alphanumerics kept, every other run
+/// collapsed to one `-` (matches the doc-heading slug discipline).
+pub(crate) fn term_slug(name: &str) -> String {
+    let mut out = String::new();
+    let mut dash = false;
+    for c in name.chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c.to_ascii_lowercase());
+            dash = false;
+        } else if !dash && !out.is_empty() {
+            out.push('-');
+            dash = true;
+        }
+    }
+    out.trim_end_matches('-').to_string()
+}
+
+/// Anchor for a glossary term node.
+pub(crate) fn make_term_anchor(project: &str, slug: &str) -> String {
+    format!("aden://term/{project}/{slug}")
+}
+
 /// The identifier-shaped core of a backtick span, or None if the span is not
 /// a plausible symbol mention (commands, flags, paths, prose).
-fn mention_candidate(span: &str) -> Option<&str> {
+pub(crate) fn mention_candidate(span: &str) -> Option<&str> {
     let name = span.trim().trim_end_matches("()");
     if name.len() < MENTION_MIN_LEN {
         return None;
