@@ -89,7 +89,7 @@ pub(crate) fn is_test_anchor(anchor: &str) -> bool {
         // a `my_tests.rs` production file is NOT swept in (that case is the
         // `_tests.` marker's, which requires the underscore).
         "/tests.",
-        "test_",
+        "/test_",
         "_test.",
         "_tests.",
         ".test.",
@@ -1740,19 +1740,26 @@ pub fn cmd_ask(
         seed
     } else {
         let primary_budget = effective_budget * 60 / 100;
-        let alt_pool = effective_budget.saturating_sub(primary_budget);
-        let per_alt = (alt_pool / resolved_alts.len()).max(1);
         let shallow_depth = depth.min(1);
         let mut combined = assemble_seed(&start_anchor, depth, primary_budget)?;
         primary_text = combined.clone();
+        let mut used = combined.len().div_ceil(4);
         for alt in &resolved_alts {
-            let alt_text = assemble_seed(alt, shallow_depth, per_alt)?;
+            let sep = "\n\n---\n\n";
+            let header = format!("// alternate (ambiguous match): [[{}]]\n", alt);
+            let overhead = sep.len().div_ceil(4) + header.len().div_ceil(4);
+            let remaining = effective_budget.saturating_sub(used + overhead);
+            if remaining < 32 {
+                break;
+            }
+            let alt_text = assemble_seed(alt, shallow_depth, remaining)?;
             if alt_text.trim().is_empty() {
                 continue;
             }
-            combined.push_str("\n\n---\n\n");
-            combined.push_str(&format!("// alternate (ambiguous match): [[{}]]\n", alt));
+            combined.push_str(sep);
+            combined.push_str(&header);
             combined.push_str(&alt_text);
+            used += overhead + alt_text.len().div_ceil(4);
         }
         combined
     };

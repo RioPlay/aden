@@ -40,3 +40,10 @@ Thumbs.db
 
 # Real-repo eval sets/docs (about external repos, not aden source).
 scripts/eval-sets/
+
+# Eval harness scripts — they contain the same identifiers (anchor_hits,
+# density, immediacy, etc.) as the production code they measure, so indexing
+# them pollutes routing for density/routing questions.
+scripts/eval_ask_density.py
+scripts/eval_corpus.py
+scripts/bench.py

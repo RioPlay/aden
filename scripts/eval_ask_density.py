@@ -92,7 +92,7 @@ CASES = [
     },
     {
         "q": "Which edge types count as downstream impact in query --impact?",
-        "expected": ["cmd_query"],
+        "expected": ["cmd_query", "impact_edge_types"],
         "must": [["Uses"], ["Constrains"], ["Invokes"], ["Mutates"]],
     },
     {

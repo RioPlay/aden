@@ -75,6 +75,17 @@ Post-0.2.0 work on main — not yet tagged.
   calls the changed code). This is a correctness bug in a shipped feature: "what
   breaks if I change this" is the reverse direction. Traversal now walks incoming
   edges via the impact-edge set, matching `query --impact` semantics.
+- **`ask` honesty gate** — the ambiguous-match alternates loop appended separator
+  (`"\n\n---\n\n"`) and header (`"// alternate (ambiguous match): …"`) overhead to
+  the assembled body without charging those bytes against the effective budget, so
+  multi-alternate responses could silently exceed `effective_budget` and fail the
+  honesty check. Replaced the static `per_alt` slice with per-iteration remaining
+  that pre-subtracts separator+header cost before each `assemble_seed` call; breaks
+  early when fewer than 32 tokens remain.
+- **`ask` test-anchor self-suppression** — `is_test_anchor` falsely fired on
+  `#is_test_anchor` because the bare `"test_"` marker matched the symbol-name
+  fragment. Narrowed to `"/test_"` (path-component form) so detection only fires on
+  path segments (e.g. `/tests/`, `test_utils.py`), not symbol names after `#`.
 
 ### Legal
 - **CLA v1.0** (`CLA.md`) — Contributor License Agreement adversarially reviewed
