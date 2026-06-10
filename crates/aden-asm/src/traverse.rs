@@ -107,6 +107,14 @@ pub struct AssemblyOptions {
     /// Default: true — LLM-dense output is the baseline. Pass false only when
     /// raw AsciiDoc is explicitly needed (e.g. IDE rendering, --format aden).
     pub llm_mode: bool,
+    /// Project root for budget-aware source-span hydration. When set and the
+    /// assembled neighborhood leaves most of the budget unspent, included
+    /// nodes are hydrated with their actual source spans (`source_file` +
+    /// `start_line`/`end_line` node attributes), nearest-first in visit order
+    /// with the seed first, each span re-verified against `source_hash` so a
+    /// stale store degrades to summary-only rendering instead of shipping
+    /// stale source. `None` (the default) disables hydration entirely.
+    pub hydrate_root: Option<std::path::PathBuf>,
 }
 
 impl Default for AssemblyOptions {
@@ -121,6 +129,7 @@ impl Default for AssemblyOptions {
             exclude_tags: Vec::new(),
             attributes: Vec::new(),
             llm_mode: true, // LLM-dense by default everywhere
+            hydrate_root: None,
         }
     }
 }
@@ -142,6 +151,9 @@ pub fn assemble(
     let mut visited = HashSet::new();
     let mut queue = VecDeque::new();
     let mut result = Vec::new();
+    // Nodes actually emitted, parallel to `result`, in visit (BFS) order —
+    // the hydration pass packs source spans nearest-first along this order.
+    let mut included: Vec<NodeIndex> = Vec::new();
     let mut total_tokens = 0usize;
 
     // Single-source the separator so its byte cost is counted in the budget by
@@ -196,12 +208,15 @@ pub fn assemble(
             // Document (plus its preceding separator) fits entirely — include it.
             total_tokens += tokens + sep;
             visited.insert(node);
+            included.push(node);
             result.push(text);
         } else if opts.llm_mode && remaining.saturating_sub(sep) > 32 {
             // LLM mode: partial inclusion — truncate so the doc PLUS its
             // preceding separator fit within the remaining budget.
             let truncated = truncate_to_tokens(&text, remaining.saturating_sub(sep));
+            total_tokens += estimate_tokens(&truncated) + sep;
             visited.insert(node);
+            included.push(node);
             result.push(truncated);
             break; // Budget exhausted after partial doc
         } else {
@@ -214,7 +229,114 @@ pub fn assemble(
         }
     }
 
+    // Budget-aware leaf hydration: the graph stores summaries, not bodies —
+    // for an undocumented symbol the only place the answer exists is the
+    // source itself. When the summary-level assembly leaves most of the
+    // budget unspent, pack it with the included nodes' actual source spans.
+    if let Some(root) = &opts.hydrate_root {
+        hydrate_with_source(graph, &included, root, opts.token_budget, &mut total_tokens, &mut result);
+    }
+
     Ok(result.join(separator))
+}
+
+/// Hydration trigger: only when the assembled summaries consumed less than
+/// this share of the budget is source packing worth the duplication risk.
+const HYDRATE_TRIGGER_PCT: usize = 85;
+/// Per-node share of the total budget a single hydrated span may consume, so
+/// one large function body cannot starve every neighbor of source context.
+/// The cap is dynamic: when the remaining budget is large relative to the
+/// remaining nodes, half of what remains may go to one span (a near-empty
+/// assembly with one giant, on-point body should ship that body, not ration
+/// it), but never less than this base share.
+const HYDRATE_PER_NODE_DIVISOR: usize = 4;
+/// Below this many remaining tokens a further span adds noise, not signal —
+/// mirrors the main loop's minimum partial-inclusion threshold.
+const HYDRATE_MIN_REMAINING: usize = 32;
+
+/// Pack the unspent token budget with the actual source spans of the included
+/// nodes, nearest-first (BFS visit order — the seed is index 0 and is always
+/// hydrated first). Language-agnostic by construction: it reads line spans
+/// recorded at gen time, never syntax.
+///
+/// Guarantees:
+/// - the budget is respected exactly — every appended byte (including the
+///   joining blank line) is charged with the same estimator the assembler
+///   budgets by, and `estimate_tokens` is subadditive under concatenation;
+/// - `source_hash` is re-verified against the CURRENT file content before any
+///   span is included; on mismatch the span is skipped with a one-line note,
+///   so a stale store can never ship stale source;
+/// - deterministic: visit order is deterministic and file reads are pure.
+fn hydrate_with_source(
+    graph: &AdenGraph<DocumentNode, AdenEdge>,
+    included: &[NodeIndex],
+    root: &std::path::Path,
+    token_budget: usize,
+    total_tokens: &mut usize,
+    result: &mut [String],
+) {
+    if *total_tokens >= token_budget * HYDRATE_TRIGGER_PCT / 100 {
+        return; // summaries already filled the budget — nothing to pack
+    }
+    let per_node_cap = (token_budget / HYDRATE_PER_NODE_DIVISOR).max(HYDRATE_MIN_REMAINING);
+    // One read per distinct file, shared across the nodes it contains.
+    let mut file_cache: HashMap<String, Option<String>> = HashMap::new();
+
+    for (i, &node) in included.iter().enumerate() {
+        let remaining = token_budget.saturating_sub(*total_tokens);
+        if remaining < HYDRATE_MIN_REMAINING {
+            break;
+        }
+        let attrs = &graph.graph[node].doc.attributes;
+        let (Some(file), Some(start), Some(end)) = (
+            attrs.get("source_file"),
+            attrs.get("start_line").and_then(|s| s.parse::<usize>().ok()),
+            attrs.get("end_line").and_then(|s| s.parse::<usize>().ok()),
+        ) else {
+            continue; // synthesized hubs / docs without spans have no source
+        };
+        let content = file_cache.entry(file.clone()).or_insert_with(|| {
+            let p = std::path::Path::new(file);
+            let abs = if p.is_absolute() { p.to_path_buf() } else { root.join(p) };
+            std::fs::read_to_string(abs).ok()
+        });
+        let Some(content) = content else { continue };
+
+        // Stale-store guard: the span's line numbers are only meaningful for
+        // the file content that was hashed at gen time.
+        if let Some(expected) = attrs.get("source_hash")
+            && aden_core::hash_source(content) != *expected
+        {
+            let note = format!(
+                "\n\n// source span omitted: {} changed since gen (hash mismatch)",
+                file
+            );
+            let cost = estimate_tokens(&note);
+            if cost <= remaining {
+                result[i].push_str(&note);
+                *total_tokens += cost;
+            }
+            continue;
+        }
+
+        let lines: Vec<&str> = content.lines().collect();
+        if start == 0 || start > lines.len() {
+            continue;
+        }
+        let span = lines[start - 1..end.min(lines.len())].join("\n");
+        if span.trim().is_empty() {
+            continue;
+        }
+        let block = format!("\n\nsource ({}:{}-{}):\n{}", file, start, end, span);
+        let allowed = per_node_cap.max(remaining / 2).min(remaining);
+        let trimmed = truncate_to_tokens(&block, allowed);
+        // A cut that leaves only the header line carries no source — skip it.
+        if trimmed.trim_end_matches('…').trim().lines().count() < 2 {
+            continue;
+        }
+        *total_tokens += estimate_tokens(&trimmed);
+        result[i].push_str(&trimmed);
+    }
 }
 
 /// Assemble documents in ADG (compact JSON) format for token-efficient LLM context.
@@ -299,9 +421,27 @@ fn document_to_text(
     attributes: &[String],
 ) -> String {
     let has_filter = !block_filter.is_empty();
-    let should_include = |b: &Block| -> bool {
+    // Docstring and signature are HEADER content, exempt from block filters:
+    // the leading Paragraph (the docstring — often the only substantive prose
+    // a code node has) and the Property/Value signature table must survive
+    // every intent filter, otherwise a List/Usage-classified question deletes
+    // the very answer the graph holds. Filters apply to the extra blocks only.
+    let first_paragraph = doc
+        .doc
+        .blocks
+        .iter()
+        .position(|b| matches!(b, Block::Paragraph(_)));
+    let is_signature_table = |b: &Block| {
+        matches!(b, Block::Table(t) if t.headers.len() >= 2
+            && t.headers[0].trim().eq_ignore_ascii_case("property")
+            && t.headers[1].trim().eq_ignore_ascii_case("value"))
+    };
+    let should_include = |idx: usize, b: &Block| -> bool {
         if !has_filter {
             return true;
+        }
+        if Some(idx) == first_paragraph || is_signature_table(b) {
+            return true; // header content — never filtered
         }
         let kind = match b {
             Block::Table(_) => BlockKind::Table,
@@ -314,6 +454,10 @@ fn document_to_text(
         };
         block_filter.contains(&kind)
     };
+    // Cells are emitted one row per line; a cell containing a newline (e.g. a
+    // multi-line closure callee captured verbatim at gen time) would otherwise
+    // break the row-per-line contract and corrupt downstream table compaction.
+    let clean_cell = |c: &str| c.split_whitespace().collect::<Vec<_>>().join(" ");
 
     // Check if we should filter by tags
     let has_tag_filter = !include_tags.is_empty() || !exclude_tags.is_empty();
@@ -345,8 +489,8 @@ fn document_to_text(
             .unwrap_or(&doc.doc.anchor);
         out.push_str(&format!("= {title}\n\n"));
         // Blocks
-        for block in &doc.doc.blocks {
-            if !should_include(block) {
+        for (idx, block) in doc.doc.blocks.iter().enumerate() {
+            if !should_include(idx, block) {
                 continue;
             }
             match block {
@@ -359,12 +503,15 @@ fn document_to_text(
                     let header = table
                         .headers
                         .iter()
-                        .map(|h| format!("|{h}"))
+                        .map(|h| format!("|{}", clean_cell(h)))
                         .collect::<String>();
                     out.push_str(&header);
                     out.push('\n');
                     for row in &table.rows {
-                        let row_str = row.iter().map(|c| format!("|{c}")).collect::<String>();
+                        let row_str = row
+                            .iter()
+                            .map(|c| format!("|{}", clean_cell(c)))
+                            .collect::<String>();
                         out.push_str(&row_str);
                         out.push('\n');
                     }
@@ -546,21 +693,42 @@ pub fn strip_asciidoc_markup(text: &str) -> String {
     // Accumulated rows of the current Signature property table, collapsed into a
     // single dense line on close.
     let mut sig_acc: Vec<(String, String)> = Vec::new();
+    // The document's title (`= Title` heading) — the synthesis fallback for
+    // the signature name (see `flush_signature`).
+    let mut doc_title: Option<String> = None;
 
+    // Cap on inlined callee names: a hub's Callee/Line table would otherwise
+    // spend hundreds of tokens on call-graph scaffolding before any neighbor's
+    // prose is reached. The first MAX_CALLEES (source order) are kept and the
+    // rest summarized as `(+K more)`.
+    const MAX_CALLEES: usize = 12;
     let flush_callees = |calls: &mut Vec<String>, out: &mut Vec<String>| {
-        if !calls.is_empty() {
-            out.push(format!("calls: {}", calls.join(", ")));
-            calls.clear();
+        if calls.is_empty() {
+            return;
         }
+        let total = calls.len();
+        let mut line = format!("calls: {}", calls[..total.min(MAX_CALLEES)].join(", "));
+        if total > MAX_CALLEES {
+            line.push_str(&format!(" (+{} more)", total - MAX_CALLEES));
+        }
+        out.push(line);
+        calls.clear();
     };
 
     // Collapse a function's signature table into one line:
-    // `[async] [unsafe] name(p1: T1, p2: T2) -> Ret`. The `Name` row duplicates
-    // the node title and `Visibility` repeats on every symbol, so both are
-    // dropped; non-function tables (no params/return) fall back to key:value
-    // lines, still without the redundant name. Every language extractor emits
-    // this same Property/Value schema, so this is language-agnostic.
-    let flush_signature = |acc: &mut Vec<(String, String)>, out: &mut Vec<String>| {
+    // `[async] [unsafe] name(p1: T1, p2: T2) -> Ret`. No language resolver
+    // emits a `Name` row (the rows are Visibility/Async/param…/Returns), so
+    // the name is synthesized from the document title (`fallback_name`) — the
+    // anchor's `#`-suffix — without which every signature table rendered to
+    // nothing. `Visibility` repeats on every symbol and is dropped;
+    // non-function tables (no params/return) fall back to key:value lines.
+    // Every language extractor emits this same Property/Value schema, so this
+    // is language-agnostic.
+    fn flush_signature(
+        acc: &mut Vec<(String, String)>,
+        out: &mut Vec<String>,
+        fallback_name: Option<&str>,
+    ) {
         if acc.is_empty() {
             return;
         }
@@ -580,6 +748,7 @@ pub fn strip_asciidoc_markup(text: &str) -> String {
                 _ => extras.push((k, v)),
             }
         }
+        let name = name.or_else(|| fallback_name.map(str::to_string));
         if let Some(n) = &name
             && (!params.is_empty() || ret.is_some())
         {
@@ -603,7 +772,7 @@ pub fn strip_asciidoc_markup(text: &str) -> String {
         for (k, v) in extras {
             out.push(format!("{}: {}", k.to_lowercase().replace(' ', "_"), v));
         }
-    };
+    }
 
     for line in text.lines() {
         let trimmed = line.trim();
@@ -649,7 +818,7 @@ pub fn strip_asciidoc_markup(text: &str) -> String {
         if trimmed == "|===" {
             // Flush accumulated callee list / signature when the table closes
             flush_callees(&mut callee_calls, &mut out);
-            flush_signature(&mut sig_acc, &mut out);
+            flush_signature(&mut sig_acc, &mut out, doc_title.as_deref());
             table_mode = TableMode::None;
             continue;
         }
@@ -713,12 +882,15 @@ pub fn strip_asciidoc_markup(text: &str) -> String {
         } else if table_mode != TableMode::None {
             // Non-table line encountered — flush accumulated table state
             flush_callees(&mut callee_calls, &mut out);
-            flush_signature(&mut sig_acc, &mut out);
+            flush_signature(&mut sig_acc, &mut out, doc_title.as_deref());
             table_mode = TableMode::None;
         }
 
         // --- Headings: convert = Title → Title, == Section → Section: ---
         let processed = if let Some(rest) = trimmed.strip_prefix("= ") {
+            if doc_title.is_none() {
+                doc_title = Some(rest.trim().to_string());
+            }
             rest.to_string()
         } else if trimmed.starts_with("== ")
             || trimmed.starts_with("=== ")
@@ -765,7 +937,7 @@ pub fn strip_asciidoc_markup(text: &str) -> String {
 
     // Final flush of any pending callee list / signature
     flush_callees(&mut callee_calls, &mut out);
-    flush_signature(&mut sig_acc, &mut out);
+    flush_signature(&mut sig_acc, &mut out, doc_title.as_deref());
 
     // Drop a trailing empty section header. A header line (ends with ':' and
     // has no value after the colon, e.g. "Relationships:") with no real content

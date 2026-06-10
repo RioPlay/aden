@@ -855,6 +855,7 @@ pub fn cmd_asm(opts: AsmOptions) -> Result<(), Box<dyn std::error::Error>> {
         exclude_tags: opts.exclude_tags.clone(),
         attributes: opts.attributes.clone(),
         llm_mode,
+        hydrate_root: None,
     };
 
     let output = match opts.format.as_str() {
@@ -1337,50 +1338,104 @@ pub fn block_filter_for_intent(intent: &QueryIntent) -> Vec<aden_asm::traverse::
     }
 }
 
-/// Assembled output below this token estimate is treated as a thin stub —
-/// the anchor resolved to a bare declaration with no useful content. `ask`
-/// broadens to `mod-project` when this threshold is not met.
+/// Assembled output below this substantive-token estimate is treated as a thin
+/// stub — the anchor resolved to a bare declaration with no useful content.
+/// `ask` escalates through the rendering/topology ladder (see `cmd_ask`) when
+/// this threshold is not met; the effective floor scales with the budget as
+/// `max(THIN_STUB_TOKEN_THRESHOLD, budget / 10)`.
 const THIN_STUB_TOKEN_THRESHOLD: usize = 150;
 
-/// For a thin-routed anchor, find its functional community and return a richer
-/// seed to broaden to: `(hub_anchor, label, member_count)`. The hub is the
-/// highest-degree member of the community (its center of gravity). Returns
-/// `None` when the anchor isn't in a multi-member community — the caller then
-/// falls back to `mod-project`. This makes the `ask` fallback land on a focused
-/// functional cluster instead of the flat project-root hub dump.
-fn community_seed_for(path: &Path, anchor: &str) -> Option<(String, String, usize)> {
-    let graph = aden_graph::cache::build_from_directory_cached(path).ok()?;
-    let communities = aden_graph::community::detect_communities(&graph, 1.0);
+/// Substantive-token estimate of an assembled body: the byte-based estimator
+/// (`bytes.div_ceil(4)`, the same one the assembler budgets with) applied to
+/// the body MINUS the line classes that carry no explanatory value — blank
+/// lines, `---` separators, `//` header/meta lines, bare-title lines (a line
+/// that is only a symbol/module name), and `calls:` scaffolding. Raw byte
+/// length rewarded callee tables and bare titles (the bulk-as-substance trap),
+/// letting a near-empty assembly pass for substantial. Mirrors the density
+/// eval's definition (`scripts/eval_ask_density.py`) so the floor checked here
+/// is the metric the gates measure.
+fn substantive_token_estimate(body: &str) -> usize {
+    let is_bare_title = |t: &str| {
+        !t.is_empty()
+            && t.chars()
+                .all(|c| c.is_alphanumeric() || matches!(c, '_' | ':' | '-' | '.' | '#' | '/'))
+    };
+    let bytes: usize = body
+        .lines()
+        .filter(|line| {
+            let t = line.trim();
+            !(t.is_empty()
+                || t == "---"
+                || t.starts_with("//")
+                || t.starts_with("calls:")
+                || is_bare_title(t))
+        })
+        .map(|line| line.len() + 1)
+        .sum();
+    bytes.div_ceil(4)
+}
+
+/// For a thin-routed anchor, find its functional community and return richer
+/// replacement-seed candidates: `(seeds, label, member_count)`, with `seeds`
+/// ranked by RELEVANCE to the question (BM25-scored against it), never by
+/// degree: degree ≠ relevance, and picking the cluster's highest-degree hub
+/// (its center of gravity) re-created the M14 hub-over-leaf bias at the
+/// fallback layer — swapping a correctly-routed leaf for whatever
+/// `mod-`adjacent giant anchors the community. Synthetic `mod-*` hub nodes,
+/// test anchors, and the anchor itself are excluded; unranked members score 0
+/// and lose ties lexicographically, so the ranking is deterministic. The
+/// caller tries seeds in order and keeps the first whose assembly is actually
+/// substantive. Returns `None` when the anchor isn't in a multi-member
+/// community.
+fn community_seeds_for(
+    path: &Path,
+    anchor: &str,
+    question: &str,
+    max_seeds: usize,
+) -> Option<(Vec<String>, String, usize)> {
+    let communities = {
+        let graph = aden_graph::cache::build_from_directory_cached(path).ok()?;
+        aden_graph::community::detect_communities(&graph, 1.0)
+    };
     let group = communities.into_iter().find(|c| c.iter().any(|a| a == anchor))?;
     if group.len() < 2 {
         return None;
     }
-    // Hub = highest (undirected) degree member, but skip the synthetic `mod-*`
-    // module nodes — they connect to everything by construction and would just
-    // reproduce the crate overview. Prefer a real symbol for richer content;
-    // fall back to the full group only if a community is somehow all hubs.
-    let real: Vec<&String> = group.iter().filter(|a| !a.starts_with("mod-")).collect();
-    let pool: Vec<&String> = if real.is_empty() {
-        group.iter().collect()
-    } else {
-        real
+    let idx = load_or_build_index(path).ok()?;
+    let results = query_index(&idx, question);
+    let score_of = |a: &str| {
+        results
+            .iter()
+            .find(|r| r.anchor == a)
+            .map(|r| r.score)
+            .unwrap_or(0.0)
     };
-    let seed = pool
-        .into_iter()
-        .max_by(|a, b| {
-            let da = graph
-                .get_index(a)
-                .map(|i| graph.graph.neighbors_undirected(i).count())
-                .unwrap_or(0);
-            let db = graph
-                .get_index(b)
-                .map(|i| graph.graph.neighbors_undirected(i).count())
-                .unwrap_or(0);
-            da.cmp(&db).then_with(|| b.cmp(a))
-        })?
-        .clone();
+    // Test-ness must be judged by the real source path too: the module-form
+    // anchor flattens the directory (`…/mcp_flag_parity.rs#…` for a file in
+    // `tests/`), exactly the [`is_test_result`] caveat.
+    let is_test_member = |a: &str| {
+        is_test_anchor(a)
+            || anchor_source_file(path, a)
+                .map(|f| is_test_source_path(&f))
+                .unwrap_or(false)
+    };
+    let mut members: Vec<&String> = group
+        .iter()
+        .filter(|a| !a.starts_with("mod-") && a.as_str() != anchor && !is_test_member(a))
+        .collect();
+    members.sort_by(|a, b| {
+        score_of(b)
+            .partial_cmp(&score_of(a))
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.cmp(b))
+    });
+    let seeds: Vec<String> = members.into_iter().take(max_seeds).cloned().collect();
+    if seeds.is_empty() {
+        return None;
+    }
     let label = crate::commands::communities::dominant_module(&group);
-    Some((seed, label, group.len()))
+    let n = group.len();
+    Some((seeds, label, n))
 }
 
 /// The real source file of an anchor, from the store document's `source_file`
@@ -1622,39 +1677,66 @@ pub fn cmd_ask(
         .collect::<Vec<_>>()
         .join(", ");
 
-    // Helper: assemble one seed's neighborhood at a given depth/budget. Cloning the
-    // filters per call keeps `edge_types`/`block_filter` available across seeds.
-    let assemble_seed = |seed: &str,
-                         seed_depth: usize,
-                         seed_budget: usize|
+    // Source-span hydration root: node `source_file` attributes are
+    // project-root-relative, so spans must be resolved against the real root
+    // even when `path` is a subdirectory of the project.
+    let hydrate_root = find_project_root(path);
+
+    // Helper: assemble one seed's neighborhood at a given depth/budget with a
+    // given block filter, optionally folding in the seed's callers (incoming
+    // Calls/Uses) — the escalation ladder's rendering and topology knobs.
+    // Hydration is always on: `ask` answers from real source bodies, not just
+    // stored summaries (the store never holds function bodies).
+    let assemble_seed_with = |seed: &str,
+                              seed_depth: usize,
+                              seed_budget: usize,
+                              filter: &[aden_asm::traverse::BlockKind],
+                              with_callers: bool|
      -> Result<String, Box<dyn std::error::Error>> {
-        let graph =
-            aden_graph::cache::build_neighborhood_cached(path, seed, seed_depth, &edge_types)?;
+        let graph = if with_callers {
+            aden_graph::cache::build_neighborhood_with_callers(
+                path,
+                seed,
+                seed_depth,
+                &edge_types,
+                &[aden_core::EdgeType::Calls, aden_core::EdgeType::Uses],
+                // Test fixtures assert, they don't explain — same policy that
+                // keeps them from winning routing, judged by BOTH the anchor
+                // and the real source path (anchors flatten `tests/` away).
+                &|a, src| !is_test_anchor(a) && !src.map(is_test_source_path).unwrap_or(false),
+            )?
+        } else {
+            aden_graph::cache::build_neighborhood_cached(path, seed, seed_depth, &edge_types)?
+        };
         let opts = AssemblyOptions {
             start_anchor: seed.to_string(),
             max_depth: seed_depth,
             token_budget: seed_budget,
             edge_types: edge_types.clone(),
-            block_filter: block_filter.clone(),
+            block_filter: filter.to_vec(),
             include_tags: Vec::new(),
             exclude_tags: Vec::new(),
             attributes: Vec::new(),
             llm_mode: true, // aden ask always targets an LLM — emit clean prose
+            hydrate_root: Some(hydrate_root.clone()),
         };
         Ok(assemble(&graph, &opts)?)
+    };
+    let assemble_seed = |seed: &str, seed_depth: usize, seed_budget: usize| {
+        assemble_seed_with(seed, seed_depth, seed_budget, &block_filter, false)
     };
 
     // Clear winner ⇒ today's behavior exactly: one seed, full budget. Ambiguous ⇒
     // primary takes the majority of the budget at full depth, and each shallow
     // alternate gets an even slice of the remainder, appended with a brief header.
     // This is paid for ONLY on near-ties, and the total stays within the budget.
-    // `primary_only_len` tracks the bytes contributed by the PRIMARY anchor
-    // alone, so the thin-stub check below can't be fooled by a fat alternate
-    // padding the combined output past the threshold.
-    let primary_only_len;
+    // `primary_text` tracks the body contributed by the PRIMARY anchor alone,
+    // so the thin-stub check below can't be fooled by a fat alternate padding
+    // the combined output past the threshold.
+    let primary_text;
     let assembled = if resolved_alts.is_empty() {
         let seed = assemble_seed(&start_anchor, depth, effective_budget)?;
-        primary_only_len = seed.len();
+        primary_text = seed.clone();
         seed
     } else {
         let primary_budget = effective_budget * 60 / 100;
@@ -1662,7 +1744,7 @@ pub fn cmd_ask(
         let per_alt = (alt_pool / resolved_alts.len()).max(1);
         let shallow_depth = depth.min(1);
         let mut combined = assemble_seed(&start_anchor, depth, primary_budget)?;
-        primary_only_len = combined.len();
+        primary_text = combined.clone();
         for alt in &resolved_alts {
             let alt_text = assemble_seed(alt, shallow_depth, per_alt)?;
             if alt_text.trim().is_empty() {
@@ -1675,19 +1757,21 @@ pub fn cmd_ask(
         combined
     };
 
-    // Thin-stub fallback: if the resolved anchor assembled almost nothing
-    // (bare module declaration, empty node), broaden to mod-project so the
-    // LLM gets a coherent overview rather than an unhelpful 10-token stub.
+    // Thin-stub handling: if the resolved anchor assembled almost nothing
+    // (bare declaration, empty node), broaden — but never by silently swapping
+    // a correctly-routed anchor for a community hub (the defect that replaced
+    // `tool_from_spec` with `AdenMcpServer::new` after routing was RIGHT).
     //
-    // EXEMPT: prose document anchors. The fallback exists to rescue
-    // near-contentless CODE stubs; a document the router chose deliberately IS
-    // the answer to the question (especially a conceptual one), and swapping it
-    // for a call-graph hub abandons that answer — the defect that hijacked
-    // "what is the philosophy of …" to `mod-project` after routing had already
-    // picked the right document. A thin doc stays routed; the note below keeps
-    // the swap-suppression honest.
+    // Prose document anchors keep their dedicated path: a document the router
+    // chose deliberately IS the answer to the question (especially a
+    // conceptual one); a thin doc broadens WITHIN its own document or stays.
+    //
+    // CODE anchors go through a floor-checked escalation ladder instead:
+    // rendering is broadened before topology, the anchor only ever changes on
+    // the final community rung, and only for a replacement that itself clears
+    // the floor — otherwise the routed anchor is kept with an explicit NOTE.
     let (assembled, start_anchor) = {
-        let est = primary_only_len.div_ceil(4);
+        let est = primary_text.len().div_ceil(4);
         if est < THIN_STUB_TOKEN_THRESHOLD && AnchorPattern::is_prose_doc(&start_anchor) {
             // Broaden WITHIN the document, never away from it: the routed file
             // IS the answer; the canonical (most cross-referenced) same-file
@@ -1724,35 +1808,146 @@ pub fn cmd_ask(
                     (assembled, start_anchor)
                 }
             }
-        } else if est < THIN_STUB_TOKEN_THRESHOLD
-            && start_anchor != "mod-project"
-            && aden_graph::cache::resolve_anchor_in_store(path, "mod-project").is_some()
+        } else if !AnchorPattern::is_prose_doc(&start_anchor)
+            && substantive_token_estimate(&primary_text) < effective_budget / 2
         {
-            // Prefer broadening to the resolved symbol's functional COMMUNITY (a
-            // focused cluster of related symbols) over the flat `mod-project` hub
-            // dump — a far more useful terminal when routing lands on a thin stub.
-            let community = community_seed_for(path, &start_anchor).and_then(|(seed, label, n)| {
-                let body = assemble_seed(&seed, depth.min(2), effective_budget).ok()?;
-                if body.trim().is_empty() {
-                    return None;
+            // F3 — escalation ladder for underfull/thin CODE anchors, driven
+            // by SUBSTANTIVE tokens (not raw bytes — bare titles and `calls:`
+            // scaffolding don't count). Two thresholds:
+            //   target (50% of budget) — the densify goal: below it the
+            //     non-anchor-changing rungs run, in order:
+            //       (a) re-render without the intent block filter;
+            //       (b) fold in the seed's callers (incoming Calls/Uses) —
+            //           outgoing-only traversal starves at leaves;
+            //       (c) deepen the traversal by 1;
+            //     keeping the best body seen, stopping early at the target.
+            //   floor (max(150, 15% of budget)) — the thin bar: only below it
+            //     may rung (d) community-broaden, seeded by the most
+            //     query-relevant member (never by degree), never for a pinned
+            //     `--from`, and only when the replacement itself clears the
+            //     floor — otherwise the routed anchor is kept, with a NOTE.
+            let target = effective_budget / 2;
+            let floor = THIN_STUB_TOKEN_THRESHOLD.max(effective_budget * 15 / 100);
+            let subst = substantive_token_estimate(&primary_text);
+            let unfiltered: Vec<aden_asm::traverse::BlockKind> = Vec::new();
+            let rungs: [(&str, usize, bool); 3] = [
+                ("unfiltered rendering", depth, false),
+                ("callers added", depth, true),
+                ("depth +1", depth + 1, true),
+            ];
+            let mut best_body = assembled;
+            let mut best_subst = subst;
+            let mut best_rung: Option<&str> = None;
+            for (label, d, with_callers) in rungs {
+                if let Ok(body) =
+                    assemble_seed_with(&start_anchor, d, effective_budget, &unfiltered, with_callers)
+                {
+                    let s = substantive_token_estimate(&body);
+                    if s > best_subst {
+                        best_body = body;
+                        best_subst = s;
+                        best_rung = Some(label);
+                    }
+                    if best_subst >= target {
+                        break;
+                    }
                 }
-                eprintln!(
-                    "NOTE: '{}' is thin (~{} tokens); broadening to community '{}' ({} symbols, hub [[{}]]).",
-                    start_anchor, est, label, n, seed
-                );
-                let header = format!("// Functional community: {} ({} symbols)\n\n", label, n);
-                Some((format!("{header}{body}"), seed))
-            });
-            match community {
-                Some(pair) => pair,
-                None => {
+            }
+            if best_subst >= floor {
+                if let Some(label) = best_rung {
                     eprintln!(
-                        "NOTE: '{}' is a thin stub (~{} tokens); broadening to 'mod-project'.",
-                        start_anchor, est
+                        "NOTE: '{}' assembled underfull (~{} substantive tokens of {} budget); escalated without changing the anchor ({}).",
+                        start_anchor, subst, effective_budget, label
                     );
-                    match assemble_seed("mod-project", depth.min(1), effective_budget) {
-                        Ok(fb) => (fb, "mod-project".to_string()),
-                        Err(_) => (assembled, start_anchor),
+                    xp.fallback = format!(
+                        "underfull (~{} substantive tokens of {} budget); escalated WITHOUT changing the anchor ({})",
+                        subst, effective_budget, label
+                    );
+                }
+                (best_body, start_anchor)
+            } else {
+                // (d) Community supplement — the routed anchor's own
+                // neighborhood is exhausted below the floor, so the remaining
+                // budget is packed with the assemblies of the community's most
+                // QUERY-RELEVANT members (never its highest-degree hub: degree
+                // ≠ relevance, and a degree pick re-created the M14
+                // hub-over-leaf bias here, swapping a correct anchor for a
+                // `mod-`adjacent giant). The routed anchor is KEPT — its body
+                // stays first and the summary anchor stays truthful; the
+                // members ride behind explicit `// community member:` markers.
+                // Every appended byte (headers and separators included) is
+                // charged against the budget before assembling each member, so
+                // the combined body stays within it.
+                let supplemented = if from_override.is_none() {
+                    community_seeds_for(path, &start_anchor, question, 3).and_then(
+                        |(seeds, label, n)| {
+                            let mut combined = best_body.clone();
+                            let mut used = combined.len().div_ceil(4);
+                            let header = format!(
+                                "\n\n---\n\n// Functional community supplement: {} ({} symbols, most query-relevant members; anchor [[{}]] kept)",
+                                label, n, start_anchor
+                            );
+                            let mut header_pending = Some(header);
+                            for seed in seeds {
+                                let marker = format!("\n\n// community member: [[{}]]\n", seed);
+                                let overhead = header_pending.as_ref().map_or(0, |h| h.len())
+                                    + marker.len();
+                                let remaining = effective_budget
+                                    .saturating_sub(used + overhead.div_ceil(4));
+                                if remaining < 64 {
+                                    break;
+                                }
+                                let Ok(body) = assemble_seed_with(
+                                    &seed,
+                                    depth.min(2),
+                                    remaining,
+                                    &unfiltered,
+                                    true,
+                                ) else {
+                                    continue;
+                                };
+                                if body.trim().is_empty() {
+                                    continue;
+                                }
+                                if let Some(h) = header_pending.take() {
+                                    combined.push_str(&h);
+                                    used += h.len().div_ceil(4);
+                                }
+                                combined.push_str(&marker);
+                                combined.push_str(&body);
+                                used += marker.len().div_ceil(4) + body.len().div_ceil(4);
+                            }
+                            if substantive_token_estimate(&combined) < floor {
+                                return None;
+                            }
+                            eprintln!(
+                                "NOTE: '{}' stayed thin through escalation (~{} substantive tokens); kept, supplemented with community '{}' ({} symbols, members by query relevance).",
+                                start_anchor, best_subst, label, n
+                            );
+                            Some(combined)
+                        },
+                    )
+                } else {
+                    None
+                };
+                match supplemented {
+                    Some(body) => {
+                        xp.fallback = format!(
+                            "thin after full escalation; kept [[{}]] and supplemented with its community's most query-relevant members",
+                            start_anchor
+                        );
+                        (body, start_anchor)
+                    }
+                    None => {
+                        eprintln!(
+                            "NOTE: '{}' assembled thin (~{} substantive tokens) and nothing cleared the floor ({}); keeping the routed anchor.",
+                            start_anchor, best_subst, floor
+                        );
+                        xp.fallback = format!(
+                            "thin; escalation exhausted — kept [[{}]] (nothing cleared floor {})",
+                            start_anchor, floor
+                        );
+                        (best_body, start_anchor)
                     }
                 }
             }
@@ -2558,6 +2753,7 @@ pub fn cmd_understand(
         exclude_tags: Vec::new(),
         attributes: Vec::new(),
         llm_mode: true,
+        hydrate_root: None,
     };
     let context = assemble(&neigh, &asm_opts)?;
 

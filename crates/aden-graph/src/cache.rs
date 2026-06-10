@@ -161,6 +161,48 @@ pub fn build_neighborhood_cached(
     depth: usize,
     edge_types: &[EdgeType],
 ) -> Result<AdenGraph<DocumentNode, AdenEdge>, crate::graph::GraphError> {
+    build_neighborhood_impl(dir, start, depth, edge_types, &[], &|_, _| true)
+}
+
+/// [`build_neighborhood_cached`] plus the seed's INCOMING `caller_types`
+/// neighbors (its callers/users) folded in as a depth-1 frontier. Outgoing-only
+/// traversal starves at high-in-degree leaves — a constructor or called-into
+/// symbol with few resolved callees yields a two-node neighborhood while all
+/// its context sits on incoming edges. The callers are attached with a
+/// REVERSED edge (`seed -> caller`) so the assembler's outgoing-only walk
+/// reaches them; the store's true edge direction is untouched — the reversal
+/// exists only in this ephemeral assembly graph. `caller_filter` lets the
+/// caller veto individual anchors (e.g. test fixtures) without this layer
+/// having to know any such policy; it receives the candidate's anchor AND its
+/// `source_file` attribute, because module-form anchors flatten the directory
+/// and can hide e.g. a `tests/` path segment.
+pub fn build_neighborhood_with_callers(
+    dir: &Path,
+    start: &str,
+    depth: usize,
+    edge_types: &[EdgeType],
+    caller_types: &[EdgeType],
+    caller_filter: &dyn Fn(&str, Option<&str>) -> bool,
+) -> Result<AdenGraph<DocumentNode, AdenEdge>, crate::graph::GraphError> {
+    build_neighborhood_impl(dir, start, depth, edge_types, caller_types, caller_filter)
+}
+
+/// Bound on folded-in callers: a popular utility can have hundreds; the first
+/// `MAX_CALLERS` in deterministic (anchor-sorted) order are enough context.
+const MAX_CALLERS: usize = 16;
+
+/// Measured out-degree above which a name-flagged hub anchor is treated as a
+/// real hub and not expanded as an intermediate node.
+const HUB_DEGREE_CAP: usize = 32;
+
+fn build_neighborhood_impl(
+    dir: &Path,
+    start: &str,
+    depth: usize,
+    edge_types: &[EdgeType],
+    caller_types: &[EdgeType],
+    caller_filter: &dyn Fn(&str, Option<&str>) -> bool,
+) -> Result<AdenGraph<DocumentNode, AdenEdge>, crate::graph::GraphError> {
     const MAX_NODES: usize = 10_000;
     let (store_path, _) = aden_paths::resolve_read_store(dir);
     let storage = Storage::open_existing(
@@ -184,11 +226,15 @@ pub fn build_neighborhood_cached(
         // have O(hundreds) edges each. When reached as an INTERMEDIATE node (d>0)
         // they explode the BFS from ~60 to ~1000+ nodes at depth 3 while adding
         // low-value index content. Allow them as the seed (d==0) but stop
-        // expanding them as intermediaries.
-        if d > 0 && is_hub_anchor(&current) {
+        // expanding them as intermediaries. The name flag is a heuristic — a
+        // symbol in a single-file crate's `lib.rs` is NOT an index node — so a
+        // name-flagged node is only blocked when its measured fan-out is
+        // actually hub-sized; the real hubs (synthesized `mod-*` nodes,
+        // file-level docs of large files) stay blocked by their degree.
+        let outgoing = storage.get_outgoing_edges(&current).unwrap_or_default();
+        if d > 0 && is_hub_anchor(&current) && outgoing.len() > HUB_DEGREE_CAP {
             continue;
         }
-        let outgoing = storage.get_outgoing_edges(&current).unwrap_or_default();
         for (nbr, et) in outgoing {
             if !edge_types.is_empty() && !edge_types.contains(&et) {
                 continue;
@@ -197,6 +243,46 @@ pub fn build_neighborhood_cached(
             if visited.insert(nbr.clone()) && visited.len() <= MAX_NODES {
                 queue.push_back((nbr, d + 1));
             }
+        }
+    }
+
+    // Fold in the seed's callers/users (incoming edges of the requested types),
+    // anchor-sorted for determinism. Module-INDEX nodes are excluded (a hub
+    // "calling" the seed is containment scaffolding, not caller context) — but
+    // only true index nodes: a real symbol that happens to live in a crate's
+    // `lib.rs` is a legitimate caller, so the broader `is_hub_anchor` test
+    // (which sweeps in every `lib.rs#symbol`) is deliberately not used here.
+    let is_index_node = |a: &str| {
+        let l = a.to_lowercase();
+        l.starts_with("mod-") || l.starts_with("module-") || !l.contains('#')
+    };
+    if !caller_types.is_empty() {
+        let mut callers: Vec<(String, EdgeType)> = storage
+            .get_incoming_edges(start)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|(src, et)| {
+                caller_types.contains(et) && !is_index_node(src) && !visited.contains(src)
+            })
+            .collect();
+        callers.sort_by(|a, b| a.0.cmp(&b.0));
+        callers.dedup_by(|a, b| a.0 == b.0);
+        let mut kept = 0usize;
+        for (src, et) in callers {
+            if kept >= MAX_CALLERS {
+                break;
+            }
+            let source_file = storage
+                .get_document(&src)
+                .ok()
+                .flatten()
+                .and_then(|d| d.attributes.get("source_file").cloned());
+            if !caller_filter(&src, source_file.as_deref()) {
+                continue;
+            }
+            edges.push((start.to_string(), src.clone(), et));
+            visited.insert(src);
+            kept += 1;
         }
     }
 

@@ -58,6 +58,7 @@ mod tests {
             exclude_tags: vec![],
             attributes: vec![],
             llm_mode: false,
+            hydrate_root: None,
         };
         assert_eq!(opts.start_anchor, "start");
         assert_eq!(opts.max_depth, 3);
