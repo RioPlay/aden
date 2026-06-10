@@ -22,8 +22,10 @@ struct EmittedSymbol {
     /// as `Uses` edges so a type that is used but never *called* is not a false
     /// dead-code candidate.
     uses: Vec<String>,
-    /// `<<target>>` cross-references found in the document body (docs link to
-    /// other docs / code via these).
+    /// Prose cross-references (`ref:<fragment>` entries from the parser-filled
+    /// `doc_refs` attribute — AsciiDoc `<<target>>`/`xref:`, markdown
+    /// `[text](#frag)`). Linked as bidirectional `RelatesTo` edges against doc
+    /// anchor fragments only.
     refs: Vec<String>,
     /// `edge::implements[Trait::method]` references (trait impls) — linked as
     /// `Implements` edges so blast radius reaches implementors (Wave 1).
@@ -182,62 +184,23 @@ fn extract_edge_macro(doc: &aden_core::Document, kind: &str) -> Vec<String> {
     out
 }
 
-/// Append `<<target>>` cross-reference targets found in `text` to `out`.
-fn collect_xrefs(text: &str, out: &mut Vec<String>) {
-    // <<target>> and <<target,text>> shorthand cross-references.
-    {
-        let mut rest = text;
-        while let Some(s) = rest.find("<<") {
-            let after = &rest[s + 2..];
-            let Some(e) = after.find(">>") else { break };
-            let inner = &after[..e];
-            let target = inner.split(',').next().unwrap_or(inner).trim();
-            // A file-qualified ref (`<<sources.adoc#anchor>>`) carries a `file#`
-            // prefix; reduce it to the trailing fragment so it matches the
-            // fragment-keyed name index. A bare ref (`<<deep-dive>>`) is kept
-            // verbatim. The full-path form would never resolve otherwise.
-            let target = match target.rsplit_once('#') {
-                Some((_, frag)) => frag.trim(),
-                None => target,
-            };
-            if !target.is_empty() && !target.contains('{') {
-                out.push(target.to_string());
-            }
-            rest = &after[e + 2..];
-        }
-    }
-    // xref:path#anchor[text] and xref:path[text] — extract the anchor fragment.
-    // File-level refs (no `#`) are skipped; only named fragment targets become edges.
-    {
-        let mut rest = text;
-        while let Some(s) = rest.find("xref:") {
-            rest = &rest[s + 5..];
-            let Some(bracket) = rest.find('[') else { break };
-            let target_part = &rest[..bracket];
-            if let Some(hash_pos) = target_part.rfind('#') {
-                let fragment = target_part[hash_pos + 1..].trim();
-                if !fragment.is_empty() && !fragment.contains('{') && !fragment.contains(' ') && fragment.len() < 80 {
-                    out.push(fragment.to_string());
-                }
-            }
-            rest = &rest[bracket + 1..];
-        }
-    }
-}
-
-/// Cross-references a document makes via `<<target>>` and `xref:path#anchor[text]`
-/// macros in its prose. These become graph edges so documentation is connected to
-/// what it references (docs were previously hollow, unlinked islands).
+/// Prose cross-references a doc node makes, read from the `doc_refs` attribute
+/// the format parsers fill (`ref:<fragment>` entries — AsciiDoc `<<target>>`/
+/// `xref:file#frag` and markdown `[text](#frag)` forms). Extraction is
+/// per-format and lives in the parser, which knows listing-fence and backtick
+/// state (a `<<x>>` inside a code example is not a reference); resolution in
+/// [`link_store_edges`] is format-neutral. A previous version scanned the
+/// document BLOCKS here with no fence/backtick awareness, which also picked up
+/// `a << b >> c` shift expressions from embedded code listings.
 fn extract_doc_refs(doc: &aden_core::Document) -> Vec<String> {
-    use aden_core::Block;
-    let mut refs = Vec::new();
-    for block in &doc.blocks {
-        match block {
-            Block::Paragraph(t) => collect_xrefs(t, &mut refs),
-            Block::Listing { code, .. } => collect_xrefs(code, &mut refs),
-            _ => {}
-        }
-    }
+    let Some(joined) = doc.attributes.get("doc_refs") else {
+        return Vec::new();
+    };
+    let mut refs: Vec<String> = joined
+        .split(',')
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect();
     refs.sort();
     refs.dedup();
     refs
@@ -403,6 +366,58 @@ fn resolve_implements<'a>(
 /// caller's own file. Returns `None` for non-module anchors (docs, etc.).
 fn anchor_file(anchor: &str) -> Option<&str> {
     anchor.strip_prefix("aden://module/")?.split('#').next()
+}
+
+/// The file portion of a DOC anchor, for both stored shapes:
+/// `aden://doc/<proj>/<file>#<frag>` (inline `[[frag]]` declarations) and
+/// `aden://doc/<proj>/<file>/<frag>` (heading `h<level><slug>` / sectanchors
+/// `_slug` forms) → `<proj>/<file>`. Returns `None` for non-doc anchors.
+fn doc_anchor_file(anchor: &str) -> Option<&str> {
+    let rest = anchor.strip_prefix("aden://doc/")?;
+    if let Some(h) = rest.find('#') {
+        return Some(&rest[..h]);
+    }
+    rest.rfind('/').map(|s| &rest[..s])
+}
+
+/// Resolve a prose cross-reference fragment (`ref:<frag>`, prefix already
+/// stripped) to a doc anchor — format-neutrally, by EXACT match against the
+/// fragment indexes built from doc anchors. Never consults the code-symbol
+/// index: `resolve_callee`'s bare-name fallbacks could attach a doc ref to a
+/// same-named code symbol, forging a doc→code edge out of prose.
+///
+/// Two tiers, never mixed (ADR: `<<anchor>>` is a GLOBAL reference to the
+/// file that DECLARES `[[anchor]]`):
+/// 1. exact anchor ids (`frags`) — inline `[[frag]]` declarations plus the
+///    literal heading/sectanchors fragments (`h2slug`, `_slug`);
+/// 2. derived bare heading slugs (`slugs`) — consulted only when no exact id
+///    exists, so markdown `[text](#my-heading)` still resolves but a derived
+///    slug can never shadow an explicit declaration.
+///
+/// Anchors are globally unique by contract, so a fragment declared in TWO
+/// docs is the author's lint problem, not a crash: prefer a declaration in
+/// the referrer's own file, else pick deterministically (candidate lists are
+/// sorted; the first wins — same spirit as `pick_local`, but a collision
+/// still yields an edge rather than dropping the reference).
+fn resolve_doc_ref<'a>(
+    frag: &str,
+    referrer: &str,
+    frags: &HashMap<&str, Vec<&'a str>>,
+    slugs: &HashMap<&str, Vec<&'a str>>,
+) -> Option<&'a str> {
+    let cands = frags.get(frag).or_else(|| slugs.get(frag))?;
+    match cands.as_slice() {
+        [] => None,
+        [one] => Some(one),
+        many => {
+            if let Some(rf) = doc_anchor_file(referrer) {
+                if let Some(same) = many.iter().find(|a| doc_anchor_file(a) == Some(rf)) {
+                    return Some(same);
+                }
+            }
+            Some(many[0])
+        }
+    }
 }
 
 /// If `callee` is a call through the current instance (`self.x`, `this.x`,
@@ -579,9 +594,9 @@ fn link_store_edges<S: GraphStorage>(
             // Doc section anchors carry no `#` — they end in `/<fragment>`
             // (e.g. `…/guide.adoc/_configuration` or `…/guide.adoc/h2configuration`).
             // Index by that trailing fragment so an `xref:file.adoc#_configuration`
-            // (whose fragment is captured by `collect_xrefs`) resolves to the
-            // section node. Asciidoctor `:sectanchors:` aliases (`_slug`) and aden's
-            // own `h<level>slug` form both become resolvable targets this way.
+            // resolves to the section node. Asciidoctor `:sectanchors:` aliases
+            // (`_slug`) and aden's own `h<level>slug` form both become resolvable
+            // targets this way.
             if let Some(slash) = anchor.rfind('/') {
                 let fragment = &anchor[slash + 1..];
                 if !fragment.is_empty() {
@@ -589,6 +604,55 @@ fn link_store_edges<S: GraphStorage>(
                 }
             }
         }
+    }
+
+    // Prose cross-reference indexes: doc anchor FRAGMENT -> declaring doc
+    // anchors. Strictly doc-side (never code symbols) so `ref:` records cannot
+    // leak into the code-symbol fuzzy path. Two tiers (see `resolve_doc_ref`):
+    // - `doc_frag_index` (exact anchor ids): the part after `#` for inline
+    //   `[[frag]]` declarations (`aden://doc/<proj>/<file>#<frag>`) and the
+    //   part after the last `/` for heading/sectanchors forms
+    //   (`…/<file>/h2slug`, `…/<file>/_slug`);
+    // - `doc_slug_index` (derived): a heading fragment `h<level><slug>` is
+    //   additionally indexed by its bare slug so markdown `[text](#my-heading)`
+    //   and AsciiDoc `<<my-heading>>` heading refs resolve — but only as a
+    //   FALLBACK, so a derived slug never shadows an explicit `[[anchor]]`
+    //   declaration (the ADR's global-anchor contract).
+    // Candidate lists are sorted for deterministic collision picks.
+    let mut doc_frag_index: HashMap<&str, Vec<&str>> = HashMap::new();
+    let mut doc_slug_index: HashMap<&str, Vec<&str>> = HashMap::new();
+    for anchor in &anchors {
+        let Some(rest) = anchor.strip_prefix("aden://doc/") else {
+            continue;
+        };
+        let fragment = match rest.find('#') {
+            Some(h) => &rest[h + 1..],
+            None => match rest.rfind('/') {
+                Some(s) => &rest[s + 1..],
+                None => continue,
+            },
+        };
+        // Skip the symbol-linked doc form whose "fragment" embeds a full code
+        // anchor (`aden://doc/<file>#aden://module/...`): not a prose target.
+        if fragment.is_empty() || fragment.contains("://") {
+            continue;
+        }
+        doc_frag_index
+            .entry(fragment)
+            .or_default()
+            .push(anchor.as_str());
+        if !rest.contains('#')
+            && let Some(numbered) = fragment.strip_prefix('h')
+        {
+            let slug = numbered.trim_start_matches(|c: char| c.is_ascii_digit());
+            if slug.len() < numbered.len() && !slug.is_empty() {
+                doc_slug_index.entry(slug).or_default().push(anchor.as_str());
+            }
+        }
+    }
+    for cands in doc_frag_index.values_mut().chain(doc_slug_index.values_mut()) {
+        cands.sort_unstable();
+        cands.dedup();
     }
 
     let mut edges: Vec<(String, String, EdgeType)> = Vec::new();
@@ -672,11 +736,20 @@ fn link_store_edges<S: GraphStorage>(
         }
     }
 
-    // Cross-reference edges from document `<<target>>` macros. Bidirectional so
-    // backlinks work (a doc and what it references are mutually reachable).
+    // Prose cross-reference edges (`ref:<fragment>` records from the parsers'
+    // `<<target>>` / `xref:` / `[text](#frag)` extraction). Resolved ONLY via
+    // the doc-fragment index — `resolve_callee` is off-limits here because its
+    // bare-name fallbacks would attach a prose ref to a same-named code
+    // symbol. Bidirectional so backlinks work (a doc and what it references
+    // are mutually reachable).
     for (anchor, refs) in ref_records {
         for r in refs {
-            if let Some(target) = resolve_callee(r, anchor, &name_index)
+            let Some(frag) = r.strip_prefix("ref:") else {
+                // Unprefixed records no longer exist (the parsers own
+                // extraction and always emit `ref:`); skip rather than guess.
+                continue;
+            };
+            if let Some(target) = resolve_doc_ref(frag, anchor, &doc_frag_index, &doc_slug_index)
                 && target != anchor.as_str()
             {
                 edges.push((anchor.clone(), target.to_string(), EdgeType::RelatesTo));
@@ -1401,36 +1474,6 @@ mod link_tests {
     }
 
     #[test]
-    fn collect_xrefs_handles_shorthand_and_macro_forms() {
-        let mut out = Vec::new();
-        collect_xrefs(
-            "Bare <<deep-dive>> and file-qualified <<sources.adoc#kit-pricing,Kit>> \
-             plus xref:guide.adoc#_configuration[config] and xref:index.adoc[nav only].",
-            &mut out,
-        );
-        // Bare shorthand kept verbatim.
-        assert!(out.contains(&"deep-dive".to_string()), "bare <<>>; got {:?}", out);
-        // File-qualified shorthand reduced to its fragment so it can resolve.
-        assert!(
-            out.contains(&"kit-pricing".to_string()),
-            "file-qualified <<file#frag>> must reduce to fragment; got {:?}",
-            out
-        );
-        // xref macro reduced to its anchor fragment.
-        assert!(
-            out.contains(&"_configuration".to_string()),
-            "xref:file#frag[text]; got {:?}",
-            out
-        );
-        // File-level xref with no fragment produces no edge.
-        assert!(
-            !out.iter().any(|s| s.contains("index")),
-            "file-level xref (no #fragment) must be skipped; got {:?}",
-            out
-        );
-    }
-
-    #[test]
     fn resolve_unique_callee_links() {
         let mut idx: HashMap<&str, Vec<&str>> = HashMap::new();
         idx.insert("foo", vec!["aden://module/c/a.rs#foo"]);
@@ -1790,6 +1833,211 @@ mod link_tests {
         assert!(
             out.contains(&(ty.to_string(), EdgeType::Mutates)),
             "&mut self method —Mutates→ parent type; got {out:?}"
+        );
+    }
+
+    /// Prose `ref:` records resolve format-neutrally against DOC anchor
+    /// fragments only — bidirectional `RelatesTo` — and must NEVER attach to a
+    /// same-named code symbol (the fuzzy code path is off-limits to prose).
+    #[test]
+    fn prose_ref_records_link_doc_anchors_only() {
+        use aden_core::{Block, Document, EdgeType, NodeType};
+        let dir = tempfile::tempdir().unwrap();
+        let storage = Storage::new(dir.path().to_str().unwrap()).unwrap();
+        let mk = |anchor: &str| Document {
+            anchor: anchor.into(),
+            node_type: NodeType::Module,
+            attributes: Default::default(),
+            blocks: vec![Block::Paragraph("body".into())],
+            source_span: None,
+            metadata: None,
+            confidence: 1.0,
+        };
+        // A glossary term (inline-anchor doc form), a SAME-NAMED code symbol,
+        // a heading-form doc node, and the referencing post section.
+        let term = "aden://doc/p/glossary.adoc#term";
+        let code_term = "aden://module/c/lib.rs#term";
+        let heading = "aden://doc/p/guide.md/h2setup-guide";
+        let post = "aden://doc/p/post.adoc/h2intro";
+        let code_only = "aden://module/c/lib.rs#onlycode";
+        for a in [term, code_term, heading, post, code_only] {
+            storage.put_document(&mk(a)).unwrap();
+        }
+        storage.flush().unwrap();
+
+        let ref_records = vec![(
+            post.to_string(),
+            vec![
+                "ref:term".to_string(),
+                "ref:setup-guide".to_string(),
+                "ref:onlycode".to_string(),
+                "ref:missing_anchor".to_string(),
+            ],
+        )];
+        link_store_edges(
+            &storage,
+            &[],
+            &[],
+            &ref_records,
+            &[],
+            &[],
+            &std::collections::HashSet::new(),
+        )
+        .unwrap();
+
+        let out = storage.get_outgoing_edges(post).unwrap();
+        assert!(
+            out.contains(&(term.to_string(), EdgeType::RelatesTo)),
+            "post must RelatesTo the glossary term doc node; got {out:?}"
+        );
+        assert!(
+            out.contains(&(heading.to_string(), EdgeType::RelatesTo)),
+            "a heading slug ref (#setup-guide) must resolve to the h2 doc node; got {out:?}"
+        );
+        assert!(
+            !out.iter().any(|(t, _)| t == code_term || t == code_only),
+            "a prose ref must NEVER link to a code symbol; got {out:?}"
+        );
+        // Bidirectional: backlink edge from the term to the post.
+        let back = storage.get_outgoing_edges(term).unwrap();
+        assert!(
+            back.contains(&(post.to_string(), EdgeType::RelatesTo)),
+            "RelatesTo must be emitted both ways; got {back:?}"
+        );
+    }
+
+    /// Anchor collisions (same fragment declared in two docs) prefer the
+    /// referrer's own file, else pick deterministically — never drop or crash.
+    #[test]
+    fn prose_ref_collision_prefers_same_file_then_deterministic() {
+        use aden_core::{Block, Document, EdgeType, NodeType};
+        let dir = tempfile::tempdir().unwrap();
+        let storage = Storage::new(dir.path().to_str().unwrap()).unwrap();
+        let mk = |anchor: &str| Document {
+            anchor: anchor.into(),
+            node_type: NodeType::Module,
+            attributes: Default::default(),
+            blocks: vec![Block::Paragraph("body".into())],
+            source_span: None,
+            metadata: None,
+            confidence: 1.0,
+        };
+        let in_a = "aden://doc/p/a.adoc#dup";
+        let in_b = "aden://doc/p/b.adoc#dup";
+        let ref_a = "aden://doc/p/a.adoc/h2intro"; // same file as in_a
+        let ref_c = "aden://doc/p/c.adoc/h2intro"; // unrelated file
+        for a in [in_a, in_b, ref_a, ref_c] {
+            storage.put_document(&mk(a)).unwrap();
+        }
+        storage.flush().unwrap();
+
+        let ref_records = vec![
+            (ref_a.to_string(), vec!["ref:dup".to_string()]),
+            (ref_c.to_string(), vec!["ref:dup".to_string()]),
+        ];
+        link_store_edges(
+            &storage,
+            &[],
+            &[],
+            &ref_records,
+            &[],
+            &[],
+            &std::collections::HashSet::new(),
+        )
+        .unwrap();
+
+        let out_a = storage.get_outgoing_edges(ref_a).unwrap();
+        assert!(
+            out_a.contains(&(in_a.to_string(), EdgeType::RelatesTo)),
+            "same-file declaration must win the collision; got {out_a:?}"
+        );
+        assert!(
+            !out_a.iter().any(|(t, _)| t == in_b),
+            "must not also link the foreign duplicate; got {out_a:?}"
+        );
+        // No locality signal: deterministic pick (first in sorted anchor order).
+        let out_c = storage.get_outgoing_edges(ref_c).unwrap();
+        assert!(
+            out_c.contains(&(in_a.to_string(), EdgeType::RelatesTo)),
+            "collision without locality resolves deterministically (sorted first); got {out_c:?}"
+        );
+    }
+
+    /// ADR contract: `<<anchor>>` resolves to the file that DECLARES
+    /// `[[anchor]]`. An explicit declaration must beat a same-named heading
+    /// SLUG (derived, tier-2) everywhere — even when the heading sorts first.
+    #[test]
+    fn explicit_anchor_declaration_beats_heading_slug() {
+        use aden_core::{Block, Document, EdgeType, NodeType};
+        let dir = tempfile::tempdir().unwrap();
+        let storage = Storage::new(dir.path().to_str().unwrap()).unwrap();
+        let mk = |anchor: &str| Document {
+            anchor: anchor.into(),
+            node_type: NodeType::Module,
+            attributes: Default::default(),
+            blocks: vec![Block::Paragraph("body".into())],
+            source_span: None,
+            metadata: None,
+            confidence: 1.0,
+        };
+        // The derived heading slug sorts BEFORE the explicit declaration, and
+        // a same-file heading exists too — neither may shadow the declaration.
+        let declared = "aden://doc/p/user-guide.adoc#faq";
+        let heading_sorts_first = "aden://doc/p/aaa.adoc/h2faq";
+        let referrer = "aden://doc/p/aaa.adoc/h2intro"; // same file as the heading!
+        for a in [declared, heading_sorts_first, referrer] {
+            storage.put_document(&mk(a)).unwrap();
+        }
+        storage.flush().unwrap();
+
+        let ref_records = vec![(referrer.to_string(), vec!["ref:faq".to_string()])];
+        link_store_edges(
+            &storage,
+            &[],
+            &[],
+            &ref_records,
+            &[],
+            &[],
+            &std::collections::HashSet::new(),
+        )
+        .unwrap();
+
+        let out = storage.get_outgoing_edges(referrer).unwrap();
+        assert!(
+            out.contains(&(declared.to_string(), EdgeType::RelatesTo)),
+            "<<faq>> must resolve to the [[faq]] declaration, not a heading slug; got {out:?}"
+        );
+        assert!(
+            !out.iter().any(|(t, _)| t == heading_sorts_first),
+            "the derived heading slug must not shadow the explicit declaration; got {out:?}"
+        );
+    }
+
+    /// extract_doc_refs reads the parser-filled `doc_refs` attribute (the
+    /// per-format extraction channel) — not the document blocks.
+    #[test]
+    fn extract_doc_refs_reads_doc_refs_attribute() {
+        use aden_core::{Block, Document, NodeType};
+        let mut attrs = std::collections::HashMap::new();
+        attrs.insert(
+            "doc_refs".to_string(),
+            "ref:_term_b,ref:_term_a,ref:_term_b".to_string(),
+        );
+        let doc = Document {
+            anchor: "aden://doc/p/x.adoc/h2s".into(),
+            node_type: NodeType::Module,
+            attributes: attrs,
+            // Blocks containing `<<not_extracted>>` must be ignored: extraction
+            // happens in the parser (fence/backtick-aware), not here.
+            blocks: vec![Block::Paragraph("prose <<not_extracted>>".into())],
+            source_span: None,
+            metadata: None,
+            confidence: 1.0,
+        };
+        assert_eq!(
+            extract_doc_refs(&doc),
+            vec!["ref:_term_a".to_string(), "ref:_term_b".to_string()],
+            "sorted, deduped, attribute-sourced"
         );
     }
 

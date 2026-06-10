@@ -1,0 +1,131 @@
+:proj: aden
+:author: RioPlay
+:status: accepted
+:toc: left
+:toclevels: 3
+
+[[adr-006]]
+= ADR-006: Prose as a First-Class Graph Citizen — Global `<<anchor>>` References
+
+== Context
+
+Aden's thesis is that *code and prose are co-equal, typed, traversable citizens of
+one graph*. ADR-001 already chose AsciiDoc for its native `[[anchor]]` / `<<reference>>`
+syntax, but the graph never honored cross-document prose references as edges:
+
+. *Extraction was code-biased.* A document's `refs` were filled only from embedded code
+  *listings* (`extract_code_references` — `fn:`/`struct:`-prefixed names). Prose
+  `<<target>>` and `xref:file#frag[]` cross-references between narrative documents
+  produced *no* edges. A glossary term referenced from a blog post, an architecture
+  section pointing at a philosophy section — all hollow, unlinked islands. The symptom
+  surfaced on a real docs-only repo: glossary terms appeared connected to each other
+  (structural `Contains`/`PartOf`) while *posts referencing those terms* had zero edges
+  to them.
+
+. *`check` was blind to real-world anchor and reference forms.* `collect_anchors`
+  matched `[[x]]` only when it was the whole trimmed line, so the common inline
+  description-list form `[[_term]]Term::` was invisible — yielding *false* "unresolved
+  `<<ref>>`" errors (58 of them on one blog) for references whose targets plainly
+  existed. And the unresolved-ref scan ran line-by-line with no listing-fence or
+  backtick state, so `<<x>>` shown *as an example inside a `----` code block* (or a
+  `a << b >> c` shift expression in an embedded listing) was flagged as a broken
+  reference.
+
+The forces:
+
+. Prose must graph exactly the way code does — references, backlinks, blast radius,
+  communities all apply to documents. This is identity, not a feature (cf. ADR-001).
+. The system is *polyglot at every level* — nothing may be AsciiDoc-specific or
+  repo-specific at the design level. Markdown docs must participate the same way.
+. Anchors are intended to be *globally unique*; the graph — not a per-file table — is
+  the router. A cross-document `<<_term>>` must resolve to whichever file declares
+  `[[_term]]`.
+. Determinism and offline operation are preserved; resolution must never forge a
+  prose→code edge by colliding with a same-named code symbol.
+
+== Decision
+
+=== 1. `<<anchor>>` is a global reference; the graph is the router
+
+In aden-managed docs an `<<anchor>>` (and `xref:file#frag[]`) is a *global* reference to
+a globally-unique anchor, resolved through the graph, regardless of which document
+declares it. Cross-document prose references are first-class graph edges.
+
+=== 2. Prose cross-references become bidirectional `RelatesTo` edges
+
+When a doc node references another anchor in its *prose*, the linker emits `RelatesTo`
+in *both* directions, so the referencing and referenced nodes are mutually reachable
+(`query --backlinks` on a glossary term reaches every post that cites it).
+
+=== 3. Extraction is per-format; resolution is format-neutral
+
+The split that keeps the design polyglot:
+
+* *Extraction* lives in each format parser, which alone knows its listing-fence and
+  backtick state. Each parser fills a `doc_refs` document attribute with `ref:<fragment>`
+  entries:
+  ** AsciiDoc (`aden-parse::asciidoc`): `<<target>>`, `<<target,label>>`,
+     `xref:file.adoc#fragment[...]`.
+  ** Markdown (`aden-parse::markdown`): `[text](#fragment)` heading-slug links.
+  ** A `<<x>>` / `[x](#y)` inside a code listing or backticks is *not* a reference.
+* *Resolution* lives in `link_store_edges` (`aden-cli::generate`) and is format-neutral:
+  a `ref:` record is matched by *exact fragment* against the fragment indexes built from
+  doc anchors only. It *never* consults the code-symbol index — `resolve_callee`'s
+  bare-name fallbacks could otherwise attach a doc reference to a same-named code symbol,
+  forging a doc→code edge out of prose. Fragment collisions across docs resolve
+  deterministically (same-file first, then a stable tiebreak); a genuine collision is a
+  doc-authoring lint, not a crash.
+
+=== 4. `check` understands inline anchors and skips literal blocks
+
+* `collect_anchors` collects *all* `[[...]]` declarations per line (inline
+  `[[_term]]Term::` included), backtick-aware, skipping `----`/`....` delimited blocks.
+* The unresolved-`<<ref>>` scan uses a fence-aware `collect_refs(text)` over the whole
+  document instead of a per-line `find_refs` loop, so reference *examples* inside code
+  listings no longer read as broken references.
+
+=== 5. Cache invalidation
+
+`GEN_LOGIC_VERSION` 2 → 3. Prose refs are only emitted from files (re)processed in a
+run; without the bump, mtime-skipped docs would never gain their new edges. The version
+mismatch invalidates stale gen caches so existing projects pick up prose edges on the
+first `gen` after upgrade.
+
+== Consequences
+
+Positive:
+
+. Documentation is connected: posts → glossary, sections → sections, docs → ADRs are
+  traversable; `query --backlinks`/`--impact` and communities work over prose.
+. `check` stops emitting false unresolved-reference errors for inline anchors and for
+  reference examples inside code blocks (verified: 58 → 0 on a real blog).
+. The explanatory-density signal (incoming `Documents`/`RelatesTo` on a doc node) becomes
+  real — a prerequisite for prose-aware `ask` routing (see the routing roadmap).
+. Polyglot by construction: adding a format means adding one extractor; resolution is
+  untouched.
+
+Negative / costs (with mitigations):
+
+. One-time full re-gen on upgrade (the `GEN_LOGIC_VERSION` bump) — expected and cheap
+  via the incremental cache thereafter.
+. Fragment-collision ambiguity if two docs declare the same anchor — resolved
+  deterministically and surfaced as an authoring concern, consistent with the
+  "anchors are globally unique" intent.
+
+== Status
+
+Accepted and implemented. Per-format prose extraction fills `doc_refs` (`ref:` prefix);
+`link_store_edges` resolves fragments format-neutrally into bidirectional `RelatesTo`
+edges; `aden-emit::check` gains `collect_refs` and inline-anchor `collect_anchors`;
+`GEN_LOGIC_VERSION` is 3. Covered by `crates/aden-cli/tests/prose_xref_edges.rs` (hermetic,
+offline) and verified end-to-end on a docs-only repo (unresolved `<<ref>>` 58 → 0).
+
+This ADR formalizes, retroactively, a capability whose implementation landed in the same
+changeset; the cross-document reference design it records was previously tracked only in
+research notes.
+
+== Related Documents
+
+. <<adr-001>> — AsciiDoc substrate (`[[anchor]]`/`<<reference>>` syntax) and Rust
+. <<adr-007>> — The typed-edge model (`RelatesTo` and the edge-type activation policy)
+. <<architecture>> — Pipeline and graph-build stages

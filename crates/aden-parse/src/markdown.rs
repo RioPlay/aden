@@ -46,6 +46,10 @@ impl crate::extractor::LanguageExtractor for MarkdownExtractor {
         let mut headings = Vec::new();
         let mut code_blocks = Vec::new();
         let mut links = Vec::new();
+        // Fragment-bearing link targets, as (0-based line index, "ref:<frag>")
+        // pairs — the markdown side of the prose cross-reference channel (the
+        // AsciiDoc parser emits the same `ref:` form for `<<target>>`).
+        let mut line_refs: Vec<(usize, String)> = Vec::new();
         let mut in_code_block = false;
         let mut current_code_lang = String::new();
         let mut current_code_lines = Vec::new();
@@ -68,6 +72,10 @@ impl crate::extractor::LanguageExtractor for MarkdownExtractor {
 
             if !in_code_block && let Some(link) = extract_markdown_link(line) {
                 links.push(link);
+            }
+
+            if !in_code_block {
+                collect_fragment_refs(line, line_num - 1, &mut line_refs);
             }
 
             if in_code_block {
@@ -145,6 +153,21 @@ impl crate::extractor::LanguageExtractor for MarkdownExtractor {
                     attrs.insert("links".to_string(), links.join(";"));
                 }
 
+                // Attribute fragment refs to this section (heading line + body).
+                // The FIRST node also adopts any pre-heading prose refs so they
+                // still become graph edges.
+                let ref_start = if hi == 0 { 0 } else { line_num - 1 };
+                let mut section_refs: Vec<String> = line_refs
+                    .iter()
+                    .filter(|(idx, _)| *idx >= ref_start && *idx < body_end)
+                    .map(|(_, r)| r.clone())
+                    .collect();
+                section_refs.sort();
+                section_refs.dedup();
+                if !section_refs.is_empty() {
+                    attrs.insert("doc_refs".to_string(), section_refs.join(","));
+                }
+
                 let mut blocks = vec![Block::Paragraph(title.clone())];
                 if !body_text.is_empty() {
                     blocks.push(Block::Paragraph(body_text));
@@ -162,7 +185,14 @@ impl crate::extractor::LanguageExtractor for MarkdownExtractor {
             }
         } else {
             let anchor = make_anchor(&crate_name, &file_name, "document");
-            let attrs = build_code_attributes(source, "document", Some(path), None);
+            let mut attrs = build_code_attributes(source, "document", Some(path), None);
+            // No headings: the whole file is one node — it owns every ref.
+            let mut all_refs: Vec<String> = line_refs.iter().map(|(_, r)| r.clone()).collect();
+            all_refs.sort();
+            all_refs.dedup();
+            if !all_refs.is_empty() {
+                attrs.insert("doc_refs".to_string(), all_refs.join(","));
+            }
             docs.push(Document {
                 anchor,
                 node_type: NodeType::Module,
@@ -379,6 +409,52 @@ fn extract_code_references(code: &str, lang: &str) -> Vec<String> {
 }
 
 
+/// Extract fragment-bearing markdown link targets from one line into `out` as
+/// `(line_idx, "ref:<frag>")` pairs — markdown's explicit cross-reference
+/// idiom, mirroring the AsciiDoc parser's `<<target>>` extraction.
+///
+/// Recognized: `[text](#frag)` (intra-doc heading link) and
+/// `[text](path/file.md#frag)` (cross-file) — both reduce to `frag`, which the
+/// gen-time linker exact-matches against doc anchor fragments/heading slugs.
+/// Deliberately excluded: bare file links (`[text](file.md)`) carry no anchor
+/// fragment to match, so they stay out of the ref channel (they keep their
+/// existing `<<stem>>` body-text rendering for display only). Inline code
+/// spans (backticks) are treated as literal examples.
+fn collect_fragment_refs(line: &str, line_idx: usize, out: &mut Vec<(usize, String)>) {
+    let bytes = line.as_bytes();
+    let mut i = 0;
+    let mut in_backticks = false;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if c == b'`' {
+            in_backticks = !in_backticks;
+            i += 1;
+            continue;
+        }
+        if in_backticks {
+            i += 1;
+            continue;
+        }
+        // `](url)` — the url part of an inline link.
+        if c == b']'
+            && i + 1 < bytes.len()
+            && bytes[i + 1] == b'('
+            && let Some(close) = line[i + 2..].find(')')
+        {
+            let url = &line[i + 2..i + 2 + close];
+            if let Some((_, frag)) = url.rsplit_once('#') {
+                let frag = frag.trim();
+                if !frag.is_empty() && !frag.contains(' ') && frag.len() < 80 {
+                    out.push((line_idx, format!("ref:{frag}")));
+                }
+            }
+            i += 2 + close + 1;
+            continue;
+        }
+        i += 1;
+    }
+}
+
 /// Normalize a markdown link target down to a bare anchor name suitable for an
 /// AsciiDoc-style `<<target>>` cross-reference.
 ///
@@ -413,6 +489,61 @@ fn normalize_link_target(url: &str) -> String {
         .unwrap_or(last)
         .trim()
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::extractor::LanguageExtractor;
+    use std::path::Path;
+
+    /// Fragment-bearing markdown links (`[t](#frag)`, `[t](file.md#frag)`)
+    /// become `ref:`-prefixed entries in the enclosing section's `doc_refs`
+    /// attribute. Bare file links carry no anchor fragment and are excluded
+    /// from the ref channel; links inside fenced code blocks are ignored.
+    #[test]
+    fn fragment_links_attributed_to_enclosing_section() {
+        let ext = MarkdownExtractor::new();
+        let src = "\
+# Title
+
+Intro with a [local link](#setup-guide) and an [external one](other.md#install-steps),
+plus a [bare file link](other.md).
+
+```text
+a fenced [example](#not-a-ref) link
+```
+
+## Setup Guide
+
+Body with no links.
+";
+        let docs = ext
+            .extract_documents(src, Path::new("readme.md"))
+            .expect("extraction must succeed");
+
+        let title = docs
+            .iter()
+            .find(|d| d.anchor.contains("h1title"))
+            .expect("title node");
+        let refs = title.attributes.get("doc_refs").cloned().unwrap_or_default();
+        let refs: Vec<&str> = refs.split(',').collect();
+        assert!(refs.contains(&"ref:setup-guide"), "got {refs:?}");
+        assert!(refs.contains(&"ref:install-steps"), "got {refs:?}");
+        assert!(
+            !refs.iter().any(|r| r.contains("not-a-ref") || r.contains("other")),
+            "fenced/bare-file links must not enter the ref channel; got {refs:?}"
+        );
+
+        let section = docs
+            .iter()
+            .find(|d| d.anchor.contains("h2setup-guide"))
+            .expect("section node");
+        assert!(
+            section.attributes.get("doc_refs").is_none(),
+            "section has no links of its own"
+        );
+    }
 }
 
 fn extract_markdown_link(line: &str) -> Option<String> {

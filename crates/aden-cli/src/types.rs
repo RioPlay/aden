@@ -14,7 +14,11 @@ use std::path::PathBuf;
 /// 2: Wave 1 graph types — `Tests`/`Implements`/`Mutates` emission
 ///    (graph-type-roadmap). Caches written before this field existed
 ///    deserialize as version 0 and are invalidated.
-pub const GEN_LOGIC_VERSION: u32 = 2;
+/// 3: Prose cross-reference channel — parsers extract `<<target>>`/`xref:`/
+///    `[text](#frag)` into the `doc_refs` attribute (`ref:` prefix) and the
+///    linker resolves them against doc anchor fragments only. Without the
+///    bump, mtime-skipped docs would never re-emit their refs.
+pub const GEN_LOGIC_VERSION: u32 = 3;
 
 /// Incremental generation cache: maps contract file path → metadata.
 #[derive(Default, Serialize, Deserialize)]

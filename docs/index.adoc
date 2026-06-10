@@ -56,6 +56,8 @@ This is the canonical entry point for all Aden documentation. Read the document 
 |<<adr-003>> |Store location and project identity (centralized per-user store; fixes subfolder pollution)
 |<<adr-004>> |AGENTS.md guidance: append-only aden usage block
 |<<adr-005>> |Project-tree footprint and opt-in tracking of `.aden/` (pristine by default; supersedes ADR-003's commit default)
+|<<adr-006>> |Prose as a first-class graph citizen: global `<<anchor>>` references → `RelatesTo` edges
+|<<adr-007>> |Typed-edge model and edge-type activation policy (emitter + consumer + eval; blast radius = dependents)
 |===
 
 == Quick Reference

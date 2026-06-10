@@ -21,7 +21,7 @@ pub fn creation_explicit() -> bool {
     CREATION_EXPLICIT.load(Ordering::Relaxed)
 }
 
-use aden_emit::check::{collect_anchors, find_refs};
+use aden_emit::check::{collect_anchors, collect_refs};
 use aden_graph::{GraphNode, cycles::find_cycles, integrity::check_hashes};
 use serde_json::Map;
 use std::collections::HashSet;
@@ -525,16 +525,17 @@ pub fn perform_check(path: &Path) -> Result<Vec<String>, Box<dyn std::error::Err
         all_anchors.extend(collect_anchors(&text));
     }
 
-    // Check for unresolved refs across every on-disk doc.
+    // Check for unresolved refs across every on-disk doc. `collect_refs` (not
+    // a per-line `find_refs` loop) so delimited listing/literal blocks are
+    // skipped — a previous version scanned line-by-line with no fence state,
+    // flagging `<<x>>` examples inside ----/.... code blocks as broken refs.
     let mut unresolved = Vec::new();
     for p in &doc_files {
         let mut text = String::new();
         std::fs::File::open(p)?.read_to_string(&mut text)?;
-        for line in text.lines() {
-            for r in find_refs(line) {
-                if !all_anchors.contains(&r) {
-                    unresolved.push(format!("{}: unresolved <<{}>>", p.display(), r));
-                }
+        for r in collect_refs(&text) {
+            if !all_anchors.contains(&r) {
+                unresolved.push(format!("{}: unresolved <<{}>>", p.display(), r));
             }
         }
     }

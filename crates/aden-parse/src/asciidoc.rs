@@ -47,9 +47,14 @@ impl crate::extractor::LanguageExtractor for AsciiDocExtractor {
         let body_lines: Vec<&str> = body.lines().collect();
         let mut headings = Vec::new();
         let mut code_blocks = Vec::new();
-        let _in_literal_block = false;
+        let mut in_literal_block = false;
         let mut current_code_lines = Vec::new();
         let mut in_listing_block = false;
+        // Prose cross-references, as (0-based line index, "ref:<target>") pairs.
+        // Collected here (where listing/literal fence state is known) and
+        // attributed below to the enclosing section node — never from inside a
+        // delimited block, where `<<x>>` is a code example, not a reference.
+        let mut line_refs: Vec<(usize, String)> = Vec::new();
 
         for (line_num, line) in body.lines().enumerate() {
             let line_num = line_num + 1;
@@ -68,6 +73,18 @@ impl crate::extractor::LanguageExtractor for AsciiDocExtractor {
                 current_code_lines.push(line.to_string());
                 continue;
             }
+
+            // Literal blocks (`....`) carry no code worth extracting, but their
+            // content is still literal — never a cross-reference.
+            if line.trim_end() == "...." {
+                in_literal_block = !in_literal_block;
+                continue;
+            }
+            if in_literal_block {
+                continue;
+            }
+
+            collect_prose_refs(line, line_num - 1, &mut line_refs);
 
             if let Some(rest) = line.strip_prefix("= ") {
                 let title = rest.trim().to_string();
@@ -154,6 +171,23 @@ impl crate::extractor::LanguageExtractor for AsciiDocExtractor {
                     attrs.insert("heading_level".to_string(), level.to_string());
                 }
 
+                // Attribute prose cross-references to this section: every ref on
+                // the heading line itself or in its body range. The FIRST node
+                // additionally adopts preamble refs (prose before any heading —
+                // common when frontmatter holds the title), so they still become
+                // graph edges instead of being dropped.
+                let ref_start = if hi == 0 { 0 } else { line_num - 1 };
+                let mut section_refs: Vec<String> = line_refs
+                    .iter()
+                    .filter(|(idx, _)| *idx >= ref_start && *idx < body_end)
+                    .map(|(_, r)| r.clone())
+                    .collect();
+                section_refs.sort();
+                section_refs.dedup();
+                if !section_refs.is_empty() {
+                    attrs.insert("doc_refs".to_string(), section_refs.join(","));
+                }
+
                 let mut blocks = vec![Block::Paragraph(title.clone())];
                 if !body_text.is_empty() {
                     blocks.push(Block::Paragraph(body_text));
@@ -176,6 +210,9 @@ impl crate::extractor::LanguageExtractor for AsciiDocExtractor {
                     if alias != anchor {
                         let mut alias_attrs = attrs.clone();
                         alias_attrs.insert("alias_of".to_string(), anchor.clone());
+                        // The alias points at the SAME section; duplicating its
+                        // doc_refs would emit every RelatesTo edge twice.
+                        alias_attrs.remove("doc_refs");
                         docs.push(Document {
                             anchor: alias,
                             node_type: NodeType::Module,
@@ -193,6 +230,13 @@ impl crate::extractor::LanguageExtractor for AsciiDocExtractor {
             let mut attrs = build_code_attributes(source, "document", Some(path), None);
             for (k, v) in &custom_attrs {
                 attrs.insert(k.clone(), v.clone());
+            }
+            // No headings: the whole file is one node — it owns every prose ref.
+            let mut all_refs: Vec<String> = line_refs.iter().map(|(_, r)| r.clone()).collect();
+            all_refs.sort();
+            all_refs.dedup();
+            if !all_refs.is_empty() {
+                attrs.insert("doc_refs".to_string(), all_refs.join(","));
             }
             docs.push(Document {
                 anchor,
@@ -394,6 +438,82 @@ fn make_sectanchors_anchor(crate_name: &str, file_name: &str, title: &str) -> St
     format!("aden://doc/{}/{}/_{}", crate_name, file_name, slug)
 }
 
+
+/// Extract prose cross-reference targets from one line into `out` as
+/// `(line_idx, "ref:<target>")` pairs.
+///
+/// Recognized forms (all reduced to the bare anchor fragment):
+/// - `<<target>>` and `<<target,label>>` shorthand xrefs;
+/// - `<<file.adoc#frag>>` file-qualified shorthand → `frag`;
+/// - `xref:file.adoc#frag[label]` / `xref:file#frag` macros → `frag`
+///   (file-level xrefs with no `#fragment` name no anchor and are skipped).
+///
+/// Backtick-quoted spans are literal examples and never produce a ref — the
+/// caller additionally guarantees we are not inside a `----`/`....` block.
+///
+/// Namespace: the `ref:` prefix marks prose cross-reference targets in the
+/// linker's ref channel. It is disjoint from the `fn:`/`struct:`/`enum:`/
+/// `type:`/`class:`/`use:`/`mod:` prefixes that [`extract_code_references`]
+/// emits into `symbol_references`, so the gen-time linker can resolve `ref:`
+/// records exclusively against DOC anchor fragments (format-neutral), never
+/// letting a prose ref fuzzy-match a same-named code symbol.
+fn collect_prose_refs(line: &str, line_idx: usize, out: &mut Vec<(usize, String)>) {
+    let push = |target: &str, out: &mut Vec<(usize, String)>| {
+        // Reduce a file-qualified target to its trailing fragment; anchors are
+        // globally unique, so the fragment alone identifies the declaration.
+        let frag = match target.rsplit_once('#') {
+            Some((_, f)) => f.trim(),
+            None => target.trim(),
+        };
+        if !frag.is_empty() && !frag.contains('{') && !frag.contains(' ') && frag.len() < 80 {
+            out.push((line_idx, format!("ref:{frag}")));
+        }
+    };
+
+    let bytes = line.as_bytes();
+    let mut i = 0;
+    let mut in_backticks = false;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if c == b'`' {
+            in_backticks = !in_backticks;
+            i += 1;
+            continue;
+        }
+        if in_backticks {
+            i += 1;
+            continue;
+        }
+        // <<target>> / <<target,label>> shorthand.
+        if c == b'<'
+            && i + 1 < bytes.len()
+            && bytes[i + 1] == b'<'
+            && let Some(end) = line[i + 2..].find(">>")
+        {
+            let abs_end = i + 2 + end;
+            let inner = &line[i + 2..abs_end];
+            push(inner.split(',').next().unwrap_or(inner), out);
+            i = abs_end + 2;
+            continue;
+        }
+        // xref:path#frag[label] (or bare xref:path#frag) macro. Match on the
+        // BYTE slice: `i` walks bytes, so `&line[i..]` would panic mid-way
+        // through a multibyte char (em-dash, typographic quote).
+        if bytes[i..].starts_with(b"xref:") {
+            let after = &line[i + 5..];
+            let target_end = after
+                .find(|ch: char| ch == '[' || ch.is_whitespace())
+                .unwrap_or(after.len());
+            let target = &after[..target_end];
+            if target.contains('#') {
+                push(target, out);
+            }
+            i += 5 + target_end;
+            continue;
+        }
+        i += 1;
+    }
+}
 
 fn extract_code_references(code: &str, lang: &str) -> Vec<String> {
     let mut refs = Vec::new();
@@ -616,6 +736,144 @@ Explanation here.
         let has_alias = anchors.iter().any(|a| a.ends_with("_core_concepts"));
         assert!(has_primary, "primary h2 anchor must be present; got: {:?}", anchors);
         assert!(has_alias, "sectanchors alias _core_concepts must be present; got: {:?}", anchors);
+    }
+
+    /// Prose `<<target>>` refs are extracted into the enclosing section node's
+    /// `doc_refs` attribute (ref:-prefixed, comma-joined), with code listings
+    /// and backtick-quoted examples excluded.
+    #[test]
+    fn prose_refs_attributed_to_enclosing_section() {
+        let ext = AsciiDocExtractor::new();
+        let src = "\
+= My Doc
+
+== Section A
+
+Prose that references <<_term_b>> and a labeled <<_term_c,custom label>>.
+
+----
+code showing <<_not_a_ref>> literally
+----
+
+More prose with `<<_in_ticks>>` quoted, plus xref:other.adoc#_frag[a label].
+
+[[_term_b]]Term B::
+Definition of b, which mentions <<_term_c>>.
+
+== Section C
+
+[[_term_c]]
+Body of c with no refs.
+";
+        let docs = ext
+            .extract_documents(src, Path::new("doc.adoc"))
+            .expect("extraction must succeed");
+
+        let refs_of = |needle: &str| -> Vec<String> {
+            let d = docs
+                .iter()
+                .find(|d| d.anchor.contains(needle))
+                .unwrap_or_else(|| {
+                    panic!(
+                        "no doc node matching {needle:?}; got {:?}",
+                        docs.iter().map(|d| &d.anchor).collect::<Vec<_>>()
+                    )
+                });
+            d.attributes
+                .get("doc_refs")
+                .map(|v| v.split(',').map(str::to_string).collect())
+                .unwrap_or_default()
+        };
+
+        let a = refs_of("h2section-a");
+        assert!(a.contains(&"ref:_term_b".to_string()), "Section A refs: {a:?}");
+        assert!(a.contains(&"ref:_term_c".to_string()), "Section A refs: {a:?}");
+        assert!(a.contains(&"ref:_frag".to_string()), "xref fragment; got {a:?}");
+        assert!(
+            !a.iter().any(|r| r.contains("_not_a_ref") || r.contains("_in_ticks")),
+            "listing/backtick examples must not become refs; got {a:?}"
+        );
+
+        // The description-list term node owns the refs in ITS body.
+        let b = refs_of("#_term_b");
+        assert_eq!(b, vec!["ref:_term_c".to_string()], "term B refs: {b:?}");
+
+        // A section with no refs carries no doc_refs attribute at all.
+        let c = refs_of("h2section-c");
+        assert!(c.is_empty(), "Section C has no refs; got {c:?}");
+    }
+
+    /// Refs in the preamble — prose BEFORE the first heading (common with
+    /// external frontmatter, e.g. Hugo) — attach to the file's first doc node
+    /// so they still become graph edges instead of being dropped.
+    #[test]
+    fn preamble_refs_attach_to_first_node() {
+        let ext = AsciiDocExtractor::new();
+        let src = "\
+A lead paragraph referencing <<_term>> before any heading.
+
+== First Section
+
+Body.
+";
+        let docs = ext
+            .extract_documents(src, Path::new("post.adoc"))
+            .expect("extraction must succeed");
+        let first = &docs[0];
+        let refs = first.attributes.get("doc_refs").cloned().unwrap_or_default();
+        assert!(
+            refs.split(',').any(|r| r == "ref:_term"),
+            "preamble ref must attach to the first node ({}); got {refs:?}",
+            first.anchor
+        );
+    }
+
+    /// The sectanchors alias node must NOT duplicate the primary node's refs —
+    /// otherwise every ref would emit double RelatesTo edges.
+    #[test]
+    fn sectanchors_alias_carries_no_doc_refs() {
+        let ext = AsciiDocExtractor::new();
+        let src = "\
+= My Doc
+:sectanchors:
+
+== Core Concepts
+
+References <<_other>> here.
+";
+        let docs = ext
+            .extract_documents(src, Path::new("guide.adoc"))
+            .expect("extraction must succeed");
+        let primary = docs
+            .iter()
+            .find(|d| d.anchor.contains("h2core-concepts"))
+            .expect("primary node");
+        assert!(
+            primary.attributes.get("doc_refs").is_some(),
+            "primary must carry the refs"
+        );
+        let alias = docs
+            .iter()
+            .find(|d| d.anchor.ends_with("_core_concepts"))
+            .expect("alias node");
+        assert!(
+            alias.attributes.get("doc_refs").is_none(),
+            "alias_of node must not duplicate refs (double edges)"
+        );
+    }
+
+    /// Regression: multibyte characters (em-dashes, typographic quotes) before
+    /// an `xref:` must not panic the byte-indexed scanner on a non-boundary
+    /// slice (`line[i..]` with i inside a UTF-8 sequence).
+    #[test]
+    fn prose_refs_survive_multibyte_text() {
+        let mut out = Vec::new();
+        collect_prose_refs(
+            "Confident — and a little smug — see xref:guide.adoc#_frag[the guide] and “quotes”.",
+            0,
+            &mut out,
+        );
+        assert_eq!(out, vec![(0usize, "ref:_frag".to_string())]);
     }
 
     #[test]
