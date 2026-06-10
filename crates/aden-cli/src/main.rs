@@ -315,6 +315,11 @@ enum Commands {
             help = "Strict mode: use --budget as an exact cap (disable the relevance boost)"
         )]
         strict: bool,
+        #[arg(
+            long,
+            help = "Explain routing: top candidates with scores/patterns, the tiebreak decision, intent, overview signal, and any fallback swap"
+        )]
+        explain: bool,
     },
     /// Search the knowledge graph for documents matching a query
     Search {
@@ -1087,6 +1092,7 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
             depth,
             edge_types,
             strict,
+            explain,
         } => {
             let intent_override = intent.map(|s| s.parse()).transpose()?;
             let edge_types_override = edge_types
@@ -1102,6 +1108,7 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
                 depth,
                 edge_types_override,
                 strict,
+                explain,
             )
         }
         Commands::Search {

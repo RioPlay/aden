@@ -140,6 +140,23 @@ pub enum AnchorPattern {
 }
 
 impl AnchorPattern {
+    /// True when the anchor lives in the prose-document scheme (`aden://doc/…`):
+    /// a heading, declared `[[anchor]]`, or section of a Markdown/AsciiDoc/…
+    /// document. These carry a `#fragment` just like code symbols, so the bare
+    /// `contains('#')` Symbol test cannot distinguish them — yet routing,
+    /// thin-stub handling, and overview questions all need to. Keyed purely on
+    /// the anchor SCHEME (never filenames or formats), so it is polyglot by
+    /// construction: anything the parsers emit into the doc scheme qualifies.
+    ///
+    /// Deliberately a parallel predicate rather than a new `from_anchor`
+    /// variant: re-classifying `aden://doc/…#x` away from `Symbol` would change
+    /// the structural tiebreak for every existing query; this predicate lets
+    /// the conceptual-routing path discriminate docs without perturbing the
+    /// default selection order.
+    pub fn is_prose_doc(anchor: &str) -> bool {
+        anchor.starts_with("aden://doc/")
+    }
+
     /// Tiebreaker score. Only used when search scores are within noise range.
     /// Symbol beats Module: a function-level answer is more useful than a
     /// module index page when both score similarly.

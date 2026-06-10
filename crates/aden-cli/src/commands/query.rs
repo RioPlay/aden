@@ -167,6 +167,279 @@ fn inband_alternate_candidates(primary: &str, results: &[SearchResult], max: usi
     out
 }
 
+// ── Conceptual / overview routing ───────────────────────────────────────────
+//
+// Broad questions ("What is X?", "philosophy", "high-level architecture") are
+// answered by curated prose, not by whichever implementation symbol happens to
+// echo a query token. The signal below is computed BEFORE anchor selection and,
+// when it fires, routing prefers substantive prose/doc anchors within the BM25
+// noise band. When it does not fire, selection is byte-identical to the default
+// path. Everything here is structural (anchor scheme, graph in-degree, token
+// counts) — nothing is aden-specific or format-specific.
+
+/// Phrasings that mark a question as a high-level/conceptual one. Matched as
+/// substrings of the lowercased question; `("how does", "work")` style pairs
+/// are handled separately in [`is_overview_query`].
+const OVERVIEW_PHRASES: &[&str] = &[
+    "what is",
+    "what's",
+    "philosophy",
+    "overview",
+    "high level",
+    "high-level",
+    "architecture",
+    "design",
+    "core idea",
+    "big picture",
+    // problem-statement questions ("what problem does X solve") are identity/
+    // motivation questions — answered by prose, not by a symbol named "solve".
+    "what problem",
+];
+
+/// True if the question contains a token that looks like a concrete code
+/// symbol or path: explicit call syntax, snake_case, `::` paths, file paths,
+/// dotted attribute access, or interior capitals (camelCase/PascalCase). Such
+/// a token is a precise target — the overview preference must stand down and
+/// let exact symbol matching win (e.g. "how does resolve_anchor_fuzzy work").
+fn has_symbolish_token(question: &str) -> bool {
+    if !extract_explicit_symbols(question).is_empty() {
+        return true;
+    }
+    question.split_whitespace().any(|w| {
+        let w = w.trim_matches(|c: char| !c.is_alphanumeric() && c != '_' && c != ':' && c != '.');
+        w.contains('_')
+            || w.contains("::")
+            || w.contains('/')
+            || (w.contains('.') && !w.ends_with('.'))
+            // Interior capitals: "AdenConfig", "dispatchRequest" — but not a
+            // capitalized first letter ("Aden"), which is just English.
+            || w.chars().skip(1).any(|c| c.is_ascii_uppercase())
+    })
+}
+
+/// The overview-question signal: broad intent (General/Explain/Compare), no
+/// symbol-like token, and conceptual phrasing. Computed BEFORE anchor
+/// selection; when false, routing behavior is unchanged.
+pub(crate) fn is_overview_query(question: &str, intent: &QueryIntent) -> bool {
+    if !matches!(
+        intent,
+        QueryIntent::General | QueryIntent::Explain | QueryIntent::Compare
+    ) {
+        return false;
+    }
+    if has_symbolish_token(question) {
+        return false;
+    }
+    let q = question.to_lowercase();
+    OVERVIEW_PHRASES.iter().any(|p| q.contains(p)) || (q.contains("how does") && q.contains("work"))
+}
+
+/// The `<proj>` segment of a scheme-form anchor (`aden://doc/<proj>/…`,
+/// `aden://module/<proj>/…`). `None` for legacy short anchors (`mod-*`, …).
+fn anchor_project_segment(anchor: &str) -> Option<&str> {
+    anchor
+        .strip_prefix("aden://doc/")
+        .or_else(|| anchor.strip_prefix("aden://module/"))
+        .and_then(|r| r.split('/').next())
+}
+
+/// Tokens of the dominant (most frequent) project segment across the results —
+/// a derivation of "what this project is called" from the corpus itself, with
+/// no configuration. Ties break to the lexicographically smaller segment for
+/// determinism.
+fn dominant_project_tokens(results: &[SearchResult]) -> HashSet<String> {
+    let mut counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for r in results {
+        if let Some(seg) = anchor_project_segment(&r.anchor) {
+            *counts.entry(seg).or_insert(0) += 1;
+        }
+    }
+    let Some((seg, _)) = counts
+        .into_iter()
+        .max_by(|a, b| a.1.cmp(&b.1).then_with(|| b.0.cmp(a.0)))
+    else {
+        return HashSet::new();
+    };
+    seg.split(|c: char| !c.is_alphanumeric())
+        .filter(|t| !t.is_empty())
+        .map(|t| t.to_lowercase())
+        .collect()
+}
+
+/// True when every substantive query token is part of the project's own name
+/// ("What is Aden?" reduces to the single token "aden"). For such a question
+/// lexical retrieval carries no information — every anchor mentions the project
+/// name — so routing should head for the corpus's front door instead of
+/// whichever section BM25-noise ranked first.
+fn query_is_project_identity(query: &str, results: &[SearchResult]) -> bool {
+    let toks: Vec<String> = query
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
+        .filter(|s| s.len() >= 3)
+        .map(|s| s.to_lowercase())
+        .filter(|s| !SYMBOL_STOP_WORDS.contains(&s.as_str()))
+        .collect();
+    if toks.is_empty() {
+        return false;
+    }
+    let proj = dominant_project_tokens(results);
+    !proj.is_empty() && toks.iter().all(|t| proj.contains(t))
+}
+
+/// True for the conventional entry-point documents of a corpus: a file whose
+/// stem is `readme` or `index` (any extension, any case). The same class of
+/// cross-ecosystem convention as the test-path markers in [`is_test_anchor`]:
+/// GitHub renders README as the project's front page; `index.*` is the root of
+/// virtually every docs tree. `file` is the `<proj>/<relpath>` form returned by
+/// [`super::generate::doc_anchor_file`].
+fn is_entry_doc_file(file: &str) -> bool {
+    let name = file.rsplit('/').next().unwrap_or(file);
+    let stem = name.split('.').next().unwrap_or(name).to_ascii_lowercase();
+    matches!(stem.as_str(), "readme" | "index")
+}
+
+/// Overview-mode anchor selection. Within the BM25 noise band, prefer prose
+/// document anchors (`aden://doc/…` scheme) over code symbols:
+///
+/// 1. Collect the in-band, non-test prose candidates (rank order, deduped).
+///    None ⇒ return `None`, and the caller falls through to the default path
+///    unchanged.
+/// 2. For a project-identity question (every substantive token is the project
+///    name), prefer the conventional entry docs (README/index) among them,
+///    picking by (cross-reference in-degree, token substance, rank). For any
+///    other overview question the top-ranked in-band prose anchor wins — BM25
+///    is trusted, only the doc-vs-code preference is applied.
+///
+/// If the chosen anchor turns out to be a thin structural shell (a bare
+/// heading node), the post-assembly fallback in `cmd_ask` broadens WITHIN the
+/// document — see the prose-doc arm of the thin-stub handling there.
+///
+/// Returns `(anchor, reason)`; the reason feeds `--explain`.
+fn resolve_anchor_overview(
+    query: &str,
+    results: &[SearchResult],
+    token_count: &dyn Fn(&str) -> usize,
+    doc_indegree: &std::collections::HashMap<String, usize>,
+) -> Option<(String, String)> {
+    if results.is_empty() {
+        return None;
+    }
+    let top_score = results[0].score;
+    let mut docs: Vec<&SearchResult> = Vec::new();
+    let mut seen: HashSet<&str> = HashSet::new();
+    for r in results {
+        if (top_score - r.score) > ANCHOR_NOISE_BAND {
+            break; // score-ordered; nothing past here is in-band
+        }
+        if is_test_result(r) || !AnchorPattern::is_prose_doc(&r.anchor) {
+            continue;
+        }
+        if seen.insert(r.anchor.as_str()) {
+            docs.push(r);
+        }
+    }
+    if docs.is_empty() {
+        return None;
+    }
+
+    let indeg = |anchor: &str| doc_indegree.get(anchor).copied().unwrap_or(0);
+
+    let identity = query_is_project_identity(query, results);
+    let (candidate, reason) = if identity {
+        let entries: Vec<&&SearchResult> = docs
+            .iter()
+            .filter(|r| {
+                super::generate::doc_anchor_file(&r.anchor)
+                    .map(is_entry_doc_file)
+                    .unwrap_or(false)
+            })
+            .collect();
+        let (pool, pool_label): (Vec<&&SearchResult>, &str) = if entries.is_empty() {
+            (docs.iter().collect(), "in-band prose docs")
+        } else {
+            (entries, "entry docs (README/index)")
+        };
+        // Best by (in-degree, substance); earliest (highest score) wins ties —
+        // candidates are iterated in rank order and replaced only on a
+        // strictly-greater key, mirroring `selection_key`'s tie handling.
+        let mut best: Option<&&SearchResult> = None;
+        for r in pool {
+            let key = |x: &SearchResult| (indeg(&x.anchor), token_count(&x.anchor));
+            if best.map(|b| key(r) > key(b)).unwrap_or(true) {
+                best = Some(r);
+            }
+        }
+        let chosen = *best?;
+        (
+            chosen,
+            format!(
+                "overview: project-identity question; best of {} by (in-degree, substance)",
+                pool_label
+            ),
+        )
+    } else {
+        (
+            docs[0],
+            "overview: top-ranked prose doc within the noise band".to_string(),
+        )
+    };
+
+    Some((candidate.anchor.clone(), reason))
+}
+
+/// The canonical anchor of the document containing `anchor`: the SAME-FILE doc
+/// anchor with the highest incoming `RelatesTo`/`Documents` in-degree (ties →
+/// lexicographically smaller anchor). This is the node the rest of the corpus
+/// actually cross-references — prose refs are real graph edges — so it sits
+/// inside the reference web and assembles connected context where a bare
+/// heading shell assembles almost nothing. `None` when no same-file anchor is
+/// referenced at all (or `anchor` itself is already the canonical one).
+fn same_file_canonical_anchor(
+    anchor: &str,
+    doc_indegree: &std::collections::HashMap<String, usize>,
+) -> Option<(String, usize)> {
+    let file = super::generate::doc_anchor_file(anchor)?;
+    // Only an anchor MORE referenced than the current one is "the" canonical
+    // node — if the routed anchor already is the file's most-referenced one,
+    // there is nothing better within the document.
+    let own = doc_indegree.get(anchor).copied().unwrap_or(0);
+    doc_indegree
+        .iter()
+        .filter(|(a, d)| {
+            **d > own && a.as_str() != anchor && super::generate::doc_anchor_file(a) == Some(file)
+        })
+        .max_by(|(a1, d1), (a2, d2)| d1.cmp(d2).then_with(|| a2.cmp(a1)))
+        .map(|(a, d)| (a.clone(), *d))
+}
+
+/// Incoming `RelatesTo`/`Documents` in-degree for every prose doc anchor in the
+/// graph — the live "explanatory importance" signal: prose cross-references are
+/// real graph edges (ADR-006), so heavily-referenced documents are exactly the
+/// pillar overviews a conceptual question wants. Built only when the overview
+/// signal fires; the graph load is cached.
+fn doc_reference_indegree(path: &Path) -> std::collections::HashMap<String, usize> {
+    let mut map = std::collections::HashMap::new();
+    let Ok(graph) = aden_graph::cache::build_from_directory_cached(path) else {
+        return map;
+    };
+    for e in graph.graph.edge_indices() {
+        let et = graph.graph[e].edge_type;
+        if !matches!(
+            et,
+            aden_core::EdgeType::RelatesTo | aden_core::EdgeType::Documents
+        ) {
+            continue;
+        }
+        let Some((_, tgt)) = graph.graph.edge_endpoints(e) else {
+            continue;
+        };
+        let anchor = &graph.graph[tgt].doc.anchor;
+        if AnchorPattern::is_prose_doc(anchor) {
+            *map.entry(anchor.clone()).or_insert(0) += 1;
+        }
+    }
+    map
+}
+
 /// Resolve a natural-language query to the best matching anchor.
 ///
 /// Strategy (in order):
@@ -189,8 +462,19 @@ fn resolve_anchor_fuzzy(
     results: &[SearchResult],
     token_count: impl Fn(&str) -> usize,
 ) -> String {
+    resolve_anchor_fuzzy_with_reason(query, results, token_count).0
+}
+
+/// [`resolve_anchor_fuzzy`] plus a human-readable label of WHICH selection
+/// step produced the anchor — surfaced by `ask --explain`. Identical logic;
+/// the wrapper above keeps the established signature for `asm` and the tests.
+fn resolve_anchor_fuzzy_with_reason(
+    query: &str,
+    results: &[SearchResult],
+    token_count: impl Fn(&str) -> usize,
+) -> (String, &'static str) {
     if results.is_empty() {
-        return "readme".to_string();
+        return ("readme".to_string(), "no search results; default readme");
     }
 
     // Step 1: explicit `func()` syntax — highest confidence.
@@ -205,7 +489,10 @@ fn resolve_anchor_fuzzy(
                     .map(|s| s.to_lowercase() == *sym)
                     .unwrap_or(false)
             }) {
-                return hit.anchor.clone();
+                return (
+                    hit.anchor.clone(),
+                    "explicit call syntax in query matched a symbol anchor exactly",
+                );
             }
         }
     }
@@ -280,7 +567,10 @@ fn resolve_anchor_fuzzy(
         }
     }
     if let Some(hit) = step2_best {
-        return hit.anchor.clone();
+        return (
+            hit.anchor.clone(),
+            "query token matched a symbol name (structural tiebreak among matches)",
+        );
     }
 
     // Step 3: score-driven selection with structural tiebreaker.
@@ -320,14 +610,20 @@ fn resolve_anchor_fuzzy(
     // Fallback: if every in-band candidate was a stop-word or test symbol, relax
     // and take the structurally-preferred top result (the query may genuinely be
     // about the test suite, or there may simply be nothing else to offer).
-    let best = best.unwrap_or_else(|| {
-        results
-            .iter()
-            .max_by_key(|r| AnchorPattern::from_anchor(&r.anchor).tiebreak())
-            .unwrap_or(&results[0])
-    });
-
-    best.anchor.clone()
+    if let Some(best) = best {
+        return (
+            best.anchor.clone(),
+            "best within score noise band (structural tiebreak + substantiveness)",
+        );
+    }
+    let relaxed = results
+        .iter()
+        .max_by_key(|r| AnchorPattern::from_anchor(&r.anchor).tiebreak())
+        .unwrap_or(&results[0]);
+    (
+        relaxed.anchor.clone(),
+        "all in-band candidates were test/stop-word symbols; relaxed to structurally-best result",
+    )
 }
 
 pub fn cmd_check(
@@ -1087,6 +1383,33 @@ fn community_seed_for(path: &Path, anchor: &str) -> Option<(String, String, usiz
     Some((seed, label, group.len()))
 }
 
+/// The real source file of an anchor, from the store document's `source_file`
+/// attribute (best-effort; `None` when the store/document/attribute is absent).
+/// `ask --explain` uses it so a bare doc anchor can be judged by the file it
+/// lives in (e.g. `…#philosophy` → `docs/philosophy.adoc`).
+fn anchor_source_file(path: &Path, anchor: &str) -> Option<String> {
+    let (store_path, _) = aden_paths::resolve_read_store(path);
+    let storage = aden_store::Storage::open_existing(store_path.to_str()?).ok()?;
+    storage
+        .get_document(anchor)
+        .ok()
+        .flatten()
+        .and_then(|d| d.attributes.get("source_file").cloned())
+}
+
+/// Routing transparency payload for `ask --explain`: top candidates with the
+/// signals selection actually used, which path decided, and whether the
+/// thin-stub fallback swapped (or was suppressed). Printed in the same `// `
+/// comment style as the summary block (`asm --inspect` is the model).
+#[derive(Default)]
+struct AskExplain {
+    overview_engaged: bool,
+    overview_note: String,
+    decision: String,
+    fallback: String,
+    candidates: Vec<String>,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn cmd_ask(
     path: &Path,
@@ -1098,6 +1421,7 @@ pub fn cmd_ask(
     depth_override: Option<usize>,
     edge_types_override: Option<Vec<aden_core::EdgeType>>,
     strict: bool,
+    explain: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use aden_asm::traverse::{AssemblyOptions, assemble};
 
@@ -1105,6 +1429,15 @@ pub fn cmd_ask(
         return Err("ask requires a directory path".into());
     }
     super::ensure_fresh(path);
+
+    // Intent is classified up front so the overview signal can feed ANCHOR
+    // SELECTION (the historical gap: intent only shaped traversal AFTER the
+    // anchor was already chosen). Pure function — computing it earlier changes
+    // nothing else.
+    let intent_was_overridden = intent_override.is_some();
+    let intent = intent_override.unwrap_or_else(|| classify_intent(question));
+
+    let mut xp = AskExplain::default();
 
     // Step 1: Resolve question to an anchor via search, or use override.
     // `ask` is the fuzzy "answer my question well" path, so it leans on the
@@ -1117,6 +1450,7 @@ pub fn cmd_ask(
     // seed shallow context from the alternates rather than betting the whole budget
     // on a single, possibly-misranked anchor.
     let (start_anchor, avg_score, alt_candidates) = if let Some(anchor) = from_override {
+        xp.decision = "pinned by --from (no search routing)".to_string();
         (anchor.to_string(), None, Vec::new())
     } else {
         let idx = load_or_build_index(path)?;
@@ -1129,7 +1463,68 @@ pub fn cmd_ask(
             return Ok(());
         }
         let avg: f64 = results.iter().map(|r| r.score).sum::<f64>() / results.len() as f64;
-        let primary = resolve_anchor_fuzzy(question, &results, |a| idx.doc_token_count(a));
+
+        // Conceptual routing: when the question is a broad/overview one, prefer
+        // substantive prose docs within the noise band (see the module-level
+        // block comment above `OVERVIEW_PHRASES`). A miss (no prose in band)
+        // falls through to the default selection unchanged.
+        let overview = is_overview_query(question, &intent);
+        xp.overview_engaged = overview;
+        xp.overview_note = if overview {
+            "engaged (broad intent + overview phrasing, no symbol-like token)".to_string()
+        } else {
+            "not engaged".to_string()
+        };
+        let token_count = |a: &str| idx.doc_token_count(a);
+        let primary = if overview {
+            let indegree = doc_reference_indegree(path);
+            match resolve_anchor_overview(question, &results, &token_count, &indegree) {
+                Some((anchor, why)) => {
+                    xp.decision = why;
+                    anchor
+                }
+                None => {
+                    let (anchor, why) =
+                        resolve_anchor_fuzzy_with_reason(question, &results, token_count);
+                    xp.decision =
+                        format!("overview engaged but no prose doc in score band; {}", why);
+                    anchor
+                }
+            }
+        } else {
+            let (anchor, why) = resolve_anchor_fuzzy_with_reason(question, &results, token_count);
+            xp.decision = why.to_string();
+            anchor
+        };
+        if explain {
+            let top_score = results[0].score;
+            xp.candidates = results
+                .iter()
+                .take(8)
+                .enumerate()
+                .map(|(i, r)| {
+                    format!(
+                        "{}. {} {} score={} pattern={:?} class={} tokens={} test={}",
+                        i + 1,
+                        if (top_score - r.score) <= ANCHOR_NOISE_BAND {
+                            "*"
+                        } else {
+                            " "
+                        },
+                        r.anchor,
+                        fmt_score(r.score),
+                        AnchorPattern::from_anchor(&r.anchor),
+                        if AnchorPattern::is_prose_doc(&r.anchor) {
+                            "doc"
+                        } else {
+                            "code"
+                        },
+                        idx.doc_token_count(&r.anchor),
+                        if is_test_result(r) { "yes" } else { "no" },
+                    )
+                })
+                .collect();
+        }
         // Up to 2 in-band alternates, deduped against the (possibly non-rank-1)
         // primary. Empty ⇒ clear winner ⇒ unchanged single-seed behavior below.
         let alts = inband_alternate_candidates(&primary, &results, 2);
@@ -1150,11 +1545,9 @@ pub fn cmd_ask(
     }
     println!();
 
-    // Step 2: Classify intent and route assembly strategy. Any of intent,
-    // depth, or edge types may be pinned by the caller to bypass automatic
-    // routing (`aden ask --intent/--depth/--edge-types`).
-    let intent_was_overridden = intent_override.is_some();
-    let intent = intent_override.unwrap_or_else(|| classify_intent(question));
+    // Step 2: Route assembly strategy from the (already classified) intent.
+    // Any of intent, depth, or edge types may be pinned by the caller to bypass
+    // automatic routing (`aden ask --intent/--depth/--edge-types`).
     let edge_types = edge_types_override.unwrap_or_else(|| edge_types_for_intent(&intent));
     let depth = depth_override.unwrap_or_else(|| depth_for_intent(&intent));
 
@@ -1198,6 +1591,11 @@ pub fn cmd_ask(
             }
         }
     };
+
+    // The store-resolved PRIMARY, captured before any thin-stub fallback can
+    // swap the final anchor — `--explain` reports both so a swap is never
+    // silent (`// Primary :` vs the summary's `// Anchor :`).
+    let primary_anchor = start_anchor.clone();
 
     // Resolve the near-tie alternates against the store, using the same validator
     // as the primary. Skip any that don't resolve, collapse onto the primary, or
@@ -1280,9 +1678,53 @@ pub fn cmd_ask(
     // Thin-stub fallback: if the resolved anchor assembled almost nothing
     // (bare module declaration, empty node), broaden to mod-project so the
     // LLM gets a coherent overview rather than an unhelpful 10-token stub.
+    //
+    // EXEMPT: prose document anchors. The fallback exists to rescue
+    // near-contentless CODE stubs; a document the router chose deliberately IS
+    // the answer to the question (especially a conceptual one), and swapping it
+    // for a call-graph hub abandons that answer — the defect that hijacked
+    // "what is the philosophy of …" to `mod-project` after routing had already
+    // picked the right document. A thin doc stays routed; the note below keeps
+    // the swap-suppression honest.
     let (assembled, start_anchor) = {
         let est = primary_only_len.div_ceil(4);
-        if est < THIN_STUB_TOKEN_THRESHOLD
+        if est < THIN_STUB_TOKEN_THRESHOLD && AnchorPattern::is_prose_doc(&start_anchor) {
+            // Broaden WITHIN the document, never away from it: the routed file
+            // IS the answer; the canonical (most cross-referenced) same-file
+            // anchor sits in the prose reference web and assembles connected
+            // context where a bare heading shell yields ~17 tokens. Used only
+            // when it actually assembles more than the shell did.
+            let broadened = same_file_canonical_anchor(&start_anchor, &doc_reference_indegree(path))
+                .and_then(|(canon, d)| {
+                    let body = assemble_seed(&canon, depth, effective_budget).ok()?;
+                    if body.len().div_ceil(4) <= est {
+                        return None;
+                    }
+                    eprintln!(
+                        "NOTE: '{}' assembled thin (~{} tokens); broadening within the document to its canonical anchor [[{}]] (cross-reference in-degree {}).",
+                        start_anchor, est, canon, d
+                    );
+                    xp.fallback = format!(
+                        "thin (~{} tokens); broadened WITHIN the document to [[{}]] (cross-reference in-degree {})",
+                        est, canon, d
+                    );
+                    Some((body, canon))
+                });
+            match broadened {
+                Some(pair) => pair,
+                None => {
+                    eprintln!(
+                        "NOTE: '{}' assembled thin (~{} tokens) but is a prose document; keeping it (fallback swap suppressed).",
+                        start_anchor, est
+                    );
+                    xp.fallback = format!(
+                        "suppressed: primary assembled thin (~{} tokens) but is a prose document — kept",
+                        est
+                    );
+                    (assembled, start_anchor)
+                }
+            }
+        } else if est < THIN_STUB_TOKEN_THRESHOLD
             && start_anchor != "mod-project"
             && aden_graph::cache::resolve_anchor_in_store(path, "mod-project").is_some()
         {
@@ -1319,8 +1761,60 @@ pub fn cmd_ask(
         }
     };
 
+    // Truthful fallback record for --explain (the suppressed case set its own).
+    if xp.fallback.is_empty() {
+        xp.fallback = if start_anchor == primary_anchor {
+            "none".to_string()
+        } else {
+            format!(
+                "thin-stub fallback swapped [[{}]] → [[{}]]",
+                primary_anchor, start_anchor
+            )
+        };
+    }
+
+    // `--explain` block: the routing decision made transparent. The `Primary`
+    // line is the routed anchor BEFORE any fallback; the summary's `Anchor`
+    // line below remains the FINAL anchor — when they differ, the `Fallback`
+    // line says why. (Format consumed by scripts/eval_corpus.py --mode ask.)
+    let print_explain = |xp: &AskExplain| {
+        println!("// ── Ask Routing Explain ─────────────────────────");
+        println!(
+            "//   Intent   : {:?}{}",
+            intent,
+            if intent_was_overridden {
+                " (override)"
+            } else {
+                ""
+            }
+        );
+        println!("//   Overview : {}", xp.overview_note);
+        if !xp.candidates.is_empty() {
+            println!(
+                "//   Candidates (top {}, * = within noise band {} of top score):",
+                xp.candidates.len(),
+                ANCHOR_NOISE_BAND
+            );
+            for line in &xp.candidates {
+                println!("//     {}", line);
+            }
+        }
+        println!("//   Decision : {}", xp.decision);
+        println!("//   Fallback : {}", xp.fallback);
+        match anchor_source_file(path, &primary_anchor) {
+            Some(src) if !src.is_empty() => {
+                println!("//   Primary  : {} (source: {})", primary_anchor, src)
+            }
+            _ => println!("//   Primary  : {}", primary_anchor),
+        }
+    };
+
     // Step 4: Send to LLM or print raw context
     if let Some(model_spec) = model {
+        if explain {
+            print_explain(&xp);
+            println!("// ────────────────────────────────────────────────");
+        }
         query_llm(model_spec, question, &assembled, &start_anchor)?;
     } else {
         // Show context with metadata for LLMs
@@ -1369,6 +1863,9 @@ pub fn cmd_ask(
 
         println!("{}", assembled);
         println!();
+        if explain {
+            print_explain(&xp);
+        }
         println!("// ────────────────────────────────────────────────");
         println!("// Aden Ask Summary");
         println!("//   Question: {}", question);
@@ -3192,5 +3689,120 @@ mod tests {
     fn inband_alternates_dedupes_repeated_anchors() {
         let results = vec![result("a", 30.0), result("b", 29.0), result("b", 28.0)];
         assert_eq!(inband_alternate_candidates("a", &results, 5), vec!["b"]);
+    }
+
+    // ---- conceptual/overview routing: broad questions prefer curated prose.
+
+    /// The polyglot proof: a mixed Go+Markdown corpus — nothing aden-specific.
+    /// A broad conceptual question routes to the prose overview even though
+    /// code symbols outscore it within the noise band; the discrimination is
+    /// purely the anchor SCHEME (`aden://doc/…`), never a filename or format.
+    #[test]
+    fn ask_routing_overview_prefers_prose_over_code() {
+        let q = "what is the design philosophy of widgetd";
+        let intent = classify_intent(q);
+        assert!(is_overview_query(q, &intent), "signal must engage for {q:?}");
+        let results = vec![
+            result_with_path(
+                "aden://module/widgetd/server.go#Server.Run",
+                "internal/server.go",
+                30.0,
+            ),
+            result_with_path(
+                "aden://doc/widgetd/docs/design.md/h1widgetd-design",
+                "docs/design.md",
+                29.0,
+            ),
+            result_with_path("aden://module/widgetd/main.go#main", "cmd/main.go", 28.0),
+        ];
+        let chosen =
+            resolve_anchor_overview(q, &results, &|_| 100, &std::collections::HashMap::new());
+        assert_eq!(
+            chosen.expect("prose doc in band must be chosen").0,
+            "aden://doc/widgetd/docs/design.md/h1widgetd-design"
+        );
+    }
+
+    /// A project-identity question ("what is <project>?") carries no lexical
+    /// signal — every anchor mentions the project name — so routing heads for
+    /// the corpus front door (README/index) rather than whichever section
+    /// BM25-noise ranked first.
+    #[test]
+    fn ask_routing_identity_question_prefers_entry_doc() {
+        let q = "what is widgetd";
+        let intent = classify_intent(q);
+        assert!(is_overview_query(q, &intent));
+        let results = vec![
+            result("aden://doc/widgetd/guide.md/h2advanced-usage", 9.5),
+            result("aden://doc/widgetd/README.md/h2quick-start", 9.0),
+            result("aden://module/widgetd/main.go#main", 8.9),
+        ];
+        let chosen =
+            resolve_anchor_overview(q, &results, &|_| 100, &std::collections::HashMap::new());
+        assert_eq!(
+            chosen.expect("entry doc must be chosen").0,
+            "aden://doc/widgetd/README.md/h2quick-start"
+        );
+    }
+
+    /// The overview preference must stand down for queries that name a code
+    /// symbol (snake_case / PascalCase / call syntax) and for non-broad intents
+    /// — those keep today's routing byte-identically.
+    #[test]
+    fn overview_signal_stands_down_for_precise_or_narrow_queries() {
+        for q in [
+            "how does resolve_anchor_fuzzy work", // snake_case symbol
+            "what is AdenConfig",                 // PascalCase symbol
+            "what does parse_file() return",      // explicit call syntax
+            "how do I use the assembler",         // Usage intent, not broad
+        ] {
+            let intent = classify_intent(q);
+            assert!(
+                !is_overview_query(q, &intent),
+                "signal must NOT engage for {q:?}"
+            );
+        }
+        // …and a question with no overview phrasing stays off too.
+        let q = "how does aden integrate with AI agents";
+        assert!(!is_overview_query(q, &classify_intent(q)));
+    }
+
+    /// No prose doc within the noise band ⇒ the overview resolver yields None
+    /// and the caller falls through to the default selection unchanged.
+    #[test]
+    fn overview_falls_through_when_no_prose_in_band() {
+        let results = vec![
+            result("aden://module/p/core.py#Engine", 30.0),
+            result("aden://doc/p/manual.md/h1manual", 20.0), // out of band
+        ];
+        assert!(
+            resolve_anchor_overview(
+                "what is the architecture",
+                &results,
+                &|_| 100,
+                &std::collections::HashMap::new()
+            )
+            .is_none()
+        );
+    }
+
+    /// Within-document broadening: the canonical anchor is the SAME-FILE doc
+    /// anchor with the highest cross-reference in-degree; anchors of other
+    /// files never qualify, and an anchor that already is the most-referenced
+    /// one has nothing better.
+    #[test]
+    fn same_file_canonical_prefers_most_referenced_same_file_anchor() {
+        let mut indeg = std::collections::HashMap::new();
+        indeg.insert("aden://doc/p/philosophy.adoc#philosophy".to_string(), 6usize);
+        indeg.insert("aden://doc/p/other.adoc#other".to_string(), 9usize);
+        assert_eq!(
+            same_file_canonical_anchor("aden://doc/p/philosophy.adoc/h1aden-philosophy", &indeg),
+            Some(("aden://doc/p/philosophy.adoc#philosophy".to_string(), 6))
+        );
+        // Already the canonical one — no better same-file target exists.
+        assert_eq!(
+            same_file_canonical_anchor("aden://doc/p/philosophy.adoc#philosophy", &indeg),
+            None
+        );
     }
 }

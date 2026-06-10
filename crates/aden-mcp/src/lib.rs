@@ -366,6 +366,7 @@ static TOOLS: &[ToolSpec] = &[
             ("depth", "integer"),
             ("edge_types", "string"),
             ("strict", "boolean"),
+            ("explain", "boolean"),
         ],
         tier: Tier::Core,
     },

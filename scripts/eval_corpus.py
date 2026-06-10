@@ -64,6 +64,54 @@ def rank_of(results, expected):
     return None
 
 
+# `aden ask --explain` routing markers. The summary "Anchor" line is the FINAL
+# anchor (after any thin-stub fallback); the explain block's "Primary"/"source"
+# pair describes the routed primary, whose source file is needed to judge bare
+# doc-root anchors (e.g. anchor `philosophy` for docs/philosophy.adoc).
+ASK_FINAL_ANCHOR_RE = re.compile(r"^//\s+Anchor\s*:\s*\[\[(.+?)\]\]", re.MULTILINE)
+ASK_PRIMARY_RE = re.compile(r"^//\s+Primary\s*:\s*(\S+)(?:\s+\(source:\s*(.*?)\))?", re.MULTILINE)
+
+
+def run_ask(bin_path, repo, query):
+    """Run `aden ask --explain` and return (final_anchor, primary, primary_source)."""
+    out = subprocess.run(
+        [bin_path, "ask", query, repo, "--explain"],
+        capture_output=True, text=True,
+    )
+    if out.returncode != 0:
+        # Older binaries predate --explain; the final-anchor summary line still
+        # carries the routing verdict (bare doc-root anchors then judge by name).
+        out = subprocess.run(
+            [bin_path, "ask", query, repo],
+            capture_output=True, text=True,
+        )
+    if out.returncode != 0:
+        print(f"  ! ask failed for {query!r}: {out.stderr.strip()[:200]}", file=sys.stderr)
+        return None, None, None
+    final = ASK_FINAL_ANCHOR_RE.search(out.stdout)
+    prim = ASK_PRIMARY_RE.search(out.stdout)
+    return (
+        final.group(1) if final else None,
+        prim.group(1) if prim else None,
+        (prim.group(2) or "") if prim else "",
+    )
+
+
+def ask_case_passes(expected, final_anchor, primary, primary_source):
+    """`expected` is a |-separated list of acceptable substrings, matched against
+    the FINAL anchor (post-fallback). The primary's source file only counts when
+    the fallback did not rewrite the anchor — a hijacked anchor must FAIL even
+    if routing initially picked the right document."""
+    if not final_anchor:
+        return False
+    hay = [final_anchor.lower()]
+    if primary and final_anchor == primary:
+        hay.append((primary_source or "").lower())
+    return any(alt.strip().lower() in h
+               for alt in expected.split("|") if alt.strip()
+               for h in hay)
+
+
 def load_queries(path):
     cases = []
     with open(path, encoding="utf-8") as f:
@@ -85,6 +133,11 @@ def main():
     ap.add_argument("--repo", required=True, help="path to the target repository")
     ap.add_argument("--queries", required=True, help="TSV: query<TAB>expected_path<TAB>note")
     ap.add_argument("--limit", type=int, default=20)
+    ap.add_argument("--mode", choices=["search", "ask"], default="search",
+                    help="search: rank expected file in `aden search` results (default). "
+                         "ask: judge `aden ask` ROUTING — does the chosen anchor land on "
+                         "the expected document/symbol (expected may be |-separated "
+                         "alternatives)")
     ap.add_argument("--gen", action="store_true", help="run `aden gen` first")
     ap.add_argument("--json", action="store_true", help="emit metrics as JSON")
     ap.add_argument("--quiet", action="store_true", help="suppress per-query lines")
@@ -98,6 +151,28 @@ def main():
     cases = load_queries(args.queries)
     if not cases:
         sys.exit(f"no queries in {args.queries}")
+
+    if args.mode == "ask":
+        passes = 0
+        fails = []
+        for q, expected, note in cases:
+            final_anchor, primary, primary_source = run_ask(args.bin, args.repo, q)
+            ok = ask_case_passes(expected, final_anchor, primary, primary_source)
+            passes += ok
+            if not ok:
+                fails.append(q)
+            if not args.quiet:
+                mark = "PASS" if ok else "FAIL"
+                print(f"  [{mark}] {q!r} -> {final_anchor or '(no anchor)'}"
+                      f"  (want: {expected}; {note})")
+        n = len(cases)
+        metrics = {"queries": n, "routing_pass": passes,
+                   "routing_accuracy": round(passes / n, 4), "failures": fails}
+        if args.json:
+            print(json.dumps(metrics, indent=2))
+        else:
+            print(f"\n  N={n}  routing accuracy={passes}/{n} ({passes / n:.0%})")
+        sys.exit(0 if passes == n else 1)
 
     ranks = []
     for q, expected, note in cases:

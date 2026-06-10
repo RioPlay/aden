@@ -372,7 +372,9 @@ fn anchor_file(anchor: &str) -> Option<&str> {
 /// `aden://doc/<proj>/<file>#<frag>` (inline `[[frag]]` declarations) and
 /// `aden://doc/<proj>/<file>/<frag>` (heading `h<level><slug>` / sectanchors
 /// `_slug` forms) → `<proj>/<file>`. Returns `None` for non-doc anchors.
-fn doc_anchor_file(anchor: &str) -> Option<&str> {
+/// Shared with ask-routing (`query.rs`), which groups in-band prose candidates
+/// by file and promotes thin section anchors to their file's canonical anchor.
+pub(crate) fn doc_anchor_file(anchor: &str) -> Option<&str> {
     let rest = anchor.strip_prefix("aden://doc/")?;
     if let Some(h) = rest.find('#') {
         return Some(&rest[..h]);
