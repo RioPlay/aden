@@ -549,14 +549,70 @@ fn action_index(action: &MergeAction) -> usize {
 
 // ── Parser helpers (shared by aden-parse) ─────────────────────────
 
+/// Parse block-header attributes.
+///
+/// Canonical form (what `aden_emit::emit_contract_document` writes):
+/// `:key: value` pairs, where a value runs until the next `:key:` marker or
+/// the end of the header — so values may contain spaces and colons. Falls
+/// back to legacy whitespace-separated `key:value` tokens when no canonical
+/// marker is present.
+fn parse_block_attrs(attr_text: &str) -> HashMap<String, String> {
+    let bytes = attr_text.as_bytes();
+    // (marker_start, value_start, key)
+    let mut markers: Vec<(usize, usize, &str)> = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        // A marker is `:key:` at the start of the header or after a space.
+        if bytes[i] == b':' && (i == 0 || bytes[i - 1] == b' ') {
+            let rest = &attr_text[i + 1..];
+            if let Some(rel) = rest.find([':', ' '])
+                && rest.as_bytes()[rel] == b':'
+                && rel > 0
+            {
+                let key = &rest[..rel];
+                let value_start = i + 1 + rel + 1;
+                markers.push((i, value_start, key));
+                i = value_start;
+                continue;
+            }
+        }
+        i += 1;
+    }
+
+    let mut attrs = HashMap::new();
+    if markers.is_empty() {
+        for attr in attr_text.split_whitespace() {
+            if let Some((k, v)) = attr.split_once(':') {
+                attrs.insert(k.trim_start_matches(':').to_string(), v.trim().to_string());
+            }
+        }
+        return attrs;
+    }
+    for (n, (_, value_start, key)) in markers.iter().enumerate() {
+        let value_end = markers.get(n + 1).map(|m| m.0).unwrap_or(attr_text.len());
+        attrs.insert(
+            key.to_string(),
+            attr_text[*value_start..value_end].trim().to_string(),
+        );
+    }
+    attrs
+}
+
 /// Parse a contract document from raw AsciiDoc text.
 ///
-/// This is a *best-effort* parser: it extracts region blocks and leaves
-/// everything else as prose. It does not validate full AsciiDoc grammar.
+/// This is the exact inverse of `aden_emit::emit_contract_document`: for any
+/// valid `ContractDocument`, parsing the emitted text reproduces the document
+/// (block line spans are recomputed from the text, not preserved).
+///
+/// Valid inputs exclude what the line-based format cannot represent:
+/// whitespace or newlines in tags, newlines in attribute keys/values,
+/// attribute values embedding a ` :word: ` marker, and leading blank prose
+/// lines in a document with no header attributes and no blocks.
 ///
 /// # Arguments
 /// * `text` — the raw AsciiDoc source.
-/// * `mode` — strict (fail on unknown syntax) or permissive (warn but continue).
+/// * `mode` — strict (fail on unknown regions / unterminated blocks) or
+///   permissive (collect freeform text as prose, never fail).
 ///
 /// # Returns
 /// `Ok(ContractDocument)` or `Err(Error::Parse(...))` in strict mode.
@@ -568,6 +624,10 @@ pub fn parse_contract(text: &str, mode: ParseMode) -> crate::Result<ContractDocu
     let mut delimiter: Option<String> = None;
     let mut line_no = 0usize;
     let mut header_done = false;
+    // The emitter writes one blank separator line after each block; consume
+    // it instead of collecting it as prose, or every emit/parse cycle would
+    // grow the document.
+    let mut skip_separator_blank = false;
 
     for line in text.lines() {
         line_no += 1;
@@ -634,14 +694,7 @@ pub fn parse_contract(text: &str, mode: ParseMode) -> crate::Result<ContractDocu
                 }
             };
 
-            let mut attrs = HashMap::new();
-            if let Some(attr_str) = attr_text {
-                for attr in attr_str.split_whitespace() {
-                    if let Some((k, v)) = attr.split_once(':') {
-                        attrs.insert(k.trim_start_matches(':').to_string(), v.trim().to_string());
-                    }
-                }
-            }
+            let attrs = attr_text.map(parse_block_attrs).unwrap_or_default();
 
             current_block = Some(RegionBlock {
                 region,
@@ -679,16 +732,28 @@ pub fn parse_contract(text: &str, mode: ParseMode) -> crate::Result<ContractDocu
                     doc.blocks.push(block);
                     block_lines.clear();
                 }
+                skip_separator_blank = true;
             } else {
                 block_lines.push(line.to_string());
             }
         } else if mode == ParseMode::Permissive {
+            if skip_separator_blank && trimmed.is_empty() {
+                skip_separator_blank = false;
+                continue;
+            }
+            skip_separator_blank = false;
             doc.prose.push(line.to_string());
         }
     }
 
     // Flush trailing block
     if let Some(mut block) = current_block.take() {
+        if in_delimited && mode == ParseMode::Strict {
+            return Err(crate::Error::Parse(format!(
+                "Line {}: unterminated delimited block (started at line {})",
+                line_no, block.start_line
+            )));
+        }
         block.content = block_lines.join("\n");
         block.end_line = line_no;
         doc.blocks.push(block);
@@ -916,6 +981,80 @@ mod tests {
         let p = ContractState::new(ground, base, working).propose().unwrap();
         assert_eq!(p.conflict_count, 1);
         assert_eq!(p.deleted_count, 0, "must not silently orphan the overlay");
+    }
+
+    // ── parse_contract: malformed input and header parsing ───────────
+
+    #[test]
+    fn parse_strict_unknown_region_is_error() {
+        let text = "[bogus]\n----\nx\n----\n";
+        assert!(matches!(
+            parse_contract(text, ParseMode::Strict),
+            Err(crate::Error::Parse(_))
+        ));
+    }
+
+    #[test]
+    fn parse_permissive_unknown_region_becomes_prose() {
+        let text = "[bogus]\n----\nx\n----\n";
+        let doc = parse_contract(text, ParseMode::Permissive).unwrap();
+        assert!(doc.blocks.is_empty());
+        assert!(doc.prose.iter().any(|l| l.contains("[bogus]")));
+    }
+
+    #[test]
+    fn parse_strict_unterminated_block_is_error() {
+        let text = "[generated#foo]\n----\nnever closed";
+        assert!(matches!(
+            parse_contract(text, ParseMode::Strict),
+            Err(crate::Error::Parse(_))
+        ));
+    }
+
+    #[test]
+    fn parse_permissive_unterminated_block_flushes() {
+        let text = "[generated#foo]\n----\nnever closed";
+        let doc = parse_contract(text, ParseMode::Permissive).unwrap();
+        assert_eq!(doc.blocks.len(), 1);
+        assert_eq!(doc.blocks[0].content, "never closed");
+    }
+
+    #[test]
+    fn parse_block_attrs_with_spaced_values() {
+        let text = "[proposed#foo :reason: two words here :status: conflict]\n----\nc\n----\n";
+        let doc = parse_contract(text, ParseMode::Strict).unwrap();
+        let b = &doc.blocks[0];
+        assert_eq!(b.region, ContractRegion::Proposed);
+        assert_eq!(b.tag.as_deref(), Some("foo"));
+        assert_eq!(
+            b.attributes.get("reason").map(String::as_str),
+            Some("two words here")
+        );
+        assert_eq!(
+            b.attributes.get("status").map(String::as_str),
+            Some("conflict")
+        );
+    }
+
+    #[test]
+    fn parse_legacy_token_attrs_still_supported() {
+        let text = "[generated#foo k:v]\n----\nc\n----\n";
+        let doc = parse_contract(text, ParseMode::Strict).unwrap();
+        assert_eq!(
+            doc.blocks[0].attributes.get("k").map(String::as_str),
+            Some("v")
+        );
+    }
+
+    #[test]
+    fn parse_header_attrs_and_prose() {
+        let text = ":source_hash: abc123\n\nFreeform prose line.\n";
+        let doc = parse_contract(text, ParseMode::Permissive).unwrap();
+        assert_eq!(
+            doc.header_attrs.get("source_hash").map(String::as_str),
+            Some("abc123")
+        );
+        assert_eq!(doc.prose, vec!["Freeform prose line.".to_string()]);
     }
 
     #[test]

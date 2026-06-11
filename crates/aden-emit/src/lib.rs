@@ -64,6 +64,8 @@ fn infer_module_anchor(source_path: Option<&str>) -> Option<String> {
 }
 
 #[cfg(test)]
+mod contract_roundtrip_tests;
+#[cfg(test)]
 mod tests;
 
 /// Emit a single Document as an AsciiDoc string.
@@ -188,11 +190,19 @@ fn emit_table(out: &mut String, table: &Table) {
 ///
 /// Each region block is wrapped in its corresponding region marker
 /// and a `----` delimiter block.
+///
+/// This is the canonical serializer: `aden_core::contract::parse_contract`
+/// is its exact inverse, so the output must contain nothing that is not in
+/// the document (derived content like module links belongs in
+/// [`emit_contract_document_rendered`]).
 pub fn emit_contract_document(doc: &ContractDocument) -> String {
     let mut out = String::new();
 
-    // Header attributes
-    for (key, value) in &doc.header_attrs {
+    // Header attributes — sorted by key so the emitted text is byte-stable
+    // (HashMap iteration order is non-deterministic run-to-run).
+    let mut attrs: Vec<_> = doc.header_attrs.iter().collect();
+    attrs.sort_by(|a, b| a.0.cmp(b.0));
+    for (key, value) in attrs {
         writeln!(out, ":{key}: {value}").unwrap();
     }
     if !doc.header_attrs.is_empty() {
@@ -210,15 +220,40 @@ pub fn emit_contract_document(doc: &ContractDocument) -> String {
         writeln!(out, "{line}").unwrap();
     }
 
-    // Auto-link to module doc for source files
+    out
+}
+
+/// Render a ContractDocument for human consumption: the canonical text plus
+/// a derived "See also" link to the module document inferred from the
+/// `source_file` header attribute.
+///
+/// The link is presentation-only and deliberately NOT part of
+/// [`emit_contract_document`]: the canonical form must round-trip exactly
+/// through `parse_contract`, and a derived line would be read back as prose
+/// and accrete on every gen/heal cycle.
+pub fn emit_contract_document_rendered(doc: &ContractDocument) -> String {
+    let mut out = emit_contract_document(doc);
     if let Some(module_anchor) =
         infer_module_anchor(doc.header_attrs.get("source_file").map(|s| s.as_str()))
     {
-        writeln!(out).unwrap();
-        writeln!(out, "See also: <<{}>>", module_anchor).unwrap();
+        out.push('\n');
+        writeln!(out, "See also: <<{module_anchor}>>").unwrap();
     }
-
     out
+}
+
+/// Pick a `-` delimiter no content line collides with: the parser closes a
+/// block on an exact (trimmed) match, so a literal `----` line in content
+/// forces a longer fence.
+fn choose_delimiter(content: &str) -> String {
+    let mut len = 4usize;
+    loop {
+        let candidate = "-".repeat(len);
+        if !content.lines().any(|l| l.trim() == candidate) {
+            return candidate;
+        }
+        len += 1;
+    }
 }
 
 fn emit_region_block(out: &mut String, block: &RegionBlock) {
@@ -227,8 +262,9 @@ fn emit_region_block(out: &mut String, block: &RegionBlock) {
         None => block.region.to_string(),
     };
 
-    // Write region header with attributes
-    write!(out, "[{region_tag}]").unwrap();
+    // Region header: `[region#tag :attr: value ...]` — attributes live
+    // INSIDE the brackets, or the parser will not recognize the header.
+    write!(out, "[{region_tag}").unwrap();
     if !block.attributes.is_empty() {
         let mut attrs: Vec<String> = block
             .attributes
@@ -238,12 +274,13 @@ fn emit_region_block(out: &mut String, block: &RegionBlock) {
         attrs.sort(); // HashMap order is non-deterministic; sort for byte-stable output
         write!(out, "{}", attrs.join("")).unwrap();
     }
-    writeln!(out).unwrap();
+    writeln!(out, "]").unwrap();
 
     // Delimited block
-    writeln!(out, "----").unwrap();
+    let delimiter = choose_delimiter(&block.content);
+    writeln!(out, "{delimiter}").unwrap();
     writeln!(out, "{}", block.content).unwrap();
-    writeln!(out, "----").unwrap();
+    writeln!(out, "{delimiter}").unwrap();
 }
 
 /// Deterministic Aden Graph (ADG) format for CI comparison and compact storage.
