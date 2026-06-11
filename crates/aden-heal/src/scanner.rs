@@ -131,10 +131,7 @@ impl Scanner {
                         }
                         entries.push((path.clone(), doc));
                     }
-                    return Some((
-                        vec![(rel_str.clone(), (current_mtime, jsons))],
-                        entries,
-                    ));
+                    return Some((vec![(rel_str.clone(), (current_mtime, jsons))], entries));
                 }
                 None::<(Vec<(String, (u64, Vec<String>))>, Vec<(PathBuf, Document)>)>
             })

@@ -171,9 +171,16 @@ fn seed_agents_md(target: &Path) -> Result<String, Box<dyn std::error::Error>> {
         }
         _ => {
             // No (well-formed) markers — append, separated by a blank line.
-            let sep = if existing.ends_with('\n') { "\n" } else { "\n\n" };
+            let sep = if existing.ends_with('\n') {
+                "\n"
+            } else {
+                "\n\n"
+            };
             std::fs::write(&path, format!("{existing}{sep}{block}"))?;
-            Ok("Appended the aden:guidance block to AGENTS.md (remove the block to opt out).".into())
+            Ok(
+                "Appended the aden:guidance block to AGENTS.md (remove the block to opt out)."
+                    .into(),
+            )
         }
     }
 }

@@ -850,10 +850,7 @@ pub fn cmd_ci_check(path: &Path, json: bool) -> Result<(), Box<dyn std::error::E
                             continue;
                         }
                         // Component match (not a substring) so it holds on Windows.
-                        if rel_path
-                            .components()
-                            .any(|c| c.as_os_str() == "tests")
-                        {
+                        if rel_path.components().any(|c| c.as_os_str() == "tests") {
                             continue;
                         }
                         if *name == "env file" {
@@ -1084,8 +1081,11 @@ pub fn cmd_ci_check(path: &Path, json: bool) -> Result<(), Box<dyn std::error::E
                     | aden_heal::DriftEvent::DocSignatureDivergence { .. }
             )
         };
-        let actionable_events: Vec<_> =
-            events.iter().filter(|e| is_actionable(e)).cloned().collect();
+        let actionable_events: Vec<_> = events
+            .iter()
+            .filter(|e| is_actionable(e))
+            .cloned()
+            .collect();
         let report = generate(actionable_events, path);
         let actionable_count = events.iter().filter(|e| is_actionable(e)).count();
         if actionable_count > 0 {

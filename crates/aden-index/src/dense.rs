@@ -150,7 +150,8 @@ impl TractEmbedder {
 
 impl EmbeddingProvider for TractEmbedder {
     fn embed(&self, text: &str) -> Vec<f32> {
-        self.embed_inner(text).unwrap_or_else(|_| vec![0.0; EMBED_DIM])
+        self.embed_inner(text)
+            .unwrap_or_else(|_| vec![0.0; EMBED_DIM])
     }
 
     fn dim(&self) -> usize {

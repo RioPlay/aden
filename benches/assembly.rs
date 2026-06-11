@@ -32,6 +32,7 @@ See <<module-helper>>.
         exclude_tags: Vec::new(),
         attributes: Vec::new(),
         llm_mode: true,
+        hydrate_root: None,
     };
 
     c.bench_function("assembly", |b| {

@@ -14,9 +14,14 @@ use std::path::{Path, PathBuf};
 /// Vendored, pinned, sha256-verified force-graph UMD bundle (MIT). See
 /// `assets/CHECKSUMS` and `NOTICE.md`. Embedded so the page is fully offline.
 const FORCE_GRAPH_JS: &str = include_str!("../../assets/force-graph.min.js");
+/// Vendored 3d-force-graph UMD bundle (MIT; bundles three.js) — the `--3d`
+/// orbital view. Same pinning/checksum discipline as the 2D library.
+const FORCE_GRAPH_3D_JS: &str = include_str!("../../assets/3d-force-graph.min.js");
 /// Self-contained page template with `/*FORCE_GRAPH_LIB*/` and `/*ADEN_DATA*/`
 /// placeholders (string-replaced, not `format!`, to avoid brace conflicts).
 const VIEW_HTML: &str = include_str!("../../assets/view.html");
+/// The `--3d` orbital-brain template (same placeholders, same data contract).
+const VIEW3D_HTML: &str = include_str!("../../assets/view3d.html");
 
 // A CLI command handler — its parameters mirror the subcommand's flags 1:1, so a
 // bundle struct would only add indirection.
@@ -32,11 +37,13 @@ pub fn cmd_view(
     editor: &str,
     replay: bool,
     max: usize,
+    scope: Option<&str>,
+    resolution: f64,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    if threed {
+    if threed && replay {
         return Err(
-            "--3d is not in this build yet (2D force-graph only); the 3d-force-graph asset \
-             lands in a follow-up. Use the default 2D view for now."
+            "--3d and --replay don't combine: replay is a 2D analytical view; \
+                    the 3D orbital view is for spatial orientation. Pick one."
                 .into(),
         );
     }
@@ -74,7 +81,7 @@ pub fn cmd_view(
             Err(_) => base,
         }
     } else {
-        let base = super::viz::viz_json_for(path, anchor, mode, depth)?;
+        let base = super::viz::viz_json_for(path, anchor, mode, depth, scope, resolution)?;
         // The whole-graph view is also the canonical *replay* surface: attach the full
         // git-history activity log so the viewer can play the entire project populating,
         // piece by piece, across every commit — over the real 800-node graph rather than
@@ -103,17 +110,71 @@ pub fn cmd_view(
     // `<\/` is an identical JSON escape for `/` (parses to the same value) but does not
     // match the HTML end-tag tokenizer — the standard JSON-in-<script> hardening.
     let data = data.replace("</", "<\\/");
-    let html = VIEW_HTML
-        .replace("/*FORCE_GRAPH_LIB*/", FORCE_GRAPH_JS)
-        .replace("/*EDITOR*/", &editor_template(editor))
-        .replace("/*ADEN_DATA*/", &data);
 
     let out_path: PathBuf = match out {
         Some(p) => p.to_path_buf(),
-        None => std::env::temp_dir().join("aden-view.html"),
+        None => {
+            let project = crate::util::find_project_root(path)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map(slug)
+                .unwrap_or_else(|| "project".to_string());
+            let anchor_slug = anchor
+                .map(|a| format!("-{}", slug(a.rsplit(['#', '/']).next().unwrap_or(a))))
+                .unwrap_or_default();
+            let dim = if threed { "-3d" } else { "" };
+            std::env::temp_dir().join(format!("aden-view-{project}{anchor_slug}{dim}.html"))
+        }
     };
-    std::fs::write(&out_path, &html)?;
-    println!("Wrote {}", out_path.display());
+    // The sibling dimension lives next to the primary (same stem, `-3d`
+    // toggled) so the in-page `d` key can hop 2D ↔ 3D as a relative link.
+    let sibling_path: PathBuf = {
+        let stem = out_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("aden-view");
+        let sib_name = match stem.strip_suffix("-3d") {
+            Some(base) => format!("{base}.html"),
+            None => format!("{stem}-3d.html"),
+        };
+        out_path.with_file_name(sib_name)
+    };
+    let render = |template: &str, lib: &str, sibling: &str| {
+        template
+            .replace("/*FORCE_GRAPH_LIB*/", lib)
+            .replace("/*EDITOR*/", &editor_template(editor))
+            .replace("/*SIBLING*/", sibling)
+            .replace("/*ADEN_DATA*/", &data)
+    };
+    let sib_href = sibling_path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let out_href = out_path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let (tpl, lib, sib_tpl, sib_lib) = if threed {
+        (VIEW3D_HTML, FORCE_GRAPH_3D_JS, VIEW_HTML, FORCE_GRAPH_JS)
+    } else {
+        (VIEW_HTML, FORCE_GRAPH_JS, VIEW3D_HTML, FORCE_GRAPH_3D_JS)
+    };
+    // Replay frames are a 2D-only surface; no sibling there (an empty
+    // placeholder hides the `d` key in the page).
+    std::fs::write(
+        &out_path,
+        render(tpl, lib, if replay { "" } else { sib_href.as_str() }),
+    )?;
+    if !replay {
+        std::fs::write(&sibling_path, render(sib_tpl, sib_lib, &out_href))?;
+        println!(
+            "Wrote {} (+ sibling {})",
+            out_path.display(),
+            sibling_path.display()
+        );
+    } else {
+        println!("Wrote {}", out_path.display());
+    }
 
     if open {
         match open_in_browser(&out_path) {
@@ -144,10 +205,17 @@ fn git_activity(root: &Path, max: usize) -> Vec<serde_json::Value> {
             .current_dir(root)
             .output()
             .ok()?;
-        out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+        out.status
+            .success()
+            .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
     };
     let max_s = max.to_string();
-    let mut args = vec!["log", "--reverse", "--no-merges", "--format=%H%x1f%s%x1f%cs"];
+    let mut args = vec![
+        "log",
+        "--reverse",
+        "--no-merges",
+        "--format=%H%x1f%s%x1f%cs",
+    ];
     if max > 0 {
         args.push("-n");
         args.push(&max_s); // `--max 0` → entire history
@@ -221,6 +289,29 @@ fn detect_editor_template() -> String {
         }
     }
     editor_template("vscode")
+}
+
+/// Sanitise a raw name into a safe, readable filename segment: lowercase, runs of
+/// non-alphanumeric chars collapsed to a single `-`, leading/trailing `-` stripped.
+fn slug(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut last_dash = true;
+    for c in s.chars() {
+        if c.is_ascii_alphanumeric() || c == '_' {
+            out.push(c.to_ascii_lowercase());
+            last_dash = false;
+        } else if !last_dash {
+            out.push('-');
+            last_dash = true;
+        }
+    }
+    if out.ends_with('-') {
+        out.pop();
+    }
+    if out.is_empty() {
+        out.push_str("project");
+    }
+    out
 }
 
 /// True if `bin` resolves to an executable on PATH (the same probe a shell does).

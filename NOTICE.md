@@ -60,6 +60,12 @@ bundle is redistributed in the binary, its MIT notice is reproduced in full:
 > CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE
 > OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
+The same feature also embeds **`3d-force-graph`** (vasturiano), **MIT**, pinned
+at v1.80.0 (sha256 in the same `CHECKSUMS` file) for the `aden view --3d`
+orbital view. Its pre-built UMD bundle includes **three.js** (© 2010–2026
+three.js authors, **MIT**). Both are © Vasco Asturiano / the three.js authors
+respectively and are used under the same MIT terms reproduced above.
+
 ## Bundled reference material
 
 The repository also contains third-party *reference material* used to inform

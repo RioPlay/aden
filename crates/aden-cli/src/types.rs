@@ -18,7 +18,12 @@ use std::path::PathBuf;
 ///    `[text](#frag)` into the `doc_refs` attribute (`ref:` prefix) and the
 ///    linker resolves them against doc anchor fragments only. Without the
 ///    bump, mtime-skipped docs would never re-emit their refs.
-pub const GEN_LOGIC_VERSION: u32 = 3;
+/// 4: Wave 3 episodic edges — parsers extract supersede-context refs into the
+///    `doc_supersedes` attribute (`Supersedes`); the linker co-emits
+///    `Justifies` for ADR-doc mentions and `AssociatedWith` from git
+///    co-change. Without the bump, mtime-skipped docs would never re-emit
+///    their supersede refs.
+pub const GEN_LOGIC_VERSION: u32 = 4;
 
 /// Incremental generation cache: maps contract file path → metadata.
 #[derive(Default, Serialize, Deserialize)]

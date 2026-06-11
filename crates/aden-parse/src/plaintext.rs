@@ -71,4 +71,3 @@ impl crate::extractor::LanguageExtractor for PlainTextExtractor {
         }])
     }
 }
-

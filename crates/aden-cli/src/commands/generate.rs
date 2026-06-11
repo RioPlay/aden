@@ -12,6 +12,12 @@ use crate::util::{
     discover_source_files, find_project_root, load_gen_cache, sanitize_source_file, save_gen_cache,
 };
 
+/// A thresholded co-change pair: each side is `(file-level anchor, repo-
+/// relative source file)`. The file paths let the linker synthesize the
+/// file-level node when the store has none (symbols hang off `mod-<crate>`
+/// hubs; the file grain only exists where co-change demands it).
+type CochangePair = ((String, String), (String, String));
+
 /// One stored symbol plus the compact data the linker needs. Carrying callee
 /// names out of the parse phase means linking never has to reload the (huge)
 /// document store to rebuild the call graph.
@@ -38,6 +44,11 @@ struct EmittedSymbol {
     /// `Mentions` edges when the name resolves to exactly one code symbol
     /// (Wave 2).
     mentions: Vec<String>,
+    /// Supersede-context refs (`<by|of>:ref:<frag>` entries from the
+    /// parser-filled `doc_supersedes` attribute — a cross-reference on a line
+    /// with supersede language). Linked as directed NEW —Supersedes→ OLD
+    /// edges against doc anchor fragments only (Wave 3).
+    supersedes: Vec<String>,
     /// `kind:name` entries from the parser-filled `symbol_references`
     /// attribute on doc code listings. Linked as `Demonstrates` edges under
     /// the same unambiguous-only rule (Wave 2).
@@ -215,6 +226,26 @@ fn extract_doc_refs(doc: &aden_core::Document) -> Vec<String> {
 /// format-neutral and links only unambiguous names.
 fn extract_doc_mentions(doc: &aden_core::Document) -> Vec<String> {
     extract_joined_attribute(doc, "doc_mentions")
+}
+
+/// Supersede-context refs, read from the `doc_supersedes` attribute the format
+/// parsers fill (Wave 3). Entries are `<by|of>:ref:<frag>` — a direction
+/// prefix plus the same `ref:` form the `doc_refs` channel uses.
+fn extract_doc_supersedes(doc: &aden_core::Document) -> Vec<String> {
+    extract_joined_attribute(doc, "doc_supersedes")
+}
+
+/// True when a doc anchor belongs to an Architecture Decision Record: any
+/// path segment of the `aden://doc/…` anchor is `adr` (an `adr/` directory)
+/// or starts with `adr-` (an `adr-NNN-…` file or `[[adr-NNN]]` fragment).
+/// ADR-ness licenses the `Justifies` reclassification — only decision
+/// records justify code; ordinary docs merely mention it.
+fn is_adr_doc_anchor(anchor: &str) -> bool {
+    let Some(rest) = anchor.strip_prefix("aden://doc/") else {
+        return false;
+    };
+    rest.split(['/', '#'])
+        .any(|seg| seg == "adr" || seg.starts_with("adr-"))
 }
 
 /// `kind:name` references a doc code listing makes, read from the
@@ -433,6 +464,7 @@ fn resolve_exact<'a>(
 ///    declarations are not extracted as symbols, so this is forward-compat;
 /// 2. the trait itself (the qualified name minus its `::method` segment);
 /// 3. the trait's bare name (last path segment) for scoped references.
+///
 /// Every step is an EXACT lookup via [`resolve_exact`]; an external trait
 /// (`fmt::Display`) simply resolves nowhere and produces no edge.
 fn resolve_implements<'a>(
@@ -508,10 +540,10 @@ fn resolve_doc_ref<'a>(
         [] => None,
         [one] => Some(one),
         many => {
-            if let Some(rf) = doc_anchor_file(referrer) {
-                if let Some(same) = many.iter().find(|a| doc_anchor_file(a) == Some(rf)) {
-                    return Some(same);
-                }
+            if let Some(rf) = doc_anchor_file(referrer)
+                && let Some(same) = many.iter().find(|a| doc_anchor_file(a) == Some(rf))
+            {
+                return Some(same);
             }
             Some(many[0])
         }
@@ -660,8 +692,10 @@ fn link_store_edges<S: GraphStorage>(
     impl_records: &[(String, Vec<String>)],
     mutates_records: &[(String, Vec<String>)],
     mention_records: &[(String, Vec<String>)],
+    supersede_records: &[(String, Vec<String>)],
     demo_records: &[(String, Vec<String>)],
     term_records: &[(String, Vec<String>)],
+    cochange_pairs: &[CochangePair],
     test_anchors: &std::collections::HashSet<String>,
 ) -> Result<CalleeStats, Box<dyn std::error::Error>> {
     use aden_core::{Block, Document, EdgeType, NodeType};
@@ -707,7 +741,10 @@ fn link_store_edges<S: GraphStorage>(
             if let Some(slash) = anchor.rfind('/') {
                 let fragment = &anchor[slash + 1..];
                 if !fragment.is_empty() {
-                    name_index.entry(fragment).or_default().push(anchor.as_str());
+                    name_index
+                        .entry(fragment)
+                        .or_default()
+                        .push(anchor.as_str());
                 }
             }
         }
@@ -753,11 +790,17 @@ fn link_store_edges<S: GraphStorage>(
         {
             let slug = numbered.trim_start_matches(|c: char| c.is_ascii_digit());
             if slug.len() < numbered.len() && !slug.is_empty() {
-                doc_slug_index.entry(slug).or_default().push(anchor.as_str());
+                doc_slug_index
+                    .entry(slug)
+                    .or_default()
+                    .push(anchor.as_str());
             }
         }
     }
-    for cands in doc_frag_index.values_mut().chain(doc_slug_index.values_mut()) {
+    for cands in doc_frag_index
+        .values_mut()
+        .chain(doc_slug_index.values_mut())
+    {
         cands.sort_unstable();
         cands.dedup();
     }
@@ -871,11 +914,47 @@ fn link_store_edges<S: GraphStorage>(
     // recall: only names that resolve to exactly ONE code symbol link;
     // ambiguous and unknown names stay unlinked rather than guessing.
     for (anchor, names) in mention_records {
+        // Justifies (Wave 3): an ADR's mention of a symbol is not casual prose —
+        // it is the decision record naming what it decided about. Co-emitted
+        // alongside Mentions (the Tests-alongside-Calls reclassification
+        // pattern) so "why is this here" becomes a one-hop traversal while
+        // Mentions consumers see no change.
+        let from_adr = is_adr_doc_anchor(anchor);
         for name in names {
             if let Some(target) = resolve_unambiguous_code(name, &name_index)
                 && target != anchor.as_str()
             {
                 edges.push((anchor.clone(), target.to_string(), EdgeType::Mentions));
+                if from_adr {
+                    edges.push((anchor.clone(), target.to_string(), EdgeType::Justifies));
+                }
+            }
+        }
+    }
+
+    // Supersedes edges (Wave 3, episodic layer): a cross-reference on a line
+    // with supersede language becomes a directed NEW —Supersedes→ OLD edge.
+    // The parser recorded which side the enclosing doc is on (`by:` = passive
+    // "superseded by X", so the referenced doc is the new one; `of:` = active
+    // "supersedes X", so the enclosing doc is). Resolution is doc-side only,
+    // same as `ref_records` — and the plain bidirectional RelatesTo from the
+    // same line is kept, so backlinks still work; Supersedes adds direction.
+    for (anchor, entries) in supersede_records {
+        for entry in entries {
+            let Some((dir, r)) = entry.split_once(':') else {
+                continue;
+            };
+            let Some(frag) = r.strip_prefix("ref:") else {
+                continue;
+            };
+            if let Some(target) = resolve_doc_ref(frag, anchor, &doc_frag_index, &doc_slug_index)
+                && target != anchor.as_str()
+            {
+                if dir == "by" {
+                    edges.push((target.to_string(), anchor.clone(), EdgeType::Supersedes));
+                } else {
+                    edges.push((anchor.clone(), target.to_string(), EdgeType::Supersedes));
+                }
             }
         }
     }
@@ -933,6 +1012,48 @@ fn link_store_edges<S: GraphStorage>(
         }
     }
 
+    // AssociatedWith edges (Wave 3, episodic layer): file-level git co-change
+    // — the Hebbian "files that change together belong together" signal.
+    // Pairs were thresholded upstream ([`cochange_pairs`]). The store has no
+    // file-level nodes (symbols hang off `mod-<crate>` hubs), so the file
+    // node is synthesized here for co-change participants only — the same
+    // pattern as the module-hub synthesis below, bounded by the thresholded
+    // pair count. Both directions are emitted (the type is bidirectional-feel
+    // by definition). Deliberately NOT in `impact_edge_types`: co-change is
+    // advisory association, not structural dependency, and must never
+    // inflate a blast radius.
+    let mut synthesized_files: HashSet<String> = HashSet::new();
+    for ((a, fa), (b, fb)) in cochange_pairs {
+        for (anchor, file) in [(a, fa), (b, fb)] {
+            if !anchor_set.contains(anchor.as_str()) && !synthesized_files.contains(anchor) {
+                let mut attrs = HashMap::new();
+                if !file.is_empty() {
+                    attrs.insert("source_file".to_string(), file.clone());
+                }
+                let _ = storage.put_document(&Document {
+                    anchor: anchor.clone(),
+                    node_type: NodeType::Module,
+                    attributes: attrs,
+                    blocks: vec![Block::Paragraph(format!(
+                        "Source file {}. Co-change hub: linked to the files that \
+                         historically change together with it.",
+                        if file.is_empty() {
+                            anchor.as_str()
+                        } else {
+                            file.as_str()
+                        }
+                    ))],
+                    source_span: None,
+                    metadata: None,
+                    confidence: 1.0,
+                });
+                synthesized_files.insert(anchor.clone());
+            }
+        }
+        edges.push((a.clone(), b.clone(), EdgeType::AssociatedWith));
+        edges.push((b.clone(), a.clone(), EdgeType::AssociatedWith));
+    }
+
     // Synthesize module nodes + project root, and connect the project to each.
     if !modules.is_empty() {
         let make_module_doc = |anchor: &str, body: &str| Document {
@@ -974,6 +1095,107 @@ fn link_store_edges<S: GraphStorage>(
     storage.put_edges_bulk(&edges)?;
     storage.flush()?;
     Ok(callee_stats)
+}
+
+/// Module-level co-change pairs from git history (Wave 3 `AssociatedWith` —
+/// the Hebbian episodic signal: things that fire together wire together).
+/// Deterministic from repo state: the last 1000 non-merge commits, skipping
+/// bulk commits (>20 files — rename sweeps and reformats say nothing about
+/// functional coupling), pair-counting each commit's files at module level
+/// and keeping pairs that co-changed ≥3 times. Files map to module anchors
+/// via the gen cache (file → anchors recorded by gen itself), so the whole
+/// pass costs one `git log` — no store scan. Non-repos and git failures
+/// degrade to no edges.
+fn cochange_pairs(root: &Path, cache: &crate::types::GenCache) -> Vec<CochangePair> {
+    use std::collections::BTreeMap;
+    const COCHANGE_COMMITS: &str = "1000";
+    const COCHANGE_MAX_FILES: usize = 20;
+    const COCHANGE_THRESHOLD: u32 = 3;
+
+    // Repo-relative file → file-level anchor: the `#`-stripped prefix of the
+    // file's first symbol anchor (code files have exactly one). Files with no
+    // symbol anchors (prose, empty) drop out here.
+    let mut file_anchor: BTreeMap<&str, String> = BTreeMap::new();
+    for (key, entry) in &cache.entries {
+        for a in &entry.anchors {
+            if let Some(h) = a.find('#') {
+                file_anchor.insert(key.as_str(), a[..h].to_string());
+                break;
+            }
+        }
+    }
+    if file_anchor.is_empty() {
+        return Vec::new();
+    }
+    // Reverse map for attaching the source file to each emitted anchor
+    // (BTreeMap iteration order makes the first-file-wins pick deterministic).
+    let mut anchor_file: BTreeMap<&str, &str> = BTreeMap::new();
+    for (f, a) in &file_anchor {
+        anchor_file.entry(a.as_str()).or_insert(f);
+    }
+
+    let Ok(out) = std::process::Command::new("git")
+        .args([
+            "log",
+            "--no-merges",
+            "-n",
+            COCHANGE_COMMITS,
+            "--pretty=format:@@",
+            "--name-only",
+        ])
+        .current_dir(root)
+        .output()
+    else {
+        return Vec::new();
+    };
+    if !out.status.success() {
+        return Vec::new();
+    }
+    let log = String::from_utf8_lossy(&out.stdout);
+
+    let mut counts: BTreeMap<(String, String), u32> = BTreeMap::new();
+    for block in log.split("@@") {
+        let files: Vec<&str> = block
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .collect();
+        // Bulk-commit gate on raw files touched, BEFORE anchor mapping — a
+        // 200-file reformat is noise even if only 5 of those files are indexed.
+        if files.len() < 2 || files.len() > COCHANGE_MAX_FILES {
+            continue;
+        }
+        let mut anchors: Vec<&str> = files
+            .iter()
+            .filter_map(|f| file_anchor.get(f).map(String::as_str))
+            .collect();
+        anchors.sort_unstable();
+        anchors.dedup();
+        for i in 0..anchors.len() {
+            for j in i + 1..anchors.len() {
+                *counts
+                    .entry((anchors[i].to_string(), anchors[j].to_string()))
+                    .or_default() += 1;
+            }
+        }
+    }
+    counts
+        .into_iter()
+        .filter(|(_, c)| *c >= COCHANGE_THRESHOLD)
+        .map(|((a, b), _)| {
+            let fa = anchor_file
+                .get(a.as_str())
+                .copied()
+                .unwrap_or("")
+                .to_string();
+            let fb = anchor_file
+                .get(b.as_str())
+                .copied()
+                .unwrap_or("")
+                .to_string();
+            ((a, fa), (b, fb))
+        })
+        .collect()
 }
 
 /// Ensure the store is up to date with the source before a read command serves
@@ -1277,6 +1499,7 @@ fn cmd_gen_inner(
                     let implements = extract_edge_macro(&doc_clone, "implements");
                     let mutates = extract_edge_macro(&doc_clone, "mutates");
                     let mentions = extract_doc_mentions(&doc_clone);
+                    let supersedes = extract_doc_supersedes(&doc_clone);
                     let demonstrates = extract_demonstrates(&doc_clone);
                     let defines_terms = extract_doc_terms(&doc_clone);
                     slim_doc_for_store(&mut doc_clone);
@@ -1321,6 +1544,7 @@ fn cmd_gen_inner(
                         implements,
                         mutates,
                         mentions,
+                        supersedes,
                         demonstrates,
                         defines_terms,
                         wrote: write,
@@ -1352,6 +1576,7 @@ fn cmd_gen_inner(
         let mut impl_records: Vec<(String, Vec<String>)> = Vec::new();
         let mut mutates_records: Vec<(String, Vec<String>)> = Vec::new();
         let mut mention_records: Vec<(String, Vec<String>)> = Vec::new();
+        let mut supersede_records: Vec<(String, Vec<String>)> = Vec::new();
         let mut demo_records: Vec<(String, Vec<String>)> = Vec::new();
         let mut term_records: Vec<(String, Vec<String>)> = Vec::new();
         // Anchors whose SOURCE FILE is a test/spec file (conventional path
@@ -1394,8 +1619,7 @@ fn cmd_gen_inner(
                     // The module-form anchor flattens the directory, so
                     // test-ness comes from the real (root-relative) source
                     // path — the same rule ask-routing applies at query time.
-                    let from_test_file =
-                        crate::commands::query::is_test_source_path(&cache_key);
+                    let from_test_file = crate::commands::query::is_test_source_path(&cache_key);
                     let fresh: Vec<String> = symbols.iter().map(|s| s.anchor.clone()).collect();
                     // Diff against what this file contributed last time: any
                     // previously-recorded anchor not in the fresh set is a
@@ -1435,6 +1659,9 @@ fn cmd_gen_inner(
                         }
                         if !sym.mentions.is_empty() {
                             mention_records.push((sym.anchor.clone(), sym.mentions));
+                        }
+                        if !sym.supersedes.is_empty() {
+                            supersede_records.push((sym.anchor.clone(), sym.supersedes));
                         }
                         if !sym.demonstrates.is_empty() {
                             demo_records.push((sym.anchor.clone(), sym.demonstrates));
@@ -1519,6 +1746,7 @@ fn cmd_gen_inner(
 
         // Connect the graph: persist module<->symbol containment and call edges
         // so the store-first graph used by asm/ask/query is actually traversable.
+        let cochange = cochange_pairs(&root, &cache);
         let callee_stats = match link_store_edges(
             &storage,
             &link_records,
@@ -1527,8 +1755,10 @@ fn cmd_gen_inner(
             &impl_records,
             &mutates_records,
             &mention_records,
+            &supersede_records,
             &demo_records,
             &term_records,
+            &cochange,
             &test_anchors,
         ) {
             Ok(stats) => stats,
@@ -1938,10 +2168,20 @@ mod link_tests {
         let test_anchors: std::collections::HashSet<String> =
             std::collections::HashSet::from([test_fn.to_string()]);
         link_store_edges(
-            &storage, &link_records, &[], &[], &[], &[],
+            &storage,
+            &link_records,
             &[],
             &[],
-            &[], &test_anchors).unwrap();
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            &test_anchors,
+        )
+        .unwrap();
 
         let out_test = storage.get_outgoing_edges(test_fn).unwrap();
         assert!(
@@ -1996,6 +2236,8 @@ mod link_tests {
             &[],
             &impl_records,
             &mutates_records,
+            &[],
+            &[],
             &[],
             &[],
             &[],
@@ -2057,6 +2299,8 @@ mod link_tests {
             &[],
             &[],
             &ref_records,
+            &[],
+            &[],
             &[],
             &[],
             &[],
@@ -2126,6 +2370,8 @@ mod link_tests {
             &[],
             &[],
             &[],
+            &[],
+            &[],
             &std::collections::HashSet::new(),
         )
         .unwrap();
@@ -2180,6 +2426,8 @@ mod link_tests {
             &[],
             &[],
             &ref_records,
+            &[],
+            &[],
             &[],
             &[],
             &[],

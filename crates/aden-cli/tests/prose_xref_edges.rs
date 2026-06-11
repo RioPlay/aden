@@ -100,9 +100,12 @@ fn prose_ref_builds_backlinked_edges_and_check_is_clean() {
     assert!(ok, "gen failed:\n{gen_out}");
 
     // Backlinks on the glossary term (declared INLINE) must include the
-    // referencing post section.
-    let term = "aden://doc/unknown/glossary.adoc#_term";
-    let back = backlinks(&project, &data, term);
+    // referencing post section. The fixture has no manifest, so the project
+    // segment is the directory name (the manifest-less naming fallback —
+    // formerly a global "unknown" bucket).
+    let proj = project.file_name().unwrap().to_string_lossy().to_string();
+    let term = format!("aden://doc/{proj}/glossary.adoc#_term");
+    let back = backlinks(&project, &data, &term);
     assert!(
         back.iter().any(|a| a.contains("post.adoc")),
         "backlinks on {term} must reach the referencing post node; got {back:?}"
@@ -117,12 +120,16 @@ fn prose_ref_builds_backlinked_edges_and_check_is_clean() {
         .clone();
     let reverse = backlinks(&project, &data, &post);
     assert!(
-        reverse.iter().any(|a| a == term),
+        reverse.contains(&term),
         "RelatesTo must be bidirectional; backlinks of {post} were {reverse:?}"
     );
 
     // The labeled form `<<_other,label>>` links too.
-    let other_back = backlinks(&project, &data, "aden://doc/unknown/glossary.adoc#_other");
+    let other_back = backlinks(
+        &project,
+        &data,
+        &format!("aden://doc/{proj}/glossary.adoc#_other"),
+    );
     assert!(
         other_back.iter().any(|a| a.contains("post.adoc")),
         "labeled <<_other,label>> must also produce the edge; got {other_back:?}"

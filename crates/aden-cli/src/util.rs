@@ -342,6 +342,7 @@ pub fn parse_single_edge_type(s: &str) -> Option<aden_core::EdgeType> {
         "demonstrates" => Some(aden_core::EdgeType::Demonstrates),
         "mentions" => Some(aden_core::EdgeType::Mentions),
         "definesterm" => Some(aden_core::EdgeType::DefinesTerm),
+        "associatedwith" => Some(aden_core::EdgeType::AssociatedWith),
         _ => None,
     }
 }
@@ -366,6 +367,7 @@ pub fn valid_edge_types() -> Vec<&'static str> {
         "demonstrates",
         "mentions",
         "definesterm",
+        "associatedwith",
     ]
 }
 
@@ -705,15 +707,17 @@ fn check_doc_path_references(root: &Path) -> Vec<String> {
         Err(_) => return Vec::new(),
     };
 
-    let doc_exts: HashSet<&'static str> =
-        ["md", "markdown", "adoc", "asciidoc", "asc"].into_iter().collect();
+    let doc_exts: HashSet<&'static str> = ["md", "markdown", "adoc", "asciidoc", "asc"]
+        .into_iter()
+        .collect();
     let filter = aden_core::filter::AdenFilter::from_directory(root);
     let mut docs = Vec::new();
     let _ = walk_supported_files(root, root, &doc_exts, &filter, &mut docs);
 
     // markdown `](target)`  and  adoc `xref:`/`link:`/`include::` target.
     let md_link = regex::Regex::new(r"\]\(([^)\s]+)\)").expect("valid regex");
-    let adoc_link = regex::Regex::new(r"(?:xref:|link:|include::)([^\[\s\]]+)").expect("valid regex");
+    let adoc_link =
+        regex::Regex::new(r"(?:xref:|link:|include::)([^\[\s\]]+)").expect("valid regex");
 
     let mut findings: Vec<String> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
@@ -836,9 +840,11 @@ fn collect_store_entries(path: &Path) -> Vec<(PathBuf, String)> {
     // the build — and the collision winner — is identical regardless of store order.
     let mut docs: Vec<_> = docs.into_values().collect();
     docs.sort_by(|a, b| {
-        a.anchor
-            .cmp(&b.anchor)
-            .then_with(|| a.attributes.get("source_file").cmp(&b.attributes.get("source_file")))
+        a.anchor.cmp(&b.anchor).then_with(|| {
+            a.attributes
+                .get("source_file")
+                .cmp(&b.attributes.get("source_file"))
+        })
     });
     docs.into_iter()
         .map(|doc| {
@@ -1084,8 +1090,9 @@ mod tests {
     fn resolve_doc_link_classifies_targets() {
         let root = Path::new("/repo");
         let docdir = Path::new("/repo/docs");
-        let tops: std::collections::HashSet<String> =
-            ["docs".to_string(), "crates".to_string()].into_iter().collect();
+        let tops: std::collections::HashSet<String> = ["docs".to_string(), "crates".to_string()]
+            .into_iter()
+            .collect();
 
         // Root-relative (starts with a top dir).
         assert_eq!(
@@ -1103,9 +1110,15 @@ mod tests {
             Some(PathBuf::from("/repo/crates/x/y.rs"))
         );
         // Not file links: URLs, anchors-only, extensionless, globs.
-        assert_eq!(resolve_doc_link("https://x.com/a.html", docdir, root, &tops), None);
+        assert_eq!(
+            resolve_doc_link("https://x.com/a.html", docdir, root, &tops),
+            None
+        );
         assert_eq!(resolve_doc_link("#section", docdir, root, &tops), None);
-        assert_eq!(resolve_doc_link("crates/aden-cli", docdir, root, &tops), None);
+        assert_eq!(
+            resolve_doc_link("crates/aden-cli", docdir, root, &tops),
+            None
+        );
         assert_eq!(resolve_doc_link("src/*.rs", docdir, root, &tops), None);
     }
 
@@ -1130,10 +1143,23 @@ mod tests {
         .unwrap();
 
         let findings = check_doc_path_references(root);
-        assert_eq!(findings.len(), 1, "exactly one broken link expected: {findings:?}");
-        assert!(findings[0].contains("docs/missing.adoc"), "got {findings:?}");
-        assert!(!findings.iter().any(|f| f.contains("src/main.rs")), "backtick mention must not flag");
-        assert!(!findings.iter().any(|f| f.contains("also-not-real")), "fenced link must not flag");
+        assert_eq!(
+            findings.len(),
+            1,
+            "exactly one broken link expected: {findings:?}"
+        );
+        assert!(
+            findings[0].contains("docs/missing.adoc"),
+            "got {findings:?}"
+        );
+        assert!(
+            !findings.iter().any(|f| f.contains("src/main.rs")),
+            "backtick mention must not flag"
+        );
+        assert!(
+            !findings.iter().any(|f| f.contains("also-not-real")),
+            "fenced link must not flag"
+        );
     }
 
     #[test]

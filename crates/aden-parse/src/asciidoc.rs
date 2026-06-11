@@ -5,7 +5,9 @@
 //!
 //! Extracts headings, code blocks, and links from AsciiDoc files.
 
-use crate::extractor::{build_code_attributes, extract_code_references, infer_project_name, make_anchor};
+use crate::extractor::{
+    build_code_attributes, extract_code_references, infer_project_name, make_anchor,
+};
 use aden_core::{Block, Document, NodeType, Result, SourceSpan};
 use std::collections::HashMap;
 use std::path::Path;
@@ -58,6 +60,10 @@ impl crate::extractor::LanguageExtractor for AsciiDocExtractor {
         // Backtick symbol mentions (Wave-2 `Mentions` channel), same shape and
         // same fence discipline as `line_refs`.
         let mut line_mentions: Vec<(usize, String)> = Vec::new();
+        // Supersede-context refs (Wave-3 `Supersedes` channel): refs found on a
+        // line with supersede language, as `(idx, "<by|of>:ref:<frag>")` — the
+        // direction prefix tells the linker which side the enclosing doc is on.
+        let mut line_supersedes: Vec<(usize, String)> = Vec::new();
         // Description-list term lines `(idx, explicit_anchor, name, same-line
         // def)` — Term-node candidates; only those inside glossary-gated
         // sections are promoted below.
@@ -91,7 +97,15 @@ impl crate::extractor::LanguageExtractor for AsciiDocExtractor {
                 continue;
             }
 
+            let refs_before = line_refs.len();
             collect_prose_refs(line, line_num - 1, &mut line_refs);
+            if line_refs.len() > refs_before
+                && let Some(dir) = crate::extractor::supersede_direction(line)
+            {
+                for (_, r) in &line_refs[refs_before..] {
+                    line_supersedes.push((line_num - 1, format!("{dir}:{r}")));
+                }
+            }
             crate::extractor::collect_backtick_mentions(line, line_num - 1, &mut line_mentions);
             if let Some((explicit, name, def)) = parse_dlist_term(line) {
                 term_lines.push((line_num - 1, explicit, name, def));
@@ -220,6 +234,17 @@ impl crate::extractor::LanguageExtractor for AsciiDocExtractor {
                 if !section_mentions.is_empty() {
                     attrs.insert("doc_mentions".to_string(), section_mentions.join(","));
                 }
+                // Same attribution rule for supersede refs (Wave-3 Supersedes).
+                let mut section_supersedes: Vec<String> = line_supersedes
+                    .iter()
+                    .filter(|(idx, _)| *idx >= ref_start && *idx < body_end)
+                    .map(|(_, s)| s.clone())
+                    .collect();
+                section_supersedes.sort();
+                section_supersedes.dedup();
+                if !section_supersedes.is_empty() {
+                    attrs.insert("doc_supersedes".to_string(), section_supersedes.join(","));
+                }
 
                 let mut blocks = vec![Block::Paragraph(title.clone())];
                 if !body_text.is_empty() {
@@ -244,9 +269,11 @@ impl crate::extractor::LanguageExtractor for AsciiDocExtractor {
                         let mut alias_attrs = attrs.clone();
                         alias_attrs.insert("alias_of".to_string(), anchor.clone());
                         // The alias points at the SAME section; duplicating its
-                        // doc_refs/doc_mentions would emit every edge twice.
+                        // doc_refs/doc_mentions/doc_supersedes would emit every
+                        // edge twice.
                         alias_attrs.remove("doc_refs");
                         alias_attrs.remove("doc_mentions");
+                        alias_attrs.remove("doc_supersedes");
                         docs.push(Document {
                             anchor: alias,
                             node_type: NodeType::Module,
@@ -278,6 +305,13 @@ impl crate::extractor::LanguageExtractor for AsciiDocExtractor {
             all_mentions.dedup();
             if !all_mentions.is_empty() {
                 attrs.insert("doc_mentions".to_string(), all_mentions.join(","));
+            }
+            let mut all_supersedes: Vec<String> =
+                line_supersedes.iter().map(|(_, s)| s.clone()).collect();
+            all_supersedes.sort();
+            all_supersedes.dedup();
+            if !all_supersedes.is_empty() {
+                attrs.insert("doc_supersedes".to_string(), all_supersedes.join(","));
             }
             docs.push(Document {
                 anchor,
@@ -537,9 +571,7 @@ fn parse_document_attributes(
                     match key {
                         "author" => metadata.author = Some(value.to_string()),
                         "email" => metadata.email = Some(value.to_string()),
-                        "revdate" | "date" | "updated" => {
-                            metadata.date = Some(value.to_string())
-                        }
+                        "revdate" | "date" | "updated" => metadata.date = Some(value.to_string()),
                         "version" | "revnumber" => metadata.version = Some(value.to_string()),
                         "revision" => metadata.revision = Some(value.to_string()),
                         "copyright" => metadata.copyright = Some(value.to_string()),
@@ -634,7 +666,6 @@ fn make_sectanchors_anchor(crate_name: &str, file_name: &str, title: &str) -> St
     format!("aden://doc/{}/{}/_{}", crate_name, file_name, slug)
 }
 
-
 /// Extract prose cross-reference targets from one line into `out` as
 /// `(line_idx, "ref:<target>")` pairs.
 ///
@@ -711,7 +742,6 @@ fn collect_prose_refs(line: &str, line_idx: usize, out: &mut Vec<(usize, String)
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -753,15 +783,27 @@ Content here.
         assert_eq!(m.date.as_deref(), Some("2026-06-07"));
 
         // Custom attributes captured
-        assert_eq!(custom.get("tags").map(|s| s.as_str()), Some("asciidoc, aden, knowledge-graph"));
+        assert_eq!(
+            custom.get("tags").map(|s| s.as_str()),
+            Some("asciidoc, aden, knowledge-graph")
+        );
         assert_eq!(custom.get("status").map(|s| s.as_str()), Some("draft"));
         assert_eq!(custom.get("docinfo").map(|s| s.as_str()), Some("shared"));
-        assert!(custom.contains_key("sectanchors"), "sectanchors must be captured");
+        assert!(
+            custom.contains_key("sectanchors"),
+            "sectanchors must be captured"
+        );
         assert_eq!(custom.get("toc").map(|s| s.as_str()), Some("left"));
 
         // Body does not include header lines
-        assert!(!body.contains(":tags:"), "body must not contain attribute lines");
-        assert!(body.contains("== First Section"), "body must contain section headings");
+        assert!(
+            !body.contains(":tags:"),
+            "body must not contain attribute lines"
+        );
+        assert!(
+            body.contains("== First Section"),
+            "body must contain section headings"
+        );
     }
 
     #[test]
@@ -791,8 +833,14 @@ Body text.
             .expect("extraction must succeed");
         assert!(!docs.is_empty());
         let first = &docs[0];
-        assert_eq!(first.attributes.get("tags").map(|s| s.as_str()), Some("aden, graph"));
-        assert_eq!(first.attributes.get("status").map(|s| s.as_str()), Some("draft"));
+        assert_eq!(
+            first.attributes.get("tags").map(|s| s.as_str()),
+            Some("aden, graph")
+        );
+        assert_eq!(
+            first.attributes.get("status").map(|s| s.as_str()),
+            Some("draft")
+        );
     }
 
     #[test]
@@ -814,8 +862,16 @@ Explanation here.
         let anchors: Vec<&str> = docs.iter().map(|d| d.anchor.as_str()).collect();
         let has_primary = anchors.iter().any(|a| a.contains("h2core-concepts"));
         let has_alias = anchors.iter().any(|a| a.ends_with("_core_concepts"));
-        assert!(has_primary, "primary h2 anchor must be present; got: {:?}", anchors);
-        assert!(has_alias, "sectanchors alias _core_concepts must be present; got: {:?}", anchors);
+        assert!(
+            has_primary,
+            "primary h2 anchor must be present; got: {:?}",
+            anchors
+        );
+        assert!(
+            has_alias,
+            "sectanchors alias _core_concepts must be present; got: {:?}",
+            anchors
+        );
     }
 
     /// Prose `<<target>>` refs are extracted into the enclosing section node's
@@ -866,11 +922,21 @@ Body of c with no refs.
         };
 
         let a = refs_of("h2section-a");
-        assert!(a.contains(&"ref:_term_b".to_string()), "Section A refs: {a:?}");
-        assert!(a.contains(&"ref:_term_c".to_string()), "Section A refs: {a:?}");
-        assert!(a.contains(&"ref:_frag".to_string()), "xref fragment; got {a:?}");
         assert!(
-            !a.iter().any(|r| r.contains("_not_a_ref") || r.contains("_in_ticks")),
+            a.contains(&"ref:_term_b".to_string()),
+            "Section A refs: {a:?}"
+        );
+        assert!(
+            a.contains(&"ref:_term_c".to_string()),
+            "Section A refs: {a:?}"
+        );
+        assert!(
+            a.contains(&"ref:_frag".to_string()),
+            "xref fragment; got {a:?}"
+        );
+        assert!(
+            !a.iter()
+                .any(|r| r.contains("_not_a_ref") || r.contains("_in_ticks")),
             "listing/backtick examples must not become refs; got {a:?}"
         );
 
@@ -900,7 +966,11 @@ Body.
             .extract_documents(src, Path::new("post.adoc"))
             .expect("extraction must succeed");
         let first = &docs[0];
-        let refs = first.attributes.get("doc_refs").cloned().unwrap_or_default();
+        let refs = first
+            .attributes
+            .get("doc_refs")
+            .cloned()
+            .unwrap_or_default();
         assert!(
             refs.split(',').any(|r| r == "ref:_term"),
             "preamble ref must attach to the first node ({}); got {refs:?}",
@@ -929,7 +999,7 @@ References <<_other>> here.
             .find(|d| d.anchor.contains("h2core-concepts"))
             .expect("primary node");
         assert!(
-            primary.attributes.get("doc_refs").is_some(),
+            primary.attributes.contains_key("doc_refs"),
             "primary must carry the refs"
         );
         let alias = docs
@@ -937,7 +1007,7 @@ References <<_other>> here.
             .find(|d| d.anchor.ends_with("_core_concepts"))
             .expect("alias node");
         assert!(
-            alias.attributes.get("doc_refs").is_none(),
+            !alias.attributes.contains_key("doc_refs"),
             "alias_of node must not duplicate refs (double edges)"
         );
     }

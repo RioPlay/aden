@@ -465,6 +465,19 @@ enum Commands {
             help = "For --mode graph: emit the WHOLE graph (no importance cap)"
         )]
         full: bool,
+        #[arg(
+            long,
+            value_name = "SUBDIR",
+            help = "Restrict to sources under this project-relative path (e.g. net/ on the kernel) — slices and community detection run on the subtree's subgraph"
+        )]
+        scope: Option<String>,
+        #[arg(
+            long,
+            value_name = "GAMMA",
+            default_value = "1.0",
+            help = "Community-detection resolution γ (higher = finer clusters; try 2.0–5.0 on very large graphs)"
+        )]
+        resolution: f64,
         #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
         path: PathBuf,
     },
@@ -490,7 +503,10 @@ enum Commands {
             help = "Max hops to include (blast/connectivity)"
         )]
         depth: usize,
-        #[arg(long = "3d", help = "Use the 3D \"brain\" force graph (follow-up; 2D for now)")]
+        #[arg(
+            long = "3d",
+            help = "Orbital 3D view — a slow-rotating spatial picture of the project (2D is the analytical view: lenses, replay, filters)"
+        )]
         three_d: bool,
         #[arg(long = "no-open", help = "Write the HTML but do not open a browser")]
         no_open: bool,
@@ -501,7 +517,10 @@ enum Commands {
             help = "Editor for 'open in editor' links: auto (detect installed) | vscode | cursor | vscodium | zed | idea | <uri-template with {file}/{line}>"
         )]
         editor: String,
-        #[arg(long, help = "Replay git history — watch the project populate commit-by-commit")]
+        #[arg(
+            long,
+            help = "Replay git history — watch the project populate commit-by-commit"
+        )]
         replay: bool,
         #[arg(
             long,
@@ -514,9 +533,22 @@ enum Commands {
             long,
             value_name = "FILE",
             value_hint = ValueHint::FilePath,
-            help = "Output HTML path (default: a temp file)"
+            help = "Output HTML path (default: a temp file named after the project)"
         )]
         out: Option<PathBuf>,
+        #[arg(
+            long,
+            value_name = "SUBDIR",
+            help = "Restrict to sources under this project-relative path — the viewer shows the subtree's subgraph"
+        )]
+        scope: Option<String>,
+        #[arg(
+            long,
+            value_name = "GAMMA",
+            default_value = "1.0",
+            help = "Community-detection resolution γ (higher = finer clusters on very large graphs)"
+        )]
+        resolution: f64,
         #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
         path: PathBuf,
     },
@@ -1193,8 +1225,20 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
             depth,
             format,
             full,
+            scope,
+            resolution,
             path,
-        } => commands::cmd_viz(&path, anchor.as_deref(), depth, &format, &mode, cli.json, full),
+        } => commands::cmd_viz(
+            &path,
+            anchor.as_deref(),
+            depth,
+            &format,
+            &mode,
+            cli.json,
+            full,
+            scope.as_deref(),
+            resolution,
+        ),
         #[cfg(feature = "view")]
         Commands::View {
             anchor,
@@ -1203,6 +1247,8 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
             three_d,
             no_open,
             out,
+            scope,
+            resolution,
             path,
             editor,
             replay,
@@ -1218,6 +1264,8 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
             &editor,
             replay,
             max,
+            scope.as_deref(),
+            resolution,
         ),
         Commands::Locate {
             symbol,

@@ -255,7 +255,9 @@ fn corpus_hybrid_report() {
                 .join(".cache/aden-models/bge-small-en-v1.5")
         });
     if !model_dir.join("model.onnx").exists() {
-        eprintln!("SKIP: bge model not found (set ADEN_BGE_MODEL_DIR); skipping hybrid corpus eval");
+        eprintln!(
+            "SKIP: bge model not found (set ADEN_BGE_MODEL_DIR); skipping hybrid corpus eval"
+        );
         return;
     }
     let embedder = TractEmbedder::from_dir(&model_dir).expect("load bge model");

@@ -272,9 +272,11 @@ fn asciidoc_glossary_entries_become_term_nodes() {
     );
     let mentions = edges_of_type(&edges, "Mentions");
     assert!(
-        mentions.iter().any(|(f, t, _)| f.starts_with("aden://term/")
-            && f.ends_with("/helper-fn")
-            && t.ends_with("#helper_fn")),
+        mentions
+            .iter()
+            .any(|(f, t, _)| f.starts_with("aden://term/")
+                && f.ends_with("/helper-fn")
+                && t.ends_with("#helper_fn")),
         "term helper_fn must Mention the code symbol it names; got: {mentions:?}"
     );
 }

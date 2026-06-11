@@ -169,7 +169,10 @@ pub fn cmd_impact_diff(
                 println!("  {}", short(t));
             }
             if tests.len() > 20 {
-                println!("  ... and {} more (see --json affected_tests)", tests.len() - 20);
+                println!(
+                    "  ... and {} more (see --json affected_tests)",
+                    tests.len() - 20
+                );
             }
         }
     }

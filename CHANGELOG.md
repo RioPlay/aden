@@ -12,6 +12,178 @@ All notable changes to aden are documented here. Format follows
 Post-0.2.0 work on main — not yet tagged.
 
 ### Added
+- **Viewer 3D: galaxies, bubble enclosures & grade punch** (2026-06-10) —
+  group-gravity now works in all three axes, condensing each module into its
+  own colored star cluster; each cluster is wrapped in a *bubble enclosure*
+  (`e`) — a translucent, faintly-breathing membrane sphere sized to its
+  members (cloned from live meshes, raycast-transparent so it never steals a
+  click), recomputed as the layout drifts. Every orb gains an *aura*: a
+  cloned, enlarged, translucent shell glowing in its own color that follows
+  silhouette and breathing. The aurora/OLED grade was mixed too dark in 3D —
+  link opacity 0.28→0.5 and ambient dim 0.42→0.6 (trails 0.85) so the wisps
+  actually shimmer. The letterbox tour bars are REMOVED (full-frame tours;
+  the resize wasn't worth the cinema).
+- **Viewer 3D: never-lost guardrails + living matter** (2026-06-10) —
+  *Guardrails*: the layout's bounding sphere (recomputed as physics cools)
+  now clamps max zoom-out, the orbit pivot glides back inside the graph when
+  a pan releases outside it, and an off-screen watchdog re-fits after ~2s of
+  the graph being out of frame or behind the camera ("recentred — you
+  drifted off the graph") — you can wander, you can't stay lost. *Living
+  matter*: the sealed bundle hides THREE, but live scene objects don't —
+  node materials gain emissive self-glow (orbs are lit from within on the
+  true-black field), silhouettes are sculpted per kind by mutating mesh
+  scales (docs flatten into tablets, Terms stretch into crystals, code stays
+  spherical — matching the 2D shape grammar), scene lighting is rebalanced
+  for more modelling, and the focused orb breathes (slow 6% swell, restored
+  on blur, off under reduced motion).
+- **Viewer: verbosity presets, OLED grade & aurora wisps** (2026-06-10) —
+  *Verbosity presets (`v`, persisted per browser)*: one key cycles three ways
+  of working — `focus` (still and quiet: no autopilot/streams/idle spin/flyby
+  cards, minimal render in 2D), `map` (calm structure: envelopes + cards,
+  nothing moves on its own — 2D default), `live` (the show: streams, idle
+  orbit, auto-tour on open — 3D default). The 3D opening auto-tour now only
+  fires in `live`. *OLED grade*: true-black backgrounds in both views (the
+  void disappears on OLED; every photon is data) with the palette pushed to
+  maximum chroma. *Aurora wisps*: links curve gently (2D 0.18 / 3D 0.25) and
+  their ambient color is the blended hue of their two endpoints, so
+  connection fields shimmer in gradients across regions instead of reading
+  as straight gray wires; the edge-TYPE color still appears on attended
+  links where it's information. *Fix*: letterbox bars no longer swallow the
+  top chrome — header, search, status pill and hint ride the bars in and
+  out with the same easing.
+- **Viewer: flyby code cards + the cosmos grade** (2026-06-10) — the
+  "stay in touch with the code" layer. *Flyby cards (3D)*: the exporter now
+  embeds each node's real first lines (read from its stored span at export
+  time; first sentence for docs/terms; capped at 1,500 nodes so kernel-scale
+  exports stay lean), and a glass card floats beside whatever orb the camera
+  is attending to — focus, list preview, every hop of a travel ride, every
+  tour stop — showing the actual code as you pass. *Color grade*: dimming is
+  now hue-preserving (colors darken, never gray out) and 3D links carry
+  their source module's color — the web reads as colored circuitry; trails
+  brighten in the same hue. *Cosmos*: a twinkling CSS starfield sits behind
+  both views (3D renderer clears transparent), and in 2D every module gets a
+  slowly-breathing nebula field behind its cluster that flares when a stream
+  enters it. *Tour cinema*: letterbox bars during tours; travel rides gained
+  a speed ramp (accelerate through the middle hops), alternating subtle
+  dutch roll, and a decaying landing impulse on arrival. All motion remains
+  off under `prefers-reduced-motion`.
+- **Viewer: envelopes, streams & cinematic camera** (2026-06-10) — the
+  containment + motion layer. *Module envelopes (2D, `e`)*: a group-gravity
+  force pulls each module's symbols into a coherent cluster and a soft
+  smoothed-hull membrane is drawn around it, labelled with the module name and
+  aggregate mass ("aden-cli · 12.4k loc") — the "big idea" orb whose size
+  EMERGES from its contents instead of being styled. *Ambient streams (both,
+  `b` in 3D)*: signals walk 3–6 hop paths emitting particles; every crossed
+  link joins a slow-fading trail (long-standing connections) and arrival
+  occasionally triggers a section pulse — a synchronized burst across that
+  module's internal links (2D: the envelope itself glows). *Cinematic camera
+  (3D)*: all programmatic moves route through one tween-aware core; between
+  moves a slight off-axis drift (three slow sines, amplitude scaled to camera
+  distance) makes every shot breathe; the neighbour-list glance cam stands
+  behind your current node looking down the synapse at whatever each
+  connection points at, and search-travel is now a mach-speed chase cam that
+  barrels hop-by-hop down the shortest path, strobing each crossed synapse,
+  with only the destination getting the full focus treatment. Everything
+  yields instantly to drag/click/search and stays still under
+  `prefers-reduced-motion`.
+- **Viewer: living-graph pass** (2026-06-10) — the eye-candy-with-purpose
+  layer, both dimensions. *Content-mass sizing*: orbs scale with what's
+  actually inside — real lines of code per symbol (`loc`, from stored spans),
+  word counts for docs/terms (`words`), symbol counts for community spheres,
+  connectivity only as fallback; mass shows in tooltips and panels. *Vivid
+  generative palette*: golden-angle hue stepping replaces the fixed pastel
+  set — maximally distinct, saturated colors for any number of groups.
+  *Neighbour-walk strobe*: scrolling/arrow-walking the connection list keeps
+  your current node anchored, expands the hovered neighbour's own ring, and
+  fires a particle volley along the connecting edge — the correlation is
+  drawn, not implied. 3D additions: *tour mode* (`t`, and auto after the
+  opening full-graph sweep) — an ambient autopilot that wanders connections,
+  leaps to new areas by pulling back first, dwells a random beat, and keeps
+  peripheral synapses firing around you; any drag/click/search snaps control
+  back instantly. *Thought-travel*: with a node focused, picking a search
+  result hops the camera along the SHORTEST PATH edge-by-edge with synapse
+  strobes — you watch how two thoughts connect instead of teleporting.
+  Ember-drift particles run only on attended links; everything respects
+  `prefers-reduced-motion` (no autopilot, no particles, jump cuts).
+- **`aden view --3d` — the orbital view** (2026-06-10) — a slow-rotating 3D
+  spatial picture of the project (vendored `3d-force-graph` v1.80.0, MIT,
+  bundles three.js; pinned + sha256'd like the 2D library; fully offline).
+  Deliberately split-purpose: 3D is for orientation and wonder (orbit, focus
+  glide, keyboard walk), 2D stays the analytical view (lenses, replay,
+  filters); `--3d --replay` is rejected with that explanation. Auto-rotation
+  pauses the moment you drag, never starts under `prefers-reduced-motion`.
+- **Viewer: pivot lenses + salience-first rendering** (2026-06-10) — the
+  blast/reach/connectivity buttons no longer rebuild the graph (which
+  restarted the force simulation at full energy — the "aggressive bounce");
+  they are now a pure FILTER over the current view: every node keeps its
+  position, the camera glides to the surviving subset, a dismissible pill
+  (top centre, ✕/Esc) names the active lens, and the depth slider dials it
+  live. New keys: `x`/`r`/`c` apply the lenses to the focused node, `m`
+  toggles minimal render (no glow/pulse painting — the cheap clean mode),
+  Esc escalates one layer per press (help → menu → lens → focus). Rendering
+  now follows attention the way recall does — you don't see every connection
+  your brain makes, only the ones about what you're attending to: ambient
+  links are quiet (and structural/advisory types Contains/PartOf/
+  AssociatedWith/Mentions start off in views >150 nodes; chips re-enable),
+  while a hovered/focused node always reveals its FULL edge set regardless of
+  filters; arrows and labels appear only on the focused neighborhood.
+  Physics calmed globally (pre-settled warmup, heavier damping) so nothing
+  explodes on load; stray background clicks no longer yank the camera
+  (double-click/`f` re-fits); `prefers-reduced-motion` disables pulse/spin
+  animation and makes camera moves jump cuts; always-on chrome trimmed (kind
+  legend lives in the `?` overlay, controls dim until hovered).
+- **Guided installer walkthrough** (2026-06-10) — `install.sh` rewritten around
+  three principles: every step states what it changes, where, and why before
+  acting; every edit to a user-owned file (shell profile, MCP configs,
+  AGENTS.md) asks first — the old script appended to the shell profile
+  unprompted; and the end-state is undoable, with a per-item undo line in the
+  final summary plus a guided `--uninstall` mode (which unregisters MCP before
+  removing the binary it needs). New coverage: MCP registration is now part of
+  install (shows `aden mcp list`, registers detected platforms on confirm) and
+  `--dense` offers the bge model fetch inline. Modes: interactive walkthrough
+  (default), `--yes` (defaults, no prompts — but never guesses a repo for
+  AGENTS.md), `--minimal` (binaries+PATH only), and non-TTY runs (curl/CI)
+  perform only self-contained steps and print instructions for the rest.
+  `INSTALL_DIR`/`PROJECT_ROOT`/`ADEN_DENSE` env overrides unchanged.
+- **Wave 3 typed edges — `Supersedes`, `Justifies`, `AssociatedWith`** (2026-06-10)
+  — the episodic layer: the graph starts recording *story* (what replaced what,
+  why code exists, what changes together), not just structure. Same ADR-007
+  emitter+consumer+eval policy, eval-first (`wave3_edges.rs`, 7 evals).
+  `Supersedes`: a prose cross-reference on a line with supersede language becomes
+  a directed NEW→OLD edge — both phrasings converge ("Superseded by <<new>>" in
+  the old doc, "supersedes <<old>>" in the new one); parsers fill a
+  `doc_supersedes` attribute (`by:`/`of:` direction prefix), resolution stays
+  doc-side and format-neutral. `Justifies`: an ADR's unambiguous mention of a
+  symbol co-emits ADR→code Justifies alongside Mentions (the
+  Tests-alongside-Calls reclassification pattern) — "why is this here" becomes a
+  one-hop traversal. `AssociatedWith`: module-level git co-change (last 1000
+  non-merge commits, >20-file bulk commits skipped, ≥3 co-changes) emits
+  bidirectional Hebbian association edges between file-level nodes (synthesized
+  on demand, same pattern as `mod-*` hubs) — "what else usually changes with
+  this" now answers the forgotten-file class of review miss; deliberately NOT in
+  `impact_edge_types` (advisory association must never inflate a blast radius).
+  Census on aden's own repo: AssociatedWith 284, Justifies 53, Supersedes 5
+  (including the real ADR-003↔ADR-005 supersession) — live edge types 12 → 15.
+  `GEN_LOGIC_VERSION` 3 → 4.
+- **`aden viz/view --scope <subdir>` + `--resolution γ`** (2026-06-10) — the
+  kernel-scale escape hatches. `--scope net/` restricts slices and community
+  detection to the subtree's SUBGRAPH (detection runs on the scoped graph, not
+  post-filtered whole-project clusters); an unmatched scope is an error, not an
+  empty diagram. `--resolution` exposes the Louvain γ that already threaded
+  through `detect_communities` (higher = finer clusters; 2.0–5.0 useful on very
+  large graphs). Declared on the MCP `viz` tool (flag-parity test enforced).
+- **Directory-based module naming for manifest-less languages** (2026-06-10) —
+  `infer_project_name` gains layered fallbacks: language manifest (unchanged) →
+  top-level directory under the VCS root (`mm/page_alloc.c` → `mm`,
+  `net/core/sock.c` → `net`) → the file's own directory → `unknown`. Fixes the
+  Linux-kernel failure where every one of 1.19M anchors collapsed into a single
+  `aden://module/unknown/…` group, making community labels and module colors
+  meaningless for C/Makefile trees.
+- **ADR node typing for flat layouts** — `detect_node_type` now recognizes
+  `docs/adr-001.adoc`-style file stems (and `.md` ADRs), not just `/adr/`
+  directories; `validate_typed_edges` no longer classifies the decision edges
+  (`Justifies`/`Supersedes`/`Amends`/`Verifies`) as code edges forbidden to ADR
+  nodes — they are exactly what ADR nodes exist to emit.
 - **Term nodes + `DefinesTerm` edges** (2026-06-10) — glossaries become graph
   citizens, completing Wave 2. Glossary entries (AsciiDoc `Name:: def` description
   lists — including the `[[anchor]]Name::` multi-line idiom — and Markdown

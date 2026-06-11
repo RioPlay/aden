@@ -13,7 +13,7 @@
 //! Run: `cargo test -p aden-index --features dense --test dense_spike -- --nocapture`
 #![cfg(feature = "dense")]
 
-use aden_index::{cosine_similarity, EmbeddingProvider, TractEmbedder};
+use aden_index::{EmbeddingProvider, TractEmbedder, cosine_similarity};
 use std::path::PathBuf;
 
 fn model_dir() -> Option<PathBuf> {
@@ -46,7 +46,10 @@ fn tract_loads_bge_and_embeddings_are_sane() {
 
     // 2. L2-normalized (unit length).
     let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
-    assert!((norm - 1.0).abs() < 1e-3, "embedding should be L2-normalized; norm={norm}");
+    assert!(
+        (norm - 1.0).abs() < 1e-3,
+        "embedding should be L2-normalized; norm={norm}"
+    );
 
     // 3. Deterministic: same text -> identical vector.
     let v2 = embedder.embed("hello world");
@@ -55,7 +58,8 @@ fn tract_loads_bge_and_embeddings_are_sane() {
     // 4. Semantic sanity: related texts are closer than unrelated ones.
     let q = embedder.embed("how to authenticate a user with a login token");
     let related = embedder.embed("validate the bearer credential and start a session");
-    let unrelated = embedder.embed("recompute the average document length for length normalization");
+    let unrelated =
+        embedder.embed("recompute the average document length for length normalization");
     let sim_related = cosine_similarity(&q, &related);
     let sim_unrelated = cosine_similarity(&q, &unrelated);
 
@@ -67,5 +71,8 @@ fn tract_loads_bge_and_embeddings_are_sane() {
          (related={sim_related:.4}, unrelated={sim_unrelated:.4})"
     );
     // Related should be meaningfully similar, unrelated meaningfully less so.
-    assert!(sim_related > 0.5, "related similarity unexpectedly low: {sim_related:.4}");
+    assert!(
+        sim_related > 0.5,
+        "related similarity unexpectedly low: {sim_related:.4}"
+    );
 }

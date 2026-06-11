@@ -733,7 +733,7 @@ impl Index {
         // would otherwise vary run-to-run. Sort by (anchor, source_path) so the index is
         // byte-identical regardless of collection order. (Same class as the
         // `detect_communities` sort-before-Louvain determinism fix.)
-        parsed.sort_by(|a, b| a.0 .0.cmp(&b.0 .0).then_with(|| a.0 .1.cmp(&b.0 .1)));
+        parsed.sort_by(|a, b| a.0.0.cmp(&b.0.0).then_with(|| a.0.1.cmp(&b.0.1)));
 
         for ((anchor, source_path, counts), text) in parsed {
             if self.doc_lengths.contains_key(&anchor) {
@@ -1409,7 +1409,9 @@ mod tests {
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             // Deterministic 4-d vector derived from the text's content hash.
             let h = text_hash(text);
-            (0..4).map(|i| ((h >> (i * 8)) & 0xff) as f32 / 255.0).collect()
+            (0..4)
+                .map(|i| ((h >> (i * 8)) & 0xff) as f32 / 255.0)
+                .collect()
         }
         fn dim(&self) -> usize {
             4
@@ -1445,7 +1447,10 @@ mod tests {
             .insert("a".to_string(), "alpha text CHANGED".to_string());
         index.embed_documents(&emb);
         assert_eq!(emb.count(), 4, "one changed doc -> one re-embed");
-        assert_ne!(index.embeddings["a"], old_a, "changed doc got a fresh vector");
+        assert_ne!(
+            index.embeddings["a"], old_a,
+            "changed doc got a fresh vector"
+        );
         assert_eq!(index.embeddings.len(), 3);
 
         // Removing a document drops its vector and embeds nothing.
@@ -1499,7 +1504,11 @@ mod tests {
         idx2.ingest(rerendered);
         idx2.finalize();
         idx2.embed_documents_cached(&emb, &mut cache);
-        assert_eq!(emb.count(), 2, "rebuild with unchanged sources re-embeds nothing");
+        assert_eq!(
+            emb.count(),
+            2,
+            "rebuild with unchanged sources re-embeds nothing"
+        );
         assert_eq!(idx2.embeddings.len(), 2);
 
         // One source actually changes (new source hash) -> exactly one new embed.

@@ -87,7 +87,6 @@ struct CSymbol<'a> {
     doc_comment: Option<String>,
 }
 
-
 fn walk_translation_unit<'a>(
     node: tree_sitter::Node<'a>,
     source: &str,

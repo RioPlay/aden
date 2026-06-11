@@ -62,8 +62,6 @@ pub fn extract_doc_comments(node: tree_sitter::Node, source: &str) -> Vec<String
     comments
 }
 
-/// Infer crate / project name from path (fallback for languages without crates).
-
 /// Pull plausible user/library type identifiers out of a type string (e.g.
 /// `&HashMap<String, Vec<DocumentNode>>` → `DocumentNode`, `list[Schema]` →
 /// `Schema`) so a symbol can be linked to the types it references via `Uses`

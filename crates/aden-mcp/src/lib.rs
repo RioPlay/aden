@@ -408,8 +408,10 @@ static TOOLS: &[ToolSpec] = &[
         description: "Export a graph slice as a text diagram (Mermaid/DOT/AsciiDoc/JSON) for docs, \
                       PRs, or CI. mode=blast (dependents at risk if the anchor changes, default) | \
                       reach (dependencies it relies on) | connectivity (both directions) | \
-                      communities (clusters; anchor not needed). Non-interactive sibling of the \
-                      browser `view` command.",
+                      communities (clusters; anchor not needed). `scope` restricts to a \
+                      project-relative subtree (e.g. net/ on a huge repo); `resolution` is the \
+                      community-detection gamma (higher = finer clusters). Non-interactive sibling \
+                      of the browser `view` command.",
         // Both positionals: anchor must precede path (spec order is emission
         // order, matching `aden viz [ANCHOR] [DIR]`).
         args: &[
@@ -418,6 +420,8 @@ static TOOLS: &[ToolSpec] = &[
             ("depth", "integer"),
             ("format", "string"),
             ("full", "boolean"),
+            ("scope", "string"),
+            ("resolution", "number"),
             ("path", "string"),
         ],
         tier: Tier::Core,

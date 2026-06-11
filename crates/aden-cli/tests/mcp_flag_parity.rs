@@ -36,12 +36,27 @@ const REVERSE_EXEMPT: &[(&str, &str, &str)] = &[
 /// off the MCP surface. A new CLI command fails the coverage test until it
 /// either gets a ToolSpec in `aden-mcp` or a conscious entry here.
 const COMMANDS_WITHOUT_MCP_TOOL: &[(&str, &str)] = &[
-    ("view", "interactive browser viewer — long-running, not request/response"),
-    ("watch", "long-running file-watch daemon; would always hit the MCP timeout"),
-    ("store", "host-level store admin (path/list/prune/migrate); operator-only"),
-    ("suggest", "meta command recommender; an MCP agent picks tools from the registry"),
+    (
+        "view",
+        "interactive browser viewer — long-running, not request/response",
+    ),
+    (
+        "watch",
+        "long-running file-watch daemon; would always hit the MCP timeout",
+    ),
+    (
+        "store",
+        "host-level store admin (path/list/prune/migrate); operator-only",
+    ),
+    (
+        "suggest",
+        "meta command recommender; an MCP agent picks tools from the registry",
+    ),
     ("overlay", "interactive authoring flow (opens an editor)"),
-    ("agents-md", "one-time repo setup step (init --agents-md covers the MCP path)"),
+    (
+        "agents-md",
+        "one-time repo setup step (init --agents-md covers the MCP path)",
+    ),
     ("help", "clap built-in"),
 ];
 

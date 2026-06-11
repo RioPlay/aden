@@ -822,7 +822,10 @@ mod edge_type_tests {
     fn all_is_duplicate_free() {
         let mut seen = std::collections::HashSet::new();
         for e in EdgeType::ALL {
-            assert!(seen.insert(format!("{e:?}")), "duplicate {e:?} in EdgeType::ALL");
+            assert!(
+                seen.insert(format!("{e:?}")),
+                "duplicate {e:?} in EdgeType::ALL"
+            );
         }
         assert_eq!(seen.len(), EdgeType::ALL.len());
     }

@@ -70,7 +70,10 @@ pub fn cmd_communities(
         }
     }
     if communities.len() > limit {
-        println!("\n... and {} more communities (raise --limit)", communities.len() - limit);
+        println!(
+            "\n... and {} more communities (raise --limit)",
+            communities.len() - limit
+        );
     }
     Ok(())
 }
@@ -117,7 +120,11 @@ fn area_of(anchor: &str) -> String {
 
 /// Short, human display name from a full anchor.
 fn short(anchor: &str) -> String {
-    anchor.rsplit(['#', '/']).next().unwrap_or(anchor).to_string()
+    anchor
+        .rsplit(['#', '/'])
+        .next()
+        .unwrap_or(anchor)
+        .to_string()
 }
 
 #[cfg(test)]

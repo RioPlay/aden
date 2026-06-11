@@ -11,7 +11,7 @@
 //! in for one. Whether a real model actually resolves M14 on real data is
 //! measured separately by the retrieval eval harness once the model lands.
 
-use aden_index::{cosine_similarity, rrf_fuse, EmbeddingProvider, Index};
+use aden_index::{EmbeddingProvider, Index, cosine_similarity, rrf_fuse};
 use std::path::PathBuf;
 
 /// A deterministic stand-in embedding provider: a tiny topic model. Each text
@@ -27,7 +27,16 @@ struct TopicProvider;
 impl TopicProvider {
     const TOPICS: &'static [&'static [&'static str]] = &[
         // auth
-        &["login", "authentication", "auth", "bearer", "session", "credential", "signin", "password"],
+        &[
+            "login",
+            "authentication",
+            "auth",
+            "bearer",
+            "session",
+            "credential",
+            "signin",
+            "password",
+        ],
         // orphan / cleanup
         &["orphan", "dangling", "unreferenced", "prune", "scan"],
         // parse
@@ -46,12 +55,7 @@ impl EmbeddingProvider for TopicProvider {
             .collect();
         Self::TOPICS
             .iter()
-            .map(|topic| {
-                words
-                    .iter()
-                    .filter(|w| topic.contains(*w))
-                    .count() as f32
-            })
+            .map(|topic| words.iter().filter(|w| topic.contains(*w)).count() as f32)
             .collect()
     }
 
@@ -68,7 +72,10 @@ fn doc(anchor: &str, prose: &str) -> (PathBuf, String) {
 }
 
 fn rank_of(results: &[aden_index::SearchResult], anchor: &str) -> Option<usize> {
-    results.iter().position(|r| r.anchor == anchor).map(|i| i + 1)
+    results
+        .iter()
+        .position(|r| r.anchor == anchor)
+        .map(|i| i + 1)
 }
 
 // --- cosine_similarity ---
@@ -99,7 +106,10 @@ fn rrf_fuse_blends_and_is_deterministic() {
         60.0,
     );
     let order: Vec<&str> = fused.iter().map(|(s, _)| s.as_str()).collect();
-    assert_eq!(order[0], "b", "item strong in both lists should win: {order:?}");
+    assert_eq!(
+        order[0], "b",
+        "item strong in both lists should win: {order:?}"
+    );
     // A doc ranked #1 by only ONE retriever (a is #1 in list one) does not beat a
     // doc ranked well by BOTH (b is #2 and #1) — the whole point of fusion.
     assert!(
@@ -122,8 +132,14 @@ fn rrf_fuse_blends_and_is_deterministic() {
 fn build_indexed() -> Index {
     let mut index = Index::default();
     index.ingest(vec![
-        doc("auth_middleware", "Validate the bearer credential and start a session."),
-        doc("parse_header", "Parse the document header syntax and grammar."),
+        doc(
+            "auth_middleware",
+            "Validate the bearer credential and start a session.",
+        ),
+        doc(
+            "parse_header",
+            "Parse the document header syntax and grammar.",
+        ),
         doc("search_ranker", "Rank and score search query results."),
         doc("prune_dangling", "Prune dangling unreferenced nodes."),
     ]);

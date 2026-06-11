@@ -631,6 +631,11 @@ impl AdenGraph<DocumentNode, AdenEdge> {
     /// and semantic edges (IsA, PartOf, etc.) only connect to semantic nodes.
     pub fn validate_typed_edges(&self) -> Vec<String> {
         let mut errors = Vec::new();
+        // Decision edges are EXCLUDED from the code set on purpose: they are
+        // exactly what ADR nodes exist to emit (an ADR Justifies the code it
+        // decided about, Supersedes/Amends the ADR it replaces) — Wave 3
+        // activated them with ADR-side emitters, so flagging them here would
+        // invalidate every correct decision edge.
         let code_types = [
             EdgeType::Uses,
             EdgeType::UsedBy,
@@ -639,14 +644,10 @@ impl AdenGraph<DocumentNode, AdenEdge> {
             EdgeType::Documents,
             EdgeType::Contains,
             EdgeType::Constrains,
-            EdgeType::Justifies,
             EdgeType::Invokes,
             EdgeType::Requires,
             EdgeType::Mutates,
             EdgeType::Calls,
-            EdgeType::Supersedes,
-            EdgeType::Amends,
-            EdgeType::Verifies,
         ];
         let semantic_types = [
             EdgeType::IsA,
@@ -713,8 +714,16 @@ fn detect_node_type(anchor: &str, file_path: &Path) -> NodeType {
         .to_lowercase();
     let anchor_lower = anchor.to_lowercase();
 
-    if path_str.ends_with(".adoc")
-        && (path_str.contains("/adr/") || anchor_lower.starts_with("adr-"))
+    // ADR detection must also match the common flat layout `docs/adr-001.adoc`
+    // (file stem, not just an `/adr/` directory) — without the stem check,
+    // every ADR in a flat docs/ dir silently types as Module and the
+    // ADR-aware consumers (routing tiebreak, decision-edge rules) never fire.
+    let file_stem_is_adr = path_str
+        .rsplit('/')
+        .next()
+        .is_some_and(|f| f.starts_with("adr-") || f.starts_with("adr_"));
+    if (path_str.ends_with(".adoc") || path_str.ends_with(".md"))
+        && (path_str.contains("/adr/") || file_stem_is_adr || anchor_lower.starts_with("adr-"))
     {
         return NodeType::Adr;
     }

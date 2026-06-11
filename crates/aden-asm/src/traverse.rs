@@ -236,7 +236,14 @@ pub fn assemble(
     // source itself. When the summary-level assembly leaves most of the
     // budget unspent, pack it with the included nodes' actual source spans.
     if let Some(root) = &opts.hydrate_root {
-        hydrate_with_source(graph, &included, root, opts.token_budget, &mut total_tokens, &mut result);
+        hydrate_with_source(
+            graph,
+            &included,
+            root,
+            opts.token_budget,
+            &mut total_tokens,
+            &mut result,
+        );
     }
 
     Ok(result.join(separator))
@@ -292,14 +299,20 @@ fn hydrate_with_source(
         let attrs = &graph.graph[node].doc.attributes;
         let (Some(file), Some(start), Some(end)) = (
             attrs.get("source_file"),
-            attrs.get("start_line").and_then(|s| s.parse::<usize>().ok()),
+            attrs
+                .get("start_line")
+                .and_then(|s| s.parse::<usize>().ok()),
             attrs.get("end_line").and_then(|s| s.parse::<usize>().ok()),
         ) else {
             continue; // synthesized hubs / docs without spans have no source
         };
         let content = file_cache.entry(file.clone()).or_insert_with(|| {
             let p = std::path::Path::new(file);
-            let abs = if p.is_absolute() { p.to_path_buf() } else { root.join(p) };
+            let abs = if p.is_absolute() {
+                p.to_path_buf()
+            } else {
+                root.join(p)
+            };
             std::fs::read_to_string(abs).ok()
         });
         let Some(content) = content else { continue };

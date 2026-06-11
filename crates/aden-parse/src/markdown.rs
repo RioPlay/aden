@@ -5,7 +5,9 @@
 //!
 //! Extracts headings, code blocks, and links from markdown files.
 
-use crate::extractor::{build_code_attributes, extract_code_references, infer_project_name, make_anchor};
+use crate::extractor::{
+    build_code_attributes, extract_code_references, infer_project_name, make_anchor,
+};
 use aden_core::{Block, Document, NodeType, Result, SourceSpan};
 use std::path::Path;
 
@@ -53,6 +55,10 @@ impl crate::extractor::LanguageExtractor for MarkdownExtractor {
         // Backtick symbol mentions (Wave-2 `Mentions` channel), same shape and
         // same fence discipline as `line_refs`.
         let mut line_mentions: Vec<(usize, String)> = Vec::new();
+        // Supersede-context refs (Wave-3 `Supersedes` channel): refs found on a
+        // line with supersede language, as `(idx, "<by|of>:ref:<frag>")` — the
+        // direction prefix tells the linker which side the enclosing doc is on.
+        let mut line_supersedes: Vec<(usize, String)> = Vec::new();
         // Glossary bullet entries `(idx, name, def)` — Term-node candidates;
         // only those inside glossary-gated sections are promoted below.
         let mut term_lines: Vec<(usize, String, String)> = Vec::new();
@@ -81,12 +87,16 @@ impl crate::extractor::LanguageExtractor for MarkdownExtractor {
             }
 
             if !in_code_block {
+                let refs_before = line_refs.len();
                 collect_fragment_refs(line, line_num - 1, &mut line_refs);
-                crate::extractor::collect_backtick_mentions(
-                    line,
-                    line_num - 1,
-                    &mut line_mentions,
-                );
+                if line_refs.len() > refs_before
+                    && let Some(dir) = crate::extractor::supersede_direction(line)
+                {
+                    for (_, r) in &line_refs[refs_before..] {
+                        line_supersedes.push((line_num - 1, format!("{dir}:{r}")));
+                    }
+                }
+                crate::extractor::collect_backtick_mentions(line, line_num - 1, &mut line_mentions);
                 if let Some((name, def)) = parse_glossary_bullet(line) {
                     term_lines.push((line_num - 1, name, def));
                 }
@@ -202,6 +212,17 @@ impl crate::extractor::LanguageExtractor for MarkdownExtractor {
                 if !section_mentions.is_empty() {
                     attrs.insert("doc_mentions".to_string(), section_mentions.join(","));
                 }
+                // Same attribution rule for supersede refs (Wave-3 Supersedes).
+                let mut section_supersedes: Vec<String> = line_supersedes
+                    .iter()
+                    .filter(|(idx, _)| *idx >= ref_start && *idx < body_end)
+                    .map(|(_, s)| s.clone())
+                    .collect();
+                section_supersedes.sort();
+                section_supersedes.dedup();
+                if !section_supersedes.is_empty() {
+                    attrs.insert("doc_supersedes".to_string(), section_supersedes.join(","));
+                }
 
                 // Glossary gate: promote this section's `- **term**: def`
                 // bullets to Term nodes (same rule as the AsciiDoc parser).
@@ -262,6 +283,13 @@ impl crate::extractor::LanguageExtractor for MarkdownExtractor {
             all_mentions.dedup();
             if !all_mentions.is_empty() {
                 attrs.insert("doc_mentions".to_string(), all_mentions.join(","));
+            }
+            let mut all_supersedes: Vec<String> =
+                line_supersedes.iter().map(|(_, s)| s.clone()).collect();
+            all_supersedes.sort();
+            all_supersedes.dedup();
+            if !all_supersedes.is_empty() {
+                attrs.insert("doc_supersedes".to_string(), all_supersedes.join(","));
             }
             docs.push(Document {
                 anchor,
@@ -478,6 +506,23 @@ fn normalize_link_target(url: &str) -> String {
         .to_string()
 }
 
+fn extract_markdown_link(line: &str) -> Option<String> {
+    let line = line.trim();
+    if line.starts_with('[')
+        && let Some(bracket_end) = line.find("](")
+    {
+        let inner = &line[1..bracket_end];
+        if let Some(paren_start) = line.find("](") {
+            let url_start = paren_start + 2;
+            if let Some(paren_end) = line[url_start..].find(')') {
+                let url = &line[url_start..url_start + paren_end];
+                return Some(format!("{}->{}", inner, url));
+            }
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -513,12 +558,18 @@ Body with no links.
             .iter()
             .find(|d| d.anchor.contains("h1title"))
             .expect("title node");
-        let refs = title.attributes.get("doc_refs").cloned().unwrap_or_default();
+        let refs = title
+            .attributes
+            .get("doc_refs")
+            .cloned()
+            .unwrap_or_default();
         let refs: Vec<&str> = refs.split(',').collect();
         assert!(refs.contains(&"ref:setup-guide"), "got {refs:?}");
         assert!(refs.contains(&"ref:install-steps"), "got {refs:?}");
         assert!(
-            !refs.iter().any(|r| r.contains("not-a-ref") || r.contains("other")),
+            !refs
+                .iter()
+                .any(|r| r.contains("not-a-ref") || r.contains("other")),
             "fenced/bare-file links must not enter the ref channel; got {refs:?}"
         );
 
@@ -527,25 +578,8 @@ Body with no links.
             .find(|d| d.anchor.contains("h2setup-guide"))
             .expect("section node");
         assert!(
-            section.attributes.get("doc_refs").is_none(),
+            !section.attributes.contains_key("doc_refs"),
             "section has no links of its own"
         );
     }
-}
-
-fn extract_markdown_link(line: &str) -> Option<String> {
-    let line = line.trim();
-    if line.starts_with('[')
-        && let Some(bracket_end) = line.find("](")
-    {
-        let inner = &line[1..bracket_end];
-        if let Some(paren_start) = line.find("](") {
-            let url_start = paren_start + 2;
-            if let Some(paren_end) = line[url_start..].find(')') {
-                let url = &line[url_start..url_start + paren_end];
-                return Some(format!("{}->{}", inner, url));
-            }
-        }
-    }
-    None
 }

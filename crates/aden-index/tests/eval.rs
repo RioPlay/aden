@@ -359,7 +359,12 @@ fn coverage_boost_lifts_broader_match_over_rarer_single_term() {
     let mut index = Index::default();
     index.ingest(
         docs.iter()
-            .map(|(a, p)| (PathBuf::from(format!("{a}.adoc")), format!("[[{a}]]\n{p}\n")))
+            .map(|(a, p)| {
+                (
+                    PathBuf::from(format!("{a}.adoc")),
+                    format!("[[{a}]]\n{p}\n"),
+                )
+            })
             .collect(),
     );
     index.finalize();
@@ -370,7 +375,11 @@ fn coverage_boost_lifts_broader_match_over_rarer_single_term() {
         Some("broad"),
         "coverage boost should lift the 2-term match 'broad' over the rare \
          single-term match 'narrow'; ranking was: {:?}",
-        results.iter().take(3).map(|r| &r.anchor).collect::<Vec<_>>()
+        results
+            .iter()
+            .take(3)
+            .map(|r| &r.anchor)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -423,7 +432,10 @@ fn hybrid_retrieval_eval_with_real_model() {
     let mut bm25_rr = 0.0;
     let mut hybrid_rr = 0.0;
 
-    println!("\n=== BM25 vs HYBRID (real bge model) — {} queries ===", cases.len());
+    println!(
+        "\n=== BM25 vs HYBRID (real bge model) — {} queries ===",
+        cases.len()
+    );
     for case in &cases {
         let b = rank_of(&index.query(case.query), case.expect_top);
         let h = rank_of(&index.hybrid_query(case.query, &embedder), case.expect_top);
@@ -463,7 +475,9 @@ fn hybrid_retrieval_eval_with_real_model() {
     let m14 = index.hybrid_query("detect orphan anchors", &embedder);
     let scan = rank_of(&m14, "scan_orphans");
     let detect = rank_of(&m14, "detect_node_type");
-    println!("  M14 'detect orphan anchors': scan_orphans @ {scan:?}, detect_node_type @ {detect:?}");
+    println!(
+        "  M14 'detect orphan anchors': scan_orphans @ {scan:?}, detect_node_type @ {detect:?}"
+    );
     assert_eq!(
         scan,
         Some(1),

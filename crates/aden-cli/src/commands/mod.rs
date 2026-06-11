@@ -7,8 +7,8 @@ pub mod diagnose;
 pub mod federation;
 pub mod generate;
 pub mod grep;
-pub mod impact_diff;
 pub mod heal;
+pub mod impact_diff;
 pub mod init;
 pub mod licenses;
 pub mod lint;
@@ -23,15 +23,15 @@ pub mod view;
 pub mod viz;
 
 // Re-export all command functions so main.rs can use `commands::cmd_init(...)` etc.
+pub use communities::cmd_communities;
 pub use diagnose::cmd_diagnose;
 pub use federation::cmd_federation;
 pub use generate::{cmd_gen, cmd_gen_opts, ensure_fresh};
-pub use communities::cmd_communities;
 pub use grep::cmd_grep;
-pub use impact_diff::cmd_impact_diff;
 #[cfg(feature = "watch")]
 pub use heal::cmd_heal_watch;
 pub use heal::{cmd_heal_apply, cmd_heal_scan, cmd_heal_scan_since};
+pub use impact_diff::cmd_impact_diff;
 pub use init::{cmd_agents_md, cmd_init, cmd_new};
 pub use licenses::cmd_licenses;
 pub use lint::cmd_lint;

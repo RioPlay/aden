@@ -47,7 +47,8 @@ pub fn detect_communities(
     if n == 0 {
         return Vec::new();
     }
-    let id_of: HashMap<NodeIndex, usize> = nodes.iter().enumerate().map(|(i, &ix)| (ix, i)).collect();
+    let id_of: HashMap<NodeIndex, usize> =
+        nodes.iter().enumerate().map(|(i, &ix)| (ix, i)).collect();
 
     // Undirected weighted adjacency: collapse edge direction, accumulate parallel
     // edges, drop self-loops. Edge weight is 1 per edge (any type counts as a
@@ -128,7 +129,10 @@ fn one_level(adj: &[BTreeMap<usize, f64>], resolution: f64) -> Vec<usize> {
     // no self-loops, aggregated levels may.
     let degree: Vec<f64> = (0..n)
         .map(|i| {
-            adj[i].iter().map(|(&j, &w)| if j == i { 2.0 * w } else { w }).sum()
+            adj[i]
+                .iter()
+                .map(|(&j, &w)| if j == i { 2.0 * w } else { w })
+                .sum()
         })
         .collect();
     let total_w: f64 = degree.iter().sum::<f64>() / 2.0; // m
@@ -225,8 +229,12 @@ mod tests {
     fn two_cliques_joined_by_one_edge_split_into_two() {
         // Clique A {0,1,2}, clique B {3,4,5}, one bridge edge 2-3.
         let edges = [
-            (0, 1), (0, 2), (1, 2), // A
-            (3, 4), (3, 5), (4, 5), // B
+            (0, 1),
+            (0, 2),
+            (1, 2), // A
+            (3, 4),
+            (3, 5),
+            (4, 5), // B
             (2, 3), // bridge
         ];
         let g = groups(&run(&edges, 6));

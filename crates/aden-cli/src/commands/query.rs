@@ -1251,7 +1251,14 @@ pub fn edge_types_for_intent(intent: &QueryIntent) -> Vec<aden_core::EdgeType> {
     // the code symbols the prose names (Wave 2) — exactly the doc→code bridge
     // conceptual answers need, and harmless from code anchors (no outgoing
     // Mentions there).
-    let semantic = vec![IsA, RelatesTo, SimilarTo, AssociatedWith, Explains, Mentions];
+    let semantic = vec![
+        IsA,
+        RelatesTo,
+        SimilarTo,
+        AssociatedWith,
+        Explains,
+        Mentions,
+    ];
     let mut edges: Vec<aden_core::EdgeType> = match intent {
         // Emitter-less edge types (Constrains/Invokes) were trimmed from every
         // intent set (ADR-007 §1): naming a type with zero live edges filters
@@ -1290,10 +1297,7 @@ pub fn edge_types_for_intent(intent: &QueryIntent) -> Vec<aden_core::EdgeType> {
             .into_iter()
             .chain(semantic.clone())
             .collect(),
-        QueryIntent::General => vec![Uses, Documents]
-            .into_iter()
-            .chain(semantic)
-            .collect(),
+        QueryIntent::General => vec![Uses, Documents].into_iter().chain(semantic).collect(),
     };
     // Module containment used to ride on `Documents` edges (module→symbol); those are
     // now typed `Contains`. Any intent that traversed `Documents` to reach a module's
@@ -1400,7 +1404,9 @@ fn community_seeds_for(
         let graph = aden_graph::cache::build_from_directory_cached(path).ok()?;
         aden_graph::community::detect_communities(&graph, 1.0)
     };
-    let group = communities.into_iter().find(|c| c.iter().any(|a| a == anchor))?;
+    let group = communities
+        .into_iter()
+        .find(|c| c.iter().any(|a| a == anchor))?;
     if group.len() < 2 {
         return None;
     }
@@ -1859,9 +1865,13 @@ pub fn cmd_ask(
             let mut best_subst = subst;
             let mut best_rung: Option<&str> = None;
             for (label, d, with_callers) in rungs {
-                if let Ok(body) =
-                    assemble_seed_with(&start_anchor, d, effective_budget, &unfiltered, with_callers)
-                {
+                if let Ok(body) = assemble_seed_with(
+                    &start_anchor,
+                    d,
+                    effective_budget,
+                    &unfiltered,
+                    with_callers,
+                ) {
                     let s = substantive_token_estimate(&body);
                     if s > best_subst {
                         best_body = body;
@@ -3823,7 +3833,9 @@ mod tests {
     #[test]
     fn test_source_path_matches_relative_first_segment() {
         assert!(is_test_source_path("tests/greeter_test.rs"));
-        assert!(is_test_source_path("crates/aden-cli/tests/mcp_flag_parity.rs"));
+        assert!(is_test_source_path(
+            "crates/aden-cli/tests/mcp_flag_parity.rs"
+        ));
         assert!(is_test_source_path("src/__tests__/app.spec.ts"));
         // Rust's conventional split-out test module file.
         assert!(is_test_source_path("crates/aden-parse/src/tests.rs"));
@@ -3843,11 +3855,7 @@ mod tests {
             result("aden://module/flask/app.py#Flask.dispatch_request", 28.0),
         ];
         let token_count = |a: &str| {
-            if a.contains("app.py") {
-                200
-            } else {
-                10
-            }
+            if a.contains("app.py") { 200 } else { 10 }
         };
         let chosen = resolve_anchor_fuzzy("how are views dispatched", &results, token_count);
         assert_eq!(chosen, "aden://module/flask/app.py#Flask.dispatch_request");
@@ -3914,7 +3922,10 @@ mod tests {
     fn ask_routing_overview_prefers_prose_over_code() {
         let q = "what is the design philosophy of widgetd";
         let intent = classify_intent(q);
-        assert!(is_overview_query(q, &intent), "signal must engage for {q:?}");
+        assert!(
+            is_overview_query(q, &intent),
+            "signal must engage for {q:?}"
+        );
         let results = vec![
             result_with_path(
                 "aden://module/widgetd/server.go#Server.Run",
@@ -4006,7 +4017,10 @@ mod tests {
     #[test]
     fn same_file_canonical_prefers_most_referenced_same_file_anchor() {
         let mut indeg = std::collections::HashMap::new();
-        indeg.insert("aden://doc/p/philosophy.adoc#philosophy".to_string(), 6usize);
+        indeg.insert(
+            "aden://doc/p/philosophy.adoc#philosophy".to_string(),
+            6usize,
+        );
         indeg.insert("aden://doc/p/other.adoc#other".to_string(), 9usize);
         assert_eq!(
             same_file_canonical_anchor("aden://doc/p/philosophy.adoc/h1aden-philosophy", &indeg),

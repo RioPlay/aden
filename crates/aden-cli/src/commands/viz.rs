@@ -16,14 +16,30 @@ use aden_graph::Direction;
 use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::path::Path;
 
+fn now_rfc3339() -> String {
+    chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
+}
+
+fn git_head_short(root: &Path) -> Option<String> {
+    let out = std::process::Command::new("git")
+        .args(["rev-parse", "--short", "HEAD"])
+        .current_dir(root)
+        .output()
+        .ok()?;
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
 /// The concrete graph type the cache yields — aliased to keep slice signatures short.
 type Graph = aden_graph::AdenGraph<aden_graph::DocumentNode, aden_graph::AdenEdge>;
 
 /// A typed node/edge slice: a flat set of anchors + the edges among them.
 type Slice = (BTreeSet<String>, BTreeSet<(String, String, String)>);
 
-/// Anchor → (absolute source file, 1-based line), for "open in editor" links.
-type SrcMap = BTreeMap<String, (String, usize)>;
+/// Anchor → (absolute source file, 1-based start line, line count), for
+/// "open in editor" links and content-mass node sizing.
+type SrcMap = BTreeMap<String, (String, usize, usize)>;
 
 /// Make a (possibly relative) source path URI-ready for `vscode://file{file}` on
 /// every OS: absolute, forward slashes, leading slash (Windows `C:\x` → `/C:/x`).
@@ -49,10 +65,140 @@ fn build_src_map(root: &Path) -> SrcMap {
     for (file, spans) in super::grep::load_symbol_spans(root) {
         let uri = uri_path(root, &file);
         for sp in spans {
-            m.entry(sp.anchor).or_insert_with(|| (uri.clone(), sp.start));
+            let loc = sp.end.saturating_sub(sp.start) + 1;
+            m.entry(sp.anchor)
+                .or_insert_with(|| (uri.clone(), sp.start, loc));
         }
     }
     m
+}
+
+/// Word count of a doc node's prose blocks — the prose analogue of LOC, for
+/// content-mass node sizing in the viewer (a 2,000-word ADR should not render
+/// the same as a one-line heading stub).
+fn doc_word_count(doc: &aden_core::Document) -> usize {
+    doc.blocks
+        .iter()
+        .map(|b| match b {
+            aden_core::Block::Paragraph(t) => t.split_whitespace().count(),
+            _ => 0,
+        })
+        .sum()
+}
+
+/// Cap above which snippet embedding is skipped: snippets exist for the
+/// interactive viewer's flyby cards, and beyond this the payload (and the
+/// file reads) stop being worth it — kernel-scale exports stay lean.
+const SNIPPET_NODE_CAP: usize = 1500;
+const SNIPPET_MAX_LINES: usize = 9;
+const SNIPPET_MAX_CHARS: usize = 380;
+
+/// First lines of each anchor's source span, read once per file. Returns
+/// anchor → snippet text (trimmed, char-capped). Files are read directly from
+/// the working tree at export time — the snippet shows what's on disk NOW,
+/// which is exactly what the viewer's "open in editor" lands on.
+fn collect_snippets(src: &SrcMap, kept: &BTreeSet<String>) -> BTreeMap<String, String> {
+    let mut by_file: BTreeMap<&str, Vec<(&str, usize, usize)>> = BTreeMap::new();
+    for a in kept {
+        if let Some((file, start, loc)) = src.get(a) {
+            by_file
+                .entry(file.as_str())
+                .or_default()
+                .push((a.as_str(), *start, *loc));
+        }
+    }
+    let mut out: BTreeMap<String, String> = BTreeMap::new();
+    for (file, anchors) in by_file {
+        let Ok(text) = std::fs::read_to_string(file) else {
+            continue;
+        };
+        let lines: Vec<&str> = text.lines().collect();
+        for (anchor, start, loc) in anchors {
+            let from = start.saturating_sub(1).min(lines.len());
+            let to = (from + loc.min(SNIPPET_MAX_LINES)).min(lines.len());
+            if from >= to {
+                continue;
+            }
+            let mut snip = lines[from..to].join("\n");
+            if snip.len() > SNIPPET_MAX_CHARS {
+                let mut cut = SNIPPET_MAX_CHARS;
+                while !snip.is_char_boundary(cut) {
+                    cut -= 1;
+                }
+                snip.truncate(cut);
+                snip.push('…');
+            }
+            if !snip.trim().is_empty() {
+                out.insert(anchor.to_string(), snip);
+            }
+        }
+    }
+    out
+}
+
+/// First prose paragraph of a doc node, word-capped — the flyby card for
+/// docs/terms shows what the section actually says.
+fn doc_snippet(doc: &aden_core::Document) -> Option<String> {
+    let text = doc.blocks.iter().find_map(|b| match b {
+        aden_core::Block::Paragraph(t) if !t.trim().is_empty() => Some(t.as_str()),
+        _ => None,
+    })?;
+    let words: Vec<&str> = text.split_whitespace().collect();
+    if words.is_empty() {
+        return None;
+    }
+    let take = words.len().min(50);
+    let mut s = words[..take].join(" ");
+    if take < words.len() {
+        s.push('…');
+    }
+    Some(s)
+}
+
+/// Restrict the graph to anchors whose source file lives under `scope` (a
+/// project-relative subdirectory or file). This is the kernel-scale escape
+/// hatch: `aden viz --mode communities --scope net/` runs detection on the
+/// `net/` SUBGRAPH instead of post-filtering whole-project communities — the
+/// clusters are the clusters *of that subtree*. Anchors without a recorded
+/// source span (synthesized `mod-*` hubs, prose docs) drop out; an empty
+/// result is an error, not an empty diagram.
+fn scoped_subgraph(
+    graph: &Graph,
+    root: &Path,
+    scope: &str,
+) -> Result<Graph, Box<dyn std::error::Error>> {
+    let src = build_src_map(root);
+    let scope_uri = uri_path(root, scope);
+    let prefix = format!("{}/", scope_uri.trim_end_matches('/'));
+    let allowed: HashSet<&str> = src
+        .iter()
+        .filter(|(_, (file, _, _))| file.starts_with(&prefix) || *file == scope_uri)
+        .map(|(a, _)| a.as_str())
+        .collect();
+    if allowed.is_empty() {
+        return Err(format!(
+            "--scope '{scope}' matched no indexed sources (paths are relative to the \
+             project root, e.g. `--scope crates/aden-cli` or `--scope net/`)"
+        )
+        .into());
+    }
+    let mut g: Graph = aden_graph::AdenGraph::new();
+    for idx in graph.graph.node_indices() {
+        let n = &graph.graph[idx];
+        if allowed.contains(n.doc.anchor.as_str()) {
+            g.add_node(n.clone());
+        }
+    }
+    for e in graph.graph.edge_indices() {
+        let Some((s, t)) = graph.graph.edge_endpoints(e) else {
+            continue;
+        };
+        let (sa, ta) = (&graph.graph[s].doc.anchor, &graph.graph[t].doc.anchor);
+        if let (Some(si), Some(ti)) = (g.get_index(sa), g.get_index(ta)) {
+            g.add_edge(si, ti, graph.graph[e]);
+        }
+    }
+    Ok(g)
 }
 
 /// Reject a directory path passed in the ANCHOR position. The positional
@@ -76,6 +222,7 @@ fn reject_directory_anchor(anchor: Option<&str>) -> Result<(), Box<dyn std::erro
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)] // CLI handler mirroring the subcommand's flags 1:1
 pub fn cmd_viz(
     path: &Path,
     anchor: Option<&str>,
@@ -84,6 +231,8 @@ pub fn cmd_viz(
     mode: &str,
     json: bool,
     full: bool,
+    scope: Option<&str>,
+    resolution: f64,
 ) -> Result<(), Box<dyn std::error::Error>> {
     reject_directory_anchor(anchor)?;
     // The global `-j/--json` flag is an alias for `--format json`, so it never
@@ -92,7 +241,10 @@ pub fn cmd_viz(
     let root = find_project_root(path);
     // Keep the graph fresh so the rendered slice reflects the current code.
     super::ensure_fresh(&root);
-    let graph = aden_graph::cache::build_from_directory_cached(&root)?;
+    let mut graph = aden_graph::cache::build_from_directory_cached(&root)?;
+    if let Some(sub) = scope {
+        graph = scoped_subgraph(&graph, &root, sub)?;
+    }
 
     let diagram = match mode {
         // Whole-graph functional clusters → DOT `cluster_*` is the right default
@@ -101,9 +253,17 @@ pub fn cmd_viz(
             // JSON / viewer uses the collapsed super-node overview (connected and
             // legible); the static formats keep member cluster-boxes.
             if format == "json" {
-                render_communities_view_json(&graph, &root, 2, 1.0, MAX_COMMUNITIES, DRILL_CAP)?
+                render_communities_view_json(
+                    &graph,
+                    &root,
+                    2,
+                    resolution,
+                    MAX_COMMUNITIES,
+                    DRILL_CAP,
+                )?
             } else {
-                let (comms, edges) = communities_slice(&graph, 2, 1.0, MAX_COMMUNITIES, MEMBER_CAP);
+                let (comms, edges) =
+                    communities_slice(&graph, 2, resolution, MAX_COMMUNITIES, MEMBER_CAP);
                 if comms.is_empty() {
                     return Err("no communities of size >= 2 found (try `aden communities`)".into());
                 }
@@ -120,7 +280,7 @@ pub fn cmd_viz(
                         .into(),
                 );
             }
-            render_whole_graph_json(&graph, &root, if full { 0 } else { GRAPH_CAP })
+            render_whole_graph_json(&graph, &root, if full { 0 } else { GRAPH_CAP }, resolution)
         }
         // Anchor-centred views.
         "blast" | "reach" | "connectivity" => {
@@ -137,7 +297,16 @@ pub fn cmd_viz(
                 _ => blast_slice(&graph, &root_anchor, depth, NODE_CAP),
             };
             let src = build_src_map(&root);
-            render_flat(&root_anchor, &nodes, &edges, format, &src)?
+            render_flat(
+                &root_anchor,
+                &nodes,
+                &edges,
+                format,
+                &src,
+                &graph,
+                &root,
+                mode,
+            )?
         }
         other => {
             return Err(format!(
@@ -169,15 +338,24 @@ pub(crate) fn viz_json_for(
     anchor: Option<&str>,
     mode: &str,
     depth: usize,
+    scope: Option<&str>,
+    resolution: f64,
 ) -> Result<String, Box<dyn std::error::Error>> {
     // `view` shares the positional trap (`aden view .`): same guard.
     reject_directory_anchor(anchor)?;
     let root = find_project_root(path);
     super::ensure_fresh(&root);
-    let graph = aden_graph::cache::build_from_directory_cached(&root)?;
+    let mut graph = aden_graph::cache::build_from_directory_cached(&root)?;
+    if let Some(sub) = scope {
+        graph = scoped_subgraph(&graph, &root, sub)?;
+    }
     match mode {
-        "graph" => Ok(render_whole_graph_json(&graph, &root, GRAPH_CAP)),
-        "communities" => render_communities_view_json(&graph, &root, 2, 1.0, MAX_COMMUNITIES, DRILL_CAP),
+        "graph" => Ok(render_whole_graph_json(
+            &graph, &root, GRAPH_CAP, resolution,
+        )),
+        "communities" => {
+            render_communities_view_json(&graph, &root, 2, resolution, MAX_COMMUNITIES, DRILL_CAP)
+        }
         "blast" | "reach" | "connectivity" => {
             let anchor = anchor.ok_or_else(|| -> Box<dyn std::error::Error> {
                 format!("--mode {mode} needs an ANCHOR (a symbol or full aden:// anchor)").into()
@@ -189,7 +367,15 @@ pub(crate) fn viz_json_for(
                 _ => blast_slice(&graph, &root_anchor, depth, NODE_CAP),
             };
             let src = build_src_map(&root);
-            Ok(render_json(&root_anchor, &nodes, &edges, &src))
+            Ok(render_json(
+                &root_anchor,
+                &nodes,
+                &edges,
+                &src,
+                &graph,
+                &root,
+                mode,
+            ))
         }
         other => Err(format!(
             "unknown --mode '{other}' (expected blast, reach, connectivity, communities, or graph)"
@@ -252,16 +438,14 @@ pub(crate) fn anchors_json(
             // ALL typed edges between the pair — parallel types are real data
             // (a test's call is both `Calls` and `Tests` since Wave 1).
             for e in graph.graph.edges_connecting(idx, nb) {
-                edges.insert((
-                    a.clone(),
-                    to.clone(),
-                    format!("{:?}", e.weight().edge_type),
-                ));
+                edges.insert((a.clone(), to.clone(), format!("{:?}", e.weight().edge_type)));
             }
         }
     }
     let src = build_src_map(&root);
-    Ok(render_json("", &nodes, &edges, &src))
+    Ok(render_json(
+        "", &nodes, &edges, &src, &graph, &root, "graph",
+    ))
 }
 
 /// Default cap on the whole-graph export — keep the most *important* (highest total
@@ -279,19 +463,25 @@ const GRAPH_CAP: usize = 800;
 /// This is the export the architecture note (research: viewer-unified-explorer) calls
 /// for: aden computes the rich, whole-graph, code+prose view model *once* and any
 /// consumer (viewer, agent, CI gate) lenses it, instead of each re-deriving it.
-fn render_whole_graph_json(graph: &Graph, root: &Path, cap: usize) -> String {
+fn render_whole_graph_json(graph: &Graph, root: &Path, cap: usize, resolution: f64) -> String {
     // Total (in+out) degree per node — the importance signal the cap ranks on, and a
     // first-class field every consumer wants (centrality without a re-derivation).
     let mut degree: BTreeMap<String, usize> = BTreeMap::new();
     for idx in graph.graph.node_indices() {
         let a = graph.graph[idx].doc.anchor.clone();
-        let out = graph.graph.neighbors_directed(idx, Direction::Outgoing).count();
-        let inc = graph.graph.neighbors_directed(idx, Direction::Incoming).count();
+        let out = graph
+            .graph
+            .neighbors_directed(idx, Direction::Outgoing)
+            .count();
+        let inc = graph
+            .graph
+            .neighbors_directed(idx, Direction::Incoming)
+            .count();
         degree.insert(a, out + inc);
     }
 
     // Community of every member + a human label per community (the most common group).
-    let comms = aden_graph::community::detect_communities(graph, 1.0);
+    let comms = aden_graph::community::detect_communities(graph, resolution);
     let mut comm_of: BTreeMap<String, usize> = BTreeMap::new();
     let mut comm_meta: Vec<serde_json::Value> = Vec::new();
     for (i, members) in comms.iter().enumerate() {
@@ -308,9 +498,33 @@ fn render_whole_graph_json(graph: &Graph, root: &Path, cap: usize) -> String {
     // Rank all nodes by degree (desc), tiebreak anchor (asc, deterministic), cap.
     let mut ranked: Vec<String> = degree.keys().cloned().collect();
     ranked.sort_by(|a, b| {
-        degree.get(b).unwrap_or(&0).cmp(degree.get(a).unwrap_or(&0)).then_with(|| a.cmp(b))
+        degree
+            .get(b)
+            .unwrap_or(&0)
+            .cmp(degree.get(a).unwrap_or(&0))
+            .then_with(|| a.cmp(b))
     });
     let total = ranked.len();
+    // Compact global search index — all anchors ranked by degree, capped so the page stays
+    // fast. Each entry uses short keys {n,a,k,g,d} to minimise payload.
+    const ALL_ANCHORS_CAP: usize = 4000;
+    let all_anchors: Vec<serde_json::Value> = ranked
+        .iter()
+        .take(ALL_ANCHORS_CAP)
+        .map(|a| {
+            let k = graph
+                .get_index(a)
+                .map(|i| format!("{:?}", graph.graph[i].doc.node_type))
+                .unwrap_or_else(|| "Note".to_string());
+            serde_json::json!({
+                "n": label(a),
+                "a": a,
+                "k": k,
+                "g": group_of(a),
+                "d": degree.get(a).copied().unwrap_or(0),
+            })
+        })
+        .collect();
     if cap > 0 && ranked.len() > cap {
         ranked.truncate(cap);
     }
@@ -322,6 +536,11 @@ fn render_whole_graph_json(graph: &Graph, root: &Path, cap: usize) -> String {
         .collect();
 
     let src = build_src_map(root);
+    let snippets = if kept.len() <= SNIPPET_NODE_CAP {
+        collect_snippets(&src, &kept)
+    } else {
+        BTreeMap::new()
+    };
     let nodes_json: Vec<serde_json::Value> = kept
         .iter()
         .map(|a| {
@@ -340,9 +559,27 @@ fn render_whole_graph_json(graph: &Graph, root: &Path, cap: usize) -> String {
             if let Some(&c) = comm_of.get(a) {
                 obj["community"] = serde_json::json!(c);
             }
-            if let Some((file, line)) = src.get(a) {
+            if let Some((file, line, loc)) = src.get(a) {
                 obj["file"] = serde_json::json!(file);
                 obj["line"] = serde_json::json!(line);
+                obj["loc"] = serde_json::json!(loc);
+            }
+            // Prose mass: word count for doc/term nodes (no source span).
+            if (a.starts_with("aden://doc/") || a.starts_with("aden://term/"))
+                && let Some(i) = idx
+            {
+                let w = doc_word_count(&graph.graph[i].doc);
+                if w > 0 {
+                    obj["words"] = serde_json::json!(w);
+                }
+                if kept.len() <= SNIPPET_NODE_CAP
+                    && let Some(s) = doc_snippet(&graph.graph[i].doc)
+                {
+                    obj["snippet"] = serde_json::json!(s);
+                }
+            }
+            if let Some(s) = snippets.get(a.as_str()) {
+                obj["snippet"] = serde_json::json!(s);
             }
             obj
         })
@@ -351,7 +588,9 @@ fn render_whole_graph_json(graph: &Graph, root: &Path, cap: usize) -> String {
     // Every typed edge among kept nodes, oriented source→target.
     let mut edge_set: BTreeSet<(String, String, String)> = BTreeSet::new();
     for a in &kept {
-        let Some(idx) = graph.get_index(a) else { continue };
+        let Some(idx) = graph.get_index(a) else {
+            continue;
+        };
         for nb in graph.graph.neighbors_directed(idx, Direction::Outgoing) {
             let to = graph.graph[nb].doc.anchor.clone();
             if !kept.contains(&to) {
@@ -374,13 +613,19 @@ fn render_whole_graph_json(graph: &Graph, root: &Path, cap: usize) -> String {
         .map(|(f, t, ty)| serde_json::json!({ "from": f, "to": t, "type": ty }))
         .collect();
 
+    let generated_at = now_rfc3339();
+    let git_hash = git_head_short(root).unwrap_or_default();
     serde_json::to_string_pretty(&serde_json::json!({
         "mode": "graph",
+        "generated_at": generated_at,
+        "git_hash": git_hash,
         "nodes": nodes_json,
         "edges": edges_json,
         "communities": comm_meta,
         "total_nodes": total,
         "shown_nodes": kept.len(),
+        "all_anchors": all_anchors,
+        "all_anchors_total": total,
     }))
     .unwrap_or_else(|_| "{}".to_string())
 }
@@ -564,11 +809,7 @@ fn communities_slice(
             }
             // ALL typed edges between the pair, not just the first.
             for e in graph.graph.edges_connecting(idx, nb) {
-                edges.insert((
-                    a.clone(),
-                    to.clone(),
-                    format!("{:?}", e.weight().edge_type),
-                ));
+                edges.insert((a.clone(), to.clone(), format!("{:?}", e.weight().edge_type)));
             }
         }
     }
@@ -682,9 +923,10 @@ fn render_communities_view_json(
             .iter()
             .map(|m| {
                 let mut obj = serde_json::json!({ "id": local[m.as_str()], "anchor": m, "label": label(m), "community": i, "group": group_of(m) });
-                if let Some((file, line)) = src.get(m) {
+                if let Some((file, line, loc)) = src.get(m) {
                     obj["file"] = serde_json::json!(file);
                     obj["line"] = serde_json::json!(line);
+                    obj["loc"] = serde_json::json!(loc);
                 }
                 obj
             })
@@ -748,7 +990,9 @@ fn community_label(members: &[String]) -> String {
         *counts.entry(group_of(m)).or_default() += 1;
     }
     // Deterministic: ties resolve to the alphabetically-first group (BTreeMap order).
-    let Some((top, n)) = counts.into_iter().max_by(|a, b| a.1.cmp(&b.1).then(b.0.cmp(a.0)))
+    let Some((top, n)) = counts
+        .into_iter()
+        .max_by(|a, b| a.1.cmp(&b.1).then(b.0.cmp(a.0)))
     else {
         return "mixed".to_string();
     };
@@ -759,18 +1003,22 @@ fn community_label(members: &[String]) -> String {
 }
 
 /// Dispatch a flat (blast/connectivity) slice to the requested format.
+#[allow(clippy::too_many_arguments)] // mirror of render_json's full context, all one shape
 fn render_flat(
     root: &str,
     nodes: &BTreeSet<String>,
     edges: &BTreeSet<(String, String, String)>,
     format: &str,
     src: &SrcMap,
+    graph: &Graph,
+    proj_root: &Path,
+    mode: &str,
 ) -> Result<String, Box<dyn std::error::Error>> {
     Ok(match format {
         "dot" => render_dot(root, nodes, edges),
         "mermaid" => render_mermaid(root, nodes, edges),
         "asciidoc" | "adoc" => render_asciidoc(root, nodes, edges),
-        "json" => render_json(root, nodes, edges, src),
+        "json" => render_json(root, nodes, edges, src, graph, proj_root, mode),
         other => {
             return Err(format!(
                 "unknown --format '{other}' (expected 'mermaid', 'dot', 'asciidoc', or 'json')"
@@ -822,8 +1070,12 @@ fn render_communities_dot(
     edges: &BTreeSet<(String, String, String)>,
 ) -> String {
     let ids = community_ids(comms);
-    let palette = ["#eef6ff", "#fff0f0", "#f0fff0", "#fffbe6", "#f5f0ff", "#f0ffff"];
-    let mut out = String::from("digraph communities {\n  rankdir=LR;\n  node [shape=box];\n  compound=true;\n");
+    let palette = [
+        "#eef6ff", "#fff0f0", "#f0fff0", "#fffbe6", "#f5f0ff", "#f0ffff",
+    ];
+    let mut out = String::from(
+        "digraph communities {\n  rankdir=LR;\n  node [shape=box];\n  compound=true;\n",
+    );
     for (i, c) in comms.iter().enumerate() {
         out.push_str(&format!(
             "  subgraph cluster_{i} {{\n    label=\"{} ({})\";\n    style=filled;\n    color=\"{}\";\n",
@@ -1055,21 +1307,51 @@ fn render_json(
     nodes: &BTreeSet<String>,
     edges: &BTreeSet<(String, String, String)>,
     src: &SrcMap,
+    graph: &Graph,
+    proj_root: &Path,
+    mode: &str,
 ) -> String {
     let ids = id_map(nodes);
+    let snippets = if nodes.len() <= SNIPPET_NODE_CAP {
+        collect_snippets(src, nodes)
+    } else {
+        BTreeMap::new()
+    };
     let nodes_json: Vec<serde_json::Value> = nodes
         .iter()
         .map(|a| {
+            let kind = graph
+                .get_index(a)
+                .map(|i| format!("{:?}", graph.graph[i].doc.node_type))
+                .unwrap_or_else(|| "Note".to_string());
             let mut obj = serde_json::json!({
                 "id": ids[a.as_str()],
                 "anchor": a,
                 "label": label(a),
                 "group": group_of(a),
+                "kind": kind,
                 "root": a == root,
             });
-            if let Some((file, line)) = src.get(a) {
+            if let Some((file, line, loc)) = src.get(a) {
                 obj["file"] = serde_json::json!(file);
                 obj["line"] = serde_json::json!(line);
+                obj["loc"] = serde_json::json!(loc);
+            }
+            if (a.starts_with("aden://doc/") || a.starts_with("aden://term/"))
+                && let Some(i) = graph.get_index(a)
+            {
+                let w = doc_word_count(&graph.graph[i].doc);
+                if w > 0 {
+                    obj["words"] = serde_json::json!(w);
+                }
+                if nodes.len() <= SNIPPET_NODE_CAP
+                    && let Some(s) = doc_snippet(&graph.graph[i].doc)
+                {
+                    obj["snippet"] = serde_json::json!(s);
+                }
+            }
+            if let Some(s) = snippets.get(a.as_str()) {
+                obj["snippet"] = serde_json::json!(s);
             }
             obj
         })
@@ -1084,8 +1366,13 @@ fn render_json(
             })
         })
         .collect();
+    let generated_at = now_rfc3339();
+    let git_hash = git_head_short(proj_root).unwrap_or_default();
     serde_json::to_string_pretty(&serde_json::json!({
         "root": root,
+        "mode": mode,
+        "generated_at": generated_at,
+        "git_hash": git_hash,
         "blast_radius": nodes.len().saturating_sub(1),
         "nodes": nodes_json,
         "edges": edges_json,
@@ -1124,8 +1411,14 @@ mod tests {
 
     #[test]
     fn tail_and_label() {
-        assert_eq!(anchor_tail("aden://module/aden-cli/query.rs#cmd_understand"), "cmd_understand");
-        assert_eq!(label("aden://module/aden-cli/query.rs#cmd_understand"), "query.rs#cmd_understand");
+        assert_eq!(
+            anchor_tail("aden://module/aden-cli/query.rs#cmd_understand"),
+            "cmd_understand"
+        );
+        assert_eq!(
+            label("aden://module/aden-cli/query.rs#cmd_understand"),
+            "query.rs#cmd_understand"
+        );
         assert_eq!(anchor_tail("bare"), "bare");
     }
 
@@ -1164,8 +1457,18 @@ mod tests {
         let b = "aden://module/x/b.rs#b".to_string();
         let c = "aden://module/y/c.rs#c".to_string();
         let comms = vec![
-            Community { label: "x".into(), size: 3, members: vec![a.clone(), b.clone()], overflow: 1 },
-            Community { label: "y".into(), size: 1, members: vec![c.clone()], overflow: 0 },
+            Community {
+                label: "x".into(),
+                size: 3,
+                members: vec![a.clone(), b.clone()],
+                overflow: 1,
+            },
+            Community {
+                label: "y".into(),
+                size: 1,
+                members: vec![c.clone()],
+                overflow: 0,
+            },
         ];
         // ids are assigned in sorted-anchor order: a=n0, b=n1, c=n2
         let edges = BTreeSet::from([(a, c, "Calls".to_string())]);
@@ -1174,7 +1477,10 @@ mod tests {
 
     #[test]
     fn group_and_label() {
-        assert_eq!(group_of("aden://module/aden-cli/query.rs#cmd_understand"), "aden-cli");
+        assert_eq!(
+            group_of("aden://module/aden-cli/query.rs#cmd_understand"),
+            "aden-cli"
+        );
         assert_eq!(group_of("aden://doc/aden/file.adoc#h"), "aden");
         let members = vec![
             "aden://module/aden-cli/a#x".to_string(),
@@ -1231,7 +1537,16 @@ mod tests {
     #[test]
     fn json_has_root_blast_radius_nodes_and_edges() {
         let (root, nodes, edges) = sample();
-        let j = render_json(&root, &nodes, &edges, &SrcMap::new());
+        let empty_graph = aden_graph::AdenGraph::new();
+        let j = render_json(
+            &root,
+            &nodes,
+            &edges,
+            &SrcMap::new(),
+            &empty_graph,
+            std::path::Path::new("."),
+            "blast",
+        );
         let v: serde_json::Value = serde_json::from_str(&j).expect("valid JSON");
         assert_eq!(v["root"], "aden://module/x/a.rs#root");
         assert_eq!(v["blast_radius"], 1); // one downstream node (child)

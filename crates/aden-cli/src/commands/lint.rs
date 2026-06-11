@@ -629,9 +629,7 @@ pub(crate) fn code_only(line: &str) -> String {
                 }
                 let mut k = j + 1;
                 while k < chars.len() {
-                    if chars[k] == '"'
-                        && (0..hashes).all(|h| chars.get(k + 1 + h) == Some(&'#'))
-                    {
+                    if chars[k] == '"' && (0..hashes).all(|h| chars.get(k + 1 + h) == Some(&'#')) {
                         for _ in 0..=hashes {
                             out.push(' '); // closing quote + hashes
                         }

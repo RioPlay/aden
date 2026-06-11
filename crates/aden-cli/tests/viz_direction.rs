@@ -134,9 +134,9 @@ fn blast_walks_incoming_dependents() {
     );
     let edges = edge_anchors(&json);
     assert!(
-        edges
-            .iter()
-            .any(|(f, t, ty)| f.ends_with("#caller_fn") && t.ends_with("#helper_fn") && ty == "Calls"),
+        edges.iter().any(|(f, t, ty)| f.ends_with("#caller_fn")
+            && t.ends_with("#helper_fn")
+            && ty == "Calls"),
         "edge must keep stored caller→callee orientation; got: {edges:?}"
     );
 }
@@ -193,9 +193,9 @@ fn reach_walks_outgoing_dependencies() {
     );
     let edges = edge_anchors(&json);
     assert!(
-        edges
-            .iter()
-            .any(|(f, t, ty)| f.ends_with("#caller_fn") && t.ends_with("#helper_fn") && ty == "Calls"),
+        edges.iter().any(|(f, t, ty)| f.ends_with("#caller_fn")
+            && t.ends_with("#helper_fn")
+            && ty == "Calls"),
         "reach edge must keep stored caller→callee orientation; got: {edges:?}"
     );
 }

@@ -84,9 +84,10 @@ mod tests {
         std::fs::write(&file, "x = 1\n").unwrap();
 
         let mut graph = AdenGraph::<DocumentNode, AdenEdge>::new();
-        let idx = graph
-            .graph
-            .add_node(node_with_source("aden://module/pkg/mod.py#x", "src/pkg/mod.py"));
+        let idx = graph.graph.add_node(node_with_source(
+            "aden://module/pkg/mod.py#x",
+            "src/pkg/mod.py",
+        ));
         graph
             .anchor_to_index
             .insert("aden://module/pkg/mod.py#x".to_string(), idx);

@@ -160,7 +160,9 @@ mod tests {
         assert!(is_expected_metadata("aden://module/aden/df.txt#document"));
 
         // Generated snippet fragments, regardless of file.
-        assert!(is_expected_metadata("aden://module/aden-cli/x.rs#code_block_7"));
+        assert!(is_expected_metadata(
+            "aden://module/aden-cli/x.rs#code_block_7"
+        ));
     }
 
     #[test]

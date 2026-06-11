@@ -43,7 +43,8 @@ pub(crate) fn make_anchor(crate_name: &str, file_name: &str, symbol: &str) -> St
 /// `aden://module/{project}/…` anchors for the same file (`aden` vs `unknown`),
 /// double-flagging every such symbol as MissingContract *and* OrphanAnchor.
 pub(crate) fn infer_project_name(path: &Path) -> String {
-    path.ancestors()
+    if let Some(name) = path
+        .ancestors()
         .find(|p| {
             p.join("Cargo.toml").exists()
                 || p.join("package.json").exists()
@@ -53,6 +54,28 @@ pub(crate) fn infer_project_name(path: &Path) -> String {
                 || p.join("tsconfig.json").exists()
         })
         .and_then(dir_name)
+    {
+        return name;
+    }
+    // Manifest-less fallback (C, Makefile-built trees like the Linux kernel):
+    // the top-level directory under the VCS root is the subsystem the file
+    // belongs to (`mm/page_alloc.c` → `mm`, `net/core/sock.c` → `net`).
+    // Without this, EVERY anchor in such a tree collapses into one
+    // `aden://module/unknown/…` group and community labels become useless at
+    // scale. Files directly at the root fall through to the parent-dir name.
+    if let Some(repo) = path.ancestors().find(|p| p.join(".git").exists())
+        && let Ok(rel) = path.strip_prefix(repo)
+        && rel.components().count() > 1
+        && let Some(std::path::Component::Normal(top)) = rel.components().next()
+    {
+        return top.to_string_lossy().to_string();
+    }
+    // No VCS root either (e.g. a tarball checkout): the file's own directory
+    // is still a more honest group than a global "unknown" bucket.
+    path.parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .and_then(dir_name)
+        .filter(|n| n != "." && n != "..")
         .unwrap_or_else(|| "unknown".to_string())
 }
 
@@ -230,7 +253,6 @@ pub(crate) fn extract_code_references(code: &str, lang: &str) -> Vec<String> {
     refs
 }
 
-
 /// Floor on mention/call-token name length: below this, prose words and
 /// generic identifiers (`new`, `get`, `run`) flood the channel with noise.
 pub(crate) const MENTION_MIN_LEN: usize = 4;
@@ -267,6 +289,29 @@ pub(crate) fn collect_backtick_mentions(line: &str, idx: usize, out: &mut Vec<(u
     }
 }
 
+/// Supersede-context detection for prose cross-references (Wave 3
+/// `Supersedes`). A ref on a line with supersede language becomes a directed
+/// NEW —Supersedes→ OLD edge; this returns which side the enclosing doc is on:
+/// - `Some("by")` — passive ("Superseded … by <<X>>"): the REFERENCED doc
+///   supersedes the enclosing one;
+/// - `Some("of")` — active ("supersedes <<X>>"): the enclosing doc supersedes
+///   the referenced one;
+/// - `None` — no supersede language; the ref stays an ordinary cross-reference.
+///
+/// `"superseded" + "by"` is checked first so the passive form wins when a line
+/// somehow carries both phrasings (the rarer, more specific pattern).
+pub(crate) fn supersede_direction(line: &str) -> Option<&'static str> {
+    let l = line.to_lowercase();
+    if !l.contains("supersed") {
+        return None;
+    }
+    if l.contains("superseded") && l.contains("by") {
+        Some("by")
+    } else {
+        Some("of")
+    }
+}
+
 /// A glossary entry found by a format parser: the per-format half of Term
 /// extraction. `slug` is the explicit `[[anchor]]` when the author declared
 /// one, else `term_slug(name)`.
@@ -281,11 +326,7 @@ pub(crate) struct GlossaryEntry {
 /// identifier-shaped) plus any backticked names in the definition, so terms
 /// link to the code they define through the ordinary Mentions channel with
 /// its unambiguous-only guard — no new resolution machinery.
-pub(crate) fn build_term_document(
-    project: &str,
-    path: &Path,
-    entry: &GlossaryEntry,
-) -> Document {
+pub(crate) fn build_term_document(project: &str, path: &Path, entry: &GlossaryEntry) -> Document {
     let mut attrs = build_code_attributes(&entry.definition, "term", Some(path), None);
     attrs.insert("term_name".to_string(), entry.name.clone());
     let mut mentions: Vec<(usize, String)> = Vec::new();
@@ -372,8 +413,8 @@ pub(crate) fn mention_candidate(span: &str) -> Option<&str> {
 /// deterministic attribute output.
 pub(crate) fn listing_call_tokens(code: &str) -> Vec<String> {
     const KEYWORDS: &[&str] = &[
-        "if", "for", "while", "match", "switch", "return", "catch", "print", "println",
-        "assert", "panic", "format", "main",
+        "if", "for", "while", "match", "switch", "return", "catch", "print", "println", "assert",
+        "panic", "format", "main",
     ];
     let mut out: Vec<String> = Vec::new();
     for line in code.lines() {
@@ -451,6 +492,51 @@ mod tests {
         let from_rel = infer_project_name(std::path::Path::new("./sub/script.ps1"));
         std::env::set_current_dir(&prev).unwrap();
         assert_eq!(from_rel, from_abs, "relative path must match absolute");
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    /// Manifest-less tree with a VCS root (the Linux-kernel layout): the
+    /// module name is the top-level directory under the repo root, NOT a
+    /// global "unknown" bucket — `mm/page_alloc.c` → `mm`,
+    /// `net/core/sock.c` → `net`.
+    #[test]
+    fn manifestless_repo_uses_top_level_dir_as_module() {
+        let base = std::env::temp_dir().join("aden_infer_test_kernel");
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(base.join(".git")).unwrap();
+        fs::create_dir_all(base.join("mm")).unwrap();
+        fs::create_dir_all(base.join("net/core")).unwrap();
+        fs::write(base.join("mm/page_alloc.c"), "int x;\n").unwrap();
+        fs::write(base.join("net/core/sock.c"), "int y;\n").unwrap();
+        fs::write(base.join("main.c"), "int z;\n").unwrap();
+
+        assert_eq!(infer_project_name(&base.join("mm/page_alloc.c")), "mm");
+        assert_eq!(
+            infer_project_name(&base.join("net/core/sock.c")),
+            "net",
+            "nested files group by TOP-level subsystem, not their leaf dir"
+        );
+        // A root-level file has no top-level subdir — its parent (the repo
+        // dir itself) is the honest group.
+        assert_eq!(
+            infer_project_name(&base.join("main.c")),
+            "aden_infer_test_kernel"
+        );
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    /// No manifest AND no VCS root (tarball checkout): the file's own
+    /// directory still beats a global "unknown".
+    #[test]
+    fn manifestless_no_vcs_falls_back_to_parent_dir() {
+        let base = std::env::temp_dir().join("aden_infer_test_tarball");
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(base.join("drivers")).unwrap();
+        fs::write(base.join("drivers/thing.c"), "int x;\n").unwrap();
+
+        assert_eq!(infer_project_name(&base.join("drivers/thing.c")), "drivers");
 
         let _ = fs::remove_dir_all(&base);
     }

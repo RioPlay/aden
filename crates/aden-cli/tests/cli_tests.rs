@@ -292,8 +292,12 @@ fn test_additional_commands() {
 fn test_regen_prunes_renamed_symbol() {
     let dir = temp_project::temp_dir();
     let src = dir.join("m.go");
-    std::fs::write(&dir.join("go.mod"), "module m\n").unwrap();
-    std::fs::write(&src, "package m\ntype Foo struct{}\nfunc (c *Foo) Bar() {}\n").unwrap();
+    std::fs::write(dir.join("go.mod"), "module m\n").unwrap();
+    std::fs::write(
+        &src,
+        "package m\ntype Foo struct{}\nfunc (c *Foo) Bar() {}\n",
+    )
+    .unwrap();
 
     // Initial gen records Foo.Bar.
     let gen_out = std::process::Command::new("aden")
@@ -303,7 +307,11 @@ fn test_regen_prunes_renamed_symbol() {
     assert!(gen_out.status.success(), "initial gen should succeed");
 
     // Rename the method, then regen.
-    std::fs::write(&src, "package m\ntype Foo struct{}\nfunc (c *Foo) Baz() {}\n").unwrap();
+    std::fs::write(
+        &src,
+        "package m\ntype Foo struct{}\nfunc (c *Foo) Baz() {}\n",
+    )
+    .unwrap();
     let regen = std::process::Command::new("aden")
         .args(["regen", &dir.to_string_lossy()])
         .output()

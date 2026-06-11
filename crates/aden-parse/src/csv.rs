@@ -99,4 +99,3 @@ impl crate::extractor::LanguageExtractor for CsvExtractor {
         }])
     }
 }
-
