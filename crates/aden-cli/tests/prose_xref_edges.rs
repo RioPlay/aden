@@ -42,13 +42,17 @@ The fence above must neither declare anchors nor count as references.
 ";
 
 fn unique_dir(label: &str) -> PathBuf {
+    // pid+nanos alone collides on macOS (µs clock granularity) when parallel
+    // test threads enter in the same tick; the counter disambiguates.
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let d = std::env::temp_dir().join(format!(
-        "aden-prosexref-{label}-{}-{}",
+        "aden-prosexref-{label}-{}-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
-            .as_nanos()
+            .as_nanos(),
+        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
