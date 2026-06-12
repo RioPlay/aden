@@ -268,7 +268,312 @@ pub(crate) fn extract_code_references(code: &str, lang: &str) -> Vec<String> {
                 }
             }
         }
-        _ => {}
+        "java" => {
+            for line in code.lines() {
+                let trimmed = line.trim();
+                // Strip visibility/modifier prefixes so we can match bare keywords.
+                let bare = trimmed
+                    .trim_start_matches("public ")
+                    .trim_start_matches("private ")
+                    .trim_start_matches("protected ")
+                    .trim_start_matches("static ")
+                    .trim_start_matches("final ")
+                    .trim_start_matches("abstract ");
+                if bare.starts_with("class ") {
+                    if let Some(name) = bare.strip_prefix("class ") {
+                        let name = name
+                            .split_whitespace()
+                            .next()
+                            .unwrap_or(name)
+                            .split('{')
+                            .next()
+                            .unwrap_or(name);
+                        refs.push(format!("type:{}", name.trim()));
+                    }
+                } else if bare.starts_with("interface ") {
+                    if let Some(name) = bare.strip_prefix("interface ") {
+                        let name = name
+                            .split_whitespace()
+                            .next()
+                            .unwrap_or(name)
+                            .split('{')
+                            .next()
+                            .unwrap_or(name);
+                        refs.push(format!("type:{}", name.trim()));
+                    }
+                } else {
+                    // Method declarations: `ReturnType methodName(` — capture the
+                    // token immediately before `(` when multiple whitespace-separated
+                    // tokens precede the paren.
+                    if let Some(paren_pos) = bare.find('(') {
+                        let before = bare[..paren_pos].trim();
+                        if let Some(name) = before.split_whitespace().last() {
+                            if name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                                && name.len() >= MENTION_MIN_LEN
+                                && !matches!(
+                                    name,
+                                    "if" | "for"
+                                        | "while"
+                                        | "switch"
+                                        | "catch"
+                                        | "class"
+                                        | "interface"
+                                        | "void"
+                                        | "int"
+                                        | "long"
+                                        | "boolean"
+                                        | "String"
+                                        | "Object"
+                                )
+                            {
+                                refs.push(format!("fn:{}", name));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        "kotlin" => {
+            for line in code.lines() {
+                let trimmed = line.trim();
+                if trimmed.starts_with("fun ") {
+                    if let Some(name) = trimmed.strip_prefix("fun ") {
+                        let name = name.split('(').next().unwrap_or(name);
+                        refs.push(format!("fn:{}", name.trim()));
+                    }
+                } else if trimmed.starts_with("class ")
+                    || trimmed.starts_with("object ")
+                    || trimmed.starts_with("interface ")
+                {
+                    if let Some(name) = trimmed.split_whitespace().nth(1) {
+                        let name = name
+                            .split('(')
+                            .next()
+                            .unwrap_or(name)
+                            .split('{')
+                            .next()
+                            .unwrap_or(name);
+                        refs.push(format!("type:{}", name.trim()));
+                    }
+                }
+            }
+        }
+        "csharp" | "cs" => {
+            for line in code.lines() {
+                let trimmed = line.trim();
+                // Strip common modifiers.
+                let bare = trimmed
+                    .trim_start_matches("public ")
+                    .trim_start_matches("private ")
+                    .trim_start_matches("protected ")
+                    .trim_start_matches("internal ")
+                    .trim_start_matches("static ")
+                    .trim_start_matches("abstract ")
+                    .trim_start_matches("sealed ");
+                if bare.starts_with("namespace ") {
+                    if let Some(name) = bare.strip_prefix("namespace ") {
+                        let name = name
+                            .split_whitespace()
+                            .next()
+                            .unwrap_or(name)
+                            .split('{')
+                            .next()
+                            .unwrap_or(name);
+                        refs.push(format!("mod:{}", name.trim()));
+                    }
+                } else if bare.starts_with("class ") {
+                    if let Some(name) = bare.strip_prefix("class ") {
+                        let name = name
+                            .split_whitespace()
+                            .next()
+                            .unwrap_or(name)
+                            .split('{')
+                            .next()
+                            .unwrap_or(name);
+                        refs.push(format!("type:{}", name.trim()));
+                    }
+                } else if bare.starts_with("interface ") {
+                    if let Some(name) = bare.strip_prefix("interface ") {
+                        let name = name
+                            .split_whitespace()
+                            .next()
+                            .unwrap_or(name)
+                            .split('{')
+                            .next()
+                            .unwrap_or(name);
+                        refs.push(format!("type:{}", name.trim()));
+                    }
+                }
+            }
+        }
+        "ruby" | "rb" => {
+            for line in code.lines() {
+                let trimmed = line.trim();
+                if trimmed.starts_with("def ") {
+                    if let Some(name) = trimmed.strip_prefix("def ") {
+                        // Handle `def self.method_name` → strip the `self.` receiver.
+                        let name = name
+                            .trim_start_matches("self.")
+                            .split('(')
+                            .next()
+                            .unwrap_or(name)
+                            .split_whitespace()
+                            .next()
+                            .unwrap_or(name);
+                        refs.push(format!("fn:{}", name.trim()));
+                    }
+                } else if trimmed.starts_with("class ") {
+                    if let Some(name) = trimmed.strip_prefix("class ") {
+                        let name = name
+                            .split_whitespace()
+                            .next()
+                            .unwrap_or(name)
+                            .split('<')
+                            .next()
+                            .unwrap_or(name);
+                        refs.push(format!("type:{}", name.trim()));
+                    }
+                } else if trimmed.starts_with("module ") {
+                    if let Some(name) = trimmed.strip_prefix("module ") {
+                        let name = name.split_whitespace().next().unwrap_or(name);
+                        refs.push(format!("mod:{}", name.trim()));
+                    }
+                }
+            }
+        }
+        "php" => {
+            for line in code.lines() {
+                let trimmed = line.trim();
+                // Strip visibility modifiers.
+                let bare = trimmed
+                    .trim_start_matches("public ")
+                    .trim_start_matches("private ")
+                    .trim_start_matches("protected ")
+                    .trim_start_matches("static ")
+                    .trim_start_matches("abstract ")
+                    .trim_start_matches("final ");
+                if bare.starts_with("function ") {
+                    if let Some(name) = bare.strip_prefix("function ") {
+                        let name = name.split('(').next().unwrap_or(name);
+                        refs.push(format!("fn:{}", name.trim()));
+                    }
+                } else if bare.starts_with("class ") {
+                    if let Some(name) = bare.strip_prefix("class ") {
+                        let name = name
+                            .split_whitespace()
+                            .next()
+                            .unwrap_or(name)
+                            .split('{')
+                            .next()
+                            .unwrap_or(name);
+                        refs.push(format!("type:{}", name.trim()));
+                    }
+                } else if bare.starts_with("interface ") {
+                    if let Some(name) = bare.strip_prefix("interface ") {
+                        let name = name
+                            .split_whitespace()
+                            .next()
+                            .unwrap_or(name)
+                            .split('{')
+                            .next()
+                            .unwrap_or(name);
+                        refs.push(format!("type:{}", name.trim()));
+                    }
+                }
+            }
+        }
+        "c" | "cpp" | "c++" => {
+            const C_KEYWORDS: &[&str] = &[
+                "if", "else", "for", "while", "do", "switch", "return", "break", "continue",
+                "case", "default", "sizeof", "typedef", "extern", "static", "inline", "const",
+                "volatile", "register", "auto",
+            ];
+            for line in code.lines() {
+                let trimmed = line.trim();
+                if trimmed.starts_with("#include") {
+                    // Extract the header name from `#include <name>` or `#include "name"`.
+                    let rest = trimmed["#include".len()..].trim();
+                    let name = rest
+                        .trim_start_matches('<')
+                        .trim_end_matches('>')
+                        .trim_start_matches('"')
+                        .trim_end_matches('"');
+                    if !name.is_empty() {
+                        refs.push(format!("mod:{}", name));
+                    }
+                } else if trimmed.starts_with("class ") {
+                    // C++ class declaration.
+                    if let Some(name) = trimmed.strip_prefix("class ") {
+                        let name = name
+                            .split_whitespace()
+                            .next()
+                            .unwrap_or(name)
+                            .split('{')
+                            .next()
+                            .unwrap_or(name)
+                            .split(':')
+                            .next()
+                            .unwrap_or(name);
+                        if !name.trim().is_empty() {
+                            refs.push(format!("type:{}", name.trim()));
+                        }
+                    }
+                } else if let Some(paren_pos) = trimmed.find('(') {
+                    // Function definition/declaration heuristic:
+                    // `ReturnType function_name(` — last whitespace-delimited token before `(`.
+                    let before = trimmed[..paren_pos].trim();
+                    // Reject lines that are clearly not declarations (comments, macros, calls
+                    // inside control flow).
+                    if !before.starts_with("//")
+                        && !before.starts_with("/*")
+                        && !before.starts_with('#')
+                    {
+                        if let Some(name) = before.split_whitespace().last() {
+                            // Strip pointer/reference decorators.
+                            let name = name.trim_start_matches('*').trim_start_matches('&');
+                            if name.len() >= MENTION_MIN_LEN
+                                && !C_KEYWORDS.contains(&name)
+                                && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                            {
+                                refs.push(format!("fn:{}", name));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        _ => {
+            // Generic fallback: call-shaped `identifier(` patterns as fn refs so
+            // unknown languages degrade gracefully instead of to nothing.
+            // Conservative: requires >= MENTION_MIN_LEN chars and skips universal keywords.
+            const FALLBACK_KEYWORDS: &[&str] = &[
+                "if", "for", "while", "match", "switch", "return", "catch", "print", "println",
+                "assert", "panic", "format", "main", "else", "elif",
+            ];
+            for line in code.lines() {
+                let bytes = line.as_bytes();
+                let mut start: Option<usize> = None;
+                for (i, &b) in bytes.iter().enumerate() {
+                    let is_ident = b.is_ascii_alphanumeric() || b == b'_';
+                    match (start, is_ident) {
+                        (None, true) if b.is_ascii_alphabetic() || b == b'_' => {
+                            start = Some(i);
+                        }
+                        (Some(s), false) => {
+                            if b == b'(' {
+                                let tok = &line[s..i];
+                                if tok.len() >= MENTION_MIN_LEN && !FALLBACK_KEYWORDS.contains(&tok)
+                                {
+                                    refs.push(format!("fn:{}", tok));
+                                }
+                            }
+                            start = None;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
     }
     refs
 }
@@ -464,6 +769,7 @@ pub(crate) fn listing_call_tokens(code: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    use super::extract_code_references;
     use super::infer_project_name;
     use super::{collect_backtick_mentions, listing_call_tokens};
     use std::fs;
@@ -678,5 +984,201 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(&base);
+    }
+
+    // ── extract_code_references per-language tests ─────────────────────────
+
+    #[test]
+    fn java_extracts_class_interface_and_method_refs() {
+        let code = "public class OrderService {\n    public void processOrder(Order o) {}\n    private String formatId(int id) { return \"\"; }\n}\npublic interface Repository {}\n";
+        let refs = extract_code_references(code, "java");
+        assert!(
+            refs.contains(&"type:OrderService".to_string()),
+            "class decl → type ref; got {:?}",
+            refs
+        );
+        assert!(
+            refs.contains(&"type:Repository".to_string()),
+            "interface decl → type ref; got {:?}",
+            refs
+        );
+        assert!(
+            refs.contains(&"fn:processOrder".to_string()),
+            "method decl → fn ref; got {:?}",
+            refs
+        );
+        assert!(
+            refs.contains(&"fn:formatId".to_string()),
+            "private method → fn ref; got {:?}",
+            refs
+        );
+    }
+
+    #[test]
+    fn kotlin_extracts_fun_class_object_interface() {
+        let code = "fun computeTotal(items: List<Item>): Int {\n    return 0\n}\nclass CartService\nobject Singleton\ninterface Validator\n";
+        let refs = extract_code_references(code, "kotlin");
+        assert!(
+            refs.contains(&"fn:computeTotal".to_string()),
+            "fun decl → fn ref; got {:?}",
+            refs
+        );
+        assert!(
+            refs.contains(&"type:CartService".to_string()),
+            "class → type ref; got {:?}",
+            refs
+        );
+        assert!(
+            refs.contains(&"type:Singleton".to_string()),
+            "object → type ref; got {:?}",
+            refs
+        );
+        assert!(
+            refs.contains(&"type:Validator".to_string()),
+            "interface → type ref; got {:?}",
+            refs
+        );
+    }
+
+    #[test]
+    fn csharp_extracts_class_interface_namespace() {
+        let code = "namespace MyApp.Services\npublic class UserService {}\npublic interface IUserRepo {}\n";
+        let refs = extract_code_references(code, "csharp");
+        assert!(
+            refs.contains(&"mod:MyApp.Services".to_string()),
+            "namespace → mod ref; got {:?}",
+            refs
+        );
+        assert!(
+            refs.contains(&"type:UserService".to_string()),
+            "class → type ref; got {:?}",
+            refs
+        );
+        assert!(
+            refs.contains(&"type:IUserRepo".to_string()),
+            "interface → type ref; got {:?}",
+            refs
+        );
+        // "cs" alias must produce identical output.
+        let refs2 = extract_code_references(code, "cs");
+        assert_eq!(refs, refs2, "\"cs\" alias must produce identical output");
+    }
+
+    #[test]
+    fn ruby_extracts_def_class_module() {
+        let code = "module Billing\n  class Invoice\n    def calculate_total(items)\n    end\n    def self.create(attrs)\n    end\n  end\nend\n";
+        let refs = extract_code_references(code, "ruby");
+        assert!(
+            refs.contains(&"mod:Billing".to_string()),
+            "module → mod ref; got {:?}",
+            refs
+        );
+        assert!(
+            refs.contains(&"type:Invoice".to_string()),
+            "class → type ref; got {:?}",
+            refs
+        );
+        assert!(
+            refs.contains(&"fn:calculate_total".to_string()),
+            "def → fn ref; got {:?}",
+            refs
+        );
+        // "rb" alias must produce identical output.
+        let refs2 = extract_code_references(code, "rb");
+        assert_eq!(refs, refs2, "\"rb\" alias must produce identical output");
+    }
+
+    #[test]
+    fn php_extracts_function_class_interface() {
+        let code = "<?php\nclass PaymentGateway {}\ninterface Billable {}\nfunction process_payment($amount) {}\n";
+        let refs = extract_code_references(code, "php");
+        assert!(
+            refs.contains(&"type:PaymentGateway".to_string()),
+            "class → type ref; got {:?}",
+            refs
+        );
+        assert!(
+            refs.contains(&"type:Billable".to_string()),
+            "interface → type ref; got {:?}",
+            refs
+        );
+        assert!(
+            refs.contains(&"fn:process_payment".to_string()),
+            "function → fn ref; got {:?}",
+            refs
+        );
+    }
+
+    #[test]
+    fn c_extracts_function_defs_and_includes() {
+        let code = "#include <stdio.h>\n#include \"mylib.h\"\nint compute_sum(int a, int b) {\n    return a + b;\n}\nvoid reset_state(void) {}\n";
+        let refs = extract_code_references(code, "c");
+        assert!(
+            refs.contains(&"mod:stdio.h".to_string()),
+            "system include → mod ref; got {:?}",
+            refs
+        );
+        assert!(
+            refs.contains(&"mod:mylib.h".to_string()),
+            "local include → mod ref; got {:?}",
+            refs
+        );
+        assert!(
+            refs.contains(&"fn:compute_sum".to_string()),
+            "int fn → fn ref; got {:?}",
+            refs
+        );
+        assert!(
+            refs.contains(&"fn:reset_state".to_string()),
+            "void fn → fn ref; got {:?}",
+            refs
+        );
+    }
+
+    #[test]
+    fn cpp_extracts_function_defs_class_and_includes() {
+        let code = "#include <vector>\nclass Matrix {\npublic:\n    double determinant() const;\n};\nvoid transform(Matrix& m) {}\n";
+        let refs = extract_code_references(code, "cpp");
+        assert!(
+            refs.contains(&"mod:vector".to_string()),
+            "system include → mod ref; got {:?}",
+            refs
+        );
+        assert!(
+            refs.contains(&"type:Matrix".to_string()),
+            "class → type ref; got {:?}",
+            refs
+        );
+        assert!(
+            refs.contains(&"fn:transform".to_string()),
+            "fn def → fn ref; got {:?}",
+            refs
+        );
+        // "c++" alias must produce identical output.
+        let refs2 = extract_code_references(code, "c++");
+        assert_eq!(refs, refs2, "\"c++\" alias must produce identical output");
+    }
+
+    #[test]
+    fn generic_fallback_extracts_call_shaped_identifiers() {
+        // Unknown language: call-shaped `identifier(` tokens must not be silently dropped.
+        let code = "send_request(payload)\nparse_response(data)\nif x { }\nab(1)\n";
+        let refs = extract_code_references(code, "someunknownlang");
+        assert!(
+            refs.contains(&"fn:send_request".to_string()),
+            "call → fn ref in fallback; got {:?}",
+            refs
+        );
+        assert!(
+            refs.contains(&"fn:parse_response".to_string()),
+            "call → fn ref in fallback; got {:?}",
+            refs
+        );
+        // Short names (< MENTION_MIN_LEN = 4) must be excluded.
+        assert!(
+            !refs.contains(&"fn:ab".to_string()),
+            "short token must be excluded; got {:?}",
+            refs
+        );
     }
 }
