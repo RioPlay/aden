@@ -23,7 +23,6 @@ use crate::php_resolver::PhpResolver;
 use crate::plaintext::PlainTextExtractor;
 use crate::python_resolver::PythonResolver;
 use crate::ruby_resolver::RubyResolver;
-#[cfg(feature = "rust-deep")]
 use crate::rust::RustExtractor;
 use crate::typescript_resolver::TypeScriptResolver;
 use aden_core::{Document, Error, Result};
@@ -53,7 +52,6 @@ impl LanguageRouter {
     }
 
     fn register_builtin(&mut self) {
-        #[cfg(feature = "rust-deep")]
         {
             let rust: Arc<dyn LanguageExtractor> = Arc::new(RustExtractor::new());
             self.by_extension.insert("rs", Arc::clone(&rust));

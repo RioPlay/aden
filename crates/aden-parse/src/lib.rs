@@ -24,7 +24,6 @@ pub mod plaintext;
 pub mod python_resolver;
 pub mod router;
 pub mod ruby_resolver;
-#[cfg(feature = "rust-deep")]
 pub mod rust;
 pub mod tree_sitter_common;
 pub mod typescript_resolver;
