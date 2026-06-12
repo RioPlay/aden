@@ -297,6 +297,8 @@ $ aden query --backlinks "aden://module/aden/aden---module-aden-cli-query.rs-cmd
 
 Per-symbol assembly is the strongest path today; `--backlinks`/`--impact` quality tracks how densely the target is linked — a thin private helper surfaces only its enclosing module, while a widely-used public API surfaces a large neighborhood.
 
+The same workflow applies to any deep-extractor language — substitute a `.py`, `.go`, or `.ts` path in step 1; anchors follow the identical `aden://module/…` scheme regardless of source language (see <<language-coverage>> for tier details).
+
 === 2–18. Aspirational Domains
 
 The same pattern generalizes. In each, raw material becomes typed nodes and edges, and the differentiating value is automatic impact analysis, drift detection, and immutable attribution.

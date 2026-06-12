@@ -19,8 +19,13 @@ fn infer_module_anchor(source_path: Option<&str>) -> Option<String> {
     // - lib/{name}/*.rs
     // - {name}/src/*.rs (language-specific layouts)
 
-    // Pattern 1: crates/crate-name/src/
-    if let Ok(re) = Regex::new(r"(?:^|/)crates/([^/]+)/src/")
+    // Pattern 1: crates/crate-name/src/ — Rust workspace layout only.
+    // Guard on `.rs` extension: the function receives only the string path with no
+    // filesystem access, so we cannot stat a Cargo.toml ancestor.  Checking the
+    // extension is the strongest signal available and prevents misfires on Python /
+    // Go projects that happen to have a `crates/` directory.
+    if path_str.ends_with(".rs")
+        && let Ok(re) = Regex::new(r"(?:^|/)crates/([^/]+)/src/")
         && let Some(caps) = re.captures(path_str)
         && let Some(m) = caps.get(1)
     {
@@ -67,6 +72,43 @@ fn infer_module_anchor(source_path: Option<&str>) -> Option<String> {
 mod contract_roundtrip_tests;
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod anchor_heuristic_tests {
+    use super::infer_module_anchor;
+
+    /// Pattern 1 must NOT fire on non-Rust files even when the path contains
+    /// `crates/<name>/src/`.  A Python file in that layout must fall through to
+    /// Pattern 2, never to Pattern 1.
+    #[test]
+    fn python_path_does_not_match_pattern1() {
+        // Before the guard, Pattern 1 would have captured "foo" and returned
+        // Some("module-foo").  With the `.rs` extension guard, Pattern 1 is
+        // skipped; Pattern 2 captures the segment after `src/` instead.
+        let result = infer_module_anchor(Some("crates/foo/src/utils.py"));
+        assert_ne!(
+            result.as_deref(),
+            Some("module-foo"),
+            "Pattern 1 must not fire for .py files in a crates/ layout"
+        );
+    }
+
+    /// Rust file in a workspace layout must still match Pattern 1.
+    #[test]
+    fn rust_workspace_path_matches_pattern1() {
+        let result = infer_module_anchor(Some("crates/aden-emit/src/lib.rs"));
+        // Pattern 1 fires first (`.rs` guard passes, `crates/aden-emit/src/` matches).
+        assert_eq!(result.as_deref(), Some("module-aden-emit"));
+    }
+
+    /// A pure Python path (no `crates/`) must not match Pattern 1.
+    #[test]
+    fn python_path_outside_crates_does_not_match_pattern1() {
+        let result = infer_module_anchor(Some("pkg/foo/utils.py"));
+        // Pattern 2 won't match either (no src/), so this should be None.
+        assert_ne!(result.as_deref(), Some("module-foo"));
+    }
+}
 
 /// Emit a single Document as an AsciiDoc string.
 pub fn emit_document(doc: &Document) -> String {

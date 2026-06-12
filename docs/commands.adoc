@@ -85,6 +85,10 @@ re-indexes just that file.
 # Single file (re-index just this file)
 aden gen src/lib.rs
 
+# Polyglot: works identically for any language
+aden gen src/app.py
+aden gen cmd/main.go
+
 # Whole project (a directory is auto-discovered)
 aden gen .
 
