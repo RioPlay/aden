@@ -89,10 +89,47 @@
   #depth-wrap { display: none; align-items: center; gap: 9px; }
   #depth-wrap input[type=range] { width: 84px; }
 
+  /* ── region hover card (top-left, below controls) ── */
+  #hover-card { position: fixed; left: 14px; top: 78px; z-index: 6; width: 240px;
+    background: rgba(17,21,30,.92); border: 1px solid #313244; border-radius: 10px;
+    padding: 10px 13px 11px; backdrop-filter: blur(6px);
+    box-shadow: 0 8px 28px rgba(0,0,0,.45);
+    opacity: 0; transform: translateY(4px);
+    transition: opacity .22s ease, transform .22s ease; pointer-events: none; }
+  #hover-card.on { opacity: 1; transform: none; }
+  #hover-card.idle { opacity: .45; transform: none; }
+  #hover-card .hc-region { display: flex; align-items: center; gap: 7px; margin-bottom: 6px; }
+  #hover-card .hc-swatch { width: 12px; height: 12px; border-radius: 3px; flex-shrink: 0; }
+  #hover-card .hc-region-name { font-size: 12px; font-weight: 600; color: #cdd6f4;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #hover-card .hc-name { font-size: 13px; color: #89b4fa; font-weight: 600;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-bottom: 2px; }
+  #hover-card .hc-type { font-size: 11px; color: #6c7086; margin-bottom: 3px; }
+  #hover-card .hc-file { font-size: 11px; color: #45475a; font-family: ui-monospace, monospace;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #hover-card .hc-hint { font-size: 11px; color: #45475a; font-style: italic; }
+
+  /* ── region legend (below hover card) ── */
+  #region-legend { position: fixed; left: 14px; top: 226px; z-index: 6; width: 240px;
+    background: rgba(17,21,30,.88); border: 1px solid #313244; border-radius: 10px;
+    backdrop-filter: blur(6px); box-shadow: 0 8px 28px rgba(0,0,0,.4);
+    opacity: .45; transition: opacity .2s; overflow: hidden; }
+  #region-legend:hover { opacity: 1; }
+  #region-legend .rl-head { display: flex; align-items: center; justify-content: space-between;
+    padding: 7px 12px 6px; cursor: pointer; }
+  #region-legend .rl-title { font-size: 11px; font-weight: 600; color: #9399b2; letter-spacing: .04em; }
+  #region-legend .rl-toggle { font-size: 11px; color: #45475a; }
+  #region-legend .rl-body { padding: 0 12px 8px; max-height: 180px; overflow-y: auto; }
+  #region-legend .rl-row { display: flex; align-items: center; gap: 7px; padding: 2px 0; }
+  #region-legend .rl-dot { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; }
+  #region-legend .rl-label { font-size: 11px; color: #a6adc8;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
   /* ── hide UI mode ── */
   body.hideui #topbar, body.hideui #controls, body.hideui #search, body.hideui #filter,
   body.hideui #hint, body.hideui #back, body.hideui #panel, body.hideui #toolbar,
-  body.hideui #act, body.hideui #snip, body.hideui #pivot-pill { opacity: 0 !important; pointer-events: none; }
+  body.hideui #act, body.hideui #snip, body.hideui #pivot-pill,
+  body.hideui #hover-card, body.hideui #region-legend { opacity: 0 !important; pointer-events: none; }
 
   /* ── flyby card: floats beside the node you're visiting, shows the code ── */
   #snip { position: fixed; z-index: 7; width: 340px; max-width: 42vw; pointer-events: none;
@@ -250,6 +287,27 @@
 </div>
 
 <div id="back" onclick="showOverview()">← communities</div>
+
+<!-- region hover card: appears on node hover, top-left corner -->
+<div id="hover-card" aria-live="polite">
+  <div class="hc-region">
+    <span class="hc-swatch" id="hc-swatch"></span>
+    <span class="hc-region-name" id="hc-region"></span>
+  </div>
+  <div class="hc-name" id="hc-name"></div>
+  <div class="hc-type" id="hc-type"></div>
+  <div class="hc-file" id="hc-file"></div>
+  <div class="hc-hint" id="hc-hint" style="display:none">hover a node</div>
+</div>
+
+<!-- region legend: collapsible list of all regions with their colors -->
+<div id="region-legend">
+  <div class="rl-head" onclick="toggleLegend()" title="toggle legend">
+    <span class="rl-title">REGIONS</span>
+    <span class="rl-toggle" id="rl-toggle">▾</span>
+  </div>
+  <div class="rl-body" id="rl-body"></div>
+</div>
 
 <!-- centre: search -->
 <div id="search">
@@ -641,11 +699,15 @@ const Graph = ForceGraph()(el)
   .onNodeHover(n => {
     if (overUI) { el.style.cursor = 'default'; return; }
     el.style.cursor = n ? 'pointer' : 'default';
-    if (!n || n === hoverNode) return;
-    highlightNodes.clear(); highlightLinks.clear();
-    highlightNodes.add(n); (n.neighbors || []).forEach(x => highlightNodes.add(x));
-    (n.adj || []).forEach(l => highlightLinks.add(l));
-    hoverNode = n;
+    if (n && n !== hoverNode) {
+      highlightNodes.clear(); highlightLinks.clear();
+      highlightNodes.add(n); (n.neighbors || []).forEach(x => highlightNodes.add(x));
+      (n.adj || []).forEach(l => highlightLinks.add(l));
+      hoverNode = n;
+    } else if (!n) {
+      hoverNode = null;
+    }
+    updateHoverCard(n);
   })
   .onNodeClick(onClick)
   .onNodeRightClick(n => openEditor(n))
@@ -655,6 +717,7 @@ const Graph = ForceGraph()(el)
   .onBackgroundClick(() => {
     highlightNodes.clear(); highlightLinks.clear(); hoverNode = null;
     resEl.classList.remove('open');
+    updateHoverCard(null);
   });
 el.addEventListener('contextmenu', e => e.preventDefault());
 el.addEventListener('dblclick', () => { if (!overUI && !hoverNode) fitAll(); });
@@ -825,6 +888,95 @@ function hexA(hex, a) { const m = hex.replace('#',''); return `rgba(${parseInt(m
 function editorUrl(n) { return (n && n.file) ? EDITOR.replace('{file}', n.file).replace('{line}', n.line || 1) : null; }
 function openEditor(n) { const u = editorUrl(n); if (u) window.location.href = u; }
 
+// ── region hover card ─────────────────────────────────────────────────────────
+// Extracts the codebase region from a node: uses the node's `group` field
+// (already the project/crate component of the anchor, e.g. "aden-core"), with
+// fallbacks for prose/doc nodes and ungrouped nodes.
+function regionOf(n) {
+  if (n.group != null) return String(n.group);
+  // Fallback: parse from anchor: aden://module/{project}/... → {project}
+  if (n.anchor) {
+    const stripped = n.anchor.replace(/^aden:\/\//, '');
+    const parts = stripped.split('/');
+    if (parts.length >= 2 && parts[1] && parts[1] !== '?') return parts[1];
+    if (parts.length >= 1 && parts[0] && parts[0] !== 'module' && parts[0] !== 'doc') return parts[0];
+  }
+  return n.kind || '?';
+}
+
+const hoverCardEl = document.getElementById('hover-card');
+function updateHoverCard(n) {
+  const hint = document.getElementById('hc-hint');
+  if (!n) {
+    // No node hovered — show idle state
+    hoverCardEl.classList.remove('on');
+    hoverCardEl.classList.add('idle');
+    document.getElementById('hc-name').textContent = '';
+    document.getElementById('hc-type').textContent = '';
+    document.getElementById('hc-file').textContent = '';
+    document.getElementById('hc-region').textContent = '';
+    document.getElementById('hc-swatch').style.background = 'transparent';
+    if (hint) hint.style.display = 'block';
+    return;
+  }
+  if (hint) hint.style.display = 'none';
+  const region = regionOf(n);
+  const col = colorOf(n);
+  document.getElementById('hc-swatch').style.background = col;
+  document.getElementById('hc-swatch').style.boxShadow = `0 0 6px ${hexA(col, .5)}`;
+  document.getElementById('hc-region').textContent = region;
+  document.getElementById('hc-region').style.color = col;
+  document.getElementById('hc-name').textContent = shortName(n);
+  document.getElementById('hc-name').style.color = col;
+  const typeStr = [n.kind, n.size != null ? n.size + ' symbols' : null, n.loc ? n.loc + ' loc' : n.words ? n.words + ' words' : null].filter(Boolean).join(' · ');
+  document.getElementById('hc-type').textContent = typeStr;
+  const fileStr = n.file ? n.file.split('/').slice(-2).join('/') : '';
+  document.getElementById('hc-file').textContent = fileStr;
+  hoverCardEl.classList.remove('idle');
+  hoverCardEl.classList.add('on');
+}
+
+// ── region legend ─────────────────────────────────────────────────────────────
+// Rebuilt whenever the graph data changes (buildData). Lists each unique region
+// (group) in the current view with its deterministic palette color.
+let legendCollapsed = false;
+function buildLegend() {
+  const body = document.getElementById('rl-body');
+  if (!body) return;
+  // Collect unique regions from current nodes, sorted by name
+  const regions = Object.keys(groupIdx).sort();
+  if (!regions.length) {
+    body.innerHTML = '<div class="rl-row"><span class="rl-label" style="color:#45475a;font-style:italic">no regions</span></div>';
+    return;
+  }
+  body.innerHTML = regions.map(r => {
+    const col = palette[groupIdx[r] % palette.length];
+    return `<div class="rl-row">
+      <span class="rl-dot" style="background:${col};box-shadow:0 0 4px ${hexA(col,.4)}"></span>
+      <span class="rl-label" title="${esc(r)}">${esc(r)}</span>
+    </div>`;
+  }).join('');
+}
+function toggleLegend() {
+  legendCollapsed = !legendCollapsed;
+  const body = document.getElementById('rl-body');
+  const tog = document.getElementById('rl-toggle');
+  if (body) body.style.display = legendCollapsed ? 'none' : '';
+  if (tog) tog.textContent = legendCollapsed ? '▸' : '▾';
+}
+// Position the legend below the hover card (accounts for card height ~148px + gap)
+function positionLegend() {
+  const legend = document.getElementById('region-legend');
+  if (!legend) return;
+  const cardH = hoverCardEl ? hoverCardEl.offsetHeight : 148;
+  legend.style.top = (78 + cardH + 8) + 'px';
+}
+// Reposition on each animation frame when card is transitioning (cheap)
+(function legendPosLoop() {
+  requestAnimationFrame(legendPosLoop);
+  positionLegend();
+})();
+
 // ── show / showOverview / showCommunity ───────────────────────────────────────
 function show(rawNodes, rawEdges) {
   fitPending = true;
@@ -849,6 +1001,8 @@ function show(rawNodes, rawEdges) {
     const sl = document.getElementById('depth'); if (sl) { sl.max = maxHop; sl.value = maxHop; }
   }
   syncSearch(); syncFilter(); applyDensity();
+  buildLegend();
+  updateHoverCard(null);
 }
 function showOverview() {
   level = 'overview';
@@ -1696,7 +1850,7 @@ addEventListener('keydown', e => {
 });
 
 // ── overUI detection ──────────────────────────────────────────────────────────
-['panel','controls','search','filter','toolbar','amb-menu','act','hint','back'].forEach(id => {
+['panel','controls','search','filter','toolbar','amb-menu','act','hint','back','region-legend'].forEach(id => {
   const e = document.getElementById(id);
   if (!e) return;
   e.addEventListener('pointerenter', () => { overUI = true; });

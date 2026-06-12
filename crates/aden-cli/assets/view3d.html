@@ -95,12 +95,64 @@
   #overlay-box .kb-desc { color: #9399b2; }
   .scene-tooltip { color: #cdd6f4 !important; font: 12px ui-sans-serif, system-ui, sans-serif !important;
     background: rgba(17,21,30,.95); border: 1px solid #313244; border-radius: 6px; padding: 4px 8px; }
+  /* ── region hover card (top-left) ── */
+  #hover-card { position: fixed; left: 14px; top: 52px; z-index: 6; width: 234px;
+    background: rgba(17,21,30,.92); border: 1px solid #313244; border-radius: 10px;
+    padding: 10px 13px 11px; backdrop-filter: blur(6px);
+    box-shadow: 0 8px 28px rgba(0,0,0,.45);
+    opacity: 0; transform: translateY(4px);
+    transition: opacity .22s ease, transform .22s ease; pointer-events: none; }
+  #hover-card.on { opacity: 1; transform: none; }
+  #hover-card.idle { opacity: .35; transform: none; }
+  #hover-card .hc-region { display: flex; align-items: center; gap: 7px; margin-bottom: 6px; }
+  #hover-card .hc-swatch { width: 12px; height: 12px; border-radius: 3px; flex-shrink: 0; }
+  #hover-card .hc-region-name { font-size: 12px; font-weight: 600; color: #cdd6f4;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #hover-card .hc-name { font-size: 13px; color: #89b4fa; font-weight: 600;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-bottom: 2px; }
+  #hover-card .hc-type { font-size: 11px; color: #6c7086; margin-bottom: 3px; }
+  #hover-card .hc-file { font-size: 11px; color: #45475a; font-family: ui-monospace, monospace;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* ── region legend (below hover card) ── */
+  #region-legend { position: fixed; left: 14px; top: 230px; z-index: 6; width: 234px;
+    background: rgba(17,21,30,.85); border: 1px solid #313244; border-radius: 10px;
+    backdrop-filter: blur(6px); box-shadow: 0 8px 28px rgba(0,0,0,.4);
+    opacity: .35; transition: opacity .2s; overflow: hidden; }
+  #region-legend:hover { opacity: 1; }
+  #region-legend .rl-head { display: flex; align-items: center; justify-content: space-between;
+    padding: 7px 12px 6px; cursor: pointer; }
+  #region-legend .rl-title { font-size: 11px; font-weight: 600; color: #9399b2; letter-spacing: .04em; }
+  #region-legend .rl-toggle { font-size: 11px; color: #45475a; }
+  #region-legend .rl-body { padding: 0 12px 8px; max-height: 180px; overflow-y: auto; }
+  #region-legend .rl-row { display: flex; align-items: center; gap: 7px; padding: 2px 0; }
+  #region-legend .rl-dot { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; }
+  #region-legend .rl-label { font-size: 11px; color: #a6adc8;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  body.hideui #hover-card, body.hideui #region-legend { opacity: 0 !important; pointer-events: none; }
 </style>
 </head>
 <body>
 <div id="hdr">aden <small>· orbital</small></div>
 <div id="search"><input id="q" type="text" placeholder="search…  ( / )" autocomplete="off" spellcheck="false" aria-label="Search symbols"><div id="results"></div></div>
 <div id="graph"></div>
+<!-- region hover card -->
+<div id="hover-card" aria-live="polite">
+  <div class="hc-region">
+    <span class="hc-swatch" id="hc-swatch"></span>
+    <span class="hc-region-name" id="hc-region"></span>
+  </div>
+  <div class="hc-name" id="hc-name"></div>
+  <div class="hc-type" id="hc-type"></div>
+  <div class="hc-file" id="hc-file"></div>
+</div>
+<!-- region legend -->
+<div id="region-legend">
+  <div class="rl-head" onclick="toggleLegend()" title="toggle legend">
+    <span class="rl-title">REGIONS</span>
+    <span class="rl-toggle" id="rl-toggle">▾</span>
+  </div>
+  <div class="rl-body" id="rl-body"></div>
+</div>
 <div id="panel"><h2 id="p-title"></h2><div id="p-anchor" class="anchor"></div><div id="p-body"></div></div>
 <div id="snip" aria-hidden="true"><div class="sn-head"><div class="sn-name" id="sn-name"></div><div class="sn-meta" id="sn-meta"></div></div><pre id="sn-code"></pre></div>
 <div id="status" role="status"><span class="st-ico">✦</span><span id="status-text"></span></div>
@@ -206,6 +258,75 @@ function massOf(n) {
   if (n.words) return n.words / 8;
   return (n.deg || 0) * 4;
 }
+function hexA(hex, a) { const m = hex.replace('#',''); return `rgba(${parseInt(m.slice(0,2),16)},${parseInt(m.slice(2,4),16)},${parseInt(m.slice(4,6),16)},${a})`; }
+
+// ── region hover card (3D) ────────────────────────────────────────────────────
+function regionOf3d(n) {
+  if (n.group != null) return String(n.group);
+  if (n.anchor) {
+    const stripped = n.anchor.replace(/^aden:\/\//, '');
+    const parts = stripped.split('/');
+    if (parts.length >= 2 && parts[1] && parts[1] !== '?') return parts[1];
+  }
+  return n.kind || '?';
+}
+const hoverCardEl3d = document.getElementById('hover-card');
+function updateHoverCard3d(n) {
+  if (!n) {
+    hoverCardEl3d.classList.remove('on');
+    hoverCardEl3d.classList.add('idle');
+    return;
+  }
+  const region = regionOf3d(n);
+  const col = colorOf(n);
+  document.getElementById('hc-swatch').style.background = col;
+  document.getElementById('hc-swatch').style.boxShadow = `0 0 6px ${hexA(col, .5)}`;
+  document.getElementById('hc-region').textContent = region;
+  document.getElementById('hc-region').style.color = col;
+  document.getElementById('hc-name').textContent = shortName(n);
+  document.getElementById('hc-name').style.color = col;
+  const typeStr = [n.kind, n.loc ? n.loc + ' loc' : n.words ? n.words + ' words' : null].filter(Boolean).join(' · ');
+  document.getElementById('hc-type').textContent = typeStr;
+  document.getElementById('hc-file').textContent = n.file ? n.file.split('/').slice(-2).join('/') : '';
+  hoverCardEl3d.classList.remove('idle');
+  hoverCardEl3d.classList.add('on');
+}
+
+// ── region legend (3D) ────────────────────────────────────────────────────────
+let legendCollapsed3d = false;
+function buildLegend3d() {
+  const body = document.getElementById('rl-body');
+  if (!body) return;
+  const regions = Object.keys(groupIdx).sort();
+  if (!regions.length) {
+    body.innerHTML = '<div class="rl-row"><span class="rl-label" style="color:#45475a;font-style:italic">no regions</span></div>';
+    return;
+  }
+  body.innerHTML = regions.map(r => {
+    const col = palette[groupIdx[r] % palette.length];
+    return `<div class="rl-row">
+      <span class="rl-dot" style="background:${col};box-shadow:0 0 4px ${hexA(col,.4)}"></span>
+      <span class="rl-label" title="${esc(r)}">${esc(r)}</span>
+    </div>`;
+  }).join('');
+}
+function toggleLegend() {
+  legendCollapsed3d = !legendCollapsed3d;
+  const body = document.getElementById('rl-body');
+  const tog = document.getElementById('rl-toggle');
+  if (body) body.style.display = legendCollapsed3d ? 'none' : '';
+  if (tog) tog.textContent = legendCollapsed3d ? '▸' : '▾';
+}
+// Dynamic top positioning: legend sits just below the hover card
+function positionLegend3d() {
+  const legend = document.getElementById('region-legend');
+  if (!legend || !hoverCardEl3d) return;
+  legend.style.top = (52 + hoverCardEl3d.offsetHeight + 8) + 'px';
+}
+(function legendPosLoop3d() {
+  requestAnimationFrame(legendPosLoop3d);
+  positionLegend3d();
+})();
 
 // Build {nodes, links}; the same salience rule as the 2D view — the ambient
 // field hides structural noise, attention reveals everything about a node.
@@ -276,10 +397,13 @@ const Graph = ForceGraph3D({ controlType: 'orbit' })(el)
   .linkDirectionalParticleSpeed(0.006)
   .linkDirectionalParticleWidth(1.8)
   .linkDirectionalParticleColor(() => '#bfe0ff')
+  .onNodeHover(n => { updateHoverCard3d(n || null); })
   .onNodeClick(focusOn)
   .onNodeRightClick(n => { const u = editorUrl(n); if (u) window.location.href = u; })
-  .onBackgroundClick(() => { /* keep focus; Esc/f manage the camera */ });
+  .onBackgroundClick(() => { updateHoverCard3d(null); /* keep focus; Esc/f manage the camera */ });
 Graph.graphData({ nodes, links });
+// Build the legend once the group index is ready
+buildLegend3d();
 
 // Color-coded galaxies: same-module nodes drift toward their module's
 // centroid (in all three axes), so each module condenses into its own
