@@ -1067,8 +1067,11 @@ pub fn is_safe_id(id: &str) -> bool {
     if id.len() < 3 || id.len() > 128 {
         return false;
     }
+    // Allow '.' so that proposal IDs derived from anchors that include a file
+    // extension (e.g. `merge-aden---module-src-lib.rs-alpha`) are accepted.
+    // Matches the set allowed by `aden_propose::store::is_safe_id`.
     id.bytes()
-        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.')
 }
 
 /// Generate a unique proposal ID from PID and nanosecond timestamp.
