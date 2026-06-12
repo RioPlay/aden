@@ -435,11 +435,19 @@ fn idempotence_no_source_change() {
 // ── test 5: polyglot_python_powershell ───────────────────────────────────────
 
 /// The gen/heal/fix cycle must complete without errors or panics for Python
-/// (.py) and PowerShell (.ps1) source files.
+/// (.py) and PowerShell (.ps1) source files, AND the store must contain
+/// function-level documents for both languages after `gen`.
 ///
-/// These exercise the generic tree-sitter extractor paths; the test verifies
-/// that aden handles polyglot input gracefully regardless of whether the
-/// extractor produces StaleHash events.
+/// Anchor format notes (discovered via red-green probing):
+/// - Python: `infer_project_name` resolves to `"unknown"` (Python files live
+///   under `src/` but the Python extractor does not pick up Rust-style project
+///   inference), so the anchor is `aden://module/unknown/module.py#<sym>`.
+/// - PowerShell: resolves to `"src"` (same as Rust fixtures), so the anchor is
+///   `aden://module/src/utils.ps1#<sym>`.
+///
+/// Both `compute_checksum` and `Get-ProjectMetadata` are tier-1 extractions:
+/// the Python extractor and the generic tree-sitter PowerShell extractor both
+/// produce function-level documents with the function name as the symbol.
 #[test]
 fn polyglot_python_powershell() {
     let project = unique_dir("polyglot");
@@ -464,6 +472,72 @@ fn polyglot_python_powershell() {
 
     git_init_commit(&project, "fixture: v1");
     run_gen(&project, &data);
+
+    // ── Store content assertions (Task 1: strengthen from exit-0-only) ────────
+    //
+    // After gen, the store must contain at least one document per language.
+    // We assert against the real anchor strings discovered by red-green probing.
+    {
+        let store = open_store(&data);
+        let all_anchors = store
+            .get_all_anchors()
+            .expect("get_all_anchors must succeed");
+
+        // Python: `compute_checksum` function must be extracted and stored.
+        // The Python extractor resolves the project name as "unknown" (see doc comment above).
+        let py_anchor = "aden://module/unknown/module.py#compute_checksum";
+        assert!(
+            all_anchors.iter().any(|a| a.contains("compute_checksum")),
+            "expected an anchor containing 'compute_checksum' in the store after gen;\n\
+             all anchors: {all_anchors:#?}"
+        );
+        let py_doc = store
+            .get_document(py_anchor)
+            .expect("get_document must not error for Python anchor")
+            .unwrap_or_else(|| {
+                // If the exact anchor differs from our probe, surface all matching anchors.
+                let matches: Vec<_> = all_anchors
+                    .iter()
+                    .filter(|a| a.contains("compute_checksum"))
+                    .collect();
+                panic!(
+                    "Python document at '{py_anchor}' not found;\n\
+                     anchors containing 'compute_checksum': {matches:?}"
+                )
+            });
+        assert_eq!(
+            py_doc.anchor, py_anchor,
+            "Python document anchor must match expected value"
+        );
+
+        // PowerShell: `Get-ProjectMetadata` function must be extracted and stored.
+        // The PowerShell extractor (generic tree-sitter) resolves project name as "src".
+        let ps1_anchor = "aden://module/src/utils.ps1#Get-ProjectMetadata";
+        assert!(
+            all_anchors
+                .iter()
+                .any(|a| a.contains("Get-ProjectMetadata")),
+            "expected an anchor containing 'Get-ProjectMetadata' in the store after gen;\n\
+             all anchors: {all_anchors:#?}"
+        );
+        let ps1_doc = store
+            .get_document(ps1_anchor)
+            .expect("get_document must not error for PowerShell anchor")
+            .unwrap_or_else(|| {
+                let matches: Vec<_> = all_anchors
+                    .iter()
+                    .filter(|a| a.contains("Get-ProjectMetadata"))
+                    .collect();
+                panic!(
+                    "PowerShell document at '{ps1_anchor}' not found;\n\
+                     anchors containing 'Get-ProjectMetadata': {matches:?}"
+                )
+            });
+        assert_eq!(
+            ps1_doc.anchor, ps1_anchor,
+            "PowerShell document anchor must match expected value"
+        );
+    }
 
     // Mutate both source files — doc comment changes.
     std::fs::write(
