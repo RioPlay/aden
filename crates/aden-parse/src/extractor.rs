@@ -27,6 +27,11 @@ pub trait LanguageExtractor: Send + Sync {
 }
 
 /// Build a safe anchor fragment from crate/file/symbol components.
+///
+/// The `symbol` argument may use language-native separators (`::` for Rust,
+/// `.` for Python/Go/TypeScript/etc.).  Normalization, if ever needed, must
+/// occur at query time — never at emit time, to avoid requiring a store
+/// migration.
 pub(crate) fn make_anchor(crate_name: &str, file_name: &str, symbol: &str) -> String {
     format!("aden://module/{crate_name}/{file_name}#{symbol}")
 }

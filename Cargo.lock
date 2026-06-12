@@ -167,6 +167,7 @@ dependencies = [
  "aden-core",
  "serde",
  "serde_json",
+ "tempfile",
  "tree-sitter",
  "tree-sitter-language-pack",
 ]

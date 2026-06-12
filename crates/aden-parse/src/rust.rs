@@ -172,17 +172,62 @@ pub fn extract_documents_inner(path: &Path, source: &str) -> Result<Vec<Document
     Ok(docs)
 }
 
-fn infer_crate_name(path: &Path) -> String {
-    let components: Vec<_> = path.components().collect();
-    for (i, component) in components.iter().enumerate() {
-        if let std::path::Component::Normal(name) = component
-            && **name == *std::ffi::OsStr::new("crates")
-            && i + 1 < components.len()
-            && let std::path::Component::Normal(crate_name) = &components[i + 1]
-        {
-            return crate_name.to_string_lossy().to_string();
+/// Read the `name` field from the `[package]` section of a `Cargo.toml`.
+///
+/// Simple line-scanning: find `[package]`, then take the first `name = "…"`
+/// that appears before the next `[` section header.  No TOML parser dependency.
+fn package_name_from_cargo_toml(manifest: &std::path::Path) -> Option<String> {
+    let text = std::fs::read_to_string(manifest).ok()?;
+    let mut in_package = false;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            in_package = trimmed == "[package]";
+            continue;
+        }
+        if in_package {
+            // Match `name = "value"` or `name = 'value'`
+            if let Some(rest) = trimmed.strip_prefix("name") {
+                let rest = rest.trim_start();
+                if let Some(rest) = rest.strip_prefix('=') {
+                    let rest = rest.trim();
+                    for q in ['"', '\''] {
+                        if let Some(inner) = rest.strip_prefix(q).and_then(|s| s.split(q).next()) {
+                            return Some(inner.to_owned());
+                        }
+                    }
+                }
+            }
         }
     }
+    None
+}
+
+/// Infer the Cargo package name for the file at `path`.
+///
+/// Strategy (nearest-ancestor-first):
+/// 1. Walk ancestors to find the nearest `Cargo.toml`.
+/// 2. Line-scan that manifest for the `name` field under `[package]`.
+/// 3. Fall back to the parent directory name when parsing yields nothing.
+fn infer_crate_name(path: &Path) -> String {
+    // Walk from the file's parent upwards.
+    let start = path.parent().unwrap_or(path);
+    for ancestor in start.ancestors() {
+        let manifest = ancestor.join("Cargo.toml");
+        if manifest.exists() {
+            if let Some(name) = package_name_from_cargo_toml(&manifest) {
+                return name;
+            }
+            // Manifest exists but has no [package] name (workspace root with only
+            // [workspace]).  Keep walking — a member manifest is deeper in the
+            // tree, but we walked *up*, so this is the nearest ancestor; stop
+            // here to avoid grabbing a workspace root name incorrectly and fall
+            // through to the directory-name fallback below.
+            break;
+        }
+    }
+    // Directory-name fallback: works for flat workspaces and single-crate repos
+    // that expose no parseable package name.
     path.parent()
         .and_then(|p| p.file_name())
         .map(|n| n.to_string_lossy().to_string())
@@ -1055,4 +1100,73 @@ fn extract_trait(
         metadata: None,
         confidence: 0.9,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    /// Helper: write a file at `dir/rel` and return the full path.
+    fn write(dir: &TempDir, rel: &str, content: &str) -> std::path::PathBuf {
+        let p = dir.path().join(rel);
+        if let Some(parent) = p.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(&p, content).unwrap();
+        p
+    }
+
+    // ── Test 1: Cargo.toml [package] name takes priority over dir name ────────
+    //
+    // Dir is named `my-pkg-dir` but the manifest declares `name = "my_pkg"`.
+    // Before the fix this returned "my-pkg-dir"; after it must return "my_pkg".
+    #[test]
+    fn infer_crate_name_reads_package_name_from_manifest() {
+        let tmp = TempDir::new().unwrap();
+        write(
+            &tmp,
+            "my-pkg-dir/Cargo.toml",
+            "[package]\nname = \"my_pkg\"\nversion = \"0.1.0\"\n",
+        );
+        let src = write(&tmp, "my-pkg-dir/src/lib.rs", "");
+        assert_eq!(infer_crate_name(&src), "my_pkg");
+    }
+
+    // ── Test 2: no Cargo.toml → falls back to parent directory name ──────────
+    //
+    // This pins the pre-existing fallback behaviour so it is never regressed.
+    // path.parent().file_name() for `my-crate/src/lib.rs` is `src`.
+    #[test]
+    fn infer_crate_name_falls_back_to_dir_name_when_no_manifest() {
+        let tmp = TempDir::new().unwrap();
+        let src = write(&tmp, "my-crate/src/lib.rs", "");
+        // No Cargo.toml anywhere under tmp.
+        let result = infer_crate_name(&src);
+        assert_eq!(result, "src");
+    }
+
+    // ── Test 3: workspace root has only [workspace]; member has [package] ────
+    //
+    // Walking up from the file hits the *member* Cargo.toml first (nearest
+    // ancestor).  That manifest has a valid [package] name, so it wins.
+    #[test]
+    fn infer_crate_name_member_name_wins_over_workspace_root() {
+        let tmp = TempDir::new().unwrap();
+        // Workspace root — no [package] section
+        write(
+            &tmp,
+            "Cargo.toml",
+            "[workspace]\nmembers = [\"my-pkg-dir\"]\n",
+        );
+        // Member manifest with a real package name
+        write(
+            &tmp,
+            "my-pkg-dir/Cargo.toml",
+            "[package]\nname = \"my_member\"\nversion = \"0.1.0\"\n",
+        );
+        let src = write(&tmp, "my-pkg-dir/src/lib.rs", "");
+        assert_eq!(infer_crate_name(&src), "my_member");
+    }
 }
