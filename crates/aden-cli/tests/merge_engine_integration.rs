@@ -578,3 +578,128 @@ fn polyglot_python_powershell() {
         String::from_utf8_lossy(&fix_out2.stderr)
     );
 }
+
+// ── test 6: apply_mergereconcile_proposal_python ─────────────────────────────
+
+/// `heal . --propose` followed by `heal . --apply <id>` must produce a
+/// well-formed `MergeReconcile` proposal for a **Python** source file.
+///
+/// Regression target: before the fix, Python docstrings were silently dropped
+/// by `extract_preceding_docstring` (it checked for an `expression_statement`
+/// wrapper that the tree-sitter-python grammar does not emit for triple-quoted
+/// docstrings). This caused ground == base in `reconcile_contract` (both lacked
+/// the docstring block), so `propose()` emitted zero actions → `generate_merge_proposal`
+/// returned `None` → the legacy fallback produced a degenerate file containing only
+/// `:source_hash: <hex>` with a `pid-nanos` filename that `aden_propose::list()`
+/// rejected as missing its `[[id]]` anchor.
+///
+/// Anchor note: for `src/module.py` in a git repo with no pyproject.toml,
+/// `infer_python_project_name` returns `"unknown"`, so the anchor is
+/// `aden://module/unknown/module.py#compute_checksum`.
+#[test]
+fn apply_mergereconcile_proposal_python() {
+    let project = unique_dir("apply-proposal-py");
+    let data = unique_dir("apply-proposal-py-data");
+
+    let src_dir = project.join("src");
+    std::fs::create_dir_all(&src_dir).unwrap();
+
+    // Python source V1 — with a triple-quoted docstring.
+    std::fs::write(
+        src_dir.join("module.py"),
+        "def compute_checksum(data):\n    \"\"\"Compute a checksum.\"\"\"\n    return hash(data)\n",
+    )
+    .unwrap();
+
+    git_init_commit(&project, "fixture: v1");
+    run_gen(&project, &data);
+
+    // Inspect the anchor the Python extractor produced.
+    let py_anchor = {
+        let store = open_store(&data);
+        let all = store
+            .get_all_anchors()
+            .expect("get_all_anchors must succeed");
+        all.into_iter()
+            .find(|a| a.contains("compute_checksum"))
+            .unwrap_or_else(|| panic!("compute_checksum anchor not found in store after gen"))
+    };
+
+    // Mutate: change the docstring → StaleHash for the Python anchor.
+    std::fs::write(
+        src_dir.join("module.py"),
+        "def compute_checksum(data):\n    \"\"\"Compute a fast checksum of input data.\"\"\"\n    return abs(hash(data))\n",
+    )
+    .unwrap();
+
+    // --propose must write a well-formed MergeReconcile proposal (not the
+    // degenerate `:source_hash:` stub from the legacy fallback).
+    let propose_out = aden(&project, &data, &["heal", ".", "--propose"]);
+    let propose_stdout = String::from_utf8_lossy(&propose_out.stdout).to_string();
+    let propose_stderr = String::from_utf8_lossy(&propose_out.stderr).to_string();
+    assert!(
+        propose_out.status.success(),
+        "aden heal . --propose failed for Python:\n  stdout: {propose_stdout}\n  stderr: {propose_stderr}"
+    );
+
+    // aden_propose::list() must see at least one proposal with drift_type=MergeReconcile.
+    let proposals = aden_propose::list(&project).expect("list must succeed");
+    let merge_proposals: Vec<_> = proposals
+        .iter()
+        .filter(|p| p.drift_type == "MergeReconcile")
+        .collect();
+    assert!(
+        !merge_proposals.is_empty(),
+        "expected MergeReconcile proposal for Python anchor; all proposals: {proposals:?}\n\
+         Regression: Python docstrings were silently dropped so ground==base → zero actions → legacy fallback"
+    );
+
+    // The proposal target must reference the Python anchor.
+    let p = merge_proposals[0];
+    assert!(
+        p.target_path.to_string_lossy().contains("compute_checksum"),
+        "proposal target must reference compute_checksum; got: {}",
+        p.target_path.display()
+    );
+
+    // The proposal must have a semantic [[id]] anchor (not a pid-nanos fallback).
+    assert!(
+        p.patch_asciidoc.contains("[[merge-"),
+        "proposal patch_asciidoc must contain [[merge-<slug>]] anchor;\n\
+         got patch_asciidoc:\n{}",
+        &p.patch_asciidoc[..p.patch_asciidoc.len().min(300)]
+    );
+
+    let proposal_id = p.id.clone();
+
+    // --apply <id> must succeed and report Applied.
+    let apply_out = aden(&project, &data, &["heal", ".", "--apply", &proposal_id]);
+    let apply_stdout = String::from_utf8_lossy(&apply_out.stdout).to_string();
+    let apply_stderr = String::from_utf8_lossy(&apply_out.stderr).to_string();
+    assert!(
+        apply_out.status.success(),
+        "aden heal . --apply {proposal_id} failed for Python:\n  stdout: {apply_stdout}\n  stderr: {apply_stderr}"
+    );
+    assert!(
+        apply_stdout.contains("Applied") || apply_stdout.contains("applied"),
+        "expected 'Applied' in --apply output:\n{apply_stdout}"
+    );
+
+    // The base snapshot must now exist and be non-empty.
+    let store = open_store(&data);
+    let snapshot = store
+        .get_base_snapshot(&py_anchor)
+        .expect("get_base_snapshot must not error")
+        .expect("base snapshot must exist after --apply");
+    assert!(
+        !snapshot.is_empty(),
+        "base snapshot for Python anchor must not be empty after --apply"
+    );
+
+    // The snapshot must reflect the NEW docstring content.
+    assert!(
+        snapshot.contains("fast checksum"),
+        "base snapshot must contain the updated docstring after --apply;\n\
+         got snapshot:\n{snapshot}"
+    );
+}

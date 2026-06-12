@@ -834,6 +834,9 @@ fn apply_merge_to_store(
     let mut docs = aden_parse::parse_file(&source_abs, &source_text)
         .map_err(|e| format!("parse error in {}: {e}", source_abs.display()))?;
     for d in &mut docs {
+        // Match the gen pipeline: sanitize source_file to a repo-root-relative
+        // path before slimming so the stored document never carries absolute paths.
+        crate::util::sanitize_source_file(d, &root);
         crate::commands::generate::slim_doc_for_store(d);
     }
     let fresh_doc = match docs.into_iter().find(|d| d.anchor == anchor) {
@@ -943,8 +946,13 @@ fn generate_merge_proposal(anchor: &str, repo_path: &Path) -> Option<aden_propos
     let fresh_doc: Option<aden_core::Document> = if source_abs.exists() {
         let source_text = std::fs::read_to_string(&source_abs).ok()?;
         let mut docs = aden_parse::parse_file(&source_abs, &source_text).ok()?;
-        // Apply the same slimming gen uses so ground matches the stored base exactly.
+        // Apply the same pipeline gen uses: sanitize source_file to a repo-root-relative
+        // path (gen calls sanitize_source_file before slim_doc_for_store), then slim.
+        // Without sanitize_source_file the fresh doc carries an absolute path in
+        // header_attrs["source_file"], which leaks host paths into the proposal and
+        // the base snapshot written on --apply.
         for d in &mut docs {
+            crate::util::sanitize_source_file(d, &root);
             crate::commands::generate::slim_doc_for_store(d);
         }
         // None here = symbol no longer in source → DeleteGenerated proposal.

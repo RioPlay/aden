@@ -661,20 +661,43 @@ fn is_std_noise(name: &str) -> bool {
 }
 
 fn extract_preceding_docstring<'a>(node: tree_sitter::Node<'a>, source: &str) -> Option<String> {
-    // In Python, docstrings are string literals immediately inside a function/class body.
+    // In Python, docstrings are the first string literal in a function/class body.
+    //
+    // Depending on the tree-sitter-python grammar version, a bare triple-quoted
+    // string statement may be represented as:
+    //   • `block > expression_statement > string`  (older grammars / full parse)
+    //   • `block > string`                         (some grammar versions)
+    //
+    // We check both: look at the first named child of the body. If it is a
+    // `string`, return its text. If it is an `expression_statement`, recurse into
+    // its children to find a `string`.
     let body = node.child_by_field_name("body")?;
     let mut cursor = body.walk();
-    let child = body.children(&mut cursor).next()?;
-    if child.kind() == "expression_statement" {
-        let mut inner = child.walk();
-        for inner_child in child.children(&mut inner) {
-            if inner_child.kind() == "string" {
-                let text = node_text(inner_child, source).trim();
-                return Some(text.to_string());
+    // Iterate named children only so anonymous punctuation/newlines are skipped.
+    let first = body.named_children(&mut cursor).next()?;
+    match first.kind() {
+        "string" => {
+            let text = node_text(first, source).trim();
+            if text.is_empty() {
+                None
+            } else {
+                Some(text.to_string())
             }
         }
+        "expression_statement" => {
+            let mut inner = first.walk();
+            for inner_child in first.named_children(&mut inner) {
+                if inner_child.kind() == "string" {
+                    let text = node_text(inner_child, source).trim();
+                    if !text.is_empty() {
+                        return Some(text.to_string());
+                    }
+                }
+            }
+            None
+        }
+        _ => None,
     }
-    None
 }
 
 fn node_text<'a>(node: tree_sitter::Node<'a>, source: &'a str) -> &'a str {
