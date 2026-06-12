@@ -530,16 +530,20 @@ fn emit_ts_symbol<'a>(
         }));
     }
 
-    // Implements edges for class declarations.
+    // Implements / extends edges for class declarations.
     //
     // `class Foo implements IBar, IBaz` → class_heritage → implements_clause →
     //   type_identifier children → emit edge::implements[IBar], edge::implements[IBaz].
     //
+    // `class Foo extends Base` → class_heritage → extends_clause →
+    //   type_identifier child → emit edge::extends[Base].
+    //
     // `class_heritage` has no field name in the TypeScript grammar; it is located
     // by scanning the class_declaration's named children for kind "class_heritage",
-    // then scanning *its* children for "implements_clause".
+    // then scanning *its* children for the appropriate clause kind.
     if sym.kind == NodeType::Type {
         let mut implements_targets: Vec<String> = Vec::new();
+        let mut extends_targets: Vec<String> = Vec::new();
         let mut heritage_cursor = sym.node.walk();
         for heritage_child in sym.node.children(&mut heritage_cursor) {
             if heritage_child.kind() == "class_heritage" {
@@ -552,6 +556,16 @@ fn emit_ts_symbol<'a>(
                                 implements_targets.push(node_text(item, source).to_string());
                             }
                         }
+                    } else if clause.kind() == "extends_clause" {
+                        // `extends Base` — in the TS grammar the superclass appears
+                        // as an "identifier" (not "type_identifier") directly under
+                        // extends_clause.
+                        let mut ec = clause.walk();
+                        for item in clause.children(&mut ec) {
+                            if item.kind() == "identifier" || item.kind() == "type_identifier" {
+                                extends_targets.push(node_text(item, source).to_string());
+                            }
+                        }
                     }
                 }
             }
@@ -560,6 +574,17 @@ fn emit_ts_symbol<'a>(
             let edge_code = implements_targets
                 .iter()
                 .map(|t| format!("edge::implements[{t}]"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            blocks.push(Block::Listing {
+                language: None,
+                code: edge_code,
+            });
+        }
+        if !extends_targets.is_empty() {
+            let edge_code = extends_targets
+                .iter()
+                .map(|t| format!("edge::extends[{t}]"))
                 .collect::<Vec<_>>()
                 .join("\n");
             blocks.push(Block::Listing {

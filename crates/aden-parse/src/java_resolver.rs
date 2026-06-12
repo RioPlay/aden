@@ -510,11 +510,11 @@ fn emit_java_symbol(
     //   type_identifier children → emit edge::implements[Bar], edge::implements[Baz].
     //
     // `class Foo extends Parent` → superclass → type_identifier →
-    //   emit edge::implements[Parent].
-    //   (No dedicated Extends EdgeType is added in this change; a separate variant
-    //    is tracked independently.)
+    //   emit edge::extends[Parent].
+    //   Inheritance and interface satisfaction are now distinct edge types.
     if sym.kind == NodeType::Type {
         let mut implements_targets: Vec<String> = Vec::new();
+        let mut extends_targets: Vec<String> = Vec::new();
 
         // `implements InterfaceA, InterfaceB` — Java grammar: super_interfaces > type_list
         if let Some(super_ifaces) = sym.node.child_by_field_name("interfaces") {
@@ -531,11 +531,13 @@ fn emit_java_symbol(
         }
 
         // `extends ParentClass` — Java grammar: superclass > type_identifier
+        // Routed to edge::extends (not edge::implements) to distinguish
+        // class inheritance from interface satisfaction.
         if let Some(superclass) = sym.node.child_by_field_name("superclass") {
             let mut cursor = superclass.walk();
             for child in superclass.children(&mut cursor) {
                 if child.kind() == "type_identifier" {
-                    implements_targets.push(node_text(child, source).to_string());
+                    extends_targets.push(node_text(child, source).to_string());
                 }
             }
         }
@@ -544,6 +546,17 @@ fn emit_java_symbol(
             let edge_code = implements_targets
                 .iter()
                 .map(|t| format!("edge::implements[{t}]"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            blocks.push(Block::Listing {
+                language: None,
+                code: edge_code,
+            });
+        }
+        if !extends_targets.is_empty() {
+            let edge_code = extends_targets
+                .iter()
+                .map(|t| format!("edge::extends[{t}]"))
                 .collect::<Vec<_>>()
                 .join("\n");
             blocks.push(Block::Listing {

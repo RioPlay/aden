@@ -575,36 +575,10 @@ impl AdenGraph<DocumentNode, AdenEdge> {
             graph.add_node(node);
         }
 
-        // Load all edges from storage and rebuild them
-        let edge_types = vec![
-            EdgeType::Uses,
-            EdgeType::UsedBy,
-            EdgeType::Implements,
-            EdgeType::Tests,
-            EdgeType::Documents,
-            EdgeType::Contains,
-            EdgeType::Constrains,
-            EdgeType::Justifies,
-            EdgeType::Invokes,
-            EdgeType::Requires,
-            EdgeType::Mutates,
-            EdgeType::Calls,
-            EdgeType::Supersedes,
-            EdgeType::Amends,
-            EdgeType::Verifies,
-            EdgeType::IsA,
-            EdgeType::PartOf,
-            EdgeType::RelatesTo,
-            EdgeType::SimilarTo,
-            EdgeType::Causes,
-            EdgeType::Implies,
-            EdgeType::SynonymOf,
-            EdgeType::AntonymOf,
-            EdgeType::AssociatedWith,
-            EdgeType::PrerequisiteFor,
-            EdgeType::Explains,
-            EdgeType::IsEquivalentTo,
-        ];
+        // Load all edges from storage and rebuild them.
+        // Use EdgeType::ALL so that any new variant added to the enum is
+        // automatically loaded without a manual update here.
+        let edge_types = EdgeType::ALL;
 
         for edge_type in &edge_types {
             let typed_edges = storage
@@ -640,6 +614,8 @@ impl AdenGraph<DocumentNode, AdenEdge> {
             EdgeType::Uses,
             EdgeType::UsedBy,
             EdgeType::Implements,
+            EdgeType::Extends,
+            EdgeType::Imports,
             EdgeType::Tests,
             EdgeType::Documents,
             EdgeType::Contains,

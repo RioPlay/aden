@@ -49,6 +49,8 @@ impl GraphEdge for AdenEdge {
             EdgeType::Uses => "Uses",
             EdgeType::UsedBy => "UsedBy",
             EdgeType::Implements => "Implements",
+            EdgeType::Extends => "Extends",
+            EdgeType::Imports => "Imports",
             EdgeType::Tests => "Tests",
             EdgeType::Documents => "Documents",
             EdgeType::Contains => "Contains",

@@ -490,9 +490,8 @@ fn java_implements_emits_edge_macros() {
     );
 }
 
-/// `class Child extends Parent` must emit `edge::implements[Parent]` on the
-/// Child class document (no dedicated Extends edge type in this change; a
-/// separate EdgeType variant is tracked independently).
+/// `class Child extends Parent` must emit `edge::extends[Parent]` on the
+/// Child class document. Inheritance is distinct from interface satisfaction.
 #[test]
 fn java_extends_emits_edge_macro() {
     let resolver = crate::java_resolver::JavaResolver::new();
@@ -501,8 +500,12 @@ fn java_extends_emits_edge_macro() {
         .expect("parse should succeed");
     let listing = listing_text_by_anchor(&docs, "Child");
     assert!(
-        listing.contains("edge::implements[Parent]"),
-        "class Child extends Parent must emit edge::implements[Parent]; got: {listing}"
+        listing.contains("edge::extends[Parent]"),
+        "class Child extends Parent must emit edge::extends[Parent]; got: {listing}"
+    );
+    assert!(
+        !listing.contains("edge::implements[Parent]"),
+        "superclass must NOT appear as edge::implements; got: {listing}"
     );
 }
 
@@ -511,6 +514,18 @@ fn java_extends_emits_edge_macro() {
 const TS_IMPLEMENTS_FIXTURE: &str = r#"
 class Foo implements IBar, IBaz {
   greet(): string { return "hi"; }
+}
+"#;
+
+const TS_EXTENDS_FIXTURE: &str = r#"
+class Child extends Base {
+  act(): void {}
+}
+"#;
+
+const TS_EXTENDS_AND_IMPLEMENTS_FIXTURE: &str = r#"
+class Derived extends Base implements IFoo {
+  work(): void {}
 }
 "#;
 
@@ -530,6 +545,47 @@ fn ts_implements_emits_edge_macros() {
     assert!(
         listing.contains("edge::implements[IBaz]"),
         "class Foo implements IBar, IBaz must emit edge::implements[IBaz]; got: {listing}"
+    );
+}
+
+/// `class Child extends Base` must emit `edge::extends[Base]` on the Child
+/// class document. Must NOT produce `edge::implements[Base]`.
+#[test]
+fn ts_extends_emits_edge_macro() {
+    let resolver = crate::typescript_resolver::TypeScriptResolver::new();
+    let docs = resolver
+        .extract_documents(TS_EXTENDS_FIXTURE, std::path::Path::new("child.ts"))
+        .expect("parse should succeed");
+    let listing = listing_text_by_anchor(&docs, "Child");
+    assert!(
+        listing.contains("edge::extends[Base]"),
+        "class Child extends Base must emit edge::extends[Base]; got: {listing}"
+    );
+    assert!(
+        !listing.contains("edge::implements[Base]"),
+        "superclass must NOT appear as edge::implements; got: {listing}"
+    );
+}
+
+/// `class Derived extends Base implements IFoo` must emit both `edge::extends[Base]`
+/// and `edge::implements[IFoo]` — inheritance and interface satisfaction are distinct.
+#[test]
+fn ts_extends_and_implements_emit_separate_edges() {
+    let resolver = crate::typescript_resolver::TypeScriptResolver::new();
+    let docs = resolver
+        .extract_documents(
+            TS_EXTENDS_AND_IMPLEMENTS_FIXTURE,
+            std::path::Path::new("derived.ts"),
+        )
+        .expect("parse should succeed");
+    let listing = listing_text_by_anchor(&docs, "Derived");
+    assert!(
+        listing.contains("edge::extends[Base]"),
+        "class Derived extends Base must emit edge::extends[Base]; got: {listing}"
+    );
+    assert!(
+        listing.contains("edge::implements[IFoo]"),
+        "class Derived implements IFoo must emit edge::implements[IFoo]; got: {listing}"
     );
 }
 

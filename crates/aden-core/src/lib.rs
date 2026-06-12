@@ -521,6 +521,15 @@ pub enum EdgeType {
     /// Inverse of Uses: target is pointed to by source.
     UsedBy,
     Implements,
+    /// Class-level inheritance: `class Child extends Parent` in Java/TypeScript.
+    /// Kept distinct from `Implements` (interface satisfaction) so inheritance
+    /// hierarchies and interface contracts can be queried independently.
+    /// Python class bases stay `Implements` — no syntactic distinction there.
+    Extends,
+    /// Module-level import/use declaration. Distinct from `Uses` so that
+    /// circular-import analysis and unused-import analysis can operate without
+    /// false positives from non-import `Uses` edges.
+    Imports,
     Tests,
     Documents,
     /// Structural containment (a module CONTAINS its symbols; the project CONTAINS
@@ -585,10 +594,12 @@ impl EdgeType {
     /// its own list). The exhaustive `match` in `aden-graph`'s `GraphEdge`
     /// impl breaks the build when a variant is added, and its fix points
     /// here; `all_variants_listed_in_all` asserts the two stay in sync.
-    pub const ALL: [EdgeType; 30] = [
+    pub const ALL: [EdgeType; 32] = [
         EdgeType::Uses,
         EdgeType::UsedBy,
         EdgeType::Implements,
+        EdgeType::Extends,
+        EdgeType::Imports,
         EdgeType::Tests,
         EdgeType::Documents,
         EdgeType::Contains,
@@ -663,6 +674,10 @@ impl EdgeType {
             EdgeType::UsedBy => 0.8,
             EdgeType::Calls => 0.8,
             EdgeType::Implements => 0.8,
+            // Inheritance is as structurally strong as interface satisfaction.
+            EdgeType::Extends => 0.8,
+            // Import edges are navigation-weight, not semantic activation.
+            EdgeType::Imports => 0.6,
             EdgeType::Tests => 0.6,
             EdgeType::Verifies => 0.6,
             EdgeType::Documents => 0.5,
@@ -784,5 +799,41 @@ mod edge_type_tests {
             );
         }
         assert_eq!(seen.len(), EdgeType::ALL.len());
+    }
+
+    /// `EdgeType::ALL` must contain exactly 32 variants (30 original + Extends + Imports).
+    #[test]
+    fn all_has_expected_count() {
+        assert_eq!(
+            EdgeType::ALL.len(),
+            32,
+            "expected 32 variants in EdgeType::ALL"
+        );
+    }
+
+    /// `Extends` and `Imports` must be present in `ALL`.
+    #[test]
+    fn extends_and_imports_in_all() {
+        assert!(
+            EdgeType::ALL.contains(&EdgeType::Extends),
+            "EdgeType::Extends must be in ALL"
+        );
+        assert!(
+            EdgeType::ALL.contains(&EdgeType::Imports),
+            "EdgeType::Imports must be in ALL"
+        );
+    }
+
+    /// `Extends` and `Imports` are code edges (not semantic).
+    #[test]
+    fn extends_imports_are_code_edges() {
+        assert!(
+            EdgeType::Extends.is_code(),
+            "EdgeType::Extends must be a code edge"
+        );
+        assert!(
+            EdgeType::Imports.is_code(),
+            "EdgeType::Imports must be a code edge"
+        );
     }
 }
