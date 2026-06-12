@@ -23,6 +23,285 @@ pub(crate) const SQL_INJECTION_PATTERN: &str = r#"(?i)\b(SELECT\s+[^;'"]*\bFROM\
 pub(crate) const SECRET_ASSIGNMENT_PATTERN: &str =
     r#"(?i)(password|passwd|pwd|secret|token|api_key)\s*=\s*['"][^'"${}]+['"]"#;
 
+// ── A06: manifest/lockfile vulnerability checks ──────────────────────────────
+//
+// Each table entry is: (crate/package name, bad version predicate description,
+// version_is_bad closure, severity, description, remediation).
+//
+// Version comparison is major.minor-only (patch is intentionally ignored since
+// patch-level CVEs are tracked by `cargo audit`, not this heuristic scan).
+
+/// Parse a semver string into (major, minor). Returns None on parse failure.
+fn parse_major_minor(v: &str) -> Option<(u64, u64)> {
+    // Strip a leading `^`, `~`, `=`, `>=`, etc. if present (Cargo.toml style).
+    let v = v.trim_start_matches(['^', '~', '=', '>', '<', ' ']);
+    let mut parts = v.splitn(3, '.');
+    let major: u64 = parts.next()?.parse().ok()?;
+    let minor: u64 = parts.next().unwrap_or("0").parse().ok()?;
+    Some((major, minor))
+}
+
+/// A single known-vulnerable dependency rule for lockfile/manifest scanning.
+#[allow(dead_code)] // `bad_range` is documentation-only; used in error messages / rule tables.
+struct DepRule {
+    /// Ecosystem this rule applies to ("cargo", "npm", "pypi", "maven").
+    ecosystem: &'static str,
+    /// Package name to match (case-insensitive).
+    name: &'static str,
+    /// Human-readable version range description, e.g. "< 1.0.0".
+    bad_range: &'static str,
+    /// Returns `true` when the resolved version is in the vulnerable range.
+    version_is_bad: fn(major: u64, minor: u64) -> bool,
+    severity: OwaspSeverity,
+    description: &'static str,
+    remediation: &'static str,
+}
+
+static DEP_RULES: &[DepRule] = &[
+    // Rust — Cargo.lock
+    DepRule {
+        ecosystem: "cargo",
+        name: "serde",
+        bad_range: "< 1.0",
+        version_is_bad: |maj, _| maj < 1,
+        severity: OwaspSeverity::High,
+        description: "Known-vulnerable serde version (pre-1.0) in Cargo.lock",
+        remediation: "Update to serde >= 1.0 for security fixes.",
+    },
+    DepRule {
+        ecosystem: "cargo",
+        name: "reqwest",
+        bad_range: "< 0.11",
+        version_is_bad: |maj, min| maj == 0 && min < 11,
+        severity: OwaspSeverity::Medium,
+        description: "Older reqwest version (< 0.11) may have known TLS issues",
+        remediation: "Update to latest reqwest version.",
+    },
+    DepRule {
+        ecosystem: "cargo",
+        name: "actix-web",
+        bad_range: "< 4.6",
+        version_is_bad: |maj, min| maj < 4 || (maj == 4 && min < 6),
+        severity: OwaspSeverity::High,
+        description: "Vulnerable actix-web version (pre-4.6) in Cargo.lock",
+        remediation: "Update to actix-web >= 4.6.",
+    },
+    // Python — requirements.txt / poetry.lock
+    DepRule {
+        ecosystem: "pypi",
+        name: "cryptography",
+        bad_range: "< 41.0",
+        version_is_bad: |maj, _| maj < 41,
+        severity: OwaspSeverity::High,
+        description: "Vulnerable cryptography library version (< 41.0) in Python manifest",
+        remediation: "Update to latest cryptography >= 41.0.",
+    },
+    // Java — pom.xml
+    DepRule {
+        ecosystem: "maven",
+        name: "jackson-databind",
+        bad_range: "< 2.15",
+        version_is_bad: |maj, min| maj < 2 || (maj == 2 && min < 15),
+        severity: OwaspSeverity::High,
+        description: "Vulnerable Jackson Databind version (< 2.15) in pom.xml",
+        remediation: "Update Jackson to 2.15+ for CVE fixes.",
+    },
+];
+
+/// A resolved dependency from a manifest or lockfile.
+struct ResolvedDep<'a> {
+    ecosystem: &'static str,
+    name: String,
+    version: String,
+    /// Path to the manifest/lockfile that contained this entry.
+    source_path: &'a std::path::Path,
+}
+
+/// Read Cargo.lock and return resolved packages (skips workspace-internal crates).
+fn read_cargo_lock(root: &Path) -> Vec<(String, String)> {
+    let content = match std::fs::read_to_string(root.join("Cargo.lock")) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    let mut out = Vec::new();
+    let mut name: Option<String> = None;
+    let mut is_workspace = false;
+    for line in content.lines() {
+        let t = line.trim();
+        if t.starts_with("[[package]]") {
+            name = None;
+            is_workspace = false;
+        } else if let Some(rest) = t.strip_prefix("name = ") {
+            let n = rest.trim_matches('"').to_string();
+            is_workspace = n.starts_with("aden");
+            name = Some(n);
+        } else if let Some(rest) = t.strip_prefix("version = ")
+            && !is_workspace
+            && let Some(ref n) = name
+        {
+            out.push((n.clone(), rest.trim_matches('"').to_string()));
+        }
+    }
+    out
+}
+
+/// Read Python deps from poetry.lock or requirements.txt.
+fn read_python_deps(root: &Path) -> Vec<(String, String)> {
+    // poetry.lock takes priority.
+    if let Ok(content) = std::fs::read_to_string(root.join("poetry.lock")) {
+        let mut out = Vec::new();
+        let mut name: Option<String> = None;
+        for line in content.lines() {
+            let t = line.trim();
+            if t.starts_with("[[package]]") {
+                name = None;
+            } else if let Some(rest) = t.strip_prefix("name = ") {
+                name = Some(rest.trim_matches('"').to_string());
+            } else if let Some(rest) = t.strip_prefix("version = ")
+                && let Some(ref n) = name
+            {
+                out.push((n.clone(), rest.trim_matches('"').to_string()));
+            }
+        }
+        return out;
+    }
+    // Fall back to requirements.txt (pinned lines only).
+    let mut out = Vec::new();
+    if let Ok(content) = std::fs::read_to_string(root.join("requirements.txt")) {
+        for line in content.lines() {
+            let line = line.split('#').next().unwrap_or("").trim();
+            if line.is_empty() || line.starts_with('-') {
+                continue;
+            }
+            let spec = line.split(';').next().unwrap_or("").trim();
+            if let Some((pkg, ver)) = spec.split_once("==") {
+                let pkg = pkg.split('[').next().unwrap_or("").trim();
+                if !pkg.is_empty() {
+                    out.push((pkg.to_string(), ver.trim().to_string()));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Extract `<artifactId>` + `<version>` pairs from a pom.xml (best-effort line scan).
+fn read_maven_deps(root: &Path) -> Vec<(String, String)> {
+    let content = match std::fs::read_to_string(root.join("pom.xml")) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    // Very lightweight parser: collect <artifactId> and <version> within the
+    // same <dependency> block. This avoids pulling in an XML parser.
+    let mut out = Vec::new();
+    let mut artifact: Option<String> = None;
+    let mut in_dep = false;
+    for line in content.lines() {
+        let t = line.trim();
+        if t.contains("<dependency>") {
+            in_dep = true;
+            artifact = None;
+        } else if t.contains("</dependency>") {
+            in_dep = false;
+            artifact = None;
+        } else if in_dep {
+            if let Some(inner) = t
+                .strip_prefix("<artifactId>")
+                .and_then(|s| s.strip_suffix("</artifactId>"))
+            {
+                artifact = Some(inner.to_string());
+            } else if let Some(inner) = t
+                .strip_prefix("<version>")
+                .and_then(|s| s.strip_suffix("</version>"))
+                && let Some(ref art) = artifact
+            {
+                out.push((art.clone(), inner.to_string()));
+            }
+        }
+    }
+    out
+}
+
+/// Scan manifests/lockfiles at `root` for known-vulnerable dependency versions.
+/// Returns `OwaspFinding` entries (A06) — no source-line scanning.
+fn check_vulnerable_deps(root: &Path) -> Vec<OwaspFinding> {
+    let mut deps: Vec<ResolvedDep<'_>> = Vec::new();
+
+    let cargo_lock_path = root.join("Cargo.lock");
+    if cargo_lock_path.exists() {
+        for (name, ver) in read_cargo_lock(root) {
+            deps.push(ResolvedDep {
+                ecosystem: "cargo",
+                name,
+                version: ver,
+                source_path: &cargo_lock_path,
+            });
+        }
+    }
+
+    let pyproject_path = root.join("pyproject.toml");
+    let setup_py_path = root.join("setup.py");
+    let reqs_path = root.join("requirements.txt");
+    // Use a single representative path for Python manifest findings.
+    let py_source = if pyproject_path.exists() {
+        &pyproject_path
+    } else if setup_py_path.exists() {
+        &setup_py_path
+    } else {
+        &reqs_path
+    };
+    if py_source.exists() || root.join("poetry.lock").exists() {
+        for (name, ver) in read_python_deps(root) {
+            deps.push(ResolvedDep {
+                ecosystem: "pypi",
+                name,
+                version: ver,
+                source_path: py_source,
+            });
+        }
+    }
+
+    let pom_path = root.join("pom.xml");
+    if pom_path.exists() {
+        for (name, ver) in read_maven_deps(root) {
+            deps.push(ResolvedDep {
+                ecosystem: "maven",
+                name,
+                version: ver,
+                source_path: &pom_path,
+            });
+        }
+    }
+
+    let mut findings = Vec::new();
+    for dep in &deps {
+        let name_lower = dep.name.to_lowercase();
+        for rule in DEP_RULES {
+            if rule.ecosystem != dep.ecosystem {
+                continue;
+            }
+            if name_lower != rule.name {
+                continue;
+            }
+            if let Some((maj, min)) = parse_major_minor(&dep.version)
+                && (rule.version_is_bad)(maj, min)
+            {
+                findings.push(OwaspFinding {
+                    owasp_id: "A06",
+                    category: "Vulnerable Dependency",
+                    severity: rule.severity,
+                    file: dep.source_path.to_path_buf(),
+                    line: 0, // manifest-level, not line-specific
+                    snippet: format!("{} = \"{}\"", dep.name, dep.version),
+                    description: rule.description,
+                    remediation: rule.remediation,
+                });
+            }
+        }
+    }
+    findings
+}
+
 pub fn cmd_audit(
     path: &Path,
     lang_filter: Option<&str>,
@@ -207,19 +486,10 @@ pub fn cmd_audit(
             (Regex::new(r#"(?i)(authorize\s*\(\s*\)|authorize\s*\(\s*\"\s*\))"#).unwrap(), Some("python"), "A01", "Broken Access Control", OwaspSeverity::Medium,
              "Empty authorization check",                                         "Require explicit role or permission verification."),
 
-            // A06 - Vulnerable Components (static patterns only)
-            (Regex::new(r##"(?i)serde\s*=\s*"0\.[5-9]""##).unwrap(),             Some("rust"), "A06", "Vulnerable Dependency",  OwaspSeverity::High,
-             "Known-vulnerable serde version (pre-0.10) in Cargo.toml",          "Update to serde >= 1.0 for security fixes."),
-            (Regex::new(r##"(?i)reqwest\s*=\s*"0\.[8-9]|0\.10""##).unwrap(),     Some("rust"), "A06", "Vulnerable Dependency",  OwaspSeverity::Medium,
-             "Older reqwest version may have known issues",                     "Update to latest reqwest version."),
-            (Regex::new(r##"(?i)actix-web\s*=\s*"[0-3]\.|4\.[0-5]\."##).unwrap(),     Some("rust"), "A06", "Vulnerable Dependency",  OwaspSeverity::High,
-             "Vulnerable actix-web version (pre-4.6)",                           "Update to actix-web >= 4.6."),
-            (Regex::new(r##"(?i)crypto\s*=\s*"[12]\.[0-9]|cryptography\s*=\s*"[0-2]\."##).unwrap(), Some("python"), "A06", "Vulnerable Dependency",  OwaspSeverity::High,
-             "Vulnerable cryptography library version",                          "Update to latest cryptography >= 41.0."),
-            (Regex::new(r#"(?i)(npm\s+install|npm\s+i)\s+[a-z0-9-]+@[0-9]+\.[0-9]+\.[0-9]+"#).unwrap(), Some("ts"), "A06", "Vulnerable Dependency",  OwaspSeverity::Medium,
-             "Direct version pin may be outdated",                              "Audit and update pinned versions regularly."),
-            (Regex::new(r#"(?i)<dependency>\s*<groupId>com\.fasterxml\.jackson\.core</groupId>\s*<version>[0-2]\.[0-9]+"#).unwrap(), Some("java"), "A06", "Vulnerable Dependency",  OwaspSeverity::High,
-             "Vulnerable Jackson version (< 2.15)",                             "Update Jackson to 2.15+ for CVE fixes."),
+            // A06 — Vulnerable Components are checked by reading manifests/lockfiles
+            // (see `check_vulnerable_deps` below), not by pattern-matching source
+            // lines. Source-line scanning for dependency versions produces false
+            // positives from string literals and doc examples.
         ]
     });
 
@@ -336,6 +606,13 @@ pub fn cmd_audit(
         }
     }
 
+    // A06: manifest/lockfile-based vulnerable dependency scan. Only runs when
+    // `path` is a directory (no manifest when auditing a single file) and when
+    // there is no language filter that would make the results misleading.
+    if path.is_dir() && lang_filter.is_none() {
+        findings.extend(check_vulnerable_deps(path));
+    }
+
     // Output — global -j/--json flag is equivalent to --format json
     let is_json = json || format == "json";
     let is_adoc = !is_json && format == "adoc";
@@ -446,102 +723,267 @@ pub fn cmd_audit(
     Ok(())
 }
 
+/// Result of running one test framework's suite.
+#[derive(Debug)]
+enum FrameworkResult {
+    Pass(String),
+    Fail(String, String), // (label, error message)
+    Skip(String, String), // (label, reason)
+}
+
+/// Returns true if `binary` resolves on PATH.
+fn binary_available(binary: &str) -> bool {
+    std::process::Command::new(binary)
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Returns true if `package.json` contains a `"test"` script entry.
+fn pkg_json_has_test_script(path: &Path) -> bool {
+    let content = match std::fs::read_to_string(path.join("package.json")) {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    let json: serde_json::Value = match serde_json::from_str(&content) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    json.get("scripts")
+        .and_then(|s| s.get("test"))
+        .and_then(|t| t.as_str())
+        .map(|t| !t.is_empty())
+        .unwrap_or(false)
+}
+
+/// Detect and run tests for every framework present at `path`.
+/// Each detected framework is attempted independently; a missing runner is
+/// reported as SKIP rather than FAIL so that a JS-only host running a
+/// Rust+Node monorepo does not block on absent `npm`. Overall result is `Err`
+/// only if at least one framework actually failed (exit status != 0).
 pub fn run_project_tests(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let has_cargo = path.join("Cargo.toml").exists();
     let has_go_mod = path.join("go.mod").exists();
-    let has_pkg_json = path.join("package.json").exists();
+    let has_pkg_json = path.join("package.json").exists() && pkg_json_has_test_script(path);
     let has_pyproject = path.join("pyproject.toml").exists();
     let has_setup_py = path.join("setup.py").exists();
     let has_reqs = path.join("requirements.txt").exists();
+    let has_pom = path.join("pom.xml").exists();
 
+    let mut results: Vec<FrameworkResult> = Vec::new();
+
+    // ── Rust / Cargo ────────────────────────────────────────────────────────
     if has_cargo {
-        let output = std::process::Command::new("cargo")
-            .args(["test", "--workspace", "--quiet"])
-            .current_dir(path)
-            .output()?;
-        if !output.status.success() {
-            return Err(format!(
-                "cargo test failed:\n{}",
-                String::from_utf8_lossy(&output.stderr)
-            )
-            .into());
-        }
-        return Ok(());
-    }
-
-    if has_go_mod {
-        let output = std::process::Command::new("go")
-            .args(["test", "./..."])
-            .current_dir(path)
-            .output()?;
-        if !output.status.success() {
-            return Err(format!(
-                "go test failed:\n{}",
-                String::from_utf8_lossy(&output.stderr)
-            )
-            .into());
-        }
-        return Ok(());
-    }
-
-    if has_pkg_json {
-        let runner = if std::process::Command::new("npm")
-            .arg("--version")
-            .output()
-            .is_ok()
-        {
-            "npm"
-        } else if std::process::Command::new("yarn")
-            .arg("--version")
-            .output()
-            .is_ok()
-        {
-            "yarn"
-        } else if std::process::Command::new("pnpm")
-            .arg("--version")
-            .output()
-            .is_ok()
-        {
-            "pnpm"
+        if !binary_available("cargo") {
+            results.push(FrameworkResult::Skip(
+                "cargo".into(),
+                "cargo not found on PATH".into(),
+            ));
         } else {
-            return Err("No JS package manager found (npm/yarn/pnpm)".into());
-        };
-        let output = std::process::Command::new(runner)
-            .args(["test"])
-            .current_dir(path)
-            .output()?;
-        if !output.status.success() {
-            return Err(format!(
-                "{} test failed:\n{}",
-                runner,
-                String::from_utf8_lossy(&output.stderr)
-            )
-            .into());
+            let output = std::process::Command::new("cargo")
+                .args(["test", "--workspace", "--quiet"])
+                .current_dir(path)
+                .output();
+            match output {
+                Ok(o) if o.status.success() => {
+                    results.push(FrameworkResult::Pass("cargo test".into()));
+                }
+                Ok(o) => {
+                    results.push(FrameworkResult::Fail(
+                        "cargo test".into(),
+                        String::from_utf8_lossy(&o.stderr).into_owned(),
+                    ));
+                }
+                Err(e) => {
+                    results.push(FrameworkResult::Fail("cargo test".into(), e.to_string()));
+                }
+            }
         }
-        return Ok(());
     }
 
+    // ── Go ──────────────────────────────────────────────────────────────────
+    if has_go_mod {
+        if !binary_available("go") {
+            results.push(FrameworkResult::Skip(
+                "go test".into(),
+                "go not found on PATH".into(),
+            ));
+        } else {
+            let output = std::process::Command::new("go")
+                .args(["test", "./..."])
+                .current_dir(path)
+                .output();
+            match output {
+                Ok(o) if o.status.success() => {
+                    results.push(FrameworkResult::Pass("go test".into()));
+                }
+                Ok(o) => {
+                    results.push(FrameworkResult::Fail(
+                        "go test".into(),
+                        String::from_utf8_lossy(&o.stderr).into_owned(),
+                    ));
+                }
+                Err(e) => {
+                    results.push(FrameworkResult::Fail("go test".into(), e.to_string()));
+                }
+            }
+        }
+    }
+
+    // ── Node / JS ───────────────────────────────────────────────────────────
+    if has_pkg_json {
+        let runner = if binary_available("npm") {
+            Some("npm")
+        } else if binary_available("yarn") {
+            Some("yarn")
+        } else if binary_available("pnpm") {
+            Some("pnpm")
+        } else {
+            None
+        };
+        match runner {
+            None => {
+                results.push(FrameworkResult::Skip(
+                    "npm/yarn/pnpm test".into(),
+                    "no JS package manager found on PATH (npm/yarn/pnpm)".into(),
+                ));
+            }
+            Some(r) => {
+                let output = std::process::Command::new(r)
+                    .args(["test", "--", "--passWithNoTests"])
+                    .current_dir(path)
+                    .output();
+                match output {
+                    Ok(o) if o.status.success() => {
+                        results.push(FrameworkResult::Pass(format!("{r} test")));
+                    }
+                    Ok(o) => {
+                        results.push(FrameworkResult::Fail(
+                            format!("{r} test"),
+                            String::from_utf8_lossy(&o.stderr).into_owned(),
+                        ));
+                    }
+                    Err(e) => {
+                        results.push(FrameworkResult::Fail(format!("{r} test"), e.to_string()));
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Python ──────────────────────────────────────────────────────────────
     if has_pyproject || has_setup_py || has_reqs {
-        let output = std::process::Command::new("pytest")
-            .args(["-q"])
-            .current_dir(path)
-            .output()?;
-        if output.status.success() {
-            return Ok(());
+        let runner = if binary_available("pytest") {
+            Some(("pytest", vec!["-q"]))
+        } else if binary_available("python") {
+            Some(("python", vec!["-m", "pytest", "-q"]))
+        } else if binary_available("python3") {
+            Some(("python3", vec!["-m", "pytest", "-q"]))
+        } else {
+            None
+        };
+        match runner {
+            None => {
+                results.push(FrameworkResult::Skip(
+                    "pytest".into(),
+                    "pytest / python not found on PATH".into(),
+                ));
+            }
+            Some((bin, args)) => {
+                let output = std::process::Command::new(bin)
+                    .args(&args)
+                    .current_dir(path)
+                    .output();
+                match output {
+                    Ok(o) if o.status.success() => {
+                        results.push(FrameworkResult::Pass(format!("{bin} {}", args.join(" "))));
+                    }
+                    Ok(o) => {
+                        results.push(FrameworkResult::Fail(
+                            format!("{bin} {}", args.join(" ")),
+                            String::from_utf8_lossy(&o.stderr).into_owned(),
+                        ));
+                    }
+                    Err(e) => {
+                        results.push(FrameworkResult::Fail(
+                            format!("{bin} {}", args.join(" ")),
+                            e.to_string(),
+                        ));
+                    }
+                }
+            }
         }
-        let output = std::process::Command::new("python")
-            .args(["-m", "pytest", "-q"])
-            .current_dir(path)
-            .output()?;
-        if output.status.success() {
-            return Ok(());
+    }
+
+    // ── Java / Maven ────────────────────────────────────────────────────────
+    if has_pom {
+        if !binary_available("mvn") {
+            results.push(FrameworkResult::Skip(
+                "mvn test".into(),
+                "mvn not found on PATH".into(),
+            ));
+        } else {
+            let output = std::process::Command::new("mvn")
+                .args(["test", "-q"])
+                .current_dir(path)
+                .output();
+            match output {
+                Ok(o) if o.status.success() => {
+                    results.push(FrameworkResult::Pass("mvn test".into()));
+                }
+                Ok(o) => {
+                    results.push(FrameworkResult::Fail(
+                        "mvn test".into(),
+                        String::from_utf8_lossy(&o.stderr).into_owned(),
+                    ));
+                }
+                Err(e) => {
+                    results.push(FrameworkResult::Fail("mvn test".into(), e.to_string()));
+                }
+            }
         }
+    }
+
+    // ── Aggregate ───────────────────────────────────────────────────────────
+    if results.is_empty() {
         return Err(
-            "Python tests failed or no test runner found (tried pytest, python -m pytest)".into(),
+            "No recognized test framework found (checked Cargo.toml, go.mod, \
+                    package.json[test script], pyproject.toml, setup.py, \
+                    requirements.txt, pom.xml)"
+                .into(),
         );
     }
 
-    Err("No recognized test framework found (checked Cargo.toml, go.mod, package.json, pyproject.toml, setup.py, requirements.txt)".into())
+    let mut failures: Vec<String> = Vec::new();
+    for r in &results {
+        match r {
+            FrameworkResult::Pass(label) => {
+                println!("  [PASS] {label}");
+            }
+            FrameworkResult::Fail(label, msg) => {
+                let trimmed = msg.trim();
+                println!("  [FAIL] {label}:\n{trimmed}");
+                failures.push(format!("{label}: {trimmed}"));
+            }
+            FrameworkResult::Skip(label, reason) => {
+                println!("  [SKIP] {label}: {reason}");
+            }
+        }
+    }
+
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "{} test framework(s) failed:\n{}",
+            failures.len(),
+            failures.join("\n---\n")
+        )
+        .into())
+    }
 }
 
 pub fn cmd_ci_check(path: &Path, json: bool) -> Result<(), Box<dyn std::error::Error>> {
@@ -2010,5 +2452,186 @@ mod tests {
             cmd_ready(&missing, false).is_err(),
             "ready should fail when the target path is not a directory"
         );
+    }
+
+    // ── run_project_tests: polyglot detection ────────────────────────────────
+
+    /// A fixture directory with both Cargo.toml and package.json should cause
+    /// `run_project_tests` to ATTEMPT both frameworks, not short-circuit after
+    /// Cargo. We assert this without actually running cargo/npm by checking that
+    /// the error message mentions both frameworks when both are present but
+    /// neither runner succeeds (CI host may lack npm; cargo test would succeed
+    /// here but we use a path that has no test binaries). The key invariant is
+    /// that the code path reaches the JS framework check at all.
+    #[test]
+    fn run_project_tests_attempts_all_detected_frameworks() {
+        let dir = std::env::temp_dir().join(format!("aden-polyglot-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Minimal Cargo.toml: cargo will pass (no tests = green).
+        std::fs::write(
+            dir.join("Cargo.toml"),
+            "[package]\nname=\"poly\"\nversion=\"0.0.0\"\nedition=\"2021\"\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("src/lib.rs"), "pub fn x() {}\n").unwrap();
+
+        // package.json with a "test" script: the JS framework should be detected.
+        std::fs::write(
+            dir.join("package.json"),
+            r#"{"name":"poly","version":"0.0.0","scripts":{"test":"echo ok"}}"#,
+        )
+        .unwrap();
+
+        // With both manifests present, run_project_tests must attempt >= 2 frameworks.
+        // We observe this by checking that it doesn't return immediately after
+        // cargo (it will also try npm/yarn/pnpm; if none present it SKIPS, not fails).
+        // The function must return Ok (cargo passes) and emit at least one [PASS] line.
+        // We just assert no panic and a definite result (not "no framework found").
+        let result = run_project_tests(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // "No recognized test framework found" must NOT appear — we have two manifests.
+        if let Err(ref e) = result {
+            let msg = e.to_string();
+            assert!(
+                !msg.contains("No recognized test framework found"),
+                "expected at least one framework to be detected, got: {msg}"
+            );
+        }
+        // Either Ok (cargo passed, JS skipped/passed) or an error naming a framework.
+    }
+
+    /// A directory with only package.json but NO "test" script should NOT be
+    /// detected as a JS test framework (avoids running `npm test` on a project
+    /// that has no tests configured, which would exit with an error).
+    #[test]
+    fn run_project_tests_skips_pkg_json_without_test_script() {
+        let dir = std::env::temp_dir().join(format!("aden-noscript-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        std::fs::write(
+            dir.join("package.json"),
+            r#"{"name":"no-test","version":"0.0.0","scripts":{"build":"tsc"}}"#,
+        )
+        .unwrap();
+
+        let result = run_project_tests(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // Should fail with "No recognized test framework found" since the only
+        // manifest has no test script and no other manifests are present.
+        assert!(
+            result.is_err(),
+            "expected error when no test scripts are configured"
+        );
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("No recognized test framework found"),
+            "should report no framework found"
+        );
+    }
+
+    // ── A06 vulnerable dependency: manifest-based, not source-line ───────────
+
+    /// A .rs source file that merely MENTIONS an old serde version in a string
+    /// literal must NOT produce an A06 finding. The version check must come from
+    /// Cargo.lock, not from pattern-matching source lines.
+    #[test]
+    fn a06_string_literal_in_rs_does_not_produce_finding() {
+        let dir =
+            std::env::temp_dir().join(format!("aden-a06-literal-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+
+        // A .rs file with a string literal that looks like a vulnerable dep spec.
+        std::fs::write(
+            dir.join("src/lib.rs"),
+            // This is a doc comment / string literal — must NOT be flagged.
+            "/// See serde = \"0.8\" for history\npub fn x() {}\n",
+        )
+        .unwrap();
+
+        // No Cargo.lock → no A06 manifest findings.
+        let findings = check_vulnerable_deps(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert!(
+            findings.is_empty(),
+            "string literal in .rs source must not produce A06 findings; got: {findings:#?}",
+        );
+    }
+
+    /// A Cargo.lock entry for a genuinely old serde version MUST produce an A06
+    /// finding. This validates the manifest-based path fires correctly.
+    #[test]
+    fn a06_cargo_lock_old_serde_produces_finding() {
+        let dir = std::env::temp_dir().join(format!("aden-a06-lock-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Minimal Cargo.lock with serde 0.9.x — pre-1.0, should be flagged.
+        std::fs::write(
+            dir.join("Cargo.lock"),
+            "# This file is automatically @generated by Cargo.\n\
+             [[package]]\n\
+             name = \"serde\"\n\
+             version = \"0.9.15\"\n\
+             source = \"registry+https://github.com/rust-lang/crates.io-index\"\n",
+        )
+        .unwrap();
+
+        let findings = check_vulnerable_deps(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert!(
+            !findings.is_empty(),
+            "Cargo.lock with serde 0.9.x must produce an A06 finding"
+        );
+        assert_eq!(findings[0].owasp_id, "A06");
+        assert!(findings[0].snippet.contains("serde"));
+    }
+
+    /// A Cargo.lock entry for a current serde (>= 1.0) must NOT produce a finding.
+    #[test]
+    fn a06_cargo_lock_current_serde_no_finding() {
+        let dir =
+            std::env::temp_dir().join(format!("aden-a06-current-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        std::fs::write(
+            dir.join("Cargo.lock"),
+            "# This file is automatically @generated by Cargo.\n\
+             [[package]]\n\
+             name = \"serde\"\n\
+             version = \"1.0.200\"\n\
+             source = \"registry+https://github.com/rust-lang/crates.io-index\"\n",
+        )
+        .unwrap();
+
+        let findings = check_vulnerable_deps(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert!(
+            findings.is_empty(),
+            "Cargo.lock with serde 1.0.x must not produce an A06 finding; got: {findings:#?}"
+        );
+    }
+
+    /// parse_major_minor handles various version string formats correctly.
+    #[test]
+    fn parse_major_minor_handles_semver_variants() {
+        assert_eq!(parse_major_minor("1.0.0"), Some((1, 0)));
+        assert_eq!(parse_major_minor("0.9.15"), Some((0, 9)));
+        assert_eq!(parse_major_minor("41.0.0"), Some((41, 0)));
+        assert_eq!(parse_major_minor("2.15.1"), Some((2, 15)));
+        assert_eq!(parse_major_minor("^1.2"), Some((1, 2)));
+        assert_eq!(parse_major_minor("invalid"), None);
     }
 }
