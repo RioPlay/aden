@@ -459,51 +459,24 @@ pub struct Table {
     pub rows: Vec<Vec<String>>,
 }
 
-/// A named entity extracted from source code.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct Symbol {
-    pub name: String,
-    pub kind: SymbolKind,
-    pub visibility: Visibility,
-    pub doc_comment: Option<String>,
-    /// Optional precise source location for this symbol.
-    pub source_span: Option<SourceSpan>,
-}
-
-/// Classification of a Symbol.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub enum SymbolKind {
-    Function,
-    Struct,
-    Enum,
-    Trait,
-    Impl,
-    Module,
-    Field,
-    Variant,
-}
-
 /// Visibility qualifier.
+///
+/// Language-neutral: `Internal` covers Rust's `pub(crate)`, Java's package-private, etc.
+/// `Restricted` covers Rust's `pub(super)`, C#'s `protected internal`, etc.
+///
+/// Serde wire names are stable: `Internal` serialises as `"Crate"` and `Restricted` as
+/// `"Super"` to preserve backward compatibility with any previously stored documents.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum Visibility {
     Public,
-    Crate,
+    #[serde(rename = "Crate")]
+    Internal,
     Private,
-    Super,
+    #[serde(rename = "Super")]
+    Restricted,
 }
 
-/// Function signature metadata.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct FunctionSig {
-    pub name: String,
-    pub parameters: Vec<Parameter>,
-    pub return_type: Option<String>,
-    pub visibility: Visibility,
-    pub is_async: bool,
-    pub is_unsafe: bool,
-}
-
-/// A single parameter.
+/// A single parameter (function/method argument).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Parameter {
     pub name: String,
@@ -511,24 +484,7 @@ pub struct Parameter {
     pub default_value: Option<String>,
 }
 
-/// Type definition metadata.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct TypeDef {
-    pub name: String,
-    pub kind: TypeKind,
-    pub fields: Vec<FieldDef>,
-    pub trait_bounds: Vec<String>,
-}
-
-/// Classification of a type definition.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub enum TypeKind {
-    Struct,
-    Enum,
-    Union,
-}
-
-/// Field inside a type definition.
+/// Field inside a struct or enum variant.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct FieldDef {
     pub name: String,

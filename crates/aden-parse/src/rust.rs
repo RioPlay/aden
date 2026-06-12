@@ -200,9 +200,9 @@ fn get_visibility_with_source(node: tree_sitter::Node, source: &str) -> Visibili
         let text = node_text(vis, source);
         if text.starts_with("pub(") {
             if text.contains("crate") {
-                Visibility::Crate
+                Visibility::Internal
             } else if text.contains("super") {
-                Visibility::Super
+                Visibility::Restricted
             } else {
                 Visibility::Public
             }
