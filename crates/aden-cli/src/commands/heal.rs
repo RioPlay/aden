@@ -152,8 +152,10 @@ pub fn cmd_heal_scan_since(
         println!("Generating proposals...");
         let proposals_dir = path.join(".aden").join("proposals");
         clear_stale_proposals(&proposals_dir)?;
+        // Open the store once for the whole --propose run (avoids N×250ms per event).
+        let propose_storage = open_heal_storage(path);
         for event in &report.events {
-            let proposal = generate_proposal(event, path)?;
+            let proposal = generate_proposal(event, path, propose_storage.as_ref())?;
             let store_path = aden_propose::persist(&proposal, path)?;
             println!("  Generated: {}", store_path.display());
         }
@@ -528,9 +530,11 @@ pub fn cmd_heal_scan(
                 println!("\n--propose flag set. Generating patches...");
                 let store_dir = path.join(".aden").join("proposals");
                 clear_stale_proposals(&store_dir)?;
+                // Open the store once for the whole --propose run (avoids N×250ms per event).
+                let propose_storage = open_heal_storage(path);
 
                 for event in &report.events {
-                    let proposal = generate_proposal(event, path)?;
+                    let proposal = generate_proposal(event, path, propose_storage.as_ref())?;
                     let store_path = aden_propose::persist(&proposal, path)?;
                     println!("  Generated proposal: {}", store_path.display());
                 }
@@ -924,16 +928,18 @@ fn apply_merge_to_store(
 /// - or the merge engine finds no contract-level actions (pure hash refresh).
 ///
 /// The caller falls back to the legacy proposal builder in that case.
-fn generate_merge_proposal(anchor: &str, repo_path: &Path) -> Option<aden_propose::Proposal> {
+fn generate_merge_proposal(
+    anchor: &str,
+    repo_path: &Path,
+    storage: &aden_store::Storage,
+) -> Option<aden_propose::Proposal> {
     use aden_core::overlay::{load_overlay, sanitize_anchor_filename};
     use aden_emit::emit_contract_document;
     use aden_propose::{Proposal, ProposalStatus};
-    use aden_store::{GraphStorage, Storage};
+    use aden_store::GraphStorage;
     use std::fmt::Write as _;
 
     let root = find_project_root(repo_path);
-    let (store_path, _) = aden_paths::resolve_read_store(&root);
-    let storage = Storage::open_existing(store_path.to_str()?).ok()?;
 
     // Require the anchor to be in the store; without it there is no base.
     let stored = storage.get_document(anchor).ok().flatten()?;
@@ -1038,6 +1044,7 @@ fn generate_merge_proposal(anchor: &str, repo_path: &Path) -> Option<aden_propos
 pub fn generate_proposal(
     event: &aden_heal::DriftEvent,
     repo_path: &Path,
+    storage: Option<&aden_store::Storage>,
 ) -> Result<aden_propose::Proposal, Box<dyn std::error::Error>> {
     use aden_propose::{Proposal, ProposalStatus};
     use std::fmt::Write;
@@ -1058,7 +1065,8 @@ pub fn generate_proposal(
             // try the merge engine first for a full per-block reconciliation.
             // Fall through to the legacy hash-refresh builder on None.
             if let Some(anchor) = target_path.strip_prefix(".aden/store:")
-                && let Some(merge_proposal) = generate_merge_proposal(anchor, repo_path)
+                && let Some(s) = storage
+                && let Some(merge_proposal) = generate_merge_proposal(anchor, repo_path, s)
             {
                 return Ok(merge_proposal);
             }
@@ -1240,7 +1248,8 @@ pub fn generate_proposal(
             // Store-resident SignatureMismatch events carry the anchor directly;
             // try the merge engine first for a full per-block reconciliation.
             if contract_path.starts_with(".aden/store:")
-                && let Some(merge_proposal) = generate_merge_proposal(anchor, repo_path)
+                && let Some(s) = storage
+                && let Some(merge_proposal) = generate_merge_proposal(anchor, repo_path, s)
             {
                 return Ok(merge_proposal);
             }
