@@ -131,9 +131,11 @@ has a grammar for — not just whichever build manifest happens to be present �
 indexes Markdown/AsciiDoc documentation alongside code.
 
 - **Deep extraction** (call graph, signatures, doc comments): Rust, Python, Go,
-  TypeScript/JavaScript, Java, C#, C, Ruby, PHP, Kotlin, PowerShell.
-- **Generic extraction** (symbols + structure): 300+ further languages via
-  tree-sitter.
+  TypeScript/JavaScript, Java, C#, C, Ruby, PHP, Kotlin.
+- **Generic extraction** (symbols + structure, no call edges): ~113 further languages
+  wired via `ext_to_language_pack_id` in `router.rs` (.ps1/.psm1/.psd1 PowerShell
+  included); 305+ grammars available in the bundled pack — add entries to
+  `ext_to_language_pack_id` in `crates/aden-parse/src/router.rs` to expose more.
 
 Grammars are compiled into the binary at build time (see `.cargo/config.toml` /
 `TSLP_LANGUAGES`), so parsing works fully offline — no runtime downloads.

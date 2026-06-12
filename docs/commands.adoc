@@ -219,7 +219,7 @@ Supports:
 - Go: `func Test*`
 - TypeScript: `describe/it/test`, `@Test`
 - Java: `@Test`, `@ParameterizedTest`
-- 305+ languages via tree-sitter
+- ~113 further languages via the generic tree-sitter extractor (305+ grammars bundled; add entries to `ext_to_language_pack_id` in `router.rs` to expose more)
 
 == Graph Commands
 

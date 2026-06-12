@@ -237,6 +237,28 @@ aden asm --from readme --format aden --depth 2 .   # explicit raw AsciiDoc
 - **"command timed out after 120s":** a blocking op (`heal --watch`) was invoked over MCP. Run those in a terminal, not via MCP.
 - **"unknown tool":** the tool name is not in the server's set. Check `aden --help` or reinstall the MCP server.
 
+[[language-coverage]]
+== Language Coverage
+
+Aden uses a two-tier extraction model. Graph density differs between tiers.
+
+*Deep extraction* — call edges, parameter types, return types, doc comments, and
+API contracts are resolved. Languages with a dedicated `*_resolver.rs` in
+`crates/aden-parse/src/`:
+
+Rust, Python, Go, TypeScript/JavaScript, Java, C#, C, Ruby, PHP, Kotlin.
+
+*Generic extraction* — symbols and structural blocks (functions, classes, modules)
+are indexed via tree-sitter, but call sites are _not_ resolved; no call edges are
+emitted. Applies to all other languages wired in `ext_to_language_pack_id`
+(currently ~113 language IDs covering ~156 extensions — including PowerShell
+`.ps1`/`.psm1`/`.psd1`, Zig, Swift, Haskell, Elixir, Lua, Solidity, and more).
+The bundled grammar pack contains 305+ grammars; expose additional languages by
+adding entries to `ext_to_language_pack_id` in `crates/aden-parse/src/router.rs`.
+
+Queries that traverse call edges (`aden asm --depth N`, `aden query backlinks`) will
+return richer results for deep-tier languages.
+
 [[use-cases]]
 == Use Cases — Beyond Code
 
@@ -251,7 +273,7 @@ Every use case follows the same arc: **Ingest** raw material, **Extract** entiti
 
 === 1. Software Engineering (Implemented Today)
 
-Aden extracts symbols, call graphs, and API contracts from source, producing a machine-readable graph that AI agents and humans query without reading every file. The real refactor flow is *find* the symbol, then *assemble* context from its stable `aden://…` anchor — you copy the anchor the tool returns rather than hand-typing it.
+Aden extracts symbols, call graphs, and API contracts from source (deep-extractor languages: Rust, Python, Go, TypeScript/JavaScript, Java, C#, C, Ruby, PHP, Kotlin), or symbols and structure only for all other languages, producing a machine-readable graph that AI agents and humans query without reading every file. The real refactor flow is *find* the symbol, then *assemble* context from its stable `aden://…` anchor — you copy the anchor the tool returns rather than hand-typing it.
 
 [source,bash]
 ----
