@@ -296,7 +296,15 @@ fn parse_function<'a>(
     _file_name: &str,
     symbols: &mut Vec<KotlinSymbol<'a>>,
 ) {
-    if let Some(name_node) = node.child_by_field_name("name") {
+    // The tree-sitter Kotlin grammar does not expose function names via a
+    // `name` field — the name is a bare `simple_identifier` child. Fall back
+    // to the first `simple_identifier` child when the field is absent.
+    let name_node_opt = node.child_by_field_name("name").or_else(|| {
+        let mut cursor = node.walk();
+        node.children(&mut cursor)
+            .find(|c| c.kind() == "simple_identifier")
+    });
+    if let Some(name_node) = name_node_opt {
         let name = node_text(name_node, source).to_string();
         let vis = extract_visibility(node, source);
 

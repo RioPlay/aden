@@ -92,6 +92,12 @@ public class World {
 }
 
 // ── Kotlin ──────────────────────────────────────────────────────
+//
+// Root cause of the previous guarded `if !docs.is_empty()`: the tree-sitter
+// Kotlin grammar does NOT expose function names through a `name` field — the
+// name is a bare `simple_identifier` child. `parse_function` now falls back
+// to the first `simple_identifier` child, so both class and method documents
+// are emitted unconditionally.
 
 #[test]
 fn kotlin_resolver_smoke() {
@@ -105,13 +111,101 @@ class World {
     let docs = resolver
         .extract_documents(src, Path::new("src/World.kt"))
         .expect("parse should succeed");
-    // TODO: Kotlin resolver currently emits empty docs for this layout.
-    // Strengthen this test once the tree-sitter Kotlin grammar node names
-    // are aligned with the resolver expectations.
-    if !docs.is_empty() {
-        assert_has_anchor(&docs, "World");
-        assert_has_node_type(&docs, aden_core::NodeType::Type);
-    }
+    assert!(!docs.is_empty(), "expected non-empty document list");
+    assert_has_anchor(&docs, "World");
+    assert_has_anchor(&docs, "greet");
+    assert_has_node_type(&docs, aden_core::NodeType::Type);
+    assert_has_node_type(&docs, aden_core::NodeType::Function);
+}
+
+// ── Python ──────────────────────────────────────────────────────
+//
+// The Python resolver is a 700-line tree-sitter extractor. These tests guard
+// three specific behaviors:
+//   1. Docstring extraction — `extract_preceding_docstring` reads the first
+//      string child of a function body (fixed: tree-sitter-python emits the
+//      docstring as `block > string` or `block > expression_statement > string`
+//      depending on grammar version).
+//   2. Dot-qualified anchors for class methods (`Class.method`).
+//   3. `edge::calls[callee]` Listing blocks for intra-module call sites.
+
+/// A top-level function with a triple-quoted docstring must produce a Function
+/// document whose anchor contains `compute_checksum` and whose blocks include
+/// a Paragraph with the docstring text.
+#[test]
+fn python_resolver_smoke() {
+    let src = "def compute_checksum(data):\n    \"\"\"Compute checksum.\"\"\"\n    pass\n";
+    let resolver = crate::python_resolver::PythonResolver::new();
+    let docs = resolver
+        .extract_documents(src, Path::new("src/utils.py"))
+        .expect("parse should succeed");
+    assert!(!docs.is_empty(), "expected non-empty document list");
+    assert_has_anchor(&docs, "compute_checksum");
+    assert_has_node_type(&docs, aden_core::NodeType::Function);
+    // The docstring body must appear in a Paragraph block (guards the
+    // extract_preceding_docstring fix for `block > string` emission).
+    let func_doc = docs
+        .iter()
+        .find(|d| d.anchor.contains("compute_checksum"))
+        .expect("compute_checksum document");
+    let has_docstring = func_doc.blocks.iter().any(|b| match b {
+        aden_core::Block::Paragraph(text) => text.contains("Compute checksum"),
+        _ => false,
+    });
+    assert!(
+        has_docstring,
+        "expected docstring text in a Paragraph block; blocks: {:?}",
+        func_doc.blocks
+    );
+}
+
+/// A class method must produce a dot-qualified anchor (`MyClass.my_method`),
+/// not a bare `my_method`, so two same-named methods in different classes
+/// cannot collapse to the same anchor.
+#[test]
+fn python_resolver_class_method() {
+    let src = "class MyClass:\n    def my_method(self):\n        pass\n";
+    let resolver = crate::python_resolver::PythonResolver::new();
+    let docs = resolver
+        .extract_documents(src, Path::new("src/myclass.py"))
+        .expect("parse should succeed");
+    // Class document
+    assert_has_anchor(&docs, "MyClass");
+    assert_has_node_type(&docs, aden_core::NodeType::Type);
+    // Method document — anchor must be dot-qualified
+    assert_has_anchor(&docs, "MyClass.my_method");
+    assert_has_node_type(&docs, aden_core::NodeType::Function);
+}
+
+/// When function A calls function B in its body, A's document must include a
+/// Listing block containing `edge::calls[function_b]`. This guards the
+/// call-site resolution and edge emission pipeline.
+#[test]
+fn python_resolver_call_sites() {
+    let src = "def function_a(x):\n    return function_b(x)\n\ndef function_b(x):\n    return x\n";
+    let resolver = crate::python_resolver::PythonResolver::new();
+    let docs = resolver
+        .extract_documents(src, Path::new("src/mod.py"))
+        .expect("parse should succeed");
+    assert_has_anchor(&docs, "function_a");
+    assert_has_anchor(&docs, "function_b");
+    let func_a = docs
+        .iter()
+        .find(|d| d.anchor.contains("function_a"))
+        .expect("function_a document");
+    let calls_text: String = func_a
+        .blocks
+        .iter()
+        .filter_map(|b| match b {
+            aden_core::Block::Listing { code, .. } => Some(code.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        calls_text.contains("edge::calls[function_b]"),
+        "expected `edge::calls[function_b]` in function_a's Listing blocks; got: {calls_text}"
+    );
 }
 
 // ── PHP ─────────────────────────────────────────────────────────
