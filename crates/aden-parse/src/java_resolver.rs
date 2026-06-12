@@ -504,6 +504,55 @@ fn emit_java_symbol(
         rows,
     }));
 
+    // Implements / extends edges for type declarations.
+    //
+    // `class Foo implements Bar, Baz` → super_interfaces → type_list →
+    //   type_identifier children → emit edge::implements[Bar], edge::implements[Baz].
+    //
+    // `class Foo extends Parent` → superclass → type_identifier →
+    //   emit edge::implements[Parent].
+    //   (No dedicated Extends EdgeType is added in this change; a separate variant
+    //    is tracked independently.)
+    if sym.kind == NodeType::Type {
+        let mut implements_targets: Vec<String> = Vec::new();
+
+        // `implements InterfaceA, InterfaceB` — Java grammar: super_interfaces > type_list
+        if let Some(super_ifaces) = sym.node.child_by_field_name("interfaces") {
+            let type_list_node = super_ifaces
+                .children(&mut super_ifaces.walk())
+                .find(|n| n.kind() == "type_list")
+                .unwrap_or(super_ifaces);
+            let mut cursor = type_list_node.walk();
+            for child in type_list_node.children(&mut cursor) {
+                if child.kind() == "type_identifier" {
+                    implements_targets.push(node_text(child, source).to_string());
+                }
+            }
+        }
+
+        // `extends ParentClass` — Java grammar: superclass > type_identifier
+        if let Some(superclass) = sym.node.child_by_field_name("superclass") {
+            let mut cursor = superclass.walk();
+            for child in superclass.children(&mut cursor) {
+                if child.kind() == "type_identifier" {
+                    implements_targets.push(node_text(child, source).to_string());
+                }
+            }
+        }
+
+        if !implements_targets.is_empty() {
+            let edge_code = implements_targets
+                .iter()
+                .map(|t| format!("edge::implements[{t}]"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            blocks.push(Block::Listing {
+                language: None,
+                code: edge_code,
+            });
+        }
+    }
+
     // Extract call sites from method body
     if sym.kind == NodeType::Function
         && let Some(body) = sym.node.child_by_field_name("body")

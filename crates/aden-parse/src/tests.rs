@@ -427,6 +427,164 @@ fn empty_block_comment_does_not_panic() {
     }
 }
 
+// ── Wave 1 graph types: implements emission — Java, TypeScript, Python ──
+
+/// Helper: collect all Listing-block text from the doc whose anchor contains
+/// `needle`. Returns the joined code strings, or panics with the full anchor
+/// list when no matching document exists.
+fn listing_text_by_anchor(docs: &[aden_core::Document], needle: &str) -> String {
+    let doc = docs
+        .iter()
+        .find(|d| d.anchor.contains(needle))
+        .unwrap_or_else(|| {
+            panic!(
+                "no document with '{}' in anchor; got: {:?}",
+                needle,
+                docs.iter().map(|d| &d.anchor).collect::<Vec<_>>()
+            )
+        });
+    doc.blocks
+        .iter()
+        .filter_map(|b| match b {
+            aden_core::Block::Listing { code, .. } => Some(code.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+// ── Java ────────────────────────────────────────────────────────────────────
+
+const JAVA_IMPLEMENTS_FIXTURE: &str = r#"
+package com.example;
+
+public class Foo implements Bar, Baz {
+    public void doThing() {}
+}
+"#;
+
+const JAVA_EXTENDS_FIXTURE: &str = r#"
+package com.example;
+
+public class Child extends Parent {
+    public void act() {}
+}
+"#;
+
+/// `class Foo implements Bar, Baz` must emit `edge::implements[Bar]` and
+/// `edge::implements[Baz]` on the Foo class document.
+#[test]
+fn java_implements_emits_edge_macros() {
+    let resolver = crate::java_resolver::JavaResolver::new();
+    let docs = resolver
+        .extract_documents(JAVA_IMPLEMENTS_FIXTURE, std::path::Path::new("Foo.java"))
+        .expect("parse should succeed");
+    let listing = listing_text_by_anchor(&docs, "Foo");
+    assert!(
+        listing.contains("edge::implements[Bar]"),
+        "class Foo implements Bar must emit edge::implements[Bar]; got: {listing}"
+    );
+    assert!(
+        listing.contains("edge::implements[Baz]"),
+        "class Foo implements Bar, Baz must emit edge::implements[Baz]; got: {listing}"
+    );
+}
+
+/// `class Child extends Parent` must emit `edge::implements[Parent]` on the
+/// Child class document (no dedicated Extends edge type in this change; a
+/// separate EdgeType variant is tracked independently).
+#[test]
+fn java_extends_emits_edge_macro() {
+    let resolver = crate::java_resolver::JavaResolver::new();
+    let docs = resolver
+        .extract_documents(JAVA_EXTENDS_FIXTURE, std::path::Path::new("Child.java"))
+        .expect("parse should succeed");
+    let listing = listing_text_by_anchor(&docs, "Child");
+    assert!(
+        listing.contains("edge::implements[Parent]"),
+        "class Child extends Parent must emit edge::implements[Parent]; got: {listing}"
+    );
+}
+
+// ── TypeScript ──────────────────────────────────────────────────────────────
+
+const TS_IMPLEMENTS_FIXTURE: &str = r#"
+class Foo implements IBar, IBaz {
+  greet(): string { return "hi"; }
+}
+"#;
+
+/// `class Foo implements IBar, IBaz` must emit `edge::implements[IBar]` and
+/// `edge::implements[IBaz]` on the Foo class document.
+#[test]
+fn ts_implements_emits_edge_macros() {
+    let resolver = crate::typescript_resolver::TypeScriptResolver::new();
+    let docs = resolver
+        .extract_documents(TS_IMPLEMENTS_FIXTURE, std::path::Path::new("foo.ts"))
+        .expect("parse should succeed");
+    let listing = listing_text_by_anchor(&docs, "Foo");
+    assert!(
+        listing.contains("edge::implements[IBar]"),
+        "class Foo implements IBar must emit edge::implements[IBar]; got: {listing}"
+    );
+    assert!(
+        listing.contains("edge::implements[IBaz]"),
+        "class Foo implements IBar, IBaz must emit edge::implements[IBaz]; got: {listing}"
+    );
+}
+
+// ── Python ──────────────────────────────────────────────────────────────────
+
+const PYTHON_BASES_FIXTURE: &str = r#"class Foo(Bar, Baz):
+    pass
+
+class SkipObject(object):
+    pass
+
+class SkipMeta(Base, metaclass=Meta):
+    pass
+"#;
+
+/// Plain identifier bases must emit `edge::implements[Base]` for each.
+/// `object` is skipped (universal base, no semantic content).
+/// `metaclass=Meta` kwargs are skipped (not a superclass).
+#[test]
+fn python_bases_emit_edge_macros() {
+    let resolver = crate::python_resolver::PythonResolver::new();
+    let docs = resolver
+        .extract_documents(PYTHON_BASES_FIXTURE, std::path::Path::new("foo.py"))
+        .expect("parse should succeed");
+
+    // Foo(Bar, Baz) → both bases emitted
+    let foo_listing = listing_text_by_anchor(&docs, "Foo");
+    assert!(
+        foo_listing.contains("edge::implements[Bar]"),
+        "class Foo(Bar, Baz) must emit edge::implements[Bar]; got: {foo_listing}"
+    );
+    assert!(
+        foo_listing.contains("edge::implements[Baz]"),
+        "class Foo(Bar, Baz) must emit edge::implements[Baz]; got: {foo_listing}"
+    );
+
+    // SkipObject(object) → no edge emitted (object is the universal Python base)
+    let skip_listing = listing_text_by_anchor(&docs, "SkipObject");
+    assert!(
+        !skip_listing.contains("edge::implements[object]"),
+        "class SkipObject(object) must NOT emit edge::implements[object]; got: {skip_listing}"
+    );
+
+    // SkipMeta(Base, metaclass=Meta) → only Base emitted, not Meta
+    let meta_listing = listing_text_by_anchor(&docs, "SkipMeta");
+    assert!(
+        meta_listing.contains("edge::implements[Base]"),
+        "class SkipMeta(Base, metaclass=Meta) must emit edge::implements[Base]; got: {meta_listing}"
+    );
+    assert!(
+        !meta_listing.contains("edge::implements[Meta]"),
+        "metaclass= kwarg must NOT produce edge::implements[Meta]; got: {meta_listing}"
+    );
+}
+
 // ── Wave 1 graph types: Implements / Mutates emission (Rust) ────
 //
 // Eval-first tests for the graph-type roadmap Wave 1 (see

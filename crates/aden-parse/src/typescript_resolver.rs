@@ -530,6 +530,45 @@ fn emit_ts_symbol<'a>(
         }));
     }
 
+    // Implements edges for class declarations.
+    //
+    // `class Foo implements IBar, IBaz` → class_heritage → implements_clause →
+    //   type_identifier children → emit edge::implements[IBar], edge::implements[IBaz].
+    //
+    // `class_heritage` has no field name in the TypeScript grammar; it is located
+    // by scanning the class_declaration's named children for kind "class_heritage",
+    // then scanning *its* children for "implements_clause".
+    if sym.kind == NodeType::Type {
+        let mut implements_targets: Vec<String> = Vec::new();
+        let mut heritage_cursor = sym.node.walk();
+        for heritage_child in sym.node.children(&mut heritage_cursor) {
+            if heritage_child.kind() == "class_heritage" {
+                let mut hc = heritage_child.walk();
+                for clause in heritage_child.children(&mut hc) {
+                    if clause.kind() == "implements_clause" {
+                        let mut ic = clause.walk();
+                        for item in clause.children(&mut ic) {
+                            if item.kind() == "type_identifier" {
+                                implements_targets.push(node_text(item, source).to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if !implements_targets.is_empty() {
+            let edge_code = implements_targets
+                .iter()
+                .map(|t| format!("edge::implements[{t}]"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            blocks.push(Block::Listing {
+                language: None,
+                code: edge_code,
+            });
+        }
+    }
+
     // Resolve call sites. Methods are named `Class.method`; the part before the
     // last `.` is the enclosing class, used to resolve `this.x()` → `Class.x`.
     let enclosing_class = sym.name.rsplit_once('.').map(|(c, _)| c);

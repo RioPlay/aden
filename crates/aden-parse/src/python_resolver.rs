@@ -420,6 +420,45 @@ fn emit_symbol_document<'a>(
         }));
     }
 
+    // Implements edges for class definitions.
+    //
+    // Python has no syntactic interface/class distinction, so ALL plain identifier
+    // bases are treated uniformly as `edge::implements[Base]`. This is the same
+    // semantic treatment as TypeScript/Java — the linker will promote or demote the
+    // edge when the target symbol's NodeType is known.
+    //
+    // `class Foo(Bar, Baz, metaclass=Meta)` → field "superclasses" (argument_list)
+    //   → identifier children → emit edge::implements[Bar], edge::implements[Baz].
+    //   keyword_argument children (e.g. `metaclass=Meta`) are skipped.
+    //   `object` is skipped — it is Python's universal implicit base and carries
+    //   no meaningful graph edge.
+    if sym.kind == NodeType::Type {
+        let mut implements_targets: Vec<String> = Vec::new();
+        if let Some(superclasses) = sym.node.child_by_field_name("superclasses") {
+            let mut cursor = superclasses.walk();
+            for child in superclasses.children(&mut cursor) {
+                if child.kind() == "identifier" {
+                    let name = node_text(child, source);
+                    if name != "object" {
+                        implements_targets.push(name.to_string());
+                    }
+                }
+                // keyword_argument (e.g. metaclass=Meta) is intentionally skipped
+            }
+        }
+        if !implements_targets.is_empty() {
+            let edge_code = implements_targets
+                .iter()
+                .map(|t| format!("edge::implements[{t}]"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            blocks.push(Block::Listing {
+                language: None,
+                code: edge_code,
+            });
+        }
+    }
+
     // Resolve call sites inside the symbol body
     let calls = resolve_call_sites(sym.node, source, ctx);
     if !calls.is_empty() {
