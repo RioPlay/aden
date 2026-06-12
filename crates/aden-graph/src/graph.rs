@@ -576,11 +576,10 @@ impl AdenGraph<DocumentNode, AdenEdge> {
         }
 
         // Load all edges from storage and rebuild them.
-        // Use EdgeType::ALL so that any new variant added to the enum is
-        // automatically loaded without a manual update here.
-        let edge_types = EdgeType::ALL;
-
-        for edge_type in &edge_types {
+        // Use the canonical EdgeType::ALL list — a hand-written local copy
+        // silently drops every edge type it forgets (Demonstrates, Mentions,
+        // and DefinesTerm were absent before this fix).
+        for edge_type in &EdgeType::ALL {
             let typed_edges = storage
                 .get_edges_by_type(edge_type)
                 .map_err(|e| GraphError::Io(e.to_string()))?;

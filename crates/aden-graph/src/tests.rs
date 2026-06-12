@@ -442,4 +442,71 @@ Closing paragraph.
             );
         }
     }
+
+    /// `build_from_storage` must load every EdgeType variant, including the
+    /// prose-to-code and glossary types (Demonstrates, Mentions, DefinesTerm)
+    /// that were silently dropped by the hand-written vec prior to this fix.
+    ///
+    /// Red-green test: with the old hand-written vec this panics because the
+    /// Demonstrates edge is absent from the rebuilt graph; with the fix (iterate
+    /// EdgeType::ALL) it passes.
+    #[test]
+    fn build_from_storage_loads_demonstrates_mentions_defines_term() {
+        use aden_store::{GraphStorage, Storage};
+
+        // Spin up a temporary on-disk store.
+        let dir = tempfile::tempdir().unwrap();
+        let storage = Storage::new(dir.path().to_str().unwrap()).unwrap();
+
+        // Two minimal documents.
+        let make_doc = |anchor: &str| Document {
+            anchor: anchor.to_string(),
+            node_type: NodeType::Module,
+            attributes: HashMap::new(),
+            blocks: Vec::new(),
+            source_span: None,
+            metadata: None,
+            confidence: 1.0,
+        };
+        storage.put_document(&make_doc("doc-src")).unwrap();
+        storage.put_document(&make_doc("doc-dst")).unwrap();
+
+        // Write all three previously-dropped edge types.
+        storage
+            .put_edge("doc-src", "doc-dst", EdgeType::Demonstrates)
+            .unwrap();
+        storage
+            .put_edge("doc-src", "doc-dst", EdgeType::Mentions)
+            .unwrap();
+        storage
+            .put_edge("doc-src", "doc-dst", EdgeType::DefinesTerm)
+            .unwrap();
+
+        // Rebuild the in-memory graph from storage.
+        let graph =
+            AdenGraph::build_from_storage(&storage).expect("build_from_storage must not fail");
+
+        // Collect all edge types present in the rebuilt graph.
+        let src_idx = *graph
+            .anchor_to_index
+            .get("doc-src")
+            .expect("doc-src node must exist after build_from_storage");
+        let edge_types_in_graph: Vec<EdgeType> = graph
+            .graph
+            .edges(src_idx)
+            .map(|e| e.weight().edge_type)
+            .collect();
+
+        for expected in [
+            EdgeType::Demonstrates,
+            EdgeType::Mentions,
+            EdgeType::DefinesTerm,
+        ] {
+            assert!(
+                edge_types_in_graph.contains(&expected),
+                "EdgeType::{expected:?} written to storage was not present in the graph \
+                 rebuilt by build_from_storage — the hand-written edge_types vec omits it"
+            );
+        }
+    }
 }
