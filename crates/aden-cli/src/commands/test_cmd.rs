@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TestInfo {
@@ -166,9 +166,22 @@ fn discover_tests(path: &Path) -> Result<Vec<TestInfo>, Box<dyn std::error::Erro
         "rs", "py", "go", "ts", "tsx", "js", "jsx", "java", "cs", "rb", "php",
     ];
 
+    // Use the shared path filter (built-in ignores + `.adenignore`) so the test
+    // runner prunes exactly what gen/audit/lint prune — including Rust toolchain
+    // dirs, agent-runtime dirs like `.claude/worktrees/`, and any project-specific
+    // `.adenignore` entries. Pruning at the directory level (`filter_entry`) avoids
+    // descending into excluded subtrees entirely.
+    let filter = aden_core::filter::AdenFilter::from_directory(path);
+
     for entry in walkdir::WalkDir::new(path)
         .follow_links(false)
         .into_iter()
+        .filter_entry(|e| {
+            e.path()
+                .strip_prefix(path)
+                .map(|rel| rel.as_os_str().is_empty() || !filter.should_skip(rel))
+                .unwrap_or(true)
+        })
         .filter_map(|e| e.ok())
     {
         let entry_path = entry.path();
@@ -185,10 +198,6 @@ fn discover_tests(path: &Path) -> Result<Vec<TestInfo>, Box<dyn std::error::Erro
             continue;
         }
 
-        if is_excluded(entry_path) {
-            continue;
-        }
-
         let content = match std::fs::read_to_string(entry_path) {
             Ok(c) => c,
             Err(_) => continue,
@@ -201,23 +210,53 @@ fn discover_tests(path: &Path) -> Result<Vec<TestInfo>, Box<dyn std::error::Erro
     Ok(tests)
 }
 
-fn is_excluded(path: &Path) -> bool {
-    let exclusions = [
-        "target",
-        ".git",
-        "node_modules",
-        ".cargo",
-        ".rustup",
-        "dist",
-        "build",
-    ];
+/// Walk up from `start` until a file named `manifest` is found, returning the
+/// directory that contains it.  Returns `None` if the filesystem root is reached
+/// without a match.
+fn find_manifest_dir(start: &Path, manifest: &str) -> Option<PathBuf> {
+    let mut dir = if start.is_file() {
+        start.parent()?.to_path_buf()
+    } else {
+        start.to_path_buf()
+    };
+    loop {
+        if dir.join(manifest).exists() {
+            return Some(dir);
+        }
+        match dir.parent() {
+            Some(p) => dir = p.to_path_buf(),
+            None => return None,
+        }
+    }
+}
 
-    path.components().any(|c| {
-        c.as_os_str()
-            .to_str()
-            .map(|s| exclusions.contains(&s))
-            .unwrap_or(false)
-    })
+/// Walk up from `start` until any file with the given extension is found in a
+/// directory, returning that directory.  Used for manifests whose names are
+/// not fixed (e.g. `*.sln`, `*.csproj`).  Returns `None` if the filesystem
+/// root is reached without a match.
+fn find_manifest_dir_by_ext(start: &Path, ext: &str) -> Option<PathBuf> {
+    let mut dir = if start.is_file() {
+        start.parent()?.to_path_buf()
+    } else {
+        start.to_path_buf()
+    };
+    loop {
+        let found = std::fs::read_dir(&dir).ok()?.any(|entry| {
+            entry.ok().and_then(|e| {
+                e.path()
+                    .extension()
+                    .and_then(|x| x.to_str())
+                    .map(|x| x == ext)
+            }) == Some(true)
+        });
+        if found {
+            return Some(dir);
+        }
+        match dir.parent() {
+            Some(p) => dir = p.to_path_buf(),
+            None => return None,
+        }
+    }
 }
 
 fn discover_file_tests(path: &Path, content: &str, ext: &str) -> Vec<TestInfo> {
@@ -502,8 +541,15 @@ fn run_single_test(test: &TestInfo) -> Result<TestResult, Box<dyn std::error::Er
 }
 
 fn run_rust_test(test: &TestInfo) -> Result<TestResult, Box<dyn std::error::Error>> {
+    // `cargo test` must run from the directory that contains `Cargo.toml`.  Walk up
+    // from the test file to find the workspace or crate root.
+    let test_path = Path::new(&test.file);
+    let dir = find_manifest_dir(test_path, "Cargo.toml")
+        .unwrap_or_else(|| test_path.parent().unwrap_or(Path::new(".")).to_path_buf());
+
     let output = std::process::Command::new("cargo")
         .args(["test", "--", "--nocapture"])
+        .current_dir(&dir)
         .output();
 
     match output {
@@ -529,8 +575,18 @@ fn run_rust_test(test: &TestInfo) -> Result<TestResult, Box<dyn std::error::Erro
 }
 
 fn run_python_test(test: &TestInfo) -> Result<TestResult, Box<dyn std::error::Error>> {
+    // pytest must run from the project root (where pyproject.toml / setup.py /
+    // requirements.txt lives) so that its rootdir detection is correct.  Try each
+    // manifest in precedence order; fall back to the file's parent directory.
+    let test_path = Path::new(&test.file);
+    let dir = find_manifest_dir(test_path, "pyproject.toml")
+        .or_else(|| find_manifest_dir(test_path, "setup.py"))
+        .or_else(|| find_manifest_dir(test_path, "requirements.txt"))
+        .unwrap_or_else(|| test_path.parent().unwrap_or(Path::new(".")).to_path_buf());
+
     let output = std::process::Command::new("python")
         .args(["-m", "pytest", "-v"])
+        .current_dir(&dir)
         .output();
 
     match output {
@@ -556,8 +612,14 @@ fn run_python_test(test: &TestInfo) -> Result<TestResult, Box<dyn std::error::Er
 }
 
 fn run_typescript_test(test: &TestInfo) -> Result<TestResult, Box<dyn std::error::Error>> {
+    // npm/yarn/pnpm must run from the directory containing `package.json`.
+    let test_path = Path::new(&test.file);
+    let dir = find_manifest_dir(test_path, "package.json")
+        .unwrap_or_else(|| test_path.parent().unwrap_or(Path::new(".")).to_path_buf());
+
     let output = std::process::Command::new("npm")
         .args(["test", "--", "--passWithNoTests"])
+        .current_dir(&dir)
         .output();
 
     match output {
@@ -583,8 +645,14 @@ fn run_typescript_test(test: &TestInfo) -> Result<TestResult, Box<dyn std::error
 }
 
 fn run_go_test(test: &TestInfo) -> Result<TestResult, Box<dyn std::error::Error>> {
+    // `go test ./...` must run from the module root (where `go.mod` lives).
+    let test_path = Path::new(&test.file);
+    let dir = find_manifest_dir(test_path, "go.mod")
+        .unwrap_or_else(|| test_path.parent().unwrap_or(Path::new(".")).to_path_buf());
+
     let output = std::process::Command::new("go")
         .args(["test", "-v", "./..."])
+        .current_dir(&dir)
         .output();
 
     match output {
@@ -610,7 +678,15 @@ fn run_go_test(test: &TestInfo) -> Result<TestResult, Box<dyn std::error::Error>
 }
 
 fn run_java_test(test: &TestInfo) -> Result<TestResult, Box<dyn std::error::Error>> {
-    let output = std::process::Command::new("mvn").args(["test"]).output();
+    // Maven must run from the directory containing `pom.xml`.
+    let test_path = Path::new(&test.file);
+    let dir = find_manifest_dir(test_path, "pom.xml")
+        .unwrap_or_else(|| test_path.parent().unwrap_or(Path::new(".")).to_path_buf());
+
+    let output = std::process::Command::new("mvn")
+        .args(["test"])
+        .current_dir(&dir)
+        .output();
 
     match output {
         Ok(o) => Ok(TestResult {
@@ -635,7 +711,17 @@ fn run_java_test(test: &TestInfo) -> Result<TestResult, Box<dyn std::error::Erro
 }
 
 fn run_csharp_test(test: &TestInfo) -> Result<TestResult, Box<dyn std::error::Error>> {
-    let output = std::process::Command::new("dotnet").args(["test"]).output();
+    // `dotnet test` must run from the directory containing a `.sln` or `.csproj`.
+    // Try `.sln` first (solution root runs all projects); fall back to `.csproj`.
+    let test_path = Path::new(&test.file);
+    let dir = find_manifest_dir_by_ext(test_path, "sln")
+        .or_else(|| find_manifest_dir_by_ext(test_path, "csproj"))
+        .unwrap_or_else(|| test_path.parent().unwrap_or(Path::new(".")).to_path_buf());
+
+    let output = std::process::Command::new("dotnet")
+        .args(["test"])
+        .current_dir(&dir)
+        .output();
 
     match output {
         Ok(o) => Ok(TestResult {
@@ -660,7 +746,16 @@ fn run_csharp_test(test: &TestInfo) -> Result<TestResult, Box<dyn std::error::Er
 }
 
 fn run_ruby_test(test: &TestInfo) -> Result<TestResult, Box<dyn std::error::Error>> {
-    let output = std::process::Command::new("rake").arg("test").output();
+    // `rake test` must run from the directory containing `Rakefile` or `Gemfile`.
+    let test_path = Path::new(&test.file);
+    let dir = find_manifest_dir(test_path, "Rakefile")
+        .or_else(|| find_manifest_dir(test_path, "Gemfile"))
+        .unwrap_or_else(|| test_path.parent().unwrap_or(Path::new(".")).to_path_buf());
+
+    let output = std::process::Command::new("rake")
+        .arg("test")
+        .current_dir(&dir)
+        .output();
 
     match output {
         Ok(o) => Ok(TestResult {
@@ -685,7 +780,17 @@ fn run_ruby_test(test: &TestInfo) -> Result<TestResult, Box<dyn std::error::Erro
 }
 
 fn run_php_test(test: &TestInfo) -> Result<TestResult, Box<dyn std::error::Error>> {
-    let output = std::process::Command::new("phpunit").output();
+    // PHPUnit must run from the directory containing `phpunit.xml` or
+    // `composer.json` (where it auto-discovers the config).
+    let test_path = Path::new(&test.file);
+    let dir = find_manifest_dir(test_path, "phpunit.xml")
+        .or_else(|| find_manifest_dir(test_path, "phpunit.xml.dist"))
+        .or_else(|| find_manifest_dir(test_path, "composer.json"))
+        .unwrap_or_else(|| test_path.parent().unwrap_or(Path::new(".")).to_path_buf());
+
+    let output = std::process::Command::new("phpunit")
+        .current_dir(&dir)
+        .output();
 
     match output {
         Ok(o) => Ok(TestResult {
