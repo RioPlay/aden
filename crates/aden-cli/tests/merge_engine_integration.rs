@@ -438,12 +438,14 @@ fn idempotence_no_source_change() {
 /// (.py) and PowerShell (.ps1) source files, AND the store must contain
 /// function-level documents for both languages after `gen`.
 ///
-/// Anchor format notes (discovered via red-green probing):
-/// - Python: `infer_project_name` resolves to `"unknown"` (Python files live
-///   under `src/` but the Python extractor does not pick up Rust-style project
-///   inference), so the anchor is `aden://module/unknown/module.py#<sym>`.
-/// - PowerShell: resolves to `"src"` (same as Rust fixtures), so the anchor is
+/// Anchor format notes (updated after fix(parse) unification):
+/// - Python: `infer_project_name` now delegates to the shared canonical function;
+///   for a git-only repo with files under `src/`, the VCS-root fallback returns
+///   `"src"` (first path component under the git root). Anchor:
+///   `aden://module/src/module.py#<sym>`.
+/// - PowerShell: resolves to `"src"` (same logic, same result), so the anchor is
 ///   `aden://module/src/utils.ps1#<sym>`.
+/// Both Python and PowerShell now agree on the project component for files under src/.
 ///
 /// Both `compute_checksum` and `Get-ProjectMetadata` are tier-1 extractions:
 /// the Python extractor and the generic tree-sitter PowerShell extractor both
@@ -484,8 +486,10 @@ fn polyglot_python_powershell() {
             .expect("get_all_anchors must succeed");
 
         // Python: `compute_checksum` function must be extracted and stored.
-        // The Python extractor resolves the project name as "unknown" (see doc comment above).
-        let py_anchor = "aden://module/unknown/module.py#compute_checksum";
+        // After fix(parse): Python now uses the shared infer_project_name, which for a
+        // git-only repo returns "src" (first path component under .git root). Anchor
+        // changed from "unknown" to "src" — both Python and PowerShell now agree.
+        let py_anchor = "aden://module/src/module.py#compute_checksum";
         assert!(
             all_anchors.iter().any(|a| a.contains("compute_checksum")),
             "expected an anchor containing 'compute_checksum' in the store after gen;\n\
@@ -593,9 +597,10 @@ fn polyglot_python_powershell() {
 /// `:source_hash: <hex>` with a `pid-nanos` filename that `aden_propose::list()`
 /// rejected as missing its `[[id]]` anchor.
 ///
-/// Anchor note: for `src/module.py` in a git repo with no pyproject.toml,
-/// `infer_python_project_name` returns `"unknown"`, so the anchor is
-/// `aden://module/unknown/module.py#compute_checksum`.
+/// Anchor note: with the unified `infer_project_name`, `src/module.py` in a
+/// git-only repo resolves to project `"src"`, so the anchor is
+/// `aden://module/src/module.py#compute_checksum` (the test discovers it
+/// dynamically from the store either way).
 #[test]
 fn apply_mergereconcile_proposal_python() {
     let project = unique_dir("apply-proposal-py");

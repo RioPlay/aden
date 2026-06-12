@@ -8,7 +8,7 @@
 //!   • Intra-file and cross-module call resolution (best-effort)
 //!   • Emits `edge::calls[]` macros for graph ingestion
 
-use crate::extractor::{LanguageExtractor, build_code_attributes, make_anchor};
+use crate::extractor::{LanguageExtractor, build_code_attributes, infer_project_name, make_anchor};
 use aden_core::{Block, Document, NodeType, Parameter, Result};
 use std::path::Path;
 
@@ -47,7 +47,7 @@ impl LanguageExtractor for PythonResolver {
             .parse(source, None)
             .ok_or_else(|| aden_core::Error::Parse("tree-sitter returned None".to_string()))?;
 
-        let proj_name = infer_python_project_name(path);
+        let proj_name = infer_project_name(path);
         let file_name = path.file_name().unwrap_or_default().to_string_lossy();
 
         // Phase 1: collect local symbols + imports.
@@ -705,18 +705,3 @@ fn node_text<'a>(node: tree_sitter::Node<'a>, source: &'a str) -> &'a str {
 }
 
 use crate::tree_sitter_common::node_to_span;
-
-/// Best-effort project name from filesystem markers.
-fn infer_python_project_name(path: &Path) -> String {
-    path.ancestors()
-        .find(|p| {
-            p.join("pyproject.toml").exists()
-                || p.join("setup.py").exists()
-                || p.join("setup.cfg").exists()
-                || p.join("Cargo.toml").exists()
-                || p.join("package.json").exists()
-        })
-        .and_then(|p| p.file_name())
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| "unknown".to_string())
-}

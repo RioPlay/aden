@@ -50,8 +50,28 @@ pub(crate) fn infer_project_name(path: &Path) -> String {
                 || p.join("package.json").exists()
                 || p.join("pyproject.toml").exists()
                 || p.join("setup.py").exists()
+                || p.join("setup.cfg").exists()
                 || p.join("go.mod").exists()
                 || p.join("tsconfig.json").exists()
+                || p.join("jsconfig.json").exists()
+                || p.join("pom.xml").exists()
+                || p.join("build.gradle").exists()
+                || p.join("build.gradle.kts").exists()
+                || p.join("Gemfile").exists()
+                || p.read_dir()
+                    .ok()
+                    .map(|mut d| {
+                        d.any(|e| {
+                            e.ok()
+                                .and_then(|e| {
+                                    let n = e.file_name();
+                                    let s = n.to_string_lossy();
+                                    (s.ends_with(".gemspec")).then(|| ())
+                                })
+                                .is_some()
+                        })
+                    })
+                    .unwrap_or(false)
         })
         .and_then(dir_name)
     {
@@ -537,6 +557,125 @@ mod tests {
         fs::write(base.join("drivers/thing.c"), "int x;\n").unwrap();
 
         assert_eq!(infer_project_name(&base.join("drivers/thing.c")), "drivers");
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    /// Git-only repo (no manifest): Python and generic (PowerShell) files under
+    /// src/ must resolve to the SAME project component — both use the
+    /// VCS-root top-level-dir fallback, which is "src" for src/foo.py.
+    #[test]
+    fn git_only_repo_python_and_generic_same_project_component() {
+        let base = std::env::temp_dir().join("aden_infer_test_gitonly");
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(base.join(".git")).unwrap();
+        fs::create_dir_all(base.join("src")).unwrap();
+        fs::write(
+            base.join("src/module.py"),
+            "def compute_checksum(data): pass\n",
+        )
+        .unwrap();
+        fs::write(base.join("src/utils.ps1"), "function Get-Foo {}\n").unwrap();
+
+        let py = infer_project_name(&base.join("src/module.py"));
+        let ps1 = infer_project_name(&base.join("src/utils.ps1"));
+        assert_eq!(
+            py, ps1,
+            "Python and PowerShell files under src/ must share the same project component; \
+             got py={py:?} ps1={ps1:?}"
+        );
+        assert_eq!(py, "src", "git-only src/ files must resolve to 'src'");
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    /// pom.xml manifest: project name = directory containing pom.xml.
+    #[test]
+    fn pom_xml_inferred_as_project_name() {
+        let base = std::env::temp_dir().join("aden_infer_test_pom");
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(base.join("src/main/java")).unwrap();
+        fs::write(base.join("pom.xml"), "<project/>\n").unwrap();
+        fs::write(base.join("src/main/java/Foo.java"), "public class Foo {}\n").unwrap();
+
+        assert_eq!(
+            infer_project_name(&base.join("src/main/java/Foo.java")),
+            "aden_infer_test_pom",
+            "pom.xml ancestor must be used as project root"
+        );
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    /// build.gradle manifest: project name = directory containing build.gradle.
+    #[test]
+    fn build_gradle_inferred_as_project_name() {
+        let base = std::env::temp_dir().join("aden_infer_test_gradle");
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(base.join("src/main")).unwrap();
+        fs::write(base.join("build.gradle"), "// gradle\n").unwrap();
+        fs::write(base.join("src/main/Foo.kt"), "fun foo() {}\n").unwrap();
+
+        assert_eq!(
+            infer_project_name(&base.join("src/main/Foo.kt")),
+            "aden_infer_test_gradle",
+            "build.gradle ancestor must be used as project root"
+        );
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    /// build.gradle.kts manifest: project name = directory containing build.gradle.kts.
+    #[test]
+    fn build_gradle_kts_inferred_as_project_name() {
+        let base = std::env::temp_dir().join("aden_infer_test_gradle_kts");
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(base.join("src")).unwrap();
+        fs::write(base.join("build.gradle.kts"), "// gradle kts\n").unwrap();
+        fs::write(base.join("src/Bar.kt"), "fun bar() {}\n").unwrap();
+
+        assert_eq!(
+            infer_project_name(&base.join("src/Bar.kt")),
+            "aden_infer_test_gradle_kts",
+            "build.gradle.kts ancestor must be used as project root"
+        );
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    /// Gemfile manifest: project name = directory containing Gemfile,
+    /// NOT a lib/-derived dotted path.
+    #[test]
+    fn gemfile_inferred_as_project_name_not_lib_path() {
+        let base = std::env::temp_dir().join("aden_infer_test_gemfile");
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(base.join("lib/my_gem")).unwrap();
+        fs::write(base.join("Gemfile"), "source 'https://rubygems.org'\n").unwrap();
+        fs::write(base.join("lib/my_gem/client.rb"), "class Client; end\n").unwrap();
+
+        assert_eq!(
+            infer_project_name(&base.join("lib/my_gem/client.rb")),
+            "aden_infer_test_gemfile",
+            "Gemfile ancestor must be used as project root (not lib/-derived path)"
+        );
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    /// setup.cfg manifest: project name = directory containing setup.cfg.
+    #[test]
+    fn setup_cfg_inferred_as_project_name() {
+        let base = std::env::temp_dir().join("aden_infer_test_setup_cfg");
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(base.join("src/mypackage")).unwrap();
+        fs::write(base.join("setup.cfg"), "[metadata]\nname = mypackage\n").unwrap();
+        fs::write(base.join("src/mypackage/mod.py"), "def foo(): pass\n").unwrap();
+
+        assert_eq!(
+            infer_project_name(&base.join("src/mypackage/mod.py")),
+            "aden_infer_test_setup_cfg",
+            "setup.cfg ancestor must be used as project root"
+        );
 
         let _ = fs::remove_dir_all(&base);
     }

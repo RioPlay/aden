@@ -13,7 +13,7 @@
 //!   • Path aliases from `tsconfig.json` / `jsconfig.json`
 //!   • Dynamic imports `import('./path')`
 
-use crate::extractor::{LanguageExtractor, build_code_attributes, make_anchor};
+use crate::extractor::{LanguageExtractor, build_code_attributes, infer_project_name, make_anchor};
 use aden_core::{Block, Document, NodeType, Parameter, Result};
 use std::path::Path;
 
@@ -55,7 +55,7 @@ impl LanguageExtractor for TypeScriptResolver {
             .parse(source, None)
             .ok_or_else(|| aden_core::Error::Parse("tree-sitter returned None".to_string()))?;
 
-        let proj_name = infer_ts_project_name(path);
+        let proj_name = infer_project_name(path);
         let file_name = path.file_name().unwrap_or_default().to_string_lossy();
 
         let mut symbols: Vec<TsSymbol> = Vec::new();
@@ -761,16 +761,4 @@ fn node_to_span<'a>(node: tree_sitter::Node<'a>, path: &Path) -> aden_core::Sour
         start_byte: node.start_byte(),
         end_byte: node.end_byte(),
     }
-}
-
-fn infer_ts_project_name(path: &Path) -> String {
-    path.ancestors()
-        .find(|p| {
-            p.join("package.json").exists()
-                || p.join("tsconfig.json").exists()
-                || p.join("jsconfig.json").exists()
-        })
-        .and_then(|p| p.file_name())
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| "unknown".to_string())
 }

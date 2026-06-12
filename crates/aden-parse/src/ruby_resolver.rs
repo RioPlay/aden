@@ -15,7 +15,7 @@
 //!   • Rails DSL awareness (`has_many`, `before_action`, etc.)
 //!   • Dynamic method dispatch (`send`, `method_missing`)
 
-use crate::extractor::{LanguageExtractor, build_code_attributes, make_anchor};
+use crate::extractor::{LanguageExtractor, build_code_attributes, infer_project_name, make_anchor};
 use aden_core::{Block, Document, NodeType, Parameter, Result};
 use std::path::Path;
 
@@ -54,23 +54,34 @@ impl LanguageExtractor for RubyResolver {
             .parse(source, None)
             .ok_or_else(|| aden_core::Error::Parse("tree-sitter returned None".to_string()))?;
 
-        let module_name = infer_ruby_module(path);
+        // Project component for the anchor (shared canonical logic).
+        let proj_name = infer_project_name(path);
+        // Module-namespace prefix used only for qualified_name building inside
+        // walk_program. Keeps the lib/-relative module path as symbol context
+        // while the anchor's project component stays canonical.
+        let module_prefix = infer_ruby_module(path);
         let file_name = path.file_name().unwrap_or_default().to_string_lossy();
 
         let mut symbols: Vec<RubySymbol> = Vec::new();
         walk_program(
             tree.root_node(),
             source,
-            &module_name,
+            &module_prefix,
             &file_name,
             &mut symbols,
         );
 
         let mut docs = Vec::new();
         for sym in &symbols {
-            if let Some(doc) =
-                emit_ruby_symbol(sym, source, path, &symbols, &module_name, &file_name)
-            {
+            if let Some(doc) = emit_ruby_symbol(
+                sym,
+                source,
+                path,
+                &symbols,
+                &proj_name,
+                &module_prefix,
+                &file_name,
+            ) {
                 docs.push(doc);
             }
         }
@@ -386,19 +397,20 @@ fn emit_ruby_symbol(
     source: &str,
     path: &Path,
     _all_symbols: &[RubySymbol],
-    module: &str,
+    proj_name: &str,
+    module_prefix: &str,
     file_name: &str,
 ) -> Option<Document> {
     // Qualify the anchor with the enclosing class/module so same-named methods in
     // different classes of one file don't collapse to one anchor (data loss).
-    // `qualified_name` is `<module>.<Class>.<method>`; strip the leading
-    // project-module prefix that `make_anchor` already supplies so the fragment
-    // stays `Class.method` and top-level/class anchors are unchanged.
+    // `qualified_name` is `<module_prefix>.<Class>.<method>`; strip the leading
+    // module-prefix (lib/-relative namespace) to get the fragment. The anchor's
+    // project component uses the shared canonical proj_name, not the lib/ path.
     let fragment = sym
         .qualified_name
-        .strip_prefix(&format!("{module}."))
+        .strip_prefix(&format!("{module_prefix}."))
         .unwrap_or(&sym.qualified_name);
-    let anchor = make_anchor(module, file_name, fragment);
+    let anchor = make_anchor(proj_name, file_name, fragment);
     let span = node_to_span(sym.node, path);
     let attrs = build_code_attributes(
         source,
