@@ -228,15 +228,14 @@ pub fn cmd_audit(
     for file in &files {
         total_scanned += 1;
 
-        // Skip documentation directories — they contain example vulnerability strings
-        // Also skip lint.rs since it contains detection patterns that trigger false positives
-        // Also skip init.rs since it uses include_str! with ../ which triggers false positives
+        // Skip documentation directories — they contain example vulnerability strings.
+        // Skip aden-cli/src/commands/ — these source files embed the detector pattern
+        // strings themselves (lint.rs, init.rs, etc.) and self-flag as false positives.
         // Normalize separators so these matches also hold on Windows (`\`).
         let path_str = crate::util::normalize_sep(file);
         if path_str.contains("/.agent/")
             || path_str.contains("/docs/")
-            || path_str.contains("/lint.rs")
-            || path_str.contains("/init.rs")
+            || path_str.contains("/aden-cli/src/commands/")
         {
             continue;
         }

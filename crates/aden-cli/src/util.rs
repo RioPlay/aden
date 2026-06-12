@@ -157,14 +157,21 @@ pub fn discover_source_files(root: &Path) -> Result<Vec<PathBuf>, Box<dyn std::e
     let mut files = Vec::new();
     walk_supported_files(root, root, &supported, &filter, &mut files)?;
 
-    // Prioritize files under a `src/`-style directory so that, when a token
+    // Prioritize files under a source-style directory so that, when a token
     // budget truncates generation, the most load-bearing code is processed
-    // first. This is a neutral heuristic that helps every layout, not just
-    // Cargo's.
+    // first. Covers: Cargo (`src/`), Go (`cmd/`, `pkg/`), Ruby/Rails (`app/`),
+    // generic libraries (`lib/`, `source/`). Neutral across ecosystems.
     files.sort_by(|a, b| {
-        let a_is_src = normalize_sep(a).contains("/src/");
-        let b_is_src = normalize_sep(b).contains("/src/");
-        b_is_src.cmp(&a_is_src)
+        let is_src_dir = |p: &PathBuf| {
+            let s = normalize_sep(p);
+            s.contains("/src/")
+                || s.contains("/cmd/")
+                || s.contains("/pkg/")
+                || s.contains("/lib/")
+                || s.contains("/app/")
+                || s.contains("/source/")
+        };
+        is_src_dir(b).cmp(&is_src_dir(a))
     });
 
     Ok(files)

@@ -108,7 +108,7 @@ macro_rules! progress {
 /// always the file (`make_anchor` appends `/<file>#<sym>`), so the directory
 /// before it is the real package/crate. For aden's own `crate/file.rs` layout
 /// this still yields the crate name, so nothing regresses.
-fn crate_from_anchor(anchor: &str) -> Option<String> {
+fn module_from_anchor(anchor: &str) -> Option<String> {
     let rest = anchor.strip_prefix("aden://module/")?;
     let path = rest.split('#').next()?;
     let segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
@@ -318,7 +318,7 @@ fn resolve_callee<'a>(
     name_index: &HashMap<&str, Vec<&'a str>>,
 ) -> Option<&'a str> {
     let caller_file = anchor_file(caller);
-    let caller_crate = crate_from_anchor(caller);
+    let caller_crate = module_from_anchor(caller);
     let pick = |cands: &[&'a str]| pick_local(cands, caller_file, caller_crate.as_deref());
     // Self-receiver fast path (exact, zero false-edge risk): a call through the
     // caller's own instance — `self.foo()`, `this.foo()`, `$this->foo()`,
@@ -381,7 +381,7 @@ fn pick_local<'a>(
             let same: Vec<&'a str> = many
                 .iter()
                 .copied()
-                .filter(|a| crate_from_anchor(a).as_deref() == Some(cc))
+                .filter(|a| module_from_anchor(a).as_deref() == Some(cc))
                 .collect();
             if same.len() == 1 { Some(same[0]) } else { None }
         }
@@ -456,7 +456,7 @@ fn resolve_exact<'a>(
     pick_local(
         cands,
         anchor_file(caller),
-        crate_from_anchor(caller).as_deref(),
+        module_from_anchor(caller).as_deref(),
     )
 }
 
@@ -814,9 +814,9 @@ fn link_store_edges<S: GraphStorage>(
 
     // Containment for every anchor.
     for anchor in &anchors {
-        if let Some(krate) = crate_from_anchor(anchor) {
-            let module_anchor = format!("mod-{}", krate);
-            modules.insert(krate);
+        if let Some(module) = module_from_anchor(anchor) {
+            let module_anchor = format!("mod-{}", module);
+            modules.insert(module);
             edges.push((module_anchor.clone(), anchor.clone(), EdgeType::Contains));
             edges.push((anchor.clone(), module_anchor, EdgeType::PartOf));
         }
@@ -1076,14 +1076,14 @@ fn link_store_edges<S: GraphStorage>(
                 "Project root. Links to every crate/module in the project.",
             ));
         }
-        for krate in &modules {
-            let module_anchor = format!("mod-{}", krate);
+        for module in &modules {
+            let module_anchor = format!("mod-{}", module);
             if !anchors.contains(&module_anchor) {
                 let _ = storage.put_document(&make_module_doc(
                     &module_anchor,
                     &format!(
                         "Module {}. Contains the symbols extracted from its source.",
-                        krate
+                        module
                     ),
                 ));
             }

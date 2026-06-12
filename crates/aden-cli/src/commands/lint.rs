@@ -300,7 +300,7 @@ pub fn cmd_lint(
             .count();
         if !json {
             println!(
-                "\n--fix: auto-fixed redundant conversions in {} file(s); {} issue(s) require manual review.",
+                "\n--fix: auto-fixed redundant Rust conversions in {} file(s); {} issue(s) require manual review.",
                 fixed_files, manual
             );
         }
