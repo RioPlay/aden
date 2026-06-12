@@ -758,8 +758,8 @@ aden heal . --watch src/
 |===
 |Drift Event |Severity |Auto-Fix
 
-|StaleHash |High |Legacy on-disk only (store: run `aden gen`)
-|SignatureMismatch |High |Yes (in store)
+|StaleHash |High |Yes — merge engine (store); or hash rewrite (on-disk legacy)
+|SignatureMismatch |High |Yes — merge engine (store); or sig rewrite (on-disk legacy)
 |MissingContract |Medium |Advisory
 |OrphanAnchor |Medium |Yes (--gc)
 |BrokenReference |Critical |No
@@ -772,17 +772,26 @@ aden heal . --watch src/
 Aden is store-first: contracts live in the per-user project store (see
 `aden store path`), not as on-disk `.adoc` stubs. Consequently:
 
-- `SignatureMismatch` `--fix` rewrites the recorded signature directly in the
-  store (legacy on-disk contract files are still rewritten in place). A failure
-  on any single event is logged and counted as skipped, never aborting the run.
-- `StaleHash` `--fix` only rewrites a legacy *on-disk* contract's hash. A
-  store-resident StaleHash is reported and skipped with a "run `aden gen`" hint —
-  the store is refreshed by re-indexing, not by heal.
+- `StaleHash` and `SignatureMismatch` `--fix` for store-resident events routes
+  through the three-way merge engine (`ContractState::apply`): it re-parses the
+  source, reconciles against the last-emitted base snapshot, and layers the
+  durable `[human]`/`[agent]` overlay as the working layer. On a *clean merge*,
+  the fresh `Document` is written to the store and the base snapshot updated —
+  equivalent to `aden gen` but gated so overlays survive. On a *conflict*
+  (an overlay block tagged identically to a generated block), a `MergeReconcile`
+  proposal with `[proposed]` conflict markers is persisted instead; the store is
+  NOT mutated until the conflict is resolved via `aden heal --apply <id>`.
+- Legacy on-disk contract files (`.adoc` stubs) still have their `:source_hash:`
+  or `:source_sig:` line rewritten in place. A failure on any single event is
+  logged and counted as skipped, never aborting the run.
 - `MissingContract` is reported as *advisory*: rather than materializing a
   hand-written stub (which has no recorded `source_hash` and would immediately
   re-flag as `StaleHash` and self-drift), the proposal points at the source file
   and emits the regeneration command (`aden gen <src> --auto .`) to populate the
   store-resident contract.
+- `aden heal --apply <id>` for a `MergeReconcile` proposal re-runs the merge
+  engine and writes the result to the store on a clean merge; conflicting
+  proposals are refreshed in place with updated `[proposed]` markers.
 - `--gc` prunes a contract whose source file is no longer a *live* source — this
   covers files deleted from disk as well as files newly excluded by
   `.adenignore`/`.adenallow`.

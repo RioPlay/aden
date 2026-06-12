@@ -294,6 +294,9 @@ pub fn cmd_heal_scan(
                 // noisy line per event (a large repo has hundreds of orphans).
                 let mut skipped_by_kind: BTreeMap<&'static str, usize> = BTreeMap::new();
 
+                // Open the store once for the whole --fix run (hoisted from per-event).
+                let fix_storage = open_heal_storage(path);
+
                 for event in &report.events {
                     let confidence = match event {
                         aden_heal::DriftEvent::StaleHash { .. } => 0.99,
@@ -334,18 +337,53 @@ pub fn cmd_heal_scan(
                                 println!("  Fixed: {} (updated hash)", target.display());
                                 fixed_count += 1;
                             } else {
-                                // Store-first StaleHash: target_path is a store
-                                // pseudo-path (".aden/store:aden://…"), not a file
-                                // on disk, so there is no :source_hash: line for
-                                // heal to rewrite — the store's recorded hash is
-                                // refreshed by `aden gen`, not heal. Count it as a
-                                // skipped event with guidance so it never silently
-                                // vanishes from both the Fixed and Skipped tallies
-                                // (the prior behaviour: dropped from each).
-                                *skipped_by_kind
-                                    .entry("StaleHash in store (run `aden gen` to refresh)")
-                                    .or_default() += 1;
-                                failed_count += 1;
+                                // Store-resident StaleHash: apply via merge engine.
+                                // A pseudo-path ".aden/store:<anchor>" has no hash
+                                // line to rewrite; we reconcile through the merge
+                                // engine instead and write the fresh document.
+                                let store_anchor = target_path
+                                    .strip_prefix(".aden/store:")
+                                    .unwrap_or(target_path);
+                                if let Some(ref storage) = fix_storage {
+                                    match apply_merge_to_store(store_anchor, path, storage) {
+                                        Ok(MergeApplyOutcome::Applied) => {
+                                            println!("  Fixed: {} (merge-applied)", store_anchor);
+                                            fixed_count += 1;
+                                        }
+                                        Ok(MergeApplyOutcome::Conflict(ref p)) => {
+                                            println!(
+                                                "  Conflict: {} → review proposal at {}",
+                                                store_anchor,
+                                                p.display()
+                                            );
+                                            *skipped_by_kind
+                                                .entry("MergeConflict (review proposal)")
+                                                .or_default() += 1;
+                                            failed_count += 1;
+                                        }
+                                        Ok(MergeApplyOutcome::NoContractChanges) => {
+                                            *skipped_by_kind
+                                                .entry("StaleHash in store (run `aden gen` to refresh)")
+                                                .or_default() += 1;
+                                            failed_count += 1;
+                                        }
+                                        Err(e) => {
+                                            eprintln!(
+                                                "  WARN: merge apply failed for {}: {}; skipping",
+                                                store_anchor, e
+                                            );
+                                            *skipped_by_kind
+                                                .entry("StaleHash in store (merge failed)")
+                                                .or_default() += 1;
+                                            failed_count += 1;
+                                        }
+                                    }
+                                } else {
+                                    *skipped_by_kind
+                                        .entry("StaleHash in store (run `aden gen` to refresh)")
+                                        .or_default() += 1;
+                                    failed_count += 1;
+                                }
                             }
                         }
                         aden_heal::DriftEvent::MissingContract { .. } => {
@@ -362,40 +400,59 @@ pub fn cmd_heal_scan(
                             expected_sig: _,
                             actual_sig,
                         } => {
-                            // Store-first: the scanner emits a pseudo-path of the
-                            // form ".aden/store:<anchor>" — there is no on-disk
-                            // contract file to rewrite. Update the signature in the
-                            // store via the graph API instead. Any failure is logged
-                            // and counted as skipped, never `?`-aborting the whole run.
+                            // Store-resident: apply via merge engine instead of
+                            // Table-row surgery (which would make the base snapshot stale).
                             if let Some(store_anchor) = contract_path.strip_prefix(".aden/store:") {
-                                match update_store_signature(path, store_anchor, actual_sig) {
-                                    Ok(true) => {
-                                        println!(
-                                            "  Fixed: {} (updated signature in store)",
-                                            anchor
-                                        );
-                                        fixed_count += 1;
+                                if let Some(ref storage) = fix_storage {
+                                    match apply_merge_to_store(store_anchor, path, storage) {
+                                        Ok(MergeApplyOutcome::Applied) => {
+                                            println!(
+                                                "  Fixed: {} (signature updated via merge)",
+                                                anchor
+                                            );
+                                            fixed_count += 1;
+                                        }
+                                        Ok(MergeApplyOutcome::Conflict(ref p)) => {
+                                            println!(
+                                                "  Conflict: {} → review proposal at {}",
+                                                anchor,
+                                                p.display()
+                                            );
+                                            *skipped_by_kind
+                                                .entry("MergeConflict (review proposal)")
+                                                .or_default() += 1;
+                                            failed_count += 1;
+                                        }
+                                        Ok(MergeApplyOutcome::NoContractChanges) => {
+                                            eprintln!(
+                                                "  WARN: signature anchor {} not found; skipping",
+                                                anchor
+                                            );
+                                            *skipped_by_kind
+                                                .entry("SignatureMismatch (anchor not in store)")
+                                                .or_default() += 1;
+                                            failed_count += 1;
+                                        }
+                                        Err(e) => {
+                                            eprintln!(
+                                                "  WARN: merge apply failed for {}: {}; skipping",
+                                                anchor, e
+                                            );
+                                            *skipped_by_kind
+                                                .entry("SignatureMismatch (merge failed)")
+                                                .or_default() += 1;
+                                            failed_count += 1;
+                                        }
                                     }
-                                    Ok(false) => {
-                                        eprintln!(
-                                            "  WARN: signature anchor {} not found in store; skipping",
-                                            anchor
-                                        );
-                                        *skipped_by_kind
-                                            .entry("SignatureMismatch (anchor not in store)")
-                                            .or_default() += 1;
-                                        failed_count += 1;
-                                    }
-                                    Err(e) => {
-                                        eprintln!(
-                                            "  WARN: failed to update signature for {}: {}; skipping",
-                                            anchor, e
-                                        );
-                                        *skipped_by_kind
-                                            .entry("SignatureMismatch (store update failed)")
-                                            .or_default() += 1;
-                                        failed_count += 1;
-                                    }
+                                } else {
+                                    eprintln!(
+                                        "  WARN: store unavailable; skipping signature fix for {}",
+                                        anchor
+                                    );
+                                    *skipped_by_kind
+                                        .entry("SignatureMismatch (store unavailable)")
+                                        .or_default() += 1;
+                                    failed_count += 1;
                                 }
                             } else {
                                 // Legacy on-disk contract path: rewrite the
@@ -496,54 +553,6 @@ pub fn cmd_heal_scan(
     }
 }
 
-/// Update the recorded signature of a store-resident contract to `actual_sig`.
-///
-/// The scanner derives a contract's "signature" from the `param ` rows of the
-/// doc's Table block(s) (see `extract_sig_from_doc`). To heal a
-/// `SignatureMismatch` we rewrite those `param ` rows' value column in the
-/// store document and persist it via `put_document`. Returns `Ok(true)` if the
-/// anchor existed and was updated, `Ok(false)` if no such anchor is in the store.
-fn update_store_signature(
-    path: &Path,
-    anchor: &str,
-    actual_sig: &[String],
-) -> Result<bool, Box<dyn std::error::Error>> {
-    use aden_core::Block;
-    use aden_store::{GraphStorage, Storage};
-
-    let root = find_project_root(path);
-    let (store_path, _) = aden_paths::resolve_read_store(&root);
-    if !store_path.is_dir() {
-        return Ok(false);
-    }
-    let storage = Storage::open_existing(store_path.to_str().ok_or("invalid store path")?)?;
-
-    let mut doc = match storage.get_document(anchor)? {
-        Some(d) => d,
-        None => return Ok(false),
-    };
-
-    // Replace the value column of each `param ` row in order, in document order,
-    // across all Table blocks — matching how `extract_sig_from_doc` reads them.
-    let mut next = 0usize;
-    for block in &mut doc.blocks {
-        if let Block::Table(table) = block {
-            for row in &mut table.rows {
-                if row.len() >= 2 && row[0].starts_with("param ") {
-                    if let Some(val) = actual_sig.get(next) {
-                        row[1] = val.clone();
-                    }
-                    next += 1;
-                }
-            }
-        }
-    }
-
-    storage.put_document(&doc)?;
-    storage.flush()?;
-    Ok(true)
-}
-
 pub fn cmd_heal_apply(repo_path: &Path, id: &str) -> Result<(), Box<dyn std::error::Error>> {
     if !is_safe_id(id) {
         return Err(format!("Invalid proposal ID: {}", id).into());
@@ -582,16 +591,46 @@ pub fn cmd_heal_apply(repo_path: &Path, id: &str) -> Result<(), Box<dyn std::err
             println!("Cannot auto-apply: requires finding the correct replacement anchor.");
         }
         "MergeReconcile" => {
-            // Phase 5 will wire the merge-engine apply path (writing the merged
-            // contract back to the store).  For now, surface the merged contract
-            // for manual review and leave the proposal as PendingReview.
-            println!("MergeReconcile proposal — review the merged contract below.");
-            println!("Apply path arrives with the merge-engine apply path (Phase 5).");
-            println!("---");
-            println!("{}", proposal.patch_asciidoc);
-            println!("---");
-            // Do NOT mark Applied: the store has not been updated yet.
-            mark_applied = false;
+            let target_str = proposal.target_path.to_string_lossy();
+            let anchor = target_str
+                .strip_prefix(".aden/store:")
+                .unwrap_or(&target_str);
+            match open_heal_storage(repo_path) {
+                Some(ref storage) => match apply_merge_to_store(anchor, repo_path, storage) {
+                    Ok(MergeApplyOutcome::Applied) => {
+                        println!("  Applied: {} (clean merge written to store)", anchor);
+                        mark_applied = true;
+                    }
+                    Ok(MergeApplyOutcome::Conflict(ref p)) => {
+                        println!(
+                            "  Conflict blocks detected; updated proposal at {}",
+                            p.display()
+                        );
+                        println!(
+                            "  Review the merged contract with conflict markers and re-apply."
+                        );
+                        mark_applied = false;
+                    }
+                    Ok(MergeApplyOutcome::NoContractChanges) => {
+                        println!(
+                            "  No contract-level changes for {}. Run `aden gen .` to refresh.",
+                            anchor
+                        );
+                        mark_applied = false;
+                    }
+                    Err(e) => {
+                        eprintln!("  ERROR applying merge for {}: {}", anchor, e);
+                        mark_applied = false;
+                    }
+                },
+                None => {
+                    eprintln!(
+                        "  ERROR: cannot open store for {}. Run `aden gen .` first.",
+                        anchor
+                    );
+                    mark_applied = false;
+                }
+            }
         }
         other => {
             println!("Unknown drift type '{}'. Cannot auto-apply.", other);
@@ -727,6 +766,150 @@ fn clear_stale_proposals(proposals_dir: &Path) -> Result<(), Box<dyn std::error:
         }
     }
     Ok(())
+}
+
+// ── merge-engine apply helpers ────────────────────────────────────────────────
+
+enum MergeApplyOutcome {
+    /// Clean merge; fresh document and base snapshot written to store.
+    Applied,
+    /// Merge had conflicts; a MergeReconcile proposal was persisted.
+    Conflict(PathBuf),
+    /// No contract-level changes, or anchor/source not found.
+    /// Caller may fall back to legacy handling.
+    NoContractChanges,
+}
+
+/// Open the project store for heal fix/apply operations.
+/// Returns `None` when the store does not yet exist (need `aden gen` first).
+fn open_heal_storage(path: &Path) -> Option<aden_store::Storage> {
+    use aden_store::Storage;
+    let root = find_project_root(path);
+    let (store_path, _) = aden_paths::resolve_read_store(&root);
+    if !store_path.is_dir() {
+        return None;
+    }
+    Storage::open_existing(store_path.to_str()?).ok()
+}
+
+/// Apply the three-way merge engine to a store-resident contract anchor.
+///
+/// * **Clean merge** — writes the fresh `Document` and updated base snapshot to
+///   the store. Equivalent to what `aden gen` would do, but gated through the
+///   merge engine so `[human]`/`[agent]` overlay intent is never clobbered.
+/// * **Conflict** — persists a `MergeReconcile` proposal carrying the merged
+///   contract with `[proposed]` markers; the store is NOT mutated.
+/// * **NoContractChanges** — pure metadata refresh, deleted symbol, or anchor
+///   not found. Caller handles fallback (e.g. `aden gen` or `--gc`).
+fn apply_merge_to_store(
+    anchor: &str,
+    repo_path: &Path,
+    storage: &aden_store::Storage,
+) -> Result<MergeApplyOutcome, Box<dyn std::error::Error>> {
+    use aden_core::contract::ContractDocument;
+    use aden_core::overlay::{load_overlay, sanitize_anchor_filename};
+    use aden_emit::emit_contract_document;
+    use aden_propose::{Proposal, ProposalStatus};
+    use aden_store::GraphStorage;
+    use std::fmt::Write as _;
+
+    let root = find_project_root(repo_path);
+
+    let stored = match storage.get_document(anchor)? {
+        Some(d) => d,
+        None => return Ok(MergeApplyOutcome::NoContractChanges),
+    };
+
+    let source_rel = match stored.attributes.get("source_file") {
+        Some(s) => s.clone(),
+        None => return Ok(MergeApplyOutcome::NoContractChanges),
+    };
+    let source_abs = root.join(&source_rel);
+
+    // Deleted symbols fall through to `--gc`, not `--fix`.
+    if !source_abs.exists() {
+        return Ok(MergeApplyOutcome::NoContractChanges);
+    }
+    let source_text = std::fs::read_to_string(&source_abs)?;
+    let mut docs = aden_parse::parse_file(&source_abs, &source_text)
+        .map_err(|e| format!("parse error in {}: {e}", source_abs.display()))?;
+    for d in &mut docs {
+        crate::commands::generate::slim_doc_for_store(d);
+    }
+    let fresh_doc = match docs.into_iter().find(|d| d.anchor == anchor) {
+        Some(d) => d,
+        None => return Ok(MergeApplyOutcome::NoContractChanges),
+    };
+
+    let base_text = storage.get_base_snapshot(anchor).ok().flatten();
+    let overlay = load_overlay(&root, anchor);
+
+    let rec = aden_heal::reconcile_contract(
+        Some(&fresh_doc),
+        Some(&stored),
+        base_text.as_deref(),
+        overlay.as_ref(),
+    )?;
+
+    if rec.proposal.actions.is_empty() {
+        return Ok(MergeApplyOutcome::NoContractChanges);
+    }
+
+    if rec.proposal.conflict_count == 0 {
+        // Clean merge: write fresh doc + updated base snapshot to the store.
+        storage.put_document(&fresh_doc)?;
+        let snapshot = emit_contract_document(&ContractDocument::from_document(&fresh_doc));
+        if let Err(e) = storage.put_base_snapshot(anchor, &snapshot) {
+            eprintln!("WARN: failed to update base snapshot for {anchor}: {e}");
+        }
+        storage.flush()?;
+        Ok(MergeApplyOutcome::Applied)
+    } else {
+        // Conflicts: persist a MergeReconcile proposal with [proposed] markers.
+        let p = &rec.proposal;
+        let id = format!("merge-{}", sanitize_anchor_filename(anchor));
+        let target_str = format!(".aden/store:{anchor}");
+        let mut rationale = String::new();
+        writeln!(
+            rationale,
+            "updated={} inserted={} deleted={} preserved={} conflicts={}",
+            p.updated_count, p.inserted_count, p.deleted_count, p.preserved_count, p.conflict_count,
+        )
+        .unwrap();
+        for action in &p.actions {
+            if let aden_core::contract::MergeAction::Conflict { reason, .. } = action {
+                writeln!(rationale, "Conflict: {reason}").unwrap();
+            }
+        }
+        let merged_text = emit_contract_document(&rec.merged);
+        let confidence = 0.5f64;
+        let patch_asciidoc = format!(
+            "[[{id}]]\n\
+             = Merge reconciliation: {anchor}\n\
+             :status: PENDING_REVIEW\n\
+             :confidence: {confidence}\n\
+             :target: {target_str}\n\
+             :drift_type: MergeReconcile\n\
+             \n\
+             == Rationale\n\
+             \n\
+             {rationale}\n\
+             == Merged contract\n\
+             \n\
+             {merged_text}"
+        );
+        let proposal = Proposal {
+            id,
+            target_path: PathBuf::from(&target_str),
+            drift_type: "MergeReconcile".to_string(),
+            confidence,
+            status: ProposalStatus::PendingReview,
+            rationale,
+            patch_asciidoc,
+        };
+        let store_path = aden_propose::persist(&proposal, repo_path)?;
+        Ok(MergeApplyOutcome::Conflict(store_path))
+    }
 }
 
 /// Attempt a merge-engine-backed proposal for a store-resident contract.

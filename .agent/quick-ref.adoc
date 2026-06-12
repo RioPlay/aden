@@ -74,8 +74,9 @@ git push
 |===
 |Command |What It Does |When
 
-|`--propose` |Preview only, no files written |Review before applying
-|`--fix` |Auto-apply changes |Confident in the fix
+|`--propose` |Preview only; generates MergeReconcile proposals for store-resident contracts |Review before applying
+|`--fix` |Auto-apply via merge engine (clean merges); persist conflict proposals for manual review |Confident in the source; human overlays are preserved
+|`--apply <id>` |Apply a specific proposal; re-runs merge engine and writes to store on clean merge |After reviewing a `--propose` output
 |===
 
 == When to Use What

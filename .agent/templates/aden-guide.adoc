@@ -133,7 +133,7 @@ Do not commit until all references resolve.
 
 |`aden heal` reports StaleHash
 |Source changed, contract not regenerated
-|Run `aden heal --scan --propose` and review patches
+|Run `aden heal . --propose` to generate a MergeReconcile patch, then `aden heal . --apply <id>` to apply it (or `aden heal . --fix` to auto-apply clean merges)
 
 |MissingContract for public symbol
 |Forgot to run `aden gen` on new file
