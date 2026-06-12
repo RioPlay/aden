@@ -811,7 +811,7 @@ fn apply_merge_to_store(
     storage: &aden_store::Storage,
 ) -> Result<MergeApplyOutcome, Box<dyn std::error::Error>> {
     use aden_core::contract::ContractDocument;
-    use aden_core::overlay::{load_overlay, sanitize_anchor_filename};
+    use aden_core::overlay::{load_overlay_lossy, sanitize_anchor_filename};
     use aden_emit::emit_contract_document;
     use aden_propose::{Proposal, ProposalStatus};
     use aden_store::GraphStorage;
@@ -849,7 +849,7 @@ fn apply_merge_to_store(
     };
 
     let base_text = storage.get_base_snapshot(anchor).ok().flatten();
-    let overlay = load_overlay(&root, anchor);
+    let overlay = load_overlay_lossy(&root, anchor);
 
     let rec = aden_heal::reconcile_contract(
         Some(&fresh_doc),
@@ -933,7 +933,7 @@ fn generate_merge_proposal(
     repo_path: &Path,
     storage: &aden_store::Storage,
 ) -> Option<aden_propose::Proposal> {
-    use aden_core::overlay::{load_overlay, sanitize_anchor_filename};
+    use aden_core::overlay::{load_overlay_lossy, sanitize_anchor_filename};
     use aden_emit::emit_contract_document;
     use aden_propose::{Proposal, ProposalStatus};
     use aden_store::GraphStorage;
@@ -968,7 +968,7 @@ fn generate_merge_proposal(
     };
 
     let base_text = storage.get_base_snapshot(anchor).ok().flatten();
-    let overlay = load_overlay(&root, anchor);
+    let overlay = load_overlay_lossy(&root, anchor);
 
     let rec = aden_heal::reconcile_contract(
         fresh_doc.as_ref(),

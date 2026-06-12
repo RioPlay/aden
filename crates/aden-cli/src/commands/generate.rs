@@ -1528,8 +1528,12 @@ fn cmd_gen_inner(
                         )
                     {
                         let stored = storage.get_document(&doc_clone.anchor).ok().flatten();
-                        let overlay =
-                            crate::commands::overlay::load_overlay(&root, &doc_clone.anchor);
+                        let overlay = crate::commands::overlay::load_overlay(
+                            &root,
+                            &doc_clone.anchor,
+                        )
+                        .ok()
+                        .flatten();
                         if let Ok(p) = aden_core::contract::reconcile_anchor(
                             &doc_clone,
                             stored.as_ref(),
