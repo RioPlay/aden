@@ -3,6 +3,11 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Prose file extensions that are never expected to resolve to a code symbol.
+///
+/// Add a new entry here when Aden begins tracking another documentation format.
+const PROSE_EXTENSIONS: &[&str] = &[".adoc", ".md", ".rst", ".txt"];
+
 /// Whether an anchor is *expected* to have no live source symbol.
 ///
 /// Reference docs (doc headings, ADRs, plans, use-cases, agent docs, README)
@@ -37,10 +42,7 @@ pub fn is_expected_metadata(anchor: &str) -> bool {
 
     // The "source" is itself a prose document (Markdown/AsciiDoc/reST), so it
     // is never expected to resolve to a code symbol.
-    file_part.ends_with(".adoc")
-        || file_part.ends_with(".md")
-        || file_part.ends_with(".rst")
-        || file_part.ends_with(".txt")
+    PROSE_EXTENSIONS.iter().any(|ext| file_part.ends_with(ext))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -173,6 +175,28 @@ mod tests {
         ));
         assert!(!is_expected_metadata(
             "aden://module/aden-parse/rust.rs#RustExtractor::new"
+        ));
+    }
+
+    #[test]
+    fn prose_extensions_const_drives_is_expected_metadata() {
+        // Every extension in PROSE_EXTENSIONS must be recognized.
+        for ext in super::PROSE_EXTENSIONS {
+            let anchor = format!("aden://module/aden/some-doc{ext}#section");
+            assert!(
+                is_expected_metadata(&anchor),
+                "{ext} should be expected metadata but was not"
+            );
+        }
+
+        // .rst specifically (regression guard: was previously the fourth explicit branch).
+        assert!(is_expected_metadata(
+            "aden://module/aden/guide.rst#introduction"
+        ));
+
+        // A plain Rust source file must NOT be considered prose.
+        assert!(!is_expected_metadata(
+            "aden://module/aden-heal/src/drift.rs#is_expected_metadata"
         ));
     }
 }
