@@ -142,7 +142,16 @@ pub enum MergeAction {
     /// Two agents (or agent vs. human) disagree; needs resolution.
     Conflict { index: usize, reason: String },
     /// Insert a new `[generated]` block that did not exist in base.
-    InsertGenerated { after_index: usize, content: String },
+    ///
+    /// `tag` carries the inserted block's identity (typically the symbol's
+    /// anchor or `anchor#n` sub-tag). Without it, `apply()` writes an
+    /// untagged block that the next gen/heal cycle can't match by tag, so
+    /// the symbol re-inserts on every run.
+    InsertGenerated {
+        after_index: usize,
+        content: String,
+        tag: Option<String>,
+    },
     /// Delete a `[generated]` block whose source symbol no longer exists.
     DeleteGenerated { index: usize, reason: String },
 }
@@ -175,15 +184,25 @@ impl ContractState {
     /// Compute the three-way merge, returning per-block actions.
     ///
     /// Rules:
-    /// 1. Every `[generated]` block in `base` is matched to `ground` by position/tag.
-    ///    If the AST-derived content differs, emit `UpdateGenerated`.
-    /// 2. If a `[generated]` block exists in `base` but not in `ground` (symbol deleted),
-    ///    emit `DeleteGenerated`.
-    /// 3. If a new symbol appears in `ground` but not `base`, emit `InsertGenerated`.
-    /// 4. Every `[human]`, `[agent]`, `[security]`, `[contract]`, `[constitution]`,
-    ///    `[override]` block in `working` is preserved (`PreserveHuman`).
-    /// 5. If a `[human]` block in `working` contradicts a new `[generated]` block
-    ///    (same tag/symbol), emit `Conflict`.
+    /// 1. Every `[generated]` block in `base` is matched to `ground` by tag.
+    ///    Tags are stable per-block identifiers (`anchor` for the first AST
+    ///    block of a symbol, `anchor#n` for subsequent ones — see
+    ///    [`ContractDocument::from_document`]). If the matched ground
+    ///    content differs, emit `UpdateGenerated`.
+    /// 2. If a `[generated]` block exists in `base` but not in `ground` (the
+    ///    symbol or one of its AST blocks no longer exists), emit
+    ///    `DeleteGenerated`. If a durable (human/agent) overlay block carries
+    ///    the same tag, surface `Conflict` instead — deletion would orphan
+    ///    intent.
+    /// 3. If a `[generated]` tag appears in `ground` but not `base`, emit
+    ///    `InsertGenerated` carrying the ground tag so the new block keeps
+    ///    its identity through apply() and future cycles.
+    /// 4. Every `[human]`, `[agent]`, `[security]`, `[contract]`,
+    ///    `[constitution]`, `[override]` block in `working` is preserved
+    ///    (`PreserveHuman`).
+    /// 5. If a durable (human/agent) overlay block carries the same tag as a
+    ///    changed `[generated]` block, emit `Conflict` instead of
+    ///    `UpdateGenerated` — the overlay was pinned to that exact content.
     pub fn propose(&self) -> crate::Result<MergeProposal> {
         let mut actions = Vec::new();
         let mut preserved = 0usize;
@@ -294,6 +313,7 @@ impl ContractState {
                     actions.push(MergeAction::InsertGenerated {
                         after_index: after,
                         content: ground_block.content.clone(),
+                        tag: ground_block.tag.clone(),
                     });
                     inserted += 1;
                 }
@@ -368,10 +388,11 @@ impl ContractState {
                 MergeAction::InsertGenerated {
                     after_index,
                     content,
+                    tag,
                 } => {
                     let new_block = RegionBlock {
                         region: ContractRegion::Generated,
-                        tag: None, // Tag should be extracted from content if available
+                        tag: tag.clone(),
                         attributes: HashMap::new(),
                         content: content.clone(),
                         start_line: 0,
@@ -448,20 +469,56 @@ pub fn reconcile_anchor(
 }
 
 impl ContractDocument {
-    /// Convert a plain Document into a ContractDocument with a single `[generated]` block.
+    /// Convert a plain `Document` into a `ContractDocument` whose
+    /// `[generated]` region carries one `RegionBlock` per AST block of the
+    /// source document.
+    ///
+    /// Tagging gives each generated block a durable identity the merge
+    /// engine can track across regenerations:
+    ///
+    /// * the first AST block gets tag `{anchor}` — backward-compatible with
+    ///   the original "one block per symbol" tagging,
+    /// * each subsequent block gets `{anchor}#{index}` (1-based).
+    ///
+    /// Tags are positional (stable as long as the extractor is
+    /// deterministic) so a content change to the n-th block still matches
+    /// base↔ground by tag and produces `UpdateGenerated`, not
+    /// `Delete`+`Insert`.
+    ///
+    /// A `Document` with no AST blocks still produces one empty
+    /// `[generated]` block so `propose()` can see the symbol's existence.
     pub fn from_document(doc: &crate::Document) -> Self {
         let mut attrs = doc.attributes.clone();
         attrs.insert("anchor".to_string(), doc.anchor.clone());
         attrs.insert("node_type".to_string(), format!("{:?}", doc.node_type));
 
-        let blocks = vec![RegionBlock {
-            region: ContractRegion::Generated,
-            tag: Some(doc.anchor.clone()),
-            attributes: HashMap::new(),
-            content: format_document_blocks(doc),
-            start_line: 1,
-            end_line: 1,
-        }];
+        let blocks: Vec<RegionBlock> = if doc.blocks.is_empty() {
+            vec![RegionBlock {
+                region: ContractRegion::Generated,
+                tag: Some(doc.anchor.clone()),
+                attributes: HashMap::new(),
+                content: String::new(),
+                start_line: 1,
+                end_line: 1,
+            }]
+        } else {
+            doc.blocks
+                .iter()
+                .enumerate()
+                .map(|(idx, block)| RegionBlock {
+                    region: ContractRegion::Generated,
+                    tag: Some(if idx == 0 {
+                        doc.anchor.clone()
+                    } else {
+                        format!("{}#{}", doc.anchor, idx)
+                    }),
+                    attributes: HashMap::new(),
+                    content: format_block(block),
+                    start_line: 1,
+                    end_line: 1,
+                })
+                .collect()
+        };
 
         Self {
             header_attrs: attrs,
@@ -471,67 +528,68 @@ impl ContractDocument {
     }
 }
 
-fn format_document_blocks(doc: &crate::Document) -> String {
+/// Serialize one `crate::Block` to the AsciiDoc-flavored body used inside a
+/// `[generated]` region. Block kinds map 1:1 to their AsciiDoc form; the
+/// trailing newline is included so adjacent blocks compose cleanly.
+fn format_block(block: &crate::Block) -> String {
     use std::fmt::Write;
     let mut out = String::new();
-    for block in &doc.blocks {
-        match block {
-            crate::Block::Paragraph(text) => {
-                let _ = writeln!(out, "{text}");
+    match block {
+        crate::Block::Paragraph(text) => {
+            let _ = writeln!(out, "{text}");
+        }
+        crate::Block::Table(table) => {
+            let _ = writeln!(out, "|===");
+            let header: String = table.headers.iter().map(|h| format!("|{h}")).collect();
+            let _ = writeln!(out, "{header}");
+            for row in &table.rows {
+                let row_str: String = row.iter().map(|c| format!("|{c}")).collect();
+                let _ = writeln!(out, "{row_str}");
             }
-            crate::Block::Table(table) => {
-                let _ = writeln!(out, "|===");
-                let header: String = table.headers.iter().map(|h| format!("|{h}")).collect();
-                let _ = writeln!(out, "{header}");
-                for row in &table.rows {
-                    let row_str: String = row.iter().map(|c| format!("|{c}")).collect();
-                    let _ = writeln!(out, "{row_str}");
-                }
-                let _ = writeln!(out, "|===");
+            let _ = writeln!(out, "|===");
+        }
+        crate::Block::Listing { language, code } => {
+            if let Some(lang) = language {
+                let _ = writeln!(out, "[source,{lang}]");
             }
-            crate::Block::Listing { language, code } => {
-                if let Some(lang) = language {
-                    let _ = writeln!(out, "[source,{lang}]");
-                }
-                let _ = writeln!(out, "----");
-                let _ = writeln!(out, "{code}");
-                let _ = writeln!(out, "----");
+            let _ = writeln!(out, "----");
+            let _ = writeln!(out, "{code}");
+            let _ = writeln!(out, "----");
+        }
+        crate::Block::Admonition { kind, text } => {
+            let label = match kind {
+                crate::AdmonitionKind::Note => "NOTE",
+                crate::AdmonitionKind::Tip => "TIP",
+                crate::AdmonitionKind::Warning => "WARNING",
+                crate::AdmonitionKind::Important => "IMPORTANT",
+                crate::AdmonitionKind::Caution => "CAUTION",
+            };
+            let _ = writeln!(out, "{label}: {text}");
+        }
+        crate::Block::DescriptionList(items) => {
+            for (term, def) in items {
+                let _ = writeln!(out, "{term}:: {def}");
             }
-            crate::Block::Admonition { kind, text } => {
-                let label = match kind {
-                    crate::AdmonitionKind::Note => "NOTE",
-                    crate::AdmonitionKind::Tip => "TIP",
-                    crate::AdmonitionKind::Warning => "WARNING",
-                    crate::AdmonitionKind::Important => "IMPORTANT",
-                    crate::AdmonitionKind::Caution => "CAUTION",
-                };
-                let _ = writeln!(out, "{label}: {text}");
+        }
+        crate::Block::Checklist(items) => {
+            for item in items {
+                let marker = if item.checked { "[x]" } else { "[ ]" };
+                let _ = writeln!(out, "* {marker} {}", item.text);
             }
-            crate::Block::DescriptionList(items) => {
-                for (term, def) in items {
-                    let _ = writeln!(out, "{term}:: {def}");
-                }
+        }
+        crate::Block::Incomplete {
+            required_fields,
+            hint,
+        } => {
+            let _ = writeln!(out, "[must-complete]");
+            let _ = writeln!(out, "====");
+            let _ = writeln!(out, "Required fields:");
+            for field in required_fields {
+                let _ = writeln!(out, "* {field}");
             }
-            crate::Block::Checklist(items) => {
-                for item in items {
-                    let marker = if item.checked { "[x]" } else { "[ ]" };
-                    let _ = writeln!(out, "* {marker} {}", item.text);
-                }
-            }
-            crate::Block::Incomplete {
-                required_fields,
-                hint,
-            } => {
-                let _ = writeln!(out, "[must-complete]");
-                let _ = writeln!(out, "====");
-                let _ = writeln!(out, "Required fields:");
-                for field in required_fields {
-                    let _ = writeln!(out, "* {field}");
-                }
-                let _ = writeln!(out);
-                let _ = writeln!(out, "Hint: {hint}");
-                let _ = writeln!(out, "====");
-            }
+            let _ = writeln!(out);
+            let _ = writeln!(out, "Hint: {hint}");
+            let _ = writeln!(out, "====");
         }
     }
     out
@@ -984,6 +1042,125 @@ mod tests {
     }
 
     // ── parse_contract: malformed input and header parsing ───────────
+
+    // ── Phase 2: per-symbol [generated] blocks + InsertGenerated.tag ──
+
+    #[test]
+    fn from_document_emits_one_region_per_block() {
+        // A Document for a symbol with three AST-derived blocks (summary
+        // paragraph, signature listing, parameter table) must produce three
+        // separate `[generated]` RegionBlocks so the merge engine can update
+        // them individually instead of treating the whole symbol as one opaque
+        // string.
+        let doc = crate::Document {
+            anchor: "foo".to_string(),
+            blocks: vec![
+                crate::Block::Paragraph("does the foo".to_string()),
+                crate::Block::Listing {
+                    language: Some("rust".to_string()),
+                    code: "fn foo() {}".to_string(),
+                },
+                crate::Block::Table(crate::Table {
+                    headers: vec!["param".to_string(), "type".to_string()],
+                    rows: vec![vec!["x".to_string(), "i32".to_string()]],
+                }),
+            ],
+            ..Default::default()
+        };
+        let cd = ContractDocument::from_document(&doc);
+        assert_eq!(
+            cd.blocks.len(),
+            3,
+            "one RegionBlock per AST block, got {} blocks",
+            cd.blocks.len()
+        );
+        let tags: Vec<Option<&str>> = cd.blocks.iter().map(|b| b.tag.as_deref()).collect();
+        assert_eq!(
+            tags,
+            vec![Some("foo"), Some("foo#1"), Some("foo#2")],
+            "block tags must give each AST block durable identity",
+        );
+        assert!(
+            cd.blocks[0].content.contains("does the foo"),
+            "first block carries the paragraph"
+        );
+        assert!(
+            cd.blocks[1].content.contains("fn foo()"),
+            "second block carries the listing"
+        );
+        assert!(
+            cd.blocks[2].content.contains("|param"),
+            "third block carries the table"
+        );
+    }
+
+    #[test]
+    fn from_document_with_no_blocks_still_represents_symbol() {
+        // A Document with empty `blocks` (declaration-only symbol) must still
+        // produce one RegionBlock so `reconcile_anchor` records its existence
+        // — otherwise propose() can't even see the symbol to update or delete.
+        let doc = crate::Document {
+            anchor: "stub".to_string(),
+            blocks: Vec::new(),
+            ..Default::default()
+        };
+        let cd = ContractDocument::from_document(&doc);
+        assert_eq!(cd.blocks.len(), 1);
+        assert_eq!(cd.blocks[0].tag.as_deref(), Some("stub"));
+    }
+
+    #[test]
+    fn propose_insert_carries_ground_tag() {
+        // When a new generated block appears in `ground` that `base` doesn't
+        // have, the `InsertGenerated` action must carry the ground block's
+        // tag — otherwise apply() inserts an untagged block and the next
+        // gen/heal cycle can't match it back to its source symbol.
+        let base = make_doc(vec![gen_block(Some("foo"), "fn foo() {}")]);
+        let ground = make_doc(vec![
+            gen_block(Some("foo"), "fn foo() {}"),
+            gen_block(Some("baz"), "fn baz() {}"),
+        ]);
+        let working = base.clone();
+        let proposal = ContractState::new(ground, base, working).propose().unwrap();
+        let inserted_tags: Vec<&Option<String>> = proposal
+            .actions
+            .iter()
+            .filter_map(|a| match a {
+                MergeAction::InsertGenerated { tag, .. } => Some(tag),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(inserted_tags.len(), 1);
+        assert_eq!(
+            inserted_tags[0].as_deref(),
+            Some("baz"),
+            "InsertGenerated must record the inserted block's tag"
+        );
+    }
+
+    #[test]
+    fn apply_inserted_block_keeps_tag() {
+        // Round-trip: the block apply() writes into `working` must carry the
+        // tag from the action, so a follow-up propose() finds it by tag in
+        // base→ground matching.
+        let base = make_doc(vec![gen_block(Some("foo"), "fn foo() {}")]);
+        let ground = make_doc(vec![
+            gen_block(Some("foo"), "fn foo() {}"),
+            gen_block(Some("baz"), "fn baz() {}"),
+        ]);
+        let working = base.clone();
+        let state = ContractState::new(ground, base, working);
+        let proposal = state.propose().unwrap();
+        let merged = state.apply(&proposal).unwrap();
+
+        let baz = merged
+            .blocks
+            .iter()
+            .find(|b| b.tag.as_deref() == Some("baz"))
+            .expect("inserted block must be findable by its tag");
+        assert!(baz.is_generated());
+        assert!(baz.content.contains("fn baz()"));
+    }
 
     #[test]
     fn parse_strict_unknown_region_is_error() {
