@@ -54,3 +54,42 @@ jobs:
         run: |
           Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process -Force
           .\install.ps1 -InstallDir "$env:TEMP\aden-test"
+
+  license-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnot/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked
+
+      - name: Check dependency licenses
+        run: cargo deny check licenses sources
+
+      - name: Verify vendored asset checksums
+        run: sha256sum --check crates/aden-cli/assets/CHECKSUMS
+
+      - name: Check SPDX headers present in all source files
+        run: |
+          MISSING=0
+          while IFS= read -r -d '' f; do
+            grep -q "SPDX-License-Identifier" "$f" || { echo "Missing SPDX: $f"; MISSING=1; }
+          done < <(find crates -name "*.rs" -print0)
+          while IFS= read -r -d '' f; do
+            grep -q "SPDX-License-Identifier" "$f" || { echo "Missing SPDX: $f"; MISSING=1; }
+          done < <(find scripts -name "*.sh" -print0)
+          [ "$MISSING" -eq 0 ] || exit 1
+
+      - name: Reject contradictory copyright blocks
+        run: |
+          if grep -r "All rights reserved" --include="*.rs" --include="*.sh" crates/ scripts/; then
+            echo "ERROR: 'All rights reserved' contradicts AGPL-3.0 grant — remove the line"
+            exit 1
+          fi

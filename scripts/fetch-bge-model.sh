@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 RioPlay <rioplay@rioplay.dev>
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # fetch-bge-model.sh — one-time setup for aden's optional dense (hybrid) search.
 #
 # Downloads the local embedding model used by `aden`'s `dense` feature into the

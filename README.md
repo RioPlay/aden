@@ -200,12 +200,14 @@ correct — please open an issue and we will fix it.
 The `research/` tree contains documentation that Aden *parses and queries*, not
 code it compiles or links — e.g. a secure-coding knowledge base summarizing
 OWASP and MITRE CWE guidance. This material is under its own third-party
-licenses (CC BY-SA 3.0, CC BY 3.0, and the MITRE CWE Terms of Use), kept
-segregated from Aden's AGPL-3.0 source and never embedded in any binary. Full
-citations, required notices, and trademark/non-endorsement statements are in
-`research/secure-coding/SOURCES.md` and `research/README.md`. "OWASP" and "CWE"
-are trademarks of their respective owners; their use here is nominative and
-implies no affiliation or endorsement.
+licenses: OWASP material under CC BY-SA 4.0 and CC BY 3.0; MITRE CWE content
+under the MITRE CWE Terms of Use (a separate, non-Creative-Commons instrument).
+Content is kept segregated from Aden's AGPL-3.0 source and never embedded in
+any binary. Full citations, required notices, and trademark/non-endorsement
+statements are in `research/secure-coding/SOURCES.md` and `research/README.md`.
+"OWASP" is a trademark of the OWASP Foundation; "CWE" is a trademark of MITRE
+Corporation. Their use here is nominative and implies no affiliation or
+endorsement by the OWASP Foundation or MITRE Corporation.
 
 ## The Name
 
