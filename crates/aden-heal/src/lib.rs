@@ -3,10 +3,12 @@
 
 pub mod drift;
 pub mod fuzzy;
+pub mod reconcile;
 pub mod report;
 pub mod scanner;
 
 pub use drift::{DriftEvent, DriftSeverity};
+pub use reconcile::{Reconciliation, reconcile_contract};
 pub use report::{HealthReport, generate};
 pub use scanner::Scanner;
 

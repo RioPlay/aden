@@ -20,6 +20,7 @@
 //! | `incoming` | `in:{anchor}` | Vec<(anchor, edge_type)> |
 //! | `index` | `idx:{term}` | Vec<(anchor, score)> |
 //! | `meta` | `meta:{key}` | value |
+//! | `bases` | `base:{anchor}` | canonical contract text as of last gen (UTF-8) |
 
 use aden_core::{Document, EdgeType};
 use serde::{Deserialize, Serialize};
@@ -96,6 +97,11 @@ pub fn meta_key(key: &str) -> String {
     format!("meta:{key}")
 }
 
+/// Build a base-snapshot key.
+pub fn base_key(anchor: &str) -> String {
+    format!("base:{anchor}")
+}
+
 // ─── Tree Names ──────────────────────────────────────────────────────────────
 
 /// Tree names in the Sled database.
@@ -106,6 +112,7 @@ pub enum TreeName {
     Incoming,
     Index,
     Meta,
+    Bases,
 }
 
 impl TreeName {
@@ -117,6 +124,7 @@ impl TreeName {
             Self::Incoming => "incoming",
             Self::Index => "index",
             Self::Meta => "meta",
+            Self::Bases => "bases",
         }
     }
 }
@@ -140,6 +148,24 @@ pub trait GraphStorage: Send + Sync {
 
     /// Delete a document.
     fn delete_document(&self, anchor: &str) -> Result<(), StoreError>;
+
+    /// Record the canonical contract text for `anchor` as produced by the
+    /// last `gen` run — the `base` layer for three-way merges.
+    ///
+    /// Stored as the `emit_contract_document` text rather than a serialized
+    /// struct: `parse_contract` is its exact inverse, so the round-trip is
+    /// lossless, and text survives struct-schema evolution and stays
+    /// debuggable with plain tools.
+    fn put_base_snapshot(&self, anchor: &str, text: &str) -> Result<(), StoreError>;
+
+    /// Load the base snapshot recorded by the last `gen` run, if any.
+    /// `None` for stores written before snapshots existed (callers fall back
+    /// to reconstructing the base from the stored Document).
+    fn get_base_snapshot(&self, anchor: &str) -> Result<Option<String>, StoreError>;
+
+    /// Remove the base snapshot for `anchor`. `delete_document` and
+    /// `delete_node` cascade this automatically.
+    fn delete_base_snapshot(&self, anchor: &str) -> Result<(), StoreError>;
 
     /// Get outgoing edges for an anchor.
     fn get_outgoing_edges(&self, anchor: &str) -> Result<Vec<(String, EdgeType)>, StoreError>;
@@ -271,6 +297,77 @@ mod tests {
             .join(format!("aden-store-test-{}", uuid::Uuid::new_v4()))
             .to_string_lossy()
             .into_owned()
+    }
+
+    fn note_doc(anchor: &str) -> Document {
+        Document {
+            anchor: anchor.to_string(),
+            node_type: aden_core::NodeType::Note,
+            attributes: HashMap::new(),
+            blocks: vec![],
+            source_span: None,
+            metadata: None,
+            confidence: 1.0,
+        }
+    }
+
+    #[test]
+    fn base_snapshot_round_trips() {
+        let path = temp_path();
+        let storage = Storage::new(&path).unwrap();
+        let text = ":anchor: foo\n\n[generated#foo]\n----\nfn foo() {}\n----\n";
+        storage.put_base_snapshot("foo", text).unwrap();
+        assert_eq!(
+            storage.get_base_snapshot("foo").unwrap().as_deref(),
+            Some(text)
+        );
+        fs::remove_dir_all(&path).ok();
+    }
+
+    #[test]
+    fn base_snapshot_missing_is_none() {
+        let path = temp_path();
+        let storage = Storage::new(&path).unwrap();
+        assert_eq!(storage.get_base_snapshot("nope").unwrap(), None);
+        fs::remove_dir_all(&path).ok();
+    }
+
+    #[test]
+    fn base_snapshot_overwrites() {
+        let path = temp_path();
+        let storage = Storage::new(&path).unwrap();
+        storage.put_base_snapshot("foo", "v1").unwrap();
+        storage.put_base_snapshot("foo", "v2").unwrap();
+        assert_eq!(
+            storage.get_base_snapshot("foo").unwrap().as_deref(),
+            Some("v2")
+        );
+        fs::remove_dir_all(&path).ok();
+    }
+
+    #[test]
+    fn delete_node_cascades_base_snapshot() {
+        // A pruned symbol must not leave a stale merge base behind — a later
+        // re-gen of the same anchor would three-way merge against a ghost.
+        let path = temp_path();
+        let storage = Storage::new(&path).unwrap();
+        storage.put_document(&note_doc("foo")).unwrap();
+        storage.put_base_snapshot("foo", "snapshot text").unwrap();
+        storage.delete_node("foo").unwrap();
+        assert!(storage.get_document("foo").unwrap().is_none());
+        assert_eq!(storage.get_base_snapshot("foo").unwrap(), None);
+        fs::remove_dir_all(&path).ok();
+    }
+
+    #[test]
+    fn delete_document_cascades_base_snapshot() {
+        let path = temp_path();
+        let storage = Storage::new(&path).unwrap();
+        storage.put_document(&note_doc("foo")).unwrap();
+        storage.put_base_snapshot("foo", "snapshot text").unwrap();
+        storage.delete_document("foo").unwrap();
+        assert_eq!(storage.get_base_snapshot("foo").unwrap(), None);
+        fs::remove_dir_all(&path).ok();
     }
 
     #[test]

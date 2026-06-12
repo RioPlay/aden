@@ -12,8 +12,8 @@
 //! interchangeable behind the [`GraphStorage`] trait.
 
 use crate::{
-    GraphStorage, KEY_SEP, StoreError, TreeName, deserialize, deserialize_document, doc_key,
-    edge_key, incoming_key, meta_key, outgoing_key, serialize, serialize_document,
+    GraphStorage, KEY_SEP, StoreError, TreeName, base_key, deserialize, deserialize_document,
+    doc_key, edge_key, incoming_key, meta_key, outgoing_key, serialize, serialize_document,
 };
 use aden_core::{Document, EdgeType};
 use fjall::{Config, Keyspace, PartitionCreateOptions, PartitionHandle, PersistMode};
@@ -35,6 +35,7 @@ pub struct FjallStorage {
     incoming: PartitionHandle,
     index: PartitionHandle,
     meta: PartitionHandle,
+    bases: PartitionHandle,
 }
 
 impl FjallStorage {
@@ -53,6 +54,7 @@ impl FjallStorage {
             incoming: open(TreeName::Incoming.name())?,
             index: open(TreeName::Index.name())?,
             meta: open(TreeName::Meta.name())?,
+            bases: open(TreeName::Bases.name())?,
             keyspace,
         })
     }
@@ -102,6 +104,27 @@ impl GraphStorage for FjallStorage {
 
     fn delete_document(&self, anchor: &str) -> Result<(), StoreError> {
         self.docs.remove(doc_key(anchor))?;
+        // A document's base snapshot is meaningless without the document.
+        self.bases.remove(base_key(anchor))?;
+        Ok(())
+    }
+
+    fn put_base_snapshot(&self, anchor: &str, text: &str) -> Result<(), StoreError> {
+        self.bases.insert(base_key(anchor), text.as_bytes())?;
+        Ok(())
+    }
+
+    fn get_base_snapshot(&self, anchor: &str) -> Result<Option<String>, StoreError> {
+        match self.bases.get(base_key(anchor))? {
+            Some(bytes) => Ok(Some(String::from_utf8(bytes.to_vec()).map_err(|e| {
+                StoreError::Serialization(format!("base snapshot for '{anchor}' not UTF-8: {e}"))
+            })?)),
+            None => Ok(None),
+        }
+    }
+
+    fn delete_base_snapshot(&self, anchor: &str) -> Result<(), StoreError> {
+        self.bases.remove(base_key(anchor))?;
         Ok(())
     }
 
@@ -204,8 +227,10 @@ impl GraphStorage for FjallStorage {
     }
 
     fn delete_node(&self, anchor: &str) -> Result<(), StoreError> {
-        // Remove the doc record.
+        // Remove the doc record and its merge base — a stale snapshot would
+        // make a future re-gen of the same anchor merge against a ghost.
         self.docs.remove(doc_key(anchor))?;
+        self.bases.remove(base_key(anchor))?;
 
         // Outgoing: for each (dst, et), drop the edge key and remove anchor from
         // dst's incoming mirror list.

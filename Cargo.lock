@@ -112,6 +112,7 @@ name = "aden-heal"
 version = "0.2.0"
 dependencies = [
  "aden-core",
+ "aden-emit",
  "aden-graph",
  "aden-parse",
  "aden-paths",

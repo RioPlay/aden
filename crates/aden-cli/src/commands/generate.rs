@@ -282,7 +282,11 @@ fn extract_joined_attribute(doc: &aden_core::Document, key: &str) -> Vec<String>
 /// block — it is redundant with the `Callee` table for display and is no longer
 /// needed for linking (callees are carried out of the parse phase directly), so
 /// storing it just bloats the (already large) store on big repos.
-fn slim_doc_for_store(doc: &mut aden_core::Document) {
+///
+/// pub(crate): heal's merge reconciliation re-parses source to build the
+/// `ground` layer and must apply the same slimming, or every reconcile sees
+/// phantom diffs against the slimmed store/base.
+pub(crate) fn slim_doc_for_store(doc: &mut aden_core::Document) {
     use aden_core::Block;
     doc.blocks.retain(|b| {
         let Block::Listing { code, .. } = b else {
@@ -1613,6 +1617,22 @@ fn cmd_gen_inner(
                     for d in &docs {
                         if let Err(e) = storage.put_document(d) {
                             eprintln!("WARN: Failed to store {}: {}", d.anchor, e);
+                            continue;
+                        }
+                        // Record the canonical contract text as the base snapshot
+                        // for three-way merges.  The snapshot is the
+                        // `emit_contract_document` output for the exact document
+                        // written above (already slimmed by slim_doc_for_store);
+                        // `parse_contract` is its exact inverse so the round-trip
+                        // is lossless.
+                        let snapshot = aden_emit::emit_contract_document(
+                            &aden_core::contract::ContractDocument::from_document(d),
+                        );
+                        if let Err(e) = storage.put_base_snapshot(&d.anchor, &snapshot) {
+                            eprintln!(
+                                "WARN: Failed to record base snapshot for {}: {}",
+                                d.anchor, e
+                            );
                         }
                     }
                     merge_conflicts.extend(conflicts);

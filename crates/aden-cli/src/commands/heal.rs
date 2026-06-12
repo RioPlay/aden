@@ -565,7 +565,12 @@ pub fn cmd_heal_apply(repo_path: &Path, id: &str) -> Result<(), Box<dyn std::err
         );
     }
 
-    // Dispatch based on drift type
+    // Dispatch based on drift type.
+    // `mark_applied` tracks whether to re-persist the proposal as Applied.
+    // MergeReconcile proposals are print-only until Phase 5 lands the merge-apply
+    // path; marking them Applied here would lie about the contract state.
+    let mut mark_applied = true;
+
     match proposal.drift_type.as_str() {
         "StaleHash" => apply_stale_hash(&proposal)?,
         "MissingContract" => apply_missing_contract(&proposal)?,
@@ -576,6 +581,18 @@ pub fn cmd_heal_apply(repo_path: &Path, id: &str) -> Result<(), Box<dyn std::err
             println!("---");
             println!("Cannot auto-apply: requires finding the correct replacement anchor.");
         }
+        "MergeReconcile" => {
+            // Phase 5 will wire the merge-engine apply path (writing the merged
+            // contract back to the store).  For now, surface the merged contract
+            // for manual review and leave the proposal as PendingReview.
+            println!("MergeReconcile proposal — review the merged contract below.");
+            println!("Apply path arrives with the merge-engine apply path (Phase 5).");
+            println!("---");
+            println!("{}", proposal.patch_asciidoc);
+            println!("---");
+            // Do NOT mark Applied: the store has not been updated yet.
+            mark_applied = false;
+        }
         other => {
             println!("Unknown drift type '{}'. Cannot auto-apply.", other);
             println!("Patch content:");
@@ -585,12 +602,18 @@ pub fn cmd_heal_apply(repo_path: &Path, id: &str) -> Result<(), Box<dyn std::err
         }
     }
 
-    // Mark proposal as applied in the store
-    let mut updated = proposal;
-    updated.status = aden_propose::ProposalStatus::Applied;
-    aden_propose::persist(&updated, repo_path)?;
-
-    println!("\nProposal {} marked as APPLIED.", id);
+    if mark_applied {
+        // Mark proposal as applied in the store.
+        let mut updated = proposal;
+        updated.status = aden_propose::ProposalStatus::Applied;
+        aden_propose::persist(&updated, repo_path)?;
+        println!("\nProposal {} marked as APPLIED.", id);
+    } else {
+        println!(
+            "\nProposal {} remains PENDING_REVIEW (not yet applied).",
+            id
+        );
+    }
     Ok(())
 }
 
@@ -706,6 +729,121 @@ fn clear_stale_proposals(proposals_dir: &Path) -> Result<(), Box<dyn std::error:
     Ok(())
 }
 
+/// Attempt a merge-engine-backed proposal for a store-resident contract.
+///
+/// Returns `None` when:
+/// - the store cannot be opened (old store or missing),
+/// - the anchor is not in the store,
+/// - the source file is missing and we have no base snapshot to diff against,
+/// - or the merge engine finds no contract-level actions (pure hash refresh).
+///
+/// The caller falls back to the legacy proposal builder in that case.
+fn generate_merge_proposal(anchor: &str, repo_path: &Path) -> Option<aden_propose::Proposal> {
+    use aden_core::overlay::{load_overlay, sanitize_anchor_filename};
+    use aden_emit::emit_contract_document;
+    use aden_propose::{Proposal, ProposalStatus};
+    use aden_store::{GraphStorage, Storage};
+    use std::fmt::Write as _;
+
+    let root = find_project_root(repo_path);
+    let (store_path, _) = aden_paths::resolve_read_store(&root);
+    let storage = Storage::open_existing(store_path.to_str()?).ok()?;
+
+    // Require the anchor to be in the store; without it there is no base.
+    let stored = storage.get_document(anchor).ok().flatten()?;
+
+    // Locate the source file and re-parse it through the same pipeline as gen.
+    let source_rel = stored.attributes.get("source_file")?;
+    let source_abs = root.join(source_rel);
+
+    // Parse the source file.  Missing file → symbol deleted (fresh = None).
+    let fresh_doc: Option<aden_core::Document> = if source_abs.exists() {
+        let source_text = std::fs::read_to_string(&source_abs).ok()?;
+        let mut docs = aden_parse::parse_file(&source_abs, &source_text).ok()?;
+        // Apply the same slimming gen uses so ground matches the stored base exactly.
+        for d in &mut docs {
+            crate::commands::generate::slim_doc_for_store(d);
+        }
+        // None here = symbol no longer in source → DeleteGenerated proposal.
+        docs.into_iter().find(|d| d.anchor == anchor)
+    } else {
+        None
+    };
+
+    let base_text = storage.get_base_snapshot(anchor).ok().flatten();
+    let overlay = load_overlay(&root, anchor);
+
+    let rec = aden_heal::reconcile_contract(
+        fresh_doc.as_ref(),
+        Some(&stored),
+        base_text.as_deref(),
+        overlay.as_ref(),
+    )
+    .ok()?;
+
+    // No contract-level changes — caller falls back to legacy (e.g. hash refresh).
+    if rec.proposal.actions.is_empty() {
+        return None;
+    }
+
+    let p = &rec.proposal;
+    let conflicts = p.conflict_count;
+    let inserted = p.inserted_count;
+    let deleted = p.deleted_count;
+    let confidence: f64 = if conflicts > 0 {
+        0.5
+    } else if inserted > 0 || deleted > 0 {
+        0.9
+    } else {
+        0.95
+    };
+
+    let id = format!("merge-{}", sanitize_anchor_filename(anchor));
+    let target_str = format!(".aden/store:{anchor}");
+
+    // Rationale: one summary line + one line per Conflict reason.
+    let mut rationale = String::new();
+    writeln!(
+        rationale,
+        "updated={} inserted={} deleted={} preserved={} conflicts={}",
+        p.updated_count, inserted, deleted, p.preserved_count, conflicts
+    )
+    .unwrap();
+    for action in &p.actions {
+        if let aden_core::contract::MergeAction::Conflict { reason, .. } = action {
+            writeln!(rationale, "Conflict: {reason}").unwrap();
+        }
+    }
+
+    // Build patch_asciidoc with envelope keys first so parse_proposal finds them.
+    let merged_text = emit_contract_document(&rec.merged);
+    let patch_asciidoc = format!(
+        "[[{id}]]\n\
+         = Merge reconciliation: {anchor}\n\
+         :status: PENDING_REVIEW\n\
+         :confidence: {confidence}\n\
+         :target: {target_str}\n\
+         :drift_type: MergeReconcile\n\
+         \n\
+         == Rationale\n\
+         \n\
+         {rationale}\n\
+         == Merged contract\n\
+         \n\
+         {merged_text}"
+    );
+
+    Some(Proposal {
+        id,
+        target_path: PathBuf::from(&target_str),
+        drift_type: "MergeReconcile".to_string(),
+        confidence,
+        status: ProposalStatus::PendingReview,
+        rationale,
+        patch_asciidoc,
+    })
+}
+
 pub fn generate_proposal(
     event: &aden_heal::DriftEvent,
     repo_path: &Path,
@@ -725,6 +863,15 @@ pub fn generate_proposal(
             expected_hash,
             actual_hash,
         } => {
+            // For store-resident contracts (pseudo-path `.aden/store:<anchor>`),
+            // try the merge engine first for a full per-block reconciliation.
+            // Fall through to the legacy hash-refresh builder on None.
+            if let Some(anchor) = target_path.strip_prefix(".aden/store:")
+                && let Some(merge_proposal) = generate_merge_proposal(anchor, repo_path)
+            {
+                return Ok(merge_proposal);
+            }
+
             confidence = 0.99;
             writeln!(rationale, "Source hash mismatch detected.").unwrap();
             writeln!(rationale, "Expected: {}", expected_hash).unwrap();
@@ -888,6 +1035,44 @@ pub fn generate_proposal(
                 id,
                 target_path: target,
                 drift_type: "OrphanAnchorDraft".to_string(),
+                confidence,
+                status: ProposalStatus::PendingReview,
+                rationale,
+                patch_asciidoc: patch,
+            })
+        }
+        aden_heal::DriftEvent::SignatureMismatch {
+            anchor,
+            contract_path,
+            ..
+        } => {
+            // Store-resident SignatureMismatch events carry the anchor directly;
+            // try the merge engine first for a full per-block reconciliation.
+            if contract_path.starts_with(".aden/store:")
+                && let Some(merge_proposal) = generate_merge_proposal(anchor, repo_path)
+            {
+                return Ok(merge_proposal);
+            }
+
+            // Legacy fallback: draft request for manual review.
+            writeln!(
+                rationale,
+                "Drift event detected: SignatureMismatch for {}",
+                anchor
+            )
+            .unwrap();
+            write_draft_request(
+                &mut patch,
+                "SignatureMismatch",
+                &[("anchor", anchor), ("contract_path", contract_path)],
+                "Aden has no deterministic template for this drift type. An LLM agent \
+                 should draft the appropriate fix below, then submit via `heal --apply`.",
+            );
+
+            Ok(Proposal {
+                id,
+                target_path: target,
+                drift_type: "SignatureMismatch".to_string(),
                 confidence,
                 status: ProposalStatus::PendingReview,
                 rationale,

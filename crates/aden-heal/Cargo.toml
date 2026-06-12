@@ -17,4 +17,5 @@ thiserror = "2.0"
 rayon.workspace = true
 
 [dev-dependencies]
+aden-emit = { path = "../aden-emit" }
 tempfile = "3.27.0"
