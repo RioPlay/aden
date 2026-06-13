@@ -46,8 +46,8 @@ impl LanguageExtractor for TypeScriptResolver {
 
     fn extract_documents(&self, source: &str, path: &Path) -> Result<Vec<Document>> {
         // Try TypeScript parser first, fall back to JavaScript if TS fails.
-        let language = tree_sitter_language_pack::get_language("typescript")
-            .or_else(|_| tree_sitter_language_pack::get_language("javascript"))
+        let language = crate::get_ts_language("typescript")
+            .or_else(|_| crate::get_ts_language("javascript"))
             .map_err(|e| aden_core::Error::Parse(format!("language-pack: {}", e)))?;
 
         let mut parser = tree_sitter::Parser::new();

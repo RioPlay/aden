@@ -30,7 +30,7 @@ dirs = "6"
 toml_edit = "0.22"
 walkdir = "2"
 toml = "0.8"
-ureq = "3"
+ureq = { version = "3", optional = true }
 aden-diagnose = { path = "../aden-diagnose" }
 aden-store = { path = "../aden-store" }
 rayon.workspace = true
@@ -42,6 +42,10 @@ tempfile = "3"
 [features]
 default = ["watch", "view"]
 watch = ["notify", "ctrlc"]
+# Network fallback for `aden licenses --full` (crates.io / npm / PyPI / deps.dev).
+# Off by default — the offline lockfile/registry table works without it. Opt in
+# with `--features licenses-net`; pulls ureq (and its rustls/ring TLS stack).
+licenses-net = ["dep:ureq"]
 # Local dense embeddings for hybrid retrieval (search/ask). Off by default — opt
 # in with `--features dense`. Pulls the tract + tokenizers stack via aden-index.
 dense = ["aden-index/dense"]

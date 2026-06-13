@@ -13,6 +13,7 @@
 //! (see `misc.rs`): Cargo (Rust), npm (Node), PyPI (Python), Go.
 
 use std::collections::BTreeSet;
+#[cfg(feature = "licenses-net")]
 use std::io::Read;
 use std::path::Path;
 
@@ -410,6 +411,7 @@ fn local_license(repo: &Path, pkg: &Package) -> Option<LicenseInfo> {
     }
 }
 
+#[cfg(feature = "licenses-net")]
 fn http_json(url: &str) -> Option<serde_json::Value> {
     let resp = ureq::get(url)
         .header("User-Agent", "aden-licenses")
@@ -426,6 +428,7 @@ fn http_json(url: &str) -> Option<serde_json::Value> {
     serde_json::from_str(&body).ok()
 }
 
+#[cfg(feature = "licenses-net")]
 fn network_license(pkg: &Package) -> LicenseInfo {
     match pkg.ecosystem {
         Ecosystem::Cargo => {
@@ -525,9 +528,13 @@ fn resolve(repo: &Path, pkg: &Package, network: bool) -> LicenseInfo {
     if let Some(info) = local_license(repo, pkg) {
         return info;
     }
+    #[cfg(feature = "licenses-net")]
     if network {
         return network_license(pkg);
     }
+    // When licenses-net is not compiled in, the network flag has no effect.
+    #[cfg(not(feature = "licenses-net"))]
+    let _ = network;
     LicenseInfo {
         source: "unknown",
         ..Default::default()

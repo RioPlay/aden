@@ -104,7 +104,7 @@ impl LanguageExtractor for GenericExtractor {
     fn extract_documents(&self, source: &str, path: &Path) -> Result<Vec<Document>> {
         // Attempt to get a tree-sitter Language from the pack.
         // If the pack does not include this language, return empty gracefully.
-        let language = match tree_sitter_language_pack::get_language(self.language_id) {
+        let language = match crate::get_ts_language(self.language_id) {
             Ok(l) => l,
             Err(_e) => {
                 return Ok(Vec::new());

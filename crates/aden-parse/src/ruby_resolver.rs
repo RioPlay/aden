@@ -47,7 +47,7 @@ impl LanguageExtractor for RubyResolver {
     }
 
     fn extract_documents(&self, source: &str, path: &Path) -> Result<Vec<Document>> {
-        let language = tree_sitter_language_pack::get_language("ruby")
+        let language = crate::get_ts_language("ruby")
             .map_err(|e| aden_core::Error::Parse(format!("language-pack: {}", e)))?;
         let mut parser = tree_sitter::Parser::new();
         parser

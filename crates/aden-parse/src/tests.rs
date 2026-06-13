@@ -235,7 +235,11 @@ class World {
 // walker (`function_statement`, `class_statement`, `class_method_definition`,
 // and the `function_name`/`simple_name` name nodes).
 
-#[cfg(feature = "generic")]
+// PowerShell is not in the build-time grammar set (TSLP_LANGUAGES), so it loads
+// only when `grammars-download` can fetch it (or a prior download seeded the
+// cache). Gate the test behind that feature so the default, network-free
+// `cargo test` stays deterministic on a fresh CI.
+#[cfg(all(feature = "generic", feature = "grammars-download"))]
 #[test]
 fn powershell_generic_smoke() {
     let src = r#"

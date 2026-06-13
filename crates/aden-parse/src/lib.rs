@@ -31,6 +31,60 @@ pub mod typescript_resolver;
 pub use extractor::LanguageExtractor;
 pub use router::{LanguageRouter, supported_extensions};
 
+/// Process-wide tree-sitter language registry for the slim (default) build.
+///
+/// With only `dynamic-loading` (the `grammars-download` feature OFF),
+/// tree-sitter-language-pack's built-in `get_language()` does NOT register the
+/// on-disk download cache, so `.so` files fetched by an earlier
+/// `grammars-download` build would not be found. We fix that by building our own
+/// `LanguageRegistry` with the cache directory pre-registered, then routing every
+/// slim-build grammar lookup through it. The cache path mirrors the hard-coded
+/// convention used by `DownloadManager::default_cache_dir` in tslp itself:
+/// `~/.cache/tree-sitter-language-pack/v{version}/libs/`. Compiled only in the
+/// slim path; the `grammars-download` build delegates to tslp's own
+/// (download-aware) `get_language` instead, which registers the cache itself.
+#[cfg(all(feature = "generic", not(feature = "grammars-download")))]
+static TS_REGISTRY: std::sync::LazyLock<tree_sitter_language_pack::LanguageRegistry> =
+    std::sync::LazyLock::new(|| {
+        use tree_sitter_language_pack::LanguageRegistry;
+        let reg = LanguageRegistry::new();
+        // Register the download cache so previously-fetched .so files are found
+        // even when the `download` feature (and its ureq/sha2/tar/zstd stack) is
+        // not compiled in. The version string here must match the tslp version in
+        // Cargo.lock; update it when bumping the tree-sitter-language-pack dep.
+        const TSLP_VERSION: &str = "1.8.1";
+        if let Some(cache_dir) = dirs::cache_dir() {
+            let libs = cache_dir
+                .join("tree-sitter-language-pack")
+                .join(format!("v{TSLP_VERSION}"))
+                .join("libs");
+            reg.add_extra_libs_dir(libs);
+        }
+        reg
+    });
+
+/// Resolve a tree-sitter language by name.
+///
+/// `grammars-download` build: delegate to tslp's own `get_language`, which
+/// registers the on-disk cache and fetches missing grammars on demand (pulling
+/// the ureq/sha2/tar/zstd stack). This restores the full 300+ language pack.
+#[cfg(all(feature = "generic", feature = "grammars-download"))]
+pub(crate) fn get_ts_language(
+    name: &str,
+) -> std::result::Result<tree_sitter::Language, tree_sitter_language_pack::Error> {
+    tree_sitter_language_pack::get_language(name)
+}
+
+/// Slim build (default): look up the grammar in the build-time language set plus
+/// the pre-registered on-disk cache, with no network. Grammars outside that set
+/// resolve to an error, which the generic extractor degrades to an empty result.
+#[cfg(all(feature = "generic", not(feature = "grammars-download")))]
+pub(crate) fn get_ts_language(
+    name: &str,
+) -> std::result::Result<tree_sitter::Language, tree_sitter_language_pack::Error> {
+    TS_REGISTRY.get_language(name)
+}
+
 #[cfg(test)]
 mod tests;
 

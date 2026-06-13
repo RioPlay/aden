@@ -164,6 +164,7 @@ name = "aden-parse"
 version = "0.2.0"
 dependencies = [
  "aden-core",
+ "dirs",
  "serde_json",
  "tempfile",
  "tree-sitter",

@@ -47,7 +47,7 @@ impl LanguageExtractor for KotlinResolver {
     }
 
     fn extract_documents(&self, source: &str, path: &Path) -> Result<Vec<Document>> {
-        let language = tree_sitter_language_pack::get_language("kotlin")
+        let language = crate::get_ts_language("kotlin")
             .map_err(|e| aden_core::Error::Parse(format!("language-pack: {}", e)))?;
         let mut parser = tree_sitter::Parser::new();
         parser

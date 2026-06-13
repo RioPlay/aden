@@ -39,7 +39,7 @@ impl LanguageExtractor for RustExtractor {
 
 /// Extract Documents from a Rust source file using tree-sitter.
 pub fn extract_documents_inner(path: &Path, source: &str) -> Result<Vec<Document>> {
-    let language = tree_sitter_language_pack::get_language("rust")
+    let language = crate::get_ts_language("rust")
         .map_err(|e| aden_core::Error::Parse(format!("language-pack: {}", e)))?;
     let mut parser = tree_sitter::Parser::new();
     parser
