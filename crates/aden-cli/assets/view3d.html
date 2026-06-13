@@ -269,12 +269,18 @@ function hexA(hex, a) { const m = hex.replace('#',''); return `rgba(${parseInt(m
 // ── region hover card (3D) ────────────────────────────────────────────────────
 function regionOf3d(n) {
   if (n.group != null) return String(n.group);
+  // Synthesized aggregate nodes: id like "mod-aden-cli" → "aden-cli"
+  const id = String(n.id || '');
+  if (id.startsWith('mod-')) {
+    const suffix = id.slice(4);
+    return (suffix === 'project' || !suffix) ? 'project' : suffix;
+  }
   if (n.anchor) {
     const stripped = n.anchor.replace(/^aden:\/\//, '');
     const parts = stripped.split('/');
     if (parts.length >= 2 && parts[1] && parts[1] !== '?') return parts[1];
   }
-  return n.kind || '?';
+  return n.kind || 'other';
 }
 const hoverCardEl3d = document.getElementById('hover-card');
 // cardDismissed3d: session flag — × hides the card; `c` toggles it back.
@@ -306,7 +312,8 @@ function updateHoverCard3d(n) {
   document.getElementById('hc-name').style.color = col;
   const typeStr = [n.kind, n.loc ? n.loc + ' loc' : n.words ? n.words + ' words' : null].filter(Boolean).join(' · ');
   document.getElementById('hc-type').textContent = typeStr;
-  document.getElementById('hc-file').textContent = n.file ? n.file.split('/').slice(-2).join('/') : '';
+  const filePath3d = fileOf(n);
+  document.getElementById('hc-file').textContent = filePath3d ? filePath3d.split('/').slice(-2).join('/') : '';
   hoverCardEl3d.classList.remove('idle');
   hoverCardEl3d.classList.add('on');
 }
@@ -588,7 +595,26 @@ function toggleSpin() {
   if (controls.autoRotate) controls.autoRotateSpeed = focusNodeRef ? 0.8 : 0.45;
 }
 
-function editorUrl(n) { return (n && n.file) ? EDITOR.replace('{file}', n.file).replace('{line}', n.line || 1) : null; }
+// fileOf: returns n.file when set, or parses the file path from the anchor.
+// Anchor format: aden://module/{project}/{relpath}#{symbol}
+// Synthesized aggregate nodes (mod-*) with no resolvable file return null.
+function fileOf(n) {
+  if (n && n.file) return n.file;
+  if (n && n.anchor) {
+    const noScheme = n.anchor.replace(/^aden:\/\//, '');
+    const hashIdx = noScheme.indexOf('#');
+    const path = hashIdx >= 0 ? noScheme.slice(0, hashIdx) : noScheme;
+    const parts = path.split('/');
+    if (parts.length >= 3 && parts[2]) return parts.slice(2).join('/');
+  }
+  return null;
+}
+function editorUrl(n) {
+  const f = fileOf(n);
+  if (!f) return null;
+  if (!EDITOR || EDITOR.includes('/*EDITOR*/')) return null;
+  return EDITOR.replace('{file}', f).replace('{line}', n.line || 1);
+}
 
 // Focus: camera glides to a comfortable distance in front of the node,
 // neighbors light up, panel opens. The layout itself never moves.
@@ -869,13 +895,13 @@ function showPanel(n) {
   const ed = editorUrl(n);
   panelNbs = (n.neighbors || []).map(x => x.id); nbSel = -1;
   const rows = (n.neighbors || []).slice(0, 30).map((x, i) =>
-    `<div class="nb" id="nb-${i}" onclick="focusById('${esc(x.id)}')" onmouseenter="previewNb('${esc(x.id)}')">${esc(shortName(x))} <span class="k">${esc(x.group || '')}</span></div>`).join('');
+    `<div class="nb" id="nb-${i}" onclick="focusById('${esc(x.id)}')" onmouseenter="previewNb('${esc(x.id)}')">${esc(shortName(x))} <span class="k">${esc(regionOf3d(x))}</span></div>`).join('');
   document.getElementById('p-body').innerHTML =
     `<div class="row"><span class="k">kind:</span> ${esc(n.kind || '—')}</div>` +
     (n.loc ? `<div class="row"><span class="k">lines:</span> ${n.loc}</div>` : '') +
     (n.words ? `<div class="row"><span class="k">words:</span> ${n.words}</div>` : '') +
     `<div class="row"><span class="k">connections:</span> ${n.deg}</div>` +
-    (ed ? `<div class="row"><a href="${ed}">open in editor →</a></div>` : '') +
+    (ed ? `<div class="row"><a href="${ed}">open file →</a></div>` : '') +
     `<div class="sec">connected (${(n.neighbors || []).length})</div>` + rows;
   document.getElementById('panel').classList.add('open');
 }
@@ -890,13 +916,14 @@ function panelBack() { const prev = panelStack.pop(); if (prev != null && byId[p
 let cardNode = null;
 const snipEl = document.getElementById('snip');
 function showCard(n) {
-  if (!n || (!n.snippet && !n.file)) { hideCard(); return; }
+  const f3d = fileOf(n);
+  if (!n || (!n.snippet && !f3d)) { hideCard(); return; }
   cardNode = n;
   document.getElementById('sn-name').textContent = shortName(n);
   document.getElementById('sn-name').style.color = colorOf(n);
   const mass = n.loc ? `${n.loc} loc` : n.words ? `${n.words} words` : '';
   document.getElementById('sn-meta').textContent =
-    [n.group, mass, (n.file || '').split('/').pop()].filter(Boolean).join(' · ');
+    [n.group, mass, f3d ? f3d.split('/').pop() : null].filter(Boolean).join(' · ');
   document.getElementById('sn-code').textContent = n.snippet || '';
   snipEl.classList.add('on');
   snipEl.setAttribute('aria-hidden', 'false');

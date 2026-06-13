@@ -156,6 +156,7 @@
     font-size: 12px; color: #cdd6f4; box-shadow: 0 8px 24px rgba(0,0,0,.4); }
   #pivot-pill.on { display: flex; }
   #pivot-pill .pp-mode { color: #89b4fa; }
+  #pivot-pill .pp-hint { font-size: 11px; opacity: .75; }
   #pivot-pill .pp-x { cursor: pointer; color: #6c7086; border: 1px solid #313244;
     border-radius: 50%; width: 18px; height: 18px; display: flex; align-items: center;
     justify-content: center; font-size: 11px; }
@@ -561,8 +562,22 @@ function kindShape(k) {
   return 'circle';
 }
 
+// Pivot mode hues: blast = warm danger (red-orange), reach = cool (blue),
+// connectivity = calm green. Root node always gets the brightest, most saturated
+// version; other pivot nodes are faded by hop distance (hop 0 = root = full).
+const PIVOT_HUE = { blast: '#f38ba8', reach: '#89b4fa', connectivity: '#a6e3a1' };
 function colorOf(n) {
-  if (n.root) return '#f38ba8';
+  if (n.root && !pivotSet) return '#f38ba8';
+  if (pivotSet && pivotSet.has(n.id)) {
+    const base = PIVOT_HUE[pivotMode] || '#89b4fa';
+    const hop = n.hop != null ? n.hop : 0;
+    // Root (hop 0) = full color. Each hop dims by ~18% (alpha on a white blend
+    // would de-saturate; we keep hue by scaling alpha against the canvas black).
+    // Fade floor at 0.35 so deep nodes are still visible.
+    if (hop === 0) return base;
+    const alpha = Math.max(0.35, 1 - hop * 0.18);
+    return hexA(base, alpha);
+  }
   if (n.group != null && n.group in groupIdx) return palette[groupIdx[n.group] % palette.length];
   if (n.community != null) return palette[n.community % palette.length];
   return '#89b4fa';
@@ -665,6 +680,15 @@ const Graph = ForceGraph()(el)
       ctx.beginPath(); ctx.arc(n.x, n.y, base * 1.7, 0, 2 * Math.PI);
       ctx.fillStyle = 'rgba(137,180,250,.22)'; ctx.fill();
     }
+    // Pivot root ring: a bright outer ring marks the focal node so it stands
+    // out against the hop-faded neighbors. Drawn regardless of highlight state.
+    if (pivotSet && n.id === pivotRoot) {
+      const ringCol = PIVOT_HUE[pivotMode] || '#89b4fa';
+      ctx.beginPath(); ctx.arc(n.x, n.y, base * 2.6, 0, 2 * Math.PI);
+      ctx.strokeStyle = hexA(ringCol, 0.85); ctx.lineWidth = 1.5 / scale; ctx.stroke();
+      ctx.beginPath(); ctx.arc(n.x, n.y, base * 3.4, 0, 2 * Math.PI);
+      ctx.strokeStyle = hexA(ringCol, 0.35); ctx.lineWidth = 1 / scale; ctx.stroke();
+    }
     // Labels follow attention: with a focus active, label ONLY the focused
     // neighborhood (everything else is dimmed anyway); with no focus, label
     // spheres + hubs at readable zoom. Keeps the idle map quiet.
@@ -687,6 +711,21 @@ const Graph = ForceGraph()(el)
   .linkCurvature(0.18)
   .linkColor(l => {
     if (isMeta(l)) return highlightLinks.has(l) ? 'rgba(180,190,220,.4)' : 'rgba(120,130,170,.12)';
+    // Pivot mode: color pivot-internal links in the mode hue, fade proportional
+    // to the deeper hop of the two endpoints so the propagation gradient extends
+    // to the edges, not just the nodes.
+    if (pivotSet) {
+      const src = idOf(l.source), dst = idOf(l.target);
+      if (pivotSet.has(src) && pivotSet.has(dst)) {
+        const base = PIVOT_HUE[pivotMode] || '#89b4fa';
+        const hopA = byId[src] && byId[src].hop != null ? byId[src].hop : 0;
+        const hopB = byId[dst] && byId[dst].hop != null ? byId[dst].hop : 0;
+        const maxH = Math.max(hopA, hopB);
+        const alpha = Math.max(0.25, 0.75 - maxH * 0.12);
+        return hexA(base, alpha);
+      }
+      return 'rgba(120,130,170,.06)';
+    }
     if (highlightLinks.has(l)) return hexA(typeColor[l.type] || '#8088aa', .9);
     const c = linkBlend(l);
     const t = trail.get(l) || 0;
@@ -699,10 +738,31 @@ const Graph = ForceGraph()(el)
   // thing reveals ALL of its connections, even types switched off globally.
   .linkVisibility(l => (highlightLinks.has(l) || isMeta(l) || activeTypes.has(l.type)) &&
     (!growMode || (revealed.has(idOf(l.source)) && revealed.has(idOf(l.target)))))
-  // Direction arrows only where you are looking (hover/focus) — hundreds of
-  // always-on arrowheads read as texture noise, not information.
-  .linkDirectionalArrowLength(l => highlightLinks.has(l) ? 4 : 0)
-  .linkDirectionalArrowRelPos(1)
+  // In pivot mode: show directional arrows on all pivot-internal links to make
+  // flow direction readable (blast = converging toward root; reach = fanning out;
+  // connectivity = undirected, no arrows). Outside pivot: arrows on hover only.
+  .linkDirectionalArrowLength(l => {
+    if (pivotSet) {
+      if (pivotMode === 'connectivity') return 0;
+      const src = idOf(l.source), dst = idOf(l.target);
+      if (pivotSet.has(src) && pivotSet.has(dst)) return 3;
+    }
+    return highlightLinks.has(l) ? 4 : 0;
+  })
+  // Arrow position: reach/default = rel=1 (arrow at target, points outward from root).
+  // blast = arrows should converge on the root, so point toward the lower-hop node.
+  // When both endpoints have hop info, place the arrow at the lower-hop end (1 = target
+  // when target hop < source hop; 0 = source end otherwise). Falls back to 1.
+  .linkDirectionalArrowRelPos(l => {
+    if (pivotSet && pivotMode === 'blast') {
+      const src = byId[idOf(l.source)], dst = byId[idOf(l.target)];
+      const hs = src && src.hop != null ? src.hop : Infinity;
+      const hd = dst && dst.hop != null ? dst.hop : Infinity;
+      // Arrow pointing toward the lower-hop (root-side) endpoint
+      return hs < hd ? 0 : 1;
+    }
+    return 1;
+  })
   .linkLabel(l => l.type)
   .onNodeHover(n => {
     if (overUI) { el.style.cursor = 'default'; return; }
@@ -893,15 +953,52 @@ function massOf(n) {
 }
 function nodeSize(n) { return Math.min(1 + Math.sqrt(massOf(n)) * 0.55, 14); }
 function hexA(hex, a) { const m = hex.replace('#',''); return `rgba(${parseInt(m.slice(0,2),16)},${parseInt(m.slice(2,4),16)},${parseInt(m.slice(4,6),16)},${a})`; }
-function editorUrl(n) { return (n && n.file) ? EDITOR.replace('{file}', n.file).replace('{line}', n.line || 1) : null; }
+// ── file / editor helpers ─────────────────────────────────────────────────────
+// fileOf: returns n.file when present, otherwise tries to parse the file path
+// from the anchor. Anchor format: aden://module/{project}/{relpath}#{symbol}
+// where {relpath} may contain '/' (e.g. src/commands/view.rs).
+// Synthesized aggregate nodes (mod-*) with no resolvable file return null.
+function fileOf(n) {
+  if (n && n.file) return n.file;
+  if (n && n.anchor) {
+    // Strip scheme, split off the fragment (#symbol), then peel {type}/{project}
+    const noScheme = n.anchor.replace(/^aden:\/\//, '');
+    const hashIdx = noScheme.indexOf('#');
+    const path = hashIdx >= 0 ? noScheme.slice(0, hashIdx) : noScheme;
+    const parts = path.split('/');
+    // parts[0] = type (module/doc/…), parts[1] = project, parts[2..] = relpath
+    if (parts.length >= 3 && parts[2]) {
+      return parts.slice(2).join('/');
+    }
+  }
+  return null;
+}
+// editorUrl: uses fileOf so the link is derivable even when n.file is absent.
+// Guards against a literal un-substituted /*EDITOR*/ placeholder (happens when
+// the user did not configure --editor and auto-detect found nothing). In that
+// case return null so the panel hides the link instead of emitting a broken href.
+function editorUrl(n) {
+  const f = fileOf(n);
+  if (!f) return null;
+  if (!EDITOR || EDITOR.includes('/*EDITOR*/')) return null;
+  return EDITOR.replace('{file}', f).replace('{line}', n.line || 1);
+}
 function openEditor(n) { const u = editorUrl(n); if (u) window.location.href = u; }
 
 // ── region hover card ─────────────────────────────────────────────────────────
 // Extracts the codebase region from a node: uses the node's `group` field
 // (already the project/crate component of the anchor, e.g. "aden-core"), with
-// fallbacks for prose/doc nodes and ungrouped nodes.
+// fallbacks for synthesized aggregate nodes (mod-{X}) and anchor-parseable nodes.
+// No node should fall to "?" when its project is derivable.
 function regionOf(n) {
   if (n.group != null) return String(n.group);
+  // Synthesized aggregate nodes: id like "mod-aden-cli" → "aden-cli"
+  const id = String(n.id || '');
+  if (id.startsWith('mod-')) {
+    const suffix = id.slice(4);
+    if (suffix === 'project' || !suffix) return 'project';
+    return suffix;
+  }
   // Fallback: parse from anchor: aden://module/{project}/... → {project}
   if (n.anchor) {
     const stripped = n.anchor.replace(/^aden:\/\//, '');
@@ -909,7 +1006,7 @@ function regionOf(n) {
     if (parts.length >= 2 && parts[1] && parts[1] !== '?') return parts[1];
     if (parts.length >= 1 && parts[0] && parts[0] !== 'module' && parts[0] !== 'doc') return parts[0];
   }
-  return n.kind || '?';
+  return n.kind || 'other';
 }
 
 const hoverCardEl = document.getElementById('hover-card');
@@ -952,8 +1049,8 @@ function updateHoverCard(n) {
   document.getElementById('hc-name').style.color = col;
   const typeStr = [n.kind, n.size != null ? n.size + ' symbols' : null, n.loc ? n.loc + ' loc' : n.words ? n.words + ' words' : null].filter(Boolean).join(' · ');
   document.getElementById('hc-type').textContent = typeStr;
-  const fileStr = n.file ? n.file.split('/').slice(-2).join('/') : '';
-  document.getElementById('hc-file').textContent = fileStr;
+  const filePath = fileOf(n);
+  document.getElementById('hc-file').textContent = filePath ? filePath.split('/').slice(-2).join('/') : '';
   hoverCardEl.classList.remove('idle');
   hoverCardEl.classList.add('on');
 }
@@ -1094,8 +1191,14 @@ function clientPivot(nodeId, mode) {
     dw.style.display = maxHop > 1 ? 'inline-flex' : 'none';
     const sl = document.getElementById('depth'); if (sl) { sl.max = maxHop; sl.value = maxHop; }
   }
+  const PIVOT_HINT = {
+    blast: `<span class="pp-hint" style="color:#f38ba8">● warm = what breaks</span>`,
+    reach: `<span class="pp-hint" style="color:#89b4fa">● cool = dependencies</span>`,
+    connectivity: `<span class="pp-hint" style="color:#a6e3a1">● green = neighbors</span>`,
+  };
   document.getElementById('pp-label').innerHTML =
-    `<span class="pp-mode">${PIVOT_LABEL[mode] || mode}</span>&nbsp;· ${esc(shortName(root))} · ${pivotSet.size} nodes`;
+    `<span class="pp-mode">${PIVOT_LABEL[mode] || mode}</span>&nbsp;· ${esc(shortName(root))} · ${pivotSet.size} nodes&nbsp;` +
+    (PIVOT_HINT[mode] || '');
   document.getElementById('pivot-pill').classList.add('on');
   updateHash('pivot=' + encodeURIComponent(root.anchor || nodeId) + '&mode=' + mode);
   refreshViz();
@@ -1294,7 +1397,7 @@ function showPanel(n) {
       const i = flatIdx++;
       nbHtml += `<div class="nb" id="nb-${i}" onclick="focusNode('${esc(id)}')" onmouseenter="previewNode('${esc(id)}', false)">
         <span class="nb-name">${esc(shortName(nb))}</span>
-        <span class="nb-type">${esc(nb.group || '')}</span>
+        <span class="nb-type">${esc(regionOf(nb))}</span>
       </div>`;
     });
     if (g.items.length > INLINE_PER_GROUP) {
@@ -1309,7 +1412,7 @@ function showPanel(n) {
     (bc ? `<div class="breadcrumb">${bc}</div>` : '') +
     (anchor ? `<div class="anchor-row"><span class="anchor-txt" title="${esc(anchor)}">${esc(anchor)}</span><span class="copy-btn" onclick="copyAnchor('${esc(anchor)}', this)">copy</span></div>` : '') +
     rows.join('') +
-    (ed ? `<div class="row"><a href="${ed}">open in editor →</a></div>` : '') +
+    (ed ? `<div class="row"><a href="${ed}">open file →</a></div>` : '') +
     pivotHtml +
     `<div class="sec"><span>neighbours</span><span class="sec-count">${totalNbs}</span></div>` +
     `<div class="dir-group">${nbHtml}</div>`;
@@ -1329,7 +1432,7 @@ function showMoreGroup(groupId, btn) {
     const fi = start + i;
     innerHtml += `<div class="nb" id="nb-${fi}" onclick="focusNode('${esc(id)}')" onmouseenter="previewNode('${esc(id)}', false)">
       <span class="nb-name">${esc(shortName(nb))}</span>
-      <span class="nb-type">${esc(nb.group || '')}</span>
+      <span class="nb-type">${esc(regionOf(nb))}</span>
     </div>`;
   });
   // Wrap in scrollable container so long lists don't expand the panel unbounded
