@@ -140,6 +140,17 @@ indexes Markdown/AsciiDoc documentation alongside code.
 Grammars are compiled into the binary at build time (see `.cargo/config.toml` /
 `TSLP_LANGUAGES`), so parsing works fully offline — no runtime downloads.
 
+## Performance
+
+Early self-run measurements on Aden's own repository (244 files) and external corpora:
+
+- **Edge-extraction F1: 0.915** [measured] — micro-precision 0.946, micro-recall 0.886 on a 79-edge polyglot ground-truth fixture.
+- **~10× token savings overall** vs a grep-and-read agent [measured, chars/4 proxy]; up to >100× for symbol and structure lookups; ~4–5× for open-ended conceptual questions.
+- **Hybrid retrieval beats BM25 on every corpus tested** — R@1 gains of 0.06–0.14 across Go, Rust, C#, Python, TypeScript, and two larger corpora (Linux kernel subset, create-t3-app).
+- Energy savings vs LLM inference are estimated (not instrumented): see full methodology and caveats in [docs/benchmarks.adoc](docs/benchmarks.adoc).
+
+See [docs/benchmarks.adoc](docs/benchmarks.adoc) for full numbers, methodology, and all caveats.
+
 ## Documentation
 
 - [Getting Started](docs/getting-started.adoc) — 10-minute intro

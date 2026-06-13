@@ -44,6 +44,7 @@ This is the canonical entry point for all Aden documentation. Read the document 
 |<<commands>> |Complete CLI reference with every flag and option
 |<<user-guide>> |Daily workflows, plus <<troubleshooting>> and <<use-cases>>
 |<<security-model>> |Threat model and security boundaries
+|<<benchmarks>> |Measured performance: token efficiency, edge F1, retrieval quality, latency, and energy estimate
 |===
 
 == Architecture Decisions
@@ -112,3 +113,4 @@ aden ci-check .
 . <<ai-integration>>
 . <<architecture>>
 . <<security-model>>
+. <<benchmarks>>
