@@ -111,7 +111,7 @@ fn block_attributes_round_trip() {
             region: ContractRegion::Proposed,
             tag: Some("foo".to_string()),
             attributes: attrs,
-            content: "// CONFLICT: resolve manually".to_string(),
+            content: "CONFLICT: resolve manually".to_string(),
             start_line: 0,
             end_line: 0,
         }],

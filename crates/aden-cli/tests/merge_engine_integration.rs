@@ -295,6 +295,28 @@ fn conflict_generates_proposed_marker() {
         p.patch_asciidoc
     );
 
+    // Conflict text must NOT use AsciiDoc comment syntax (lines starting with
+    // `//`).  In AsciiDoc, `//` opens a comment and is invisible in rendered
+    // output, so a conflict marker beginning with `//` silently vanishes for
+    // anyone viewing the rendered proposal.
+    let asciidoc_comment_line = p
+        .patch_asciidoc
+        .lines()
+        .any(|l| l.trim_start().starts_with("//"));
+    assert!(
+        !asciidoc_comment_line,
+        "conflict marker must not use `//` comment syntax (invisible in AsciiDoc):\n{}",
+        p.patch_asciidoc
+    );
+
+    // The conflict text must contain a visible `CONFLICT:` label so that
+    // anyone reading the rendered proposal can see what happened.
+    assert!(
+        p.patch_asciidoc.contains("CONFLICT:"),
+        "conflict marker must contain visible 'CONFLICT:' text:\n{}",
+        p.patch_asciidoc
+    );
+
     // The stored document must NOT have been mutated (conflict → store untouched).
     let doc_after = open_store(&data)
         .get_document(BETA_ANCHOR)

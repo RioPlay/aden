@@ -375,7 +375,7 @@ impl ContractState {
                             m
                         },
                         content: format!(
-                            "// CONFLICT: {}\n// Resolve manually or run `aden gen --propose` to review.",
+                            "CONFLICT: {}\nResolve manually or run `aden gen --propose` to review.",
                             reason
                         ),
                         start_line: 0,
