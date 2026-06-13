@@ -70,8 +70,8 @@ jobs:
       - name: Install cargo-deny
         run: cargo install cargo-deny --locked
 
-      - name: Check dependency licenses
-        run: cargo deny check licenses sources
+      - name: Check dependencies (licenses, sources, advisories, bans)
+        run: cargo deny check
 
       - name: Verify vendored asset checksums
         # CHECKSUMS lists bare filenames, so sha256sum -c must run from the

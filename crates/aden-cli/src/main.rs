@@ -17,6 +17,17 @@ use std::path::PathBuf;
 #[command(
     name = "aden",
     version = env!("CARGO_PKG_VERSION"),
+    // `--version` prints the source offer required by AGPL-3.0 §13: any
+    // network-accessible instance (e.g. `aden mcp`) must offer its Corresponding
+    // Source. `-V` still prints the bare version.
+    long_version = concat!(
+        env!("CARGO_PKG_VERSION"),
+        "\nLicense: AGPL-3.0-or-later",
+        "\nSource:  https://github.com/RioPlay/aden",
+        "\nThis is free software with ABSOLUTELY NO WARRANTY. The Corresponding",
+        "\nSource for any network-accessible instance is the repository above,",
+        "\nas required by AGPL-3.0 section 13."
+    ),
     about = "Aden — A Dense Referential Context Compiler"
 )]
 struct Cli {
