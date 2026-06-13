@@ -29,7 +29,7 @@ regex = "1.11"
 dirs = "6"
 toml_edit = "0.22"
 walkdir = "2"
-serde_yaml = "0.9"
+toml = "0.8"
 ureq = "3"
 aden-diagnose = { path = "../aden-diagnose" }
 aden-store = { path = "../aden-store" }
