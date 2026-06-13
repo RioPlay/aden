@@ -15,6 +15,7 @@ pub mod lint;
 pub mod misc;
 pub mod overlay;
 pub mod query;
+pub mod savings_store;
 pub mod session;
 pub mod store;
 pub mod test_cmd;

@@ -1487,7 +1487,8 @@ pub fn cmd_ask(
     strict: bool,
     explain: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use aden_asm::traverse::{AssemblyOptions, assemble};
+    use aden_asm::traverse::{AssemblyOptions, assemble_with_anchors};
+    use aden_core::savings::{BASELINE_MAX_FILES, PriceTier, SavingsEstimate};
 
     if !path.is_dir() {
         return Err("ask requires a directory path".into());
@@ -1696,12 +1697,14 @@ pub fn cmd_ask(
     // Calls/Uses) — the escalation ladder's rendering and topology knobs.
     // Hydration is always on: `ask` answers from real source bodies, not just
     // stored summaries (the store never holds function bodies).
+    // Core assembly helper — returns (text, included_anchors) so callers can
+    // resolve source files for baseline estimation without a second traversal.
     let assemble_seed_with = |seed: &str,
                               seed_depth: usize,
                               seed_budget: usize,
                               filter: &[aden_asm::traverse::BlockKind],
                               with_callers: bool|
-     -> Result<String, Box<dyn std::error::Error>> {
+     -> Result<(String, Vec<String>), Box<dyn std::error::Error>> {
         let graph = if with_callers {
             aden_graph::cache::build_neighborhood_with_callers(
                 path,
@@ -1739,10 +1742,20 @@ pub fn cmd_ask(
             llm_mode: true, // aden ask always targets an LLM — emit clean prose
             hydrate_root: Some(hydrate_root.clone()),
         };
-        Ok(assemble(&graph, &opts)?)
+        Ok(assemble_with_anchors(&graph, &opts)?)
+    };
+    // Convenience wrapper for callers that only need the assembled text.
+    let assemble_seed_str = |seed: &str,
+                             seed_depth: usize,
+                             seed_budget: usize,
+                             filter: &[aden_asm::traverse::BlockKind],
+                             with_callers: bool|
+     -> Result<String, Box<dyn std::error::Error>> {
+        assemble_seed_with(seed, seed_depth, seed_budget, filter, with_callers)
+            .map(|(text, _)| text)
     };
     let assemble_seed = |seed: &str, seed_depth: usize, seed_budget: usize| {
-        assemble_seed_with(seed, seed_depth, seed_budget, &block_filter, false)
+        assemble_seed_str(seed, seed_depth, seed_budget, &block_filter, false)
     };
 
     // Clear winner ⇒ today's behavior exactly: one seed, full budget. Ambiguous ⇒
@@ -1752,15 +1765,25 @@ pub fn cmd_ask(
     // `primary_text` tracks the body contributed by the PRIMARY anchor alone,
     // so the thin-stub check below can't be fooled by a fat alternate padding
     // the combined output past the threshold.
+    // Anchors included in the primary seed's assembly — used for baseline-file
+    // resolution in the savings estimate. Captured from the primary call only;
+    // alternates and thin-stub fallbacks contribute bytes but not more files to
+    // the baseline (the primary is what drove routing).
+    let primary_anchors: Vec<String>;
     let primary_text;
     let assembled = if resolved_alts.is_empty() {
-        let seed = assemble_seed(&start_anchor, depth, effective_budget)?;
-        primary_text = seed.clone();
-        seed
+        let (seed_text, seed_anchors) =
+            assemble_seed_with(&start_anchor, depth, effective_budget, &block_filter, false)?;
+        primary_anchors = seed_anchors;
+        primary_text = seed_text.clone();
+        seed_text
     } else {
         let primary_budget = effective_budget * 60 / 100;
         let shallow_depth = depth.min(1);
-        let mut combined = assemble_seed(&start_anchor, depth, primary_budget)?;
+        let (primary_seed_text, seed_anchors) =
+            assemble_seed_with(&start_anchor, depth, primary_budget, &block_filter, false)?;
+        primary_anchors = seed_anchors;
+        let mut combined = primary_seed_text;
         primary_text = combined.clone();
         let mut used = combined.len().div_ceil(4);
         for alt in &resolved_alts {
@@ -1865,7 +1888,7 @@ pub fn cmd_ask(
             let mut best_subst = subst;
             let mut best_rung: Option<&str> = None;
             for (label, d, with_callers) in rungs {
-                if let Ok(body) = assemble_seed_with(
+                if let Ok(body) = assemble_seed_str(
                     &start_anchor,
                     d,
                     effective_budget,
@@ -1927,7 +1950,7 @@ pub fn cmd_ask(
                                 if remaining < 64 {
                                     break;
                                 }
-                                let Ok(body) = assemble_seed_with(
+                                let Ok(body) = assemble_seed_str(
                                     &seed,
                                     depth.min(2),
                                     remaining,
@@ -2034,6 +2057,41 @@ pub fn cmd_ask(
         }
     };
 
+    // Savings estimate: compare tokens Aden returned against a grep-read
+    // baseline of the distinct source files the primary assembly touched.
+    // Baseline = sum of on-disk bytes for up to BASELINE_MAX_FILES distinct
+    // source files, capped and priced at the default tier (Opus 4.8).
+    let savings_est = {
+        let mut seen_files: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut baseline_bytes: usize = 0;
+        for anchor in &primary_anchors {
+            if seen_files.len() >= BASELINE_MAX_FILES {
+                break;
+            }
+            if let Some(src) = anchor_source_file(path, anchor) {
+                if src.is_empty() || seen_files.contains(&src) {
+                    continue;
+                }
+                // source_file attribute is repo-root-relative; resolve against
+                // the same hydration root that the assembler uses.
+                let abs = hydrate_root.join(&src);
+                if let Ok(meta) = std::fs::metadata(&abs) {
+                    seen_files.insert(src);
+                    baseline_bytes += meta.len() as usize;
+                }
+            }
+        }
+        let baseline_files = seen_files.len();
+        SavingsEstimate::from_bytes(
+            assembled.len(),
+            baseline_bytes,
+            baseline_files,
+            PriceTier::default(),
+        )
+    };
+    // Persist the estimate to the ledger (best-effort; never errors the command).
+    super::savings_store::record(&hydrate_root, &savings_est);
+
     // Step 4: Send to LLM or print raw context
     if let Some(model_spec) = model {
         if explain {
@@ -2106,6 +2164,7 @@ pub fn cmd_ask(
             "//   Nodes   : {} | ~{} tokens ({} bytes) / {} budget ({})",
             node_count, est_tokens, bytes, budget_note, budget_label
         );
+        println!("{}", savings_est.footer_line());
         println!("// ────────────────────────────────────────────────");
     }
 

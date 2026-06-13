@@ -1395,6 +1395,30 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
 
+            // Savings summary from the persistent ledger: this session + all-time.
+            let repo_root = find_project_root(&path);
+            let summary = crate::commands::savings_store::load_summary(&repo_root);
+            let tier = aden_core::savings::PriceTier::default();
+            if summary.all_time.queries == 0 {
+                println!("Savings (est., {}): no queries recorded yet", tier.id());
+            } else {
+                use aden_core::savings::humanize_count;
+                let line = |label: &str, l: &crate::commands::savings_store::SavingsLedger| {
+                    let usd = (l.saved_tokens as f64 / 1_000_000.0) * tier.input_usd_per_mtok();
+                    println!(
+                        "{label}: {} aden call{} → est. ~{} tool calls + ~{} tokens (~${:.2}) saved vs grep-and-read",
+                        l.queries,
+                        if l.queries == 1 { "" } else { "s" },
+                        l.tool_calls_saved,
+                        humanize_count(l.saved_tokens),
+                        usd,
+                    );
+                };
+                println!("Savings estimate (vs grep-and-read, {}) [est.]:", tier.id());
+                line("  This session", &summary.session);
+                line("  All-time    ", &summary.all_time);
+            }
+
             Ok(())
         }
         Commands::Sync { path, no_gc } => {
