@@ -31,7 +31,7 @@ toml_edit = "0.22"
 walkdir = "2"
 chrono = "0.4"
 serde_yaml = "0.9"
-ureq = "2"
+ureq = "3"
 aden-diagnose = { path = "../aden-diagnose" }
 aden-store = { path = "../aden-store" }
 rayon.workspace = true

@@ -412,14 +412,17 @@ fn local_license(repo: &Path, pkg: &Package) -> Option<LicenseInfo> {
 
 fn http_json(url: &str) -> Option<serde_json::Value> {
     let resp = ureq::get(url)
-        .set("User-Agent", "aden-licenses")
+        .header("User-Agent", "aden-licenses")
         .call()
         .ok()?;
     if resp.status() != 200 {
         return None;
     }
     let mut body = String::new();
-    resp.into_reader().read_to_string(&mut body).ok()?;
+    resp.into_body()
+        .into_reader()
+        .read_to_string(&mut body)
+        .ok()?;
     serde_json::from_str(&body).ok()
 }
 
