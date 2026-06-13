@@ -26,7 +26,10 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Build workspace
-        run: cargo build --workspace
+        # aden-lsp is a standalone, unshipped binary (install.sh never builds it);
+        # excluded here to skip the heavy tower-lsp stack. Validated separately in
+        # the `lsp-build` job below.
+        run: cargo build --workspace --exclude aden-lsp
 
       - name: Install aden binary
         run: cargo install --path crates/aden-cli --locked
@@ -35,7 +38,7 @@ jobs:
         run: echo "$HOME/.cargo/bin" >> $GITHUB_PATH
 
       - name: Test workspace
-        run: cargo test --workspace --no-fail-fast
+        run: cargo test --workspace --exclude aden-lsp --no-fail-fast
 
       - name: Regenerate contracts
         run: cargo run -p aden-cli -- gen .
@@ -54,6 +57,24 @@ jobs:
         run: |
           Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process -Force
           .\install.ps1 -InstallDir "$env:TEMP\aden-test"
+
+  # aden-lsp is excluded from the main workspace build (standalone, unshipped).
+  # This job still compiles it on every PR so it can't bit-rot against
+  # aden-core/aden-graph API changes.
+  lsp-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build aden-lsp (standalone LSP server)
+        run: cargo build -p aden-lsp
 
   license-check:
     runs-on: ubuntu-latest

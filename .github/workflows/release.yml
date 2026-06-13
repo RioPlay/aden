@@ -53,7 +53,9 @@ jobs:
           key: ${{ matrix.target }}
 
       - name: Build binary
-        run: cargo build --workspace --release --target ${{ matrix.target }}
+        # aden-lsp is standalone and not part of the release artifacts; exclude it
+        # to skip the tower-lsp stack on every cross-compile target.
+        run: cargo build --workspace --exclude aden-lsp --release --target ${{ matrix.target }}
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
 

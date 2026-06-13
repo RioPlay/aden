@@ -16,11 +16,13 @@ ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
 echo "[pre-push] running CI gate (build → test → aden ci-check)…"
 
-echo "[pre-push] cargo build --workspace"
-cargo build --workspace
+# aden-lsp is standalone/unshipped; exclude it from the default gate (CI's
+# `lsp-build` job still compiles it). Build it on demand with `make lsp`.
+echo "[pre-push] cargo build --workspace --exclude aden-lsp"
+cargo build --workspace --exclude aden-lsp
 
-echo "[pre-push] cargo test --workspace --no-fail-fast"
-cargo test --workspace --no-fail-fast
+echo "[pre-push] cargo test --workspace --exclude aden-lsp --no-fail-fast"
+cargo test --workspace --exclude aden-lsp --no-fail-fast
 
 # aden's gate also runs the tests, lint, doc check, secret scan, OWASP + cargo
 # audit, and contract freshness. Run via cargo so it uses the current build.

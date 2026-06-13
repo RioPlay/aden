@@ -1,11 +1,13 @@
 INSTALL_SCRIPT := ./install.sh
 
-.PHONY: build test install dev release ci
+.PHONY: build test install dev release ci lsp
 
-# Fast dev build + install. Use this during active development.
+# aden-lsp is a standalone, unshipped binary (install.sh never builds it). The
+# default targets exclude it to skip the heavy tower-lsp stack; `make lsp` builds
+# it on demand.
 dev:
 	cargo build -p aden-cli
-	@cargo test --workspace --quiet 2>&1 | tail -5
+	@cargo test --workspace --exclude aden-lsp --quiet 2>&1 | tail -5
 	$(INSTALL_SCRIPT)
 	@echo "Installed (debug)"
 
@@ -16,14 +18,18 @@ release:
 
 # Run tests only (no install).
 test:
-	cargo test --workspace
+	cargo test --workspace --exclude aden-lsp
 
 # Build only (no install, no test).
 build:
-	cargo build --workspace
+	cargo build --workspace --exclude aden-lsp
 
 # Full CI gates (check + heal + test).
 ci:
-	cargo build --workspace
-	cargo test --workspace
+	cargo build --workspace --exclude aden-lsp
+	cargo test --workspace --exclude aden-lsp
 	aden check .
+
+# Build the standalone LSP server (excluded from the default workspace build).
+lsp:
+	cargo build -p aden-lsp
