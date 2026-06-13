@@ -1488,7 +1488,7 @@ pub fn cmd_ask(
     explain: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use aden_asm::traverse::{AssemblyOptions, assemble_with_anchors};
-    use aden_core::savings::{BASELINE_MAX_FILES, PriceTier, SavingsEstimate};
+    use aden_core::savings::{BASELINE_MAX_FILES, SavingsEstimate};
 
     if !path.is_dir() {
         return Err("ask requires a directory path".into());
@@ -2082,12 +2082,7 @@ pub fn cmd_ask(
             }
         }
         let baseline_files = seen_files.len();
-        SavingsEstimate::from_bytes(
-            assembled.len(),
-            baseline_bytes,
-            baseline_files,
-            PriceTier::default(),
-        )
+        SavingsEstimate::from_bytes(assembled.len(), baseline_bytes, baseline_files)
     };
     // Persist the estimate to the ledger (best-effort; never errors the command).
     super::savings_store::record(&hydrate_root, &savings_est);

@@ -211,36 +211,27 @@ This is cited as external corroboration that graph-based context compression is
 a real phenomenon — it is *not* an Aden measurement, and the paper's methodology
 and corpus differ from those described above.
 
-== Cost Savings [estimated — derived from measured tokens]
+== Savings Summary [estimated — derived from measured tokens]
 
-Direct dollar conversion of the measured Token Efficiency run above
-(34,739 vs 374,028 tokens over 8 questions → *339,289 tokens saved*, ~42,400 per
-question). Prices are Anthropic's published per-token rates; the token base is the
-`chars/4` proxy, so this inherits that proxy's bias.
+The Token Efficiency run above (34,739 vs 374,028 tokens over 8 questions) nets
+*339,289 tokens saved* — ~42,400 per question. At a sustained 1,000 questions/day
+that is ~15.5 *billion* tokens/year an agent never has to load: the input context
+a grep-and-read agent would pull in that aden's subgraph omits.
 
-The saved tokens are almost entirely *input* context — files a grep-and-read agent
-loads that aden's subgraph omits — so they are priced at the *input* rate (the
-conservative choice; displaced *output*/reasoning tokens cost 5× more and are not
-yet captured here — that is the displacement bench, see <<planned-benchmarks>>).
-
-|===
-|Model (tier routed to) |Input $/1M |Saved $/question |Saved $/yr @ 1,000 q/day
-
-|Claude Haiku 4.5 |1.00 |$0.042 |~$15,500
-|Claude Sonnet 4.6 |3.00 |$0.127 |~$46,400
-|Claude Opus 4.8 |5.00 |$0.212 |~$77,400
-|Claude Fable 5 |10.00 |$0.424 |~$155,000
-|===
+Aden reports savings in *tokens only*, on purpose. Tokens are the
+model-independent quantity it actually displaces; a dollar conversion would have
+to assume one model's price — and published prices drift — which makes it
+dishonest the moment a different model, or a new price, is in play. Anyone who
+needs a dollar figure can multiply the token count by their own current rate.
 
 *Caveats:*
 
-* *Input-rate only.* Output tokens bill at 5× input; any displaced *reasoning* on
-  the LLM side is undervalued here. The displacement bench will price both sides.
-* *Prompt caching is the main downward force.* Repeated context bills at ~0.1× when
-  cached, so a caching agent realizes less than the full-rate figure above; an
-  uncached or cold-start agent realizes close to it.
 * Inherits the `chars/4` proxy bias (~10–30% undercount) from the source run;
   the real-tokenizer correction (<<planned-benchmarks>>) retires it.
+* *Compression only.* This measures "less to read", not the larger *displacement*
+  effect — work the LLM never does at all (see <<planned-benchmarks>>).
+* *Prompt caching varies realized savings.* A caching agent re-loads less context,
+  so what it actually saves depends on cache state.
 * Single mid-size repo, 8 questions — same scope caveat as the source run.
 
 [[planned-benchmarks]]
@@ -269,18 +260,17 @@ tokens and GPU-joules that are never spent, not merely reduced.
 * *Multi-turn trajectory* — end-to-end agent token spend with vs without aden in
   the loop, capturing the compounding fewer-tool-calls effect.
 
-=== Power & cost savings
+=== Power savings
 
 * *Measured aden energy (RAPL)* — `scripts/energy.py` reads CPU package + DRAM
   counters around each command (idle-subtracted, N≥20, medians), reported *with and
   without* the known fjall 250 ms floor. Moves aden's side of the energy story from
   `[estimated]` to `[measured]`.
 * *Frontier-LLM comparison* — hosted inference can't be instrumented, so the LLM
-  side stays modeled, but calibrated to the tier actually used and paired with a
-  fully-grounded *cost* axis: dollars saved = displaced tokens × published
-  per-token price (Opus 4.8 default, Fable 5 / Sonnet 4.6 / Haiku 4.5 as a
-  sensitivity band). The joule axis stays `[estimated]` with an explicit
-  prefill/decode split to narrow the current 40× span.
+  side stays modeled, calibrated to the tier actually used. The joule axis stays
+  `[estimated]` with an explicit prefill/decode split to narrow the current 40×
+  span. (No dollar axis: savings are reported in tokens — the model-independent
+  unit — not a price that drifts.)
 
 == Reproducing These Numbers
 
