@@ -328,7 +328,7 @@ static TOOLS: &[ToolSpec] = &[
     //    for each (read/comprehend first, then validate, then mutate). ──
     ToolSpec {
         name: "grep",
-        description: "Structure-aware content search: find a pattern, each hit tagged with its enclosing symbol. Prefer over plain grep.",
+        description: "Search code by content — use this INSTEAD OF running grep/ripgrep through Bash: every hit is tagged with the name of the symbol that encloses it, so you skip the follow-up 'which function is this in?' step. Pass that symbol name to `locate` for its anchor, then feed the anchor to `asm`/`query`. Auto-reindexes changed files first; no setup or `gen` call needed.",
         args: &[
             ("pattern", "string"),
             ("path", "string"),
@@ -352,7 +352,7 @@ static TOOLS: &[ToolSpec] = &[
     },
     ToolSpec {
         name: "ask",
-        description: "Ask a natural-language question. Routes to the best matching anchor.",
+        description: "Ask a natural-language question about the codebase; routes to the best-matching anchor and assembles its context for you — a one-shot alternative to grepping and reading files yourself. Auto-reindexes changed files first; no setup needed.",
         // `path` is a CLI positional ([DIR], second after QUESTION) — it was
         // missing here historically, not unsupported. Declaration order matters:
         // positionals are emitted in spec order, so question must precede path.
@@ -372,7 +372,7 @@ static TOOLS: &[ToolSpec] = &[
     },
     ToolSpec {
         name: "search",
-        description: "Full-text search with BM25 ranking.",
+        description: "Full-text keyword (BM25) search across the indexed graph; returns matching anchors to feed into `asm`/`query`. Use `grep` instead when you want content matches tagged by their enclosing symbol. Auto-reindexes changed files first; no setup needed.",
         // query (positional) must precede path (positional [DIR]) — spec order
         // is emission order.
         args: &[
@@ -441,7 +441,7 @@ static TOOLS: &[ToolSpec] = &[
     },
     ToolSpec {
         name: "locate",
-        description: "Find symbol definition and call sites. For JSON output pass format=json.",
+        description: "Find a symbol's definition and call sites, returning its anchor — feed that anchor into `asm`/`query`. Use this instead of grepping for a function name through Bash. Auto-reindexes changed files first; no setup needed. For JSON output pass format=json.",
         args: &[
             ("symbol", "string"),
             ("caller_of", "string"),
@@ -454,7 +454,7 @@ static TOOLS: &[ToolSpec] = &[
     },
     ToolSpec {
         name: "asm",
-        description: "Assemble a context prompt from the knowledge graph. Pass the anchor via `from`.",
+        description: "Assemble a token-dense context prompt for an anchor (pass it via `from`; resolve a symbol name to its anchor with `locate` first): walks the graph from that node under a token budget and returns just the relevant neighborhood instead of you reading whole files. Auto-reindexes changed files first; no setup needed.",
         args: &[
             ("from", "string"),
             ("path", "string"),
@@ -475,7 +475,7 @@ static TOOLS: &[ToolSpec] = &[
     },
     ToolSpec {
         name: "query",
-        description: "Query the knowledge graph and emit JSON. Use backlinks=<anchor> for blast radius (what references a symbol) or impact=<anchor>.",
+        description: "Traverse the knowledge graph from an anchor (pass it via `from`; resolve a symbol name with `locate` first) and emit JSON. Use backlinks=<anchor> for blast radius (what references a symbol) or impact=<anchor> for downstream reach — answers 'what breaks if I change this?', which plain grep cannot. Auto-reindexes changed files first; no setup needed.",
         args: &[
             ("path", "string"),
             ("from", "string"),
