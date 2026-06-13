@@ -3345,10 +3345,6 @@ pub fn cmd_watch(
         None
     };
 
-    println!(
-        "Watching {} for changes... Press Ctrl+C to stop.",
-        path.display()
-    );
     if graph_sync {
         println!("Graph sync enabled - contracts and graph stay current.");
     }

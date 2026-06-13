@@ -363,6 +363,7 @@ enum Commands {
         semantics: bool,
     },
     /// List all anchors and contracts in the knowledge graph (alias: ls)
+    #[command(alias = "ls")]
     List {
         #[arg(
             long,
