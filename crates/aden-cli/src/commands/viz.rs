@@ -17,7 +17,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::path::Path;
 
 fn now_rfc3339() -> String {
-    chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
+    crate::time_util::unix_secs_to_rfc3339(crate::time_util::now_unix_secs())
 }
 
 fn git_head_short(root: &Path) -> Option<String> {

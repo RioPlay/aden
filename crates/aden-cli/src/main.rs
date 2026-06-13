@@ -3,6 +3,7 @@
 
 mod commands;
 mod mcp;
+mod time_util;
 mod types;
 mod util;
 

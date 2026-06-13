@@ -2187,16 +2187,19 @@ pub fn cmd_emergency(
         std::fs::create_dir_all(&aden_dir)?;
     }
 
-    let timestamp = chrono::Utc::now();
-    let expires_at = timestamp + chrono::Duration::seconds(ttl_seconds);
-    let tag = format!("emergency-{}", timestamp.format("%Y%m%d-%H%M%S"));
+    let now_secs = crate::time_util::now_unix_secs();
+    let expires_secs = now_secs + ttl_seconds as u64;
+    let tag = format!(
+        "emergency-{}",
+        crate::time_util::unix_secs_to_compact(now_secs)
+    );
 
     let audit_log_path = aden_dir.join("emergency-audit.log");
     let audit_entry = format!(
         "[{}] EMERGENCY OVERRIDE created: reason='{}', expires={}, tag={}\n",
-        timestamp.to_rfc3339(),
+        crate::time_util::unix_secs_to_rfc3339(now_secs),
         reason,
-        expires_at.to_rfc3339(),
+        crate::time_util::unix_secs_to_rfc3339(expires_secs),
         tag
     );
 
@@ -2212,7 +2215,7 @@ pub fn cmd_emergency(
         "[[{}]]\n= Emergency Override\n\n[override#{}]\n----\nEmergency override: all Forbid directives downgraded to Warn.\nExpires: {}\nReason: {}\n----\n",
         tag,
         tag,
-        expires_at.to_rfc3339(),
+        crate::time_util::unix_secs_to_rfc3339(expires_secs),
         reason
     );
 
@@ -2220,7 +2223,10 @@ pub fn cmd_emergency(
 
     println!("[{}] EMERGENCY OVERRIDE created", tag);
     println!("  Reason: {}", reason);
-    println!("  Expires: {}", expires_at.to_rfc3339());
+    println!(
+        "  Expires: {}",
+        crate::time_util::unix_secs_to_rfc3339(expires_secs)
+    );
     println!("  File: {}", emergency_path.display());
     println!("  Audit: {}", audit_log_path.display());
 
