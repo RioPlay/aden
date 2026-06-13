@@ -9,7 +9,7 @@ description = "Aden: Storage abstraction layer for the knowledge graph"
 
 [dependencies]
 aden-core = { path = "../aden-core" }
-postcard = { version = "1.0", features = ["alloc"] }
+postcard = { version = "1.0", default-features = false, features = ["alloc"] }
 thiserror = "2.0"
 serde = { version = "1.0", features = ["derive"] }
 # fjall (pure-Rust LSM-tree) is aden's storage engine: vs the previous sled
