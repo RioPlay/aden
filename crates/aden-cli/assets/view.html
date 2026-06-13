@@ -137,7 +137,10 @@
   body.hideui #hover-card, body.hideui #region-legend { opacity: 0 !important; pointer-events: none; }
 
   /* ── flyby card: floats beside the node you're visiting, shows the code ── */
-  #snip { position: fixed; z-index: 7; width: 340px; max-width: 42vw; pointer-events: none;
+  /* Docked to the bottom-right, under the detail panel — never floats over the
+     graph canvas. The right panel is ~360px wide; this sits below it. */
+  #snip { position: fixed; right: 14px; bottom: 52px; z-index: 7; width: 340px; max-width: 33vw;
+    pointer-events: none;
     background: rgba(10,13,20,.93); border: 1px solid #2a3040; border-radius: 10px;
     box-shadow: 0 14px 44px rgba(0,0,0,.55); backdrop-filter: blur(6px);
     opacity: 0; transform: translateY(6px); transition: opacity .28s ease, transform .28s ease;
@@ -1645,20 +1648,8 @@ function hideCard() {
   snipEl.classList.remove('on');
   snipEl.setAttribute('aria-hidden', 'true');
 }
-(function cardLoop() {
-  requestAnimationFrame(cardLoop);
-  if (!cardNode || cardNode.x == null) return;
-  const p = Graph.graph2ScreenCoords(cardNode.x, cardNode.y);
-  if (!isFinite(p.x) || !isFinite(p.y)) { snipEl.style.opacity = '0'; return; }
-  snipEl.style.opacity = '';
-  const w = snipEl.offsetWidth || 340, h = snipEl.offsetHeight || 120;
-  let x = p.x + 40;
-  if (x + w > innerWidth - 360) x = p.x - w - 40;   // keep clear of the panel
-  let y = p.y - h / 2;
-  y = Math.max(86, Math.min(innerHeight - h - 56, y));
-  snipEl.style.left = `${Math.round(x)}px`;
-  snipEl.style.top = `${Math.round(y)}px`;
-})();
+// The snippet card is docked bottom-right via CSS (under the detail panel) so it
+// never covers the graph — no per-frame screen-tracking needed.
 
 // ── tour mode: the map shows itself (2D edition) ─────────────────────────────
 // Same autopilot as the 3D view: mostly follows real connections, sometimes

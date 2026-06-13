@@ -972,12 +972,19 @@ fn render_communities_view_json(
 
 /// The group segment (crate/dir) of an anchor: `aden://module/aden-cli/x#y` → `aden-cli`.
 fn group_of(anchor: &str) -> &str {
+    // Synthesized aggregate nodes ("mod-aden-parse", "mod-project") are NOT
+    // aden:// anchors — without this they fall through to "?" and collapse into a
+    // meaningless "?" region in the viewer legend/colours. Resolve them to their
+    // project (the segment after "mod-").
+    if let Some(rest) = anchor.strip_prefix("mod-") {
+        return rest;
+    }
     anchor
         .strip_prefix("aden://")
         .unwrap_or(anchor)
         .split('/')
         .nth(1)
-        .unwrap_or("?")
+        .unwrap_or("other")
 }
 
 /// A human label for a community: the dominant subsystem among its members — but
