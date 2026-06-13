@@ -41,6 +41,10 @@ const COMMANDS_WITHOUT_MCP_TOOL: &[(&str, &str)] = &[
         "interactive browser viewer — long-running, not request/response",
     ),
     (
+        "timeline",
+        "interactive browser file-history viewer (like view); writes HTML + opens a browser, not request/response",
+    ),
+    (
         "watch",
         "long-running file-watch daemon; would always hit the MCP timeout",
     ),

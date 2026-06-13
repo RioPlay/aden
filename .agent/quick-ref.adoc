@@ -64,6 +64,9 @@ git push
 |Find symbol |`aden locate --symbol foo`
 |Search docs |`aden search "query"`
 
+|View file history |`aden timeline <file>`
+|Interactive graph (browser) |`aden view`
+
 |Auto-regenerate |`aden watch .`
 |Pre-commit (fast) |`aden ready .`
 |Pre-push (full) |`aden ci-check .`

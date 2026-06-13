@@ -816,6 +816,32 @@ enum Commands {
         )]
         format: String,
     },
+    /// Time-travel file viewer: bake every historical version of a file into
+    /// a self-contained HTML page with client-side comparison.
+    #[cfg(feature = "view")]
+    Timeline {
+        /// File path, repo-relative path, or aden:// anchor URI
+        #[arg(value_name = "PATH")]
+        path_arg: String,
+        /// Oldest ref to include (git ref or hash)
+        #[arg(long, value_name = "REF")]
+        from: Option<String>,
+        /// Newest ref to include (git ref or hash)
+        #[arg(long, value_name = "REF")]
+        to: Option<String>,
+        /// Show a single version at this ref
+        #[arg(long, value_name = "REF")]
+        at: Option<String>,
+        /// Max versions to bake (default: 60; 0 = all)
+        #[arg(long, value_name = "N", default_value = "60")]
+        max: usize,
+        /// Output HTML path (default: temp file)
+        #[arg(long, value_name = "FILE", value_hint = ValueHint::FilePath)]
+        out: Option<PathBuf>,
+        /// Write the HTML but do not open a browser
+        #[arg(long = "no-open")]
+        no_open: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1533,5 +1559,23 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
             };
             commands::cmd_diagnose(&path, &effective_format)
         }
+        #[cfg(feature = "view")]
+        Commands::Timeline {
+            path_arg,
+            from,
+            to,
+            at,
+            max,
+            out,
+            no_open,
+        } => commands::cmd_timeline(
+            &path_arg,
+            from.as_deref(),
+            to.as_deref(),
+            at.as_deref(),
+            max,
+            out.as_deref(),
+            !no_open,
+        ),
     }
 }

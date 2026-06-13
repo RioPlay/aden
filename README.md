@@ -116,6 +116,8 @@ into the cache dir by hand instead of running the script.
 | `aden ready` | Fast pre-commit gate: gen → lint → check → heal drift → audit |
 | `aden sync` | Reconcile store after merges or file deletions (gen + check + heal with gc) |
 | `aden ci-check` | Full CI gate suite including external tools; use before push |
+| `aden view` | Interactive graph viewer in the browser — offline, with git-history replay |
+| `aden timeline` | Time-travel file viewer: bake every git version of a file into a self-contained offline HTML page with client-side diff |
 
 ## Why AsciiDoc?
 

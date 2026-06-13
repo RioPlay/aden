@@ -675,6 +675,49 @@ control. Keyboard: `/` search, space play/pause, `f` fit, `b` *synapse mode* (th
 fires like a neural net — signals travel the edges), `h` hide UI, `o` open in editor.
 Cross-platform: the browser opener and editor URIs work on Linux, macOS, and Windows.
 
+=== timeline
+
+Time-travel viewer: bake every historical version of a file into a self-contained,
+offline HTML page. Client-side JS handles comparison — no server required, works
+from `file://`. Gated behind the `view` feature (on by default).
+
+[source,bash]
+----
+# View the full history of a file (opens in browser)
+aden timeline src/lib.rs
+
+# Compare specific refs
+aden timeline src/lib.rs --from HEAD~10 --to HEAD
+
+# Cap to last 20 commits, write to file
+aden timeline src/lib.rs --max 20 --out /tmp/tl.html --no-open
+
+# Use an aden anchor URI
+aden timeline "aden://module/myproject/src/lib.rs#my_fn"
+----
+
+The generated page shows:
+
+* A **version timeline strip** (chips, oldest→newest) for every baked version.
+* **Two selectors** (Base / Compare) defaulting to first commit vs working tree.
+* A **"Compare to today"** button (sets Compare = working tree) and adjacent-step buttons.
+* A **side-by-side line diff** computed client-side via LCS (no server, no Rust diff dep).
+
+|===
+|Flag |Description
+
+|`<PATH>` |File path (repo-relative, absolute, CWD-relative) or `aden://` anchor URI
+|`--from <REF>` |Oldest ref to include
+|`--to <REF>` |Newest ref to include
+|`--at <REF>` |Show a single version at this ref
+|`--max <N>` |Cap baked versions to N most-recent commits (default: 60; 0 = all)
+|`--out <FILE>` |Write HTML to this path instead of a temp file
+|`--no-open` |Write the HTML but do not open a browser
+|===
+
+Files not tracked in git, binary files, and repos without git are handled gracefully
+with clear error messages. Renames are followed via `git log --follow`.
+
 === impact-diff
 
 Map a `git diff` to the symbols it touches and report the *blast radius* — every
