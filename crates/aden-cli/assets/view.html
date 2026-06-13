@@ -108,6 +108,11 @@
   #hover-card .hc-file { font-size: 11px; color: #45475a; font-family: ui-monospace, monospace;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #hover-card .hc-hint { font-size: 11px; color: #45475a; font-style: italic; }
+  #hover-card .hc-dismiss { position: absolute; top: 6px; right: 8px; pointer-events: auto;
+    cursor: pointer; color: #45475a; font-size: 13px; line-height: 1; padding: 2px 4px;
+    border-radius: 3px; }
+  #hover-card .hc-dismiss:hover { color: #f38ba8; background: rgba(243,139,168,.1); }
+  #hover-card { position: relative; }
 
   /* ── region legend (below hover card) ── */
   #region-legend { position: fixed; left: 14px; top: 226px; z-index: 6; width: 240px;
@@ -232,6 +237,7 @@
   #panel .nb .nb-type { color: #6c7086; font-size: 11px; flex-shrink: 0; }
   #panel .show-more { font-size: 11px; color: #6c7086; cursor: pointer; padding: 3px 5px; }
   #panel .show-more:hover { color: #89b4fa; }
+  #panel .show-more-list { max-height: 220px; overflow-y: auto; border-left: 1px solid #1f2430; padding-left: 4px; margin-top: 2px; }
   #pback { display: none; cursor: pointer; color: #89b4fa; font-size: 12px; margin-bottom: 8px; }
   #pback:hover { text-decoration: underline; }
   #panel a { color: #89b4fa; }
@@ -290,6 +296,7 @@
 
 <!-- region hover card: appears on node hover, top-left corner -->
 <div id="hover-card" aria-live="polite">
+  <span class="hc-dismiss" onclick="dismissHoverCard()" title="dismiss card (c to restore)">×</span>
   <div class="hc-region">
     <span class="hc-swatch" id="hc-swatch"></span>
     <span class="hc-region-name" id="hc-region"></span>
@@ -402,7 +409,8 @@
       <div class="kb-row"><kbd class="kb-key">Space</kbd><span class="kb-desc">play / pause replay</span></div>
       <div class="kb-row"><kbd class="kb-key">o</kbd><span class="kb-desc">open focused node in editor</span></div>
       <div class="kb-row"><kbd class="kb-key">Backspace</kbd><span class="kb-desc">back (panel history)</span></div>
-      <div class="kb-row"><kbd class="kb-key">x / r / c</kbd><span class="kb-desc">blast / reach / connectivity lens</span></div>
+      <div class="kb-row"><kbd class="kb-key">x / r / c</kbd><span class="kb-desc">blast / reach / connectivity lens (when node focused)</span></div>
+      <div class="kb-row"><kbd class="kb-key">c</kbd><span class="kb-desc">toggle hover card (when no node focused)</span></div>
       <div class="kb-sep"></div>
       <div class="kb-row"><kbd class="kb-key">↑↓</kbd><span class="kb-desc">walk neighbour list</span></div>
       <div class="kb-row"><kbd class="kb-key">Enter</kbd><span class="kb-desc">navigate to selected</span></div>
@@ -905,7 +913,21 @@ function regionOf(n) {
 }
 
 const hoverCardEl = document.getElementById('hover-card');
+// cardDismissed: session flag — × hides the card; `c` (when no node is focused)
+// toggles it back. The card never intercepts pointer events (pointer-events:none
+// on the surface); only the × button is pointer-events:auto.
+let cardDismissed = false;
+function dismissHoverCard() {
+  cardDismissed = true;
+  hoverCardEl.classList.remove('on', 'idle');
+}
+function toggleCardDismiss() {
+  cardDismissed = !cardDismissed;
+  if (!cardDismissed) updateHoverCard(hoverNode);   // re-show with current state
+  else hoverCardEl.classList.remove('on', 'idle');
+}
 function updateHoverCard(n) {
+  if (cardDismissed) return;   // user dismissed — keep hidden until toggled back
   const hint = document.getElementById('hc-hint');
   if (!n) {
     // No node hovered — show idle state
@@ -951,11 +973,23 @@ function buildLegend() {
   }
   body.innerHTML = regions.map(r => {
     const col = palette[groupIdx[r] % palette.length];
-    return `<div class="rl-row">
+    return `<div class="rl-row" style="cursor:pointer" title="Jump to region" onclick="jumpToRegion(${JSON.stringify(r)})">
       <span class="rl-dot" style="background:${col};box-shadow:0 0 4px ${hexA(col,.4)}"></span>
       <span class="rl-label" title="${esc(r)}">${esc(r)}</span>
     </div>`;
   }).join('');
+}
+function jumpToRegion(r) {
+  const matching = Object.values(byId).filter(n => idVisible(n.id) && regionOf(n) === r);
+  if (!matching.length) return;   // guard: no visible nodes in this region
+  // Briefly highlight the region's nodes using existing machinery
+  highlightNodes.clear(); highlightLinks.clear();
+  matching.forEach(n => {
+    highlightNodes.add(n);
+    (n.adj || []).forEach(l => highlightLinks.add(l));
+  });
+  refreshViz();
+  Graph.zoomToFit(700, 80, n => idVisible(n.id) && regionOf(n) === r);
 }
 function toggleLegend() {
   legendCollapsed = !legendCollapsed;
@@ -1289,16 +1323,17 @@ function showMoreGroup(groupId, btn) {
   const start = +btn.getAttribute('data-start');
   const container = document.getElementById(groupId);
   if (!container) return;
-  let html = '';
+  let innerHtml = '';
   ids.forEach((id, i) => {
     const nb = byId[id] || { id };
     const fi = start + i;
-    html += `<div class="nb" id="nb-${fi}" onclick="focusNode('${esc(id)}')" onmouseenter="previewNode('${esc(id)}', false)">
+    innerHtml += `<div class="nb" id="nb-${fi}" onclick="focusNode('${esc(id)}')" onmouseenter="previewNode('${esc(id)}', false)">
       <span class="nb-name">${esc(shortName(nb))}</span>
       <span class="nb-type">${esc(nb.group || '')}</span>
     </div>`;
   });
-  container.innerHTML = html;
+  // Wrap in scrollable container so long lists don't expand the panel unbounded
+  container.innerHTML = `<div class="show-more-list">${innerHtml}</div>`;
   btn.remove();
 }
 
@@ -1768,6 +1803,11 @@ function stopPlay() {
   playing = false; clearTimeout(playTimer);
   document.getElementById('play-icon').textContent = '▶';
   document.getElementById('play-lbl').textContent = 'Replay history';
+  // BUG FIX: growMode was left `true` after stopPlay/scrubTo, causing community-
+  // expanded nodes (added to byId but not to `revealed`) to stay invisible on
+  // subsequent navigation.  Reset here so the full graph is visible once replay
+  // is not actively running.
+  growMode = false; revealed.clear(); refreshViz();
 }
 function togglePlay() { playing ? stopPlay() : startPlay(); }
 function setSpeed(v) {
@@ -1841,6 +1881,8 @@ addEventListener('keydown', e => {
     if (e.key === 'r' || e.key === 'R') { clientPivot(panelCur, 'reach'); return; }
     if (e.key === 'c' || e.key === 'C') { clientPivot(panelCur, 'connectivity'); return; }
   }
+  // `c` with no focused node toggles the hover card (dismiss/restore).
+  if (e.key === 'c' || e.key === 'C') { toggleCardDismiss(); return; }
   const open = document.getElementById('panel').classList.contains('open');
   const max = Math.min(panelNbs.length, 80);
   if (!open || !max) return;
