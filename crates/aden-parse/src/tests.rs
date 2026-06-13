@@ -1061,3 +1061,229 @@ fn ts_multiple_imports_same_source_emits_one_edge() {
         "two named imports from same source must emit exactly 1 edge; listing: {listing}"
     );
 }
+
+// ── TypeScript positive extraction smoke tests ───────────────────────────────
+//
+// These exercise real extraction paths that were previously uncovered:
+//   - class + interface → NodeType::Type documents (distinct from Function)
+//   - JSDoc `/** ... */` comment captured as a Paragraph block
+//   - intra-file call site → `edge::calls[callee]` Listing block
+//
+// Anchors are asserted with `contains` (not exact match) because the full
+// anchor embeds an inferred project path that varies by working directory.
+
+/// A `class Foo` and an `interface IBar` must each produce a `NodeType::Type`
+/// document. The class methods are also extracted as Function documents, but
+/// the primary assertion is the Type-level presence of both named symbols.
+#[test]
+fn ts_class_and_interface_smoke() {
+    let src = "class Foo {\n    doThing(): void {}\n}\n\ninterface IBar {\n    doSomething(): string;\n}\n";
+    let resolver = crate::typescript_resolver::TypeScriptResolver::new();
+    let docs = resolver
+        .extract_documents(src, Path::new("src/shapes.ts"))
+        .expect("parse should succeed");
+    assert!(!docs.is_empty(), "expected non-empty document list");
+    // Both Foo (class) and IBar (interface) must be present as Type documents.
+    assert_has_anchor(&docs, "Foo");
+    assert_has_anchor(&docs, "IBar");
+    // Both must be NodeType::Type (not Function).
+    // Anchors have the form `aden://...#Foo`; find by exact suffix to avoid
+    // matching the method document `#Foo.doThing`.
+    let foo = docs
+        .iter()
+        .find(|d| d.anchor.ends_with("#Foo"))
+        .expect("Foo class document (anchor ending with #Foo)");
+    assert_eq!(
+        foo.node_type,
+        aden_core::NodeType::Type,
+        "class Foo must be NodeType::Type; got {:?}",
+        foo.node_type
+    );
+    let ibar = docs
+        .iter()
+        .find(|d| d.anchor.ends_with("#IBar"))
+        .expect("IBar interface document (anchor ending with #IBar)");
+    assert_eq!(
+        ibar.node_type,
+        aden_core::NodeType::Type,
+        "interface IBar must be NodeType::Type; got {:?}",
+        ibar.node_type
+    );
+}
+
+/// A function preceded by a `/** ... */` JSDoc comment must produce a Function
+/// document whose blocks include a Paragraph containing the JSDoc text.
+///
+/// The TypeScript resolver captures the preceding comment via
+/// `extract_ts_doc_comment`, which matches `/**`-prefixed siblings and stores
+/// the raw comment text in `TsSymbol::doc_comment`. `emit_ts_symbol` then
+/// pushes it as `Block::Paragraph`.
+#[test]
+fn ts_jsdoc_captured() {
+    let src = "/** Greets a user by name. */\nfunction greet(name: string): void {}\n";
+    let resolver = crate::typescript_resolver::TypeScriptResolver::new();
+    let docs = resolver
+        .extract_documents(src, Path::new("src/greet.ts"))
+        .expect("parse should succeed");
+    assert_has_anchor(&docs, "greet");
+    assert_has_node_type(&docs, aden_core::NodeType::Function);
+    let greet_doc = docs
+        .iter()
+        .find(|d| d.anchor.contains("greet"))
+        .expect("greet document");
+    let has_jsdoc = greet_doc.blocks.iter().any(|b| match b {
+        aden_core::Block::Paragraph(text) => text.contains("Greets a user by name"),
+        _ => false,
+    });
+    assert!(
+        has_jsdoc,
+        "expected JSDoc text in a Paragraph block; blocks: {:?}",
+        greet_doc.blocks
+    );
+}
+
+/// When function A calls function B in the same file, A's document must contain
+/// a `Listing` block with `edge::calls[beta]`. This is the TS analogue of the
+/// existing `python_resolver_call_sites` test.
+#[test]
+fn ts_call_site_edge() {
+    let src = "function alpha(): void {\n    beta();\n}\n\nfunction beta(): void {}\n";
+    let resolver = crate::typescript_resolver::TypeScriptResolver::new();
+    let docs = resolver
+        .extract_documents(src, Path::new("src/mod.ts"))
+        .expect("parse should succeed");
+    assert_has_anchor(&docs, "alpha");
+    assert_has_anchor(&docs, "beta");
+    let alpha = docs
+        .iter()
+        .find(|d| d.anchor.contains("alpha"))
+        .expect("alpha document");
+    let calls_text: String = alpha
+        .blocks
+        .iter()
+        .filter_map(|b| match b {
+            aden_core::Block::Listing { code, .. } => Some(code.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        calls_text.contains("edge::calls[beta]"),
+        "expected `edge::calls[beta]` in alpha's Listing blocks; got: {calls_text}"
+    );
+}
+
+// ── Go positive extraction smoke tests ───────────────────────────────────────
+//
+// Three tests covering paths not exercised by the existing pointer-receiver
+// regression guard: standalone function with doc comment, struct type, and
+// interface type.
+//
+// NOTE: The Go resolver does NOT extract individual interface methods or struct
+// fields as separate documents — an entire interface or struct is one Type
+// document. Call sites within the function body produce `edge::calls[callee]`
+// Listing blocks. Doc comments appear as `Block::Paragraph` with the raw
+// `// ...` text preserved.
+
+/// A standalone `func Compute(...)` with a `// Compute does X` doc comment
+/// must produce a Function document whose blocks include the doc comment text.
+#[test]
+fn go_func_smoke() {
+    let src =
+        "package compute\n\n// Compute does X\nfunc Compute(x int) int {\n    return x * 2\n}\n";
+    let resolver = crate::go_resolver::GoResolver::new();
+    let docs = resolver
+        .extract_documents(src, Path::new("pkg/compute.go"))
+        .expect("parse should succeed");
+    assert!(!docs.is_empty(), "expected non-empty document list");
+    assert_has_anchor(&docs, "Compute");
+    assert_has_node_type(&docs, aden_core::NodeType::Function);
+    let compute = docs
+        .iter()
+        .find(|d| d.anchor.contains("Compute"))
+        .expect("Compute document");
+    let has_doc = compute.blocks.iter().any(|b| match b {
+        aden_core::Block::Paragraph(text) => text.contains("Compute does X"),
+        _ => false,
+    });
+    assert!(
+        has_doc,
+        "expected doc comment text in a Paragraph block; blocks: {:?}",
+        compute.blocks
+    );
+}
+
+/// `type Point struct { X int; Y int }` must produce a single `NodeType::Type`
+/// document for `Point`.
+///
+/// NOTE: The Go resolver does NOT emit separate documents for struct fields
+/// (X, Y). The entire struct is represented as one Type document. Field types
+/// appear only as `edge::uses[T]` Listing blocks when the field type is a
+/// user-defined (PascalCase) type — primitive types like `int` are filtered.
+#[test]
+fn go_struct_smoke() {
+    let src = "package geometry\n\ntype Point struct {\n    X int\n    Y int\n}\n";
+    let resolver = crate::go_resolver::GoResolver::new();
+    let docs = resolver
+        .extract_documents(src, Path::new("pkg/geometry.go"))
+        .expect("parse should succeed");
+    assert!(!docs.is_empty(), "expected non-empty document list");
+    assert_has_anchor(&docs, "Point");
+    let point = docs
+        .iter()
+        .find(|d| d.anchor.contains("Point"))
+        .expect("Point document");
+    assert_eq!(
+        point.node_type,
+        aden_core::NodeType::Type,
+        "type Point struct must be NodeType::Type; got {:?}",
+        point.node_type
+    );
+    // The resolver emits a "Go type from module ..." prose block.
+    let has_prose = point.blocks.iter().any(|b| match b {
+        aden_core::Block::Paragraph(text) => text.contains("Go type from module"),
+        _ => false,
+    });
+    assert!(
+        has_prose,
+        "expected a 'Go type from module' Paragraph block; blocks: {:?}",
+        point.blocks
+    );
+}
+
+/// `type Shape interface { Area() float64 }` must produce a single
+/// `NodeType::Type` document for `Shape`.
+///
+/// NOTE: The Go resolver treats interfaces the same as structs at the
+/// extraction level — the whole interface is one Type document. The interface
+/// method `Area` is NOT extracted as a separate Function document (Go method
+/// declarations on concrete receiver types ARE extracted, but interface method
+/// signatures inside an `interface_type` body are not walked by the resolver).
+#[test]
+fn go_interface_method() {
+    let src = "package shapes\n\ntype Shape interface {\n    Area() float64\n}\n";
+    let resolver = crate::go_resolver::GoResolver::new();
+    let docs = resolver
+        .extract_documents(src, Path::new("pkg/shapes.go"))
+        .expect("parse should succeed");
+    assert!(!docs.is_empty(), "expected non-empty document list");
+    assert_has_anchor(&docs, "Shape");
+    let shape = docs
+        .iter()
+        .find(|d| d.anchor.contains("Shape"))
+        .expect("Shape document");
+    assert_eq!(
+        shape.node_type,
+        aden_core::NodeType::Type,
+        "type Shape interface must be NodeType::Type; got {:?}",
+        shape.node_type
+    );
+    // Interface method `Area` is NOT a separate document in the current resolver.
+    // Only the enclosing interface type is emitted.
+    assert!(
+        !docs.iter().any(|d| d.anchor.contains("Area")),
+        "interface method Area must NOT produce a separate document (current resolver limitation); \
+         got anchors: {:?}",
+        docs.iter().map(|d| &d.anchor).collect::<Vec<_>>()
+    );
+}
