@@ -37,6 +37,8 @@ pub enum QueryError {
     UnknownFunction(String),
     #[error("invalid anchor: {0}")]
     InvalidAnchor(String),
+    #[error("ambiguous anchor: {0}")]
+    AmbiguousAnchor(String),
     #[error("parse error: {0}")]
     Parse(String),
 }
@@ -84,18 +86,50 @@ impl<'a> AdqInterpreter<'a> {
         }
     }
 
+    /// Resolve a user-supplied anchor argument to a full anchor present in the
+    /// graph. Accepts either an exact anchor or a bare symbol name (the part
+    /// after the final `#` of a full anchor), so `.adq` scripts stay writable by
+    /// hand — matching how `locate`/`understand`/`asm` already resolve short
+    /// names. Errors with `InvalidAnchor` when nothing matches and
+    /// `AmbiguousAnchor` (listing the candidates) when more than one symbol
+    /// shares the name. Never guesses on ambiguity — same policy as
+    /// [`crate::cache::resolve_anchor_in_store`].
+    fn resolve(&self, anchor: &str) -> Result<String, QueryError> {
+        // Exact match — already a full anchor present in the graph.
+        if self.graph.get_index(anchor).is_some() {
+            return Ok(anchor.to_string());
+        }
+        // Bare-name fallback: match the `#suffix` of each known anchor.
+        let mut matches: Vec<String> = self
+            .graph
+            .anchor_to_index
+            .keys()
+            .filter(|a| a.rsplit('#').next() == Some(anchor))
+            .cloned()
+            .collect();
+        matches.sort();
+        matches.dedup();
+        match matches.len() {
+            0 => Err(QueryError::InvalidAnchor(anchor.to_string())),
+            1 => Ok(matches.remove(0)),
+            _ => Err(QueryError::AmbiguousAnchor(format!(
+                "'{}' matches {} symbols; use a full anchor. Candidates: {}",
+                anchor,
+                matches.len(),
+                matches.join(", ")
+            ))),
+        }
+    }
+
     fn exec_node(&self, args: &[&str]) -> Result<QueryResult, QueryError> {
         let anchor = args
             .first()
             .ok_or_else(|| QueryError::Parse("node() requires anchor".to_string()))?;
         let anchor = anchor.trim_matches(|c| c == '(' || c == ')' || c == ';');
-
-        if self.graph.get_index(anchor).is_none() {
-            return Err(QueryError::InvalidAnchor(anchor.to_string()));
-        }
+        let anchor = self.resolve(anchor)?;
 
         Ok(QueryResult {
-            nodes: vec![anchor.to_string()],
+            nodes: vec![anchor],
             total: 1,
         })
     }
@@ -105,11 +139,12 @@ impl<'a> AdqInterpreter<'a> {
             .first()
             .ok_or_else(|| QueryError::Parse("incoming() requires anchor".to_string()))?;
         let anchor = anchor.trim_matches(|c| c == '(' || c == ')' || c == ';');
+        let anchor = self.resolve(anchor)?;
 
         let idx = self
             .graph
-            .get_index(anchor)
-            .ok_or_else(|| QueryError::InvalidAnchor(anchor.to_string()))?;
+            .get_index(&anchor)
+            .ok_or_else(|| QueryError::InvalidAnchor(anchor.clone()))?;
 
         let mut nodes = Vec::new();
         for neighbor in self
@@ -131,11 +166,12 @@ impl<'a> AdqInterpreter<'a> {
             .first()
             .ok_or_else(|| QueryError::Parse("outgoing() requires anchor".to_string()))?;
         let anchor = anchor.trim_matches(|c| c == '(' || c == ')' || c == ';');
+        let anchor = self.resolve(anchor)?;
 
         let idx = self
             .graph
-            .get_index(anchor)
-            .ok_or_else(|| QueryError::InvalidAnchor(anchor.to_string()))?;
+            .get_index(&anchor)
+            .ok_or_else(|| QueryError::InvalidAnchor(anchor.clone()))?;
 
         let mut nodes = Vec::new();
         for neighbor in self
@@ -447,6 +483,83 @@ pub fn execute_adq(
 ) -> Result<QueryResult, QueryError> {
     let interpreter = AdqInterpreter::new(graph);
     interpreter.execute(script)
+}
+
+#[cfg(test)]
+mod adq_resolve_tests {
+    use super::*;
+    use crate::{AdenEdge, AdenGraph, DocumentNode};
+    use aden_core::{Document, NodeType};
+    use std::collections::HashMap;
+
+    fn node(anchor: &str) -> DocumentNode {
+        DocumentNode {
+            doc: Document {
+                anchor: anchor.to_string(),
+                node_type: NodeType::Function,
+                attributes: HashMap::new(),
+                blocks: Vec::new(),
+                source_span: None,
+                metadata: None,
+                confidence: 0.9,
+            },
+            parsed: None,
+            source_path: std::path::PathBuf::from("x.rs"),
+        }
+    }
+
+    fn graph_with(anchors: &[&str]) -> AdenGraph<DocumentNode, AdenEdge> {
+        let mut g = AdenGraph::<DocumentNode, AdenEdge>::new();
+        for a in anchors {
+            g.add_node(node(a));
+        }
+        g
+    }
+
+    #[test]
+    fn short_name_resolves_to_full_anchor() {
+        let g = graph_with(&["aden://module/x.rs#foo", "aden://module/y.rs#bar"]);
+        let r = AdqInterpreter::new(&g).execute("node(foo)").unwrap();
+        assert_eq!(r.nodes, vec!["aden://module/x.rs#foo".to_string()]);
+    }
+
+    #[test]
+    fn exact_full_anchor_still_resolves() {
+        let g = graph_with(&["aden://module/x.rs#foo"]);
+        let r = AdqInterpreter::new(&g)
+            .execute("node(aden://module/x.rs#foo)")
+            .unwrap();
+        assert_eq!(r.nodes, vec!["aden://module/x.rs#foo".to_string()]);
+    }
+
+    #[test]
+    fn unknown_short_name_is_invalid_anchor() {
+        let g = graph_with(&["aden://module/x.rs#foo"]);
+        let e = AdqInterpreter::new(&g).execute("node(nope)").unwrap_err();
+        assert!(matches!(e, QueryError::InvalidAnchor(_)));
+    }
+
+    #[test]
+    fn ambiguous_short_name_errors_with_candidates() {
+        let g = graph_with(&["aden://module/x.rs#foo", "aden://module/y.rs#foo"]);
+        let e = AdqInterpreter::new(&g).execute("node(foo)").unwrap_err();
+        match e {
+            QueryError::AmbiguousAnchor(msg) => assert!(
+                msg.contains("x.rs#foo") && msg.contains("y.rs#foo"),
+                "candidates missing from message: {msg}"
+            ),
+            other => panic!("expected AmbiguousAnchor, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn incoming_and_outgoing_accept_short_names() {
+        let g = graph_with(&["aden://module/x.rs#foo"]);
+        let interp = AdqInterpreter::new(&g);
+        // Resolution succeeds (no edges -> empty result, not InvalidAnchor).
+        assert_eq!(interp.execute("incoming(foo)").unwrap().total, 0);
+        assert_eq!(interp.execute("outgoing(foo)").unwrap().total, 0);
+    }
 }
 
 #[cfg(test)]
