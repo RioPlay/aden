@@ -61,6 +61,8 @@ pub fn extract_documents_inner(path: &Path, source: &str) -> Result<Vec<Document
     let mut cursor = root.walk();
     let children: Vec<_> = root.children(&mut cursor).collect();
     let mut buffered_comments: Vec<String> = Vec::new();
+    // Collect module-level use paths for edge::imports emission.
+    let mut import_paths: Vec<String> = Vec::new();
 
     for child in children {
         if !child.is_named() {
@@ -76,6 +78,18 @@ pub fn extract_documents_inner(path: &Path, source: &str) -> Result<Vec<Document
                 if let Some(comment) = process_block_comment(child, source) {
                     buffered_comments.push(comment);
                 }
+            }
+            "use_declaration" => {
+                // Collect the imported path(s) for edge::imports.
+                // `argument` field holds a _use_clause; we flatten grouped paths:
+                //   `use foo::bar`       → ["foo::bar"]
+                //   `use foo::{a, b}`    → ["foo::a", "foo::b"]
+                //   `use foo as local`   → ["foo"]  (emit the module path, not alias)
+                // Self and crate paths are kept as-is.
+                if let Some(arg) = child.child_by_field_name("argument") {
+                    collect_use_paths(arg, source, "", &mut import_paths);
+                }
+                buffered_comments.clear();
             }
             "function_item" | "function_signature_item" => {
                 if let Some(doc) = extract_function(
@@ -176,6 +190,32 @@ pub fn extract_documents_inner(path: &Path, source: &str) -> Result<Vec<Document
             _ => {}
         }
     }
+
+    // Emit a file-level Module document carrying edge::imports for each
+    // module-level `use` declaration found.  Prepend so graph traversal sees
+    // the file node before its contained symbols.
+    if !import_paths.is_empty() {
+        let edge_code = import_paths
+            .iter()
+            .map(|p| format!("edge::imports[{p}]"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let file_anchor = make_anchor(&crate_name, file_name, "");
+        let file_doc = Document {
+            anchor: file_anchor,
+            node_type: NodeType::Module,
+            attributes: Default::default(),
+            blocks: vec![Block::Listing {
+                language: None,
+                code: edge_code,
+            }],
+            source_span: None,
+            metadata: None,
+            confidence: 0.85,
+        };
+        docs.insert(0, file_doc);
+    }
+
     Ok(docs)
 }
 
@@ -896,6 +936,86 @@ const SKIP_CALLEES: &[&str] = &[
 
 fn is_std_noise(name: &str) -> bool {
     SKIP_CALLEES.contains(&name)
+}
+
+/// Flatten a `_use_clause` node into one canonical path string per imported
+/// item and append to `out`.
+///
+/// Target-string form:
+/// - `use foo::bar`       → `foo::bar`
+/// - `use foo::{a, b}`   → `foo::a`, `foo::b`
+/// - `use foo as local`  → `foo`  (the module path, not the alias)
+/// - `use foo::*`        → `foo::*`
+///
+/// For grouped lists the prefix accumulated by `scoped_use_list` is threaded
+/// through recursion so inner names are fully qualified.
+fn collect_use_paths(node: tree_sitter::Node, source: &str, prefix: &str, out: &mut Vec<String>) {
+    match node.kind() {
+        // `use_as_clause`: `path as alias` — emit the path, not the alias.
+        "use_as_clause" => {
+            if let Some(p) = node.child_by_field_name("path") {
+                let path_text = node_text(p, source);
+                let full = if prefix.is_empty() {
+                    path_text.to_string()
+                } else {
+                    format!("{prefix}::{path_text}")
+                };
+                out.push(full);
+            }
+        }
+        // `scoped_use_list`: `path::{ ... }` — recurse into the list with the
+        // prefix extended by `path`.
+        "scoped_use_list" => {
+            let path_part = node
+                .child_by_field_name("path")
+                .map(|p| node_text(p, source).to_string())
+                .unwrap_or_default();
+            let new_prefix = if prefix.is_empty() {
+                path_part
+            } else if path_part.is_empty() {
+                prefix.to_string()
+            } else {
+                format!("{prefix}::{path_part}")
+            };
+            if let Some(list) = node.child_by_field_name("list") {
+                collect_use_paths(list, source, &new_prefix, out);
+            }
+        }
+        // `use_list`: `{ item, item, ... }` — recurse each child.
+        "use_list" => {
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                if child.is_named() {
+                    collect_use_paths(child, source, prefix, out);
+                }
+            }
+        }
+        // `use_wildcard`: `path::*` — emit prefix::*.
+        "use_wildcard" => {
+            let star = if prefix.is_empty() {
+                "*".to_string()
+            } else {
+                format!("{prefix}::*")
+            };
+            out.push(star);
+        }
+        // Leaf path nodes: `identifier`, `scoped_identifier`, `crate`, `self`,
+        // `super` — emit the full path.
+        _ => {
+            let text = node_text(node, source);
+            if text.is_empty() || text == "{" || text == "}" || text == "," || text == ";" {
+                return;
+            }
+            let full = if prefix.is_empty() {
+                text.to_string()
+            } else {
+                format!("{prefix}::{text}")
+            };
+            if !out.contains(&full) {
+                out.push(full);
+            }
+        }
+    }
 }
 
 /// Recursively walk an AST subtree and collect all `call_expression` nodes.

@@ -84,6 +84,40 @@ impl LanguageExtractor for GoResolver {
             }
         }
 
+        // Emit a file-level Module document carrying edge::imports for each
+        // import path found in the file.
+        //
+        // Target-string form: the raw import path string, quotes stripped.
+        //   `import "fmt"`      → `fmt`
+        //   `import "net/http"` → `net/http`
+        if !imports.is_empty() {
+            let mut seen: Vec<String> = Vec::new();
+            let mut import_edges: Vec<String> = Vec::new();
+            for imp in &imports {
+                let edge = format!("edge::imports[{}]", imp.path);
+                if !seen.contains(&imp.path) {
+                    seen.push(imp.path.clone());
+                    import_edges.push(edge);
+                }
+            }
+            if !import_edges.is_empty() {
+                let file_anchor = make_anchor(&module_path, file_name, "");
+                let file_doc = Document {
+                    anchor: file_anchor,
+                    node_type: NodeType::Module,
+                    attributes: Default::default(),
+                    blocks: vec![Block::Listing {
+                        language: None,
+                        code: import_edges.join("\n"),
+                    }],
+                    source_span: None,
+                    metadata: None,
+                    confidence: 0.85,
+                };
+                docs.insert(0, file_doc);
+            }
+        }
+
         Ok(docs)
     }
 }

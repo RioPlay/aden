@@ -762,3 +762,302 @@ fn rust_mut_self_receiver_emits_mutates_macro() {
         "`&self` trait method must NOT emit mutates; got: {greet}"
     );
 }
+
+// ── edge::imports emission ───────────────────────────────────────────────────
+//
+// Each language resolver must emit a file-level Module document carrying
+// `edge::imports[target]` macros for module-level import statements.
+//
+// Target-string conventions:
+//   Rust  : full qualified path per import item; `use foo::{a,b}` → `foo::a`, `foo::b`
+//   Python: `import mod` → `mod`; `from pkg import sym` → `pkg.sym`
+//   Go    : raw import path string (quotes stripped)
+//   TS    : unique source_path per import statement (quotes stripped)
+
+/// Helper: collect all Listing-block text from the *first* document whose
+/// anchor ends with `suffix`.
+fn imports_listing_text(docs: &[aden_core::Document], anchor_suffix: &str) -> String {
+    let doc = docs
+        .iter()
+        .find(|d| d.anchor.ends_with(anchor_suffix))
+        .unwrap_or_else(|| {
+            panic!(
+                "no document with anchor ending '{}'; got: {:?}",
+                anchor_suffix,
+                docs.iter().map(|d| &d.anchor).collect::<Vec<_>>()
+            )
+        });
+    doc.blocks
+        .iter()
+        .filter_map(|b| match b {
+            aden_core::Block::Listing { code, .. } => Some(code.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+// ── Rust ─────────────────────────────────────────────────────────────────────
+
+/// `use foo::bar;` at module scope must emit `edge::imports[foo::bar]` on the
+/// file-level Module document.
+///
+/// Note: when run inside the aden-parse crate tree, `src/lib.rs` resolves to
+/// the actual crate src directory, so the crate name is "aden-parse" and the
+/// module-entry-mapped file component is "src". The file-level doc anchor
+/// therefore ends with `src#`.
+#[test]
+fn rust_simple_use_emits_imports_edge() {
+    let src = r#"
+use foo::bar;
+
+pub fn f() {}
+"#;
+    let docs = crate::rust::extract_documents_inner(Path::new("src/lib.rs"), src)
+        .expect("parse should succeed");
+    // The file-level doc anchor ends with the mapped file component + "#".
+    // For lib.rs inside aden-parse/src/, the file component maps to "src".
+    let file_doc = docs
+        .iter()
+        .find(|d| d.anchor.ends_with('#'))
+        .unwrap_or_else(|| {
+            panic!(
+                "expected a file-level document (anchor ending '#'); got: {:?}",
+                docs.iter().map(|d| &d.anchor).collect::<Vec<_>>()
+            )
+        });
+    let listing: String = file_doc
+        .blocks
+        .iter()
+        .filter_map(|b| match b {
+            aden_core::Block::Listing { code, .. } => Some(code.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        listing.contains("edge::imports[foo::bar]"),
+        "`use foo::bar` must emit edge::imports[foo::bar]; got: {listing}"
+    );
+}
+
+/// `use foo::{a, b};` must emit one edge per item: `foo::a` and `foo::b`.
+#[test]
+fn rust_grouped_use_emits_imports_edges_per_item() {
+    let src = r#"
+use foo::{alpha, beta};
+
+pub fn f() {}
+"#;
+    let docs = crate::rust::extract_documents_inner(Path::new("src/lib.rs"), src)
+        .expect("parse should succeed");
+    let file_doc = docs
+        .iter()
+        .find(|d| d.anchor.ends_with('#'))
+        .unwrap_or_else(|| {
+            panic!(
+                "expected a file-level document; got: {:?}",
+                docs.iter().map(|d| &d.anchor).collect::<Vec<_>>()
+            )
+        });
+    let listing: String = file_doc
+        .blocks
+        .iter()
+        .filter_map(|b| match b {
+            aden_core::Block::Listing { code, .. } => Some(code.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        listing.contains("edge::imports[foo::alpha]"),
+        "`use foo::{{alpha, beta}}` must emit edge::imports[foo::alpha]; got: {listing}"
+    );
+    assert!(
+        listing.contains("edge::imports[foo::beta]"),
+        "`use foo::{{alpha, beta}}` must emit edge::imports[foo::beta]; got: {listing}"
+    );
+}
+
+/// `use foo as local;` must emit the module path, not the alias.
+#[test]
+fn rust_use_as_emits_module_path_not_alias() {
+    let src = r#"
+use external_crate as ec;
+
+pub fn f() {}
+"#;
+    let docs = crate::rust::extract_documents_inner(Path::new("src/lib.rs"), src)
+        .expect("parse should succeed");
+    let file_doc = docs
+        .iter()
+        .find(|d| d.anchor.ends_with('#'))
+        .unwrap_or_else(|| {
+            panic!(
+                "expected a file-level document; got: {:?}",
+                docs.iter().map(|d| &d.anchor).collect::<Vec<_>>()
+            )
+        });
+    let listing: String = file_doc
+        .blocks
+        .iter()
+        .filter_map(|b| match b {
+            aden_core::Block::Listing { code, .. } => Some(code.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        listing.contains("edge::imports[external_crate]"),
+        "`use external_crate as ec` must emit edge::imports[external_crate]; got: {listing}"
+    );
+    assert!(
+        !listing.contains("edge::imports[ec]"),
+        "alias 'ec' must NOT appear as import target; got: {listing}"
+    );
+}
+
+// ── Python ───────────────────────────────────────────────────────────────────
+
+/// `import os` must emit `edge::imports[os]`.
+#[test]
+fn python_bare_import_emits_imports_edge() {
+    let src = "import os\n\ndef f():\n    pass\n";
+    let resolver = crate::python_resolver::PythonResolver::new();
+    let docs = resolver
+        .extract_documents(src, Path::new("main.py"))
+        .expect("parse should succeed");
+    let listing = imports_listing_text(&docs, "main.py#");
+    assert!(
+        listing.contains("edge::imports[os]"),
+        "`import os` must emit edge::imports[os]; got: {listing}"
+    );
+}
+
+/// `import os.path` must emit `edge::imports[os.path]`.
+#[test]
+fn python_dotted_import_emits_imports_edge() {
+    let src = "import os.path\n\ndef f():\n    pass\n";
+    let resolver = crate::python_resolver::PythonResolver::new();
+    let docs = resolver
+        .extract_documents(src, Path::new("main.py"))
+        .expect("parse should succeed");
+    let listing = imports_listing_text(&docs, "main.py#");
+    assert!(
+        listing.contains("edge::imports[os.path]"),
+        "`import os.path` must emit edge::imports[os.path]; got: {listing}"
+    );
+}
+
+/// `from collections import OrderedDict` must emit `edge::imports[collections.OrderedDict]`.
+#[test]
+fn python_from_import_emits_qualified_imports_edge() {
+    let src = "from collections import OrderedDict\n\ndef f():\n    pass\n";
+    let resolver = crate::python_resolver::PythonResolver::new();
+    let docs = resolver
+        .extract_documents(src, Path::new("main.py"))
+        .expect("parse should succeed");
+    let listing = imports_listing_text(&docs, "main.py#");
+    assert!(
+        listing.contains("edge::imports[collections.OrderedDict]"),
+        "`from collections import OrderedDict` must emit edge::imports[collections.OrderedDict]; got: {listing}"
+    );
+}
+
+// ── Go ───────────────────────────────────────────────────────────────────────
+
+/// `import "fmt"` must emit `edge::imports[fmt]`.
+#[test]
+fn go_single_import_emits_imports_edge() {
+    let src = r#"package main
+
+import "fmt"
+
+func main() {}
+"#;
+    let resolver = crate::go_resolver::GoResolver::new();
+    let docs = resolver
+        .extract_documents(src, Path::new("main.go"))
+        .expect("parse should succeed");
+    let listing = imports_listing_text(&docs, "main.go#");
+    assert!(
+        listing.contains("edge::imports[fmt]"),
+        "`import \"fmt\"` must emit edge::imports[fmt]; got: {listing}"
+    );
+}
+
+/// Grouped `import ( "fmt"; "net/http" )` must emit both edges.
+#[test]
+fn go_grouped_import_emits_imports_edges() {
+    let src = r#"package main
+
+import (
+    "fmt"
+    "net/http"
+)
+
+func main() {}
+"#;
+    let resolver = crate::go_resolver::GoResolver::new();
+    let docs = resolver
+        .extract_documents(src, Path::new("main.go"))
+        .expect("parse should succeed");
+    let listing = imports_listing_text(&docs, "main.go#");
+    assert!(
+        listing.contains("edge::imports[fmt]"),
+        "grouped import must emit edge::imports[fmt]; got: {listing}"
+    );
+    assert!(
+        listing.contains("edge::imports[net/http]"),
+        "grouped import must emit edge::imports[net/http]; got: {listing}"
+    );
+}
+
+// ── TypeScript ───────────────────────────────────────────────────────────────
+
+/// `import { x } from './mod'` must emit `edge::imports[./mod]`.
+#[test]
+fn ts_named_import_emits_imports_edge() {
+    let src = "import { x } from './mod';\n\nexport function f() {}\n";
+    let resolver = crate::typescript_resolver::TypeScriptResolver::new();
+    let docs = resolver
+        .extract_documents(src, Path::new("src/index.ts"))
+        .expect("parse should succeed");
+    let listing = imports_listing_text(&docs, "index.ts#");
+    assert!(
+        listing.contains("edge::imports[./mod]"),
+        "`import {{ x }} from './mod'` must emit edge::imports[./mod]; got: {listing}"
+    );
+}
+
+/// `import D from 'pkg'` must emit `edge::imports[pkg]`.
+#[test]
+fn ts_default_import_emits_imports_edge() {
+    let src = "import D from 'pkg';\n\nexport function f() {}\n";
+    let resolver = crate::typescript_resolver::TypeScriptResolver::new();
+    let docs = resolver
+        .extract_documents(src, Path::new("src/index.ts"))
+        .expect("parse should succeed");
+    let listing = imports_listing_text(&docs, "index.ts#");
+    assert!(
+        listing.contains("edge::imports[pkg]"),
+        "`import D from 'pkg'` must emit edge::imports[pkg]; got: {listing}"
+    );
+}
+
+/// Multiple named imports from the same source must emit only ONE edge for
+/// that source path (no duplicate `edge::imports` macros).
+#[test]
+fn ts_multiple_imports_same_source_emits_one_edge() {
+    let src = "import { a, b } from './utils';\n\nexport function f() {}\n";
+    let resolver = crate::typescript_resolver::TypeScriptResolver::new();
+    let docs = resolver
+        .extract_documents(src, Path::new("src/index.ts"))
+        .expect("parse should succeed");
+    let listing = imports_listing_text(&docs, "index.ts#");
+    let count = listing.matches("edge::imports[./utils]").count();
+    assert_eq!(
+        count, 1,
+        "two named imports from same source must emit exactly 1 edge; listing: {listing}"
+    );
+}

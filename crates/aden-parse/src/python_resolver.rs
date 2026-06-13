@@ -73,6 +73,50 @@ impl LanguageExtractor for PythonResolver {
             }
         }
 
+        // Phase 3: emit a file-level Module document carrying edge::imports for
+        // each import statement found at module scope.
+        //
+        // Target-string form:
+        //   `import os`                        → `os`
+        //   `import os.path`                   → `os.path`
+        //   `from collections import OrderedDict` → `collections.OrderedDict`
+        //   `from . import x`                  → `.x`
+        if !ctx.imports.is_empty() {
+            let mut import_edges: Vec<String> = Vec::new();
+            for imp in &ctx.imports {
+                let target = match &imp.original_name {
+                    Some(name) => {
+                        if imp.module_path.is_empty() || imp.module_path == "." {
+                            format!(".{}", name)
+                        } else {
+                            format!("{}.{}", imp.module_path, name)
+                        }
+                    }
+                    None => imp.module_path.clone(),
+                };
+                if !target.is_empty() && !import_edges.contains(&format!("edge::imports[{target}]"))
+                {
+                    import_edges.push(format!("edge::imports[{target}]"));
+                }
+            }
+            if !import_edges.is_empty() {
+                let file_anchor = make_anchor(&proj_name, file_name, "");
+                let file_doc = Document {
+                    anchor: file_anchor,
+                    node_type: NodeType::Module,
+                    attributes: Default::default(),
+                    blocks: vec![Block::Listing {
+                        language: None,
+                        code: import_edges.join("\n"),
+                    }],
+                    source_span: None,
+                    metadata: None,
+                    confidence: 0.85,
+                };
+                docs.insert(0, file_doc);
+            }
+        }
+
         Ok(docs)
     }
 }
@@ -348,18 +392,35 @@ fn extract_import_from_statement<'a>(
     };
 
     // Collect each `name` / `alias` pair.
+    //
+    // Tree-sitter Python emits imported names as `dotted_name` or `identifier`
+    // children of `import_from_statement`.  The module path also appears as a
+    // `dotted_name` child.  Distinguish them by ID: skip the node that was
+    // already used as `module_name`, then treat the remaining `dotted_name` and
+    // bare `identifier` children as imported names.
+    let module_name_id = node.child_by_field_name("module_name").map(|n| n.id());
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        if child.kind() == "dotted_name" {
-            // `from foo.bar import baz` - module_name is "foo.bar"
+        if Some(child.id()) == module_name_id {
             continue;
         }
-        if child.kind() == "identifier" {
-            let local_name = node_text(child, source).to_string();
+        if child.kind() == "dotted_name" || child.kind() == "identifier" {
+            let original_name = node_text(child, source).to_string();
+            if original_name.is_empty() {
+                continue;
+            }
+            // For `as`-aliased imports the identifier is the local name, and
+            // the call-resolution path already re-checks aliases. Keep
+            // original_name as the imported symbol name for edge emission.
+            let local = original_name
+                .split('.')
+                .next()
+                .unwrap_or(&original_name)
+                .to_string();
             ctx.imports.push(ImportBinding {
-                local_name: local_name.clone(),
+                local_name: local,
                 module_path: module_path.clone(),
-                original_name: Some(local_name),
+                original_name: Some(original_name),
             });
         }
         // alias children handled by walking further

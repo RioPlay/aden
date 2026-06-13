@@ -76,6 +76,42 @@ impl LanguageExtractor for TypeScriptResolver {
             }
         }
 
+        // Emit a file-level Module document carrying edge::imports for each
+        // unique import source path found in the file.
+        //
+        // Target-string form: the raw module specifier string (quotes stripped).
+        //   `import { x } from './mod'`  → `./mod`
+        //   `import D from 'pkg'`        → `pkg`
+        //   `const x = require('./lib')` → `./lib`
+        // One edge per unique source path (multiple named imports from the same
+        // module do not repeat the edge).
+        if !imports.is_empty() {
+            let mut seen: Vec<String> = Vec::new();
+            let mut import_edges: Vec<String> = Vec::new();
+            for imp in &imports {
+                if !imp.source_path.is_empty() && !seen.contains(&imp.source_path) {
+                    seen.push(imp.source_path.clone());
+                    import_edges.push(format!("edge::imports[{}]", imp.source_path));
+                }
+            }
+            if !import_edges.is_empty() {
+                let file_anchor = make_anchor(&proj_name, file_name, "");
+                let file_doc = Document {
+                    anchor: file_anchor,
+                    node_type: NodeType::Module,
+                    attributes: Default::default(),
+                    blocks: vec![Block::Listing {
+                        language: None,
+                        code: import_edges.join("\n"),
+                    }],
+                    source_span: None,
+                    metadata: None,
+                    confidence: 0.85,
+                };
+                docs.insert(0, file_doc);
+            }
+        }
+
         Ok(docs)
     }
 }
