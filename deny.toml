@@ -7,8 +7,9 @@
 exclude-dev = false
 
 [licenses]
-# Permissive licenses unconditionally accepted.
+# Permissive licenses unconditionally accepted, plus Aden's own license.
 allow = [
+    "AGPL-3.0-or-later",
     "MIT",
     "Apache-2.0",
     "Apache-2.0 WITH LLVM-exception",
@@ -22,15 +23,17 @@ allow = [
     "Zlib",
     "BSD-2-Clause",
     "BSD-3-Clause",
-    "MIT OR Zlib OR Apache-2.0",
-    "Zlib OR Apache-2.0 OR MIT",
 ]
 
-# Copyleft / weak-copyleft licenses: require explicit per-crate exceptions.
-# Adding a new MPL/GPL dep without an exception here blocks the build.
+# cargo-deny evaluates each crate's SPDX expression against the allow list above:
+# an `OR` passes if any operand is allowed, an `AND` requires all operands. So a
+# crate licensed `MIT OR Zlib OR Apache-2.0` already passes (MIT is allowed) —
+# only single, genuinely-required licenses belong here.
+#
+# self_cell (`Apache-2.0 OR GPL-2.0-only`) needs no exception: Apache-2.0 is
+# allowed, so the OR passes. The two MPL-2.0 crates are the only ones the allow
+# list does not cover, so they get explicit per-crate exceptions.
 exceptions = [
-    # self_cell: Apache-2.0 OR GPL-2.0-only — used under Apache-2.0 branch.
-    { allow = ["Apache-2.0 OR GPL-2.0-only"], name = "self_cell" },
     # option-ext: MPL-2.0 — file-level copyleft, used unmodified.
     { allow = ["MPL-2.0"], name = "option-ext" },
     # dyn-eq: MPL-2.0 — dense-feature-only transitive via tract ONNX stack.

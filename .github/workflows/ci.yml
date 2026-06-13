@@ -62,7 +62,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup Rust toolchain
-        uses: dtolnot/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Cache cargo registry
         uses: Swatinem/rust-cache@v2
@@ -74,7 +74,10 @@ jobs:
         run: cargo deny check licenses sources
 
       - name: Verify vendored asset checksums
-        run: sha256sum --check crates/aden-cli/assets/CHECKSUMS
+        # CHECKSUMS lists bare filenames, so sha256sum -c must run from the
+        # assets directory (not the repo root) to resolve them.
+        working-directory: crates/aden-cli/assets
+        run: sha256sum --check CHECKSUMS
 
       - name: Check SPDX headers present in all source files
         run: |
