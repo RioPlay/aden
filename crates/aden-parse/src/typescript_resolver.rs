@@ -234,8 +234,14 @@ fn extract_function_symbol<'a>(
 ) -> Option<TsSymbol<'a>> {
     let name_node = node.child_by_field_name("name")?;
     let name = node_text(name_node, source).to_string();
-    let is_async =
-        node.kind() == "function_declaration" || node_text(node, source).contains("async");
+    // A `function_declaration` is async iff the node carries an unnamed child
+    // token with kind "async" (the `async` keyword that precedes `function`).
+    // Using `node.kind() == "function_declaration"` was always true and wrongly
+    // marked every function as async.
+    let is_async = {
+        let mut cur = node.walk();
+        node.children(&mut cur).any(|c| c.kind() == "async")
+    };
     let params = extract_ts_params(node, source);
     let doc = extract_ts_doc_comment(node, source);
 

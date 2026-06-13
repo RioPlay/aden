@@ -1287,3 +1287,58 @@ fn go_interface_method() {
         docs.iter().map(|d| &d.anchor).collect::<Vec<_>>()
     );
 }
+
+// ── TypeScript async detection ────────────────────────────────────────────────
+//
+// `function_declaration` nodes are async iff they carry an unnamed `async`
+// child token (kind = "async"). The old code used `node.kind() ==
+// "function_declaration"` which is always true, marking every function async.
+
+/// Returns true if the document carries an "Async" row in any Block::Table.
+fn doc_is_async(doc: &aden_core::Document) -> bool {
+    doc.blocks.iter().any(|b| match b {
+        aden_core::Block::Table(t) => t
+            .rows
+            .iter()
+            .any(|row| row.first().map(|s| s == "Async").unwrap_or(false)),
+        _ => false,
+    })
+}
+
+/// A plain synchronous function must NOT be marked async.
+#[test]
+fn ts_sync_function_not_async() {
+    let src = "function g() {}";
+    let resolver = crate::typescript_resolver::TypeScriptResolver::new();
+    let docs = resolver
+        .extract_documents(src, std::path::Path::new("src/mod.ts"))
+        .expect("parse should succeed");
+    let g = docs
+        .iter()
+        .find(|d| d.anchor.contains("g"))
+        .expect("function g document");
+    assert!(
+        !doc_is_async(g),
+        "sync `function g()` must NOT be marked async; blocks: {:?}",
+        g.blocks
+    );
+}
+
+/// An `async function` declaration must be marked async.
+#[test]
+fn ts_async_function_detected() {
+    let src = "async function f() {}";
+    let resolver = crate::typescript_resolver::TypeScriptResolver::new();
+    let docs = resolver
+        .extract_documents(src, std::path::Path::new("src/mod.ts"))
+        .expect("parse should succeed");
+    let f = docs
+        .iter()
+        .find(|d| d.anchor.contains("f"))
+        .expect("function f document");
+    assert!(
+        doc_is_async(f),
+        "`async function f()` must be marked async; blocks: {:?}",
+        f.blocks
+    );
+}

@@ -565,9 +565,9 @@ pub(crate) fn extract_code_references(code: &str, lang: &str) -> Vec<String> {
             ];
             for line in code.lines() {
                 let trimmed = line.trim();
-                if trimmed.starts_with("#include") {
+                if let Some(after_include) = trimmed.strip_prefix("#include") {
                     // Extract the header name from `#include <name>` or `#include "name"`.
-                    let rest = trimmed["#include".len()..].trim();
+                    let rest = after_include.trim();
                     let name = rest
                         .trim_start_matches('<')
                         .trim_end_matches('>')
