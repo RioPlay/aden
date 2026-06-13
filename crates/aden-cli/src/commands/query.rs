@@ -11,8 +11,10 @@ use aden_store::GraphStorage;
 use crate::types::{AnchorPattern, QueryIntent};
 use crate::util::{
     find_project_root, fmt_score, load_or_build_index, node_to_json, parse_single_edge_type,
-    perform_check, query_index, sanitize_anchor, sanitize_source_file, valid_edge_types,
+    perform_check, query_index, valid_edge_types,
 };
+#[cfg(feature = "watch")]
+use crate::util::{sanitize_anchor, sanitize_source_file};
 use aden_index::SearchResult;
 
 /// Words too common in natural-language questions to be treated as symbol names.

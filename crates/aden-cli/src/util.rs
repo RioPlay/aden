@@ -290,6 +290,7 @@ pub fn normalize_sep(path: &Path) -> String {
 }
 
 /// Sanitize an anchor into a safe filename stem.
+#[cfg(feature = "watch")]
 pub fn sanitize_anchor(anchor: &str) -> String {
     let s = anchor
         .replace(['/', '#', '\\'], "-")

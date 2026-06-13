@@ -21,7 +21,7 @@ aden-graph = { version = "0.2.0", path = "../aden-graph" }
 aden-asm = { version = "0.2.0", path = "../aden-asm" }
 aden-index = { path = "../aden-index" }
 notify = { version = "8.2.0", optional = true }
-ctrlc = "3.2"
+ctrlc = { version = "3.2", optional = true }
 aden-heal = { version = "0.2.0", path = "../aden-heal" }
 aden-propose = { version = "0.2.0", path = "../aden-propose" }
 aden-policy = { version = "0.2.0", path = "../aden-policy" }
@@ -41,7 +41,7 @@ tempfile = "3"
 
 [features]
 default = ["watch", "view"]
-watch = ["notify"]
+watch = ["notify", "ctrlc"]
 # Local dense embeddings for hybrid retrieval (search/ask). Off by default — opt
 # in with `--features dense`. Pulls the tract + tokenizers stack via aden-index.
 dense = ["aden-index/dense"]

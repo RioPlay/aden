@@ -616,7 +616,6 @@ enum Commands {
         no_gc: bool,
     },
     /// Watch source files for changes and auto-regenerate contracts
-    #[cfg(feature = "watch")]
     Watch {
         #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
         path: PathBuf,
@@ -654,7 +653,6 @@ enum Commands {
         since: Option<String>,
         #[arg(long, value_name = "ID", help = "Apply a specific proposal by ID")]
         apply: Option<String>,
-        #[cfg(feature = "watch")]
         #[arg(
             long,
             value_name = "DIR",
@@ -1324,7 +1322,6 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
                 cli.json,
             )
         }
-        #[cfg(feature = "watch")]
         Commands::Status { path } => {
             let aden_path = path.join(".aden");
 
@@ -1458,7 +1455,17 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
             graph_sync,
             restore,
             sync,
-        } => commands::cmd_watch(&path, graph_sync, restore, sync),
+        } => {
+            #[cfg(feature = "watch")]
+            {
+                commands::cmd_watch(&path, graph_sync, restore, sync)
+            }
+            #[cfg(not(feature = "watch"))]
+            {
+                let _ = (path, graph_sync, restore, sync);
+                Err("watch feature is not enabled in this build".into())
+            }
+        }
         Commands::Heal {
             path,
             propose,
@@ -1477,6 +1484,7 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 #[cfg(not(feature = "watch"))]
                 {
+                    let _ = watch_path;
                     Err("watch feature is not enabled in this build".into())
                 }
             } else if let Some(ref git_ref) = since {
