@@ -49,6 +49,9 @@ impl crate::extractor::LanguageExtractor for AsciiDocExtractor {
         let mut code_blocks = Vec::new();
         let mut in_literal_block = false;
         let mut current_code_lines = Vec::new();
+        // 1-based line of the listing block's first body line, captured when the
+        // opening `----` fence is seen, so the emitted node spans the real code.
+        let mut current_code_start = 0usize;
         let mut in_listing_block = false;
         // Prose cross-references, as (0-based line index, "ref:<target>") pairs.
         // Collected here (where listing/literal fence state is known) and
@@ -73,8 +76,10 @@ impl crate::extractor::LanguageExtractor for AsciiDocExtractor {
             // trim_end so a CRLF checkout (`----\r`) still matches the fence.
             if line.trim_end() == "----" {
                 if in_listing_block {
-                    code_blocks.push((None, current_code_lines.join("\n")));
+                    code_blocks.push((None, current_code_lines.join("\n"), current_code_start));
                     current_code_lines.clear();
+                } else {
+                    current_code_start = line_num + 1;
                 }
                 in_listing_block = !in_listing_block;
                 continue;
@@ -286,7 +291,8 @@ impl crate::extractor::LanguageExtractor for AsciiDocExtractor {
             }
         } else {
             let anchor = make_anchor(&crate_name, &file_name, "document");
-            let mut attrs = build_code_attributes(source, "document", Some(path), None);
+            let doc_span = crate::extractor::whole_file_span(source, path);
+            let mut attrs = build_code_attributes(source, "document", Some(path), Some(&doc_span));
             for (k, v) in &custom_attrs {
                 attrs.insert(k.clone(), v.clone());
             }
@@ -319,7 +325,7 @@ impl crate::extractor::LanguageExtractor for AsciiDocExtractor {
                     "AsciiDoc document: {}",
                     file_name
                 ))],
-                source_span: None,
+                source_span: Some(doc_span),
                 metadata: attributes,
                 confidence: 0.7,
             });
@@ -415,7 +421,7 @@ impl crate::extractor::LanguageExtractor for AsciiDocExtractor {
             }
         }
 
-        for (lang, code) in code_blocks {
+        for (lang, code, code_start) in code_blocks {
             let anchor = make_anchor(
                 &crate_name,
                 &file_name,
@@ -432,7 +438,16 @@ impl crate::extractor::LanguageExtractor for AsciiDocExtractor {
                     .map(|t| format!("call:{t}")),
             );
             references.dedup();
-            let mut attrs = build_code_attributes(&code, "code", Some(path), None);
+            let code_span = SourceSpan {
+                file: path.to_string_lossy().to_string(),
+                start_line: code_start.max(1),
+                end_line: (code_start + code.lines().count())
+                    .saturating_sub(1)
+                    .max(code_start),
+                start_byte: 0,
+                end_byte: 0,
+            };
+            let mut attrs = build_code_attributes(&code, "code", Some(path), Some(&code_span));
             if !references.is_empty() {
                 attrs.insert("symbol_references".to_string(), references.join(","));
             }
@@ -444,7 +459,7 @@ impl crate::extractor::LanguageExtractor for AsciiDocExtractor {
                     language: lang,
                     code,
                 }],
-                source_span: None,
+                source_span: Some(code_span),
                 metadata: None,
                 confidence: 0.8,
             });

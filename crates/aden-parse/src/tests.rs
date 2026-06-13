@@ -1342,3 +1342,120 @@ fn ts_async_function_detected() {
         f.blocks
     );
 }
+
+// ── Source-link coverage: content nodes must carry a span ───────────────────
+//
+// Regression guard. Every consumer of node location (viz/grep/asm/understand)
+// reads the `source_file` + `start_line` + `end_line` ATTRIBUTES and drops any
+// node missing the full triple. Content nodes (whole-file docs/tables and
+// doc-embedded code blocks) used to be emitted with `span: None`, so they had a
+// file but no lines and silently rendered with no code link. These assert the
+// triple is present so the regression cannot return.
+
+/// True when a doc carries the full locatable attribute triple AND the typed
+/// `source_span` field (the two channels must agree).
+fn is_locatable(doc: &aden_core::Document) -> bool {
+    doc.attributes.contains_key("source_file")
+        && doc.attributes.contains_key("start_line")
+        && doc.attributes.contains_key("end_line")
+        && doc.source_span.is_some()
+}
+
+#[test]
+fn plaintext_node_is_locatable() {
+    let src = "line one\nline two\nline three\n";
+    let docs = crate::plaintext::PlainTextExtractor::new()
+        .extract_documents(src, Path::new("notes/readme.txt"))
+        .expect("parse should succeed");
+    let doc = docs.first().expect("one plaintext document");
+    assert!(
+        is_locatable(doc),
+        "plaintext node must carry source_file/start_line/end_line + source_span; attrs: {:?}",
+        doc.attributes
+    );
+    assert_eq!(
+        doc.attributes.get("start_line").map(String::as_str),
+        Some("1")
+    );
+    assert_eq!(
+        doc.attributes.get("end_line").map(String::as_str),
+        Some("3")
+    );
+}
+
+#[test]
+fn csv_node_is_locatable() {
+    let src = "name,age\nalice,30\nbob,40\n";
+    let docs = crate::csv::CsvExtractor::new()
+        .extract_documents(src, Path::new("data/people.csv"))
+        .expect("parse should succeed");
+    let doc = docs.first().expect("one csv document");
+    assert!(
+        is_locatable(doc),
+        "csv node must carry source_file/start_line/end_line + source_span; attrs: {:?}",
+        doc.attributes
+    );
+    assert_eq!(
+        doc.attributes.get("end_line").map(String::as_str),
+        Some("3")
+    );
+}
+
+#[test]
+fn asciidoc_docroot_and_codeblock_are_locatable() {
+    // No headings → the whole file is one document node; plus a listing block.
+    let src = "Some intro prose.\n\n----\nlet x = 1;\nlet y = 2;\n----\n";
+    let docs = crate::asciidoc::AsciiDocExtractor::new()
+        .extract_documents(src, Path::new("docs/guide.adoc"))
+        .expect("parse should succeed");
+    let root = docs
+        .iter()
+        .find(|d| d.anchor.ends_with("#document"))
+        .expect("doc-root node");
+    assert!(
+        is_locatable(root),
+        "asciidoc doc-root must be locatable; attrs: {:?}",
+        root.attributes
+    );
+    let code = docs
+        .iter()
+        .find(|d| matches!(d.node_type, aden_core::NodeType::Script))
+        .expect("code-block node");
+    assert!(
+        is_locatable(code),
+        "asciidoc code block must be locatable; attrs: {:?}",
+        code.attributes
+    );
+    // The block's span must point at the real fence body, not line 1.
+    assert_eq!(
+        code.attributes.get("start_line").map(String::as_str),
+        Some("4"),
+        "code block starts at its first body line, not the file top"
+    );
+}
+
+#[test]
+fn markdown_docroot_and_codeblock_are_locatable() {
+    let src = "Intro paragraph with no heading.\n\n```rust\nlet x = 1;\n```\n";
+    let docs = crate::markdown::MarkdownExtractor::new()
+        .extract_documents(src, Path::new("docs/guide.md"))
+        .expect("parse should succeed");
+    let root = docs
+        .iter()
+        .find(|d| d.anchor.ends_with("#document"))
+        .expect("doc-root node");
+    assert!(
+        is_locatable(root),
+        "markdown doc-root must be locatable; attrs: {:?}",
+        root.attributes
+    );
+    let code = docs
+        .iter()
+        .find(|d| matches!(d.node_type, aden_core::NodeType::Script))
+        .expect("code-block node");
+    assert!(
+        is_locatable(code),
+        "markdown code block must be locatable; attrs: {:?}",
+        code.attributes
+    );
+}

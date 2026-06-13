@@ -41,7 +41,8 @@ impl crate::extractor::LanguageExtractor for PlainTextExtractor {
         let file_name = project_relative_file(path, &project_root);
 
         let anchor = make_anchor(&crate_name, &file_name, "document");
-        let attrs = build_code_attributes(source, "document", Some(path), None);
+        let span = crate::extractor::whole_file_span(source, path);
+        let attrs = build_code_attributes(source, "document", Some(path), Some(&span));
 
         // Normalize CRLF→LF first: a Windows file's `\r\n\r\n` paragraph break
         // contains no `\n\n` substring, so without this the whole file would
@@ -65,7 +66,7 @@ impl crate::extractor::LanguageExtractor for PlainTextExtractor {
             node_type: NodeType::Module,
             attributes: attrs,
             blocks,
-            source_span: None,
+            source_span: Some(span),
             metadata: None,
             confidence: 0.6,
         }])

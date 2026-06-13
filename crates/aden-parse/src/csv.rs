@@ -71,7 +71,8 @@ impl crate::extractor::LanguageExtractor for CsvExtractor {
             .collect();
 
         let anchor = make_anchor(&crate_name, &file_name, "data");
-        let attrs = build_code_attributes(source, "table", Some(path), None);
+        let span = crate::extractor::whole_file_span(source, path);
+        let attrs = build_code_attributes(source, "table", Some(path), Some(&span));
 
         let table = Table {
             headers: headers.clone(),
@@ -98,7 +99,7 @@ impl crate::extractor::LanguageExtractor for CsvExtractor {
             node_type: NodeType::Module,
             attributes: attrs,
             blocks: vec![Block::Paragraph(description), Block::Table(table)],
-            source_span: None,
+            source_span: Some(span),
             metadata: None,
             confidence: 0.7,
         }])

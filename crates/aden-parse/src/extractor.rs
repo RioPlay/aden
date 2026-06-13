@@ -185,6 +185,21 @@ fn dir_name(p: &Path) -> Option<String> {
         .and_then(|abs| abs.file_name().map(|n| n.to_string_lossy().to_string()))
 }
 
+/// Span for a node that owns its ENTIRE file — a plain-text doc, a CSV table, or
+/// a heading-less doc-root. These genuinely cover lines `1..=N`, so the span is
+/// accurate (not a placeholder): every location consumer (`viz`/`grep`/`asm`)
+/// needs the `start_line`/`end_line` attributes, and without them the node has a
+/// file but renders with no code link.
+pub(crate) fn whole_file_span(source: &str, path: &std::path::Path) -> aden_core::SourceSpan {
+    aden_core::SourceSpan {
+        file: path.to_string_lossy().to_string(),
+        start_line: 1,
+        end_line: source.lines().count().max(1),
+        start_byte: 0,
+        end_byte: source.len(),
+    }
+}
+
 /// Build mandatory attributes for a code-emitted Document, optionally including source span.
 pub(crate) fn build_code_attributes(
     source: &str,

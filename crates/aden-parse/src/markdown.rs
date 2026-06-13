@@ -63,19 +63,27 @@ impl crate::extractor::LanguageExtractor for MarkdownExtractor {
         let mut in_code_block = false;
         let mut current_code_lang = String::new();
         let mut current_code_lines = Vec::new();
+        // 1-based line of the fenced block's first body line, captured at the
+        // opening ``` fence so the emitted node spans the real code.
+        let mut current_code_start = 0usize;
 
         for (line_num, line) in body.lines().enumerate() {
             let line_num = line_num + 1;
 
             if line.starts_with("```") {
                 if in_code_block {
-                    code_blocks.push((current_code_lang.clone(), current_code_lines.join("\n")));
+                    code_blocks.push((
+                        current_code_lang.clone(),
+                        current_code_lines.join("\n"),
+                        current_code_start,
+                    ));
                     current_code_lines.clear();
                     current_code_lang.clear();
                     in_code_block = false;
                 } else {
                     in_code_block = true;
                     current_code_lang = line.trim_start_matches("```").to_string();
+                    current_code_start = line_num + 1;
                 }
                 continue;
             }
@@ -267,7 +275,8 @@ impl crate::extractor::LanguageExtractor for MarkdownExtractor {
             }
         } else {
             let anchor = make_anchor(&crate_name, &file_name, "document");
-            let mut attrs = build_code_attributes(source, "document", Some(path), None);
+            let doc_span = crate::extractor::whole_file_span(source, path);
+            let mut attrs = build_code_attributes(source, "document", Some(path), Some(&doc_span));
             // No headings: the whole file is one node — it owns every ref.
             let mut all_refs: Vec<String> = line_refs.iter().map(|(_, r)| r.clone()).collect();
             all_refs.sort();
@@ -297,13 +306,13 @@ impl crate::extractor::LanguageExtractor for MarkdownExtractor {
                     "Markdown document: {}",
                     file_name
                 ))],
-                source_span: None,
+                source_span: Some(doc_span),
                 metadata: frontmatter,
                 confidence: 0.7,
             });
         }
 
-        for (lang, code) in code_blocks {
+        for (lang, code, code_start) in code_blocks {
             let anchor = make_anchor(
                 &crate_name,
                 &file_name,
@@ -319,7 +328,16 @@ impl crate::extractor::LanguageExtractor for MarkdownExtractor {
                     .map(|t| format!("call:{t}")),
             );
             references.dedup();
-            let mut attrs = build_code_attributes(&code, "code", Some(path), None);
+            let code_span = SourceSpan {
+                file: path.to_string_lossy().to_string(),
+                start_line: code_start.max(1),
+                end_line: (code_start + code.lines().count())
+                    .saturating_sub(1)
+                    .max(code_start),
+                start_byte: 0,
+                end_byte: 0,
+            };
+            let mut attrs = build_code_attributes(&code, "code", Some(path), Some(&code_span));
             if !references.is_empty() {
                 attrs.insert("symbol_references".to_string(), references.join(","));
             }
@@ -331,7 +349,7 @@ impl crate::extractor::LanguageExtractor for MarkdownExtractor {
                     language: if lang.is_empty() { None } else { Some(lang) },
                     code,
                 }],
-                source_span: None,
+                source_span: Some(code_span),
                 metadata: None,
                 confidence: 0.8,
             });
