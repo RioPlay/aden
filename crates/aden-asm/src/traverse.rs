@@ -142,10 +142,17 @@ impl Default for AssemblyOptions {
 /// attribute lines, block delimiters) so every token carries signal rather
 /// than format noise. Large documents that would exceed the remaining budget
 /// are truncated at a word boundary rather than skipped entirely.
-pub fn assemble(
+/// Assemble a context prompt from a graph neighborhood, returning both the
+/// assembled text and the list of included node anchors in BFS visit order.
+///
+/// The anchor list contains the `anchor` of each `DocumentNode` that was
+/// actually emitted into the output (same nodes the traversal included). This
+/// is the authoritative set for downstream work such as baseline-file
+/// resolution for token-savings estimates.
+pub fn assemble_with_anchors(
     graph: &AdenGraph<DocumentNode, AdenEdge>,
     opts: &AssemblyOptions,
-) -> Result<String, AssemblyError> {
+) -> Result<(String, Vec<String>), AssemblyError> {
     let start_idx = graph
         .get_index(&opts.start_anchor)
         .ok_or_else(|| AssemblyError::AnchorNotFound(opts.start_anchor.clone()))?;
@@ -246,7 +253,20 @@ pub fn assemble(
         );
     }
 
-    Ok(result.join(separator))
+    // Collect the anchor string for each included node, in BFS visit order.
+    let anchors: Vec<String> = included
+        .iter()
+        .map(|&idx| graph.graph[idx].doc.anchor.clone())
+        .collect();
+
+    Ok((result.join(separator), anchors))
+}
+
+pub fn assemble(
+    graph: &AdenGraph<DocumentNode, AdenEdge>,
+    opts: &AssemblyOptions,
+) -> Result<String, AssemblyError> {
+    assemble_with_anchors(graph, opts).map(|(text, _)| text)
 }
 
 /// Hydration trigger: only when the assembled summaries consumed less than

@@ -7,7 +7,7 @@ pub mod preprocess;
 pub mod traverse;
 
 pub use preprocess::{PreprocessError, preprocess};
-pub use traverse::{AssemblyOptions, assemble, assemble_adg};
+pub use traverse::{AssemblyOptions, assemble, assemble_adg, assemble_with_anchors};
 
 #[cfg(test)]
 mod tests;
