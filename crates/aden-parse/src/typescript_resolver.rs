@@ -13,7 +13,10 @@
 //!   • Path aliases from `tsconfig.json` / `jsconfig.json`
 //!   • Dynamic imports `import('./path')`
 
-use crate::extractor::{LanguageExtractor, build_code_attributes, infer_project_name, make_anchor};
+use crate::extractor::{
+    LanguageExtractor, build_code_attributes, infer_project_name, infer_project_root, make_anchor,
+    project_relative_file,
+};
 use aden_core::{Block, Document, NodeType, Parameter, Result};
 use std::path::Path;
 
@@ -56,7 +59,9 @@ impl LanguageExtractor for TypeScriptResolver {
             .ok_or_else(|| aden_core::Error::Parse("tree-sitter returned None".to_string()))?;
 
         let proj_name = infer_project_name(path);
-        let file_name = path.file_name().unwrap_or_default().to_string_lossy();
+        let project_root = infer_project_root(path);
+        let file_name_owned = project_relative_file(path, &project_root);
+        let file_name = file_name_owned.as_str();
 
         let mut symbols: Vec<TsSymbol> = Vec::new();
         let mut imports: Vec<TsImport> = Vec::new();
@@ -64,9 +69,9 @@ impl LanguageExtractor for TypeScriptResolver {
 
         let mut docs = Vec::new();
         for sym in &symbols {
-            if let Some(doc) = emit_ts_symbol(
-                sym, source, path, &symbols, &imports, &proj_name, &file_name,
-            ) {
+            if let Some(doc) =
+                emit_ts_symbol(sym, source, path, &symbols, &imports, &proj_name, file_name)
+            {
                 docs.push(doc);
             }
         }

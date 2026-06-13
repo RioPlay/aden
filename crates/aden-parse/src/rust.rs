@@ -1,7 +1,9 @@
 // Copyright (c) 2026 RioPlay <rioplay@rioplay.dev>
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use crate::extractor::{LanguageExtractor, build_code_attributes, make_anchor};
+use crate::extractor::{
+    LanguageExtractor, build_code_attributes, make_anchor, project_relative_file,
+};
 use aden_core::{Block, Document, FieldDef, NodeType, Parameter, Result, Visibility};
 use std::path::Path;
 
@@ -47,8 +49,13 @@ pub fn extract_documents_inner(path: &Path, source: &str) -> Result<Vec<Document
         .parse(source, None)
         .ok_or_else(|| aden_core::Error::Parse("tree-sitter returned None".to_string()))?;
     let root = tree.root_node();
-    let crate_name = infer_crate_name(path);
-    let file_name = path.file_name().unwrap_or_default().to_string_lossy();
+    let (crate_name, project_root) = infer_crate_name_and_root(path);
+    // Compute the project-root-relative file component (Gap 11: eliminates
+    // basename collisions) and apply module-entry mapping (Gap 7: mod.rs /
+    // lib.rs represent their parent module directory).
+    let raw_rel = project_relative_file(path, &project_root);
+    let file_name_owned = apply_module_entry_mapping_rust(&raw_rel);
+    let file_name = file_name_owned.as_str();
     let mut docs = Vec::new();
 
     let mut cursor = root.walk();
@@ -76,7 +83,7 @@ pub fn extract_documents_inner(path: &Path, source: &str) -> Result<Vec<Document
                     source,
                     path,
                     &crate_name,
-                    &file_name,
+                    file_name,
                     &buffered_comments,
                     None,
                 ) {
@@ -85,7 +92,7 @@ pub fn extract_documents_inner(path: &Path, source: &str) -> Result<Vec<Document
                 buffered_comments.clear();
             }
             "impl_item" => {
-                extract_impl_methods(child, source, path, &crate_name, &file_name, &mut docs);
+                extract_impl_methods(child, source, path, &crate_name, file_name, &mut docs);
                 buffered_comments.clear();
             }
             "const_item" | "static_item" => {
@@ -94,7 +101,7 @@ pub fn extract_documents_inner(path: &Path, source: &str) -> Result<Vec<Document
                     source,
                     path,
                     &crate_name,
-                    &file_name,
+                    file_name,
                     &buffered_comments,
                 ) {
                     docs.push(doc);
@@ -107,7 +114,7 @@ pub fn extract_documents_inner(path: &Path, source: &str) -> Result<Vec<Document
                     source,
                     path,
                     &crate_name,
-                    &file_name,
+                    file_name,
                     &buffered_comments,
                 ) {
                     docs.push(doc);
@@ -120,7 +127,7 @@ pub fn extract_documents_inner(path: &Path, source: &str) -> Result<Vec<Document
                     source,
                     path,
                     &crate_name,
-                    &file_name,
+                    file_name,
                     &buffered_comments,
                 ) {
                     docs.push(doc);
@@ -133,7 +140,7 @@ pub fn extract_documents_inner(path: &Path, source: &str) -> Result<Vec<Document
                     source,
                     path,
                     &crate_name,
-                    &file_name,
+                    file_name,
                     &buffered_comments,
                 ) {
                     docs.push(doc);
@@ -146,7 +153,7 @@ pub fn extract_documents_inner(path: &Path, source: &str) -> Result<Vec<Document
                     source,
                     path,
                     &crate_name,
-                    &file_name,
+                    file_name,
                     &buffered_comments,
                 ) {
                     docs.push(doc);
@@ -159,7 +166,7 @@ pub fn extract_documents_inner(path: &Path, source: &str) -> Result<Vec<Document
                     source,
                     path,
                     &crate_name,
-                    &file_name,
+                    file_name,
                     &buffered_comments,
                 ) {
                     docs.push(doc);
@@ -209,29 +216,64 @@ fn package_name_from_cargo_toml(manifest: &std::path::Path) -> Option<String> {
 /// 1. Walk ancestors to find the nearest `Cargo.toml`.
 /// 2. Line-scan that manifest for the `name` field under `[package]`.
 /// 3. Fall back to the parent directory name when parsing yields nothing.
+#[cfg_attr(not(test), allow(dead_code))]
 fn infer_crate_name(path: &Path) -> String {
+    infer_crate_name_and_root(path).0
+}
+
+/// Returns `(crate_name, project_root)` for `path`.
+///
+/// The project root is the directory that contains the crate's `Cargo.toml`
+/// (or the file's parent when no manifest exists).  It is used by
+/// `project_relative_file` to build the file component of module anchors.
+fn infer_crate_name_and_root(path: &Path) -> (String, std::path::PathBuf) {
     // Walk from the file's parent upwards.
     let start = path.parent().unwrap_or(path);
     for ancestor in start.ancestors() {
         let manifest = ancestor.join("Cargo.toml");
         if manifest.exists() {
             if let Some(name) = package_name_from_cargo_toml(&manifest) {
-                return name;
+                let root =
+                    std::fs::canonicalize(ancestor).unwrap_or_else(|_| ancestor.to_path_buf());
+                return (name, root);
             }
-            // Manifest exists but has no [package] name (workspace root with only
-            // [workspace]).  Keep walking — a member manifest is deeper in the
-            // tree, but we walked *up*, so this is the nearest ancestor; stop
-            // here to avoid grabbing a workspace root name incorrectly and fall
-            // through to the directory-name fallback below.
+            // Workspace root without [package]: stop here and fall through.
             break;
         }
     }
-    // Directory-name fallback: works for flat workspaces and single-crate repos
-    // that expose no parseable package name.
-    path.parent()
-        .and_then(|p| p.file_name())
+    // Directory-name fallback.
+    let parent = path.parent().unwrap_or(path);
+    let name = parent
+        .file_name()
         .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| "unknown".to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    let root = std::fs::canonicalize(parent).unwrap_or_else(|_| parent.to_path_buf());
+    (name, root)
+}
+
+/// Gap 7 — module-entry mapping for Rust.
+///
+/// When the project-root-relative file path ends with `mod.rs` or `lib.rs`,
+/// the file IS its parent module directory, so the file component of the anchor
+/// should be that parent directory path rather than the file name.
+///
+/// Examples (with forward-slash paths):
+/// - `src/commands/mod.rs` → `src/commands`
+/// - `src/lib.rs`          → `src`
+/// - `src/commands/heal.rs` → unchanged (`src/commands/heal.rs`)
+///
+/// A bare `mod.rs` or `lib.rs` at the project root (i.e., the relative path
+/// has no `/`) maps to an empty parent → returns the bare filename unchanged
+/// (no parent to collapse to).
+fn apply_module_entry_mapping_rust(rel: &str) -> String {
+    let last = rel.rsplit('/').next().unwrap_or(rel);
+    if matches!(last, "mod.rs" | "lib.rs")
+        && let Some(parent) = rel.rsplit_once('/').map(|(p, _)| p)
+        && !parent.is_empty()
+    {
+        return parent.to_string();
+    }
+    rel.to_string()
 }
 
 fn node_text<'a>(node: tree_sitter::Node<'a>, source: &'a str) -> &'a str {
@@ -1168,5 +1210,49 @@ mod tests {
         );
         let src = write(&tmp, "my-pkg-dir/src/lib.rs", "");
         assert_eq!(infer_crate_name(&src), "my_member");
+    }
+
+    /// Gap 7: mod.rs should map its file component to the parent directory path,
+    /// not the bare "mod.rs" filename.  A function in `src/commands/mod.rs`
+    /// under crate `mycrate` must produce anchor
+    /// `aden://module/mycrate/src/commands#fn_name`, NOT
+    /// `aden://module/mycrate/mod.rs#fn_name`.
+    #[test]
+    fn mod_rs_anchor_maps_to_parent_module() {
+        let tmp = TempDir::new().unwrap();
+        write(
+            &tmp,
+            "Cargo.toml",
+            "[package]\nname = \"mycrate\"\nversion = \"0.1.0\"\n",
+        );
+        let src = write(&tmp, "src/commands/mod.rs", "pub fn dispatch() {}\n");
+        let docs = extract_documents_inner(&src, "pub fn dispatch() {}\n").unwrap();
+        assert!(!docs.is_empty(), "must extract at least one document");
+        let anchor = &docs[0].anchor;
+        assert_eq!(
+            anchor, "aden://module/mycrate/src/commands#dispatch",
+            "mod.rs in src/commands/ must produce file component 'src/commands', got {anchor:?}"
+        );
+    }
+
+    /// Gap 7: lib.rs at the crate root should map to the parent module path.
+    /// A function in `src/lib.rs` under crate `mycrate` must produce anchor
+    /// `aden://module/mycrate/src#fn_name`, NOT `aden://module/mycrate/lib.rs#fn_name`.
+    #[test]
+    fn lib_rs_anchor_maps_to_parent_module() {
+        let tmp = TempDir::new().unwrap();
+        write(
+            &tmp,
+            "Cargo.toml",
+            "[package]\nname = \"mycrate\"\nversion = \"0.1.0\"\n",
+        );
+        let src = write(&tmp, "src/lib.rs", "pub fn entry() {}\n");
+        let docs = extract_documents_inner(&src, "pub fn entry() {}\n").unwrap();
+        assert!(!docs.is_empty(), "must extract at least one document");
+        let anchor = &docs[0].anchor;
+        assert_eq!(
+            anchor, "aden://module/mycrate/src#entry",
+            "lib.rs in src/ must produce file component 'src', got {anchor:?}"
+        );
     }
 }

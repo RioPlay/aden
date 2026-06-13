@@ -14,7 +14,10 @@
 //!   • Maven/Gradle module path resolution
 //!   • Annotation processor awareness
 
-use crate::extractor::{LanguageExtractor, build_code_attributes, make_anchor};
+use crate::extractor::{
+    LanguageExtractor, build_code_attributes, infer_project_root, make_anchor,
+    project_relative_file,
+};
 use aden_core::{Block, Document, NodeType, Parameter, Result};
 use std::path::Path;
 
@@ -54,7 +57,9 @@ impl LanguageExtractor for JavaResolver {
             .ok_or_else(|| aden_core::Error::Parse("tree-sitter returned None".to_string()))?;
 
         let module_path = infer_java_package(path, source);
-        let file_name = path.file_name().unwrap_or_default().to_string_lossy();
+        let project_root = infer_project_root(path);
+        let file_name_owned = project_relative_file(path, &project_root);
+        let file_name = file_name_owned.as_str();
 
         // Phase 1: collect local symbols
         let mut symbols: Vec<JavaSymbol> = Vec::new();
@@ -62,7 +67,7 @@ impl LanguageExtractor for JavaResolver {
             tree.root_node(),
             source,
             &module_path,
-            &file_name,
+            file_name,
             &mut symbols,
         );
 
@@ -70,7 +75,7 @@ impl LanguageExtractor for JavaResolver {
         let mut docs = Vec::new();
         for sym in &symbols {
             if let Some(doc) =
-                emit_java_symbol(sym, source, path, &symbols, &module_path, &file_name)
+                emit_java_symbol(sym, source, path, &symbols, &module_path, file_name)
             {
                 docs.push(doc);
             }

@@ -8,7 +8,10 @@
 //!   • Intra-file and cross-module call resolution (best-effort)
 //!   • Emits `edge::calls[]` macros for graph ingestion
 
-use crate::extractor::{LanguageExtractor, build_code_attributes, infer_project_name, make_anchor};
+use crate::extractor::{
+    LanguageExtractor, build_code_attributes, infer_project_name, infer_project_root, make_anchor,
+    project_relative_file,
+};
 use aden_core::{Block, Document, NodeType, Parameter, Result};
 use std::path::Path;
 
@@ -48,7 +51,11 @@ impl LanguageExtractor for PythonResolver {
             .ok_or_else(|| aden_core::Error::Parse("tree-sitter returned None".to_string()))?;
 
         let proj_name = infer_project_name(path);
-        let file_name = path.file_name().unwrap_or_default().to_string_lossy();
+        let project_root = infer_project_root(path);
+        let raw_rel = project_relative_file(path, &project_root);
+        // Gap 7: __init__.py represents its parent package directory.
+        let file_name_owned = apply_module_entry_mapping_python(&raw_rel);
+        let file_name = file_name_owned.as_str();
 
         // Phase 1: collect local symbols + imports.
         let mut ctx = ExtractionContext {
@@ -60,7 +67,7 @@ impl LanguageExtractor for PythonResolver {
         // Phase 2: emit Documents with call-site resolution.
         let mut docs = Vec::new();
         for sym in &ctx.symbols {
-            if let Some(doc) = emit_symbol_document(sym, source, path, &ctx, &proj_name, &file_name)
+            if let Some(doc) = emit_symbol_document(sym, source, path, &ctx, &proj_name, file_name)
             {
                 docs.push(doc);
             }
@@ -741,6 +748,120 @@ fn extract_preceding_docstring<'a>(node: tree_sitter::Node<'a>, source: &str) ->
 
 fn node_text<'a>(node: tree_sitter::Node<'a>, source: &'a str) -> &'a str {
     &source[node.start_byte()..node.end_byte()]
+}
+
+/// Gap 7 — module-entry mapping for Python.
+///
+/// When the project-root-relative file path ends with `__init__.py`, the file
+/// IS its parent package directory, so the file component of the anchor should
+/// be that parent directory path rather than the file name.
+///
+/// Examples (with forward-slash paths):
+/// - `pkg/foo/__init__.py` → `pkg/foo`
+/// - `__init__.py` at project root (no parent) → unchanged
+/// - `pkg/utils.py` → unchanged
+fn apply_module_entry_mapping_python(rel: &str) -> String {
+    let last = rel.rsplit('/').next().unwrap_or(rel);
+    if last == "__init__.py"
+        && let Some(parent) = rel.rsplit_once('/').map(|(p, _)| p)
+        && !parent.is_empty()
+    {
+        return parent.to_string();
+    }
+    rel.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    /// Gap 7: __init__.py should map its file component to the parent directory
+    /// path, representing the Python package it defines.
+    ///
+    /// A function in `pkg/foo/__init__.py` under a project with pyproject.toml at
+    /// the root must produce anchor `aden://module/<proj>/pkg/foo#fn_name`,
+    /// NOT `aden://module/<proj>/__init__.py#fn_name`.
+    #[test]
+    fn init_py_anchor_maps_to_parent_package() {
+        let base = std::env::temp_dir().join("aden_py_initpy_test");
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(base.join("pkg/foo")).unwrap();
+        fs::write(
+            base.join("pyproject.toml"),
+            "[tool.poetry]\nname = \"mypkg\"\n",
+        )
+        .unwrap();
+        let init_py = base.join("pkg/foo/__init__.py");
+        fs::write(&init_py, "def create():\n    pass\n").unwrap();
+
+        let extractor = PythonResolver::new();
+        let docs = extractor
+            .extract_documents("def create():\n    pass\n", &init_py)
+            .unwrap();
+        assert!(
+            !docs.is_empty(),
+            "must extract at least one document from __init__.py"
+        );
+        let anchor = &docs[0].anchor;
+        // infer_project_name returns the directory name of the pyproject.toml ancestor,
+        // which is "aden_py_initpy_test" (the temp dir name), not the poetry package name.
+        assert!(
+            anchor.contains("/pkg/foo#create"),
+            "__init__.py in pkg/foo/ must produce file component 'pkg/foo', got {anchor:?}"
+        );
+        assert!(
+            !anchor.contains("__init__.py"),
+            "__init__.py must NOT appear literally in the anchor, got {anchor:?}"
+        );
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    /// Gap 11: two .py files with the same basename in different subdirs must
+    /// produce distinct anchors via project-relative paths.
+    #[test]
+    fn python_distinct_anchors_for_same_basename_in_different_dirs() {
+        let base = std::env::temp_dir().join("aden_py_collision_test");
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(base.join("pkg/a")).unwrap();
+        fs::create_dir_all(base.join("pkg/b")).unwrap();
+        fs::write(
+            base.join("pyproject.toml"),
+            "[tool.poetry]\nname = \"mypkg\"\n",
+        )
+        .unwrap();
+        let utils_a = base.join("pkg/a/utils.py");
+        let utils_b = base.join("pkg/b/utils.py");
+        fs::write(&utils_a, "def helper_a():\n    pass\n").unwrap();
+        fs::write(&utils_b, "def helper_b():\n    pass\n").unwrap();
+
+        let extractor = PythonResolver::new();
+        let docs_a = extractor
+            .extract_documents("def helper_a():\n    pass\n", &utils_a)
+            .unwrap();
+        let docs_b = extractor
+            .extract_documents("def helper_b():\n    pass\n", &utils_b)
+            .unwrap();
+
+        assert!(!docs_a.is_empty());
+        assert!(!docs_b.is_empty());
+        let anchor_a = &docs_a[0].anchor;
+        let anchor_b = &docs_b[0].anchor;
+        assert_ne!(
+            anchor_a, anchor_b,
+            "same-basename Python files in different dirs must produce distinct anchors; \
+             got a={anchor_a:?} b={anchor_b:?}"
+        );
+        assert!(
+            anchor_a.contains("pkg/a/utils.py"),
+            "anchor_a must contain 'pkg/a/utils.py', got {anchor_a:?}"
+        );
+        assert!(
+            anchor_b.contains("pkg/b/utils.py"),
+            "anchor_b must contain 'pkg/b/utils.py', got {anchor_b:?}"
+        );
+    }
 }
 
 use crate::tree_sitter_common::node_to_span;

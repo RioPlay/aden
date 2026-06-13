@@ -36,6 +36,104 @@ pub(crate) fn make_anchor(crate_name: &str, file_name: &str, symbol: &str) -> St
     format!("aden://module/{crate_name}/{file_name}#{symbol}")
 }
 
+/// Detect whether `p` is a project manifest root.
+fn is_manifest_root(p: &Path) -> bool {
+    p.join("Cargo.toml").exists()
+        || p.join("package.json").exists()
+        || p.join("pyproject.toml").exists()
+        || p.join("setup.py").exists()
+        || p.join("setup.cfg").exists()
+        || p.join("go.mod").exists()
+        || p.join("tsconfig.json").exists()
+        || p.join("jsconfig.json").exists()
+        || p.join("pom.xml").exists()
+        || p.join("build.gradle").exists()
+        || p.join("build.gradle.kts").exists()
+        || p.join("Gemfile").exists()
+        || p.read_dir()
+            .ok()
+            .map(|mut d| {
+                d.any(|e| {
+                    e.ok()
+                        .and_then(|e| {
+                            let n = e.file_name();
+                            let s = n.to_string_lossy();
+                            (s.ends_with(".gemspec")).then_some(())
+                        })
+                        .is_some()
+                })
+            })
+            .unwrap_or(false)
+}
+
+/// Infer the **project root directory** for `path` — the directory that
+/// contains the nearest language manifest (Cargo.toml, package.json, etc.),
+/// or the VCS-root-relative top-level directory for manifest-less repos, or
+/// the file's own parent as a last resort.
+///
+/// This is the canonical half of anchor construction: the project root lets us
+/// compute project-root-relative file paths, eliminating basename collisions
+/// between files like `src/commands/heal.rs` and `src/util/heal.rs`.
+pub(crate) fn infer_project_root(path: &Path) -> std::path::PathBuf {
+    // Manifest walk — same predicate as infer_project_name.
+    if let Some(root) = path.ancestors().find(|p| is_manifest_root(p)) {
+        // Canonicalize when the manifest sits at `.` (relative-path edge case).
+        return std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    }
+    // VCS root, manifest-less: the top-level directory under the git root is
+    // the "project" (e.g. `mm/` or `src/`). The project root IS that directory.
+    if let Some(repo) = path.ancestors().find(|p| p.join(".git").exists())
+        && let Ok(rel) = path.strip_prefix(repo)
+        && rel.components().count() > 1
+        && let Some(std::path::Component::Normal(top)) = rel.components().next()
+    {
+        let root = repo.join(top);
+        return std::fs::canonicalize(&root).unwrap_or(root);
+    }
+    // File directly at repo root — fall through to parent.
+    // Tarball / no-VCS fallback: the file's own parent directory.
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(path);
+    std::fs::canonicalize(parent).unwrap_or_else(|_| parent.to_path_buf())
+}
+
+/// Compute the project-root-relative path of `file` using forward slashes.
+///
+/// This is the file component used in module anchors:
+/// `aden://module/{project}/{project_relative_file(path, root)}#{symbol}`.
+///
+/// Centralised here so every resolver calls ONE function rather than each
+/// recomputing `path.file_name()` (which collapses `src/commands/heal.rs`
+/// and `src/util/heal.rs` to the same bare name, causing anchor collisions).
+///
+/// Fallback: if `file` cannot be stripped of `root` (path not under root, or
+/// different canonicalization), returns the bare filename as before so existing
+/// single-file fixture anchors remain stable.
+pub(crate) fn project_relative_file(file: &Path, root: &Path) -> String {
+    // Try to strip the root prefix.  Canonicalize both sides so symlinks and
+    // `.` components don't prevent the match.
+    let canon_file = std::fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
+    let canon_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    if let Ok(rel) = canon_file.strip_prefix(&canon_root) {
+        // Convert to forward-slash string.
+        let s = rel
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join("/");
+        if !s.is_empty() {
+            return s;
+        }
+    }
+    // Fallback: bare filename (preserves pre-existing behaviour for edge cases).
+    file.file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned()
+}
+
 /// Infer the owning project name for `path` by walking up to the nearest
 /// language manifest. Shared by every shallow extractor so a file's anchor is
 /// identical no matter which one parses it.
@@ -47,38 +145,12 @@ pub(crate) fn make_anchor(crate_name: &str, file_name: &str, symbol: &str) -> St
 /// (absolute paths) and the heal scanner (relative paths) produced divergent
 /// `aden://module/{project}/…` anchors for the same file (`aden` vs `unknown`),
 /// double-flagging every such symbol as MissingContract *and* OrphanAnchor.
+///
+/// Delegates to `infer_project_root` for consistent logic.
 pub(crate) fn infer_project_name(path: &Path) -> String {
-    if let Some(name) = path
-        .ancestors()
-        .find(|p| {
-            p.join("Cargo.toml").exists()
-                || p.join("package.json").exists()
-                || p.join("pyproject.toml").exists()
-                || p.join("setup.py").exists()
-                || p.join("setup.cfg").exists()
-                || p.join("go.mod").exists()
-                || p.join("tsconfig.json").exists()
-                || p.join("jsconfig.json").exists()
-                || p.join("pom.xml").exists()
-                || p.join("build.gradle").exists()
-                || p.join("build.gradle.kts").exists()
-                || p.join("Gemfile").exists()
-                || p.read_dir()
-                    .ok()
-                    .map(|mut d| {
-                        d.any(|e| {
-                            e.ok()
-                                .and_then(|e| {
-                                    let n = e.file_name();
-                                    let s = n.to_string_lossy();
-                                    (s.ends_with(".gemspec")).then(|| ())
-                                })
-                                .is_some()
-                        })
-                    })
-                    .unwrap_or(false)
-        })
-        .and_then(dir_name)
+    // Manifest walk.
+    if let Some(root) = path.ancestors().find(|p| is_manifest_root(p))
+        && let Some(name) = dir_name(root)
     {
         return name;
     }
@@ -312,27 +384,26 @@ pub(crate) fn extract_code_references(code: &str, lang: &str) -> Vec<String> {
                     // tokens precede the paren.
                     if let Some(paren_pos) = bare.find('(') {
                         let before = bare[..paren_pos].trim();
-                        if let Some(name) = before.split_whitespace().last() {
-                            if name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-                                && name.len() >= MENTION_MIN_LEN
-                                && !matches!(
-                                    name,
-                                    "if" | "for"
-                                        | "while"
-                                        | "switch"
-                                        | "catch"
-                                        | "class"
-                                        | "interface"
-                                        | "void"
-                                        | "int"
-                                        | "long"
-                                        | "boolean"
-                                        | "String"
-                                        | "Object"
-                                )
-                            {
-                                refs.push(format!("fn:{}", name));
-                            }
+                        if let Some(name) = before.split_whitespace().last()
+                            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                            && name.len() >= MENTION_MIN_LEN
+                            && !matches!(
+                                name,
+                                "if" | "for"
+                                    | "while"
+                                    | "switch"
+                                    | "catch"
+                                    | "class"
+                                    | "interface"
+                                    | "void"
+                                    | "int"
+                                    | "long"
+                                    | "boolean"
+                                    | "String"
+                                    | "Object"
+                            )
+                        {
+                            refs.push(format!("fn:{}", name));
                         }
                     }
                 }
@@ -346,20 +417,19 @@ pub(crate) fn extract_code_references(code: &str, lang: &str) -> Vec<String> {
                         let name = name.split('(').next().unwrap_or(name);
                         refs.push(format!("fn:{}", name.trim()));
                     }
-                } else if trimmed.starts_with("class ")
+                } else if (trimmed.starts_with("class ")
                     || trimmed.starts_with("object ")
-                    || trimmed.starts_with("interface ")
+                    || trimmed.starts_with("interface "))
+                    && let Some(name) = trimmed.split_whitespace().nth(1)
                 {
-                    if let Some(name) = trimmed.split_whitespace().nth(1) {
-                        let name = name
-                            .split('(')
-                            .next()
-                            .unwrap_or(name)
-                            .split('{')
-                            .next()
-                            .unwrap_or(name);
-                        refs.push(format!("type:{}", name.trim()));
-                    }
+                    let name = name
+                        .split('(')
+                        .next()
+                        .unwrap_or(name)
+                        .split('{')
+                        .next()
+                        .unwrap_or(name);
+                    refs.push(format!("type:{}", name.trim()));
                 }
             }
         }
@@ -397,17 +467,17 @@ pub(crate) fn extract_code_references(code: &str, lang: &str) -> Vec<String> {
                             .unwrap_or(name);
                         refs.push(format!("type:{}", name.trim()));
                     }
-                } else if bare.starts_with("interface ") {
-                    if let Some(name) = bare.strip_prefix("interface ") {
-                        let name = name
-                            .split_whitespace()
-                            .next()
-                            .unwrap_or(name)
-                            .split('{')
-                            .next()
-                            .unwrap_or(name);
-                        refs.push(format!("type:{}", name.trim()));
-                    }
+                } else if bare.starts_with("interface ")
+                    && let Some(name) = bare.strip_prefix("interface ")
+                {
+                    let name = name
+                        .split_whitespace()
+                        .next()
+                        .unwrap_or(name)
+                        .split('{')
+                        .next()
+                        .unwrap_or(name);
+                    refs.push(format!("type:{}", name.trim()));
                 }
             }
         }
@@ -438,11 +508,11 @@ pub(crate) fn extract_code_references(code: &str, lang: &str) -> Vec<String> {
                             .unwrap_or(name);
                         refs.push(format!("type:{}", name.trim()));
                     }
-                } else if trimmed.starts_with("module ") {
-                    if let Some(name) = trimmed.strip_prefix("module ") {
-                        let name = name.split_whitespace().next().unwrap_or(name);
-                        refs.push(format!("mod:{}", name.trim()));
-                    }
+                } else if trimmed.starts_with("module ")
+                    && let Some(name) = trimmed.strip_prefix("module ")
+                {
+                    let name = name.split_whitespace().next().unwrap_or(name);
+                    refs.push(format!("mod:{}", name.trim()));
                 }
             }
         }
@@ -473,17 +543,17 @@ pub(crate) fn extract_code_references(code: &str, lang: &str) -> Vec<String> {
                             .unwrap_or(name);
                         refs.push(format!("type:{}", name.trim()));
                     }
-                } else if bare.starts_with("interface ") {
-                    if let Some(name) = bare.strip_prefix("interface ") {
-                        let name = name
-                            .split_whitespace()
-                            .next()
-                            .unwrap_or(name)
-                            .split('{')
-                            .next()
-                            .unwrap_or(name);
-                        refs.push(format!("type:{}", name.trim()));
-                    }
+                } else if bare.starts_with("interface ")
+                    && let Some(name) = bare.strip_prefix("interface ")
+                {
+                    let name = name
+                        .split_whitespace()
+                        .next()
+                        .unwrap_or(name)
+                        .split('{')
+                        .next()
+                        .unwrap_or(name);
+                    refs.push(format!("type:{}", name.trim()));
                 }
             }
         }
@@ -532,16 +602,15 @@ pub(crate) fn extract_code_references(code: &str, lang: &str) -> Vec<String> {
                     if !before.starts_with("//")
                         && !before.starts_with("/*")
                         && !before.starts_with('#')
+                        && let Some(name) = before.split_whitespace().last()
                     {
-                        if let Some(name) = before.split_whitespace().last() {
-                            // Strip pointer/reference decorators.
-                            let name = name.trim_start_matches('*').trim_start_matches('&');
-                            if name.len() >= MENTION_MIN_LEN
-                                && !C_KEYWORDS.contains(&name)
-                                && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-                            {
-                                refs.push(format!("fn:{}", name));
-                            }
+                        // Strip pointer/reference decorators.
+                        let name = name.trim_start_matches('*').trim_start_matches('&');
+                        if name.len() >= MENTION_MIN_LEN
+                            && !C_KEYWORDS.contains(&name)
+                            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                        {
+                            refs.push(format!("fn:{}", name));
                         }
                     }
                 }
@@ -776,7 +845,9 @@ pub(crate) fn listing_call_tokens(code: &str) -> Vec<String> {
 mod tests {
     use super::extract_code_references;
     use super::infer_project_name;
-    use super::{collect_backtick_mentions, listing_call_tokens};
+    use super::{
+        collect_backtick_mentions, infer_project_root, listing_call_tokens, project_relative_file,
+    };
     use std::fs;
 
     #[test]
@@ -1185,5 +1256,89 @@ mod tests {
             "short token must be excluded; got {:?}",
             refs
         );
+    }
+
+    // ── project_relative_file + infer_project_root tests ──────────────────────
+
+    /// Gap 11: two files with the same basename in different subdirs of one project
+    /// must produce DISTINCT project-relative paths and therefore distinct anchors.
+    #[test]
+    fn project_relative_file_distinguishes_same_basename_in_different_dirs() {
+        let base = std::env::temp_dir().join("aden_prf_collision_test");
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(base.join("src/commands")).unwrap();
+        fs::create_dir_all(base.join("src/util")).unwrap();
+        fs::write(base.join("Cargo.toml"), "[package]\nname = \"mycrate\"\n").unwrap();
+        fs::write(base.join("src/commands/heal.rs"), "pub fn heal() {}").unwrap();
+        fs::write(base.join("src/util/heal.rs"), "pub fn heal_util() {}").unwrap();
+
+        let root = infer_project_root(&base.join("src/commands/heal.rs"));
+        let rel_commands = project_relative_file(&base.join("src/commands/heal.rs"), &root);
+        let rel_util = project_relative_file(&base.join("src/util/heal.rs"), &root);
+
+        assert_ne!(
+            rel_commands, rel_util,
+            "same-basename files in different subdirs must have distinct project-relative paths; \
+             got commands={rel_commands:?} util={rel_util:?}"
+        );
+        assert_eq!(rel_commands, "src/commands/heal.rs");
+        assert_eq!(rel_util, "src/util/heal.rs");
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    /// Invariant: for a git-only repo with a single file at src/lib.rs, the
+    /// project root is the `src/` dir (VCS first-component logic) and the
+    /// project-relative file is just `lib.rs`.  The resulting anchor
+    /// `aden://module/src/lib.rs#symbol` is UNCHANGED from the pre-refactor
+    /// value — the merge_engine_integration test constants must stay valid.
+    #[test]
+    fn git_only_src_lib_rs_anchor_invariant() {
+        let base = std::env::temp_dir().join("aden_prf_git_only_invariant");
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(base.join(".git")).unwrap();
+        fs::create_dir_all(base.join("src")).unwrap();
+        fs::write(base.join("src/lib.rs"), "pub fn alpha() {}").unwrap();
+
+        let path = base.join("src/lib.rs");
+        let proj_name = infer_project_name(&path);
+        let root = infer_project_root(&path);
+        let rel = project_relative_file(&path, &root);
+
+        assert_eq!(
+            proj_name, "src",
+            "project name must be 'src' for git-only src/lib.rs"
+        );
+        assert_eq!(
+            rel, "lib.rs",
+            "project-relative file for src/lib.rs in git-only repo must be 'lib.rs'"
+        );
+        // The full anchor format:
+        let anchor = super::make_anchor(&proj_name, &rel, "alpha");
+        assert_eq!(
+            anchor, "aden://module/src/lib.rs#alpha",
+            "anchor must match merge_engine_integration constant"
+        );
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    /// Manifest-bearing repo: project root is the Cargo.toml directory, and
+    /// project-relative file includes the subdirectory path.
+    #[test]
+    fn manifest_bearing_project_relative_file_includes_subdir() {
+        let base = std::env::temp_dir().join("aden_prf_manifest_test");
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(base.join("src/commands")).unwrap();
+        fs::write(base.join("Cargo.toml"), "[package]\nname = \"aden-cli\"\n").unwrap();
+        fs::write(base.join("src/commands/heal.rs"), "pub fn heal() {}").unwrap();
+
+        let path = base.join("src/commands/heal.rs");
+        let root = infer_project_root(&path);
+        let rel = project_relative_file(&path, &root);
+
+        assert_eq!(rel, "src/commands/heal.rs");
+
+        let _ = fs::remove_dir_all(&base);
     }
 }

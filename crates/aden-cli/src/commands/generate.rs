@@ -112,11 +112,11 @@ fn crate_from_anchor(anchor: &str) -> Option<String> {
     let rest = anchor.strip_prefix("aden://module/")?;
     let path = rest.split('#').next()?;
     let segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
-    let name = match segs.len() {
-        0 => return None,
-        1 => segs[0],     // file at module root — use it
-        n => segs[n - 2], // directory containing the file
-    };
+    // The first segment is always the project/crate name.
+    // Previously this used segs[n-2] (penultimate segment), which worked when
+    // file_name was a bare basename but broke with project-relative paths like
+    // `aden-cli/src/commands/heal.rs` where n-2 would give "commands".
+    let name = segs.first().copied()?;
     if name.is_empty() {
         None
     } else {
@@ -1887,6 +1887,15 @@ mod link_tests {
 
     #[test]
     fn anchor_file_extracts_path() {
+        // New format: file component is the full project-relative path,
+        // so the anchor now looks like aden://module/{project}/{rel/path}#symbol.
+        // anchor_file strips "aden://module/" and the "#..." fragment, returning
+        // the rest — which is "{project}/{rel/path}".
+        assert_eq!(
+            anchor_file("aden://module/aden-parse/src/rust.rs#node_text"),
+            Some("aden-parse/src/rust.rs")
+        );
+        // Old bare-basename format still works (backward compat; no '#' or extra '/'):
         assert_eq!(
             anchor_file("aden://module/aden-parse/rust.rs#node_text"),
             Some("aden-parse/rust.rs")

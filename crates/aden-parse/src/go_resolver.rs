@@ -9,7 +9,10 @@
 //!   • No cyclic imports
 //!   • `tree-sitter-go` grammar is simple and stable
 
-use crate::extractor::{LanguageExtractor, build_code_attributes, make_anchor};
+use crate::extractor::{
+    LanguageExtractor, build_code_attributes, infer_project_root, make_anchor,
+    project_relative_file,
+};
 use aden_core::{Block, Document, NodeType, Result};
 use std::path::Path;
 
@@ -49,7 +52,9 @@ impl LanguageExtractor for GoResolver {
             .ok_or_else(|| aden_core::Error::Parse("tree-sitter returned None".to_string()))?;
 
         let module_path = find_go_module(path);
-        let file_name = path.file_name().unwrap_or_default().to_string_lossy();
+        let project_root = infer_project_root(path);
+        let file_name_owned = project_relative_file(path, &project_root);
+        let file_name = file_name_owned.as_str();
 
         // Collect symbols and imports from the file.
         let mut symbols: Vec<GoSymbol> = Vec::new();
@@ -58,7 +63,7 @@ impl LanguageExtractor for GoResolver {
             tree.root_node(),
             source,
             &module_path,
-            &file_name,
+            file_name,
             &mut symbols,
             &mut imports,
         );
@@ -73,7 +78,7 @@ impl LanguageExtractor for GoResolver {
                 &symbols,
                 &imports,
                 &module_path,
-                &file_name,
+                file_name,
             ) {
                 docs.push(doc);
             }

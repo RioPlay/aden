@@ -591,20 +591,29 @@ impl Scanner {
             }
         }
 
-        // Infer from anchor pattern: aden://module/{crate}/{file}#{symbol}
+        // Infer from anchor pattern: aden://module/{project}/{rel_path}#{symbol}
+        //
+        // Since feat/anchor-path-precision, `{rel_path}` is the project-root-relative
+        // path (e.g. `src/commands/heal.rs`), NOT a bare basename.  The project root
+        // is the directory that contains the manifest (Cargo.toml, go.mod, …) or the
+        // VCS top-level directory for manifest-less repos.
+        //
+        // We probe several layouts to cover:
+        //   • Cargo workspace members  → crates/{project}/{rel_path}
+        //   • Standalone crate/module  → {project}/{rel_path}
+        //   • File directly at root    → {rel_path}  (for VCS-root anchors like src/lib.rs)
         let anchor = &doc.anchor;
         if let Some(hash_pos) = anchor.rfind('#') {
             let prefix = &anchor[..hash_pos];
             if let Some(rest) = prefix.strip_prefix("aden://module/") {
                 let parts: Vec<&str> = rest.splitn(2, '/').collect();
                 if parts.len() == 2 {
-                    let crate_name = parts[0];
-                    let file_name = parts[1];
+                    let project = parts[0];
+                    let rel_path = parts[1];
                     let candidates = [
-                        format!("crates/{}/src/{}", crate_name, file_name),
-                        format!("crates/{}/{}", crate_name, file_name),
-                        format!("{}/src/{}", crate_name, file_name),
-                        format!("{}/{}", crate_name, file_name),
+                        format!("crates/{}/{}", project, rel_path),
+                        format!("{}/{}", project, rel_path),
+                        rel_path.to_string(),
                     ];
                     for candidate in &candidates {
                         let path = self.repo_root.join(candidate);

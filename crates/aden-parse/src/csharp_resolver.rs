@@ -15,7 +15,10 @@
 //!   • `partial` class aggregation
 //!   • Generic constraint tracking
 
-use crate::extractor::{LanguageExtractor, build_code_attributes, make_anchor};
+use crate::extractor::{
+    LanguageExtractor, build_code_attributes, infer_project_root, make_anchor,
+    project_relative_file,
+};
 use aden_core::{Block, Document, NodeType, Parameter, Result};
 use std::path::Path;
 
@@ -55,20 +58,22 @@ impl LanguageExtractor for CSharpResolver {
             .ok_or_else(|| aden_core::Error::Parse("tree-sitter returned None".to_string()))?;
 
         let namespace = infer_cs_namespace(path, source);
-        let file_name = path.file_name().unwrap_or_default().to_string_lossy();
+        let project_root = infer_project_root(path);
+        let file_name_owned = project_relative_file(path, &project_root);
+        let file_name = file_name_owned.as_str();
 
         let mut symbols: Vec<CsSymbol> = Vec::new();
         walk_compilation_unit(
             tree.root_node(),
             source,
             &namespace,
-            &file_name,
+            file_name,
             &mut symbols,
         );
 
         let mut docs = Vec::new();
         for sym in &symbols {
-            if let Some(doc) = emit_cs_symbol(sym, source, path, &symbols, &namespace, &file_name) {
+            if let Some(doc) = emit_cs_symbol(sym, source, path, &symbols, &namespace, file_name) {
                 docs.push(doc);
             }
         }

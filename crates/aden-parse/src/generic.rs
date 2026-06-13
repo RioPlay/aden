@@ -9,7 +9,10 @@
 //! classes, structs, and modules, but does **not** resolve cross-file
 //! call sites.  That is the job of deep language resolvers (Phase 2).
 
-use crate::extractor::{LanguageExtractor, build_code_attributes, infer_project_name, make_anchor};
+use crate::extractor::{
+    LanguageExtractor, build_code_attributes, infer_project_name, infer_project_root, make_anchor,
+    project_relative_file,
+};
 use aden_core::{Block, Document, NodeType, Result};
 use std::path::Path;
 
@@ -117,7 +120,9 @@ impl LanguageExtractor for GenericExtractor {
             .ok_or_else(|| aden_core::Error::Parse("tree-sitter returned None".to_string()))?;
 
         let crate_name = infer_project_name(path);
-        let file_name = path.file_name().unwrap_or_default().to_string_lossy();
+        let project_root = infer_project_root(path);
+        let file_name_owned = project_relative_file(path, &project_root);
+        let file_name = file_name_owned.as_str();
         let mut docs = Vec::new();
 
         // Walk the AST and collect symbols.
@@ -126,7 +131,7 @@ impl LanguageExtractor for GenericExtractor {
             source,
             path,
             &crate_name,
-            &file_name,
+            file_name,
             &mut docs,
         );
 

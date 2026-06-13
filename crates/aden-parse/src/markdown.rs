@@ -6,7 +6,8 @@
 //! Extracts headings, code blocks, and links from markdown files.
 
 use crate::extractor::{
-    build_code_attributes, extract_code_references, infer_project_name, make_anchor,
+    build_code_attributes, extract_code_references, infer_project_name, infer_project_root,
+    make_anchor, project_relative_file,
 };
 use aden_core::{Block, Document, NodeType, Result, SourceSpan};
 use std::path::Path;
@@ -36,12 +37,9 @@ impl crate::extractor::LanguageExtractor for MarkdownExtractor {
 
     fn extract_documents(&self, source: &str, path: &Path) -> Result<Vec<Document>> {
         let mut docs = Vec::new();
-        let file_name = path
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| "unknown".to_string());
-
         let crate_name = infer_project_name(path);
+        let project_root = infer_project_root(path);
+        let file_name = project_relative_file(path, &project_root);
 
         let (frontmatter, body) = parse_frontmatter(source);
         let body_lines: Vec<&str> = body.lines().collect();
