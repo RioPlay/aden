@@ -10,7 +10,7 @@
 //!   • `tree-sitter-go` grammar is simple and stable
 
 use crate::extractor::{
-    LanguageExtractor, build_code_attributes, infer_project_root, make_anchor,
+    LanguageExtractor, build_code_attributes, infer_project_name, infer_project_root, make_anchor,
     project_relative_file,
 };
 use aden_core::{Block, Document, NodeType, Result};
@@ -134,7 +134,12 @@ fn find_go_module(path: &Path) -> String {
             }
         }
     }
-    "unknown".to_string()
+    // No go.mod: fall back to the shared project-name inference (VCS-root
+    // top dir / parent dir) instead of a literal "unknown", so manifest-less
+    // Go files in a polyglot repo share the same project prefix as Python/TS
+    // files beside them rather than collapsing into an inconsistent
+    // `aden://module/unknown/…` group.
+    infer_project_name(path)
 }
 
 #[derive(Debug)]
