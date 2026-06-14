@@ -147,6 +147,10 @@
     opacity: 0; transform: translateY(6px); transition: opacity .28s ease, transform .28s ease;
     overflow: hidden; }
   #snip.on { opacity: 1; transform: none; }
+  /* The detail panel grows full-height with a long relations list and would
+     clobber the bottom-right card. While the panel is open, shift the card clear
+     of the panel's column so the two boxes sit side by side and never overlap. */
+  body:has(#panel.open) #snip { right: 366px; }
   #snip .sn-head { padding: 8px 13px 6px; border-bottom: 1px solid #1f2430; }
   #snip .sn-name { font-weight: 600; font-size: 13px; }
   #snip .sn-meta { color: #6c7086; font-size: 11px; margin-top: 1px; }
