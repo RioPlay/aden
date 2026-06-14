@@ -35,29 +35,36 @@ impl AdenMcpServer {
 /// language-agnostic context compiler and gives the canonical workflow so the
 /// model uses the tools correctly on *any* project (not just Rust).
 const SERVER_INSTRUCTIONS: &str = "\
-Aden is a language-agnostic referential context compiler. It turns ANY codebase \
+Aden is a language-agnostic referential context compiler: it turns ANY codebase \
 or documentation (Rust, Python, Go, TypeScript, Java, Ruby, PHP, C/C++, and 300+ \
 more — plus Markdown/AsciiDoc docs) into a queryable knowledge graph. Nothing \
-here is specific to Aden's own source; every result is derived from the target \
-project you point it at.\n\n\
-The graph is fresh by construction: read tools (`ask`, `asm`, `query`, `locate`, \
-`grep`) auto-reindex any source that changed since the last run, so you do NOT \
-need to call `gen` before each session. Only run `gen` (auto=true) after large \
+here is specific to Aden's own source; every result is derived from the project \
+you point it at.\n\n\
+RULE: When you open unfamiliar code, or need to find or understand a symbol, your \
+FIRST move is `grep`/`ask`/`locate` — NOT Bash `grep`/`find`/`cat`. These return \
+structure-aware results (every hit tagged with its enclosing symbol) and assemble \
+just the relevant neighborhood under a token budget, so they cost far fewer \
+tokens than reading whole files — and `query` answers 'what breaks if I change \
+this?', which plain text search cannot. This rule applies to any subagents you \
+spawn: they do NOT inherit these instructions, so tell them to use these tools too.\n\n\
+The graph is fresh by construction: the read tools (`ask`, `asm`, `query`, \
+`locate`, `grep`, `understand`) auto-reindex any source that changed since the \
+last run, so you do NOT need to call `gen` first. Only run `gen` after large \
 external changes — e.g. cloning a new repo, a big merge, or generated code \
 appearing outside your edits.\n\n\
 Typical workflow:\n\
 1. `grep \"pattern\"` for structure-aware content search: every match is tagged \
-with its enclosing symbol. Prefer it over a plain text grep — the enclosing \
-symbol name it returns is exactly what you feed to `asm` as an anchor.\n\
-2. `ask` a natural-language question, or `search` for keywords, to retrieve \
-context. `locate` finds a symbol's definition and call sites.\n\
-3. `query`/`asm` traverse the graph. Before a refactor, `query` with \
-backlinks=<symbol> shows what references that symbol (its blast radius); \
-impact=<symbol> shows the downstream reach.\n\
-4. `check`/`heal` validate and keep contracts in sync with the code.\n\n\
-The `path` argument defaults to the current project directory for every tool.\n\
-Setup/admin tools (e.g. `init`, `new`, `federation`, `mcp`) are hidden from this \
-list to keep it focused; set ADEN_MCP_FULL=1 in the server environment to surface them.";
+with its enclosing symbol — exactly the anchor you feed to `locate`/`asm`.\n\
+2. `ask` a natural-language question to get assembled context, or `locate` a \
+symbol's definition and call sites.\n\
+3. `understand <symbol>` for one-shot comprehension (definition + callers + \
+downstream impact), or `query`/`asm` to traverse the graph yourself — `query` \
+backlinks=<anchor> is blast radius, impact=<anchor> is downstream reach.\n\
+4. `check` validates the graph and gates CI.\n\n\
+The `path` argument defaults to the current project directory for every tool. \
+Only the seven highest-value navigation tools are listed by default; the rest \
+(validate/heal/build/setup) stay callable by name and are surfaced by setting \
+ADEN_MCP_FULL=1 in the server environment.";
 
 // ── Tool declaration ──────────────────────────────────────────
 
@@ -71,11 +78,54 @@ enum Tier {
     Extended,
 }
 
+/// What a tool does to the project, surfaced to MCP clients as tool
+/// annotations (`ToolAnnotations`). The load-bearing signal is read-only-ness:
+/// clients that gate tool calls behind a permission prompt can auto-approve
+/// read-only tools, removing the per-call friction that otherwise pushes an
+/// agent back to Bash. Mutating tools are deliberately NOT marked read-only so
+/// that confirmation step survives.
+#[derive(PartialEq, Clone, Copy)]
+enum Effect {
+    /// Pure navigation/inspection. A transparent incremental reindex does not
+    /// count as a mutation. `read_only_hint = true`.
+    Read,
+    /// Rebuilds derived store state from source; idempotent and never touches
+    /// the working tree. Not read-only, but non-destructive.
+    Rebuild,
+    /// May modify the working tree or config, or run project code. Treated as
+    /// destructive so clients keep a confirmation step.
+    Mutate,
+}
+
+impl Effect {
+    /// Map the effect to MCP tool annotations. Per the MCP spec the
+    /// `destructive`/`idempotent` hints are only meaningful when
+    /// `read_only == false`, so the Read arm sets just `read_only`/`open_world`;
+    /// the Mutate arm leaves `destructive`/`idempotent` unset so clients fall
+    /// back to the conservative spec defaults (destructive=true, idempotent=false).
+    fn annotations(self) -> ToolAnnotations {
+        match self {
+            Effect::Read => ToolAnnotations::new().read_only(true).open_world(false),
+            Effect::Rebuild => ToolAnnotations::new()
+                .read_only(false)
+                .destructive(false)
+                .idempotent(true)
+                .open_world(false),
+            Effect::Mutate => ToolAnnotations::new().read_only(false),
+        }
+    }
+}
+
 /// A tool the LLM can invoke.  Zero code per tool — just metadata.
 struct ToolSpec {
     name: &'static str,
+    /// Human-readable display name, surfaced via the MCP `title` field so the
+    /// tool reads as purpose-built rather than a bare verb.
+    title: &'static str,
     description: &'static str,
     args: &'static [(&'static str, &'static str)], // (arg_name, arg_type: "string"|"boolean"|"integer"|"number")
+    /// Read / Rebuild / Mutate — drives the MCP tool annotations.
+    effect: Effect,
     tier: Tier,
 }
 
@@ -302,7 +352,12 @@ fn tool_from_spec(spec: &ToolSpec) -> Tool {
     if !required.is_empty() {
         schema.insert("required".to_string(), serde_json::json!(required));
     }
+    // A friendly display title + Read/Rebuild/Mutate annotations let clients
+    // present read tools as auto-approvable (no per-call permission wall) while
+    // keeping a confirmation step on the mutating ones.
     Tool::new(spec.name, spec.description, Arc::new(schema))
+        .with_title(spec.title)
+        .annotate(spec.effect.annotations())
 }
 
 /// True when the full tool surface (Core + Extended) should be listed.
@@ -324,11 +379,13 @@ fn parse_full(v: Option<&str>) -> bool {
 
 /// Every MCP tool maps 1:1 to `aden <name> <args>`.
 static TOOLS: &[ToolSpec] = &[
-    // ── Core: the per-session surface, ordered by how often an agent reaches
-    //    for each (read/comprehend first, then validate, then mutate). ──
+    // ── Core (the Tight-7): the default per-session surface — the
+    //    navigate/comprehend tools an agent reaches for first. Everything else
+    //    is Extended (callable by name; listed only when ADEN_MCP_FULL=1). ──
     ToolSpec {
         name: "grep",
-        description: "Search code by content — use this INSTEAD OF running grep/ripgrep through Bash: every hit is tagged with the name of the symbol that encloses it, so you skip the follow-up 'which function is this in?' step. Pass that symbol name to `locate` for its anchor, then feed the anchor to `asm`/`query`. Auto-reindexes changed files first; no setup or `gen` call needed.",
+        title: "Search code (structure-aware)",
+        description: "Search code by content — use this INSTEAD OF running grep/ripgrep through Bash: every hit is tagged with the name of the symbol that encloses it, so you skip the follow-up 'which function is this in?' step. e.g. grep(pattern=\"fn authenticate\"). Pass that symbol name to `locate` for its anchor, then feed the anchor to `asm`/`query`. Auto-reindexes changed files first; no setup or `gen` call needed.",
         args: &[
             ("pattern", "string"),
             ("path", "string"),
@@ -337,22 +394,26 @@ static TOOLS: &[ToolSpec] = &[
             ("symbol_only", "boolean"),
             ("limit", "integer"),
         ],
+        effect: Effect::Read,
         tier: Tier::Core,
     },
     ToolSpec {
         name: "understand",
-        description: "One-shot symbol comprehension: resolves a symbol to its anchor, shows its definition location, lists backlinks (callers/references), lists downstream impact, and assembles a context block. Replaces the manual locate → query --backlinks → query --impact → asm chain.",
+        title: "Understand a symbol",
+        description: "When you need to understand a symbol before changing it, reach for this FIRST (not a manual file read): resolves the symbol to its anchor, shows its definition location, lists backlinks (callers/references) and downstream impact, and assembles a context block — your one-shot blast-radius check before a refactor. e.g. understand(symbol=\"MergeProposal\"). Replaces the manual locate → query --backlinks → query --impact → asm chain.",
         args: &[
             ("symbol", "string"),
             ("path", "string"),
             ("budget", "integer"),
             ("json", "boolean"),
         ],
+        effect: Effect::Read,
         tier: Tier::Core,
     },
     ToolSpec {
         name: "ask",
-        description: "Ask a natural-language question about the codebase; routes to the best-matching anchor and assembles its context for you — a one-shot alternative to grepping and reading files yourself. Auto-reindexes changed files first; no setup needed.",
+        title: "Ask about the codebase",
+        description: "When you have a question about the codebase, ask it here INSTEAD OF grepping and reading files yourself — routes to the best-matching anchor and returns its assembled context. e.g. ask(question=\"where is auth enforced?\"). Auto-reindexes changed files first; no setup or `gen` call needed.",
         // `path` is a CLI positional ([DIR], second after QUESTION) — it was
         // missing here historically, not unsupported. Declaration order matters:
         // positionals are emitted in spec order, so question must precede path.
@@ -368,10 +429,74 @@ static TOOLS: &[ToolSpec] = &[
             ("strict", "boolean"),
             ("explain", "boolean"),
         ],
+        effect: Effect::Read,
+        tier: Tier::Core,
+    },
+    ToolSpec {
+        name: "locate",
+        title: "Locate a symbol",
+        description: "Find a symbol's definition and call sites, returning its anchor — feed that anchor into `asm`/`query`. Use this INSTEAD OF grepping for a function name through Bash. e.g. locate(symbol=\"propose\"). Auto-reindexes changed files first; no setup needed. For JSON output pass format=json.",
+        args: &[
+            ("symbol", "string"),
+            ("caller_of", "string"),
+            ("path", "string"),
+            ("limit", "integer"),
+            ("show_context", "integer"),
+            ("format", "string"),
+        ],
+        effect: Effect::Read,
+        tier: Tier::Core,
+    },
+    ToolSpec {
+        name: "asm",
+        title: "Assemble context",
+        description: "Assemble a token-dense context prompt for an anchor (pass it via `from`; resolve a symbol name to its anchor with `locate` first): walks the graph from that node under a token budget and returns just the relevant neighborhood INSTEAD OF you reading whole files. e.g. asm(from=\"fn-propose\"). Auto-reindexes changed files first; no setup needed.",
+        args: &[
+            ("from", "string"),
+            ("path", "string"),
+            ("depth", "integer"),
+            ("budget", "integer"),
+            ("edge_types", "string"),
+            ("format", "string"),
+            ("inspect", "boolean"),
+            ("out", "string"),
+            ("include_tag", "string"),
+            ("exclude_tag", "string"),
+            ("set_attr", "string"),
+            ("silent", "boolean"),
+            ("auto", "boolean"),
+            ("strict", "boolean"),
+        ],
+        effect: Effect::Read,
+        tier: Tier::Core,
+    },
+    ToolSpec {
+        name: "query",
+        title: "Query the graph",
+        description: "Traverse the knowledge graph from an anchor (pass it via `from`; resolve a symbol name with `locate` first) and emit JSON. Use backlinks=<anchor> for blast radius (what references a symbol) or impact=<anchor> for downstream reach — answers 'what breaks if I change this?', which plain grep cannot. e.g. query(backlinks=\"fn-authenticate\"). Auto-reindexes changed files first; no setup needed.",
+        args: &[
+            ("path", "string"),
+            ("from", "string"),
+            ("edge_type", "string"),
+            ("depth", "integer"),
+            ("backlinks", "string"),
+            ("impact", "string"),
+            ("format", "string"),
+        ],
+        effect: Effect::Read,
+        tier: Tier::Core,
+    },
+    ToolSpec {
+        name: "check",
+        title: "Validate the graph",
+        description: "Validate the graph and gate CI: flags unresolved <<refs>>, circular includes, orphan anchors, typed-edge violations, stale source hashes, and incomplete contracts. severity=Suggest|Warn|Forbid sets the fail threshold and exits non-zero past it. For duplicate-anchor detection and a 0-100 health score, use `diagnose`.",
+        args: &[("path", "string"), ("severity", "string")],
+        effect: Effect::Read,
         tier: Tier::Core,
     },
     ToolSpec {
         name: "search",
+        title: "Keyword search (BM25)",
         description: "Full-text keyword (BM25) search across the indexed graph; returns matching anchors to feed into `asm`/`query`. Use `grep` instead when you want content matches tagged by their enclosing symbol. Auto-reindexes changed files first; no setup needed.",
         // query (positional) must precede path (positional [DIR]) — spec order
         // is emission order.
@@ -383,10 +508,12 @@ static TOOLS: &[ToolSpec] = &[
             ("doc_type", "string"),
             ("semantics", "boolean"),
         ],
-        tier: Tier::Core,
+        effect: Effect::Read,
+        tier: Tier::Extended,
     },
     ToolSpec {
         name: "communities",
+        title: "Find code clusters",
         description: "Detect functional communities — clusters of symbols that call/use each \
                       other densely (modularity community detection), independent of the \
                       directory layout. Good for orienting in a codebase. `min_size` filters \
@@ -397,14 +524,15 @@ static TOOLS: &[ToolSpec] = &[
             ("resolution", "number"),
             ("path", "string"),
         ],
-        tier: Tier::Core,
+        effect: Effect::Read,
+        tier: Tier::Extended,
     },
-    // Core, like the other read/export tools (locate/communities/query): viz is
-    // the non-interactive graph-slice exporter (text Mermaid/DOT/AsciiDoc/JSON),
-    // so it is MCP-suitable — unlike its interactive sibling `view` (browser,
-    // long-running) which stays off the surface.
+    // A read/export tool: viz is the non-interactive graph-slice exporter (text
+    // Mermaid/DOT/AsciiDoc/JSON), so it is MCP-suitable — unlike its interactive
+    // sibling `view` (browser, long-running) which stays off the surface.
     ToolSpec {
         name: "viz",
+        title: "Export graph diagram",
         description: "Export a graph slice as a text diagram (Mermaid/DOT/AsciiDoc/JSON) for docs, \
                       PRs, or CI. mode=blast (dependents at risk if the anchor changes, default) | \
                       reach (dependencies it relies on) | connectivity (both directions) | \
@@ -424,10 +552,12 @@ static TOOLS: &[ToolSpec] = &[
             ("resolution", "number"),
             ("path", "string"),
         ],
-        tier: Tier::Core,
+        effect: Effect::Read,
+        tier: Tier::Extended,
     },
     ToolSpec {
         name: "impact-diff",
+        title: "Diff blast radius",
         description: "Map a git diff to the symbols it touches and report the blast radius \
                       (transitive dependents at risk) before committing. `since` diffs against a ref \
                       (e.g. HEAD~1, main); `staged` analyzes staged changes; default is the \
@@ -437,58 +567,12 @@ static TOOLS: &[ToolSpec] = &[
             ("staged", "boolean"),
             ("path", "string"),
         ],
-        tier: Tier::Core,
-    },
-    ToolSpec {
-        name: "locate",
-        description: "Find a symbol's definition and call sites, returning its anchor — feed that anchor into `asm`/`query`. Use this instead of grepping for a function name through Bash. Auto-reindexes changed files first; no setup needed. For JSON output pass format=json.",
-        args: &[
-            ("symbol", "string"),
-            ("caller_of", "string"),
-            ("path", "string"),
-            ("limit", "integer"),
-            ("show_context", "integer"),
-            ("format", "string"),
-        ],
-        tier: Tier::Core,
-    },
-    ToolSpec {
-        name: "asm",
-        description: "Assemble a token-dense context prompt for an anchor (pass it via `from`; resolve a symbol name to its anchor with `locate` first): walks the graph from that node under a token budget and returns just the relevant neighborhood instead of you reading whole files. Auto-reindexes changed files first; no setup needed.",
-        args: &[
-            ("from", "string"),
-            ("path", "string"),
-            ("depth", "integer"),
-            ("budget", "integer"),
-            ("edge_types", "string"),
-            ("format", "string"),
-            ("inspect", "boolean"),
-            ("out", "string"),
-            ("include_tag", "string"),
-            ("exclude_tag", "string"),
-            ("set_attr", "string"),
-            ("silent", "boolean"),
-            ("auto", "boolean"),
-            ("strict", "boolean"),
-        ],
-        tier: Tier::Core,
-    },
-    ToolSpec {
-        name: "query",
-        description: "Traverse the knowledge graph from an anchor (pass it via `from`; resolve a symbol name with `locate` first) and emit JSON. Use backlinks=<anchor> for blast radius (what references a symbol) or impact=<anchor> for downstream reach — answers 'what breaks if I change this?', which plain grep cannot. Auto-reindexes changed files first; no setup needed.",
-        args: &[
-            ("path", "string"),
-            ("from", "string"),
-            ("edge_type", "string"),
-            ("depth", "integer"),
-            ("backlinks", "string"),
-            ("impact", "string"),
-            ("format", "string"),
-        ],
-        tier: Tier::Core,
+        effect: Effect::Read,
+        tier: Tier::Extended,
     },
     ToolSpec {
         name: "list",
+        title: "List anchors",
         description: "List all indexed anchors.",
         args: &[
             ("path", "string"),
@@ -499,22 +583,20 @@ static TOOLS: &[ToolSpec] = &[
             ("offset", "integer"),
             ("unlimited", "boolean"),
         ],
-        tier: Tier::Core,
+        effect: Effect::Read,
+        tier: Tier::Extended,
     },
     ToolSpec {
         name: "ready",
+        title: "Pre-commit gate",
         description: "Fast pre-commit gate — gen + lint + check + heal drift scan + audit. Aden-only, no external tool dependencies. Use before every commit. Prefer over ci-check for local dev loops.",
         args: &[("path", "string"), ("fix", "boolean")],
-        tier: Tier::Core,
-    },
-    ToolSpec {
-        name: "check",
-        description: "Validate the graph and gate CI: flags unresolved <<refs>>, circular includes, orphan anchors, typed-edge violations, stale source hashes, and incomplete contracts. severity=Suggest|Warn|Forbid sets the fail threshold and exits non-zero past it. For duplicate-anchor detection and a 0-100 health score, use `diagnose`.",
-        args: &[("path", "string"), ("severity", "string")],
-        tier: Tier::Core,
+        effect: Effect::Mutate,
+        tier: Tier::Extended,
     },
     ToolSpec {
         name: "lint",
+        title: "Lint source",
         description: "Lint source files. Use dead_code=true to flag symbols with no incoming graph edges (Function/Type nodes with zero callers). Conservative by default — skips entry points and public API; set include_public=true to widen.",
         args: &[
             ("path", "string"),
@@ -525,10 +607,12 @@ static TOOLS: &[ToolSpec] = &[
             ("dead_code", "boolean"),
             ("include_public", "boolean"),
         ],
-        tier: Tier::Core,
+        effect: Effect::Mutate,
+        tier: Tier::Extended,
     },
     ToolSpec {
         name: "test",
+        title: "Run tests",
         description: "Discover and run tests.",
         args: &[
             ("path", "string"),
@@ -536,10 +620,12 @@ static TOOLS: &[ToolSpec] = &[
             ("filter", "string"),
             ("list", "boolean"),
         ],
-        tier: Tier::Core,
+        effect: Effect::Mutate,
+        tier: Tier::Extended,
     },
     ToolSpec {
         name: "heal",
+        title: "Heal doc drift",
         description: "Self-healing documentation engine: scan for drift, propose patches, apply reviewed changes.",
         args: &[
             ("path", "string"),
@@ -550,16 +636,20 @@ static TOOLS: &[ToolSpec] = &[
             ("apply", "string"),
             ("watch", "string"),
         ],
-        tier: Tier::Core,
+        effect: Effect::Mutate,
+        tier: Tier::Extended,
     },
     ToolSpec {
         name: "status",
+        title: "Health dashboard",
         description: "Read-only one-glance dashboard: heal-drift health score plus an orphan breakdown (same classifier as `check`). No fixes, no deep scan — a quick pulse before deciding whether to run `diagnose`/`ready`.",
         args: &[("path", "string")],
-        tier: Tier::Core,
+        effect: Effect::Read,
+        tier: Tier::Extended,
     },
     ToolSpec {
         name: "gen",
+        title: "Index the project",
         description: "Incrementally compile source into the per-user store (store-first: never writes the working tree). A directory indexes the whole project; a single file re-indexes just that file. For a clean cache-clearing rebuild use `regen`; to also prune deleted symbols use `sync`.",
         args: &[
             ("path", "string"),
@@ -568,16 +658,20 @@ static TOOLS: &[ToolSpec] = &[
             ("propose", "boolean"),
             ("force_regen", "boolean"),
         ],
-        tier: Tier::Core,
+        effect: Effect::Rebuild,
+        tier: Tier::Extended,
     },
     ToolSpec {
         name: "sync",
+        title: "Reconcile the store",
         description: "Reconcile the store — gen + check + heal with gc (prunes deleted symbols). Use after large merges or file deletions, NOT as a routine pre-commit step (use `ready` for that). Pass no_gc=true to skip garbage-collection.",
         args: &[("path", "string"), ("no_gc", "boolean")],
-        tier: Tier::Core,
+        effect: Effect::Mutate,
+        tier: Tier::Extended,
     },
     ToolSpec {
         name: "audit",
+        title: "Security audit",
         description: "OWASP-aligned security audit: scan source for vulnerabilities.",
         args: &[
             ("path", "string"),
@@ -585,56 +679,72 @@ static TOOLS: &[ToolSpec] = &[
             ("format", "string"),
             ("strict", "boolean"),
         ],
-        tier: Tier::Core,
+        effect: Effect::Read,
+        tier: Tier::Extended,
     },
     ToolSpec {
         name: "ci-check",
+        title: "CI gate suite",
         description: "Full CI gate suite: aden check, project tests, aden lint, secret scan, attribution check, OWASP audit, merge-conflict-marker scan, insecure-protocol check, cargo clippy, cargo audit, contract freshness. Use before push to remote. For local dev use `ready` instead.",
         args: &[("path", "string")],
-        tier: Tier::Core,
+        effect: Effect::Mutate,
+        tier: Tier::Extended,
     },
     ToolSpec {
         name: "diagnose",
+        title: "Diagnose graph health",
         description: "Deterministic structural scan of the graph: stale refs, duplicate anchors, invalid edges, orphans, circular includes, missing source files; emits a 0-100 health score (format=json for machine output). Overlaps `check` but additionally flags duplicate anchors and low-confidence nodes and reports a score; read-only — finds nothing about your environment (that's `doctor`).",
         args: &[("path", "string"), ("format", "string")],
-        tier: Tier::Core,
+        effect: Effect::Read,
+        tier: Tier::Extended,
     },
     ToolSpec {
         name: "regen",
+        title: "Full rebuild",
         description: "Full from-scratch rebuild: clears the gen/graph caches and (unless $ADEN_STORE is pinned/shared) the per-user store, then regenerates and prunes stale anchors. NOT an alias for `gen` — use after renames/deletions leave stale anchors or after corruption; for routine incremental indexing use `gen`.",
         args: &[("path", "string")],
-        tier: Tier::Core,
+        effect: Effect::Rebuild,
+        tier: Tier::Extended,
     },
-    // ── Extended: setup / admin / niche. Hidden from list_tools by default
-    //    (set ADEN_MCP_FULL=1 to surface) but always callable by name. ──
+    // ── Extended: everything beyond the Tight-7 navigation set — keyword
+    //    search, validate/heal, build/store, run, and setup/admin tools.
+    //    Hidden from list_tools by default (set ADEN_MCP_FULL=1 to surface)
+    //    but always callable by name. ──
     ToolSpec {
         name: "new",
+        title: "New project",
         description: "Create a new project from a language template.",
         args: &[("name", "string"), ("lang", "string"), ("path", "string")],
+        effect: Effect::Mutate,
         tier: Tier::Extended,
     },
     ToolSpec {
         name: "init",
+        title: "Init workspace",
         description: "Scaffold .agent/ workspace and templates.",
         args: &[
             ("path", "string"),
             ("with_secure_refs", "boolean"),
             ("agents_md", "boolean"),
         ],
+        effect: Effect::Mutate,
         tier: Tier::Extended,
     },
     ToolSpec {
         name: "kickoff",
+        title: "Kickoff document",
         description: "Create a structured kickoff document.",
         args: &[
             ("name", "string"),
             ("interactive", "boolean"),
             ("path", "string"),
         ],
+        effect: Effect::Mutate,
         tier: Tier::Extended,
     },
     ToolSpec {
         name: "workflow",
+        title: "Instantiate template",
         description: "Instantiate templates with substitutions.",
         args: &[
             ("template", "string"),
@@ -642,10 +752,12 @@ static TOOLS: &[ToolSpec] = &[
             ("from", "string"),
             ("path", "string"),
         ],
+        effect: Effect::Mutate,
         tier: Tier::Extended,
     },
     ToolSpec {
         name: "session",
+        title: "Log session entry",
         description: "Append entry to .agent/session.adoc.",
         args: &[
             ("agent_id", "string"),
@@ -654,62 +766,79 @@ static TOOLS: &[ToolSpec] = &[
             ("status", "string"),
             ("path", "string"),
         ],
+        effect: Effect::Mutate,
         tier: Tier::Extended,
     },
     ToolSpec {
         name: "review",
+        title: "Review heal proposals",
         description: "Semantic review of pending heal proposals. Only meaningful after `heal propose=true` has written proposals.",
         args: &[
             ("path", "string"),
             ("since", "string"),
             ("budget", "integer"),
         ],
+        effect: Effect::Read,
         tier: Tier::Extended,
     },
     ToolSpec {
         name: "complete",
+        title: "Find undocumented contracts",
         description: "List contracts missing required documentation. Reports only — automatic LLM filling is NOT implemented; --model just previews the fill prompt. For drift in existing docs use `heal`, not this.",
         args: &[
             ("path", "string"),
             ("dry_run", "boolean"),
             ("model", "string"),
         ],
+        effect: Effect::Read,
         tier: Tier::Extended,
     },
     ToolSpec {
         name: "query-adq",
+        title: "Run ADQ script",
         description: "Execute an Aden Query (.adq) script — multi-step filtered graph traversal (node/incoming/outgoing/where) beyond what `query` expresses in one call. For simple backlinks/impact use `query`.",
         args: &[("script", "string"), ("path", "string")],
+        effect: Effect::Read,
         tier: Tier::Extended,
     },
     ToolSpec {
         name: "doctor",
+        title: "Check environment",
         description: "Probe the host environment, NOT the graph: git, language toolchains (rustc/cargo, node, python, go), signing keys. Use when a command fails for environmental reasons (missing tool/binary). For graph/content problems use `diagnose`; for reference errors use `check`.",
         args: &[("path", "string")],
+        effect: Effect::Read,
         tier: Tier::Extended,
     },
     ToolSpec {
         name: "licenses",
+        title: "Generate attributions",
         description: "Generate third-party dependency attribution.",
         args: &[("path", "string"), ("out", "string"), ("full", "boolean")],
+        effect: Effect::Read,
         tier: Tier::Extended,
     },
     ToolSpec {
         name: "federation",
+        title: "Manage federation",
         description: "Manage a multi-repo workspace. action is a subcommand: list, add, remove, config. Over MCP only list/config run (add/remove need a path/name the bridge can't pass — use the CLI). Operates on the federation manifest only; it does not index or query code.",
         args: &[("action", "string")],
+        effect: Effect::Read,
         tier: Tier::Extended,
     },
     ToolSpec {
         name: "emergency",
+        title: "Downgrade policies",
         description: "Downgrade Forbid policies to Warn with justification.",
         args: &[("reason", "string"), ("path", "string"), ("ttl", "string")],
+        effect: Effect::Mutate,
         tier: Tier::Extended,
     },
     ToolSpec {
         name: "mcp",
+        title: "Manage MCP integration",
         description: "MCP (Model Context Protocol) integration management. action is a subcommand: install, uninstall, list. Over MCP only `list` runs (install/uninstall are a one-time terminal setup step).",
         args: &[("action", "string")],
+        effect: Effect::Read,
         tier: Tier::Extended,
     },
 ];
