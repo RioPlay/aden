@@ -46,6 +46,12 @@ watch = ["notify", "ctrlc"]
 # Off by default — the offline lockfile/registry table works without it. Opt in
 # with `--features licenses-net`; pulls ureq (and its rustls/ring TLS stack).
 licenses-net = ["dep:ureq"]
+# Restore on-demand fetch of the full tree-sitter grammar pack (PowerShell and
+# the 300+ long tail) via aden-parse. Off by default — keeps the build slim and
+# CI network-free (only TSLP_LANGUAGES grammars are built in). Integration tests
+# that assert a non-build-time grammar (e.g. the PowerShell half of
+# `polyglot_python_powershell`) are gated behind this feature.
+grammars-download = ["aden-parse/grammars-download"]
 # Local dense embeddings for hybrid retrieval (search/ask). Off by default — opt
 # in with `--features dense`. Pulls the tract + tokenizers stack via aden-index.
 dense = ["aden-index/dense"]

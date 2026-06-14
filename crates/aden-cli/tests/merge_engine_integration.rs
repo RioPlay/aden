@@ -467,6 +467,7 @@ fn idempotence_no_source_change() {
 ///   `aden://module/src/module.py#<sym>`.
 /// - PowerShell: resolves to `"src"` (same logic, same result), so the anchor is
 ///   `aden://module/src/utils.ps1#<sym>`.
+///
 /// Both Python and PowerShell now agree on the project component for files under src/.
 ///
 /// Both `compute_checksum` and `Get-ProjectMetadata` are tier-1 extractions:
@@ -487,7 +488,13 @@ fn polyglot_python_powershell() {
     )
     .unwrap();
 
-    // PowerShell source V1
+    // PowerShell source V1. PowerShell is NOT in the build-time grammar set
+    // (TSLP_LANGUAGES), so it only parses when `grammars-download` can fetch the
+    // grammar (or a prior download seeded the on-disk cache). Gate every
+    // PowerShell-specific step behind that feature so the default, network-free
+    // `cargo test` stays deterministic on a fresh CI — mirroring the gating on
+    // `powershell_generic_smoke` in aden-parse.
+    #[cfg(feature = "grammars-download")]
     std::fs::write(
         src_dir.join("utils.ps1"),
         "function Get-ProjectMetadata {\n    <#\n    .SYNOPSIS\n    Returns project metadata.\n    #>\n    return @{ version = '1.0' }\n}\n",
@@ -538,31 +545,36 @@ fn polyglot_python_powershell() {
 
         // PowerShell: `Get-ProjectMetadata` function must be extracted and stored.
         // The PowerShell extractor (generic tree-sitter) resolves project name as "src".
-        let ps1_anchor = "aden://module/src/utils.ps1#Get-ProjectMetadata";
-        assert!(
-            all_anchors
-                .iter()
-                .any(|a| a.contains("Get-ProjectMetadata")),
-            "expected an anchor containing 'Get-ProjectMetadata' in the store after gen;\n\
-             all anchors: {all_anchors:#?}"
-        );
-        let ps1_doc = store
-            .get_document(ps1_anchor)
-            .expect("get_document must not error for PowerShell anchor")
-            .unwrap_or_else(|| {
-                let matches: Vec<_> = all_anchors
+        // Only asserted under `grammars-download` — the slim default build cannot
+        // load the PowerShell grammar, so the .ps1 above isn't even written there.
+        #[cfg(feature = "grammars-download")]
+        {
+            let ps1_anchor = "aden://module/src/utils.ps1#Get-ProjectMetadata";
+            assert!(
+                all_anchors
                     .iter()
-                    .filter(|a| a.contains("Get-ProjectMetadata"))
-                    .collect();
-                panic!(
-                    "PowerShell document at '{ps1_anchor}' not found;\n\
-                     anchors containing 'Get-ProjectMetadata': {matches:?}"
-                )
-            });
-        assert_eq!(
-            ps1_doc.anchor, ps1_anchor,
-            "PowerShell document anchor must match expected value"
-        );
+                    .any(|a| a.contains("Get-ProjectMetadata")),
+                "expected an anchor containing 'Get-ProjectMetadata' in the store after gen;\n\
+                 all anchors: {all_anchors:#?}"
+            );
+            let ps1_doc = store
+                .get_document(ps1_anchor)
+                .expect("get_document must not error for PowerShell anchor")
+                .unwrap_or_else(|| {
+                    let matches: Vec<_> = all_anchors
+                        .iter()
+                        .filter(|a| a.contains("Get-ProjectMetadata"))
+                        .collect();
+                    panic!(
+                        "PowerShell document at '{ps1_anchor}' not found;\n\
+                         anchors containing 'Get-ProjectMetadata': {matches:?}"
+                    )
+                });
+            assert_eq!(
+                ps1_doc.anchor, ps1_anchor,
+                "PowerShell document anchor must match expected value"
+            );
+        }
     }
 
     // Mutate both source files — doc comment changes.
@@ -571,6 +583,7 @@ fn polyglot_python_powershell() {
         "def compute_checksum(data):\n    \"\"\"Compute a fast checksum of input data.\"\"\"\n    return abs(hash(data))\n",
     )
     .unwrap();
+    #[cfg(feature = "grammars-download")]
     std::fs::write(
         src_dir.join("utils.ps1"),
         "function Get-ProjectMetadata {\n    <#\n    .SYNOPSIS\n    Returns current project metadata.\n    #>\n    return @{ version = '1.1' }\n}\n",
