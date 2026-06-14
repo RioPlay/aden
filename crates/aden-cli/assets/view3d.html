@@ -51,6 +51,10 @@
   #panel h2 { margin: 0 0 6px; font-size: 14px; color: #89b4fa; word-break: break-all; }
   #panel .anchor { color: #6c7086; font-size: 11px; word-break: break-all; margin-bottom: 10px; }
   #panel .row { margin: 4px 0; font-size: 12px; }
+  #panel pre.p-snip { margin: 8px 0 2px; padding: 9px 11px; background: rgba(10,13,20,.5);
+    border: 1px solid #1f2430; border-radius: 7px;
+    font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: #9fb0d0; white-space: pre-wrap; word-break: break-word; max-height: 220px; overflow: auto; }
   #panel .k { color: #6c7086; }
   #panel .nb { color: #a6adc8; cursor: pointer; border-radius: 4px; padding: 2px 5px; margin: 1px -5px;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
@@ -60,8 +64,8 @@
   #panel a { color: #89b4fa; }
   #hint { position: fixed; left: 14px; bottom: 12px; color: #585b70; font-size: 12px; }
   #hint b { color: #6c7086; font-weight: 600; }
-  /* flyby card: floats beside the orb you're visiting, shows the actual code */
-  /* Docked bottom-right, under the detail panel — never floats over the graph. */
+  /* flyby card: tour-mode glance element. On manual focus the code lives in the
+     detail panel instead; this only floats during the self-running tour/travel. */
   #snip { position: fixed; right: 14px; bottom: 52px; z-index: 7; width: 340px; max-width: 33vw;
     pointer-events: none;
     background: rgba(13,17,26,.92); border: 1px solid #2a3040; border-radius: 10px;
@@ -69,6 +73,9 @@
     opacity: 0; transform: translateY(6px); transition: opacity .28s ease, transform .28s ease;
     overflow: hidden; }
   #snip.on { opacity: 1; transform: none; }
+  /* While the panel is open (tour/travel) shift the card clear of the ~320px
+     panel column so the two never overlap. */
+  body:has(#panel.open) #snip { right: 346px; }
   #snip .sn-head { padding: 8px 13px 6px; border-bottom: 1px solid #1f2430; }
   #snip .sn-name { font-weight: 600; font-size: 13px; }
   #snip .sn-meta { color: #6c7086; font-size: 11px; margin-top: 1px; }
@@ -836,7 +843,8 @@ function focusOn(n, pushHistory = true, ms = 900) {
   repaint();
   frameNode(n, ms);
   showPanel(n);
-  if (cardAuto) showCard(n); else hideCard();
+  // Code lives in the panel; float the card only when the tour is driving.
+  if (touring) showCard(n); else hideCard();
 }
 function clearFocus() {
   focusNodeRef = null; highlightNodes.clear(); highlightLinks.clear();
@@ -861,7 +869,7 @@ function previewNb(id) {
   if (id !== lastPreviewId) {
     // Turn toward what this connection points at — the glance IS the preview.
     glanceAt(cur, nb);
-    if (cardAuto) showCard(nb);
+    if (touring) showCard(nb);   // hover previews the orb; the panel holds the code
     if (!REDUCED_MOTION) {
       (cur.adj || []).forEach(l => {
         const s = idOf(l.source), t = idOf(l.target);
@@ -884,7 +892,7 @@ function restorePreview() {   // pointer left the list → glide back to the foc
     (n.adj || []).forEach(l => highlightLinks.add(l));
     repaint();
     frameNode(n, 650);
-    if (cardAuto) showCard(n);
+    if (touring) showCard(n);
     lastPreviewId = null;
   }
 }
@@ -903,7 +911,8 @@ function showPanel(n) {
     (n.loc ? `<div class="row"><span class="k">lines:</span> ${n.loc}</div>` : '') +
     (n.words ? `<div class="row"><span class="k">words:</span> ${n.words}</div>` : '') +
     `<div class="row"><span class="k">connections:</span> ${n.deg}</div>` +
-    (ed ? `<div class="row"><a href="${ed}">open file →</a></div>` : '') +
+    (ed ? `<div class="row"><a href="${ed}">open in editor →</a></div>` : '') +
+    (n.snippet ? `<div class="sec">source</div><pre class="p-snip">${esc(n.snippet)}</pre>` : '') +
     `<div class="sec">connected (${(n.neighbors || []).length})</div>` + rows;
   document.getElementById('panel').classList.add('open');
 }
@@ -949,24 +958,23 @@ function setStatus(text) {
 // ── verbosity presets: one key, three ways of working ─────────────────────────
 // focus — still and quiet: no autopilot, no streams, no idle spin, no flyby
 //         cards; the panel carries the detail. For finding and inspecting.
-// map   — calm structure: cards on focus/preview, but nothing moves on its
-//         own. For reading the architecture.
+// map   — calm structure: the panel carries the detail and nothing moves on
+//         its own; the flyby card stays parked (it rides with tours only).
+//         For reading the architecture.
 // live  — the cosmos: streams firing, idle orbit, tours welcome. For
 //         presentations, exploration, and staring.
 const VMODES = ['focus', 'map', 'live'];
 let vmode = localStorage.getItem('aden3d-verbosity') || 'live';
-let cardAuto = true;
 function applyVerbosity(m, announce) {
   vmode = m;
   try { localStorage.setItem('aden3d-verbosity', m); } catch (e) {}
   if (m === 'focus') {
     stopTour(); streamsManual = false; stopStreams();
-    controls.autoRotate = false; cardAuto = false; hideCard();
+    controls.autoRotate = false; hideCard();
   } else if (m === 'map') {
     stopTour(); streamsManual = false; stopStreams();
-    controls.autoRotate = false; cardAuto = true;
+    controls.autoRotate = false;
   } else {
-    cardAuto = true;
     startStreams();
     if (!focusNodeRef) controls.autoRotate = !REDUCED_MOTION;
   }
@@ -1086,6 +1094,7 @@ function stopTour() {
   touring = false;
   clearTimeout(tourTimer);
   if (!streamsManual) stopStreams();
+  hideCard();   // the float is tour/travel-only; clear it when the tour ends
   setStatus('');
 }
 function toggleTour() { touring ? stopTour() : startTour(); }
@@ -1138,7 +1147,7 @@ function travelTo(target) {
     highlightNodes.clear(); highlightLinks.clear();
     highlightNodes.add(from); highlightNodes.add(n);
     repaint();
-    if (cardAuto) showCard(n);
+    if (touring || traveling) showCard(n);   // cinematic per-hop glance during the ride
     const last = i === path.length - 1;
     if (last) {
       traveling = false; setStatus('');

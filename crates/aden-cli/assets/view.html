@@ -137,9 +137,10 @@
   body.hideui #act, body.hideui #snip, body.hideui #pivot-pill,
   body.hideui #hover-card, body.hideui #region-legend { opacity: 0 !important; pointer-events: none; }
 
-  /* ── flyby card: floats beside the node you're visiting, shows the code ── */
-  /* Docked to the bottom-right, under the detail panel — never floats over the
-     graph canvas. The right panel is ~360px wide; this sits below it. */
+  /* ── flyby card: tour-mode glance element (the autopilot's code preview) ── */
+  /* On manual click the code lives in the detail panel instead; this floating
+     card only appears while the tour is running. Docked clear of the panel
+     (which is ~360px wide) so the two boxes never overlap. */
   #snip { position: fixed; right: 14px; bottom: 52px; z-index: 7; width: 340px; max-width: 33vw;
     pointer-events: none;
     background: rgba(10,13,20,.93); border: 1px solid #2a3040; border-radius: 10px;
@@ -229,6 +230,10 @@
   #panel .breadcrumb span:hover { color: #89b4fa; text-decoration: underline; }
   #panel .k { color: #6c7086; }
   #panel .row { margin: 4px 0; word-break: break-all; font-size: 12px; }
+  #panel pre.p-snip { margin: 8px 0 2px; padding: 9px 11px; background: rgba(10,13,20,.5);
+    border: 1px solid #1f2430; border-radius: 7px;
+    font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: #9fb0d0; white-space: pre-wrap; word-break: break-word; max-height: 220px; overflow: auto; }
   #panel .pivot-section { margin: 12px 0 8px; display: flex; gap: 6px; flex-wrap: wrap; }
   #panel .pivot-btn { font-size: 11px; padding: 3px 10px; border-radius: 6px; cursor: pointer;
     border: 1px solid #313244; background: rgba(255,255,255,.04); color: #9399b2; white-space: nowrap; }
@@ -592,6 +597,11 @@ function colorOf(n) {
 }
 const idOf = e => (e && e.id != null) ? e.id : e;
 function esc(s) { return String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+// Attribute-safe escape: also encodes the double quote, so JSON (which is full of
+// them) survives a `data-*="…"` round-trip. Plain esc() leaves `"` raw, which
+// truncates the attribute at the first quote — e.g. data-ids JSON came back as
+// `[`, and JSON.parse threw, so "(+N more)" silently did nothing.
+function escAttr(s) { return String(s).replace(/[&"<>]/g, c => ({'&':'&amp;','"':'&quot;','<':'&lt;','>':'&gt;'}[c])); }
 function row(k, v) { return `<div class="row"><span class="k">${k}:</span> ${esc(v)}</div>`; }
 
 // label from a full anchor string (for use before byId is built)
@@ -1304,7 +1314,9 @@ function goNode(n) {
   const ids = new Set([n.id, ...(n.neighbors || []).map(x => x.id)]);
   Graph.zoomToFit(dur(600), 90, x => ids.has(x.id));
   showPanel(n);
-  showCard(n);
+  // The code now lives in the panel; the floating card is the tour's glance
+  // element only — never pop it over the canvas on a manual click.
+  if (touring) showCard(n); else hideCard();
 }
 function navTo(n) {
   stopTour();   // the user called something to its place — autopilot yields
@@ -1342,7 +1354,7 @@ function previewNode(id, center) {
     pulses.set(id, 1); startPulseAnim();
   }
   lastPreviewId = id;
-  showCard(n);
+  if (touring) showCard(n);   // hover-preview strobes the edge; no floating card
   if (center && n.x != null) Graph.centerAt(n.x, n.y, dur(350));
 }
 function restoreFocus() {
@@ -1411,7 +1423,7 @@ function showPanel(n) {
     if (g.items.length > INLINE_PER_GROUP) {
       const rest = g.items.slice(INLINE_PER_GROUP);
       const groupId = 'more-' + flatIdx;
-      nbHtml += `<span class="show-more" onclick="showMoreGroup('${groupId}', this)" data-ids="${esc(JSON.stringify(rest))}" data-start="${flatIdx}">(+${rest.length} more)</span><div id="${groupId}"></div>`;
+      nbHtml += `<span class="show-more" onclick="showMoreGroup('${groupId}', this)" data-ids="${escAttr(JSON.stringify(rest))}" data-start="${flatIdx}">(+${rest.length} more)</span><div id="${groupId}"></div>`;
     }
   });
 
@@ -1420,8 +1432,9 @@ function showPanel(n) {
     (bc ? `<div class="breadcrumb">${bc}</div>` : '') +
     (anchor ? `<div class="anchor-row"><span class="anchor-txt" title="${esc(anchor)}">${esc(anchor)}</span><span class="copy-btn" onclick="copyAnchor('${esc(anchor)}', this)">copy</span></div>` : '') +
     rows.join('') +
-    (ed ? `<div class="row"><a href="${ed}">open file →</a></div>` : '') +
+    (ed ? `<div class="row"><a href="${ed}">open in editor →</a></div>` : '') +
     (n.file ? `<div class="row hint-txt">↔ history: aden timeline ${esc(n.file)}</div>` : '') +
+    (n.snippet ? `<div class="sec"><span>source</span></div><pre class="p-snip">${esc(n.snippet)}</pre>` : '') +
     pivotHtml +
     `<div class="sec"><span>neighbours</span><span class="sec-count">${totalNbs}</span></div>` +
     `<div class="dir-group">${nbHtml}</div>`;
@@ -1654,8 +1667,9 @@ function hideCard() {
   snipEl.classList.remove('on');
   snipEl.setAttribute('aria-hidden', 'true');
 }
-// The snippet card is docked bottom-right via CSS (under the detail panel) so it
-// never covers the graph — no per-frame screen-tracking needed.
+// The code now lives in the detail panel (showPanel); this floating card only
+// appears during tour mode. Docked bottom-right via CSS, clear of the panel —
+// no per-frame screen-tracking needed.
 
 // ── tour mode: the map shows itself (2D edition) ─────────────────────────────
 // Same autopilot as the 3D view: mostly follows real connections, sometimes
@@ -1713,6 +1727,7 @@ function stopTour() {
   if (!touring) return;
   touring = false;
   clearTimeout(tourTimer);
+  hideCard();   // the float is tour-only; clear it when the tour ends
   if (!playing) document.getElementById('act').style.display = 'none';
 }
 function toggleTour() { touring ? stopTour() : startTour(); }

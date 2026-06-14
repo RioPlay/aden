@@ -142,7 +142,17 @@ pub fn cmd_view(
     let render = |template: &str, lib: &str, sibling: &str| {
         template
             .replace("/*FORCE_GRAPH_LIB*/", lib)
-            .replace("/*EDITOR*/", &editor_template(editor))
+            // Substitute ONLY the double-quoted `const EDITOR = "/*EDITOR*/"`
+            // assignment — NOT the single-quoted `EDITOR.includes('/*EDITOR*/')`
+            // guard in editorUrl(). A blunt global replace of the bare token would
+            // rewrite the guard's needle to the template too, so `EDITOR.includes(
+            // <template>)` (EDITOR === <template>) is always true and every
+            // open-in-editor link is suppressed. Targeting the quoted form leaves
+            // the guard intact: it still fires only when the placeholder survives.
+            .replace(
+                "\"/*EDITOR*/\"",
+                &format!("\"{}\"", editor_template(editor)),
+            )
             .replace("/*SIBLING*/", sibling)
             .replace("/*ADEN_DATA*/", &data)
     };

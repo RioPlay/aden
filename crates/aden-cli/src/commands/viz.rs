@@ -563,6 +563,12 @@ fn render_whole_graph_json(graph: &Graph, root: &Path, cap: usize, resolution: f
                 obj["file"] = serde_json::json!(file);
                 obj["line"] = serde_json::json!(line);
                 obj["loc"] = serde_json::json!(loc);
+            } else if let Some(rest) = a.strip_prefix("mod-") {
+                // Aggregate hub: no own span — aim "open in editor" at the crate entry.
+                if let Some(file) = module_entry_file(rest, &src) {
+                    obj["file"] = serde_json::json!(file);
+                    obj["line"] = serde_json::json!(1);
+                }
             }
             // Prose mass: word count for doc/term nodes (no source span).
             if (a.starts_with("aden://doc/") || a.starts_with("aden://term/"))
@@ -987,6 +993,30 @@ fn group_of(anchor: &str) -> &str {
         .unwrap_or("other")
 }
 
+/// Resolve a synthesized `mod-<crate>` hub to a representative source file — its
+/// crate entry point — so the aggregate node can still offer an "open in editor"
+/// link despite having no span of its own. Prefers `src/lib.rs`, then
+/// `src/main.rs`, then any `lib.rs`/`main.rs`/`mod.rs`, else the shortest member
+/// path. Members are every indexed anchor whose group resolves to this crate.
+fn module_entry_file<'a>(crate_name: &str, src: &'a SrcMap) -> Option<&'a str> {
+    let mut files: Vec<&str> = src
+        .iter()
+        .filter(|(anchor, _)| group_of(anchor) == crate_name)
+        .map(|(_, (f, _, _))| f.as_str())
+        .collect();
+    files.sort_unstable();
+    files.dedup();
+    files
+        .iter()
+        .find(|f| f.ends_with("/src/lib.rs"))
+        .or_else(|| files.iter().find(|f| f.ends_with("/src/main.rs")))
+        .or_else(|| files.iter().find(|f| f.ends_with("/lib.rs")))
+        .or_else(|| files.iter().find(|f| f.ends_with("/main.rs")))
+        .or_else(|| files.iter().find(|f| f.ends_with("/mod.rs")))
+        .or_else(|| files.iter().min_by_key(|f| f.len()))
+        .copied()
+}
+
 /// A human label for a community: the dominant subsystem among its members — but
 /// "mixed" when no subsystem holds a majority. A low-purity community is a Louvain
 /// "misc" merge of small peripheral modules (e.g. aden-mcp + aden-lsp + benches with
@@ -1343,6 +1373,12 @@ fn render_json(
                 obj["file"] = serde_json::json!(file);
                 obj["line"] = serde_json::json!(line);
                 obj["loc"] = serde_json::json!(loc);
+            } else if let Some(rest) = a.strip_prefix("mod-") {
+                // Aggregate hub: no own span — aim "open in editor" at the crate entry.
+                if let Some(file) = module_entry_file(rest, src) {
+                    obj["file"] = serde_json::json!(file);
+                    obj["line"] = serde_json::json!(1);
+                }
             }
             if (a.starts_with("aden://doc/") || a.starts_with("aden://term/"))
                 && let Some(i) = graph.get_index(a)
