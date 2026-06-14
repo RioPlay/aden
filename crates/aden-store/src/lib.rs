@@ -45,8 +45,20 @@ pub fn serialize_document(doc: &Document) -> Result<Vec<u8>, StoreError> {
 }
 
 /// Deserialize a Document from bytes.
+///
+/// Rehydrates `source_span` from attributes when absent — the read-side inverse
+/// of [`aden_core::Document::with_span`]. Symbols persist their span only in
+/// attributes (`source_file`/`start_line`/`end_line`/`start_byte`/`end_byte`);
+/// without this the struct field is permanently `None` for every stored symbol,
+/// so consumers reading `.source_span` (e.g. the dead-code linter) silently
+/// degrade. Span-less nodes (prose/term/note) have no source attributes, so
+/// `from_attributes` returns `None` and they are left untouched.
 pub fn deserialize_document(bytes: &[u8]) -> Result<Document, StoreError> {
-    deserialize(bytes)
+    let mut doc: Document = deserialize(bytes)?;
+    if doc.source_span.is_none() {
+        doc.source_span = aden_core::SourceSpan::from_attributes(&doc.attributes);
+    }
+    Ok(doc)
 }
 
 /// Serialize a Vec of (String, EdgeType) tuples to bytes.
@@ -626,6 +638,54 @@ mod tests {
         assert_eq!(retrieved.anchor, doc.anchor);
         assert_eq!(retrieved.node_type, doc.node_type);
         assert_eq!(retrieved.attributes.get("key"), doc.attributes.get("key"));
+    }
+
+    #[test]
+    fn deserialize_rehydrates_source_span_from_attributes() {
+        // Symbols persist their span only in attributes — the extractor writes
+        // source_file/start_line/end_line/start_byte/end_byte and leaves the
+        // `source_span` struct field None on the wire. Deserialization must
+        // rebuild the field (the read-side inverse of `Document::with_span`) so
+        // consumers that read `.source_span` (e.g. the dead-code linter) get the
+        // real file:line instead of degrading.
+        let mut attrs = HashMap::new();
+        attrs.insert("source_file".to_string(), "/repo/src/lib.rs".to_string());
+        attrs.insert("start_line".to_string(), "42".to_string());
+        attrs.insert("end_line".to_string(), "99".to_string());
+        attrs.insert("start_byte".to_string(), "1000".to_string());
+        attrs.insert("end_byte".to_string(), "2500".to_string());
+
+        let doc = Document {
+            anchor: "aden://module/src/lib.rs#foo".to_string(),
+            node_type: aden_core::NodeType::Function,
+            attributes: attrs,
+            blocks: vec![],
+            source_span: None,
+            metadata: None,
+            confidence: 1.0,
+        };
+
+        let bytes = serialize_document(&doc).unwrap();
+        let retrieved = deserialize_document(&bytes).unwrap();
+
+        let span = retrieved
+            .source_span
+            .expect("source_span must be rehydrated from attributes");
+        assert_eq!(span.file, "/repo/src/lib.rs");
+        assert_eq!(span.start_line, 42);
+        assert_eq!(span.end_line, 99);
+        assert_eq!(span.start_byte, 1000);
+        assert_eq!(span.end_byte, 2500);
+    }
+
+    #[test]
+    fn deserialize_leaves_spanless_documents_untouched() {
+        // A node with no source attributes (prose/term/note) must stay None,
+        // never synthesize a bogus span.
+        let doc = note_doc("plain");
+        let bytes = serialize_document(&doc).unwrap();
+        let retrieved = deserialize_document(&bytes).unwrap();
+        assert!(retrieved.source_span.is_none());
     }
 
     #[test]
