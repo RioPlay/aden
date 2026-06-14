@@ -2946,6 +2946,18 @@ fn print_locate_results(hits: &[serde_json::Value], format: &str, context: Optio
             }
         }
     }
+    // Self-document the discovery→assembly loop: the symbol shown is exactly the
+    // anchor `asm`/`understand` take, so the agent can pivot from a locate hit
+    // straight to full context without a second lookup.
+    if let Some(first) = hits.first() {
+        let anchor = first["anchor"].as_str().unwrap_or("");
+        let symbol = anchor.split('#').next_back().unwrap_or(anchor);
+        if !symbol.is_empty() {
+            println!(
+                "  ↳ expand into full context: `asm --from {symbol}` (or `understand {symbol}`)"
+            );
+        }
+    }
 }
 
 pub fn cmd_locate(

@@ -133,6 +133,12 @@ pub fn cmd_grep(
             total - limit
         );
     }
+    // Self-document the discovery→assembly loop: the enclosing symbol shown per
+    // hit is exactly the anchor `asm`/`understand` take, so the agent can pivot
+    // from a search hit straight to full context without a second lookup.
+    if let Some(sym) = matches.iter().take(limit).find_map(|m| m.symbol.as_deref()) {
+        println!("  ↳ expand a hit into full context: `asm --from {sym}` (or `understand {sym}`)");
+    }
     Ok(())
 }
 

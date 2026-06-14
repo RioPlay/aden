@@ -218,7 +218,10 @@ enum Commands {
         from: String,
         #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
         path: PathBuf,
-        #[arg(long, value_name = "N", default_value = "3")]
+        // Default matches the library's AssemblyOptions default (max_depth 2):
+        // a focused neighborhood beats a whole-crate dump on the first call.
+        // Raise --depth for wider context; the token budget still caps output.
+        #[arg(long, value_name = "N", default_value = "2")]
         depth: usize,
         #[arg(long, value_name = "TOKENS", default_value = "8192")]
         budget: usize,
