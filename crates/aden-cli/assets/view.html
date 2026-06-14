@@ -1383,7 +1383,8 @@ function showPanel(n) {
   const rows = [];
   if (n.size != null) rows.push(row('symbols', n.size));
   if (n.kind) rows.push(row('kind', n.kind));
-  if (n.loc) rows.push(row('lines', n.loc));
+  if (n.line) rows.push(row('line', n.line));
+  if (n.loc) rows.push(row('loc', n.loc));
   if (n.words) rows.push(row('words', n.words));
   if (n.community != null) rows.push(row('community', n.community));
   rows.push(row('degree', n.deg));

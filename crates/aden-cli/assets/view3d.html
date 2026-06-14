@@ -908,7 +908,8 @@ function showPanel(n) {
     `<div class="nb" id="nb-${i}" onclick="focusById('${esc(x.id)}')" onmouseenter="previewNb('${esc(x.id)}')">${esc(shortName(x))} <span class="k">${esc(regionOf3d(x))}</span></div>`).join('');
   document.getElementById('p-body').innerHTML =
     `<div class="row"><span class="k">kind:</span> ${esc(n.kind || '—')}</div>` +
-    (n.loc ? `<div class="row"><span class="k">lines:</span> ${n.loc}</div>` : '') +
+    (n.line ? `<div class="row"><span class="k">line:</span> ${n.line}</div>` : '') +
+    (n.loc ? `<div class="row"><span class="k">loc:</span> ${n.loc}</div>` : '') +
     (n.words ? `<div class="row"><span class="k">words:</span> ${n.words}</div>` : '') +
     `<div class="row"><span class="k">connections:</span> ${n.deg}</div>` +
     (ed ? `<div class="row"><a href="${ed}">open in editor →</a></div>` : '') +
