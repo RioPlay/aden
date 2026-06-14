@@ -117,3 +117,45 @@ jobs:
             echo "ERROR: 'All rights reserved' contradicts AGPL-3.0 grant — remove the line"
             exit 1
           fi
+
+  # Guards the dependency slim-down (commit d646816). Two invariants the default
+  # build relies on but the other jobs don't exercise:
+  #   1. The default tree stays free of the network/compression stack — those
+  #      crates may only be pulled by opt-in features, never by `cargo install`.
+  #   2. The opt-in features still compile, so their cfg-gated code can't bit-rot
+  #      unnoticed (the polyglot PowerShell test regression came from exactly this
+  #      blind spot).
+  # Both checks are network-free: `grammars-download` only fetches grammars at
+  # runtime, so compiling it needs no network.
+  slim-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: Swatinem/rust-cache@v2
+
+      - name: Assert default build stays slim (no network/grammar deps)
+        run: |
+          FORBIDDEN="ureq ureq-proto rustls ring tar zstd"
+          TREE=$(cargo tree -p aden-cli --edges normal --prefix none | awk '{print $1}' | sort -u)
+          LEAKED=""
+          for dep in $FORBIDDEN; do
+            echo "$TREE" | grep -ixq "$dep" && LEAKED="$LEAKED $dep"
+          done
+          if [ -n "$LEAKED" ]; then
+            echo "slim-down regression: forbidden dep(s) in the default aden-cli tree:$LEAKED"
+            echo "These belong behind opt-in features (grammars-download / licenses-net), not the default build."
+            exit 1
+          fi
+          echo "OK: default aden-cli tree free of:$FORBIDDEN"
+
+      - name: Compile-check opt-in features (no network)
+        # grammars-download / dense / licenses-net are off by default, so the slim
+        # CI above never compiles them. Type-check them here so their cfg-gated
+        # code keeps building. aden-lsp stays excluded to match build-and-test.
+        run: cargo check --workspace --exclude aden-lsp --all-features
