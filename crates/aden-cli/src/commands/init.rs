@@ -106,9 +106,11 @@ const AGENTS_END: &str = "<!-- END aden:guidance -->";
 /// reference lives in `.agent/aden-guide.adoc`.
 const AGENTS_GUIDANCE: &str = r#"## Using aden
 
-Use the **aden** MCP tools (or `aden <cmd>` on the shell) to navigate this
-codebase — not raw `grep`/`find`. Every aden result is tagged with its enclosing
-symbol, which is the anchor you feed back into the graph.
+**Use the aden MCP tools (or `aden <cmd>` on the shell) for ALL code navigation —
+not raw `grep`/`find`/`cat`.** They are structure-aware (every result is tagged
+with its enclosing symbol = the anchor you feed back into the graph) and far
+cheaper in tokens than reading whole files. This applies to any subagents you
+spawn too — tell them to use aden, since they do not inherit this guidance.
 
 **The graph is fresh by construction.** Read tools (`ask`, `search`, `grep`,
 `locate`, `query`, `asm`) auto-reindex any file changed since the last run. You do
