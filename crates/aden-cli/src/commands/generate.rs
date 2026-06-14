@@ -33,6 +33,9 @@ struct EmittedSymbol {
     /// `[text](#frag)`). Linked as bidirectional `RelatesTo` edges against doc
     /// anchor fragments only.
     refs: Vec<String>,
+    /// `include::` document-composition targets (raw file paths from the
+    /// `doc_includes` attribute). Linked as directional `Requires` edges.
+    includes: Vec<String>,
     /// `edge::implements[Trait::method]` references (trait impls) — linked as
     /// `Implements` edges so blast radius reaches implementors (Wave 1).
     implements: Vec<String>,
@@ -218,6 +221,76 @@ fn extract_edge_macro(doc: &aden_core::Document, kind: &str) -> Vec<String> {
 /// `a << b >> c` shift expressions from embedded code listings.
 fn extract_doc_refs(doc: &aden_core::Document) -> Vec<String> {
     extract_joined_attribute(doc, "doc_refs")
+}
+
+/// Document-composition targets, read from the `doc_includes` attribute the
+/// AsciiDoc parser fills for `include::` directives. Resolved file-wise (by
+/// stem) to directional `Requires` edges in [`link_include_edges`].
+fn extract_doc_includes(doc: &aden_core::Document) -> Vec<String> {
+    extract_joined_attribute(doc, "doc_includes")
+}
+
+/// Resolve `include::` directives (the `doc_includes` channel) into directional
+/// `Requires` edges: an including document depends on each file it pulls in.
+/// Resolution is file-wise by stem (an include names a file, not a fragment),
+/// pointing at that file's representative (first) doc node. Runs as a separate
+/// additive pass after `link_store_edges`; `put_edges_bulk` appends, so edges
+/// already written are kept.
+fn link_include_edges<S: GraphStorage>(
+    storage: &S,
+    include_records: &[(String, Vec<String>)],
+) -> Result<(), Box<dyn std::error::Error>> {
+    use aden_core::EdgeType;
+    if include_records.is_empty() {
+        return Ok(());
+    }
+    let anchors = storage.get_all_anchors()?;
+    // File stem -> declaring doc anchors (sorted/deduped for deterministic picks).
+    let mut stem_index: HashMap<&str, Vec<&str>> = HashMap::new();
+    for anchor in &anchors {
+        if let Some(file_key) = doc_anchor_file(anchor)
+            && let Some(stem) = std::path::Path::new(file_key)
+                .file_stem()
+                .and_then(|s| s.to_str())
+        {
+            stem_index.entry(stem).or_default().push(anchor.as_str());
+        }
+    }
+    for cands in stem_index.values_mut() {
+        cands.sort_unstable();
+        cands.dedup();
+    }
+    let mut edges: Vec<(String, String, EdgeType)> = Vec::new();
+    for (referrer, targets) in include_records {
+        let ref_file = doc_anchor_file(referrer);
+        for target in targets {
+            let Some(stem) = std::path::Path::new(target)
+                .file_stem()
+                .and_then(|s| s.to_str())
+            else {
+                continue;
+            };
+            let Some(cands) = stem_index.get(stem) else {
+                continue;
+            };
+            // An include points at ANOTHER document: prefer a candidate in a
+            // different file than the referrer; else the first (deterministic).
+            let target_anchor = cands
+                .iter()
+                .copied()
+                .find(|a| doc_anchor_file(a) != ref_file)
+                .or_else(|| cands.first().copied());
+            if let Some(ta) = target_anchor
+                && ta != referrer.as_str()
+            {
+                edges.push((referrer.clone(), ta.to_string(), EdgeType::Requires));
+            }
+        }
+    }
+    if !edges.is_empty() {
+        storage.put_edges_bulk(&edges)?;
+    }
+    Ok(())
 }
 
 /// Backtick prose mentions, read from the `doc_mentions` attribute the format
@@ -1500,6 +1573,7 @@ fn cmd_gen_inner(
                     let callees = extract_callees(&doc_clone);
                     let uses = extract_uses(&doc_clone);
                     let refs = extract_doc_refs(&doc_clone);
+                    let includes = extract_doc_includes(&doc_clone);
                     let implements = extract_edge_macro(&doc_clone, "implements");
                     let mutates = extract_edge_macro(&doc_clone, "mutates");
                     let mentions = extract_doc_mentions(&doc_clone);
@@ -1549,6 +1623,7 @@ fn cmd_gen_inner(
                         callees,
                         uses,
                         refs,
+                        includes,
                         implements,
                         mutates,
                         mentions,
@@ -1581,6 +1656,7 @@ fn cmd_gen_inner(
         let mut link_records: Vec<(String, Vec<String>)> = Vec::new();
         let mut use_records: Vec<(String, Vec<String>)> = Vec::new();
         let mut ref_records: Vec<(String, Vec<String>)> = Vec::new();
+        let mut include_records: Vec<(String, Vec<String>)> = Vec::new();
         let mut impl_records: Vec<(String, Vec<String>)> = Vec::new();
         let mut mutates_records: Vec<(String, Vec<String>)> = Vec::new();
         let mut mention_records: Vec<(String, Vec<String>)> = Vec::new();
@@ -1671,6 +1747,9 @@ fn cmd_gen_inner(
                         }
                         if !sym.refs.is_empty() {
                             ref_records.push((sym.anchor.clone(), sym.refs));
+                        }
+                        if !sym.includes.is_empty() {
+                            include_records.push((sym.anchor.clone(), sym.includes));
                         }
                         if !sym.uses.is_empty() {
                             use_records.push((sym.anchor.clone(), sym.uses));
@@ -1791,6 +1870,13 @@ fn cmd_gen_inner(
                 CalleeStats::default()
             }
         };
+
+        // Additive second pass: include:: directives -> Requires edges. Kept
+        // separate from link_store_edges (which works from anchors only); this
+        // resolves file-wise and put_edges_bulk appends, so prior edges persist.
+        if let Err(e) = link_include_edges(&storage, &include_records) {
+            eprintln!("WARN: Failed to link include edges: {}", e);
+        }
 
         save_gen_cache(&cache_path, &cache)?;
 
@@ -2293,6 +2379,44 @@ mod link_tests {
     /// fragments only — bidirectional `RelatesTo` — and must NEVER attach to a
     /// same-named code symbol (the fuzzy code path is off-limits to prose).
     #[test]
+    fn include_records_link_requires_edges() {
+        use aden_core::{Block, Document, EdgeType, NodeType};
+        let dir = tempfile::tempdir().unwrap();
+        let storage = Storage::new(dir.path().to_str().unwrap()).unwrap();
+        let mk = |anchor: &str| Document {
+            anchor: anchor.into(),
+            node_type: NodeType::Module,
+            attributes: Default::default(),
+            blocks: vec![Block::Paragraph("body".into())],
+            source_span: None,
+            metadata: None,
+            confidence: 1.0,
+        };
+        // A master doc and a chapter it includes, each a heading-section node.
+        let master = "aden://doc/p/master.adoc/h1master";
+        let chapter = "aden://doc/p/chapter-one.adoc/h1chapter";
+        for a in [master, chapter] {
+            storage.put_document(&mk(a)).unwrap();
+        }
+        storage.flush().unwrap();
+
+        let include_records = vec![(master.to_string(), vec!["chapter-one.adoc".to_string()])];
+        link_include_edges(&storage, &include_records).unwrap();
+
+        let out = storage.get_outgoing_edges(master).unwrap();
+        assert!(
+            out.contains(&(chapter.to_string(), EdgeType::Requires)),
+            "master must Requires the included chapter doc node; got {out:?}"
+        );
+        // Directional: the chapter does not Requires the master.
+        let back = storage.get_outgoing_edges(chapter).unwrap();
+        assert!(
+            !back.iter().any(|(t, _)| t == master),
+            "include edge must be directional (master->chapter only); got {back:?}"
+        );
+    }
+
+    #[test]
     fn prose_ref_records_link_doc_anchors_only() {
         use aden_core::{Block, Document, EdgeType, NodeType};
         let dir = tempfile::tempdir().unwrap();
@@ -2505,6 +2629,33 @@ mod link_tests {
         assert_eq!(
             extract_doc_refs(&doc),
             vec!["ref:_term_a".to_string(), "ref:_term_b".to_string()],
+            "sorted, deduped, attribute-sourced"
+        );
+    }
+
+    #[test]
+    fn extract_doc_includes_reads_doc_includes_attribute() {
+        use aden_core::{Block, Document, NodeType};
+        let mut attrs = std::collections::HashMap::new();
+        attrs.insert(
+            "doc_includes".to_string(),
+            "chapter-two.adoc,chapter-one.adoc,chapter-two.adoc".to_string(),
+        );
+        let doc = Document {
+            anchor: "aden://doc/p/master.adoc/h2overview".into(),
+            node_type: NodeType::Module,
+            attributes: attrs,
+            blocks: vec![Block::Paragraph("body".into())],
+            source_span: None,
+            metadata: None,
+            confidence: 1.0,
+        };
+        assert_eq!(
+            extract_doc_includes(&doc),
+            vec![
+                "chapter-one.adoc".to_string(),
+                "chapter-two.adoc".to_string()
+            ],
             "sorted, deduped, attribute-sourced"
         );
     }

@@ -69,6 +69,10 @@ impl crate::extractor::LanguageExtractor for AsciiDocExtractor {
         // def)` — Term-node candidates; only those inside glossary-gated
         // sections are promoted below.
         let mut term_lines: Vec<(usize, Option<String>, String, String)> = Vec::new();
+        // `include::target[]` directives (document composition). File-level, so
+        // collected once and attached to the document's representative node;
+        // resolved to `Requires` edges in the link phase.
+        let mut includes: Vec<String> = Vec::new();
 
         for (line_num, line) in body.lines().enumerate() {
             let line_num = line_num + 1;
@@ -112,6 +116,17 @@ impl crate::extractor::LanguageExtractor for AsciiDocExtractor {
             crate::extractor::collect_backtick_mentions(line, line_num - 1, &mut line_mentions);
             if let Some((explicit, name, def)) = parse_dlist_term(line) {
                 term_lines.push((line_num - 1, explicit, name, def));
+            }
+            // `include::target[opts]` — document composition. Fence-guarded by the
+            // listing/literal skips above, so an include inside a delimited block
+            // (a code example) is not mistaken for a real directive.
+            if let Some(rest) = line.trim_start().strip_prefix("include::")
+                && let Some(br) = rest.find('[')
+            {
+                let target = rest[..br].trim();
+                if !target.is_empty() {
+                    includes.push(target.to_string());
+                }
             }
 
             if let Some(rest) = line.strip_prefix("= ") {
@@ -226,6 +241,15 @@ impl crate::extractor::LanguageExtractor for AsciiDocExtractor {
                 if !section_refs.is_empty() {
                     attrs.insert("doc_refs".to_string(), section_refs.join(","));
                 }
+                // Includes are file-level; attach the whole file's targets to the
+                // document's representative (first) node so the link phase emits
+                // one Requires edge per included file from the document.
+                if hi == 0 && !includes.is_empty() {
+                    let mut inc = includes.clone();
+                    inc.sort();
+                    inc.dedup();
+                    attrs.insert("doc_includes".to_string(), inc.join(","));
+                }
                 // Same attribution rule for prose mentions (Wave-2 Mentions).
                 let mut section_mentions: Vec<String> = line_mentions
                     .iter()
@@ -302,6 +326,12 @@ impl crate::extractor::LanguageExtractor for AsciiDocExtractor {
             all_refs.dedup();
             if !all_refs.is_empty() {
                 attrs.insert("doc_refs".to_string(), all_refs.join(","));
+            }
+            if !includes.is_empty() {
+                let mut inc = includes.clone();
+                inc.sort();
+                inc.dedup();
+                attrs.insert("doc_includes".to_string(), inc.join(","));
             }
             let mut all_mentions: Vec<String> =
                 line_mentions.iter().map(|(_, m)| m.clone()).collect();
@@ -1022,6 +1052,58 @@ References <<_other>> here.
         assert!(
             !alias.attributes.contains_key("doc_refs"),
             "alias_of node must not duplicate refs (double edges)"
+        );
+    }
+
+    /// `include::target[]` directives must surface as a `doc_includes` attribute
+    /// on the document's representative node, so the link phase can emit a
+    /// `Requires` edge. The canonical gen path previously dropped includes.
+    #[test]
+    fn include_directive_emits_doc_includes_attribute() {
+        let ext = AsciiDocExtractor::new();
+        let src = "\
+= Master
+
+include::chapter-one.adoc[]
+
+== Overview
+
+Body.
+";
+        let docs = ext
+            .extract_documents(src, Path::new("master.adoc"))
+            .expect("extraction must succeed");
+        let with_inc = docs
+            .iter()
+            .find(|d| d.attributes.contains_key("doc_includes"))
+            .expect("a node must carry doc_includes");
+        assert_eq!(
+            with_inc.attributes.get("doc_includes").map(String::as_str),
+            Some("chapter-one.adoc"),
+        );
+    }
+
+    /// `include::` inside a delimited listing block is a code example, not a real
+    /// directive — it must NOT produce a doc_includes entry.
+    #[test]
+    fn include_inside_listing_block_is_ignored() {
+        let ext = AsciiDocExtractor::new();
+        let src = "\
+= Master
+
+----
+include::not-real.adoc[]
+----
+
+Body.
+";
+        let docs = ext
+            .extract_documents(src, Path::new("master.adoc"))
+            .expect("extraction must succeed");
+        assert!(
+            docs.iter()
+                .all(|d| !d.attributes.contains_key("doc_includes")),
+            "include inside a listing block must be ignored"
         );
     }
 
