@@ -27,10 +27,11 @@ const GLOBAL_FLAGS: &[&str] = &["--json", "--unlimited", "--verbose", "--project
 /// Every entry must carry a reason — an empty list is the healthy state.
 /// (Positional CLI args are out of scope here: the reverse check enumerates
 /// `--long` flags only; positionals are covered by the forward direction.)
-const REVERSE_EXEMPT: &[(&str, &str, &str)] = &[
-    // (none currently — add `(tool, "--flag", "why")` when a flag is
-    //  consciously kept CLI-only, e.g. interactive or daemon-spawning flags)
-];
+const REVERSE_EXEMPT: &[(&str, &str, &str)] = &[(
+    "heal",
+    "--watch",
+    "long-running file-watch daemon; always trips the MCP request/response timeout",
+)];
 
 /// Top-level CLI commands with NO MCP tool, each with the reason it is kept
 /// off the MCP surface. A new CLI command fails the coverage test until it
@@ -187,6 +188,42 @@ fn cli_flags_are_declared_on_mcp_tools() {
     assert!(
         failures.is_empty(),
         "CLI\u{2192}MCP flag drift detected ({} issue(s)):\n  {}",
+        failures.len(),
+        failures.join("\n  ")
+    );
+}
+
+/// Enum drift: every value the MCP schema pins in an `enum` (check/lint
+/// severity, viz mode, asm/audit/etc. format, ask intent, search doc_type, …)
+/// must still appear in that command's `--help`. Catches the harmful direction —
+/// a value renamed or removed in the CLI while the MCP enum keeps offering it.
+/// (It does NOT force completeness when the CLI *adds* a value: enums are
+/// client-side hints, never server-enforced, so a lagging enum only under-offers
+/// — it can never mis-route a call.)
+#[test]
+fn mcp_enum_values_exist_in_cli_help() {
+    let bin = env!("CARGO_BIN_EXE_aden");
+    let mut failures: Vec<String> = Vec::new();
+
+    for (tool, arg, values) in aden_mcp::tool_arg_enums() {
+        let out = Command::new(bin)
+            .args([tool, "--help"])
+            .output()
+            .unwrap_or_else(|e| panic!("failed to run `aden {tool} --help`: {e}"));
+        let help = String::from_utf8_lossy(&out.stdout);
+        for v in values {
+            if !help.contains(v) {
+                failures.push(format!(
+                    "{tool}.{arg}: MCP enum offers `{v}` but `aden {tool} --help` no longer \
+                     lists it (update arg_enum in aden-mcp, or the CLI)"
+                ));
+            }
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "MCP enum/CLI drift detected ({} issue(s)):\n  {}",
         failures.len(),
         failures.join("\n  ")
     );

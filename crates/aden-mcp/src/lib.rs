@@ -149,6 +149,54 @@ fn required_args(tool: &str) -> &'static [&'static str] {
     }
 }
 
+/// Allowed values for an enumerable argument, surfaced as a JSON-schema `enum`
+/// so a client can validate the value and an LLM can see the valid set up front
+/// instead of discovering a bad value via an opaque CLI usage error.
+///
+/// These are HINTS, not server-enforced: the CLI parses these args as plain
+/// strings (not clap `ValueEnum`), so the accepted set lives only in `--help`
+/// prose and may evolve. Enforcing a possibly-stale set server-side could block
+/// a newly-valid value, so we only advertise it. The `mcp_enum_values_exist_in_cli_help`
+/// contract test pins every value below to the CLI `--help`, catching drift if a
+/// value is renamed or removed. Empty slice = no constraint.
+fn arg_enum(tool: &str, arg: &str) -> &'static [&'static str] {
+    match (tool, arg) {
+        // Subcommand-dispatch verbs (clap subcommands — the most stable set).
+        ("federation", "action") => &["list", "add", "remove", "config"],
+        ("mcp", "action") => &["install", "uninstall", "list"],
+        // Severity thresholds — note check uses Forbid, lint uses Error.
+        ("check", "severity") => &["Suggest", "Warn", "Forbid"],
+        ("lint", "severity") => &["Suggest", "Warn", "Error"],
+        // Output formats — each tool's accepted set differs.
+        ("viz", "format") => &["mermaid", "dot", "asciidoc", "json"],
+        ("asm", "format") => &["llm", "adg", "aden"],
+        ("audit", "format") => &["text", "json", "adoc"],
+        ("diagnose", "format") => &["text", "json"],
+        ("query", "format") => &["json", "table"],
+        // Other closed value sets.
+        ("viz", "mode") => &["blast", "reach", "connectivity", "communities"],
+        ("ask", "intent") => &[
+            "debug", "usage", "explain", "refactor", "impact", "list", "compare", "count",
+            "general",
+        ],
+        ("audit", "lang") => &["rust", "python", "go", "ts", "php"],
+        ("search", "doc_type") => &["module", "adr", "plan", "use-case"],
+        ("test", "scope") => &["unit", "integration", "all"],
+        _ => &[],
+    }
+}
+
+/// "At least one of" argument groups that a flat `required` list cannot express
+/// (that is an AND). Rendered as JSON-schema `anyOf: [{required: [...]}, …]`.
+/// `locate` needs one of `symbol`/`caller_of`; `validate_args` enforces the same
+/// rule at call time, so this is the schema-level hint for the same constraint.
+fn any_of_required(tool: &str) -> &'static [&'static [&'static str]] {
+    match tool {
+        "locate" => &[&["symbol"], &["caller_of"]],
+        _ => &[],
+    }
+}
+
 /// Cross-argument validation that a flat JSON-schema `required` list cannot
 /// express (e.g. "at least one of A or B"). Returns `Err(message)` when the
 /// constraint is violated. Runs after schema validation, before shelling out.
@@ -243,6 +291,22 @@ fn is_subcommand_dispatch(tool: &str, arg: &str) -> bool {
 /// Lets `aden-cli` assert that no MCP-emittable flag has drifted from the CLI.
 pub fn tool_arg_specs() -> Vec<(&'static str, &'static [(&'static str, &'static str)])> {
     TOOLS.iter().map(|t| (t.name, t.args)).collect()
+}
+
+/// Contract-test accessor: every `(tool, arg, allowed-values)` the MCP schema
+/// constrains with an `enum`. Lets `aden-cli` assert each value still appears in
+/// that command's `--help`, catching drift when a value is renamed or removed.
+pub fn tool_arg_enums() -> Vec<(&'static str, &'static str, &'static [&'static str])> {
+    let mut out = Vec::new();
+    for t in TOOLS {
+        for &(arg, _ty) in t.args {
+            let vals = arg_enum(t.name, arg);
+            if !vals.is_empty() {
+                out.push((t.name, arg, vals));
+            }
+        }
+    }
+    out
 }
 
 /// Contract-test accessor: does `tool` take `arg` positionally (vs. as a `--flag`)?
@@ -340,6 +404,13 @@ fn tool_from_spec(spec: &ToolSpec) -> Tool {
     for &(arg_name, ty) in spec.args {
         let mut p = serde_json::Map::new();
         p.insert("type".to_string(), serde_json::json!(ty));
+        // Constrain enumerable args (e.g. federation/mcp `action`) so a client
+        // can validate the value and an LLM sees the valid set, instead of
+        // discovering a bad verb via an opaque CLI error.
+        let allowed = arg_enum(spec.name, arg_name);
+        if !allowed.is_empty() {
+            p.insert("enum".to_string(), serde_json::json!(allowed));
+        }
         props.insert(arg_name.to_string(), serde_json::Value::Object(p));
     }
     let mut schema = JsonObject::new();
@@ -351,6 +422,17 @@ fn tool_from_spec(spec: &ToolSpec) -> Tool {
     let required = required_args(spec.name);
     if !required.is_empty() {
         schema.insert("required".to_string(), serde_json::json!(required));
+    }
+    // "At least one of" constraints (e.g. locate's symbol/caller_of) cannot be a
+    // flat `required` list; express them as `anyOf` so the schema itself hints
+    // the rule that `validate_args` also enforces at call time.
+    let any_of = any_of_required(spec.name);
+    if !any_of.is_empty() {
+        let clauses: Vec<serde_json::Value> = any_of
+            .iter()
+            .map(|group| serde_json::json!({ "required": group }))
+            .collect();
+        schema.insert("anyOf".to_string(), serde_json::json!(clauses));
     }
     // A friendly display title + Read/Rebuild/Mutate annotations let clients
     // present read tools as auto-approvable (no per-call permission wall) while
@@ -634,7 +716,11 @@ static TOOLS: &[ToolSpec] = &[
             ("propose", "boolean"),
             ("since", "string"),
             ("apply", "string"),
-            ("watch", "string"),
+            // NOTE: `--watch` is intentionally NOT exposed over MCP — it is a
+            // long-running daemon that always trips the request/response
+            // timeout. (It is still confined defensively in `confine_path_args`
+            // in case a raw client smuggles the key.) Exempted on the CLI side
+            // in the mcp_flag_parity test's REVERSE_EXEMPT.
         ],
         effect: Effect::Mutate,
         tier: Tier::Extended,
@@ -914,6 +1000,7 @@ impl ServerHandler for AdenMcpServer {
         // Run
         let output = run_aden_command(
             &self.project_dir,
+            spec.name,
             &cmd_args.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
         )
         .await;
@@ -1051,7 +1138,36 @@ fn resolve_aden_binary() -> std::ffi::OsString {
 /// instead and surface a clean error to the caller.
 const COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
-async fn run_aden_command(project_dir: &Path, args: &[&str]) -> Result<String, String> {
+/// Index-rebuild tools whose stdout is progress chrome ("Generated N nodes",
+/// "Emitted N edges", "INFO: …") rather than an answer. ONLY these get their
+/// stdout chrome-stripped for the MCP channel. Every other tool — especially
+/// the diagnostics (`check`/`status`/`diagnose`) whose findings ARE printed as
+/// `INFO:` lines — returns stdout verbatim. Blanket `INFO:` stripping was the
+/// bug that made `check` come back empty over MCP: every line it prints is an
+/// `INFO:` line, so the filter ate the entire result.
+fn strips_index_chrome(tool: &str) -> bool {
+    matches!(tool, "gen" | "regen")
+}
+
+/// Post-process a successful command's stdout for return over MCP, per the
+/// `strips_index_chrome` policy. Line-ending normalization (join with `\n`,
+/// trailing newline dropped) is identical for both paths; only the filter
+/// differs, so non-index tools are returned unchanged save normalization.
+fn clean_stdout(tool: &str, raw: &str) -> String {
+    let strip = strips_index_chrome(tool);
+    raw.lines()
+        .filter(|l| {
+            if !strip {
+                return true;
+            }
+            let t = l.trim_start();
+            !(t.starts_with("INFO:") || t.starts_with("Generated") || t.starts_with("Emitted"))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+async fn run_aden_command(project_dir: &Path, tool: &str, args: &[&str]) -> Result<String, String> {
     let child = tokio::process::Command::new(resolve_aden_binary())
         .args(args)
         .current_dir(project_dir)
@@ -1071,13 +1187,7 @@ async fn run_aden_command(project_dir: &Path, args: &[&str]) -> Result<String, S
 
     if output.status.success() {
         let raw = String::from_utf8_lossy(&output.stdout).into_owned();
-        Ok(raw
-            .lines()
-            .filter(|l| !l.trim_start().starts_with("INFO:"))
-            .filter(|l| !l.trim_start().starts_with("Generated"))
-            .filter(|l| !l.trim_start().starts_with("Emitted"))
-            .collect::<Vec<_>>()
-            .join("\n"))
+        Ok(clean_stdout(tool, &raw))
     } else {
         let mut err = String::from_utf8_lossy(&output.stderr).into_owned();
         let out = String::from_utf8_lossy(&output.stdout);
@@ -1581,5 +1691,108 @@ mod tests {
         let props = schema.get("properties").unwrap().as_object().unwrap();
         assert!(props.contains_key("path"));
         assert!(props.contains_key("auto"));
+    }
+
+    #[test]
+    fn clean_stdout_preserves_diagnostic_findings() {
+        // `check`/`diagnose`/`status` print findings as `INFO:` lines. Blanket
+        // INFO-stripping made `check` come back EMPTY over MCP — guard it.
+        let findings = "INFO: All <<refs>> resolve.\nINFO: All contracts complete.";
+        assert_eq!(clean_stdout("check", findings), findings);
+        assert_eq!(clean_stdout("diagnose", findings), findings);
+        assert_eq!(clean_stdout("status", findings), findings);
+    }
+
+    #[test]
+    fn clean_stdout_strips_index_chrome_for_rebuilds() {
+        let raw = "INFO: indexing\nGenerated 10 nodes\nEmitted 5 edges\nstore updated";
+        assert_eq!(clean_stdout("gen", raw), "store updated");
+        assert_eq!(clean_stdout("regen", raw), "store updated");
+    }
+
+    #[test]
+    fn clean_stdout_is_verbatim_for_read_tools() {
+        // A real result line may legitimately start with "Generated"; it must
+        // survive for any non-rebuild tool (regression: over-eager filtering).
+        let raw = "Found 1 match\nGenerated config helper";
+        assert_eq!(clean_stdout("grep", raw), raw);
+    }
+
+    #[test]
+    fn heal_watch_is_not_on_the_mcp_surface() {
+        // `heal --watch` is a daemon: it always trips the MCP request/response
+        // timeout, so it must not be advertised as a callable arg.
+        assert!(
+            !spec("heal").args.iter().any(|(a, _)| *a == "watch"),
+            "heal must not expose `watch` over MCP"
+        );
+    }
+
+    #[test]
+    fn locate_schema_declares_any_of_symbol_or_caller_of() {
+        let server = AdenMcpServer::new(PathBuf::from("."));
+        let tool = server.get_tool("locate").unwrap();
+        let any_of = tool
+            .input_schema
+            .get("anyOf")
+            .and_then(|v| v.as_array())
+            .expect("locate schema should declare anyOf");
+        let names: Vec<&str> = any_of
+            .iter()
+            .filter_map(|c| c.get("required"))
+            .filter_map(|r| r.as_array())
+            .flat_map(|a| a.iter().filter_map(|v| v.as_str()))
+            .collect();
+        assert!(
+            names.contains(&"symbol") && names.contains(&"caller_of"),
+            "anyOf should require symbol or caller_of, got {names:?}"
+        );
+    }
+
+    #[test]
+    fn federation_action_enum_constrains_subcommands() {
+        let server = AdenMcpServer::new(PathBuf::from("."));
+        let tool = server.get_tool("federation").unwrap();
+        let vals: Vec<&str> = tool
+            .input_schema
+            .get("properties")
+            .and_then(|p| p.get("action"))
+            .and_then(|a| a.get("enum"))
+            .and_then(|e| e.as_array())
+            .expect("federation.action should be enum-constrained")
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert!(
+            vals.contains(&"list") && vals.contains(&"config"),
+            "enum should list valid subcommands, got {vals:?}"
+        );
+    }
+
+    #[test]
+    fn constrained_value_args_are_enum_hinted() {
+        // A spread across the constrained-arg classes: severity, mode, format,
+        // doc_type. Each must surface its valid set as a JSON-schema enum.
+        let server = AdenMcpServer::new(PathBuf::from("."));
+        let cases = [
+            ("check", "severity", "Forbid"),
+            ("viz", "mode", "connectivity"),
+            ("asm", "format", "adg"),
+            ("search", "doc_type", "use-case"),
+        ];
+        for (tool, arg, val) in cases {
+            let t = server.get_tool(tool).unwrap();
+            let en = t
+                .input_schema
+                .get("properties")
+                .and_then(|p| p.get(arg))
+                .and_then(|a| a.get("enum"))
+                .and_then(|e| e.as_array())
+                .unwrap_or_else(|| panic!("{tool}.{arg} should be enum-constrained"));
+            assert!(
+                en.iter().any(|v| v == val),
+                "{tool}.{arg} enum should contain {val}, got {en:?}"
+            );
+        }
     }
 }
