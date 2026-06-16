@@ -12,6 +12,19 @@ All notable changes to aden are documented here. Format follows
 Post-0.2.0 work on main — not yet tagged.
 
 ### Added
+- **Query-aware assembly + MMR context selection** (2026-06-16) — `ask` now
+  spends its token budget on *distinct, query-relevant* context. The assembly
+  frontier is ordered by query relevance (the hybrid BM25+dense scores that
+  already route the seed), and near-duplicate neighbors are pruned via MMR
+  (lexical token-Jaccard, τ=0.8) before they consume budget — freeing it for
+  diverse context. Both are deterministic (no per-query LLM), preserving aden's
+  model-invariance. Motivated by a cross-corpus measurement: the 4096 default
+  captures only ~25% of a richly-connected symbol's neighborhood (90% recall
+  knee >8192), so *selection beats a bigger budget*; an MMR headroom probe found
+  τ=0.8 reshapes 42–100% of rich hubs. Also lands the
+  `aden-graph::personalized_pagerank` (PPR) primitive — available but not yet
+  wired into `ask`, held pending a multi-hop assembly eval — and `#[ignore]d`
+  measurement harnesses (`budget_sweep`, `assembly_ab`, `mmr_headroom`).
 - **Viewer 3D: galaxies, bubble enclosures & grade punch** (2026-06-10) —
   group-gravity now works in all three axes, condensing each module into its
   own colored star cluster; each cluster is wrapped in a *bubble enclosure*

@@ -66,6 +66,7 @@ pub fn cmd_complete(
             attributes: Vec::new(),
             llm_mode: true, // complete targets an LLM — emit clean prose
             hydrate_root: None,
+            relevance: None,
         };
 
         let context = match assemble(&graph, &asm_opts) {

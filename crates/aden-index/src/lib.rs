@@ -804,10 +804,14 @@ impl Index {
                 Self::collect_files_inner(&path, root, filter, out)?;
             } else if path.is_file() {
                 let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-                // Support multiple file formats:
-                // - .adoc, .aden: AsciiDoc (primary)
-                // - .txt: Plain text (common for notes, READMEs, logs)
-                if ext == "adoc" || ext == "aden" || ext == "txt" {
+                // On-disk source for the search index: AsciiDoc only (.adoc/.aden).
+                // `.txt` is deliberately NOT indexed file-level here: gen emits one
+                // paragraph `Note` per `.txt` paragraph into the store, and
+                // load_or_build_index merges those paragraph-granular nodes in.
+                // Indexing the whole file here too duplicated that coverage with a
+                // coarser, less-dense blob (the `note` vs `note.txt#p1` pair); the
+                // store's paragraph nodes are now the canonical .txt coverage.
+                if ext == "adoc" || ext == "aden" {
                     // For files in different directories, skip prefix check (security: only for project root)
                     let parent = path
                         .parent()
