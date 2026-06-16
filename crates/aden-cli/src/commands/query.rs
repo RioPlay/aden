@@ -1517,9 +1517,9 @@ pub fn cmd_ask(
     // those paths assemble exactly as before. When routing is ambiguous they let us
     // seed shallow context from the alternates rather than betting the whole budget
     // on a single, possibly-misranked anchor.
-    let (start_anchor, avg_score, alt_candidates) = if let Some(anchor) = from_override {
+    let (start_anchor, avg_score, alt_candidates, relevance) = if let Some(anchor) = from_override {
         xp.decision = "pinned by --from (no search routing)".to_string();
-        (anchor.to_string(), None, Vec::new())
+        (anchor.to_string(), None, Vec::new(), None)
     } else {
         let idx = load_or_build_index(path)?;
         let results = query_index(&idx, question);
@@ -1596,7 +1596,16 @@ pub fn cmd_ask(
         // Up to 2 in-band alternates, deduped against the (possibly non-rank-1)
         // primary. Empty ⇒ clear winner ⇒ unchanged single-seed behavior below.
         let alts = inband_alternate_candidates(&primary, &results, 2);
-        (primary, Some(avg), alts)
+        // Forward the search relevance into assembly frontier ordering: the same
+        // hybrid (dense+BM25) scores that routed the seed now break structural
+        // ties toward query-relevant neighbors. Anchors absent from the map score
+        // 0.0 in `ordered_neighbors`, so an unmatched neighborhood degrades
+        // exactly to the prior structural (edge_priority, anchor) order.
+        let relevance: std::collections::HashMap<String, f32> = results
+            .iter()
+            .map(|r| (r.anchor.clone(), r.score as f32))
+            .collect();
+        (primary, Some(avg), alts, Some(relevance))
     };
 
     // Apply the relevance boost by default; `--strict` opts out and treats
@@ -1744,7 +1753,7 @@ pub fn cmd_ask(
             attributes: Vec::new(),
             llm_mode: true, // aden ask always targets an LLM — emit clean prose
             hydrate_root: Some(hydrate_root.clone()),
-            relevance: None,
+            relevance: relevance.clone(),
         };
         Ok(assemble_with_anchors(&graph, &opts)?)
     };
