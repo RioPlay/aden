@@ -382,7 +382,9 @@ Internally:
    Explain, Usage, Refactor, Impact, Debug, List, Compare, Count, General
 3. Select edge types and depth from the intent — override with
    `--intent` / `--depth` / `--edge-types`
-4. BFS traversal from the matched anchor(s)
+4. BFS traversal from the matched anchor(s), ordering the frontier by query
+   relevance (relevant neighbors first) and pruning near-duplicate neighbors via
+   MMR (token-Jaccard, τ=0.8) so a tight budget is spent on distinct context
 5. Token budgeting with a ~4-bytes-per-token heuristic. Unlike `asm` (a hard
    cap), `ask` *boosts* the budget by match relevance by default (up to ~4x,
    capped at 32k), treating `--budget` as a base; pass `--strict` to use
