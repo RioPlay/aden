@@ -1490,7 +1490,7 @@ pub fn cmd_ask(
     strict: bool,
     explain: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use aden_asm::traverse::{AssemblyOptions, assemble_with_anchors};
+    use aden_asm::traverse::{AssemblyOptions, assemble_with_anchors_mmr};
     use aden_core::savings::{BASELINE_MAX_FILES, SavingsEstimate};
 
     if !path.is_dir() {
@@ -1755,7 +1755,10 @@ pub fn cmd_ask(
             hydrate_root: Some(hydrate_root.clone()),
             relevance: relevance.clone(),
         };
-        Ok(assemble_with_anchors(&graph, &opts)?)
+        // Prune near-duplicate neighbors before they spend budget. τ=0.8 skips
+        // only genuine near-dups (≥80% token overlap); the headroom probe showed
+        // this alters 42–100% of hubs, trading redundant context for distinct.
+        Ok(assemble_with_anchors_mmr(&graph, &opts, Some(0.8))?)
     };
     // Convenience wrapper for callers that only need the assembled text.
     let assemble_seed_str = |seed: &str,
