@@ -92,6 +92,25 @@ fn ordered_neighbors(
     neighbors.into_iter().map(|(_, _, _, n)| n).collect()
 }
 
+/// Lowercased alphanumeric token set of `text` (tokens of length > 1), the unit
+/// of comparison for MMR lexical redundancy.
+fn token_set(text: &str) -> HashSet<String> {
+    text.split(|c: char| !c.is_alphanumeric())
+        .filter(|t| t.len() > 1)
+        .map(str::to_ascii_lowercase)
+        .collect()
+}
+
+/// Jaccard overlap |A∩B| / |A∪B| of two token sets, in `[0, 1]`. 0 when either
+/// is empty, so a blockless/empty node never reads as redundant.
+fn jaccard(a: &HashSet<String>, b: &HashSet<String>) -> f32 {
+    if a.is_empty() || b.is_empty() {
+        return 0.0;
+    }
+    let inter = a.iter().filter(|t| b.contains(*t)).count();
+    inter as f32 / (a.len() + b.len() - inter) as f32
+}
+
 /// Which block types to include when assembling a document.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BlockKind {
@@ -180,6 +199,20 @@ pub fn assemble_with_anchors(
     graph: &AdenGraph<DocumentNode, AdenEdge>,
     opts: &AssemblyOptions,
 ) -> Result<(String, Vec<String>), AssemblyError> {
+    assemble_with_anchors_mmr(graph, opts, None)
+}
+
+/// Like [`assemble_with_anchors`], but with optional MMR-style redundancy
+/// pruning. When `mmr` is `Some(tau)`, a candidate whose lexical Jaccard overlap
+/// with any already-included node reaches `tau` is skipped — freeing its budget
+/// for more diverse context — while its neighbors are still traversed. `None`
+/// reproduces `assemble_with_anchors` byte-for-byte. Deterministic (token-set
+/// Jaccard, no RNG), so it preserves aden's model-invariance.
+pub fn assemble_with_anchors_mmr(
+    graph: &AdenGraph<DocumentNode, AdenEdge>,
+    opts: &AssemblyOptions,
+    mmr: Option<f32>,
+) -> Result<(String, Vec<String>), AssemblyError> {
     let start_idx = graph
         .get_index(&opts.start_anchor)
         .ok_or_else(|| AssemblyError::AnchorNotFound(opts.start_anchor.clone()))?;
@@ -190,6 +223,8 @@ pub fn assemble_with_anchors(
     // Nodes actually emitted, parallel to `result`, in visit (BFS) order —
     // the hydration pass packs source spans nearest-first along this order.
     let mut included: Vec<NodeIndex> = Vec::new();
+    // Token sets of included nodes, for MMR redundancy checks (only when enabled).
+    let mut included_tokens: Vec<HashSet<String>> = Vec::new();
     let mut total_tokens = 0usize;
 
     // Single-source the separator so its byte cost is counted in the budget by
@@ -234,6 +269,24 @@ pub fn assemble_with_anchors(
         };
 
         let tokens = estimate_tokens(&text);
+
+        // MMR redundancy skip: a near-duplicate of already-included content wastes
+        // budget. Skip its inclusion (freeing the budget for more diverse context)
+        // but still traverse its neighbors so downstream context isn't lost. The
+        // `None` default path leaves traversal and budget arithmetic unchanged.
+        let toks = mmr.is_some().then(|| token_set(&text));
+        if let (Some(tau), Some(ts)) = (mmr, toks.as_ref())
+            && included_tokens.iter().any(|s| jaccard(ts, s) >= tau)
+        {
+            visited.insert(node);
+            for neighbor in
+                ordered_neighbors(graph, node, &opts.edge_types, opts.relevance.as_ref())
+            {
+                queue.push_back((neighbor, depth + 1));
+            }
+            continue;
+        }
+
         let remaining = opts.token_budget.saturating_sub(total_tokens);
         // A separator precedes this doc in the final join iff something is
         // already in `result`. Count it against the budget here so the joined
@@ -245,6 +298,9 @@ pub fn assemble_with_anchors(
             total_tokens += tokens + sep;
             visited.insert(node);
             included.push(node);
+            if let Some(ts) = toks {
+                included_tokens.push(ts);
+            }
             result.push(text);
         } else if opts.llm_mode && remaining.saturating_sub(sep) > 32 {
             // LLM mode: partial inclusion — truncate so the doc PLUS its
@@ -1390,6 +1446,72 @@ mod tests {
             parsed: None,
             source_path: std::path::PathBuf::from("x.adoc"),
         }
+    }
+
+    #[test]
+    fn jaccard_and_token_set_behave() {
+        let a = token_set("handle the incoming request body");
+        assert!((jaccard(&a, &a) - 1.0).abs() < 1e-6, "identical → 1.0");
+        let b = token_set("render response cookie session values");
+        assert_eq!(jaccard(&a, &b), 0.0, "disjoint → 0.0");
+        let c = token_set("handle the incoming request payload");
+        let j = jaccard(&a, &c); // share handle/the/incoming/request
+        assert!(j > 0.4 && j < 1.0, "partial overlap, got {j}");
+        assert_eq!(jaccard(&a, &token_set("")), 0.0, "empty → 0.0");
+    }
+
+    /// MMR redundancy pruning: a hub fanning out to two near-duplicate leaves and
+    /// one distinct leaf. At a budget that fits the hub + two leaves, plain
+    /// assembly spends both leaf slots on the duplicates (anchor order a,b,c) and
+    /// drops the distinct leaf; MMR skips the second duplicate, freeing its slot
+    /// for the distinct one.
+    #[test]
+    fn mmr_skips_redundant_and_includes_diverse() {
+        let mut graph = AdenGraph::<DocumentNode, AdenEdge>::new();
+        let hub = graph.add_node(node_with_text("hub", "hub overview of the module"));
+        let a = graph.add_node(node_with_text(
+            "leaf-a",
+            "parse the incoming http request body and validate the json payload fields",
+        ));
+        let b = graph.add_node(node_with_text(
+            "leaf-b",
+            "parse the incoming http request body and validate the json payload values",
+        ));
+        let c = graph.add_node(node_with_text(
+            "leaf-c",
+            "render a templated response and persist the signed session cookie securely",
+        ));
+        for leaf in [a, b, c] {
+            graph.graph.add_edge(
+                hub,
+                leaf,
+                AdenEdge {
+                    edge_type: EdgeType::Calls,
+                },
+            );
+        }
+
+        // Budget tuned to fit the hub + two leaves, not all three.
+        let opts = AssemblyOptions {
+            start_anchor: "hub".to_string(),
+            max_depth: 1,
+            token_budget: 60,
+            ..Default::default()
+        };
+
+        let plain = assemble_with_anchors(&graph, &opts).unwrap().1;
+        assert!(
+            plain.iter().any(|x| x == "leaf-b") && !plain.iter().any(|x| x == "leaf-c"),
+            "plain assembly spends the budget on the duplicate leaf-b, dropping leaf-c: {plain:?}"
+        );
+
+        let pruned = assemble_with_anchors_mmr(&graph, &opts, Some(0.7))
+            .unwrap()
+            .1;
+        assert!(
+            pruned.iter().any(|x| x == "leaf-c") && !pruned.iter().any(|x| x == "leaf-b"),
+            "MMR skips redundant leaf-b and includes distinct leaf-c: {pruned:?}"
+        );
     }
 
     /// The graph is a petgraph multigraph: a single (src -> tgt) pair can carry
