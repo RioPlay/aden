@@ -213,6 +213,7 @@ struct Metrics {
     recall_at_1: f64,
     recall_at_5: f64,
     mrr: f64,
+    ndcg_at_10: f64,
     total: usize,
     top1_hits: usize,
 }
@@ -221,6 +222,7 @@ fn evaluate(index: &Index, cases: &[EvalCase]) -> (Metrics, Vec<(usize, Option<u
     let mut top1 = 0usize;
     let mut top5 = 0usize;
     let mut rr_sum = 0.0;
+    let mut ndcg_sum = 0.0;
     let mut per_case = Vec::with_capacity(cases.len());
 
     for (i, case) in cases.iter().enumerate() {
@@ -234,6 +236,13 @@ fn evaluate(index: &Index, cases: &[EvalCase]) -> (Metrics, Vec<(usize, Option<u
                 top5 += 1;
             }
             rr_sum += 1.0 / r as f64;
+            // nDCG@10, binary relevance. Each case has exactly one relevant doc,
+            // so the ideal ranking puts it at rank 1 → IDCG = 1/log2(2) = 1. The
+            // per-case nDCG is therefore just the discounted gain at its rank,
+            // counted only when it lands in the top 10 (else 0).
+            if r <= 10 {
+                ndcg_sum += 1.0 / ((r as f64) + 1.0).log2();
+            }
         }
         per_case.push((i, rank));
     }
@@ -244,6 +253,7 @@ fn evaluate(index: &Index, cases: &[EvalCase]) -> (Metrics, Vec<(usize, Option<u
             recall_at_1: top1 as f64 / total as f64,
             recall_at_5: top5 as f64 / total as f64,
             mrr: rr_sum / total as f64,
+            ndcg_at_10: ndcg_sum / total as f64,
             total,
             top1_hits: top1,
         },
@@ -284,8 +294,8 @@ fn retrieval_eval_report() {
         );
     }
     println!(
-        "  Recall@1 = {:.3} ({}/{})  Recall@5 = {:.3}  MRR = {:.3}",
-        m.recall_at_1, m.top1_hits, m.total, m.recall_at_5, m.mrr
+        "  Recall@1 = {:.3} ({}/{})  Recall@5 = {:.3}  MRR = {:.3}  nDCG@10 = {:.3}",
+        m.recall_at_1, m.top1_hits, m.total, m.recall_at_5, m.mrr, m.ndcg_at_10
     );
 
     // Aggregate quality floor. The fixture set is designed so a healthy ranker
@@ -297,6 +307,14 @@ fn retrieval_eval_report() {
         m.recall_at_5
     );
     assert!(m.mrr >= 0.75, "MRR regressed below 0.75: {:.3}", m.mrr);
+    // nDCG@10 ~0.969 on the healthy fixture; 0.85 is a comfortable floor that
+    // catches a real ranking regression (≈5 cases slipping to rank 2) without
+    // tripping on minor noise.
+    assert!(
+        m.ndcg_at_10 >= 0.85,
+        "nDCG@10 regressed below 0.85: {:.3}",
+        m.ndcg_at_10
+    );
 }
 
 /// The M14 rare-verb case — a KNOWN LIMITATION of pure-lexical retrieval.
@@ -431,6 +449,20 @@ fn hybrid_retrieval_eval_with_real_model() {
     let mut hybrid_top1 = 0usize;
     let mut bm25_rr = 0.0;
     let mut hybrid_rr = 0.0;
+    let mut bm25_ndcg = 0.0;
+    let mut hybrid_ndcg = 0.0;
+    // nDCG@10 gain for a single-relevant-doc case (IDCG = 1): the discounted
+    // gain at the achieved rank when it lands in the top 10, else 0.
+    let ndcg_gain = |rank: Option<usize>| {
+        rank.map(|r| {
+            if r <= 10 {
+                1.0 / ((r as f64) + 1.0).log2()
+            } else {
+                0.0
+            }
+        })
+        .unwrap_or(0.0)
+    };
 
     println!(
         "\n=== BM25 vs HYBRID (real bge model) — {} queries ===",
@@ -447,6 +479,8 @@ fn hybrid_retrieval_eval_with_real_model() {
         }
         bm25_rr += b.map(|r| 1.0 / r as f64).unwrap_or(0.0);
         hybrid_rr += h.map(|r| 1.0 / r as f64).unwrap_or(0.0);
+        bm25_ndcg += ndcg_gain(b);
+        hybrid_ndcg += ndcg_gain(h);
         let flag = if h == Some(1) && b != Some(1) {
             " <- hybrid wins"
         } else if b == Some(1) && h != Some(1) {
@@ -461,11 +495,14 @@ fn hybrid_retrieval_eval_with_real_model() {
     }
     let n = cases.len() as f64;
     println!(
-        "  R@1: bm25 {:.3} -> hybrid {:.3}   MRR: bm25 {:.3} -> hybrid {:.3}",
+        "  R@1: bm25 {:.3} -> hybrid {:.3}   MRR: bm25 {:.3} -> hybrid {:.3}   \
+         nDCG@10: bm25 {:.3} -> hybrid {:.3}",
         bm25_top1 as f64 / n,
         hybrid_top1 as f64 / n,
         bm25_rr / n,
         hybrid_rr / n,
+        bm25_ndcg / n,
+        hybrid_ndcg / n,
     );
 
     // M14 gate: hybrid must rank the orphan-handling doc above the rare-verb
