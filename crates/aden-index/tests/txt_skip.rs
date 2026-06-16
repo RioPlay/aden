@@ -1,3 +1,5 @@
+// Copyright (c) 2026 RioPlay <rioplay@rioplay.dev>
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // `Index::from_directory` indexes AsciiDoc (.adoc/.aden) on disk but deliberately
 // skips `.txt`: gen emits one paragraph `Note` per `.txt` paragraph into the
 // store, which load_or_build_index merges in. A file-level `.txt` blob here would

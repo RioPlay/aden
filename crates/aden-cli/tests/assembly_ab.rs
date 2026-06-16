@@ -1,3 +1,5 @@
+// Copyright (c) 2026 RioPlay <rioplay@rioplay.dev>
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // Assembly-quality A/B (measurement harness, #[ignore]d, real repo).
 //
 // Validates the query-aware assembly ordering committed in 173ea06: from a hub
