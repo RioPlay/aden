@@ -36,12 +36,14 @@ pub mod graph;
 pub mod integrity;
 pub mod nodes;
 pub mod parser;
+pub mod ppr;
 pub mod query;
 
 pub use graph::AdenGraph;
 pub use nodes::aden::{AdenEdge, DocumentNode};
 pub use nodes::{GraphEdge, GraphNode};
 pub use petgraph::Direction;
+pub use ppr::personalized_pagerank;
 
 #[cfg(test)]
 mod tests;
