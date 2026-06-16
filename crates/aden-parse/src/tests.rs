@@ -1388,6 +1388,49 @@ fn plaintext_node_is_locatable() {
 }
 
 #[test]
+fn plaintext_splits_paragraphs_into_notes() {
+    // Three blank-line-separated paragraphs become three independent `Note`
+    // nodes, each with its own line span — the notepad-prose granularity, so a
+    // file of distinct thoughts is independently locatable, not one blob.
+    let src =
+        "First thought here.\n\nSecond, on another line.\nStill the second.\n\nThird and last.\n";
+    let docs = crate::plaintext::PlainTextExtractor::new()
+        .extract_documents(src, Path::new("notes/brain.txt"))
+        .expect("parse should succeed");
+
+    assert_eq!(docs.len(), 3, "one Note node per blank-line paragraph");
+    assert!(
+        docs.iter()
+            .all(|d| d.node_type == aden_core::NodeType::Note),
+        "each paragraph node is a Note"
+    );
+
+    // Per-paragraph anchors must be distinct.
+    let anchors: std::collections::HashSet<&str> = docs.iter().map(|d| d.anchor.as_str()).collect();
+    assert_eq!(anchors.len(), 3, "paragraph anchors must be distinct");
+
+    // Line spans: para 1 = line 1, para 2 = lines 3-4, para 3 = line 6.
+    let spans: Vec<(Option<&str>, Option<&str>)> = docs
+        .iter()
+        .map(|d| {
+            (
+                d.attributes.get("start_line").map(String::as_str),
+                d.attributes.get("end_line").map(String::as_str),
+            )
+        })
+        .collect();
+    assert_eq!(spans[0], (Some("1"), Some("1")));
+    assert_eq!(spans[1], (Some("3"), Some("4")));
+    assert_eq!(spans[2], (Some("6"), Some("6")));
+
+    // Every paragraph node carries source_file/start_line/end_line + source_span.
+    assert!(
+        docs.iter().all(is_locatable),
+        "every paragraph node must be locatable"
+    );
+}
+
+#[test]
 fn csv_node_is_locatable() {
     let src = "name,age\nalice,30\nbob,40\n";
     let docs = crate::csv::CsvExtractor::new()
