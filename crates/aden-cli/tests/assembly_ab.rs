@@ -15,6 +15,7 @@
 
 use aden_asm::traverse::{AssemblyOptions, assemble_with_anchors};
 use aden_core::Block;
+use aden_graph::personalized_pagerank;
 use aden_index::Index;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -164,6 +165,7 @@ fn assembly_ab_report() {
 
     let mut struct_hits = vec![0usize; budgets.len()];
     let mut aware_hits = vec![0usize; budgets.len()];
+    let mut ppr_hits = vec![0usize; budgets.len()];
     let mut scored = 0usize;
 
     for c in cases() {
@@ -199,28 +201,39 @@ fn assembly_ab_report() {
         }
         scored += 1;
 
+        // PPR arm: spread the same BM25 relevance over the graph topology before
+        // ordering, so structurally-central context near the query region ranks up.
+        let ppr = personalized_pagerank(&graph, &rel);
+
         let mut row_s = String::new();
         let mut row_a = String::new();
+        let mut row_p = String::new();
         for (bi, &b) in budgets.iter().enumerate() {
             let s = includes_gold(&mk(b, None), c.gold);
             let a = includes_gold(&mk(b, Some(rel.clone())), c.gold);
+            let p = includes_gold(&mk(b, Some(ppr.clone())), c.gold);
             if s {
                 struct_hits[bi] += 1;
             }
             if a {
                 aware_hits[bi] += 1;
             }
+            if p {
+                ppr_hits[bi] += 1;
+            }
             row_s.push(if s { 'Y' } else { '.' });
             row_a.push(if a { 'Y' } else { '.' });
+            row_p.push(if p { 'Y' } else { '.' });
         }
         let tail = seed.rsplit('#').next().unwrap_or(&seed);
         println!(
-            "  seed={tail:<28} gold={:<20} struct[{row_s}] aware[{row_a}]",
+            "  seed={tail:<28} gold={:<20} struct[{row_s}] aware[{row_a}] ppr[{row_p}]",
             c.gold
         );
     }
 
     println!("\n  reachable cases scored: {scored}");
-    println!("  structural gold-inclusion by budget {budgets:?}: {struct_hits:?}");
+    println!("  structural  gold-inclusion by budget {budgets:?}: {struct_hits:?}");
     println!("  query-aware gold-inclusion by budget {budgets:?}: {aware_hits:?}");
+    println!("  ppr         gold-inclusion by budget {budgets:?}: {ppr_hits:?}");
 }
