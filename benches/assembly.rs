@@ -33,6 +33,7 @@ See <<module-helper>>.
         attributes: Vec::new(),
         llm_mode: true,
         hydrate_root: None,
+        relevance: None,
     };
 
     c.bench_function("assembly", |b| {

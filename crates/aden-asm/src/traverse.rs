@@ -44,6 +44,7 @@ fn ordered_neighbors(
     graph: &AdenGraph<DocumentNode, AdenEdge>,
     node: NodeIndex,
     edge_types: &[EdgeType],
+    relevance: Option<&HashMap<String, f32>>,
 ) -> Vec<NodeIndex> {
     // The graph is a petgraph multigraph: a single (node -> target) pair can
     // carry several parallel edges of *different* types (e.g. Calls AND
@@ -66,12 +67,29 @@ fn ordered_neighbors(
                 .or_insert(prio);
         }
     }
-    let mut neighbors: Vec<(u8, &str, NodeIndex)> = best
+    let mut neighbors: Vec<(u8, f32, &str, NodeIndex)> = best
         .into_iter()
-        .map(|(target, prio)| (prio, graph.graph[target].doc.anchor.as_str(), target))
+        .map(|(target, prio)| {
+            let anchor = graph.graph[target].doc.anchor.as_str();
+            // 0.0 when there is no relevance map or no entry for this target — so
+            // the absent path reduces EXACTLY to the old (edge_priority, anchor)
+            // order, leaving `asm` and every current caller unchanged.
+            let rel = relevance
+                .and_then(|m| m.get(anchor))
+                .copied()
+                .unwrap_or(0.0);
+            (prio, rel, anchor, target)
+        })
         .collect();
-    neighbors.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(b.1)));
-    neighbors.into_iter().map(|(_, _, n)| n).collect()
+    // edge_priority ascending, then relevance DESCENDING, then anchor ascending.
+    // Anchor stays the final tiebreaker so the order is fully deterministic even
+    // under relevance ties — and identical to before when relevance is uniformly 0.
+    neighbors.sort_by(|a, b| {
+        a.0.cmp(&b.0)
+            .then_with(|| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal))
+            .then_with(|| a.2.cmp(b.2))
+    });
+    neighbors.into_iter().map(|(_, _, _, n)| n).collect()
 }
 
 /// Which block types to include when assembling a document.
@@ -117,6 +135,14 @@ pub struct AssemblyOptions {
     /// stale store degrades to summary-only rendering instead of shipping
     /// stale source. `None` (the default) disables hydration entirely.
     pub hydrate_root: Option<std::path::PathBuf>,
+    /// Optional per-anchor query-relevance scores (anchor → score). When set,
+    /// `ordered_neighbors` breaks structural-priority ties toward more
+    /// query-relevant neighbors, so a tight budget is spent on the parts of a
+    /// high-fan-out neighborhood that actually match the question. `None` (the
+    /// default) preserves the pure structural `(edge_priority, anchor)` order:
+    /// `asm <anchor>` has no query, so it never sets this; only `ask` would,
+    /// and only once an assembly-quality eval validates it.
+    pub relevance: Option<HashMap<String, f32>>,
 }
 
 impl Default for AssemblyOptions {
@@ -132,6 +158,7 @@ impl Default for AssemblyOptions {
             attributes: Vec::new(),
             llm_mode: true, // LLM-dense by default everywhere
             hydrate_root: None,
+            relevance: None,
         }
     }
 }
@@ -233,7 +260,7 @@ pub fn assemble_with_anchors(
         }
 
         // Add neighbors in deterministic, structural-priority order.
-        for neighbor in ordered_neighbors(graph, node, &opts.edge_types) {
+        for neighbor in ordered_neighbors(graph, node, &opts.edge_types, opts.relevance.as_ref()) {
             queue.push_back((neighbor, depth + 1));
         }
     }
@@ -431,7 +458,7 @@ pub fn assemble_adg(
         visited.insert(node);
         results.push(adg_json);
 
-        for neighbor in ordered_neighbors(graph, node, &opts.edge_types) {
+        for neighbor in ordered_neighbors(graph, node, &opts.edge_types, opts.relevance.as_ref()) {
             queue.push_back((neighbor, depth + 1));
         }
     }
@@ -1255,7 +1282,7 @@ mod tests {
         );
 
         // edge_types empty => follow all.
-        let ordered = ordered_neighbors(&graph, src, &[]);
+        let ordered = ordered_neighbors(&graph, src, &[], None);
         let anchors: Vec<&str> = ordered
             .iter()
             .map(|&idx| graph.graph[idx].doc.anchor.as_str())
@@ -1293,7 +1320,7 @@ mod tests {
             },
         );
 
-        let ordered = ordered_neighbors(&graph, src, &[EdgeType::Calls]);
+        let ordered = ordered_neighbors(&graph, src, &[EdgeType::Calls], None);
         let anchors: Vec<&str> = ordered
             .iter()
             .map(|&idx| graph.graph[idx].doc.anchor.as_str())
@@ -1303,6 +1330,44 @@ mod tests {
             vec!["calls-x"],
             "filter must keep only Calls neighbors"
         );
+    }
+
+    /// Query-aware ordering: with a relevance map, ordered_neighbors breaks ties
+    /// WITHIN a priority bucket toward the more query-relevant target — the
+    /// high-fan-out prose case (one section Contains many equal-priority
+    /// paragraphs). Without a map (None) the order is byte-identical to before.
+    #[test]
+    fn ordered_neighbors_relevance_breaks_ties_within_priority() {
+        let mut graph = AdenGraph::<DocumentNode, AdenEdge>::new();
+        let src = graph.graph.add_node(node("src"));
+        // Three Contains neighbors, all priority 11 — only relevance can reorder.
+        for anchor in ["para-a", "para-b", "para-c"] {
+            let t = graph.graph.add_node(node(anchor));
+            graph.graph.add_edge(
+                src,
+                t,
+                AdenEdge {
+                    edge_type: EdgeType::Contains,
+                },
+            );
+        }
+
+        // None → deterministic anchor order, unchanged from today.
+        let structural: Vec<String> = ordered_neighbors(&graph, src, &[], None)
+            .iter()
+            .map(|&i| graph.graph[i].doc.anchor.clone())
+            .collect();
+        assert_eq!(structural, vec!["para-a", "para-b", "para-c"]);
+
+        // Relevance favouring para-c → it leads; para-b (no entry → 0.0) trails.
+        let mut rel = HashMap::new();
+        rel.insert("para-c".to_string(), 0.9_f32);
+        rel.insert("para-a".to_string(), 0.1_f32);
+        let aware: Vec<String> = ordered_neighbors(&graph, src, &[], Some(&rel))
+            .iter()
+            .map(|&i| graph.graph[i].doc.anchor.clone())
+            .collect();
+        assert_eq!(aware, vec!["para-c", "para-a", "para-b"]);
     }
 
     // ── FIX B: parallel-edge (multigraph) priority folding ────────────────────
@@ -1371,7 +1436,7 @@ mod tests {
             },
         );
 
-        let ordered = ordered_neighbors(&graph, src, &[]);
+        let ordered = ordered_neighbors(&graph, src, &[], None);
         let anchors: Vec<&str> = ordered
             .iter()
             .map(|&idx| graph.graph[idx].doc.anchor.as_str())

@@ -43,6 +43,7 @@ mod tests {
             attributes: vec![],
             llm_mode: false,
             hydrate_root: None,
+            relevance: None,
         };
         assert_eq!(opts.start_anchor, "start");
         assert_eq!(opts.max_depth, 3);

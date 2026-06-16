@@ -858,6 +858,7 @@ pub fn cmd_asm(opts: AsmOptions) -> Result<(), Box<dyn std::error::Error>> {
         attributes: opts.attributes.clone(),
         llm_mode,
         hydrate_root: None,
+        relevance: None,
     };
 
     let output = match opts.format.as_str() {
@@ -1743,6 +1744,7 @@ pub fn cmd_ask(
             attributes: Vec::new(),
             llm_mode: true, // aden ask always targets an LLM — emit clean prose
             hydrate_root: Some(hydrate_root.clone()),
+            relevance: None,
         };
         Ok(assemble_with_anchors(&graph, &opts)?)
     };
@@ -2837,6 +2839,7 @@ pub fn cmd_understand(
         attributes: Vec::new(),
         llm_mode: true,
         hydrate_root: None,
+        relevance: None,
     };
     let context = assemble(&neigh, &asm_opts)?;
 
