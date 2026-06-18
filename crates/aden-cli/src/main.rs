@@ -578,6 +578,11 @@ enum Commands {
         since: Option<String>,
         #[arg(long, help = "Analyze staged changes (git diff --cached)")]
         staged: bool,
+        #[arg(
+            long = "run-tests",
+            help = "After the report, run the affected test files (cargo test, grouped by package) and report pass/fail"
+        )]
+        run_tests: bool,
         #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
         path: PathBuf,
     },
@@ -1257,8 +1262,9 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::ImpactDiff {
             since,
             staged,
+            run_tests,
             path,
-        } => commands::cmd_impact_diff(&path, since.as_deref(), staged, cli.json),
+        } => commands::cmd_impact_diff(&path, since.as_deref(), staged, cli.json, run_tests),
         Commands::Viz {
             anchor,
             mode,

@@ -55,6 +55,7 @@ pub fn cmd_impact_diff(
     since: Option<&str>,
     staged: bool,
     json: bool,
+    run_tests: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let root = find_project_root(path);
     // Keep the store fresh so span/edge resolution reflects the current code.
@@ -135,6 +136,9 @@ pub fn cmd_impact_diff(
                 "risk": risk,
             })
         );
+        if run_tests {
+            run_affected_tests(&root, &tests)?;
+        }
         return Ok(());
     }
 
@@ -184,6 +188,89 @@ pub fn cmd_impact_diff(
                 println!("  ... and {} more file(s)", by_file.len() - 20);
             }
         }
+    }
+    if run_tests {
+        run_affected_tests(&root, &tests)?;
+    }
+    Ok(())
+}
+
+/// Map the affected test anchors to `cargo test` targets, grouped by package.
+/// `<pkg>/tests/<stem>.rs` becomes an integration target (`--test <stem>`); an
+/// inline `<pkg>/src/...` test module becomes the package's lib tests
+/// (`--lib`). Pure (no IO) so the mapping is unit-tested without spawning cargo.
+fn plan_cargo_tests(tests: &BTreeSet<String>) -> BTreeMap<String, (BTreeSet<String>, bool)> {
+    let mut by_pkg: BTreeMap<String, (BTreeSet<String>, bool)> = BTreeMap::new();
+    for anchor in tests {
+        let file = test_file(anchor); // e.g. "aden-cli/tests/compound_ab.rs"
+        let mut segs = file.splitn(2, '/');
+        let (Some(pkg), Some(rest)) = (segs.next(), segs.next()) else {
+            continue;
+        };
+        let entry = by_pkg.entry(pkg.to_string()).or_default();
+        match rest
+            .strip_prefix("tests/")
+            .and_then(|f| f.strip_suffix(".rs"))
+        {
+            Some(stem) => {
+                entry.0.insert(stem.to_string());
+            }
+            None => entry.1 = true, // src/ inline #[cfg(test)] module → lib tests
+        }
+    }
+    by_pkg
+}
+
+/// Run the affected test files via `cargo test`, grouped by package, and report
+/// pass/fail. Test SELECTION is language-neutral, but auto-RUN is currently
+/// cargo-only: a non-cargo project gets a note and the printed file list to run
+/// with its own runner. Streams cargo output live; never fails the command on a
+/// test failure (the gate is informational), only surfaces which packages failed.
+fn run_affected_tests(
+    root: &Path,
+    tests: &BTreeSet<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if tests.is_empty() {
+        return Ok(());
+    }
+    if !root.join("Cargo.toml").exists() {
+        println!(
+            "\n--run-tests: auto-run currently supports cargo projects; \
+             run the files listed above with your project's test runner."
+        );
+        return Ok(());
+    }
+    let by_pkg = plan_cargo_tests(tests);
+    if by_pkg.is_empty() {
+        return Ok(());
+    }
+    println!("\nRunning affected tests ({} package(s)):", by_pkg.len());
+    let mut failed: Vec<String> = Vec::new();
+    for (pkg, (stems, needs_lib)) in &by_pkg {
+        let mut cmd = std::process::Command::new("cargo");
+        cmd.current_dir(root).arg("test").arg("-p").arg(pkg);
+        if *needs_lib {
+            cmd.arg("--lib");
+        }
+        for stem in stems {
+            cmd.arg("--test").arg(stem);
+        }
+        let lib_part = if *needs_lib { " --lib" } else { "" };
+        let test_part: String = stems.iter().map(|s| format!(" --test {s}")).collect();
+        println!("  $ cargo test -p {pkg}{lib_part}{test_part}");
+        match cmd.status() {
+            Ok(status) if status.success() => {}
+            Ok(_) => failed.push(pkg.clone()),
+            Err(e) => {
+                println!("  (could not run cargo for {pkg}: {e})");
+                failed.push(pkg.clone());
+            }
+        }
+    }
+    if failed.is_empty() {
+        println!("\n✓ affected tests passed.");
+    } else {
+        println!("\n✗ affected tests failed in: {}", failed.join(", "));
     }
     Ok(())
 }
@@ -342,6 +429,35 @@ fn parse_hunk_new_range(rest: &str) -> Option<(usize, usize)> {
 mod tests {
     use super::*;
     use aden_graph::{AdenEdge, AdenGraph, DocumentNode};
+
+    #[test]
+    fn plan_cargo_tests_groups_by_package_and_target() {
+        let tests: BTreeSet<String> = [
+            "aden://module/aden-cli/tests/compound_ab.rs#load_embedder",
+            "aden://module/aden-cli/tests/compound_ab.rs#report", // same file -> one stem
+            "aden://module/aden-cli/tests/concept_graph.rs#run",
+            "aden://module/aden-index/src/lib.rs#tests", // inline src test -> --lib
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+
+        let plan = plan_cargo_tests(&tests);
+
+        assert_eq!(plan.len(), 2, "two distinct packages");
+        let (cli_stems, cli_lib) = &plan["aden-cli"];
+        assert_eq!(
+            cli_stems,
+            &["compound_ab".to_string(), "concept_graph".to_string()]
+                .into_iter()
+                .collect::<BTreeSet<_>>(),
+            "integration stems deduped per file"
+        );
+        assert!(!cli_lib, "aden-cli has no inline src test here");
+        let (idx_stems, idx_lib) = &plan["aden-index"];
+        assert!(idx_stems.is_empty(), "no integration stems for aden-index");
+        assert!(idx_lib, "inline src test selects --lib");
+    }
 
     /// Minimal graph node for fixture graphs.
     fn fixture_node(anchor: &str) -> DocumentNode {
