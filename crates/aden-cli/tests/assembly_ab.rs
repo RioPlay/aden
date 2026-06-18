@@ -54,6 +54,36 @@ struct Case {
 }
 
 fn cases(repo: &str) -> Vec<Case> {
+    if repo == "kin-openapi" {
+        // CROSS-LANGUAGE (Go): unlike Rust's edge-less types, a Go struct hub HAS
+        // outgoing Uses edges to its field-types (confirmed: `understand Schema` ->
+        // 7 downstream nodes), but methods attach as INCOMING backlinks (like Rust).
+        // So reachable golds are downstream Uses-targets (field-types), not methods.
+        // Tests whether gather-then-select reorders a Uses frontier toward a
+        // query-relevant deep field-type better than the structural walk.
+        return vec![
+            Case {
+                hub: "Components openapi components container",
+                query: "security scheme definitions",
+                gold: "SecuritySchemes",
+            },
+            Case {
+                hub: "Components openapi components container",
+                query: "request body definitions",
+                gold: "RequestBodies",
+            },
+            Case {
+                hub: "Operation openapi path operation",
+                query: "external documentation links",
+                gold: "ExternalDocs",
+            },
+            Case {
+                hub: "Schema openapi schema object",
+                query: "source location of a field",
+                gold: "Location",
+            },
+        ];
+    }
     if repo == "rustfmt" {
         // CROSS-LANGUAGE FINDING (kept as reproducible evidence, not a passing eval):
         // these Flask-shaped class-hub cases come back UNREACHABLE on Rust, and that IS
@@ -152,6 +182,22 @@ fn cases(repo: &str) -> Vec<Case> {
 /// Low structural retention under these = over-aggressive promotion (pulling in
 /// topically-adjacent-but-wrong members when there is no clear winner).
 fn negatives(repo: &str) -> Vec<(&'static str, &'static str)> {
+    if repo == "kin-openapi" {
+        return vec![
+            (
+                "Components openapi components container",
+                "numeric tensor matrix multiplication kernels",
+            ),
+            (
+                "Schema openapi schema object",
+                "establish a tcp network socket connection",
+            ),
+            (
+                "Operation openapi path operation",
+                "rotating file log handler buffering",
+            ),
+        ];
+    }
     if repo == "rustfmt" {
         return vec![
             (
