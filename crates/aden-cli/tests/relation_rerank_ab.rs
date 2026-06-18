@@ -329,6 +329,14 @@ fn rerank(dense: &[SearchResult], rels: &[f64], w_rel: f64) -> Vec<String> {
         .collect()
 }
 
+/// Domain of a card = its crate, parsed from the anchor (`aden://module/<crate>/…`).
+fn crate_of(anchor: &str) -> &str {
+    anchor
+        .strip_prefix("aden://module/")
+        .and_then(|s| s.split('/').next())
+        .unwrap_or("?")
+}
+
 #[test]
 #[ignore = "relationship reranker (needs --features dense); reads project store; writes nothing"]
 fn relation_rerank_report() {
@@ -369,10 +377,9 @@ fn relation_rerank_report() {
         );
 
         let mut dense_m = Metrics::default();
-        let mut ppmi1 = Metrics::default();
-        let mut ppmi2 = Metrics::default();
-        let mut multi1 = Metrics::default();
-        let mut multi2 = Metrics::default();
+        let mut l1 = Metrics::default();
+        let mut l2 = Metrics::default();
+        let mut l3 = Metrics::default();
         let mut orc = Metrics::default();
 
         let empty = HashSet::new();
@@ -397,11 +404,22 @@ fn relation_rerank_report() {
                 })
                 .collect();
 
+            // Layer 3: domain boost. A candidate in the crate where the Layer-2 relationship
+            // relevance pools (the query's inferred domain) gets multiplicatively boosted.
+            let crates: Vec<&str> = head.iter().map(|r| crate_of(&r.anchor)).collect();
+            let mut mass: HashMap<&str, f64> = HashMap::new();
+            for (i, c) in crates.iter().enumerate() {
+                *mass.entry(*c).or_default() += rels_m[i];
+            }
+            let max_mass = mass.values().cloned().fold(0.0_f64, f64::max).max(1e-9);
+            let rels_l3: Vec<f64> = (0..head.len())
+                .map(|i| rels_m[i] * (1.0 + mass[crates[i]] / max_mass))
+                .collect();
+
             dense_m.add(rank_anchors(&rerank(&dense, &rels_p, 0.0), p.accept));
-            ppmi1.add(rank_anchors(&rerank(&dense, &rels_p, 1.0), p.accept));
-            ppmi2.add(rank_anchors(&rerank(&dense, &rels_p, 2.0), p.accept));
-            multi1.add(rank_anchors(&rerank(&dense, &rels_m, 1.0), p.accept));
-            multi2.add(rank_anchors(&rerank(&dense, &rels_m, 2.0), p.accept));
+            l1.add(rank_anchors(&rerank(&dense, &rels_p, 2.0), p.accept));
+            l2.add(rank_anchors(&rerank(&dense, &rels_m, 2.0), p.accept));
+            l3.add(rank_anchors(&rerank(&dense, &rels_l3, 2.0), p.accept));
             orc.add(rank_anchors(
                 &index
                     .query(&format!("{} {}", p.query, p.expand))
@@ -412,13 +430,12 @@ fn relation_rerank_report() {
             ));
         }
 
-        println!("\n  rank-of-gold:");
+        println!("\n  rank-of-gold (rerank weight 2.0):");
         println!("{}", dense_m.line("DENSE", n));
-        println!("{}", ppmi1.line("PPMI w=1.0", n));
-        println!("{}", ppmi2.line("PPMI w=2.0", n));
-        println!("{}", multi1.line("PPMI+OEWN w=1.0", n));
-        println!("{}", multi2.line("PPMI+OEWN w=2.0", n));
-        println!("{}", orc.line("ORACLE (ref)", n));
+        println!("{}", l1.line("L1 PPMI", n));
+        println!("{}", l2.line("L2 +OEWN", n));
+        println!("{}", l3.line("L3 +DOMAIN", n));
+        println!("{}", orc.line("ORACLE", n));
 
         assert!(n_cards > 0, "no cards");
     }
