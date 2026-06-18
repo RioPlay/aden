@@ -147,6 +147,45 @@ fn assembly_ab_report() {
     index.ingest(entries);
     index.finalize();
 
+    // Relevance signal: HYBRID (dense + BM25) when built with `--features dense`
+    // and the bge model is present — the SAME signal production `ask` uses, so
+    // this measures the real feature rather than the BM25 floor. The harness
+    // embeds the graph nodes itself, so the repo need not be gen'd with dense.
+    // Falls back to BM25 when dense is absent so the harness still runs.
+    let embedder: Option<Box<dyn aden_index::EmbeddingProvider>> = {
+        #[cfg(feature = "dense")]
+        {
+            let dir = PathBuf::from(std::env::var("HOME").unwrap_or_default())
+                .join(".cache/aden-models/bge-small-en-v1.5");
+            match aden_index::TractEmbedder::from_dir(&dir) {
+                Ok(e) => Some(Box::new(e) as Box<dyn aden_index::EmbeddingProvider>),
+                Err(e) => {
+                    eprintln!("dense model unavailable ({e}); falling back to BM25");
+                    None
+                }
+            }
+        }
+        #[cfg(not(feature = "dense"))]
+        {
+            None
+        }
+    };
+    if let Some(e) = &embedder {
+        index.embed_documents(e.as_ref());
+    }
+    let relevance_mode = if embedder.is_some() {
+        "HYBRID (dense+BM25)"
+    } else {
+        "BM25"
+    };
+    // Single query path: hybrid when an embedder is loaded, BM25 otherwise.
+    let do_query = |q: &str| -> Vec<aden_index::SearchResult> {
+        match &embedder {
+            Some(e) => index.hybrid_query(q, e.as_ref()),
+            None => index.query(q),
+        }
+    };
+
     let includes_gold = |opts: &AssemblyOptions, gold: &str| -> bool {
         assemble_with_anchors(&graph, opts)
             .map(|(_, inc)| inc.iter().any(|a| a.contains(gold)))
@@ -158,11 +197,12 @@ fn assembly_ab_report() {
 
     println!(
         "\n=== Assembly A/B: structural vs query-aware ordering ===\n\
-         Repo: {} | {} nodes, {} edges | budgets {:?}",
+         Repo: {} | {} nodes, {} edges | budgets {:?} | relevance: {}",
         repo.display(),
         graph.node_count(),
         graph.edge_count(),
-        budgets
+        budgets,
+        relevance_mode
     );
 
     let mut struct_hits = vec![0usize; budgets.len()];
@@ -175,6 +215,12 @@ fn assembly_ab_report() {
         // with no members to order). The relevance tie-break only matters among a
         // hub's many neighbors, so among the top hub matches pick the most-
         // connected node (highest out-degree) — the actual structural hub.
+        //
+        // Seed resolution stays on BM25 deliberately: the seed is experimental
+        // SETUP, held fixed across both arms AND across the BM25-vs-hybrid
+        // comparison, so the only thing that varies is the relevance-ordering
+        // treatment below. (Hybrid seed resolution drifts the hub onto test
+        // helpers here, which is a separate routing question, not this A/B.)
         let Some(seed) = index
             .query(c.hub)
             .iter()
@@ -195,8 +241,7 @@ fn assembly_ab_report() {
             continue;
         };
 
-        let rel: HashMap<String, f32> = index
-            .query(c.query)
+        let rel: HashMap<String, f32> = do_query(c.query)
             .into_iter()
             .map(|r| (r.anchor, r.score as f32))
             .collect();
