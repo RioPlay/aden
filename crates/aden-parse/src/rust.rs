@@ -652,6 +652,14 @@ fn extract_impl_methods(
                     {
                         edge_lines.push(format!("edge::mutates[{target}]"));
                     }
+                    // Reverse Contains: this method is a MEMBER of its type. Rust impl
+                    // methods live in a separate `impl` block, not nested in the type
+                    // decl, so (unlike a Python class) the type node would otherwise have
+                    // no outgoing members and a hub seed could never reach them. The
+                    // linker stores `member_of[T]` as `T Contains <method>`.
+                    if let Some(target) = mutates_target.as_deref() {
+                        edge_lines.push(format!("edge::member_of[{target}]"));
+                    }
                     if !edge_lines.is_empty() {
                         doc.blocks.push(Block::Listing {
                             language: None,

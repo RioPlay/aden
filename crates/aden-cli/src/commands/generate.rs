@@ -42,6 +42,9 @@ struct EmittedSymbol {
     /// `edge::mutates[Type]` references (`&mut self` receivers) — linked as
     /// `Mutates` edges from a method to the type whose state it writes.
     mutates: Vec<String>,
+    /// `edge::member_of[Type]` references (impl methods) — linked REVERSED as
+    /// `Type —Contains→ method`, so a type reaches its impl-block methods.
+    member_of: Vec<String>,
     /// Backtick symbol names from the parser-filled `doc_mentions` attribute
     /// (prose only — the parsers' fence state keeps listings out). Linked as
     /// `Mentions` edges when the name resolves to exactly one code symbol
@@ -768,6 +771,7 @@ fn link_store_edges<S: GraphStorage>(
     ref_records: &[(String, Vec<String>)],
     impl_records: &[(String, Vec<String>)],
     mutates_records: &[(String, Vec<String>)],
+    member_of_records: &[(String, Vec<String>)],
     mention_records: &[(String, Vec<String>)],
     supersede_records: &[(String, Vec<String>)],
     demo_records: &[(String, Vec<String>)],
@@ -959,6 +963,20 @@ fn link_store_edges<S: GraphStorage>(
                 && target != anchor.as_str()
             {
                 edges.push((anchor.clone(), target.to_string(), EdgeType::Mutates));
+            }
+        }
+    }
+
+    // Member-of edges: a Rust impl method is a member of its type, stored REVERSED as
+    // `type —Contains→ method` so a type reaches the methods defined in its separate
+    // impl blocks (a Python class nests its methods; a Rust type does not). Exact
+    // resolution only, mirroring mutates.
+    for (anchor, targets) in member_of_records {
+        for t in targets {
+            if let Some(target) = resolve_exact(t, anchor, &name_index)
+                && target != anchor.as_str()
+            {
+                edges.push((target.to_string(), anchor.clone(), EdgeType::Contains));
             }
         }
     }
@@ -1576,6 +1594,7 @@ fn cmd_gen_inner(
                     let includes = extract_doc_includes(&doc_clone);
                     let implements = extract_edge_macro(&doc_clone, "implements");
                     let mutates = extract_edge_macro(&doc_clone, "mutates");
+                    let member_of = extract_edge_macro(&doc_clone, "member_of");
                     let mentions = extract_doc_mentions(&doc_clone);
                     let supersedes = extract_doc_supersedes(&doc_clone);
                     let demonstrates = extract_demonstrates(&doc_clone);
@@ -1626,6 +1645,7 @@ fn cmd_gen_inner(
                         includes,
                         implements,
                         mutates,
+                        member_of,
                         mentions,
                         supersedes,
                         demonstrates,
@@ -1659,6 +1679,7 @@ fn cmd_gen_inner(
         let mut include_records: Vec<(String, Vec<String>)> = Vec::new();
         let mut impl_records: Vec<(String, Vec<String>)> = Vec::new();
         let mut mutates_records: Vec<(String, Vec<String>)> = Vec::new();
+        let mut member_of_records: Vec<(String, Vec<String>)> = Vec::new();
         let mut mention_records: Vec<(String, Vec<String>)> = Vec::new();
         let mut supersede_records: Vec<(String, Vec<String>)> = Vec::new();
         let mut demo_records: Vec<(String, Vec<String>)> = Vec::new();
@@ -1760,6 +1781,9 @@ fn cmd_gen_inner(
                         if !sym.mutates.is_empty() {
                             mutates_records.push((sym.anchor.clone(), sym.mutates));
                         }
+                        if !sym.member_of.is_empty() {
+                            member_of_records.push((sym.anchor.clone(), sym.member_of));
+                        }
                         if !sym.mentions.is_empty() {
                             mention_records.push((sym.anchor.clone(), sym.mentions));
                         }
@@ -1857,6 +1881,7 @@ fn cmd_gen_inner(
             &ref_records,
             &impl_records,
             &mutates_records,
+            &member_of_records,
             &mention_records,
             &supersede_records,
             &demo_records,
@@ -2298,6 +2323,7 @@ mod link_tests {
             &[],
             &[],
             &[],
+            &[],
             &test_anchors,
         )
         .unwrap();
@@ -2355,6 +2381,7 @@ mod link_tests {
             &[],
             &impl_records,
             &mutates_records,
+            &[],
             &[],
             &[],
             &[],
@@ -2463,6 +2490,7 @@ mod link_tests {
             &[],
             &[],
             &[],
+            &[],
             &std::collections::HashSet::new(),
         )
         .unwrap();
@@ -2529,6 +2557,7 @@ mod link_tests {
             &[],
             &[],
             &[],
+            &[],
             &std::collections::HashSet::new(),
         )
         .unwrap();
@@ -2583,6 +2612,7 @@ mod link_tests {
             &[],
             &[],
             &ref_records,
+            &[],
             &[],
             &[],
             &[],

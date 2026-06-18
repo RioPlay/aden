@@ -501,6 +501,23 @@ impl AdenGraph<DocumentNode, AdenEdge> {
 
             // Build edges from edge:: macros
             for edge_macro in &parsed.edges {
+                // `member_of[T]` is the REVERSE of contains: the emitting symbol is a
+                // member of T, stored as `T Contains <self>`. This lets a type reach the
+                // methods defined in its (separate) impl blocks — without it a Rust type
+                // node has no outgoing members, unlike a Python class whose methods nest
+                // inside it. Direction is swapped here; everything else is a normal edge.
+                if edge_macro.edge_type.eq_ignore_ascii_case("member_of")
+                    || edge_macro.edge_type.eq_ignore_ascii_case("memberof")
+                {
+                    let _ = graph.add_edge_by_anchor(
+                        &edge_macro.target,
+                        &source_anchor,
+                        AdenEdge {
+                            edge_type: EdgeType::Contains,
+                        },
+                    );
+                    continue;
+                }
                 let edge_type = match edge_macro.edge_type.to_lowercase().as_str() {
                     "uses" => EdgeType::Uses,
                     "usedby" | "used_by" => EdgeType::UsedBy,
