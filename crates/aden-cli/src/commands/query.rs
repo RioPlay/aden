@@ -729,6 +729,7 @@ pub struct AsmOptions {
     pub auto: bool,
     pub strict: bool,
     pub inspect: bool,
+    pub select: bool,
     pub include_tags: Vec<String>,
     pub exclude_tags: Vec<String>,
     pub attributes: Vec<String>,
@@ -851,6 +852,25 @@ pub fn cmd_asm(opts: AsmOptions) -> Result<(), Box<dyn std::error::Error>> {
 
     // llm_mode=true is the default. Only raw AsciiDoc (--format aden) disables it.
     let llm_mode = opts.format != "aden";
+
+    // Opt-in query-aware selection (`--select`): gather the neighborhood, then
+    // select to budget by relevance to `--from` rather than walking by structural
+    // priority. Benched (assembly_ab harness) to pull query-relevant deep nodes
+    // into tight budgets that the structural walk never reaches (Go: 0/3 -> 3/3),
+    // signal-agnostic so the cheap BM25 score is enough. Default OFF: the off-topic
+    // safety gate is the open rank-calibration problem, so this stays explicit.
+    let relevance = if opts.select {
+        let index = load_or_build_index(&opts.path)?;
+        let map: std::collections::HashMap<String, f32> = query_index(&index, &opts.from)
+            .into_iter()
+            .map(|r| (r.anchor, r.score as f32))
+            .collect();
+        (!map.is_empty()).then_some(map)
+    } else {
+        None
+    };
+    let relevance_select = relevance.is_some();
+
     let asm_opts = AssemblyOptions {
         start_anchor: resolved_anchor,
         max_depth: opts.depth,
@@ -862,8 +882,8 @@ pub fn cmd_asm(opts: AsmOptions) -> Result<(), Box<dyn std::error::Error>> {
         attributes: opts.attributes.clone(),
         llm_mode,
         hydrate_root: None,
-        relevance: None,
-        relevance_select: false,
+        relevance,
+        relevance_select,
     };
 
     let output = match opts.format.as_str() {
