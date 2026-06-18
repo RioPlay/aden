@@ -164,15 +164,24 @@ pub fn cmd_impact_diff(
         if tests.is_empty() {
             println!("\nAffected tests: none found (no Tests edge reaches the blast set).");
         } else {
-            println!("\nAffected tests ({} — run these):", tests.len());
-            for t in tests.iter().take(20) {
-                println!("  {}", short(t));
+            // Dedupe to the runnable unit (the test file): the raw set repeats helpers like
+            // `load_embedder` once per file, which is noise. Group by file, most-covering first.
+            let mut by_file: BTreeMap<String, usize> = BTreeMap::new();
+            for t in &tests {
+                *by_file.entry(test_file(t)).or_default() += 1;
             }
-            if tests.len() > 20 {
-                println!(
-                    "  ... and {} more (see --json affected_tests)",
-                    tests.len() - 20
-                );
+            println!(
+                "\nAffected tests ({} symbol(s) across {} file(s) — run these):",
+                tests.len(),
+                by_file.len()
+            );
+            let mut files: Vec<(&String, &usize)> = by_file.iter().collect();
+            files.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+            for (file, n) in files.iter().take(20) {
+                println!("  {file}  ({n} symbol(s))");
+            }
+            if by_file.len() > 20 {
+                println!("  ... and {} more file(s)", by_file.len() - 20);
             }
         }
     }
@@ -221,6 +230,16 @@ fn short(anchor: &str) -> String {
     anchor
         .rsplit(['#', '/'])
         .next()
+        .unwrap_or(anchor)
+        .to_string()
+}
+
+/// The test FILE a symbol anchor lives in (the runnable unit for "run these tests"),
+/// e.g. `aden://module/aden-cli/tests/foo.rs#bar` -> `aden-cli/tests/foo.rs`.
+fn test_file(anchor: &str) -> String {
+    anchor
+        .strip_prefix("aden://module/")
+        .and_then(|r| r.split('#').next())
         .unwrap_or(anchor)
         .to_string()
 }
