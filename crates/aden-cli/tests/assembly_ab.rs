@@ -53,7 +53,46 @@ struct Case {
     gold: &'static str,
 }
 
-fn cases() -> Vec<Case> {
+fn cases(repo: &str) -> Vec<Case> {
+    if repo == "rustfmt" {
+        // CROSS-LANGUAGE FINDING (kept as reproducible evidence, not a passing eval):
+        // these Flask-shaped class-hub cases come back UNREACHABLE on Rust, and that IS
+        // the result. In aden's Rust graph a type node has ZERO outgoing edges
+        // (confirmed: `understand FmtVisitor` -> downstream 0 nodes); impl methods attach
+        // to the module/impl and only REFERENCE the type (incoming backlinks). So a
+        // class-hub seed cannot reach its methods via outgoing Contains the way it does
+        // in Python. Rust navigation is Calls-based (priority 0, already top of the
+        // walk), so gather-then-select's low-priority-Contains RESCUE has no analogue
+        // here. Conclusion: the mechanism is validated for the Contains-heavy regime
+        // (Python classes, prose sections), NOT a universal uplift. See the devlog.
+        return vec![
+            Case {
+                hub: "visitor source formatting module",
+                query: "format the statements inside a code block",
+                gold: "walk_block_stmts",
+            },
+            Case {
+                hub: "visitor source formatting module",
+                query: "format a macro invocation",
+                gold: "visit_mac",
+            },
+            Case {
+                hub: "visitor source formatting module",
+                query: "format an item declared inside a trait",
+                gold: "visit_trait_item",
+            },
+            Case {
+                hub: "visitor source formatting module",
+                query: "format a type alias definition",
+                gold: "visit_ty_alias_kind",
+            },
+            Case {
+                hub: "visitor source formatting module",
+                query: "walk and format the items of a module",
+                gold: "walk_mod_items",
+            },
+        ];
+    }
     vec![
         Case {
             hub: "Flask application object class",
@@ -112,7 +151,19 @@ fn cases() -> Vec<Case> {
 /// relevance is noise — promotion should NOT disturb the structural assembly here.
 /// Low structural retention under these = over-aggressive promotion (pulling in
 /// topically-adjacent-but-wrong members when there is no clear winner).
-fn negatives() -> Vec<(&'static str, &'static str)> {
+fn negatives(repo: &str) -> Vec<(&'static str, &'static str)> {
+    if repo == "rustfmt" {
+        return vec![
+            (
+                "ast visitor that formats source code items",
+                "numeric tensor matrix multiplication kernels",
+            ),
+            (
+                "ast visitor that formats source code items",
+                "establish a tcp network socket connection",
+            ),
+        ];
+    }
     vec![
         (
             "Flask application object class",
@@ -140,6 +191,13 @@ fn assembly_ab_report() {
         eprintln!("SKIP: eval repo not found (set ADEN_ASM_REPO)");
         return;
     };
+    // Select the case set by repo dir name (flask | rustfmt), so the same harness
+    // validates the gate across languages: run once per repo via ADEN_ASM_REPO.
+    let repo_name = repo
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_string();
     // The store-backed loader: the edge-rich graph the gen pipeline wrote (Calls,
     // Uses, Contains …), the same one `asm`/`ask` load. Requires `aden gen <repo>`
     // to have run. (`AdenGraph::build_from_directory` would give a doc-only,
@@ -263,7 +321,7 @@ fn assembly_ab_report() {
     let topk = [5usize, 10, 25];
     let mut rank_top = [0usize; 3];
 
-    for c in cases() {
+    for c in cases(&repo_name) {
         // Seed resolution stays on BM25 deliberately: the seed is experimental SETUP,
         // held fixed across all arms AND across the BM25-vs-hybrid comparison, so the
         // only thing that varies is the relevance treatment. (Hybrid seed resolution
@@ -370,7 +428,7 @@ fn assembly_ab_report() {
     );
     let mut retain_sum = vec![0.0f64; budgets.len()];
     let mut neg_scored = 0usize;
-    for (hub, q) in negatives() {
+    for (hub, q) in negatives(&repo_name) {
         let Some(seed) = resolve_hub(hub) else {
             continue;
         };
