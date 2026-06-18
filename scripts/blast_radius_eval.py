@@ -20,7 +20,7 @@ import statistics
 from collections import defaultdict
 from pathlib import Path
 
-ROOT = Path("/home/unknown/Projects/aden")
+ROOT = Path(__file__).resolve().parent.parent
 EVAL = Path.home() / ".cache/aden/dict/eval"
 CALL_TYPES = {"Calls", "Uses", "Invokes"}
 
