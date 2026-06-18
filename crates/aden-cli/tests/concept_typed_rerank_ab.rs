@@ -61,6 +61,15 @@ fn load_cards(repo: &Path) -> Vec<(String, Vec<String>, String)> {
         return Vec::new();
     };
     docs.values()
+        // EVAL HYGIENE: exclude the test harnesses themselves — they contain the probe queries
+        // and gold symbol names verbatim, which would pollute retrieval (self-referential cards).
+        .filter(|d| {
+            !d.anchor.contains("/tests/")
+                && !d
+                    .attributes
+                    .get("source_file")
+                    .is_some_and(|s| s.contains("/tests/"))
+        })
         .map(|d| {
             let text = index_text(d);
             (d.anchor.clone(), aden_index::tokenize(&text), text)
