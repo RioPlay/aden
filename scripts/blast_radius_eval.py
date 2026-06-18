@@ -49,7 +49,9 @@ for p in ROOT.glob("crates/**/*.rs"):
     rp = str(p.relative_to(ROOT))
     if "/tests/" in rp:
         continue
-    src[rp] = p.read_text(errors="ignore")
+    # Drop inline `#[cfg(test)]` modules: aden does not extract call edges from test code,
+    # so counting test-only call sites as ground truth understates PRODUCTION blast-radius.
+    src[rp] = p.read_text(errors="ignore").split("#[cfg(test)]")[0]
 
 
 def truth_files(name):
