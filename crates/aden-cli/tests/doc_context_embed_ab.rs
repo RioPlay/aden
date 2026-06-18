@@ -99,6 +99,7 @@ fn doc_context_embed_report() {
     }
     #[cfg(feature = "dense")]
     {
+        use aden_core::EdgeType;
         use aden_index::EmbeddingProvider;
         use aden_store::{GraphStorage, Storage};
         use rayon::prelude::*;
@@ -146,16 +147,16 @@ fn doc_context_embed_report() {
         // One pass over outgoing edges builds BOTH directions of neighbour context.
         use std::collections::HashMap;
         let idx: HashMap<&str, usize> = anchors.iter().enumerate().map(|(i, &a)| (a, i)).collect();
-        let mut out_nbrs: Vec<Vec<usize>> = vec![Vec::new(); n];
-        let mut in_nbrs: Vec<Vec<usize>> = vec![Vec::new(); n];
+        let mut out_nbrs: Vec<Vec<(usize, EdgeType)>> = vec![Vec::new(); n];
+        let mut in_nbrs: Vec<Vec<(usize, EdgeType)>> = vec![Vec::new(); n];
         for i in 0..n {
             if let Ok(out) = storage.get_outgoing_edges(&cards[i].0) {
-                for (tgt, _) in out {
+                for (tgt, et) in out {
                     if let Some(&j) = idx.get(tgt.as_str())
                         && j != i
                     {
-                        out_nbrs[i].push(j);
-                        in_nbrs[j].push(i);
+                        out_nbrs[i].push((j, et));
+                        in_nbrs[j].push((i, et));
                     }
                 }
             }
@@ -168,20 +169,46 @@ fn doc_context_embed_report() {
                 .take(HEAD)
                 .collect()
         };
-        let enriched: Vec<String> = (0..n)
-            .map(|i| {
-                let mut ctx = String::new();
-                for &j in out_nbrs[i].iter().take(NBR_PER_DIR) {
-                    ctx.push(' ');
-                    ctx.push_str(&head(&cards[j].1));
-                }
-                for &j in in_nbrs[i].iter().take(NBR_PER_DIR) {
-                    ctx.push(' ');
-                    ctx.push_str(&head(&cards[j].1));
-                }
-                format!("{}\n{ctx}", cards[i].1)
-            })
-            .collect();
+        // Call-context edges: the symbol's actual code relationships, vs structural noise
+        // (Contains/Documents/Imports) that may dilute the embedding.
+        let call_edge = |et: &EdgeType| {
+            matches!(
+                et,
+                EdgeType::Calls
+                    | EdgeType::Uses
+                    | EdgeType::UsedBy
+                    | EdgeType::Implements
+                    | EdgeType::Extends
+            )
+        };
+        // Build an enrichment recipe: own text repeated `own` times (anti-dilution anchor), then
+        // up to NBR_PER_DIR neighbours per direction (optionally call-edges-only).
+        let build = |own: usize, call_only: bool| -> Vec<String> {
+            (0..n)
+                .map(|i| {
+                    let mut s = String::new();
+                    for _ in 0..own {
+                        s.push_str(&cards[i].1);
+                        s.push('\n');
+                    }
+                    for dir in [&out_nbrs[i], &in_nbrs[i]] {
+                        let mut added = 0;
+                        for (j, et) in dir {
+                            if added >= NBR_PER_DIR {
+                                break;
+                            }
+                            if call_only && !call_edge(et) {
+                                continue;
+                            }
+                            s.push(' ');
+                            s.push_str(&head(&cards[*j].1));
+                            added += 1;
+                        }
+                    }
+                    s
+                })
+                .collect()
+        };
         let avg_nbrs = (out_nbrs
             .iter()
             .chain(in_nbrs.iter())
@@ -189,15 +216,17 @@ fn doc_context_embed_report() {
             .sum::<usize>()) as f64
             / n as f64;
 
-        // Embed plain and graph-enriched cards (parallel).
+        // Embed plain + three enrichment recipes (each parallel).
+        let embed_bank = |texts: &[String]| -> Vec<Vec<f32>> {
+            texts.par_iter().map(|t| normalize(emb.embed(t))).collect()
+        };
         let plain: Vec<Vec<f32>> = cards
             .par_iter()
             .map(|(_, t)| normalize(emb.embed(t)))
             .collect();
-        let ctx: Vec<Vec<f32>> = enriched
-            .par_iter()
-            .map(|t| normalize(emb.embed(t)))
-            .collect();
+        let ctx_all = embed_bank(&build(1, false)); // current recipe (0.305)
+        let ctx_call = embed_bank(&build(1, true)); // call-context edges only
+        let ctx_anchor = embed_bank(&build(2, false)); // own text 2x (anti-dilution)
 
         let probes = common::PROBES;
         let np = probes.len();
@@ -234,12 +263,19 @@ fn doc_context_embed_report() {
                 .map(|p| p + 1)
         };
 
-        let (mut dense_m, mut ctx_m, mut oracle_m) =
-            (Metrics::default(), Metrics::default(), Metrics::default());
+        let (mut dense_m, mut all_m, mut call_m, mut anchor_m, mut oracle_m) = (
+            Metrics::default(),
+            Metrics::default(),
+            Metrics::default(),
+            Metrics::default(),
+            Metrics::default(),
+        );
         for &(q, accept, oracle) in probes {
             let qv = normalize(emb.embed(q));
             dense_m.add(rank(&plain, &qv, accept));
-            ctx_m.add(rank(&ctx, &qv, accept));
+            all_m.add(rank(&ctx_all, &qv, accept));
+            call_m.add(rank(&ctx_call, &qv, accept));
+            anchor_m.add(rank(&ctx_anchor, &qv, accept));
             let ov = normalize(emb.embed(&format!("{q} {oracle}")));
             oracle_m.add(rank(&plain, &ov, accept));
         }
@@ -248,7 +284,9 @@ fn doc_context_embed_report() {
             "\n=== Doc-side graph-context embedding ({np} probes, {n} cards, avg {avg_nbrs:.1} nbrs/card) ==="
         );
         println!("{}", dense_m.line("DENSE", np));
-        println!("{}", ctx_m.line("DENSE-CTX", np));
+        println!("{}", all_m.line("CTX-ALL", np));
+        println!("{}", call_m.line("CTX-CALL", np));
+        println!("{}", anchor_m.line("CTX-ANCHOR", np));
         println!("{}", oracle_m.line("ORACLE", np));
 
         assert!(!cards.is_empty(), "no cards");
