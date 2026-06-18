@@ -17,6 +17,7 @@
 
 use aden_asm::traverse::{AssemblyOptions, assemble_with_anchors};
 use aden_core::Block;
+use aden_graph::Direction;
 use aden_index::Index;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -169,7 +170,27 @@ fn assembly_ab_report() {
     let mut scored = 0usize;
 
     for c in cases() {
-        let Some(seed) = index.query(c.hub).first().map(|r| r.anchor.clone()) else {
+        // The hub is a HIGH-FAN-OUT node, but BM25 on prose often resolves the
+        // hub query to a leaf method whose docstring matched (e.g. a `__call__`
+        // with no members to order). The relevance tie-break only matters among a
+        // hub's many neighbors, so among the top hub matches pick the most-
+        // connected node (highest out-degree) — the actual structural hub.
+        let Some(seed) = index
+            .query(c.hub)
+            .iter()
+            .take(8)
+            .filter_map(|r| {
+                graph.get_index(&r.anchor).map(|ix| {
+                    let deg = graph
+                        .graph
+                        .neighbors_directed(ix, Direction::Outgoing)
+                        .count();
+                    (r.anchor.clone(), deg)
+                })
+            })
+            .max_by_key(|(_, deg)| *deg)
+            .map(|(anchor, _)| anchor)
+        else {
             println!("  [skip] hub '{}' resolved nothing", c.hub);
             continue;
         };
