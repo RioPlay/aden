@@ -245,6 +245,7 @@ pub fn cmd_understand(
         llm_mode: true,
         hydrate_root: None,
         relevance: None,
+        relevance_select: false,
     };
     let context = assemble(&neigh, &asm_opts)?;
 

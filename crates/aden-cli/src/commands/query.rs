@@ -863,6 +863,7 @@ pub fn cmd_asm(opts: AsmOptions) -> Result<(), Box<dyn std::error::Error>> {
         llm_mode,
         hydrate_root: None,
         relevance: None,
+        relevance_select: false,
     };
 
     let output = match opts.format.as_str() {
@@ -1583,6 +1584,7 @@ impl AskAssembler<'_> {
             llm_mode: true, // aden ask always targets an LLM — emit clean prose
             hydrate_root: Some(self.hydrate_root.clone()),
             relevance: self.relevance.clone(),
+            relevance_select: false,
         };
         // Prune near-duplicate neighbors before they spend budget. τ=0.8 skips
         // only genuine near-dups (≥80% token overlap); the headroom probe showed

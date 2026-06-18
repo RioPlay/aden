@@ -173,7 +173,12 @@ fn assembly_ab_report() {
     let mut struct_hits = vec![0usize; budgets.len()];
     let mut aware_hits = vec![0usize; budgets.len()];
     let mut ppr_hits = vec![0usize; budgets.len()];
+    let mut select_hits = vec![0usize; budgets.len()]; // relevance_select (gather-then-select)
     let mut scored = 0usize;
+    // Gather-then-select proxy: how often gold lands in the relevance-rank top-K of
+    // the generously-gathered set (would survive a relevance-driven compression).
+    let topk = [5usize, 10, 25];
+    let mut rank_top = [0usize; 3];
 
     for c in cases() {
         let Some(seed) = index.query(c.hub).first().map(|r| r.anchor.clone()) else {
@@ -212,13 +217,40 @@ fn assembly_ab_report() {
         // ordering, so structurally-central context near the query region ranks up.
         let ppr = personalized_pagerank(&graph, &rel);
 
+        // Gather-then-select proxy: at the reach budget gold IS gathered, so rank
+        // the gathered nodes by relevance — gold's rank is where a relevance-driven
+        // compression would place it.
+        let (_, gathered) =
+            assemble_with_anchors(&graph, &mk(REACH_BUDGET, Some(rel.clone()))).unwrap_or_default();
+        let mut ranked: Vec<&String> = gathered.iter().collect();
+        ranked.sort_by(|a, b| {
+            let ra = rel.get(*a).copied().unwrap_or(0.0);
+            let rb = rel.get(*b).copied().unwrap_or(0.0);
+            rb.partial_cmp(&ra).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let gold_rank = ranked.iter().position(|a| a.contains(c.gold));
+        for (ti, &k) in topk.iter().enumerate() {
+            if gold_rank.is_some_and(|r| r < k) {
+                rank_top[ti] += 1;
+            }
+        }
+
         let mut row_s = String::new();
         let mut row_a = String::new();
         let mut row_p = String::new();
+        let mut row_sel = String::new();
         for (bi, &b) in budgets.iter().enumerate() {
             let s = includes_gold(&mk(b, None), c.gold);
             let a = includes_gold(&mk(b, Some(rel.clone())), c.gold);
             let p = includes_gold(&mk(b, Some(ppr.clone())), c.gold);
+            // Gather-then-select arm: same seed/budget/relevance, but the new mode.
+            let sel = includes_gold(
+                &AssemblyOptions {
+                    relevance_select: true,
+                    ..mk(b, Some(rel.clone()))
+                },
+                c.gold,
+            );
             if s {
                 struct_hits[bi] += 1;
             }
@@ -228,19 +260,31 @@ fn assembly_ab_report() {
             if p {
                 ppr_hits[bi] += 1;
             }
+            if sel {
+                select_hits[bi] += 1;
+            }
             row_s.push(if s { 'Y' } else { '.' });
             row_a.push(if a { 'Y' } else { '.' });
             row_p.push(if p { 'Y' } else { '.' });
+            row_sel.push(if sel { 'Y' } else { '.' });
         }
         let tail = seed.rsplit('#').next().unwrap_or(&seed);
+        let rank_str = match gold_rank {
+            Some(r) => format!("rel-rank #{}/{}", r + 1, gathered.len()),
+            None => "rel-rank NA".to_string(),
+        };
         println!(
-            "  seed={tail:<28} gold={:<20} struct[{row_s}] aware[{row_a}] ppr[{row_p}]",
+            "  seed={tail:<26} gold={:<18} struct[{row_s}] aware[{row_a}] ppr[{row_p}] select[{row_sel}] {rank_str}",
             c.gold
         );
     }
 
     println!("\n  reachable cases scored: {scored}");
-    println!("  structural  gold-inclusion by budget {budgets:?}: {struct_hits:?}");
-    println!("  query-aware gold-inclusion by budget {budgets:?}: {aware_hits:?}");
-    println!("  ppr         gold-inclusion by budget {budgets:?}: {ppr_hits:?}");
+    println!("  structural    gold-inclusion by budget {budgets:?}: {struct_hits:?}");
+    println!("  query-aware   gold-inclusion by budget {budgets:?}: {aware_hits:?}");
+    println!("  ppr           gold-inclusion by budget {budgets:?}: {ppr_hits:?}");
+    println!("  gather-select gold-inclusion by budget {budgets:?}: {select_hits:?}");
+    println!(
+        "  gather-then-select: gold in relevance-rank top-{topk:?} of the gathered set: {rank_top:?} (of {scored})"
+    );
 }
