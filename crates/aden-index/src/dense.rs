@@ -31,10 +31,12 @@ const EMBED_DIM: usize = 384;
 /// (see `from_dir`), so each text runs at its OWN token count with NO padding — a
 /// short symbol doc does a short forward, not a fixed-128 one. This cap bounds
 /// long docs (BERT supports up to 512). 128 keeps the per-forward cost low, but it
-/// silently truncates long cards: a GPU-sidecar sweep (`scripts/gpu_eval.py`) showed
-/// 128 → 512 lifts dense MRR ~0.33 → 0.40 on the 40-probe vocab-mismatch bench. The
-/// cap is therefore overridable via the `ADEN_MAX_SEQ` env var (clamped to the model's
-/// 512 limit); the default stays 128 so offline-CPU `gen` cost is unchanged unless asked.
+/// truncates long cards. A GPU-sidecar sweep (`scripts/gpu_eval.py`) over the faithful
+/// `stable_embed_text` baseline showed a modest gain from raising it: dense MRR ~0.36 at
+/// 128, peaking ~0.40 at 256, then dropping at 512 (long tails dilute the CLS vector), on
+/// the 40-probe vocab-mismatch bench. So 256 is the practical sweet spot. The cap is
+/// overridable via `ADEN_MAX_SEQ` (clamped to the model's 512 limit); default stays 128 so
+/// offline-CPU `gen` cost is unchanged unless asked.
 const DEFAULT_MAX_SEQ: usize = 128;
 /// The model's architectural maximum sequence length (BERT/bge-small).
 const MODEL_MAX_SEQ: usize = 512;

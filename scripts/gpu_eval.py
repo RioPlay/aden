@@ -128,12 +128,58 @@ ov = embed([f"{p[0]} {p[2]}" for p in probes])
 # Sweep the embedding sequence length. aden's tract path is fixed at 128 tokens; 512 is the
 # model's real limit. maxlen=128 should reproduce the Rust harness (DENSE ~0.281, CTX-D2 ~0.312)
 # and validate this sidecar; 512 measures what aden leaves on the floor by truncating.
-ctx_text = build(2, 12, 120)
-for maxlen in (128, 512):
+def strip_boilerplate(t):
+    # Drop the leading metadata block (:end_byte:/:source_hash:/:start_line: etc.) and the
+    # [[uri]] anchor macro, which together eat ~50 tokens of pure structure before any content.
+    keep = []
+    for line in t.splitlines():
+        s = line.strip()
+        if s.startswith(":") and s.count(":") >= 2:
+            continue
+        if s.startswith("[["):
+            continue
+        keep.append(line)
+    return "\n".join(keep).strip()
+
+
+texts_stripped = [strip_boilerplate(t) for t in texts]
+
+
+def build_stripped(depth, per, hd):
+    # Same depth-2 enrichment, but own + neighbour gists are BOILERPLATE-STRIPPED first, so the
+    # folded context is real descriptions, not metadata.
+    res = []
+    for i in range(n):
+        s = texts_stripped[i]
+        for j in nbr_indices(i, depth, per):
+            s += " " + head(texts_stripped[j], hd)
+        res.append(s)
+    return res
+
+
+def stable(t):
+    # = aden's production stable_embed_text: drop ONLY the volatile provenance attrs.
+    # This is the faithful baseline; the harnesses wrongly embedded emit_document (raw),
+    # which keeps the byte/line/hash noise production already strips.
+    vol = (
+        ":last-verified:",
+        ":start_line:",
+        ":end_line:",
+        ":start_byte:",
+        ":end_byte:",
+        ":source_hash:",
+    )
+    return "\n".join(l for l in t.splitlines() if not l.strip().startswith(vol))
+
+
+texts_stable = [stable(t) for t in texts]
+for maxlen in (128, 256, 512):
     tok.enable_truncation(max_length=maxlen)
-    plain = embed(texts)
-    ctx_d2 = embed(ctx_text)
+    raw = embed(texts)
+    stab = embed(texts_stable)
+    strp = embed(texts_stripped)
     print(f"\n=== maxlen={maxlen} ({len(probes)} probes, {n} cards) ===")
-    print(f"  DENSE     {eval_bank(plain, qv)}")
-    print(f"  CTX-D2    {eval_bank(ctx_d2, qv)}")
-    print(f"  ORACLE    {eval_bank(plain, ov)}")
+    print(f"  DENSE-RAW     {eval_bank(raw, qv)}   (emit_document; what the harness used)")
+    print(f"  DENSE-STABLE  {eval_bank(stab, qv)}   (= production stable_embed_text)")
+    print(f"  DENSE-STRIP   {eval_bank(strp, qv)}   (aggressive: drop all attrs + uri)")
+    print(f"  ORACLE-STABLE {eval_bank(stab, ov)}")
