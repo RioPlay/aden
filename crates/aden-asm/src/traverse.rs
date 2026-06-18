@@ -257,28 +257,40 @@ fn gather_then_select(
         return (Vec::new(), Vec::new(), 0);
     }
 
-    // Phase 2: derived-margin selection. Confidence = how peaked the relevance
-    // distribution is: (max - mean) / (max - min). Flat -> ~0 (defer to structure);
-    // one clear winner -> ~1 (relevance leads, can cross priority buckets).
+    // Phase 2: GLOBAL-normalized selection. Relevance is scaled against the best match
+    // ANYWHERE for this query (the max of the whole relevance map), not the local
+    // gathered set. This is the fix for the sparse-zero bug: an off-topic neighborhood
+    // whose nodes barely match the query (its real matches are elsewhere) stays low, so
+    // promotion does not fire and structure is preserved; a neighborhood that actually
+    // contains the query's top match promotes it. The blend weight (confidence) is the
+    // strongest in-neighborhood match as a fraction of that global best, so it too is
+    // derived from the signal, with no hardcoded threshold.
     let scores: Vec<f32> = cands.iter().map(|c| c.3).collect();
-    let rmin = scores.iter().copied().fold(f32::INFINITY, f32::min);
-    let rmax = scores.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-    let rmean = scores.iter().sum::<f32>() / scores.len() as f32;
-    let span = rmax - rmin;
-    let conf = if span > 0.0 {
-        ((rmax - rmean) / span).clamp(0.0, 1.0)
+    let global_max = rel.values().copied().fold(0.0f32, f32::max);
+    // Confidence = top-1 SEPARATION among the gathered matches: how far the best
+    // match stands above the second best. A real answer has a clear leader (big gap);
+    // best-of-noise is a flat field of similar weak scores (small gap), which gates
+    // promotion off. Scale-free and derived, not fooled by a sea of zeros (which a
+    // central-tendency measure was) nor by a weak global best inside the neighborhood
+    // (which a max/global ratio was).
+    let mut desc = scores.clone();
+    desc.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+    let top1 = desc.first().copied().unwrap_or(0.0);
+    let top2 = desc.get(1).copied().unwrap_or(0.0);
+    let conf = if top1 > 0.0 {
+        ((top1 - top2) / top1).clamp(0.0, 1.0)
     } else {
         0.0
     };
     let n = cands.len() as f32;
     let value = |idx: usize, score: f32| -> f32 {
-        let rel_norm = if span > 0.0 {
-            (score - rmin) / span
+        let rel_frac = if global_max > 0.0 {
+            (score / global_max).clamp(0.0, 1.0)
         } else {
             0.0
         };
         let struct_val = 1.0 - (idx as f32 / n); // earlier BFS index = closer = higher
-        conf * rel_norm + (1.0 - conf) * struct_val
+        conf * rel_frac + (1.0 - conf) * struct_val
     };
 
     // Seed (index 0) always leads; the rest by value descending (anchor breaks ties
