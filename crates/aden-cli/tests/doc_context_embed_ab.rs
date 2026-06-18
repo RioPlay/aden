@@ -20,9 +20,6 @@ mod common;
 
 use std::path::PathBuf;
 
-const NBR_PER_DIR: usize = 6; // neighbours per direction folded into a card
-const HEAD: usize = 140; // chars of a neighbour's gist appended
-
 fn corpus() -> Option<PathBuf> {
     if let Ok(d) = std::env::var("ADEN_REAL_CORPUS") {
         let p = PathBuf::from(d);
@@ -161,62 +158,58 @@ fn doc_context_embed_report() {
                 }
             }
         }
-        let head = |t: &str| -> String {
+        let head = |t: &str, hd: usize| -> String {
             t.split_whitespace()
                 .collect::<Vec<_>>()
                 .join(" ")
                 .chars()
-                .take(HEAD)
+                .take(hd)
                 .collect()
         };
-        // Call-context edges: the symbol's actual code relationships, vs structural noise
-        // (Contains/Documents/Imports) that may dilute the embedding.
-        let call_edge = |et: &EdgeType| {
-            matches!(
-                et,
-                EdgeType::Calls
-                    | EdgeType::Uses
-                    | EdgeType::UsedBy
-                    | EdgeType::Implements
-                    | EdgeType::Extends
-            )
+        // BFS neighbour collection up to `depth` hops, capped at `per` new nodes per node.
+        let nbr_indices = |i: usize, depth: usize, per: usize| -> Vec<usize> {
+            let mut seen: std::collections::HashSet<usize> = std::collections::HashSet::new();
+            seen.insert(i);
+            let mut frontier = vec![i];
+            let mut result = Vec::new();
+            for _ in 0..depth {
+                let mut next = Vec::new();
+                for &x in &frontier {
+                    let mut c = 0;
+                    for (j, _et) in out_nbrs[x].iter().chain(in_nbrs[x].iter()) {
+                        if c >= per {
+                            break;
+                        }
+                        if seen.insert(*j) {
+                            result.push(*j);
+                            next.push(*j);
+                            c += 1;
+                        }
+                    }
+                }
+                if next.is_empty() {
+                    break;
+                }
+                frontier = next;
+            }
+            result
         };
-        // Build an enrichment recipe: own text repeated `own` times (anti-dilution anchor), then
-        // up to NBR_PER_DIR neighbours per direction (optionally call-edges-only).
-        let build = |own: usize, call_only: bool| -> Vec<String> {
+        // Enrichment recipe: own card text + the gist (hd chars) of neighbours out to `depth`.
+        let build = |depth: usize, per: usize, hd: usize| -> Vec<String> {
             (0..n)
                 .map(|i| {
-                    let mut s = String::new();
-                    for _ in 0..own {
-                        s.push_str(&cards[i].1);
-                        s.push('\n');
-                    }
-                    for dir in [&out_nbrs[i], &in_nbrs[i]] {
-                        let mut added = 0;
-                        for (j, et) in dir {
-                            if added >= NBR_PER_DIR {
-                                break;
-                            }
-                            if call_only && !call_edge(et) {
-                                continue;
-                            }
-                            s.push(' ');
-                            s.push_str(&head(&cards[*j].1));
-                            added += 1;
-                        }
+                    let mut s = cards[i].1.clone();
+                    for j in nbr_indices(i, depth, per) {
+                        s.push(' ');
+                        s.push_str(&head(&cards[j].1, hd));
                     }
                     s
                 })
                 .collect()
         };
-        let avg_nbrs = (out_nbrs
-            .iter()
-            .chain(in_nbrs.iter())
-            .map(|v| v.len().min(NBR_PER_DIR))
-            .sum::<usize>()) as f64
-            / n as f64;
+        let avg_nbrs = (0..n).map(|i| nbr_indices(i, 1, 12).len()).sum::<usize>() as f64 / n as f64;
 
-        // Embed plain + three enrichment recipes (each parallel).
+        // Embed plain + three richness recipes (each parallel).
         let embed_bank = |texts: &[String]| -> Vec<Vec<f32>> {
             texts.par_iter().map(|t| normalize(emb.embed(t))).collect()
         };
@@ -224,9 +217,9 @@ fn doc_context_embed_report() {
             .par_iter()
             .map(|(_, t)| normalize(emb.embed(t)))
             .collect();
-        let ctx_all = embed_bank(&build(1, false)); // current recipe (0.305)
-        let ctx_call = embed_bank(&build(1, true)); // call-context edges only
-        let ctx_anchor = embed_bank(&build(2, false)); // own text 2x (anti-dilution)
+        let ctx_base = embed_bank(&build(1, 12, 140)); // pass-1 recipe (~0.305)
+        let ctx_rich = embed_bank(&build(1, 24, 320)); // more neighbours + fuller gist
+        let ctx_d2 = embed_bank(&build(2, 12, 120)); // depth-2 reach
 
         let probes = common::PROBES;
         let np = probes.len();
@@ -263,7 +256,7 @@ fn doc_context_embed_report() {
                 .map(|p| p + 1)
         };
 
-        let (mut dense_m, mut all_m, mut call_m, mut anchor_m, mut oracle_m) = (
+        let (mut dense_m, mut base_m, mut rich_m, mut d2_m, mut oracle_m) = (
             Metrics::default(),
             Metrics::default(),
             Metrics::default(),
@@ -273,9 +266,9 @@ fn doc_context_embed_report() {
         for &(q, accept, oracle) in probes {
             let qv = normalize(emb.embed(q));
             dense_m.add(rank(&plain, &qv, accept));
-            all_m.add(rank(&ctx_all, &qv, accept));
-            call_m.add(rank(&ctx_call, &qv, accept));
-            anchor_m.add(rank(&ctx_anchor, &qv, accept));
+            base_m.add(rank(&ctx_base, &qv, accept));
+            rich_m.add(rank(&ctx_rich, &qv, accept));
+            d2_m.add(rank(&ctx_d2, &qv, accept));
             let ov = normalize(emb.embed(&format!("{q} {oracle}")));
             oracle_m.add(rank(&plain, &ov, accept));
         }
@@ -284,9 +277,9 @@ fn doc_context_embed_report() {
             "\n=== Doc-side graph-context embedding ({np} probes, {n} cards, avg {avg_nbrs:.1} nbrs/card) ==="
         );
         println!("{}", dense_m.line("DENSE", np));
-        println!("{}", all_m.line("CTX-ALL", np));
-        println!("{}", call_m.line("CTX-CALL", np));
-        println!("{}", anchor_m.line("CTX-ANCHOR", np));
+        println!("{}", base_m.line("CTX-BASE", np));
+        println!("{}", rich_m.line("CTX-RICH", np));
+        println!("{}", d2_m.line("CTX-D2", np));
         println!("{}", oracle_m.line("ORACLE", np));
 
         assert!(!cards.is_empty(), "no cards");
