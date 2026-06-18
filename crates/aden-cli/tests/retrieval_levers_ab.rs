@@ -568,6 +568,34 @@ fn retrieval_levers_report() {
                 .map(|p| p + 1)
         };
 
+        // Pseudo-relevance feedback (Rocchio in embedding space) — a NATURALLY generated query
+        // expansion: pull the query vector toward its own top-k dense results (each weighted by
+        // its dense score, so confident hits dominate), then re-retrieve over ALL cards. No
+        // dictionary, no graph; the corpus's own response IS the expansion. Targets the oracle's
+        // "add the right domain terms" effect automatically.
+        let prf = |qv: &[f32],
+                   sims: &[(usize, f32)],
+                   accept: &[&str],
+                   alpha: f64,
+                   k: usize|
+         -> Option<usize> {
+            let mut q1 = qv.to_vec();
+            for &(i, s) in sims.iter().take(k) {
+                let w = alpha as f32 * s; // weight feedback by the doc's own dense score
+                for (a, &b) in q1.iter_mut().zip(&card_norm[i]) {
+                    *a += w * b;
+                }
+            }
+            let q1 = normalize(q1);
+            let mut s: Vec<(usize, f32)> = card_norm
+                .iter()
+                .enumerate()
+                .map(|(i, v)| (i, cosine(&q1, v)))
+                .collect();
+            s.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+            rank_in(&s, accept)
+        };
+
         let (mut dense_m, mut concept_m, mut mhmax_m, mut mhaccum_m) = (
             Metrics::default(),
             Metrics::default(),
@@ -578,6 +606,8 @@ fn retrieval_levers_report() {
             (Metrics::default(), Metrics::default(), Metrics::default());
         // Per-probe rows for the data-derived confidence-gate pass (see GatedRow).
         let mut gated: Vec<GatedRow> = Vec::new();
+        let (mut prf1_m, mut prf2_m, mut prf3_m) =
+            (Metrics::default(), Metrics::default(), Metrics::default());
 
         for &(q, accept, oracle) in probes {
             let qv = normalize(emb.embed(q));
@@ -617,6 +647,10 @@ fn retrieval_levers_report() {
                 union(&[&nbr_mhmax, &nbr_oewn]),
                 accept,
             ));
+
+            prf1_m.add(prf(&qv, &sims, accept, 0.5, 5));
+            prf2_m.add(prf(&qv, &sims, accept, 1.0, 5));
+            prf3_m.add(prf(&qv, &sims, accept, 1.0, 10));
         }
 
         // Confidence-gated rerank — gate DERIVED FROM THE DATA, not a constant. Confidence =
@@ -656,6 +690,9 @@ fn retrieval_levers_report() {
             hard_m.line("GATE-HARD", np)
         );
         println!("{}", soft_m.line("GATE-SOFT", np));
+        println!("{}", prf1_m.line("PRF .5/5", np));
+        println!("{}", prf2_m.line("PRF 1/5", np));
+        println!("{}", prf3_m.line("PRF 1/10", np));
 
         assert!(!probes.is_empty(), "no probes");
     }
