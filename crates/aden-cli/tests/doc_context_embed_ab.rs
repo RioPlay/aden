@@ -217,9 +217,9 @@ fn doc_context_embed_report() {
             .par_iter()
             .map(|(_, t)| normalize(emb.embed(t)))
             .collect();
-        let ctx_base = embed_bank(&build(1, 12, 140)); // pass-1 recipe (~0.305)
-        let ctx_rich = embed_bank(&build(1, 24, 320)); // more neighbours + fuller gist
-        let ctx_d2 = embed_bank(&build(2, 12, 120)); // depth-2 reach
+        let ctx_d2 = embed_bank(&build(2, 12, 120)); // pass-2 best (0.312)
+        let ctx_d3 = embed_bank(&build(3, 12, 100)); // deeper reach
+        let ctx_d2w = embed_bank(&build(2, 20, 160)); // depth-2 + wider/fuller
 
         let probes = common::PROBES;
         let np = probes.len();
@@ -256,7 +256,7 @@ fn doc_context_embed_report() {
                 .map(|p| p + 1)
         };
 
-        let (mut dense_m, mut base_m, mut rich_m, mut d2_m, mut oracle_m) = (
+        let (mut dense_m, mut d2_m, mut d3_m, mut d2w_m, mut oracle_m) = (
             Metrics::default(),
             Metrics::default(),
             Metrics::default(),
@@ -266,9 +266,9 @@ fn doc_context_embed_report() {
         for &(q, accept, oracle) in probes {
             let qv = normalize(emb.embed(q));
             dense_m.add(rank(&plain, &qv, accept));
-            base_m.add(rank(&ctx_base, &qv, accept));
-            rich_m.add(rank(&ctx_rich, &qv, accept));
             d2_m.add(rank(&ctx_d2, &qv, accept));
+            d3_m.add(rank(&ctx_d3, &qv, accept));
+            d2w_m.add(rank(&ctx_d2w, &qv, accept));
             let ov = normalize(emb.embed(&format!("{q} {oracle}")));
             oracle_m.add(rank(&plain, &ov, accept));
         }
@@ -277,9 +277,9 @@ fn doc_context_embed_report() {
             "\n=== Doc-side graph-context embedding ({np} probes, {n} cards, avg {avg_nbrs:.1} nbrs/card) ==="
         );
         println!("{}", dense_m.line("DENSE", np));
-        println!("{}", base_m.line("CTX-BASE", np));
-        println!("{}", rich_m.line("CTX-RICH", np));
         println!("{}", d2_m.line("CTX-D2", np));
+        println!("{}", d3_m.line("CTX-D3", np));
+        println!("{}", d2w_m.line("CTX-D2-WIDE", np));
         println!("{}", oracle_m.line("ORACLE", np));
 
         assert!(!cards.is_empty(), "no cards");
