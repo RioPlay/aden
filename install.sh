@@ -181,11 +181,14 @@ fi
 # 2 ─ Build ───────────────────────────────────────────────────────────────────
 step "Build release binaries"
 cd "$PROJECT_ROOT"
-# Aden's own checkout: activate the repo's pre-push CI gate so local pushes run
-# the same checks as CI. This configures THIS repo only — nothing global.
+# Aden's own checkout: activate the repo's git hooks so local work runs the same
+# checks as CI. core.hooksPath=git-hooks enables BOTH hooks in that directory: the
+# pre-push CI gate (build, test, aden ci-check) and the pre-commit impact gate
+# (aden impact-diff --staged: blast radius + tests to run, informational, never
+# blocks). Configures THIS repo only, nothing global.
 if git -C "$PROJECT_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
     git -C "$PROJECT_ROOT" config core.hooksPath git-hooks
-    ok "git hooks activated for this checkout (pre-push CI gate; repo-local setting)"
+    ok "git hooks activated for this checkout (pre-push CI gate + pre-commit impact gate; repo-local)"
 fi
 if [ "$DENSE" = "1" ]; then
     note "Building WITH dense/hybrid search: adds the tract + bge embedding stack."
