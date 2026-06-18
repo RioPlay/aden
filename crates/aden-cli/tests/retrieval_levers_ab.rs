@@ -122,6 +122,14 @@ fn union(parts: &[&[(String, f64)]]) -> Vec<(String, f64)> {
     m.into_iter().map(|(s, w)| (s.to_string(), w)).collect()
 }
 
+/// (dense top1-top2 margin, dense sims, OEWN∪multi-hop neighbours, gold) per probe.
+type GatedRow = (
+    f32,
+    Vec<(usize, f32)>,
+    Vec<(String, f64)>,
+    &'static [&'static str],
+);
+
 #[derive(Default, Clone)]
 struct Metrics {
     r1: usize,
@@ -568,6 +576,8 @@ fn retrieval_levers_report() {
         );
         let (mut oewn_m, mut compound_m, mut oracle_m) =
             (Metrics::default(), Metrics::default(), Metrics::default());
+        // Per-probe rows for the data-derived confidence-gate pass (see GatedRow).
+        let mut gated: Vec<GatedRow> = Vec::new();
 
         for &(q, accept, oracle) in probes {
             let qv = normalize(emb.embed(q));
@@ -599,6 +609,35 @@ fn retrieval_levers_report() {
             mhaccum_m.add(rerank(&sims, &nbr_mhaccum, accept));
             oewn_m.add(rerank(&sims, &union(&[&nbr_concept, &nbr_oewn]), accept));
             compound_m.add(rerank(&sims, &union(&[&nbr_mhmax, &nbr_oewn]), accept));
+
+            let margin = sims[0].1 - sims.get(1).map_or(0.0, |x| x.1);
+            gated.push((
+                margin,
+                sims.clone(),
+                union(&[&nbr_mhmax, &nbr_oewn]),
+                accept,
+            ));
+        }
+
+        // Confidence-gated rerank — gate DERIVED FROM THE DATA, not a constant. Confidence =
+        // dense top-1/top-2 margin; the cutoff is the MEDIAN margin across the query set, so
+        // "uncertain" is defined by the distribution itself, not a hand-set threshold.
+        let mut margins: Vec<f32> = gated.iter().map(|g| g.0).collect();
+        margins.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let median = margins.get(margins.len() / 2).copied().unwrap_or(0.0);
+        let (mut hard_m, mut soft_m) = (Metrics::default(), Metrics::default());
+        let mut gated_n = 0usize;
+        for (margin, sims, nbrs, accept) in &gated {
+            if *margin < median {
+                gated_n += 1;
+                hard_m.add(rerank(sims, nbrs, accept)); // rerank only the uncertain queries
+            } else {
+                hard_m.add(rank_in(sims, accept)); // trust dense when it is confident
+            }
+            let scale = (1.0 - (*margin as f64) / (median as f64 + 1e-9)).max(0.0);
+            let faded: Vec<(String, f64)> =
+                nbrs.iter().map(|(s, w)| (s.clone(), w * scale)).collect();
+            soft_m.add(rerank(sims, &faded, accept)); // boost faded continuously by confidence
         }
 
         println!(
@@ -612,6 +651,11 @@ fn retrieval_levers_report() {
         println!("{}", oewn_m.line("OEWN", np));
         println!("{}", compound_m.line("OEWN+MH", np));
         println!("{}", oracle_m.line("ORACLE", np));
+        println!(
+            "{}   [gated {gated_n}/{np}, median margin {median:.3}]",
+            hard_m.line("GATE-HARD", np)
+        );
+        println!("{}", soft_m.line("GATE-SOFT", np));
 
         assert!(!probes.is_empty(), "no probes");
     }
