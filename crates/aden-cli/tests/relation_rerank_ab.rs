@@ -20,7 +20,9 @@
 
 #![cfg_attr(not(feature = "dense"), allow(dead_code))]
 
+use aden_core::EdgeType;
 use aden_index::{Index, SearchResult};
+use aden_store::{GraphStorage, Storage};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -50,7 +52,6 @@ fn index_text(doc: &aden_core::Document) -> String {
 
 /// Build the index, the per-card token sets keyed by anchor, and term→{anchors} postings.
 fn load(repo: &Path) -> Option<(Index, TermMap, TermMap)> {
-    use aden_store::{GraphStorage, Storage};
     let root = aden_paths::resolve_root(repo);
     let (store_path, _) = aden_paths::resolve_read_store(&root);
     let storage = Storage::open_existing(store_path.to_str()?).ok()?;
@@ -139,6 +140,72 @@ fn rel(
             card.iter()
                 .filter(|ct| ok(ct))
                 .map(|ct| ppmi(qt, ct, postings, n))
+                .fold(0.0_f64, f64::max)
+        })
+        .sum()
+}
+
+fn lexicon_path() -> PathBuf {
+    std::env::var("ADEN_LEXICON_STORE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".cache/aden/lexicon")
+        })
+}
+
+/// For each query term, its SynonymOf lemmas from the OEWN lexicon overlay (stemmed key →
+/// best-effort lemma match). Empty when the lexicon store is absent.
+fn build_syn(lex: Option<&Storage>, qts: &[String]) -> HashMap<String, HashSet<String>> {
+    let mut out: HashMap<String, HashSet<String>> = HashMap::new();
+    let Some(l) = lex else {
+        return out;
+    };
+    for qt in qts {
+        if let Ok(edges) = l.get_outgoing_edges(&format!("aden://term/oewn/{qt}")) {
+            let s: HashSet<String> = edges
+                .into_iter()
+                .filter(|(_, et)| matches!(et, EdgeType::SynonymOf))
+                .map(|(tgt, _)| tgt.rsplit('/').next().unwrap_or(&tgt).to_string())
+                .collect();
+            if !s.is_empty() {
+                out.insert(qt.clone(), s);
+            }
+        }
+    }
+    out
+}
+
+/// Like [`rel`], but adds a fixed `bonus` whenever an OEWN SynonymOf edge also connects the
+/// pair — a second signal alongside corpus PPMI (union: catches synonym bridges that
+/// co-occurrence misses, e.g. `store→put`). Layer 2 of the multi-signal plan.
+fn rel_multi(
+    qts: &[String],
+    card: &HashSet<String>,
+    postings: &TermMap,
+    n: usize,
+    max_df: usize,
+    syn: &HashMap<String, HashSet<String>>,
+    bonus: f64,
+) -> f64 {
+    let ok = |t: &str| {
+        let d = postings.get(t).map_or(0, |s| s.len());
+        (MIN_DF..=max_df).contains(&d)
+    };
+    qts.iter()
+        .filter(|qt| ok(qt))
+        .map(|qt| {
+            let qsyn = syn.get(qt);
+            card.iter()
+                .filter(|ct| ok(ct))
+                .map(|ct| {
+                    let p = ppmi(qt, ct, postings, n);
+                    let o = if qsyn.is_some_and(|s| s.contains(ct)) {
+                        bonus
+                    } else {
+                        0.0
+                    };
+                    p + o
+                })
                 .fold(0.0_f64, f64::max)
         })
         .sum()
@@ -291,10 +358,21 @@ fn relation_rerank_report() {
         let n = probes.len();
         println!("\n=== Relationship reranker — Layer 1 ({n_cards} cards, {n} probes) ===");
 
+        let lex = Storage::open_existing(lexicon_path().to_str().unwrap_or_default()).ok();
+        println!(
+            "  lexicon (OEWN agreement signal): {}",
+            if lex.is_some() {
+                "ON"
+            } else {
+                "OFF — run build_lexicon_store first"
+            }
+        );
+
         let mut dense_m = Metrics::default();
-        let mut r05 = Metrics::default();
-        let mut r10w = Metrics::default();
-        let mut r20w = Metrics::default();
+        let mut ppmi1 = Metrics::default();
+        let mut ppmi2 = Metrics::default();
+        let mut multi1 = Metrics::default();
+        let mut multi2 = Metrics::default();
         let mut orc = Metrics::default();
 
         let empty = HashSet::new();
@@ -302,18 +380,28 @@ fn relation_rerank_report() {
             let dense = index.dense_query(p.query, &e);
             let head: Vec<&SearchResult> = dense.iter().take(TOPK).collect();
             let qts: Vec<String> = aden_index::tokenize(p.query);
-            let rels: Vec<f64> = head
+            let syn = build_syn(lex.as_ref(), &qts);
+
+            let rels_p: Vec<f64> = head
                 .iter()
                 .map(|r| {
-                    let card = card_tokens.get(&r.anchor).unwrap_or(&empty);
-                    rel(&qts, card, &postings, n_cards, max_df)
+                    let c = card_tokens.get(&r.anchor).unwrap_or(&empty);
+                    rel(&qts, c, &postings, n_cards, max_df)
+                })
+                .collect();
+            let rels_m: Vec<f64> = head
+                .iter()
+                .map(|r| {
+                    let c = card_tokens.get(&r.anchor).unwrap_or(&empty);
+                    rel_multi(&qts, c, &postings, n_cards, max_df, &syn, 3.0)
                 })
                 .collect();
 
-            dense_m.add(rank_anchors(&rerank(&dense, &rels, 0.0), p.accept));
-            r05.add(rank_anchors(&rerank(&dense, &rels, 0.5), p.accept));
-            r10w.add(rank_anchors(&rerank(&dense, &rels, 1.0), p.accept));
-            r20w.add(rank_anchors(&rerank(&dense, &rels, 2.0), p.accept));
+            dense_m.add(rank_anchors(&rerank(&dense, &rels_p, 0.0), p.accept));
+            ppmi1.add(rank_anchors(&rerank(&dense, &rels_p, 1.0), p.accept));
+            ppmi2.add(rank_anchors(&rerank(&dense, &rels_p, 2.0), p.accept));
+            multi1.add(rank_anchors(&rerank(&dense, &rels_m, 1.0), p.accept));
+            multi2.add(rank_anchors(&rerank(&dense, &rels_m, 2.0), p.accept));
             orc.add(rank_anchors(
                 &index
                     .query(&format!("{} {}", p.query, p.expand))
@@ -325,10 +413,11 @@ fn relation_rerank_report() {
         }
 
         println!("\n  rank-of-gold:");
-        println!("{}", dense_m.line("DENSE (rel=0)", n));
-        println!("{}", r05.line("RERANK w=0.5", n));
-        println!("{}", r10w.line("RERANK w=1.0", n));
-        println!("{}", r20w.line("RERANK w=2.0", n));
+        println!("{}", dense_m.line("DENSE", n));
+        println!("{}", ppmi1.line("PPMI w=1.0", n));
+        println!("{}", ppmi2.line("PPMI w=2.0", n));
+        println!("{}", multi1.line("PPMI+OEWN w=1.0", n));
+        println!("{}", multi2.line("PPMI+OEWN w=2.0", n));
         println!("{}", orc.line("ORACLE (ref)", n));
 
         assert!(n_cards > 0, "no cards");
