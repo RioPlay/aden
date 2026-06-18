@@ -208,6 +208,10 @@ fn assembly_ab_report() {
     let mut struct_hits = vec![0usize; budgets.len()];
     let mut aware_hits = vec![0usize; budgets.len()];
     let mut scored = 0usize;
+    // Gather-then-select proxy: how often gold lands in the relevance-rank top-K of
+    // the generously-gathered set (would survive a relevance-driven compression).
+    let topk = [5usize, 10, 25];
+    let mut rank_top = [0usize; 3];
 
     for c in cases() {
         // The hub is a HIGH-FAN-OUT node, but BM25 on prose often resolves the
@@ -267,6 +271,26 @@ fn assembly_ab_report() {
         }
         scored += 1;
 
+        // Gather-then-select proxy (the "lift the budget, then compress" idea): at
+        // the reach budget gold IS gathered, so rank the gathered nodes by relevance
+        // — gold's rank is where a relevance-driven compression would place it. A low
+        // rank means gather-then-select keeps gold even at a tiny output budget,
+        // without any ordering trick during the walk.
+        let (_, gathered) =
+            assemble_with_anchors(&graph, &mk(REACH_BUDGET, Some(rel.clone()))).unwrap_or_default();
+        let mut ranked: Vec<&String> = gathered.iter().collect();
+        ranked.sort_by(|a, b| {
+            let ra = rel.get(*a).copied().unwrap_or(0.0);
+            let rb = rel.get(*b).copied().unwrap_or(0.0);
+            rb.partial_cmp(&ra).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let gold_rank = ranked.iter().position(|a| a.contains(c.gold));
+        for (ti, &k) in topk.iter().enumerate() {
+            if gold_rank.is_some_and(|r| r < k) {
+                rank_top[ti] += 1;
+            }
+        }
+
         let mut row_s = String::new();
         let mut row_a = String::new();
         for (bi, &b) in budgets.iter().enumerate() {
@@ -282,8 +306,12 @@ fn assembly_ab_report() {
             row_a.push(if a { 'Y' } else { '.' });
         }
         let tail = seed.rsplit('#').next().unwrap_or(&seed);
+        let rank_str = match gold_rank {
+            Some(r) => format!("rel-rank #{}/{}", r + 1, gathered.len()),
+            None => "rel-rank NA".to_string(),
+        };
         println!(
-            "  seed={tail:<28} gold={:<20} struct[{row_s}] aware[{row_a}]",
+            "  seed={tail:<28} gold={:<20} struct[{row_s}] aware[{row_a}] {rank_str}",
             c.gold
         );
     }
@@ -291,4 +319,7 @@ fn assembly_ab_report() {
     println!("\n  reachable cases scored: {scored}");
     println!("  structural gold-inclusion by budget {budgets:?}: {struct_hits:?}");
     println!("  query-aware gold-inclusion by budget {budgets:?}: {aware_hits:?}");
+    println!(
+        "  gather-then-select: gold in relevance-rank top-{topk:?} of the gathered set: {rank_top:?} (of {scored})"
+    );
 }
