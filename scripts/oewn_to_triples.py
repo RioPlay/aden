@@ -72,27 +72,28 @@ def extract(synsets, seed=None):
         if seed_lc is not None and not (set(members) & seed_lc):
             continue
         pos = POS_NAME.get(syn.get("partOfSpeech", ""), "unknown")
-        head = members[0]
+        hypers = [first_member(synsets, h) for h in syn.get("hypernym", [])]
+        parts = [
+            first_member(synsets, p) for key in MERONYM_KEYS for p in syn.get(key, [])
+        ]
 
-        # SynonymOf — every co-member is a synonym of the head (any POS).
-        for other in members[1:]:
-            if other != head:
-                yield (head, "SynonymOf", other, pos)
-
-        # IsA — hypernym pointers (noun hypernymy / verb troponymy).
-        if pos in ("noun", "verb"):
-            for h in syn.get("hypernym", []):
-                obj = first_member(synsets, h)
-                if obj and obj != head:
-                    yield (head, "IsA", obj, pos)
-
-        # PartOf — meronyms ARE parts of this synset, so meronym PART-OF head (noun-gated).
-        if pos == "noun":
-            for key in MERONYM_KEYS:
-                for part in syn.get(key, []):
-                    obj = first_member(synsets, part)
-                    if obj and obj != head:
-                        yield (obj, "PartOf", head, pos)
+        # Emit per MEMBER (not just the synset head) so every relation is traversable
+        # from ANY lemma. SynonymOf is symmetric (every co-member, both directions);
+        # IsA/PartOf are synset-level, so they hold for each member alike.
+        for m in members:
+            for other in members:
+                if other != m:
+                    yield (m, "SynonymOf", other, pos)
+            # IsA — hypernymy (nouns) / troponymy (verbs).
+            if pos in ("noun", "verb"):
+                for obj in hypers:
+                    if obj and obj != m:
+                        yield (m, "IsA", obj, pos)
+            # PartOf — each meronym is part-of each member (noun-gated).
+            if pos == "noun":
+                for obj in parts:
+                    if obj and obj != m:
+                        yield (obj, "PartOf", m, pos)
 
 
 def to_wordset(triples, synsets, seed=None):
