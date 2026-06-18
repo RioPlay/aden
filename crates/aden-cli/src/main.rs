@@ -246,6 +246,11 @@ enum Commands {
         inspect: bool,
         #[arg(
             long,
+            help = "Query-aware selection: gather the neighborhood, then select to budget by relevance to --from (opt-in; wins at tight budgets, signal from BM25)"
+        )]
+        select: bool,
+        #[arg(
+            long,
             value_name = "TAG",
             help = "Include only content with this tag (can repeat)"
         )]
@@ -1115,6 +1120,7 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
             auto,
             strict,
             inspect,
+            select,
             include_tag,
             exclude_tag,
             set_attr,
@@ -1136,6 +1142,7 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
                 auto: effective_auto,
                 strict,
                 inspect,
+                select,
                 include_tags: include_tag,
                 exclude_tags: exclude_tag,
                 attributes: set_attr,
