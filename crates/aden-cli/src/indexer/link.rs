@@ -15,6 +15,7 @@ pub(crate) struct EdgeRecords<'a> {
     pub(crate) refs: &'a [(String, Vec<String>)],
     pub(crate) implements: &'a [(String, Vec<String>)],
     pub(crate) mutates: &'a [(String, Vec<String>)],
+    pub(crate) member_of: &'a [(String, Vec<String>)],
     pub(crate) mentions: &'a [(String, Vec<String>)],
     pub(crate) supersedes: &'a [(String, Vec<String>)],
     pub(crate) demonstrates: &'a [(String, Vec<String>)],
@@ -578,6 +579,8 @@ fn classify_drop(callee: &str, name_index: &HashMap<&str, Vec<&str>>) -> DropRea
 ///   traversal from a changed trait reaches its implementors.
 /// - Mutates: `edge::mutates[Type]` records (`&mut self` receivers) become
 ///   method --Mutates--> parent-type edges.
+/// - Member-of: `edge::member_of[Type]` records (impl methods) become
+///   type --Contains--> method edges (reversed from the emit direction).
 /// - Mentions (Wave 2): backtick prose mentions (`doc_mentions` records)
 ///   become doc --Mentions--> symbol edges, only when the name resolves to
 ///   exactly ONE code symbol.
@@ -595,6 +598,7 @@ pub(crate) fn link_store_edges<S: GraphStorage>(
         refs: ref_records,
         implements: impl_records,
         mutates: mutates_records,
+        member_of: member_of_records,
         mentions: mention_records,
         supersedes: supersede_records,
         demonstrates: demo_records,
@@ -801,6 +805,20 @@ pub(crate) fn link_store_edges<S: GraphStorage>(
                 && target != anchor.as_str()
             {
                 edges.push((anchor.clone(), target.to_string(), EdgeType::Mutates));
+            }
+        }
+    }
+
+    // Member-of edges: a Rust impl method is a member of its type, stored REVERSED as
+    // `type —Contains→ method` so a type reaches the methods defined in its separate
+    // impl blocks (a Python class nests its methods; a Rust type does not). Exact
+    // resolution only, mirroring mutates.
+    for (anchor, targets) in member_of_records {
+        for t in targets {
+            if let Some(target) = resolve_exact(t, anchor, &name_index)
+                && target != anchor.as_str()
+            {
+                edges.push((target.to_string(), anchor.clone(), EdgeType::Contains));
             }
         }
     }
@@ -1373,6 +1391,7 @@ mod link_tests {
                 refs: &[],
                 implements: &[],
                 mutates: &[],
+                member_of: &[],
                 mentions: &[],
                 supersedes: &[],
                 demonstrates: &[],
@@ -1437,6 +1456,7 @@ mod link_tests {
                 refs: &[],
                 implements: &impl_records,
                 mutates: &mutates_records,
+                member_of: &[],
                 mentions: &[],
                 supersedes: &[],
                 demonstrates: &[],
@@ -1542,6 +1562,7 @@ mod link_tests {
                 refs: &ref_records,
                 implements: &[],
                 mutates: &[],
+                member_of: &[],
                 mentions: &[],
                 supersedes: &[],
                 demonstrates: &[],
@@ -1610,6 +1631,7 @@ mod link_tests {
                 refs: &ref_records,
                 implements: &[],
                 mutates: &[],
+                member_of: &[],
                 mentions: &[],
                 supersedes: &[],
                 demonstrates: &[],
@@ -1673,6 +1695,7 @@ mod link_tests {
                 refs: &ref_records,
                 implements: &[],
                 mutates: &[],
+                member_of: &[],
                 mentions: &[],
                 supersedes: &[],
                 demonstrates: &[],
@@ -1736,6 +1759,7 @@ mod link_tests {
                 refs: &ref_records,
                 implements: &[],
                 mutates: &[],
+                member_of: &[],
                 mentions: &[],
                 supersedes: &[],
                 demonstrates: &[],
@@ -1788,6 +1812,7 @@ mod link_tests {
                 refs: &[],
                 implements: &[],
                 mutates: &[],
+                member_of: &[],
                 mentions: &[],
                 supersedes: &[],
                 demonstrates: &[],
