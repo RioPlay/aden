@@ -67,6 +67,7 @@ pub fn cmd_complete(
             llm_mode: true, // complete targets an LLM — emit clean prose
             hydrate_root: None,
             relevance: None,
+            relevance_select: false,
         };
 
         let context = match assemble(&graph, &asm_opts) {

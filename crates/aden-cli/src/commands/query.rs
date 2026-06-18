@@ -859,6 +859,7 @@ pub fn cmd_asm(opts: AsmOptions) -> Result<(), Box<dyn std::error::Error>> {
         llm_mode,
         hydrate_root: None,
         relevance: None,
+        relevance_select: false,
     };
 
     let output = match opts.format.as_str() {
@@ -1754,6 +1755,7 @@ pub fn cmd_ask(
             llm_mode: true, // aden ask always targets an LLM — emit clean prose
             hydrate_root: Some(hydrate_root.clone()),
             relevance: relevance.clone(),
+            relevance_select: false,
         };
         Ok(assemble_with_anchors(&graph, &opts)?)
     };
@@ -2849,6 +2851,7 @@ pub fn cmd_understand(
         llm_mode: true,
         hydrate_root: None,
         relevance: None,
+        relevance_select: false,
     };
     let context = assemble(&neigh, &asm_opts)?;
 

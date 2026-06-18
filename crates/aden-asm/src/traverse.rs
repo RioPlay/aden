@@ -143,6 +143,16 @@ pub struct AssemblyOptions {
     /// `asm <anchor>` has no query, so it never sets this; only `ask` would,
     /// and only once an assembly-quality eval validates it.
     pub relevance: Option<HashMap<String, f32>>,
+    /// Gather-then-select assembly. Instead of stopping the priority-ordered walk
+    /// when the budget runs out, gather the reachable neighborhood (bounded) and
+    /// then SELECT down to the budget by relevance. This reaches the answer even
+    /// when it sits behind low-priority `Contains` members (a class's methods rank
+    /// behind its Calls/Uses neighbors), then compresses. The promotion strength is
+    /// DERIVED from the relevance distribution's own confidence (a clear winner
+    /// crosses structural-priority buckets; a flat distribution defers to
+    /// structure), so no weight is hardcoded. Requires `relevance` to be set;
+    /// `false` (the default) keeps the original in-budget priority walk byte-for-byte.
+    pub relevance_select: bool,
 }
 
 impl Default for AssemblyOptions {
@@ -159,8 +169,138 @@ impl Default for AssemblyOptions {
             llm_mode: true, // LLM-dense by default everywhere
             hydrate_root: None,
             relevance: None,
+            relevance_select: false,
         }
     }
+}
+
+/// Gather-then-select assembly (see `AssemblyOptions::relevance_select`).
+///
+/// Phase 1 GATHERS the reachable neighborhood (BFS to `max_depth`) up to a
+/// generous multiple of the output budget, recording each node's text, token
+/// cost, BFS (structural) order, and relevance. Phase 2 SELECTS down to the
+/// output budget: the seed always leads, the rest are ordered by a value that
+/// blends normalized relevance with structural proximity, weighted by the
+/// relevance distribution's own CONFIDENCE. A peaked distribution (a clear
+/// winner) lets relevance lead and cross structural-priority buckets; a flat one
+/// defers to structural order. The blend weight is derived from the signal, not
+/// hardcoded. Returns (included nodes, rendered texts, total tokens) for the
+/// caller's shared hydration + join.
+fn gather_then_select(
+    graph: &AdenGraph<DocumentNode, AdenEdge>,
+    opts: &AssemblyOptions,
+    start: NodeIndex,
+    sep_cost: usize,
+) -> (Vec<NodeIndex>, Vec<String>, usize) {
+    let Some(rel) = opts.relevance.as_ref() else {
+        return (Vec::new(), Vec::new(), 0);
+    };
+
+    // Phase 1: gather. Bounded so a high-degree hub cannot blow up: stop at a
+    // generous multiple of the output budget (we only need to reach well past it).
+    const GATHER_FACTOR: usize = 16;
+    const MAX_GATHER_NODES: usize = 10_000;
+    let gather_cap = opts.token_budget.saturating_mul(GATHER_FACTOR).max(8192);
+    let mut visited = std::collections::HashSet::new();
+    let mut queue = VecDeque::new();
+    let mut cands: Vec<(NodeIndex, String, usize, f32)> = Vec::new();
+    let mut gathered_tokens = 0usize;
+    queue.push_back((start, 0usize));
+    while let Some((node, depth)) = queue.pop_front() {
+        if cands.len() >= MAX_GATHER_NODES || gathered_tokens >= gather_cap {
+            break;
+        }
+        if !visited.insert(node) || depth > opts.max_depth {
+            continue;
+        }
+        let doc = &graph.graph[node];
+        let raw = document_to_text(
+            doc,
+            &opts.block_filter,
+            &opts.include_tags,
+            &opts.exclude_tags,
+            &opts.attributes,
+        );
+        let text = if opts.llm_mode {
+            strip_asciidoc_markup(&raw)
+        } else {
+            raw
+        };
+        let tokens = estimate_tokens(&text);
+        let score = rel.get(doc.doc.anchor.as_str()).copied().unwrap_or(0.0);
+        gathered_tokens += tokens;
+        cands.push((node, text, tokens, score));
+        for neighbor in ordered_neighbors(graph, node, &opts.edge_types, opts.relevance.as_ref()) {
+            queue.push_back((neighbor, depth + 1));
+        }
+    }
+    if cands.is_empty() {
+        return (Vec::new(), Vec::new(), 0);
+    }
+
+    // Phase 2: derived-margin selection. Confidence = how peaked the relevance
+    // distribution is: (max - mean) / (max - min). Flat -> ~0 (defer to structure);
+    // one clear winner -> ~1 (relevance leads, can cross priority buckets).
+    let scores: Vec<f32> = cands.iter().map(|c| c.3).collect();
+    let rmin = scores.iter().copied().fold(f32::INFINITY, f32::min);
+    let rmax = scores.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    let rmean = scores.iter().sum::<f32>() / scores.len() as f32;
+    let span = rmax - rmin;
+    let conf = if span > 0.0 {
+        ((rmax - rmean) / span).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let n = cands.len() as f32;
+    let value = |idx: usize, score: f32| -> f32 {
+        let rel_norm = if span > 0.0 {
+            (score - rmin) / span
+        } else {
+            0.0
+        };
+        let struct_val = 1.0 - (idx as f32 / n); // earlier BFS index = closer = higher
+        conf * rel_norm + (1.0 - conf) * struct_val
+    };
+
+    // Seed (index 0) always leads; the rest by value descending (anchor breaks ties
+    // for determinism).
+    let mut order: Vec<usize> = (1..cands.len()).collect();
+    order.sort_by(|&a, &b| {
+        value(b, cands[b].3)
+            .partial_cmp(&value(a, cands[a].3))
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| {
+                graph.graph[cands[a].0]
+                    .doc
+                    .anchor
+                    .cmp(&graph.graph[cands[b].0].doc.anchor)
+            })
+    });
+
+    // Greedily pack to the OUTPUT budget. Skip a node that does not fit and try the
+    // next (smaller) one, so a single large doc cannot starve the rest; the seed is
+    // truncated if needed so the anchor always appears. Separator accounting mirrors
+    // the priority walk.
+    let mut result = Vec::new();
+    let mut included = Vec::new();
+    let mut total = 0usize;
+    for (pos, &idx) in std::iter::once(&0usize).chain(order.iter()).enumerate() {
+        let (node, text, tokens, _) = &cands[idx];
+        let sep = if result.is_empty() { 0 } else { sep_cost };
+        let remaining = opts.token_budget.saturating_sub(total);
+        if tokens + sep <= remaining {
+            total += tokens + sep;
+            included.push(*node);
+            result.push(text.clone());
+        } else if pos == 0 && opts.llm_mode && remaining.saturating_sub(sep) > 32 {
+            let truncated = truncate_to_tokens(text, remaining.saturating_sub(sep));
+            total += estimate_tokens(&truncated) + sep;
+            included.push(*node);
+            result.push(truncated);
+        }
+        // otherwise skip this node and try the next (smaller) candidate
+    }
+    (included, result, total)
 }
 
 /// Assemble a context prompt from a graph neighborhood.
@@ -204,7 +344,19 @@ pub fn assemble_with_anchors(
     };
     let sep_cost = estimate_tokens(separator);
 
-    queue.push_back((start_idx, 0usize));
+    // Gather-then-select (gated): gather the reachable neighborhood, then compress
+    // to budget by relevance, so the answer surfaces even behind low-priority
+    // members. This leaves `queue` empty, so the priority walk below is skipped
+    // unchanged; the default path pushes the seed and runs the walk exactly as before.
+    if opts.relevance_select && opts.relevance.is_some() {
+        let (sel_included, sel_result, sel_total) =
+            gather_then_select(graph, opts, start_idx, sep_cost);
+        included = sel_included;
+        result = sel_result;
+        total_tokens = sel_total;
+    } else {
+        queue.push_back((start_idx, 0usize));
+    }
 
     const MAX_VISITED_NODES: usize = 10_000;
     while let Some((node, depth)) = queue.pop_front() {
