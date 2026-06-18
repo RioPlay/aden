@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Copyright (c) 2026 RioPlay <rioplay@rioplay.dev>
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Pre-commit impact gate — before each commit, show what the staged change BREAKS
+# (its transitive dependents) and which test files cover it, straight from aden's
+# typed-edge graph. This makes "what breaks if I change X, and which tests to run"
+# the default lead step of every commit instead of an optional query.
+#
+# Informational only: it NEVER blocks a commit (the pre-push gate is where blocking
+# lives). Bypass entirely with `git commit --no-verify`.
+#
+# Activate (once per clone):  git config core.hooksPath git-hooks
+# (install.sh wires this automatically.)
+
+# Deliberately no `set -e`: a gate that aborts a commit on its own hiccup would be
+# worse than no gate. Every path below falls through to `exit 0`.
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+cd "$ROOT" || exit 0
+
+# Nothing staged -> nothing to analyze.
+git diff --cached --quiet && exit 0
+
+echo "[pre-commit] impact gate — what your staged change breaks, and the tests to run:"
+# Prefer the installed binary (fast); fall back to a cargo build for dev clones.
+if command -v aden >/dev/null 2>&1; then
+    aden impact-diff --staged || true
+else
+    cargo run -q -p aden-cli -- impact-diff --staged 2>/dev/null || true
+fi
+echo "[pre-commit] informational only; commit proceeds (bypass: git commit --no-verify)"
+exit 0
