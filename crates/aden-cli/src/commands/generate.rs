@@ -1463,6 +1463,26 @@ fn cmd_gen_inner(
         } else {
             discover_source_files(&root)?
         };
+
+        // A directory argument is a *project locator*, not a scope: it resolves
+        // to the project root (git top-level / manifest dir) and the WHOLE
+        // project is indexed — passing a subdirectory does NOT limit gen to it.
+        // Say so explicitly, otherwise `gen path/to/subdir` silently indexing
+        // the entire repo is baffling (e.g. `gen linux/mm` → all 87k kernel
+        // files). Compare canonical paths so `.`/trailing-slash spellings match.
+        if !path.is_file() {
+            let canon_arg = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+            if canon_arg != root {
+                eprintln!(
+                    "Note: '{}' is inside the project rooted at '{}'; gen indexes the \
+                     whole project ({} files), not just that subdirectory. Pass the \
+                     project root to silence this, or pass a single file to index only it.",
+                    path.display(),
+                    root.display(),
+                    sources.len()
+                );
+            }
+        }
         if sources.is_empty() {
             eprintln!(
                 "No source files discovered in {}. Is this a supported project?",
