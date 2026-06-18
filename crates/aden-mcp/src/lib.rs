@@ -47,6 +47,12 @@ just the relevant neighborhood under a token budget, so they cost far fewer \
 tokens than reading whole files — and `query` answers 'what breaks if I change \
 this?', which plain text search cannot. This rule applies to any subagents you \
 spawn: they do NOT inherit these instructions, so tell them to use these tools too.\n\n\
+GATE: Before you EDIT an existing symbol, run `understand <symbol>` first (or \
+`impact-diff` for a whole git diff). Read its blast radius (the transitive \
+callers and dependents that break if you change it) and the tests that cover it \
+BEFORE you touch the code, not after CI. This is the pre-edit gate, and the \
+default lead step for any change to existing code: `understand` is the one-shot \
+form, `impact-diff --staged` is the same check across everything you have staged.\n\n\
 The graph is fresh by construction: the read tools (`ask`, `asm`, `query`, \
 `locate`, `grep`, `understand`) auto-reindex any source that changed since the \
 last run, so you do NOT need to call `gen` first. Only run `gen` after large \
