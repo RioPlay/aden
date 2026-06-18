@@ -108,6 +108,31 @@ fn cases() -> Vec<Case> {
     ]
 }
 
+/// Precision controls: off-topic queries on real hubs. No member is the answer, so
+/// relevance is noise — promotion should NOT disturb the structural assembly here.
+/// Low structural retention under these = over-aggressive promotion (pulling in
+/// topically-adjacent-but-wrong members when there is no clear winner).
+fn negatives() -> Vec<(&'static str, &'static str)> {
+    vec![
+        (
+            "Flask application object class",
+            "sqlite database migration and schema versioning",
+        ),
+        (
+            "Blueprint class for modular routes",
+            "rotating file log handler buffering",
+        ),
+        (
+            "request object incoming data",
+            "command line argument parsing subcommands",
+        ),
+        (
+            "session cookie interface",
+            "numeric tensor matrix multiplication kernels",
+        ),
+    ]
+}
+
 #[test]
 #[ignore = "measurement harness, not a CI gate; reads an external repo"]
 fn assembly_ab_report() {
@@ -191,6 +216,30 @@ fn assembly_ab_report() {
             .map(|(_, inc)| inc.iter().any(|a| a.contains(gold)))
             .unwrap_or(false)
     };
+    // Resolve a prose hub to the most-connected node among its top BM25 matches
+    // (the real structural hub); shared by the positive and precision-control loops.
+    let resolve_hub = |hub: &str| -> Option<String> {
+        index
+            .query(hub)
+            .iter()
+            .take(8)
+            .filter_map(|r| {
+                graph.get_index(&r.anchor).map(|ix| {
+                    let deg = graph
+                        .graph
+                        .neighbors_directed(ix, Direction::Outgoing)
+                        .count();
+                    (r.anchor.clone(), deg)
+                })
+            })
+            .max_by_key(|(_, deg)| *deg)
+            .map(|(anchor, _)| anchor)
+    };
+    let included_anchors = |opts: &AssemblyOptions| -> Vec<String> {
+        assemble_with_anchors(&graph, opts)
+            .map(|(_, inc)| inc)
+            .unwrap_or_default()
+    };
 
     let budgets = [128usize, 256, 512, 1024];
     const REACH_BUDGET: usize = 16384; // generous: is gold reachable from the seed at all?
@@ -215,33 +264,11 @@ fn assembly_ab_report() {
     let mut rank_top = [0usize; 3];
 
     for c in cases() {
-        // The hub is a HIGH-FAN-OUT node, but BM25 on prose often resolves the
-        // hub query to a leaf method whose docstring matched (e.g. a `__call__`
-        // with no members to order). The relevance tie-break only matters among a
-        // hub's many neighbors, so among the top hub matches pick the most-
-        // connected node (highest out-degree) — the actual structural hub.
-        //
-        // Seed resolution stays on BM25 deliberately: the seed is experimental
-        // SETUP, held fixed across both arms AND across the BM25-vs-hybrid
-        // comparison, so the only thing that varies is the relevance-ordering
-        // treatment below. (Hybrid seed resolution drifts the hub onto test
-        // helpers here, which is a separate routing question, not this A/B.)
-        let Some(seed) = index
-            .query(c.hub)
-            .iter()
-            .take(8)
-            .filter_map(|r| {
-                graph.get_index(&r.anchor).map(|ix| {
-                    let deg = graph
-                        .graph
-                        .neighbors_directed(ix, Direction::Outgoing)
-                        .count();
-                    (r.anchor.clone(), deg)
-                })
-            })
-            .max_by_key(|(_, deg)| *deg)
-            .map(|(anchor, _)| anchor)
-        else {
+        // Seed resolution stays on BM25 deliberately: the seed is experimental SETUP,
+        // held fixed across all arms AND across the BM25-vs-hybrid comparison, so the
+        // only thing that varies is the relevance treatment. (Hybrid seed resolution
+        // drifts the hub onto test helpers here, a separate routing question.)
+        let Some(seed) = resolve_hub(c.hub) else {
             println!("  [skip] hub '{}' resolved nothing", c.hub);
             continue;
         };
@@ -334,6 +361,61 @@ fn assembly_ab_report() {
     println!("  structural    gold-inclusion by budget {budgets:?}: {struct_hits:?}");
     println!("  query-aware   gold-inclusion by budget {budgets:?}: {aware_hits:?}");
     println!("  gather-select gold-inclusion by budget {budgets:?}: {select_hits:?}");
+
+    // PRECISION control: on off-topic queries, gather-select should preserve the
+    // structural assembly (retention ~ 1.00). A low number means promotion is firing
+    // on noise — the cost of leaning in, which recall alone cannot see.
+    println!(
+        "\n  Precision control (off-topic queries; retention = overlap with structural, ~1.00 = safe):"
+    );
+    let mut retain_sum = vec![0.0f64; budgets.len()];
+    let mut neg_scored = 0usize;
+    for (hub, q) in negatives() {
+        let Some(seed) = resolve_hub(hub) else {
+            continue;
+        };
+        let rel: HashMap<String, f32> = do_query(q)
+            .into_iter()
+            .map(|r| (r.anchor, r.score as f32))
+            .collect();
+        let mk_neg = |b: usize, relevance: Option<HashMap<String, f32>>| AssemblyOptions {
+            start_anchor: seed.clone(),
+            max_depth: 3,
+            token_budget: b,
+            relevance,
+            ..Default::default()
+        };
+        neg_scored += 1;
+        let mut row = String::new();
+        for (bi, &b) in budgets.iter().enumerate() {
+            let s_set: std::collections::HashSet<String> =
+                included_anchors(&mk_neg(b, None)).into_iter().collect();
+            let sel = included_anchors(&AssemblyOptions {
+                relevance_select: true,
+                ..mk_neg(b, Some(rel.clone()))
+            });
+            let kept = sel.iter().filter(|a| s_set.contains(*a)).count();
+            let ret = if s_set.is_empty() {
+                1.0
+            } else {
+                kept as f64 / s_set.len() as f64
+            };
+            retain_sum[bi] += ret;
+            row.push_str(&format!("{ret:.2} "));
+        }
+        let tail = seed.rsplit(['#', '/']).next().unwrap_or(&seed);
+        println!("    seed={tail:<26} retention[{}]", row.trim_end());
+    }
+    if neg_scored > 0 {
+        let avg: Vec<String> = retain_sum
+            .iter()
+            .map(|s| format!("{:.2}", s / neg_scored as f64))
+            .collect();
+        println!(
+            "    mean structural retention by budget {budgets:?}: [{}]",
+            avg.join(", ")
+        );
+    }
     println!(
         "  gather-then-select: gold in relevance-rank top-{topk:?} of the gathered set: {rank_top:?} (of {scored})"
     );
