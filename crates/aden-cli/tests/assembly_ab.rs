@@ -67,27 +67,27 @@ fn cases(repo: &str) -> Vec<Case> {
         // (Python classes, prose sections), NOT a universal uplift. See the devlog.
         return vec![
             Case {
-                hub: "visitor source formatting module",
+                hub: "FmtVisitor source formatting visitor",
                 query: "format the statements inside a code block",
                 gold: "walk_block_stmts",
             },
             Case {
-                hub: "visitor source formatting module",
+                hub: "FmtVisitor source formatting visitor",
                 query: "format a macro invocation",
                 gold: "visit_mac",
             },
             Case {
-                hub: "visitor source formatting module",
+                hub: "FmtVisitor source formatting visitor",
                 query: "format an item declared inside a trait",
                 gold: "visit_trait_item",
             },
             Case {
-                hub: "visitor source formatting module",
+                hub: "FmtVisitor source formatting visitor",
                 query: "format a type alias definition",
                 gold: "visit_ty_alias_kind",
             },
             Case {
-                hub: "visitor source formatting module",
+                hub: "FmtVisitor source formatting visitor",
                 query: "walk and format the items of a module",
                 gold: "walk_mod_items",
             },
@@ -281,6 +281,9 @@ fn assembly_ab_report() {
             .query(hub)
             .iter()
             .take(8)
+            // A hub is a SYMBOL (class/type), not a whole-file module node, which
+            // out-ranks everything on out-degree and isn't what we seed assembly at.
+            .filter(|r| r.anchor.contains('#') && !r.anchor.starts_with("mod-"))
             .filter_map(|r| {
                 graph.get_index(&r.anchor).map(|ix| {
                     let deg = graph
