@@ -17,7 +17,7 @@
 
 use aden_asm::traverse::{AssemblyOptions, assemble_with_anchors};
 use aden_core::Block;
-use aden_graph::personalized_pagerank;
+use aden_graph::{Direction, personalized_pagerank};
 use aden_index::Index;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -26,13 +26,8 @@ fn repo() -> Option<PathBuf> {
     let p = std::env::var("ADEN_ASM_REPO")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
-            PathBuf::from(
-                dirs::home_dir()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .into_owned(),
-            )
-            .join("Projects/eval-repos/flask")
+            PathBuf::from(std::env::var("HOME").unwrap_or_default())
+                .join("Projects/eval-repos/flask")
         });
     p.is_dir().then_some(p)
 }
@@ -58,7 +53,76 @@ struct Case {
     gold: &'static str,
 }
 
-fn cases() -> Vec<Case> {
+fn cases(repo: &str) -> Vec<Case> {
+    if repo == "kin-openapi" {
+        // CROSS-LANGUAGE (Go): unlike Rust's edge-less types, a Go struct hub HAS
+        // outgoing Uses edges to its field-types (confirmed: `understand Schema` ->
+        // 7 downstream nodes), but methods attach as INCOMING backlinks (like Rust).
+        // So reachable golds are downstream Uses-targets (field-types), not methods.
+        // Tests whether gather-then-select reorders a Uses frontier toward a
+        // query-relevant deep field-type better than the structural walk.
+        return vec![
+            Case {
+                hub: "Components openapi components container",
+                query: "security scheme definitions",
+                gold: "SecuritySchemes",
+            },
+            Case {
+                hub: "Components openapi components container",
+                query: "request body definitions",
+                gold: "RequestBodies",
+            },
+            Case {
+                hub: "Operation openapi path operation",
+                query: "external documentation links",
+                gold: "ExternalDocs",
+            },
+            Case {
+                hub: "Schema openapi schema object",
+                query: "source location of a field",
+                gold: "Location",
+            },
+        ];
+    }
+    if repo == "rustfmt" {
+        // CROSS-LANGUAGE FINDING (kept as reproducible evidence, not a passing eval):
+        // these Flask-shaped class-hub cases come back UNREACHABLE on Rust, and that IS
+        // the result. In aden's Rust graph a type node has ZERO outgoing edges
+        // (confirmed: `understand FmtVisitor` -> downstream 0 nodes); impl methods attach
+        // to the module/impl and only REFERENCE the type (incoming backlinks). So a
+        // class-hub seed cannot reach its methods via outgoing Contains the way it does
+        // in Python. Rust navigation is Calls-based (priority 0, already top of the
+        // walk), so gather-then-select's low-priority-Contains RESCUE has no analogue
+        // here. Conclusion: the mechanism is validated for the Contains-heavy regime
+        // (Python classes, prose sections), NOT a universal uplift. See the devlog.
+        return vec![
+            Case {
+                hub: "FmtVisitor source formatting visitor",
+                query: "format the statements inside a code block",
+                gold: "walk_block_stmts",
+            },
+            Case {
+                hub: "FmtVisitor source formatting visitor",
+                query: "format a macro invocation",
+                gold: "visit_mac",
+            },
+            Case {
+                hub: "FmtVisitor source formatting visitor",
+                query: "format an item declared inside a trait",
+                gold: "visit_trait_item",
+            },
+            Case {
+                hub: "FmtVisitor source formatting visitor",
+                query: "format a type alias definition",
+                gold: "visit_ty_alias_kind",
+            },
+            Case {
+                hub: "FmtVisitor source formatting visitor",
+                query: "walk and format the items of a module",
+                gold: "walk_mod_items",
+            },
+        ];
+    }
     vec![
         Case {
             hub: "Flask application object class",
@@ -113,6 +177,59 @@ fn cases() -> Vec<Case> {
     ]
 }
 
+/// Precision controls: off-topic queries on real hubs. No member is the answer, so
+/// relevance is noise — promotion should NOT disturb the structural assembly here.
+/// Low structural retention under these = over-aggressive promotion (pulling in
+/// topically-adjacent-but-wrong members when there is no clear winner).
+fn negatives(repo: &str) -> Vec<(&'static str, &'static str)> {
+    if repo == "kin-openapi" {
+        return vec![
+            (
+                "Components openapi components container",
+                "numeric tensor matrix multiplication kernels",
+            ),
+            (
+                "Schema openapi schema object",
+                "establish a tcp network socket connection",
+            ),
+            (
+                "Operation openapi path operation",
+                "rotating file log handler buffering",
+            ),
+        ];
+    }
+    if repo == "rustfmt" {
+        return vec![
+            (
+                "ast visitor that formats source code items",
+                "numeric tensor matrix multiplication kernels",
+            ),
+            (
+                "ast visitor that formats source code items",
+                "establish a tcp network socket connection",
+            ),
+        ];
+    }
+    vec![
+        (
+            "Flask application object class",
+            "sqlite database migration and schema versioning",
+        ),
+        (
+            "Blueprint class for modular routes",
+            "rotating file log handler buffering",
+        ),
+        (
+            "request object incoming data",
+            "command line argument parsing subcommands",
+        ),
+        (
+            "session cookie interface",
+            "numeric tensor matrix multiplication kernels",
+        ),
+    ]
+}
+
 #[test]
 #[ignore = "measurement harness, not a CI gate; reads an external repo"]
 fn assembly_ab_report() {
@@ -120,6 +237,13 @@ fn assembly_ab_report() {
         eprintln!("SKIP: eval repo not found (set ADEN_ASM_REPO)");
         return;
     };
+    // Select the case set by repo dir name (flask | rustfmt), so the same harness
+    // validates the gate across languages: run once per repo via ADEN_ASM_REPO.
+    let repo_name = repo
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_string();
     // The store-backed loader: the edge-rich graph the gen pipeline wrote (Calls,
     // Uses, Contains …), the same one `asm`/`ask` load. Requires `aden gen <repo>`
     // to have run. (`AdenGraph::build_from_directory` would give a doc-only,
@@ -152,10 +276,98 @@ fn assembly_ab_report() {
     index.ingest(entries);
     index.finalize();
 
+    // Relevance signal: HYBRID (dense + BM25) when built with `--features dense`
+    // and the bge model is present — the SAME signal production `ask` uses, so
+    // this measures the real feature rather than the BM25 floor. The harness
+    // embeds the graph nodes itself, so the repo need not be gen'd with dense.
+    // Falls back to BM25 when dense is absent so the harness still runs.
+    let embedder: Option<Box<dyn aden_index::EmbeddingProvider>> = {
+        #[cfg(feature = "dense")]
+        {
+            let dir = PathBuf::from(std::env::var("HOME").unwrap_or_default())
+                .join(".cache/aden-models/bge-small-en-v1.5");
+            match aden_index::TractEmbedder::from_dir(&dir) {
+                Ok(e) => Some(Box::new(e) as Box<dyn aden_index::EmbeddingProvider>),
+                Err(e) => {
+                    eprintln!("dense model unavailable ({e}); falling back to BM25");
+                    None
+                }
+            }
+        }
+        #[cfg(not(feature = "dense"))]
+        {
+            None
+        }
+    };
+    if let Some(e) = &embedder {
+        index.embed_documents(e.as_ref());
+    }
+    let relevance_mode = if embedder.is_some() {
+        "HYBRID (dense+BM25)"
+    } else {
+        "BM25"
+    };
+    // Single query path: hybrid when an embedder is loaded, BM25 otherwise.
+    let do_query = |q: &str| -> Vec<aden_index::SearchResult> {
+        match &embedder {
+            Some(e) => index.hybrid_query(q, e.as_ref()),
+            None => index.query(q),
+        }
+    };
+    // Cross-query CALIBRATED confidence (the off-topic safety gate's input). The
+    // production relevance map is RRF-fused, which discards magnitude, so it carries
+    // no cross-query "is this a good match at all" signal. The raw dense COSINE does
+    // (∈[-1,1], comparable across queries). Map the best cosine through bge-small's
+    // own semantic band — measured here: on-topic best cosines land ≥0.72, off-topic
+    // ≤0.69 across Flask (Python) and kin-openapi (Go), consistent with the model's
+    // general behavior (relevant pairs ~0.7-0.85, unrelated ~0.3-0.6). A smooth ramp,
+    // NOT a cliff, so confidence degrades gracefully. The band is a property of the
+    // EMBEDDER (re-validate if the model changes), not of these two repos. Returns
+    // None when no embedder is loaded (BM25-only): then no calibration is possible and
+    // the gate runs at full strength, exactly as before.
+    const CALIB_LO: f32 = 0.66; // below: clearly off-topic for bge-small
+    const CALIB_HI: f32 = 0.74; // above: clearly on-topic
+    let calib_conf = |q: &str| -> Option<f32> {
+        let e = embedder.as_ref()?;
+        let best = index
+            .dense_query(q, e.as_ref())
+            .first()
+            .map(|r| r.score as f32)
+            .unwrap_or(0.0);
+        Some(((best - CALIB_LO) / (CALIB_HI - CALIB_LO)).clamp(0.0, 1.0))
+    };
+
     let includes_gold = |opts: &AssemblyOptions, gold: &str| -> bool {
         assemble_with_anchors(&graph, opts)
             .map(|(_, inc)| inc.iter().any(|a| a.contains(gold)))
             .unwrap_or(false)
+    };
+    // Resolve a prose hub to the most-connected node among its top BM25 matches
+    // (the real structural hub); shared by the positive and precision-control loops.
+    let resolve_hub = |hub: &str| -> Option<String> {
+        index
+            .query(hub)
+            .iter()
+            .take(8)
+            // A hub is a SYMBOL (class/type), not a whole-file module node, which
+            // out-ranks everything on out-degree and isn't what we seed assembly at.
+            .filter(|r| r.anchor.contains('#') && !r.anchor.starts_with("mod-"))
+            .filter_map(|r| {
+                graph.get_index(&r.anchor).map(|ix| {
+                    let deg = graph
+                        .graph
+                        .neighbors_directed(ix, Direction::Outgoing)
+                        .count();
+                    (r.anchor.clone(), deg)
+                })
+            })
+            .max_by_key(|(_, deg)| *deg)
+            .map(|(anchor, _)| anchor)
+    };
+    let included_anchors = |opts: &AssemblyOptions| -> Vec<String> {
+        assemble_with_anchors(&graph, opts)
+            .map(|(_, inc)| inc)
+            .unwrap_or_default()
     };
 
     let budgets = [128usize, 256, 512, 1024];
@@ -163,12 +375,53 @@ fn assembly_ab_report() {
 
     println!(
         "\n=== Assembly A/B: structural vs query-aware ordering ===\n\
-         Repo: {} | {} nodes, {} edges | budgets {:?}",
+         Repo: {} | {} nodes, {} edges | budgets {:?} | relevance: {}",
         repo.display(),
         graph.node_count(),
         graph.edge_count(),
-        budgets
+        budgets,
+        relevance_mode
     );
+
+    // DIAGNOSTIC (measure-before-mutate): does the RAW dense cosine of the best
+    // match separate on-topic (case) queries from off-topic (negative) queries?
+    // RRF discards magnitude, so it cannot; raw cosine is cross-query comparable
+    // (∈[-1,1]). If positives cluster high and negatives low with a gap, that gap
+    // is the calibration signal the off-topic safety gate needs.
+    if let Some(e) = &embedder {
+        // For a query: best raw cosine, plus the z-score of that best against the
+        // query's OWN cosine distribution over the corpus (mean μ, std σ). z =
+        // (best-μ)/σ asks "is the best match a strong outlier for this query"
+        // (on-topic) "or close to the pack" (off-topic) — fully derived per query,
+        // no corpus-specific constant.
+        let stats = |q: &str| -> (f32, f32) {
+            let scores: Vec<f32> = index
+                .dense_query(q, e.as_ref())
+                .iter()
+                .map(|r| r.score as f32)
+                .collect();
+            if scores.is_empty() {
+                return (0.0, 0.0);
+            }
+            let best = scores[0];
+            let n = scores.len() as f32;
+            let mu = scores.iter().sum::<f32>() / n;
+            let var = scores.iter().map(|s| (s - mu).powi(2)).sum::<f32>() / n;
+            let sd = var.sqrt();
+            let z = if sd > 0.0 { (best - mu) / sd } else { 0.0 };
+            (best, z)
+        };
+        println!("\n  [diag] best raw cosine / z-score — ON-TOPIC (case) queries:");
+        for c in cases(&repo_name) {
+            let (b, z) = stats(c.query);
+            println!("    cos={b:.3}  z={z:+.2}   {}", c.query);
+        }
+        println!("  [diag] best raw cosine / z-score — OFF-TOPIC (negative) queries:");
+        for (_, q) in negatives(&repo_name) {
+            let (b, z) = stats(q);
+            println!("    cos={b:.3}  z={z:+.2}   {}", q);
+        }
+    }
 
     let mut struct_hits = vec![0usize; budgets.len()];
     let mut aware_hits = vec![0usize; budgets.len()];
@@ -180,17 +433,21 @@ fn assembly_ab_report() {
     let topk = [5usize, 10, 25];
     let mut rank_top = [0usize; 3];
 
-    for c in cases() {
-        let Some(seed) = index.query(c.hub).first().map(|r| r.anchor.clone()) else {
+    for c in cases(&repo_name) {
+        // Seed resolution stays on BM25 deliberately: the seed is experimental SETUP,
+        // held fixed across all arms AND across the BM25-vs-hybrid comparison, so the
+        // only thing that varies is the relevance treatment. (Hybrid seed resolution
+        // drifts the hub onto test helpers here, a separate routing question.)
+        let Some(seed) = resolve_hub(c.hub) else {
             println!("  [skip] hub '{}' resolved nothing", c.hub);
             continue;
         };
 
-        let rel: HashMap<String, f32> = index
-            .query(c.query)
+        let rel: HashMap<String, f32> = do_query(c.query)
             .into_iter()
             .map(|r| (r.anchor, r.score as f32))
             .collect();
+        let conf = calib_conf(c.query);
 
         let mk = |budget: usize, relevance: Option<HashMap<String, f32>>| AssemblyOptions {
             start_anchor: seed.clone(),
@@ -213,13 +470,13 @@ fn assembly_ab_report() {
         }
         scored += 1;
 
-        // PPR arm: spread the same BM25 relevance over the graph topology before
-        // ordering, so structurally-central context near the query region ranks up.
         let ppr = personalized_pagerank(&graph, &rel);
 
-        // Gather-then-select proxy: at the reach budget gold IS gathered, so rank
-        // the gathered nodes by relevance — gold's rank is where a relevance-driven
-        // compression would place it.
+        // Gather-then-select proxy (the "lift the budget, then compress" idea): at
+        // the reach budget gold IS gathered, so rank the gathered nodes by relevance
+        // — gold's rank is where a relevance-driven compression would place it. A low
+        // rank means gather-then-select keeps gold even at a tiny output budget,
+        // without any ordering trick during the walk.
         let (_, gathered) =
             assemble_with_anchors(&graph, &mk(REACH_BUDGET, Some(rel.clone()))).unwrap_or_default();
         let mut ranked: Vec<&String> = gathered.iter().collect();
@@ -247,6 +504,7 @@ fn assembly_ab_report() {
             let sel = includes_gold(
                 &AssemblyOptions {
                     relevance_select: true,
+                    relevance_confidence: conf,
                     ..mk(b, Some(rel.clone()))
                 },
                 c.gold,
@@ -284,6 +542,83 @@ fn assembly_ab_report() {
     println!("  query-aware   gold-inclusion by budget {budgets:?}: {aware_hits:?}");
     println!("  ppr           gold-inclusion by budget {budgets:?}: {ppr_hits:?}");
     println!("  gather-select gold-inclusion by budget {budgets:?}: {select_hits:?}");
+
+    // PRECISION control: on off-topic queries, gather-select should preserve the
+    // structural assembly (retention ~ 1.00). A low number means promotion is firing
+    // on noise — the cost of leaning in, which recall alone cannot see.
+    println!(
+        "\n  Precision control (off-topic queries; retention = overlap with structural, ~1.00 = safe):"
+    );
+    let mut retain_sum = vec![0.0f64; budgets.len()];
+    // Attribution: retention of the query-aware WALK (relevance set, but NOT
+    // gather-then-select) vs structural. This isolates churn caused by the
+    // within-bucket relevance tie-break (a separate, already-shipped feature) from
+    // churn caused by gather-then-select, so a low select-retention is not
+    // mis-blamed on the gate.
+    let mut aware_retain_sum = vec![0.0f64; budgets.len()];
+    let mut neg_scored = 0usize;
+    for (hub, q) in negatives(&repo_name) {
+        let Some(seed) = resolve_hub(hub) else {
+            continue;
+        };
+        let rel: HashMap<String, f32> = do_query(q)
+            .into_iter()
+            .map(|r| (r.anchor, r.score as f32))
+            .collect();
+        let conf = calib_conf(q);
+        let mk_neg = |b: usize, relevance: Option<HashMap<String, f32>>| AssemblyOptions {
+            start_anchor: seed.clone(),
+            max_depth: 3,
+            token_budget: b,
+            relevance,
+            ..Default::default()
+        };
+        neg_scored += 1;
+        let mut row = String::new();
+        for (bi, &b) in budgets.iter().enumerate() {
+            let s_set: std::collections::HashSet<String> =
+                included_anchors(&mk_neg(b, None)).into_iter().collect();
+            let sel = included_anchors(&AssemblyOptions {
+                relevance_select: true,
+                relevance_confidence: conf,
+                ..mk_neg(b, Some(rel.clone()))
+            });
+            // Query-aware walk (relevance set, gather-then-select OFF): the tie-break
+            // baseline, to attribute churn.
+            let aware = included_anchors(&mk_neg(b, Some(rel.clone())));
+            let retention = |out: &[String]| -> f64 {
+                if s_set.is_empty() {
+                    1.0
+                } else {
+                    out.iter().filter(|a| s_set.contains(*a)).count() as f64 / s_set.len() as f64
+                }
+            };
+            let ret = retention(&sel);
+            retain_sum[bi] += ret;
+            aware_retain_sum[bi] += retention(&aware);
+            row.push_str(&format!("{ret:.2} "));
+        }
+        let tail = seed.rsplit(['#', '/']).next().unwrap_or(&seed);
+        println!("    seed={tail:<26} retention[{}]", row.trim_end());
+    }
+    if neg_scored > 0 {
+        let avg: Vec<String> = retain_sum
+            .iter()
+            .map(|s| format!("{:.2}", s / neg_scored as f64))
+            .collect();
+        let aware_avg: Vec<String> = aware_retain_sum
+            .iter()
+            .map(|s| format!("{:.2}", s / neg_scored as f64))
+            .collect();
+        println!(
+            "    mean retention vs structural — query-aware WALK : [{}]",
+            aware_avg.join(", ")
+        );
+        println!(
+            "    mean retention vs structural — gather-then-SELECT: [{}]  (gate active)",
+            avg.join(", ")
+        );
+    }
     println!(
         "  gather-then-select: gold in relevance-rank top-{topk:?} of the gathered set: {rank_top:?} (of {scored})"
     );

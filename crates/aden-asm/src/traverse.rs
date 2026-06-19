@@ -172,6 +172,23 @@ pub struct AssemblyOptions {
     /// structure), so no weight is hardcoded. Requires `relevance` to be set;
     /// `false` (the default) keeps the original in-budget priority walk byte-for-byte.
     pub relevance_select: bool,
+    /// Cross-query CALIBRATED confidence that the query has a genuinely good match
+    /// at all (∈[0,1]), supplied by the caller because only it knows the signal
+    /// type and has the embedder. This is the off-topic SAFETY gate for
+    /// gather-then-select: the within-neighborhood `relevance` distribution cannot
+    /// tell an on-topic query (real answer present) from an off-topic one
+    /// (best-of-noise), because every scale-free measure (separation, z-score,
+    /// central tendency) reads best-of-noise as a confident peak. The only
+    /// discriminator is the ABSOLUTE magnitude of the best match — for dense that
+    /// is the raw cosine, which RRF discards — and absolute magnitude only means
+    /// something once calibrated to the embedder's own semantic band. So the caller
+    /// maps the best raw cosine through that band to a [0,1] confidence and passes
+    /// it here; the gate multiplies its derived promotion strength by it, so an
+    /// off-topic query (low confidence) defers to structure instead of churning the
+    /// bundle on noise. `None` (the default) means "no calibration available"
+    /// (e.g. BM25-only, no embedder) and leaves promotion at full strength — the
+    /// prior behavior, byte-for-byte.
+    pub relevance_confidence: Option<f32>,
 }
 
 impl Default for AssemblyOptions {
@@ -189,6 +206,7 @@ impl Default for AssemblyOptions {
             hydrate_root: None,
             relevance: None,
             relevance_select: false,
+            relevance_confidence: None,
         }
     }
 }
@@ -277,11 +295,21 @@ fn gather_then_select(
     desc.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
     let top1 = desc.first().copied().unwrap_or(0.0);
     let top2 = desc.get(1).copied().unwrap_or(0.0);
-    let conf = if top1 > 0.0 {
+    let separation = if top1 > 0.0 {
         ((top1 - top2) / top1).clamp(0.0, 1.0)
     } else {
         0.0
     };
+    // Off-topic SAFETY gate. `separation` is scale-free, so it reads best-of-noise as a
+    // confident peak just as it reads a real answer (validated: off-topic queries score
+    // separation/z just as high as on-topic ones). The only signal that tells the two
+    // apart is the caller's CROSS-QUERY calibrated confidence — the absolute quality of
+    // the best match, mapped through the embedder's semantic band. Multiply them: an
+    // off-topic query (low calibrated confidence) collapses the gate toward structure
+    // even when its within-neighborhood separation is high, so the bundle is preserved
+    // instead of churned on noise. Absent (BM25-only, no embedder) it is 1.0 — full
+    // strength, the prior behavior.
+    let conf = separation * opts.relevance_confidence.unwrap_or(1.0).clamp(0.0, 1.0);
     let n = cands.len() as f32;
     let value = |idx: usize, score: f32| -> f32 {
         let rel_frac = if global_max > 0.0 {
@@ -395,7 +423,16 @@ pub fn assemble_with_anchors_mmr(
     // to budget by relevance, so the answer surfaces even behind low-priority
     // members. This leaves `queue` empty, so the priority walk below is skipped
     // unchanged; the default path pushes the seed and runs the walk exactly as before.
-    if opts.relevance_select && opts.relevance.is_some() {
+    //
+    // SAFETY GATE: a calibrated confidence of 0 means the caller's embedder found no
+    // good match for this query anywhere (off-topic). Selection cannot help — it can
+    // only churn the bundle on noise — so we BYPASS it and fall back to the structural
+    // walk, which gives graceful degradation (the structural bundle, unchanged) rather
+    // than the softened-but-still-different bundle a near-zero multiplier would leave.
+    // `None` (no calibration, e.g. BM25-only) is treated as full confidence, so the
+    // prior behavior is byte-for-byte preserved.
+    let calibrated = opts.relevance_confidence.unwrap_or(1.0);
+    if opts.relevance_select && opts.relevance.is_some() && calibrated > 0.0 {
         let (sel_included, sel_result, sel_total) =
             gather_then_select(graph, opts, start_idx, sep_cost);
         included = sel_included;
@@ -404,6 +441,16 @@ pub fn assemble_with_anchors_mmr(
     } else {
         queue.push_back((start_idx, 0usize));
     }
+    // The walk's within-bucket relevance tie-break is gated by the SAME calibrated
+    // confidence: an off-topic query (calibrated 0) reorders the frontier on noise
+    // relevance just as harmfully as gather-then-select would, so below the floor the
+    // walk falls back to PURE structural order. Above it (or with no calibration —
+    // `None` → 1.0, the prior behavior) the query-aware tie-break stays on.
+    let walk_relevance = if calibrated > 0.0 {
+        opts.relevance.as_ref()
+    } else {
+        None
+    };
 
     const MAX_VISITED_NODES: usize = 10_000;
     while let Some((node, depth)) = queue.pop_front() {
@@ -480,7 +527,7 @@ pub fn assemble_with_anchors_mmr(
         }
 
         // Add neighbors in deterministic, structural-priority order.
-        for neighbor in ordered_neighbors(graph, node, &opts.edge_types, opts.relevance.as_ref()) {
+        for neighbor in ordered_neighbors(graph, node, &opts.edge_types, walk_relevance) {
             queue.push_back((neighbor, depth + 1));
         }
     }

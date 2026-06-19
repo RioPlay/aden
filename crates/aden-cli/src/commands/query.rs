@@ -884,6 +884,11 @@ pub fn cmd_asm(opts: AsmOptions) -> Result<(), Box<dyn std::error::Error>> {
         hydrate_root: None,
         relevance,
         relevance_select,
+        // Production calibration is not wired yet: the off-topic safety gate was
+        // validated on the assembly_ab harness first (the devlog discipline). Until
+        // that lands here, the gate runs at full strength (prior behavior). `--select`
+        // stays opt-in, so this is safe.
+        relevance_confidence: None,
     };
 
     let output = match opts.format.as_str() {
@@ -898,16 +903,23 @@ pub fn cmd_asm(opts: AsmOptions) -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
+    let returned_bytes = output.len();
+    let savings_anchor = asm_opts.start_anchor.clone();
     if let Some(out_path) = &opts.out {
-        std::fs::write(out_path, output)?;
+        std::fs::write(out_path, &output)?;
         println!("Written assembly to {}", out_path.display());
+    } else if opts.silent {
+        print!("{output}");
     } else {
-        if opts.silent {
-            print!("{}", output);
-        } else {
-            println!("{}", output);
-        }
+        println!("{output}");
     }
+    let repo_root = crate::util::find_project_root(&opts.path);
+    super::savings_store::record_read_query(
+        &repo_root,
+        &opts.path,
+        &[savings_anchor],
+        returned_bytes,
+    );
     Ok(())
 }
 
@@ -1605,6 +1617,7 @@ impl AskAssembler<'_> {
             hydrate_root: Some(self.hydrate_root.clone()),
             relevance: self.relevance.clone(),
             relevance_select: false,
+            relevance_confidence: None,
         };
         // Prune near-duplicate neighbors before they spend budget. τ=0.8 skips
         // only genuine near-dups (≥80% token overlap); the headroom probe showed
@@ -1634,39 +1647,6 @@ impl AskAssembler<'_> {
     ) -> Result<String, Box<dyn std::error::Error>> {
         self.assemble_seed_str(seed, seed_depth, seed_budget, &self.block_filter, false)
     }
-}
-
-/// Estimate tokens saved vs. a grep-read baseline of the distinct source files
-/// the primary assembly touched. Baseline = sum of on-disk bytes for up to
-/// BASELINE_MAX_FILES distinct source files, capped and priced at the default
-/// tier (Opus 4.8). `source_file` attributes are repo-root-relative, so they
-/// resolve against the same hydration root the assembler uses.
-fn estimate_ask_savings(
-    path: &Path,
-    hydrate_root: &Path,
-    primary_anchors: &[String],
-    assembled_len: usize,
-) -> aden_core::savings::SavingsEstimate {
-    use aden_core::savings::{BASELINE_MAX_FILES, SavingsEstimate};
-    let mut seen_files: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut baseline_bytes: usize = 0;
-    for anchor in primary_anchors {
-        if seen_files.len() >= BASELINE_MAX_FILES {
-            break;
-        }
-        if let Some(src) = anchor_source_file(path, anchor) {
-            if src.is_empty() || seen_files.contains(&src) {
-                continue;
-            }
-            let abs = hydrate_root.join(&src);
-            if let Ok(meta) = std::fs::metadata(&abs) {
-                seen_files.insert(src);
-                baseline_bytes += meta.len() as usize;
-            }
-        }
-    }
-    let baseline_files = seen_files.len();
-    SavingsEstimate::from_bytes(assembled_len, baseline_bytes, baseline_files)
 }
 
 /// Render the `--explain` routing trace: the signals selection used, which path
@@ -2258,8 +2238,8 @@ pub fn cmd_ask(
 
     // Savings estimate vs. a grep-read baseline of the source files the primary
     // assembly touched (the helper holds the BASELINE_MAX_FILES cap + pricing).
-    let savings_est = estimate_ask_savings(path, &hydrate_root, &primary_anchors, assembled.len());
-    // Persist the estimate to the ledger (best-effort; never errors the command).
+    let savings_est =
+        super::savings_store::estimate_read_savings(path, &primary_anchors, assembled.len());
     super::savings_store::record(&hydrate_root, &savings_est);
 
     // Step 4: Send to LLM or print raw context
