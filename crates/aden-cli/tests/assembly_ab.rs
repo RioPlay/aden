@@ -123,6 +123,34 @@ fn cases(repo: &str) -> Vec<Case> {
             },
         ];
     }
+    if repo == "query" {
+        // CROSS-LANGUAGE (TypeScript, TanStack Query): TS classes are Contains-heavy
+        // like Python — a class node has outgoing member edges to its methods — so
+        // these are the same class-hub-reaches-its-method shape Flask validates, on a
+        // 4th language. Confirms the selector win is not a Python/Go artifact.
+        return vec![
+            Case {
+                hub: "QueryClient query cache client",
+                query: "write data for a query key into the cache",
+                gold: "setQueryData",
+            },
+            Case {
+                hub: "QueryClient query cache client",
+                query: "mark matching queries as stale and refetch them",
+                gold: "invalidateQueries",
+            },
+            Case {
+                hub: "QueryClient query cache client",
+                query: "read the cached data for a query key",
+                gold: "getQueryData",
+            },
+            Case {
+                hub: "QueryObserver subscription to a single query",
+                query: "apply new options to the active observer",
+                gold: "setOptions",
+            },
+        ];
+    }
     vec![
         Case {
             hub: "Flask application object class",
@@ -207,6 +235,22 @@ fn negatives(repo: &str) -> Vec<(&'static str, &'static str)> {
             (
                 "ast visitor that formats source code items",
                 "establish a tcp network socket connection",
+            ),
+        ];
+    }
+    if repo == "query" {
+        return vec![
+            (
+                "QueryClient query cache client",
+                "render a 3d triangle mesh with vertex shaders",
+            ),
+            (
+                "QueryObserver subscription to a single query",
+                "establish a raw tcp network socket connection",
+            ),
+            (
+                "QueryClient query cache client",
+                "numeric tensor matrix multiplication kernels",
             ),
         ];
     }
