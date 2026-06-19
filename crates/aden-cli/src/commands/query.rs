@@ -880,6 +880,11 @@ pub fn cmd_asm(opts: AsmOptions) -> Result<(), Box<dyn std::error::Error>> {
         hydrate_root: None,
         relevance,
         relevance_select,
+        // Production calibration is not wired yet: the off-topic safety gate was
+        // validated on the assembly_ab harness first (the devlog discipline). Until
+        // that lands here, the gate runs at full strength (prior behavior). `--select`
+        // stays opt-in, so this is safe.
+        relevance_confidence: None,
     };
 
     let output = match opts.format.as_str() {
@@ -1776,6 +1781,7 @@ pub fn cmd_ask(
             hydrate_root: Some(hydrate_root.clone()),
             relevance: relevance.clone(),
             relevance_select: false,
+            relevance_confidence: None,
         };
         Ok(assemble_with_anchors(&graph, &opts)?)
     };
@@ -2872,6 +2878,7 @@ pub fn cmd_understand(
         hydrate_root: None,
         relevance: None,
         relevance_select: false,
+        relevance_confidence: None,
     };
     let context = assemble(&neigh, &asm_opts)?;
 

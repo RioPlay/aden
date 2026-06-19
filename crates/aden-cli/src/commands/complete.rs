@@ -68,6 +68,7 @@ pub fn cmd_complete(
             hydrate_root: None,
             relevance: None,
             relevance_select: false,
+            relevance_confidence: None,
         };
 
         let context = match assemble(&graph, &asm_opts) {

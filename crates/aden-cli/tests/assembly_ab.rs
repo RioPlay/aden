@@ -314,6 +314,28 @@ fn assembly_ab_report() {
             None => index.query(q),
         }
     };
+    // Cross-query CALIBRATED confidence (the off-topic safety gate's input). The
+    // production relevance map is RRF-fused, which discards magnitude, so it carries
+    // no cross-query "is this a good match at all" signal. The raw dense COSINE does
+    // (∈[-1,1], comparable across queries). Map the best cosine through bge-small's
+    // own semantic band — measured here: on-topic best cosines land ≥0.72, off-topic
+    // ≤0.69 across Flask (Python) and kin-openapi (Go), consistent with the model's
+    // general behavior (relevant pairs ~0.7-0.85, unrelated ~0.3-0.6). A smooth ramp,
+    // NOT a cliff, so confidence degrades gracefully. The band is a property of the
+    // EMBEDDER (re-validate if the model changes), not of these two repos. Returns
+    // None when no embedder is loaded (BM25-only): then no calibration is possible and
+    // the gate runs at full strength, exactly as before.
+    const CALIB_LO: f32 = 0.66; // below: clearly off-topic for bge-small
+    const CALIB_HI: f32 = 0.74; // above: clearly on-topic
+    let calib_conf = |q: &str| -> Option<f32> {
+        let e = embedder.as_ref()?;
+        let best = index
+            .dense_query(q, e.as_ref())
+            .first()
+            .map(|r| r.score as f32)
+            .unwrap_or(0.0);
+        Some(((best - CALIB_LO) / (CALIB_HI - CALIB_LO)).clamp(0.0, 1.0))
+    };
 
     let includes_gold = |opts: &AssemblyOptions, gold: &str| -> bool {
         assemble_with_anchors(&graph, opts)
@@ -361,6 +383,46 @@ fn assembly_ab_report() {
         relevance_mode
     );
 
+    // DIAGNOSTIC (measure-before-mutate): does the RAW dense cosine of the best
+    // match separate on-topic (case) queries from off-topic (negative) queries?
+    // RRF discards magnitude, so it cannot; raw cosine is cross-query comparable
+    // (∈[-1,1]). If positives cluster high and negatives low with a gap, that gap
+    // is the calibration signal the off-topic safety gate needs.
+    if let Some(e) = &embedder {
+        // For a query: best raw cosine, plus the z-score of that best against the
+        // query's OWN cosine distribution over the corpus (mean μ, std σ). z =
+        // (best-μ)/σ asks "is the best match a strong outlier for this query"
+        // (on-topic) "or close to the pack" (off-topic) — fully derived per query,
+        // no corpus-specific constant.
+        let stats = |q: &str| -> (f32, f32) {
+            let scores: Vec<f32> = index
+                .dense_query(q, e.as_ref())
+                .iter()
+                .map(|r| r.score as f32)
+                .collect();
+            if scores.is_empty() {
+                return (0.0, 0.0);
+            }
+            let best = scores[0];
+            let n = scores.len() as f32;
+            let mu = scores.iter().sum::<f32>() / n;
+            let var = scores.iter().map(|s| (s - mu).powi(2)).sum::<f32>() / n;
+            let sd = var.sqrt();
+            let z = if sd > 0.0 { (best - mu) / sd } else { 0.0 };
+            (best, z)
+        };
+        println!("\n  [diag] best raw cosine / z-score — ON-TOPIC (case) queries:");
+        for c in cases(&repo_name) {
+            let (b, z) = stats(c.query);
+            println!("    cos={b:.3}  z={z:+.2}   {}", c.query);
+        }
+        println!("  [diag] best raw cosine / z-score — OFF-TOPIC (negative) queries:");
+        for (_, q) in negatives(&repo_name) {
+            let (b, z) = stats(q);
+            println!("    cos={b:.3}  z={z:+.2}   {}", q);
+        }
+    }
+
     let mut struct_hits = vec![0usize; budgets.len()];
     let mut aware_hits = vec![0usize; budgets.len()];
     let mut select_hits = vec![0usize; budgets.len()]; // relevance_select (gather-then-select)
@@ -384,6 +446,7 @@ fn assembly_ab_report() {
             .into_iter()
             .map(|r| (r.anchor, r.score as f32))
             .collect();
+        let conf = calib_conf(c.query);
 
         let mk = |budget: usize, relevance: Option<HashMap<String, f32>>| AssemblyOptions {
             start_anchor: seed.clone(),
@@ -436,6 +499,7 @@ fn assembly_ab_report() {
             let sel = includes_gold(
                 &AssemblyOptions {
                     relevance_select: true,
+                    relevance_confidence: conf,
                     ..mk(b, Some(rel.clone()))
                 },
                 c.gold,
@@ -476,6 +540,12 @@ fn assembly_ab_report() {
         "\n  Precision control (off-topic queries; retention = overlap with structural, ~1.00 = safe):"
     );
     let mut retain_sum = vec![0.0f64; budgets.len()];
+    // Attribution: retention of the query-aware WALK (relevance set, but NOT
+    // gather-then-select) vs structural. This isolates churn caused by the
+    // within-bucket relevance tie-break (a separate, already-shipped feature) from
+    // churn caused by gather-then-select, so a low select-retention is not
+    // mis-blamed on the gate.
+    let mut aware_retain_sum = vec![0.0f64; budgets.len()];
     let mut neg_scored = 0usize;
     for (hub, q) in negatives(&repo_name) {
         let Some(seed) = resolve_hub(hub) else {
@@ -485,6 +555,7 @@ fn assembly_ab_report() {
             .into_iter()
             .map(|r| (r.anchor, r.score as f32))
             .collect();
+        let conf = calib_conf(q);
         let mk_neg = |b: usize, relevance: Option<HashMap<String, f32>>| AssemblyOptions {
             start_anchor: seed.clone(),
             max_depth: 3,
@@ -499,15 +570,22 @@ fn assembly_ab_report() {
                 included_anchors(&mk_neg(b, None)).into_iter().collect();
             let sel = included_anchors(&AssemblyOptions {
                 relevance_select: true,
+                relevance_confidence: conf,
                 ..mk_neg(b, Some(rel.clone()))
             });
-            let kept = sel.iter().filter(|a| s_set.contains(*a)).count();
-            let ret = if s_set.is_empty() {
-                1.0
-            } else {
-                kept as f64 / s_set.len() as f64
+            // Query-aware walk (relevance set, gather-then-select OFF): the tie-break
+            // baseline, to attribute churn.
+            let aware = included_anchors(&mk_neg(b, Some(rel.clone())));
+            let retention = |out: &[String]| -> f64 {
+                if s_set.is_empty() {
+                    1.0
+                } else {
+                    out.iter().filter(|a| s_set.contains(*a)).count() as f64 / s_set.len() as f64
+                }
             };
+            let ret = retention(&sel);
             retain_sum[bi] += ret;
+            aware_retain_sum[bi] += retention(&aware);
             row.push_str(&format!("{ret:.2} "));
         }
         let tail = seed.rsplit(['#', '/']).next().unwrap_or(&seed);
@@ -518,8 +596,16 @@ fn assembly_ab_report() {
             .iter()
             .map(|s| format!("{:.2}", s / neg_scored as f64))
             .collect();
+        let aware_avg: Vec<String> = aware_retain_sum
+            .iter()
+            .map(|s| format!("{:.2}", s / neg_scored as f64))
+            .collect();
         println!(
-            "    mean structural retention by budget {budgets:?}: [{}]",
+            "    mean retention vs structural — query-aware WALK : [{}]",
+            aware_avg.join(", ")
+        );
+        println!(
+            "    mean retention vs structural — gather-then-SELECT: [{}]  (gate active)",
             avg.join(", ")
         );
     }

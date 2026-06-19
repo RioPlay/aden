@@ -45,6 +45,7 @@ mod tests {
             hydrate_root: None,
             relevance: None,
             relevance_select: false,
+            relevance_confidence: None,
         };
         assert_eq!(opts.start_anchor, "start");
         assert_eq!(opts.max_depth, 3);
