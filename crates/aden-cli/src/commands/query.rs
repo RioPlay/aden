@@ -11,7 +11,7 @@ use aden_store::GraphStorage;
 use crate::types::{AnchorPattern, QueryIntent};
 use crate::util::{
     find_project_root, fmt_score, load_or_build_index, node_to_json, parse_single_edge_type,
-    perform_check, query_index, valid_edge_types,
+    perform_check, query_index, query_relevance_confidence, valid_edge_types,
 };
 #[cfg(feature = "watch")]
 use crate::util::{sanitize_anchor, sanitize_source_file};
@@ -855,15 +855,21 @@ pub fn cmd_asm(opts: AsmOptions) -> Result<(), Box<dyn std::error::Error>> {
     // into tight budgets that the structural walk never reaches (Go: 0/3 -> 3/3),
     // signal-agnostic so the cheap BM25 score is enough. Default OFF: the off-topic
     // safety gate is the open rank-calibration problem, so this stays explicit.
-    let relevance = if opts.select {
+    // Compute the relevance map AND its cross-query calibrated confidence together
+    // (one index load, one query). The confidence is the off-topic safety gate: when
+    // the query has no good match (low best-cosine), gather-then-select defers to the
+    // structural walk instead of churning the bundle on noise. `None` (BM25-only / no
+    // model) leaves the gate at full strength, the prior behavior.
+    let (relevance, relevance_confidence) = if opts.select {
         let index = load_or_build_index(&opts.path)?;
         let map: std::collections::HashMap<String, f32> = query_index(&index, &opts.from)
             .into_iter()
             .map(|r| (r.anchor, r.score as f32))
             .collect();
-        (!map.is_empty()).then_some(map)
+        let conf = query_relevance_confidence(&index, &opts.from);
+        ((!map.is_empty()).then_some(map), conf)
     } else {
-        None
+        (None, None)
     };
     let relevance_select = relevance.is_some();
 
@@ -880,11 +886,10 @@ pub fn cmd_asm(opts: AsmOptions) -> Result<(), Box<dyn std::error::Error>> {
         hydrate_root: None,
         relevance,
         relevance_select,
-        // Production calibration is not wired yet: the off-topic safety gate was
-        // validated on the assembly_ab harness first (the devlog discipline). Until
-        // that lands here, the gate runs at full strength (prior behavior). `--select`
-        // stays opt-in, so this is safe.
-        relevance_confidence: None,
+        // Off-topic safety gate, validated on the assembly_ab harness (two languages,
+        // recall-neutral) before wiring here. `--select` stays opt-in until a broader
+        // multi-language eval justifies flipping the default.
+        relevance_confidence,
     };
 
     let output = match opts.format.as_str() {
