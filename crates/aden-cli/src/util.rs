@@ -978,20 +978,129 @@ pub fn fmt_score(score: f64) -> String {
     }
 }
 
+/// Cached handle to the OEWN lexical overlay store (opened once per process). `None` if the
+/// store is absent. `$ADEN_LEXICON_STORE` else `~/.cache/aden/lexicon`.
+fn lexicon_store() -> Option<&'static aden_store::Storage> {
+    use std::sync::OnceLock;
+    static STORE: OnceLock<Option<aden_store::Storage>> = OnceLock::new();
+    STORE
+        .get_or_init(|| {
+            let path = std::env::var("ADEN_LEXICON_STORE").unwrap_or_else(|_| {
+                std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default())
+                    .join(".cache/aden/lexicon")
+                    .to_string_lossy()
+                    .into_owned()
+            });
+            aden_store::Storage::open_existing(&path).ok()
+        })
+        .as_ref()
+}
+
+/// Expand `query` with grounded OEWN `SynonymOf` neighbours (the dictionary-for-prose lever).
+/// Each candidate synonym is kept only if it tokenizes entirely into the corpus vocabulary, so
+/// the dictionary only ever adds words the corpus actually uses (a no-op on code vocab it lacks,
+/// decisive on prose). Returns `None` when the lexicon is absent or nothing grounds. Validated
+/// on prose: BM25 R@1 1/42 -> 41/42, and complementary to dense (dense alone 20/42, +OEWN 41/42).
+fn expand_query_with_lexicon(index: &aden_index::Index, query: &str) -> Option<String> {
+    use aden_store::GraphStorage as _;
+    let store = lexicon_store()?;
+    let grounded = |lemma: &str| {
+        let toks = aden_index::tokenize(lemma);
+        !toks.is_empty() && toks.iter().all(|t| index.knows_term(t))
+    };
+    let mut adds: Vec<String> = Vec::new();
+    for w in query
+        .split(|c: char| !c.is_ascii_alphabetic())
+        .filter(|w| w.len() >= 3)
+        .map(str::to_ascii_lowercase)
+    {
+        let Ok(edges) = store.get_outgoing_edges(&format!("aden://term/oewn/{w}")) else {
+            continue;
+        };
+        let mut added = 0;
+        for (tgt, et) in edges {
+            if !matches!(et, aden_core::EdgeType::SynonymOf) {
+                continue;
+            }
+            let lemma = tgt.rsplit('/').next().unwrap_or(&tgt).to_string();
+            if lemma.contains(' ') || adds.contains(&lemma) || !grounded(&lemma) {
+                continue;
+            }
+            adds.push(lemma);
+            added += 1;
+            if added >= 8 {
+                break;
+            }
+        }
+    }
+    (!adds.is_empty()).then(|| format!("{query} {}", adds.join(" ")))
+}
+
+/// Heuristic: does the query look like code (identifiers/operators) rather than prose? Flags
+/// snake_case, camelCase, `::`, paths, and code punctuation; plain English words do not trigger.
+/// Used by auto-gating to choose between the prose lever (expansion) and the code lever (rerank).
+fn query_looks_codey(query: &str) -> bool {
+    query.split_whitespace().any(|t| {
+        t.contains('_')
+            || t.contains("::")
+            || t.contains("->")
+            || t.contains('(')
+            || t.contains('/')
+            || t.chars()
+                .any(|c| matches!(c, '{' | '}' | ')' | '<' | '>' | '=' | ';' | '[' | ']'))
+            || has_camel_hump(t)
+    })
+}
+
+/// True if `t` has a lowercase to uppercase transition (a camelCase hump), e.g. `putEdges`.
+fn has_camel_hump(t: &str) -> bool {
+    let b = t.as_bytes();
+    (1..b.len()).any(|i| b[i - 1].is_ascii_lowercase() && b[i].is_ascii_uppercase())
+}
+
 /// Run a search query against the index, using hybrid (dense + BM25 via RRF)
 /// retrieval when embeddings are present and a model is loaded, else pure BM25.
 /// This is the single entry point all `search`/`ask` paths should use so routing
 /// stays consistent.
+///
+/// Dual-substrate retrieval levers (validated by the lexical ablations):
+/// - PROSE lever: ground-and-append OEWN synonyms before retrieval (prose R@1 1/42 -> 41/42).
+/// - CODE lever: PPMI rerank of the top window by corpus co-occurrence (code MRR 0.216 -> 0.289).
+///
+/// `ADEN_LEXICON_AUTO` auto-gates both on the detected text: expand for non-pure-code queries
+/// (grounding makes it a no-op where the corpus lacks the vocabulary), and rerank when the query
+/// looks code-y OR the corpus is code-bearing (so NL-over-code queries still get the lift). The
+/// explicit `ADEN_LEXICON_EXPAND` / `ADEN_PPMI_RERANK` flags force a lever on regardless. All off
+/// by default, so routing is unchanged unless one is set. Expansion feeds the base ranking; the
+/// rerank keys off the ORIGINAL query terms.
 pub fn query_index(index: &aden_index::Index, query: &str) -> Vec<aden_index::SearchResult> {
+    let auto = std::env::var_os("ADEN_LEXICON_AUTO").is_some();
+    let codey = query_looks_codey(query);
+
+    let do_expand = std::env::var_os("ADEN_LEXICON_EXPAND").is_some() || (auto && !codey);
+    let expanded = do_expand
+        .then(|| expand_query_with_lexicon(index, query))
+        .flatten();
+    let q: &str = expanded.as_deref().unwrap_or(query);
+
     #[cfg(feature = "dense")]
+    let base = if index.has_embeddings()
+        && let Some(emb) = dense_embedder()
     {
-        if index.has_embeddings()
-            && let Some(emb) = dense_embedder()
-        {
-            return index.hybrid_query(query, emb);
-        }
+        index.hybrid_query(q, emb)
+    } else {
+        index.query(q)
+    };
+    #[cfg(not(feature = "dense"))]
+    let base = index.query(q);
+
+    let do_rerank = std::env::var_os("ADEN_PPMI_RERANK").is_some()
+        || (auto && (codey || index.code_anchor_fraction() >= 0.5));
+    if do_rerank {
+        index.ppmi_rerank(query, base, 50)
+    } else {
+        base
     }
-    index.query(query)
 }
 
 /// Classify an anchor as *expected* metadata that legitimately has no graph
