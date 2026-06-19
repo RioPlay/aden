@@ -1379,6 +1379,31 @@ fn fuse_base_weighted(
     out
 }
 
+/// Cross-query CALIBRATED confidence that `query` has a genuinely good match in
+/// `index` (∈[0,1]), the off-topic safety signal consumed by gather-then-select's
+/// `relevance_confidence`. The production relevance map is RRF-fused (magnitude
+/// discarded), so this reaches past it to the raw dense COSINE of the best match —
+/// the only cross-query-comparable signal — and maps it through the embedder's
+/// semantic band via [`aden_index::semantic_match_confidence`]. Returns `None` when
+/// dense is unavailable (no embeddings / no model): then no calibration is possible
+/// and the gate runs at full strength, exactly as before.
+#[allow(unused_variables)]
+pub fn query_relevance_confidence(index: &aden_index::Index, query: &str) -> Option<f32> {
+    #[cfg(feature = "dense")]
+    {
+        if index.has_embeddings()
+            && let Some(emb) = dense_embedder()
+        {
+            let best = index
+                .dense_query(query, emb)
+                .first()
+                .map(|r| r.score as f32)?;
+            return Some(aden_index::semantic_match_confidence(best));
+        }
+    }
+    None
+}
+
 /// Classify an anchor as *expected* metadata that legitimately has no graph
 /// edges. Doc-heading anchors (`aden://doc/...`) and standalone metadata docs
 /// (ADR/plan/use-case/readme/agent) are reference material, not dead code, so

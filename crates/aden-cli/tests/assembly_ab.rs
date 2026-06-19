@@ -325,8 +325,9 @@ fn assembly_ab_report() {
     // EMBEDDER (re-validate if the model changes), not of these two repos. Returns
     // None when no embedder is loaded (BM25-only): then no calibration is possible and
     // the gate runs at full strength, exactly as before.
-    const CALIB_LO: f32 = 0.66; // below: clearly off-topic for bge-small
-    const CALIB_HI: f32 = 0.74; // above: clearly on-topic
+    // Shared with production (util::query_relevance_confidence) via the single
+    // source of truth in aden-index, so the validated band cannot drift from what
+    // ships.
     let calib_conf = |q: &str| -> Option<f32> {
         let e = embedder.as_ref()?;
         let best = index
@@ -334,7 +335,7 @@ fn assembly_ab_report() {
             .first()
             .map(|r| r.score as f32)
             .unwrap_or(0.0);
-        Some(((best - CALIB_LO) / (CALIB_HI - CALIB_LO)).clamp(0.0, 1.0))
+        Some(aden_index::semantic_match_confidence(best))
     };
 
     let includes_gold = |opts: &AssemblyOptions, gold: &str| -> bool {

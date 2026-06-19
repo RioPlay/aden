@@ -669,6 +669,29 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     dot / (na.sqrt() * nb.sqrt())
 }
 
+/// Map a raw dense cosine similarity to a cross-query CALIBRATED confidence in
+/// `[0,1]` — "does this query have a genuinely good match at all?".
+///
+/// Rank-based fusion (RRF) discards magnitude, and every scale-free measure of a
+/// within-query score distribution (separation, z-score, central tendency) reads
+/// best-of-noise as a confident peak, so none of them separates an on-topic query
+/// from an off-topic one. The only signal that does is the ABSOLUTE cosine of the
+/// best match — but "absolute" only means something once anchored to the embedder's
+/// own semantic band. For bge-small-en-v1.5 that band was measured on the
+/// `assembly_ab` bench across Python (Flask) and Go (kin-openapi): on-topic best
+/// cosines land `>= 0.72`, off-topic `<= 0.69`, consistent with the model's general
+/// behavior (relevant pairs ~0.7-0.85, unrelated ~0.3-0.6). The ramp below maps that
+/// band to `[0,1]` — a smooth transition, NOT a cliff, so confidence degrades
+/// gracefully. The constants are a property of the EMBEDDER (re-validate if the
+/// model changes), not of any one repo.
+pub fn semantic_match_confidence(cosine: f32) -> f32 {
+    /// Below this cosine, bge-small considers the best match clearly off-topic.
+    const BAND_LO: f32 = 0.66;
+    /// Above this cosine, clearly on-topic.
+    const BAND_HI: f32 = 0.74;
+    ((cosine - BAND_LO) / (BAND_HI - BAND_LO)).clamp(0.0, 1.0)
+}
+
 /// Reciprocal Rank Fusion — Cormack, Clarke & Buettcher, SIGIR 2009
 /// ("Reciprocal rank fusion outperforms condorcet and individual rank learning
 /// methods"). Fuses several ranked lists by summing `1 / (k + rank)` for each
