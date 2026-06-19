@@ -45,6 +45,26 @@ fn anchor_match_rank(anchor: &str, symbol: &str) -> u8 {
     }
 }
 
+/// Other store anchors that share `symbol`'s trailing `#symbol` segment, excluding
+/// `chosen` (the anchor `understand` resolved to). Non-empty means the name is
+/// defined in more than one place, so the single resolved view is incomplete — the
+/// siblings carry their own backlinks/impact (M16). Case-insensitive match, sorted
+/// + deduped for deterministic output.
+fn alternate_anchors<'a>(
+    symbol: &str,
+    chosen: &str,
+    anchors: impl Iterator<Item = &'a str>,
+) -> Vec<String> {
+    let sym_suffix = format!("#{}", symbol.to_lowercase());
+    let mut v: Vec<String> = anchors
+        .filter(|a| *a != chosen && a.to_lowercase().ends_with(&sym_suffix))
+        .map(|a| a.to_string())
+        .collect();
+    v.sort();
+    v.dedup();
+    v
+}
+
 /// Resolve a bare symbol name to a single full store anchor (the `understand`
 /// resolver). Filters to anchors that contain the symbol, then picks the best by
 /// [`anchor_match_rank`] (exact fragment > exact method-name > member > substring),
@@ -202,6 +222,15 @@ pub fn cmd_understand(
         )
     })?;
 
+    // M16: surface the OTHER definitions that share this symbol name. `understand`
+    // resolves to exactly one anchor, so when a name is defined in several places
+    // the siblings — and their distinct backlinks/impact — were silently hidden.
+    let alternates = alternate_anchors(
+        symbol,
+        &anchor,
+        graph.anchor_to_index.keys().map(|s| s.as_str()),
+    );
+
     // Definition location from the node's attributes.
     let def = {
         let node = &graph.graph[idx];
@@ -246,6 +275,7 @@ pub fn cmd_understand(
         hydrate_root: None,
         relevance: None,
         relevance_select: false,
+        relevance_confidence: None,
     };
     let context = assemble(&neigh, &asm_opts)?;
 
@@ -255,13 +285,22 @@ pub fn cmd_understand(
             json!({
                 "symbol": symbol,
                 "anchor": anchor,
+                "alternates": alternates,
                 "definition": def,
                 "backlinks": backlinks,
                 "impact": impact,
                 "context": context,
             }),
         );
-        println!("{}", serde_json::to_string_pretty(&env)?);
+        let body = serde_json::to_string_pretty(&env)?;
+        let repo_root = crate::util::find_project_root(path);
+        super::savings_store::record_read_query(
+            &repo_root,
+            path,
+            &[anchor.clone()],
+            context.len(),
+        );
+        println!("{body}");
         return Ok(());
     }
 
@@ -278,6 +317,19 @@ pub fn cmd_understand(
         println!("  {} {} ({}:{})", anchor, nt, file, line);
     }
     println!();
+
+    if !alternates.is_empty() {
+        println!(
+            "## Other definitions ({}) — '{}' is defined in more than one place",
+            alternates.len(),
+            symbol
+        );
+        for a in &alternates {
+            println!("  {}", a);
+        }
+        println!("  (showing the first above; re-run with a fuller anchor to inspect another)");
+        println!();
+    }
 
     println!("## Backlinks ({} reference(s))", backlinks.len());
     if backlinks.is_empty() {
@@ -302,6 +354,8 @@ pub fn cmd_understand(
     println!("## Context (budget {} tokens)", budget);
     println!();
     println!("{}", context);
+    let repo_root = crate::util::find_project_root(path);
+    super::savings_store::record_read_query(&repo_root, path, &[anchor], context.len());
     Ok(())
 }
 
@@ -491,6 +545,23 @@ pub fn cmd_locate(
                     };
                     println!("| {} | {} | {} |", r.anchor, fmt_score(r.score), snippet);
                 }
+                let repo_root = crate::util::find_project_root(path);
+                let anchors: Vec<String> = search_results
+                    .iter()
+                    .take(limit)
+                    .map(|r| r.anchor.clone())
+                    .collect();
+                let returned_bytes: usize = search_results
+                    .iter()
+                    .take(limit)
+                    .map(|r| r.anchor.len() + r.snippet.len())
+                    .sum();
+                super::savings_store::record_read_query(
+                    &repo_root,
+                    path,
+                    &super::savings_store::unique_anchors(anchors.iter()),
+                    returned_bytes,
+                );
                 return Ok(());
             }
             println!("No symbol found matching '{}'", sym);
@@ -501,13 +572,31 @@ pub fn cmd_locate(
             return Ok(());
         }
 
+        let anchors: Vec<String> = hits
+            .iter()
+            .filter_map(|h| h["anchor"].as_str().map(str::to_string))
+            .collect();
+        let returned_bytes = serde_json::to_string(&hits).unwrap_or_default().len();
+        let repo_root = crate::util::find_project_root(path);
         if want_json {
             let env = super::augment_read_json(path, serde_json::Value::Array(hits));
             println!("{}", serde_json::to_string_pretty(&env)?);
+            super::savings_store::record_read_query(
+                &repo_root,
+                path,
+                &super::savings_store::unique_anchors(anchors.iter()),
+                returned_bytes,
+            );
             return Ok(());
         }
         println!("Found {} match(es) for '{}':", matched.len(), sym);
         print_locate_results(&hits, format, context);
+        super::savings_store::record_read_query(
+            &repo_root,
+            path,
+            &super::savings_store::unique_anchors(anchors.iter()),
+            returned_bytes,
+        );
         return Ok(());
     }
 
@@ -619,9 +708,18 @@ pub fn cmd_locate(
             })
             .collect();
 
+        let repo_root = crate::util::find_project_root(path);
+        let returned_bytes = serde_json::to_string(&hits).unwrap_or_default().len();
+        let anchor_list: Vec<String> = callers.iter().take(limit).cloned().collect();
         if want_json {
             let env = super::augment_read_json(path, serde_json::Value::Array(hits));
             println!("{}", serde_json::to_string_pretty(&env)?);
+            super::savings_store::record_read_query(
+                &repo_root,
+                path,
+                &super::savings_store::unique_anchors(anchor_list.iter()),
+                returned_bytes,
+            );
             return Ok(());
         }
         println!("Found {} caller(s) of '{}':", hits.len(), target);
@@ -635,6 +733,12 @@ pub fn cmd_locate(
             };
             println!("  {}{}", h["anchor"].as_str().unwrap_or(""), loc);
         }
+        super::savings_store::record_read_query(
+            &repo_root,
+            path,
+            &super::savings_store::unique_anchors(anchor_list.iter()),
+            returned_bytes,
+        );
         return Ok(());
     }
 
@@ -801,5 +905,42 @@ mod tests {
             Some("crates/x.rs#AssembleContext".to_string())
         );
         assert_eq!(super::pick_symbol_anchor("nope_not_here", &anchors), None);
+    }
+
+    #[test]
+    fn understand_alternates_surface_duplicate_symbol_definitions() {
+        let anchors = [
+            "aden://module/aden-cli/src/util.rs#is_expected_metadata",
+            "aden://module/aden-heal/src/drift.rs#is_expected_metadata",
+            "aden://module/aden-cli/src/util.rs#classify_orphans",
+        ];
+        let chosen = "aden://module/aden-cli/src/util.rs#is_expected_metadata";
+        let alts =
+            super::alternate_anchors("is_expected_metadata", chosen, anchors.iter().copied());
+        assert_eq!(
+            alts,
+            vec!["aden://module/aden-heal/src/drift.rs#is_expected_metadata".to_string()]
+        );
+    }
+
+    #[test]
+    fn understand_alternates_empty_for_unique_symbol_and_case_insensitive() {
+        let anchors = ["crates/x.rs#AssembleContext", "crates/y.rs#other"];
+        assert!(
+            super::alternate_anchors(
+                "assemblecontext",
+                "crates/z.rs#nope",
+                anchors.iter().copied()
+            )
+            .contains(&"crates/x.rs#AssembleContext".to_string())
+        );
+        assert_eq!(
+            super::alternate_anchors(
+                "AssembleContext",
+                "crates/x.rs#AssembleContext",
+                anchors.iter().copied()
+            ),
+            Vec::<String>::new()
+        );
     }
 }
