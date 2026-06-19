@@ -103,13 +103,26 @@ fn lexicon_path() -> PathBuf {
         })
 }
 
-fn build_syn(lex: Option<&Storage>, qts: &[String]) -> HashMap<String, HashSet<String>> {
+fn moby_lexicon_path() -> PathBuf {
+    std::env::var("ADEN_MOBY_STORE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".cache/aden/moby")
+        })
+}
+
+/// Per-query-term SynonymOf neighbours from a given source namespace (oewn|moby|...).
+fn build_syn_from(
+    lex: Option<&Storage>,
+    source: &str,
+    qts: &[String],
+) -> HashMap<String, HashSet<String>> {
     let mut out: HashMap<String, HashSet<String>> = HashMap::new();
     let Some(l) = lex else {
         return out;
     };
     for qt in qts {
-        if let Ok(edges) = l.get_outgoing_edges(&format!("aden://term/oewn/{qt}")) {
+        if let Ok(edges) = l.get_outgoing_edges(&format!("aden://term/{source}/{qt}")) {
             let s: HashSet<String> = edges
                 .into_iter()
                 .filter(|(_, et)| matches!(et, EdgeType::SynonymOf))
@@ -117,6 +130,35 @@ fn build_syn(lex: Option<&Storage>, qts: &[String]) -> HashMap<String, HashSet<S
                 .collect();
             if !s.is_empty() {
                 out.insert(qt.clone(), s);
+            }
+        }
+    }
+    out
+}
+
+/// Per-term union of two syn maps (merged-union arm: agreement >= 1).
+fn union_maps(
+    a: &HashMap<String, HashSet<String>>,
+    b: &HashMap<String, HashSet<String>>,
+) -> HashMap<String, HashSet<String>> {
+    let mut out = a.clone();
+    for (k, v) in b {
+        out.entry(k.clone()).or_default().extend(v.iter().cloned());
+    }
+    out
+}
+
+/// Per-term cross-source agreement (merged-agree2 arm): only lemmas in BOTH sources.
+fn agree2_maps(
+    a: &HashMap<String, HashSet<String>>,
+    b: &HashMap<String, HashSet<String>>,
+) -> HashMap<String, HashSet<String>> {
+    let mut out: HashMap<String, HashSet<String>> = HashMap::new();
+    for (k, va) in a {
+        if let Some(vb) = b.get(k) {
+            let inter: HashSet<String> = va.iter().filter(|x| vb.contains(*x)).cloned().collect();
+            if !inter.is_empty() {
+                out.insert(k.clone(), inter);
             }
         }
     }
@@ -277,6 +319,63 @@ fn probes() -> Vec<Probe> {
     ]
 }
 
+/// Prose/NL probes: each query uses a SYNONYM of a real doc heading word, so only
+/// lexicon-aided reranking can lift the gold doc anchor. The fair test of the dict substrate.
+fn prose_probes() -> Vec<Probe> {
+    vec![
+        Probe {
+            query: "fused dense sparse retrieval",
+            accept: &["hybrid-retrieval"],
+            expand: "hybrid retrieval dense sparse fusion",
+        },
+        Probe {
+            query: "three-way reconciliation strategy",
+            accept: &["three-way-merge"],
+            expand: "three way merge reconcile",
+        },
+        Probe {
+            query: "fundamental argument design rationale",
+            accept: &["core-thesis"],
+            expand: "core thesis argument",
+        },
+        Probe {
+            query: "worldwide command flags",
+            accept: &["global-options"],
+            expand: "global options flags",
+        },
+        Probe {
+            query: "hidden credential detection",
+            accept: &["secret-scanning"],
+            expand: "secret scanning credential",
+        },
+        Probe {
+            query: "context budget savings measurement",
+            accept: &["token-efficiency"],
+            expand: "token efficiency savings",
+        },
+        Probe {
+            query: "impact scope prior to rewrite",
+            accept: &["blast-radius"],
+            expand: "blast radius impact",
+        },
+        Probe {
+            query: "how the question answering operates",
+            accept: &["ask--works"],
+            expand: "ask works question answering",
+        },
+        Probe {
+            query: "auto-repairing drift contracts",
+            accept: &["self-healing"],
+            expand: "self healing contracts drift",
+        },
+        Probe {
+            query: "restructure code safely",
+            accept: &["refactor-with-confidence"],
+            expand: "refactor confidence restructure",
+        },
+    ]
+}
+
 #[derive(Default)]
 struct Metrics {
     r1: usize,
@@ -334,55 +433,95 @@ fn compound_report() {
         let n = probes.len();
         println!("\n=== Compounding ({n_cards} cards, {n} probes) ===");
 
-        let (mut md, mut mh, mut mrd, mut mrh, mut orc) = (
-            Metrics::default(),
-            Metrics::default(),
-            Metrics::default(),
-            Metrics::default(),
-            Metrics::default(),
-        );
-        let empty = HashSet::new();
-        for p in &probes {
-            let bm = index.query(p.query);
-            let de = index.dense_query(p.query, &e);
-            let qts: Vec<String> = aden_index::tokenize(p.query);
-            let syn = build_syn(lex.as_ref(), &qts);
-
-            let dense_base: Vec<String> = de.iter().map(|r| r.anchor.clone()).collect();
-            let hybrid_base: Vec<String> = rrf(&bm, &de, 1.0, 5.0);
-
-            let rels_for = |base: &[String]| -> Vec<f64> {
-                base.iter()
-                    .take(TOPK)
-                    .map(|a| {
-                        let c = card_tokens.get(a).unwrap_or(&empty);
-                        rel_score(&qts, c, &postings, n_cards, max_df, &syn)
-                    })
-                    .collect()
-            };
-            let rd = rels_for(&dense_base);
-            let rh = rels_for(&hybrid_base);
-
-            md.add(rank_anchors(&dense_base, p.accept));
-            mh.add(rank_anchors(&hybrid_base, p.accept));
-            mrd.add(rank_anchors(&rerank_list(&dense_base, &rd, 2.0), p.accept));
-            mrh.add(rank_anchors(&rerank_list(&hybrid_base, &rh, 2.0), p.accept));
-            orc.add(rank_anchors(
-                &index
-                    .query(&format!("{} {}", p.query, p.expand))
-                    .iter()
-                    .map(|r| r.anchor.clone())
-                    .collect::<Vec<_>>(),
-                p.accept,
-            ));
+        let moby = Storage::open_existing(moby_lexicon_path().to_str().unwrap_or_default()).ok();
+        if moby.is_none() {
+            eprintln!("NOTE: Moby store absent — Moby/union/agree arms equal PPMI-only");
         }
+        let empty: HashSet<String> = HashSet::new();
 
-        println!("\n  rank-of-gold:");
-        println!("{}", md.line("DENSE", n));
-        println!("{}", mh.line("HYBRID 1:5", n));
-        println!("{}", mrd.line("RERANK→DENSE", n));
-        println!("{}", mrh.line("RERANK→HYBRID", n));
-        println!("{}", orc.line("ORACLE", n));
+        // One pass over a probe set: all arms rerank the SAME hybrid base, differing only in
+        // the relation signal. RR+PPMI is derived-only (corpus co-occurrence); RR+OEWN/MOBY add
+        // an imported dict; RR+UNION/AGREE2 combine the two dicts (agree2 = cross-source).
+        let run = |probes: &[Probe], label: &str| {
+            let n = probes.len();
+            let (mut md, mut mh, mut der, mut roewn, mut rmoby, mut runi, mut ragr, mut orc) = (
+                Metrics::default(),
+                Metrics::default(),
+                Metrics::default(),
+                Metrics::default(),
+                Metrics::default(),
+                Metrics::default(),
+                Metrics::default(),
+                Metrics::default(),
+            );
+            for p in probes {
+                let bm = index.query(p.query);
+                let de = index.dense_query(p.query, &e);
+                let qts: Vec<String> = aden_index::tokenize(p.query);
+                let syn_oewn = build_syn_from(lex.as_ref(), "oewn", &qts);
+                let syn_moby = build_syn_from(moby.as_ref(), "moby", &qts);
+                let syn_union = union_maps(&syn_oewn, &syn_moby);
+                let syn_agree = agree2_maps(&syn_oewn, &syn_moby);
+                let none_syn: HashMap<String, HashSet<String>> = HashMap::new();
+
+                let dense_base: Vec<String> = de.iter().map(|r| r.anchor.clone()).collect();
+                let hybrid_base: Vec<String> = rrf(&bm, &de, 1.0, 5.0);
+                let rels_for = |syn: &HashMap<String, HashSet<String>>| -> Vec<f64> {
+                    hybrid_base
+                        .iter()
+                        .take(TOPK)
+                        .map(|a| {
+                            let c = card_tokens.get(a).unwrap_or(&empty);
+                            rel_score(&qts, c, &postings, n_cards, max_df, syn)
+                        })
+                        .collect()
+                };
+
+                md.add(rank_anchors(&dense_base, p.accept));
+                mh.add(rank_anchors(&hybrid_base, p.accept));
+                der.add(rank_anchors(
+                    &rerank_list(&hybrid_base, &rels_for(&none_syn), 2.0),
+                    p.accept,
+                ));
+                roewn.add(rank_anchors(
+                    &rerank_list(&hybrid_base, &rels_for(&syn_oewn), 2.0),
+                    p.accept,
+                ));
+                rmoby.add(rank_anchors(
+                    &rerank_list(&hybrid_base, &rels_for(&syn_moby), 2.0),
+                    p.accept,
+                ));
+                runi.add(rank_anchors(
+                    &rerank_list(&hybrid_base, &rels_for(&syn_union), 2.0),
+                    p.accept,
+                ));
+                ragr.add(rank_anchors(
+                    &rerank_list(&hybrid_base, &rels_for(&syn_agree), 2.0),
+                    p.accept,
+                ));
+                orc.add(rank_anchors(
+                    &index
+                        .query(&format!("{} {}", p.query, p.expand))
+                        .iter()
+                        .map(|r| r.anchor.clone())
+                        .collect::<Vec<_>>(),
+                    p.accept,
+                ));
+            }
+
+            println!("\n  === {label} ({n} probes) rank-of-gold ===");
+            println!("{}", md.line("DENSE", n));
+            println!("{}", mh.line("HYBRID 1:5", n));
+            println!("{}", der.line("RR+PPMI(deriv)", n));
+            println!("{}", roewn.line("RR+OEWN", n));
+            println!("{}", rmoby.line("RR+MOBY", n));
+            println!("{}", runi.line("RR+UNION", n));
+            println!("{}", ragr.line("RR+AGREE2", n));
+            println!("{}", orc.line("ORACLE", n));
+        };
+
+        run(&probes, "CODE");
+        run(&prose_probes(), "PROSE");
 
         assert!(n_cards > 0, "no cards");
     }
