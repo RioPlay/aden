@@ -30,14 +30,14 @@ const EMBED_DIM: usize = 384;
 /// Default truncation cap. The model is built with a SYMBOLIC sequence dimension
 /// (see `from_dir`), so each text runs at its OWN token count with NO padding — a
 /// short symbol doc does a short forward, not a fixed-128 one. This cap bounds
-/// long docs (BERT supports up to 512). 128 keeps the per-forward cost low, but it
-/// truncates long cards. A GPU-sidecar sweep (`scripts/gpu_eval.py`) over the faithful
-/// `stable_embed_text` baseline showed a modest gain from raising it: dense MRR ~0.36 at
-/// 128, peaking ~0.40 at 256, then dropping at 512 (long tails dilute the CLS vector), on
-/// the 40-probe vocab-mismatch bench. So 256 is the practical sweet spot. The cap is
-/// overridable via `ADEN_MAX_SEQ` (clamped to the model's 512 limit); default stays 128 so
-/// offline-CPU `gen` cost is unchanged unless asked.
-const DEFAULT_MAX_SEQ: usize = 128;
+/// long docs (BERT supports up to 512). A GPU-sidecar sweep (`scripts/gpu_eval.py`) over
+/// the faithful `stable_embed_text` baseline showed the gain is NOT monotonic in token
+/// count: dense MRR ~0.36 at 128, PEAKING ~0.40 at 256, then dropping at 512 (long tails
+/// dilute the CLS vector), on the 40-probe vocab-mismatch bench. So 256 is the practical
+/// sweet spot — better retrieval than 128 at only ~2x the per-forward cost (not 4x), and
+/// it is now the default. The cap is overridable via `ADEN_MAX_SEQ` (clamped to the
+/// model's 512 limit); set it to 128 to restore the older, cheaper offline-`gen` cost.
+const DEFAULT_MAX_SEQ: usize = 256;
 /// The model's architectural maximum sequence length (BERT/bge-small).
 const MODEL_MAX_SEQ: usize = 512;
 
@@ -88,7 +88,7 @@ impl TractEmbedder {
         // `into_runnable()` already yields an `Arc<SimplePlan>` in tract 0.23.
         let model = model.into_optimized()?.into_runnable()?;
 
-        // Token cap: default 128, overridable via ADEN_MAX_SEQ (clamped to the model's 512).
+        // Token cap: default 256 (the measured sweet spot), overridable via ADEN_MAX_SEQ (clamped to the model's 512).
         let max_seq = std::env::var("ADEN_MAX_SEQ")
             .ok()
             .and_then(|s| s.parse::<usize>().ok())
