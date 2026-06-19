@@ -50,12 +50,11 @@ unknown-git = "deny"
 
 [advisories]
 # Deny crates with known security advisories in the RustSec database.
-ignore = [
-    # atomic-polyfill is unmaintained (no CVE). Pulled transitively:
-    # postcard → heapless → atomic-polyfill. No safe upgrade is available
-    # upstream yet; revisit when heapless drops the dependency.
-    "RUSTSEC-2023-0089",
-]
+# No ignores currently needed: the former RUSTSEC-2023-0089 entry
+# (atomic-polyfill, pulled via postcard → heapless) was dropped once that
+# dependency chain left the tree — `cargo deny` now flags the ignore as
+# unmatched, so it was removed rather than left as dead config.
+ignore = []
 
 [bans]
 # Surface dependency-diamond drift (multiple versions of the same crate) without
