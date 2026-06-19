@@ -134,8 +134,15 @@ pub fn is_secret_path(relative: &Path) -> bool {
     // Private-key / keystore / encrypted-secret extensions. Terraform state and
     // tfvars files routinely contain plaintext provider credentials, so they are
     // treated as secrets at the indexing boundary.
+    //
+    // `.asc` is deliberately ABSENT: it is dual-use — the canonical AsciiDoc extension
+    // (Pro Git and many doc/book repos use it) AND a PGP armored-data extension. Blanket
+    // skipping it silently dropped entire AsciiDoc corpora from the index (empty graph,
+    // green health). A real armored PRIVATE key in a `.asc` is still caught by the content
+    // gate (`content_has_high_confidence_secret`), which is the right boundary for a
+    // dual-use extension: judge by content, not by name.
     const SECRET_EXTS: &[&str] = &[
-        "pem", "key", "p8", "p12", "pfx", "keystore", "jks", "kdbx", "ppk", "asc", "gpg", "pgp",
+        "pem", "key", "p8", "p12", "pfx", "keystore", "jks", "kdbx", "ppk", "gpg", "pgp",
         "tfstate", "tfvars",
     ];
     if let Some(ext) = relative.extension().and_then(|e| e.to_str())
@@ -161,10 +168,21 @@ pub fn is_secret_path(relative: &Path) -> bool {
 /// this is applied only at indexing — never to ephemeral `grep`/`audit`, which
 /// must still be able to find a secret in order to fix it.
 pub fn content_has_high_confidence_secret(content: &str) -> bool {
-    // PEM private-key blocks (RSA/EC/OPENSSH/PGP/generic).
+    // PEM private-key blocks (RSA/EC/OPENSSH/generic): `-----BEGIN ... PRIVATE KEY-----`.
     let pem_start = "-----BEGIN ";
     let pem_end = ["PRIVATE", " KEY-----"].concat();
     if content.contains(pem_start) && content.contains(&pem_end) {
+        return true;
+    }
+    // PGP armored PRIVATE key blocks end `PRIVATE KEY BLOCK-----`, not `PRIVATE KEY-----`,
+    // so the PEM check above misses them. This is the secret a dual-use `.asc` might hold
+    // (now that `.asc` is content-gated rather than extension-skipped). Public-key blocks
+    // and detached signatures are NOT secret, so they are intentionally not matched here —
+    // an AsciiDoc page that merely shows a public key or signature still indexes. Built by
+    // concat (like `pem_end`) so this source file never contains the contiguous marker and
+    // thus never flags itself as a secret.
+    let pgp_priv_end = ["PGP PRIVATE", " KEY BLOCK-----"].concat();
+    if content.contains(&pgp_priv_end) {
         return true;
     }
     // Provider tokens: a fixed prefix followed by N token chars. Scanning by
@@ -505,6 +523,37 @@ mod tests {
             45, 45, 45,
         ]);
         assert!(content_has_high_confidence_secret(&pem_key));
+    }
+
+    #[test]
+    fn asc_is_dual_use_doc_not_blanket_secret() {
+        // `.asc` is the canonical AsciiDoc extension (Pro Git and many book/doc repos),
+        // so it must index — NOT be skipped by extension as a PGP file. Other crypto
+        // extensions stay protected.
+        assert!(!is_secret_path(Path::new(
+            "book/03-git-tools/sections/signing.asc"
+        )));
+        assert!(!is_secret_path(Path::new("docs/intro.asc")));
+        assert!(is_secret_path(Path::new("secrets/server.pem")));
+        assert!(is_secret_path(Path::new("backup/key.gpg")));
+
+        // A real armored PRIVATE key inside a `.asc` is still caught by the CONTENT gate.
+        // Marker built by concat so this source file never holds it contiguously.
+        let priv_block = format!(
+            "-----BEGIN {}\nlQVYBF...\n-----END {}",
+            ["PGP PRIVATE", " KEY BLOCK-----"].concat(),
+            ["PGP PRIVATE", " KEY BLOCK-----"].concat()
+        );
+        assert!(content_has_high_confidence_secret(&priv_block));
+
+        // A PUBLIC key block or detached signature (what a signing chapter shows) is NOT a
+        // secret, so the AsciiDoc page still indexes.
+        assert!(!content_has_high_confidence_secret(
+            "-----BEGIN PGP PUBLIC KEY BLOCK-----\nmQENBF...\n-----END PGP PUBLIC KEY BLOCK-----"
+        ));
+        assert!(!content_has_high_confidence_secret(
+            "-----BEGIN PGP SIGNATURE-----\niQEzBA...\n-----END PGP SIGNATURE-----"
+        ));
     }
 
     #[test]
