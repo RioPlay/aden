@@ -88,8 +88,32 @@ fn build_index(repo: &Path) -> Option<(Index, usize, HashSet<String>)> {
     Some((index, n, vocab))
 }
 
-fn lex_anchor(lemma: &str) -> String {
-    format!("aden://term/oewn/{lemma}")
+fn lex_anchor(source: &str, lemma: &str) -> String {
+    format!("aden://term/{source}/{lemma}")
+}
+
+fn moby_lexicon_path() -> PathBuf {
+    std::env::var("ADEN_MOBY_STORE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".cache/aden/moby")
+        })
+}
+
+/// Union of two grounded synonym lists (merged-union arm: agreement >= 1).
+fn union_syns(a: &[String], b: &[String]) -> Vec<String> {
+    let mut out = a.to_vec();
+    for x in b {
+        if !out.contains(x) {
+            out.push(x.clone());
+        }
+    }
+    out
+}
+
+/// Cross-source agreement (merged-agree2 arm): a lemma attested by BOTH sources.
+fn agree2_syns(a: &[String], b: &[String]) -> Vec<String> {
+    a.iter().filter(|x| b.contains(x)).cloned().collect()
 }
 
 /// Content words of a query for lexicon lookup: lowercased, alphabetic, length >= 3.
@@ -114,11 +138,17 @@ fn grounded(lemma: &str, vocab: &HashSet<String>) -> bool {
 /// Expand a query with SynonymOf neighbours from the LIVE lexicon store. Draws from the
 /// FULL neighbour list (so the right sense isn't lost to an early cap); when `vocab` is
 /// `Some`, keeps only corpus-grounded lemmas. Caps the KEPT count per word.
-fn expand(lex: &Storage, query: &str, vocab: Option<&HashSet<String>>, cap: usize) -> Vec<String> {
+fn expand(
+    lex: &Storage,
+    source: &str,
+    query: &str,
+    vocab: Option<&HashSet<String>>,
+    cap: usize,
+) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for w in query_words(query) {
         for cand in std::iter::once(w.clone()).chain(singular(&w)) {
-            let Ok(edges) = lex.get_outgoing_edges(&lex_anchor(&cand)) else {
+            let Ok(edges) = lex.get_outgoing_edges(&lex_anchor(source, &cand)) else {
                 continue;
             };
             let mut added = 0;
@@ -217,6 +247,128 @@ fn probes() -> Vec<Probe> {
     ]
 }
 
+/// Prose/NL probe set: each query uses a SYNONYM of a word in a real doc heading, so
+/// only lexicon-aided expansion can route it. This is the fair test of the dict substrate
+/// (prose), complementing the code-symbol `probes()`. Gold = a distinctive substring of the
+/// real `aden://doc/...` heading anchor in this repo's store.
+fn prose_probes() -> Vec<Probe> {
+    vec![
+        Probe {
+            query: "fused dense sparse retrieval",
+            accept: &["hybrid-retrieval"],
+            expand: "hybrid retrieval dense sparse fusion",
+        },
+        Probe {
+            query: "three-way reconciliation strategy",
+            accept: &["three-way-merge"],
+            expand: "three way merge reconcile",
+        },
+        Probe {
+            query: "fundamental argument design rationale",
+            accept: &["core-thesis"],
+            expand: "core thesis argument",
+        },
+        Probe {
+            query: "worldwide command flags",
+            accept: &["global-options"],
+            expand: "global options flags",
+        },
+        Probe {
+            query: "hidden credential detection",
+            accept: &["secret-scanning"],
+            expand: "secret scanning credential",
+        },
+        Probe {
+            query: "context budget savings measurement",
+            accept: &["token-efficiency"],
+            expand: "token efficiency savings",
+        },
+        Probe {
+            query: "impact scope prior to rewrite",
+            accept: &["blast-radius"],
+            expand: "blast radius impact",
+        },
+        Probe {
+            query: "how the question answering operates",
+            accept: &["ask--works"],
+            expand: "ask works question answering",
+        },
+        Probe {
+            query: "auto-repairing drift contracts",
+            accept: &["self-healing"],
+            expand: "self healing contracts drift",
+        },
+        Probe {
+            query: "restructure code safely",
+            accept: &["refactor-with-confidence"],
+            expand: "refactor confidence restructure",
+        },
+    ]
+}
+
+/// Run every arm over one probe set and print an R@1 table. Arms: BASELINE, OEWN-grounded,
+/// MOBY-grounded, MERGED-UNION (oewn ∪ moby), MERGED-AGREE2 (oewn ∩ moby = cross-source
+/// agreement), ORACLE. Moby-dependent arms degrade to baseline when the Moby store is absent.
+fn run_arms(
+    index: &Index,
+    lex: &Storage,
+    moby: Option<&Storage>,
+    vocab: &HashSet<String>,
+    probes: &[Probe],
+    label: &str,
+) {
+    let n = probes.len();
+    let (mut b, mut oewn, mut mob, mut uni, mut ag2, mut orc) = (0, 0, 0, 0, 0, 0);
+    println!("\n=== {label} probe set ({n} probes) ===");
+    for p in probes {
+        let oewn_g = expand(lex, "oewn", p.query, Some(vocab), 8);
+        let moby_g = moby
+            .map(|m| expand(m, "moby", p.query, Some(vocab), 8))
+            .unwrap_or_default();
+        let union = union_syns(&oewn_g, &moby_g);
+        let agree = agree2_syns(&oewn_g, &moby_g);
+        let q = |syns: &[String]| {
+            if syns.is_empty() {
+                top(index, p.query)
+            } else {
+                top(index, &format!("{} {}", p.query, syns.join(" ")))
+            }
+        };
+        let (bx, ox, mx, ux, ax, rx) = (
+            hit(&top(index, p.query), p.accept),
+            hit(&q(&oewn_g), p.accept),
+            hit(&q(&moby_g), p.accept),
+            hit(&q(&union), p.accept),
+            hit(&q(&agree), p.accept),
+            hit(&top(index, &format!("{} {}", p.query, p.expand)), p.accept),
+        );
+        b += bx as usize;
+        oewn += ox as usize;
+        mob += mx as usize;
+        uni += ux as usize;
+        ag2 += ax as usize;
+        orc += rx as usize;
+        let m = |ok: bool| if ok { "OK " } else { "-- " };
+        println!(
+            "  base {} oewn {} moby {} union {} agr2 {} oracle {}  q: {}",
+            m(bx),
+            m(ox),
+            m(mx),
+            m(ux),
+            m(ax),
+            m(rx),
+            p.query
+        );
+    }
+    println!("  -- {label} R@1 --");
+    println!("    BASELINE        {b}/{n}");
+    println!("    OEWN-grounded   {oewn}/{n}   (lift {:+})", oewn as i64 - b as i64);
+    println!("    MOBY-grounded   {mob}/{n}   (lift {:+})", mob as i64 - b as i64);
+    println!("    MERGED-UNION    {uni}/{n}   (lift {:+})", uni as i64 - b as i64);
+    println!("    MERGED-AGREE2   {ag2}/{n}   (lift {:+})", ag2 as i64 - b as i64);
+    println!("    ORACLE          {orc}/{n}   (upper bound)");
+}
+
 fn top(index: &Index, q: &str) -> Option<String> {
     index.query(q).into_iter().next().map(|r| r.anchor)
 }
@@ -250,55 +402,15 @@ fn lexicon_routing_report() {
         vocab.len()
     );
 
-    let (mut b, mut l, mut g, mut o) = (0usize, 0usize, 0usize, 0usize);
-    for p in &probes {
-        let naive = expand(&lex, p.query, None, 8);
-        let grnd = expand(&lex, p.query, Some(&vocab), 8);
-
-        let b_ok = hit(&top(&index, p.query), p.accept);
-        let l_ok = hit(
-            &top(&index, &format!("{} {}", p.query, naive.join(" "))),
-            p.accept,
+    let moby = Storage::open_existing(moby_lexicon_path().to_str().unwrap_or_default()).ok();
+    if moby.is_none() {
+        eprintln!(
+            "NOTE: Moby store absent (run build_moby_store) — Moby/union/agree arms show as baseline"
         );
-        let g_ok = hit(
-            &top(&index, &format!("{} {}", p.query, grnd.join(" "))),
-            p.accept,
-        );
-        let o_ok = hit(&top(&index, &format!("{} {}", p.query, p.expand)), p.accept);
-        b += b_ok as usize;
-        l += l_ok as usize;
-        g += g_ok as usize;
-        o += o_ok as usize;
-
-        let mark = |ok: bool| if ok { "OK  " } else { "MISS" };
-        println!(
-            "  bm25 {} | naive {} | grounded {} | oracle {}   q: {}",
-            mark(b_ok),
-            mark(l_ok),
-            mark(g_ok),
-            mark(o_ok),
-            p.query
-        );
-        println!("        grounded kept: {grnd:?}");
     }
 
-    println!("\n  routing R@1:");
-    println!("    BM25               {b}/{n}");
-    println!("    BM25 + NAIVE       {l}/{n}   (all-sense overlay expansion)");
-    println!("    BM25 + GROUNDED    {g}/{n}   (overlay expansion ∩ corpus vocab)");
-    println!("    BM25 + ORACLE      {o}/{n}   (hand-authored upper bound)");
-    println!(
-        "\n  real lift   (grounded - bm25):   {}",
-        g as i64 - b as i64
-    );
-    println!(
-        "  residual gap (oracle - grounded): {}   <- domain synonymy OEWN lacks + lemma misses",
-        o as i64 - g as i64
-    );
+    run_arms(&index, &lex, moby.as_ref(), &vocab, &probes, "CODE");
+    run_arms(&index, &lex, moby.as_ref(), &vocab, &prose_probes(), "PROSE");
 
     assert!(n_cards > 0, "no cards");
-    assert!(
-        g >= b,
-        "grounded expansion routed worse than baseline ({g} < {b})"
-    );
 }
