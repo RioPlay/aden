@@ -83,13 +83,15 @@ enum WorkItem {
         source_mtime: u64,
         source_path: String,
         symbols: Vec<EmittedSymbol>,
-        /// Slimmed documents to write to the store. Carried out of the parallel
-        /// pass so the actual `put_document` happens *sequentially in sorted
-        /// source order* in Phase 2 — otherwise two files sharing a basename
-        /// anchor (e.g. `openapi2/helpers.go` + `openapi3/helpers.go` →
-        /// `helpers.go#copyURI`) race, and the collision winner (hence the index)
-        /// is non-deterministic. Empty on a `--propose` dry-run.
-        docs: Vec<aden_core::Document>,
+        /// Slimmed documents to write to the store, each paired with its base
+        /// snapshot (the lossless `emit_contract_document` text, emitted here in
+        /// the parallel pass so the serial writer stays pure I/O). Carried out
+        /// of the parallel pass so the actual write happens *sequentially in
+        /// sorted source order* in Phase 2 — otherwise two files sharing a
+        /// basename anchor (e.g. `openapi2/helpers.go` + `openapi3/helpers.go` →
+        /// `helpers.go#copyURI`) race, and the collision winner (hence the
+        /// index) is non-deterministic. Empty on a `--propose` dry-run.
+        docs: Vec<(aden_core::Document, String)>,
         /// Anchors whose freshly-generated content collided with durable
         /// `[human]`/`[agent]` overlay intent. Surfaced as proposals; the
         /// stored document is left untouched for these.
@@ -1599,7 +1601,7 @@ fn cmd_gen_inner(
                 // deterministically instead of racing across worker threads.
                 let mut emitted = Vec::new();
                 let mut conflicts: Vec<(String, aden_core::contract::MergeProposal)> = Vec::new();
-                let mut docs_local: Vec<aden_core::Document> = Vec::new();
+                let mut docs_local: Vec<(aden_core::Document, String)> = Vec::new();
                 for doc in docs {
                     let mut doc_clone = doc.clone();
                     sanitize_source_file(&mut doc_clone, &root);
@@ -1672,9 +1674,18 @@ fn cmd_gen_inner(
                         defines_terms,
                         wrote: write,
                     });
-                    // Defer the write — Phase 2 stores these in sorted source order.
+                    // Defer the write — Phase 2 stores these in sorted source
+                    // order. Emit the base snapshot HERE (in the parallel pass),
+                    // not in the serial writer: it is the lossless
+                    // `emit_contract_document` text for this exact slimmed doc
+                    // (`parse_contract` is its inverse), so computing it
+                    // per-worker keeps Phase 2's single-threaded write loop to
+                    // pure I/O.
                     if write {
-                        docs_local.push(doc_clone);
+                        let snapshot = aden_emit::emit_contract_document(
+                            &aden_core::contract::ContractDocument::from_document(&doc_clone),
+                        );
+                        docs_local.push((doc_clone, snapshot));
                     }
                 }
 
@@ -1735,26 +1746,17 @@ fn cmd_gen_inner(
                     docs,
                     conflicts,
                 } => {
-                    for d in &docs {
-                        if let Err(e) = storage.put_document(d) {
-                            eprintln!("WARN: Failed to store {}: {}", d.anchor, e);
-                            continue;
-                        }
-                        // Record the canonical contract text as the base snapshot
-                        // for three-way merges.  The snapshot is the
-                        // `emit_contract_document` output for the exact document
-                        // written above (already slimmed by slim_doc_for_store);
-                        // `parse_contract` is its exact inverse so the round-trip
-                        // is lossless.
-                        let snapshot = aden_emit::emit_contract_document(
-                            &aden_core::contract::ContractDocument::from_document(d),
-                        );
-                        if let Err(e) = storage.put_base_snapshot(&d.anchor, &snapshot) {
-                            eprintln!(
-                                "WARN: Failed to record base snapshot for {}: {}",
-                                d.anchor, e
-                            );
-                        }
+                    // Documents + their base snapshots commit in ONE atomic
+                    // fjall batch per file (snapshots were already emitted in
+                    // the parallel pass). Per-file — not one global — batching is
+                    // deliberate: an atomic batch gives every item the same
+                    // sequence number, so keys within a batch must be unique.
+                    // Anchors are unique within a single source file, and files
+                    // commit in sorted order (see the `work_items.sort_by`
+                    // above), so the cross-file basename-collision rule
+                    // (last-sorted-source wins) is preserved.
+                    if let Err(e) = storage.put_documents_bulk(&docs) {
+                        eprintln!("WARN: Failed to store documents for {}: {}", source_path, e);
                     }
                     merge_conflicts.extend(conflicts);
                     // The module-form anchor flattens the directory, so
