@@ -27,11 +27,18 @@ const GLOBAL_FLAGS: &[&str] = &["--json", "--unlimited", "--verbose", "--project
 /// Every entry must carry a reason — an empty list is the healthy state.
 /// (Positional CLI args are out of scope here: the reverse check enumerates
 /// `--long` flags only; positionals are covered by the forward direction.)
-const REVERSE_EXEMPT: &[(&str, &str, &str)] = &[(
-    "heal",
-    "--watch",
-    "long-running file-watch daemon; always trips the MCP request/response timeout",
-)];
+const REVERSE_EXEMPT: &[(&str, &str, &str)] = &[
+    (
+        "heal",
+        "--watch",
+        "long-running file-watch daemon; always trips the MCP request/response timeout",
+    ),
+    (
+        "impact-diff",
+        "--run-tests",
+        "runs the affected test suite (cargo test); long-running and side-effecting, trips the MCP request/response timeout — test execution stays a CLI/human action",
+    ),
+];
 
 /// Top-level CLI commands with NO MCP tool, each with the reason it is kept
 /// off the MCP surface. A new CLI command fails the coverage test until it

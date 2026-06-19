@@ -554,6 +554,7 @@ static TOOLS: &[ToolSpec] = &[
             ("silent", "boolean"),
             ("auto", "boolean"),
             ("strict", "boolean"),
+            ("select", "boolean"),
         ],
         effect: Effect::Read,
         tier: Tier::Core,
