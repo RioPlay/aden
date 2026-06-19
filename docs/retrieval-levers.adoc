@@ -24,11 +24,13 @@ The two substrates are not interchangeable, and mixing them backfires:
 
 == Using the levers
 
-All three switches are environment variables and all are off by default, so routing is unchanged unless one is set.
+Auto-gating is **on by default**, routed by the detected text (see below). The switches are environment variables:
 
-`ADEN_LEXICON_EXPAND`:: Force the prose lever. Grounds and appends OEWN synonyms to the query before retrieval. Grounding means a synonym is kept only if it tokenizes entirely into the corpus vocabulary, so the dictionary only ever adds words the corpus actually uses.
-`ADEN_PPMI_RERANK`:: Force the code lever. Reranks the top window of results by corpus PPMI co-occurrence between the query terms and each candidate's terms.
-`ADEN_LEXICON_AUTO`:: Auto-gate both levers on the detected text (recommended for mixed repositories).
+`ADEN_LEXICON_OFF`:: Disable auto-gating entirely (plain retrieval, exactly as before the levers).
+`ADEN_LEXICON_EXPAND`:: Force the prose lever even when disabled. Grounds and appends OEWN synonyms to the query before retrieval. Grounding means a synonym is kept only if it tokenizes entirely into the corpus vocabulary, so the dictionary only ever adds words the corpus actually uses.
+`ADEN_PPMI_RERANK`:: Force the code lever even when disabled. Reranks the top window of results by corpus PPMI co-occurrence between the query terms and each candidate's terms.
+
+Both levers are grounded and corpus-gated, so default-on is safe: the prose lever no-ops when the OEWN store is absent or the corpus lacks the vocabulary, and the code lever only fires on a code-bearing corpus.
 
 === How auto-gating decides
 
@@ -80,8 +82,8 @@ OEWN beats Moby substantially on prose (curated WordNet vs broad noisy thesaurus
 
 == MCP
 
-The MCP `ask` and `search` tools shell out to the `aden` CLI, so they inherit these levers from the MCP server's environment. To enable auto-gating for MCP clients, set `ADEN_LEXICON_AUTO=1` (and build the lexicon store) in the environment the MCP server runs under. No tool-schema change is needed: the levers are deployment configuration, not per-call parameters.
+The MCP `ask` and `search` tools shell out to the `aden` CLI, so they inherit these levers automatically (auto-gating is on by default in the CLI). Build the OEWN lexicon store to get the prose lever; set `ADEN_LEXICON_OFF` in the MCP server environment to disable. No tool-schema change is needed: the levers are deployment configuration, not per-call parameters.
 
 == Status
 
-The levers are opt-in pending wider evaluation before any default-on decision. They are grounded and corpus-gated, so they are safe to enable. ConceptNet is excluded from the lexical overlay (CC-BY-SA ShareAlike, incompatible with aden's AGPL distribution); see `LEXICON-SOURCES.md` when a prebuilt store is shipped.
+Auto-gating is **on by default** as of 2026-06-19, after an end-to-end OFF vs ON bench with the shipped binary: prose synonym-bridge R@1 went 0/15 -> 15/15, and code rank-of-gold improved (e.g. `rrf_fuse` 18 -> 1, MRR 0.216 -> 0.289 in the harness), with no regression (the rerank is rerank-of-the-hybrid-base, never worse). Disable with `ADEN_LEXICON_OFF`. The levers are grounded and corpus-gated, so they no-op where they would not help. ConceptNet is excluded from the lexical overlay (CC-BY-SA ShareAlike, incompatible with aden's AGPL distribution); see `LEXICON-SOURCES.md` when a prebuilt store is shipped.

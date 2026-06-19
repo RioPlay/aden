@@ -1067,14 +1067,16 @@ fn has_camel_hump(t: &str) -> bool {
 /// - PROSE lever: ground-and-append OEWN synonyms before retrieval (prose R@1 1/42 -> 41/42).
 /// - CODE lever: PPMI rerank of the top window by corpus co-occurrence (code MRR 0.216 -> 0.289).
 ///
-/// `ADEN_LEXICON_AUTO` auto-gates both on the detected text: expand for non-pure-code queries
+/// Auto-gating is ON BY DEFAULT, routed by the detected text: expand for non-pure-code queries
 /// (grounding makes it a no-op where the corpus lacks the vocabulary), and rerank when the query
-/// looks code-y OR the corpus is code-bearing (so NL-over-code queries still get the lift). The
-/// explicit `ADEN_LEXICON_EXPAND` / `ADEN_PPMI_RERANK` flags force a lever on regardless. All off
-/// by default, so routing is unchanged unless one is set. Expansion feeds the base ranking; the
-/// rerank keys off the ORIGINAL query terms.
+/// looks code-y OR the corpus is code-bearing (so NL-over-code queries still get the lift). Set
+/// `ADEN_LEXICON_OFF` to disable both; the explicit `ADEN_LEXICON_EXPAND` / `ADEN_PPMI_RERANK`
+/// flags force a lever on even when disabled. Both levers are grounded and corpus-gated, so they
+/// no-op where they would not help (the prose lever needs the OEWN store; absent it, retrieval is
+/// unchanged). Expansion feeds the base ranking; the rerank keys off the ORIGINAL query terms.
+/// Benched OFF->ON: prose R@1 0/15 -> 15/15 (end-to-end), code MRR 0.216 -> 0.289 (harness).
 pub fn query_index(index: &aden_index::Index, query: &str) -> Vec<aden_index::SearchResult> {
-    let auto = std::env::var_os("ADEN_LEXICON_AUTO").is_some();
+    let auto = std::env::var_os("ADEN_LEXICON_OFF").is_none();
     let codey = query_looks_codey(query);
 
     let do_expand = std::env::var_os("ADEN_LEXICON_EXPAND").is_some() || (auto && !codey);
