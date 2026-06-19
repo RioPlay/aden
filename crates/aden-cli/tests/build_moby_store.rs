@@ -104,9 +104,7 @@ fn build_moby_store() {
     println!("Mapped edges   : {}", edges.len());
     println!("Moby store     : {}", store_path.display());
 
-    store
-        .put_edges_bulk(&edges)
-        .expect("bulk-write Moby edges");
+    store.put_edges_bulk(&edges).expect("bulk-write Moby edges");
 
     // Read back counts to verify the write landed.
     let count = |et: EdgeType| store.get_edges_by_type(&et).map(|v| v.len()).unwrap_or(0);

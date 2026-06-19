@@ -362,10 +362,22 @@ fn run_arms(
     }
     println!("  -- {label} R@1 --");
     println!("    BASELINE        {b}/{n}");
-    println!("    OEWN-grounded   {oewn}/{n}   (lift {:+})", oewn as i64 - b as i64);
-    println!("    MOBY-grounded   {mob}/{n}   (lift {:+})", mob as i64 - b as i64);
-    println!("    MERGED-UNION    {uni}/{n}   (lift {:+})", uni as i64 - b as i64);
-    println!("    MERGED-AGREE2   {ag2}/{n}   (lift {:+})", ag2 as i64 - b as i64);
+    println!(
+        "    OEWN-grounded   {oewn}/{n}   (lift {:+})",
+        oewn as i64 - b as i64
+    );
+    println!(
+        "    MOBY-grounded   {mob}/{n}   (lift {:+})",
+        mob as i64 - b as i64
+    );
+    println!(
+        "    MERGED-UNION    {uni}/{n}   (lift {:+})",
+        uni as i64 - b as i64
+    );
+    println!(
+        "    MERGED-AGREE2   {ag2}/{n}   (lift {:+})",
+        ag2 as i64 - b as i64
+    );
     println!("    ORACLE          {orc}/{n}   (upper bound)");
 }
 
@@ -410,7 +422,14 @@ fn lexicon_routing_report() {
     }
 
     run_arms(&index, &lex, moby.as_ref(), &vocab, &probes, "CODE");
-    run_arms(&index, &lex, moby.as_ref(), &vocab, &prose_probes(), "PROSE");
+    run_arms(
+        &index,
+        &lex,
+        moby.as_ref(),
+        &vocab,
+        &prose_probes(),
+        "PROSE",
+    );
 
     assert!(n_cards > 0, "no cards");
 }
