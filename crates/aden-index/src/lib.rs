@@ -1345,6 +1345,107 @@ impl Index {
             })
             .collect()
     }
+
+    /// Rerank the top-`top_k` of a base result list by corpus PPMI co-occurrence between the
+    /// query terms and each candidate document's terms. This is a purely CORPUS-DERIVED signal
+    /// (positive pointwise mutual information over the index's own postings), with no external
+    /// dictionary: the lexical-merge ablation showed dictionaries dilute it, while PPMI alone
+    /// lifted code retrieval over the hybrid base (compound_ab A/B: MRR 0.216 -> 0.289). Terms
+    /// are df-gated (`MIN_DF..=20% of corpus`) to drop both hapax noise and ubiquitous tokens.
+    /// The tail past `top_k` keeps its base order. Returns `base` unchanged when there is no
+    /// usable signal (empty corpus/base, or no in-band query term).
+    pub fn ppmi_rerank(
+        &self,
+        query: &str,
+        base: Vec<SearchResult>,
+        top_k: usize,
+    ) -> Vec<SearchResult> {
+        const MIN_DF: usize = 3;
+        const MAX_DF_FRAC: f64 = 0.20;
+        const W_REL: f64 = 2.0;
+
+        let n = self.doc_lengths.len();
+        if n == 0 || base.is_empty() {
+            return base;
+        }
+        let max_df = (MAX_DF_FRAC * n as f64) as usize;
+        let df = |t: &str| self.inverted.get(t).map_or(0, |v| v.len());
+        let in_band = |t: &str| (MIN_DF..=max_df).contains(&df(t));
+        let posting_set = |t: &str| -> std::collections::HashSet<&str> {
+            self.inverted
+                .get(t)
+                .map(|v| v.iter().map(|(a, _)| a.as_str()).collect())
+                .unwrap_or_default()
+        };
+
+        // Posting sets for the in-band query terms (computed once).
+        let q_sets: Vec<std::collections::HashSet<&str>> = tokenize(query)
+            .into_iter()
+            .filter(|t| in_band(t))
+            .map(|t| posting_set(&t))
+            .collect();
+        if q_sets.is_empty() {
+            return base;
+        }
+
+        // PPMI of two terms via their posting (anchor) sets: max(0, log2(co*n / (dfa*dfb))).
+        let ppmi = |qset: &std::collections::HashSet<&str>, ct: &str| -> f64 {
+            let clen = df(ct);
+            if clen == 0 || qset.is_empty() {
+                return 0.0;
+            }
+            let cset = posting_set(ct);
+            let (small, big) = if qset.len() <= cset.len() {
+                (qset, &cset)
+            } else {
+                (&cset, qset)
+            };
+            let co = small.iter().filter(|x| big.contains(*x)).count();
+            if co == 0 {
+                return 0.0;
+            }
+            ((co as f64 * n as f64) / (qset.len() as f64 * clen as f64))
+                .log2()
+                .max(0.0)
+        };
+
+        let k = top_k.min(base.len());
+        let mut head: Vec<(usize, f64)> = (0..k)
+            .map(|i| {
+                let card: std::collections::HashSet<String> = self
+                    .anchor_text
+                    .get(&base[i].anchor)
+                    .map(|t| tokenize(t).into_iter().collect())
+                    .unwrap_or_default();
+                // Each query term scores its single best (max-PPMI) in-band card term; sum over
+                // query terms. Mirrors the validated `rel_score` minus the dictionary bonus.
+                let rel: f64 = q_sets
+                    .iter()
+                    .map(|qset| {
+                        card.iter()
+                            .filter(|ct| in_band(ct))
+                            .map(|ct| ppmi(qset, ct))
+                            .fold(0.0_f64, f64::max)
+                    })
+                    .sum();
+                (i, rel)
+            })
+            .collect();
+
+        let max_rel = head.iter().map(|(_, r)| *r).fold(0.0_f64, f64::max);
+        if max_rel <= 0.0 {
+            return base; // no co-occurrence signal in the window
+        }
+        // Blend base rank (1/(rank)) with normalized relevance; reorder the window only.
+        head.sort_by(|a, b| {
+            let sa = 1.0 / (a.0 + 1) as f64 + W_REL * a.1 / max_rel;
+            let sb = 1.0 / (b.0 + 1) as f64 + W_REL * b.1 / max_rel;
+            sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let mut out: Vec<SearchResult> = head.into_iter().map(|(i, _)| base[i].clone()).collect();
+        out.extend(base.into_iter().skip(k));
+        out
+    }
 }
 
 // Tests live here, mid-file, with the semantic-normalization helpers below them

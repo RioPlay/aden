@@ -984,14 +984,25 @@ pub fn fmt_score(score: f64) -> String {
 /// stays consistent.
 pub fn query_index(index: &aden_index::Index, query: &str) -> Vec<aden_index::SearchResult> {
     #[cfg(feature = "dense")]
+    let base = if index.has_embeddings()
+        && let Some(emb) = dense_embedder()
     {
-        if index.has_embeddings()
-            && let Some(emb) = dense_embedder()
-        {
-            return index.hybrid_query(query, emb);
-        }
+        index.hybrid_query(query, emb)
+    } else {
+        index.query(query)
+    };
+    #[cfg(not(feature = "dense"))]
+    let base = index.query(query);
+
+    // Phase 2.5: opt-in corpus-derived PPMI rerank of the top window. Off by default, so
+    // routing is unchanged unless `ADEN_PPMI_RERANK` is set. The lexical-merge ablation found
+    // this corpus signal (no external dictionary) is what lifts code retrieval over the hybrid
+    // base; dictionaries diluted it. Kept behind a flag pending wider eval before defaulting on.
+    if std::env::var_os("ADEN_PPMI_RERANK").is_some() {
+        index.ppmi_rerank(query, base, 50)
+    } else {
+        base
     }
-    index.query(query)
 }
 
 /// Cross-query CALIBRATED confidence that `query` has a genuinely good match in
