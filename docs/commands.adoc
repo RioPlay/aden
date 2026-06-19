@@ -257,6 +257,11 @@ aden asm --from mod-aden-core --auto
 # Strict mode (never exceed budget)
 aden asm --from mod-aden-core --strict
 
+# Query-aware selection: gather the neighborhood, then keep the nodes most
+# relevant to --from, so a tight budget reaches the answer even when it sits
+# behind low-priority members (e.g. a class's methods). Opt-in.
+aden asm --from QueryClient --select --budget 256
+
 # Tag filtering
 aden asm --from mod-aden-core --include-tag main
 aden asm --from mod-aden-core --exclude-tag admin
@@ -277,6 +282,7 @@ aden asm --from mod-aden-core --set-attr mode=production
 |--silent |Skip intro, output only context |false
 |--auto |Adjust budget based on relevance |false
 |--strict |Never exceed budget |false
+|--select |Query-aware: gather the neighborhood then select to budget by relevance to `--from` (reaches answers behind low-priority members; an off-topic-safety gate falls back to the structural walk when no good match exists) |false
 |--inspect |Show what would be included |false
 |--include-tag |Include content with this tag |—
 |--exclude-tag |Exclude content with this tag |—
