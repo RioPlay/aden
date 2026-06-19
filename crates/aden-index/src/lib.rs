@@ -783,6 +783,15 @@ impl Index {
         self.doc_lengths.get(anchor).copied().unwrap_or(0)
     }
 
+    /// Whether the index has any posting for `term` (an already-tokenized term). Used by
+    /// query-time lexicon expansion to GROUND candidate synonyms to the corpus vocabulary, so
+    /// a dictionary only ever adds words the corpus actually uses (the WSD-noise fix the prose
+    /// ablation validated: dictionary synonyms absent from the corpus are dropped before they
+    /// can mislead ranking).
+    pub fn knows_term(&self, term: &str) -> bool {
+        self.inverted.contains_key(term)
+    }
+
     /// Recompute the BM25 average document length. Call once after ingestion.
     pub fn finalize(&mut self) {
         let total_len: usize = self.doc_lengths.values().sum();
