@@ -1004,9 +1004,17 @@ fn lexicon_store() -> Option<&'static aden_store::Storage> {
 fn expand_query_with_lexicon(index: &aden_index::Index, query: &str) -> Option<String> {
     use aden_store::GraphStorage as _;
     let store = lexicon_store()?;
+    // A synonym is kept only if it (a) tokenizes entirely into the corpus vocabulary
+    // AND (b) at least one of its tokens is *discriminative* (document frequency in the
+    // narrowing band). (b) is the fix for the external regression: grounding on mere
+    // presence let common-word synonyms ("change"->"alteration", "work"->"job") in, and
+    // those high-frequency terms scattered the ranking. The DF band drops them at the
+    // source, so expansion can only ever add terms that actually narrow the result set.
     let grounded = |lemma: &str| {
         let toks = aden_index::tokenize(lemma);
-        !toks.is_empty() && toks.iter().all(|t| index.knows_term(t))
+        !toks.is_empty()
+            && toks.iter().all(|t| index.knows_term(t))
+            && toks.iter().any(|t| index.term_is_discriminative(t))
     };
     let mut adds: Vec<String> = Vec::new();
     for w in query
@@ -1067,42 +1075,105 @@ fn has_camel_hump(t: &str) -> bool {
 /// - PROSE lever: ground-and-append OEWN synonyms before retrieval (prose R@1 1/42 -> 41/42).
 /// - CODE lever: PPMI rerank of the top window by corpus co-occurrence (code MRR 0.216 -> 0.289).
 ///
-/// Auto-gating is ON BY DEFAULT, routed by the detected text: expand for non-pure-code queries
-/// (grounding makes it a no-op where the corpus lacks the vocabulary), and rerank when the query
-/// looks code-y OR the corpus is code-bearing (so NL-over-code queries still get the lift). Set
-/// `ADEN_LEXICON_OFF` to disable both; the explicit `ADEN_LEXICON_EXPAND` / `ADEN_PPMI_RERANK`
-/// flags force a lever on even when disabled. Both levers are grounded and corpus-gated, so they
-/// no-op where they would not help (the prose lever needs the OEWN store; absent it, retrieval is
-/// unchanged). Expansion feeds the base ranking; the rerank keys off the ORIGINAL query terms.
-/// Benched OFF->ON: prose R@1 0/15 -> 15/15 (end-to-end), code MRR 0.216 -> 0.289 (harness).
+/// Auto-gating is OPT-IN (`ADEN_LEXICON_ON`), NOT on by default. The dual-substrate levers were
+/// originally validated on engineered probes (single-word, zero-vocabulary-overlap queries) and an
+/// in-process fixture harness, where each lever wins big. On the PRODUCT path over EXTERNAL repos
+/// with NATURAL multi-word queries they do NOT win — measured neutral-to-negative on every corpus
+/// (rustfmt/Go/flask/TS/prose) — because real queries already share vocabulary with the target, so
+/// expansion only injects noise. The previous ON-BY-DEFAULT setting therefore shipped a net
+/// regression (e.g. prose MRR 0.336->0.166, tanstack 0.104->0.007 on the same base). Default is now
+/// the baseline ranking (best of everything tested); the levers are opt-in and, when enabled, run
+/// behind the additive guard below so they cannot crater retrieval the way the blind-replace design
+/// did. `ADEN_LEXICON_OFF` still force-disables; `ADEN_LEXICON_EXPAND` / `ADEN_PPMI_RERANK` still
+/// force an individual lever on. Re-enabling by default must be gated on the EXTERNAL A/B harness
+/// (`scripts/lexicon_ab_bench.py`), not the in-tree fixtures.
 pub fn query_index(index: &aden_index::Index, query: &str) -> Vec<aden_index::SearchResult> {
-    let auto = std::env::var_os("ADEN_LEXICON_OFF").is_none();
+    let auto = std::env::var_os("ADEN_LEXICON_ON").is_some()
+        && std::env::var_os("ADEN_LEXICON_OFF").is_none();
     let codey = query_looks_codey(query);
 
+    // The baseline (unexpanded) ranking is ALWAYS computed and is the safety floor:
+    // the lexicon levers may only FUSE INTO it (base-weighted) or reorder its top-K,
+    // never replace it. The previous design rewrote the query and ran a SINGLE pass,
+    // so a misfiring expansion could evict the right result entirely — which it did on
+    // every external corpus measured. Retaining the base guarantees retrieval cannot
+    // drop below plain BM25/hybrid on any query.
+    let base = run_base(index, query);
+
+    // Expansion (prose lever): only when the query is non-code-shaped. Fuse the expanded
+    // ranking into the base with the base up-weighted, so even a surviving noisy synonym
+    // can nudge the tail but cannot displace a confident base hit.
     let do_expand = std::env::var_os("ADEN_LEXICON_EXPAND").is_some() || (auto && !codey);
-    let expanded = do_expand
-        .then(|| expand_query_with_lexicon(index, query))
-        .flatten();
-    let q: &str = expanded.as_deref().unwrap_or(query);
-
-    #[cfg(feature = "dense")]
-    let base = if index.has_embeddings()
-        && let Some(emb) = dense_embedder()
-    {
-        index.hybrid_query(q, emb)
-    } else {
-        index.query(q)
-    };
-    #[cfg(not(feature = "dense"))]
-    let base = index.query(q);
-
-    let do_rerank = std::env::var_os("ADEN_PPMI_RERANK").is_some()
-        || (auto && (codey || index.code_anchor_fraction() >= 0.5));
-    if do_rerank {
-        index.ppmi_rerank(query, base, 50)
+    let ranked = if do_expand {
+        match expand_query_with_lexicon(index, query) {
+            Some(expanded) => fuse_base_weighted(base, run_base(index, &expanded)),
+            None => base,
+        }
     } else {
         base
+    };
+
+    // PPMI rerank (code lever): restricted to genuinely code-shaped queries (or the
+    // explicit override). The old blanket `code_anchor_fraction >= 0.5` trigger fired the
+    // rerank on natural-language-over-code queries too, where it regressed externally;
+    // the validated win was on code-shaped queries, so gate on exactly that.
+    let do_rerank = std::env::var_os("ADEN_PPMI_RERANK").is_some() || (auto && codey);
+    if do_rerank {
+        index.ppmi_rerank(query, ranked, 50)
+    } else {
+        ranked
     }
+}
+
+/// Run the base ranking for `q`: hybrid (BM25+dense) when embeddings are present, else BM25.
+fn run_base(index: &aden_index::Index, q: &str) -> Vec<aden_index::SearchResult> {
+    #[cfg(feature = "dense")]
+    if index.has_embeddings()
+        && let Some(emb) = dense_embedder()
+    {
+        return index.hybrid_query(q, emb);
+    }
+    index.query(q)
+}
+
+/// Fuse a `base` ranking with an `exp`(anded) ranking via Reciprocal Rank Fusion, with the
+/// base up-weighted (`BASE_WEIGHT`). RRF combines by rank, not score, so the two passes
+/// (run over different query strings, hence different score scales) merge without
+/// normalization. Up-weighting the base means expansion can only lift a result the base
+/// ranked low or missed — it can never push a confidently-ranked base hit down. Fully
+/// deterministic (ties broken by anchor).
+fn fuse_base_weighted(
+    base: Vec<aden_index::SearchResult>,
+    exp: Vec<aden_index::SearchResult>,
+) -> Vec<aden_index::SearchResult> {
+    use std::collections::HashMap;
+    const K: f64 = 60.0;
+    const BASE_WEIGHT: f64 = 2.0;
+    let mut score: HashMap<String, f64> = HashMap::new();
+    for (i, r) in base.iter().enumerate() {
+        *score.entry(r.anchor.clone()).or_insert(0.0) += BASE_WEIGHT / (K + (i + 1) as f64);
+    }
+    for (i, r) in exp.iter().enumerate() {
+        *score.entry(r.anchor.clone()).or_insert(0.0) += 1.0 / (K + (i + 1) as f64);
+    }
+    // Keep one SearchResult per anchor, preferring the base object (its snippet/score
+    // reflect the user's literal query) over the expanded one.
+    let mut by_anchor: HashMap<String, aden_index::SearchResult> = HashMap::new();
+    for r in exp.into_iter() {
+        by_anchor.insert(r.anchor.clone(), r);
+    }
+    for r in base.into_iter() {
+        by_anchor.insert(r.anchor.clone(), r);
+    }
+    let mut out: Vec<aden_index::SearchResult> = by_anchor.into_values().collect();
+    out.sort_by(|a, b| {
+        let sa = score.get(&a.anchor).copied().unwrap_or(0.0);
+        let sb = score.get(&b.anchor).copied().unwrap_or(0.0);
+        sb.partial_cmp(&sa)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.anchor.cmp(&b.anchor))
+    });
+    out
 }
 
 /// Classify an anchor as *expected* metadata that legitimately has no graph

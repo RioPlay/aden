@@ -769,6 +769,35 @@ impl Index {
         self.inverted.contains_key(term)
     }
 
+    /// Document frequency of an already-tokenized `term` (number of postings). 0 if absent.
+    pub fn doc_frequency(&self, term: &str) -> usize {
+        self.inverted.get(term).map_or(0, |v| v.len())
+    }
+
+    /// Number of indexed documents — the denominator for document-frequency bands.
+    pub fn corpus_len(&self) -> usize {
+        self.doc_lengths.len()
+    }
+
+    /// Whether `term` is *discriminative*: its document frequency sits in the band
+    /// `MIN_DF..=MAX_DF_FRAC*N` — frequent enough to not be hapax noise, rare enough
+    /// to not be a ubiquitous stop-word-like token. This is the SAME band `ppmi_rerank`
+    /// uses; query-time lexicon expansion reuses it so a dictionary can only inject
+    /// synonyms that actually narrow the result set, never high-frequency common-word
+    /// synonyms (the noise that regressed external prose/code retrieval when expansion
+    /// grounded on mere presence). Mirrors `ppmi_rerank`'s `MIN_DF` / `MAX_DF_FRAC`.
+    pub fn term_is_discriminative(&self, term: &str) -> bool {
+        const MIN_DF: usize = 3;
+        const MAX_DF_FRAC: f64 = 0.20;
+        let n = self.corpus_len();
+        if n == 0 {
+            return false;
+        }
+        let df = self.doc_frequency(term);
+        let max_df = (MAX_DF_FRAC * n as f64) as usize;
+        df >= MIN_DF && df <= max_df.max(MIN_DF)
+    }
+
     /// Fraction of indexed anchors that are CODE symbols (the `aden://module/...` scheme), vs
     /// prose/doc anchors (`aden://doc/...`). A cheap corpus-substrate signal for auto-gating the
     /// dual-substrate retrieval levers: a code-bearing corpus benefits from the PPMI rerank even
