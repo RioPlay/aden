@@ -2703,6 +2703,26 @@ pub fn cmd_list(
 /// symbol or contains `#symbol`. `None` when nothing matches — callers turn
 /// that into a helpful "not found" message. Factored out so it is unit-testable
 /// without a live store.
+/// Other store anchors that share `symbol`'s trailing `#symbol` segment, excluding
+/// `chosen` (the anchor `understand` resolved to). Non-empty means the name is
+/// defined in more than one place, so the single resolved view is incomplete — the
+/// siblings carry their own backlinks/impact (M16). Case-insensitive match, sorted
+/// + deduped for deterministic output.
+fn alternate_anchors<'a>(
+    symbol: &str,
+    chosen: &str,
+    anchors: impl Iterator<Item = &'a str>,
+) -> Vec<String> {
+    let sym_suffix = format!("#{}", symbol.to_lowercase());
+    let mut v: Vec<String> = anchors
+        .filter(|a| *a != chosen && a.to_lowercase().ends_with(&sym_suffix))
+        .map(|a| a.to_string())
+        .collect();
+    v.sort();
+    v.dedup();
+    v
+}
+
 fn pick_symbol_anchor(symbol: &str, anchors: &[String]) -> Option<String> {
     let sym = symbol.to_lowercase();
     let mut matched: Vec<&String> = anchors
@@ -2820,6 +2840,20 @@ pub fn cmd_understand(
         )
     })?;
 
+    // M16: surface the OTHER definitions that share this symbol name. `understand`
+    // resolves to exactly one anchor, so when a name is defined in several places
+    // (a helper copied across crates, an overridden method, two same-named symbols)
+    // the siblings — and their distinct backlinks/impact — were silently hidden.
+    // Mirror `ask`'s "alternate (ambiguous match)" notes: list every other anchor
+    // whose trailing `#symbol` segment matches, so the ambiguity is visible and the
+    // user can re-run on a fuller anchor to inspect another. Pure read over the
+    // already-loaded graph.
+    let alternates = alternate_anchors(
+        symbol,
+        &anchor,
+        graph.anchor_to_index.keys().map(|s| s.as_str()),
+    );
+
     // Definition location from the node's attributes.
     let def = {
         let node = &graph.graph[idx];
@@ -2891,6 +2925,7 @@ pub fn cmd_understand(
         let env = json!({
             "symbol": symbol,
             "anchor": anchor,
+            "alternates": alternates,
             "definition": def,
             "backlinks": backlinks,
             "impact": impact,
@@ -2913,6 +2948,21 @@ pub fn cmd_understand(
         println!("  {} {} ({}:{})", anchor, nt, file, line);
     }
     println!();
+
+    // M16: warn when the name is ambiguous so the shown view isn't mistaken for
+    // the whole story (the other definitions have their own backlinks/impact).
+    if !alternates.is_empty() {
+        println!(
+            "## Other definitions ({}) — '{}' is defined in more than one place",
+            alternates.len(),
+            symbol
+        );
+        for a in &alternates {
+            println!("  {}", a);
+        }
+        println!("  (showing the first above; re-run with a fuller anchor to inspect another)");
+        println!();
+    }
 
     println!("## Backlinks ({} reference(s))", backlinks.len());
     if backlinks.is_empty() {
@@ -3859,6 +3909,50 @@ mod tests {
             Some("crates/x.rs#AssembleContext".to_string())
         );
         assert_eq!(super::pick_symbol_anchor("nope_not_here", &anchors), None);
+    }
+
+    /// M16: `understand` must surface the OTHER definitions of a duplicated symbol
+    /// name (each has its own backlinks/impact) instead of silently showing one.
+    #[test]
+    fn understand_alternates_surface_duplicate_symbol_definitions() {
+        let anchors = [
+            "aden://module/aden-cli/src/util.rs#is_expected_metadata",
+            "aden://module/aden-heal/src/drift.rs#is_expected_metadata",
+            "aden://module/aden-cli/src/util.rs#classify_orphans", // unrelated, excluded
+        ];
+        let chosen = "aden://module/aden-cli/src/util.rs#is_expected_metadata";
+        let alts =
+            super::alternate_anchors("is_expected_metadata", chosen, anchors.iter().copied());
+        // The chosen anchor is excluded; the sibling (different file) is surfaced;
+        // the unrelated symbol is not.
+        assert_eq!(
+            alts,
+            vec!["aden://module/aden-heal/src/drift.rs#is_expected_metadata".to_string()]
+        );
+    }
+
+    /// A unique symbol has no alternates (the common case stays quiet), and the
+    /// match is case-insensitive on the trailing `#symbol` segment.
+    #[test]
+    fn understand_alternates_empty_for_unique_symbol_and_case_insensitive() {
+        let anchors = ["crates/x.rs#AssembleContext", "crates/y.rs#other"];
+        assert!(
+            super::alternate_anchors(
+                "assemblecontext",
+                "crates/z.rs#nope",
+                anchors.iter().copied()
+            )
+            .contains(&"crates/x.rs#AssembleContext".to_string())
+        );
+        // Only one definition besides the (non-matching) chosen → exactly one alt.
+        assert_eq!(
+            super::alternate_anchors(
+                "AssembleContext",
+                "crates/x.rs#AssembleContext",
+                anchors.iter().copied()
+            ),
+            Vec::<String>::new()
+        );
     }
 
     #[test]
