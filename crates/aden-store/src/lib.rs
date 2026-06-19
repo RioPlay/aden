@@ -179,6 +179,32 @@ pub trait GraphStorage: Send + Sync {
     /// `delete_node` cascade this automatically.
     fn delete_base_snapshot(&self, anchor: &str) -> Result<(), StoreError>;
 
+    /// Persist a batch of documents together with their base snapshots in one
+    /// atomic write.
+    ///
+    /// Each entry is a `(document, base_snapshot)` pair, where `base_snapshot`
+    /// is the `emit_contract_document` text for that exact document (see
+    /// [`put_base_snapshot`](Self::put_base_snapshot)). `gen` writes a contract
+    /// and its merge base together, so batching them turns 2*N individual
+    /// journal appends into one, and the commit is atomic — a crash never
+    /// leaves a document without its base (or vice-versa).
+    ///
+    /// Callers MUST keep all anchors within a single call distinct: an atomic
+    /// batch assigns one sequence number to every item, so two entries sharing
+    /// a key have an undefined winner. `gen` satisfies this by batching one
+    /// source file at a time (anchors are unique within a file) and committing
+    /// files in sorted order, so cross-file basename collisions still resolve
+    /// last-sorted-source-wins.
+    ///
+    /// Default impl falls back to per-item `put_document` + `put_base_snapshot`.
+    fn put_documents_bulk(&self, docs: &[(Document, String)]) -> Result<(), StoreError> {
+        for (doc, snapshot) in docs {
+            self.put_document(doc)?;
+            self.put_base_snapshot(&doc.anchor, snapshot)?;
+        }
+        Ok(())
+    }
+
     /// Get outgoing edges for an anchor.
     fn get_outgoing_edges(&self, anchor: &str) -> Result<Vec<(String, EdgeType)>, StoreError>;
 
@@ -420,6 +446,42 @@ mod tests {
             storage.get_base_snapshot("foo").unwrap().as_deref(),
             Some("v2")
         );
+        fs::remove_dir_all(&path).ok();
+    }
+
+    #[test]
+    fn put_documents_bulk_writes_docs_and_snapshots() {
+        // The batched ingest path must be observably equivalent to per-item
+        // `put_document` + `put_base_snapshot`: every document AND its base
+        // snapshot is retrievable after one atomic commit.
+        let path = temp_path();
+        let storage = Storage::new(&path).unwrap();
+        let batch = vec![
+            (note_doc("a"), "snap-a".to_string()),
+            (note_doc("b"), "snap-b".to_string()),
+            (note_doc("c"), "snap-c".to_string()),
+        ];
+        storage.put_documents_bulk(&batch).unwrap();
+        for (anchor, snap) in [("a", "snap-a"), ("b", "snap-b"), ("c", "snap-c")] {
+            assert!(
+                storage.get_document(anchor).unwrap().is_some(),
+                "doc {anchor} missing after bulk write"
+            );
+            assert_eq!(
+                storage.get_base_snapshot(anchor).unwrap().as_deref(),
+                Some(snap),
+                "snapshot for {anchor} missing/wrong after bulk write"
+            );
+        }
+        fs::remove_dir_all(&path).ok();
+    }
+
+    #[test]
+    fn put_documents_bulk_empty_is_noop() {
+        let path = temp_path();
+        let storage = Storage::new(&path).unwrap();
+        storage.put_documents_bulk(&[]).unwrap();
+        assert_eq!(storage.count_nodes().unwrap(), 0);
         fs::remove_dir_all(&path).ok();
     }
 

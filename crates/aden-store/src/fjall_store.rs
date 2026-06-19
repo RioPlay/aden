@@ -135,6 +135,27 @@ impl GraphStorage for FjallStorage {
         Ok(())
     }
 
+    fn put_documents_bulk(&self, docs: &[(Document, String)]) -> Result<(), StoreError> {
+        // One atomic fjall batch per call: every item shares a single journal
+        // append and sequence number, replacing 2*N individual `insert` calls
+        // (doc + base snapshot) with one. Because the whole batch gets the same
+        // seqno, anchors within `docs` MUST be distinct (the gen caller batches
+        // one source file at a time to guarantee this); the doc and its base
+        // commit together so a crash never leaves one without the other.
+        // Durability is the caller's trailing `flush()` (SyncAll) — the commit
+        // here only appends to the journal and applies to the memtable.
+        if docs.is_empty() {
+            return Ok(());
+        }
+        let mut batch = self.keyspace.batch();
+        for (doc, snapshot) in docs {
+            batch.insert(&self.docs, doc_key(&doc.anchor), serialize_document(doc)?);
+            batch.insert(&self.bases, base_key(&doc.anchor), snapshot.as_bytes());
+        }
+        batch.commit()?;
+        Ok(())
+    }
+
     fn get_base_snapshot(&self, anchor: &str) -> Result<Option<String>, StoreError> {
         match self.bases.get(base_key(anchor))? {
             Some(bytes) => Ok(Some(String::from_utf8(bytes.to_vec()).map_err(|e| {
