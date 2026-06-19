@@ -1036,18 +1036,51 @@ fn expand_query_with_lexicon(index: &aden_index::Index, query: &str) -> Option<S
     (!adds.is_empty()).then(|| format!("{query} {}", adds.join(" ")))
 }
 
+/// Heuristic: does the query look like code (identifiers/operators) rather than prose? Flags
+/// snake_case, camelCase, `::`, paths, and code punctuation; plain English words do not trigger.
+/// Used by auto-gating to choose between the prose lever (expansion) and the code lever (rerank).
+fn query_looks_codey(query: &str) -> bool {
+    query.split_whitespace().any(|t| {
+        t.contains('_')
+            || t.contains("::")
+            || t.contains("->")
+            || t.contains('(')
+            || t.contains('/')
+            || t.chars()
+                .any(|c| matches!(c, '{' | '}' | ')' | '<' | '>' | '=' | ';' | '[' | ']'))
+            || has_camel_hump(t)
+    })
+}
+
+/// True if `t` has a lowercase to uppercase transition (a camelCase hump), e.g. `putEdges`.
+fn has_camel_hump(t: &str) -> bool {
+    let b = t.as_bytes();
+    (1..b.len()).any(|i| b[i - 1].is_ascii_lowercase() && b[i].is_ascii_uppercase())
+}
+
 /// Run a search query against the index, using hybrid (dense + BM25 via RRF)
 /// retrieval when embeddings are present and a model is loaded, else pure BM25.
 /// This is the single entry point all `search`/`ask` paths should use so routing
 /// stays consistent.
 ///
-/// Two opt-in dual-substrate levers (both off by default, so routing is unchanged unless set):
-/// `ADEN_LEXICON_EXPAND` grounds-and-appends OEWN synonyms before retrieval (the PROSE lever),
-/// and `ADEN_PPMI_RERANK` reranks the top window by corpus co-occurrence (the CODE lever). The
-/// expansion feeds the base ranking; the rerank keys off the ORIGINAL query terms.
+/// Dual-substrate retrieval levers (validated by the lexical ablations):
+/// - PROSE lever: ground-and-append OEWN synonyms before retrieval (prose R@1 1/42 -> 41/42).
+/// - CODE lever: PPMI rerank of the top window by corpus co-occurrence (code MRR 0.216 -> 0.289).
+///
+/// `ADEN_LEXICON_AUTO` auto-gates both on the detected text: expand for non-pure-code queries
+/// (grounding makes it a no-op where the corpus lacks the vocabulary), and rerank when the query
+/// looks code-y OR the corpus is code-bearing (so NL-over-code queries still get the lift). The
+/// explicit `ADEN_LEXICON_EXPAND` / `ADEN_PPMI_RERANK` flags force a lever on regardless. All off
+/// by default, so routing is unchanged unless one is set. Expansion feeds the base ranking; the
+/// rerank keys off the ORIGINAL query terms.
 pub fn query_index(index: &aden_index::Index, query: &str) -> Vec<aden_index::SearchResult> {
-    let expanded = std::env::var_os("ADEN_LEXICON_EXPAND")
-        .and_then(|_| expand_query_with_lexicon(index, query));
+    let auto = std::env::var_os("ADEN_LEXICON_AUTO").is_some();
+    let codey = query_looks_codey(query);
+
+    let do_expand = std::env::var_os("ADEN_LEXICON_EXPAND").is_some() || (auto && !codey);
+    let expanded = do_expand
+        .then(|| expand_query_with_lexicon(index, query))
+        .flatten();
     let q: &str = expanded.as_deref().unwrap_or(query);
 
     #[cfg(feature = "dense")]
@@ -1061,7 +1094,9 @@ pub fn query_index(index: &aden_index::Index, query: &str) -> Vec<aden_index::Se
     #[cfg(not(feature = "dense"))]
     let base = index.query(q);
 
-    if std::env::var_os("ADEN_PPMI_RERANK").is_some() {
+    let do_rerank = std::env::var_os("ADEN_PPMI_RERANK").is_some()
+        || (auto && (codey || index.code_anchor_fraction() >= 0.5));
+    if do_rerank {
         index.ppmi_rerank(query, base, 50)
     } else {
         base

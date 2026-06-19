@@ -792,6 +792,23 @@ impl Index {
         self.inverted.contains_key(term)
     }
 
+    /// Fraction of indexed anchors that are CODE symbols (the `aden://module/...` scheme), vs
+    /// prose/doc anchors (`aden://doc/...`). A cheap corpus-substrate signal for auto-gating the
+    /// dual-substrate retrieval levers: a code-bearing corpus benefits from the PPMI rerank even
+    /// for natural-language queries (the NL-over-code case), a prose corpus does not. Returns 0.0
+    /// for an empty index.
+    pub fn code_anchor_fraction(&self) -> f64 {
+        if self.anchor_text.is_empty() {
+            return 0.0;
+        }
+        let code = self
+            .anchor_text
+            .keys()
+            .filter(|a| a.contains("://module") || a.contains("://symbol"))
+            .count();
+        code as f64 / self.anchor_text.len() as f64
+    }
+
     /// Recompute the BM25 average document length. Call once after ingestion.
     pub fn finalize(&mut self) {
         let total_len: usize = self.doc_lengths.values().sum();
