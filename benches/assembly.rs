@@ -35,6 +35,7 @@ See <<module-helper>>.
         hydrate_root: None,
         relevance: None,
         relevance_select: false,
+        relevance_confidence: None,
     };
 
     c.bench_function("assembly", |b| {
