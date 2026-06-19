@@ -1,0 +1,87 @@
+= Retrieval levers: the dual substrate
+:toc:
+
+[[retrieval-levers]]
+Aden retrieves over two complementary substrates, and the right one depends on what the text is. Code is best served by the corpus's own co-occurrence structure; prose is best served by an English dictionary. Aden exposes one lever for each, plus an auto-gate that picks per query.
+
+== The two substrates
+
+[cols="1,2,3,2",options="header"]
+|===
+|Domain |Lever |Signal |Measured lift
+|Code |PPMI rerank |Corpus co-occurrence (no external dictionary) |MRR 0.216 -> 0.289
+|Prose |OEWN synonym expansion |Open English WordNet synonymy, grounded to corpus vocab |R@1 1/42 -> 41/42
+|===
+
+Both findings come from A/B harnesses under `crates/aden-cli/tests/` (`compound_ab`, `prose_lexicon_ab`, `lexicon_routing_ab`).
+
+== Why not one lever for both
+
+The two substrates are not interchangeable, and mixing them backfires:
+
+* On code, an external dictionary *dilutes* the corpus signal: PPMI-only reranking scores MRR 0.289, while PPMI plus OEWN synonyms drops to 0.247. Code synonymy is corpus-specific identifier vocabulary, not English dictionary synonymy.
+* On prose, dense embeddings capture only about half of the synonym bridges (R@1 20/42) that the dictionary captures (41/42), and the dictionary still adds on top of a hybrid base (HYBRID+OEWN 41/42 vs HYBRID 16/42). The dictionary is complementary to dense, not redundant.
+
+== Using the levers
+
+All three switches are environment variables and all are off by default, so routing is unchanged unless one is set.
+
+`ADEN_LEXICON_EXPAND`:: Force the prose lever. Grounds and appends OEWN synonyms to the query before retrieval. Grounding means a synonym is kept only if it tokenizes entirely into the corpus vocabulary, so the dictionary only ever adds words the corpus actually uses.
+`ADEN_PPMI_RERANK`:: Force the code lever. Reranks the top window of results by corpus PPMI co-occurrence between the query terms and each candidate's terms.
+`ADEN_LEXICON_AUTO`:: Auto-gate both levers on the detected text (recommended for mixed repositories).
+
+=== How auto-gating decides
+
+* *Expand* when the query is not pure-code. Grounding self-gates on vocabulary the corpus lacks, so this is a no-op on a code-only corpus and decisive on prose.
+* *Rerank* when the query looks code-y (snake_case, camelCase, `::`, paths, operators) OR the corpus is code-bearing (`Index::code_anchor_fraction` >= 0.5). The corpus signal is what lets natural-language questions over a code repository still get the rerank lift.
+
+So a code-identifier query reranks, a prose query over a docs corpus expands, and a natural-language question over a code repository does both. Example: on the aden repository, `aden search "combine ranked lists"` in auto mode promotes `rrf_fuse` to rank 1, which the default ranking misses.
+
+== Setup
+
+The prose lever reads the OEWN lexical overlay store (a per-user overlay, never the project `.aden/store`):
+
+[source,sh]
+----
+# Convert OEWN to triples, then build the overlay store (~/.cache/aden/lexicon)
+python3 scripts/oewn_to_triples.py --all
+cargo test -p aden-cli --test build_lexicon_store -- --include-ignored
+----
+
+The code lever's hybrid base uses dense embeddings, so build with `--features dense` for the strongest result (it degrades to BM25 otherwise).
+
+== Benchmarks
+
+Prose, synonym-bridge probes (query is a dictionary synonym absent from the gold article, so only a dictionary can bridge it), BM25-only unless noted:
+
+[cols="2,1",options="header"]
+|===
+|Arm |prose R@1
+|BASELINE |1/42
+|+OEWN |41/42
+|+MOBY |16/42
+|DENSE alone |20/42
+|HYBRID + OEWN |41/42
+|ORACLE |42/42
+|===
+
+Code, rank-of-gold over hybrid base (`compound_ab`):
+
+[cols="2,1",options="header"]
+|===
+|Arm |code MRR
+|DENSE |0.201
+|HYBRID 1:5 |0.216
+|RR + PPMI (derived) |0.289
+|RR + PPMI + OEWN |0.247
+|===
+
+OEWN beats Moby substantially on prose (curated WordNet vs broad noisy thesaurus), and merging dictionaries adds nothing over OEWN alone, so the shipped prose lever is OEWN.
+
+== MCP
+
+The MCP `ask` and `search` tools shell out to the `aden` CLI, so they inherit these levers from the MCP server's environment. To enable auto-gating for MCP clients, set `ADEN_LEXICON_AUTO=1` (and build the lexicon store) in the environment the MCP server runs under. No tool-schema change is needed: the levers are deployment configuration, not per-call parameters.
+
+== Status
+
+The levers are opt-in pending wider evaluation before any default-on decision. They are grounded and corpus-gated, so they are safe to enable. ConceptNet is excluded from the lexical overlay (CC-BY-SA ShareAlike, incompatible with aden's AGPL distribution); see `LEXICON-SOURCES.md` when a prebuilt store is shipped.

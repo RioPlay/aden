@@ -12,6 +12,14 @@ All notable changes to aden are documented here. Format follows
 Post-0.2.0 work on main — not yet tagged.
 
 ### Added
+- **Dual-substrate retrieval levers** (2026-06-19): `search`/`ask` gain two opt-in,
+  text-routed retrieval levers, a corpus-derived PPMI rerank for code (MRR 0.216 to 0.289)
+  and grounded OEWN synonym expansion for prose (BM25 R@1 1/42 to 41/42). `ADEN_LEXICON_AUTO`
+  auto-gates both on the detected query shape and corpus substrate; `ADEN_LEXICON_EXPAND` and
+  `ADEN_PPMI_RERANK` force one on. All off by default, so routing is unchanged unless set.
+  Validated by the lexical ablations (dictionaries dilute code, dense captures only half of
+  prose synonymy); ConceptNet excluded (CC-BY-SA). The MCP server inherits the levers via the
+  CLI subprocess. See `docs/retrieval-levers.adoc`.
 - **Query-aware assembly + MMR context selection** (2026-06-16) — `ask` now
   spends its token budget on *distinct, query-relevant* context. The assembly
   frontier is ordered by query relevance (the hybrid BM25+dense scores that
