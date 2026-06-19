@@ -97,6 +97,17 @@ fn top(index: &Index, q: &str) -> Option<String> {
     index.query(q).into_iter().next().map(|r| r.anchor)
 }
 
+#[cfg(feature = "dense")]
+fn load_embedder() -> Option<aden_index::TractEmbedder> {
+    let dir = std::env::var("ADEN_BGE_MODEL_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| home_join(".cache/aden-models/bge-small-en-v1.5"));
+    if !dir.join("model.onnx").exists() {
+        return None;
+    }
+    aden_index::TractEmbedder::from_dir(&dir).ok()
+}
+
 /// Build a BM25 index over the external prose corpus. Each `.txt` becomes one document
 /// anchored by its filename stem (the concept). Returns (index, vocab, [(concept, tokens)]).
 fn build_index() -> Option<(Index, HashSet<String>, Vec<(String, HashSet<String>)>)> {
@@ -241,6 +252,36 @@ fn prose_lexicon_report() {
         ag as i64 - base as i64
     );
     println!("    ORACLE     {orc}/{n}   (S + the gold concept word)");
+
+    // Does dense already subsume the OEWN win on prose? If DENSE(S) alone matches +OEWN,
+    // the dictionary's value is the no-embedding-model deployment; if DENSE is weak and
+    // HYBRID+OEWN beats HYBRID, OEWN earns its keep even when dense is present.
+    #[cfg(feature = "dense")]
+    if let Some(e) = load_embedder() {
+        let mut index = index; // take ownership to embed (BM25 borrows above have ended)
+        index.embed_documents(&e);
+        let hit_top = |rs: Vec<aden_index::SearchResult>, c: &str| {
+            rs.first().is_some_and(|r| r.anchor.contains(c))
+        };
+        let (mut d, mut h, mut ho) = (0usize, 0usize, 0usize);
+        for (s, c) in &probes {
+            let oewn_x = expand(Some(&oewn), "oewn", s, &vocab);
+            d += hit_top(index.dense_query(s, &e), c) as usize;
+            h += hit_top(index.hybrid_query(s, &e), c) as usize;
+            let q = if oewn_x.is_empty() {
+                s.clone()
+            } else {
+                format!("{s} {}", oewn_x.join(" "))
+            };
+            ho += hit_top(index.hybrid_query(&q, &e), c) as usize;
+        }
+        println!("\n  -- prose R@1 (dense available) --");
+        println!("    DENSE(S)        {d}/{n}   (does dense alone bridge the synonym?)");
+        println!("    HYBRID(S)       {h}/{n}");
+        println!("    HYBRID(S)+OEWN  {ho}/{n}   (does OEWN add on top of dense?)");
+    } else {
+        eprintln!("(dense arm skipped: bge model not found)");
+    }
 
     assert!(n > 0, "no probes constructed");
 }
