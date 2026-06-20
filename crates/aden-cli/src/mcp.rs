@@ -126,22 +126,34 @@ impl Platform {
 
     /// The JSON value to insert for the aden MCP server. Only valid for
     /// JSON-config platforms; TOML platforms (Codex) are handled separately.
-    pub fn aden_config(&self, binary: &str, project: &str) -> Value {
+    pub fn aden_config(&self, binary: &str, project: &str, surface: Option<&str>) -> Value {
+        // Bake the requested tool surface into the launch ARGS (cross-platform;
+        // not every client passes an `env` block). `aden-mcp` reads
+        // `--surface <essential|standard|full>`. Omitted => server default.
+        let mut args: Vec<String> = vec![project.to_string()];
+        if let Some(s) = surface {
+            args.push("--surface".to_string());
+            args.push(s.to_string());
+        }
         match self {
-            Platform::OpenCode => serde_json::json!({
-                "type": "local",
-                "command": [binary, project],
-                "enabled": true,
-            }),
+            Platform::OpenCode => {
+                let mut command = vec![binary.to_string()];
+                command.extend(args.iter().cloned());
+                serde_json::json!({
+                    "type": "local",
+                    "command": command,
+                    "enabled": true,
+                })
+            }
             Platform::ClaudeCode | Platform::Cursor | Platform::Windsurf => serde_json::json!({
                 "command": binary,
-                "args": [project],
+                "args": args,
             }),
             // Zed requires `source: "custom"` for manually-declared servers.
             Platform::Zed => serde_json::json!({
                 "source": "custom",
                 "command": binary,
-                "args": [project],
+                "args": args,
             }),
             Platform::Codex => {
                 unreachable!("Codex uses a TOML config; handled by the TOML install path")
@@ -376,11 +388,15 @@ fn write_toml(path: &Path, doc: &DocumentMut) -> Result<(), String> {
 }
 
 /// Build the `[mcp_servers.aden]` TOML table for Codex.
-fn codex_aden_table(binary: &str, project: &str) -> TomlTable {
+fn codex_aden_table(binary: &str, project: &str, surface: Option<&str>) -> TomlTable {
     let mut tbl = TomlTable::new();
     tbl["command"] = toml_value(binary);
     let mut args = TomlArray::new();
     args.push(project);
+    if let Some(s) = surface {
+        args.push("--surface");
+        args.push(s);
+    }
     tbl["args"] = toml_value(args);
     tbl
 }
@@ -418,6 +434,7 @@ fn install_platform(
     binary: &Path,
     project: &Path,
     requested_scope: Option<Scope>,
+    surface: Option<&str>,
     dry_run: bool,
 ) -> Result<(), String> {
     let binary = binary.to_string_lossy();
@@ -449,7 +466,7 @@ fn install_platform(
             parent.set_implicit(true);
             doc[key] = TomlItem::Table(parent);
         }
-        doc[key]["aden"] = TomlItem::Table(codex_aden_table(&binary, &project));
+        doc[key]["aden"] = TomlItem::Table(codex_aden_table(&binary, &project, surface));
 
         if dry_run {
             println!("  [dry-run] Would write: {}", config_path.display());
@@ -469,7 +486,7 @@ fn install_platform(
 
     // Merge or create the aden entry
     if let Some(Value::Object(servers)) = cfg.get_mut(key) {
-        let aden_value = platform.aden_config(&binary, &project);
+        let aden_value = platform.aden_config(&binary, &project, surface);
         servers.insert("aden".to_string(), aden_value);
     }
 
@@ -569,10 +586,19 @@ pub fn run_install(
     binary_override: Option<&Path>,
     project_override: Option<&Path>,
     scope_name: Option<&str>,
+    surface: Option<&str>,
     all: bool,
     dry_run: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let scope = parse_scope(scope_name);
+    // Validate the surface level up front so a typo fails loudly, not silently.
+    if let Some(s) = surface
+        && !matches!(s, "essential" | "standard" | "full")
+    {
+        return Err(
+            format!("invalid --surface '{s}'; expected essential | standard | full").into(),
+        );
+    }
 
     // Resolve platforms
     let platforms: Vec<Platform> = if names.is_empty() {
@@ -646,6 +672,7 @@ pub fn run_install(
     println!("Installing aden MCP server...");
     println!("  Binary : {}", binary.display());
     println!("  Project: {}", project.display());
+    println!("  Surface: {}", surface.unwrap_or("essential (default)"));
     if dry_run {
         println!("  Mode   : dry-run (no changes written)");
     }
@@ -661,7 +688,7 @@ pub fn run_install(
             platform.display_name(),
             eff.label()
         );
-        match install_platform(platform, &binary, &project, scope, dry_run) {
+        match install_platform(platform, &binary, &project, scope, surface, dry_run) {
             Ok(()) => ok += 1,
             Err(e) => {
                 eprintln!("  Error: {}", e);
@@ -930,7 +957,7 @@ mod tests {
 
     #[test]
     fn zed_requires_source_custom() {
-        let v = Platform::Zed.aden_config("aden-mcp", "/proj");
+        let v = Platform::Zed.aden_config("aden-mcp", "/proj", None);
         assert_eq!(v["source"], "custom");
         assert_eq!(v["command"], "aden-mcp");
         assert_eq!(v["args"][0], "/proj");
@@ -940,7 +967,7 @@ mod tests {
     #[test]
     fn claude_cursor_windsurf_use_command_args() {
         for p in [Platform::ClaudeCode, Platform::Cursor, Platform::Windsurf] {
-            let v = p.aden_config("aden-mcp", "/proj");
+            let v = p.aden_config("aden-mcp", "/proj", None);
             assert_eq!(v["command"], "aden-mcp", "{}", p.display_name());
             assert_eq!(v["args"][0], "/proj", "{}", p.display_name());
         }
@@ -948,7 +975,7 @@ mod tests {
 
     #[test]
     fn opencode_uses_local_command_array() {
-        let v = Platform::OpenCode.aden_config("aden-mcp", "/proj");
+        let v = Platform::OpenCode.aden_config("aden-mcp", "/proj", None);
         assert_eq!(v["type"], "local");
         assert_eq!(v["command"][0], "aden-mcp");
         assert_eq!(v["command"][1], "/proj");
@@ -957,8 +984,36 @@ mod tests {
     }
 
     #[test]
+    fn surface_is_baked_into_launch_args() {
+        // JSON platforms: `args` carries `--surface <level>` after the project.
+        let v = Platform::Cursor.aden_config("aden-mcp", "/proj", Some("standard"));
+        assert_eq!(v["args"][0], "/proj");
+        assert_eq!(v["args"][1], "--surface");
+        assert_eq!(v["args"][2], "standard");
+        // OpenCode folds it into the single `command` array.
+        let oc = Platform::OpenCode.aden_config("aden-mcp", "/proj", Some("full"));
+        assert_eq!(oc["command"][2], "--surface");
+        assert_eq!(oc["command"][3], "full");
+        // Codex (TOML) likewise.
+        let tbl = codex_aden_table("aden-mcp", "/proj", Some("essential"));
+        let args = tbl["args"].as_array().unwrap();
+        assert_eq!(args.get(1).and_then(|v| v.as_str()), Some("--surface"));
+        assert_eq!(args.get(2).and_then(|v| v.as_str()), Some("essential"));
+        // None => no surface flag (server default).
+        let bare = Platform::Cursor.aden_config("aden-mcp", "/proj", None);
+        assert!(bare["args"].as_array().unwrap().len() == 1);
+    }
+
+    #[test]
+    fn run_install_rejects_invalid_surface() {
+        let err = run_install(&[], None, None, None, Some("turbo"), false, true)
+            .expect_err("invalid surface must error");
+        assert!(err.to_string().contains("invalid --surface"));
+    }
+
+    #[test]
     fn codex_table_has_command_and_args() {
-        let tbl = codex_aden_table("aden-mcp", "/proj");
+        let tbl = codex_aden_table("aden-mcp", "/proj", None);
         assert_eq!(tbl["command"].as_str(), Some("aden-mcp"));
         assert_eq!(
             tbl["args"]
@@ -980,7 +1035,7 @@ mod tests {
         if !doc.get(key).map(|t| t.is_table()).unwrap_or(false) {
             doc[key] = TomlItem::Table(TomlTable::new());
         }
-        doc[key]["aden"] = TomlItem::Table(codex_aden_table("aden-mcp", "/proj"));
+        doc[key]["aden"] = TomlItem::Table(codex_aden_table("aden-mcp", "/proj", None));
 
         let out = doc.to_string();
         assert!(
@@ -1015,7 +1070,7 @@ mod tests {
 
         let mut doc = read_toml(&path).unwrap(); // empty
         doc["mcp_servers"] = TomlItem::Table(TomlTable::new());
-        doc["mcp_servers"]["aden"] = TomlItem::Table(codex_aden_table("aden-mcp", "/proj"));
+        doc["mcp_servers"]["aden"] = TomlItem::Table(codex_aden_table("aden-mcp", "/proj", None));
         write_toml(&path, &doc).unwrap();
 
         let reloaded = read_toml(&path).unwrap();

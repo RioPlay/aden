@@ -867,6 +867,12 @@ enum McpAction {
             help = "Install scope: user (global) or project (local). Default: user for Claude Code, project otherwise"
         )]
         scope: Option<String>,
+        #[arg(
+            long,
+            value_name = "LEVEL",
+            help = "Tool surface to bake into the config: essential (default), standard, or full"
+        )]
+        surface: Option<String>,
         #[arg(long, help = "Install for all platforms, not just detected ones")]
         all: bool,
         #[arg(long, help = "Show what would be done without writing files")]
@@ -1552,6 +1558,7 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
                 binary,
                 project,
                 scope,
+                surface,
                 all,
                 dry_run,
             } => {
@@ -1561,6 +1568,7 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
                     binary.as_deref(),
                     project.as_deref(),
                     scope.as_deref(),
+                    surface.as_deref(),
                     all,
                     dry_run,
                 )

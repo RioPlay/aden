@@ -13,10 +13,13 @@
 #   ./install.sh --yes         accept every default, no prompts
 #   ./install.sh --minimal     binaries + PATH only (skip MCP/AGENTS.md steps)
 #   ./install.sh --dense       build with local hybrid (dense) search support
+#   ./install.sh --surface=LVL bake the MCP tool surface into the registration:
+#                              essential (default, 6 tools) | standard (15) | full (36)
 #   ./install.sh --uninstall   guided removal
 #
 # Environment overrides: INSTALL_DIR (default ~/.local/bin), PROJECT_ROOT
-# (default: this checkout), ADEN_DENSE=1 (same as --dense).
+# (default: this checkout), ADEN_DENSE=1 (same as --dense), ADEN_MCP_SURFACE
+# (same as --surface=).
 #
 # Non-interactive runs (no TTY, e.g. piped from curl or CI) perform only the
 # self-contained steps — build, copy binaries — and PRINT instructions for the
@@ -32,12 +35,16 @@ PROJECT_ROOT="${PROJECT_ROOT:-$SCRIPT_DIR}"
 YES=0
 MINIMAL=0
 DENSE="${ADEN_DENSE:-0}"
+# Tool surface baked into the MCP registration: essential (default) | standard |
+# full. Empty means "ask (interactive) or use the server default essential".
+SURFACE="${ADEN_MCP_SURFACE:-}"
 UNINSTALL=0
 for arg in "$@"; do
     case "$arg" in
         -y | --yes) YES=1 ;;
         --minimal) MINIMAL=1 ;;
         --dense) DENSE=1 ;;
+        --surface=*) SURFACE="${arg#*=}" ;;
         --uninstall) UNINSTALL=1 ;;
         -h | --help)
             sed -n '5,23p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
@@ -80,6 +87,35 @@ ask_yn() {
     case "${reply:-$def}" in
         y | Y | yes | YES) return 0 ;;
         *) return 1 ;;
+    esac
+}
+
+# Resolve $SURFACE (the MCP tool surface). Honors a preset value (--surface=… or
+# $ADEN_MCP_SURFACE); otherwise prompts interactively, defaulting to essential.
+choose_surface() {
+    case "$SURFACE" in
+        essential | standard | full) return 0 ;;
+        "") : ;;
+        *)
+            note "Ignoring unknown surface '$SURFACE' (expected essential|standard|full)."
+            SURFACE=""
+            ;;
+    esac
+    if [ "$YES" = "1" ] || [ "$TTY" = "0" ]; then
+        SURFACE="essential"
+        return 0
+    fi
+    note "Tool surface — how many aden tools your AI tools see by default:"
+    note "  essential   6 tools  find -> comprehend -> blast-radius   [default]"
+    note "  standard   15 tools  + impact-diff, list, test, lint, audit, diagnose, …"
+    note "  full       36 tools  + build / setup / admin tooling"
+    note "(every tool stays callable by name at any level; this gates the listing.)"
+    printf "   Surface [essential/standard/full]: "
+    read -r reply || reply=""
+    case "$(printf '%s' "$reply" | tr '[:upper:]' '[:lower:]')" in
+        standard | 2) SURFACE="standard" ;;
+        full | 3) SURFACE="full" ;;
+        *) SURFACE="essential" ;;
     esac
 }
 
@@ -241,13 +277,19 @@ if [ "$MINIMAL" = "0" ]; then
     echo ""
     note "Default: register for the DETECTED platforms only (✓ column above)."
     if [ "$TTY" = "0" ]; then
-        skip "non-interactive: run 'aden mcp install' yourself to register."
+        if [ -n "$SURFACE" ]; then
+            skip "non-interactive: run 'aden mcp install --surface $SURFACE' to register."
+        else
+            skip "non-interactive: run 'aden mcp install [--surface standard|full]' to register."
+        fi
     elif ask_yn "Register aden with the detected platforms?" y; then
-        "$INSTALL_DIR/aden" mcp install ||
+        choose_surface
+        "$INSTALL_DIR/aden" mcp install --surface "$SURFACE" ||
             note "(some platforms failed — 'aden mcp list' shows the current state)"
+        note "Surface: $SURFACE — re-run 'aden mcp install --surface <level>' to change it."
         note "Restart any open editor/agent sessions to pick up the new server."
     else
-        skip "skipped — 'aden mcp install [--platform <name>]' does this any time."
+        skip "skipped — 'aden mcp install [--surface <level>]' does this any time."
     fi
 fi
 
