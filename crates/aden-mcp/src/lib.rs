@@ -70,21 +70,56 @@ BEFORE editing — see every caller and downstream node at risk.\n\
 3. Make the edit.\n\
 4. `impact-diff` maps your git diff to the symbols it touches and re-checks the \
 blast radius; `check` validates the graph and gates CI; `test`/`lint`/`audit` verify.\n\n\
-The `path` argument defaults to the current project directory for every tool. The \
-high-value navigate / comprehend / change-safety / verify tools are listed by \
-default; setup, build, and admin tools stay callable by name and are surfaced by \
-setting ADEN_MCP_FULL=1 in the server environment.";
+The `path` argument defaults to the current project directory for every tool. By \
+default only the ESSENTIAL tools are listed (grep, locate, understand, ask, asm, \
+query — the find->comprehend->blast-radius loop). Set ADEN_MCP_SURFACE=standard to \
+also list the change-safety / verify / orient tools (check, impact-diff, list, \
+communities, status, diagnose, test, lint, audit), or =full for the build/setup/\
+admin tools too. Every tool stays callable by name at any level, so nothing is \
+ever out of reach.";
 
 // ── Tool declaration ──────────────────────────────────────────
 
-/// Visibility tier. Core tools lead the surface and are listed by default;
-/// Extended tools stay callable by name but are hidden from `list_tools`
-/// unless `ADEN_MCP_FULL` is set — keeping the per-session surface slim
-/// without stranding setup/admin tools for MCP-only consumers.
-#[derive(PartialEq)]
+/// Surface tier — how broad an enablement a tool needs to be LISTED. All tools
+/// stay callable by name regardless of tier; this gates the default `list_tools`
+/// registry only, so a session is not flooded with build/setup/admin tools.
+/// Ordered Essential < Standard < Full, so `tool_tier(name) <= requested_surface()`
+/// selects every tool at or below the requested level.
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
 enum Tier {
-    Core,
-    Extended,
+    Essential,
+    Standard,
+    Full,
+}
+
+/// ESSENTIAL surface (the default): the find -> comprehend -> blast-radius loop.
+/// The smallest set that delivers aden's core value. Everything else is opt-in.
+const ESSENTIAL_TOOLS: &[&str] = &["grep", "locate", "understand", "ask", "asm", "query"];
+
+/// STANDARD surface (`ADEN_MCP_SURFACE=standard`): adds change-safety, verify, and
+/// orientation tools on top of Essential.
+const STANDARD_TOOLS: &[&str] = &[
+    "check",
+    "impact-diff",
+    "list",
+    "communities",
+    "status",
+    "diagnose",
+    "test",
+    "lint",
+    "audit",
+];
+
+/// Tier of a tool by name. Anything not Essential/Standard is Full (the
+/// build/setup/admin tools surfaced only at `ADEN_MCP_SURFACE=full`).
+fn tool_tier(name: &str) -> Tier {
+    if ESSENTIAL_TOOLS.contains(&name) {
+        Tier::Essential
+    } else if STANDARD_TOOLS.contains(&name) {
+        Tier::Standard
+    } else {
+        Tier::Full
+    }
 }
 
 /// What a tool does to the project, surfaced to MCP clients as tool
@@ -135,7 +170,6 @@ struct ToolSpec {
     args: &'static [(&'static str, &'static str)], // (arg_name, arg_type: "string"|"boolean"|"integer"|"number")
     /// Read / Rebuild / Mutate — drives the MCP tool annotations.
     effect: Effect,
-    tier: Tier,
 }
 
 /// Required argument names per tool (must match the `arg_name` strings in the
@@ -451,15 +485,27 @@ fn tool_from_spec(spec: &ToolSpec) -> Tool {
         .annotate(spec.effect.annotations())
 }
 
-/// True when the full tool surface (Core + Extended) should be listed.
-/// Default is Core-only, keeping the per-session registry slim; setting
-/// `ADEN_MCP_FULL` to a truthy value (1/true/full/yes) lists everything.
-/// Extended tools stay callable by name regardless — this gates listing only.
-fn surface_is_full() -> bool {
-    parse_full(std::env::var("ADEN_MCP_FULL").ok().as_deref())
+/// The tool surface the operator requested, gating which tools `list_tools`
+/// returns (all tools stay callable by name regardless). Default is ESSENTIAL —
+/// the smallest high-value set. `ADEN_MCP_SURFACE=essential|standard|full` (or
+/// 1|2|3) widens it; the legacy `ADEN_MCP_FULL=1` is kept as an alias for `full`.
+fn requested_surface() -> Tier {
+    if let Ok(v) = std::env::var("ADEN_MCP_SURFACE") {
+        match v.trim().to_ascii_lowercase().as_str() {
+            "essential" | "1" | "min" | "minimal" | "core" => return Tier::Essential,
+            "standard" | "2" | "std" | "extended" => return Tier::Standard,
+            "full" | "3" | "all" => return Tier::Full,
+            // Unrecognized value: fall through to the legacy toggle / default.
+            _ => {}
+        }
+    }
+    if parse_full(std::env::var("ADEN_MCP_FULL").ok().as_deref()) {
+        return Tier::Full;
+    }
+    Tier::Essential
 }
 
-/// Pure parse of the `ADEN_MCP_FULL` toggle, split out so it is testable
+/// Pure parse of the legacy `ADEN_MCP_FULL` toggle, split out so it is testable
 /// without mutating process-global environment state.
 fn parse_full(v: Option<&str>) -> bool {
     matches!(
@@ -470,14 +516,13 @@ fn parse_full(v: Option<&str>) -> bool {
 
 /// Every MCP tool maps 1:1 to `aden <name> <args>`.
 static TOOLS: &[ToolSpec] = &[
-    // ── Tier is set PER-TOOL (not by position): Core tools form the default
-    //    per-session surface — the navigate/comprehend/change-safety/verify loop
-    //    an agent reaches for. The primary navigation set leads here; other Core
-    //    tools (impact-diff, list, lint, test, audit, diagnose) are declared in
-    //    their logical groups below but still surface in the default list. Setup,
-    //    build, and admin tools are Extended (callable by name; listed only when
-    //    ADEN_MCP_FULL=1). `core_surface_leads_with_primary_navigation` guards
-    //    that the default surface leads with grep/understand/ask/locate/asm/query. ──
+    // ── Tier is assigned by NAME (see ESSENTIAL_TOOLS / STANDARD_TOOLS up top),
+    //    not by position in this slice, so reordering tools never changes the
+    //    surface. ESSENTIAL (default) = the find -> comprehend -> blast-radius loop;
+    //    STANDARD adds change-safety/verify/orient; FULL adds setup/build/admin.
+    //    `ADEN_MCP_SURFACE=essential|standard|full` (legacy `ADEN_MCP_FULL=1` = full)
+    //    selects the level; every tool stays callable by name regardless. The slice
+    //    is kept grouped Essential-first below purely for readability. ──
     ToolSpec {
         name: "grep",
         title: "Search code (structure-aware)",
@@ -491,7 +536,6 @@ static TOOLS: &[ToolSpec] = &[
             ("limit", "integer"),
         ],
         effect: Effect::Read,
-        tier: Tier::Core,
     },
     ToolSpec {
         name: "understand",
@@ -504,7 +548,6 @@ static TOOLS: &[ToolSpec] = &[
             ("json", "boolean"),
         ],
         effect: Effect::Read,
-        tier: Tier::Core,
     },
     ToolSpec {
         name: "ask",
@@ -526,7 +569,6 @@ static TOOLS: &[ToolSpec] = &[
             ("explain", "boolean"),
         ],
         effect: Effect::Read,
-        tier: Tier::Core,
     },
     ToolSpec {
         name: "locate",
@@ -541,7 +583,6 @@ static TOOLS: &[ToolSpec] = &[
             ("format", "string"),
         ],
         effect: Effect::Read,
-        tier: Tier::Core,
     },
     ToolSpec {
         name: "asm",
@@ -564,7 +605,6 @@ static TOOLS: &[ToolSpec] = &[
             ("strict", "boolean"),
         ],
         effect: Effect::Read,
-        tier: Tier::Core,
     },
     ToolSpec {
         name: "query",
@@ -580,7 +620,6 @@ static TOOLS: &[ToolSpec] = &[
             ("format", "string"),
         ],
         effect: Effect::Read,
-        tier: Tier::Core,
     },
     ToolSpec {
         name: "check",
@@ -588,7 +627,6 @@ static TOOLS: &[ToolSpec] = &[
         description: "Validate the graph and gate CI: flags unresolved <<refs>>, circular includes, orphan anchors, typed-edge violations, stale source hashes, and incomplete contracts. severity=Suggest|Warn|Forbid sets the fail threshold and exits non-zero past it. For duplicate-anchor detection and a 0-100 health score, use `diagnose`.",
         args: &[("path", "string"), ("severity", "string")],
         effect: Effect::Read,
-        tier: Tier::Core,
     },
     ToolSpec {
         name: "search",
@@ -605,7 +643,6 @@ static TOOLS: &[ToolSpec] = &[
             ("semantics", "boolean"),
         ],
         effect: Effect::Read,
-        tier: Tier::Extended,
     },
     ToolSpec {
         name: "communities",
@@ -621,7 +658,6 @@ static TOOLS: &[ToolSpec] = &[
             ("path", "string"),
         ],
         effect: Effect::Read,
-        tier: Tier::Core,
     },
     // A read/export tool: viz is the non-interactive graph-slice exporter (text
     // Mermaid/DOT/AsciiDoc/JSON), so it is MCP-suitable — unlike its interactive
@@ -649,7 +685,6 @@ static TOOLS: &[ToolSpec] = &[
             ("path", "string"),
         ],
         effect: Effect::Read,
-        tier: Tier::Extended,
     },
     ToolSpec {
         name: "impact-diff",
@@ -664,7 +699,6 @@ static TOOLS: &[ToolSpec] = &[
             ("path", "string"),
         ],
         effect: Effect::Read,
-        tier: Tier::Core,
     },
     ToolSpec {
         name: "list",
@@ -680,7 +714,6 @@ static TOOLS: &[ToolSpec] = &[
             ("unlimited", "boolean"),
         ],
         effect: Effect::Read,
-        tier: Tier::Core,
     },
     ToolSpec {
         name: "ready",
@@ -688,7 +721,6 @@ static TOOLS: &[ToolSpec] = &[
         description: "Fast pre-commit gate — gen + lint + check + heal drift scan + audit. Aden-only, no external tool dependencies. Use before every commit. Prefer over ci-check for local dev loops.",
         args: &[("path", "string"), ("fix", "boolean")],
         effect: Effect::Mutate,
-        tier: Tier::Extended,
     },
     ToolSpec {
         name: "lint",
@@ -704,7 +736,6 @@ static TOOLS: &[ToolSpec] = &[
             ("include_public", "boolean"),
         ],
         effect: Effect::Mutate,
-        tier: Tier::Core,
     },
     ToolSpec {
         name: "test",
@@ -717,7 +748,6 @@ static TOOLS: &[ToolSpec] = &[
             ("list", "boolean"),
         ],
         effect: Effect::Mutate,
-        tier: Tier::Core,
     },
     ToolSpec {
         name: "heal",
@@ -737,7 +767,6 @@ static TOOLS: &[ToolSpec] = &[
             // in the mcp_flag_parity test's REVERSE_EXEMPT.
         ],
         effect: Effect::Mutate,
-        tier: Tier::Extended,
     },
     ToolSpec {
         name: "status",
@@ -745,7 +774,6 @@ static TOOLS: &[ToolSpec] = &[
         description: "Read-only one-glance dashboard: heal-drift health score plus an orphan breakdown (same classifier as `check`). No fixes, no deep scan — a quick pulse before deciding whether to run `diagnose`/`ready`.",
         args: &[("path", "string")],
         effect: Effect::Read,
-        tier: Tier::Extended,
     },
     ToolSpec {
         name: "gen",
@@ -759,7 +787,6 @@ static TOOLS: &[ToolSpec] = &[
             ("force_regen", "boolean"),
         ],
         effect: Effect::Rebuild,
-        tier: Tier::Extended,
     },
     ToolSpec {
         name: "sync",
@@ -767,7 +794,6 @@ static TOOLS: &[ToolSpec] = &[
         description: "Reconcile the store — gen + check + heal with gc (prunes deleted symbols). Use after large merges or file deletions, NOT as a routine pre-commit step (use `ready` for that). Pass no_gc=true to skip garbage-collection.",
         args: &[("path", "string"), ("no_gc", "boolean")],
         effect: Effect::Mutate,
-        tier: Tier::Extended,
     },
     ToolSpec {
         name: "audit",
@@ -780,7 +806,6 @@ static TOOLS: &[ToolSpec] = &[
             ("strict", "boolean"),
         ],
         effect: Effect::Read,
-        tier: Tier::Core,
     },
     ToolSpec {
         name: "ci-check",
@@ -788,7 +813,6 @@ static TOOLS: &[ToolSpec] = &[
         description: "Full CI gate suite: aden check, project tests, aden lint, secret scan, attribution check, OWASP audit, merge-conflict-marker scan, insecure-protocol check, cargo clippy, cargo audit, contract freshness. Use before push to remote. For local dev use `ready` instead.",
         args: &[("path", "string")],
         effect: Effect::Mutate,
-        tier: Tier::Extended,
     },
     ToolSpec {
         name: "diagnose",
@@ -796,7 +820,6 @@ static TOOLS: &[ToolSpec] = &[
         description: "Deterministic structural scan of the graph: stale refs, duplicate anchors, invalid edges, orphans, circular includes, missing source files; emits a 0-100 health score (format=json for machine output). Overlaps `check` but additionally flags duplicate anchors and low-confidence nodes and reports a score; read-only — finds nothing about your environment (that's `doctor`).",
         args: &[("path", "string"), ("format", "string")],
         effect: Effect::Read,
-        tier: Tier::Core,
     },
     ToolSpec {
         name: "regen",
@@ -804,18 +827,16 @@ static TOOLS: &[ToolSpec] = &[
         description: "Full from-scratch rebuild: clears the gen/graph caches and (unless $ADEN_STORE is pinned/shared) the per-user store, then regenerates and prunes stale anchors. NOT an alias for `gen` — use after renames/deletions leave stale anchors or after corruption; for routine incremental indexing use `gen`.",
         args: &[("path", "string")],
         effect: Effect::Rebuild,
-        tier: Tier::Extended,
     },
-    // ── Extended: setup, build/store, and admin tools (plus a few superseded by
-    //    a Core tool, e.g. `search` → `grep`). Hidden from list_tools by default
-    //    (set ADEN_MCP_FULL=1 to surface) but always callable by name. ──
+    // ── FULL-tier: setup, build/store, and admin tools (plus a few superseded by
+    //    an Essential tool, e.g. `search` → `grep`). Listed only at
+    //    ADEN_MCP_SURFACE=full; always callable by name. ──
     ToolSpec {
         name: "new",
         title: "New project",
         description: "Create a new project from a language template.",
         args: &[("name", "string"), ("lang", "string"), ("path", "string")],
         effect: Effect::Mutate,
-        tier: Tier::Extended,
     },
     ToolSpec {
         name: "init",
@@ -827,7 +848,6 @@ static TOOLS: &[ToolSpec] = &[
             ("agents_md", "boolean"),
         ],
         effect: Effect::Mutate,
-        tier: Tier::Extended,
     },
     ToolSpec {
         name: "kickoff",
@@ -839,7 +859,6 @@ static TOOLS: &[ToolSpec] = &[
             ("path", "string"),
         ],
         effect: Effect::Mutate,
-        tier: Tier::Extended,
     },
     ToolSpec {
         name: "workflow",
@@ -852,7 +871,6 @@ static TOOLS: &[ToolSpec] = &[
             ("path", "string"),
         ],
         effect: Effect::Mutate,
-        tier: Tier::Extended,
     },
     ToolSpec {
         name: "session",
@@ -866,7 +884,6 @@ static TOOLS: &[ToolSpec] = &[
             ("path", "string"),
         ],
         effect: Effect::Mutate,
-        tier: Tier::Extended,
     },
     ToolSpec {
         name: "review",
@@ -878,7 +895,6 @@ static TOOLS: &[ToolSpec] = &[
             ("budget", "integer"),
         ],
         effect: Effect::Read,
-        tier: Tier::Extended,
     },
     ToolSpec {
         name: "complete",
@@ -890,7 +906,6 @@ static TOOLS: &[ToolSpec] = &[
             ("model", "string"),
         ],
         effect: Effect::Read,
-        tier: Tier::Extended,
     },
     ToolSpec {
         name: "query-adq",
@@ -898,7 +913,6 @@ static TOOLS: &[ToolSpec] = &[
         description: "Execute an Aden Query (.adq) script — multi-step filtered graph traversal (node/incoming/outgoing/where) beyond what `query` expresses in one call. For simple backlinks/impact use `query`.",
         args: &[("script", "string"), ("path", "string")],
         effect: Effect::Read,
-        tier: Tier::Extended,
     },
     ToolSpec {
         name: "doctor",
@@ -906,7 +920,6 @@ static TOOLS: &[ToolSpec] = &[
         description: "Probe the host environment, NOT the graph: git, language toolchains (rustc/cargo, node, python, go), signing keys. Use when a command fails for environmental reasons (missing tool/binary). For graph/content problems use `diagnose`; for reference errors use `check`.",
         args: &[("path", "string")],
         effect: Effect::Read,
-        tier: Tier::Extended,
     },
     ToolSpec {
         name: "licenses",
@@ -914,7 +927,6 @@ static TOOLS: &[ToolSpec] = &[
         description: "Generate third-party dependency attribution.",
         args: &[("path", "string"), ("out", "string"), ("full", "boolean")],
         effect: Effect::Read,
-        tier: Tier::Extended,
     },
     ToolSpec {
         name: "federation",
@@ -922,7 +934,6 @@ static TOOLS: &[ToolSpec] = &[
         description: "Manage a multi-repo workspace. action is a subcommand: list, add, remove, config. Over MCP only list/config run (add/remove need a path/name the bridge can't pass — use the CLI). Operates on the federation manifest only; it does not index or query code.",
         args: &[("action", "string")],
         effect: Effect::Read,
-        tier: Tier::Extended,
     },
     ToolSpec {
         name: "emergency",
@@ -930,7 +941,6 @@ static TOOLS: &[ToolSpec] = &[
         description: "Downgrade Forbid policies to Warn with justification.",
         args: &[("reason", "string"), ("path", "string"), ("ttl", "string")],
         effect: Effect::Mutate,
-        tier: Tier::Extended,
     },
     ToolSpec {
         name: "mcp",
@@ -938,7 +948,6 @@ static TOOLS: &[ToolSpec] = &[
         description: "MCP (Model Context Protocol) integration management. action is a subcommand: install, uninstall, list. Over MCP only `list` runs (install/uninstall are a one-time terminal setup step).",
         args: &[("action", "string")],
         effect: Effect::Read,
-        tier: Tier::Extended,
     },
 ];
 
@@ -960,13 +969,14 @@ impl ServerHandler for AdenMcpServer {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, McpError> {
-        // Default to the Core surface to keep the per-session registry slim;
-        // `ADEN_MCP_FULL` widens it to Core + Extended. Hidden Extended tools
-        // remain callable by name via `call_tool`, so nothing is unreachable.
-        let full = surface_is_full();
+        // Default to the ESSENTIAL surface to keep the per-session registry slim;
+        // ADEN_MCP_SURFACE=standard|full (or the legacy ADEN_MCP_FULL=1) widens it.
+        // Tools below the requested level stay callable by name via `call_tool`, so
+        // nothing is ever unreachable.
+        let level = requested_surface();
         let tools: Vec<Tool> = TOOLS
             .iter()
-            .filter(|t| full || t.tier == Tier::Core)
+            .filter(|t| tool_tier(t.name) <= level)
             .map(tool_from_spec)
             .collect();
         Ok(ListToolsResult::with_all_items(tools))
@@ -1316,47 +1326,63 @@ mod tests {
     }
 
     #[test]
-    fn core_surface_leads_with_primary_navigation() {
-        // The default (Core-only) surface, in declaration order, must begin with the
-        // primary navigate/comprehend loop so an agent sees the highest-value tools
-        // first. Change-safety + verify tools follow; Extended stays hidden.
-        let core: Vec<&str> = TOOLS
+    fn essential_surface_is_the_navigation_loop() {
+        // The default (Essential) surface, in presentation order, is exactly the
+        // find -> comprehend -> blast-radius loop — nothing more.
+        let essential: Vec<&str> = TOOLS
             .iter()
-            .filter(|t| t.tier == Tier::Core)
             .map(|t| t.name)
+            .filter(|n| tool_tier(n) == Tier::Essential)
             .collect();
-        let lead = ["grep", "understand", "ask", "locate", "asm", "query"];
-        assert!(
-            core.starts_with(&lead),
-            "Core surface must lead with the primary navigation loop; got: {core:?}"
+        assert_eq!(
+            essential,
+            ["grep", "understand", "ask", "locate", "asm", "query"],
+            "Essential surface drifted; got: {essential:?}"
         );
-        // The change-safety + verify tools are now part of the default surface.
+        // Change-safety / verify / orient tools are Standard, NOT in the default.
         for t in [
-            "impact-diff",
             "check",
+            "impact-diff",
             "test",
             "lint",
             "audit",
             "diagnose",
             "list",
         ] {
-            assert!(
-                core.contains(&t),
-                "{t} should be in the Core surface; got: {core:?}"
-            );
+            assert_eq!(tool_tier(t), Tier::Standard, "{t} should be Standard tier");
         }
     }
 
     #[test]
-    fn default_surface_is_core_only_full_surface_is_everything() {
-        let core = TOOLS.iter().filter(|t| t.tier == Tier::Core).count();
-        let all = TOOLS.len();
-        assert!(
-            core > 0 && core < all,
-            "expected a mix of Core and Extended"
+    fn surface_tiers_widen_essential_to_standard_to_full() {
+        let count = |lvl: Tier| TOOLS.iter().filter(|t| tool_tier(t.name) <= lvl).count();
+        let (e, s, f) = (
+            count(Tier::Essential),
+            count(Tier::Standard),
+            count(Tier::Full),
         );
-        // Default list (no ADEN_MCP_FULL) shows Core only; full shows all.
-        assert_eq!(TOOLS.iter().filter(|t| Tier::Core == t.tier).count(), core);
+        assert_eq!(e, ESSENTIAL_TOOLS.len(), "essential surface size");
+        assert_eq!(
+            s,
+            ESSENTIAL_TOOLS.len() + STANDARD_TOOLS.len(),
+            "standard = essential + standard list"
+        );
+        assert_eq!(f, TOOLS.len(), "full surface is every registered tool");
+        assert!(e < s && s < f, "tiers must strictly widen: {e} < {s} < {f}");
+    }
+
+    #[test]
+    fn tier_lists_are_valid_and_disjoint() {
+        let names: std::collections::HashSet<&str> = TOOLS.iter().map(|t| t.name).collect();
+        for n in ESSENTIAL_TOOLS.iter().chain(STANDARD_TOOLS) {
+            assert!(names.contains(n), "{n} is tiered but not a registered tool");
+        }
+        for n in ESSENTIAL_TOOLS {
+            assert!(
+                !STANDARD_TOOLS.contains(n),
+                "{n} is in both Essential and Standard"
+            );
+        }
     }
 
     #[test]
@@ -1367,7 +1393,7 @@ mod tests {
         for off in ["0", "false", "", "no", "core", "2"] {
             assert!(!parse_full(Some(off)), "{off:?} should not enable full");
         }
-        assert!(!parse_full(None), "unset must default to Core-only");
+        assert!(!parse_full(None), "unset must not force the full surface");
     }
 
     #[test]
