@@ -62,7 +62,7 @@ def git_commit():
                           capture_output=True, text=True).stdout.strip() or "unknown"
 
 
-def run_eval(binary, repo, queries, lexicon_on):
+def run_metrics(binary, repo, queries, lexicon_on):
     env = dict(os.environ)
     # Levers are opt-in (ADEN_LEXICON_ON) as of the additive-guard change. ON sets the
     # opt-in flag; OFF leaves it unset (the default = baseline ranking).
@@ -98,9 +98,9 @@ def bench(name, cfg, binary, do_gen):
         print(f"  [{name}] gen …", file=sys.stderr)
         rec["gen_time_sec"] = timed_gen(binary, cfg["repo"])
     print(f"  [{name}] eval OFF …", file=sys.stderr)
-    off = run_eval(binary, cfg["repo"], cfg["queries"], lexicon_on=False)
+    off = run_metrics(binary, cfg["repo"], cfg["queries"], lexicon_on=False)
     print(f"  [{name}] eval ON …", file=sys.stderr)
-    on = run_eval(binary, cfg["repo"], cfg["queries"], lexicon_on=True)
+    on = run_metrics(binary, cfg["repo"], cfg["queries"], lexicon_on=True)
     if not off or not on:
         rec["error"] = "eval failed (see stderr)"
         return rec
