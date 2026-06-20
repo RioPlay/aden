@@ -16,11 +16,13 @@ pub mod impact_diff;
 pub mod init;
 pub mod licenses;
 pub mod lint;
+pub mod locate;
 pub mod overlay;
 pub mod query;
 pub mod ready;
 pub mod review;
 pub mod savings_store;
+pub mod search;
 pub mod session;
 pub mod store;
 pub mod suggest;
@@ -48,14 +50,13 @@ pub use impact_diff::cmd_impact_diff;
 pub use init::{cmd_agents_md, cmd_init, cmd_new};
 pub use licenses::cmd_licenses;
 pub use lint::cmd_lint;
+pub use locate::{cmd_locate, cmd_understand};
 #[cfg(feature = "watch")]
 pub use query::cmd_watch;
-pub use query::{
-    cmd_ask, cmd_asm, cmd_check, cmd_list, cmd_locate, cmd_query, cmd_query_adq, cmd_search,
-    cmd_understand,
-};
+pub use query::{cmd_ask, cmd_asm, cmd_check, cmd_query, cmd_query_adq};
 pub use ready::cmd_ready;
 pub use review::{cmd_review, cmd_review_since};
+pub use search::{cmd_list, cmd_search};
 pub use session::{cmd_kickoff, cmd_session, cmd_workflow};
 pub use store::{cmd_store_list, cmd_store_migrate, cmd_store_path, cmd_store_prune};
 pub use suggest::cmd_suggest;
