@@ -107,13 +107,31 @@ pub fn cmd_grep(
     matches.sort_by(|a, b| a.file.cmp(&b.file).then(a.line.cmp(&b.line)));
     let total = matches.len();
 
+    // A literal search that finds nothing but whose pattern carries regex
+    // metacharacters is almost always a misfired regex — e.g. `Ready|ready`
+    // matched literally, pipe and all, hits nothing. A human sees the empty
+    // result and adjusts; an agent consuming `{"total": 0}` would wrongly
+    // conclude the term is absent. Surface a hint so "zero means absent" stays
+    // trustworthy. Fires only on zero results, so a successful search is never
+    // cluttered and behavior never changes.
+    let regex_hint = (total == 0 && !regex && looks_like_regex(pattern)).then(|| {
+        format!(
+            "pattern '{}' was matched literally but contains regex metacharacters; \
+             retry with regex=true for alternation/classes, or ignore_case=true for case folding",
+            pattern
+        )
+    });
+
     if json {
-        print_json(&matches, limit);
+        print_json(&matches, limit, regex_hint.as_deref());
         return Ok(());
     }
 
     if total == 0 {
         println!("No matches for '{}'.", pattern);
+        if let Some(hint) = &regex_hint {
+            println!("  ↳ hint: {hint}");
+        }
         return Ok(());
     }
 
@@ -207,7 +225,7 @@ fn short_name(anchor: &str) -> String {
 /// needs the total count and an explicit `truncated` flag — the human footer
 /// ("... and N more (raise --limit)") is noise to a program. `returned` is how
 /// many of `total` matches are in the array after `limit` applies.
-fn print_json(matches: &[Match], limit: usize) {
+fn print_json(matches: &[Match], limit: usize, hint: Option<&str>) {
     let total = matches.len();
     let returned = total.min(limit);
     let items: Vec<String> = matches
@@ -230,13 +248,61 @@ fn print_json(matches: &[Match], limit: usize) {
             )
         })
         .collect();
+    // `hint` is emitted only when present (a zero-result literal search whose
+    // pattern looks like a regex), so the envelope shape is unchanged for every
+    // normal search and existing consumers are unaffected.
+    let hint_field = match hint {
+        Some(h) => format!(", \"hint\": {}", json_str(h)),
+        None => String::new(),
+    };
     println!(
-        "{{\"total\": {}, \"returned\": {}, \"truncated\": {}, \"matches\": [\n{}\n]}}",
+        "{{\"total\": {}, \"returned\": {}, \"truncated\": {}{}, \"matches\": [\n{}\n]}}",
         total,
         returned,
         total > limit,
+        hint_field,
         items.join(",\n")
     );
+}
+
+/// Heuristic: does a *literal* (non-regex) pattern look like it was actually
+/// meant as a regex? Used only to nudge `regex=true` on a zero-result literal
+/// search — a soft hint, never a behavior change. Flags the high-signal regex
+/// idioms (alternation, character classes, groups, escapes, wildcards) and
+/// deliberately skips bare `.`/`*`/`+`/`?`, which appear in literal code
+/// searches too often (`foo.bar`, `x++`, globs) to be a reliable signal.
+fn looks_like_regex(pattern: &str) -> bool {
+    pattern.contains('|')
+        || pattern.contains('[')
+        || pattern.contains('(')
+        || pattern.contains('\\')
+        || pattern.contains(".*")
+        || pattern.contains(".+")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::looks_like_regex;
+
+    #[test]
+    fn flags_regex_idioms() {
+        assert!(looks_like_regex("Ready|ready")); // alternation — the original miss
+        assert!(looks_like_regex("[A-Z]")); // character class
+        assert!(looks_like_regex("fn (foo|bar)")); // group + alternation
+        assert!(looks_like_regex(r"\bword\b")); // escape
+        assert!(looks_like_regex("foo.*bar")); // wildcard
+    }
+
+    #[test]
+    fn ignores_plain_literals() {
+        // Bare literals — including code that happens to contain `.`/`*`/`?`/`+`
+        // — must NOT be flagged, or every zero-result search would nag.
+        assert!(!looks_like_regex("cmd_ready"));
+        assert!(!looks_like_regex("foo.bar"));
+        assert!(!looks_like_regex("x++"));
+        assert!(!looks_like_regex("value?"));
+        assert!(!looks_like_regex("get_all_edges"));
+    }
 }
 
 /// Minimal JSON string escaping (quotes, backslashes, control chars).
