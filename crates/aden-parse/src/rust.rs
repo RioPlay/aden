@@ -1043,8 +1043,36 @@ fn resolve_callee_name(node: tree_sitter::Node, source: &str) -> String {
     match node.kind() {
         "identifier" => node_text(node, source).to_string(),
         "field_expression" => {
-            if let Some(name) = node.child_by_field_name("field") {
-                node_text(name, source).to_string()
+            // `x.foo()` is a call_expression whose function is this field_expression
+            // (tree-sitter-rust has no method_call_expression). The bare field name
+            // alone is usually ambiguous (every type has its own `foo`) and gets
+            // dropped at link time. When the receiver is `self`/`Self` we DO know the
+            // type — it is the enclosing impl — so emit `self.method` and let the
+            // linker's zero-false-positive self path re-qualify it to `Type::method`.
+            // Other receivers keep the bare field name (their type is unknown here).
+            match (
+                node.child_by_field_name("value"),
+                node.child_by_field_name("field"),
+            ) {
+                (Some(v), Some(f)) => {
+                    let recv = node_text(v, source).trim_start_matches('&').trim();
+                    let method = node_text(f, source);
+                    if recv == "self" || recv == "Self" {
+                        format!("self.{method}")
+                    } else {
+                        method.to_string()
+                    }
+                }
+                (None, Some(f)) => node_text(f, source).to_string(),
+                _ => node_text(node, source).to_string(),
+            }
+        }
+        "generic_function" => {
+            // `self.method::<T>()` / `func::<T>()` — the callee is the `function`
+            // child; recurse so a self-method with a turbofish still routes through
+            // the self path instead of stringifying the turbofish.
+            if let Some(inner) = node.child_by_field_name("function") {
+                resolve_callee_name(inner, source)
             } else {
                 node_text(node, source).to_string()
             }
