@@ -2665,14 +2665,6 @@ pub fn cmd_list(
     Ok(())
 }
 
-/// Resolve a bare symbol name to a single full store anchor, mirroring the
-/// suffix/`#name` matching that `locate` uses against the store's anchor keys.
-///
-/// Returns the unique best match: an exact `#symbol` suffix match is preferred,
-/// otherwise the first (sorted) anchor whose lowercased form ends with the
-/// symbol or contains `#symbol`. `None` when nothing matches — callers turn
-/// that into a helpful "not found" message. Factored out so it is unit-testable
-/// without a live store.
 /// Rank how well `anchor` matches the query `symbol` for symbol resolution
 /// (lower is better). The anchor's trailing fragment is taken after the last
 /// `#`/`/`; BOTH the whole fragment and its last `.`/`::` component (the bare
@@ -2709,6 +2701,12 @@ fn anchor_match_rank(anchor: &str, symbol: &str) -> u8 {
     }
 }
 
+/// Resolve a bare symbol name to a single full store anchor (the `understand`
+/// resolver). Filters to anchors that contain the symbol, then picks the best by
+/// [`anchor_match_rank`] (exact fragment > exact method-name > member > substring),
+/// tie-broken by anchor. `None` when nothing matches — callers turn that into a
+/// helpful "not found" message. Factored out so it is unit-testable without a live
+/// store. Shares its ranking with `cmd_locate` so the two resolvers never disagree.
 fn pick_symbol_anchor(symbol: &str, anchors: &[String]) -> Option<String> {
     let sym = symbol.to_lowercase();
     let mut matched: Vec<&String> = anchors

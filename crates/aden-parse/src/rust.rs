@@ -1050,6 +1050,12 @@ fn resolve_callee_name(node: tree_sitter::Node, source: &str) -> String {
             // type — it is the enclosing impl — so emit `self.method` and let the
             // linker's zero-false-positive self path re-qualify it to `Type::method`.
             // Other receivers keep the bare field name (their type is unknown here).
+            //
+            // NB: self-qualified callees intentionally bypass the SKIP_CALLEES noise
+            // filter (which lists BARE std-method names like `push`/`iter`/`clone`).
+            // `self.push` only links when the ENCLOSING type actually defines `push`,
+            // so it is a real self-call worth tracking, not std noise — do not re-apply
+            // SKIP_CALLEES to the `self.`-prefixed form or genuine self-calls are lost.
             match (
                 node.child_by_field_name("value"),
                 node.child_by_field_name("field"),
