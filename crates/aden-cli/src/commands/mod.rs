@@ -24,8 +24,10 @@ pub mod review;
 pub mod savings_store;
 pub mod search;
 pub mod session;
+pub mod status;
 pub mod store;
 pub mod suggest;
+pub mod sync;
 pub mod test_cmd;
 #[cfg(feature = "view")]
 pub mod timeline;
@@ -58,8 +60,10 @@ pub use ready::cmd_ready;
 pub use review::{cmd_review, cmd_review_since};
 pub use search::{cmd_list, cmd_search};
 pub use session::{cmd_kickoff, cmd_session, cmd_workflow};
+pub use status::cmd_status;
 pub use store::{cmd_store_list, cmd_store_migrate, cmd_store_path, cmd_store_prune};
 pub use suggest::cmd_suggest;
+pub use sync::cmd_sync;
 pub use test_cmd::cmd_test;
 #[cfg(feature = "view")]
 pub use timeline::cmd_timeline;
