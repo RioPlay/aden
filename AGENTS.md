@@ -35,7 +35,8 @@ repo, a big merge, or generated code appearing outside your edits.
 - `diagnose` — deterministic knowledge-graph diagnostics
 - `lint .` — lint all languages
 - `test .` — run tests
-- `ci-check .` — full CI gates before push
+- `ready .` — fast pre-commit gate (gen + lint + check + heal drift + audit; aden-only, no external tools)
+- `ci-check .` — full CI gate before push (adds external tools on top of `ready`)
 
 ## Conventions
 
