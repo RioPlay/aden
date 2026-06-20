@@ -100,6 +100,12 @@ pub fn cmd_heal_scan_since(
 ) -> Result<(), Box<dyn std::error::Error>> {
     use aden_heal::{Scanner, generate};
 
+    // A store left in an unreadable engine format (e.g. after a fjall upgrade)
+    // would make heal silently find nothing. Recover it first — but ONLY on the
+    // format-mismatch signal, never on mere staleness, so a normal heal still
+    // observes real drift between source and the current store.
+    super::generate::recover_if_incompatible_store(path);
+
     println!("Aden Incremental Scan (since {})", since);
     println!("================================");
 
@@ -172,6 +178,11 @@ pub fn cmd_heal_scan(
     unlimited: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use aden_heal::{Scanner, generate};
+
+    // Recover a store left in an unreadable engine format before scanning, so
+    // heal doesn't silently find nothing. Format-mismatch signal only — never a
+    // staleness-gen, which would mask the drift heal exists to surface.
+    super::generate::recover_if_incompatible_store(path);
 
     if gc {
         return cmd_heal_gc(path);
@@ -561,6 +572,11 @@ pub fn cmd_heal_apply(repo_path: &Path, id: &str) -> Result<(), Box<dyn std::err
     if !is_safe_id(id) {
         return Err(format!("Invalid proposal ID: {}", id).into());
     }
+
+    // A MergeReconcile proposal opens the store; recover it first if it is in an
+    // unreadable engine format, so apply doesn't fail with the misleading
+    // "run `aden gen` first" message. Format-mismatch signal only.
+    super::generate::recover_if_incompatible_store(repo_path);
 
     let proposal = aden_propose::load(id, repo_path)
         .map_err(|e| format!("Failed to load proposal '{}': {}", id, e))?;

@@ -310,6 +310,14 @@ pub enum StoreError {
 
     #[error("duplicate: {0}")]
     Duplicate(String),
+
+    /// The on-disk store was written in a storage-engine format this build
+    /// cannot read (e.g. after a fjall major-version upgrade). Distinct from
+    /// [`Io`](Self::Io) because the store is a rebuildable cache (ADR-003): a
+    /// creation path (`gen`) may safely wipe and rebuild from source on THIS
+    /// signal, whereas a generic I/O error must not trigger deletion.
+    #[error("incompatible store format: {0}")]
+    IncompatibleVersion(String),
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
@@ -336,6 +344,49 @@ mod tests {
             metadata: None,
             confidence: 1.0,
         }
+    }
+
+    #[test]
+    fn fjall_version_mismatch_maps_to_incompatible_not_io() {
+        // The migration-gate linchpin: a format-version mismatch must surface as
+        // the distinct `IncompatibleVersion` variant (so a creation path can
+        // wipe-and-rebuild on it), while EVERY other fjall error stays on the
+        // generic `Io` path (so a real I/O failure never triggers deletion). If a
+        // future fjall renames the variant, this test fails loudly.
+        let version: StoreError = fjall::Error::InvalidVersion(None).into();
+        assert!(
+            matches!(version, StoreError::IncompatibleVersion(_)),
+            "InvalidVersion must map to IncompatibleVersion, got {version:?}"
+        );
+        let other: StoreError = fjall::Error::InvalidTrailer.into();
+        assert!(
+            matches!(other, StoreError::Io(_)),
+            "a non-version fjall error must map to Io, got {other:?}"
+        );
+    }
+
+    #[test]
+    fn open_surfaces_incompatible_version_for_unreadable_format() {
+        // End-to-end through the real engine: create a valid store, corrupt its
+        // on-disk version marker, and reopen. The engine reports an unreadable
+        // format and `Storage::new` surfaces it as `IncompatibleVersion` — the
+        // same signal a genuine older-format (e.g. fjall V2) store produces, which
+        // gen's recovery path keys off to rebuild from source.
+        let path = temp_path();
+        {
+            let _s = Storage::new(&path).unwrap(); // materialize a valid v3 store
+        }
+        fs::write(format!("{path}/version"), b"not-a-valid-fjall-version").unwrap();
+        // `unwrap_err` would require `FjallStorage: Debug`; map to the error (Ok
+        // value dropped). Clean up the temp dir BEFORE asserting so a failure
+        // doesn't leak it.
+        let got_incompatible =
+            matches!(Storage::new(&path), Err(StoreError::IncompatibleVersion(_)));
+        fs::remove_dir_all(&path).ok();
+        assert!(
+            got_incompatible,
+            "a corrupt/old version marker must surface IncompatibleVersion"
+        );
     }
 
     #[test]

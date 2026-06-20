@@ -32,7 +32,18 @@ use std::collections::{HashMap, HashSet};
 
 impl From<fjall::Error> for StoreError {
     fn from(e: fjall::Error) -> Self {
-        StoreError::Io(e.to_string())
+        // A version mismatch means the on-disk store was written in a different
+        // engine format (e.g. after a fjall major-version upgrade). Surface it as
+        // a distinct, catchable variant so a creation path can wipe-and-rebuild
+        // the (rebuildable, ADR-003) cache. Every OTHER fjall error stays on the
+        // generic `Io` path — a real I/O failure must never be confused with a
+        // recoverable format change, or it could trigger deletion of a store that
+        // is merely temporarily unreadable.
+        if matches!(e, fjall::Error::InvalidVersion(_)) {
+            StoreError::IncompatibleVersion(e.to_string())
+        } else {
+            StoreError::Io(e.to_string())
+        }
     }
 }
 

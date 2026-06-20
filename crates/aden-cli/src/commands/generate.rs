@@ -1285,6 +1285,46 @@ fn cochange_pairs(root: &Path, cache: &crate::types::GenCache) -> Vec<CochangePa
 ///
 /// Best-effort: any error degrades to serving the existing store rather than
 /// failing the read.
+/// Rebuild the store from source IF (and only if) it exists on disk but is in a
+/// storage-engine format this build cannot read (e.g. after a fjall upgrade).
+///
+/// Returns `true` when a rebuild was triggered. Unlike [`ensure_fresh`], this
+/// does NOT regenerate on mere mtime staleness — it fires solely on the
+/// format-mismatch signal. That distinction matters for `heal`, whose whole job
+/// is to observe drift between source and the *current* store: a staleness-gen
+/// before a heal scan would reconcile the very drift heal is meant to surface,
+/// but a store in an unreadable format carries no usable baseline to drift from,
+/// so rebuilding it first is correct (and leaves heal a readable store).
+pub(crate) fn recover_if_incompatible_store(path: &Path) -> bool {
+    let root = find_project_root(path);
+    let (store, _) = aden_paths::resolve_read_store(&root);
+    if store.exists()
+        && let Some(store_str) = store.to_str()
+        && matches!(
+            Storage::open_existing(store_str),
+            Err(aden_store::StoreError::IncompatibleVersion(_))
+        )
+    {
+        // Recovery is best-effort, but its OUTCOME must be honest: return `true`
+        // only when the rebuild actually succeeded. A failure here means the
+        // store is still unreadable — most concretely a pinned/shared
+        // `$ADEN_STORE`, which `cmd_gen_inner` refuses to auto-wipe and so
+        // returns `Err`. Returning `true` regardless would make callers
+        // (`ensure_fresh`, heal) treat the store as recovered, skip their own
+        // logic, and silently degrade to empty results. Surface the error so the
+        // user understands why, and return `false` so callers do not assume
+        // success.
+        return match cmd_gen_silent(&root) {
+            Ok(()) => true,
+            Err(e) => {
+                eprintln!("aden: could not rebuild the incompatible store: {e}");
+                false
+            }
+        };
+    }
+    false
+}
+
 pub fn ensure_fresh(path: &Path) {
     use std::time::UNIX_EPOCH;
 
@@ -1295,6 +1335,16 @@ pub fn ensure_fresh(path: &Path) {
     let (existing_store, _) = aden_paths::resolve_read_store(&root);
     if !existing_store.exists() {
         let _ = cmd_gen_silent(&root);
+        return;
+    }
+
+    // The store exists but may be unreadable by this build — e.g. it was written
+    // by an older storage-engine format and this binary was just upgraded. The
+    // mtime freshness check below would see an up-to-date tree and skip the
+    // rebuild, leaving the read to open an incompatible store and degrade to
+    // empty results. Recover on the format-mismatch signal (and ONLY that), so
+    // the read auto-recovers with zero user action.
+    if recover_if_incompatible_store(&root) {
         return;
     }
 
@@ -1440,7 +1490,7 @@ fn cmd_gen_inner(
     // link_store_edges — no .adoc files or contracts/ directory are emitted.
     {
         // A single file re-indexes just itself; a directory indexes the project.
-        let sources = if path.is_file() {
+        let mut sources = if path.is_file() {
             vec![path.to_path_buf()]
         } else {
             discover_source_files(&root)?
@@ -1463,12 +1513,59 @@ fn cmd_gen_inner(
             std::fs::create_dir_all(parent)
                 .map_err(|e| format!("Failed to create store dir {}: {}", parent.display(), e))?;
         }
-        let storage = Storage::new(
-            store_path
-                .to_str()
-                .expect("Store path should be valid UTF-8"),
-        )
-        .map_err(|e| format!("Failed to open store at {}: {}", store_path.display(), e))?;
+        let store_str = store_path
+            .to_str()
+            .expect("Store path should be valid UTF-8");
+        // A store that does not exist yet — first gen, a manual `rm -rf store/`,
+        // or a `regen` wipe — is empty: its incremental gen-cache, if any, is now
+        // stale and must be ignored, or every file would be skipped as
+        // "unchanged" against an empty store and the rebuild would silently
+        // produce nothing (the recovery-from-deletion trap).
+        let mut full_rebuild = force || !store_path.exists();
+        let storage = match Storage::new(store_str) {
+            Ok(s) => s,
+            Err(aden_store::StoreError::IncompatibleVersion(_)) => {
+                // The on-disk store was written in an engine format this build
+                // cannot read (e.g. a fjall major upgrade). The store is a
+                // rebuildable cache (ADR-003), so wipe it and rebuild from
+                // source. Scoped strictly to this signal — a generic Io error
+                // falls through to the hard-failure arm below and never wipes.
+                //
+                // SAFETY: a pinned/shared `$ADEN_STORE` may hold several projects'
+                // data; never auto-wipe shared state. Surface an actionable error
+                // and let the user decide (mirrors `regen`'s pinned-store
+                // caution). The default per-project store is safe to wipe.
+                if std::env::var_os("ADEN_STORE").is_some() {
+                    return Err(format!(
+                        "Store at {} is in an incompatible engine format, and $ADEN_STORE \
+                         is pinned/shared — refusing to auto-wipe shared state. Unset \
+                         $ADEN_STORE for a per-project store, or run `aden regen` to rebuild.",
+                        store_path.display()
+                    )
+                    .into());
+                }
+                progress!(
+                    silent,
+                    "Store format changed (engine upgrade) — rebuilding from source."
+                );
+                let _ = std::fs::remove_dir_all(&store_path);
+                full_rebuild = true;
+                // The wipe destroyed the WHOLE store, so a single-file `gen` must
+                // now repopulate the whole project — otherwise the rebuild would
+                // re-index just that one file and leave a near-empty graph.
+                if path.is_file() {
+                    sources = discover_source_files(&root)?;
+                }
+                Storage::new(store_str).map_err(|e| {
+                    format!("Failed to rebuild store at {}: {}", store_path.display(), e)
+                })?
+            }
+            Err(e) => {
+                return Err(
+                    format!("Failed to open store at {}: {}", store_path.display(), e).into(),
+                );
+            }
+        };
         let _ = aden_paths::write_meta(&root);
 
         let cache_path = aden_paths::gen_cache_file(&root);
@@ -1505,10 +1602,13 @@ fn cmd_gen_inner(
                     return None;
                 }
                 let cache_key = src_rel.to_string_lossy().to_string();
-                // `--force-regen` and `--propose` must re-examine every file even
-                // when its mtime is unchanged: force needs to overwrite, and the
-                // dry-run needs to audit current state against overlays.
-                if !force
+                // `--force-regen`/`--propose` and a full rebuild (new/empty/
+                // recovered store) must re-examine every file even when its mtime
+                // is unchanged: force needs to overwrite, the dry-run needs to
+                // audit current state against overlays, and a full rebuild has an
+                // empty store whose "unchanged" cache entries no longer reflect
+                // any stored contract.
+                if !full_rebuild
                     && !propose
                     && let Some(e) = cache.entries.get(&cache_key)
                     && e.source_mtime == mtime_secs
