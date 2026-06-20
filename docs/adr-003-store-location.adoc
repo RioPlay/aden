@@ -27,8 +27,8 @@ subdirectories ("subfolder pollution"):
   walk-up, then an `.aden/project.conf` fallback), and `gen`/`grep`/`heal` use
   it — but `query`, `aden-graph::cache`, `aden-heal::scanner`, and
   `aden-core::overlay` build `path.join(".aden")` straight from the raw argument.
-. *The store is auto-created on open — even by reads.* `fjall::Config::new(path)
-  .open()` creates the directory. So `aden list` / `aden query` run from
+. *The store is auto-created on open — even by reads.* Opening a fjall store at a
+  path creates the directory. So `aden list` / `aden query` run from
   `crates/aden-core/` materializes `crates/aden-core/.aden/store`. A read command
   is enough to pollute; no write is required.
 

@@ -321,11 +321,10 @@ aden query --from mod-aden-core --format table
 may carry several parallel edges of different types; a neighbor is kept when
 *any* edge between the pair matches the filter.
 
-`--backlinks` counts incoming *reference* edges (`Calls`/`Uses`/`Invokes`/
-`RelatesTo`/`Tests`/`Verifies`/`Implements`/`Requires`/`Mutates`) and excludes
-structural containment (the module-hub `Documents`/`PartOf` edges) — the same
-set as the ADQ `refs` selector. `--impact` traverses downstream dependency
-edges (`Uses`, `Calls`, `Constrains`, `Invokes`, `Implements`, `Mutates`).
+`--backlinks` returns every node with an incoming edge to the anchor (all direct
+referencers, regardless of edge type); narrow it to one relationship with
+`--edge-type`. `--impact` traverses downstream dependency edges (`Uses`, `Calls`,
+`Implements`, `Mutates`).
 
 === ask
 
@@ -394,16 +393,20 @@ Internally:
 |===
 |Intent |Depth |Edge Types (primary; all also add the semantic edges)
 
-|Explain |2 |Uses, Calls, Implements, Documents
-|Usage |2 |Uses, Invokes, Requires, Documents
+|Explain |2 |Uses, Calls, Implements, Documents, Demonstrates
+|Usage |2 |Uses, Requires, Documents, Demonstrates
 |Refactor |4 |Calls, Uses, Mutates, Supersedes, Amends
-|Impact |3 |Uses, Calls, Constrains
-|Debug |3 |Constrains, Documents, Calls, Invokes, Requires
+|Impact |3 |Uses, Calls
+|Debug |3 |Documents, Calls, Requires
 |List |2 |Uses, Documents
-|Compare |3 |Uses, Documents, Constrains
+|Compare |3 |Uses, Documents
 |Count |1 |Documents, Uses
-|General |2 |Uses, Documents, Constrains
+|General |2 |Uses, Documents
 |===
+
+In addition to the per-intent types above, every intent always traverses `Calls`
+(the call graph stays navigable for all questions), and any intent that includes
+`Documents` also traverses `Contains` (module→member containment).
 
 NOTE: Classification is keyword/phrase based, so phrasing matters — e.g. "blast
 radius of X" and "what depends on X" route to Impact, while an unusual phrasing

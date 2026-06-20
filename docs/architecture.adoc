@@ -87,7 +87,7 @@ AI agents have finite context windows. Aden budgets tokens by:
    node's neighbours in deterministic priority order (most structurally
    load-bearing edge types first: `Calls`, then `Uses`, containment, …) so the
    budget is spent on the most relevant context and the output is reproducible
-2. **Depth limiting** — stop at depth N (default: 3)
+2. **Depth limiting** — stop at depth N (default: 2)
 3. **Token estimation** — ~4-bytes-per-token heuristic (byte length ÷ 4)
 4. **Assembly** — concatenate documents until the budget is reached. The budget
    is a hard cap: inter-document separators are counted, and a final document
@@ -155,7 +155,7 @@ Builds a directed graph (`DiGraph`) from all contracts + documentation + <<adr-0
 
 - Nodes: anchors (`[[name]]`)
 - Edges: typed relationships — active types (emitter + consumer + eval verified):
-  `Uses`, `Calls`, `Constrains`, `Contains`/`PartOf` (containment),
+  `Uses`, `Calls`, `Contains`/`PartOf` (containment),
   `Documents` (prose→code), `IsA`, `RelatesTo`, `Tests`, `Implements`, `Mutates`.
   `RelatesTo` edges also connect prose: cross-document `<<anchor>>`, `xref:`, and
   markdown `[text](#frag)` references become bidirectional `RelatesTo` edges on

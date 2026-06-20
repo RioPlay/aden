@@ -139,19 +139,25 @@ Release binary, Aden's own repository (244 files, 2,592 contracts).
 |ripgrep (reference) |6.5 ms
 |===
 
-The ~250 ms floor on all store-backed commands is caused by `fjall` 2.11.2
-`KeyspaceInner::drop`, which poll-sleeps ~250 ms per open/drop cycle waiting on
-background threads (confirmed via gdb).
-Every store-backed command pays 1–2 units of this cost.
-The conceptual `ask` path opens and drops the store many more times during
-escalation, which compounds to ~48 s.
-A fast-path escape runs at ~9 ms, confirming ~10 ms is achievable once the
-fjall drop is addressed.
-The warm `gen` anomaly (308 ms > 274 ms cold) is a known side effect of the
-no-op skip path; the difference is within measurement noise for this floor.
+NOTE: The latency table above was measured under `fjall` 2.11.2 and predates the
+fjall 3 upgrade described below. The store-backed rows no longer reflect current
+behavior and will be re-measured.
 
-This latency issue is partially addressed: `--propose` now opens the store once
-per run instead of per event (commit `be92d95`).
+The ~250 ms floor on all store-backed commands was caused by `fjall` 2.11.2
+`KeyspaceInner::drop`, which poll-slept ~250 ms per open/drop cycle waiting on
+background threads (confirmed via gdb). Every store-backed command paid 1–2 units
+of this cost, and the conceptual `ask` path — which opens and drops the store many
+more times during escalation — compounded it to ~48 s.
+
+This floor was eliminated by upgrading to `fjall` 3 (PR #44): fjall 3 replaces the
+poll-sleep with a `flume`-channel wake, so an open/drop cycle now completes in
+~715 µs instead of ~250 ms (measured by the `store_perf` bench), realizing the
+~10 ms-per-command target an earlier fast-path escape had predicted. An earlier
+partial mitigation also stands: `--propose` opens the store once per run instead of
+per event (commit `be92d95`).
+
+The warm `gen` anomaly (308 ms > 274 ms cold) is a side effect of the no-op skip
+path; the difference is within measurement noise for the old floor.
 
 == Energy vs an LLM [estimated — NOT measured]
 
@@ -263,8 +269,8 @@ tokens and GPU-joules that are never spent, not merely reduced.
 === Power savings
 
 * *Measured aden energy (RAPL)* — `scripts/energy.py` reads CPU package + DRAM
-  counters around each command (idle-subtracted, N≥20, medians), reported *with and
-  without* the known fjall 250 ms floor. Moves aden's side of the energy story from
+  counters around each command (idle-subtracted, N≥20, medians). Moves aden's side
+  of the energy story from
   `[estimated]` to `[measured]`.
 * *Frontier-LLM comparison* — hosted inference can't be instrumented, so the LLM
   side stays modeled, calibrated to the tier actually used. The joule axis stays

@@ -35,7 +35,7 @@ repo, a big merge, or generated code appearing outside your edits.
 - `diagnose` — deterministic knowledge-graph diagnostics
 - `lint .` — lint all languages
 - `test .` — run tests
-- `ci-check .` — full CI gates before commit
+- `ci-check .` — full CI gates before push
 
 ## Conventions
 

@@ -575,26 +575,20 @@ impl AdenGraph<DocumentNode, AdenEdge> {
             graph.add_node(node);
         }
 
-        // Load all edges from storage and rebuild them.
-        // Use the canonical EdgeType::ALL list — a hand-written local copy
-        // silently drops every edge type it forgets (Demonstrates, Mentions,
-        // and DefinesTerm were absent before this fix).
-        for edge_type in &EdgeType::ALL {
-            let typed_edges = storage
-                .get_edges_by_type(edge_type)
-                .map_err(|e| GraphError::Io(e.to_string()))?;
-            for (src, dst) in typed_edges {
-                if graph
-                    .add_edge_by_anchor(
-                        &src,
-                        &dst,
-                        AdenEdge {
-                            edge_type: *edge_type,
-                        },
-                    )
-                    .is_err()
-                {}
-            }
+        // Load all edges in a single pass over the edges partition. The previous
+        // loop over `EdgeType::ALL` issued one full partition scan per variant
+        // (32 scans); `get_all_edges` buckets by the type embedded in each key in
+        // one scan, and still covers every variant — so Demonstrates/Mentions/
+        // DefinesTerm stay included (a hand-written list silently drops any it
+        // forgets).
+        let edges = storage
+            .get_all_edges()
+            .map_err(|e| GraphError::Io(e.to_string()))?;
+        for (src, dst, edge_type) in edges {
+            if graph
+                .add_edge_by_anchor(&src, &dst, AdenEdge { edge_type })
+                .is_err()
+            {}
         }
 
         Ok(graph)

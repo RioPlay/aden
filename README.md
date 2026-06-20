@@ -99,14 +99,15 @@ With the feature off (the default), nothing changes and no extra dependencies ar
 built. Air-gapped? Place `model.onnx` + `tokenizer.json` from BAAI/bge-small-en-v1.5
 into the cache dir by hand instead of running the script.
 
-### Dual-substrate levers (on by default)
+### Dual-substrate levers (opt-in)
 
 Two retrieval levers route by what the text is: a corpus-derived **PPMI rerank** for
 code (MRR 0.216 → 0.289) and grounded **OEWN synonym expansion** for prose (R@1
-1/42 → 41/42; end-to-end 0/15 → 15/15). Auto-gating is **on by default** (routed by query
-shape + corpus substrate); set `ADEN_LEXICON_OFF` to disable, or `ADEN_LEXICON_EXPAND` /
-`ADEN_PPMI_RERANK` to force a single lever. Grounded and corpus-gated, so it no-ops where
-it would not help. See [`docs/retrieval-levers.adoc`](docs/retrieval-levers.adoc).
+1/42 → 41/42; end-to-end 0/15 → 15/15). Auto-gating is **off by default** (net-neutral to
+negative on natural multi-word queries over external repos); opt in with `ADEN_LEXICON_ON`
+(routed by query shape + corpus substrate), or force a single lever with `ADEN_LEXICON_EXPAND` /
+`ADEN_PPMI_RERANK`. Once opted in, `ADEN_LEXICON_OFF` force-disables. Grounded and corpus-gated,
+so it no-ops where it would not help. See [`docs/retrieval-levers.adoc`](docs/retrieval-levers.adoc).
 
 ## Core Commands
 
