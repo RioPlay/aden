@@ -1476,6 +1476,182 @@ struct AskExplain {
     candidates: Vec<String>,
 }
 
+/// Assembles a seed anchor's neighborhood at a given depth/budget/block filter,
+/// optionally folding in the seed's callers (incoming Calls/Uses). Holds the
+/// per-`ask` invariants (edge types, default block filter, hydration root,
+/// search relevance) so the thin-stub escalation ladder can re-assemble a seed
+/// many ways without re-threading them. Hydration is always on: `ask` answers
+/// from real source bodies, not just stored summaries (the store never holds
+/// function bodies).
+struct AskAssembler<'a> {
+    path: &'a Path,
+    edge_types: Vec<aden_core::EdgeType>,
+    block_filter: Vec<aden_asm::traverse::BlockKind>,
+    hydrate_root: PathBuf,
+    relevance: Option<std::collections::HashMap<String, f32>>,
+}
+
+impl AskAssembler<'_> {
+    /// Core assembly helper — returns (text, included_anchors) so callers can
+    /// resolve source files for baseline estimation without a second traversal.
+    fn assemble_seed_with(
+        &self,
+        seed: &str,
+        seed_depth: usize,
+        seed_budget: usize,
+        filter: &[aden_asm::traverse::BlockKind],
+        with_callers: bool,
+    ) -> Result<(String, Vec<String>), Box<dyn std::error::Error>> {
+        use aden_asm::traverse::{AssemblyOptions, assemble_with_anchors_mmr};
+        let graph = if with_callers {
+            aden_graph::cache::build_neighborhood_with_callers(
+                self.path,
+                seed,
+                seed_depth,
+                &self.edge_types,
+                // Incoming context worth folding in: callers/users, plus doc
+                // listings that exercise the seed (Demonstrates runs
+                // listing→symbol, so a symbol's working examples sit on its
+                // incoming side — Wave 2's "show me an example" payoff).
+                // `Mentions` is deliberately NOT folded: a prose name-drop is
+                // a hint, and 16 caller slots are better spent on real code.
+                &[
+                    aden_core::EdgeType::Calls,
+                    aden_core::EdgeType::Uses,
+                    aden_core::EdgeType::Demonstrates,
+                ],
+                // Test fixtures assert, they don't explain — same policy that
+                // keeps them from winning routing, judged by BOTH the anchor
+                // and the real source path (anchors flatten `tests/` away).
+                &|a, src| !is_test_anchor(a) && !src.map(is_test_source_path).unwrap_or(false),
+            )?
+        } else {
+            aden_graph::cache::build_neighborhood_cached(
+                self.path,
+                seed,
+                seed_depth,
+                &self.edge_types,
+            )?
+        };
+        let opts = AssemblyOptions {
+            start_anchor: seed.to_string(),
+            max_depth: seed_depth,
+            token_budget: seed_budget,
+            edge_types: self.edge_types.clone(),
+            block_filter: filter.to_vec(),
+            include_tags: Vec::new(),
+            exclude_tags: Vec::new(),
+            attributes: Vec::new(),
+            llm_mode: true, // aden ask always targets an LLM — emit clean prose
+            hydrate_root: Some(self.hydrate_root.clone()),
+            relevance: self.relevance.clone(),
+        };
+        // Prune near-duplicate neighbors before they spend budget. τ=0.8 skips
+        // only genuine near-dups (≥80% token overlap); the headroom probe showed
+        // this alters 42–100% of hubs, trading redundant context for distinct.
+        Ok(assemble_with_anchors_mmr(&graph, &opts, Some(0.8))?)
+    }
+
+    /// Convenience wrapper for callers that only need the assembled text.
+    fn assemble_seed_str(
+        &self,
+        seed: &str,
+        seed_depth: usize,
+        seed_budget: usize,
+        filter: &[aden_asm::traverse::BlockKind],
+        with_callers: bool,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        self.assemble_seed_with(seed, seed_depth, seed_budget, filter, with_callers)
+            .map(|(text, _)| text)
+    }
+
+    /// Assemble at the intent's default block filter with callers off.
+    fn assemble_seed(
+        &self,
+        seed: &str,
+        seed_depth: usize,
+        seed_budget: usize,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        self.assemble_seed_str(seed, seed_depth, seed_budget, &self.block_filter, false)
+    }
+}
+
+/// Estimate tokens saved vs. a grep-read baseline of the distinct source files
+/// the primary assembly touched. Baseline = sum of on-disk bytes for up to
+/// BASELINE_MAX_FILES distinct source files, capped and priced at the default
+/// tier (Opus 4.8). `source_file` attributes are repo-root-relative, so they
+/// resolve against the same hydration root the assembler uses.
+fn estimate_ask_savings(
+    path: &Path,
+    hydrate_root: &Path,
+    primary_anchors: &[String],
+    assembled_len: usize,
+) -> aden_core::savings::SavingsEstimate {
+    use aden_core::savings::{BASELINE_MAX_FILES, SavingsEstimate};
+    let mut seen_files: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut baseline_bytes: usize = 0;
+    for anchor in primary_anchors {
+        if seen_files.len() >= BASELINE_MAX_FILES {
+            break;
+        }
+        if let Some(src) = anchor_source_file(path, anchor) {
+            if src.is_empty() || seen_files.contains(&src) {
+                continue;
+            }
+            let abs = hydrate_root.join(&src);
+            if let Ok(meta) = std::fs::metadata(&abs) {
+                seen_files.insert(src);
+                baseline_bytes += meta.len() as usize;
+            }
+        }
+    }
+    let baseline_files = seen_files.len();
+    SavingsEstimate::from_bytes(assembled_len, baseline_bytes, baseline_files)
+}
+
+/// Render the `--explain` routing trace: the signals selection used, which path
+/// decided, and whether the thin-stub fallback swapped or was suppressed. The
+/// `Primary` line is the routed anchor BEFORE any fallback; the summary's
+/// `Anchor` line is the FINAL anchor — when they differ, `Fallback` says why.
+/// (Format consumed by scripts/eval_corpus.py --mode ask.)
+fn print_ask_explain(
+    xp: &AskExplain,
+    intent: &QueryIntent,
+    intent_was_overridden: bool,
+    path: &Path,
+    primary_anchor: &str,
+) {
+    println!("// ── Ask Routing Explain ─────────────────────────");
+    println!(
+        "//   Intent   : {:?}{}",
+        intent,
+        if intent_was_overridden {
+            " (override)"
+        } else {
+            ""
+        }
+    );
+    println!("//   Overview : {}", xp.overview_note);
+    if !xp.candidates.is_empty() {
+        println!(
+            "//   Candidates (top {}, * = within noise band {} of top score):",
+            xp.candidates.len(),
+            ANCHOR_NOISE_BAND
+        );
+        for line in &xp.candidates {
+            println!("//     {}", line);
+        }
+    }
+    println!("//   Decision : {}", xp.decision);
+    println!("//   Fallback : {}", xp.fallback);
+    match anchor_source_file(path, primary_anchor) {
+        Some(src) if !src.is_empty() => {
+            println!("//   Primary  : {} (source: {})", primary_anchor, src)
+        }
+        _ => println!("//   Primary  : {}", primary_anchor),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn cmd_ask(
     path: &Path,
@@ -1489,9 +1665,6 @@ pub fn cmd_ask(
     strict: bool,
     explain: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use aden_asm::traverse::{AssemblyOptions, assemble_with_anchors_mmr};
-    use aden_core::savings::{BASELINE_MAX_FILES, SavingsEstimate};
-
     if !path.is_dir() {
         return Err("ask requires a directory path".into());
     }
@@ -1703,74 +1876,14 @@ pub fn cmd_ask(
     // even when `path` is a subdirectory of the project.
     let hydrate_root = find_project_root(path);
 
-    // Helper: assemble one seed's neighborhood at a given depth/budget with a
-    // given block filter, optionally folding in the seed's callers (incoming
-    // Calls/Uses) — the escalation ladder's rendering and topology knobs.
-    // Hydration is always on: `ask` answers from real source bodies, not just
-    // stored summaries (the store never holds function bodies).
-    // Core assembly helper — returns (text, included_anchors) so callers can
-    // resolve source files for baseline estimation without a second traversal.
-    let assemble_seed_with = |seed: &str,
-                              seed_depth: usize,
-                              seed_budget: usize,
-                              filter: &[aden_asm::traverse::BlockKind],
-                              with_callers: bool|
-     -> Result<(String, Vec<String>), Box<dyn std::error::Error>> {
-        let graph = if with_callers {
-            aden_graph::cache::build_neighborhood_with_callers(
-                path,
-                seed,
-                seed_depth,
-                &edge_types,
-                // Incoming context worth folding in: callers/users, plus doc
-                // listings that exercise the seed (Demonstrates runs
-                // listing→symbol, so a symbol's working examples sit on its
-                // incoming side — Wave 2's "show me an example" payoff).
-                // `Mentions` is deliberately NOT folded: a prose name-drop is
-                // a hint, and 16 caller slots are better spent on real code.
-                &[
-                    aden_core::EdgeType::Calls,
-                    aden_core::EdgeType::Uses,
-                    aden_core::EdgeType::Demonstrates,
-                ],
-                // Test fixtures assert, they don't explain — same policy that
-                // keeps them from winning routing, judged by BOTH the anchor
-                // and the real source path (anchors flatten `tests/` away).
-                &|a, src| !is_test_anchor(a) && !src.map(is_test_source_path).unwrap_or(false),
-            )?
-        } else {
-            aden_graph::cache::build_neighborhood_cached(path, seed, seed_depth, &edge_types)?
-        };
-        let opts = AssemblyOptions {
-            start_anchor: seed.to_string(),
-            max_depth: seed_depth,
-            token_budget: seed_budget,
-            edge_types: edge_types.clone(),
-            block_filter: filter.to_vec(),
-            include_tags: Vec::new(),
-            exclude_tags: Vec::new(),
-            attributes: Vec::new(),
-            llm_mode: true, // aden ask always targets an LLM — emit clean prose
-            hydrate_root: Some(hydrate_root.clone()),
-            relevance: relevance.clone(),
-        };
-        // Prune near-duplicate neighbors before they spend budget. τ=0.8 skips
-        // only genuine near-dups (≥80% token overlap); the headroom probe showed
-        // this alters 42–100% of hubs, trading redundant context for distinct.
-        Ok(assemble_with_anchors_mmr(&graph, &opts, Some(0.8))?)
-    };
-    // Convenience wrapper for callers that only need the assembled text.
-    let assemble_seed_str = |seed: &str,
-                             seed_depth: usize,
-                             seed_budget: usize,
-                             filter: &[aden_asm::traverse::BlockKind],
-                             with_callers: bool|
-     -> Result<String, Box<dyn std::error::Error>> {
-        assemble_seed_with(seed, seed_depth, seed_budget, filter, with_callers)
-            .map(|(text, _)| text)
-    };
-    let assemble_seed = |seed: &str, seed_depth: usize, seed_budget: usize| {
-        assemble_seed_str(seed, seed_depth, seed_budget, &block_filter, false)
+    // Bundle the per-`ask` invariants so the thin-stub escalation ladder can
+    // re-assemble a seed many ways without re-threading them (see AskAssembler).
+    let asm = AskAssembler {
+        path,
+        edge_types: edge_types.clone(),
+        block_filter: block_filter.clone(),
+        hydrate_root: hydrate_root.clone(),
+        relevance: relevance.clone(),
     };
 
     // Clear winner ⇒ today's behavior exactly: one seed, full budget. Ambiguous ⇒
@@ -1788,7 +1901,7 @@ pub fn cmd_ask(
     let primary_text;
     let assembled = if resolved_alts.is_empty() {
         let (seed_text, seed_anchors) =
-            assemble_seed_with(&start_anchor, depth, effective_budget, &block_filter, false)?;
+            asm.assemble_seed_with(&start_anchor, depth, effective_budget, &block_filter, false)?;
         primary_anchors = seed_anchors;
         primary_text = seed_text.clone();
         seed_text
@@ -1796,7 +1909,7 @@ pub fn cmd_ask(
         let primary_budget = effective_budget * 60 / 100;
         let shallow_depth = depth.min(1);
         let (primary_seed_text, seed_anchors) =
-            assemble_seed_with(&start_anchor, depth, primary_budget, &block_filter, false)?;
+            asm.assemble_seed_with(&start_anchor, depth, primary_budget, &block_filter, false)?;
         primary_anchors = seed_anchors;
         let mut combined = primary_seed_text;
         primary_text = combined.clone();
@@ -1809,7 +1922,7 @@ pub fn cmd_ask(
             if remaining < 32 {
                 break;
             }
-            let alt_text = assemble_seed(alt, shallow_depth, remaining)?;
+            let alt_text = asm.assemble_seed(alt, shallow_depth, remaining)?;
             if alt_text.trim().is_empty() {
                 continue;
             }
@@ -1844,7 +1957,7 @@ pub fn cmd_ask(
             // when it actually assembles more than the shell did.
             let broadened = same_file_canonical_anchor(&start_anchor, &doc_reference_indegree(path))
                 .and_then(|(canon, d)| {
-                    let body = assemble_seed(&canon, depth, effective_budget).ok()?;
+                    let body = asm.assemble_seed(&canon, depth, effective_budget).ok()?;
                     if body.len().div_ceil(4) <= est {
                         return None;
                     }
@@ -1903,7 +2016,7 @@ pub fn cmd_ask(
             let mut best_subst = subst;
             let mut best_rung: Option<&str> = None;
             for (label, d, with_callers) in rungs {
-                if let Ok(body) = assemble_seed_str(
+                if let Ok(body) = asm.assemble_seed_str(
                     &start_anchor,
                     d,
                     effective_budget,
@@ -1965,7 +2078,7 @@ pub fn cmd_ask(
                                 if remaining < 64 {
                                     break;
                                 }
-                                let Ok(body) = assemble_seed_str(
+                                let Ok(body) = asm.assemble_seed_str(
                                     &seed,
                                     depth.min(2),
                                     remaining,
@@ -2036,76 +2149,16 @@ pub fn cmd_ask(
         };
     }
 
-    // `--explain` block: the routing decision made transparent. The `Primary`
-    // line is the routed anchor BEFORE any fallback; the summary's `Anchor`
-    // line below remains the FINAL anchor — when they differ, the `Fallback`
-    // line says why. (Format consumed by scripts/eval_corpus.py --mode ask.)
-    let print_explain = |xp: &AskExplain| {
-        println!("// ── Ask Routing Explain ─────────────────────────");
-        println!(
-            "//   Intent   : {:?}{}",
-            intent,
-            if intent_was_overridden {
-                " (override)"
-            } else {
-                ""
-            }
-        );
-        println!("//   Overview : {}", xp.overview_note);
-        if !xp.candidates.is_empty() {
-            println!(
-                "//   Candidates (top {}, * = within noise band {} of top score):",
-                xp.candidates.len(),
-                ANCHOR_NOISE_BAND
-            );
-            for line in &xp.candidates {
-                println!("//     {}", line);
-            }
-        }
-        println!("//   Decision : {}", xp.decision);
-        println!("//   Fallback : {}", xp.fallback);
-        match anchor_source_file(path, &primary_anchor) {
-            Some(src) if !src.is_empty() => {
-                println!("//   Primary  : {} (source: {})", primary_anchor, src)
-            }
-            _ => println!("//   Primary  : {}", primary_anchor),
-        }
-    };
-
-    // Savings estimate: compare tokens Aden returned against a grep-read
-    // baseline of the distinct source files the primary assembly touched.
-    // Baseline = sum of on-disk bytes for up to BASELINE_MAX_FILES distinct
-    // source files, capped and priced at the default tier (Opus 4.8).
-    let savings_est = {
-        let mut seen_files: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let mut baseline_bytes: usize = 0;
-        for anchor in &primary_anchors {
-            if seen_files.len() >= BASELINE_MAX_FILES {
-                break;
-            }
-            if let Some(src) = anchor_source_file(path, anchor) {
-                if src.is_empty() || seen_files.contains(&src) {
-                    continue;
-                }
-                // source_file attribute is repo-root-relative; resolve against
-                // the same hydration root that the assembler uses.
-                let abs = hydrate_root.join(&src);
-                if let Ok(meta) = std::fs::metadata(&abs) {
-                    seen_files.insert(src);
-                    baseline_bytes += meta.len() as usize;
-                }
-            }
-        }
-        let baseline_files = seen_files.len();
-        SavingsEstimate::from_bytes(assembled.len(), baseline_bytes, baseline_files)
-    };
+    // Savings estimate vs. a grep-read baseline of the source files the primary
+    // assembly touched (the helper holds the BASELINE_MAX_FILES cap + pricing).
+    let savings_est = estimate_ask_savings(path, &hydrate_root, &primary_anchors, assembled.len());
     // Persist the estimate to the ledger (best-effort; never errors the command).
     super::savings_store::record(&hydrate_root, &savings_est);
 
     // Step 4: Send to LLM or print raw context
     if let Some(model_spec) = model {
         if explain {
-            print_explain(&xp);
+            print_ask_explain(&xp, &intent, intent_was_overridden, path, &primary_anchor);
             println!("// ────────────────────────────────────────────────");
         }
         query_llm(model_spec, question, &assembled, &start_anchor)?;
@@ -2157,7 +2210,7 @@ pub fn cmd_ask(
         println!("{}", assembled);
         println!();
         if explain {
-            print_explain(&xp);
+            print_ask_explain(&xp, &intent, intent_was_overridden, path, &primary_anchor);
         }
         println!("// ────────────────────────────────────────────────");
         println!("// Aden Ask Summary");
