@@ -9,7 +9,7 @@
 |===
 |Task |Command
 
-|Active development |`aden watch .` (auto-updates the graph on save)
+|Active development |`aden watch .` (auto-updates the graph on save; requires `--features watch` — fails with an error on default builds)
 |Before every commit |`aden ready .` (fast aden-only gates)
 |Before push to remote |`aden ci-check .` (full gate suite incl. external tools)
 |One-shot symbol comprehension |`aden understand <symbol> .`
@@ -29,7 +29,7 @@ aden gen src/ --auto
 aden check .
 
 # === DAILY DEVELOPMENT ===
-aden watch .                    # Terminal 1: auto-regenerate
+aden watch .                    # Terminal 1: auto-regenerate (requires --features watch)
 # ... make edits ...
 
 # === BEFORE COMMIT ===
@@ -67,7 +67,7 @@ git push
 |View file history |`aden timeline <file>`
 |Interactive graph (browser) |`aden view`
 
-|Auto-regenerate |`aden watch .`
+|Auto-regenerate |`aden watch .`  # requires --features watch
 |Pre-commit (fast) |`aden ready .`
 |Pre-push (full) |`aden ci-check .`
 |===

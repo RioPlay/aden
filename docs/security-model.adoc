@@ -19,7 +19,7 @@ Aden assumes the following threats:
 |Unsafe Rust code |Zero `unsafe` blocks in application code |Enforced
 |Stale context leading to wrong decisions |`heal` detects drift, `check` validates integrity |Implemented
 |Excessive token budget leaking context |Token budgeting with ~4-bytes-per-token heuristic, hard cap |Implemented
-|Malicious contract injection |Contracts are build artifacts, gitignored |Enforced
+|Malicious contract injection |Store-first architecture (ADR-003): no contract files are written to the working tree; the graph store lives in the per-user data directory, not the repo. |Implemented
 |Path args escaping the project root over MCP |`confine_path_args` rejects any path/out/from argument resolving outside the project dir |Implemented
 |Argument injection via leading-dash values over MCP |`--` end-of-options terminator separates injected flags from user values in `build_cli_args` |Implemented
 |Unbounded/blocking MCP tool execution |120s `COMMAND_TIMEOUT` bounds every spawned command |Implemented
@@ -83,13 +83,13 @@ Permission IsA Entity
 read_action IsA Permission
 write_action IsA Permission
 delete_action IsA Permission
-AdminRole CanPerform delete_action
-AdminRole CanPerform write_action
-AdminRole CanPerform read_action
-EditorRole CanPerform write_action
-EditorRole CanPerform read_action
-ViewerRole CanPerform read_action
-SuperAdmin CanPerform delete_action
+AdminRole Invokes delete_action
+AdminRole Invokes write_action
+AdminRole Invokes read_action
+EditorRole Invokes write_action
+EditorRole Invokes read_action
+ViewerRole Invokes read_action
+SuperAdmin Invokes delete_action
 ----
 
 [[security-principal]]

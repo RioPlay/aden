@@ -274,6 +274,7 @@ flowchart TB
 
     subgraph store[Persistence]
         ST[aden-store<br/>fjall LSM-tree<br/>per-user store]
+        PA[aden-paths<br/>Per-user path resolution]
     end
 
     subgraph diagnose[Diagnostics]
@@ -292,6 +293,7 @@ flowchart TB
     CLI --> heal
     CLI --> store
     CLI --> diagnose
+    CLI --> PA
 
     parse --> emit
     parse --> graph
@@ -617,7 +619,6 @@ Staging:: Write-only audit trail in `.aden/staging/` for agent proposals before 
 |Crate |Purpose |Status
 
 |aden-retrieval |Tier 1-3 search (structural, semantic, lexical) — NOTE: hybrid semantic + lexical retrieval has already LANDED inside `aden-index` (BM25 + dense via RRF, see <<architecture>> Hybrid Retrieval); a dedicated crate is no longer required for that |Phase 2 (partially superseded)
-|aden-mcp |Execution-based MCP server |Phase 2
 |aden-a2a |Google A2A agent bridge |Phase 2
 |aden-attest |SPDX, CycloneDX, Ed25519, SLSA, SBOMit |Phase 4
 |aden-telemetry |OTLP ingestion, proposal engine, cost-report |Phase 5

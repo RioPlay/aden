@@ -269,7 +269,7 @@ aden asm --from mod-aden-core --set-attr mode=production
 |Flag |Description |Default
 
 |--from |Starting anchor (required) |—
-|--depth |BFS traversal depth |3
+|--depth |BFS traversal depth |2
 |--budget |Token budget (bytes/4 heuristic) |8192
 |--edge-types |Comma-separated edge types |All
 |--out |Output file path |stdout
@@ -611,7 +611,8 @@ The first argument is a symbol — a bare name like `cmd_understand` or a full
 |--depth |Max hops to include (blast/reach/connectivity) |2
 |--format |Output: `mermaid`, `dot`, `asciidoc`, or `json` |mermaid
 |--full |For `--mode graph`: emit the whole graph with no importance cap |false
-|-j/--json |Alias for `--format json` |false
+|--scope <SUBDIR> |Restrict to sources under this project-relative path (e.g. `net/`) — slices and community detection run on the subtree |
+|--resolution <GAMMA> |Community-detection resolution γ (default `1.0`; higher = finer clusters) |1.0
 |===
 
 `blast` and `reach` use the same impact-edge set as the `impact-diff` command and
@@ -779,6 +780,17 @@ aden overlay "aden://module/app/B.java#Greeter.hello" --project /path/to/proj
 === heal
 
 Detect drift between source and contracts.
+
+|===
+|Flag |Description |Default
+
+|--propose |Generate patch proposals for review |false
+|--fix |Auto-fix high-confidence drift (SignatureMismatch rewrites) |false
+|--gc |Garbage-collect orphaned contracts (no matching source) |false
+|--since <REF> |Limit scan to files changed since this git ref |
+|--apply <ID> |Apply a specific proposal by ID |
+|--watch <DIR> |Watch directory and auto-heal on changes |
+|===
 
 [source,bash]
 ----
@@ -1070,6 +1082,7 @@ disturbing other servers.
 |--binary <PATH> |Path to the `aden-mcp` binary to register
 |--project <PATH> |Project directory the server should serve
 |--dry-run |Show what would change without writing files
+|--surface <LEVEL> |Tool surface baked into the MCP config: `essential` (default), `standard`, or `full` |essential
 |===
 
 |===
@@ -1266,6 +1279,7 @@ Prints a compact summary:
 - the active `.aden` store path
 - a health-score percentage with an emoji (✅ / ⚠️ / ❌)
 - an orphan-document count
+- a savings estimate: session and all-time counts of aden calls, tool calls saved, and tokens saved vs grep-and-read
 
 === diagnose
 

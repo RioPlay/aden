@@ -231,18 +231,20 @@ aden suggest "find all tests in the project"
 
 When using Aden via MCP (OpenCode, Claude Code, Cursor, etc.), the server exposes
 its CLI as tools — one per `aden` subcommand. The surface is *tiered* so the
-default tool list stays focused:
+default tool list stays focused on the navigation loop:
 
-* *Core* — the read/query, validate, and build tools an agent reaches for
-  constantly. Listed by default, ordered most-used first.
-* *Extended* — setup / admin / niche tools. Hidden from the tool list to save
-  context, but still callable by name. Set `ADEN_MCP_FULL=1` in the server
-  environment to list them too.
+* *Essential* (default) — the find→comprehend→blast-radius loop. The smallest
+  set that delivers aden's core value.
+* *Standard* (`ADEN_MCP_SURFACE=standard`) — adds change-safety, verify, and
+  orientation tools on top of Essential.
+* *Full* (`ADEN_MCP_SURFACE=full`) — all tools, including setup/admin commands.
+  The legacy `ADEN_MCP_FULL=1` env var is an alias for this level.
 
-A few of the most-used tools list their key arguments below; for the rest, run
-`aden <tool> --help`.
+All tools remain *callable by name* regardless of tier — tier only gates what
+appears in the tool list. Set `ADEN_MCP_SURFACE` in the server environment (or
+bake it in at install time with `aden mcp install --surface <level>`).
 
-=== Core (listed by default)
+=== Essential (listed by default)
 
 .Read / comprehend
 |===
@@ -250,50 +252,56 @@ A few of the most-used tools list their key arguments below; for the rest, run
 |grep|Structure-aware content search (hit + enclosing symbol)|pattern, regex, ignore_case, symbol_only, limit
 |understand|One-shot symbol comprehension (locate + backlinks + impact + asm)|symbol, budget, json
 |ask|Natural language Q&A|question, budget, from
-|search|Full-text search (BM25; hybrid BM25+dense via RRF when the `dense` feature is built)|query, limit, offset, doc_type, semantics
 |locate|Symbol definitions (requires at least one of `symbol`/`caller_of`)|symbol, caller_of, show_context, limit, format
 |asm|Graph-traversed context|from, depth, budget, format (llm = default LLM-dense prose, adg = compact JSON, aden = raw AsciiDoc)
 |query|Structured JSON graph neighborhood|from, depth, backlinks, impact, edge_type (applies to from/backlinks/impact)
-|list|Anchors in graph|filter, limit, semantics
 |===
+
+=== Standard (set `ADEN_MCP_SURFACE=standard`)
+
+Includes all Essential tools plus:
 
 .Graph analysis
 |===
 |Tool|Purpose|Key Arguments
-|communities|Functional clusters via Louvain modularity (call/use density, independent of directory layout)|min_size, limit, path
 |impact-diff|Git-diff blast radius — maps a diff to touched symbols and their downstream impact|since, staged, path
+|communities|Functional clusters via Louvain modularity|min_size, limit, path
+|list|Anchors in graph|filter, limit, semantics
 |===
 
 .Validate / build
 |===
 |Tool|Purpose|Key Arguments
-|ready|Fast local pre-commit gate (gen + lint + check + heal + audit)|path, fix
 |check|Validate + gate CI: refs, cycles, orphans, edges, hashes, contracts|path, severity
 |lint|Lint source (dead_code flags zero-caller symbols)|path, severity, fix, json, dead_code
 |test|Run tests|path, scope, filter, list
-|heal|Drift detection / repair|path, fix, gc, propose, since, apply
-|gen|Incremental store-first index|auto, quiet
-|sync|Reconcile store: gen + check + heal + gc|path, no_gc
-|regen|Full from-scratch rebuild (wipes caches, prunes stale anchors)|path
-|ci-check|Full remote pre-push CI gate|path
 |audit|OWASP security scan|path, lang, format, strict
-|status|Health-score glance|path
+|status|Health-score glance + savings estimate|path
 |diagnose|Deterministic structural graph scan + health score|path, format
 |===
 
-=== Extended (hidden — set ADEN_MCP_FULL=1, or call by name)
+=== Full (set `ADEN_MCP_SURFACE=full` or `ADEN_MCP_FULL=1`)
+
+Includes all Essential and Standard tools plus setup/admin commands:
 
 |===
 |Tool|Purpose
+|search|Full-text search (BM25; hybrid BM25+dense via RRF when `dense` feature is built)
+|ready|Fast local pre-commit gate (gen + lint + check + heal + audit)
+|gen|Incremental store-first index
+|sync|Reconcile store: gen + check + heal + gc
+|regen|Full from-scratch rebuild
+|heal|Drift detection / repair
+|ci-check|Full remote pre-push CI gate
 |new|Scaffold a new project from a language template
 |init|Initialize an Aden `.agent/` workspace
 |kickoff|Start a new work session/plan
 |workflow|Instantiate a template with substitutions
 |session|Append a work-session journal entry
 |review|Review pending heal proposals
-|complete|Report contracts needing completion (automatic LLM fill not implemented)
-|query-adq|Multi-step ADQ traversal script (beyond a single `query`)
-|doctor|Diagnose the host environment — NOT the graph
+|complete|Report contracts needing completion
+|query-adq|Multi-step ADQ traversal script
+|doctor|Diagnose the host environment
 |licenses|Third-party license inventory
 |federation|Multi-repo workspace management
 |emergency|Downgrade Forbid policies to Warn

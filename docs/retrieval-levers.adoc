@@ -24,20 +24,21 @@ The two substrates are not interchangeable, and mixing them backfires:
 
 == Using the levers
 
-Auto-gating is **on by default**, routed by the detected text (see below). The switches are environment variables:
+Auto-gating is **off by default**. Set `ADEN_LEXICON_ON` to opt in; it is then routed by the detected text (see below). The switches are environment variables:
 
-`ADEN_LEXICON_OFF`:: Disable auto-gating entirely (plain retrieval, exactly as before the levers).
-`ADEN_LEXICON_EXPAND`:: Force the prose lever even when disabled. Grounds and appends OEWN synonyms to the query before retrieval. Grounding means a synonym is kept only if it tokenizes entirely into the corpus vocabulary, so the dictionary only ever adds words the corpus actually uses.
-`ADEN_PPMI_RERANK`:: Force the code lever even when disabled. Reranks the top window of results by corpus PPMI co-occurrence between the query terms and each candidate's terms.
+`ADEN_LEXICON_ON`:: Enable auto-gating. The lever is chosen per query: prose queries get expansion, code-shaped queries get rerank.
+`ADEN_LEXICON_OFF`:: Kill switch. Overrides `ADEN_LEXICON_ON` and disables auto-gating even when that variable is set (plain retrieval, exactly as before the levers).
+`ADEN_LEXICON_EXPAND`:: Force the prose lever regardless of auto-gating state. Grounds and appends OEWN synonyms to the query before retrieval. Grounding means a synonym is kept only if it tokenizes entirely into the corpus vocabulary, so the dictionary only ever adds words the corpus actually uses.
+`ADEN_PPMI_RERANK`:: Force the code lever regardless of auto-gating state. Reranks the top window of results by corpus PPMI co-occurrence between the query terms and each candidate's terms.
 
-Both levers are grounded and corpus-gated, so default-on is safe: the prose lever no-ops when the OEWN store is absent or the corpus lacks the vocabulary, and the code lever only fires on a code-bearing corpus.
+Both levers are grounded and corpus-gated: the prose lever no-ops when the OEWN store is absent or the corpus lacks the vocabulary, and the code lever only fires when the query looks code-shaped.
 
 === How auto-gating decides
 
-* *Expand* when the query is not pure-code. Grounding self-gates on vocabulary the corpus lacks, so this is a no-op on a code-only corpus and decisive on prose.
-* *Rerank* when the query looks code-y (snake_case, camelCase, `::`, paths, operators) OR the corpus is code-bearing (`Index::code_anchor_fraction` >= 0.5). The corpus signal is what lets natural-language questions over a code repository still get the rerank lift.
+* *Expand* (`!codey`): when the query is not code-shaped. Grounding self-gates on vocabulary the corpus lacks, so this is a no-op on a code-only corpus and decisive on prose.
+* *Rerank* (`codey`): when the query looks code-shaped — `query_looks_codey` checks for snake_case, camelCase, `::`, paths, and code punctuation. The check is on the query text only, not on corpus properties.
 
-So a code-identifier query reranks, a prose query over a docs corpus expands, and a natural-language question over a code repository does both. Example: on the aden repository, `aden search "combine ranked lists"` in auto mode promotes `rrf_fuse` to rank 1, which the default ranking misses.
+So a code-identifier query reranks, a prose query over a docs corpus expands, and a natural-language question over a code repository expands only (it is not code-shaped, so `codey=false`). Example: on the aden repository, `aden search "combine ranked lists"` in auto mode promotes `rrf_fuse` to rank 1, which the default ranking misses.
 
 == Setup
 
@@ -82,8 +83,8 @@ OEWN beats Moby substantially on prose (curated WordNet vs broad noisy thesaurus
 
 == MCP
 
-The MCP `ask` and `search` tools shell out to the `aden` CLI, so they inherit these levers automatically (auto-gating is on by default in the CLI). Build the OEWN lexicon store to get the prose lever; set `ADEN_LEXICON_OFF` in the MCP server environment to disable. No tool-schema change is needed: the levers are deployment configuration, not per-call parameters.
+The MCP `ask` and `search` tools shell out to the `aden` CLI, so they inherit these levers automatically. Auto-gating is off by default; set `ADEN_LEXICON_ON` in the MCP server environment to enable it. Build the OEWN lexicon store to get the prose lever. Use `ADEN_LEXICON_OFF` as a kill switch to override `ADEN_LEXICON_ON` if needed. No tool-schema change is needed: the levers are deployment configuration, not per-call parameters.
 
 == Status
 
-Auto-gating is **on by default** as of 2026-06-19, after an end-to-end OFF vs ON bench with the shipped binary: prose synonym-bridge R@1 went 0/15 -> 15/15, and code rank-of-gold improved (e.g. `rrf_fuse` 18 -> 1, MRR 0.216 -> 0.289 in the harness), with no regression (the rerank is rerank-of-the-hybrid-base, never worse). Disable with `ADEN_LEXICON_OFF`. The levers are grounded and corpus-gated, so they no-op where they would not help. ConceptNet is excluded from the lexical overlay (CC-BY-SA ShareAlike, incompatible with aden's AGPL distribution); see `LEXICON-SOURCES.md` when a prebuilt store is shipped.
+Auto-gating is **off by default** (opt-in via `ADEN_LEXICON_ON`). PR #39 enabled it by default after an end-to-end OFF vs ON bench with the shipped binary showed prose synonym-bridge R@1 went 0/15 -> 15/15 and code rank-of-gold improved (e.g. `rrf_fuse` 18 -> 1, MRR 0.216 -> 0.289 in the harness). PR #40 reverted that default due to regressions on external repos (prose MRR regressed; tanstack dropped significantly), so auto-gating is now opt-in only. Set `ADEN_LEXICON_ON` to enable; use `ADEN_LEXICON_OFF` as a kill switch to override `ADEN_LEXICON_ON`. The levers are grounded and corpus-gated, so they no-op where they would not help. ConceptNet is excluded from the lexical overlay (CC-BY-SA ShareAlike, incompatible with aden's AGPL distribution); see `LEXICON-SOURCES.md` when a prebuilt store is shipped.

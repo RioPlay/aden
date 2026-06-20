@@ -622,11 +622,11 @@ Always verify that third-party licenses are compatible with your project's licen
         }
     }
 
-    // Compile the project into the knowledge graph (.aden/store)
+    // Compile the project into the knowledge graph (the per-user store)
     println!("\nBuilding the knowledge graph...");
     match crate::commands::generate::cmd_gen(target, false) {
         Ok(_) => {
-            println!("✅ Knowledge graph built in .aden/store.");
+            println!("✅ Knowledge graph built (per-user store; see `aden store path`).");
             println!("✅ Project is ready. Run 'aden status' to check health.");
         }
         Err(e) => {
