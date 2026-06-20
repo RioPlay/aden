@@ -46,9 +46,10 @@ reason to reach for aden, especially before you change code.\n\n\
 TWO RULES (they apply to any subagents you spawn — they do NOT inherit these \
 instructions, so tell them too):\n\
 - Before you READ unfamiliar code or find a symbol: first move is \
-`grep`/`ask`/`locate` — NOT Bash `grep`/`find`/`cat`. These return structure-aware \
-results (every hit tagged with its enclosing symbol) and assemble just the \
-relevant neighborhood under a token budget, far cheaper than reading whole files.\n\
+`grep`/`ask`/`locate` — NOT Bash `grep`/`find`/`cat`/`head`/`tail` or the Read \
+tool. These return structure-aware results (every hit tagged with its enclosing \
+symbol) and assemble just the relevant neighborhood under a token budget, far \
+cheaper than reading whole files.\n\
 - Before you EDIT or refactor a symbol: first move is `understand <symbol>` (or \
 `query backlinks=`/`impact=`) — the callers and downstream nodes at risk. Never \
 change a symbol without knowing what references it. This is aden's reason to exist.\n\n\
@@ -526,7 +527,7 @@ static TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "grep",
         title: "Search code (structure-aware)",
-        description: "Search code by content — use this INSTEAD OF running grep/ripgrep through Bash: every hit is tagged with the name of the symbol that encloses it, so you skip the follow-up 'which function is this in?' step. e.g. grep(pattern=\"fn authenticate\"). Pass that symbol name to `locate` for its anchor, then feed the anchor to `asm`/`query`. Auto-reindexes changed files first; no setup or `gen` call needed.",
+        description: "Search code by content — use this INSTEAD OF running grep/ripgrep/cat/head/tail through Bash or using the Read tool on whole files: every hit is tagged with the name of the symbol that encloses it, so you skip the follow-up 'which function is this in?' step. e.g. grep(pattern=\"fn authenticate\"). Pass that symbol name to `locate` for its anchor, then feed the anchor to `asm`/`query`. Auto-reindexes changed files first; no setup or `gen` call needed.",
         args: &[
             ("pattern", "string"),
             ("path", "string"),
@@ -540,7 +541,7 @@ static TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "understand",
         title: "Understand a symbol",
-        description: "Before you change a symbol, reach for this FIRST (not a manual file read): resolves the name to its best-matching anchor (exact match preferred), shows its definition location, lists backlinks (callers/references) and downstream impact, and assembles a context block — your one-shot blast-radius check before a refactor. This is the thing plain grep and embeddings cannot give you. e.g. understand(symbol=\"MergeProposal\"). Replaces the manual locate → query --backlinks → query --impact → asm chain.",
+        description: "Before you READ or change a symbol, reach for this FIRST (not a manual cat/head/Read): resolves the name to its best-matching anchor (exact match preferred), shows its definition location, lists backlinks (callers/references) and downstream impact, and assembles a context block — one-shot comprehension AND blast-radius check. This is the thing plain grep and embeddings cannot give you. e.g. understand(symbol=\"MergeProposal\"). Replaces the manual locate → query --backlinks → query --impact → asm chain.",
         args: &[
             ("symbol", "string"),
             ("path", "string"),
@@ -552,7 +553,7 @@ static TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "ask",
         title: "Ask about the codebase",
-        description: "Ask a natural-language question about the codebase INSTEAD OF grepping and reading files yourself — routes to the most relevant anchor and returns its assembled graph NEIGHBORHOOD (the symbol plus its connected context under a token budget), not just a text snippet. e.g. ask(question=\"where is auth enforced?\"). Auto-reindexes changed files first; no setup or `gen` call needed.",
+        description: "First move when entering an unfamiliar area: ask a natural-language question INSTEAD OF grepping, cat-ing, or Read-ing files yourself — routes to the most relevant anchor and returns its assembled graph NEIGHBORHOOD (the symbol plus its connected context under a token budget), not just a text snippet. e.g. ask(question=\"where is auth enforced?\"). Auto-reindexes changed files first; no setup or `gen` call needed.",
         // `path` is a CLI positional ([DIR], second after QUESTION) — it was
         // missing here historically, not unsupported. Declaration order matters:
         // positionals are emitted in spec order, so question must precede path.
