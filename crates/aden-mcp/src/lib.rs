@@ -37,34 +37,43 @@ impl AdenMcpServer {
 const SERVER_INSTRUCTIONS: &str = "\
 Aden is a language-agnostic referential context compiler: it turns ANY codebase \
 or documentation (Rust, Python, Go, TypeScript, Java, Ruby, PHP, C/C++, and 300+ \
-more — plus Markdown/AsciiDoc docs) into a queryable knowledge graph. Nothing \
-here is specific to Aden's own source; every result is derived from the project \
-you point it at.\n\n\
-RULE: When you open unfamiliar code, or need to find or understand a symbol, your \
-FIRST move is `grep`/`ask`/`locate` — NOT Bash `grep`/`find`/`cat`. These return \
-structure-aware results (every hit tagged with its enclosing symbol) and assemble \
-just the relevant neighborhood under a token budget, so they cost far fewer \
-tokens than reading whole files — and `query` answers 'what breaks if I change \
-this?', which plain text search cannot. This rule applies to any subagents you \
-spawn: they do NOT inherit these instructions, so tell them to use these tools too.\n\n\
-The graph is fresh by construction: the read tools (`ask`, `asm`, `query`, \
-`locate`, `grep`, `understand`) auto-reindex any source that changed since the \
-last run, so you do NOT need to call `gen` first. Only run `gen` after large \
-external changes — e.g. cloning a new repo, a big merge, or generated code \
-appearing outside your edits.\n\n\
-Typical workflow:\n\
-1. `grep \"pattern\"` for structure-aware content search: every match is tagged \
-with its enclosing symbol — exactly the anchor you feed to `locate`/`asm`.\n\
-2. `ask` a natural-language question to get assembled context, or `locate` a \
-symbol's definition and call sites.\n\
+more — plus Markdown/AsciiDoc docs) into a queryable knowledge graph. Every \
+result is derived from the project you point it at.\n\n\
+WHY ADEN: its unique value is the GRAPH — 'what calls, references, or breaks if I \
+change this symbol?' (blast radius and downstream impact). Plain text search and \
+embeddings cannot answer that; the graph can, with high precision. That is the \
+reason to reach for aden, especially before you change code.\n\n\
+TWO RULES (they apply to any subagents you spawn — they do NOT inherit these \
+instructions, so tell them too):\n\
+- Before you READ unfamiliar code or find a symbol: first move is \
+`grep`/`ask`/`locate` — NOT Bash `grep`/`find`/`cat`. These return structure-aware \
+results (every hit tagged with its enclosing symbol) and assemble just the \
+relevant neighborhood under a token budget, far cheaper than reading whole files.\n\
+- Before you EDIT or refactor a symbol: first move is `understand <symbol>` (or \
+`query backlinks=`/`impact=`) — the callers and downstream nodes at risk. Never \
+change a symbol without knowing what references it. This is aden's reason to exist.\n\n\
+The graph is fresh by construction: the read tools auto-reindex any source that \
+changed since the last run, so you do NOT need to call `gen` first. Only run \
+`gen` after large external changes — cloning a new repo, a big merge, or \
+generated code appearing outside your edits.\n\n\
+EXPLORE a codebase:\n\
+1. `grep \"pattern\"` — structure-aware content search; every hit tagged with its \
+enclosing symbol (the anchor you feed to `locate`/`asm`).\n\
+2. `ask` a natural-language question, or `locate` a symbol's definition and call sites.\n\
 3. `understand <symbol>` for one-shot comprehension (definition + callers + \
-downstream impact), or `query`/`asm` to traverse the graph yourself — `query` \
-backlinks=<anchor> is blast radius, impact=<anchor> is downstream reach.\n\
-4. `check` validates the graph and gates CI.\n\n\
-The `path` argument defaults to the current project directory for every tool. \
-Only the seven highest-value navigation tools are listed by default; the rest \
-(validate/heal/build/setup) stay callable by name and are surfaced by setting \
-ADEN_MCP_FULL=1 in the server environment.";
+downstream impact), or `asm`/`query` to traverse the graph yourself. `list` and \
+`communities` orient you in an unfamiliar tree.\n\n\
+CHANGE code safely (aden's killer loop):\n\
+1. `locate`/`understand` the target symbol.\n\
+2. `understand <symbol>` (or `query backlinks=<anchor>` / `impact=<anchor>`) \
+BEFORE editing — see every caller and downstream node at risk.\n\
+3. Make the edit.\n\
+4. `impact-diff` maps your git diff to the symbols it touches and re-checks the \
+blast radius; `check` validates the graph and gates CI; `test`/`lint`/`audit` verify.\n\n\
+The `path` argument defaults to the current project directory for every tool. The \
+high-value navigate / comprehend / change-safety / verify tools are listed by \
+default; setup, build, and admin tools stay callable by name and are surfaced by \
+setting ADEN_MCP_FULL=1 in the server environment.";
 
 // ── Tool declaration ──────────────────────────────────────────
 
@@ -461,9 +470,14 @@ fn parse_full(v: Option<&str>) -> bool {
 
 /// Every MCP tool maps 1:1 to `aden <name> <args>`.
 static TOOLS: &[ToolSpec] = &[
-    // ── Core (the Tight-7): the default per-session surface — the
-    //    navigate/comprehend tools an agent reaches for first. Everything else
-    //    is Extended (callable by name; listed only when ADEN_MCP_FULL=1). ──
+    // ── Tier is set PER-TOOL (not by position): Core tools form the default
+    //    per-session surface — the navigate/comprehend/change-safety/verify loop
+    //    an agent reaches for. The primary navigation set leads here; other Core
+    //    tools (impact-diff, list, lint, test, audit, diagnose) are declared in
+    //    their logical groups below but still surface in the default list. Setup,
+    //    build, and admin tools are Extended (callable by name; listed only when
+    //    ADEN_MCP_FULL=1). `core_surface_leads_with_primary_navigation` guards
+    //    that the default surface leads with grep/understand/ask/locate/asm/query. ──
     ToolSpec {
         name: "grep",
         title: "Search code (structure-aware)",
@@ -482,7 +496,7 @@ static TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "understand",
         title: "Understand a symbol",
-        description: "When you need to understand a symbol before changing it, reach for this FIRST (not a manual file read): resolves the symbol to its anchor, shows its definition location, lists backlinks (callers/references) and downstream impact, and assembles a context block — your one-shot blast-radius check before a refactor. e.g. understand(symbol=\"MergeProposal\"). Replaces the manual locate → query --backlinks → query --impact → asm chain.",
+        description: "Before you change a symbol, reach for this FIRST (not a manual file read): resolves the name to its best-matching anchor (exact match preferred), shows its definition location, lists backlinks (callers/references) and downstream impact, and assembles a context block — your one-shot blast-radius check before a refactor. This is the thing plain grep and embeddings cannot give you. e.g. understand(symbol=\"MergeProposal\"). Replaces the manual locate → query --backlinks → query --impact → asm chain.",
         args: &[
             ("symbol", "string"),
             ("path", "string"),
@@ -495,7 +509,7 @@ static TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "ask",
         title: "Ask about the codebase",
-        description: "When you have a question about the codebase, ask it here INSTEAD OF grepping and reading files yourself — routes to the best-matching anchor and returns its assembled context. e.g. ask(question=\"where is auth enforced?\"). Auto-reindexes changed files first; no setup or `gen` call needed.",
+        description: "Ask a natural-language question about the codebase INSTEAD OF grepping and reading files yourself — routes to the most relevant anchor and returns its assembled graph NEIGHBORHOOD (the symbol plus its connected context under a token budget), not just a text snippet. e.g. ask(question=\"where is auth enforced?\"). Auto-reindexes changed files first; no setup or `gen` call needed.",
         // `path` is a CLI positional ([DIR], second after QUESTION) — it was
         // missing here historically, not unsupported. Declaration order matters:
         // positionals are emitted in spec order, so question must precede path.
@@ -607,7 +621,7 @@ static TOOLS: &[ToolSpec] = &[
             ("path", "string"),
         ],
         effect: Effect::Read,
-        tier: Tier::Extended,
+        tier: Tier::Core,
     },
     // A read/export tool: viz is the non-interactive graph-slice exporter (text
     // Mermaid/DOT/AsciiDoc/JSON), so it is MCP-suitable — unlike its interactive
@@ -650,12 +664,12 @@ static TOOLS: &[ToolSpec] = &[
             ("path", "string"),
         ],
         effect: Effect::Read,
-        tier: Tier::Extended,
+        tier: Tier::Core,
     },
     ToolSpec {
         name: "list",
         title: "List anchors",
-        description: "List all indexed anchors.",
+        description: "List the anchors (symbols/docs) aden has indexed — a quick inventory of what the graph knows about the project. `filter` narrows by substring, `verbose` adds node types and locations. Use to discover entry points or confirm a symbol was indexed before you `locate`/`understand` it.",
         args: &[
             ("path", "string"),
             ("filter", "string"),
@@ -666,7 +680,7 @@ static TOOLS: &[ToolSpec] = &[
             ("unlimited", "boolean"),
         ],
         effect: Effect::Read,
-        tier: Tier::Extended,
+        tier: Tier::Core,
     },
     ToolSpec {
         name: "ready",
@@ -690,7 +704,7 @@ static TOOLS: &[ToolSpec] = &[
             ("include_public", "boolean"),
         ],
         effect: Effect::Mutate,
-        tier: Tier::Extended,
+        tier: Tier::Core,
     },
     ToolSpec {
         name: "test",
@@ -703,7 +717,7 @@ static TOOLS: &[ToolSpec] = &[
             ("list", "boolean"),
         ],
         effect: Effect::Mutate,
-        tier: Tier::Extended,
+        tier: Tier::Core,
     },
     ToolSpec {
         name: "heal",
@@ -766,7 +780,7 @@ static TOOLS: &[ToolSpec] = &[
             ("strict", "boolean"),
         ],
         effect: Effect::Read,
-        tier: Tier::Extended,
+        tier: Tier::Core,
     },
     ToolSpec {
         name: "ci-check",
@@ -782,7 +796,7 @@ static TOOLS: &[ToolSpec] = &[
         description: "Deterministic structural scan of the graph: stale refs, duplicate anchors, invalid edges, orphans, circular includes, missing source files; emits a 0-100 health score (format=json for machine output). Overlaps `check` but additionally flags duplicate anchors and low-confidence nodes and reports a score; read-only — finds nothing about your environment (that's `doctor`).",
         args: &[("path", "string"), ("format", "string")],
         effect: Effect::Read,
-        tier: Tier::Extended,
+        tier: Tier::Core,
     },
     ToolSpec {
         name: "regen",
@@ -792,10 +806,9 @@ static TOOLS: &[ToolSpec] = &[
         effect: Effect::Rebuild,
         tier: Tier::Extended,
     },
-    // ── Extended: everything beyond the Tight-7 navigation set — keyword
-    //    search, validate/heal, build/store, run, and setup/admin tools.
-    //    Hidden from list_tools by default (set ADEN_MCP_FULL=1 to surface)
-    //    but always callable by name. ──
+    // ── Extended: setup, build/store, and admin tools (plus a few superseded by
+    //    a Core tool, e.g. `search` → `grep`). Hidden from list_tools by default
+    //    (set ADEN_MCP_FULL=1 to surface) but always callable by name. ──
     ToolSpec {
         name: "new",
         title: "New project",
@@ -1303,14 +1316,33 @@ mod tests {
     }
 
     #[test]
-    fn core_tools_lead_extended_tools() {
-        // Primacy: every Core tool must be declared before any Extended tool,
-        // so the default (Core-only) list is also the highest-value-first list.
-        let first_extended = TOOLS.iter().position(|t| t.tier == Tier::Extended);
-        if let Some(idx) = first_extended {
+    fn core_surface_leads_with_primary_navigation() {
+        // The default (Core-only) surface, in declaration order, must begin with the
+        // primary navigate/comprehend loop so an agent sees the highest-value tools
+        // first. Change-safety + verify tools follow; Extended stays hidden.
+        let core: Vec<&str> = TOOLS
+            .iter()
+            .filter(|t| t.tier == Tier::Core)
+            .map(|t| t.name)
+            .collect();
+        let lead = ["grep", "understand", "ask", "locate", "asm", "query"];
+        assert!(
+            core.starts_with(&lead),
+            "Core surface must lead with the primary navigation loop; got: {core:?}"
+        );
+        // The change-safety + verify tools are now part of the default surface.
+        for t in [
+            "impact-diff",
+            "check",
+            "test",
+            "lint",
+            "audit",
+            "diagnose",
+            "list",
+        ] {
             assert!(
-                TOOLS[idx..].iter().all(|t| t.tier == Tier::Extended),
-                "a Core tool is declared after an Extended tool — primacy order broken"
+                core.contains(&t),
+                "{t} should be in the Core surface; got: {core:?}"
             );
         }
     }
