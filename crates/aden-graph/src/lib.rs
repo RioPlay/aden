@@ -42,6 +42,7 @@ pub use graph::AdenGraph;
 pub use nodes::aden::{AdenEdge, DocumentNode};
 pub use nodes::{GraphEdge, GraphNode};
 pub use petgraph::Direction;
+pub use petgraph::graph::NodeIndex;
 
 #[cfg(test)]
 mod tests;
