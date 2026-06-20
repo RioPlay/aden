@@ -14,7 +14,7 @@ use std::path::Path;
 
 use rayon::prelude::*;
 
-use crate::util::{discover_source_files, find_project_root};
+use crate::util::{discover_source_files_scoped, find_project_root};
 
 /// A single content match, enriched with its enclosing symbol.
 struct Match {
@@ -73,7 +73,18 @@ pub fn cmd_grep(
     // Per-file symbol spans, from the store, for enclosing-symbol resolution.
     let spans_by_file = load_symbol_spans(&root);
 
-    let files = discover_source_files(&root)?;
+    // Scope the search to PATH. A file searches just that file; a subdirectory
+    // searches under it; the project root searches everything. Previously the
+    // PATH argument only selected the project root for discovery, so
+    // `grep <pat> some/file.rs` silently scanned the WHOLE repo (and could dump
+    // megabytes when it matched minified asset lines). Symbol attribution still
+    // keys off the project root, so hits keep their enclosing-symbol tags.
+    let files: Vec<std::path::PathBuf> = if path.is_file() {
+        vec![std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())]
+    } else {
+        let scope = if path.is_dir() { path } else { root.as_path() };
+        discover_source_files_scoped(scope, &root)?
+    };
     let mut matches: Vec<Match> = files
         .par_iter()
         .flat_map_iter(|file| {

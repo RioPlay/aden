@@ -149,13 +149,27 @@ const EXTENSIONLESS_SOURCE_FILES: &[&str] = &[
 /// cross-ecosystem built-in ignore list so build artifacts and vendored deps
 /// are skipped for every language.
 pub fn discover_source_files(root: &Path) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
+    discover_source_files_scoped(root, root)
+}
+
+/// Like [`discover_source_files`] but walks only `scope` (a directory at or
+/// under `root`), while still resolving `.adenignore`/`.adenallow` and the
+/// built-in ignore list relative to `root`. This lets `grep PATH` actually
+/// narrow the search to a subtree instead of always scanning the whole project
+/// (the `PATH` argument otherwise only picks the project root, so a scoped
+/// search silently fanned out to every file). `scope` is expected to be a
+/// directory; callers handle a single-file `PATH` themselves.
+pub fn discover_source_files_scoped(
+    scope: &Path,
+    root: &Path,
+) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
     use std::collections::HashSet;
 
     let supported: HashSet<&'static str> = aden_parse::supported_extensions().into_iter().collect();
     let filter = aden_core::filter::AdenFilter::from_directory(root);
 
     let mut files = Vec::new();
-    walk_supported_files(root, root, &supported, &filter, &mut files)?;
+    walk_supported_files(scope, root, &supported, &filter, &mut files)?;
 
     // Prioritize files under a source-style directory so that, when a token
     // budget truncates generation, the most load-bearing code is processed
@@ -1278,6 +1292,29 @@ pub fn generate_proposal_id() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn discover_source_files_scoped_narrows_to_subtree() {
+        // A repo with source under two crates; a scoped walk must see only the
+        // subtree it was pointed at, while the unscoped walk sees the whole tree.
+        let dir = std::env::temp_dir().join(format!("aden-scope-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let a = dir.join("crate-a/src");
+        let b = dir.join("crate-b/src");
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        std::fs::write(a.join("lib.rs"), "fn a() {}\n").unwrap();
+        std::fs::write(b.join("lib.rs"), "fn b() {}\n").unwrap();
+
+        let all = discover_source_files(&dir).unwrap();
+        assert_eq!(all.len(), 2, "unscoped walk sees both crates");
+
+        let scoped = discover_source_files_scoped(&dir.join("crate-a"), &dir).unwrap();
+        assert_eq!(scoped.len(), 1, "scoped walk sees only crate-a");
+        assert!(scoped[0].ends_with("crate-a/src/lib.rs"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn resolve_doc_link_classifies_targets() {
