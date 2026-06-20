@@ -2665,14 +2665,48 @@ pub fn cmd_list(
     Ok(())
 }
 
-/// Resolve a bare symbol name to a single full store anchor, mirroring the
-/// suffix/`#name` matching that `locate` uses against the store's anchor keys.
-///
-/// Returns the unique best match: an exact `#symbol` suffix match is preferred,
-/// otherwise the first (sorted) anchor whose lowercased form ends with the
-/// symbol or contains `#symbol`. `None` when nothing matches — callers turn
-/// that into a helpful "not found" message. Factored out so it is unit-testable
-/// without a live store.
+/// Rank how well `anchor` matches the query `symbol` for symbol resolution
+/// (lower is better). The anchor's trailing fragment is taken after the last
+/// `#`/`/`; BOTH the whole fragment and its last `.`/`::` component (the bare
+/// method/function name) are considered, so a method like `Scaffold.errorhandler`
+/// is preferred for the query `errorhandler` over a substring superset such as
+/// `Blueprint.app_errorhandler`. Shared by `cmd_locate` and `pick_symbol_anchor`
+/// so the two resolvers can never disagree on what an exact match is.
+///   0 — whole fragment == symbol, same case   (the exact definition)
+///   1 — whole fragment == symbol, any case
+///   2 — last `.`/`::` component == symbol, same case  (exact method name)
+///   3 — last component == symbol, any case
+///   4 — fragment starts `symbol.`/`symbol::`  (members of the queried symbol)
+///   5 — any other substring match  (incidental)
+fn anchor_match_rank(anchor: &str, symbol: &str) -> u8 {
+    let sym_lower = symbol.to_lowercase();
+    let seg = anchor.rsplit(['#', '/']).next().unwrap_or("");
+    let seg_lower = seg.to_lowercase();
+    let leaf = seg.rsplit(['.', ':']).next().unwrap_or(seg);
+    let leaf_lower = leaf.to_lowercase();
+    if seg == symbol {
+        0
+    } else if seg_lower == sym_lower {
+        1
+    } else if leaf == symbol {
+        2
+    } else if leaf_lower == sym_lower {
+        3
+    } else if seg_lower.starts_with(&format!("{sym_lower}."))
+        || seg_lower.starts_with(&format!("{sym_lower}::"))
+    {
+        4
+    } else {
+        5
+    }
+}
+
+/// Resolve a bare symbol name to a single full store anchor (the `understand`
+/// resolver). Filters to anchors that contain the symbol, then picks the best by
+/// [`anchor_match_rank`] (exact fragment > exact method-name > member > substring),
+/// tie-broken by anchor. `None` when nothing matches — callers turn that into a
+/// helpful "not found" message. Factored out so it is unit-testable without a live
+/// store. Shares its ranking with `cmd_locate` so the two resolvers never disagree.
 fn pick_symbol_anchor(symbol: &str, anchors: &[String]) -> Option<String> {
     let sym = symbol.to_lowercase();
     let mut matched: Vec<&String> = anchors
@@ -2684,14 +2718,16 @@ fn pick_symbol_anchor(symbol: &str, anchors: &[String]) -> Option<String> {
                 || al.contains(&format!("#{}", sym))
         })
         .collect();
-    matched.sort();
-    // Prefer an exact `#symbol` suffix (a real symbol anchor) over a looser
-    // tail match, so `parse` resolves to `…#parse` not `…#reparse`.
-    matched
-        .iter()
-        .find(|a| a.to_lowercase().ends_with(&format!("#{}", sym)))
-        .or_else(|| matched.first())
-        .map(|a| (*a).clone())
+    // Prefer an exact symbol or method-name match over an incidental substring,
+    // so `errorhandler` resolves to `…#Scaffold.errorhandler` (method-name match)
+    // not the substring superset `…#Blueprint.app_errorhandler`. Deterministic
+    // tie-break by anchor string.
+    matched.sort_by(|a, b| {
+        anchor_match_rank(a, symbol)
+            .cmp(&anchor_match_rank(b, symbol))
+            .then_with(|| a.cmp(b))
+    });
+    matched.first().map(|a| (*a).clone())
 }
 
 /// Backlinks of `anchor` (incoming references) as JSON nodes, one entry per
@@ -2728,6 +2764,36 @@ fn collect_unique_backlinks(
 ///
 /// Reuses the shared `resolve_anchor_in_store` resolution and the same graph
 /// traversal / assembly internals the individual commands use.
+/// Downstream-impact reach: BFS over OUTGOING edges from `start`, keeping a
+/// neighbor when ANY parallel edge between the pair is an impact edge. Returns
+/// `(node, depth)` in BFS order. Multigraph-correct — `find_edge` returns one
+/// arbitrary edge and would drop a neighbor whose impact edge (e.g. `Calls`)
+/// coexists with a non-impact one (e.g. `Contains`). Mirrors `query --impact`.
+fn impact_reachable(
+    graph: &aden_graph::AdenGraph<aden_graph::DocumentNode, aden_graph::AdenEdge>,
+    start: aden_graph::NodeIndex,
+    impact_types: &[aden_core::EdgeType],
+) -> Vec<(aden_graph::NodeIndex, usize)> {
+    let mut out = Vec::new();
+    let mut visited = HashSet::new();
+    let mut queue = VecDeque::new();
+    visited.insert(start);
+    queue.push_back((start, 0usize));
+    while let Some((node, d)) = queue.pop_front() {
+        for neighbor in graph.graph.neighbors_directed(node, Direction::Outgoing) {
+            let is_impact = graph
+                .graph
+                .edges_connecting(node, neighbor)
+                .any(|e| impact_types.contains(&e.weight().edge_type));
+            if is_impact && visited.insert(neighbor) {
+                out.push((neighbor, d + 1));
+                queue.push_back((neighbor, d + 1));
+            }
+        }
+    }
+    out
+}
+
 pub fn cmd_understand(
     symbol: &str,
     path: &Path,
@@ -2812,29 +2878,10 @@ pub fn cmd_understand(
     // silently drifted (it was missing Implements/Mutates, so understand's
     // impact view truncated at trait boundaries that `query --impact` crossed).
     let impact_types = crate::util::impact_edge_types();
-    let mut impact: Vec<serde_json::Value> = Vec::new();
-    let mut visited = HashSet::new();
-    let mut queue = VecDeque::new();
-    visited.insert(idx);
-    queue.push_back((idx, 0usize));
-    while let Some((node, d)) = queue.pop_front() {
-        for neighbor in graph.graph.neighbors_directed(node, Direction::Outgoing) {
-            let weight = graph
-                .graph
-                .find_edge(node, neighbor)
-                .and_then(|e| graph.graph.edge_weight(e))
-                .map(|e| &e.edge_type)
-                .copied()
-                .unwrap_or(aden_core::EdgeType::Uses);
-            if !impact_types.contains(&weight) {
-                continue;
-            }
-            if visited.insert(neighbor) {
-                impact.push(node_to_json(&graph.graph[neighbor], d + 1));
-                queue.push_back((neighbor, d + 1));
-            }
-        }
-    }
+    let impact: Vec<serde_json::Value> = impact_reachable(&graph, idx, &impact_types)
+        .into_iter()
+        .map(|(n, d)| node_to_json(&graph.graph[n], d))
+        .collect();
 
     // Step 4: assemble a context block from the anchor within budget, via the
     // same neighborhood-stream + assemble path `asm` uses.
@@ -3034,28 +3081,15 @@ pub fn cmd_locate(
             })
             .collect();
         // Precision: surface the exact symbol definition (and its members) before
-        // incidental substring hits (doc headings, `OtherGroup`, code blocks). The
-        // trailing path/anchor segment is compared against the query name:
-        //   rank 0 — segment == name, same case  (the definition the user typed)
-        //   rank 1 — segment == name, any case   (e.g. `group` fn vs `Group` type)
-        //   rank 2 — segment starts `name.`/`::`  (its methods/members)
-        //   rank 3 — any other substring match    (incidental)
-        let locate_rank = |a: &str| -> u8 {
-            let seg = a.rsplit(['#', '/']).next().unwrap_or("");
-            let seg_lower = seg.to_lowercase();
-            if seg == sym {
-                0
-            } else if seg_lower == sym_lower {
-                1
-            } else if seg_lower.starts_with(&format!("{}.", sym_lower))
-                || seg_lower.starts_with(&format!("{}::", sym_lower))
-            {
-                2
-            } else {
-                3
-            }
-        };
-        matched.sort_by(|a, b| locate_rank(a).cmp(&locate_rank(b)).then_with(|| a.cmp(b)));
+        // incidental substring hits (doc headings, `OtherGroup`, code blocks).
+        // Shared with `understand`'s resolver via `anchor_match_rank`, which also
+        // ranks a method-name match (`Scaffold.errorhandler` for `errorhandler`)
+        // above an unrelated substring superset (`Blueprint.app_errorhandler`).
+        matched.sort_by(|a, b| {
+            anchor_match_rank(a, sym)
+                .cmp(&anchor_match_rank(b, sym))
+                .then_with(|| a.cmp(b))
+        });
 
         let hits: Vec<serde_json::Value> = matched
             .iter()
@@ -3557,6 +3591,32 @@ mod tests {
         assert!(anchors.contains(&"other-caller"), "got {anchors:?}");
     }
 
+    /// `understand`'s downstream impact must keep a neighbor reachable via a
+    /// `Calls` edge even when a NON-impact edge (`Documents`/`Contains`) runs in
+    /// parallel between the same pair. The old `find_edge` could return the
+    /// non-impact edge and silently drop the neighbor; `impact_reachable` checks
+    /// all parallel edges. New method-call edges make this collision more common.
+    #[test]
+    fn understand_impact_keeps_neighbor_with_parallel_non_impact_edge() {
+        let mut g = aden_graph::AdenGraph::<aden_graph::DocumentNode, aden_graph::AdenEdge>::new();
+        let caller = g.add_node(backlink_fixture_node("caller"));
+        let callee = g.add_node(backlink_fixture_node("callee"));
+        // Non-impact edge added FIRST, then the real Calls edge.
+        for et in [aden_core::EdgeType::Documents, aden_core::EdgeType::Calls] {
+            g.graph
+                .add_edge(caller, callee, aden_graph::AdenEdge { edge_type: et });
+        }
+        let impact_types = crate::util::impact_edge_types();
+        let reached: Vec<String> = super::impact_reachable(&g, caller, &impact_types)
+            .into_iter()
+            .map(|(n, _)| g.graph[n].doc.anchor.clone())
+            .collect();
+        assert!(
+            reached.contains(&"callee".to_string()),
+            "impact must include the callee reachable via a parallel Calls edge; got: {reached:?}"
+        );
+    }
+
     /// An anchor missing from the graph yields no backlinks (and no panic).
     #[test]
     fn understand_backlinks_unknown_anchor_is_empty() {
@@ -3814,6 +3874,31 @@ mod tests {
         assert_eq!(
             super::pick_symbol_anchor("parse", &anchors),
             Some("src/b.rs#parse".to_string())
+        );
+    }
+
+    /// A bare method name must resolve to the symbol whose LAST component matches
+    /// exactly (`Scaffold.errorhandler`), not a substring superset that merely ends
+    /// with the query (`Blueprint.app_errorhandler`). Regression for the external
+    /// blast-radius eval, where `understand errorhandler` mis-resolved.
+    #[test]
+    fn understand_prefers_exact_method_name_over_substring_superset() {
+        let anchors = vec![
+            "src/blueprints.rs#Blueprint.app_errorhandler".to_string(),
+            "src/scaffold.rs#Scaffold.errorhandler".to_string(),
+        ];
+        assert_eq!(
+            super::pick_symbol_anchor("errorhandler", &anchors),
+            Some("src/scaffold.rs#Scaffold.errorhandler".to_string())
+        );
+        // And a whole-fragment exact match still beats a method-name match.
+        let anchors2 = vec![
+            "src/a.rs#Scaffold.errorhandler".to_string(),
+            "src/b.rs#errorhandler".to_string(),
+        ];
+        assert_eq!(
+            super::pick_symbol_anchor("errorhandler", &anchors2),
+            Some("src/b.rs#errorhandler".to_string())
         );
     }
 

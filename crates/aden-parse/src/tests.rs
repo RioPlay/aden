@@ -208,6 +208,39 @@ fn python_resolver_call_sites() {
     );
 }
 
+#[test]
+fn python_self_method_call_emits_self_prefix() {
+    // `self.prepare()` must emit `self.prepare` so the linker re-qualifies it to
+    // `Command.prepare` (the zero-FP self path). End-to-end this is what gives
+    // method callers a blast radius on OO Python.
+    let src = "class Command:\n\
+               \x20   def invoke(self):\n\
+               \x20       self.prepare()\n\
+               \x20   def prepare(self):\n\
+               \x20       pass\n";
+    let resolver = crate::python_resolver::PythonResolver::new();
+    let docs = resolver
+        .extract_documents(src, Path::new("src/cmd.py"))
+        .expect("parse should succeed");
+    let invoke = docs
+        .iter()
+        .find(|d| d.anchor.contains("invoke"))
+        .expect("invoke document");
+    let calls_text: String = invoke
+        .blocks
+        .iter()
+        .filter_map(|b| match b {
+            aden_core::Block::Listing { code, .. } => Some(code.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        calls_text.contains("edge::calls[self.prepare]"),
+        "self-method call must emit `self.prepare`; got: {calls_text}"
+    );
+}
+
 // ── PHP ─────────────────────────────────────────────────────────
 
 #[test]
@@ -729,6 +762,61 @@ fn rust_trait_impl_emits_implements_macro() {
 }
 
 #[test]
+fn rust_self_method_call_emits_qualified_callee() {
+    // `self.flush()` must emit `self.flush` (not bare `flush`) so the linker's
+    // zero-FP self path re-qualifies it to `Engine::flush`. Bare `flush` would be
+    // ambiguous across types and get dropped — the OO blast-radius gap.
+    let src = "pub struct Engine;\n\
+               impl Engine {\n\
+               \x20   pub fn run(&self) { self.flush(); }\n\
+               \x20   pub fn flush(&self) {}\n\
+               }\n";
+    let docs = crate::rust::extract_documents_inner(std::path::Path::new("src/engine.rs"), src)
+        .expect("parse should succeed");
+    let run = listing_text(&docs, "Engine::run");
+    assert!(
+        run.contains("edge::calls[self.flush]"),
+        "self-method call must emit a self-qualified callee; got: {run}"
+    );
+}
+
+#[test]
+fn rust_self_method_call_with_turbofish_emits_qualified_callee() {
+    // `self.parse::<T>()` parses as a generic_function; the callee must still be
+    // the self-qualified method, not the stringified turbofish.
+    let src = "pub struct P;\n\
+               impl P {\n\
+               \x20   pub fn run(&self) { self.parse::<u8>(); }\n\
+               \x20   pub fn parse<T>(&self) {}\n\
+               }\n";
+    let docs = crate::rust::extract_documents_inner(std::path::Path::new("src/p.rs"), src)
+        .expect("parse should succeed");
+    let run = listing_text(&docs, "P::run");
+    assert!(
+        run.contains("edge::calls[self.parse]"),
+        "self-method call with turbofish must emit `self.parse`; got: {run}"
+    );
+}
+
+#[test]
+fn rust_non_self_method_call_keeps_bare_field() {
+    // A non-self receiver's type is unknown at parse time, so the bare method name
+    // is kept (linker locality decides) — we must NOT invent a `self.` prefix.
+    let src = "pub struct Engine;\n\
+               impl Engine {\n\
+               \x20   pub fn run(&self, other: &Engine) { other.flush(); }\n\
+               \x20   pub fn flush(&self) {}\n\
+               }\n";
+    let docs = crate::rust::extract_documents_inner(std::path::Path::new("src/engine.rs"), src)
+        .expect("parse should succeed");
+    let run = listing_text(&docs, "Engine::run");
+    assert!(
+        run.contains("edge::calls[flush]") && !run.contains("edge::calls[self.flush]"),
+        "non-self receiver must keep the bare method name; got: {run}"
+    );
+}
+
+#[test]
 fn rust_inherent_impl_emits_no_implements_macro() {
     let docs = crate::rust::extract_documents_inner(
         std::path::Path::new("src/greeter.rs"),
@@ -1174,6 +1262,37 @@ fn ts_call_site_edge() {
     assert!(
         calls_text.contains("edge::calls[beta]"),
         "expected `edge::calls[beta]` in alpha's Listing blocks; got: {calls_text}"
+    );
+}
+
+#[test]
+fn ts_this_method_call_emits_class_qualified_callee() {
+    // `this.flush()` inside a class is rewritten to `Engine.flush` at parse time,
+    // so the method caller gets a resolvable Calls edge (OO blast radius).
+    let src = "class Engine {\n\
+               \x20 run(): void { this.flush(); }\n\
+               \x20 flush(): void {}\n\
+               }\n";
+    let resolver = crate::typescript_resolver::TypeScriptResolver::new();
+    let docs = resolver
+        .extract_documents(src, Path::new("src/engine.ts"))
+        .expect("parse should succeed");
+    let run = docs
+        .iter()
+        .find(|d| d.anchor.contains("run"))
+        .expect("run document");
+    let calls_text: String = run
+        .blocks
+        .iter()
+        .filter_map(|b| match b {
+            aden_core::Block::Listing { code, .. } => Some(code.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        calls_text.contains("edge::calls[Engine.flush]"),
+        "this-method call must emit class-qualified `Engine.flush`; got: {calls_text}"
     );
 }
 
