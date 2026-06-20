@@ -18,6 +18,25 @@ use crate::util::{
 /// hubs; the file grain only exists where co-change demands it).
 type CochangePair = ((String, String), (String, String));
 
+/// The per-kind edge record slices `link_store_edges` writes, bundled into one
+/// argument. Every record is the same shape (anchor -> target list); the field
+/// name picks the EdgeType. `cochange` carries git co-change pairs and
+/// `test_anchors` the set of test-symbol anchors (callers whose `Calls` are
+/// reclassified as `Tests`).
+struct EdgeRecords<'a> {
+    calls: &'a [(String, Vec<String>)],
+    uses: &'a [(String, Vec<String>)],
+    refs: &'a [(String, Vec<String>)],
+    implements: &'a [(String, Vec<String>)],
+    mutates: &'a [(String, Vec<String>)],
+    mentions: &'a [(String, Vec<String>)],
+    supersedes: &'a [(String, Vec<String>)],
+    demonstrates: &'a [(String, Vec<String>)],
+    terms: &'a [(String, Vec<String>)],
+    cochange: &'a [CochangePair],
+    test_anchors: &'a std::collections::HashSet<String>,
+}
+
 /// One stored symbol plus the compact data the linker needs. Carrying callee
 /// names out of the parse phase means linking never has to reload the (huge)
 /// document store to rebuild the call graph.
@@ -760,21 +779,25 @@ fn classify_drop(callee: &str, name_index: &HashMap<&str, Vec<&str>>) -> DropRea
 ///   exactly ONE code symbol.
 /// - Demonstrates (Wave 2): `symbol_references` records on doc code listings
 ///   become listing --Demonstrates--> symbol edges, same unambiguous-only rule.
-#[allow(clippy::too_many_arguments)] // compact per-kind record slices, all one shape
 fn link_store_edges<S: GraphStorage>(
     storage: &S,
-    link_records: &[(String, Vec<String>)],
-    use_records: &[(String, Vec<String>)],
-    ref_records: &[(String, Vec<String>)],
-    impl_records: &[(String, Vec<String>)],
-    mutates_records: &[(String, Vec<String>)],
-    mention_records: &[(String, Vec<String>)],
-    supersede_records: &[(String, Vec<String>)],
-    demo_records: &[(String, Vec<String>)],
-    term_records: &[(String, Vec<String>)],
-    cochange_pairs: &[CochangePair],
-    test_anchors: &std::collections::HashSet<String>,
+    records: EdgeRecords<'_>,
 ) -> Result<CalleeStats, Box<dyn std::error::Error>> {
+    // Destructure back into the original per-kind bindings so the linking body
+    // below is unchanged; only the call surface collapsed to one struct.
+    let EdgeRecords {
+        calls: link_records,
+        uses: use_records,
+        refs: ref_records,
+        implements: impl_records,
+        mutates: mutates_records,
+        mentions: mention_records,
+        supersedes: supersede_records,
+        demonstrates: demo_records,
+        terms: term_records,
+        cochange: cochange_pairs,
+        test_anchors,
+    } = records;
     use aden_core::{Block, Document, EdgeType, NodeType};
     use std::collections::HashSet;
 
@@ -1952,17 +1975,19 @@ fn cmd_gen_inner(
         let cochange = cochange_pairs(&root, &cache);
         let callee_stats = match link_store_edges(
             &storage,
-            &link_records,
-            &use_records,
-            &ref_records,
-            &impl_records,
-            &mutates_records,
-            &mention_records,
-            &supersede_records,
-            &demo_records,
-            &term_records,
-            &cochange,
-            &test_anchors,
+            EdgeRecords {
+                calls: &link_records,
+                uses: &use_records,
+                refs: &ref_records,
+                implements: &impl_records,
+                mutates: &mutates_records,
+                mentions: &mention_records,
+                supersedes: &supersede_records,
+                demonstrates: &demo_records,
+                terms: &term_records,
+                cochange: &cochange,
+                test_anchors: &test_anchors,
+            },
         ) {
             Ok(stats) => stats,
             Err(e) => {
@@ -2388,17 +2413,19 @@ mod link_tests {
             std::collections::HashSet::from([test_fn.to_string()]);
         link_store_edges(
             &storage,
-            &link_records,
-            &[],
-            &[],
-            &[],
-            &[],
-            &[],
-            &[],
-            &[],
-            &[],
-            &[],
-            &test_anchors,
+            EdgeRecords {
+                calls: &link_records,
+                uses: &[],
+                refs: &[],
+                implements: &[],
+                mutates: &[],
+                mentions: &[],
+                supersedes: &[],
+                demonstrates: &[],
+                terms: &[],
+                cochange: &[],
+                test_anchors: &test_anchors,
+            },
         )
         .unwrap();
 
@@ -2450,17 +2477,19 @@ mod link_tests {
         let mutates_records = vec![(method.to_string(), vec!["English".to_string()])];
         link_store_edges(
             &storage,
-            &[],
-            &[],
-            &[],
-            &impl_records,
-            &mutates_records,
-            &[],
-            &[],
-            &[],
-            &[],
-            &[],
-            &std::collections::HashSet::new(),
+            EdgeRecords {
+                calls: &[],
+                uses: &[],
+                refs: &[],
+                implements: &impl_records,
+                mutates: &mutates_records,
+                mentions: &[],
+                supersedes: &[],
+                demonstrates: &[],
+                terms: &[],
+                cochange: &[],
+                test_anchors: &std::collections::HashSet::new(),
+            },
         )
         .unwrap();
 
@@ -2553,17 +2582,19 @@ mod link_tests {
         )];
         link_store_edges(
             &storage,
-            &[],
-            &[],
-            &ref_records,
-            &[],
-            &[],
-            &[],
-            &[],
-            &[],
-            &[],
-            &[],
-            &std::collections::HashSet::new(),
+            EdgeRecords {
+                calls: &[],
+                uses: &[],
+                refs: &ref_records,
+                implements: &[],
+                mutates: &[],
+                mentions: &[],
+                supersedes: &[],
+                demonstrates: &[],
+                terms: &[],
+                cochange: &[],
+                test_anchors: &std::collections::HashSet::new(),
+            },
         )
         .unwrap();
 
@@ -2619,17 +2650,19 @@ mod link_tests {
         ];
         link_store_edges(
             &storage,
-            &[],
-            &[],
-            &ref_records,
-            &[],
-            &[],
-            &[],
-            &[],
-            &[],
-            &[],
-            &[],
-            &std::collections::HashSet::new(),
+            EdgeRecords {
+                calls: &[],
+                uses: &[],
+                refs: &ref_records,
+                implements: &[],
+                mutates: &[],
+                mentions: &[],
+                supersedes: &[],
+                demonstrates: &[],
+                terms: &[],
+                cochange: &[],
+                test_anchors: &std::collections::HashSet::new(),
+            },
         )
         .unwrap();
 
@@ -2680,17 +2713,19 @@ mod link_tests {
         let ref_records = vec![(referrer.to_string(), vec!["ref:faq".to_string()])];
         link_store_edges(
             &storage,
-            &[],
-            &[],
-            &ref_records,
-            &[],
-            &[],
-            &[],
-            &[],
-            &[],
-            &[],
-            &[],
-            &std::collections::HashSet::new(),
+            EdgeRecords {
+                calls: &[],
+                uses: &[],
+                refs: &ref_records,
+                implements: &[],
+                mutates: &[],
+                mentions: &[],
+                supersedes: &[],
+                demonstrates: &[],
+                terms: &[],
+                cochange: &[],
+                test_anchors: &std::collections::HashSet::new(),
+            },
         )
         .unwrap();
 
