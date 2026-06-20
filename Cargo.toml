@@ -61,6 +61,12 @@ sha2 = "0.11"
 
 [dev-dependencies]
 criterion = "0.5"
+aden-store = { path = "crates/aden-store" }
+aden-core = { path = "crates/aden-core" }
+
+[[bench]]
+name = "store_perf"
+harness = false
 
 [[bench]]
 name = "token_density"

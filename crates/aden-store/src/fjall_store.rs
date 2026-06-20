@@ -8,15 +8,26 @@
 //! a much smaller on-disk store, which is what matters as data pools grow.
 //!
 //! The key/value layout mirrors [`SledStorage`](crate::SledStorage) exactly;
-//! sled "trees" map 1:1 onto fjall "partitions", so the two backends are
+//! sled "trees" map 1:1 onto fjall "keyspaces", so the two backends are
 //! interchangeable behind the [`GraphStorage`] trait.
+//!
+//! ## Fjall 3 API mapping
+//!
+//! | fjall 2.x             | fjall 3.x                |
+//! |-----------------------|--------------------------|
+//! | `Keyspace` (root)     | `Database`               |
+//! | `PartitionHandle`     | `Keyspace`               |
+//! | `PartitionCreateOptions` | `KeyspaceCreateOptions` |
+//! | `Config::new(p).open()` | `Database::builder(p).open()` |
+//! | `ks.open_partition(n, opts)` | `db.keyspace(n, opts_fn)` |
+//! | Iterator yields `Result<(key, val)>` | Iterator yields `Guard`; call `.into_inner()` |
 
 use crate::{
     GraphStorage, KEY_SEP, StoreError, TreeName, base_key, deserialize, deserialize_document,
     doc_key, edge_key, incoming_key, meta_key, outgoing_key, serialize, serialize_document,
 };
 use aden_core::{Document, EdgeType};
-use fjall::{Config, Keyspace, PartitionCreateOptions, PartitionHandle, PersistMode};
+use fjall::{Database, Keyspace, KeyspaceCreateOptions, PersistMode};
 use std::collections::{HashMap, HashSet};
 
 impl From<fjall::Error> for StoreError {
@@ -27,24 +38,23 @@ impl From<fjall::Error> for StoreError {
 
 /// A Fjall (LSM-tree) backed implementation of [`GraphStorage`].
 pub struct FjallStorage {
-    // Keyspace must outlive the partitions; kept for `persist` (flush).
-    keyspace: Keyspace,
-    docs: PartitionHandle,
-    edges: PartitionHandle,
-    outgoing: PartitionHandle,
-    incoming: PartitionHandle,
-    index: PartitionHandle,
-    meta: PartitionHandle,
-    bases: PartitionHandle,
+    // Database must outlive the keyspaces; kept for `persist` (flush).
+    db: Database,
+    docs: Keyspace,
+    edges: Keyspace,
+    outgoing: Keyspace,
+    incoming: Keyspace,
+    index: Keyspace,
+    meta: Keyspace,
+    bases: Keyspace,
 }
 
 impl FjallStorage {
     /// Open (or create) a Fjall store at the given path.
     pub fn new(path: &str) -> Result<Self, StoreError> {
-        let keyspace = Config::new(path).open()?;
-        let open = |name: &str| -> Result<PartitionHandle, StoreError> {
-            keyspace
-                .open_partition(name, PartitionCreateOptions::default())
+        let db = Database::builder(path).open()?;
+        let open = |name: &str| -> Result<Keyspace, StoreError> {
+            db.keyspace(name, KeyspaceCreateOptions::default)
                 .map_err(StoreError::from)
         };
         Ok(Self {
@@ -55,13 +65,13 @@ impl FjallStorage {
             index: open(TreeName::Index.name())?,
             meta: open(TreeName::Meta.name())?,
             bases: open(TreeName::Bases.name())?,
-            keyspace,
+            db,
         })
     }
 
     /// Open an *existing* Fjall store without creating it.
     ///
-    /// Unlike [`new`](Self::new) — which calls `fjall::Config::open()` and so
+    /// Unlike [`new`](Self::new) — which calls `Database::builder(path).open()` and so
     /// materializes the directory — this returns [`StoreError::NotFound`] when
     /// the store is absent. Read commands use this so that running e.g.
     /// `aden query` before `aden gen` yields a clear error rather than silently
@@ -86,8 +96,8 @@ impl GraphStorage for FjallStorage {
 
     fn get_all_documents(&self) -> Result<HashMap<String, Document>, StoreError> {
         let mut docs = HashMap::new();
-        for item in self.docs.iter() {
-            let (key, value) = item?;
+        for guard in self.docs.iter() {
+            let (key, value) = guard.into_inner()?;
             let key_str = String::from_utf8_lossy(&key);
             if let Some(anchor) = key_str.strip_prefix("doc:") {
                 docs.insert(anchor.to_string(), deserialize_document(&value)?);
@@ -143,7 +153,8 @@ impl GraphStorage for FjallStorage {
     }
 
     fn put_edge(&self, src: &str, dst: &str, edge_type: EdgeType) -> Result<(), StoreError> {
-        self.edges.insert(edge_key(src, dst, &edge_type), [])?;
+        self.edges
+            .insert(edge_key(src, dst, &edge_type), &[] as &[u8])?;
 
         let out_key = outgoing_key(src);
         let mut out: Vec<(String, EdgeType)> = match self.outgoing.get(&out_key)? {
@@ -167,7 +178,8 @@ impl GraphStorage for FjallStorage {
         let mut out_add: HashMap<&str, Vec<(String, EdgeType)>> = HashMap::new();
         let mut in_add: HashMap<&str, Vec<(String, EdgeType)>> = HashMap::new();
         for (src, dst, edge_type) in edges {
-            self.edges.insert(edge_key(src, dst, edge_type), [])?;
+            self.edges
+                .insert(edge_key(src, dst, edge_type), &[] as &[u8])?;
             out_add
                 .entry(src.as_str())
                 .or_default()
@@ -274,13 +286,38 @@ impl GraphStorage for FjallStorage {
         let edge_str = format!("{:?}", edge_type);
         let prefix = format!("edge{KEY_SEP}");
         let mut edges = Vec::new();
-        for item in self.edges.iter() {
-            let (key, _) = item?;
+        for guard in self.edges.iter() {
+            let (key, _) = guard.into_inner()?;
             let key_str = String::from_utf8_lossy(&key);
             if let Some(suffix) = key_str.strip_prefix(&prefix) {
                 let parts: Vec<&str> = suffix.split(KEY_SEP).collect();
                 if parts.len() == 3 && parts[2] == edge_str {
                     edges.push((parts[0].to_string(), parts[1].to_string()));
+                }
+            }
+        }
+        Ok(edges)
+    }
+
+    fn get_all_edges(&self) -> Result<Vec<(String, String, EdgeType)>, StoreError> {
+        // Build a debug-string → EdgeType lookup once so we can bucket by type
+        // in a single scan of the edges partition instead of one scan per type.
+        let type_map: HashMap<String, EdgeType> = EdgeType::ALL
+            .iter()
+            .map(|et| (format!("{et:?}"), *et))
+            .collect();
+
+        let prefix = format!("edge{KEY_SEP}");
+        let mut edges = Vec::new();
+        for guard in self.edges.iter() {
+            let (key, _) = guard.into_inner()?;
+            let key_str = String::from_utf8_lossy(&key);
+            if let Some(suffix) = key_str.strip_prefix(&prefix) {
+                let parts: Vec<&str> = suffix.split(KEY_SEP).collect();
+                if parts.len() == 3 {
+                    if let Some(&et) = type_map.get(parts[2]) {
+                        edges.push((parts[0].to_string(), parts[1].to_string(), et));
+                    }
                 }
             }
         }
@@ -293,8 +330,8 @@ impl GraphStorage for FjallStorage {
 
     fn get_all_anchors(&self) -> Result<HashSet<String>, StoreError> {
         let mut anchors = HashSet::new();
-        for item in self.docs.iter() {
-            let (key, _) = item?;
+        for guard in self.docs.iter() {
+            let (key, _) = guard.into_inner()?;
             let key_str = String::from_utf8_lossy(&key);
             if let Some(anchor) = key_str.strip_prefix("doc:") {
                 anchors.insert(anchor.to_string());
@@ -393,7 +430,10 @@ impl GraphStorage for FjallStorage {
             &self.index,
             &self.meta,
         ] {
-            let keys: Vec<_> = part.iter().filter_map(|i| i.ok().map(|(k, _)| k)).collect();
+            let keys: Vec<_> = part
+                .iter()
+                .filter_map(|g| g.into_inner().ok().map(|(k, _)| k))
+                .collect();
             for k in keys {
                 part.remove(k)?;
             }
@@ -402,7 +442,7 @@ impl GraphStorage for FjallStorage {
     }
 
     fn flush(&self) -> Result<(), StoreError> {
-        self.keyspace.persist(PersistMode::SyncAll)?;
+        self.db.persist(PersistMode::SyncAll)?;
         Ok(())
     }
 }

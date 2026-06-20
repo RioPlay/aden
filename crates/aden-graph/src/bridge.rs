@@ -49,17 +49,10 @@ impl GraphBridge {
     /// Load a graph from storage into in-memory structures.
     pub fn load_from_storage<S: GraphStorage>(storage: &S) -> Result<LoadedGraph, StoreError> {
         let docs = storage.get_all_documents()?;
-        let mut edges = Vec::new();
-
-        // The canonical variant list — a local copy here silently dropped
-        // every edge of a forgotten type on load (Wave 2 regression).
-        for edge_type in &EdgeType::ALL {
-            let typed_edges = storage.get_edges_by_type(edge_type)?;
-            for (src, dst) in typed_edges {
-                edges.push((src, dst, *edge_type));
-            }
-        }
-
+        // Single-pass: reads the edge type from each key instead of one full
+        // scan per type (32 scans → 1). The default trait impl falls back to
+        // the per-type loop for backends that don't override get_all_edges.
+        let edges = storage.get_all_edges()?;
         Ok((docs, edges))
     }
 

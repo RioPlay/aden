@@ -229,6 +229,21 @@ pub trait GraphStorage: Send + Sync {
     /// Get all edges of a type.
     fn get_edges_by_type(&self, edge_type: &EdgeType) -> Result<Vec<(String, String)>, StoreError>;
 
+    /// Get all edges in one pass, bucketed by type.
+    ///
+    /// Default implementation calls `get_edges_by_type` for every variant (one
+    /// full scan per type). Backends should override with a single scan that
+    /// reads the type from the key — reducing 32 scans to 1 for graph loads.
+    fn get_all_edges(&self) -> Result<Vec<(String, String, EdgeType)>, StoreError> {
+        let mut edges = Vec::new();
+        for et in &EdgeType::ALL {
+            for (src, dst) in self.get_edges_by_type(et)? {
+                edges.push((src, dst, *et));
+            }
+        }
+        Ok(edges)
+    }
+
     /// Check if an edge exists.
     fn edge_exists(&self, src: &str, dst: &str, edge_type: &EdgeType) -> Result<bool, StoreError>;
 
