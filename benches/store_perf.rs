@@ -15,8 +15,9 @@
 
 use aden_core::{Document, EdgeType, NodeType};
 use aden_store::{GraphStorage, Storage};
-use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use std::collections::HashMap;
+use std::hint::black_box;
 use std::path::PathBuf;
 
 fn temp_store_path(label: &str) -> PathBuf {
