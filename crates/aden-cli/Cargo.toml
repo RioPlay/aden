@@ -27,9 +27,9 @@ aden-propose = { version = "0.2.0", path = "../aden-propose" }
 aden-policy = { version = "0.2.0", path = "../aden-policy" }
 regex = "1.11"
 dirs = "6"
-toml_edit = "0.22"
+toml_edit = "0.25"
 walkdir = "2"
-toml = "0.8"
+toml = "1"
 ureq = { version = "3", optional = true }
 aden-diagnose = { path = "../aden-diagnose" }
 aden-store = { path = "../aden-store" }
