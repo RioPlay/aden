@@ -15,15 +15,17 @@ rayon.workspace = true
 rust-stemmers = "1.0"
 # Optional dense-embedding stack (hybrid retrieval), behind the `dense` feature so
 # the default build stays lean. tract-onnx = pure-Rust ONNX inference
-# (Apache-2.0 OR MIT, no native runtime, deterministic); tokenizers = HuggingFace
-# tokenizers (Apache-2.0), default-features off to avoid the native `onig` C lib.
-# See crates/aden-index/src/dense.rs. Subject to the license verification pass.
+# (Apache-2.0 OR MIT, no native runtime, deterministic); kitoken = pure-Rust
+# WordPiece tokenizer (BSD-2-Clause) that loads the model's tokenizer.json directly.
+# Replaced HuggingFace `tokenizers` to drop its `paste` dep (RUSTSEC-2024-0436) and
+# its C/C++ build deps; byte-identical token ids are pinned by
+# tests/tokenizer_parity.rs. See crates/aden-index/src/dense.rs.
 tract-onnx = { version = "0.23", optional = true }
-tokenizers = { version = "0.21", optional = true, default-features = false, features = ["fancy-regex"] }
+kitoken = { version = "0.11", optional = true, default-features = false, features = ["std", "normalization", "convert-tokenizers"] }
 
 [features]
 # Local ONNX embedding provider (TractEmbedder) for hybrid retrieval.
-dense = ["dep:tract-onnx", "dep:tokenizers"]
+dense = ["dep:tract-onnx", "dep:kitoken"]
 
 [dev-dependencies]
 tempfile = "3.27.0"

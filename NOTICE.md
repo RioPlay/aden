@@ -27,7 +27,7 @@ AGPL-compatible terms:
 
 The optional **`dense`** feature (local hybrid-retrieval embeddings, off by
 default) additionally builds against `tract` / `tract-onnx` (`Apache-2.0 OR
-MIT`), HuggingFace `tokenizers` (`Apache-2.0`), and `fancy-regex` (`MIT`) — all
+MIT`), `kitoken` (`BSD-2-Clause`), and `fancy-regex` (`MIT`) — all
 permissive and AGPL-compatible. The embedding model for this feature, the
 MIT-licensed BAAI/bge-small-en-v1.5, is **fetched on demand** by the user
 (`scripts/fetch-bge-model.sh`) rather than bundled; it is used under its own MIT
@@ -1913,10 +1913,17 @@ because the NOTICE was generated without that feature flag.
 - **License**: MIT
 - **Repository**: https://github.com/fancy-regex/fancy-regex
 
-### tokenizers (HuggingFace)
+### kitoken
 
-- **License**: Apache-2.0
-- **Repository**: https://github.com/huggingface/tokenizers
+- **License**: BSD-2-Clause
+- **Repository**: https://github.com/Systemcluster/kitoken
+
+Pure-Rust WordPiece tokenizer; replaced HuggingFace `tokenizers` to drop the
+unmaintained `paste` crate (RUSTSEC-2024-0436) and the C/C++ build deps. Pulls
+these small permissive transitive crates (dense-only): `bstr`
+(`MIT OR Apache-2.0`), `derive_more` (`MIT`), `orx-priority-queue`
+(`MIT OR Apache-2.0`), `tinyvec` (`Zlib OR Apache-2.0 OR MIT`), and
+`unicode-normalization` (`MIT OR Apache-2.0`), all AGPL-compatible.
 
 ### tract / tract-onnx and sub-crates
 
