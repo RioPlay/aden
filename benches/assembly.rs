@@ -3,7 +3,8 @@
 
 use aden_asm::traverse::{AssemblyOptions, assemble};
 use aden_graph::graph::AdenGraph;
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use criterion::{Criterion, criterion_group, criterion_main};
+use std::hint::black_box;
 
 fn bench_assembly(c: &mut Criterion) {
     let tmp = std::env::temp_dir().join("aden_bench_assembly");
