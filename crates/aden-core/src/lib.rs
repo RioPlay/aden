@@ -655,6 +655,16 @@ impl EdgeType {
         !self.is_semantic()
     }
 
+    /// Returns true if this edge was *inferred* from embeddings (semantic
+    /// similarity) rather than authored in source/markup or parsed from
+    /// structure. Currently only `SimilarTo` (derived by the dense similarity
+    /// pass). Distinct from [`is_semantic`](Self::is_semantic): authored
+    /// conceptual edges like `Mentions`, `IsA`, and `PartOf` are semantic but NOT
+    /// inferred. Used to flag derived relatedness in query provenance output.
+    pub fn is_inferred(&self) -> bool {
+        matches!(self, EdgeType::SimilarTo)
+    }
+
     /// Weight for spreading activation (0.0-1.0).
     pub fn activation_weight(&self) -> f64 {
         match self {

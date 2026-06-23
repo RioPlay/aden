@@ -461,6 +461,11 @@ pub fn node_to_json(node: &aden_graph::DocumentNode, depth: usize) -> serde_json
         serde_json::Value::String(resolve_node_type(node)),
     );
     map.insert("depth".to_string(), serde_json::Value::from(depth as u64));
+    // Phase 6 (provenance): surface the node's confidence so readers can weight
+    // generated/derived content. Additive key — existing consumers are unaffected.
+    if let Some(c) = serde_json::Number::from_f64(node.doc.confidence) {
+        map.insert("confidence".to_string(), serde_json::Value::Number(c));
+    }
     serde_json::Value::Object(map)
 }
 
@@ -949,22 +954,80 @@ fn maybe_embed(_index: &mut aden_index::Index, _path: &Path) -> bool {
     false
 }
 
+/// Per-user cache root, platform-native via `dirs::cache_dir()`:
+/// `%LOCALAPPDATA%` on Windows, `~/Library/Caches` on macOS, `$XDG_CACHE_HOME`
+/// (or `~/.cache`) on Linux. Falls back to `~/.cache` only if `cache_dir()` is
+/// unavailable. Aden's downloadable/rebuildable per-user assets (the embedding
+/// model, the OEWN lexicon store) live under here.
+fn user_cache_root() -> std::path::PathBuf {
+    dirs::cache_dir().unwrap_or_else(legacy_cache_root)
+}
+
+/// The pre-migration location these assets used on every OS: `~/.cache`. On
+/// Linux with default XDG settings this equals `user_cache_root()` (so the
+/// migration is a no-op there); when `XDG_CACHE_HOME` is customized — or on
+/// Windows/macOS — the two diverge and this is read as a non-destructive fallback
+/// (via `prefer_native`) so an install that already populated `~/.cache` keeps
+/// working without re-downloading.
+fn legacy_cache_root() -> std::path::PathBuf {
+    dirs::home_dir().unwrap_or_default().join(".cache")
+}
+
+/// Choose `native` unless it is absent and `legacy` is present — a
+/// non-destructive cache migration: fresh writes go to the native location, but
+/// an existing legacy install is honored in place. `present` reports whether a
+/// candidate is materialized; it is injected so the choice is unit-testable
+/// without touching the filesystem.
+fn prefer_native(
+    native: std::path::PathBuf,
+    legacy: std::path::PathBuf,
+    present: impl Fn(&std::path::Path) -> bool,
+) -> std::path::PathBuf {
+    if present(&native) {
+        native
+    } else if present(&legacy) {
+        legacy
+    } else {
+        native
+    }
+}
+
+/// Resolve the local bge embedding model directory. `ADEN_BGE_MODEL_DIR` wins;
+/// otherwise the platform-native cache location (`user_cache_root()`), with the
+/// legacy `~/.cache` path honored in place if that is where the model already
+/// lives (presence keyed on `model.onnx`). A fresh `aden model fetch` therefore
+/// lands in the native location while existing installs are not re-downloaded.
+#[cfg(any(feature = "dense", feature = "model-fetch"))]
+pub fn bge_model_dir() -> std::path::PathBuf {
+    if let Ok(dir) = std::env::var("ADEN_BGE_MODEL_DIR") {
+        return std::path::PathBuf::from(dir);
+    }
+    const REL: &str = "aden-models/bge-small-en-v1.5";
+    prefer_native(
+        user_cache_root().join(REL),
+        legacy_cache_root().join(REL),
+        |p| p.join("model.onnx").exists(),
+    )
+}
+
 /// Lazily construct and cache the local embedding model (loaded once per process).
-/// Reads `ADEN_BGE_MODEL_DIR`, else `~/.cache/aden-models/bge-small-en-v1.5`.
-/// Returns `None` (degrading to BM25) when the model is absent or fails to load.
+/// Reads the model from `bge_model_dir()`. Returns `None` (degrading to BM25) when
+/// the model is absent or fails to load, printing a one-line hint on how to fetch
+/// it so the degrade is discoverable rather than silent.
 #[cfg(feature = "dense")]
 fn dense_embedder() -> Option<&'static aden_index::TractEmbedder> {
     use std::sync::OnceLock;
     static EMBEDDER: OnceLock<Option<aden_index::TractEmbedder>> = OnceLock::new();
     EMBEDDER
         .get_or_init(|| {
-            let dir = std::env::var("ADEN_BGE_MODEL_DIR")
-                .map(std::path::PathBuf::from)
-                .unwrap_or_else(|_| {
-                    std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default())
-                        .join(".cache/aden-models/bge-small-en-v1.5")
-                });
+            let dir = bge_model_dir();
             if !dir.join("model.onnx").exists() {
+                eprintln!(
+                    "aden: dense feature enabled but no embedding model at {}; using BM25.\n      \
+                     Fetch it with `aden model fetch` (build --features model-fetch) or \
+                     scripts/fetch-bge-model.sh, or set ADEN_BGE_MODEL_DIR.",
+                    dir.display()
+                );
                 return None;
             }
             match aden_index::TractEmbedder::from_dir(&dir) {
@@ -993,17 +1056,25 @@ pub fn fmt_score(score: f64) -> String {
 }
 
 /// Cached handle to the OEWN lexical overlay store (opened once per process). `None` if the
-/// store is absent. `$ADEN_LEXICON_STORE` else `~/.cache/aden/lexicon`.
+/// store is absent. `$ADEN_LEXICON_STORE` else the platform-native per-user cache dir
+/// (`user_cache_root()/aden/lexicon`), honoring an existing legacy `~/.cache/aden/lexicon` in place.
 fn lexicon_store() -> Option<&'static aden_store::Storage> {
     use std::sync::OnceLock;
     static STORE: OnceLock<Option<aden_store::Storage>> = OnceLock::new();
     STORE
         .get_or_init(|| {
             let path = std::env::var("ADEN_LEXICON_STORE").unwrap_or_else(|_| {
-                std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default())
-                    .join(".cache/aden/lexicon")
-                    .to_string_lossy()
-                    .into_owned()
+                // Platform-native cache dir (Win %LOCALAPPDATA%, macOS ~/Library/
+                // Caches, Linux ~/.cache), with a legacy ~/.cache store honored in
+                // place — non-destructive migration.
+                const REL: &str = "aden/lexicon";
+                prefer_native(
+                    user_cache_root().join(REL),
+                    legacy_cache_root().join(REL),
+                    |p| p.exists(),
+                )
+                .to_string_lossy()
+                .into_owned()
             });
             aden_store::Storage::open_existing(&path).ok()
         })
@@ -1292,6 +1363,24 @@ pub fn generate_proposal_id() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prefer_native_picks_native_or_falls_back_to_existing_legacy() {
+        let native = std::path::PathBuf::from("/native/aden/x");
+        let legacy = std::path::PathBuf::from("/legacy/aden/x");
+
+        // Native present -> native (even if legacy also present).
+        let r = prefer_native(native.clone(), legacy.clone(), |_| true);
+        assert_eq!(r, native);
+
+        // Native absent, legacy present -> legacy (non-destructive migration).
+        let r = prefer_native(native.clone(), legacy.clone(), |p| p == legacy);
+        assert_eq!(r, legacy);
+
+        // Neither present -> native (fresh writes land at the native location).
+        let r = prefer_native(native.clone(), legacy.clone(), |_| false);
+        assert_eq!(r, native);
+    }
 
     #[test]
     fn discover_source_files_scoped_narrows_to_subtree() {

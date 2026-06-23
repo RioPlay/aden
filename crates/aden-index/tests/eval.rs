@@ -430,8 +430,13 @@ fn hybrid_retrieval_eval_with_real_model() {
     let dir = std::env::var("ADEN_BGE_MODEL_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
-            PathBuf::from(std::env::var("HOME").unwrap_or_default())
-                .join(".cache/aden-models/bge-small-en-v1.5")
+            PathBuf::from(
+                dirs::home_dir()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned(),
+            )
+            .join(".cache/aden-models/bge-small-en-v1.5")
         });
     if !dir.join("model.onnx").exists() {
         eprintln!("SKIP: bge model not found (set ADEN_BGE_MODEL_DIR); skipping hybrid eval");

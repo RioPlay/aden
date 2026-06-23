@@ -845,6 +845,23 @@ enum Commands {
         #[arg(long = "no-open")]
         no_open: bool,
     },
+    /// Manage the local embedding model for dense (hybrid) retrieval
+    #[cfg(feature = "model-fetch")]
+    Model {
+        #[command(subcommand)]
+        action: ModelAction,
+    },
+}
+
+#[cfg(feature = "model-fetch")]
+#[derive(Subcommand)]
+enum ModelAction {
+    /// Download + checksum-verify the bge embedding model into the model cache
+    Fetch {
+        /// Re-download even if a verified copy is already present
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1493,5 +1510,9 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
             out.as_deref(),
             !no_open,
         ),
+        #[cfg(feature = "model-fetch")]
+        Commands::Model { action } => match action {
+            ModelAction::Fetch { force } => commands::cmd_model_fetch(force),
+        },
     }
 }

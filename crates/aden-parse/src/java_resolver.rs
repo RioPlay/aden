@@ -102,19 +102,24 @@ fn infer_java_package(path: &Path, source: &str) -> String {
     if let Some(pkg) = extract_package_from_source(source) {
         return pkg;
     }
-    // Fallback: infer from directory structure (src/main/java/com/example/Foo.java -> com.example)
-    let path_str = path.to_string_lossy();
-    if let Some(idx) = path_str.rfind("/java/") {
-        let start = idx + 6;
-        let end = path_str.rfind('/').unwrap_or(path_str.len()).max(start);
-        let after_java = &path_str[start..end];
-        return after_java.replace('/', ".");
-    }
-    if let Some(idx) = path_str.rfind("\\\\java\\\\") {
-        let start = idx + 7;
-        let end = path_str.rfind('\\').unwrap_or(path_str.len()).max(start);
-        let after_java = &path_str[start..end];
-        return after_java.replace('\\', ".");
+    // Fallback: infer from directory structure
+    // (src/main/java/com/example/Foo.java -> com.example). Walk path *components*
+    // rather than matching "/java/" or "\\java\\" in the stringified path, so it
+    // works identically regardless of the OS path separator.
+    let comps: Vec<String> = path
+        .components()
+        .filter_map(|c| match c {
+            std::path::Component::Normal(s) => Some(s.to_string_lossy().into_owned()),
+            _ => None,
+        })
+        .collect();
+    if let Some(idx) = comps.iter().rposition(|c| c == "java") {
+        // Package = the directory components after the last `java`, excluding the
+        // file name (the final component). An empty slice means a default-package
+        // file (e.g. src/main/java/Foo.java) -> return "" rather than falling
+        // through to the parent-dir heuristic below, which would wrongly yield
+        // "java". This matches the prior string-rfind behavior.
+        return comps[idx + 1..comps.len().saturating_sub(1)].join(".");
     }
     path.parent()
         .and_then(|p| p.file_name())
@@ -768,5 +773,47 @@ fn resolve_java_callee_name(node: tree_sitter::Node, source: &str) -> String {
             }
         }
         _ => node_text(node, source).to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // All cases pass an empty source so the package-from-source short-circuit is
+    // skipped and the directory-structure fallback is exercised.
+    #[test]
+    fn infer_package_standard_maven_layout() {
+        let p = Path::new("src/main/java/com/example/Foo.java");
+        assert_eq!(infer_java_package(p, ""), "com.example");
+    }
+
+    #[test]
+    fn infer_package_default_package_is_empty() {
+        // Nothing between `java/` and the file -> default package, empty string
+        // (NOT "java", which the pre-fix component logic wrongly returned).
+        let p = Path::new("src/main/java/Foo.java");
+        assert_eq!(infer_java_package(p, ""), "");
+    }
+
+    #[test]
+    fn infer_package_last_java_root_wins() {
+        let p = Path::new("a/java/b/java/com/x/Bar.java");
+        assert_eq!(infer_java_package(p, ""), "com.x");
+    }
+
+    #[test]
+    fn infer_package_no_java_component_falls_back_to_parent_dir() {
+        let p = Path::new("some/other/dir/Baz.java");
+        assert_eq!(infer_java_package(p, ""), "dir");
+    }
+
+    #[test]
+    fn infer_package_from_source_takes_precedence() {
+        let p = Path::new("src/main/java/com/example/Foo.java");
+        assert_eq!(
+            infer_java_package(p, "package com.override;\n"),
+            "com.override"
+        );
     }
 }

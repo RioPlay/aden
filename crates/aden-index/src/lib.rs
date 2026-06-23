@@ -93,7 +93,12 @@ const INDEX_CACHE_BASENAME: &str = "index-cache.json";
 /// v8: per-anchor embedding content hashes (`embedding_hashes`) for *incremental*
 /// embedding — re-embed only changed docs. Bumped so v7 caches (which carry no
 /// hashes) rebuild once cleanly rather than trusting vectors of unknown freshness.
-const CURRENT_INDEX_VERSION: u32 = 8;
+/// v10: MAX_SEQ 128 -> 512 so full prose sections embed (CLS pooling, single
+/// forward). Changes the stored vectors without the doc text changing, so the
+/// persisted index rebuilds and `EMBED_PARAM_VERSION` busts the content-addressed
+/// embedding cache in parallel. (A whole-doc mean-pool variant was trialed on this
+/// version and reverted as net-negative for retrieval — see `EMBED_PARAM_VERSION`.)
+const CURRENT_INDEX_VERSION: u32 = 10;
 
 /// Reciprocal Rank Fusion constant — Cormack, Clarke & Buettcher, SIGIR 2009 use
 /// 60. Damps the contribution of low-ranked items so a top hit in either
@@ -606,11 +611,25 @@ fn doc_attr<'a>(text: &'a str, attr: &str) -> Option<&'a str> {
 /// thousands of unchanged symbols on every reindex. Documents without a source
 /// hash (prose: Markdown/AsciiDoc/`.txt`) fall back to hashing their stable text
 /// projection.
+/// Bumped whenever an embedding-model parameter changes the produced vectors
+/// without the document text changing — e.g. `MAX_SEQ` (truncation length), the
+/// model itself, or the pooling strategy. Folded into [`embed_key`] so such a
+/// change busts the content-addressed embedding cache and forces a re-embed;
+/// otherwise stale 128-token vectors would persist for every unchanged doc.
+///   v1: implicit (pre-versioning).
+///   v2: MAX_SEQ 128 -> 512 (full prose sections embed; CLS pooling, single
+///       forward). A chunk + mean-pool variant was trialed and reverted: a Pro Git
+///       A/B (2026-06-23) showed whole-doc mean-pooling was net-negative for
+///       retrieval at both caps, so only the cap raise ships. Bumped past any
+///       locally-built pooled cache to force a clean re-embed.
+const EMBED_PARAM_VERSION: u64 = 4;
+
 fn embed_key(anchor: &str, text: &str) -> u64 {
-    match doc_attr(text, ":source_hash:") {
-        Some(source_hash) => text_hash(&format!("{source_hash}\u{1f}{anchor}")),
-        None => text_hash(&stable_embed_text(text)),
-    }
+    let base = match doc_attr(text, ":source_hash:") {
+        Some(source_hash) => format!("{source_hash}\u{1f}{anchor}"),
+        None => stable_embed_text(text),
+    };
+    text_hash(&format!("v{EMBED_PARAM_VERSION}\u{1f}{base}"))
 }
 
 /// Stable 64-bit content hash (FNV-1a) used to detect whether a document's text
@@ -1342,6 +1361,68 @@ impl Index {
             .collect()
     }
 
+    /// Derive top-`top_k` nearest-neighbor anchor pairs by embedding cosine
+    /// similarity — the raw material for `SimilarTo`/`RelatesTo` graph edges built
+    /// from *semantic closeness* rather than authored cross-references. Only
+    /// neighbors scoring at least `min_cosine` are kept. Empty when no embeddings
+    /// are stored, so it is always safe to call (pure BM25 corpora derive nothing).
+    ///
+    /// Returns directed `(src, dst, score)` triples — each `src` paired with its
+    /// strongest neighbors. `SimilarTo` is symmetric, so callers typically write
+    /// both directions (graph edge dedup collapses the repeats).
+    ///
+    /// `anchor_prefix` restricts the scan to anchors with that URI prefix (e.g.
+    /// `"aden://doc/"` for prose-only). The index co-locates code and prose
+    /// embeddings, so without this the O(n²·dim) cross-product runs over every
+    /// code symbol on a code-heavy repo and the caller throws nearly all of it
+    /// away — filtering BEFORE the scan keeps `n` at the prose-doc count. Pass
+    /// `None` to compare all anchors.
+    ///
+    /// A flat O(n²·dim) scan like [`dense_query`] — deterministic (anchors are
+    /// processed in sorted order; neighbors ranked by score desc, then anchor
+    /// asc) and dependency-free. Fine up to tens of thousands of anchors; revisit
+    /// with an ANN index only if a corpus demands it.
+    pub fn similar_pairs(
+        &self,
+        top_k: usize,
+        min_cosine: f32,
+        anchor_prefix: Option<&str>,
+    ) -> Vec<(String, String, f32)> {
+        if self.embeddings.is_empty() || top_k == 0 {
+            return Vec::new();
+        }
+        let mut anchors: Vec<String> = self.embeddings.keys().cloned().collect();
+        if let Some(prefix) = anchor_prefix {
+            anchors.retain(|a| a.starts_with(prefix));
+        }
+        anchors.sort_unstable();
+        let mut out: Vec<(String, String, f32)> = Vec::new();
+        for src in &anchors {
+            let Some(src_vec) = self.embeddings.get(src) else {
+                continue;
+            };
+            let mut scored: Vec<(&String, f32)> = anchors
+                .iter()
+                .filter(|dst| dst.as_str() != src.as_str())
+                .filter_map(|dst| {
+                    let v = self.embeddings.get(dst)?;
+                    let s = cosine_similarity(src_vec, v);
+                    (s >= min_cosine).then_some((dst, s))
+                })
+                .collect();
+            scored.sort_by(|a, b| {
+                b.1.partial_cmp(&a.1)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| a.0.cmp(b.0))
+            });
+            scored.truncate(top_k);
+            for (dst, s) in scored {
+                out.push((src.clone(), dst.clone(), s));
+            }
+        }
+        out
+    }
+
     /// Hybrid retrieval: fuse the BM25 and dense rankings with Reciprocal Rank
     /// Fusion (see [`rrf_fuse`]). The two retrievers are complementary — BM25
     /// nails exact identifiers and rare terms, dense captures meaning and
@@ -1620,6 +1701,33 @@ mod tests {
         assert!(!index.embeddings.contains_key("b"));
         assert!(!index.embedding_hashes.contains_key("b"));
         assert_eq!(index.embeddings.len(), 2);
+    }
+
+    #[test]
+    fn similar_pairs_links_nearest_neighbors() {
+        let mut index = Index::default();
+        // Hand-set embeddings: a and b nearly identical; c orthogonal to both.
+        index.embeddings.insert("a".to_string(), vec![1.0, 0.0]);
+        index.embeddings.insert("b".to_string(), vec![0.99, 0.141]);
+        index.embeddings.insert("c".to_string(), vec![0.0, 1.0]);
+
+        let pairs = index.similar_pairs(1, 0.5, None);
+        // a's nearest is b and b's nearest is a (symmetric); c has no neighbor
+        // above the 0.5 cosine threshold.
+        assert!(pairs.iter().any(|(s, d, _)| s == "a" && d == "b"));
+        assert!(pairs.iter().any(|(s, d, _)| s == "b" && d == "a"));
+        assert!(
+            !pairs.iter().any(|(s, _, _)| s == "c"),
+            "c has no above-threshold neighbor"
+        );
+        // top_k = 1 -> at most one neighbor per source.
+        assert!(pairs.iter().filter(|(s, _, _)| s == "a").count() <= 1);
+    }
+
+    #[test]
+    fn similar_pairs_empty_without_embeddings() {
+        let index = Index::default();
+        assert!(index.similar_pairs(5, 0.0, None).is_empty());
     }
 
     #[test]

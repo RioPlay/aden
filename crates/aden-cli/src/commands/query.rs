@@ -885,6 +885,28 @@ pub fn cmd_asm(opts: AsmOptions) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Phase 6 (provenance): annotate a query-result node with the edge type(s) that
+/// reached it and whether any is *inferred* — an embedding-derived edge
+/// (`SimilarTo`, from the dense similarity pass, per Phase 2) rather than an edge
+/// authored in source/markup or parsed from structure. Note `inferred` is
+/// narrower than "semantic": authored conceptual edges (`Mentions`, `IsA`,
+/// `PartOf`) are semantic but NOT inferred, so they read as hard facts here.
+/// Purely additive: only inserts keys, so existing JSON consumers are unaffected.
+fn annotate_edge_provenance(node: &mut serde_json::Value, via: &[aden_core::EdgeType]) {
+    if let Some(obj) = node.as_object_mut() {
+        let names: Vec<serde_json::Value> = via
+            .iter()
+            .map(|e| serde_json::Value::String(format!("{:?}", e)))
+            .collect();
+        let inferred = via.iter().any(|e| e.is_inferred());
+        obj.insert(
+            "via_edge_types".to_string(),
+            serde_json::Value::Array(names),
+        );
+        obj.insert("inferred".to_string(), serde_json::Value::Bool(inferred));
+    }
+}
+
 pub fn cmd_query(
     path: &Path,
     from: Option<&str>,
@@ -967,15 +989,18 @@ pub fn cmd_query(
                 // an arbitrary one, so a node could be wrongly skipped. Check ALL
                 // edges between the pair and keep the neighbor if ANY edge matches
                 // the filter (mirrors `traverse::ordered_neighbors`).
+                let via = edges_between(node, neighbor);
                 let passes = match filter_type {
-                    Some(ft) => edges_between(node, neighbor).contains(&ft),
+                    Some(ft) => via.contains(&ft),
                     None => true,
                 };
                 if !passes {
                     continue;
                 }
                 if visited.insert(neighbor) {
-                    results.push(node_to_json(&graph.graph[neighbor], d + 1));
+                    let mut nj = node_to_json(&graph.graph[neighbor], d + 1);
+                    annotate_edge_provenance(&mut nj, &via);
+                    results.push(nj);
                     queue.push_back((neighbor, d + 1));
                 }
             }
@@ -995,13 +1020,16 @@ pub fn cmd_query(
             // Honor --edge-type: keep an incoming neighbor only if at least one
             // edge from it to the target matches the requested type. Check ALL
             // parallel edges (a source may link via several edge types).
+            let via = edges_between(neighbor, target_idx);
             if let Some(ft) = filter_type
-                && !edges_between(neighbor, target_idx).contains(&ft)
+                && !via.contains(&ft)
             {
                 continue;
             }
             if seen.insert(neighbor) {
-                results.push(node_to_json(&graph.graph[neighbor], 1));
+                let mut nj = node_to_json(&graph.graph[neighbor], 1);
+                annotate_edge_provenance(&mut nj, &via);
+                results.push(nj);
             }
         }
     } else if let Some(anchor) = &impact {
@@ -1026,14 +1054,14 @@ pub fn cmd_query(
                 // Parallel edges: keep the neighbor if ANY edge between the pair
                 // is an impact edge, instead of testing only `find_edge`'s
                 // arbitrary pick.
-                if !edges_between(node, neighbor)
-                    .iter()
-                    .any(|et| impact_types.contains(et))
-                {
+                let via = edges_between(node, neighbor);
+                if !via.iter().any(|et| impact_types.contains(et)) {
                     continue;
                 }
                 if visited.insert(neighbor) {
-                    results.push(node_to_json(&graph.graph[neighbor], d + 1));
+                    let mut nj = node_to_json(&graph.graph[neighbor], d + 1);
+                    annotate_edge_provenance(&mut nj, &via);
+                    results.push(nj);
                     queue.push_back((neighbor, d + 1));
                 }
             }
@@ -1689,9 +1717,11 @@ pub fn cmd_ask(
     // those paths assemble exactly as before. When routing is ambiguous they let us
     // seed shallow context from the alternates rather than betting the whole budget
     // on a single, possibly-misranked anchor.
-    let (start_anchor, avg_score, alt_candidates, relevance) = if let Some(anchor) = from_override {
+    let (start_anchor, avg_score, alt_candidates, relevance, routing_note) = if let Some(anchor) =
+        from_override
+    {
         xp.decision = "pinned by --from (no search routing)".to_string();
-        (anchor.to_string(), None, Vec::new(), None)
+        (anchor.to_string(), None, Vec::new(), None, None)
     } else {
         let idx = load_or_build_index(path)?;
         let results = query_index(&idx, question);
@@ -1716,11 +1746,17 @@ pub fn cmd_ask(
             "not engaged".to_string()
         };
         let token_count = |a: &str| idx.doc_token_count(a);
+        // True when overview routing deliberately promoted a prose doc over the
+        // (in-band) rank-1 result. In that case the in-band "alternates" below are
+        // that intentional bypass, not a near-tie — so the user-facing note must
+        // not cry "ambiguous".
+        let mut overview_promoted = false;
         let primary = if overview {
             let indegree = doc_reference_indegree(path);
             match resolve_anchor_overview(question, &results, &token_count, &indegree) {
                 Some((anchor, why)) => {
                     xp.decision = why;
+                    overview_promoted = true;
                     anchor
                 }
                 None => {
@@ -1768,6 +1804,25 @@ pub fn cmd_ask(
         // Up to 2 in-band alternates, deduped against the (possibly non-rank-1)
         // primary. Empty ⇒ clear winner ⇒ unchanged single-seed behavior below.
         let alts = inband_alternate_candidates(&primary, &results, 2);
+        // Decide the honest low-confidence note here, where we know whether the
+        // alternates are a genuine near-tie or the deliberate overview bypass.
+        let routing_note = if alts.is_empty() {
+            None
+        } else if overview_promoted {
+            Some(format!(
+                "// note: overview routing chose a prose doc over {} in-band result(s) \
+                 (an intentional pick, not a tie); showing it plus shallow alternates. Pin a \
+                 specific anchor with --from <anchor>.",
+                alts.len()
+            ))
+        } else {
+            Some(format!(
+                "// note: routing ambiguous — {} near-tie candidate(s); showing the primary plus \
+                 shallow alternates at a reduced budget. Re-run with --explain for scores, or pin \
+                 with --from <anchor>.",
+                alts.len()
+            ))
+        };
         // Forward the search relevance into assembly frontier ordering: the same
         // hybrid (dense+BM25) scores that routed the seed now break structural
         // ties toward query-relevant neighbors. Anchors absent from the map score
@@ -1777,20 +1832,39 @@ pub fn cmd_ask(
             .iter()
             .map(|r| (r.anchor.clone(), r.score as f32))
             .collect();
-        (primary, Some(avg), alts, Some(relevance))
+        (primary, Some(avg), alts, Some(relevance), routing_note)
     };
 
     // Apply the relevance boost by default; `--strict` opts out and treats
     // --budget as an exact cap (deterministic size for callers/agents). The
     // user's --budget is the BASE the boost multiplies.
     let effective_budget = match (strict, avg_score) {
-        (false, Some(avg)) => auto_boosted_budget(budget, avg),
+        (false, Some(avg)) => {
+            let boosted = auto_boosted_budget(budget, avg);
+            // Confidence gating: in-band alternates mean routing is ambiguous —
+            // there is no clear winner. Betting a fully-boosted budget on a
+            // single, possibly-misranked anchor is the "fail big" failure mode
+            // (a wrong primary balloons into a huge, confident-looking block).
+            // Instead pull the budget halfway back toward the base; the reclaimed
+            // tokens are spent on the shallow alternates below, so we fail small.
+            if alt_candidates.is_empty() {
+                boosted
+            } else {
+                (budget + boosted) / 2
+            }
+        }
         _ => budget,
     };
 
     println!("// Aden Ask: '{}' → [[{}]]", question, start_anchor);
     if from_override.is_some() {
         println!("// (pinned by --from)");
+    }
+    // Honest low-confidence signal in the MAIN output (not just --explain),
+    // decided at routing time so it distinguishes a genuine near-tie from a
+    // deliberate overview pick (see `routing_note`).
+    if let Some(note) = &routing_note {
+        println!("{note}");
     }
     println!();
 

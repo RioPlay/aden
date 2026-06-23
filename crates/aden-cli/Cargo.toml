@@ -31,6 +31,7 @@ toml_edit = "0.25"
 walkdir = "2"
 toml = "1"
 ureq = { version = "3", optional = true }
+sha2 = { workspace = true, optional = true }
 aden-diagnose = { path = "../aden-diagnose" }
 aden-store = { path = "../aden-store" }
 rayon.workspace = true
@@ -55,6 +56,11 @@ grammars-download = ["aden-parse/grammars-download"]
 # Local dense embeddings for hybrid retrieval (search/ask). Off by default — opt
 # in with `--features dense`. Pulls the tract + tokenizers stack via aden-index.
 dense = ["aden-index/dense"]
+# Opt-in network fetch of the bge embedding model (`aden model fetch`). Off by
+# default so the core binary stays network-free by design (see
+# scripts/fetch-bge-model.sh). Pulls ureq only when enabled; offline/air-gapped
+# users place the model files by hand instead.
+model-fetch = ["dep:ureq", "dep:sha2"]
 # Browser graph viewer (`aden view`). ON by default (in `default`); disable with
 # `--no-default-features`. Embeds the vendored, pinned force-graph UMD bundle (MIT)
 # into the binary; no extra crates, no runtime network. See assets/CHECKSUMS.

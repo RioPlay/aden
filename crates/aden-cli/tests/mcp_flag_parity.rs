@@ -62,6 +62,10 @@ const COMMANDS_WITHOUT_MCP_TOOL: &[(&str, &str)] = &[
         "agents-md",
         "one-time repo setup step (init --agents-md covers the MCP path)",
     ),
+    (
+        "model",
+        "opt-in operator setup (model-fetch feature); downloads the embedding model over the network, not a request/response retrieval tool",
+    ),
     ("help", "clap built-in"),
 ];
 

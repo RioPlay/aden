@@ -33,6 +33,11 @@ MIT-licensed BAAI/bge-small-en-v1.5, is **fetched on demand** by the user
 (`scripts/fetch-bge-model.sh`) rather than bundled; it is used under its own MIT
 terms, with the license recorded alongside the downloaded files.
 
+The optional **`model-fetch`** feature (off by default) adds the `aden model
+fetch` command, which downloads that same model with checksum verification. It
+compiles in `ureq` (`MIT OR Apache-2.0`); `sha2` (`MIT OR Apache-2.0`) is already
+a default dependency. No model bytes enter aden's source tree.
+
 The **`view`** feature (browser graph viewer, **on by default**) embeds one
 vendored frontend asset: **`force-graph`** (vasturiano), **MIT**, pinned at
 v1.51.4 and recorded with a sha256 in

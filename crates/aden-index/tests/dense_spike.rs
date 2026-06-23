@@ -20,7 +20,10 @@ fn model_dir() -> Option<PathBuf> {
     let dir = std::env::var("ADEN_BGE_MODEL_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
-            let home = std::env::var("HOME").unwrap_or_default();
+            let home = dirs::home_dir()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned();
             PathBuf::from(home).join(".cache/aden-models/bge-small-en-v1.5")
         });
     if dir.join("model.onnx").exists() && dir.join("tokenizer.json").exists() {

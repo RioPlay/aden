@@ -26,7 +26,13 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 
 fn home_join(rest: &str) -> PathBuf {
-    PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(rest)
+    PathBuf::from(
+        dirs::home_dir()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned(),
+    )
+    .join(rest)
 }
 
 fn corpus_dir() -> PathBuf {

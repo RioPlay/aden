@@ -25,8 +25,13 @@ fn repo() -> Option<PathBuf> {
     let p = std::env::var("ADEN_ASM_REPO")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
-            PathBuf::from(std::env::var("HOME").unwrap_or_default())
-                .join("Projects/eval-repos/flask")
+            PathBuf::from(
+                dirs::home_dir()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned(),
+            )
+            .join("Projects/eval-repos/flask")
         });
     p.is_dir().then_some(p)
 }

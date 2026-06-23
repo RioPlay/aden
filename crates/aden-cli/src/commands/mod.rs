@@ -17,6 +17,8 @@ pub mod init;
 pub mod licenses;
 pub mod lint;
 pub mod locate;
+#[cfg(feature = "model-fetch")]
+pub mod model;
 pub mod overlay;
 pub mod query;
 pub mod ready;
@@ -53,6 +55,8 @@ pub use init::{cmd_agents_md, cmd_init, cmd_new};
 pub use licenses::cmd_licenses;
 pub use lint::cmd_lint;
 pub use locate::{cmd_locate, cmd_understand};
+#[cfg(feature = "model-fetch")]
+pub use model::cmd_model_fetch;
 #[cfg(feature = "watch")]
 pub use query::cmd_watch;
 pub use query::{cmd_ask, cmd_asm, cmd_check, cmd_query, cmd_query_adq};

@@ -35,10 +35,20 @@ const CLS_TOKEN: u32 = 101;
 const SEP_TOKEN: u32 = 102;
 /// Truncation cap. The model is built with a SYMBOLIC sequence dimension (see
 /// `from_dir`), so each text runs at its OWN token count with NO padding — a
-/// short symbol doc does a short forward, not a fixed-128 one. This cap bounds
-/// long docs (BERT supports up to 512; 128 keeps the per-forward cost low and
-/// covers a symbol signature + doc comment, which is what we embed).
-const MAX_SEQ: usize = 128;
+/// short symbol doc does a short forward, not a fixed-`MAX_SEQ` one, so raising
+/// this cap costs nothing for short (code) docs and only lengthens the forward
+/// for genuinely long ones.
+///
+/// Set to the model's maximum (BGE/BERT support 512). The previous 128 cap
+/// truncated every prose document to its first ~80 words, so a long
+/// `.adoc`/`.md` file's embedding represented only its opening paragraph — the
+/// single biggest reason dense retrieval underperformed on prose. 512 lets a
+/// full section embed in one forward (CLS pooling). A Pro Git A/B (2026-06-23)
+/// confirmed the cap raise is a modest retrieval win, and that adding whole-doc
+/// chunk-mean-pooling on top was net-negative (so it was reverted; only the cap
+/// ships). Changing this value changes every embedding, so it is folded into
+/// `EMBED_PARAM_VERSION` to force a re-embed.
+const MAX_SEQ: usize = 512;
 
 type Runnable = RunnableModel<TypedFact, Box<dyn TypedOp>>;
 

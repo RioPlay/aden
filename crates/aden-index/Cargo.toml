@@ -29,3 +29,5 @@ dense = ["dep:tract-onnx", "dep:kitoken"]
 
 [dev-dependencies]
 tempfile = "3.27.0"
+# Cross-platform home-dir resolution for eval-harness tests (no $HOME on Windows).
+dirs = "6"

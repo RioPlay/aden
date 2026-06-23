@@ -43,7 +43,13 @@ fn lexicon_path() -> PathBuf {
     std::env::var("ADEN_LEXICON_STORE")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
-            PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".cache/aden/lexicon")
+            PathBuf::from(
+                dirs::home_dir()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned(),
+            )
+            .join(".cache/aden/lexicon")
         })
 }
 
@@ -96,7 +102,13 @@ fn moby_lexicon_path() -> PathBuf {
     std::env::var("ADEN_MOBY_STORE")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
-            PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".cache/aden/moby")
+            PathBuf::from(
+                dirs::home_dir()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned(),
+            )
+            .join(".cache/aden/moby")
         })
 }
 

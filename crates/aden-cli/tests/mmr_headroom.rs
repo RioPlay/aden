@@ -32,7 +32,13 @@ fn eval_root() -> PathBuf {
     std::env::var("ADEN_EVAL_REPOS")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
-            PathBuf::from(std::env::var("HOME").unwrap_or_default()).join("Projects/eval-repos")
+            PathBuf::from(
+                dirs::home_dir()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned(),
+            )
+            .join("Projects/eval-repos")
         })
 }
 

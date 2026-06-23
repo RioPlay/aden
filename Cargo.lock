@@ -53,6 +53,7 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "toml",
  "toml_edit",
@@ -130,6 +131,7 @@ version = "0.2.0"
 dependencies = [
  "aden-core",
  "aden-paths",
+ "dirs",
  "kitoken",
  "rayon",
  "regex",
