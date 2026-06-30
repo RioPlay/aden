@@ -67,6 +67,14 @@ const COMMANDS_WITHOUT_MCP_TOOL: &[(&str, &str)] = &[
         "opt-in operator setup (model-fetch feature); downloads the embedding model over the network, not a request/response retrieval tool",
     ),
     ("help", "clap built-in"),
+    (
+        "scope",
+        "advanced scoping for impact gates and agent task manifests (produces files consumed by impact-diff --scope); primarily a human/CI workflow, not general agent retrieval over MCP",
+    ),
+    (
+        "config",
+        "local aden configuration get/set (.aden/config.toml); host-specific operator tool, not useful or safe to surface over MCP",
+    ),
 ];
 
 #[test]

@@ -7,6 +7,7 @@
 
 pub mod contract;
 pub mod filter;
+pub mod lock;
 pub mod overlay;
 pub mod savings;
 pub mod staging;

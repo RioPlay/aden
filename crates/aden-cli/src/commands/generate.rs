@@ -1489,6 +1489,49 @@ pub fn cmd_gen_silent(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     cmd_gen_inner(path, true, true, false, false)
 }
 
+/// Lock the store for a write phase (G4). Held for the whole of `gen` so two
+/// concurrent runs against one store cannot interleave their writes and corrupt
+/// it — parallel-agent driving makes that concurrency real. Waits up to 10
+/// minutes for a live holder; a dead holder is reclaimed immediately (process
+/// liveness on Linux), so this blocks only on a genuinely active gen. The
+/// lockfile is a sibling of the store directory.
+fn acquire_store_lock(store_path: &Path) -> std::io::Result<aden_core::lock::FileLock> {
+    aden_core::lock::FileLock::acquire_timeout(
+        store_path.with_extension("lock"),
+        std::time::Duration::from_secs(600),
+    )
+}
+
+#[cfg(test)]
+mod store_lock_tests {
+    use super::*;
+
+    #[test]
+    fn gen_store_lock_is_exclusive_and_releases() {
+        let dir = tempfile::tempdir().unwrap();
+        let store_path = dir.path().join("store");
+
+        let held = acquire_store_lock(&store_path).expect("first gen takes the lock");
+        // A second writer on the same store's sibling lockfile is blocked.
+        let blocked = aden_core::lock::FileLock::acquire_timeout(
+            store_path.with_extension("lock"),
+            std::time::Duration::from_millis(100),
+        );
+        assert_eq!(
+            blocked.expect_err("second writer must block").kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+
+        drop(held);
+        // Once the first writer finishes, the store is acquirable again.
+        aden_core::lock::FileLock::acquire_timeout(
+            store_path.with_extension("lock"),
+            std::time::Duration::from_millis(100),
+        )
+        .expect("lock is free after release");
+    }
+}
+
 fn cmd_gen_inner(
     path: &Path,
     quiet: bool,
@@ -1536,6 +1579,14 @@ fn cmd_gen_inner(
             std::fs::create_dir_all(parent)
                 .map_err(|e| format!("Failed to create store dir {}: {}", parent.display(), e))?;
         }
+        // G4: serialize concurrent writers. Held until this function returns,
+        // covering the whole open/index/flush write phase.
+        let _store_lock = acquire_store_lock(&store_path).map_err(|e| {
+            format!(
+                "another aden gen is writing the store at {}: {e}",
+                store_path.display()
+            )
+        })?;
         let store_str = store_path
             .to_str()
             .expect("Store path should be valid UTF-8");

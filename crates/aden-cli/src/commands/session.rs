@@ -269,6 +269,16 @@ pub fn cmd_session(
         .into());
     }
 
+    // G4: serialize concurrent appenders. The whole read-modify-write below is
+    // not atomic — two agents would each read the file without the other's
+    // entry and the last writer would clobber the first (a lost update). Hold an
+    // advisory lock across the RMW so parallel-agent sessions append safely.
+    let _lock = aden_core::lock::FileLock::acquire_timeout(
+        session_path.with_extension("lock"),
+        std::time::Duration::from_secs(10),
+    )
+    .map_err(|e| format!("could not lock session log: {e}"))?;
+
     // Enforce session file size limit to prevent DoS via log growth
     const MAX_SESSION_SIZE: u64 = 5 * 1024 * 1024; // 5 MB
     let meta = std::fs::metadata(&session_path)?;
@@ -302,8 +312,10 @@ pub fn cmd_session(
         content.push_str(&entry);
     }
 
-    // Atomic write: temp file + rename to prevent race conditions between agents
-    let temp_path = session_path.with_extension("tmp");
+    // Atomic publish: write a per-process temp then rename over the log. The
+    // lock above serializes appenders; the unique temp name additionally keeps
+    // two processes from clobbering one shared `session.tmp`.
+    let temp_path = session_path.with_extension(format!("tmp.{}", std::process::id()));
     std::fs::write(&temp_path, &content)?;
     std::fs::rename(&temp_path, &session_path)?;
 
@@ -313,4 +325,61 @@ pub fn cmd_session(
         session_path.display()
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    /// A minimal session.adoc carrying the table and the `== Known Invariants`
+    /// marker the append logic inserts before.
+    const FIXTURE: &str = "= Session Log\n\n\
+        [options=\"header\"]\n|===\n|Time |Agent |Task |Files |Status\n|===\n\n\
+        == Known Invariants\n\n(none)\n";
+
+    fn temp_repo(name: &str) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("aden-session-test-{}-{}", std::process::id(), name));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".agent")).unwrap();
+        std::fs::write(dir.join(".agent").join("session.adoc"), FIXTURE).unwrap();
+        dir
+    }
+
+    #[test]
+    fn concurrent_appends_keep_every_entry() {
+        let repo = Arc::new(temp_repo("concurrent"));
+        const AGENTS: usize = 8;
+        const PER_AGENT: usize = 5;
+
+        let mut handles = Vec::new();
+        for a in 0..AGENTS {
+            let repo = Arc::clone(&repo);
+            handles.push(std::thread::spawn(move || {
+                for j in 0..PER_AGENT {
+                    let agent = format!("agent-{a}-{j}");
+                    cmd_session(&repo, &agent, "task", None, "in-progress")
+                        .expect("append must succeed");
+                }
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        let final_log = std::fs::read_to_string(repo.join(".agent").join("session.adoc")).unwrap();
+        // Every agent-a-j entry must survive the concurrent read-modify-writes;
+        // the pre-G4 lost-update path would drop most of them.
+        for a in 0..AGENTS {
+            for j in 0..PER_AGENT {
+                let marker = format!("agent-{a}-{j} ");
+                assert!(
+                    final_log.contains(&marker),
+                    "lost entry {marker:?} under concurrent append"
+                );
+            }
+        }
+        let _ = std::fs::remove_dir_all(&*repo);
+    }
 }

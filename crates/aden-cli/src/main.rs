@@ -578,8 +578,50 @@ enum Commands {
         since: Option<String>,
         #[arg(long, help = "Analyze staged changes (git diff --cached)")]
         staged: bool,
+        #[arg(
+            long,
+            value_name = "MANIFEST",
+            value_hint = ValueHint::FilePath,
+            help = "Gate the diff against a scope manifest; exit 0 in-scope, 1 scope-escape, 2 blast-leak"
+        )]
+        scope: Option<PathBuf>,
         #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
         path: PathBuf,
+    },
+    /// Emit a task's scope manifest (read-only): seeds -> expanded anchors, the
+    /// file mandate, and the context budget. Consumed by `impact-diff --scope`.
+    ///
+    /// With `--agents`, splits the task into disjoint sub-scopes, writes one
+    /// manifest per sub-scope under `.aden/agents/`, and emits the partition
+    /// index to stdout (tab-separated: id, role, manifest-path, depends_on).
+    Scope {
+        #[arg(value_name = "NAME", help = "Task name; labels the scope")]
+        name: String,
+        #[arg(
+            long = "seed",
+            value_name = "SYMBOL",
+            help = "Seed symbol or anchor for the task (repeatable)"
+        )]
+        seeds: Vec<String>,
+        #[arg(
+            long,
+            value_name = "TOKENS",
+            default_value_t = 8192,
+            help = "Context token budget for assembly"
+        )]
+        budget: u64,
+        #[arg(
+            long,
+            help = "Split into disjoint sub-scopes; emit partition index to stdout"
+        )]
+        agents: bool,
+        #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
+        path: PathBuf,
+    },
+    /// Get or set runtime configuration in .aden/config.toml
+    Config {
+        #[command(subcommand)]
+        action: ConfigAction,
     },
     Locate {
         #[arg(long, value_name = "SYMBOL", help = "Find definition of this symbol")]
@@ -943,6 +985,26 @@ enum StoreAction {
 }
 
 #[derive(Subcommand)]
+enum ConfigAction {
+    /// Print a config value by dotted key (e.g. heal.window)
+    Get {
+        #[arg(value_name = "KEY")]
+        key: String,
+        #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
+        path: PathBuf,
+    },
+    /// Set a config value in .aden/config.toml
+    Set {
+        #[arg(value_name = "KEY")]
+        key: String,
+        #[arg(value_name = "VALUE")]
+        value: String,
+        #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
+        path: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
 enum FederationAction {
     /// List repositories in the workspace
     List,
@@ -1280,8 +1342,30 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::ImpactDiff {
             since,
             staged,
+            scope,
             path,
-        } => commands::cmd_impact_diff(&path, since.as_deref(), staged, cli.json),
+        } => commands::cmd_impact_diff(&path, since.as_deref(), staged, cli.json, scope.as_deref()),
+        Commands::Scope {
+            name,
+            seeds,
+            budget,
+            agents,
+            path,
+        } => {
+            if agents {
+                commands::cmd_scope_agents(&path, &name, &seeds, budget)
+            } else {
+                commands::cmd_scope(&path, &name, &seeds, budget, cli.json)
+            }
+        }
+        Commands::Config { action } => match action {
+            ConfigAction::Get { key, path } => {
+                commands::cmd_config_get(&find_project_root(&path), &key)
+            }
+            ConfigAction::Set { key, value, path } => {
+                commands::cmd_config_set(&find_project_root(&path), &key, &value)
+            }
+        },
         Commands::Viz {
             anchor,
             mode,

@@ -10,11 +10,12 @@ const PROSE_EXTENSIONS: &[&str] = &[".adoc", ".md", ".rst", ".txt"];
 
 /// Whether an anchor is *expected* to have no live source symbol.
 ///
-/// Reference docs (doc headings, ADRs, plans, use-cases, agent docs, README)
-/// normally have no backing code symbol, so they must not be reported as
-/// actionable `OrphanAnchor` drift. Single source of truth shared by the heal
-/// scanner and the CLI's `classify_orphans`/`is_expected_metadata` so they can
-/// never disagree on what counts as a real orphan.
+/// Reference docs (doc headings, ADRs, plans, use-cases, agent docs, README
+/// and other root-level prose) normally have no backing code symbol, so they
+/// must not be reported as actionable `OrphanAnchor` drift. Single source of
+/// truth shared by the heal scanner and the CLI's `classify_orphans`/
+/// `is_expected_metadata` so they can never disagree on what counts as a real
+/// orphan.
 pub fn is_expected_metadata(anchor: &str) -> bool {
     if anchor.starts_with("aden://doc/")
         || anchor.starts_with("adr-")
@@ -22,7 +23,29 @@ pub fn is_expected_metadata(anchor: &str) -> bool {
         || anchor.starts_with("use-case-")
         || anchor.starts_with("agent-")
         || anchor.starts_with("mod-") // synthesized module hub nodes (mod-*, mod-project)
-        || anchor == "readme"
+        || anchor.eq_ignore_ascii_case("readme")
+    {
+        return true;
+    }
+
+    // Common bare root-level doc anchors (from AGENTS, CHANGELOG, etc. and
+    // special files) are expected metadata prose with no code backing.
+    let lower = anchor.to_lowercase();
+    if [
+        "agents",
+        "changelog",
+        "contributing",
+        "security",
+        "notice",
+        "issues",
+        "cla",
+        "license",
+        "pull_request_template",
+        "df",
+        "bdfl",
+    ]
+    .iter()
+    .any(|&d| lower == d)
     {
         return true;
     }
@@ -176,6 +199,30 @@ mod tests {
         assert!(!is_expected_metadata(
             "aden://module/aden-parse/rust.rs#RustExtractor::new"
         ));
+    }
+
+    #[test]
+    fn root_prose_docs_are_expected_metadata() {
+        // Bare root-level docs should be treated as expected (no code backing).
+        for name in &[
+            "AGENTS",
+            "CHANGELOG",
+            "CONTRIBUTING",
+            "SECURITY",
+            "NOTICE",
+            "ISSUES",
+            "CLA",
+            "LICENSE",
+            "df",
+            "bdfl",
+            "PULL_REQUEST_TEMPLATE",
+        ] {
+            assert!(is_expected_metadata(name), "{name} should be expected");
+            assert!(
+                is_expected_metadata(&name.to_lowercase()),
+                "{name} lower should be expected"
+            );
+        }
     }
 
     #[test]

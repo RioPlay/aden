@@ -51,7 +51,7 @@ fn anchor_match_rank(anchor: &str, symbol: &str) -> u8 {
 /// tie-broken by anchor. `None` when nothing matches — callers turn that into a
 /// helpful "not found" message. Factored out so it is unit-testable without a live
 /// store. Shares its ranking with `cmd_locate` so the two resolvers never disagree.
-fn pick_symbol_anchor(symbol: &str, anchors: &[String]) -> Option<String> {
+pub(crate) fn pick_symbol_anchor(symbol: &str, anchors: &[String]) -> Option<String> {
     let sym = symbol.to_lowercase();
     let mut matched: Vec<&String> = anchors
         .iter()

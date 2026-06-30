@@ -50,11 +50,144 @@ fn affected_tests(
     tests
 }
 
+/// The edit-gate verdict from comparing a diff against a scope manifest. coxn
+/// (and CI) obeys the exit code as a hard contract; see the coxn repo's
+/// `docs/contract.adoc`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GateVerdict {
+    /// Touched files and blast set stay within the manifest. Proceed.
+    InScope,
+    /// An edit touched a file outside the mandate. Block.
+    ScopeEscape,
+    /// In-scope edits whose blast set reaches outside the scope footprint. Block.
+    BlastLeak,
+}
+
+impl GateVerdict {
+    /// Exit code coxn reads: `0` proceed, `1` scope-escape, `2` blast-leak.
+    pub fn exit_code(self) -> i32 {
+        match self {
+            GateVerdict::InScope => 0,
+            GateVerdict::ScopeEscape => 1,
+            GateVerdict::BlastLeak => 2,
+        }
+    }
+
+    /// The verdict label used in output.
+    pub fn label(self) -> &'static str {
+        match self {
+            GateVerdict::InScope => "in-scope",
+            GateVerdict::ScopeEscape => "scope-escape",
+            GateVerdict::BlastLeak => "blast-leak",
+        }
+    }
+}
+
+/// Compute the gate verdict, with the offending paths/anchors. Pure and
+/// testable: a change *escapes* when it touches a file outside the manifest's
+/// mandate; failing that it *leaks* when its blast set reaches an anchor outside
+/// the scope's declared footprint; otherwise it is in scope.
+pub fn evaluate_gate(
+    changed_files: &BTreeSet<String>,
+    blast: &BTreeSet<String>,
+    manifest: &crate::commands::scope::ScopeManifest,
+) -> (GateVerdict, Vec<String>) {
+    let mandate: BTreeSet<&str> = manifest.files.iter().map(String::as_str).collect();
+    let escaped: Vec<String> = changed_files
+        .iter()
+        .filter(|f| !mandate.contains(f.as_str()))
+        .cloned()
+        .collect();
+    if !escaped.is_empty() {
+        return (GateVerdict::ScopeEscape, escaped);
+    }
+
+    let footprint: BTreeSet<&str> = manifest.anchors.iter().map(String::as_str).collect();
+    let leaked: Vec<String> = blast
+        .iter()
+        .filter(|a| !footprint.contains(a.as_str()))
+        .cloned()
+        .collect();
+    if !leaked.is_empty() {
+        return (GateVerdict::BlastLeak, leaked);
+    }
+
+    (GateVerdict::InScope, Vec::new())
+}
+
+/// Run the scope gate and exit with the verdict's code: `0` in-scope, `1`
+/// scope-escape, `2` blast-leak, `3` gate error (manifest unreadable/invalid).
+/// A gate that cannot run is a closed gate — coxn blocks on any nonzero exit.
+fn run_scope_gate(
+    manifest_path: &Path,
+    changed_files: &BTreeSet<String>,
+    blast: &BTreeSet<String>,
+    json: bool,
+) -> ! {
+    let load = std::fs::read_to_string(manifest_path)
+        .map_err(|e| {
+            format!(
+                "cannot read scope manifest {}: {e}",
+                manifest_path.display()
+            )
+        })
+        .and_then(|text| {
+            crate::commands::scope::ScopeManifest::from_json(&text)
+                .map_err(|e| format!("invalid scope manifest {}: {e}", manifest_path.display()))
+        });
+    let manifest = match load {
+        Ok(m) => m,
+        Err(msg) => {
+            eprintln!("{msg}");
+            std::process::exit(3);
+        }
+    };
+
+    let (verdict, offenders) = evaluate_gate(changed_files, blast, &manifest);
+
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "scope": manifest.name,
+                "verdict": verdict.label(),
+                "exit_code": verdict.exit_code(),
+                "offenders": offenders,
+            })
+        );
+    } else {
+        match verdict {
+            GateVerdict::InScope => {
+                println!("gate: in-scope for '{}' — proceed.", manifest.name)
+            }
+            GateVerdict::ScopeEscape => {
+                println!("gate: SCOPE-ESCAPE for '{}' — blocked.", manifest.name);
+                println!("  edits touched files outside the mandate:");
+                for f in &offenders {
+                    println!("    {f}");
+                }
+            }
+            GateVerdict::BlastLeak => {
+                println!("gate: BLAST-LEAK for '{}' — blocked.", manifest.name);
+                println!("  blast radius reaches anchors outside the scope:");
+                for a in offenders.iter().take(20) {
+                    println!("    {}", short(a));
+                }
+                if offenders.len() > 20 {
+                    println!("    ... and {} more", offenders.len() - 20);
+                }
+            }
+        }
+    }
+    std::process::exit(verdict.exit_code());
+}
+
 pub fn cmd_impact_diff(
     path: &Path,
     since: Option<&str>,
     staged: bool,
     json: bool,
+    scope: Option<&Path>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let root = find_project_root(path);
     // Keep the store fresh so span/edge resolution reflects the current code.
@@ -64,6 +197,10 @@ pub fn cmd_impact_diff(
     let changed = parse_unified_diff(&diff);
 
     if changed.is_empty() {
+        // An empty diff cannot escape or leak: the gate passes (exit 0).
+        if let Some(manifest_path) = scope {
+            run_scope_gate(manifest_path, &BTreeSet::new(), &BTreeSet::new(), json);
+        }
         if json {
             println!(
                 "{}",
@@ -106,6 +243,13 @@ pub fn cmd_impact_diff(
 
     let blast = union.len();
     let risk = risk_tier(blast);
+
+    // The hard gate: compare the diff against the scope manifest and exit with
+    // the verdict code (diverges; never falls through to the report below).
+    if let Some(manifest_path) = scope {
+        let changed_files: BTreeSet<String> = changed.keys().cloned().collect();
+        run_scope_gate(manifest_path, &changed_files, &union, json);
+    }
 
     // Always-on test selection ("you changed X — run these tests"): the test
     // symbols with a `Tests` edge into anything touched or at risk.
@@ -184,7 +328,7 @@ pub fn cmd_impact_diff(
 /// graph are stored referencer→referencee (caller→callee), so dependents sit on
 /// the INCOMING side of each node; for an incoming neighbor the connecting edge
 /// runs neighbor→node. Excludes the touched symbol itself.
-fn dependents_of(
+pub(crate) fn dependents_of(
     graph: &aden_graph::AdenGraph<aden_graph::DocumentNode, aden_graph::AdenEdge>,
     anchor: &str,
     impact_types: &[aden_core::EdgeType],
@@ -538,5 +682,56 @@ diff --git a/gone.rs b/gone.rs
         assert_eq!(risk_tier(3), "low");
         assert_eq!(risk_tier(15), "medium");
         assert_eq!(risk_tier(99), "high");
+    }
+
+    use crate::commands::scope::ScopeManifest;
+
+    fn manifest(files: &[&str], anchors: &[&str]) -> ScopeManifest {
+        ScopeManifest {
+            name: "t".to_string(),
+            files: files.iter().map(|s| s.to_string()).collect(),
+            anchors: anchors.iter().map(|s| s.to_string()).collect(),
+            ..Default::default()
+        }
+    }
+
+    fn set(items: &[&str]) -> BTreeSet<String> {
+        items.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn in_scope_when_files_and_blast_stay_inside() {
+        let m = manifest(&["src/a.rs", "src/b.rs"], &["sym_x", "sym_y"]);
+        let (v, off) = evaluate_gate(&set(&["src/a.rs"]), &set(&["sym_x"]), &m);
+        assert_eq!(v, GateVerdict::InScope);
+        assert_eq!(v.exit_code(), 0);
+        assert!(off.is_empty());
+    }
+
+    #[test]
+    fn scope_escape_when_an_edit_leaves_the_mandate() {
+        let m = manifest(&["src/a.rs"], &["sym_x"]);
+        let (v, off) = evaluate_gate(&set(&["src/a.rs", "src/other.rs"]), &set(&["sym_x"]), &m);
+        assert_eq!(v, GateVerdict::ScopeEscape);
+        assert_eq!(v.exit_code(), 1);
+        assert_eq!(off, vec!["src/other.rs".to_string()]);
+    }
+
+    #[test]
+    fn blast_leak_when_dependents_exceed_the_footprint() {
+        let m = manifest(&["src/a.rs"], &["sym_x"]);
+        // In mandate, but the blast reaches sym_z which is outside the footprint.
+        let (v, off) = evaluate_gate(&set(&["src/a.rs"]), &set(&["sym_x", "sym_z"]), &m);
+        assert_eq!(v, GateVerdict::BlastLeak);
+        assert_eq!(v.exit_code(), 2);
+        assert_eq!(off, vec!["sym_z".to_string()]);
+    }
+
+    #[test]
+    fn escape_takes_precedence_over_leak() {
+        let m = manifest(&["src/a.rs"], &["sym_x"]);
+        // Both an out-of-mandate file and an out-of-footprint dependent; escape wins.
+        let (v, _) = evaluate_gate(&set(&["src/nope.rs"]), &set(&["sym_z"]), &m);
+        assert_eq!(v, GateVerdict::ScopeEscape);
     }
 }

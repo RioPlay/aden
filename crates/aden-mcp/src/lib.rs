@@ -697,6 +697,7 @@ static TOOLS: &[ToolSpec] = &[
         args: &[
             ("since", "string"),
             ("staged", "boolean"),
+            ("scope", "string"),
             ("path", "string"),
         ],
         effect: Effect::Read,
