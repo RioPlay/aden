@@ -11,14 +11,9 @@ use crate::types::GenCacheEntry;
 use crate::util::{
     cochange_pairs, discover_source_files, extract_callees, extract_demonstrates,
     extract_doc_includes, extract_doc_mentions, extract_doc_refs, extract_doc_supersedes,
-    extract_doc_terms, extract_edge_macro, extract_joined_attribute, extract_uses,
-    find_project_root, load_gen_cache, sanitize_source_file, save_gen_cache,
+    extract_doc_terms, extract_edge_macro, extract_uses, find_project_root, load_gen_cache,
+    sanitize_source_file, save_gen_cache,
 };
-
-/// A thresholded co-change pair: each side is `(file-level anchor, repo-
-/// relative source file)`. The file paths let the linker synthesize the
-/// file-level node when the store has none (symbols hang off `mod-<crate>`
-/// hubs; the file grain only exists where co-change demands it).
 
 /// The per-kind edge record slices `link_store_edges` writes, bundled into one
 /// argument. Every record is the same shape (anchor -> target list); the field
@@ -1050,15 +1045,6 @@ fn link_store_edges<S: GraphStorage>(
     storage.flush()?;
     Ok(callee_stats)
 }
-
-/// Module-level co-change pairs from git history (Wave 3 `AssociatedWith` —
-/// the Hebbian episodic signal: things that fire together wire together).
-/// Deterministic from repo state: the last 1000 non-merge commits, skipping
-/// bulk commits (>20 files — rename sweeps and reformats say nothing about
-/// functional coupling), pair-counting each commit's files at module level
-/// and keeping pairs that co-changed ≥3 times. Files map to module anchors
-/// via the gen cache (file → anchors recorded by gen itself), so the whole
-/// pass costs one `git log` — no store scan. Non-repos and git failures
 
 /// Ensure the store is up to date with the source before a read command serves
 /// from it. This is the "fresh by construction" path: a cheap mtime sweep over

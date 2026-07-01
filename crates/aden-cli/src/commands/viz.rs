@@ -186,7 +186,7 @@ fn scoped_subgraph(
     for idx in graph.graph.node_indices() {
         let n = &graph.graph[idx];
         if allowed.contains(n.doc.anchor.as_str()) {
-            g.add_node(n.clone());
+            let _ = g.add_node(n.clone());
         }
     }
     for e in graph.graph.edge_indices() {
