@@ -225,11 +225,11 @@ All findings have evidence in specific files/anchors from the subagent reports.
 - In `graph.rs`:
   - `add_node`: now returns `Result<NodeIndex, GraphError>`, checks for duplicate anchor and returns `Err(DuplicateAnchor)` (restored enforcement).
   - Updated callers in build_from_* and test helpers (let _ = since dups shouldn't occur in normal construction).
-  - (Further unification of add_edge etc. and determinism guards still to do.)
+  - `add_edge`: now dedupes on (pair, edge value) matching add_edge_by_anchor (was only contains_edge on pair).
 - Update CLI paths (query, locate, impact_diff, asm traverse) to use `get_backlinks` / cache where appropriate.
 - Add or strengthen tests for multigraph + backlinks + build_from_directory vs build_from_storage equivalence.
 
-Completed: basic dedup enforcement in add_node.
+Completed: dedup enforcement in add_node + multigraph consistency in add_edge.
 
 **Approach for all of Phase 4**:
 - Small PRs with red tests first.
