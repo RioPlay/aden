@@ -38,10 +38,8 @@ fn build_graph_from_docs_and_edges(
     edges: Vec<(String, String, EdgeType)>,
     root: &Path,
 ) -> AdenGraph<DocumentNode, AdenEdge> {
-    use petgraph::graph::DiGraph;
-    let mut graph = DiGraph::new();
-    let mut anchor_to_index: HashMap<String, petgraph::graph::NodeIndex> = HashMap::new();
-    let mut path_to_index: HashMap<PathBuf, petgraph::graph::NodeIndex> = HashMap::new();
+    // Use AdenGraph wrapper to enforce dedup (M3) and populate indices.
+    let mut graph = AdenGraph::<DocumentNode, AdenEdge>::new();
 
     // Intent overlays: fold durable [human]/[agent] blocks into the in-memory
     // document so the context-assembling readers (asm/ask) surface them. The store
@@ -49,7 +47,7 @@ fn build_graph_from_docs_and_edges(
     // only. The slug set is read once so this is free when no overlays exist.
     let overlay_slugs = aden_core::overlay::overlay_slugs(root);
 
-    // First pass: insert nodes
+    // First pass: insert nodes (now enforces no duplicate anchors)
     for (anchor, mut doc) in docs {
         if !overlay_slugs.is_empty()
             && overlay_slugs.contains(&aden_core::overlay::sanitize_anchor_filename(&anchor))
@@ -67,26 +65,15 @@ fn build_graph_from_docs_and_edges(
             source_path: source_path.clone(),
             parsed: None,
         };
-        let idx = graph.add_node(node);
-        anchor_to_index.insert(anchor.clone(), idx);
-        path_to_index.insert(source_path, idx);
+        let _ = graph.add_node(node); // duplicates shouldn't occur; ignored for build
     }
 
-    // Second pass: insert edges
+    // Second pass: insert edges using public API (enforces value dedup)
     for (src, dst, edge_type) in edges {
-        if let (Some(&src_idx), Some(&dst_idx)) =
-            (anchor_to_index.get(&src), anchor_to_index.get(&dst))
-        {
-            graph.add_edge(src_idx, dst_idx, AdenEdge { edge_type });
-        }
+        let _ = graph.add_edge_by_anchor(&src, &dst, AdenEdge { edge_type });
     }
 
-    AdenGraph {
-        graph,
-        anchor_to_index,
-        path_to_index,
-        backlinks_cache: None,
-    }
+    graph
 }
 
 /// Resolve a user anchor against the store without loading the whole graph.

@@ -229,7 +229,7 @@ All findings have evidence in specific files/anchors from the subagent reports.
 - Update CLI paths (query, locate, impact_diff, asm traverse) to use `get_backlinks` / cache where appropriate.
 - Add or strengthen tests for multigraph + backlinks + build_from_directory vs build_from_storage equivalence.
 
-Completed: dedup enforcement in add_node + multigraph consistency in add_edge.
+Completed: dedup enforcement in add_node + multigraph consistency in add_edge + updated cache build to use wrapper (no bypass).
 
 **Approach for all of Phase 4**:
 - Small PRs with red tests first.
