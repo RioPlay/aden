@@ -9,8 +9,10 @@ use std::path::Path;
 
 use crate::types::GenCacheEntry;
 use crate::util::{
-    cochange_pairs, discover_source_files, find_project_root, load_gen_cache, sanitize_source_file,
-    save_gen_cache,
+    cochange_pairs, discover_source_files, extract_callees, extract_demonstrates,
+    extract_doc_includes, extract_doc_mentions, extract_doc_refs, extract_doc_supersedes,
+    extract_doc_terms, extract_edge_macro, extract_joined_attribute, extract_uses,
+    find_project_root, load_gen_cache, sanitize_source_file, save_gen_cache,
 };
 
 /// A thresholded co-change pair: each side is `(file-level anchor, repo-
@@ -146,109 +148,6 @@ fn module_from_anchor(anchor: &str) -> Option<String> {
     }
 }
 
-/// Callee names referenced by a symbol document, for call-graph linking.
-/// Reads both the `edge::calls[...]` listing and the `Callee` table so it works
-/// regardless of which an extractor emits.
-fn extract_callees(doc: &aden_core::Document) -> Vec<String> {
-    use aden_core::Block;
-    let mut callees = Vec::new();
-    for block in &doc.blocks {
-        match block {
-            Block::Listing { code, .. } => {
-                for line in code.lines() {
-                    if let Some(rest) = line.trim().strip_prefix("edge::calls[")
-                        && let Some(callee) = rest.strip_suffix(']')
-                        && !callee.is_empty()
-                    {
-                        callees.push(callee.to_string());
-                    }
-                }
-            }
-            Block::Table(t)
-                if t.headers.first().map(|h| h.eq_ignore_ascii_case("callee")) == Some(true) =>
-            {
-                for row in &t.rows {
-                    if let Some(c) = row.first()
-                        && !c.is_empty()
-                    {
-                        callees.push(c.clone());
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    callees.sort();
-    callees.dedup();
-    callees
-}
-
-/// Type names a symbol `Uses`, read from `edge::uses[...]` listings (emitted by
-/// extractors for the types referenced in a signature/fields). Kept separate
-/// from callees so they link as `Uses` edges, not `Calls`.
-fn extract_uses(doc: &aden_core::Document) -> Vec<String> {
-    use aden_core::Block;
-    let mut uses = Vec::new();
-    for block in &doc.blocks {
-        if let Block::Listing { code, .. } = block {
-            for line in code.lines() {
-                if let Some(rest) = line.trim().strip_prefix("edge::uses[")
-                    && let Some(t) = rest.strip_suffix(']')
-                    && !t.is_empty()
-                {
-                    uses.push(t.to_string());
-                }
-            }
-        }
-    }
-    uses.sort();
-    uses.dedup();
-    uses
-}
-
-/// Targets of one `edge::<kind>[...]` macro family in a document's listing
-/// blocks, sorted + deduped. Shared reader for the Wave-1 edge macros
-/// (`implements`, `mutates`) — same format `extract_uses` reads for `uses`.
-fn extract_edge_macro(doc: &aden_core::Document, kind: &str) -> Vec<String> {
-    use aden_core::Block;
-    let prefix = format!("edge::{kind}[");
-    let mut out = Vec::new();
-    for block in &doc.blocks {
-        if let Block::Listing { code, .. } = block {
-            for line in code.lines() {
-                if let Some(rest) = line.trim().strip_prefix(prefix.as_str())
-                    && let Some(t) = rest.strip_suffix(']')
-                    && !t.is_empty()
-                {
-                    out.push(t.to_string());
-                }
-            }
-        }
-    }
-    out.sort();
-    out.dedup();
-    out
-}
-
-/// Prose cross-references a doc node makes, read from the `doc_refs` attribute
-/// the format parsers fill (`ref:<fragment>` entries — AsciiDoc `<<target>>`/
-/// `xref:file#frag` and markdown `[text](#frag)` forms). Extraction is
-/// per-format and lives in the parser, which knows listing-fence and backtick
-/// state (a `<<x>>` inside a code example is not a reference); resolution in
-/// [`link_store_edges`] is format-neutral. A previous version scanned the
-/// document BLOCKS here with no fence/backtick awareness, which also picked up
-/// `a << b >> c` shift expressions from embedded code listings.
-fn extract_doc_refs(doc: &aden_core::Document) -> Vec<String> {
-    extract_joined_attribute(doc, "doc_refs")
-}
-
-/// Document-composition targets, read from the `doc_includes` attribute the
-/// AsciiDoc parser fills for `include::` directives. Resolved file-wise (by
-/// stem) to directional `Requires` edges in [`link_include_edges`].
-fn extract_doc_includes(doc: &aden_core::Document) -> Vec<String> {
-    extract_joined_attribute(doc, "doc_includes")
-}
-
 /// Resolve `include::` directives (the `doc_includes` channel) into directional
 /// `Requires` edges: an including document depends on each file it pulls in.
 /// Resolution is file-wise by stem (an include names a file, not a fragment),
@@ -312,21 +211,6 @@ fn link_include_edges<S: GraphStorage>(
     Ok(())
 }
 
-/// Backtick prose mentions, read from the `doc_mentions` attribute the format
-/// parsers fill (Wave 2). Same division of labor as `doc_refs`: the parser
-/// knows fence/backtick state; resolution in [`link_store_edges`] is
-/// format-neutral and links only unambiguous names.
-fn extract_doc_mentions(doc: &aden_core::Document) -> Vec<String> {
-    extract_joined_attribute(doc, "doc_mentions")
-}
-
-/// Supersede-context refs, read from the `doc_supersedes` attribute the format
-/// parsers fill (Wave 3). Entries are `<by|of>:ref:<frag>` — a direction
-/// prefix plus the same `ref:` form the `doc_refs` channel uses.
-fn extract_doc_supersedes(doc: &aden_core::Document) -> Vec<String> {
-    extract_joined_attribute(doc, "doc_supersedes")
-}
-
 /// True when a doc anchor belongs to an Architecture Decision Record: any
 /// path segment of the `aden://doc/…` anchor is `adr` (an `adr/` directory)
 /// or starts with `adr-` (an `adr-NNN-…` file or `[[adr-NNN]]` fragment).
@@ -338,36 +222,6 @@ fn is_adr_doc_anchor(anchor: &str) -> bool {
     };
     rest.split(['/', '#'])
         .any(|seg| seg == "adr" || seg.starts_with("adr-"))
-}
-
-/// `kind:name` references a doc code listing makes, read from the
-/// `symbol_references` attribute the format parsers fill on `code_block_*`
-/// docs (declaration scan + language-neutral call-token scan). Linked as
-/// `Demonstrates` edges (Wave 2).
-fn extract_demonstrates(doc: &aden_core::Document) -> Vec<String> {
-    extract_joined_attribute(doc, "symbol_references")
-}
-
-/// Term anchors a glossary section defines, read from the `doc_terms`
-/// attribute the format parsers fill (Wave 2 remainder). Values are full
-/// `aden://term/…` anchors, so linking is exact-match only.
-fn extract_doc_terms(doc: &aden_core::Document) -> Vec<String> {
-    extract_joined_attribute(doc, "doc_terms")
-}
-
-/// A comma-joined doc attribute as a sorted, deduped list.
-fn extract_joined_attribute(doc: &aden_core::Document, key: &str) -> Vec<String> {
-    let Some(joined) = doc.attributes.get(key) else {
-        return Vec::new();
-    };
-    let mut vals: Vec<String> = joined
-        .split(',')
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .collect();
-    vals.sort();
-    vals.dedup();
-    vals
 }
 
 /// Slim a document before storing it. Drops the `edge::calls[...]` listing
