@@ -131,8 +131,13 @@ impl<N: GraphNode, E: GraphEdge> AdenGraph<N, E> {
     }
 
     /// Add an edge between two nodes by index.
+    /// Dedupes on (pair, edge value) for consistency with add_edge_by_anchor.
     pub fn add_edge(&mut self, src: NodeIndex, tgt: NodeIndex, edge: E) {
-        if !self.graph.contains_edge(src, tgt) {
+        let duplicate = self
+            .graph
+            .edges_connecting(src, tgt)
+            .any(|e| *e.weight() == edge);
+        if !duplicate {
             self.graph.add_edge(src, tgt, edge);
             self.backlinks_cache = None;
         }
