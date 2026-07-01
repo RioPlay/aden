@@ -64,7 +64,13 @@ pub fn preprocess(
     visited: &mut Vec<PathBuf>,
     level_offset: usize,
 ) -> Result<String, PreprocessError> {
-    preprocess_with_options(path, attrs, visited, level_offset, PreprocessOptions::STRICT)
+    preprocess_with_options(
+        path,
+        attrs,
+        visited,
+        level_offset,
+        PreprocessOptions::STRICT,
+    )
 }
 
 /// Lenient preprocessing for the indexing path: missing includes are skipped
@@ -75,7 +81,13 @@ pub fn preprocess_for_index(
     visited: &mut Vec<PathBuf>,
     level_offset: usize,
 ) -> Result<String, PreprocessError> {
-    preprocess_with_options(path, attrs, visited, level_offset, PreprocessOptions::FOR_INDEX)
+    preprocess_with_options(
+        path,
+        attrs,
+        visited,
+        level_offset,
+        PreprocessOptions::FOR_INDEX,
+    )
 }
 
 /// Preprocess in-memory AsciiDoc (indexing path). Uses `current_path` to
@@ -149,15 +161,7 @@ pub fn preprocess_with_options(
         });
 
     visited.push(canon.clone());
-    let result = process_text(
-        &raw,
-        path,
-        &base_dir,
-        attrs,
-        visited,
-        level_offset,
-        options,
-    );
+    let result = process_text(&raw, path, &base_dir, attrs, visited, level_offset, options);
     visited.pop();
     result
 }

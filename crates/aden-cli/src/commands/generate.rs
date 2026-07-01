@@ -880,7 +880,9 @@ fn link_store_edges<S: GraphStorage>(
             } else {
                 None
             };
-            if let Some(target) = target && target != anchor.as_str() {
+            if let Some(target) = target
+                && target != anchor.as_str()
+            {
                 edges.push((anchor.clone(), target.to_string(), EdgeType::RelatesTo));
                 edges.push((target.to_string(), anchor.clone(), EdgeType::RelatesTo));
             }
@@ -2472,7 +2474,10 @@ mod link_tests {
 
         let ref_records = vec![(
             post.to_string(),
-            vec!["file:guide.adoc".to_string(), "file:missing.adoc".to_string()],
+            vec![
+                "file:guide.adoc".to_string(),
+                "file:missing.adoc".to_string(),
+            ],
         )];
         link_store_edges(
             &storage,

@@ -657,7 +657,7 @@ fn validate_server_name(name: Option<&str>) -> Result<String, String> {
     Ok(name.to_string())
 }
 
-fn validate_surface<'a>(surface: Option<&'a str>) -> Result<Option<&'a str>, String> {
+fn validate_surface(surface: Option<&str>) -> Result<Option<&str>, String> {
     if let Some(s) = surface
         && !matches!(s, "essential" | "standard" | "full")
     {
@@ -686,6 +686,7 @@ fn resolve_server_name(
 }
 
 /// Install aden MCP into selected platforms.
+#[allow(clippy::too_many_arguments)] // CLI install flags map 1:1 to subcommand args
 pub fn run_install(
     names: &[String],
     binary_override: Option<&Path>,

@@ -42,8 +42,7 @@ impl crate::extractor::LanguageExtractor for AsciiDocExtractor {
         let project_root = infer_project_root(path);
         let file_name = project_relative_file(path, &project_root);
 
-        let (attributes, local_custom_attrs, _, document_title) =
-            parse_document_attributes(source);
+        let (attributes, local_custom_attrs, _, document_title) = parse_document_attributes(source);
         let mut custom_attrs = parse_shared_attribute_include_attrs(source, path, &project_root);
         // Page-local attributes win over included shared attributes, matching
         // Asciidoctor's "include common first, override locally" convention.
@@ -878,12 +877,7 @@ fn parse_source_block_lang(line: &str) -> Option<Option<String>> {
     if first != "source" && !first.starts_with("source%") {
         return None;
     }
-    Some(
-        parts
-            .next()
-            .filter(|s| !s.is_empty())
-            .map(str::to_string),
-    )
+    Some(parts.next().filter(|s| !s.is_empty()).map(str::to_string))
 }
 
 fn make_adoc_anchor(crate_name: &str, file_name: &str, title: &str, level: usize) -> String {
@@ -1012,7 +1006,9 @@ fn collect_prose_refs(line: &str, line_idx: usize, out: &mut Vec<(usize, String)
 fn is_adoc_file_target(target: &str) -> bool {
     let path = target.split_once('#').map(|(p, _)| p).unwrap_or(target);
     matches!(
-        std::path::Path::new(path).extension().and_then(|e| e.to_str()),
+        std::path::Path::new(path)
+            .extension()
+            .and_then(|e| e.to_str()),
         Some("adoc" | "asciidoc" | "asc")
     )
 }
@@ -1640,11 +1636,7 @@ endif::[]
         let chapter = dir.path().join("chapter.adoc");
         std::fs::write(&chapter, "== Included Chapter\n\nBody.\n").expect("write chapter");
         let master = dir.path().join("master.adoc");
-        std::fs::write(
-            &master,
-            "= Master\n\ninclude::chapter.adoc[]\n",
-        )
-        .expect("write master");
+        std::fs::write(&master, "= Master\n\ninclude::chapter.adoc[]\n").expect("write master");
 
         let ext = AsciiDocExtractor::new();
         let source = std::fs::read_to_string(&master).expect("read master");
@@ -1652,8 +1644,7 @@ endif::[]
             .extract_documents(&source, &master)
             .expect("extraction must succeed");
         assert!(
-            docs.iter()
-                .any(|d| d.anchor.contains("h2included-chapter")),
+            docs.iter().any(|d| d.anchor.contains("h2included-chapter")),
             "preprocessed include must promote chapter heading into master; got {:?}",
             docs.iter().map(|d| &d.anchor).collect::<Vec<_>>()
         );
@@ -1665,11 +1656,8 @@ endif::[]
         let part = dir.path().join("part.adoc");
         std::fs::write(&part, "= Part Title\n\nPart body.\n").expect("write part");
         let master = dir.path().join("book.adoc");
-        std::fs::write(
-            &master,
-            "= Book\n\ninclude::part.adoc[leveloffset=+1]\n",
-        )
-        .expect("write book");
+        std::fs::write(&master, "= Book\n\ninclude::part.adoc[leveloffset=+1]\n")
+            .expect("write book");
 
         let ext = AsciiDocExtractor::new();
         let source = std::fs::read_to_string(&master).expect("read book");
