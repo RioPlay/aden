@@ -132,7 +132,8 @@ pub fn cmd_review_since(
 
     let show_count = (budget / 100).min(relevant_events.len());
     for (i, event) in relevant_events.iter().take(show_count).enumerate() {
-        println!("  {}. {:?}", i + 1, event);
+        let ev = format!("{:?}", event);
+        println!("  {}. {}", i + 1, ev);
     }
     if show_count < relevant_events.len() {
         println!(

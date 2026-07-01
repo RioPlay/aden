@@ -142,7 +142,7 @@ fn one_level(adj: &[BTreeMap<usize, f64>], resolution: f64) -> Vec<usize> {
     let two_m = 2.0 * total_w;
 
     let mut community: Vec<usize> = (0..n).collect();
-    let mut comm_tot: Vec<f64> = degree.clone(); // Σtot per community (seeded singletons)
+    let mut comm_tot: Vec<f64> = degree.to_vec(); // Σtot per community (seeded singletons)
 
     let mut improved = true;
     while improved {

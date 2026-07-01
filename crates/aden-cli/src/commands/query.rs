@@ -1830,7 +1830,7 @@ pub fn cmd_ask(
         // exactly to the prior structural (edge_priority, anchor) order.
         let relevance: std::collections::HashMap<String, f32> = results
             .iter()
-            .map(|r| (r.anchor.clone(), r.score as f32))
+            .map(|r| (r.anchor.to_owned(), r.score as f32))
             .collect();
         (primary, Some(avg), alts, Some(relevance), routing_note)
     };
@@ -2261,7 +2261,8 @@ pub fn cmd_ask(
                 resolved_alts.join(", ")
             );
         }
-        println!("<!-- Strategy: {:?} -->", intent);
+        let strategy = format!("{:?}", intent);
+        println!("<!-- Strategy: {} -->", strategy);
         println!("<!-- Edge Types: {} -->", edge_types_str);
         println!();
 
@@ -2296,7 +2297,7 @@ pub fn cmd_ask(
                 resolved_alts.join(", ")
             );
         }
-        println!("//   Strategy: {:?} | Depth: {}", intent, depth);
+        println!("//   Strategy: {} | Depth: {}", strategy, depth);
         println!(
             "//   Nodes   : {} | ~{} tokens ({} bytes) / {} budget ({})",
             node_count, est_tokens, bytes, budget_note, budget_label
