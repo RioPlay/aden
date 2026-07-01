@@ -223,12 +223,13 @@ All findings have evidence in specific files/anchors from the subagent reports.
 **M3 (AdenGraph)**:
 - `aden understand AdenGraph` (use CLI `aden` or direct source after locating).
 - In `graph.rs`:
-  - `add_node`: return or error on duplicate anchor (restore `DuplicateAnchor`).
-  - Unify `add_edge` vs `add_edge_by_anchor` (value-aware everywhere or explicit multi API).
-  - Document or eliminate raw `graph.graph.add_edge` usage in tests/cache.
-  - Add sorts or BTree where order matters for determinism.
+  - `add_node`: now returns `Result<NodeIndex, GraphError>`, checks for duplicate anchor and returns `Err(DuplicateAnchor)` (restored enforcement).
+  - Updated callers in build_from_* and test helpers (let _ = since dups shouldn't occur in normal construction).
+  - (Further unification of add_edge etc. and determinism guards still to do.)
 - Update CLI paths (query, locate, impact_diff, asm traverse) to use `get_backlinks` / cache where appropriate.
 - Add or strengthen tests for multigraph + backlinks + build_from_directory vs build_from_storage equivalence.
+
+Completed: basic dedup enforcement in add_node.
 
 **Approach for all of Phase 4**:
 - Small PRs with red tests first.
