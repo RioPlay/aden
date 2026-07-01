@@ -12,6 +12,7 @@ use crate::extractor::{
     LanguageExtractor, build_code_attributes, infer_project_name, infer_project_root, make_anchor,
     project_relative_file,
 };
+use crate::tree_sitter_common::node_to_span;
 use aden_core::{Block, Document, NodeType, Parameter, Result};
 use std::path::Path;
 
@@ -924,5 +925,3 @@ mod tests {
         );
     }
 }
-
-use crate::tree_sitter_common::node_to_span;

@@ -104,7 +104,7 @@ is part of the design, not an afterthought:
   planting; JSON deserialization is bounded and rejects unknown fields.
 - **Sanitized identifiers:** proposal IDs are validated against an ASCII-safe
   whitelist before use as filenames.
-- **No `unsafe`:** application code contains zero `unsafe` blocks.
+- **No `unsafe`:** application/library code contains zero `unsafe` blocks (test + MCP startup env hacks only).
 
 See <<security-model>> for the full threat model.
 

@@ -46,10 +46,33 @@ Useful flags:
 * `--project <PATH>` — pin the project directory the server serves (defaults to CWD).
 * `--binary <PATH>` — point at a specific `aden-mcp` binary if it is not on `PATH`.
 * `--scope <SCOPE>` — `user` (global) or `project` (local). Default: user for Claude Code, project otherwise.
+* `--preset <PRESET>` — workflow preset: `explore`, `verify`, or `admin`. Sets the default config name and tool surface.
+* `--name <NAME>` — config entry name (default: `aden`). Use this to keep multiple local MCP profiles side by side.
+* `--surface <LEVEL>` — override the preset/default tool surface: `essential`, `standard`, or `full`.
 * `--dry-run` — print what would be written without touching any config.
 * `--all` — install for every supported platform, not just detected ones.
 
-Related: `aden mcp list` (platforms + install status), `aden mcp uninstall --platform <platform>`, `aden mcp serve` (HTTP endpoint for CI/agent integration).
+IMPORTANT: Claude Code's default `user` scope registers one global server named
+`aden`; it is not a separate per-folder install. If you want each repository to
+have its own Aden MCP server, run `aden mcp install --platform claude --scope
+project` inside each repository (or pass `--project <PATH>` explicitly).
+
+For token-controlled local setups, install separate workflow presets instead of
+one oversized tool surface:
+
+[source,bash]
+----
+aden mcp install --platform codex --scope project --preset explore
+aden mcp install --platform codex --scope project --preset verify
+----
+
+`explore` maps to the essential navigation surface (`aden-explore`), `verify`
+maps to the standard validation surface (`aden-verify`), and `admin` maps to the
+full operational surface (`aden-admin`). Use `full`/`admin` only for setup/admin
+sessions; it lists more tools and gives the
+model more irrelevant choices during normal planning or implementation work.
+
+Related: `aden mcp list [--preset <PRESET>|--name <NAME>]` (platforms + install status), `aden mcp uninstall --platform <platform>`, `aden mcp serve` (HTTP endpoint for CI/agent integration).
 
 === Verify it works
 

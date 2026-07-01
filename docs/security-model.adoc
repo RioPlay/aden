@@ -16,7 +16,7 @@ Aden assumes the following threats:
 |Path traversal via `include::[]` |Canonicalize paths, reject anything outside project root |Implemented
 |Binary planting via PowerShell discovery |Avoid cwd resolution |Implemented
 |Hardcoded secrets in source |Secret scan in `ci-check` |Implemented
-|Unsafe Rust code |Zero `unsafe` blocks in application code |Enforced
+|Unsafe Rust code |Zero `unsafe` blocks in application/library code (test + MCP startup env hacks only) |Enforced
 |Stale context leading to wrong decisions |`heal` detects drift, `check` validates integrity |Implemented
 |Excessive token budget leaking context |Token budgeting with ~4-bytes-per-token heuristic, hard cap |Implemented
 |Malicious contract injection |Store-first architecture (ADR-003): no contract files are written to the working tree; the graph store lives in the per-user data directory, not the repo. |Implemented
@@ -148,8 +148,9 @@ Aden takes several steps to ensure safe execution of agent commands:
 
 1. **Id & Filename Sanitization** — Proposal IDs are validated against ASCII-safe whitelists before being used as filenames
 2. **JSON Deserialization** — Bounded and uses `deny_unknown_fields` to prevent injection
-3. **No `unsafe` Code** — The project contains zero `unsafe` blocks in application code
+3. **No `unsafe` Code** — The project contains zero `unsafe` blocks in application/library code (only test isolation and MCP startup env var hacks)
 4. **PowerShell Discovery** — Avoids cwd resolution to prevent binary planting attacks
+5. **Store overrides** — `$ADEN_STORE` / `$ADEN_DATA_DIR` are power-user escapes that bypass per-project keying and creation guards; use with care (see ADR-003)
 
 == Related Documents
 

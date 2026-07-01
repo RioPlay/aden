@@ -9,14 +9,11 @@ use std::path::Path;
 
 use crate::types::GenCacheEntry;
 use crate::util::{
-    discover_source_files, find_project_root, load_gen_cache, sanitize_source_file, save_gen_cache,
+    cochange_pairs, discover_source_files, extract_callees, extract_demonstrates,
+    extract_doc_includes, extract_doc_mentions, extract_doc_refs, extract_doc_supersedes,
+    extract_doc_terms, extract_edge_macro, extract_uses, find_project_root, load_gen_cache,
+    sanitize_source_file, save_gen_cache,
 };
-
-/// A thresholded co-change pair: each side is `(file-level anchor, repo-
-/// relative source file)`. The file paths let the linker synthesize the
-/// file-level node when the store has none (symbols hang off `mod-<crate>`
-/// hubs; the file grain only exists where co-change demands it).
-type CochangePair = ((String, String), (String, String));
 
 /// The per-kind edge record slices `link_store_edges` writes, bundled into one
 /// argument. Every record is the same shape (anchor -> target list); the field
@@ -33,7 +30,7 @@ struct EdgeRecords<'a> {
     supersedes: &'a [(String, Vec<String>)],
     demonstrates: &'a [(String, Vec<String>)],
     terms: &'a [(String, Vec<String>)],
-    cochange: &'a [CochangePair],
+    cochange: &'a [crate::types::CochangePair],
     test_anchors: &'a std::collections::HashSet<String>,
 }
 
@@ -86,7 +83,6 @@ struct EmittedSymbol {
 }
 
 /// Work item returned from parallel file processing.
-///
 /// `Reindexed` is emitted whenever a file was (re)parsed — even if it produced
 /// ZERO symbols (e.g. every function was deleted). That is deliberate: the
 /// prune step diffs each reindexed file's fresh anchor set against the set the
@@ -144,109 +140,6 @@ fn module_from_anchor(anchor: &str) -> Option<String> {
     } else {
         Some(name.to_string())
     }
-}
-
-/// Callee names referenced by a symbol document, for call-graph linking.
-/// Reads both the `edge::calls[...]` listing and the `Callee` table so it works
-/// regardless of which an extractor emits.
-fn extract_callees(doc: &aden_core::Document) -> Vec<String> {
-    use aden_core::Block;
-    let mut callees = Vec::new();
-    for block in &doc.blocks {
-        match block {
-            Block::Listing { code, .. } => {
-                for line in code.lines() {
-                    if let Some(rest) = line.trim().strip_prefix("edge::calls[")
-                        && let Some(callee) = rest.strip_suffix(']')
-                        && !callee.is_empty()
-                    {
-                        callees.push(callee.to_string());
-                    }
-                }
-            }
-            Block::Table(t)
-                if t.headers.first().map(|h| h.eq_ignore_ascii_case("callee")) == Some(true) =>
-            {
-                for row in &t.rows {
-                    if let Some(c) = row.first()
-                        && !c.is_empty()
-                    {
-                        callees.push(c.clone());
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    callees.sort();
-    callees.dedup();
-    callees
-}
-
-/// Type names a symbol `Uses`, read from `edge::uses[...]` listings (emitted by
-/// extractors for the types referenced in a signature/fields). Kept separate
-/// from callees so they link as `Uses` edges, not `Calls`.
-fn extract_uses(doc: &aden_core::Document) -> Vec<String> {
-    use aden_core::Block;
-    let mut uses = Vec::new();
-    for block in &doc.blocks {
-        if let Block::Listing { code, .. } = block {
-            for line in code.lines() {
-                if let Some(rest) = line.trim().strip_prefix("edge::uses[")
-                    && let Some(t) = rest.strip_suffix(']')
-                    && !t.is_empty()
-                {
-                    uses.push(t.to_string());
-                }
-            }
-        }
-    }
-    uses.sort();
-    uses.dedup();
-    uses
-}
-
-/// Targets of one `edge::<kind>[...]` macro family in a document's listing
-/// blocks, sorted + deduped. Shared reader for the Wave-1 edge macros
-/// (`implements`, `mutates`) — same format `extract_uses` reads for `uses`.
-fn extract_edge_macro(doc: &aden_core::Document, kind: &str) -> Vec<String> {
-    use aden_core::Block;
-    let prefix = format!("edge::{kind}[");
-    let mut out = Vec::new();
-    for block in &doc.blocks {
-        if let Block::Listing { code, .. } = block {
-            for line in code.lines() {
-                if let Some(rest) = line.trim().strip_prefix(prefix.as_str())
-                    && let Some(t) = rest.strip_suffix(']')
-                    && !t.is_empty()
-                {
-                    out.push(t.to_string());
-                }
-            }
-        }
-    }
-    out.sort();
-    out.dedup();
-    out
-}
-
-/// Prose cross-references a doc node makes, read from the `doc_refs` attribute
-/// the format parsers fill (`ref:<fragment>` entries — AsciiDoc `<<target>>`/
-/// `xref:file#frag` and markdown `[text](#frag)` forms). Extraction is
-/// per-format and lives in the parser, which knows listing-fence and backtick
-/// state (a `<<x>>` inside a code example is not a reference); resolution in
-/// [`link_store_edges`] is format-neutral. A previous version scanned the
-/// document BLOCKS here with no fence/backtick awareness, which also picked up
-/// `a << b >> c` shift expressions from embedded code listings.
-fn extract_doc_refs(doc: &aden_core::Document) -> Vec<String> {
-    extract_joined_attribute(doc, "doc_refs")
-}
-
-/// Document-composition targets, read from the `doc_includes` attribute the
-/// AsciiDoc parser fills for `include::` directives. Resolved file-wise (by
-/// stem) to directional `Requires` edges in [`link_include_edges`].
-fn extract_doc_includes(doc: &aden_core::Document) -> Vec<String> {
-    extract_joined_attribute(doc, "doc_includes")
 }
 
 /// Resolve `include::` directives (the `doc_includes` channel) into directional
@@ -312,21 +205,6 @@ fn link_include_edges<S: GraphStorage>(
     Ok(())
 }
 
-/// Backtick prose mentions, read from the `doc_mentions` attribute the format
-/// parsers fill (Wave 2). Same division of labor as `doc_refs`: the parser
-/// knows fence/backtick state; resolution in [`link_store_edges`] is
-/// format-neutral and links only unambiguous names.
-fn extract_doc_mentions(doc: &aden_core::Document) -> Vec<String> {
-    extract_joined_attribute(doc, "doc_mentions")
-}
-
-/// Supersede-context refs, read from the `doc_supersedes` attribute the format
-/// parsers fill (Wave 3). Entries are `<by|of>:ref:<frag>` — a direction
-/// prefix plus the same `ref:` form the `doc_refs` channel uses.
-fn extract_doc_supersedes(doc: &aden_core::Document) -> Vec<String> {
-    extract_joined_attribute(doc, "doc_supersedes")
-}
-
 /// True when a doc anchor belongs to an Architecture Decision Record: any
 /// path segment of the `aden://doc/…` anchor is `adr` (an `adr/` directory)
 /// or starts with `adr-` (an `adr-NNN-…` file or `[[adr-NNN]]` fragment).
@@ -340,42 +218,11 @@ fn is_adr_doc_anchor(anchor: &str) -> bool {
         .any(|seg| seg == "adr" || seg.starts_with("adr-"))
 }
 
-/// `kind:name` references a doc code listing makes, read from the
-/// `symbol_references` attribute the format parsers fill on `code_block_*`
-/// docs (declaration scan + language-neutral call-token scan). Linked as
-/// `Demonstrates` edges (Wave 2).
-fn extract_demonstrates(doc: &aden_core::Document) -> Vec<String> {
-    extract_joined_attribute(doc, "symbol_references")
-}
-
-/// Term anchors a glossary section defines, read from the `doc_terms`
-/// attribute the format parsers fill (Wave 2 remainder). Values are full
-/// `aden://term/…` anchors, so linking is exact-match only.
-fn extract_doc_terms(doc: &aden_core::Document) -> Vec<String> {
-    extract_joined_attribute(doc, "doc_terms")
-}
-
-/// A comma-joined doc attribute as a sorted, deduped list.
-fn extract_joined_attribute(doc: &aden_core::Document, key: &str) -> Vec<String> {
-    let Some(joined) = doc.attributes.get(key) else {
-        return Vec::new();
-    };
-    let mut vals: Vec<String> = joined
-        .split(',')
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .collect();
-    vals.sort();
-    vals.dedup();
-    vals
-}
-
 /// Slim a document before storing it. Drops the `edge::calls[...]` listing
 /// block — it is redundant with the `Callee` table for display and is no longer
 /// needed for linking (callees are carried out of the parse phase directly), so
 /// storing it just bloats the (already large) store on big repos.
-///
-/// pub(crate): heal's merge reconciliation re-parses source to build the
+/// `pub(crate)`: heal's merge reconciliation re-parses source to build the
 /// `ground` layer and must apply the same slimming, or every reconcile sees
 /// phantom diffs against the slimmed store/base.
 pub(crate) fn slim_doc_for_store(doc: &mut aden_core::Document) {
@@ -646,6 +493,23 @@ fn resolve_doc_ref<'a>(
     }
 }
 
+fn resolve_doc_file_ref<'a>(
+    target: &str,
+    referrer: &str,
+    files: &HashMap<String, Vec<&'a str>>,
+) -> Option<&'a str> {
+    let stem = std::path::Path::new(target)
+        .file_stem()
+        .and_then(|s| s.to_str())?;
+    let cands = files.get(stem)?;
+    let ref_file = doc_anchor_file(referrer);
+    cands
+        .iter()
+        .copied()
+        .find(|a| doc_anchor_file(a) != ref_file)
+        .or_else(|| cands.first().copied())
+}
+
 /// If `callee` is a call through the current instance (`self.x`, `this.x`,
 /// `$this->x`, `Self::x`), return the part after the receiver. Returns `None`
 /// for everything else, so non-self calls fall through to ordinary resolution.
@@ -865,10 +729,21 @@ fn link_store_edges<S: GraphStorage>(
     // Candidate lists are sorted for deterministic collision picks.
     let mut doc_frag_index: HashMap<&str, Vec<&str>> = HashMap::new();
     let mut doc_slug_index: HashMap<&str, Vec<&str>> = HashMap::new();
+    let mut doc_file_index: HashMap<String, Vec<&str>> = HashMap::new();
     for anchor in &anchors {
         let Some(rest) = anchor.strip_prefix("aden://doc/") else {
             continue;
         };
+        if let Some(file_key) = doc_anchor_file(anchor)
+            && let Some(stem) = std::path::Path::new(file_key)
+                .file_stem()
+                .and_then(|s| s.to_str())
+        {
+            doc_file_index
+                .entry(stem.to_string())
+                .or_default()
+                .push(anchor.as_str());
+        }
         let fragment = match rest.find('#') {
             Some(h) => &rest[h + 1..],
             None => match rest.rfind('/') {
@@ -901,6 +776,10 @@ fn link_store_edges<S: GraphStorage>(
         .values_mut()
         .chain(doc_slug_index.values_mut())
     {
+        cands.sort_unstable();
+        cands.dedup();
+    }
+    for cands in doc_file_index.values_mut() {
         cands.sort_unstable();
         cands.dedup();
     }
@@ -994,12 +873,14 @@ fn link_store_edges<S: GraphStorage>(
     // are mutually reachable).
     for (anchor, refs) in ref_records {
         for r in refs {
-            let Some(frag) = r.strip_prefix("ref:") else {
-                // Unprefixed records no longer exist (the parsers own
-                // extraction and always emit `ref:`); skip rather than guess.
-                continue;
+            let target = if let Some(frag) = r.strip_prefix("ref:") {
+                resolve_doc_ref(frag, anchor, &doc_frag_index, &doc_slug_index)
+            } else if let Some(file) = r.strip_prefix("file:") {
+                resolve_doc_file_ref(file, anchor, &doc_file_index)
+            } else {
+                None
             };
-            if let Some(target) = resolve_doc_ref(frag, anchor, &doc_frag_index, &doc_slug_index)
+            if let Some(target) = target
                 && target != anchor.as_str()
             {
                 edges.push((anchor.clone(), target.to_string(), EdgeType::RelatesTo));
@@ -1195,107 +1076,6 @@ fn link_store_edges<S: GraphStorage>(
     storage.put_edges_bulk(&edges)?;
     storage.flush()?;
     Ok(callee_stats)
-}
-
-/// Module-level co-change pairs from git history (Wave 3 `AssociatedWith` —
-/// the Hebbian episodic signal: things that fire together wire together).
-/// Deterministic from repo state: the last 1000 non-merge commits, skipping
-/// bulk commits (>20 files — rename sweeps and reformats say nothing about
-/// functional coupling), pair-counting each commit's files at module level
-/// and keeping pairs that co-changed ≥3 times. Files map to module anchors
-/// via the gen cache (file → anchors recorded by gen itself), so the whole
-/// pass costs one `git log` — no store scan. Non-repos and git failures
-/// degrade to no edges.
-fn cochange_pairs(root: &Path, cache: &crate::types::GenCache) -> Vec<CochangePair> {
-    use std::collections::BTreeMap;
-    const COCHANGE_COMMITS: &str = "1000";
-    const COCHANGE_MAX_FILES: usize = 20;
-    const COCHANGE_THRESHOLD: u32 = 3;
-
-    // Repo-relative file → file-level anchor: the `#`-stripped prefix of the
-    // file's first symbol anchor (code files have exactly one). Files with no
-    // symbol anchors (prose, empty) drop out here.
-    let mut file_anchor: BTreeMap<&str, String> = BTreeMap::new();
-    for (key, entry) in &cache.entries {
-        for a in &entry.anchors {
-            if let Some(h) = a.find('#') {
-                file_anchor.insert(key.as_str(), a[..h].to_string());
-                break;
-            }
-        }
-    }
-    if file_anchor.is_empty() {
-        return Vec::new();
-    }
-    // Reverse map for attaching the source file to each emitted anchor
-    // (BTreeMap iteration order makes the first-file-wins pick deterministic).
-    let mut anchor_file: BTreeMap<&str, &str> = BTreeMap::new();
-    for (f, a) in &file_anchor {
-        anchor_file.entry(a.as_str()).or_insert(f);
-    }
-
-    let Ok(out) = std::process::Command::new("git")
-        .args([
-            "log",
-            "--no-merges",
-            "-n",
-            COCHANGE_COMMITS,
-            "--pretty=format:@@",
-            "--name-only",
-        ])
-        .current_dir(root)
-        .output()
-    else {
-        return Vec::new();
-    };
-    if !out.status.success() {
-        return Vec::new();
-    }
-    let log = String::from_utf8_lossy(&out.stdout);
-
-    let mut counts: BTreeMap<(String, String), u32> = BTreeMap::new();
-    for block in log.split("@@") {
-        let files: Vec<&str> = block
-            .lines()
-            .map(str::trim)
-            .filter(|l| !l.is_empty())
-            .collect();
-        // Bulk-commit gate on raw files touched, BEFORE anchor mapping — a
-        // 200-file reformat is noise even if only 5 of those files are indexed.
-        if files.len() < 2 || files.len() > COCHANGE_MAX_FILES {
-            continue;
-        }
-        let mut anchors: Vec<&str> = files
-            .iter()
-            .filter_map(|f| file_anchor.get(f).map(String::as_str))
-            .collect();
-        anchors.sort_unstable();
-        anchors.dedup();
-        for i in 0..anchors.len() {
-            for j in i + 1..anchors.len() {
-                *counts
-                    .entry((anchors[i].to_string(), anchors[j].to_string()))
-                    .or_default() += 1;
-            }
-        }
-    }
-    counts
-        .into_iter()
-        .filter(|(_, c)| *c >= COCHANGE_THRESHOLD)
-        .map(|((a, b), _)| {
-            let fa = anchor_file
-                .get(a.as_str())
-                .copied()
-                .unwrap_or("")
-                .to_string();
-            let fb = anchor_file
-                .get(b.as_str())
-                .copied()
-                .unwrap_or("")
-                .to_string();
-            ((a, fa), (b, fb))
-        })
-        .collect()
 }
 
 /// Ensure the store is up to date with the source before a read command serves
@@ -2667,6 +2447,69 @@ mod link_tests {
         assert!(
             back.contains(&(post.to_string(), EdgeType::RelatesTo)),
             "RelatesTo must be emitted both ways; got {back:?}"
+        );
+    }
+
+    #[test]
+    fn file_level_prose_ref_links_representative_doc_node() {
+        use aden_core::{Block, Document, EdgeType, NodeType};
+        let dir = tempfile::tempdir().unwrap();
+        let storage = Storage::new(dir.path().to_str().unwrap()).unwrap();
+        let mk = |anchor: &str| Document {
+            anchor: anchor.into(),
+            node_type: NodeType::Module,
+            attributes: Default::default(),
+            blocks: vec![Block::Paragraph("body".into())],
+            source_span: None,
+            metadata: None,
+            confidence: 1.0,
+        };
+        let post = "aden://doc/p/post.adoc/h2intro";
+        let guide = "aden://doc/p/guide.adoc/h1guide";
+        let other = "aden://doc/p/other.adoc/h1other";
+        for a in [post, guide, other] {
+            storage.put_document(&mk(a)).unwrap();
+        }
+        storage.flush().unwrap();
+
+        let ref_records = vec![(
+            post.to_string(),
+            vec![
+                "file:guide.adoc".to_string(),
+                "file:missing.adoc".to_string(),
+            ],
+        )];
+        link_store_edges(
+            &storage,
+            EdgeRecords {
+                calls: &[],
+                uses: &[],
+                refs: &ref_records,
+                implements: &[],
+                mutates: &[],
+                mentions: &[],
+                supersedes: &[],
+                demonstrates: &[],
+                terms: &[],
+                cochange: &[],
+                test_anchors: &std::collections::HashSet::new(),
+            },
+        )
+        .unwrap();
+
+        let out = storage.get_outgoing_edges(post).unwrap();
+        assert!(
+            out.contains(&(guide.to_string(), EdgeType::RelatesTo)),
+            "file-level xref should RelatesTo the target file representative; got {out:?}"
+        );
+        assert!(
+            !out.iter().any(|(t, _)| t == other),
+            "file-level xref must not link unrelated files; got {out:?}"
+        );
+        let back = storage.get_outgoing_edges(guide).unwrap();
+        assert!(
+            back.contains(&(post.to_string(), EdgeType::RelatesTo)),
+            "file-level RelatesTo must be bidirectional; got {back:?}"
         );
     }
 

@@ -659,9 +659,15 @@ mod tests {
     #[test]
     fn understand_backlinks_dedup_parallel_edges() {
         let mut g = aden_graph::AdenGraph::<aden_graph::DocumentNode, aden_graph::AdenEdge>::new();
-        let target = g.add_node(backlink_fixture_node("target"));
-        let module = g.add_node(backlink_fixture_node("mod-caller"));
-        let other = g.add_node(backlink_fixture_node("other-caller"));
+        let target = g
+            .add_node(backlink_fixture_node("target"))
+            .expect("unique fixture anchor");
+        let module = g
+            .add_node(backlink_fixture_node("mod-caller"))
+            .expect("unique fixture anchor");
+        let other = g
+            .add_node(backlink_fixture_node("other-caller"))
+            .expect("unique fixture anchor");
         // Use raw petgraph add_edge: AdenGraph::add_edge skips duplicates, but
         // real builds create parallel edges of different types directly.
         for et in [
@@ -702,8 +708,12 @@ mod tests {
     #[test]
     fn understand_impact_keeps_neighbor_with_parallel_non_impact_edge() {
         let mut g = aden_graph::AdenGraph::<aden_graph::DocumentNode, aden_graph::AdenEdge>::new();
-        let caller = g.add_node(backlink_fixture_node("caller"));
-        let callee = g.add_node(backlink_fixture_node("callee"));
+        let caller = g
+            .add_node(backlink_fixture_node("caller"))
+            .expect("unique fixture anchor");
+        let callee = g
+            .add_node(backlink_fixture_node("callee"))
+            .expect("unique fixture anchor");
         // Non-impact edge added FIRST, then the real Calls edge.
         for et in [aden_core::EdgeType::Documents, aden_core::EdgeType::Calls] {
             g.graph

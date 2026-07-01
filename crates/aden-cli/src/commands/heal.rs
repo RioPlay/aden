@@ -755,8 +755,8 @@ pub fn cmd_heal_watch(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
                 if let Ok(events) = scanner.scan() {
                     let report = generate(events.clone(), path);
                     println!("Health Score: {:.2}", report.overall_score);
-                    for event in events.iter().take(5) {
-                        println!("  - {:?} ({:?})", event, event.severity());
+                    for _ in events.iter().take(5) {
+                        println!("  - drift event");
                     }
                     if events.len() > 5 {
                         println!("  ... and {} more events", events.len() - 5);

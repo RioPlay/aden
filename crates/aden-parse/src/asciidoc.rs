@@ -42,13 +42,34 @@ impl crate::extractor::LanguageExtractor for AsciiDocExtractor {
         let project_root = infer_project_root(path);
         let file_name = project_relative_file(path, &project_root);
 
-        let (attributes, custom_attrs, body) = parse_document_attributes(source);
+        let (attributes, local_custom_attrs, _, document_title) = parse_document_attributes(source);
+        let mut custom_attrs = parse_shared_attribute_include_attrs(source, path, &project_root);
+        // Page-local attributes win over included shared attributes, matching
+        // Asciidoctor's "include common first, override locally" convention.
+        custom_attrs.extend(local_custom_attrs);
         let has_sectanchors = custom_attrs.contains_key("sectanchors");
+        // Collect composition includes from the raw source before preprocess
+        // expands them away; the link phase still emits Requires edges.
+        let includes = collect_include_directives(source);
+        let index_source = {
+            let mut visited = Vec::new();
+            crate::asciidoc_preprocess::preprocess_text_for_index(
+                source,
+                path,
+                &custom_attrs,
+                &mut visited,
+                0,
+            )
+            .unwrap_or_else(|_| source.to_string())
+        };
+        let (_, _, body, _) = parse_document_attributes(&index_source);
         let body_lines: Vec<&str> = body.lines().collect();
         let mut headings = Vec::new();
         let mut code_blocks = Vec::new();
         let mut in_literal_block = false;
         let mut current_code_lines = Vec::new();
+        let mut current_code_lang: Option<String> = None;
+        let mut pending_source_lang: Option<String> = None;
         // 1-based line of the listing block's first body line, captured when the
         // opening `----` fence is seen, so the emitted node spans the real code.
         let mut current_code_start = 0usize;
@@ -69,21 +90,21 @@ impl crate::extractor::LanguageExtractor for AsciiDocExtractor {
         // def)` — Term-node candidates; only those inside glossary-gated
         // sections are promoted below.
         let mut term_lines: Vec<(usize, Option<String>, String, String)> = Vec::new();
-        // `include::target[]` directives (document composition). File-level, so
-        // collected once and attached to the document's representative node;
-        // resolved to `Requires` edges in the link phase.
-        let mut includes: Vec<String> = Vec::new();
-
         for (line_num, line) in body.lines().enumerate() {
             let line_num = line_num + 1;
 
             // trim_end so a CRLF checkout (`----\r`) still matches the fence.
             if line.trim_end() == "----" {
                 if in_listing_block {
-                    code_blocks.push((None, current_code_lines.join("\n"), current_code_start));
+                    code_blocks.push((
+                        current_code_lang.take(),
+                        current_code_lines.join("\n"),
+                        current_code_start,
+                    ));
                     current_code_lines.clear();
                 } else {
                     current_code_start = line_num + 1;
+                    current_code_lang = pending_source_lang.take();
                 }
                 in_listing_block = !in_listing_block;
                 continue;
@@ -117,18 +138,10 @@ impl crate::extractor::LanguageExtractor for AsciiDocExtractor {
             if let Some((explicit, name, def)) = parse_dlist_term(line) {
                 term_lines.push((line_num - 1, explicit, name, def));
             }
-            // `include::target[opts]` — document composition. Fence-guarded by the
-            // listing/literal skips above, so an include inside a delimited block
-            // (a code example) is not mistaken for a real directive.
-            if let Some(rest) = line.trim_start().strip_prefix("include::")
-                && let Some(br) = rest.find('[')
-            {
-                let target = rest[..br].trim();
-                if !target.is_empty() {
-                    includes.push(target.to_string());
-                }
+            if let Some(lang) = parse_source_block_lang(line) {
+                pending_source_lang = lang;
+                continue;
             }
-
             if let Some(rest) = line.strip_prefix("= ") {
                 let title = rest.trim().to_string();
                 if !title.is_empty() {
@@ -159,6 +172,8 @@ impl crate::extractor::LanguageExtractor for AsciiDocExtractor {
                 if !title.is_empty() {
                     headings.push((6, title, line_num));
                 }
+            } else if let Some(anchor_name) = parse_block_anchor_line(line) {
+                headings.push((0, anchor_name, line_num));
             } else if let (Some(open), Some(close)) = (line.find("[["), line.find("]]"))
                 && open + 2 <= close
             {
@@ -173,12 +188,18 @@ impl crate::extractor::LanguageExtractor for AsciiDocExtractor {
         // `code_block_{docs.len()}` numbering never shifts under existing stores.
         let mut term_docs: Vec<Document> = Vec::new();
         // Glossary gate, document level: a glossary-titled doc promotes terms
-        // in EVERY section; otherwise only glossary-titled sections do.
-        let is_glossary_doc = headings
-            .iter()
-            .find(|(level, ..)| *level == 1)
-            .map(|(_, t, _)| crate::extractor::is_glossary_title(t))
-            .unwrap_or_else(|| crate::extractor::is_glossary_title(&file_name));
+        // in EVERY section; otherwise only glossary-titled sections do. The
+        // document title from the header (`= Glossary`) counts — it is not
+        // re-emitted in the body by `parse_document_attributes`.
+        let is_glossary_doc = document_title
+            .as_ref()
+            .is_some_and(|t| crate::extractor::is_glossary_title(t))
+            || headings
+                .iter()
+                .find(|(level, ..)| *level == 1)
+                .map(|(_, t, _)| crate::extractor::is_glossary_title(t))
+                .unwrap_or(false)
+            || crate::extractor::is_glossary_title(&file_name);
 
         if !headings.is_empty() {
             for hi in 0..headings.len() {
@@ -271,6 +292,27 @@ impl crate::extractor::LanguageExtractor for AsciiDocExtractor {
                 section_supersedes.dedup();
                 if !section_supersedes.is_empty() {
                     attrs.insert("doc_supersedes".to_string(), section_supersedes.join(","));
+                }
+
+                // `[[id]]` / `[#id]` on the line directly above a real heading
+                // shares the section's body range — strip channels from the
+                // explicit-anchor node so edges are not emitted twice (same
+                // discipline as `:sectanchors:` aliases).
+                if level == 0
+                    && headings
+                        .get(hi + 1)
+                        .is_some_and(|(next_level, _, next_line)| {
+                            *next_level > 0 && *next_line == line_num + 1
+                        })
+                {
+                    let (canon_level, canon_title, _) = &headings[hi + 1];
+                    let canonical =
+                        make_adoc_anchor(&crate_name, &file_name, canon_title, *canon_level);
+                    attrs.insert("alias_of".to_string(), canonical);
+                    attrs.remove("doc_refs");
+                    attrs.remove("doc_mentions");
+                    attrs.remove("doc_supersedes");
+                    attrs.remove("doc_terms");
                 }
 
                 let mut blocks = vec![Block::Paragraph(title.clone())];
@@ -416,38 +458,74 @@ impl crate::extractor::LanguageExtractor for AsciiDocExtractor {
                 }
             }
         }
-        // Whole-file glossaries with no headings at all (rare): the single
-        // document node owns every term.
-        if headings.is_empty() && crate::extractor::is_glossary_title(&file_name) {
-            let mut term_anchors: Vec<String> = Vec::new();
-            for (idx, explicit, name, def) in &term_lines {
-                let definition = if def.is_empty() {
-                    following_definition_lines(&body_lines, *idx)
-                } else {
-                    def.clone()
-                };
-                let slug = explicit
-                    .clone()
-                    .unwrap_or_else(|| crate::extractor::term_slug(name));
-                if slug.is_empty() {
-                    continue;
+        // Whole-file glossaries with no real section headings: either a single
+        // document node (`= Glossary` in the header, body has no headings) or a
+        // fragment-only dlist (`[[id]]Term::` on every line — Hugo frontmatter
+        // glossaries). Fragment-only docs attach each term to its matching
+        // `aden://doc/...#id` node; the no-heading case batches on one node.
+        if is_glossary_doc && real_headings.is_empty() {
+            if headings.is_empty() {
+                let mut term_anchors: Vec<String> = Vec::new();
+                for (idx, explicit, name, def) in &term_lines {
+                    let definition = if def.is_empty() {
+                        following_definition_lines(&body_lines, *idx)
+                    } else {
+                        def.clone()
+                    };
+                    let slug = explicit
+                        .clone()
+                        .unwrap_or_else(|| crate::extractor::term_slug(name));
+                    if slug.is_empty() {
+                        continue;
+                    }
+                    let entry = crate::extractor::GlossaryEntry {
+                        name: name.clone(),
+                        slug,
+                        definition,
+                    };
+                    let term = crate::extractor::build_term_document(&crate_name, path, &entry);
+                    term_anchors.push(term.anchor.clone());
+                    term_docs.push(term);
                 }
-                let entry = crate::extractor::GlossaryEntry {
-                    name: name.clone(),
-                    slug,
-                    definition,
-                };
-                let term = crate::extractor::build_term_document(&crate_name, path, &entry);
-                term_anchors.push(term.anchor.clone());
-                term_docs.push(term);
-            }
-            term_anchors.sort();
-            term_anchors.dedup();
-            if !term_anchors.is_empty()
-                && let Some(d) = docs.last_mut()
-            {
-                d.attributes
-                    .insert("doc_terms".to_string(), term_anchors.join(","));
+                term_anchors.sort();
+                term_anchors.dedup();
+                if !term_anchors.is_empty()
+                    && let Some(d) = docs.last_mut()
+                {
+                    d.attributes
+                        .insert("doc_terms".to_string(), term_anchors.join(","));
+                }
+            } else {
+                for (idx, explicit, name, def) in &term_lines {
+                    let definition = if def.is_empty() {
+                        following_definition_lines(&body_lines, *idx)
+                    } else {
+                        def.clone()
+                    };
+                    let slug = explicit
+                        .clone()
+                        .unwrap_or_else(|| crate::extractor::term_slug(name));
+                    if slug.is_empty() {
+                        continue;
+                    }
+                    let entry = crate::extractor::GlossaryEntry {
+                        name: name.clone(),
+                        slug: slug.clone(),
+                        definition,
+                    };
+                    let term = crate::extractor::build_term_document(&crate_name, path, &entry);
+                    let frag_anchor = format!(
+                        "aden://doc/{}/{}#{}",
+                        crate_name,
+                        file_name,
+                        explicit.as_deref().unwrap_or(&slug)
+                    );
+                    if let Some(d) = docs.iter_mut().find(|d| d.anchor == frag_anchor) {
+                        d.attributes
+                            .insert("doc_terms".to_string(), term.anchor.clone());
+                    }
+                    term_docs.push(term);
+                }
             }
         }
 
@@ -579,9 +657,11 @@ fn parse_document_attributes(
     Option<aden_core::DocumentMetadata>,
     HashMap<String, String>,
     String,
+    Option<String>,
 ) {
     let mut metadata = aden_core::DocumentMetadata::default();
     let mut custom_attrs: HashMap<String, String> = HashMap::new();
+    let mut document_title: Option<String> = None;
     let mut title_seen = false;
     let mut any_attr_seen = false;
     let mut header_end_line = 0usize;
@@ -595,8 +675,14 @@ fn parse_document_attributes(
             break;
         }
 
-        // Document title line(s) — `= Title`, `== Embedded`, etc.
-        if line.starts_with("= ") || line == "=" {
+        // Document title — `= Title` only (not `==` section headings).
+        if line.starts_with("= ") && !line.starts_with("== ") {
+            title_seen = true;
+            document_title = Some(line[2..].trim().to_string());
+            header_end_line = i + 1;
+            continue;
+        }
+        if line == "=" {
             title_seen = true;
             header_end_line = i + 1;
             continue;
@@ -671,7 +757,127 @@ fn parse_document_attributes(
         if has_metadata { Some(metadata) } else { None },
         custom_attrs,
         body,
+        document_title,
     )
+}
+
+/// Asciidoctor block-attribute anchor: `[#id]` on its own line (optional
+/// role/option suffixes after `.`, `%`, or `,`).
+fn parse_block_anchor_line(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+    let inner = trimmed.strip_prefix("[#")?.strip_suffix(']')?;
+    let id = inner.split(['.', '%', ',']).next()?.trim();
+    if id.is_empty() || id.contains(' ') || id.contains('{') {
+        return None;
+    }
+    Some(id.to_string())
+}
+
+fn parse_shared_attribute_include_attrs(
+    source: &str,
+    path: &Path,
+    project_root: &Path,
+) -> HashMap<String, String> {
+    let mut attrs = HashMap::new();
+    let Ok(root) = project_root.canonicalize() else {
+        return attrs;
+    };
+    let Some(base) = path.parent() else {
+        return attrs;
+    };
+    // Keep this deliberately shallow: shared attribute files are conventionally
+    // included in the document header or preamble, before the first section.
+    for line in source.lines().take(128) {
+        let trimmed = line.trim();
+        if trimmed.starts_with("== ") {
+            break;
+        }
+        let Some(target) = parse_include_target(trimmed) else {
+            continue;
+        };
+        if target.contains('{') || target.contains("://") {
+            continue;
+        }
+        let candidate = base.join(target);
+        let Ok(canon) = candidate.canonicalize() else {
+            continue;
+        };
+        if !canon.starts_with(&root) {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&canon) else {
+            continue;
+        };
+        attrs.extend(parse_attribute_entries(&text));
+    }
+    attrs
+}
+
+fn parse_attribute_entries(source: &str) -> HashMap<String, String> {
+    let mut attrs = HashMap::new();
+    for line in source.lines() {
+        let trimmed = line.trim();
+        let Some(rest) = trimmed.strip_prefix(':') else {
+            continue;
+        };
+        let Some(colon_pos) = rest.find(':') else {
+            continue;
+        };
+        let raw_key = rest[..colon_pos].trim();
+        let key = raw_key.trim_start_matches('!');
+        if key.is_empty() {
+            continue;
+        }
+        attrs.insert(key.to_string(), rest[colon_pos + 1..].trim().to_string());
+    }
+    attrs
+}
+
+fn parse_include_target(line: &str) -> Option<&str> {
+    let rest = line.strip_prefix("include::")?;
+    let bracket = rest.find('[')?;
+    let target = rest[..bracket].trim();
+    (!target.is_empty()).then_some(target)
+}
+
+/// Fence-aware scan for top-level `include::` directives in raw AsciiDoc.
+/// Runs on the un-preprocessed source so composition edges survive include
+/// expansion during indexing.
+fn collect_include_directives(source: &str) -> Vec<String> {
+    let mut includes = Vec::new();
+    let mut in_listing_block = false;
+    let mut in_literal_block = false;
+    for line in source.lines() {
+        if line.trim_end() == "----" {
+            in_listing_block = !in_listing_block;
+            continue;
+        }
+        if in_listing_block {
+            continue;
+        }
+        if line.trim_end() == "...." {
+            in_literal_block = !in_literal_block;
+            continue;
+        }
+        if in_literal_block {
+            continue;
+        }
+        if let Some(target) = parse_include_target(line.trim()) {
+            includes.push(target.to_string());
+        }
+    }
+    includes
+}
+
+fn parse_source_block_lang(line: &str) -> Option<Option<String>> {
+    let trimmed = line.trim();
+    let inner = trimmed.strip_prefix('[')?.strip_suffix(']')?;
+    let mut parts = inner.split(',').map(str::trim);
+    let first = parts.next()?;
+    if first != "source" && !first.starts_with("source%") {
+        return None;
+    }
+    Some(parts.next().filter(|s| !s.is_empty()).map(str::to_string))
 }
 
 fn make_adoc_anchor(crate_name: &str, file_name: &str, title: &str, level: usize) -> String {
@@ -715,8 +921,9 @@ fn make_sectanchors_anchor(crate_name: &str, file_name: &str, title: &str) -> St
 /// Recognized forms (all reduced to the bare anchor fragment):
 /// - `<<target>>` and `<<target,label>>` shorthand xrefs;
 /// - `<<file.adoc#frag>>` file-qualified shorthand → `frag`;
-/// - `xref:file.adoc#frag[label]` / `xref:file#frag` macros → `frag`
-///   (file-level xrefs with no `#fragment` name no anchor and are skipped).
+/// - `xref:file.adoc#frag[label]` / `xref:file#frag` macros → `frag`;
+/// - file-level `xref:file.adoc[label]` macros → `file:<target>` so the linker
+///   can attach the edge to the target file's representative doc node.
 ///
 /// Backtick-quoted spans are literal examples and never produce a ref — the
 /// caller additionally guarantees we are not inside a `----`/`....` block.
@@ -731,12 +938,24 @@ fn collect_prose_refs(line: &str, line_idx: usize, out: &mut Vec<(usize, String)
     let push = |target: &str, out: &mut Vec<(usize, String)>| {
         // Reduce a file-qualified target to its trailing fragment; anchors are
         // globally unique, so the fragment alone identifies the declaration.
-        let frag = match target.rsplit_once('#') {
-            Some((_, f)) => f.trim(),
-            None => target.trim(),
-        };
-        if !frag.is_empty() && !frag.contains('{') && !frag.contains(' ') && frag.len() < 80 {
-            out.push((line_idx, format!("ref:{frag}")));
+        let target = target.trim();
+        if target.is_empty() || target.contains('{') || target.contains(' ') || target.len() >= 120
+        {
+            return;
+        }
+        match target.rsplit_once('#') {
+            Some((_, frag)) => {
+                let frag = frag.trim();
+                if !frag.is_empty() {
+                    out.push((line_idx, format!("ref:{frag}")));
+                }
+            }
+            None if is_adoc_file_target(target) => {
+                out.push((line_idx, format!("file:{target}")));
+            }
+            None => {
+                out.push((line_idx, format!("ref:{target}")));
+            }
         }
     };
 
@@ -766,7 +985,8 @@ fn collect_prose_refs(line: &str, line_idx: usize, out: &mut Vec<(usize, String)
             i = abs_end + 2;
             continue;
         }
-        // xref:path#frag[label] (or bare xref:path#frag) macro. Match on the
+        // xref:path#frag[label], xref:path.adoc[label], or bare xref:path#frag
+        // macro. Match on the
         // BYTE slice: `i` walks bytes, so `&line[i..]` would panic mid-way
         // through a multibyte char (em-dash, typographic quote).
         if bytes[i..].starts_with(b"xref:") {
@@ -775,14 +995,22 @@ fn collect_prose_refs(line: &str, line_idx: usize, out: &mut Vec<(usize, String)
                 .find(|ch: char| ch == '[' || ch.is_whitespace())
                 .unwrap_or(after.len());
             let target = &after[..target_end];
-            if target.contains('#') {
-                push(target, out);
-            }
+            push(target, out);
             i += 5 + target_end;
             continue;
         }
         i += 1;
     }
+}
+
+fn is_adoc_file_target(target: &str) -> bool {
+    let path = target.split_once('#').map(|(p, _)| p).unwrap_or(target);
+    matches!(
+        std::path::Path::new(path)
+            .extension()
+            .and_then(|e| e.to_str()),
+        Some("adoc" | "asciidoc" | "asc")
+    )
 }
 
 #[cfg(test)]
@@ -818,12 +1046,13 @@ mod tests {
 
 Content here.
 ";
-        let (meta, custom, body) = parse_document_attributes(src);
+        let (meta, custom, body, title) = parse_document_attributes(src);
 
         // Standard metadata
         assert!(meta.is_some());
         let m = meta.unwrap();
         assert_eq!(m.date.as_deref(), Some("2026-06-07"));
+        assert_eq!(title.as_deref(), Some("AsciiDoc Mastery"));
 
         // Custom attributes captured
         assert_eq!(
@@ -852,9 +1081,10 @@ Content here.
     #[test]
     fn parse_document_attributes_empty_when_no_header() {
         let src = "Just plain content\nwith no header.\n";
-        let (meta, custom, body) = parse_document_attributes(src);
+        let (meta, custom, body, title) = parse_document_attributes(src);
         assert!(meta.is_none());
         assert!(custom.is_empty());
+        assert!(title.is_none());
         // Body is the full source when no header is detected
         assert!(body.contains("Just plain content"));
     }
@@ -1107,6 +1337,68 @@ Body.
         );
     }
 
+    #[test]
+    fn source_listing_language_is_preserved() {
+        let ext = AsciiDocExtractor::new();
+        let src = "\
+= Example
+
+[source,rust]
+----
+fn main() {
+    println!(\"hello\");
+}
+----
+";
+        let docs = ext
+            .extract_documents(src, Path::new("example.adoc"))
+            .expect("extraction must succeed");
+        let listing = docs
+            .iter()
+            .find_map(|d| match d.blocks.first() {
+                Some(Block::Listing { language, .. }) => language.as_deref(),
+                _ => None,
+            })
+            .expect("listing language must be captured");
+        assert_eq!(listing, "rust");
+    }
+
+    #[test]
+    fn shared_attribute_include_enables_sectanchors() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let shared = dir.path().join("common.adoc");
+        std::fs::write(&shared, ":sectanchors:\n:tags: shared\n").expect("write shared attrs");
+        let page = dir.path().join("guide.adoc");
+        std::fs::write(
+            &page,
+            "\
+= Guide
+include::common.adoc[]
+
+== Core Concepts
+
+Body.
+",
+        )
+        .expect("write page");
+
+        let ext = AsciiDocExtractor::new();
+        let source = std::fs::read_to_string(&page).expect("read page");
+        let docs = ext
+            .extract_documents(&source, &page)
+            .expect("extraction must succeed");
+        assert!(
+            docs.iter().any(|d| d.anchor.ends_with("_core_concepts")),
+            "included :sectanchors: should generate heading alias; got {:?}",
+            docs.iter().map(|d| &d.anchor).collect::<Vec<_>>()
+        );
+        assert!(
+            docs.iter()
+                .any(|d| d.attributes.get("tags").map(String::as_str) == Some("shared")),
+            "included custom attributes should propagate"
+        );
+    }
+
     /// Regression: multibyte characters (em-dashes, typographic quotes) before
     /// an `xref:` must not panic the byte-indexed scanner on a non-boundary
     /// slice (`line[i..]` with i inside a UTF-8 sequence).
@@ -1119,6 +1411,264 @@ Body.
             &mut out,
         );
         assert_eq!(out, vec![(0usize, "ref:_frag".to_string())]);
+    }
+
+    #[test]
+    fn file_level_xref_emits_file_ref() {
+        let mut out = Vec::new();
+        collect_prose_refs("See xref:guide.adoc[the guide].", 0, &mut out);
+        assert_eq!(out, vec![(0usize, "file:guide.adoc".to_string())]);
+    }
+
+    #[test]
+    fn explicit_anchor_above_heading_carries_no_doc_refs() {
+        let ext = AsciiDocExtractor::new();
+        let src = "\
+= Doc
+
+[[adr-2]]
+== Second decision
+
+This superseded <<adr-1>>.
+
+[[adr-1]]
+== First decision
+
+Original approach.
+";
+        let docs = ext
+            .extract_documents(src, Path::new("adr.adoc"))
+            .expect("extraction must succeed");
+
+        let with_refs: Vec<_> = docs
+            .iter()
+            .filter(|d| d.attributes.contains_key("doc_refs"))
+            .collect();
+        assert_eq!(
+            with_refs.len(),
+            1,
+            "only the canonical section node may own doc_refs; got {:?}",
+            docs.iter()
+                .filter(|d| d.attributes.contains_key("doc_refs"))
+                .map(|d| &d.anchor)
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            with_refs[0].anchor.contains("h2second-decision"),
+            "canonical section must own the ref"
+        );
+
+        let alias = docs
+            .iter()
+            .find(|d| d.anchor.ends_with("#adr-2"))
+            .expect("explicit anchor node");
+        assert_eq!(
+            alias.attributes.get("alias_of").map(String::as_str),
+            Some(with_refs[0].anchor.as_str()),
+            "explicit anchor must alias the following heading"
+        );
+        assert!(
+            !alias.attributes.contains_key("doc_refs"),
+            "alias must not duplicate refs"
+        );
+    }
+
+    #[test]
+    fn block_anchor_hash_syntax_declares_fragment() {
+        let ext = AsciiDocExtractor::new();
+        let src = "\
+= Doc
+
+[#adr-5]
+== Fifth decision
+
+Content five.
+
+[[adr-6]]
+== Sixth decision
+
+Refers to <<adr-5>>.
+";
+        let docs = ext
+            .extract_documents(src, Path::new("hash.adoc"))
+            .expect("extraction must succeed");
+        assert!(
+            docs.iter().any(|d| d.anchor.ends_with("#adr-5")),
+            "[#adr-5] must declare a fragment node; got {:?}",
+            docs.iter().map(|d| &d.anchor).collect::<Vec<_>>()
+        );
+        let sixth = docs
+            .iter()
+            .find(|d| d.anchor.contains("h2sixth-decision"))
+            .expect("sixth section");
+        let refs = sixth
+            .attributes
+            .get("doc_refs")
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            refs.contains("ref:adr-5"),
+            "xref to [#adr-5] must resolve; got {refs:?}"
+        );
+    }
+
+    #[test]
+    fn glossary_document_title_gates_term_extraction() {
+        let ext = AsciiDocExtractor::new();
+        let src = "\
+= Glossary
+
+Linker:: The component that resolves refs.
+Resolver:: The sibling component.
+";
+        let docs = ext
+            .extract_documents(src, Path::new("definitions.adoc"))
+            .expect("extraction must succeed");
+        let term_anchors: Vec<_> = docs
+            .iter()
+            .filter(|d| d.anchor.starts_with("aden://term/"))
+            .map(|d| d.anchor.as_str())
+            .collect();
+        assert!(
+            term_anchors.iter().any(|a| a.contains("linker")),
+            "= Glossary title must gate term extraction; got {term_anchors:?}"
+        );
+        assert!(
+            term_anchors.iter().any(|a| a.contains("resolver")),
+            "= Glossary title must gate term extraction; got {term_anchors:?}"
+        );
+    }
+
+    #[test]
+    fn fragment_only_glossary_promotes_term_nodes() {
+        let ext = AsciiDocExtractor::new();
+        let src = "\
+---
+title: Glossary
+---
+
+[[_linker]]Linker::
+The component that resolves refs.
+
+[[_resolver]]Resolver::
+The sibling component.
+";
+        let docs = ext
+            .extract_documents(src, Path::new("glossary.adoc"))
+            .expect("extraction must succeed");
+        let term_anchors: Vec<_> = docs
+            .iter()
+            .filter(|d| d.anchor.starts_with("aden://term/"))
+            .map(|d| d.anchor.as_str())
+            .collect();
+        assert_eq!(
+            term_anchors.len(),
+            2,
+            "fragment-only glossary must emit Term nodes; got {term_anchors:?}"
+        );
+        let linker_frag = docs
+            .iter()
+            .find(|d| d.anchor.ends_with("#_linker"))
+            .expect("linker fragment node");
+        assert!(
+            linker_frag
+                .attributes
+                .get("doc_terms")
+                .is_some_and(|t| t.starts_with("aden://term/") && t.contains("linker")),
+            "fragment node must DefinesTerm its term; attrs={:?}",
+            linker_frag.attributes
+        );
+    }
+
+    #[test]
+    fn inactive_ifdef_branch_is_excluded_from_indexing() {
+        let ext = AsciiDocExtractor::new();
+        let src = "\
+= Doc
+:draft:
+
+ifdef::draft[]
+== Draft Only
+
+See <<_draft_ref>>.
+endif::[]
+
+ifndef::draft[]
+== Published Only
+
+See <<_published_ref>>.
+endif::[]
+";
+        let docs = ext
+            .extract_documents(src, Path::new("draft.adoc"))
+            .expect("extraction must succeed");
+        let anchors: Vec<&str> = docs.iter().map(|d| d.anchor.as_str()).collect();
+        assert!(
+            anchors.iter().any(|a| a.contains("h2draft-only")),
+            "active ifdef branch must be indexed; got {anchors:?}"
+        );
+        assert!(
+            !anchors.iter().any(|a| a.contains("published")),
+            "inactive ifndef branch must be excluded; got {anchors:?}"
+        );
+        let draft = docs
+            .iter()
+            .find(|d| d.anchor.contains("h2draft-only"))
+            .expect("draft section");
+        let refs = draft
+            .attributes
+            .get("doc_refs")
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            refs.contains("ref:_draft_ref"),
+            "refs from active branch only; got {refs:?}"
+        );
+        assert!(
+            !refs.contains("ref:_published_ref"),
+            "inactive branch refs must not appear; got {refs:?}"
+        );
+    }
+
+    #[test]
+    fn included_chapter_content_shapes_indexed_headings() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let chapter = dir.path().join("chapter.adoc");
+        std::fs::write(&chapter, "== Included Chapter\n\nBody.\n").expect("write chapter");
+        let master = dir.path().join("master.adoc");
+        std::fs::write(&master, "= Master\n\ninclude::chapter.adoc[]\n").expect("write master");
+
+        let ext = AsciiDocExtractor::new();
+        let source = std::fs::read_to_string(&master).expect("read master");
+        let docs = ext
+            .extract_documents(&source, &master)
+            .expect("extraction must succeed");
+        assert!(
+            docs.iter().any(|d| d.anchor.contains("h2included-chapter")),
+            "preprocessed include must promote chapter heading into master; got {:?}",
+            docs.iter().map(|d| &d.anchor).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn include_leveloffset_adjusts_promoted_heading_level() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let part = dir.path().join("part.adoc");
+        std::fs::write(&part, "= Part Title\n\nPart body.\n").expect("write part");
+        let master = dir.path().join("book.adoc");
+        std::fs::write(&master, "= Book\n\ninclude::part.adoc[leveloffset=+1]\n")
+            .expect("write book");
+
+        let ext = AsciiDocExtractor::new();
+        let source = std::fs::read_to_string(&master).expect("read book");
+        let docs = ext
+            .extract_documents(&source, &master)
+            .expect("extraction must succeed");
+        assert!(
+            docs.iter().any(|d| d.anchor.contains("h2part-title")),
+            "leveloffset=+1 should promote = Part to ==; got {:?}",
+            docs.iter().map(|d| &d.anchor).collect::<Vec<_>>()
+        );
     }
 
     #[test]

@@ -16,7 +16,7 @@ mod tests {
         )
         .unwrap();
         let mut visited = Vec::new();
-        let out = preprocess::preprocess(tmp.path(), &HashMap::new(), &mut visited, 0).unwrap();
+        let out = preprocess(tmp.path(), &HashMap::new(), &mut visited, 0).unwrap();
         assert!(out.contains("[[anchor]]"));
         assert!(out.contains("Hello world"));
     }
@@ -26,7 +26,7 @@ mod tests {
         let tmp = tempfile::NamedTempFile::new().unwrap();
         std::fs::write(tmp.path(), "[[solo]]\n= Solo\n\nNo includes here.").unwrap();
         let mut visited = Vec::new();
-        let out = preprocess::preprocess(tmp.path(), &HashMap::new(), &mut visited, 0).unwrap();
+        let out = preprocess(tmp.path(), &HashMap::new(), &mut visited, 0).unwrap();
         assert!(out.contains("No includes here."));
     }
 

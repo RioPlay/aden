@@ -1064,6 +1064,7 @@ aden mcp uninstall --platform opencode
 
 # List configured platforms
 aden mcp list
+aden mcp list --name aden-plan
 
 # Start HTTP server for CI/agents
 aden mcp serve --port 3030
@@ -1071,8 +1072,24 @@ aden mcp serve --port 3030
 
 Each platform reads MCP servers from its own config file and schema. `aden mcp
 install` writes the project-local file when one applies, falling back to the
-user-global path, and merges the `aden` entry into any existing config without
+user-global path, and merges the named server entry into any existing config without
 disturbing other servers.
+
+Claude Code defaults to `user` scope, which registers one global server named
+`aden` via `claude mcp add -s user`. Running that command again from a different
+folder does not create another folder-bound server. For one Aden MCP server per
+repository, use `aden mcp install --platform claude --scope project` from each
+repository, or pass `--project <PATH>` explicitly.
+
+For local agent orchestration, prefer presets over one broad MCP entry. For
+example, a Codex project can keep a small exploration profile and a broader
+verification profile in the same `.codex/config.toml`:
+
+[source,bash]
+----
+aden mcp install --platform codex --scope project --preset explore
+aden mcp install --platform codex --scope project --preset verify
+----
 
 `install`/`uninstall` flags:
 
@@ -1082,10 +1099,12 @@ disturbing other servers.
 |--platform <PLATFORM> |Target one platform: `opencode`, `claude`, `cursor`, `codex`, `zed`, `windsurf`
 |--all |Apply to all platforms, not just detected ones
 |--scope <SCOPE> |`user` (global) or `project` (local). Default: `user` for Claude Code, `project` otherwise
+|--preset <PRESET> |Workflow preset: `explore` (`aden-explore`, essential), `verify` (`aden-verify`, standard), or `admin` (`aden-admin`, full)
+|--name <NAME> |Override the MCP server entry name to install, list, or uninstall. Default: `aden`
 |--binary <PATH> |Path to the `aden-mcp` binary to register
 |--project <PATH> |Project directory the server should serve
 |--dry-run |Show what would change without writing files
-|--surface <LEVEL> |Tool surface baked into the MCP config: `essential` (default), `standard`, or `full` |essential
+|--surface <LEVEL> |Override the preset/default tool surface: `essential`, `standard`, or `full` |essential
 |===
 
 |===

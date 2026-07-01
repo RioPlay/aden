@@ -22,6 +22,7 @@ dependencies = [
  "aden-core",
  "aden-emit",
  "aden-graph",
+ "aden-parse",
  "petgraph",
  "regex",
  "tempfile",
@@ -168,8 +169,10 @@ version = "0.2.0"
 dependencies = [
  "aden-core",
  "dirs",
+ "regex",
  "serde_json",
  "tempfile",
+ "thiserror 2.0.18",
  "tree-sitter",
  "tree-sitter-language-pack",
 ]

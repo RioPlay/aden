@@ -136,7 +136,7 @@ Extracts symbols, signatures, and relationships from source code using tree-sitt
 
 |TypeScript/JS |Deep |Full AST, generics
 
-|305+ others |Shallow |Generic AST fallback
+|~100+ via tree-sitter pack (curated deep + generic fallback for many more) |Shallow |Generic AST fallback for unmapped extensions
 |===
 
 Discovery is **language-agnostic**: `aden gen --auto` walks the whole project and

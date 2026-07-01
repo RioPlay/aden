@@ -718,9 +718,12 @@ pub fn perform_check(path: &Path) -> Result<Vec<String>, Box<dyn std::error::Err
 /// Only genuine LINK constructs are checked — markdown `[text](path)` and adoc
 /// `xref:`/`link:`/`include::` — so an illustrative backtick mention of a path
 /// (e.g. a scaffolded `src/main.rs`, or a command's example `--out` target) is
-/// NOT flagged. A target is resolved relative to the doc's own directory, or to
-/// the repo root when it starts with a real top-level directory. URLs, anchors,
-/// globs, and placeholders are skipped. Lines with `aden:allow-path` are exempt.
+/// NOT flagged. AsciiDoc passthrough (`+...+`) and monospace spans are stripped
+/// before matching so syntax examples like `` `xref:file.adoc#frag` `` or
+/// `+xref:other.adoc#section[label]+` do not fire. A target is resolved
+/// relative to the doc's own directory, or to the repo root when it starts with a
+/// real top-level directory. URLs, anchors, globs, and placeholders are
+/// skipped. Lines with `aden:allow-path` are exempt.
 fn check_doc_path_references(root: &Path) -> Vec<String> {
     use std::collections::HashSet;
 
@@ -768,9 +771,10 @@ fn check_doc_path_references(root: &Path) -> Vec<String> {
             if in_fence || line.contains("aden:allow-path") {
                 continue;
             }
+            let scan_line = strip_illustrative_spans(line);
             let targets = md_link
-                .captures_iter(line)
-                .chain(adoc_link.captures_iter(line))
+                .captures_iter(&scan_line)
+                .chain(adoc_link.captures_iter(&scan_line))
                 .filter_map(|c| c.get(1).map(|m| m.as_str().to_string()));
             for target in targets {
                 if let Some(resolved) = resolve_doc_link(&target, doc_dir, root, &top_dirs)
@@ -791,6 +795,39 @@ fn check_doc_path_references(root: &Path) -> Vec<String> {
     }
     findings.sort();
     findings
+}
+
+/// Strip monospace and AsciiDoc passthrough spans so illustrative syntax
+/// examples are not mistaken for live link constructs during path checking.
+fn strip_illustrative_spans(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut chars = line.chars().peekable();
+    let mut in_mono = false;
+    let mut in_pass = false;
+    while let Some(c) = chars.next() {
+        if c == '`' && !in_pass {
+            if chars.peek() == Some(&'`') {
+                chars.next();
+                while let Some(ch) = chars.next() {
+                    if ch == '`' && chars.peek() == Some(&'`') {
+                        chars.next();
+                        break;
+                    }
+                }
+                continue;
+            }
+            in_mono = !in_mono;
+            continue;
+        }
+        if c == '+' && !in_mono {
+            in_pass = !in_pass;
+            continue;
+        }
+        if !in_mono && !in_pass {
+            out.push(c);
+        }
+    }
+    out
 }
 
 /// Resolve a doc link target to a filesystem path to existence-check, or `None`
@@ -1482,6 +1519,32 @@ mod tests {
     }
 
     #[test]
+    fn doc_path_gate_ignores_monospace_and_passthrough_xref_examples() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("docs")).unwrap();
+        std::fs::write(
+            root.join("docs/guide.adoc"),
+            "= Guide\n\
+             The illustrative `xref:file.adoc#fragment` example must not flag.\n\
+             Passthrough +xref:other-doc.adoc#section[label]+ is also illustrative.\n\
+             Live xref:docs/missing.adoc[broken] must still flag.\n",
+        )
+        .unwrap();
+
+        let findings = check_doc_path_references(root);
+        assert_eq!(
+            findings.len(),
+            1,
+            "only the live broken link must flag: {findings:?}"
+        );
+        assert!(
+            findings[0].contains("docs/missing.adoc"),
+            "got {findings:?}"
+        );
+    }
+
+    #[test]
     fn classify_orphans_dedups_colliding_anchors() {
         use aden_graph::{AdenEdge, AdenGraph, DocumentNode};
         let orphan = |src: &str| DocumentNode {
@@ -1497,17 +1560,16 @@ mod tests {
             source_path: std::path::PathBuf::from(src),
             parsed: None,
         };
-        // Two distinct files collapse to the same anchor "dup". add_node keeps
-        // both petgraph nodes but anchor_to_index maps "dup" to one — so
-        // orphans() repeats the anchor while get_node() collapses it.
+        // M3: add_node rejects duplicate anchors, so only one node lands. The
+        // classify_orphans dedup still matters when orphans() repeats an anchor
+        // (legacy cached graphs); here we verify the single-anchor orphan path.
         let mut graph: AdenGraph<DocumentNode, AdenEdge> = AdenGraph::new();
-        graph.add_node(orphan("a.rs"));
-        graph.add_node(orphan("b.rs"));
-        assert_eq!(
-            graph.orphans().len(),
-            2,
-            "precondition: orphans() yields the colliding anchor once per node"
+        graph.add_node(orphan("a.rs")).expect("first node");
+        assert!(
+            graph.add_node(orphan("b.rs")).is_err(),
+            "duplicate anchor must be rejected at insert"
         );
+        assert_eq!(graph.orphans(), vec!["dup"]);
 
         // classify_orphans must report the distinct orphan anchor ONCE.
         let (_expected, actionable) = classify_orphans(&graph);
@@ -1592,4 +1654,256 @@ mod tests {
             "must strip against the given root, leaking no /home/ prefix"
         );
     }
+}
+
+/// Callee names referenced by a symbol document, for call-graph linking.
+/// Reads both the `edge::calls[...]` listing and the `Callee` table so it works
+/// regardless of which an extractor emits.
+pub fn extract_callees(doc: &aden_core::Document) -> Vec<String> {
+    use aden_core::Block;
+    let mut callees = Vec::new();
+    for block in &doc.blocks {
+        match block {
+            Block::Listing { code, .. } => {
+                for line in code.lines() {
+                    if let Some(rest) = line.trim().strip_prefix("edge::calls[")
+                        && let Some(callee) = rest.strip_suffix(']')
+                        && !callee.is_empty()
+                    {
+                        callees.push(callee.to_string());
+                    }
+                }
+            }
+            Block::Table(t)
+                if t.headers.first().map(|h| h.eq_ignore_ascii_case("callee")) == Some(true) =>
+            {
+                for row in &t.rows {
+                    if let Some(c) = row.first()
+                        && !c.is_empty()
+                    {
+                        callees.push(c.clone());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    callees.sort();
+    callees.dedup();
+    callees
+}
+
+/// Type names a symbol `Uses`, read from `edge::uses[...]` listings (emitted by
+/// extractors for the types referenced in a signature/fields). Kept separate
+/// from callees so they link as `Uses` edges, not `Calls`.
+pub fn extract_uses(doc: &aden_core::Document) -> Vec<String> {
+    use aden_core::Block;
+    let mut uses = Vec::new();
+    for block in &doc.blocks {
+        if let Block::Listing { code, .. } = block {
+            for line in code.lines() {
+                if let Some(rest) = line.trim().strip_prefix("edge::uses[")
+                    && let Some(t) = rest.strip_suffix(']')
+                    && !t.is_empty()
+                {
+                    uses.push(t.to_string());
+                }
+            }
+        }
+    }
+    uses.sort();
+    uses.dedup();
+    uses
+}
+
+/// Targets of one `edge::<kind>[...]` macro family in a document's listing
+/// blocks, sorted + deduped. Shared reader for the Wave-1 edge macros
+/// (`implements`, `mutates`) — same format `extract_uses` reads for `uses`.
+pub fn extract_edge_macro(doc: &aden_core::Document, kind: &str) -> Vec<String> {
+    use aden_core::Block;
+    let prefix = format!("edge::{kind}[");
+    let mut out = Vec::new();
+    for block in &doc.blocks {
+        if let Block::Listing { code, .. } = block {
+            for line in code.lines() {
+                if let Some(rest) = line.trim().strip_prefix(prefix.as_str())
+                    && let Some(t) = rest.strip_suffix(']')
+                    && !t.is_empty()
+                {
+                    out.push(t.to_string());
+                }
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// Prose cross-references a doc node makes, read from the `doc_refs` attribute
+/// the format parsers fill (`ref:<fragment>` entries — AsciiDoc `<<target>>`/
+/// `xref:file#frag` and markdown `[text](#frag)` forms). Extraction is
+/// per-format and lives in the parser, which knows listing-fence and backtick
+/// state (a `<<x>>` inside a code example is not a reference); resolution in
+/// [`link_store_edges`] is format-neutral. A previous version scanned the
+/// document BLOCKS here with no fence/backtick awareness, which also picked up
+/// `a << b >> c` shift expressions from embedded code listings.
+pub fn extract_doc_refs(doc: &aden_core::Document) -> Vec<String> {
+    extract_joined_attribute(doc, "doc_refs")
+}
+
+/// Document-composition targets, read from the `doc_includes` attribute the
+/// AsciiDoc parser fills for `include::` directives. Resolved file-wise (by
+/// stem) to directional `Requires` edges in [`link_include_edges`].
+pub fn extract_doc_includes(doc: &aden_core::Document) -> Vec<String> {
+    extract_joined_attribute(doc, "doc_includes")
+}
+
+/// Backtick prose mentions, read from the `doc_mentions` attribute the format
+/// parsers fill (Wave 2). Same division of labor as `doc_refs`: the parser
+/// knows fence/backtick state; resolution in [`link_store_edges`] is
+/// format-neutral and links only unambiguous names.
+pub fn extract_doc_mentions(doc: &aden_core::Document) -> Vec<String> {
+    extract_joined_attribute(doc, "doc_mentions")
+}
+
+/// Supersede-context refs, read from the `doc_supersedes` attribute the format
+/// parsers fill (Wave 3). Entries are `<by|of>:ref:<frag>` — a direction
+/// prefix plus the same `ref:` form the `doc_refs` channel uses.
+pub fn extract_doc_supersedes(doc: &aden_core::Document) -> Vec<String> {
+    extract_joined_attribute(doc, "doc_supersedes")
+}
+
+/// `kind:name` references a doc code listing makes, read from the
+/// `symbol_references` attribute the format parsers fill on `code_block_*`
+/// docs (declaration scan + language-neutral call-token scan). Linked as
+/// `Demonstrates` edges (Wave 2).
+pub fn extract_demonstrates(doc: &aden_core::Document) -> Vec<String> {
+    extract_joined_attribute(doc, "symbol_references")
+}
+
+/// Term anchors a glossary section defines, read from the `doc_terms`
+/// attribute the format parsers fill (Wave 2 remainder). Values are full
+/// `aden://term/…` anchors, so linking is exact-match only.
+pub fn extract_doc_terms(doc: &aden_core::Document) -> Vec<String> {
+    extract_joined_attribute(doc, "doc_terms")
+}
+
+/// A comma-joined doc attribute as a sorted, deduped list.
+pub fn extract_joined_attribute(doc: &aden_core::Document, key: &str) -> Vec<String> {
+    let Some(joined) = doc.attributes.get(key) else {
+        return Vec::new();
+    };
+    let mut vals: Vec<String> = joined
+        .split(',')
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect();
+    vals.sort();
+    vals.dedup();
+    vals
+}
+
+/// Module-level co-change pairs from git history (Wave 3 `AssociatedWith` —
+/// the Hebbian episodic signal: things that fire together wire together).
+/// Deterministic from repo state: the last 1000 non-merge commits, skipping
+/// bulk commits (>20 files — rename sweeps and reformats say nothing about
+/// functional coupling), pair-counting each commit's files at module level
+/// and keeping pairs that co-changed ≥3 times. Files map to module anchors
+/// via the gen cache (file → anchors recorded by gen itself), so the whole
+/// pass costs one `git log` — no store scan. Non-repos and git failures
+/// degrade to no edges.
+pub fn cochange_pairs(
+    root: &std::path::Path,
+    cache: &crate::types::GenCache,
+) -> Vec<crate::types::CochangePair> {
+    use std::collections::BTreeMap;
+    const COCHANGE_COMMITS: &str = "1000";
+    const COCHANGE_MAX_FILES: usize = 20;
+    const COCHANGE_THRESHOLD: u32 = 3;
+
+    // Repo-relative file → file-level anchor: the `#`-stripped prefix of the
+    // file's first symbol anchor (code files have exactly one). Files with no
+    // symbol anchors (prose, empty) drop out here.
+    let mut file_anchor: BTreeMap<&str, String> = BTreeMap::new();
+    for (key, entry) in &cache.entries {
+        for a in &entry.anchors {
+            if let Some(h) = a.find('#') {
+                file_anchor.insert(key.as_str(), a[..h].to_string());
+                break;
+            }
+        }
+    }
+    if file_anchor.is_empty() {
+        return Vec::new();
+    }
+    // Reverse map for attaching the source file to each emitted anchor
+    // (BTreeMap iteration order makes the first-file-wins pick deterministic).
+    let mut anchor_file: BTreeMap<&str, &str> = BTreeMap::new();
+    for (f, a) in &file_anchor {
+        anchor_file.entry(a.as_str()).or_insert(f);
+    }
+
+    let Ok(out) = std::process::Command::new("git")
+        .args([
+            "log",
+            "--no-merges",
+            "-n",
+            COCHANGE_COMMITS,
+            "--pretty=format:@@",
+            "--name-only",
+        ])
+        .current_dir(root)
+        .output()
+    else {
+        return Vec::new();
+    };
+    if !out.status.success() {
+        return Vec::new();
+    }
+    let log = String::from_utf8_lossy(&out.stdout);
+
+    let mut counts: BTreeMap<(String, String), u32> = BTreeMap::new();
+    for block in log.split("@@") {
+        let files: Vec<&str> = block
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .collect();
+        // Bulk-commit gate on raw files touched, BEFORE anchor mapping — a
+        // 200-file reformat is noise even if only 5 of those files are indexed.
+        if files.len() < 2 || files.len() > COCHANGE_MAX_FILES {
+            continue;
+        }
+        let mut anchors: Vec<&str> = files
+            .iter()
+            .filter_map(|f| file_anchor.get(f).map(String::as_str))
+            .collect();
+        anchors.sort_unstable();
+        anchors.dedup();
+        for i in 0..anchors.len() {
+            for j in i + 1..anchors.len() {
+                *counts
+                    .entry((anchors[i].to_string(), anchors[j].to_string()))
+                    .or_default() += 1;
+            }
+        }
+    }
+    counts
+        .into_iter()
+        .filter(|(_, c)| *c >= COCHANGE_THRESHOLD)
+        .map(|((a, b), _)| {
+            let fa = anchor_file
+                .get(a.as_str())
+                .copied()
+                .unwrap_or("")
+                .to_string();
+            let fb = anchor_file
+                .get(b.as_str())
+                .copied()
+                .unwrap_or("")
+                .to_string();
+            ((a, fa), (b, fb))
+        })
+        .collect()
 }

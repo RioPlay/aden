@@ -12,6 +12,15 @@ All notable changes to aden are documented here. Format follows
 Post-0.2.0 work on main — not yet tagged.
 
 ### Added
+- **AsciiDoc indexing hygiene** (2026-07-01) — preprocessor moved to `aden-parse`
+  (`asciidoc_preprocess.rs`) and wired into the active gen path (`include::`,
+  `ifdef`/`ifndef`, `leveloffset`, tagged includes). Shared-attribute shallow
+  scan, `[#id]` block anchors, file-level `xref:` refs, and `[[id]]`+heading
+  dedup land in extraction. Fragment-only glossaries (`[[id]]Term::` on every
+  line, Hugo frontmatter) now emit `aden://term/` nodes and `DefinesTerm` edges.
+  `check` strips monospace/passthrough spans before path-link scanning so
+  illustrative `` `xref:file.adoc#frag` `` examples do not false-flag.
+  `GEN_LOGIC_VERSION` bumped **4 → 5** (one-time regen required).
 - **Dual-substrate retrieval levers, on by default** (2026-06-19): `search`/`ask` route by
   detected text, a corpus-derived PPMI rerank for code (MRR 0.216 to 0.289) and grounded OEWN
   synonym expansion for prose (BM25 R@1 1/42 to 41/42; end-to-end 0/15 to 15/15). Auto-gating
