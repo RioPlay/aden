@@ -511,7 +511,7 @@ mod adq_resolve_tests {
     fn graph_with(anchors: &[&str]) -> AdenGraph<DocumentNode, AdenEdge> {
         let mut g = AdenGraph::<DocumentNode, AdenEdge>::new();
         for a in anchors {
-            g.add_node(node(a));
+            let _ = g.add_node(node(a));
         }
         g
     }

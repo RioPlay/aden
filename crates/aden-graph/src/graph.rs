@@ -78,14 +78,18 @@ impl<N: GraphNode, E: GraphEdge> AdenGraph<N, E> {
     }
 
     /// Add a node to the graph.
-    pub fn add_node(&mut self, node: N) -> NodeIndex {
+    /// Returns Err(DuplicateAnchor) if the anchor already exists.
+    pub fn add_node(&mut self, node: N) -> Result<NodeIndex, GraphError> {
         let anchor = node.anchor().to_string();
+        if self.anchor_to_index.contains_key(&anchor) {
+            return Err(GraphError::DuplicateAnchor(anchor));
+        }
         let source_path = node.source_path().clone();
         let idx = self.graph.add_node(node);
         self.anchor_to_index.insert(anchor, idx);
         self.path_to_index.insert(source_path, idx);
         self.backlinks_cache = None;
-        idx
+        Ok(idx)
     }
 
     /// Add an edge between two nodes by anchor.
@@ -438,7 +442,7 @@ impl AdenGraph<DocumentNode, AdenEdge> {
 
         // Add all nodes (thread-safe: petgraph DiGraph is Send+Sync)
         for (_anchor, node) in node_work {
-            graph.add_node(node);
+            let _ = graph.add_node(node); // duplicates filtered by construction
         }
 
         // Sequential edge building (depends on all nodes existing)
@@ -572,7 +576,7 @@ impl AdenGraph<DocumentNode, AdenEdge> {
                 source_path: PathBuf::new(), // storage doesn't track paths
                 parsed: None,                // no parsed doc from storage
             };
-            graph.add_node(node);
+            let _ = graph.add_node(node); // no duplicates expected from storage
         }
 
         // Load all edges in a single pass over the edges partition. The previous
