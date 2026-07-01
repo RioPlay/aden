@@ -1593,3 +1593,107 @@ mod tests {
         );
     }
 }
+
+/// Module-level co-change pairs from git history (Wave 3 `AssociatedWith` —
+/// the Hebbian episodic signal: things that fire together wire together).
+/// Deterministic from repo state: the last 1000 non-merge commits, skipping
+/// bulk commits (>20 files — rename sweeps and reformats say nothing about
+/// functional coupling), pair-counting each commit's files at module level
+/// and keeping pairs that co-changed ≥3 times. Files map to module anchors
+/// via the gen cache (file → anchors recorded by gen itself), so the whole
+/// pass costs one `git log` — no store scan. Non-repos and git failures
+/// degrade to no edges.
+pub fn cochange_pairs(
+    root: &std::path::Path,
+    cache: &crate::types::GenCache,
+) -> Vec<crate::types::CochangePair> {
+    use std::collections::BTreeMap;
+    const COCHANGE_COMMITS: &str = "1000";
+    const COCHANGE_MAX_FILES: usize = 20;
+    const COCHANGE_THRESHOLD: u32 = 3;
+
+    // Repo-relative file → file-level anchor: the `#`-stripped prefix of the
+    // file's first symbol anchor (code files have exactly one). Files with no
+    // symbol anchors (prose, empty) drop out here.
+    let mut file_anchor: BTreeMap<&str, String> = BTreeMap::new();
+    for (key, entry) in &cache.entries {
+        for a in &entry.anchors {
+            if let Some(h) = a.find('#') {
+                file_anchor.insert(key.as_str(), a[..h].to_string());
+                break;
+            }
+        }
+    }
+    if file_anchor.is_empty() {
+        return Vec::new();
+    }
+    // Reverse map for attaching the source file to each emitted anchor
+    // (BTreeMap iteration order makes the first-file-wins pick deterministic).
+    let mut anchor_file: BTreeMap<&str, &str> = BTreeMap::new();
+    for (f, a) in &file_anchor {
+        anchor_file.entry(a.as_str()).or_insert(f);
+    }
+
+    let Ok(out) = std::process::Command::new("git")
+        .args([
+            "log",
+            "--no-merges",
+            "-n",
+            COCHANGE_COMMITS,
+            "--pretty=format:@@",
+            "--name-only",
+        ])
+        .current_dir(root)
+        .output()
+    else {
+        return Vec::new();
+    };
+    if !out.status.success() {
+        return Vec::new();
+    }
+    let log = String::from_utf8_lossy(&out.stdout);
+
+    let mut counts: BTreeMap<(String, String), u32> = BTreeMap::new();
+    for block in log.split("@@") {
+        let files: Vec<&str> = block
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .collect();
+        // Bulk-commit gate on raw files touched, BEFORE anchor mapping — a
+        // 200-file reformat is noise even if only 5 of those files are indexed.
+        if files.len() < 2 || files.len() > COCHANGE_MAX_FILES {
+            continue;
+        }
+        let mut anchors: Vec<&str> = files
+            .iter()
+            .filter_map(|f| file_anchor.get(f).map(String::as_str))
+            .collect();
+        anchors.sort_unstable();
+        anchors.dedup();
+        for i in 0..anchors.len() {
+            for j in i + 1..anchors.len() {
+                *counts
+                    .entry((anchors[i].to_string(), anchors[j].to_string()))
+                    .or_default() += 1;
+            }
+        }
+    }
+    counts
+        .into_iter()
+        .filter(|(_, c)| *c >= COCHANGE_THRESHOLD)
+        .map(|((a, b), _)| {
+            let fa = anchor_file
+                .get(a.as_str())
+                .copied()
+                .unwrap_or("")
+                .to_string();
+            let fb = anchor_file
+                .get(b.as_str())
+                .copied()
+                .unwrap_or("")
+                .to_string();
+            ((a, fa), (b, fb))
+        })
+        .collect()
+}

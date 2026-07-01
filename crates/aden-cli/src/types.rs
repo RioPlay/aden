@@ -145,6 +145,12 @@ pub enum AnchorPattern {
     Generic,
 }
 
+/// A thresholded co-change pair: each side is `(file-level anchor, repo-
+/// relative source file)`. The file paths let the linker synthesize the
+/// file-level node when the store has none (symbols hang off `mod-<crate>`
+/// hubs; the file grain only exists where co-change demands it).
+pub type CochangePair = ((String, String), (String, String));
+
 impl AnchorPattern {
     /// True when the anchor lives in the prose-document scheme (`aden://doc/…`):
     /// a heading, declared `[[anchor]]`, or section of a Markdown/AsciiDoc/…

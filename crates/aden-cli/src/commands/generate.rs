@@ -9,14 +9,14 @@ use std::path::Path;
 
 use crate::types::GenCacheEntry;
 use crate::util::{
-    discover_source_files, find_project_root, load_gen_cache, sanitize_source_file, save_gen_cache,
+    cochange_pairs, discover_source_files, find_project_root, load_gen_cache, sanitize_source_file,
+    save_gen_cache,
 };
 
 /// A thresholded co-change pair: each side is `(file-level anchor, repo-
 /// relative source file)`. The file paths let the linker synthesize the
 /// file-level node when the store has none (symbols hang off `mod-<crate>`
 /// hubs; the file grain only exists where co-change demands it).
-type CochangePair = ((String, String), (String, String));
 
 /// The per-kind edge record slices `link_store_edges` writes, bundled into one
 /// argument. Every record is the same shape (anchor -> target list); the field
@@ -33,7 +33,7 @@ struct EdgeRecords<'a> {
     supersedes: &'a [(String, Vec<String>)],
     demonstrates: &'a [(String, Vec<String>)],
     terms: &'a [(String, Vec<String>)],
-    cochange: &'a [CochangePair],
+    cochange: &'a [crate::types::CochangePair],
     test_anchors: &'a std::collections::HashSet<String>,
 }
 
@@ -1205,98 +1205,6 @@ fn link_store_edges<S: GraphStorage>(
 /// and keeping pairs that co-changed ≥3 times. Files map to module anchors
 /// via the gen cache (file → anchors recorded by gen itself), so the whole
 /// pass costs one `git log` — no store scan. Non-repos and git failures
-/// degrade to no edges.
-fn cochange_pairs(root: &Path, cache: &crate::types::GenCache) -> Vec<CochangePair> {
-    use std::collections::BTreeMap;
-    const COCHANGE_COMMITS: &str = "1000";
-    const COCHANGE_MAX_FILES: usize = 20;
-    const COCHANGE_THRESHOLD: u32 = 3;
-
-    // Repo-relative file → file-level anchor: the `#`-stripped prefix of the
-    // file's first symbol anchor (code files have exactly one). Files with no
-    // symbol anchors (prose, empty) drop out here.
-    let mut file_anchor: BTreeMap<&str, String> = BTreeMap::new();
-    for (key, entry) in &cache.entries {
-        for a in &entry.anchors {
-            if let Some(h) = a.find('#') {
-                file_anchor.insert(key.as_str(), a[..h].to_string());
-                break;
-            }
-        }
-    }
-    if file_anchor.is_empty() {
-        return Vec::new();
-    }
-    // Reverse map for attaching the source file to each emitted anchor
-    // (BTreeMap iteration order makes the first-file-wins pick deterministic).
-    let mut anchor_file: BTreeMap<&str, &str> = BTreeMap::new();
-    for (f, a) in &file_anchor {
-        anchor_file.entry(a.as_str()).or_insert(f);
-    }
-
-    let Ok(out) = std::process::Command::new("git")
-        .args([
-            "log",
-            "--no-merges",
-            "-n",
-            COCHANGE_COMMITS,
-            "--pretty=format:@@",
-            "--name-only",
-        ])
-        .current_dir(root)
-        .output()
-    else {
-        return Vec::new();
-    };
-    if !out.status.success() {
-        return Vec::new();
-    }
-    let log = String::from_utf8_lossy(&out.stdout);
-
-    let mut counts: BTreeMap<(String, String), u32> = BTreeMap::new();
-    for block in log.split("@@") {
-        let files: Vec<&str> = block
-            .lines()
-            .map(str::trim)
-            .filter(|l| !l.is_empty())
-            .collect();
-        // Bulk-commit gate on raw files touched, BEFORE anchor mapping — a
-        // 200-file reformat is noise even if only 5 of those files are indexed.
-        if files.len() < 2 || files.len() > COCHANGE_MAX_FILES {
-            continue;
-        }
-        let mut anchors: Vec<&str> = files
-            .iter()
-            .filter_map(|f| file_anchor.get(f).map(String::as_str))
-            .collect();
-        anchors.sort_unstable();
-        anchors.dedup();
-        for i in 0..anchors.len() {
-            for j in i + 1..anchors.len() {
-                *counts
-                    .entry((anchors[i].to_string(), anchors[j].to_string()))
-                    .or_default() += 1;
-            }
-        }
-    }
-    counts
-        .into_iter()
-        .filter(|(_, c)| *c >= COCHANGE_THRESHOLD)
-        .map(|((a, b), _)| {
-            let fa = anchor_file
-                .get(a.as_str())
-                .copied()
-                .unwrap_or("")
-                .to_string();
-            let fb = anchor_file
-                .get(b.as_str())
-                .copied()
-                .unwrap_or("")
-                .to_string();
-            ((a, fa), (b, fb))
-        })
-        .collect()
-}
 
 /// Ensure the store is up to date with the source before a read command serves
 /// from it. This is the "fresh by construction" path: a cheap mtime sweep over
