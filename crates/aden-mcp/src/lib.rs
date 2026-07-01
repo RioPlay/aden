@@ -1193,10 +1193,20 @@ fn clean_stdout(tool: &str, raw: &str) -> String {
 }
 
 async fn run_aden_command(project_dir: &Path, tool: &str, args: &[&str]) -> Result<String, String> {
-    let child = tokio::process::Command::new(resolve_aden_binary())
-        .args(args)
-        .current_dir(project_dir)
-        .output();
+    let mut cmd = tokio::process::Command::new(resolve_aden_binary());
+    cmd.args(args).current_dir(project_dir);
+
+    // SECURITY: do not leak host env (model keys, tokens, etc.) to the child `aden`.
+    // Allowlist only what is required for basic operation (ADEN_* for config,
+    // PATH/HOME for binaries and dirs, USER for some tools).
+    cmd.env_clear();
+    for (k, v) in std::env::vars() {
+        if k.starts_with("ADEN_") || matches!(k.as_str(), "PATH" | "HOME" | "USER" | "SHELL") {
+            cmd.env(&k, &v);
+        }
+    }
+
+    let child = cmd.output();
 
     let output = match tokio::time::timeout(COMMAND_TIMEOUT, child).await {
         Ok(result) => result.map_err(|e| format!("failed to run aden: {}", e))?,
