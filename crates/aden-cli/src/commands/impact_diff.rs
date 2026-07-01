@@ -491,7 +491,7 @@ mod tests {
     ) -> AdenGraph<DocumentNode, AdenEdge> {
         let mut g = AdenGraph::new();
         for a in anchors {
-            g.add_node(fixture_node(a));
+            let _ = g.add_node(fixture_node(a));
         }
         for (src, tgt, et) in edges {
             g.add_edge_by_anchor(src, tgt, AdenEdge { edge_type: *et })

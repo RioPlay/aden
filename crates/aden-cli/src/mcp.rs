@@ -11,6 +11,8 @@ use toml_edit::{
     Array as TomlArray, DocumentMut, Item as TomlItem, Table as TomlTable, value as toml_value,
 };
 
+const DEFAULT_SERVER_NAME: &str = "aden";
+
 /// Supported MCP platforms.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Platform {
@@ -186,6 +188,48 @@ impl Scope {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Preset {
+    Explore,
+    Verify,
+    Admin,
+}
+
+impl Preset {
+    fn from_name(name: &str) -> Option<Preset> {
+        match name.to_lowercase().as_str() {
+            "explore" | "plan" | "read" | "nav" | "navigate" => Some(Preset::Explore),
+            "verify" | "validate" | "change" | "implement" | "impl" => Some(Preset::Verify),
+            "admin" | "ops" | "full" => Some(Preset::Admin),
+            _ => None,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Preset::Explore => "explore",
+            Preset::Verify => "verify",
+            Preset::Admin => "admin",
+        }
+    }
+
+    fn default_name(self) -> &'static str {
+        match self {
+            Preset::Explore => "aden-explore",
+            Preset::Verify => "aden-verify",
+            Preset::Admin => "aden-admin",
+        }
+    }
+
+    fn default_surface(self) -> &'static str {
+        match self {
+            Preset::Explore => "essential",
+            Preset::Verify => "standard",
+            Preset::Admin => "full",
+        }
+    }
+}
+
 /// The scope to use when the user didn't pass `--scope`. Claude Code's canonical
 /// MCP install is user-scoped (`claude mcp add -s user` / `~/.claude.json`);
 /// Windsurf only has a user-global config. Everything else defaults to project.
@@ -213,9 +257,9 @@ fn json_has_server(cfg: &Value, key: &str, name: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// True if aden is registered as a user-scoped MCP server in `~/.claude.json`.
+/// True if a server is registered as a user-scoped MCP server in `~/.claude.json`.
 /// Read-only — never rewrites the file.
-fn claude_user_configured() -> bool {
+fn claude_user_configured(server_name: &str) -> bool {
     let Some(home) = dirs::home_dir() else {
         return false;
     };
@@ -224,7 +268,7 @@ fn claude_user_configured() -> bool {
         return false;
     };
     match serde_json::from_str::<Value>(&text) {
-        Ok(cfg) => json_has_server(&cfg, "mcpServers", "aden"),
+        Ok(cfg) => json_has_server(&cfg, "mcpServers", server_name),
         Err(_) => false,
     }
 }
@@ -254,35 +298,35 @@ fn run_claude_cli(args: &[&str]) -> Result<(), String> {
 
 /// Install aden as a user-scoped Claude Code MCP server via the `claude` CLI.
 /// We shell out rather than hand-edit the large, stateful `~/.claude.json`.
-fn install_claude_user(binary: &str, dry_run: bool) -> Result<(), String> {
-    if claude_user_configured() {
-        println!("  ✓ Already configured (user scope) in ~/.claude.json");
+fn install_claude_user(binary: &str, server_name: &str, dry_run: bool) -> Result<(), String> {
+    if claude_user_configured(server_name) {
+        println!("  ✓ {server_name} already configured (user scope) in ~/.claude.json");
         println!(
-            "    To re-add: aden mcp uninstall --platform claude --scope user, then install again."
+            "    To re-add: aden mcp uninstall --platform claude --scope user --name {server_name}, then install again."
         );
         return Ok(());
     }
     if dry_run {
-        println!("  [dry-run] Would run: claude mcp add aden -s user -- {binary}");
+        println!("  [dry-run] Would run: claude mcp add {server_name} -s user -- {binary}");
         return Ok(());
     }
-    run_claude_cli(&["mcp", "add", "aden", "-s", "user", "--", binary])?;
-    println!("  ✓ Configured (user scope) via: claude mcp add aden -s user -- {binary}");
+    run_claude_cli(&["mcp", "add", server_name, "-s", "user", "--", binary])?;
+    println!("  ✓ Configured (user scope) via: claude mcp add {server_name} -s user -- {binary}");
     Ok(())
 }
 
 /// Remove the user-scoped Claude Code MCP server via the `claude` CLI.
-fn uninstall_claude_user(dry_run: bool) -> Result<(), String> {
-    if !claude_user_configured() {
-        println!("  ✗ aden was not configured (user scope) in ~/.claude.json");
+fn uninstall_claude_user(server_name: &str, dry_run: bool) -> Result<(), String> {
+    if !claude_user_configured(server_name) {
+        println!("  ✗ {server_name} was not configured (user scope) in ~/.claude.json");
         return Ok(());
     }
     if dry_run {
-        println!("  [dry-run] Would run: claude mcp remove aden -s user");
+        println!("  [dry-run] Would run: claude mcp remove {server_name} -s user");
         return Ok(());
     }
-    run_claude_cli(&["mcp", "remove", "aden", "-s", "user"])?;
-    println!("  ✓ Removed aden (user scope) via: claude mcp remove aden -s user");
+    run_claude_cli(&["mcp", "remove", server_name, "-s", "user"])?;
+    println!("  ✓ Removed {server_name} (user scope) via: claude mcp remove {server_name} -s user");
     Ok(())
 }
 
@@ -387,8 +431,8 @@ fn write_toml(path: &Path, doc: &DocumentMut) -> Result<(), String> {
     Ok(())
 }
 
-/// Build the `[mcp_servers.aden]` TOML table for Codex.
-fn codex_aden_table(binary: &str, project: &str, surface: Option<&str>) -> TomlTable {
+/// Build one `[mcp_servers.<name>]` TOML table for Codex.
+fn codex_server_table(binary: &str, project: &str, surface: Option<&str>) -> TomlTable {
     let mut tbl = TomlTable::new();
     tbl["command"] = toml_value(binary);
     let mut args = TomlArray::new();
@@ -411,7 +455,7 @@ fn active_config_path(platform: &Platform) -> PathBuf {
 }
 
 /// Check whether aden is already configured at the given path.
-fn is_configured_at(path: &Path, platform: &Platform) -> Result<bool, String> {
+fn is_configured_at(path: &Path, platform: &Platform, server_name: &str) -> Result<bool, String> {
     if !path.exists() {
         return Ok(false);
     }
@@ -421,11 +465,11 @@ fn is_configured_at(path: &Path, platform: &Platform) -> Result<bool, String> {
         return Ok(doc
             .get(key)
             .and_then(|t| t.as_table())
-            .map(|t| t.contains_key("aden"))
+            .map(|t| t.contains_key(server_name))
             .unwrap_or(false));
     }
     let cfg = read_config(path)?;
-    Ok(json_has_server(&cfg, key, "aden"))
+    Ok(json_has_server(&cfg, key, server_name))
 }
 
 /// Install aden MCP into one platform.
@@ -435,6 +479,7 @@ fn install_platform(
     project: &Path,
     requested_scope: Option<Scope>,
     surface: Option<&str>,
+    server_name: &str,
     dry_run: bool,
 ) -> Result<(), String> {
     let binary = binary.to_string_lossy();
@@ -444,7 +489,7 @@ fn install_platform(
     // than writing a project file (the canonical, common-case install).
     let scope = requested_scope.unwrap_or_else(|| default_scope(platform));
     if matches!(platform, Platform::ClaudeCode) && scope == Scope::User {
-        return install_claude_user(&binary, dry_run);
+        return install_claude_user(&binary, server_name, dry_run);
     }
 
     // File-based install. With an explicit scope, pick the matching config
@@ -458,15 +503,15 @@ fn install_platform(
 
     if platform.is_toml() {
         let mut doc = read_toml(&config_path)?;
-        // Ensure the [mcp_servers] table exists, then set [mcp_servers.aden].
+        // Ensure the [mcp_servers] table exists, then set [mcp_servers.<name>].
         // Mark the parent implicit so a fresh config renders just the
-        // `[mcp_servers.aden]` subtable, not a redundant empty `[mcp_servers]`.
+        // `[mcp_servers.<name>]` subtable, not a redundant empty `[mcp_servers]`.
         if !doc.get(key).map(|t| t.is_table()).unwrap_or(false) {
             let mut parent = TomlTable::new();
             parent.set_implicit(true);
             doc[key] = TomlItem::Table(parent);
         }
-        doc[key]["aden"] = TomlItem::Table(codex_aden_table(&binary, &project, surface));
+        doc[key][server_name] = TomlItem::Table(codex_server_table(&binary, &project, surface));
 
         if dry_run {
             println!("  [dry-run] Would write: {}", config_path.display());
@@ -484,10 +529,10 @@ fn install_platform(
         cfg[key] = Value::Object(Default::default());
     }
 
-    // Merge or create the aden entry
+    // Merge or create the requested server entry.
     if let Some(Value::Object(servers)) = cfg.get_mut(key) {
         let aden_value = platform.aden_config(&binary, &project, surface);
-        servers.insert("aden".to_string(), aden_value);
+        servers.insert(server_name.to_string(), aden_value);
     }
 
     if dry_run {
@@ -504,11 +549,12 @@ fn install_platform(
 fn uninstall_platform(
     platform: &Platform,
     requested_scope: Option<Scope>,
+    server_name: &str,
     dry_run: bool,
 ) -> Result<(), String> {
     let scope = requested_scope.unwrap_or_else(|| default_scope(platform));
     if matches!(platform, Platform::ClaudeCode) && scope == Scope::User {
-        return uninstall_claude_user(dry_run);
+        return uninstall_claude_user(server_name, dry_run);
     }
 
     let config_path = match requested_scope {
@@ -527,10 +573,13 @@ fn uninstall_platform(
         let changed = doc
             .get_mut(key)
             .and_then(|t| t.as_table_mut())
-            .map(|t| t.remove("aden").is_some())
+            .map(|t| t.remove(server_name).is_some())
             .unwrap_or(false);
         if !changed {
-            println!("  ✗ aden was not configured in: {}", config_path.display());
+            println!(
+                "  ✗ {server_name} was not configured in: {}",
+                config_path.display()
+            );
             return Ok(());
         }
         if dry_run {
@@ -538,19 +587,22 @@ fn uninstall_platform(
             return Ok(());
         }
         write_toml(&config_path, &doc)?;
-        println!("  ✓ Removed aden from: {}", config_path.display());
+        println!("  ✓ Removed {server_name} from: {}", config_path.display());
         return Ok(());
     }
 
     let mut cfg = read_config(&config_path)?;
 
     let changed = match cfg.get_mut(key) {
-        Some(Value::Object(servers)) => servers.remove("aden").is_some(),
+        Some(Value::Object(servers)) => servers.remove(server_name).is_some(),
         _ => false,
     };
 
     if !changed {
-        println!("  ✗ aden was not configured in: {}", config_path.display());
+        println!(
+            "  ✗ {server_name} was not configured in: {}",
+            config_path.display()
+        );
         return Ok(());
     }
 
@@ -560,7 +612,7 @@ fn uninstall_platform(
     }
 
     write_config(&config_path, &cfg)?;
-    println!("  ✓ Removed aden from: {}", config_path.display());
+    println!("  ✓ Removed {server_name} from: {}", config_path.display());
     Ok(())
 }
 
@@ -580,6 +632,59 @@ fn parse_scope(scope_name: Option<&str>) -> Option<Scope> {
     }
 }
 
+fn parse_preset(preset_name: Option<&str>) -> Result<Option<Preset>, String> {
+    match preset_name {
+        None => Ok(None),
+        Some(s) => Preset::from_name(s)
+            .map(Some)
+            .ok_or_else(|| format!("invalid --preset '{s}'; expected explore | verify | admin")),
+    }
+}
+
+fn validate_server_name(name: Option<&str>) -> Result<String, String> {
+    let name = name.unwrap_or(DEFAULT_SERVER_NAME);
+    if name.is_empty() {
+        return Err("--name cannot be empty".to_string());
+    }
+    if !name
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    {
+        return Err(format!(
+            "invalid --name '{name}'; use only ASCII letters, numbers, '-' or '_'"
+        ));
+    }
+    Ok(name.to_string())
+}
+
+fn validate_surface<'a>(surface: Option<&'a str>) -> Result<Option<&'a str>, String> {
+    if let Some(s) = surface
+        && !matches!(s, "essential" | "standard" | "full")
+    {
+        return Err(format!(
+            "invalid --surface '{s}'; expected essential | standard | full"
+        ));
+    }
+    Ok(surface)
+}
+
+fn resolve_install_profile<'a>(
+    preset: Option<Preset>,
+    surface: Option<&'a str>,
+    server_name: Option<&str>,
+) -> Result<(String, Option<&'a str>), String> {
+    let name = server_name.or_else(|| preset.map(Preset::default_name));
+    let surface = surface.or_else(|| preset.map(Preset::default_surface));
+    Ok((validate_server_name(name)?, validate_surface(surface)?))
+}
+
+fn resolve_server_name(
+    preset: Option<Preset>,
+    server_name: Option<&str>,
+) -> Result<String, String> {
+    validate_server_name(server_name.or_else(|| preset.map(Preset::default_name)))
+}
+
 /// Install aden MCP into selected platforms.
 pub fn run_install(
     names: &[String],
@@ -587,18 +692,14 @@ pub fn run_install(
     project_override: Option<&Path>,
     scope_name: Option<&str>,
     surface: Option<&str>,
+    preset_name: Option<&str>,
+    server_name: Option<&str>,
     all: bool,
     dry_run: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let scope = parse_scope(scope_name);
-    // Validate the surface level up front so a typo fails loudly, not silently.
-    if let Some(s) = surface
-        && !matches!(s, "essential" | "standard" | "full")
-    {
-        return Err(
-            format!("invalid --surface '{s}'; expected essential | standard | full").into(),
-        );
-    }
+    let preset = parse_preset(preset_name)?;
+    let (server_name, surface) = resolve_install_profile(preset, surface, server_name)?;
 
     // Resolve platforms
     let platforms: Vec<Platform> = if names.is_empty() {
@@ -670,6 +771,10 @@ pub fn run_install(
     let project = absolute_path(&project)?;
 
     println!("Installing aden MCP server...");
+    println!("  Name   : {server_name}");
+    if let Some(preset) = preset {
+        println!("  Preset : {}", preset.label());
+    }
     println!("  Binary : {}", binary.display());
     println!("  Project: {}", project.display());
     println!("  Surface: {}", surface.unwrap_or("essential (default)"));
@@ -688,7 +793,15 @@ pub fn run_install(
             platform.display_name(),
             eff.label()
         );
-        match install_platform(platform, &binary, &project, scope, surface, dry_run) {
+        match install_platform(
+            platform,
+            &binary,
+            &project,
+            scope,
+            surface,
+            &server_name,
+            dry_run,
+        ) {
             Ok(()) => ok += 1,
             Err(e) => {
                 eprintln!("  Error: {}", e);
@@ -713,10 +826,14 @@ pub fn run_install(
 pub fn run_uninstall(
     names: &[String],
     scope_name: Option<&str>,
+    preset_name: Option<&str>,
+    server_name: Option<&str>,
     all: bool,
     dry_run: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let scope = parse_scope(scope_name);
+    let preset = parse_preset(preset_name)?;
+    let server_name = resolve_server_name(preset, server_name)?;
     let platforms: Vec<Platform> = if names.is_empty() {
         if all {
             Platform::all().to_vec()
@@ -764,7 +881,7 @@ pub fn run_uninstall(
             platform.display_name(),
             eff.label()
         );
-        match uninstall_platform(platform, scope, dry_run) {
+        match uninstall_platform(platform, scope, &server_name, dry_run) {
             Ok(()) => ok += 1,
             Err(e) => {
                 eprintln!("  Error: {}", e);
@@ -784,8 +901,17 @@ pub fn run_uninstall(
 }
 
 /// List all supported platforms and their status.
-pub fn run_list() -> Result<(), Box<dyn std::error::Error>> {
+pub fn run_list(
+    preset_name: Option<&str>,
+    server_name: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let preset = parse_preset(preset_name)?;
+    let server_name = resolve_server_name(preset, server_name)?;
     println!("Supported MCP Platforms");
+    println!("Server name: {server_name}");
+    if let Some(preset) = preset {
+        println!("Preset: {}", preset.label());
+    }
     println!("══════════════════════════════════════════════════════════════════");
     println!(
         "{:<18} {:<10} {:<12} Config Path",
@@ -802,9 +928,9 @@ pub fn run_list() -> Result<(), Box<dyn std::error::Error>> {
             let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"));
             let user_json = home.join(".claude.json");
             let project_cfg = active_config_path(platform);
-            let project_configured =
-                project_cfg.exists() && is_configured_at(&project_cfg, platform).unwrap_or(false);
-            if claude_user_configured() {
+            let project_configured = project_cfg.exists()
+                && is_configured_at(&project_cfg, platform, &server_name).unwrap_or(false);
+            if claude_user_configured(&server_name) {
                 (true, format!("{} (user scope)", user_json.display()))
             } else if project_configured {
                 (true, format!("{} (project scope)", project_cfg.display()))
@@ -816,8 +942,8 @@ pub fn run_list() -> Result<(), Box<dyn std::error::Error>> {
             }
         } else {
             let config_path = active_config_path(platform);
-            let configured =
-                config_path.exists() && is_configured_at(&config_path, platform).unwrap_or(false);
+            let configured = config_path.exists()
+                && is_configured_at(&config_path, platform, &server_name).unwrap_or(false);
             let path_str = if config_path.exists() {
                 config_path.display().to_string()
             } else {
@@ -841,13 +967,21 @@ pub fn run_list() -> Result<(), Box<dyn std::error::Error>> {
     println!();
     println!("Legend:");
     println!("  Detected   – config file or directory exists for this platform");
-    println!("  Configured – aden MCP server is present in the config");
+    println!("  Configured – named MCP server is present in the config");
     println!();
-    println!("To install:   aden mcp install [--platform <name>] [--scope user|project] [--all]");
-    println!("To uninstall: aden mcp uninstall [--platform <name>] [--scope user|project] [--all]");
+    println!(
+        "To install:   aden mcp install [--platform <platform>] [--scope user|project] [--preset explore|verify|admin] [--name {server_name}] [--all]"
+    );
+    println!(
+        "To uninstall: aden mcp uninstall [--platform <platform>] [--scope user|project] [--preset explore|verify|admin] [--name {server_name}] [--all]"
+    );
     println!();
     println!("Scope: Claude Code defaults to user (global, via `claude mcp add -s user`);");
-    println!("       other platforms default to a project-local config file.");
+    println!("       this is one global `aden` server, not one server per folder.");
+    println!("       Use `--scope project` inside each repo for per-folder servers.");
+    println!("       Use `--preset explore|verify|admin` for token-scoped local profiles.");
+    println!("       Use `--name` and `--surface` only when overriding a preset.");
+    println!("       Other platforms default to a project-local config file.");
 
     Ok(())
 }
@@ -995,7 +1129,7 @@ mod tests {
         assert_eq!(oc["command"][2], "--surface");
         assert_eq!(oc["command"][3], "full");
         // Codex (TOML) likewise.
-        let tbl = codex_aden_table("aden-mcp", "/proj", Some("essential"));
+        let tbl = codex_server_table("aden-mcp", "/proj", Some("essential"));
         let args = tbl["args"].as_array().unwrap();
         assert_eq!(args.get(1).and_then(|v| v.as_str()), Some("--surface"));
         assert_eq!(args.get(2).and_then(|v| v.as_str()), Some("essential"));
@@ -1006,14 +1140,24 @@ mod tests {
 
     #[test]
     fn run_install_rejects_invalid_surface() {
-        let err = run_install(&[], None, None, None, Some("turbo"), false, true)
-            .expect_err("invalid surface must error");
+        let err = run_install(
+            &[],
+            None,
+            None,
+            None,
+            Some("turbo"),
+            None,
+            None,
+            false,
+            true,
+        )
+        .expect_err("invalid surface must error");
         assert!(err.to_string().contains("invalid --surface"));
     }
 
     #[test]
     fn codex_table_has_command_and_args() {
-        let tbl = codex_aden_table("aden-mcp", "/proj", None);
+        let tbl = codex_server_table("aden-mcp", "/proj", None);
         assert_eq!(tbl["command"].as_str(), Some("aden-mcp"));
         assert_eq!(
             tbl["args"]
@@ -1035,7 +1179,9 @@ mod tests {
         if !doc.get(key).map(|t| t.is_table()).unwrap_or(false) {
             doc[key] = TomlItem::Table(TomlTable::new());
         }
-        doc[key]["aden"] = TomlItem::Table(codex_aden_table("aden-mcp", "/proj", None));
+        doc[key]["aden"] = TomlItem::Table(codex_server_table("aden-mcp", "/proj", None));
+        doc[key]["aden-plan"] =
+            TomlItem::Table(codex_server_table("aden-mcp", "/proj", Some("essential")));
 
         let out = doc.to_string();
         assert!(
@@ -1055,6 +1201,10 @@ mod tests {
             "missing aden table:\n{out}"
         );
         assert!(
+            out.contains("[mcp_servers.aden-plan]"),
+            "missing named aden table:\n{out}"
+        );
+        assert!(
             out.contains("command = \"aden-mcp\""),
             "missing aden cmd:\n{out}"
         );
@@ -1070,7 +1220,7 @@ mod tests {
 
         let mut doc = read_toml(&path).unwrap(); // empty
         doc["mcp_servers"] = TomlItem::Table(TomlTable::new());
-        doc["mcp_servers"]["aden"] = TomlItem::Table(codex_aden_table("aden-mcp", "/proj", None));
+        doc["mcp_servers"]["aden"] = TomlItem::Table(codex_server_table("aden-mcp", "/proj", None));
         write_toml(&path, &doc).unwrap();
 
         let reloaded = read_toml(&path).unwrap();
@@ -1091,6 +1241,57 @@ mod tests {
         assert_eq!(Scope::from_name("Project"), Some(Scope::Project));
         assert_eq!(Scope::from_name("local"), Some(Scope::Project));
         assert_eq!(Scope::from_name("nonsense"), None);
+    }
+
+    #[test]
+    fn server_name_validation_allows_portable_profile_names() {
+        assert_eq!(validate_server_name(None).unwrap(), "aden");
+        assert_eq!(
+            validate_server_name(Some("aden-plan")).unwrap(),
+            "aden-plan"
+        );
+        assert_eq!(
+            validate_server_name(Some("aden_impl")).unwrap(),
+            "aden_impl"
+        );
+        assert!(validate_server_name(Some("")).is_err());
+        assert!(validate_server_name(Some("aden plan")).is_err());
+        assert!(validate_server_name(Some("aden.plan")).is_err());
+    }
+
+    #[test]
+    fn presets_resolve_to_workflow_names_and_surfaces() {
+        let explore = Preset::from_name("plan").unwrap();
+        assert_eq!(explore, Preset::Explore);
+        assert_eq!(explore.default_name(), "aden-explore");
+        assert_eq!(explore.default_surface(), "essential");
+
+        let verify = Preset::from_name("implement").unwrap();
+        assert_eq!(verify, Preset::Verify);
+        assert_eq!(verify.default_name(), "aden-verify");
+        assert_eq!(verify.default_surface(), "standard");
+
+        let admin = Preset::from_name("ops").unwrap();
+        assert_eq!(admin, Preset::Admin);
+        assert_eq!(admin.default_name(), "aden-admin");
+        assert_eq!(admin.default_surface(), "full");
+        assert!(Preset::from_name("unknown").is_none());
+    }
+
+    #[test]
+    fn preset_defaults_can_be_overridden() {
+        let (name, surface) = resolve_install_profile(Some(Preset::Verify), None, None).unwrap();
+        assert_eq!(name, "aden-verify");
+        assert_eq!(surface, Some("standard"));
+
+        let (name, surface) =
+            resolve_install_profile(Some(Preset::Verify), Some("essential"), Some("aden-fast"))
+                .unwrap();
+        assert_eq!(name, "aden-fast");
+        assert_eq!(surface, Some("essential"));
+
+        let name = resolve_server_name(Some(Preset::Admin), None).unwrap();
+        assert_eq!(name, "aden-admin");
     }
 
     #[test]

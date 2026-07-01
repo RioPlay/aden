@@ -83,7 +83,6 @@ struct EmittedSymbol {
 }
 
 /// Work item returned from parallel file processing.
-///
 /// `Reindexed` is emitted whenever a file was (re)parsed — even if it produced
 /// ZERO symbols (e.g. every function was deleted). That is deliberate: the
 /// prune step diffs each reindexed file's fresh anchor set against the set the
@@ -223,8 +222,7 @@ fn is_adr_doc_anchor(anchor: &str) -> bool {
 /// block — it is redundant with the `Callee` table for display and is no longer
 /// needed for linking (callees are carried out of the parse phase directly), so
 /// storing it just bloats the (already large) store on big repos.
-///
-/// pub(crate): heal's merge reconciliation re-parses source to build the
+/// `pub(crate)`: heal's merge reconciliation re-parses source to build the
 /// `ground` layer and must apply the same slimming, or every reconcile sees
 /// phantom diffs against the slimmed store/base.
 pub(crate) fn slim_doc_for_store(doc: &mut aden_core::Document) {
@@ -495,6 +493,23 @@ fn resolve_doc_ref<'a>(
     }
 }
 
+fn resolve_doc_file_ref<'a>(
+    target: &str,
+    referrer: &str,
+    files: &HashMap<String, Vec<&'a str>>,
+) -> Option<&'a str> {
+    let stem = std::path::Path::new(target)
+        .file_stem()
+        .and_then(|s| s.to_str())?;
+    let cands = files.get(stem)?;
+    let ref_file = doc_anchor_file(referrer);
+    cands
+        .iter()
+        .copied()
+        .find(|a| doc_anchor_file(a) != ref_file)
+        .or_else(|| cands.first().copied())
+}
+
 /// If `callee` is a call through the current instance (`self.x`, `this.x`,
 /// `$this->x`, `Self::x`), return the part after the receiver. Returns `None`
 /// for everything else, so non-self calls fall through to ordinary resolution.
@@ -714,10 +729,21 @@ fn link_store_edges<S: GraphStorage>(
     // Candidate lists are sorted for deterministic collision picks.
     let mut doc_frag_index: HashMap<&str, Vec<&str>> = HashMap::new();
     let mut doc_slug_index: HashMap<&str, Vec<&str>> = HashMap::new();
+    let mut doc_file_index: HashMap<String, Vec<&str>> = HashMap::new();
     for anchor in &anchors {
         let Some(rest) = anchor.strip_prefix("aden://doc/") else {
             continue;
         };
+        if let Some(file_key) = doc_anchor_file(anchor)
+            && let Some(stem) = std::path::Path::new(file_key)
+                .file_stem()
+                .and_then(|s| s.to_str())
+        {
+            doc_file_index
+                .entry(stem.to_string())
+                .or_default()
+                .push(anchor.as_str());
+        }
         let fragment = match rest.find('#') {
             Some(h) => &rest[h + 1..],
             None => match rest.rfind('/') {
@@ -750,6 +776,10 @@ fn link_store_edges<S: GraphStorage>(
         .values_mut()
         .chain(doc_slug_index.values_mut())
     {
+        cands.sort_unstable();
+        cands.dedup();
+    }
+    for cands in doc_file_index.values_mut() {
         cands.sort_unstable();
         cands.dedup();
     }
@@ -843,14 +873,14 @@ fn link_store_edges<S: GraphStorage>(
     // are mutually reachable).
     for (anchor, refs) in ref_records {
         for r in refs {
-            let Some(frag) = r.strip_prefix("ref:") else {
-                // Unprefixed records no longer exist (the parsers own
-                // extraction and always emit `ref:`); skip rather than guess.
-                continue;
+            let target = if let Some(frag) = r.strip_prefix("ref:") {
+                resolve_doc_ref(frag, anchor, &doc_frag_index, &doc_slug_index)
+            } else if let Some(file) = r.strip_prefix("file:") {
+                resolve_doc_file_ref(file, anchor, &doc_file_index)
+            } else {
+                None
             };
-            if let Some(target) = resolve_doc_ref(frag, anchor, &doc_frag_index, &doc_slug_index)
-                && target != anchor.as_str()
-            {
+            if let Some(target) = target && target != anchor.as_str() {
                 edges.push((anchor.clone(), target.to_string(), EdgeType::RelatesTo));
                 edges.push((target.to_string(), anchor.clone(), EdgeType::RelatesTo));
             }
@@ -2415,6 +2445,66 @@ mod link_tests {
         assert!(
             back.contains(&(post.to_string(), EdgeType::RelatesTo)),
             "RelatesTo must be emitted both ways; got {back:?}"
+        );
+    }
+
+    #[test]
+    fn file_level_prose_ref_links_representative_doc_node() {
+        use aden_core::{Block, Document, EdgeType, NodeType};
+        let dir = tempfile::tempdir().unwrap();
+        let storage = Storage::new(dir.path().to_str().unwrap()).unwrap();
+        let mk = |anchor: &str| Document {
+            anchor: anchor.into(),
+            node_type: NodeType::Module,
+            attributes: Default::default(),
+            blocks: vec![Block::Paragraph("body".into())],
+            source_span: None,
+            metadata: None,
+            confidence: 1.0,
+        };
+        let post = "aden://doc/p/post.adoc/h2intro";
+        let guide = "aden://doc/p/guide.adoc/h1guide";
+        let other = "aden://doc/p/other.adoc/h1other";
+        for a in [post, guide, other] {
+            storage.put_document(&mk(a)).unwrap();
+        }
+        storage.flush().unwrap();
+
+        let ref_records = vec![(
+            post.to_string(),
+            vec!["file:guide.adoc".to_string(), "file:missing.adoc".to_string()],
+        )];
+        link_store_edges(
+            &storage,
+            EdgeRecords {
+                calls: &[],
+                uses: &[],
+                refs: &ref_records,
+                implements: &[],
+                mutates: &[],
+                mentions: &[],
+                supersedes: &[],
+                demonstrates: &[],
+                terms: &[],
+                cochange: &[],
+                test_anchors: &std::collections::HashSet::new(),
+            },
+        )
+        .unwrap();
+
+        let out = storage.get_outgoing_edges(post).unwrap();
+        assert!(
+            out.contains(&(guide.to_string(), EdgeType::RelatesTo)),
+            "file-level xref should RelatesTo the target file representative; got {out:?}"
+        );
+        assert!(
+            !out.iter().any(|(t, _)| t == other),
+            "file-level xref must not link unrelated files; got {out:?}"
+        );
+        let back = storage.get_outgoing_edges(guide).unwrap();
+        assert!(
+            back.contains(&(post.to_string(), EdgeType::RelatesTo)),
+            "file-level RelatesTo must be bidirectional; got {back:?}"
         );
     }
 

@@ -7,6 +7,8 @@ license.workspace = true
 
 [dependencies]
 aden-core = { path = "../aden-core" }
+regex = "1.12.3"
+thiserror = "2.0.18"
 tree-sitter = { version = "0.26", optional = true }
 # Slim by default: `dynamic-loading` (no `download`) drops the ureq/sha2/tar/zstd
 # stack tslp's default `download` feature would pull. The build-time grammars

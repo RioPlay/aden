@@ -23,7 +23,11 @@ use std::path::PathBuf;
 ///    `Justifies` for ADR-doc mentions and `AssociatedWith` from git
 ///    co-change. Without the bump, mtime-skipped docs would never re-emit
 ///    their supersede refs.
-pub const GEN_LOGIC_VERSION: u32 = 4;
+/// 5: AsciiDoc glossary hardening — fragment-only `[[id]]Term::` glossaries
+///    (Hugo frontmatter, no `= Glossary` body title) now emit Term nodes and
+///    `DefinesTerm` edges; preprocessor-aware indexing path unchanged but
+///    emission shape for glossary-titled files shifts.
+pub const GEN_LOGIC_VERSION: u32 = 5;
 
 /// Incremental generation cache: maps contract file path → metadata.
 #[derive(Default, Serialize, Deserialize)]

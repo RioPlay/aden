@@ -932,6 +932,18 @@ enum McpAction {
             help = "Tool surface to bake into the config: essential (default), standard, or full"
         )]
         surface: Option<String>,
+        #[arg(
+            long,
+            value_name = "PRESET",
+            help = "Workflow preset: explore, verify, or admin. Sets default name and surface"
+        )]
+        preset: Option<String>,
+        #[arg(
+            long,
+            value_name = "NAME",
+            help = "MCP server name to write in client config (default: aden)"
+        )]
+        name: Option<String>,
         #[arg(long, help = "Install for all platforms, not just detected ones")]
         all: bool,
         #[arg(long, help = "Show what would be done without writing files")]
@@ -947,13 +959,38 @@ enum McpAction {
             help = "Uninstall scope: user (global) or project (local). Default: user for Claude Code, project otherwise"
         )]
         scope: Option<String>,
+        #[arg(
+            long,
+            value_name = "NAME",
+            help = "MCP server name to remove from client config (default: aden)"
+        )]
+        name: Option<String>,
+        #[arg(
+            long,
+            value_name = "PRESET",
+            help = "Workflow preset whose server name should be removed: explore, verify, or admin"
+        )]
+        preset: Option<String>,
         #[arg(long, help = "Remove from all supported platforms")]
         all: bool,
         #[arg(long, help = "Show what would be done without writing files")]
         dry_run: bool,
     },
     /// List supported platforms and their status
-    List,
+    List {
+        #[arg(
+            long,
+            value_name = "NAME",
+            help = "MCP server name to look for in client config (default: aden)"
+        )]
+        name: Option<String>,
+        #[arg(
+            long,
+            value_name = "PRESET",
+            help = "Workflow preset whose server name should be checked: explore, verify, or admin"
+        )]
+        preset: Option<String>,
+    },
     /// Start HTTP server for CI/agent integration
     Serve {
         #[arg(long, value_name = "PORT", default_value = "3030")]
@@ -1534,6 +1571,8 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
                 project,
                 scope,
                 surface,
+                preset,
+                name,
                 all,
                 dry_run,
             } => {
@@ -1544,6 +1583,8 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
                     project.as_deref(),
                     scope.as_deref(),
                     surface.as_deref(),
+                    preset.as_deref(),
+                    name.as_deref(),
                     all,
                     dry_run,
                 )
@@ -1551,13 +1592,22 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
             McpAction::Uninstall {
                 platform,
                 scope,
+                name,
+                preset,
                 all,
                 dry_run,
             } => {
                 let platforms = platform.map_or_else(Vec::new, |p| vec![p]);
-                mcp::run_uninstall(&platforms, scope.as_deref(), all, dry_run)
+                mcp::run_uninstall(
+                    &platforms,
+                    scope.as_deref(),
+                    preset.as_deref(),
+                    name.as_deref(),
+                    all,
+                    dry_run,
+                )
             }
-            McpAction::List => mcp::run_list(),
+            McpAction::List { name, preset } => mcp::run_list(preset.as_deref(), name.as_deref()),
             McpAction::Serve { port, path } => mcp::run_http_server(&path, port),
         },
         Commands::Store { action } => match action {

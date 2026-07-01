@@ -718,9 +718,12 @@ pub fn perform_check(path: &Path) -> Result<Vec<String>, Box<dyn std::error::Err
 /// Only genuine LINK constructs are checked — markdown `[text](path)` and adoc
 /// `xref:`/`link:`/`include::` — so an illustrative backtick mention of a path
 /// (e.g. a scaffolded `src/main.rs`, or a command's example `--out` target) is
-/// NOT flagged. A target is resolved relative to the doc's own directory, or to
-/// the repo root when it starts with a real top-level directory. URLs, anchors,
-/// globs, and placeholders are skipped. Lines with `aden:allow-path` are exempt.
+/// NOT flagged. AsciiDoc passthrough (`+...+`) and monospace spans are stripped
+/// before matching so syntax examples like `` `xref:file.adoc#frag` `` or
+/// `+xref:other.adoc#section[label]+` do not fire. A target is resolved
+/// relative to the doc's own directory, or to the repo root when it starts with a
+/// real top-level directory. URLs, anchors, globs, and placeholders are
+/// skipped. Lines with `aden:allow-path` are exempt.
 fn check_doc_path_references(root: &Path) -> Vec<String> {
     use std::collections::HashSet;
 
@@ -768,9 +771,10 @@ fn check_doc_path_references(root: &Path) -> Vec<String> {
             if in_fence || line.contains("aden:allow-path") {
                 continue;
             }
+            let scan_line = strip_illustrative_spans(line);
             let targets = md_link
-                .captures_iter(line)
-                .chain(adoc_link.captures_iter(line))
+                .captures_iter(&scan_line)
+                .chain(adoc_link.captures_iter(&scan_line))
                 .filter_map(|c| c.get(1).map(|m| m.as_str().to_string()));
             for target in targets {
                 if let Some(resolved) = resolve_doc_link(&target, doc_dir, root, &top_dirs)
@@ -791,6 +795,39 @@ fn check_doc_path_references(root: &Path) -> Vec<String> {
     }
     findings.sort();
     findings
+}
+
+/// Strip monospace and AsciiDoc passthrough spans so illustrative syntax
+/// examples are not mistaken for live link constructs during path checking.
+fn strip_illustrative_spans(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut chars = line.chars().peekable();
+    let mut in_mono = false;
+    let mut in_pass = false;
+    while let Some(c) = chars.next() {
+        if c == '`' && !in_pass {
+            if chars.peek() == Some(&'`') {
+                chars.next();
+                while let Some(ch) = chars.next() {
+                    if ch == '`' && chars.peek() == Some(&'`') {
+                        chars.next();
+                        break;
+                    }
+                }
+                continue;
+            }
+            in_mono = !in_mono;
+            continue;
+        }
+        if c == '+' && !in_mono {
+            in_pass = !in_pass;
+            continue;
+        }
+        if !in_mono && !in_pass {
+            out.push(c);
+        }
+    }
+    out
 }
 
 /// Resolve a doc link target to a filesystem path to existence-check, or `None`
@@ -1482,6 +1519,32 @@ mod tests {
     }
 
     #[test]
+    fn doc_path_gate_ignores_monospace_and_passthrough_xref_examples() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("docs")).unwrap();
+        std::fs::write(
+            root.join("docs/guide.adoc"),
+            "= Guide\n\
+             The illustrative `xref:file.adoc#fragment` example must not flag.\n\
+             Passthrough +xref:other-doc.adoc#section[label]+ is also illustrative.\n\
+             Live xref:docs/missing.adoc[broken] must still flag.\n",
+        )
+        .unwrap();
+
+        let findings = check_doc_path_references(root);
+        assert_eq!(
+            findings.len(),
+            1,
+            "only the live broken link must flag: {findings:?}"
+        );
+        assert!(
+            findings[0].contains("docs/missing.adoc"),
+            "got {findings:?}"
+        );
+    }
+
+    #[test]
     fn classify_orphans_dedups_colliding_anchors() {
         use aden_graph::{AdenEdge, AdenGraph, DocumentNode};
         let orphan = |src: &str| DocumentNode {
@@ -1497,17 +1560,16 @@ mod tests {
             source_path: std::path::PathBuf::from(src),
             parsed: None,
         };
-        // Two distinct files collapse to the same anchor "dup". add_node keeps
-        // both petgraph nodes but anchor_to_index maps "dup" to one — so
-        // orphans() repeats the anchor while get_node() collapses it.
+        // M3: add_node rejects duplicate anchors, so only one node lands. The
+        // classify_orphans dedup still matters when orphans() repeats an anchor
+        // (legacy cached graphs); here we verify the single-anchor orphan path.
         let mut graph: AdenGraph<DocumentNode, AdenEdge> = AdenGraph::new();
-        graph.add_node(orphan("a.rs"));
-        graph.add_node(orphan("b.rs"));
-        assert_eq!(
-            graph.orphans().len(),
-            2,
-            "precondition: orphans() yields the colliding anchor once per node"
+        graph.add_node(orphan("a.rs")).expect("first node");
+        assert!(
+            graph.add_node(orphan("b.rs")).is_err(),
+            "duplicate anchor must be rejected at insert"
         );
+        assert_eq!(graph.orphans(), vec!["dup"]);
 
         // classify_orphans must report the distinct orphan anchor ONCE.
         let (_expected, actionable) = classify_orphans(&graph);

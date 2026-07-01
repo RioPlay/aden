@@ -203,15 +203,17 @@ Negative / costs:
 . The `ADEN_LEXICON_ON` opt-in means retrieval improvements are invisible to users who do
   not set the variable. Promotion to default requires corpus-validation across diverse
   external repos before it can be reconsidered.
-. `GEN_LOGIC_VERSION=4` invalidates all version-3 stores. For large repos the first
-  `gen` after upgrade is a full rebuild; incremental gen resumes normally afterward.
+. `GEN_LOGIC_VERSION=5` invalidates all version-4 stores (AsciiDoc glossary/preprocessor
+  emission). For large repos the first `gen` after upgrade is a full rebuild; incremental
+  gen resumes normally afterward.
 
 == Status
 
 Accepted. All four areas are implemented and shipped on `main` as of 2026-06-20.
 
 Wave 3 edges (`Supersedes`, `Justifies`, `AssociatedWith`) are emitted and
-census-verified. `GEN_LOGIC_VERSION` is 4. The store-first architecture has been in
+census-verified. `GEN_LOGIC_VERSION` is 5 (AsciiDoc indexing hygiene on branch
+`fix/audit-coxn-hygiene`; pending merge). The store-first architecture has been in
 place since the removal of working-tree contract emission (no separate ADR was written
 at that time; this document is the record). MCP surface tiering shipped in PR #42
 (three-tier surface) and `aden mcp install --surface`. Dual-substrate retrieval shipped

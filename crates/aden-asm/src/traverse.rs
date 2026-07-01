@@ -1468,19 +1468,27 @@ mod tests {
     #[test]
     fn mmr_skips_redundant_and_includes_diverse() {
         let mut graph = AdenGraph::<DocumentNode, AdenEdge>::new();
-        let hub = graph.add_node(node_with_text("hub", "hub overview of the module"));
-        let a = graph.add_node(node_with_text(
-            "leaf-a",
-            "parse the incoming http request body and validate the json payload fields",
-        ));
-        let b = graph.add_node(node_with_text(
-            "leaf-b",
-            "parse the incoming http request body and validate the json payload values",
-        ));
-        let c = graph.add_node(node_with_text(
-            "leaf-c",
-            "render a templated response and persist the signed session cookie securely",
-        ));
+        let hub = graph
+            .add_node(node_with_text("hub", "hub overview of the module"))
+            .unwrap();
+        let a = graph
+            .add_node(node_with_text(
+                "leaf-a",
+                "parse the incoming http request body and validate the json payload fields",
+            ))
+            .unwrap();
+        let b = graph
+            .add_node(node_with_text(
+                "leaf-b",
+                "parse the incoming http request body and validate the json payload values",
+            ))
+            .unwrap();
+        let c = graph
+            .add_node(node_with_text(
+                "leaf-c",
+                "render a templated response and persist the signed session cookie securely",
+            ))
+            .unwrap();
         for leaf in [a, b, c] {
             graph.graph.add_edge(
                 hub,
@@ -1590,16 +1598,20 @@ mod tests {
         let mut graph = AdenGraph::<DocumentNode, AdenEdge>::new();
         // A hub plus several small leaf docs, each big enough that the separator
         // accounting matters but small enough that several fit a tight budget.
-        let hub = graph.add_node(node_with_text(
-            "hub",
-            "the hub doc body with some words to spend a few tokens",
-        ));
+        let hub = graph
+            .add_node(node_with_text(
+                "hub",
+                "the hub doc body with some words to spend a few tokens",
+            ))
+            .unwrap();
         let mut leaves = Vec::new();
         for i in 0..12 {
-            let n = graph.add_node(node_with_text(
-                &format!("leaf-{i:02}"),
-                "leaf paragraph content with several words consuming tokens here",
-            ));
+            let n = graph
+                .add_node(node_with_text(
+                    &format!("leaf-{i:02}"),
+                    "leaf paragraph content with several words consuming tokens here",
+                ))
+                .unwrap();
             leaves.push(n);
         }
         // Fan the hub out to every leaf via Calls edges.
@@ -1639,12 +1651,16 @@ mod tests {
     #[test]
     fn assemble_adg_output_never_exceeds_token_budget() {
         let mut graph = AdenGraph::<DocumentNode, AdenEdge>::new();
-        let hub = graph.add_node(node_with_text("hub", "hub body words for tokens"));
+        let hub = graph
+            .add_node(node_with_text("hub", "hub body words for tokens"))
+            .unwrap();
         for i in 0..10 {
-            let n = graph.add_node(node_with_text(
-                &format!("leaf-{i:02}"),
-                "leaf body words consuming a few tokens each",
-            ));
+            let n = graph
+                .add_node(node_with_text(
+                    &format!("leaf-{i:02}"),
+                    "leaf body words consuming a few tokens each",
+                ))
+                .unwrap();
             graph.add_edge(
                 hub,
                 n,

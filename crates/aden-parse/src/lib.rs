@@ -10,6 +10,7 @@
 //! extraction only (no call resolution).
 
 pub mod asciidoc;
+pub mod asciidoc_preprocess;
 pub mod c_resolver;
 pub mod csharp_resolver;
 pub mod csv;

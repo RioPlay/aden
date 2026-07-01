@@ -39,6 +39,23 @@ pub enum PreprocessError {
     PathTraversal { path: String },
 }
 
+/// Options controlling how strictly preprocessing resolves includes.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PreprocessOptions {
+    /// When true, a missing include is skipped instead of aborting the run.
+    /// Indexing uses this so one broken include does not drop the whole file.
+    pub skip_missing_includes: bool,
+}
+
+impl PreprocessOptions {
+    pub const STRICT: Self = Self {
+        skip_missing_includes: false,
+    };
+    pub const FOR_INDEX: Self = Self {
+        skip_missing_includes: true,
+    };
+}
+
 /// Preprocess a single AsciiDoc file, resolving `include::[]` directives
 /// and evaluating conditionals. Returns the flat AsciiDoc text.
 pub fn preprocess(
@@ -46,6 +63,56 @@ pub fn preprocess(
     attrs: &HashMap<String, String>,
     visited: &mut Vec<PathBuf>,
     level_offset: usize,
+) -> Result<String, PreprocessError> {
+    preprocess_with_options(path, attrs, visited, level_offset, PreprocessOptions::STRICT)
+}
+
+/// Lenient preprocessing for the indexing path: missing includes are skipped
+/// so graph extraction still runs on the rest of the document.
+pub fn preprocess_for_index(
+    path: &Path,
+    attrs: &HashMap<String, String>,
+    visited: &mut Vec<PathBuf>,
+    level_offset: usize,
+) -> Result<String, PreprocessError> {
+    preprocess_with_options(path, attrs, visited, level_offset, PreprocessOptions::FOR_INDEX)
+}
+
+/// Preprocess in-memory AsciiDoc (indexing path). Uses `current_path` to
+/// resolve relative `include::` targets on disk.
+pub fn preprocess_text_for_index(
+    raw: &str,
+    current_path: &Path,
+    attrs: &HashMap<String, String>,
+    visited: &mut Vec<PathBuf>,
+    level_offset: usize,
+) -> Result<String, PreprocessError> {
+    let base_dir = current_path
+        .parent()
+        .and_then(|p| p.canonicalize().ok())
+        .or_else(|| {
+            std::env::current_dir()
+                .ok()
+                .and_then(|d| d.canonicalize().ok())
+        })
+        .unwrap_or_default();
+    process_text(
+        raw,
+        current_path,
+        &base_dir,
+        attrs,
+        visited,
+        level_offset,
+        PreprocessOptions::FOR_INDEX,
+    )
+}
+
+pub fn preprocess_with_options(
+    path: &Path,
+    attrs: &HashMap<String, String>,
+    visited: &mut Vec<PathBuf>,
+    level_offset: usize,
+    options: PreprocessOptions,
 ) -> Result<String, PreprocessError> {
     let canon = path.canonicalize().map_err(|e| PreprocessError::Io {
         path: path.display().to_string(),
@@ -82,7 +149,15 @@ pub fn preprocess(
         });
 
     visited.push(canon.clone());
-    let result = process_text(&raw, path, &base_dir, attrs, visited, level_offset);
+    let result = process_text(
+        &raw,
+        path,
+        &base_dir,
+        attrs,
+        visited,
+        level_offset,
+        options,
+    );
     visited.pop();
     result
 }
@@ -94,6 +169,7 @@ fn process_text(
     attrs: &HashMap<String, String>,
     _visited: &mut Vec<PathBuf>,
     level_offset: usize,
+    options: PreprocessOptions,
 ) -> Result<String, PreprocessError> {
     let local_attrs = attrs.clone();
     let mut output = Vec::new();
@@ -158,6 +234,9 @@ fn process_text(
             let inc_path = base.join(&rel_path);
 
             if !inc_path.exists() {
+                if options.skip_missing_includes {
+                    continue;
+                }
                 return Err(PreprocessError::MissingInclude {
                     path: inc_path.display().to_string(),
                 });
@@ -206,7 +285,8 @@ fn process_text(
                 inc_text = filter_tags(&inc_text, &t)?;
             }
 
-            // Recursively preprocess
+            // Recursively preprocess; `process_text` applies `level_offset` to
+            // headings as it walks the included file.
             let sub = process_text(
                 &inc_text,
                 &inc_canon,
@@ -214,11 +294,9 @@ fn process_text(
                 &local_attrs,
                 _visited,
                 (level_offset as i32 + new_leveloff).max(0) as usize,
+                options,
             )?;
-
-            // Apply level offset to headings
-            let adjusted = adjust_headings(&sub, level_offset as i32 + new_leveloff);
-            output.push(adjusted);
+            output.push(sub);
             continue;
         }
 
@@ -340,23 +418,6 @@ fn filter_tags(text: &str, tag_name: &str) -> Result<String, PreprocessError> {
         }
     }
     Ok(result.join("\n"))
-}
-
-fn adjust_headings(text: &str, offset: i32) -> String {
-    text.lines()
-        .map(|line| {
-            let trimmed = line.trim();
-            if let Some(cap) = HEADING_RE.captures(trimmed) {
-                let level = cap[1].len();
-                let new_level = (level as i32 + offset).clamp(1, 6) as usize;
-                let title = &cap[2];
-                format!("{} {}", "=".repeat(new_level), title)
-            } else {
-                line.to_string()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 fn resolve_inline_attrs(line: &str, attrs: &HashMap<String, String>) -> String {
