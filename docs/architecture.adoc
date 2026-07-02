@@ -399,7 +399,12 @@ touching authentication or authorization.
 ===
 ----
 
-`aden check` resolves conflicts using stated precedence.
+`aden check` validates referential integrity (`<<anchor>>` resolution, orphans,
+duplicates) independently of constitutional policy. Directive enforcement via
+`aden-policy::PolicyEngine` is **advisory as of 0.2.x** — violations surface in
+`diagnose`/`lint`/`check --json` but do not block `gen` until enforce mode ships
+(see <<adr-010>>). Today, `PolicyEngine::load_bootstrap` is wired only in
+`ci-check` when `.aden/constitution.adoc` exists.
 
 === Tagged Includes
 
@@ -494,8 +499,56 @@ set of changes reaches downstream.
 
 - The knowledge-graph store is a rebuildable build artifact that lives outside the working tree (per-user, per-project) — see <<adr-003>>; legacy in-tree `.aden/store`/cache paths are auto-ignored in `.gitignore`, while durable intent under `.aden/` (overlays, constitution, hooks) is git-tracked
 - Include directives bounded to project root — no path traversal
-- No `unsafe` blocks in application code
+- MCP child processes run with `env_clear()` and an `ADEN_*`/`PATH`/`HOME` allowlist — host secrets do not leak to spawned `aden` (see <<security-model>> and <<adr-010>>)
+- No `unsafe` blocks in application code (test isolation and MCP startup env handling excepted)
 - AGPL-3.0-or-later license prevents cloud capture without sharing modifications
+
+[[known-limitations]]
+== Known Limitations (0.2.x)
+
+Honest snapshot of structural and behavioral gaps documented in <<adr-010>>:
+
+|===
+|Area |Current state |Remediation
+
+|Write pipeline |Concentrated in `generate.rs` (~2,770 LOC) |Strangler to `aden-cli/src/indexer/` (Phase 4)
+|Query pipeline |`query.rs` (~3,200 LOC) in `aden-cli` |Deferred after indexer extraction
+|Parsing |`aden-parse` + `aden-graph/parser.rs` overlap |Unify on separate branch after PR-5 (Phase 4)
+|Policy |`PolicyEngine` bootstrap in `ci-check` only |Advisory wiring in `diagnose`/`lint`/`check` (Phase 3)
+|Doc-heading edges |~59 orphan info-level headings |Phase 5 graph edge work
+|MCP freshness |`ADEN_SKIP_AUTO_GEN=1` on all MCP calls |Scope to read tools + stale hints (Phase 2A)
+|===
+
+[[target-architecture]]
+== Target Architecture
+
+End state after structural remediation (Phases 4–6). Hard boundaries unchanged:
+`contract.rs`, `fjall_store.rs` internals.
+
+[mermaid, target-arch, svg]
+----
+flowchart TD
+    subgraph cli[aden-cli — thin shell]
+        CMD[commands/*.rs wrappers]
+        IDX[indexer/ link merge fresh gen]
+    end
+    subgraph libs[workspace crates]
+        PARSE[aden-parse — canonical parse]
+        GRAPH[aden-graph]
+        STORE[aden-store]
+        POLICY[aden-policy — diagnose+lint+check]
+        SEARCH[aden-index — BM25/dense only]
+    end
+    CMD --> IDX
+    IDX --> PARSE
+    IDX --> GRAPH
+    IDX --> STORE
+    POLICY --> GRAPH
+    SEARCH --> STORE
+----
+
+Optional future crate `aden-compile` may absorb `indexer/` once stable 2+ weeks.
+**Never** reuse the `aden-index` name for the compile pipeline — that crate is search.
 
 == Command Reference
 
@@ -554,7 +607,7 @@ Block:: A content unit within a Document: table, paragraph, listing, admonition,
 Symbol:: A named entity extracted from source code (function, type, trait, module).
 Anchor:: A globally unique AsciiDoc identifier matching `^[a-z0-9_-]+$`.
 Emitter:: The `aden-emit` crate that serializes `Document` structs into `.adoc` / `.aden` text.
-Extraction:: Parsing source (Rust, Python, Go, TypeScript, Java, 300+ via tree-sitter) into a `Vec<Document>`.
+Extraction:: Parsing source (Rust, Python, Go, TypeScript/JS deep; ~100+ more via curated tree-sitter pack + generic fallback) into a `Vec<Document>`.
 ContractRegion:: Semantic region of a contract (`Generated`, `Human`, `Agent`, `Security`, `Contract`, `Constitution`, `Override`, `Proposed`). Determines merge behavior.
 ContractState:: Three-way merge state (`ground`/`base`/`working`) for incremental contract generation.
 Constitution:: A `[constitution]` block of precedence-ranked policy directives — the highest authority in the contract hierarchy.
@@ -610,7 +663,7 @@ Staging:: Write-only audit trail in `.aden/staging/` for agent proposals before 
 |aden-mcp |MCP server integration (shells out to the `aden` binary) |Shipped Phase 0
 |aden-lsp |LSP for `.adoc`/`.aden` files |Shipped Phase 0
 |aden-policy |Constitutional policy engine, directives |Shipped Phase 0
-|aden-cli |Binary (`aden`) with all commands |Shipped Phase 0
+|aden-cli |Binary (`aden`) with all commands; write path concentrated in `generate.rs` (see <<known-limitations>>) |Shipped Phase 0
 |===
 
 === Phase 1-6 Crate Map (Planned)
@@ -670,8 +723,8 @@ New crates should start as: (1) features in existing crates (preferred), (2) exp
 
 The cleanup of the four removed crates is complete (documented, decided **remove** as declaration-only roadmap scaffolding, and removed on 2026-06-03).
 
-*Last updated:* 2026-06-03 +
-*Next review:* 2026-08-27
+*Last updated:* 2026-07-02 +
+*Next review:* 2026-09-02
 
 == Related Documents
 
@@ -680,6 +733,7 @@ The cleanup of the four removed crates is complete (documented, decided **remove
 . <<adr-004>> — Append-only AGENTS.md guidance block
 . <<adr-006>> — Prose as a first-class graph citizen (RelatesTo edges from prose refs)
 . <<adr-007>> — Typed-edge activation policy (emitter + consumer + eval)
+. <<adr-010>> — Structural remediation: indexer strangler, advisory policy, MCP freshness
 . <<ai-integration>> — How AI agents use Aden
 . <<user-guide>> — Daily workflows
 . Root entry point: `README.md`; agent workspace: `.agent/context.adoc`

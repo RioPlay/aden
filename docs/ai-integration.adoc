@@ -98,6 +98,41 @@ If the tools do not appear, see <<troubleshooting>>.
 * *Timeout.* Long-running tools are bounded by a 120-second guard.
 * *`watch` is terminal-only.* The continuous file-watch / live-reindex mode is not exposed over MCP — run `aden watch` in a terminal; use `gen`/`sync` for one-shot updates.
 
+[[mcp-freshness]]
+=== Graph freshness over MCP
+
+Shell CLI and MCP do not behave identically for incremental indexing. See <<adr-010>>
+for the full rationale.
+
+==== Shell (default)
+
+Read tools (`grep`, `ask`, `locate`, `asm`, `query`, `search`, `understand`) call
+`ensure_fresh()` before serving results. When the working tree has changed since the
+last `gen`, a silent incremental reindex runs — you do **not** need `gen` after every
+edit in a normal shell session.
+
+==== MCP (current 0.2.x)
+
+`aden-mcp` sets `ADEN_SKIP_AUTO_GEN=1` on every spawned `aden` process. This prevents
+read tools from silently acquiring the store lock while the host may be running
+`aden ready` or another writer. Trade-off: **existing stores may be stale** relative to
+recent edits until you run an explicit write tool.
+
+| Situation | What happens |
+|-----------|--------------|
+| No store yet (first query) | Initial `gen` still runs — read tools work out of the box |
+| Store exists, files changed | MCP read tools may return graph from last `gen` |
+| After your edits | Run MCP `gen`, `sync`, or `ready` (or shell `aden gen`) before trusting blast radius |
+| Large external change (clone, merge) | Always run `gen` regardless of transport |
+
+Phase 2A will scope `ADEN_SKIP_AUTO_GEN` to read tools only and add a stale sentinel
+(`index_stale: true` + hint) when skip prevents refresh.
+
+IMPORTANT: The core agent loop (`understand` → edit → `impact-diff`) depends on an
+up-to-date graph for blast-radius accuracy. After substantive edits over MCP, run `gen`
+or `sync` before `impact-diff` — or use the shell CLI for read tools when you need
+automatic freshness.
+
 == How `aden ask` Works
 
 `aden ask` is the primary interface for AI agents. It is not a chatbot wrapper around an LLM. It is a **context retrieval engine**.

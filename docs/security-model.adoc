@@ -23,6 +23,7 @@ Aden assumes the following threats:
 |Path args escaping the project root over MCP |`confine_path_args` rejects any path/out/from argument resolving outside the project dir |Implemented
 |Argument injection via leading-dash values over MCP |`--` end-of-options terminator separates injected flags from user values in `build_cli_args` |Implemented
 |Unbounded/blocking MCP tool execution |120s `COMMAND_TIMEOUT` bounds every spawned command |Implemented
+|Host secret leakage via MCP child env |`env_clear()` + allowlist (`ADEN_*`, `PATH`, `HOME`, `USER`, `SHELL`) on every spawned `aden` |Implemented (<<adr-010>>)
 |===
 
 == Include Directive Security
@@ -132,15 +133,20 @@ Read-only access to resources.
 The `[constitution]` block declares governance rules with precedence-ranked directives:
 
 |===
-|Directive |Behavior
+|Directive |Behavior (0.2.x advisory mode)
 
-|`Forbid` |Hard block — CI fails
+|`Forbid` |Reported in `diagnose`/`lint`/`check --json`; hard block deferred to enforce mode (0.3.0+)
 |`Warn` |Surfaces in output, CI passes
 |`Suggest` |Non-blocking recommendation
 |`Allow` |Explicitly permits an otherwise forbidden pattern
 |===
 
 Overrides require `:justification:` and `:reviewer:` attributes.
+
+NOTE: As of 0.2.x, `PolicyEngine` enforcement is **advisory** outside `ci-check`
+bootstrap (`PolicyEngine::load_bootstrap` when `.aden/constitution.adoc` exists).
+`aden check` reference integrity (unresolved `<<ref>>`, orphans) is separate from
+constitutional policy. Full wiring is tracked in <<adr-010>> Phase 3.
 
 == Safe Execution
 

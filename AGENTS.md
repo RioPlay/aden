@@ -5,12 +5,22 @@
 > `grep`/`find`/`cat`-walking. Every aden result is tagged with its enclosing symbol,
 > which is the anchor you feed back into the graph.
 
-## The graph is fresh by construction
+## The graph is fresh by construction (shell CLI)
 
-Read tools (`ask`, `search`, `grep`, `locate`, `query`, `asm`) auto-reindex any file
-that changed since the last run. You do **not** need to run `gen` before a session or
-after your own edits. Only run `gen` after large *external* changes — cloning a new
-repo, a big merge, or generated code appearing outside your edits.
+Read tools (`ask`, `search`, `grep`, `locate`, `query`, `asm`, `understand`) auto-reindex
+any file that changed since the last run when invoked from the **shell**. You do **not**
+need to run `gen` before a session or after your own edits in that mode. Only run `gen`
+after large *external* changes — cloning a new repo, a big merge, or generated code
+appearing outside your edits.
+
+**MCP exception:** `aden-mcp` sets `ADEN_SKIP_AUTO_GEN=1` so read tools do not silently
+reindex while another writer may hold the store lock. Over MCP, an existing store may be
+stale until you run `gen`, `sync`, or `ready`. After substantive edits, run one of those
+before `impact-diff`. See `docs/adr-010-structural-remediation.adoc` and
+`docs/ai-integration.adoc` (MCP freshness).
+
+> **Subagents:** MCP instructions are not inherited automatically — tell spawned agents
+> about the MCP freshness exception if they use aden tools over MCP.
 
 ## Which tool, when
 
@@ -56,10 +66,10 @@ Use the **aden** MCP tools (or `aden <cmd>` on the shell) to navigate this
 codebase — not raw `grep`/`find`. Every aden result is tagged with its enclosing
 symbol, which is the anchor you feed back into the graph.
 
-**The graph is fresh by construction.** Read tools (`ask`, `search`, `grep`,
-`locate`, `query`, `asm`) auto-reindex any file changed since the last run. You do
-**not** need `gen` before a session or after your own edits — only after large
-*external* changes (cloning, a big merge, generated code).
+**The graph is fresh by construction** on the shell CLI — read tools auto-reindex
+changed files. Over **MCP**, `ADEN_SKIP_AUTO_GEN` may leave the graph stale until you
+run `gen`/`sync`/`ready`; see ADR-010. Only skip `gen` after large *external* changes
+when using the shell.
 
 | Goal | Tool |
 | --- | --- |

@@ -2,13 +2,13 @@
 
 ## Supported Versions
 
-aden is pre-1.0. Security fixes are applied to the latest `0.1.x` release line
+aden is pre-1.0. Security fixes are applied to the latest `0.2.x` release line
 only; there is no backporting to older point releases.
 
 | Version | Supported          |
 |---------|--------------------|
-| 0.1.x   | :white_check_mark: |
-| < 0.1   | :x:                |
+| 0.2.x   | :white_check_mark: |
+| < 0.2   | :x:                |
 
 ## Reporting a Vulnerability
 
@@ -44,6 +44,10 @@ assembles context from source it did not author. Its defenses reflect that:
 - **argv, not shell.** Commands are spawned with an explicit argument vector and
   a `--` end-of-options terminator, so attacker-controlled values cannot be
   interpreted as flags or injected into a shell.
+- **MCP environment isolation.** The MCP server clears the host environment
+  before spawning `aden` and re-injects only `ADEN_*`, `PATH`, `HOME`, `USER`,
+  and `SHELL`. API keys and tokens from the host process do not leak to child
+  commands.
 - **Per-file panic isolation.** A malformed or pathological source file cannot
   abort an indexing run; parse failures are isolated per file.
 - **Secret screening at index time.** Files are screened by path and by content
@@ -52,6 +56,14 @@ assembles context from source it did not author. Its defenses reflect that:
   context.
 - **Bounded execution.** MCP tool invocations are bounded by a command timeout
   so a single call cannot block indefinitely.
+
+### MCP freshness note
+
+MCP sets `ADEN_SKIP_AUTO_GEN=1` on spawned `aden` processes so read tools do
+not silently reindex while another writer may hold the store lock. This is a
+concurrency safeguard, not a security boundary — but agents should know that MCP
+read results may reflect a slightly stale graph until an explicit `gen`/`sync`
+runs. See [ADR-010](docs/adr-010-structural-remediation.adoc).
 
 For the full threat table, the include-directive rules, and the secret-scanning
 layers, see [`docs/security-model.adoc`](docs/security-model.adoc).

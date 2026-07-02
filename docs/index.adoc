@@ -60,6 +60,9 @@ This is the canonical entry point for all Aden documentation. Read the document 
 |<<adr-005>> |Project-tree footprint and opt-in tracking of `.aden/` (pristine by default; supersedes ADR-003's commit default)
 |<<adr-006>> |Prose as a first-class graph citizen: global `<<anchor>>` references → `RelatesTo` edges
 |<<adr-007>> |Typed-edge model and edge-type activation policy (emitter + consumer + eval; blast radius = dependents)
+|<<adr-008>> |Current implementation state: Wave 3 edges, store-first, MCP tiers, dual-substrate retrieval
+|<<adr-009>> |Store format change recovery (fjall 3 migration + freshness coupling)
+|<<adr-010>> |Structural remediation: indexer strangler, advisory policy, MCP freshness model
 |===
 
 == Quick Reference
