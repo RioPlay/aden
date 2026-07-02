@@ -48,7 +48,7 @@ pub use diagnose::cmd_diagnose;
 pub use doctor::cmd_doctor;
 pub use emergency::cmd_emergency;
 pub use federation::cmd_federation;
-pub use generate::{cmd_gen, cmd_gen_opts, ensure_fresh};
+pub use generate::{cmd_gen, cmd_gen_opts, ensure_fresh, StaleHintGuard};
 pub use grep::cmd_grep;
 #[cfg(feature = "watch")]
 pub use heal::cmd_heal_watch;

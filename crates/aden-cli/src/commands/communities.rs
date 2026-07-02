@@ -19,6 +19,7 @@ pub fn cmd_communities(
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let root = find_project_root(path);
+    let _stale_hint = super::StaleHintGuard::new(&root, json);
     super::ensure_fresh(&root);
 
     let graph = aden_graph::cache::build_from_directory_cached(&root)?;

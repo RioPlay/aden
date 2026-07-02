@@ -756,6 +756,7 @@ pub fn cmd_asm(opts: AsmOptions) -> Result<(), Box<dyn std::error::Error>> {
     if !opts.path.is_dir() {
         return Err("asm requires a directory path".into());
     }
+    let _stale_hint = super::StaleHintGuard::new(&opts.path, false);
     super::ensure_fresh(&opts.path);
 
     let (from_anchor, effective_budget) = if opts.auto && !opts.strict {
@@ -919,6 +920,7 @@ pub fn cmd_query(
     if !path.is_dir() {
         return Err("query requires a directory path".into());
     }
+    let _stale_hint = super::StaleHintGuard::new(path, format == "json");
     super::ensure_fresh(path);
 
     let graph = aden_graph::cache::build_from_directory_cached(path)?;
@@ -1696,6 +1698,7 @@ pub fn cmd_ask(
     if !path.is_dir() {
         return Err("ask requires a directory path".into());
     }
+    let _stale_hint = super::StaleHintGuard::new(path, false);
     super::ensure_fresh(path);
 
     // Intent is classified up front so the overview signal can feed ANCHOR

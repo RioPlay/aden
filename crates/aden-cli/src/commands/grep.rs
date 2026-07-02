@@ -45,6 +45,7 @@ pub fn cmd_grep(
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let root = find_project_root(path);
+    let _stale_hint = super::StaleHintGuard::new(&root, json);
     // Keep the graph current so enclosing-symbol resolution is accurate.
     super::ensure_fresh(&root);
 

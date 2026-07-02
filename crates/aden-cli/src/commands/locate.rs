@@ -150,6 +150,7 @@ pub fn cmd_understand(
     if !path.is_dir() {
         return Err("understand requires a directory path".into());
     }
+    let _stale_hint = super::StaleHintGuard::new(path, json);
     super::ensure_fresh(path);
 
     // Step 1: resolve the symbol to a full store anchor. Try the shared exact
@@ -395,12 +396,13 @@ pub fn cmd_locate(
         }
         return Err(format!("locate: '{}' is not a directory", path.display()).into());
     }
+    let want_json = json || format == "json";
+    let _stale_hint = super::StaleHintGuard::new(path, want_json);
     super::ensure_fresh(path);
 
     // JSON is requested via either the global `-j/--json` flag or `--format json`.
     // In JSON mode every human header ("Found N match(es)…") is suppressed so the
     // stream is a single machine-parseable value, never JSON prefixed by prose.
-    let want_json = json || format == "json";
 
     // If --symbol is given, find the definition.
     if let Some(sym) = symbol {

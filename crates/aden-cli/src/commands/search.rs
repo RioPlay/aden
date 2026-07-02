@@ -40,6 +40,7 @@ pub fn cmd_search(
     if !path.is_dir() {
         return Err("search requires a directory path".into());
     }
+    let _stale_hint = super::StaleHintGuard::new(path, json);
     super::ensure_fresh(path);
 
     // Load config to check for private patterns (ADRs, retros, etc.)
@@ -224,6 +225,7 @@ pub fn cmd_list(
     if !path.is_dir() {
         return Err("list requires a directory path".into());
     }
+    let _stale_hint = super::StaleHintGuard::new(path, json);
     super::ensure_fresh(path);
 
     let graph = aden_graph::cache::build_from_directory_cached(path)?;

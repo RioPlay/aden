@@ -190,6 +190,7 @@ pub fn cmd_impact_diff(
     scope: Option<&Path>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let root = find_project_root(path);
+    let _stale_hint = super::StaleHintGuard::new(&root, json);
     // Keep the store fresh so span/edge resolution reflects the current code.
     super::ensure_fresh(&root);
 

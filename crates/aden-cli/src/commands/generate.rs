@@ -5,7 +5,7 @@ use aden_graph::graph::AdenGraph;
 use aden_store::{GraphStorage, Storage};
 use rayon::prelude::*;
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::types::GenCacheEntry;
 use crate::util::{
@@ -1140,9 +1140,77 @@ pub(crate) fn skip_auto_gen_on_read() -> bool {
     }
 }
 
-pub fn ensure_fresh(path: &Path) {
+/// Whether any indexed source file is newer than the last `gen` cache entry.
+pub fn index_is_stale(path: &Path) -> bool {
+    index_is_stale_for_root(&find_project_root(path))
+}
+
+fn index_is_stale_for_root(root: &Path) -> bool {
     use std::time::UNIX_EPOCH;
 
+    let (existing_store, _) = aden_paths::resolve_read_store(root);
+    if !existing_store.exists() {
+        return false;
+    }
+
+    let cache = load_gen_cache(&aden_paths::gen_cache_file(root));
+    let sources = match discover_source_files(root) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+
+    let newest_known = cache
+        .entries
+        .values()
+        .map(|e| e.source_mtime)
+        .max()
+        .unwrap_or(0);
+
+    sources.iter().any(|src| {
+        let mtime = src
+            .metadata()
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        mtime > newest_known
+    })
+}
+
+pub const STALE_HINT: &str =
+    "NOTE: index_stale=true — working tree changed since last `gen`; run `gen` or `sync` for a fresh graph.";
+
+/// Print a stale-index hint when auto-gen is suppressed (MCP read tools).
+/// Skips JSON mode so structured envelopes stay parseable (Phase 2B adds JSON field).
+pub fn maybe_print_stale_hint(path: &Path, json: bool) {
+    if !json && skip_auto_gen_on_read() && index_is_stale(path) {
+        println!("{STALE_HINT}");
+    }
+}
+
+/// RAII guard: prints [`maybe_print_stale_hint`] when the read command completes.
+pub struct StaleHintGuard {
+    root: PathBuf,
+    json: bool,
+}
+
+impl StaleHintGuard {
+    pub fn new(path: &Path, json: bool) -> Self {
+        Self {
+            root: find_project_root(path),
+            json,
+        }
+    }
+}
+
+impl Drop for StaleHintGuard {
+    fn drop(&mut self) {
+        maybe_print_stale_hint(&self.root, self.json);
+    }
+}
+
+pub fn ensure_fresh(path: &Path) {
     let root = find_project_root(path);
     let skip_auto = skip_auto_gen_on_read();
     // No store yet → build it now. Read commands are store-first, so a fresh
@@ -1167,36 +1235,7 @@ pub fn ensure_fresh(path: &Path) {
         return;
     }
 
-    let cache = load_gen_cache(&aden_paths::gen_cache_file(&root));
-    let sources = match discover_source_files(&root) {
-        Ok(s) => s,
-        Err(_) => return,
-    };
-
-    // The newest source mtime gen has already seen. Comparing against this —
-    // rather than requiring every discovered file to be present in the cache —
-    // avoids perpetual staleness from files that are discovered but never
-    // cached (e.g. unsupported languages that fail to parse). A file newer than
-    // anything gen knew about is genuinely new or modified.
-    let newest_known = cache
-        .entries
-        .values()
-        .map(|e| e.source_mtime)
-        .max()
-        .unwrap_or(0);
-
-    let stale = sources.iter().any(|src| {
-        let mtime = src
-            .metadata()
-            .ok()
-            .and_then(|m| m.modified().ok())
-            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        mtime > newest_known
-    });
-
-    if stale && !skip_auto {
+    if index_is_stale_for_root(&root) && !skip_auto {
         // Silent incremental regen: re-parses only changed files and re-links
         // edges, without printing anything (this runs transparently on reads).
         let _ = cmd_gen_silent(&root);

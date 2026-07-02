@@ -102,10 +102,10 @@ Docs only. No behavior change.
 
 ---
 
-### Phase 1 — Complete In-Flight Work (~½ day)
+### Phase 1 — Complete In-Flight Work (~½ day) `[DONE 2026-07-02]`
 
-- [ ] Commit `ADEN_SKIP_AUTO_GEN` + tests (`generate.rs`)
-- [ ] Commit MCP `env_clear()` (already on main; verify `ADEN_SKIP_AUTO_GEN` scoping plan in Phase 2A)
+- [x] Commit `ADEN_SKIP_AUTO_GEN` + tests (`generate.rs`)
+- [x] Commit MCP `env_clear()` (already on main; verify `ADEN_SKIP_AUTO_GEN` scoping plan in Phase 2A)
 
 **PR:** `fix/mcp-auto-gen-suppression`
 
@@ -115,10 +115,10 @@ Docs only. No behavior change.
 
 Per gstack DX review (MCP UX scored 5/10; magical moment = `understand` → `impact-diff`).
 
-**2A — Scoped `ADEN_SKIP_AUTO_GEN`**
-- [ ] Set skip only for **read** MCP tools (grep, ask, locate, understand, asm, query, list, search, communities, viz, status, diagnose)
-- [ ] Write tools (gen, ready, sync, heal --fix) run without skip
-- [ ] Stale sentinel: `index_stale: true` + hint when skip prevents refresh
+**2A — Scoped `ADEN_SKIP_AUTO_GEN`** `[DONE 2026-07-02]`
+- [x] Set skip only for **read** MCP tools (`Effect::Read` in `aden-mcp`)
+- [x] Write tools (gen, ready, sync, heal, …) run without skip
+- [x] Stale sentinel: text `index_stale=true` hint via `StaleHintGuard` (JSON field deferred to 2B)
 
 **2B — Heal/Check JSON summaries**
 - [ ] Add check/heal/status to MCP `structured_output_flags()`

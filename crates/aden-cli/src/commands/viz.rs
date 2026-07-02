@@ -239,6 +239,7 @@ pub fn cmd_viz(
     // becomes a silent no-op the way an ignored global flag would.
     let format = if json { "json" } else { format };
     let root = find_project_root(path);
+    let _stale_hint = super::StaleHintGuard::new(&root, format == "json");
     // Keep the graph fresh so the rendered slice reflects the current code.
     super::ensure_fresh(&root);
     let mut graph = aden_graph::cache::build_from_directory_cached(&root)?;
@@ -344,6 +345,7 @@ pub(crate) fn viz_json_for(
     // `view` shares the positional trap (`aden view .`): same guard.
     reject_directory_anchor(anchor)?;
     let root = find_project_root(path);
+    let _stale_hint = super::StaleHintGuard::new(&root, true);
     super::ensure_fresh(&root);
     let mut graph = aden_graph::cache::build_from_directory_cached(&root)?;
     if let Some(sub) = scope {
@@ -394,6 +396,7 @@ pub(crate) fn anchors_json(
     cap: usize,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let root = find_project_root(path);
+    let _stale_hint = super::StaleHintGuard::new(&root, true);
     super::ensure_fresh(&root);
     let graph = aden_graph::cache::build_from_directory_cached(&root)?;
     // Candidates present in the graph, ranked by *intra-set* degree so the cap keeps
