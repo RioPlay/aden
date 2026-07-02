@@ -51,8 +51,8 @@ crates/aden-cli/src/indexer/
   fixture) must pass before any module move.
 * A dedicated crate (`aden-compile`, name tentative) is deferred until the strangler
   module is stable for 2+ weeks.
-* **Hard boundaries** (no touch without explicit approval): `aden-core/src/contract.rs`,
-  `aden-store/src/fjall_store.rs` internals.
+* **High-care modules** (improvements welcome; require tests + blast-radius review):
+  `aden-core/src/contract.rs`, `aden-store/src/fjall_store.rs`. No blanket freeze.
 
 === 2. Policy enforcement: advisory first
 

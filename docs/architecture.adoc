@@ -522,8 +522,9 @@ Honest snapshot of structural and behavioral gaps documented in <<adr-010>>:
 [[target-architecture]]
 == Target Architecture
 
-End state after structural remediation (Phases 4–6). Hard boundaries unchanged:
-`contract.rs`, `fjall_store.rs` internals.
+End state after structural remediation (Phases 4–6). High-care modules
+(`contract.rs`, `fjall_store.rs`) may be improved when the change is justified —
+see <<adr-010>>.
 
 [mermaid, target-arch, svg]
 ----

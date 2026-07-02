@@ -49,7 +49,7 @@ aden-graph/parser.rs (dup) ──┘ aden-parse (canonical)
 aden-policy (ci bootstrap)     aden-policy (diagnose+lint+check)
 ```
 
-**Hard boundaries:** `contract.rs`, `fjall_store.rs` internals — no touch without approval.
+**Boundaries (updated 2026-07-02):** `contract.rs` and `fjall_store.rs` are fair game when the change is a clear improvement — extra care + tests, but no blanket freeze.
 
 ---
 
@@ -228,7 +228,6 @@ Phase0 (docs) ──┬──> Phase1 (MCP flag commit)
 
 ## NOT in Scope
 
-- `contract.rs` internals
 - Policy blocking `gen` by default (0.3.0)
 - New `aden-compile` crate in initial Phase 4
 - Deleting `aden-graph/parser.rs` in same PR as indexer move
