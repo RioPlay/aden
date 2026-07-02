@@ -1205,6 +1205,9 @@ async fn run_aden_command(project_dir: &Path, tool: &str, args: &[&str]) -> Resu
             cmd.env(&k, &v);
         }
     }
+    // Read tools must not silently `gen` — the host may be running `aden ready`
+    // or another writer. MCP is read-mostly; callers run `gen` explicitly.
+    cmd.env("ADEN_SKIP_AUTO_GEN", "1");
 
     let child = cmd.output();
 

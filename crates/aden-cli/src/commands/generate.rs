@@ -1128,16 +1128,32 @@ pub(crate) fn recover_if_incompatible_store(path: &Path) -> bool {
     false
 }
 
+/// True when read-path callers (MCP, coxn) own explicit `gen` and must not
+/// trigger a silent incremental regen on every query.
+pub(crate) fn skip_auto_gen_on_read() -> bool {
+    match std::env::var("ADEN_SKIP_AUTO_GEN") {
+        Ok(v) => {
+            let t = v.trim();
+            !t.is_empty() && !matches!(t, "0" | "false" | "no" | "off")
+        }
+        Err(_) => false,
+    }
+}
+
 pub fn ensure_fresh(path: &Path) {
     use std::time::UNIX_EPOCH;
 
     let root = find_project_root(path);
+    let skip_auto = skip_auto_gen_on_read();
     // No store yet → build it now. Read commands are store-first, so a fresh
     // project must be indexed on first query (this is what makes asm/ask/locate
-    // work without an explicit `aden gen`).
+    // work without an explicit `aden gen`). When auto-gen is suppressed the
+    // caller must run `aden gen` explicitly (coxn does this at boot).
     let (existing_store, _) = aden_paths::resolve_read_store(&root);
     if !existing_store.exists() {
-        let _ = cmd_gen_silent(&root);
+        if !skip_auto {
+            let _ = cmd_gen_silent(&root);
+        }
         return;
     }
 
@@ -1147,7 +1163,7 @@ pub fn ensure_fresh(path: &Path) {
     // rebuild, leaving the read to open an incompatible store and degrade to
     // empty results. Recover on the format-mismatch signal (and ONLY that), so
     // the read auto-recovers with zero user action.
-    if recover_if_incompatible_store(&root) {
+    if !skip_auto && recover_if_incompatible_store(&root) {
         return;
     }
 
@@ -1180,7 +1196,7 @@ pub fn ensure_fresh(path: &Path) {
         mtime > newest_known
     });
 
-    if stale {
+    if stale && !skip_auto {
         // Silent incremental regen: re-parses only changed files and re-links
         // edges, without printing anything (this runs transparently on reads).
         let _ = cmd_gen_silent(&root);
@@ -1280,6 +1296,47 @@ fn acquire_store_lock(store_path: &Path) -> std::io::Result<aden_core::lock::Fil
         store_path.with_extension("lock"),
         std::time::Duration::from_secs(600),
     )
+}
+
+#[cfg(test)]
+mod skip_auto_gen_tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn with_env(key: &str, value: Option<&str>, f: impl FnOnce()) {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::var(key).ok();
+        match value {
+            Some(v) => unsafe { std::env::set_var(key, v) },
+            None => unsafe { std::env::remove_var(key) },
+        }
+        f();
+        match prev {
+            Some(v) => unsafe { std::env::set_var(key, v) },
+            None => unsafe { std::env::remove_var(key) },
+        }
+    }
+
+    #[test]
+    fn skip_auto_gen_env_is_truthy_except_off_values() {
+        with_env("ADEN_SKIP_AUTO_GEN", None, || {
+            assert!(!skip_auto_gen_on_read());
+        });
+        with_env("ADEN_SKIP_AUTO_GEN", Some("1"), || {
+            assert!(skip_auto_gen_on_read());
+        });
+        with_env("ADEN_SKIP_AUTO_GEN", Some("true"), || {
+            assert!(skip_auto_gen_on_read());
+        });
+        with_env("ADEN_SKIP_AUTO_GEN", Some("0"), || {
+            assert!(!skip_auto_gen_on_read());
+        });
+        with_env("ADEN_SKIP_AUTO_GEN", Some("false"), || {
+            assert!(!skip_auto_gen_on_read());
+        });
+    }
 }
 
 #[cfg(test)]
