@@ -37,11 +37,20 @@ SECRET_PATTERNS=(
     "AKIA[0-9A-Z]{16}"
     "ghp_[a-zA-Z0-9]{36,}"
     "sk-[a-zA-Z0-9]{32,}"
+    "xox[baprs]-[0-9A-Za-z-]{10,}"
     "bearer\s+[a-zA-Z0-9_\-]{20,}"
     "api[_-]?key\s*[:=]\s*['\"]?[a-zA-Z0-9_\-]{16,}"
     "password\s*[:=]\s*['\"][^'\"]{4,}['\"]"
     "secret\s*[:=]\s*['\"][^'\"]{4,}['\"]"
     "token\s*[:=]\s*['\"][^'\"]{8,}['\"]"
+)
+
+# Absolute home paths and agent session artifacts — privacy leak, not credentials.
+PATH_LEAK_PATTERNS=(
+    "/home/[a-zA-Z0-9._-]+/"
+    "/Users/[a-zA-Z0-9._-]+/"
+    "\.grok/sessions/"
+    "updates\.jsonl"
 )
 
 STAGED=$(git diff --cached --name-only --diff-filter=ACM || true)
@@ -50,10 +59,14 @@ if [ -z "$STAGED" ]; then
     exit 0
 fi
 
+should_skip_privacy_scan() {
+    echo "$1" | grep -qE '^(tools/git-hooks/pre-commit|docs/policy\.adoc|adr-001|MAINTAINERS|crates/aden-mcp/src/lib\.rs|crates/aden-cli/src/util\.rs)$'
+}
+
 SECRET_FOUND=0
+PATH_LEAK_FOUND=0
 for file in $STAGED; do
-    # Skip our own test fixtures and policy docs that intentionally mention secrets
-    if echo "$file" | grep -qE "(tools/git-hooks/pre-commit|docs/policy.adoc|adr-001|MAINTAINERS)"; then
+    if should_skip_privacy_scan "$file"; then
         continue
     fi
     for pattern in "${SECRET_PATTERNS[@]}"; do
@@ -63,12 +76,32 @@ for file in $STAGED; do
             SECRET_FOUND=1
         fi
     done
+    for pattern in "${PATH_LEAK_PATTERNS[@]}"; do
+        if git show ":$file" 2>/dev/null | grep -inE "$pattern" >/dev/null 2>&1; then
+            echo -e "${RED}PATH/SESSION LEAK DETECTED in $file${NC}"
+            echo -e "${RED}  Pattern: $pattern${NC}"
+            PATH_LEAK_FOUND=1
+        fi
+    done
+    # Never stage agent-runtime artifacts (even if .gitignore is bypassed with -f).
+    if echo "$file" | grep -qE '(^|/)\.(grok|cursor|codex|windsurf)/|\.updates\.jsonl$|(^|/)\.env(\.|$)'; then
+        echo -e "${RED}BLOCKED ARTIFACT in $file${NC}"
+        echo -e "${RED}  Agent runtime / env files must not be committed.${NC}"
+        PATH_LEAK_FOUND=1
+    fi
 done
 
 if [ $SECRET_FOUND -ne 0 ]; then
     echo ""
     echo -e "${RED}COMMIT BLOCKED: Secrets detected in staged files.${NC}"
     echo "Remove the secrets and re-stage. Never commit private keys or tokens."
+    EXIT_CODE=$FAIL
+fi
+
+if [ $PATH_LEAK_FOUND -ne 0 ]; then
+    echo ""
+    echo -e "${RED}COMMIT BLOCKED: Home paths or agent session artifacts in staged files.${NC}"
+    echo "Redact absolute paths and never commit .grok/.cursor session data."
     EXIT_CODE=$FAIL
 fi
 

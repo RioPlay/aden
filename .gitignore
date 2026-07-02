@@ -33,6 +33,13 @@ editors/**/*.adoc
 # ─────────────────────────────────────────────────────────────────────────
 .claude/
 .opencode/
+# Host agent runtimes — session transcripts, terminal logs, local MCP state;
+# often embed absolute home paths or tool credentials. Never commit.
+.grok/
+.cursor/
+.codex/
+.windsurf/
+*.updates.jsonl
 
 # ─────────────────────────────────────────────────────────────────────────
 # Secrets & credentials — NEVER commit these.

@@ -24,6 +24,10 @@ pub const BUILT_IN_IGNORES: &[&str] = &[
     // convention; never index them.
     ".claude/",
     ".opencode/",
+    ".grok/",
+    ".cursor/",
+    ".codex/",
+    ".windsurf/",
     // NOTE: do NOT hard-code "contracts/" here — it is aden's *own* output dir
     // name, but it is also *source* in other ecosystems (Solidity/Vyper smart
     // contracts live in `contracts/`). aden's actual output lives under `.aden/`
