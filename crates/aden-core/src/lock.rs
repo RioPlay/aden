@@ -30,6 +30,29 @@ const POLL: Duration = Duration::from_millis(50);
 /// `gen` is never reclaimed out from under itself.
 pub const STALE_TTL: Duration = Duration::from_secs(15 * 60);
 
+/// Identity recorded in a held lockfile (`pid` on line 1, unix secs on line 2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LockHolder {
+    pub pid: u32,
+    pub acquired_secs: u64,
+}
+
+/// Sibling lockfile path for a store directory (`store` → `store.lock`).
+pub fn store_lock_path(store_path: &Path) -> PathBuf {
+    store_path.with_extension("lock")
+}
+
+/// Read the live holder from an existing lockfile, if parseable.
+pub fn read_holder(lock_path: &Path) -> Option<LockHolder> {
+    parse_holder(&read_lock_body(lock_path)?)
+}
+
+/// Human-readable holder summary for status / wait messages.
+pub fn describe_holder(holder: LockHolder) -> String {
+    let age = now_secs().saturating_sub(holder.acquired_secs);
+    format!("pid {} (held {}s)", holder.pid, age)
+}
+
 /// A held advisory lock. Dropping it releases the lock by removing the lockfile.
 #[derive(Debug)]
 pub struct FileLock {
@@ -48,8 +71,27 @@ impl FileLock {
     /// generous to make false-stale reclaim during a healthy write effectively
     /// impossible.
     pub fn acquire_timeout(path: impl AsRef<Path>, timeout: Duration) -> io::Result<Self> {
+        Self::acquire_timeout_inner(path, timeout, false)
+    }
+
+    /// Like [`acquire_timeout`](Self::acquire_timeout), but emits a `NOTE:` line
+    /// to stderr every 5s while waiting so long-running `gen`/`ready` queues do
+    /// not look hung (ADR-011 Phase 2).
+    pub fn acquire_timeout_verbose(path: impl AsRef<Path>, timeout: Duration) -> io::Result<Self> {
+        Self::acquire_timeout_inner(path, timeout, true)
+    }
+
+    fn acquire_timeout_inner(
+        path: impl AsRef<Path>,
+        timeout: Duration,
+        verbose: bool,
+    ) -> io::Result<Self> {
         let path = path.as_ref().to_path_buf();
         let deadline = SystemTime::now() + timeout;
+        let started = SystemTime::now();
+        let mut last_note = started;
+        const NOTE_EVERY: Duration = Duration::from_secs(5);
+
         loop {
             match create_exclusive(&path) {
                 Ok(()) => return Ok(FileLock { path }),
@@ -57,19 +99,31 @@ impl FileLock {
                     if e.kind() == io::ErrorKind::AlreadyExists
                         || e.kind() == io::ErrorKind::PermissionDenied =>
                 {
-                    // PermissionDenied is treated as contention on Windows:
-                    // hard_link or create_new(tmp) can legitimately return
-                    // Access Denied (code 5) when racing for an existing target
-                    // instead of the Unix-y AlreadyExists. Reclaim or poll.
                     if reclaim_if_stale(&path)? {
                         continue;
                     }
-                    if SystemTime::now() >= deadline {
+                    let now = SystemTime::now();
+                    if verbose && now.duration_since(last_note).unwrap_or_default() >= NOTE_EVERY {
+                        let waited = now.duration_since(started).unwrap_or_default();
+                        let detail = read_holder(&path)
+                            .map(describe_holder)
+                            .unwrap_or_else(|| "unknown holder".into());
+                        eprintln!(
+                            "NOTE: waiting for store writer lock at {} ({detail}; waited {}s)…",
+                            path.display(),
+                            waited.as_secs()
+                        );
+                        last_note = now;
+                    }
+                    if now >= deadline {
+                        let detail = read_holder(&path)
+                            .map(describe_holder)
+                            .unwrap_or_else(|| "unknown holder".into());
                         return Err(io::Error::new(
                             io::ErrorKind::WouldBlock,
                             format!(
                                 "store locked — another aden process holds the lock at {} \
-                                 (waited {:?})",
+                                 ({detail}; waited {:?})",
                                 path.display(),
                                 timeout
                             ),
@@ -151,31 +205,33 @@ fn now_secs() -> u64 {
 /// If the lockfile at `path` is stale (holder dead or past [`STALE_TTL`]), remove
 /// it and return `Ok(true)`. A lockfile that vanished underneath us (the holder
 /// released it) also returns `Ok(true)`.
-fn reclaim_if_stale(path: &Path) -> io::Result<bool> {
+fn read_lock_body(path: &Path) -> Option<String> {
     let mut buf = String::new();
-    match File::open(path) {
-        Ok(mut f) => {
-            let _ = f.read_to_string(&mut buf);
-        }
-        Err(e)
-            if e.kind() == io::ErrorKind::NotFound
-                || e.kind() == io::ErrorKind::PermissionDenied =>
-        {
+    File::open(path).ok()?.read_to_string(&mut buf).ok()?;
+    Some(buf)
+}
+
+fn parse_holder(buf: &str) -> Option<LockHolder> {
+    let mut lines = buf.lines();
+    let pid = lines.next()?.trim().parse().ok()?;
+    let acquired_secs = lines.next()?.trim().parse().ok()?;
+    Some(LockHolder { pid, acquired_secs })
+}
+
+fn reclaim_if_stale(path: &Path) -> io::Result<bool> {
+    let buf = match read_lock_body(path) {
+        Some(b) => b,
+        None => {
             // On Windows a transient PermissionDenied on open can occur while a
-            // prior holder is dropping the lockfile. Treat as "vanished" so the
-            // caller can immediately retry create_exclusive.
+            // prior holder is dropping the lockfile. Treat as "vanished".
             return Ok(true);
         }
-        Err(e) => return Err(e),
-    }
+    };
 
-    let mut lines = buf.lines();
-    let pid = lines.next().and_then(|l| l.trim().parse::<u32>().ok());
-    let acquired = lines.next().and_then(|l| l.trim().parse::<u64>().ok());
-
-    // Unparseable identity (partial write, foreign file) counts as stale.
-    let dead = pid.is_none_or(|pid| !process_alive(pid));
-    let expired = acquired.is_none_or(|ts| now_secs().saturating_sub(ts) > STALE_TTL.as_secs());
+    let holder = parse_holder(&buf);
+    let dead = holder.is_none_or(|h| !process_alive(h.pid));
+    let expired =
+        holder.is_none_or(|h| now_secs().saturating_sub(h.acquired_secs) > STALE_TTL.as_secs());
 
     if dead || expired {
         match fs::remove_file(path) {
@@ -218,6 +274,15 @@ mod tests {
         p.push(format!("aden-lock-test-{}-{}", std::process::id(), name));
         let _ = fs::remove_file(&p);
         p
+    }
+
+    #[test]
+    fn read_holder_parses_lockfile() {
+        let path = lock_path("parse");
+        fs::write(&path, "4242\n1700000000\n").unwrap();
+        let h = read_holder(&path).expect("must parse");
+        assert_eq!(h.pid, 4242);
+        assert_eq!(h.acquired_secs, 1_700_000_000);
     }
 
     #[test]

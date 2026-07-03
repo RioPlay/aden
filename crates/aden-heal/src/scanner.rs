@@ -168,7 +168,17 @@ impl Scanner {
         let mut aden_anchors: HashSet<String> = HashSet::new();
         let mut contract_docs: Vec<(String, Document)> = Vec::new();
 
-        if store_path.exists()
+        // ADR-011: prefer fresh graph.snapshot (lock-free) when doing drift
+        // scanning that produces MergeReconcile proposals.
+        if let Some((docs, _)) = aden_graph::snapshot::try_read_fresh(&self.repo_root) {
+            for (anchor, doc) in docs {
+                aden_anchors.insert(anchor.clone());
+                contract_docs.push((anchor, doc));
+            }
+        }
+
+        if contract_docs.is_empty()
+            && store_path.exists()
             && {
                 if is_legacy {
                     eprintln!("{}", aden_paths::legacy_notice(&self.repo_root));

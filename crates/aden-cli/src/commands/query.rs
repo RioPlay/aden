@@ -1530,6 +1530,13 @@ fn community_seeds_for(
 /// `ask --explain` uses it so a bare doc anchor can be judged by the file it
 /// lives in (e.g. `…#philosophy` → `docs/philosophy.adoc`).
 fn anchor_source_file(path: &Path, anchor: &str) -> Option<String> {
+    // ADR-011: prefer graph.snapshot (via try_read_fresh) for lock-free reads.
+    if let Some((docs, _)) = aden_graph::snapshot::try_read_fresh(path)
+        && let Some(d) = docs.get(anchor)
+    {
+        return d.attributes.get("source_file").cloned();
+    }
+
     let (store_path, _) = aden_paths::resolve_read_store(path);
     let storage = aden_store::Storage::open_existing(store_path.to_str()?).ok()?;
     storage

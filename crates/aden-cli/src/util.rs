@@ -965,13 +965,39 @@ fn resolve_doc_link(
 fn collect_store_entries(path: &Path) -> Vec<(PathBuf, String)> {
     use aden_store::{GraphStorage, Storage};
 
-    let (store_path, _) = aden_paths::resolve_read_store(&find_project_root(path));
+    let root = find_project_root(path);
+    let (store_path, _) = aden_paths::resolve_read_store(&root);
     if !store_path.is_dir() {
         return Vec::new();
     }
     let Some(store_str) = store_path.to_str() else {
         return Vec::new();
     };
+
+    // ADR-011: snapshot-first (via helper) so search/ask don't open fjall
+    // while gen/heal/merge writers are active.
+    if let Some((docs_map, _)) = aden_graph::snapshot::try_read_fresh(&root) {
+        let mut docs: Vec<_> = docs_map.into_values().collect();
+        docs.sort_by(|a, b| {
+            a.anchor.cmp(&b.anchor).then_with(|| {
+                a.attributes
+                    .get("source_file")
+                    .cmp(&b.attributes.get("source_file"))
+            })
+        });
+        return docs
+            .into_iter()
+            .map(|doc| {
+                let synthetic = doc
+                    .attributes
+                    .get("source_file")
+                    .cloned()
+                    .unwrap_or_else(|| doc.anchor.clone());
+                (PathBuf::from(synthetic), index_text(&doc))
+            })
+            .collect();
+    }
+
     let Ok(storage) = Storage::open_existing(store_str) else {
         return Vec::new();
     };
@@ -1503,6 +1529,258 @@ pub fn generate_proposal_id() -> String {
     format!("{pid}-{ts}")
 }
 
+/// Callee names referenced by a symbol document, for call-graph linking.
+/// Reads both the `edge::calls[...]` listing and the `Callee` table so it works
+/// regardless of which an extractor emits.
+pub fn extract_callees(doc: &aden_core::Document) -> Vec<String> {
+    use aden_core::Block;
+    let mut callees = Vec::new();
+    for block in &doc.blocks {
+        match block {
+            Block::Listing { code, .. } => {
+                for line in code.lines() {
+                    if let Some(rest) = line.trim().strip_prefix("edge::calls[")
+                        && let Some(callee) = rest.strip_suffix(']')
+                        && !callee.is_empty()
+                    {
+                        callees.push(callee.to_string());
+                    }
+                }
+            }
+            Block::Table(t)
+                if t.headers.first().map(|h| h.eq_ignore_ascii_case("callee")) == Some(true) =>
+            {
+                for row in &t.rows {
+                    if let Some(c) = row.first()
+                        && !c.is_empty()
+                    {
+                        callees.push(c.clone());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    callees.sort();
+    callees.dedup();
+    callees
+}
+
+/// Type names a symbol `Uses`, read from `edge::uses[...]` listings (emitted by
+/// extractors for the types referenced in a signature/fields). Kept separate
+/// from callees so they link as `Uses` edges, not `Calls`.
+pub fn extract_uses(doc: &aden_core::Document) -> Vec<String> {
+    use aden_core::Block;
+    let mut uses = Vec::new();
+    for block in &doc.blocks {
+        if let Block::Listing { code, .. } = block {
+            for line in code.lines() {
+                if let Some(rest) = line.trim().strip_prefix("edge::uses[")
+                    && let Some(t) = rest.strip_suffix(']')
+                    && !t.is_empty()
+                {
+                    uses.push(t.to_string());
+                }
+            }
+        }
+    }
+    uses.sort();
+    uses.dedup();
+    uses
+}
+
+/// Targets of one `edge::<kind>[...]` macro family in a document's listing
+/// blocks, sorted + deduped. Shared reader for the Wave-1 edge macros
+/// (`implements`, `mutates`) — same format `extract_uses` reads for `uses`.
+pub fn extract_edge_macro(doc: &aden_core::Document, kind: &str) -> Vec<String> {
+    use aden_core::Block;
+    let prefix = format!("edge::{kind}[");
+    let mut out = Vec::new();
+    for block in &doc.blocks {
+        if let Block::Listing { code, .. } = block {
+            for line in code.lines() {
+                if let Some(rest) = line.trim().strip_prefix(prefix.as_str())
+                    && let Some(t) = rest.strip_suffix(']')
+                    && !t.is_empty()
+                {
+                    out.push(t.to_string());
+                }
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// Prose cross-references a doc node makes, read from the `doc_refs` attribute
+/// the format parsers fill (`ref:<fragment>` entries — AsciiDoc `<<target>>`/
+/// `xref:file#frag` and markdown `[text](#frag)` forms). Extraction is
+/// per-format and lives in the parser, which knows listing-fence and backtick
+/// state (a `<<x>>` inside a code example is not a reference); resolution in
+/// [`link_store_edges`] is format-neutral. A previous version scanned the
+/// document BLOCKS here with no fence/backtick awareness, which also picked up
+/// `a << b >> c` shift expressions from embedded code listings.
+pub fn extract_doc_refs(doc: &aden_core::Document) -> Vec<String> {
+    extract_joined_attribute(doc, "doc_refs")
+}
+
+/// Document-composition targets, read from the `doc_includes` attribute the
+/// AsciiDoc parser fills for `include::` directives. Resolved file-wise (by
+/// stem) to directional `Requires` edges in [`link_include_edges`].
+pub fn extract_doc_includes(doc: &aden_core::Document) -> Vec<String> {
+    extract_joined_attribute(doc, "doc_includes")
+}
+
+/// Backtick prose mentions, read from the `doc_mentions` attribute the format
+/// parsers fill (Wave 2). Same division of labor as `doc_refs`: the parser
+/// knows fence/backtick state; resolution in [`link_store_edges`] is
+/// format-neutral and links only unambiguous names.
+pub fn extract_doc_mentions(doc: &aden_core::Document) -> Vec<String> {
+    extract_joined_attribute(doc, "doc_mentions")
+}
+
+/// Supersede-context refs, read from the `doc_supersedes` attribute the format
+/// parsers fill (Wave 3). Entries are `<by|of>:ref:<frag>` — a direction
+/// prefix plus the same `ref:` form the `doc_refs` channel uses.
+pub fn extract_doc_supersedes(doc: &aden_core::Document) -> Vec<String> {
+    extract_joined_attribute(doc, "doc_supersedes")
+}
+
+/// `kind:name` references a doc code listing makes, read from the
+/// `symbol_references` attribute the format parsers fill on `code_block_*`
+/// docs (declaration scan + language-neutral call-token scan). Linked as
+/// `Demonstrates` edges (Wave 2).
+pub fn extract_demonstrates(doc: &aden_core::Document) -> Vec<String> {
+    extract_joined_attribute(doc, "symbol_references")
+}
+
+/// Term anchors a glossary section defines, read from the `doc_terms`
+/// attribute the format parsers fill (Wave 2 remainder). Values are full
+/// `aden://term/…` anchors, so linking is exact-match only.
+pub fn extract_doc_terms(doc: &aden_core::Document) -> Vec<String> {
+    extract_joined_attribute(doc, "doc_terms")
+}
+
+/// A comma-joined doc attribute as a sorted, deduped list.
+pub fn extract_joined_attribute(doc: &aden_core::Document, key: &str) -> Vec<String> {
+    let Some(joined) = doc.attributes.get(key) else {
+        return Vec::new();
+    };
+    let mut vals: Vec<String> = joined
+        .split(',')
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect();
+    vals.sort();
+    vals.dedup();
+    vals
+}
+
+/// Module-level co-change pairs from git history (Wave 3 `AssociatedWith` —
+/// the Hebbian episodic signal: things that fire together wire together).
+/// Deterministic from repo state: the last 1000 non-merge commits, skipping
+/// bulk commits (>20 files — rename sweeps and reformats say nothing about
+/// functional coupling), pair-counting each commit's files at module level
+/// and keeping pairs that co-changed ≥3 times. Files map to module anchors
+/// via the gen cache (file → anchors recorded by gen itself), so the whole
+/// pass costs one `git log` — no store scan. Non-repos and git failures
+/// degrade to no edges.
+pub fn cochange_pairs(
+    root: &std::path::Path,
+    cache: &crate::types::GenCache,
+) -> Vec<crate::types::CochangePair> {
+    use std::collections::BTreeMap;
+    const COCHANGE_COMMITS: &str = "1000";
+    const COCHANGE_MAX_FILES: usize = 20;
+    const COCHANGE_THRESHOLD: u32 = 3;
+
+    // Repo-relative file → file-level anchor: the `#`-stripped prefix of the
+    // file's first symbol anchor (code files have exactly one). Files with no
+    // symbol anchors (prose, empty) drop out here.
+    let mut file_anchor: BTreeMap<&str, String> = BTreeMap::new();
+    for (key, entry) in &cache.entries {
+        for a in &entry.anchors {
+            if let Some(h) = a.find('#') {
+                file_anchor.insert(key.as_str(), a[..h].to_string());
+                break;
+            }
+        }
+    }
+    if file_anchor.is_empty() {
+        return Vec::new();
+    }
+    // Reverse map for attaching the source file to each emitted anchor
+    // (BTreeMap iteration order makes the first-file-wins pick deterministic).
+    let mut anchor_file: BTreeMap<&str, &str> = BTreeMap::new();
+    for (f, a) in &file_anchor {
+        anchor_file.entry(a.as_str()).or_insert(f);
+    }
+
+    let Ok(out) = std::process::Command::new("git")
+        .args([
+            "log",
+            "--no-merges",
+            "-n",
+            COCHANGE_COMMITS,
+            "--pretty=format:@@",
+            "--name-only",
+        ])
+        .current_dir(root)
+        .output()
+    else {
+        return Vec::new();
+    };
+    if !out.status.success() {
+        return Vec::new();
+    }
+    let log = String::from_utf8_lossy(&out.stdout);
+
+    let mut counts: BTreeMap<(String, String), u32> = BTreeMap::new();
+    for block in log.split("@@") {
+        let files: Vec<&str> = block
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .collect();
+        // Bulk-commit gate on raw files touched, BEFORE anchor mapping — a
+        // 200-file reformat is noise even if only 5 of those files are indexed.
+        if files.len() < 2 || files.len() > COCHANGE_MAX_FILES {
+            continue;
+        }
+        let mut anchors: Vec<&str> = files
+            .iter()
+            .filter_map(|f| file_anchor.get(f).map(String::as_str))
+            .collect();
+        anchors.sort_unstable();
+        anchors.dedup();
+        for i in 0..anchors.len() {
+            for j in i + 1..anchors.len() {
+                *counts
+                    .entry((anchors[i].to_string(), anchors[j].to_string()))
+                    .or_default() += 1;
+            }
+        }
+    }
+    counts
+        .into_iter()
+        .filter(|(_, c)| *c >= COCHANGE_THRESHOLD)
+        .map(|((a, b), _)| {
+            let fa = anchor_file
+                .get(a.as_str())
+                .copied()
+                .unwrap_or("")
+                .to_string();
+            let fb = anchor_file
+                .get(b.as_str())
+                .copied()
+                .unwrap_or("")
+                .to_string();
+            ((a, fa), (b, fb))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1760,256 +2038,4 @@ mod tests {
             "must strip against the given root, leaking no /home/ prefix"
         );
     }
-}
-
-/// Callee names referenced by a symbol document, for call-graph linking.
-/// Reads both the `edge::calls[...]` listing and the `Callee` table so it works
-/// regardless of which an extractor emits.
-pub fn extract_callees(doc: &aden_core::Document) -> Vec<String> {
-    use aden_core::Block;
-    let mut callees = Vec::new();
-    for block in &doc.blocks {
-        match block {
-            Block::Listing { code, .. } => {
-                for line in code.lines() {
-                    if let Some(rest) = line.trim().strip_prefix("edge::calls[")
-                        && let Some(callee) = rest.strip_suffix(']')
-                        && !callee.is_empty()
-                    {
-                        callees.push(callee.to_string());
-                    }
-                }
-            }
-            Block::Table(t)
-                if t.headers.first().map(|h| h.eq_ignore_ascii_case("callee")) == Some(true) =>
-            {
-                for row in &t.rows {
-                    if let Some(c) = row.first()
-                        && !c.is_empty()
-                    {
-                        callees.push(c.clone());
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    callees.sort();
-    callees.dedup();
-    callees
-}
-
-/// Type names a symbol `Uses`, read from `edge::uses[...]` listings (emitted by
-/// extractors for the types referenced in a signature/fields). Kept separate
-/// from callees so they link as `Uses` edges, not `Calls`.
-pub fn extract_uses(doc: &aden_core::Document) -> Vec<String> {
-    use aden_core::Block;
-    let mut uses = Vec::new();
-    for block in &doc.blocks {
-        if let Block::Listing { code, .. } = block {
-            for line in code.lines() {
-                if let Some(rest) = line.trim().strip_prefix("edge::uses[")
-                    && let Some(t) = rest.strip_suffix(']')
-                    && !t.is_empty()
-                {
-                    uses.push(t.to_string());
-                }
-            }
-        }
-    }
-    uses.sort();
-    uses.dedup();
-    uses
-}
-
-/// Targets of one `edge::<kind>[...]` macro family in a document's listing
-/// blocks, sorted + deduped. Shared reader for the Wave-1 edge macros
-/// (`implements`, `mutates`) — same format `extract_uses` reads for `uses`.
-pub fn extract_edge_macro(doc: &aden_core::Document, kind: &str) -> Vec<String> {
-    use aden_core::Block;
-    let prefix = format!("edge::{kind}[");
-    let mut out = Vec::new();
-    for block in &doc.blocks {
-        if let Block::Listing { code, .. } = block {
-            for line in code.lines() {
-                if let Some(rest) = line.trim().strip_prefix(prefix.as_str())
-                    && let Some(t) = rest.strip_suffix(']')
-                    && !t.is_empty()
-                {
-                    out.push(t.to_string());
-                }
-            }
-        }
-    }
-    out.sort();
-    out.dedup();
-    out
-}
-
-/// Prose cross-references a doc node makes, read from the `doc_refs` attribute
-/// the format parsers fill (`ref:<fragment>` entries — AsciiDoc `<<target>>`/
-/// `xref:file#frag` and markdown `[text](#frag)` forms). Extraction is
-/// per-format and lives in the parser, which knows listing-fence and backtick
-/// state (a `<<x>>` inside a code example is not a reference); resolution in
-/// [`link_store_edges`] is format-neutral. A previous version scanned the
-/// document BLOCKS here with no fence/backtick awareness, which also picked up
-/// `a << b >> c` shift expressions from embedded code listings.
-pub fn extract_doc_refs(doc: &aden_core::Document) -> Vec<String> {
-    extract_joined_attribute(doc, "doc_refs")
-}
-
-/// Document-composition targets, read from the `doc_includes` attribute the
-/// AsciiDoc parser fills for `include::` directives. Resolved file-wise (by
-/// stem) to directional `Requires` edges in [`link_include_edges`].
-pub fn extract_doc_includes(doc: &aden_core::Document) -> Vec<String> {
-    extract_joined_attribute(doc, "doc_includes")
-}
-
-/// Backtick prose mentions, read from the `doc_mentions` attribute the format
-/// parsers fill (Wave 2). Same division of labor as `doc_refs`: the parser
-/// knows fence/backtick state; resolution in [`link_store_edges`] is
-/// format-neutral and links only unambiguous names.
-pub fn extract_doc_mentions(doc: &aden_core::Document) -> Vec<String> {
-    extract_joined_attribute(doc, "doc_mentions")
-}
-
-/// Supersede-context refs, read from the `doc_supersedes` attribute the format
-/// parsers fill (Wave 3). Entries are `<by|of>:ref:<frag>` — a direction
-/// prefix plus the same `ref:` form the `doc_refs` channel uses.
-pub fn extract_doc_supersedes(doc: &aden_core::Document) -> Vec<String> {
-    extract_joined_attribute(doc, "doc_supersedes")
-}
-
-/// `kind:name` references a doc code listing makes, read from the
-/// `symbol_references` attribute the format parsers fill on `code_block_*`
-/// docs (declaration scan + language-neutral call-token scan). Linked as
-/// `Demonstrates` edges (Wave 2).
-pub fn extract_demonstrates(doc: &aden_core::Document) -> Vec<String> {
-    extract_joined_attribute(doc, "symbol_references")
-}
-
-/// Term anchors a glossary section defines, read from the `doc_terms`
-/// attribute the format parsers fill (Wave 2 remainder). Values are full
-/// `aden://term/…` anchors, so linking is exact-match only.
-pub fn extract_doc_terms(doc: &aden_core::Document) -> Vec<String> {
-    extract_joined_attribute(doc, "doc_terms")
-}
-
-/// A comma-joined doc attribute as a sorted, deduped list.
-pub fn extract_joined_attribute(doc: &aden_core::Document, key: &str) -> Vec<String> {
-    let Some(joined) = doc.attributes.get(key) else {
-        return Vec::new();
-    };
-    let mut vals: Vec<String> = joined
-        .split(',')
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .collect();
-    vals.sort();
-    vals.dedup();
-    vals
-}
-
-/// Module-level co-change pairs from git history (Wave 3 `AssociatedWith` —
-/// the Hebbian episodic signal: things that fire together wire together).
-/// Deterministic from repo state: the last 1000 non-merge commits, skipping
-/// bulk commits (>20 files — rename sweeps and reformats say nothing about
-/// functional coupling), pair-counting each commit's files at module level
-/// and keeping pairs that co-changed ≥3 times. Files map to module anchors
-/// via the gen cache (file → anchors recorded by gen itself), so the whole
-/// pass costs one `git log` — no store scan. Non-repos and git failures
-/// degrade to no edges.
-pub fn cochange_pairs(
-    root: &std::path::Path,
-    cache: &crate::types::GenCache,
-) -> Vec<crate::types::CochangePair> {
-    use std::collections::BTreeMap;
-    const COCHANGE_COMMITS: &str = "1000";
-    const COCHANGE_MAX_FILES: usize = 20;
-    const COCHANGE_THRESHOLD: u32 = 3;
-
-    // Repo-relative file → file-level anchor: the `#`-stripped prefix of the
-    // file's first symbol anchor (code files have exactly one). Files with no
-    // symbol anchors (prose, empty) drop out here.
-    let mut file_anchor: BTreeMap<&str, String> = BTreeMap::new();
-    for (key, entry) in &cache.entries {
-        for a in &entry.anchors {
-            if let Some(h) = a.find('#') {
-                file_anchor.insert(key.as_str(), a[..h].to_string());
-                break;
-            }
-        }
-    }
-    if file_anchor.is_empty() {
-        return Vec::new();
-    }
-    // Reverse map for attaching the source file to each emitted anchor
-    // (BTreeMap iteration order makes the first-file-wins pick deterministic).
-    let mut anchor_file: BTreeMap<&str, &str> = BTreeMap::new();
-    for (f, a) in &file_anchor {
-        anchor_file.entry(a.as_str()).or_insert(f);
-    }
-
-    let Ok(out) = std::process::Command::new("git")
-        .args([
-            "log",
-            "--no-merges",
-            "-n",
-            COCHANGE_COMMITS,
-            "--pretty=format:@@",
-            "--name-only",
-        ])
-        .current_dir(root)
-        .output()
-    else {
-        return Vec::new();
-    };
-    if !out.status.success() {
-        return Vec::new();
-    }
-    let log = String::from_utf8_lossy(&out.stdout);
-
-    let mut counts: BTreeMap<(String, String), u32> = BTreeMap::new();
-    for block in log.split("@@") {
-        let files: Vec<&str> = block
-            .lines()
-            .map(str::trim)
-            .filter(|l| !l.is_empty())
-            .collect();
-        // Bulk-commit gate on raw files touched, BEFORE anchor mapping — a
-        // 200-file reformat is noise even if only 5 of those files are indexed.
-        if files.len() < 2 || files.len() > COCHANGE_MAX_FILES {
-            continue;
-        }
-        let mut anchors: Vec<&str> = files
-            .iter()
-            .filter_map(|f| file_anchor.get(f).map(String::as_str))
-            .collect();
-        anchors.sort_unstable();
-        anchors.dedup();
-        for i in 0..anchors.len() {
-            for j in i + 1..anchors.len() {
-                *counts
-                    .entry((anchors[i].to_string(), anchors[j].to_string()))
-                    .or_default() += 1;
-            }
-        }
-    }
-    counts
-        .into_iter()
-        .filter(|(_, c)| *c >= COCHANGE_THRESHOLD)
-        .map(|((a, b), _)| {
-            let fa = anchor_file
-                .get(a.as_str())
-                .copied()
-                .unwrap_or("")
-                .to_string();
-            let fb = anchor_file
-                .get(b.as_str())
-                .copied()
-                .unwrap_or("")
-                .to_string();
-            ((a, fa), (b, fb))
-        })
-        .collect()
 }

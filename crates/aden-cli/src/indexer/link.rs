@@ -1776,8 +1776,7 @@ mod link_tests {
             "<<faq>> must resolve to the [[faq]] declaration, not a heading slug; got {out:?}"
         );
         assert!(
-            !out
-                .iter()
+            !out.iter()
                 .any(|(t, et)| t == heading_sorts_first && *et == EdgeType::RelatesTo),
             "the derived heading slug must not shadow the explicit declaration via RelatesTo; got {out:?}"
         );

@@ -219,22 +219,29 @@ pub fn cmd_grep(
     Ok(())
 }
 
+/// Load project documents for read-side symbol attribution (ADR-011 snapshot-first).
+fn load_docs_for_spans(root: &Path) -> HashMap<String, aden_core::Document> {
+    use aden_graph::snapshot;
+    use aden_store::{GraphStorage, Storage};
+
+    if let Some((docs, _)) = snapshot::try_read_fresh(root) {
+        return docs;
+    }
+    let (store_path, _) = aden_paths::resolve_read_store(root);
+    let Some(store_str) = store_path.to_str() else {
+        return HashMap::new();
+    };
+    let Ok(storage) = Storage::open_existing(store_str) else {
+        return HashMap::new();
+    };
+    storage.get_all_documents().unwrap_or_default()
+}
+
 /// Load `source_file -> [span]` from the store so each match can be attributed
 /// to the symbol that encloses it.
 pub(crate) fn load_symbol_spans(root: &Path) -> HashMap<String, Vec<Span>> {
-    use aden_store::{GraphStorage, Storage};
-
     let mut by_file: HashMap<String, Vec<Span>> = HashMap::new();
-    let (store_path, _) = aden_paths::resolve_read_store(root);
-    let Some(store_str) = store_path.to_str() else {
-        return by_file;
-    };
-    let Ok(storage) = Storage::open_existing(store_str) else {
-        return by_file;
-    };
-    let Ok(docs) = storage.get_all_documents() else {
-        return by_file;
-    };
+    let docs = load_docs_for_spans(root);
     for (anchor, doc) in docs {
         let (Some(file), Some(start), Some(end)) = (
             doc.attributes.get("source_file"),

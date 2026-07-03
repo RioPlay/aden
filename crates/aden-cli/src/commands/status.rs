@@ -11,6 +11,10 @@ use crate::util::find_project_root;
 /// Honors the global `-j/--json` flag.
 pub fn cmd_status(path: &Path, json: bool) -> Result<(), Box<dyn std::error::Error>> {
     let aden_path = path.join(".aden");
+    let root = find_project_root(path);
+    let store_path = aden_paths::store_dir(&root);
+    let lock_path = aden_paths::store_lock_file(&root);
+    let snapshot_path = aden_paths::graph_snapshot_file(&root);
 
     // Health is a heal-drift metric (stale docs vs. code), separate
     // from orphans. Keep it as the honest drift signal.
@@ -48,7 +52,19 @@ pub fn cmd_status(path: &Path, json: bool) -> Result<(), Box<dyn std::error::Err
             "truncated": actionable.len() > 20,
             "path": path.display().to_string(),
             "aden_dir": aden_path.display().to_string(),
-            "store": aden_paths::store_dir(&find_project_root(path)).display().to_string(),
+            "store": store_path.display().to_string(),
+            "store_writer": aden_core::lock::read_holder(&lock_path).map(|h| {
+                serde_json::json!({
+                    "pid": h.pid,
+                    "held_secs": std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs().saturating_sub(h.acquired_secs))
+                        .unwrap_or(0),
+                })
+            }),
+            "read_snapshot": snapshot_path
+                .is_file()
+                .then(|| snapshot_path.display().to_string()),
             "health_score": health,
             "health": health_pct,
             "orphans": {
@@ -64,10 +80,16 @@ pub fn cmd_status(path: &Path, json: bool) -> Result<(), Box<dyn std::error::Err
 
     println!("Aden Status: {}", path.display());
     println!("Active .aden: {}", aden_path.display());
-    println!(
-        "Store: {}",
-        aden_paths::store_dir(&find_project_root(path)).display()
-    );
+    println!("Store: {}", store_path.display());
+    if let Some(holder) = aden_core::lock::read_holder(&lock_path) {
+        println!(
+            "Store writer: active ({})",
+            aden_core::lock::describe_holder(holder)
+        );
+    }
+    if snapshot_path.is_file() {
+        println!("Read snapshot: {}", snapshot_path.display());
+    }
     let emoji = if health >= 0.95 {
         "✅"
     } else if health >= 0.8 {
@@ -97,8 +119,7 @@ pub fn cmd_status(path: &Path, json: bool) -> Result<(), Box<dyn std::error::Err
     }
 
     // Savings summary from the persistent ledger: this session + all-time.
-    let repo_root = find_project_root(path);
-    let summary = crate::commands::savings_store::load_summary(&repo_root);
+    let summary = crate::commands::savings_store::load_summary(&root);
     if summary.all_time.queries == 0 {
         println!("Savings (est.): no queries recorded yet");
     } else {

@@ -12,6 +12,13 @@ All notable changes to aden are documented here. Format follows
 Post-0.2.0 work on main — not yet tagged.
 
 ### Added
+- **Read snapshot for concurrent graph loads** (2026-07-03) — ADR-011: `gen`
+  publishes `graph.snapshot` (Postcard docs + edges) beside the per-user store;
+  `try_load` reads the snapshot when fresh, avoiding fjall `Locked` errors under
+  multi-agent workloads. See `docs/adr-011-read-snapshot.adoc`.
+- **Writer queue UX** (2026-07-03) — ADR-011 Phase 2: `gen` waits up to 10m on
+  `store.lock` with holder `pid`/age notes; `Storage::new_with_retry` retries fjall
+  `Locked` opens while readers finish; `aden status` shows active writer + snapshot.
 - **Query-aware gather-then-select assembly** (2026-07-03) — `AssemblyOptions.relevance_select`
   (gated, default off) gathers the reachable neighborhood then selects to budget by
   blended relevance and structural proximity. `aden asm --select` activates it when relevance

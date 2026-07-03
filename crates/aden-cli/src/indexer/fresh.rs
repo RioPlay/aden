@@ -231,10 +231,8 @@ mod skip_auto_gen_tests {
 
     #[test]
     fn augment_read_json_wraps_arrays_and_tags_objects() {
-        let obj = augment_read_json_with_stale(
-            false,
-            serde_json::json!({"total": 0, "matches": []}),
-        );
+        let obj =
+            augment_read_json_with_stale(false, serde_json::json!({"total": 0, "matches": []}));
         assert_eq!(obj["total"], 0);
         assert_eq!(obj["index_stale"].as_bool(), Some(false));
         assert!(obj.get("stale_hint").is_none());

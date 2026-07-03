@@ -200,6 +200,19 @@ pub fn gen_cache_file(root: &Path) -> PathBuf {
     project_dir(root).join("gen-cache.json")
 }
 
+/// Advisory writer lock beside the fjall store (`store.lock` for `store/`).
+pub fn store_lock_file(root: &Path) -> PathBuf {
+    store_dir(root).with_extension("lock")
+}
+
+/// Atomic read snapshot published at the end of every successful `gen`
+/// (ADR-011). Readers load this file instead of opening the live fjall store
+/// when it is present and fresh, so concurrent agents do not contend on fjall's
+/// process-level database lock.
+pub fn graph_snapshot_file(root: &Path) -> PathBuf {
+    project_dir(root).join("graph.snapshot")
+}
+
 /// Heal drift-scan cache file.
 pub fn scan_cache_file(root: &Path) -> PathBuf {
     project_dir(root).join("scan-cache.json")

@@ -29,6 +29,8 @@ use crate::{
 use aden_core::{Document, EdgeType};
 use fjall::{Database, Keyspace, KeyspaceCreateOptions, PersistMode};
 use std::collections::{HashMap, HashSet};
+use std::thread::sleep;
+use std::time::{Duration, Instant};
 
 impl From<fjall::Error> for StoreError {
     fn from(e: fjall::Error) -> Self {
@@ -60,9 +62,57 @@ pub struct FjallStorage {
     bases: Keyspace,
 }
 
+/// Default wait for a contended fjall open (readers holding the DB lock).
+pub const FJALL_OPEN_RETRY_TIMEOUT: Duration = Duration::from_secs(600);
+
+fn store_error_is_locked(err: &StoreError) -> bool {
+    matches!(err, StoreError::Io(msg) if msg.contains("Locked"))
+}
+
 impl FjallStorage {
     /// Open (or create) a Fjall store at the given path.
     pub fn new(path: &str) -> Result<Self, StoreError> {
+        Self::open_once(path)
+    }
+
+    /// Open with retry when fjall reports `Locked` — typical when MCP read
+    /// tools still have the live store open. Waits up to `timeout`, emitting a
+    /// `NOTE:` every 5s (ADR-011 Phase 2).
+    pub fn new_with_retry(path: &str, timeout: Duration) -> Result<Self, StoreError> {
+        let deadline = Instant::now() + timeout;
+        let started = Instant::now();
+        let mut last_note = started;
+        const NOTE_EVERY: Duration = Duration::from_secs(5);
+        const POLL: Duration = Duration::from_millis(100);
+
+        loop {
+            match Self::open_once(path) {
+                Ok(storage) => return Ok(storage),
+                Err(e) if store_error_is_locked(&e) => {
+                    let now = Instant::now();
+                    if now.duration_since(last_note) >= NOTE_EVERY {
+                        eprintln!(
+                            "NOTE: waiting for fjall store at {path} (readers may be active; \
+                             waited {}s)…",
+                            now.duration_since(started).as_secs()
+                        );
+                        last_note = now;
+                    }
+                    if now >= deadline {
+                        return Err(StoreError::Io(format!(
+                            "store locked at {path} — readers or another writer still have the \
+                             database open (waited {timeout:?}). Retry when agents are idle, or \
+                             run from a shell after `aden gen` publishes graph.snapshot (ADR-011)."
+                        )));
+                    }
+                    sleep(POLL);
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
+    fn open_once(path: &str) -> Result<Self, StoreError> {
         let db = Database::builder(path).open()?;
         let open = |name: &str| -> Result<Keyspace, StoreError> {
             db.keyspace(name, KeyspaceCreateOptions::default)

@@ -141,41 +141,15 @@ pub fn cmd_gen_silent(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
 /// minutes for a live holder; a dead holder is reclaimed immediately (process
 /// liveness on Linux), so this blocks only on a genuinely active gen. The
 /// lockfile is a sibling of the store directory.
+const WRITE_QUEUE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
+
 fn acquire_store_lock(store_path: &Path) -> std::io::Result<aden_core::lock::FileLock> {
-    aden_core::lock::FileLock::acquire_timeout(
-        store_path.with_extension("lock"),
-        std::time::Duration::from_secs(600),
+    aden_core::lock::FileLock::acquire_timeout_verbose(
+        aden_core::lock::store_lock_path(store_path),
+        WRITE_QUEUE_TIMEOUT,
     )
 }
-#[cfg(test)]
-mod store_lock_tests {
-    use super::*;
 
-    #[test]
-    fn gen_store_lock_is_exclusive_and_releases() {
-        let dir = tempfile::tempdir().unwrap();
-        let store_path = dir.path().join("store");
-
-        let held = acquire_store_lock(&store_path).expect("first gen takes the lock");
-        // A second writer on the same store's sibling lockfile is blocked.
-        let blocked = aden_core::lock::FileLock::acquire_timeout(
-            store_path.with_extension("lock"),
-            std::time::Duration::from_millis(100),
-        );
-        assert_eq!(
-            blocked.expect_err("second writer must block").kind(),
-            std::io::ErrorKind::WouldBlock
-        );
-
-        drop(held);
-        // Once the first writer finishes, the store is acquirable again.
-        aden_core::lock::FileLock::acquire_timeout(
-            store_path.with_extension("lock"),
-            std::time::Duration::from_millis(100),
-        )
-        .expect("lock is free after release");
-    }
-}
 fn cmd_gen_inner(
     path: &Path,
     quiet: bool,
@@ -198,6 +172,7 @@ fn cmd_gen_inner(
     // Store-first: `gen` writes ONLY to .aden/store. Module hub nodes
     // (mod-project, mod-<crate>) are synthesized into the store by
     // link_store_edges — no .adoc files or contracts/ directory are emitted.
+    let mut pending_snapshot: Option<(std::path::PathBuf, Vec<u8>)> = None;
     {
         // A single file re-indexes just itself; a directory indexes the project.
         let mut sources = if path.is_file() {
@@ -227,15 +202,11 @@ fn cmd_gen_inner(
         // covering the whole open/index/flush write phase.
         let _store_lock = acquire_store_lock(&store_path).map_err(|e| {
             if e.kind() == std::io::ErrorKind::WouldBlock {
-                format!(
-                    "store locked — another aden process holds the lock at {}. \
-                     Wait for it to finish or stop the other process.",
-                    store_path.with_extension("lock").display()
-                )
+                e.to_string()
             } else {
                 format!(
                     "failed to acquire store lock at {}: {e}",
-                    store_path.display()
+                    aden_core::lock::store_lock_path(&store_path).display()
                 )
             }
         })?;
@@ -248,7 +219,7 @@ fn cmd_gen_inner(
         // "unchanged" against an empty store and the rebuild would silently
         // produce nothing (the recovery-from-deletion trap).
         let mut full_rebuild = force || !store_path.exists();
-        let storage = match Storage::new(store_str) {
+        let storage = match Storage::new_with_retry(store_str, WRITE_QUEUE_TIMEOUT) {
             Ok(s) => s,
             Err(aden_store::StoreError::IncompatibleVersion(_)) => {
                 // The on-disk store was written in an engine format this build
@@ -713,6 +684,15 @@ fn cmd_gen_inner(
             eprintln!("WARN: Failed to link include edges: {}", e);
         }
 
+        // ADR-011: encode the read snapshot while storage is open; publish after
+        // the store handle drops so a final fjall flush cannot age the store
+        // past the snapshot file.
+        let snapshot_path = aden_paths::graph_snapshot_file(&root);
+        match aden_graph::snapshot::prepare_from_storage(&storage) {
+            Ok(bytes) => pending_snapshot = Some((snapshot_path, bytes)),
+            Err(e) => eprintln!("WARN: Failed to prepare read snapshot: {e}"),
+        }
+
         save_gen_cache(&cache_path, &cache)?;
 
         // The summary is "summary only" output: shown under --quiet/regen, but
@@ -795,6 +775,12 @@ fn cmd_gen_inner(
         }
     }
 
+    if let Some((snapshot_path, bytes)) = pending_snapshot
+        && let Err(e) = aden_graph::snapshot::publish_bytes(&snapshot_path, &bytes)
+    {
+        eprintln!("WARN: Failed to publish read snapshot: {e}");
+    }
+
     // Invalidate caches after generating so the next query rebuilds
     let cache_dir = aden_paths::cache_dir(path);
     if cache_dir.exists() {
@@ -803,4 +789,34 @@ fn cmd_gen_inner(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod store_lock_tests {
+    use super::*;
+
+    #[test]
+    fn gen_store_lock_is_exclusive_and_releases() {
+        let dir = tempfile::tempdir().unwrap();
+        let store_path = dir.path().join("store");
+
+        let held = acquire_store_lock(&store_path).expect("first gen takes the lock");
+        // A second writer on the same store's sibling lockfile is blocked.
+        let blocked = aden_core::lock::FileLock::acquire_timeout(
+            store_path.with_extension("lock"),
+            std::time::Duration::from_millis(100),
+        );
+        assert_eq!(
+            blocked.expect_err("second writer must block").kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+
+        drop(held);
+        // Once the first writer finishes, the store is acquirable again.
+        aden_core::lock::FileLock::acquire_timeout(
+            store_path.with_extension("lock"),
+            std::time::Duration::from_millis(100),
+        )
+        .expect("lock is free after release");
+    }
 }

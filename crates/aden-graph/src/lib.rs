@@ -38,6 +38,7 @@ pub mod nodes;
 pub mod parser;
 pub mod ppr;
 pub mod query;
+pub mod snapshot;
 
 pub use graph::AdenGraph;
 pub use nodes::aden::{AdenEdge, DocumentNode};

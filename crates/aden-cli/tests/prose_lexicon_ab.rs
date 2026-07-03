@@ -114,9 +114,11 @@ fn load_embedder() -> Option<aden_index::TractEmbedder> {
     aden_index::TractEmbedder::from_dir(&dir).ok()
 }
 
+type ProseIndexBundle = (Index, HashSet<String>, Vec<(String, HashSet<String>)>);
+
 /// Build a BM25 index over the external prose corpus. Each `.txt` becomes one document
 /// anchored by its filename stem (the concept). Returns (index, vocab, [(concept, tokens)]).
-fn build_index() -> Option<(Index, HashSet<String>, Vec<(String, HashSet<String>)>)> {
+fn build_index() -> Option<ProseIndexBundle> {
     let dir = corpus_dir();
     let rd = std::fs::read_dir(&dir).ok()?;
     let mut entries: Vec<(PathBuf, String)> = Vec::new();

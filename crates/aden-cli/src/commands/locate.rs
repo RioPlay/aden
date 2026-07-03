@@ -179,14 +179,20 @@ pub fn cmd_understand(
     let anchor = match aden_graph::cache::resolve_anchor_in_store(path, symbol) {
         Some(a) => a,
         None => {
-            let (store_path, _) = aden_paths::resolve_read_store(path);
-            let anchors = aden_store::Storage::open_existing(
-                store_path.to_str().ok_or("invalid store path")?,
-            )
-            .ok()
-            .and_then(|s| s.get_all_anchors().ok())
-            .unwrap_or_default();
-            let anchors: Vec<String> = anchors.into_iter().collect();
+            // Prefer snapshot for the anchor list in bare symbol fallback (lock-free).
+            let anchors = if let Some((docs, _)) = aden_graph::snapshot::try_read_fresh(path) {
+                docs.keys().cloned().collect::<Vec<_>>()
+            } else {
+                let (store_path, _) = aden_paths::resolve_read_store(path);
+                aden_store::Storage::open_existing(
+                    store_path.to_str().ok_or("invalid store path")?,
+                )
+                .ok()
+                .and_then(|s| s.get_all_documents().ok())
+                .unwrap_or_default()
+                .into_keys()
+                .collect::<Vec<_>>()
+            };
             match pick_symbol_anchor(symbol, &anchors) {
                 Some(a) => a,
                 None => {
@@ -297,7 +303,7 @@ pub fn cmd_understand(
         super::savings_store::record_read_query(
             &repo_root,
             path,
-            &[anchor.clone()],
+            std::slice::from_ref(&anchor),
             context.len(),
         );
         println!("{body}");
@@ -469,11 +475,19 @@ pub fn cmd_locate(
         // documents that match. Building the full petgraph here is what made
         // `locate` take ~47s on the kernel (1.2M nodes); this is bounded by the
         // number of matches.
-        let (store_path, _) = aden_paths::resolve_read_store(path);
-        let storage =
-            aden_store::Storage::open_existing(store_path.to_str().ok_or("invalid store path")?)
+        // Prefer snapshot for lock-free reads (ADR-011).
+        let docs: std::collections::HashMap<String, aden_core::Document> =
+            if let Some((docs, _)) = aden_graph::snapshot::try_read_fresh(path) {
+                docs
+            } else {
+                let (store_path, _) = aden_paths::resolve_read_store(path);
+                let storage = aden_store::Storage::open_existing(
+                    store_path.to_str().ok_or("invalid store path")?,
+                )
                 .map_err(|e| format!("failed to open store: {}", e))?;
-        let all_anchors = storage.get_all_anchors().unwrap_or_default();
+                storage.get_all_documents().unwrap_or_default()
+            };
+        let all_anchors: Vec<String> = docs.keys().cloned().collect();
 
         let sym_lower = sym.to_lowercase();
         let mut matched: Vec<&String> = all_anchors
@@ -500,7 +514,7 @@ pub fn cmd_locate(
             .iter()
             .take(limit)
             .filter_map(|a| {
-                let doc = storage.get_document(a).ok().flatten()?;
+                let doc = docs.get(*a)?;
                 let attrs = &doc.attributes;
                 Some(json!({
                     "anchor": a,
@@ -679,7 +693,8 @@ pub fn cmd_locate(
             return Ok(());
         }
 
-        // Enrich each caller with file:line from the store (best-effort).
+        // Enrich each caller with file:line (best-effort). Prefer snapshot.
+        let docs = aden_graph::snapshot::try_read_fresh(path).map(|(d, _)| d);
         let (store_path, _) = aden_paths::resolve_read_store(path);
         let storage =
             aden_store::Storage::open_existing(store_path.to_str().ok_or("invalid store path")?)
@@ -688,19 +703,16 @@ pub fn cmd_locate(
             .iter()
             .take(limit)
             .map(|a| {
-                let (file, line) = storage
-                    .as_ref()
-                    .and_then(|s| s.get_document(a).ok().flatten())
-                    .map(|doc| {
+                let doc = docs.as_ref().and_then(|d| d.get(a).cloned()).or_else(|| {
+                    storage
+                        .as_ref()
+                        .and_then(|s| s.get_document(a).ok().flatten())
+                });
+                let (file, line) = doc
+                    .map(|d| {
                         (
-                            doc.attributes
-                                .get("source_file")
-                                .cloned()
-                                .unwrap_or_default(),
-                            doc.attributes
-                                .get("start_line")
-                                .cloned()
-                                .unwrap_or_default(),
+                            d.attributes.get("source_file").cloned().unwrap_or_default(),
+                            d.attributes.get("start_line").cloned().unwrap_or_default(),
                         )
                     })
                     .unwrap_or_default();

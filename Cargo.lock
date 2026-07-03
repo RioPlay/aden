@@ -102,6 +102,7 @@ dependencies = [
  "aden-paths",
  "aden-store",
  "petgraph",
+ "postcard",
  "rayon",
  "regex",
  "serde",

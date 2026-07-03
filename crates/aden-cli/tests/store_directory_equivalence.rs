@@ -19,6 +19,7 @@ use aden_core::EdgeType;
 use aden_graph::bridge::GraphBridge;
 use aden_graph::graph::AdenGraph;
 use aden_graph::nodes::AdenEdge;
+use aden_graph::snapshot;
 use aden_store::{GraphStorage, Storage};
 
 fn edge_key(s: &str, t: &str, et: EdgeType) -> (String, String, String) {
@@ -200,5 +201,76 @@ fn gen_store_edges_match_build_from_storage() {
     assert!(
         !rebuilt.is_empty(),
         "gen fixture must produce at least one edge"
+    );
+}
+
+fn find_project_dir(data: &Path) -> PathBuf {
+    let projects = data.join("projects");
+    let mut entries: Vec<_> = std::fs::read_dir(&projects)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .collect();
+    entries.sort_by_key(|e| e.path());
+    entries[0].path()
+}
+
+/// ADR-011: `gen` must publish a loadable read snapshot.
+#[test]
+fn gen_publishes_read_snapshot() {
+    let project = unique_dir("snap");
+    let data = unique_dir("snap-data");
+    std::fs::write(project.join("greeter.rs"), GREETER_RS).unwrap();
+    git(&project, &["init", "-q"]);
+    git(&project, &["config", "user.email", "snap@test.invalid"]);
+    git(&project, &["config", "user.name", "Snap Test"]);
+    git(&project, &["add", "-A"]);
+    git(&project, &["commit", "-q", "-m", "fixture"]);
+
+    let out = Command::new(env!("CARGO_BIN_EXE_aden"))
+        .args(["gen", "."])
+        .current_dir(&project)
+        .env("ADEN_DATA_DIR", &data)
+        .output()
+        .expect("aden must run");
+    assert!(
+        out.status.success(),
+        "gen failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let project_dir = find_project_dir(&data);
+    let snapshot_path = project_dir.join("graph.snapshot");
+    assert!(
+        snapshot_path.is_file(),
+        "graph.snapshot missing at {}",
+        snapshot_path.display()
+    );
+
+    let store_path = find_store(&data);
+    assert!(snapshot::snapshot_covers_store(&snapshot_path, &store_path));
+
+    let (docs, edges) = snapshot::read_snapshot_file(&snapshot_path).unwrap();
+    assert!(!docs.is_empty());
+    assert!(!edges.is_empty());
+
+    // Read path uses the snapshot via subprocess (no process-global env mutation).
+    let status_out = Command::new(env!("CARGO_BIN_EXE_aden"))
+        .args(["status", ".", "-j"])
+        .current_dir(&project)
+        .env("ADEN_DATA_DIR", &data)
+        .output()
+        .expect("aden status must run");
+    assert!(
+        status_out.status.success(),
+        "status failed: {}",
+        String::from_utf8_lossy(&status_out.stderr)
+    );
+    let json: serde_json::Value =
+        serde_json::from_slice(&status_out.stdout).expect("status must emit JSON");
+    assert!(
+        json.get("read_snapshot")
+            .and_then(|v| v.as_str())
+            .is_some_and(|p| !p.is_empty()),
+        "status must report read_snapshot: {json}"
     );
 }

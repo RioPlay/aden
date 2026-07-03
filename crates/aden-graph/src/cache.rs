@@ -2,33 +2,36 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Disk cache for the Aden knowledge graph.
 //!
-//! Store-first: the graph is read directly from the fjall (LSM-tree) store at
-//! `.aden/store`, which `aden gen` writes. There is no separate cache database —
-//! the store IS the cache.
+//! Store-first: the graph is read from the ADR-011 read snapshot when present
+//! and fresh, otherwise from the fjall (LSM-tree) store at `store/`, which
+//! `aden gen` writes.
 
 use crate::bridge::GraphBridge;
 use crate::graph::AdenGraph;
 use crate::nodes::{AdenEdge, DocumentNode};
+use crate::snapshot;
 use aden_core::{Document, EdgeType};
 use aden_store::{GraphStorage, Storage};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 
-/// Try loading the graph from the store-first fjall store (`.aden/store`).
+/// Try loading the graph for read commands (ADR-011 snapshot-first, fjall fallback).
 pub fn try_load(path: &Path) -> Option<AdenGraph<DocumentNode, AdenEdge>> {
-    // ADR-003: read the per-user central store (or a legacy in-tree store, with
-    // a deprecation notice); never create one on a read.
     let (store_path, is_legacy) = aden_paths::resolve_read_store(path);
-    if store_path.exists() {
-        if is_legacy {
-            eprintln!("{}", aden_paths::legacy_notice(path));
-        }
-        if let Ok(storage) = Storage::open_existing(store_path.to_str()?)
-            && let Ok((docs, edges)) = GraphBridge::load_from_storage(&storage)
-            && !docs.is_empty()
-        {
-            return Some(build_graph_from_docs_and_edges(docs, edges, path));
-        }
+    if is_legacy {
+        eprintln!("{}", aden_paths::legacy_notice(path));
+    }
+
+    if let Some((docs, edges)) = snapshot::try_read_fresh(path) {
+        return Some(build_graph_from_docs_and_edges(docs, edges, path));
+    }
+
+    if store_path.exists()
+        && let Ok(storage) = Storage::open_existing(store_path.to_str()?)
+        && let Ok((docs, edges)) = GraphBridge::load_from_storage(&storage)
+        && !docs.is_empty()
+    {
+        return Some(build_graph_from_docs_and_edges(docs, edges, path));
     }
     None
 }
@@ -83,6 +86,27 @@ fn build_graph_from_docs_and_edges(
 /// the anchor *keys*). Returns `None` if unknown or ambiguous — callers should
 /// treat that as "not found" rather than guessing.
 pub fn resolve_anchor_in_store(dir: &Path, anchor: &str) -> Option<String> {
+    // ADR-011: snapshot-first (lock-free) when a fresh graph.snapshot covers the store.
+    // Critical for concurrent readers (MCP + heal/merge --fix, ask/asm while gen runs).
+    if let Some(graph) = try_load(dir) {
+        if graph.get_node(anchor).is_some() {
+            return Some(anchor.to_string());
+        }
+        let anchors: Vec<String> = graph.all_nodes().into_iter().map(|(a, _)| a).collect();
+        if anchors.contains(&anchor.to_string()) {
+            return Some(anchor.to_string());
+        }
+        let matches: Vec<String> = anchors
+            .into_iter()
+            .filter(|a| a.rsplit('#').next() == Some(anchor))
+            .collect();
+        if matches.len() == 1 {
+            return Some(matches[0].clone());
+        }
+        return None;
+    }
+
+    // Fallback to direct fjall (may see Locked under active readers/writers).
     let (store_path, _) = aden_paths::resolve_read_store(dir);
     let storage = Storage::open_existing(store_path.to_str()?).ok()?;
     if matches!(storage.get_document(anchor), Ok(Some(_))) {
@@ -182,6 +206,94 @@ const MAX_CALLERS: usize = 16;
 /// real hub and not expanded as an intermediate node.
 const HUB_DEGREE_CAP: usize = 32;
 
+fn build_neighborhood_from_materialized(
+    (docs, all_edges): snapshot::SnapshotData,
+    dir: &Path,
+    start: &str,
+    depth: usize,
+    edge_types: &[EdgeType],
+    caller_types: &[EdgeType],
+    caller_filter: &dyn Fn(&str, Option<&str>) -> bool,
+) -> Result<AdenGraph<DocumentNode, AdenEdge>, crate::graph::GraphError> {
+    let mut outgoing: HashMap<String, Vec<(String, EdgeType)>> = HashMap::new();
+    let mut incoming: HashMap<String, Vec<(String, EdgeType)>> = HashMap::new();
+    for (src, dst, et) in all_edges {
+        outgoing
+            .entry(src.clone())
+            .or_default()
+            .push((dst.clone(), et));
+        incoming.entry(dst).or_default().push((src, et));
+    }
+
+    const MAX_NODES: usize = 10_000;
+    let mut visited: HashSet<String> = HashSet::new();
+    visited.insert(start.to_string());
+    let mut queue: VecDeque<(String, usize)> = VecDeque::new();
+    queue.push_back((start.to_string(), 0));
+    let mut edges: Vec<(String, String, EdgeType)> = Vec::new();
+
+    while let Some((current, d)) = queue.pop_front() {
+        if d >= depth || visited.len() >= MAX_NODES {
+            continue;
+        }
+        let outgoing_edges = outgoing.get(&current).map(|v| v.as_slice()).unwrap_or(&[]);
+        if d > 0 && is_hub_anchor(&current) && outgoing_edges.len() > HUB_DEGREE_CAP {
+            continue;
+        }
+        for (nbr, et) in outgoing_edges {
+            if !edge_types.is_empty() && !edge_types.contains(et) {
+                continue;
+            }
+            edges.push((current.clone(), nbr.clone(), *et));
+            if visited.insert(nbr.clone()) && visited.len() <= MAX_NODES {
+                queue.push_back((nbr.clone(), d + 1));
+            }
+        }
+    }
+
+    let is_index_node = |a: &str| {
+        let l = a.to_lowercase();
+        l.starts_with("mod-") || l.starts_with("module-") || !l.contains('#')
+    };
+    if !caller_types.is_empty() {
+        let mut callers: Vec<(String, EdgeType)> = incoming
+            .get(start)
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|(src, et)| {
+                caller_types.contains(et) && !is_index_node(src) && !visited.contains(src)
+            })
+            .collect();
+        callers.sort_by(|a, b| a.0.cmp(&b.0));
+        callers.dedup_by(|a, b| a.0 == b.0);
+        let mut kept = 0usize;
+        for (src, et) in callers {
+            if kept >= MAX_CALLERS {
+                break;
+            }
+            let source_file = docs
+                .get(&src)
+                .and_then(|d| d.attributes.get("source_file").map(String::as_str));
+            if !caller_filter(&src, source_file) {
+                continue;
+            }
+            edges.push((start.to_string(), src.clone(), et));
+            visited.insert(src);
+            kept += 1;
+        }
+    }
+
+    let mut visited_docs: HashMap<String, Document> = HashMap::new();
+    for anchor in &visited {
+        if let Some(doc) = docs.get(anchor) {
+            visited_docs.insert(anchor.clone(), doc.clone());
+        }
+    }
+
+    Ok(build_graph_from_docs_and_edges(visited_docs, edges, dir))
+}
+
 fn build_neighborhood_impl(
     dir: &Path,
     start: &str,
@@ -190,6 +302,19 @@ fn build_neighborhood_impl(
     caller_types: &[EdgeType],
     caller_filter: &dyn Fn(&str, Option<&str>) -> bool,
 ) -> Result<AdenGraph<DocumentNode, AdenEdge>, crate::graph::GraphError> {
+    // ADR-011: snapshot-first, depth-bounded BFS in memory (lock-free reads).
+    if let Some(data) = snapshot::try_read_fresh(dir) {
+        return build_neighborhood_from_materialized(
+            data,
+            dir,
+            start,
+            depth,
+            edge_types,
+            caller_types,
+            caller_filter,
+        );
+    }
+
     const MAX_NODES: usize = 10_000;
     let (store_path, _) = aden_paths::resolve_read_store(dir);
     let storage = Storage::open_existing(

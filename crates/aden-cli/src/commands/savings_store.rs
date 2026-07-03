@@ -186,6 +186,12 @@ pub fn record(repo_root: &Path, est: &SavingsEstimate) {
 }
 
 fn anchor_source_file(path: &Path, anchor: &str) -> Option<String> {
+    // ADR-011: prefer graph.snapshot via the standard helper.
+    if let Some((docs, _)) = aden_graph::snapshot::try_read_fresh(path)
+        && let Some(d) = docs.get(anchor)
+    {
+        return d.attributes.get("source_file").cloned();
+    }
     let (store_path, _) = aden_paths::resolve_read_store(path);
     let storage = aden_store::Storage::open_existing(store_path.to_str()?).ok()?;
     storage
