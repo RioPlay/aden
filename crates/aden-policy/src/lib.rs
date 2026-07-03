@@ -511,7 +511,10 @@ fn parse_rule_header(line: &str) -> Option<DirectiveSeverity> {
     let inner = line
         .strip_prefix("[rule=\"")
         .and_then(|s| s.strip_suffix("\"]"))
-        .or_else(|| line.strip_prefix("[rule='").and_then(|s| s.strip_suffix("']")));
+        .or_else(|| {
+            line.strip_prefix("[rule='")
+                .and_then(|s| s.strip_suffix("']"))
+        });
     inner.and_then(|s| s.parse().ok())
 }
 
@@ -666,10 +669,8 @@ mod tests {
 
     #[test]
     fn test_load_bootstrap_parses_rule_blocks() {
-        let dir = std::env::temp_dir().join(format!(
-            "aden-policy-bootstrap-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("aden-policy-bootstrap-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let aden = dir.join(".aden");
         std::fs::create_dir_all(&aden).unwrap();
@@ -684,7 +685,11 @@ mod tests {
         )
         .unwrap();
         let engine = PolicyEngine::load_bootstrap(&dir).unwrap();
-        let n: usize = engine.constitutions().iter().map(|c| c.directives.len()).sum();
+        let n: usize = engine
+            .constitutions()
+            .iter()
+            .map(|c| c.directives.len())
+            .sum();
         assert_eq!(n, 2, "bootstrap fallback should load rule bullets");
         let _ = std::fs::remove_dir_all(&dir);
     }

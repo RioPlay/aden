@@ -20,10 +20,7 @@ pub fn cmd_diagnose(path: &Path, format: &str) -> Result<(), Box<dyn std::error:
             let mut value: serde_json::Value =
                 serde_json::from_str(&aden_diagnose::diagnose_json_with_rules(path, &rules)?)?;
             if let Some(obj) = value.as_object_mut() {
-                obj.insert(
-                    "policy_mode".to_string(),
-                    serde_json::json!(policy.mode),
-                );
+                obj.insert("policy_mode".to_string(), serde_json::json!(policy.mode));
                 obj.insert(
                     "policy_unwired".to_string(),
                     serde_json::json!(policy.unwired),

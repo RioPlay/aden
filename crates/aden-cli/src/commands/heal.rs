@@ -257,8 +257,7 @@ pub fn cmd_heal_scan(
             if let Some(cap) = max_issues {
                 let (errors, warnings, info) = drift_buckets(&report.events);
                 let ok = errors.is_empty();
-                let summary =
-                    crate::util::build_gate_summary(&errors, &warnings, &info, ok, cap);
+                let summary = crate::util::build_gate_summary(&errors, &warnings, &info, ok, cap);
                 println!("{}", crate::util::gate_summary_line(&summary));
                 println!("Health Score: {:.2}/1.00", report.overall_score);
                 for issue in &summary.top_issues {
@@ -917,7 +916,7 @@ fn apply_merge_to_store(
         // Match the gen pipeline: sanitize source_file to a repo-root-relative
         // path before slimming so the stored document never carries absolute paths.
         crate::util::sanitize_source_file(d, &root);
-        crate::commands::generate::slim_doc_for_store(d);
+        crate::indexer::merge::slim_doc_for_store(d);
     }
     let fresh_doc = match docs.into_iter().find(|d| d.anchor == anchor) {
         Some(d) => d,
@@ -1035,7 +1034,7 @@ fn generate_merge_proposal(
         // the base snapshot written on --apply.
         for d in &mut docs {
             crate::util::sanitize_source_file(d, &root);
-            crate::commands::generate::slim_doc_for_store(d);
+            crate::indexer::merge::slim_doc_for_store(d);
         }
         // None here = symbol no longer in source → DeleteGenerated proposal.
         docs.into_iter().find(|d| d.anchor == anchor)

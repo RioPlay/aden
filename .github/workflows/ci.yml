@@ -54,6 +54,16 @@ jobs:
         run: cargo run -p aden-cli -- check . --severity Forbid
         if: runner.os != 'Windows'
 
+      - name: MCP golden path (grep → understand → impact-diff → check --json)
+        if: runner.os != 'Windows'
+        run: |
+          set -euo pipefail
+          aden grep "link_store_edges" . | head -1
+          aden understand "aden://module/aden-cli/src/indexer/link.rs#link_store_edges"
+          aden impact-diff . --json | head -c 4096
+          aden check . --json --max-issues 20 | head -c 4096
+          test "$(aden check . --json --max-issues 20 | wc -c)" -lt 2048
+
       - name: Verify install script (Unix)
         if: runner.os != 'Windows'
         run: bash install.sh

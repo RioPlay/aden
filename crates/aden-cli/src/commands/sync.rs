@@ -38,9 +38,7 @@ pub fn cmd_sync(
     } else {
         println!("\n[3/3] Scanning for drift...");
     }
-    if let Err(e) =
-        crate::commands::cmd_heal_scan(path, false, false, gc, unlimited, false, None)
-    {
+    if let Err(e) = crate::commands::cmd_heal_scan(path, false, false, gc, unlimited, false, None) {
         eprintln!("Heal error: {}", e);
     }
 

@@ -630,7 +630,11 @@ static TOOLS: &[ToolSpec] = &[
         name: "check",
         title: "Validate the graph",
         description: "Validate the graph and gate CI: flags unresolved <<refs>>, circular includes, orphan anchors, typed-edge violations, stale source hashes, and incomplete contracts. severity=Suggest|Warn|Forbid sets the fail threshold and exits non-zero past it. For duplicate-anchor detection and a 0-100 health score, use `diagnose`.",
-        args: &[("path", "string"), ("severity", "string")],
+        args: &[
+            ("path", "string"),
+            ("severity", "string"),
+            ("max_issues", "integer"),
+        ],
         effect: Effect::Read,
     },
     ToolSpec {
@@ -766,6 +770,7 @@ static TOOLS: &[ToolSpec] = &[
             ("propose", "boolean"),
             ("since", "string"),
             ("apply", "string"),
+            ("max_issues", "integer"),
             // NOTE: `--watch` is intentionally NOT exposed over MCP — it is a
             // long-running daemon that always trips the request/response
             // timeout. (It is still confined defensively in `confine_path_args`
@@ -1199,7 +1204,8 @@ fn clean_stdout(tool: &str, raw: &str) -> String {
 /// MCP sets `ADEN_SKIP_AUTO_GEN` only for read-only tools so write paths
 /// (`gen`, `ready`, `sync`, `heal --fix`, …) can still refresh the store.
 fn mcp_skips_auto_gen(tool: &str) -> bool {
-    TOOLS.iter()
+    TOOLS
+        .iter()
         .find(|t| t.name == tool)
         .is_some_and(|t| t.effect == Effect::Read)
 }
@@ -1621,7 +1627,14 @@ mod tests {
     #[test]
     fn structured_output_tools_request_json() {
         // Tools with a real JSON envelope must auto-request --json over MCP.
-        for t in ["grep", "search", "list", "test", "impact-diff", "communities"] {
+        for t in [
+            "grep",
+            "search",
+            "list",
+            "test",
+            "impact-diff",
+            "communities",
+        ] {
             assert_eq!(
                 structured_output_flags(t),
                 &["--json"],

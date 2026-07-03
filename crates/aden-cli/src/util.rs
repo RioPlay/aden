@@ -593,7 +593,11 @@ pub fn gate_summary_line(summary: &GateSummary) -> String {
         summary.counts.warnings,
         summary.counts.info,
         summary.top_issues.len(),
-        if summary.truncated { " (truncated)" } else { "" }
+        if summary.truncated {
+            " (truncated)"
+        } else {
+            ""
+        }
     )
 }
 

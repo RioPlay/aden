@@ -12,6 +12,12 @@ All notable changes to aden are documented here. Format follows
 Post-0.2.0 work on main — not yet tagged.
 
 ### Added
+- **Structural remediation (Phases 0–6)** (2026-07-02) — ADR-010 strangler indexer
+  (`crates/aden-cli/src/indexer/{link,merge,fresh,gen}.rs`); `generate.rs` thinned
+  to a re-export shell. MCP `ADEN_SKIP_AUTO_GEN` scoped to read tools; check/heal/
+  status JSON summaries for agents; advisory policy wiring (`policy_violations[]`);
+  PR-0 `store_directory_equivalence` gate; doc-heading `Contains`/`PartOf` edges;
+  `make install-hooks` + `install.sh` pre-commit prompt; MCP golden-path CI step.
 - **AsciiDoc indexing hygiene** (2026-07-01) — preprocessor moved to `aden-parse`
   (`asciidoc_preprocess.rs`) and wired into the active gen path (`include::`,
   `ifdef`/`ifndef`, `leveloffset`, tagged includes). Shared-attribute shallow

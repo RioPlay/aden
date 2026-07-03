@@ -511,12 +511,12 @@ Honest snapshot of structural and behavioral gaps documented in <<adr-010>>:
 |===
 |Area |Current state |Remediation
 
-|Write pipeline |Concentrated in `generate.rs` (~2,770 LOC) |Strangler to `aden-cli/src/indexer/` (Phase 4)
-|Query pipeline |`query.rs` (~3,200 LOC) in `aden-cli` |Deferred after indexer extraction
-|Parsing |`aden-parse` + `aden-graph/parser.rs` overlap |Unify on separate branch after PR-5 (Phase 4)
-|Policy |`PolicyEngine` bootstrap in `ci-check` only |Advisory wiring in `diagnose`/`lint`/`check` (Phase 3)
-|Doc-heading edges |~59 orphan info-level headings |Phase 5 graph edge work
-|MCP freshness |`ADEN_SKIP_AUTO_GEN=1` on all MCP calls |Scope to read tools + stale hints (Phase 2A)
+|Write pipeline |Extracted to `aden-cli/src/indexer/`; `generate.rs` is a thin re-export shell |`query.rs` (~3,200 LOC) next
+|Query pipeline |`query.rs` (~3,200 LOC) in `aden-cli` |Deferred after indexer stabilization
+|Parsing |`aden-parse` + `aden-graph/parser.rs` overlap; CSV/tabular is best-effort |Unify on separate branch (`fix/parse-canonical`)
+|Policy |Advisory mode (`ADEN_POLICY_MODE=advisory`); `ci-check` bootstrap still enforces |Optional `enforce` in 0.3.0+
+|Doc-heading edges |Section nodes linked via `Contains`/`PartOf` to file representatives |Monitor orphan census
+|MCP freshness |Read tools skip auto-gen; write tools run fresh |Document explicit `gen`/`sync` after external edits
 |===
 
 [[target-architecture]]

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 mod commands;
+mod indexer;
 mod mcp;
 mod time_util;
 mod types;

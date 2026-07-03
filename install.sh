@@ -222,6 +222,18 @@ cd "$PROJECT_ROOT"
 if git -C "$PROJECT_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
     git -C "$PROJECT_ROOT" config core.hooksPath git-hooks
     ok "git hooks activated for this checkout (pre-push CI gate; repo-local setting)"
+    if [ "$TTY" = "1" ] && [ -f "$PROJECT_ROOT/tools/git-hooks/pre-commit" ]; then
+        note "Optional: install the pre-commit hook (secret scan + aden check + test)."
+        note "Runs on every commit — heavier than pre-push but catches issues earlier."
+        if ask_yn "Install pre-commit hook into .git/hooks/?" n; then
+            mkdir -p "$PROJECT_ROOT/.git/hooks"
+            cp "$PROJECT_ROOT/tools/git-hooks/pre-commit" "$PROJECT_ROOT/.git/hooks/pre-commit"
+            chmod +x "$PROJECT_ROOT/.git/hooks/pre-commit"
+            ok "pre-commit hook installed (also: make install-hooks)"
+        else
+            skip "skipped — run 'make install-hooks' any time."
+        fi
+    fi
 fi
 if [ "$DENSE" = "1" ]; then
     note "Building WITH dense/hybrid search: adds the tract + bge embedding stack."
