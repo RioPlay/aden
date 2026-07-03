@@ -184,14 +184,12 @@ pub fn cmd_understand(
                 docs.keys().cloned().collect::<Vec<_>>()
             } else {
                 let (store_path, _) = aden_paths::resolve_read_store(path);
-                aden_store::Storage::open_existing(
-                    store_path.to_str().ok_or("invalid store path")?,
-                )
-                .ok()
-                .and_then(|s| s.get_all_documents().ok())
-                .unwrap_or_default()
-                .into_keys()
-                .collect::<Vec<_>>()
+                aden_store::Storage::open_existing(store_path.to_str().ok_or("invalid store path")?)
+                    .ok()
+                    .and_then(|s| s.get_all_documents().ok())
+                    .unwrap_or_default()
+                    .into_keys()
+                    .collect::<Vec<_>>()
             };
             match pick_symbol_anchor(symbol, &anchors) {
                 Some(a) => a,
