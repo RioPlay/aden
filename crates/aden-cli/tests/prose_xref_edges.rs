@@ -88,7 +88,8 @@ fn backlinks(project: &Path, data: &Path, target: &str) -> Vec<String> {
     assert!(ok, "query --backlinks {target} failed:\n{text}");
     let json: serde_json::Value = serde_json::from_str(&text)
         .unwrap_or_else(|e| panic!("query --backlinks must emit JSON ({e}); got: {text}"));
-    json.as_array()
+    let rows = json.get("items").unwrap_or(&json);
+    rows.as_array()
         .unwrap_or_else(|| panic!("backlinks output must be an array; got {json}"))
         .iter()
         .map(|v| v["anchor"].as_str().unwrap_or_default().to_string())
