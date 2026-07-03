@@ -109,10 +109,49 @@ fn index_is_stale_for_root(root: &Path) -> bool {
 
 pub const STALE_HINT: &str = "NOTE: index_stale=true — working tree changed since last `gen`; run `gen` or `sync` for a fresh graph.";
 
+/// Whether the index is stale for agent-facing read output (auto-gen suppressed).
+pub fn read_index_stale(path: &Path) -> bool {
+    skip_auto_gen_on_read() && index_is_stale(path)
+}
+
+/// Add `index_stale` (and `stale_hint` when true) to MCP read-tool JSON output.
+/// Bare arrays are wrapped as `{"index_stale": …, "items": …}` so agents always
+/// receive an object envelope.
+pub fn augment_read_json(path: &Path, value: serde_json::Value) -> serde_json::Value {
+    augment_read_json_with_stale(read_index_stale(path), value)
+}
+
+fn augment_read_json_with_stale(stale: bool, value: serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(mut map) => {
+            map.insert("index_stale".into(), serde_json::Value::Bool(stale));
+            if stale {
+                map.insert(
+                    "stale_hint".into(),
+                    serde_json::Value::String(STALE_HINT.into()),
+                );
+            }
+            serde_json::Value::Object(map)
+        }
+        other => {
+            let mut map = serde_json::Map::new();
+            map.insert("index_stale".into(), serde_json::Value::Bool(stale));
+            if stale {
+                map.insert(
+                    "stale_hint".into(),
+                    serde_json::Value::String(STALE_HINT.into()),
+                );
+            }
+            map.insert("items".into(), other);
+            serde_json::Value::Object(map)
+        }
+    }
+}
+
 /// Print a stale-index hint when auto-gen is suppressed (MCP read tools).
-/// Skips JSON mode so structured envelopes stay parseable (Phase 2B adds JSON field).
+/// JSON mode carries `index_stale` via [`augment_read_json`] instead.
 pub fn maybe_print_stale_hint(path: &Path, json: bool) {
-    if !json && skip_auto_gen_on_read() && index_is_stale(path) {
+    if !json && read_index_stale(path) {
         println!("{STALE_HINT}");
     }
 }
@@ -188,6 +227,25 @@ mod skip_auto_gen_tests {
             Some(v) => unsafe { std::env::set_var(key, v) },
             None => unsafe { std::env::remove_var(key) },
         }
+    }
+
+    #[test]
+    fn augment_read_json_wraps_arrays_and_tags_objects() {
+        let obj = augment_read_json_with_stale(
+            false,
+            serde_json::json!({"total": 0, "matches": []}),
+        );
+        assert_eq!(obj["total"], 0);
+        assert_eq!(obj["index_stale"].as_bool(), Some(false));
+        assert!(obj.get("stale_hint").is_none());
+
+        let arr = augment_read_json_with_stale(false, serde_json::json!(["a"]));
+        assert_eq!(arr["items"][0], "a");
+        assert_eq!(arr["index_stale"].as_bool(), Some(false));
+
+        let stale = augment_read_json_with_stale(true, serde_json::json!({"total": 1}));
+        assert_eq!(stale["index_stale"].as_bool(), Some(true));
+        assert_eq!(stale["stale_hint"].as_str(), Some(STALE_HINT));
     }
 
     #[test]

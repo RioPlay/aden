@@ -120,21 +120,24 @@ pub fn cmd_search(
     if json {
         let total = results.len();
         let page: Vec<_> = results.iter().skip(offset).take(limit).collect();
-        let env = serde_json::json!({
-            "total": total,
-            "returned": page.len(),
-            "offset": offset,
-            "truncated": offset + page.len() < total,
-            "results": page.iter().map(|r| serde_json::json!({
-                "anchor": r.anchor,
-                "score": r.score,
-                "snippet": r.snippet,
-            })).collect::<Vec<_>>(),
-            "semantic": semantic_results.iter().map(|(anchor, rel)| serde_json::json!({
-                "anchor": anchor,
-                "relationship": rel,
-            })).collect::<Vec<_>>(),
-        });
+        let env = super::augment_read_json(
+            path,
+            serde_json::json!({
+                "total": total,
+                "returned": page.len(),
+                "offset": offset,
+                "truncated": offset + page.len() < total,
+                "results": page.iter().map(|r| serde_json::json!({
+                    "anchor": r.anchor,
+                    "score": r.score,
+                    "snippet": r.snippet,
+                })).collect::<Vec<_>>(),
+                "semantic": semantic_results.iter().map(|(anchor, rel)| serde_json::json!({
+                    "anchor": anchor,
+                    "relationship": rel,
+                })).collect::<Vec<_>>(),
+            }),
+        );
         println!("{}", serde_json::to_string_pretty(&env)?);
         return Ok(());
     }
@@ -303,13 +306,16 @@ pub fn cmd_list(
                 }
             })
             .collect();
-        let env = serde_json::json!({
-            "total": total_count,
-            "returned": limited.len(),
-            "offset": offset,
-            "truncated": offset + limited.len() < total_count,
-            "anchors": items,
-        });
+        let env = super::augment_read_json(
+            path,
+            serde_json::json!({
+                "total": total_count,
+                "returned": limited.len(),
+                "offset": offset,
+                "truncated": offset + limited.len() < total_count,
+                "anchors": items,
+            }),
+        );
         println!("{}", serde_json::to_string_pretty(&env)?);
         return Ok(());
     }

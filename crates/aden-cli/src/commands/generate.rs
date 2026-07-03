@@ -6,7 +6,8 @@
 #![allow(unused_imports)]
 
 pub use crate::indexer::fresh::{
-    STALE_HINT, StaleHintGuard, ensure_fresh, index_is_stale, maybe_print_stale_hint,
+    STALE_HINT, StaleHintGuard, augment_read_json, ensure_fresh, index_is_stale,
+    maybe_print_stale_hint, read_index_stale,
 };
 pub use crate::indexer::r#gen::{cmd_gen, cmd_gen_opts, cmd_gen_silent};
 

@@ -113,20 +113,21 @@ edit in a normal shell session.
 
 ==== MCP (current 0.2.x)
 
-`aden-mcp` sets `ADEN_SKIP_AUTO_GEN=1` on every spawned `aden` process. This prevents
-read tools from silently acquiring the store lock while the host may be running
-`aden ready` or another writer. Trade-off: **existing stores may be stale** relative to
-recent edits until you run an explicit write tool.
+`aden-mcp` sets `ADEN_SKIP_AUTO_GEN=1` on **read-only** tool invocations only. Write
+tools (`gen`, `sync`, `ready`, `heal --fix`, …) run without skip so they can refresh
+the store. This prevents read tools from silently acquiring the store lock while the
+host may be running `aden ready` or another writer. Trade-off: **existing stores may
+be stale** relative to recent edits until you run an explicit write tool.
 
 | Situation | What happens |
 |-----------|--------------|
 | No store yet (first query) | Initial `gen` still runs — read tools work out of the box |
-| Store exists, files changed | MCP read tools may return graph from last `gen` |
+| Store exists, files changed | MCP read tools may return graph from last `gen`; JSON includes `index_stale: true` |
 | After your edits | Run MCP `gen`, `sync`, or `ready` (or shell `aden gen`) before trusting blast radius |
 | Large external change (clone, merge) | Always run `gen` regardless of transport |
 
-Phase 2A will scope `ADEN_SKIP_AUTO_GEN` to read tools only and add a stale sentinel
-(`index_stale: true` + hint) when skip prevents refresh.
+Read-tool JSON envelopes include `index_stale` (and `stale_hint` when true). Shell output
+prints a `NOTE: index_stale=true` line when auto-gen is suppressed and the tree changed.
 
 IMPORTANT: The core agent loop (`understand` → edit → `impact-diff`) depends on an
 up-to-date graph for blast-radius accuracy. After substantive edits over MCP, run `gen`

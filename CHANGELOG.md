@@ -12,6 +12,18 @@ All notable changes to aden are documented here. Format follows
 Post-0.2.0 work on main — not yet tagged.
 
 ### Added
+- **MCP stale-index JSON signaling** (2026-07-03) — read-tool JSON envelopes now
+  include `index_stale` (and `stale_hint` when true) so agents detect graph
+  staleness without parsing shell `NOTE:` lines. Applied to `grep`, `search`,
+  `list`, `locate`, `understand`, `query`, `impact-diff`, and `communities`.
+  Bare-array JSON outputs are wrapped as `{"index_stale": …, "items": …}`.
+
+### Changed
+- **MCP freshness docs aligned with Phase 2A** (2026-07-03) — ADR-010,
+  `ai-integration.adoc`, `AGENTS.md`, and `SECURITY.md` now document that
+  `ADEN_SKIP_AUTO_GEN` is scoped to read tools only (write tools refresh without
+  skip). `ISSUES.md` marks doc-heading orphan linkage as fixed (Phase 5).
+
 - **Structural remediation (Phases 0–6)** (2026-07-02) — ADR-010 strangler indexer
   (`crates/aden-cli/src/indexer/{link,merge,fresh,gen}.rs`); `generate.rs` thinned
   to a re-export shell. MCP `ADEN_SKIP_AUTO_GEN` scoped to read tools; check/heal/

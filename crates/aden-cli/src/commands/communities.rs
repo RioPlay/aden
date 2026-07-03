@@ -39,10 +39,11 @@ pub fn cmd_communities(
                 })
             })
             .collect();
-        println!(
-            "{}",
-            serde_json::json!({ "communities": arr.len(), "items": arr })
+        let env = super::augment_read_json(
+            &root,
+            serde_json::json!({ "communities": arr.len(), "items": arr }),
         );
+        println!("{}", serde_json::to_string_pretty(&env)?);
         return Ok(());
     }
 

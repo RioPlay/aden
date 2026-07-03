@@ -13,11 +13,13 @@ need to run `gen` before a session or after your own edits in that mode. Only ru
 after large *external* changes — cloning a new repo, a big merge, or generated code
 appearing outside your edits.
 
-**MCP exception:** `aden-mcp` sets `ADEN_SKIP_AUTO_GEN=1` so read tools do not silently
-reindex while another writer may hold the store lock. Over MCP, an existing store may be
-stale until you run `gen`, `sync`, or `ready`. After substantive edits, run one of those
-before `impact-diff`. See `docs/adr-010-structural-remediation.adoc` and
-`docs/ai-integration.adoc` (MCP freshness).
+**MCP exception:** `aden-mcp` sets `ADEN_SKIP_AUTO_GEN=1` on **read-only** tools so they
+do not silently reindex while another writer may hold the store lock. Write tools
+(`gen`, `sync`, `ready`) run without skip. Over MCP, an existing store may be stale
+until you run `gen`, `sync`, or `ready`. Read-tool JSON includes `index_stale` (and
+`stale_hint` when true) — check it before trusting blast radius. After substantive
+edits, run one of those write tools before `impact-diff`. See
+`docs/adr-010-structural-remediation.adoc` and `docs/ai-integration.adoc`.
 
 > **Subagents:** MCP instructions are not inherited automatically — tell spawned agents
 > about the MCP freshness exception if they use aden tools over MCP.
@@ -67,9 +69,10 @@ codebase — not raw `grep`/`find`. Every aden result is tagged with its enclosi
 symbol, which is the anchor you feed back into the graph.
 
 **The graph is fresh by construction** on the shell CLI — read tools auto-reindex
-changed files. Over **MCP**, `ADEN_SKIP_AUTO_GEN` may leave the graph stale until you
-run `gen`/`sync`/`ready`; see ADR-010. Only skip `gen` after large *external* changes
-when using the shell.
+changed files. Over **MCP**, read tools skip auto-gen (`ADEN_SKIP_AUTO_GEN`); JSON
+responses include `index_stale` when the working tree changed since last `gen`. Run
+`gen`/`sync`/`ready` after substantive edits. See ADR-010. Only skip `gen` after large
+*external* changes when using the shell.
 
 | Goal | Tool |
 | --- | --- |

@@ -20,8 +20,8 @@ remaining debt is *structural concentration* and *documentation honesty gaps*:
   deferred until after indexer extraction).
 * `aden-policy::PolicyEngine` is only bootstrapped in `ci.rs`; `[constitution]` blocks
   are not fully enforced across `check`/`lint`/`diagnose`.
-* MCP sets `ADEN_SKIP_AUTO_GEN=1` globally, which suppresses silent incremental `gen`
-  on read tools — correct for concurrency safety, but docs still claim unconditional
+* MCP scoped `ADEN_SKIP_AUTO_GEN` to read tools only (Phase 2A shipped); write tools
+  (`gen`, `ready`, `sync`) refresh without skip. Docs previously claimed unconditional
   "fresh by construction" without noting the MCP exception or stale-graph risk.
 
 This ADR records the remediation strategy locked after gstack eng + DX reviews
@@ -82,9 +82,10 @@ See <<security-model>> threat table.
 
 ==== 3.2 `ADEN_SKIP_AUTO_GEN`
 
-MCP currently sets `ADEN_SKIP_AUTO_GEN=1` on **all** tool invocations. When set, read
-tools skip silent incremental `gen` in `ensure_fresh()` — avoiding store-lock contention
-when the host may be running `aden ready` or another writer.
+MCP sets `ADEN_SKIP_AUTO_GEN=1` on **read-only** tool invocations only. Write tools
+(`gen`, `sync`, `ready`, `heal --fix`, …) run without skip so they can refresh the store.
+When set, read tools skip silent incremental `gen` in `ensure_fresh()` — avoiding
+store-lock contention when the host may be running `aden ready` or another writer.
 
 **Implications for agents:**
 
@@ -92,8 +93,8 @@ when the host may be running `aden ready` or another writer.
   is not skipped).
 * Existing stores may be stale relative to working-tree edits until an explicit `gen`,
   `sync`, or `ready` runs.
-* Phase 2A will scope skip to read tools only; write tools (`gen`, `heal --fix`, `ready`)
-  will run without skip.
+* Read-tool JSON envelopes include `index_stale` (and `stale_hint` when true) so agents
+  can detect staleness without parsing human `NOTE:` lines.
 
 Shell CLI usage (no `ADEN_SKIP_AUTO_GEN`) retains full auto-fresh behavior: read tools
 reindex changed files on each invocation.
@@ -133,7 +134,8 @@ This ADR is the authority for:
   `aden-compile` crate.
 * Advisory policy means `[Forbid]` directives are not yet hard gates outside `ci-check`
   bootstrap.
-* Global `ADEN_SKIP_AUTO_GEN` over MCP is a temporary DX compromise until Phase 2A scoping.
+* MCP read tools may serve a stale graph until explicit `gen`/`sync` — agents must
+  check `index_stale` in JSON envelopes or run write tools after substantive edits.
 
 == Related Documents
 

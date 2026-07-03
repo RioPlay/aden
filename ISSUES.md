@@ -114,8 +114,10 @@ and fixed the root causes:
   and dangling empty `Relationships:` headers from llm-mode output.
 
 ### Still open (lower priority)
-- Doc-heading anchors (`aden://doc/...`) remain orphans — not linked to the
-  symbols/sections they document.
+- ~~Doc-heading anchors (`aden://doc/...`) remain orphans — not linked to the
+  symbols/sections they document.~~ **FIXED** (Phase 5) — `link_store_edges` now emits
+  `Contains`/`PartOf` edges from doc-heading sections to their file representative;
+  see `doc_heading_sections_gain_file_containment_edges` in `indexer/link.rs`.
 - `aden heal` / `aden check` flood stdout (hundreds of events, repeated file
   lists) — context-hostile for an agent; should summarize/cap.
 - ~~`aden list --filter "mod-*"` glob returns 0 even when matches exist.~~ **FIXED** —

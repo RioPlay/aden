@@ -135,7 +135,7 @@ pub fn cmd_grep(
     });
 
     if json {
-        print_json(&matches, limit, regex_hint.as_deref());
+        print_json(&root, &matches, limit, regex_hint.as_deref());
         return Ok(());
     }
 
@@ -237,44 +237,33 @@ fn short_name(anchor: &str) -> String {
 /// needs the total count and an explicit `truncated` flag — the human footer
 /// ("... and N more (raise --limit)") is noise to a program. `returned` is how
 /// many of `total` matches are in the array after `limit` applies.
-fn print_json(matches: &[Match], limit: usize, hint: Option<&str>) {
+fn print_json(root: &Path, matches: &[Match], limit: usize, hint: Option<&str>) {
     let total = matches.len();
     let returned = total.min(limit);
-    let items: Vec<String> = matches
+    let page: Vec<serde_json::Value> = matches
         .iter()
         .take(limit)
         .map(|m| {
-            format!(
-                "    {{\"file\": {}, \"line\": {}, \"symbol\": {}, \"anchor\": {}, \"text\": {}}}",
-                json_str(&m.file),
-                m.line,
-                m.symbol
-                    .as_deref()
-                    .map(json_str)
-                    .unwrap_or_else(|| "null".to_string()),
-                m.anchor
-                    .as_deref()
-                    .map(json_str)
-                    .unwrap_or_else(|| "null".to_string()),
-                json_str(&m.text),
-            )
+            serde_json::json!({
+                "file": m.file,
+                "line": m.line,
+                "symbol": m.symbol,
+                "anchor": m.anchor,
+                "text": m.text,
+            })
         })
         .collect();
-    // `hint` is emitted only when present (a zero-result literal search whose
-    // pattern looks like a regex), so the envelope shape is unchanged for every
-    // normal search and existing consumers are unaffected.
-    let hint_field = match hint {
-        Some(h) => format!(", \"hint\": {}", json_str(h)),
-        None => String::new(),
-    };
-    println!(
-        "{{\"total\": {}, \"returned\": {}, \"truncated\": {}{}, \"matches\": [\n{}\n]}}",
-        total,
-        returned,
-        total > limit,
-        hint_field,
-        items.join(",\n")
-    );
+    let mut env = serde_json::json!({
+        "total": total,
+        "returned": returned,
+        "truncated": total > limit,
+        "matches": page,
+    });
+    if let Some(h) = hint {
+        env["hint"] = serde_json::Value::String(h.to_string());
+    }
+    let env = super::augment_read_json(root, env);
+    println!("{}", serde_json::to_string(&env).unwrap_or_default());
 }
 
 /// Heuristic: does a *literal* (non-regex) pattern look like it was actually
@@ -315,23 +304,4 @@ mod tests {
         assert!(!looks_like_regex("value?"));
         assert!(!looks_like_regex("get_all_edges"));
     }
-}
-
-/// Minimal JSON string escaping (quotes, backslashes, control chars).
-fn json_str(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push('"');
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\t' => out.push_str("\\t"),
-            '\r' => out.push_str("\\r"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
 }

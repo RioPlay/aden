@@ -175,14 +175,15 @@ pub fn cmd_understand(
                         symbol
                     );
                     if json {
-                        println!(
-                            "{}",
-                            serde_json::to_string_pretty(&json!({
+                        let env = super::augment_read_json(
+                            path,
+                            json!({
                                 "symbol": symbol,
                                 "anchor": null,
                                 "error": msg,
-                            }))?
+                            }),
                         );
+                        println!("{}", serde_json::to_string_pretty(&env)?);
                     } else {
                         println!("{}", msg);
                     }
@@ -248,14 +249,17 @@ pub fn cmd_understand(
     let context = assemble(&neigh, &asm_opts)?;
 
     if json {
-        let env = json!({
-            "symbol": symbol,
-            "anchor": anchor,
-            "definition": def,
-            "backlinks": backlinks,
-            "impact": impact,
-            "context": context,
-        });
+        let env = super::augment_read_json(
+            path,
+            json!({
+                "symbol": symbol,
+                "anchor": anchor,
+                "definition": def,
+                "backlinks": backlinks,
+                "impact": impact,
+                "context": context,
+            }),
+        );
         println!("{}", serde_json::to_string_pretty(&env)?);
         return Ok(());
     }
@@ -466,7 +470,8 @@ pub fn cmd_locate(
                     .take(limit)
                     .map(|r| json!({ "anchor": r.anchor, "score": r.score, "snippet": r.snippet }))
                     .collect();
-                println!("{}", serde_json::to_string_pretty(&arr)?);
+                let env = super::augment_read_json(path, serde_json::Value::Array(arr));
+                println!("{}", serde_json::to_string_pretty(&env)?);
                 return Ok(());
             }
             if !search_results.is_empty() {
@@ -496,11 +501,12 @@ pub fn cmd_locate(
         }
 
         if want_json {
-            println!("{}", serde_json::to_string_pretty(&hits)?);
-        } else {
-            println!("Found {} match(es) for '{}':", matched.len(), sym);
-            print_locate_results(&hits, format, context);
+            let env = super::augment_read_json(path, serde_json::Value::Array(hits));
+            println!("{}", serde_json::to_string_pretty(&env)?);
+            return Ok(());
         }
+        println!("Found {} match(es) for '{}':", matched.len(), sym);
+        print_locate_results(&hits, format, context);
         return Ok(());
     }
 
@@ -528,7 +534,8 @@ pub fn cmd_locate(
 
         if targets.is_empty() {
             if want_json {
-                println!("[]");
+                let env = super::augment_read_json(path, serde_json::json!([]));
+                println!("{}", serde_json::to_string_pretty(&env)?);
                 return Ok(());
             }
             println!("No symbol found matching '{}'", target);
@@ -571,7 +578,8 @@ pub fn cmd_locate(
 
         if callers.is_empty() {
             if want_json {
-                println!("[]");
+                let env = super::augment_read_json(path, serde_json::json!([]));
+                println!("{}", serde_json::to_string_pretty(&env)?);
                 return Ok(());
             }
             println!(
@@ -611,19 +619,20 @@ pub fn cmd_locate(
             .collect();
 
         if want_json {
-            println!("{}", serde_json::to_string_pretty(&hits)?);
-        } else {
-            println!("Found {} caller(s) of '{}':", hits.len(), target);
-            for h in &hits {
-                let file = h["file"].as_str().unwrap_or("");
-                let line = h["start_line"].as_str().unwrap_or("");
-                let loc = if file.is_empty() {
-                    String::new()
-                } else {
-                    format!("  ({}:{})", file, line)
-                };
-                println!("  {}{}", h["anchor"].as_str().unwrap_or(""), loc);
-            }
+            let env = super::augment_read_json(path, serde_json::Value::Array(hits));
+            println!("{}", serde_json::to_string_pretty(&env)?);
+            return Ok(());
+        }
+        println!("Found {} caller(s) of '{}':", hits.len(), target);
+        for h in &hits {
+            let file = h["file"].as_str().unwrap_or("");
+            let line = h["start_line"].as_str().unwrap_or("");
+            let loc = if file.is_empty() {
+                String::new()
+            } else {
+                format!("  ({}:{})", file, line)
+            };
+            println!("  {}{}", h["anchor"].as_str().unwrap_or(""), loc);
         }
         return Ok(());
     }

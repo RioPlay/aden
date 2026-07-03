@@ -1081,6 +1081,10 @@ pub fn cmd_query(
                 println!("| {} | {} | {} |", r["anchor"], r["depth"], r["node_type"]);
             }
         }
+        "json" => {
+            let env = super::augment_read_json(path, serde_json::Value::Array(results));
+            println!("{}", serde_json::to_string_pretty(&env)?);
+        }
         _ => {
             println!("{}", serde_json::to_string_pretty(&results)?);
         }

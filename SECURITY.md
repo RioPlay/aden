@@ -59,11 +59,13 @@ assembles context from source it did not author. Its defenses reflect that:
 
 ### MCP freshness note
 
-MCP sets `ADEN_SKIP_AUTO_GEN=1` on spawned `aden` processes so read tools do
-not silently reindex while another writer may hold the store lock. This is a
-concurrency safeguard, not a security boundary — but agents should know that MCP
-read results may reflect a slightly stale graph until an explicit `gen`/`sync`
-runs. See [ADR-010](docs/adr-010-structural-remediation.adoc).
+MCP sets `ADEN_SKIP_AUTO_GEN=1` on **read-only** tool invocations so read tools
+do not silently reindex while another writer may hold the store lock. Write tools
+(`gen`, `sync`, `ready`) run without skip. This is a concurrency safeguard, not a
+security boundary — but agents should know that MCP read results may reflect a
+slightly stale graph until an explicit `gen`/`sync` runs. Read-tool JSON envelopes
+include `index_stale` (and `stale_hint` when true) for machine-detectable staleness.
+See [ADR-010](docs/adr-010-structural-remediation.adoc).
 
 For the full threat table, the include-directive rules, and the secret-scanning
 layers, see [`docs/security-model.adoc`](docs/security-model.adoc).

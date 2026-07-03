@@ -203,13 +203,14 @@ pub fn cmd_impact_diff(
             run_scope_gate(manifest_path, &BTreeSet::new(), &BTreeSet::new(), json);
         }
         if json {
-            println!(
-                "{}",
+            let env = super::augment_read_json(
+                &root,
                 serde_json::json!({
                     "changed_files": 0, "touched": [], "blast_radius": 0,
                     "impacted": [], "affected_tests": [], "risk": "none"
-                })
+                }),
             );
+            println!("{}", serde_json::to_string_pretty(&env)?);
         } else {
             println!("No changed lines found (nothing to analyze).");
         }
@@ -269,8 +270,8 @@ pub fn cmd_impact_diff(
                 })
             })
             .collect();
-        println!(
-            "{}",
+        let env = super::augment_read_json(
+            &root,
             serde_json::json!({
                 "changed_files": changed.len(),
                 "touched": touched_json,
@@ -278,8 +279,9 @@ pub fn cmd_impact_diff(
                 "impacted": union.iter().collect::<Vec<_>>(),
                 "affected_tests": tests.iter().collect::<Vec<_>>(),
                 "risk": risk,
-            })
+            }),
         );
+        println!("{}", serde_json::to_string_pretty(&env)?);
         return Ok(());
     }
 
