@@ -85,26 +85,24 @@ aden-policy (advisory + ci)    optional enforce mode (0.3.0)
 - Policy `enforce` mode (0.3.0)
 - New `aden-compile` crate
 
-## Branch inventory (2026-07-03)
+## Branch inventory (2026-07-03 — clean state)
 
-All local feature branches backed up to `origin/*`. Tag
-`backup/pre-branch-integration-2026-07-03` marks `main` before any future merges.
+**Local:** only `main`. Worktrees and stash cleared. Tag
+`backup/pre-branch-integration-2026-07-03` marks pre-PPR-merge `main`.
 
-| Branch | Status | Action |
-|--------|--------|--------|
-| `origin/main` | **Current** — golden state + `index_stale` JSON | Ship from here |
-| `origin/feat/asm-ppr-ordering` | 2 unique commits (PPR); cherry-pick conflicts on `aden-graph` | Rebase + PR when ready |
-| `origin/feat/coxn-directional-prereqs` | Largely **superseded** on `main` (G4 lock, config, scope gate) | Archive / delete after diff audit |
-| `origin/integration/all-fixes` | Largely **superseded** on `main` (MCP surface tiers) | Archive / delete after diff audit |
-| `origin/chore/dep-currency-backup` | 4 dep bumps; independent | PR when convenient |
-| `origin/feat/lexical-overlay-perfbase` | **Diverged** (+78/−77 vs `main`); core levers already via PRs #38–40 | Do not merge wholesale; cherry-pick if needed |
-| `origin/feat/vocab-mismatch-evals` | **Diverged** (+59/−77); `--select` assembly evals | Rebase + PR as separate effort |
-| `origin/perf/store-batch-ingest` | **Diverged** (+69/−77); batch ingest + benches | Rebase + PR as separate effort |
-| `origin/fix/audit-phase1-hygiene` | **Stale** (0 ahead); precursor to golden-state indexer | Safe to delete |
+| Branch | Status |
+|--------|--------|
+| `origin/main` | **Ship from here** — golden state + `index_stale` JSON + PPR merge |
+| `origin/chore/dep-currency-backup` | Dep bumps; PR when convenient |
+| `origin/feat/lexical-overlay-perfbase` | Diverged eval branch; cherry-pick only if needed |
+| `origin/feat/vocab-mismatch-evals` | Diverged; `--select` assembly evals — rebase + PR later |
+| `origin/perf/store-batch-ingest` | Diverged; batch ingest — rebase + PR later |
+| `origin/backup/dense-kitoken-stash` | Archived WIP (kitoken dense tokenization) |
 
-**Merge policy:** no wholesale merges of diverged branches into `main`. Integrate via
-rebase + CI + focused PR per branch. PPR attempted 2026-07-03 — conflict in
-`crates/aden-graph/src/lib.rs`; aborted to keep `main` green.
+**Merged / deleted (2026-07-03):** `feat/asm-ppr-ordering`, `feat/coxn-directional-prereqs`,
+`integration/all-fixes`, `fix/audit-phase1-hygiene` (superseded or landed on `main`).
+
+**Merge policy:** no wholesale merges of diverged branches. Rebase + CI + focused PR.
 
 ---
 
