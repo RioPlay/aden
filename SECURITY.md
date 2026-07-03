@@ -67,5 +67,9 @@ slightly stale graph until an explicit `gen`/`sync` runs. Read-tool JSON envelop
 include `index_stale` (and `stale_hint` when true) for machine-detectable staleness.
 See [ADR-010](docs/adr-010-structural-remediation.adoc).
 
+Concurrent read subprocesses on the same project load `graph.snapshot` when fresh
+(ADR-011) instead of opening the live fjall store, reducing `FjallError: Locked`
+contention under multi-agent use. Writers still serialize on `store.lock`.
+
 For the full threat table, the include-directive rules, and the secret-scanning
 layers, see [`docs/security-model.adoc`](docs/security-model.adoc).

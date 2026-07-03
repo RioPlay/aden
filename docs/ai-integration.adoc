@@ -134,6 +134,28 @@ up-to-date graph for blast-radius accuracy. After substantive edits over MCP, ru
 or `sync` before `impact-diff` — or use the shell CLI for read tools when you need
 automatic freshness.
 
+==== Concurrent reads within one project (ADR-011)
+
+Several MCP sessions or shell read commands on the *same* repository used to contend
+for fjall's process-level store lock (`FjallError: Locked`). That is separate from
+MCP's `ADEN_SKIP_AUTO_GEN` staleness trade-off above.
+
+After each successful `gen`, aden publishes `graph.snapshot` beside the per-user store.
+Read commands load from that snapshot when it is fresher than the live `store/`
+directory, then fold in-tree overlays in memory. Writers (`gen`, `ready`, `sync`) still
+open fjall under `store.lock`; a second writer waits with holder `pid`/age notes instead
+of failing immediately.
+
+| Situation | What happens |
+|-----------|--------------|
+| N concurrent read tools, no writer | Each loads `graph.snapshot` — no fjall open |
+| `gen` running while reads are active | Reads use the last published snapshot; writer holds `store.lock` |
+| Snapshot missing or stale vs store | Falls back to opening fjall (today's path) |
+| Working tree changed since last `gen` | Unchanged — still check `index_stale` over MCP |
+
+`aden status` (and `--json`) reports the active store writer and read-snapshot path.
+See <<adr-011>> for format and freshness rules.
+
 == How `aden ask` Works
 
 `aden ask` is the primary interface for AI agents. It is not a chatbot wrapper around an LLM. It is a **context retrieval engine**.

@@ -40,6 +40,9 @@ Post-0.2.0 work on main — not yet tagged.
   Bare-array JSON outputs are wrapped as `{"index_stale": …, "items": …}`.
 
 ### Changed
+- **Docs synced with ADR-011 read snapshot** (2026-07-03) — `architecture.adoc`,
+  `commands.adoc`, `ai-integration.adoc`, `adr-010`, `AGENTS.md`, and `SECURITY.md`
+  document `graph.snapshot`, writer-queue UX, and `aden status` diagnostics.
 - **Docs synced with assembly + indexer state** (2026-07-03) — `commands.adoc`,
   `ai-integration.adoc`, `architecture.adoc`, and `index.adoc` updated for `asm --select`,
   `understand` alternates, kitoken (not HuggingFace `tokenizers`), and `ADEN_LEXICON_ON`

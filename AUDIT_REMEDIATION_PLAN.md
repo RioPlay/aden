@@ -3,6 +3,8 @@
 **Date**: 2026-07-02 (updated 2026-07-03)  
 **Source**: Original gstack audit + `/plan-eng-review` + `/plan-devex-review` (2026-07-02)  
 **Status**: **Golden state reached** — Phases 0–6 shipped on `main` (2026-07-03).
+ADR-011 read snapshot + writer-queue UX shipped on `wip/merge-engine-phase2-snapshot`
+(2026-07-03).
 
 ---
 
@@ -31,6 +33,8 @@ Aden is in **good health** (tests green, `aden check --severity Forbid` passes, 
 - Phase 4 strangler indexer (`indexer/{link,merge,fresh,gen}.rs`; `generate.rs` 15 LOC)
 - Phase 5 doc-heading edges, install-hooks prompt, parser claims update, CHANGELOG
 - Phase 6 verification gates + MCP golden-path CI step
+- ADR-011 read snapshot (`graph.snapshot`) + writer-queue UX (visible `store.lock`
+  wait, fjall open retry, `aden status` diagnostics)
 
 ---
 
@@ -62,6 +66,7 @@ aden-policy (advisory + ci)    optional enforce mode (0.3.0)
 | 4 — Strangler indexer | **Done** |
 | 5 — Graph connectivity + polish | **Done** |
 | 6 — Verification | **Done** |
+| ADR-011 — Read snapshot + writer UX | **Done** (branch `wip/merge-engine-phase2-snapshot`) |
 
 ---
 

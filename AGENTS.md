@@ -21,6 +21,11 @@ until you run `gen`, `sync`, or `ready`. Read-tool JSON includes `index_stale` (
 edits, run one of those write tools before `impact-diff`. See
 `docs/adr-010-structural-remediation.adoc` and `docs/ai-integration.adoc`.
 
+**Concurrent reads:** `gen` publishes `graph.snapshot` (ADR-011) so multiple read
+subprocesses on the same repo load the snapshot instead of opening fjall — avoiding
+`FjallError: Locked` under multi-agent workloads. Writers still serialize on
+`store.lock`; `aden status` shows the active holder and snapshot path.
+
 > **Subagents:** MCP instructions are not inherited automatically — tell spawned agents
 > about the MCP freshness exception if they use aden tools over MCP.
 

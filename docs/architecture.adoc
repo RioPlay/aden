@@ -194,6 +194,13 @@ postcard-serialized values. Per <<adr-003>> the store lives *outside* the workin
 tree and is never written into it. It does not emit `.adoc` contract files into
 the project tree on any run.
 
+After linking edges, `gen` also publishes an atomic **read snapshot**
+(`graph.snapshot` beside the store; see <<adr-011>>): a Postcard-encoded copy of
+docs + edges that read commands load when fresh, so concurrent readers avoid
+fjall's process-level `Locked` errors under multi-agent workloads. Writers still
+serialize on `store.lock`; a second `gen` waits (with holder diagnostics) rather
+than failing immediately.
+
 The **source of truth** is the source code itself; the per-user store is the
 **durable, rebuildable artifact** derived from it. If the store is missing,
 stale, or deleted, it is rebuilt deterministically from the source — the same
@@ -208,8 +215,9 @@ A read command like `aden ask "How does auth work?"` runs end to end as:
 1. **Auto-reindex** — any source file changed since the last run is re-parsed
    and the graph updated, so reads are always against a fresh graph (no manual
    `aden gen` required).
-2. **Store lookup / rehydrate** — the compiled graph is loaded from the per-user
-   store (fjall + postcard); if absent it is rebuilt from source.
+2. **Store lookup / rehydrate** — the compiled graph is loaded snapshot-first
+   (`graph.snapshot` when fresher than the live store; see <<adr-011>>), then from
+   the per-user fjall store; if absent it is rebuilt from source.
 3. **Search (aden-index)** — the question is matched to find the best
    entry-point anchors. BM25 by default; when the `dense` feature is built and a
    local model is present, this is a hybrid search (BM25 + dense embeddings fused
@@ -517,6 +525,7 @@ Honest snapshot of structural and behavioral gaps documented in <<adr-010>>:
 |Policy |Advisory mode (`ADEN_POLICY_MODE=advisory`); `ci-check` bootstrap still enforces |Optional `enforce` in 0.3.0+
 |Doc-heading edges |Section nodes linked via `Contains`/`PartOf` to file representatives |Monitor orphan census
 |MCP freshness |Read tools skip auto-gen; write tools run fresh |Document explicit `gen`/`sync` after external edits
+|Intra-project read contention |Read snapshot + `store.lock` writer queue (<<adr-011>>) |Phase 3: in-process MCP snapshot cache
 |===
 
 [[target-architecture]]
@@ -724,7 +733,7 @@ New crates should start as: (1) features in existing crates (preferred), (2) exp
 
 The cleanup of the four removed crates is complete (documented, decided **remove** as declaration-only roadmap scaffolding, and removed on 2026-06-03).
 
-*Last updated:* 2026-07-02 +
+*Last updated:* 2026-07-03 +
 *Next review:* 2026-09-02
 
 == Related Documents
@@ -735,6 +744,7 @@ The cleanup of the four removed crates is complete (documented, decided **remove
 . <<adr-006>> — Prose as a first-class graph citizen (RelatesTo edges from prose refs)
 . <<adr-007>> — Typed-edge activation policy (emitter + consumer + eval)
 . <<adr-010>> — Structural remediation: indexer strangler, advisory policy, MCP freshness
+. <<adr-011>> — Read snapshot: concurrent graph reads without fjall lock contention
 . <<ai-integration>> — How AI agents use Aden
 . <<user-guide>> — Daily workflows
 . Root entry point: `README.md`; agent workspace: `.agent/context.adoc`

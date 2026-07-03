@@ -100,7 +100,15 @@ store-lock contention when the host may be running `aden ready` or another write
 Shell CLI usage (no `ADEN_SKIP_AUTO_GEN`) retains full auto-fresh behavior: read tools
 reindex changed files on each invocation.
 
-==== 3.3 Agent guidance
+==== 3.3 Concurrent reads (ADR-011)
+
+`ADEN_SKIP_AUTO_GEN` addresses *write* contention during silent reindex. A separate
+problem is *read* opens contending with each other and with writers on the same fjall
+database. <<adr-011>> publishes `graph.snapshot` at the end of every successful `gen`;
+read paths load the snapshot when fresh, falling back to fjall. Writers still hold
+`store.lock`; Phase 2 adds visible wait/retry UX (`aden status` reports holder + snapshot).
+
+==== 3.4 Agent guidance
 
 | Context | Freshness expectation |
 |---------|----------------------|
@@ -142,6 +150,7 @@ This ADR is the authority for:
 
 . `AUDIT_REMEDIATION_PLAN.md` — phased checklist (Phases 0–6)
 . <<adr-003>> — per-user store location
+. <<adr-011>> — read snapshot for intra-project concurrent reads
 . <<adr-008>> — current implementation state (MCP tiers, store-first)
 . <<architecture>> — `<<known-limitations>>`, `<<target-architecture>>`
 . <<ai-integration>> — MCP freshness subsection
