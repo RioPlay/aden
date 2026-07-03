@@ -120,26 +120,26 @@ Per gstack DX review (MCP UX scored 5/10; magical moment = `understand` → `imp
 - [x] Write tools (gen, ready, sync, heal, …) run without skip
 - [x] Stale sentinel: text `index_stale=true` hint via `StaleHintGuard` (JSON field deferred to 2B)
 
-**2B — Heal/Check JSON summaries**
-- [ ] Add check/heal/status to MCP `structured_output_flags()`
-- [ ] Schema: `{ok, counts, top_issues[], truncated}`
-- [ ] Text mode: summary line + `--max-issues 20` for MCP
-- [ ] Target: MCP `check` <2KB on aden self-repo
+**2B — Heal/Check JSON summaries** `[DONE 2026-07-03]`
+- [x] Add check/heal/status to MCP `structured_output_flags()`
+- [x] Schema: `{ok, counts, top_issues[], truncated, policy_mode, policy_violations}`
+- [x] Text mode: summary line + `--max-issues` for MCP
+- [x] Target: MCP `check` <2KB on aden self-repo (~1.1KB measured)
 
-**2C — Store lock UX (L7)**
-- [ ] Clear error: "store locked — another aden process holds the lock"
+**2C — Store lock UX (L7)** `[DONE 2026-07-03]`
+- [x] Clear error: "store locked — another aden process holds the lock"
 
 **Deferred to Phase 5:** doc-heading edges, install-hooks, status in Essential MCP surface
 
 ---
 
-### Phase 3 — Advisory Policy Wiring (~2–3 days)
+### Phase 3 — Advisory Policy Wiring `[DONE 2026-07-03]`
 
-- [ ] `PolicyEngine` in `aden diagnose` — report unwired `[constitution]` blocks
-- [ ] `Warn` directives surfaced in `aden lint`
-- [ ] `policy_violations[]` in `check --json`
-- [ ] Document `ADEN_POLICY_MODE=advisory` (default); enforce deferred to 0.3.0
-- [ ] **Do not** block `gen` in this phase
+- [x] `PolicyEngine` in `aden diagnose` — report unwired `[constitution]` blocks
+- [x] `Warn` directives surfaced in `aden lint`
+- [x] `policy_violations[]` in `check --json`
+- [x] `ADEN_POLICY_MODE=advisory` default via `aden_policy::policy_mode_label()`
+- [x] **Do not** block `gen` in this phase (advisory only)
 
 ---
 

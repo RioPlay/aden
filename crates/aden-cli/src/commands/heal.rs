@@ -12,6 +12,44 @@ use crate::util::{find_project_root, generate_proposal_id, is_safe_id};
 /// `StaleMarkdown`, which lists every changed source file — so printing one
 /// event per line with `{:?}` floods an agent's context with thousands of
 /// lines. This keeps each event to its identifying path/anchor plus a count.
+fn drift_buckets(events: &[aden_heal::DriftEvent]) -> (Vec<String>, Vec<String>, Vec<String>) {
+    use aden_heal::DriftSeverity;
+    let mut errors = Vec::new();
+    let mut warnings = Vec::new();
+    let mut info = Vec::new();
+    for event in events {
+        let line = summarize_drift_event(event);
+        match event.severity() {
+            DriftSeverity::Critical | DriftSeverity::High => errors.push(line),
+            DriftSeverity::Medium => warnings.push(line),
+            DriftSeverity::Low => info.push(line),
+        }
+    }
+    (errors, warnings, info)
+}
+
+fn emit_heal_json(
+    report: &aden_heal::HealthReport,
+    path: &Path,
+    max_issues: Option<usize>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (errors, warnings, info) = drift_buckets(&report.events);
+    let ok = errors.is_empty();
+    let cap = max_issues.unwrap_or(20);
+    let summary = crate::util::build_gate_summary(&errors, &warnings, &info, ok, cap);
+    let policy = aden_policy::audit_policy(path);
+    let env = serde_json::json!({
+        "ok": summary.ok,
+        "counts": summary.counts,
+        "top_issues": summary.top_issues,
+        "truncated": summary.truncated,
+        "health_score": report.overall_score,
+        "policy_mode": policy.mode,
+    });
+    println!("{}", serde_json::to_string(&env)?);
+    Ok(())
+}
+
 fn summarize_drift_event(event: &aden_heal::DriftEvent) -> String {
     use aden_heal::DriftEvent::*;
     match event {
@@ -176,6 +214,8 @@ pub fn cmd_heal_scan(
     fix: bool,
     gc: bool,
     unlimited: bool,
+    json: bool,
+    max_issues: Option<usize>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use aden_heal::{Scanner, generate};
 
@@ -188,15 +228,22 @@ pub fn cmd_heal_scan(
         return cmd_heal_gc(path);
     }
 
-    println!("Aden Self-Healing Documentation Engine");
-    println!("========================================");
-    println!("Scanning: {}", path.display());
-    println!();
+    if !json {
+        println!("Aden Self-Healing Documentation Engine");
+        println!("========================================");
+        println!("Scanning: {}", path.display());
+        println!();
+    }
 
     let scanner = Scanner::new(path);
     match scanner.scan() {
         Ok(events) => {
             let report = generate(events.clone(), path);
+
+            if json {
+                emit_heal_json(&report, path, max_issues)?;
+                return Ok(());
+            }
 
             println!("Health Score: {:.2}/1.00", report.overall_score);
             println!("Total Drift Events: {}", report.events.len());
@@ -204,6 +251,19 @@ pub fn cmd_heal_scan(
 
             if report.events.is_empty() {
                 println!("INFO: No drift detected. Documentation is healthy.");
+                return Ok(());
+            }
+
+            if let Some(cap) = max_issues {
+                let (errors, warnings, info) = drift_buckets(&report.events);
+                let ok = errors.is_empty();
+                let summary =
+                    crate::util::build_gate_summary(&errors, &warnings, &info, ok, cap);
+                println!("{}", crate::util::gate_summary_line(&summary));
+                println!("Health Score: {:.2}/1.00", report.overall_score);
+                for issue in &summary.top_issues {
+                    println!("{issue}");
+                }
                 return Ok(());
             }
 

@@ -68,8 +68,8 @@ impl FileLock {
                         return Err(io::Error::new(
                             io::ErrorKind::WouldBlock,
                             format!(
-                                "could not acquire lock {} within {:?}; another aden \
-                                 process holds it",
+                                "store locked — another aden process holds the lock at {} \
+                                 (waited {:?})",
                                 path.display(),
                                 timeout
                             ),

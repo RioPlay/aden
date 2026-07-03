@@ -188,6 +188,21 @@ pub fn cmd_lint(
         results.extend(lint_dead_code(path, include_public)?);
     }
 
+    // Constitution Warn directives (Phase 3 advisory policy).
+    let policy = aden_policy::audit_policy(path);
+    for v in &policy.violations {
+        if v.severity.eq_ignore_ascii_case("warn") {
+            results.push(LintResult {
+                file: ".aden/constitution.adoc".to_string(),
+                line: 0,
+                column: 0,
+                severity: LintSeverity::Warn,
+                rule: "policy-constitution".to_string(),
+                message: v.message.clone(),
+            });
+        }
+    }
+
     results.sort_by_key(|r| r.file.clone());
 
     let filtered: Vec<_> = results

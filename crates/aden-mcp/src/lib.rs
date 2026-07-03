@@ -367,6 +367,10 @@ fn structured_output_flags(tool: &str) -> &'static [&'static str] {
     match tool {
         // These honor the global `-j/--json` and print a structured envelope.
         "grep" | "search" | "list" | "test" | "impact-diff" | "communities" => &["--json"],
+        // Phase 2B: compact gate summaries for agent verify workflow.
+        "check" => &["--json", "--max-issues", "20"],
+        "heal" => &["--json", "--max-issues", "10"],
+        "status" => &["--json"],
         _ => &[],
     }
 }
@@ -1587,7 +1591,19 @@ mod tests {
     #[test]
     fn non_read_tools_get_no_structured_flags() {
         assert!(structured_output_flags("gen").is_empty());
-        assert!(structured_output_flags("status").is_empty());
+    }
+
+    #[test]
+    fn gate_tools_request_json_and_max_issues() {
+        assert_eq!(
+            structured_output_flags("check"),
+            &["--json", "--max-issues", "20"]
+        );
+        assert_eq!(
+            structured_output_flags("heal"),
+            &["--json", "--max-issues", "10"]
+        );
+        assert_eq!(structured_output_flags("status"), &["--json"]);
     }
 
     #[test]
@@ -1605,7 +1621,7 @@ mod tests {
     #[test]
     fn structured_output_tools_request_json() {
         // Tools with a real JSON envelope must auto-request --json over MCP.
-        for t in ["grep", "search", "list", "test"] {
+        for t in ["grep", "search", "list", "test", "impact-diff", "communities"] {
             assert_eq!(
                 structured_output_flags(t),
                 &["--json"],

@@ -99,7 +99,7 @@ pub fn cmd_ready(path: &Path, fix: bool) -> Result<(), Box<dyn std::error::Error
         use aden_heal::{Scanner, generate};
         if fix {
             // Auto-apply StaleHash/MissingContract fixes before judging drift.
-            let _ = crate::commands::cmd_heal_scan(path, false, true, false, false);
+            let _ = crate::commands::cmd_heal_scan(path, false, true, false, false, false, None);
         }
         let scanner = Scanner::new(path);
         let events = scanner.scan()?;

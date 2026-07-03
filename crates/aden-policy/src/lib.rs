@@ -149,6 +149,31 @@ impl PolicyEngine {
         let doc = parse_contract(&content, ParseMode::Permissive)?;
         let mut engine = Self::default();
         engine.load_from_document(&doc);
+        // Fallback: init-style `[rule="Forbid"]` bullets often live outside the
+        // parsed RegionBlock content — scan the full file when blocks load empty.
+        let loaded: usize = engine
+            .constitutions
+            .iter()
+            .map(|c| c.directives.len())
+            .sum();
+        if loaded == 0 {
+            let directives = parse_directives_from_content(&content);
+            if !directives.is_empty() {
+                engine.constitutions.push(ConstitutionBlock {
+                    block: RegionBlock {
+                        region: ContractRegion::Constitution,
+                        tag: Some("bootstrap".to_string()),
+                        attributes: HashMap::from([("precedence".to_string(), "100".to_string())]),
+                        content: String::new(),
+                        start_line: 1,
+                        end_line: 1,
+                    },
+                    directives,
+                    precedence: 100,
+                    author: Some("bootstrap".to_string()),
+                });
+            }
+        }
         Ok(engine)
     }
 
@@ -283,10 +308,144 @@ impl PolicyEngine {
     }
 }
 
+/// Active policy mode. Default is advisory until 0.3.0 enforce census.
+pub fn policy_mode_label() -> &'static str {
+    match std::env::var("ADEN_POLICY_MODE")
+        .ok()
+        .as_deref()
+        .map(|s| s.trim().to_ascii_lowercase())
+    {
+        Some(ref s) if s == "enforce" => "enforce",
+        _ => "advisory",
+    }
+}
+
+/// A constitution or policy directive surfaced for agents (advisory by default).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PolicyViolation {
+    pub severity: String,
+    pub message: String,
+    pub source: String,
+}
+
+/// Summary of policy wiring for diagnose/check/lint.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PolicyAudit {
+    pub mode: String,
+    pub constitution_present: bool,
+    pub directive_count: usize,
+    pub unwired: bool,
+    pub violations: Vec<PolicyViolation>,
+}
+
+/// Audit constitutional policy for a repo. Advisory mode never blocks callers.
+pub fn audit_policy(repo_path: &std::path::Path) -> PolicyAudit {
+    let constitution_path = repo_path.join(".aden/constitution.adoc");
+    let present = constitution_path.exists();
+    let raw_rules = present
+        .then(|| std::fs::read_to_string(&constitution_path).ok())
+        .flatten()
+        .map(|c| count_rule_blocks(&c))
+        .unwrap_or(0);
+
+    let engine = PolicyEngine::load_bootstrap(repo_path).unwrap_or_default();
+    let directive_count: usize = engine
+        .constitutions()
+        .iter()
+        .map(|c| c.directives.len())
+        .sum();
+    let unwired = present && raw_rules > 0 && directive_count == 0;
+
+    let mut violations = Vec::new();
+    if unwired {
+        violations.push(PolicyViolation {
+            severity: "Warn".to_string(),
+            message: format!(
+                "constitution has {raw_rules} [rule=…] block(s) but PolicyEngine loaded 0 directives — parser/format mismatch"
+            ),
+            source: "policy-engine".to_string(),
+        });
+    }
+    for block in engine.constitutions() {
+        for d in &block.directives {
+            if matches!(
+                d.severity,
+                DirectiveSeverity::Forbid | DirectiveSeverity::Warn
+            ) {
+                let msg = match &d.kind {
+                    DirectiveKind::Custom { params, .. } => params
+                        .get("text")
+                        .cloned()
+                        .or_else(|| params.get("value").cloned())
+                        .unwrap_or_else(|| format!("{:?}", d.kind)),
+                    DirectiveKind::ForbidImport { pattern } => {
+                        format!("forbid import: {pattern}")
+                    }
+                    DirectiveKind::RequirePattern { pattern } => {
+                        format!("require pattern: {pattern}")
+                    }
+                    other => format!("{other:?}"),
+                };
+                violations.push(PolicyViolation {
+                    severity: d.severity.to_string(),
+                    message: msg,
+                    source: block
+                        .author
+                        .clone()
+                        .unwrap_or_else(|| "constitution".to_string()),
+                });
+            }
+        }
+    }
+
+    PolicyAudit {
+        mode: policy_mode_label().to_string(),
+        constitution_present: present,
+        directive_count,
+        unwired,
+        violations,
+    }
+}
+
+fn count_rule_blocks(content: &str) -> usize {
+    content
+        .lines()
+        .filter(|l| {
+            let t = l.trim();
+            t.starts_with("[rule=\"") || t.starts_with("[rule='")
+        })
+        .count()
+}
+
 fn parse_directives_from_content(content: &str) -> Vec<Directive> {
     let mut directives = Vec::new();
+    let mut rule_severity: Option<DirectiveSeverity> = None;
     for line in content.lines() {
         let trimmed = line.trim();
+        if let Some(sev) = parse_rule_header(trimmed) {
+            rule_severity = Some(sev);
+            continue;
+        }
+        if let Some(text) = trimmed
+            .strip_prefix("- ")
+            .or_else(|| trimmed.strip_prefix("* "))
+            && let Some(sev) = rule_severity
+        {
+            directives.push(Directive {
+                severity: sev,
+                kind: DirectiveKind::Custom {
+                    name: "rule".to_string(),
+                    params: {
+                        let mut m = HashMap::new();
+                        m.insert("text".to_string(), text.to_string());
+                        m
+                    },
+                },
+                source_tag: None,
+                attributes: HashMap::new(),
+            });
+            continue;
+        }
         if trimmed.starts_with(':') && trimmed.contains(':') {
             // attribute-style directive: :forbid_import: pattern
             let inner = trimmed.trim_start_matches(':');
@@ -346,6 +505,14 @@ fn parse_directives_from_content(content: &str) -> Vec<Directive> {
         }
     }
     directives
+}
+
+fn parse_rule_header(line: &str) -> Option<DirectiveSeverity> {
+    let inner = line
+        .strip_prefix("[rule=\"")
+        .and_then(|s| s.strip_suffix("\"]"))
+        .or_else(|| line.strip_prefix("[rule='").and_then(|s| s.strip_suffix("']")));
+    inner.and_then(|s| s.parse().ok())
 }
 
 fn matches_subject(directive: &Directive, subject: &str) -> bool {
@@ -495,6 +662,44 @@ mod tests {
         assert!(glob_match("foo::bar::baz", "*::baz"));
         assert!(glob_match("foo::bar::baz", "foo::*::baz"));
         assert!(!glob_match("foo::bar", "bar::foo"));
+    }
+
+    #[test]
+    fn test_load_bootstrap_parses_rule_blocks() {
+        let dir = std::env::temp_dir().join(format!(
+            "aden-policy-bootstrap-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let aden = dir.join(".aden");
+        std::fs::create_dir_all(&aden).unwrap();
+        std::fs::write(
+            aden.join("constitution.adoc"),
+            r#"[constitution]
+[rule="Forbid"]
+- Never commit secrets
+[rule="Warn"]
+- Run tests before commit
+"#,
+        )
+        .unwrap();
+        let engine = PolicyEngine::load_bootstrap(&dir).unwrap();
+        let n: usize = engine.constitutions().iter().map(|c| c.directives.len()).sum();
+        assert_eq!(n, 2, "bootstrap fallback should load rule bullets");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_parse_rule_block_directives() {
+        let content = r#"[rule="Forbid"]
+- Never commit secrets
+[rule="Warn"]
+- All tests must pass
+"#;
+        let directives = parse_directives_from_content(content);
+        assert_eq!(directives.len(), 2);
+        assert_eq!(directives[0].severity, DirectiveSeverity::Forbid);
+        assert_eq!(directives[1].severity, DirectiveSeverity::Warn);
     }
 }
 

@@ -22,7 +22,7 @@ pub fn cmd_sync(
 
     // 2. Check references
     println!("\n[2/3] Checking references...");
-    if let Err(e) = crate::commands::cmd_check(path, "Warn", false) {
+    if let Err(e) = crate::commands::cmd_check(path, "Warn", false, None) {
         let msg = format!("{}", e);
         if !msg.contains("ERROR") {
             println!("Check OK");
@@ -38,7 +38,9 @@ pub fn cmd_sync(
     } else {
         println!("\n[3/3] Scanning for drift...");
     }
-    if let Err(e) = crate::commands::cmd_heal_scan(path, false, false, gc, unlimited) {
+    if let Err(e) =
+        crate::commands::cmd_heal_scan(path, false, false, gc, unlimited, false, None)
+    {
         eprintln!("Heal error: {}", e);
     }
 

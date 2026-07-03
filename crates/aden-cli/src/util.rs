@@ -520,6 +520,83 @@ fn check_incomplete_contracts(path: &Path) -> Vec<String> {
     incomplete
 }
 
+/// Classify check messages by severity prefix.
+pub fn classify_check_messages(messages: &[String]) -> (Vec<String>, Vec<String>, Vec<String>) {
+    let mut errors = Vec::new();
+    let mut warnings = Vec::new();
+    let mut info = Vec::new();
+    for m in messages {
+        if let Some(rest) = m.strip_prefix("ERROR: ") {
+            errors.push(rest.to_string());
+        } else if let Some(rest) = m.strip_prefix("WARNING: ") {
+            warnings.push(rest.to_string());
+        } else if let Some(rest) = m.strip_prefix("INFO: ") {
+            info.push(rest.to_string());
+        } else {
+            info.push(m.clone());
+        }
+    }
+    (errors, warnings, info)
+}
+
+#[derive(serde::Serialize)]
+pub struct GateCounts {
+    pub errors: usize,
+    pub warnings: usize,
+    pub info: usize,
+}
+
+#[derive(serde::Serialize)]
+pub struct GateSummary {
+    pub ok: bool,
+    pub counts: GateCounts,
+    pub top_issues: Vec<String>,
+    pub truncated: bool,
+}
+
+/// Build a compact gate summary for MCP agents.
+pub fn build_gate_summary(
+    errors: &[String],
+    warnings: &[String],
+    info: &[String],
+    ok: bool,
+    max_issues: usize,
+) -> GateSummary {
+    let mut issues: Vec<String> = errors
+        .iter()
+        .map(|e| format!("ERROR: {e}"))
+        .chain(warnings.iter().map(|w| format!("WARNING: {w}")))
+        .collect();
+    if issues.is_empty() {
+        issues = info.iter().map(|i| format!("INFO: {i}")).collect();
+    }
+    let total = issues.len();
+    let truncated = total > max_issues;
+    let top_issues: Vec<String> = issues.into_iter().take(max_issues).collect();
+    GateSummary {
+        ok,
+        counts: GateCounts {
+            errors: errors.len(),
+            warnings: warnings.len(),
+            info: info.len(),
+        },
+        top_issues,
+        truncated,
+    }
+}
+
+pub fn gate_summary_line(summary: &GateSummary) -> String {
+    format!(
+        "Summary: ok={} | {} error(s), {} warning(s), {} info | showing {} issue(s){}",
+        summary.ok,
+        summary.counts.errors,
+        summary.counts.warnings,
+        summary.counts.info,
+        summary.top_issues.len(),
+        if summary.truncated { " (truncated)" } else { "" }
+    )
+}
+
 /// Perform all integrity checks on a project directory.
 /// Returns a list of human-readable messages ("INFO: ...", "ERROR: ...", "WARNING: ...").
 pub fn perform_check(path: &Path) -> Result<Vec<String>, Box<dyn std::error::Error>> {

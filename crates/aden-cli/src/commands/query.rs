@@ -631,6 +631,7 @@ pub fn cmd_check(
     path: &Path,
     severity: &str,
     json: bool,
+    max_issues: Option<usize>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if !path.is_dir() {
         return Err("check requires a directory path".into());
@@ -650,33 +651,36 @@ pub fn cmd_check(
     };
 
     let messages = perform_check(path)?;
+    let (errors, warnings, info) = crate::util::classify_check_messages(&messages);
+    let policy = aden_policy::audit_policy(path);
+    let fails = !errors.is_empty() || (!warnings.is_empty() && min_severity <= 1);
 
-    // Machine-readable for the global `-j/--json` flag (previously ignored).
-    // Classify the human messages by prefix into errors/warnings/info, mirroring
-    // the exit semantics of the text path below.
+    // Machine-readable for the global `-j/--json` flag (MCP Phase 2B envelope).
     if json {
-        let mut errors = Vec::new();
-        let mut warnings = Vec::new();
-        let mut info = Vec::new();
-        for m in &messages {
-            if let Some(rest) = m.strip_prefix("ERROR: ") {
-                errors.push(rest.to_string());
-            } else if let Some(rest) = m.strip_prefix("WARNING: ") {
-                warnings.push(rest.to_string());
-            } else if let Some(rest) = m.strip_prefix("INFO: ") {
-                info.push(rest.to_string());
-            } else {
-                info.push(m.clone());
-            }
-        }
-        let fails = !errors.is_empty() || (!warnings.is_empty() && min_severity <= 1);
+        let cap = max_issues.unwrap_or(20);
+        let summary = crate::util::build_gate_summary(&errors, &warnings, &info, !fails, cap);
         let env = serde_json::json!({
-            "ok": !fails,
-            "errors": errors,
-            "warnings": warnings,
-            "info": info,
+            "ok": summary.ok,
+            "counts": summary.counts,
+            "top_issues": summary.top_issues,
+            "truncated": summary.truncated,
+            "policy_mode": policy.mode,
+            "policy_violations": policy.violations,
+            "policy_unwired": policy.unwired,
         });
-        println!("{}", serde_json::to_string_pretty(&env)?);
+        println!("{}", serde_json::to_string(&env)?);
+        if fails {
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+
+    if let Some(cap) = max_issues {
+        let summary = crate::util::build_gate_summary(&errors, &warnings, &info, !fails, cap);
+        println!("{}", crate::util::gate_summary_line(&summary));
+        for issue in &summary.top_issues {
+            println!("{issue}");
+        }
         if fails {
             std::process::exit(1);
         }

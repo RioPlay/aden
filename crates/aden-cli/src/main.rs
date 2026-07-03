@@ -156,6 +156,12 @@ enum Commands {
             help = "Minimum severity to fail: Suggest, Warn, Forbid"
         )]
         severity: String,
+        #[arg(
+            long,
+            value_name = "N",
+            help = "Cap issues in summary output (MCP default: 20)"
+        )]
+        max_issues: Option<usize>,
     },
     /// Complete incomplete contracts by filling in required documentation
     Complete {
@@ -705,6 +711,12 @@ enum Commands {
             help = "Watch directory and auto-heal on changes"
         )]
         watch: Option<PathBuf>,
+        #[arg(
+            long,
+            value_name = "N",
+            help = "Cap drift issues in summary/json output (MCP default: 20)"
+        )]
+        max_issues: Option<usize>,
     },
     /// Fast pre-commit combo: gen + lint + check + heal drift scan + audit
     Ready {
@@ -1185,7 +1197,11 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
             };
             commands::cmd_gen_opts(&effective_path, quiet, propose, force_regen)
         }
-        Commands::Check { path, severity } => commands::cmd_check(&path, &severity, cli.json),
+        Commands::Check {
+            path,
+            severity,
+            max_issues,
+        } => commands::cmd_check(&path, &severity, cli.json, max_issues),
         Commands::Complete {
             path,
             dry_run,
@@ -1496,6 +1512,7 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
             since,
             apply,
             watch,
+            max_issues,
         } => {
             if let Some(id) = apply {
                 commands::cmd_heal_apply(&path, &id)
@@ -1512,7 +1529,15 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
             } else if let Some(ref git_ref) = since {
                 commands::cmd_heal_scan_since(&path, propose, git_ref)
             } else {
-                commands::cmd_heal_scan(&path, propose, fix, gc, cli.unlimited)
+                commands::cmd_heal_scan(
+                    &path,
+                    propose,
+                    fix,
+                    gc,
+                    cli.unlimited,
+                    cli.json,
+                    max_issues,
+                )
             }
         }
         Commands::CiCheck { path } => commands::cmd_ci_check(&path, cli.json),

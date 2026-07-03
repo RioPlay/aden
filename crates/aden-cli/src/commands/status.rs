@@ -28,9 +28,24 @@ pub fn cmd_status(path: &Path, json: bool) -> Result<(), Box<dyn std::error::Err
             Err(_) => (0, Vec::new()),
         };
 
-    // Machine-readable for the global `-j/--json` flag (previously ignored).
+    // Machine-readable for the global `-j/--json` flag (MCP Phase 2B envelope).
     if json {
+        let ok = health >= 0.8 && actionable.is_empty();
+        let top_issues: Vec<String> = actionable
+            .iter()
+            .take(20)
+            .map(|a| format!("orphan: {a}"))
+            .collect();
+        let policy = aden_policy::audit_policy(path);
         let env = serde_json::json!({
+            "ok": ok,
+            "counts": {
+                "errors": if health < 0.8 { 1usize } else { 0usize },
+                "warnings": actionable.len(),
+                "info": expected_n,
+            },
+            "top_issues": top_issues,
+            "truncated": actionable.len() > 20,
             "path": path.display().to_string(),
             "aden_dir": aden_path.display().to_string(),
             "store": aden_paths::store_dir(&find_project_root(path)).display().to_string(),
@@ -39,10 +54,11 @@ pub fn cmd_status(path: &Path, json: bool) -> Result<(), Box<dyn std::error::Err
             "orphans": {
                 "expected": expected_n,
                 "actionable_count": actionable.len(),
-                "actionable": actionable,
             },
+            "policy_mode": policy.mode,
+            "policy_violations": policy.violations,
         });
-        println!("{}", serde_json::to_string_pretty(&env)?);
+        println!("{}", serde_json::to_string(&env)?);
         return Ok(());
     }
 

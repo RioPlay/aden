@@ -1458,10 +1458,15 @@ fn cmd_gen_inner(
         // G4: serialize concurrent writers. Held until this function returns,
         // covering the whole open/index/flush write phase.
         let _store_lock = acquire_store_lock(&store_path).map_err(|e| {
-            format!(
-                "another aden gen is writing the store at {}: {e}",
-                store_path.display()
-            )
+            if e.kind() == std::io::ErrorKind::WouldBlock {
+                format!(
+                    "store locked — another aden process holds the lock at {}. \
+                     Wait for it to finish or stop the other process.",
+                    store_path.with_extension("lock").display()
+                )
+            } else {
+                format!("failed to acquire store lock at {}: {e}", store_path.display())
+            }
         })?;
         let store_str = store_path
             .to_str()

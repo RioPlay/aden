@@ -13,19 +13,59 @@ use std::path::Path;
 /// Returns human-readable text output by default, or JSON if `format == "json"`.
 pub fn cmd_diagnose(path: &Path, format: &str) -> Result<(), Box<dyn std::error::Error>> {
     let rules = aden_diagnose::DiagnosticRules::default();
+    let policy = aden_policy::audit_policy(path);
 
     match format {
         "json" => {
-            let json = aden_diagnose::diagnose_json_with_rules(path, &rules)?;
-            println!("{}", json);
+            let mut value: serde_json::Value =
+                serde_json::from_str(&aden_diagnose::diagnose_json_with_rules(path, &rules)?)?;
+            if let Some(obj) = value.as_object_mut() {
+                obj.insert(
+                    "policy_mode".to_string(),
+                    serde_json::json!(policy.mode),
+                );
+                obj.insert(
+                    "policy_unwired".to_string(),
+                    serde_json::json!(policy.unwired),
+                );
+                obj.insert(
+                    "policy_violations".to_string(),
+                    serde_json::json!(policy.violations),
+                );
+            }
+            println!("{}", serde_json::to_string(&value)?);
         }
         _ => {
             let diagnosis = aden_diagnose::diagnose_with_rules(path, &rules)?;
             print_diagnosis(&diagnosis);
+            print_policy_advisory(&policy);
         }
     }
 
     Ok(())
+}
+
+fn print_policy_advisory(policy: &aden_policy::PolicyAudit) {
+    println!("== POLICY ({} mode) ==", policy.mode);
+    if !policy.constitution_present {
+        println!("  INFO: no .aden/constitution.adoc (optional)");
+        return;
+    }
+    if policy.unwired {
+        println!(
+            "  WARN: constitution present but {} directive(s) loaded — policy engine may be unwired",
+            policy.directive_count
+        );
+    } else {
+        println!(
+            "  INFO: {} constitution directive(s) loaded",
+            policy.directive_count
+        );
+    }
+    for v in &policy.violations {
+        println!("  [{}] {} ({})", v.severity, v.message, v.source);
+    }
+    println!();
 }
 
 /// Print a human-readable diagnosis report.
