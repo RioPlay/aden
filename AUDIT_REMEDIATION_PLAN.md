@@ -3,8 +3,7 @@
 **Date**: 2026-07-02 (updated 2026-07-03)  
 **Source**: Original gstack audit + `/plan-eng-review` + `/plan-devex-review` (2026-07-02)  
 **Status**: **Golden state reached** — Phases 0–6 shipped on `main` (2026-07-03).
-ADR-011 read snapshot + writer-queue UX shipped on `wip/merge-engine-phase2-snapshot`
-(2026-07-03).
+ADR-011 read snapshot + writer-queue UX shipped on `main` (2026-07-03).
 
 ---
 
@@ -66,7 +65,7 @@ aden-policy (advisory + ci)    optional enforce mode (0.3.0)
 | 4 — Strangler indexer | **Done** |
 | 5 — Graph connectivity + polish | **Done** |
 | 6 — Verification | **Done** |
-| ADR-011 — Read snapshot + writer UX | **Done** (branch `wip/merge-engine-phase2-snapshot`) |
+| ADR-011 — Read snapshot + writer UX | **Done** |
 
 ---
 
