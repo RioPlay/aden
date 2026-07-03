@@ -92,12 +92,14 @@ aden-policy (advisory + ci)    optional enforce mode (0.3.0)
 
 | Branch | Status |
 |--------|--------|
-| `origin/main` | **Ship from here** — golden state + `index_stale` JSON + PPR merge |
-| `origin/chore/dep-currency-backup` | Dep bumps; PR when convenient |
-| `origin/feat/lexical-overlay-perfbase` | Diverged eval branch; cherry-pick only if needed |
-| `origin/feat/vocab-mismatch-evals` | Diverged; `--select` assembly evals — rebase + PR later |
-| `origin/perf/store-batch-ingest` | Diverged; batch ingest — rebase + PR later |
-| `origin/backup/dense-kitoken-stash` | Archived WIP (kitoken dense tokenization) |
+| `origin/main` | **Ship from here** — golden state + gather-select/`--select` + batch gen + M16 alternates + PPR |
+| `origin/chore/dep-currency-backup` | Dep bumps (criterion/toml); skip tokenizers bump — main uses kitoken |
+| `origin/feat/lexical-overlay-perfbase` | Diverged eval branch; largely superseded — cherry-pick only if needed |
+| `origin/feat/vocab-mismatch-evals` | Diverged assembly eval harnesses — optional rebase later |
+| `origin/backup/dense-kitoken-stash` | Archived WIP (kitoken landed on main) |
+
+**Merged into `main` (2026-07-03):** `origin/perf/store-batch-ingest` production commits
+(gather-then-select, `--select`, batch fjall ingest, understand alternates, MCP parity).
 
 **Merged / deleted (2026-07-03):** `feat/asm-ppr-ordering`, `feat/coxn-directional-prereqs`,
 `integration/all-fixes`, `fix/audit-phase1-hygiene` (superseded or landed on `main`).

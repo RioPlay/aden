@@ -13,9 +13,10 @@ As of 2026-07-02, Aden is in good health: tests pass, `aden check --severity For
 is green, and the product thesis (typed knowledge graph for agents) is sound. The
 remaining debt is *structural concentration* and *documentation honesty gaps*:
 
-* `crates/aden-cli/src/commands/generate.rs` (~2,770 LOC; `cmd_gen_inner` alone ~1,400
-  LOC) concentrates the write/index pipeline in a single god module with ~185 downstream
-  impact nodes.
+* The write/index pipeline was concentrated in `generate.rs` (~2,770 LOC pre-Phase 1).
+  **Phase 1 shipped (2026-07-02):** logic moved to `crates/aden-cli/src/indexer/`;
+  `generate.rs` is now a thin re-export shell. `query.rs` (~3,200 LOC) remains the
+  next strangler target.
 * `aden-parse` and `aden-graph/src/parser.rs` duplicate parsing paths (unification
   deferred until after indexer extraction).
 * `aden-policy::PolicyEngine` is only bootstrapped in `ci.rs`; `[constitution]` blocks
@@ -31,8 +32,8 @@ This ADR records the remediation strategy locked after gstack eng + DX reviews
 
 === 1. Indexer extraction: strangler inside `aden-cli` first
 
-The write path (`gen`, freshness checks, link/merge logic currently in `generate.rs`)
-will be extracted incrementally into:
+The write path (`gen`, freshness checks, link/merge logic) is extracted incrementally into
+(the Phase 1 module layout; further splits are incremental):
 
 ----
 crates/aden-cli/src/indexer/
@@ -123,8 +124,8 @@ This ADR is the authority for:
 
 **Positive:**
 
-* Incremental refactor with PR-0 equivalence gate reduces regression risk on the highest-
-  impact module (`generate.rs`).
+* Incremental refactor with PR-0 equivalence gate reduced regression risk on the write
+  pipeline (`generate.rs` → `indexer/`); `query.rs` is the remaining concentration.
 * Advisory policy unblocks honest docs without premature `gen` blocking.
 * MCP freshness docs prevent agents from assuming silent reindex over MCP.
 

@@ -45,7 +45,7 @@ This is the canonical entry point for all Aden documentation. Read the document 
 |<<user-guide>> |Daily workflows, plus <<troubleshooting>> and <<use-cases>>
 |<<security-model>> |Threat model and security boundaries
 |<<benchmarks>> |Measured performance: token efficiency, edge F1, retrieval quality, latency, and energy estimate
-|<<retrieval-levers>> |Dual-substrate retrieval levers: corpus PPMI for code, OEWN synonym expansion for prose, and `ADEN_LEXICON_AUTO` gating
+|<<retrieval-levers>> |Dual-substrate retrieval levers: corpus PPMI for code, OEWN synonym expansion for prose, and opt-in `ADEN_LEXICON_ON` gating
 |===
 
 == Architecture Decisions

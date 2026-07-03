@@ -12,6 +12,20 @@ All notable changes to aden are documented here. Format follows
 Post-0.2.0 work on main — not yet tagged.
 
 ### Added
+- **Query-aware gather-then-select assembly** (2026-07-03) — `AssemblyOptions.relevance_select`
+  (gated, default off) gathers the reachable neighborhood then selects to budget by
+  blended relevance and structural proximity. `aden asm --select` activates it when relevance
+  is available; an off-topic safety gate (`relevance_confidence`) falls back to the
+  structural walk when cross-query calibration is low. MCP `asm` tool accepts `select`.
+- **Rust type→method containment** (2026-07-03) — impl methods emit `member_of` edges,
+  stored reversed as `Type —Contains→ method`, so Rust type hubs reach their impl-block
+  methods in assembly and blast-radius traversal.
+- **`understand` duplicate-symbol alternates** (2026-07-03) — when a bare symbol name
+  resolves to one anchor but others share the same `#symbol` suffix, `understand` surfaces
+  them in text (`## Other definitions`) and JSON (`alternates`).
+- **Batch fjall doc ingest** (2026-07-03) — `gen` commits each file's slimmed documents
+  and base snapshots in one atomic `put_documents_bulk` batch (fewer journal appends;
+  doc and base never diverge on crash).
 - **MCP stale-index JSON signaling** (2026-07-03) — read-tool JSON envelopes now
   include `index_stale` (and `stale_hint` when true) so agents detect graph
   staleness without parsing shell `NOTE:` lines. Applied to `grep`, `search`,
@@ -19,6 +33,10 @@ Post-0.2.0 work on main — not yet tagged.
   Bare-array JSON outputs are wrapped as `{"index_stale": …, "items": …}`.
 
 ### Changed
+- **Docs synced with assembly + indexer state** (2026-07-03) — `commands.adoc`,
+  `ai-integration.adoc`, `architecture.adoc`, and `index.adoc` updated for `asm --select`,
+  `understand` alternates, kitoken (not HuggingFace `tokenizers`), and `ADEN_LEXICON_ON`
+  opt-in gating. ADR-010 context reflects Phase 1 indexer extraction as shipped.
 - **MCP freshness docs aligned with Phase 2A** (2026-07-03) — ADR-010,
   `ai-integration.adoc`, `AGENTS.md`, and `SECURITY.md` now document that
   `ADEN_SKIP_AUTO_GEN` is scoped to read tools only (write tools refresh without

@@ -512,7 +512,7 @@ Honest snapshot of structural and behavioral gaps documented in <<adr-010>>:
 |Area |Current state |Remediation
 
 |Write pipeline |Extracted to `aden-cli/src/indexer/`; `generate.rs` is a thin re-export shell |`query.rs` (~3,200 LOC) next
-|Query pipeline |`query.rs` (~3,200 LOC) in `aden-cli` |Deferred after indexer stabilization
+|Query pipeline |`query.rs` (~3,200 LOC); `locate.rs` + `search.rs` split out |Further strangler extraction deferred
 |Parsing |`aden-parse` + `aden-graph/parser.rs` overlap; CSV/tabular is best-effort |Unify on separate branch (`fix/parse-canonical`)
 |Policy |Advisory mode (`ADEN_POLICY_MODE=advisory`); `ci-check` bootstrap still enforces |Optional `enforce` in 0.3.0+
 |Doc-heading edges |Section nodes linked via `Contains`/`PartOf` to file representatives |Monitor orphan census
@@ -642,7 +642,7 @@ Staging:: Write-only audit trail in `.aden/staging/` for agent proposals before 
 |regex |Lightweight AsciiDoc parsing |Latest stable
 |toml |Configuration parsing |Latest stable
 |tract-onnx |Dense embedding inference (behind `dense` feature; AGPL-compatible per NOTICE.md) |Latest stable
-|tokenizers |Tokenization for dense embeddings (behind `dense` feature, fancy-regex backend; AGPL-compatible per NOTICE.md) |Latest stable
+|kitoken |Pure-Rust WordPiece tokenization for dense embeddings (behind `dense` feature; replaces HuggingFace `tokenizers` — see NOTICE.md) |Latest stable
 |===
 
 === Phase 0 Crate Map (Current)
@@ -664,7 +664,7 @@ Staging:: Write-only audit trail in `.aden/staging/` for agent proposals before 
 |aden-mcp |MCP server integration (shells out to the `aden` binary) |Shipped Phase 0
 |aden-lsp |LSP for `.adoc`/`.aden` files |Shipped Phase 0
 |aden-policy |Constitutional policy engine, directives |Shipped Phase 0
-|aden-cli |Binary (`aden`) with all commands; write path concentrated in `generate.rs` (see <<known-limitations>>) |Shipped Phase 0
+|aden-cli |Binary (`aden`) with all commands; write path in `indexer/` (`generate.rs` is a thin shell; see <<known-limitations>>) |Shipped Phase 0
 |===
 
 === Phase 1-6 Crate Map (Planned)

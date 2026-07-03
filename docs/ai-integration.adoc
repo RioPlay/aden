@@ -309,10 +309,10 @@ bake it in at install time with `aden mcp install --surface <level>`).
 |===
 |Tool|Purpose|Key Arguments
 |grep|Structure-aware content search (hit + enclosing symbol)|pattern, regex, ignore_case, symbol_only, limit
-|understand|One-shot symbol comprehension (locate + backlinks + impact + asm)|symbol, budget, json
+|understand|One-shot symbol comprehension (locate + backlinks + impact + asm); surfaces `alternates` when the name is defined in more than one place|symbol, budget, json
 |ask|Natural language Q&A|question, budget, from
 |locate|Symbol definitions (requires at least one of `symbol`/`caller_of`)|symbol, caller_of, show_context, limit, format
-|asm|Graph-traversed context|from, depth, budget, format (llm = default LLM-dense prose, adg = compact JSON, aden = raw AsciiDoc)
+|asm|Graph-traversed context; `--select` gathers the neighborhood then selects to budget by query relevance (opt-in)|from, depth, budget, select, format (llm = default LLM-dense prose, adg = compact JSON, aden = raw AsciiDoc)
 |query|Structured JSON graph neighborhood|from, depth, backlinks, impact, edge_type (applies to from/backlinks/impact)
 |===
 
@@ -443,10 +443,10 @@ You have access to Aden, a knowledge graph compiler for codebases.
 ## Aden Tools Available:
 - `ask(question)`: Natural-language question about the codebase — best first tool for exploration
 - `search(query)`: Full-text search (BM25; hybrid BM25+dense via RRF when built with the `dense` feature). The `--semantics` flag is separate — it expands results along knowledge-graph edges, not dense embeddings.
-- `asm(from, depth)`: Assemble context from a starting anchor (passed as `from`)
+- `asm(from, depth, select)`: Assemble context from a starting anchor (passed as `from`); `select=true` enables query-aware gather-then-select when relevance is available
 - `query(anchor, depth)`: Get structured graph neighborhood as JSON
 - `locate(symbol)`: Find symbol definitions and call sites, --show-context N for surrounding code
-- `understand(symbol)`: One-shot comprehension — definition + backlinks + impact + context in one call; replaces locate + query --backlinks + query --impact + asm
+- `understand(symbol)`: One-shot comprehension — definition + backlinks + impact + context in one call; includes `alternates` when the symbol name is ambiguous; replaces locate + query --backlinks + query --impact + asm
 - `list()`: List all available anchors, --semantics for semantic nodes
 - `grep(pattern)`: Structure-aware search — every hit tagged with its enclosing symbol
 - `communities(min_size, limit)`: Detect functional clusters of densely-connected symbols (Louvain modularity), independent of directory layout
