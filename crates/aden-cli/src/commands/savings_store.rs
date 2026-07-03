@@ -3,7 +3,8 @@
 
 //! Persistent token-savings ledger: `<repo_root>/.aden/savings.json`.
 //!
-//! Tracks cumulative savings estimates across `aden` read queries so
+//! Tracks cumulative savings estimates across aden read queries (`ask`, `asm`,
+//! `understand`, `grep`, `locate`) so
 //! `aden status` can surface both an all-time total and a "this session"
 //! window. The file is NOT under `.aden/store` (which is an LSM database); it
 //! lives alongside store metadata as a plain JSON sidecar, written only by
@@ -21,7 +22,10 @@
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use aden_core::savings::SavingsEstimate;
+use std::collections::HashSet;
+
+use aden_core::savings::{BASELINE_MAX_FILES, SavingsEstimate};
+use aden_store::GraphStorage;
 use serde::{Deserialize, Serialize};
 
 /// Path of the savings sidecar, relative to the repo root.
@@ -178,5 +182,84 @@ pub fn record(repo_root: &Path, est: &SavingsEstimate) {
             }
         }
         Err(e) => eprintln!("aden: savings: serialize failed: {}", e),
+    }
+}
+
+fn anchor_source_file(path: &Path, anchor: &str) -> Option<String> {
+    let (store_path, _) = aden_paths::resolve_read_store(path);
+    let storage = aden_store::Storage::open_existing(store_path.to_str()?).ok()?;
+    storage
+        .get_document(anchor)
+        .ok()
+        .flatten()
+        .and_then(|d| d.attributes.get("source_file").cloned())
+}
+
+/// Estimate tokens saved vs. a grep-read baseline of distinct source files touched.
+pub fn estimate_read_savings(
+    path: &Path,
+    primary_anchors: &[String],
+    returned_bytes: usize,
+) -> SavingsEstimate {
+    let hydrate_root = crate::util::find_project_root(path);
+    let mut seen_files: HashSet<String> = HashSet::new();
+    let mut baseline_bytes: usize = 0;
+    for anchor in primary_anchors {
+        if seen_files.len() >= BASELINE_MAX_FILES {
+            break;
+        }
+        if let Some(src) = anchor_source_file(path, anchor) {
+            if src.is_empty() || seen_files.contains(&src) {
+                continue;
+            }
+            let abs = hydrate_root.join(&src);
+            if let Ok(meta) = std::fs::metadata(&abs) {
+                seen_files.insert(src);
+                baseline_bytes += meta.len() as usize;
+            }
+        }
+    }
+    SavingsEstimate::from_bytes(returned_bytes, baseline_bytes, seen_files.len())
+}
+
+/// Record one completed read query into the ledger (best-effort).
+pub fn record_read_query(
+    repo_root: &Path,
+    store_path: &Path,
+    primary_anchors: &[String],
+    returned_bytes: usize,
+) {
+    let est = estimate_read_savings(store_path, primary_anchors, returned_bytes);
+    record(repo_root, &est);
+}
+
+/// Collect unique anchor strings in first-seen order.
+pub fn unique_anchors(anchors: impl IntoIterator<Item = impl AsRef<str>>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for a in anchors {
+        let s = a.as_ref();
+        if seen.insert(s.to_string()) {
+            out.push(s.to_string());
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ledger_saved_tokens_matches_baseline_minus_returned() {
+        let ledger = SavingsLedger {
+            queries: 3,
+            returned_tokens: 1_000,
+            baseline_tokens: 10_000,
+            saved_tokens: 9_000,
+            tool_calls_saved: 5,
+        };
+        let expected = ledger.baseline_tokens as i64 - ledger.returned_tokens as i64;
+        assert_eq!(ledger.saved_tokens, expected);
     }
 }

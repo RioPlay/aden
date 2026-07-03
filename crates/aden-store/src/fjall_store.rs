@@ -147,7 +147,7 @@ impl GraphStorage for FjallStorage {
         if docs.is_empty() {
             return Ok(());
         }
-        let mut batch = self.keyspace.batch();
+        let mut batch = self.db.batch();
         for (doc, snapshot) in docs {
             batch.insert(&self.docs, doc_key(&doc.anchor), serialize_document(doc)?);
             batch.insert(&self.bases, base_key(&doc.anchor), snapshot.as_bytes());
