@@ -135,39 +135,7 @@ pub fn cmd_grep(
     });
 
     if json {
-        let returned_bytes = {
-            let total = matches.len();
-            let returned = total.min(limit);
-            let page: Vec<serde_json::Value> = matches
-                .iter()
-                .take(limit)
-                .map(|m| {
-                    serde_json::json!({
-                        "file": m.file,
-                        "line": m.line,
-                        "symbol": m.symbol,
-                        "anchor": m.anchor,
-                        "text": m.text,
-                    })
-                })
-                .collect();
-            let mut env = serde_json::json!({
-                "total": total,
-                "returned": returned,
-                "truncated": total > limit,
-                "matches": page,
-            });
-            if let Some(h) = regex_hint.as_deref() {
-                env["hint"] = serde_json::Value::String(h.to_string());
-            }
-            let env = super::augment_read_json(&root, env);
-            serde_json::to_string(&env).unwrap_or_default().len()
-        };
         print_json(&root, &matches, limit, regex_hint.as_deref());
-        let anchors = super::savings_store::unique_anchors(
-            matches.iter().take(limit).filter_map(|m| m.anchor.as_ref()),
-        );
-        super::savings_store::record_read_query(&root, &root, &anchors, returned_bytes);
         return Ok(());
     }
 
@@ -201,21 +169,6 @@ pub fn cmd_grep(
     if let Some(sym) = matches.iter().take(limit).find_map(|m| m.symbol.as_deref()) {
         println!("  ↳ expand a hit into full context: `asm --from {sym}` (or `understand {sym}`)");
     }
-    let returned_bytes: usize = matches
-        .iter()
-        .take(limit)
-        .map(|m| {
-            m.file.len()
-                + m.line.to_string().len()
-                + m.text.len()
-                + m.symbol.as_ref().map(|s| s.len()).unwrap_or(0)
-                + 8
-        })
-        .sum();
-    let anchors = super::savings_store::unique_anchors(
-        matches.iter().take(limit).filter_map(|m| m.anchor.as_ref()),
-    );
-    super::savings_store::record_read_query(&root, &root, &anchors, returned_bytes);
     Ok(())
 }
 

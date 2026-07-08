@@ -908,8 +908,6 @@ pub fn cmd_asm(opts: AsmOptions) -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    let returned_bytes = output.len();
-    let savings_anchor = asm_opts.start_anchor.clone();
     if let Some(out_path) = &opts.out {
         std::fs::write(out_path, &output)?;
         println!("Written assembly to {}", out_path.display());
@@ -918,13 +916,6 @@ pub fn cmd_asm(opts: AsmOptions) -> Result<(), Box<dyn std::error::Error>> {
     } else {
         println!("{output}");
     }
-    let repo_root = crate::util::find_project_root(&opts.path);
-    super::savings_store::record_read_query(
-        &repo_root,
-        &opts.path,
-        &[savings_anchor],
-        returned_bytes,
-    );
     Ok(())
 }
 
@@ -1992,24 +1983,17 @@ pub fn cmd_ask(
     // `primary_text` tracks the body contributed by the PRIMARY anchor alone,
     // so the thin-stub check below can't be fooled by a fat alternate padding
     // the combined output past the threshold.
-    // Anchors included in the primary seed's assembly — used for baseline-file
-    // resolution in the savings estimate. Captured from the primary call only;
-    // alternates and thin-stub fallbacks contribute bytes but not more files to
-    // the baseline (the primary is what drove routing).
-    let primary_anchors: Vec<String>;
     let primary_text;
     let assembled = if resolved_alts.is_empty() {
-        let (seed_text, seed_anchors) =
+        let (seed_text, _) =
             asm.assemble_seed_with(&start_anchor, depth, effective_budget, &block_filter, false)?;
-        primary_anchors = seed_anchors;
         primary_text = seed_text.clone();
         seed_text
     } else {
         let primary_budget = effective_budget * 60 / 100;
         let shallow_depth = depth.min(1);
-        let (primary_seed_text, seed_anchors) =
+        let (primary_seed_text, _) =
             asm.assemble_seed_with(&start_anchor, depth, primary_budget, &block_filter, false)?;
-        primary_anchors = seed_anchors;
         let mut combined = primary_seed_text;
         primary_text = combined.clone();
         let mut used = combined.len().div_ceil(4);
@@ -2248,12 +2232,6 @@ pub fn cmd_ask(
         };
     }
 
-    // Savings estimate vs. a grep-read baseline of the source files the primary
-    // assembly touched (the helper holds the BASELINE_MAX_FILES cap + pricing).
-    let savings_est =
-        super::savings_store::estimate_read_savings(path, &primary_anchors, assembled.len());
-    super::savings_store::record(&hydrate_root, &savings_est);
-
     // Step 4: Send to LLM or print raw context
     if let Some(model_spec) = model {
         if explain {
@@ -2327,7 +2305,6 @@ pub fn cmd_ask(
             "//   Nodes   : {} | ~{} tokens ({} bytes) / {} budget ({})",
             node_count, est_tokens, bytes, budget_note, budget_label
         );
-        println!("{}", savings_est.footer_line());
         println!("// ────────────────────────────────────────────────");
     }
 

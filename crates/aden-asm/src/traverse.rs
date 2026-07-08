@@ -374,7 +374,7 @@ fn gather_then_select(
 /// The anchor list contains the `anchor` of each `DocumentNode` that was
 /// actually emitted into the output (same nodes the traversal included). This
 /// is the authoritative set for downstream work such as baseline-file
-/// resolution for token-savings estimates.
+/// resolution for source-file attribution.
 pub fn assemble_with_anchors(
     graph: &AdenGraph<DocumentNode, AdenEdge>,
     opts: &AssemblyOptions,

@@ -1313,7 +1313,6 @@ Prints a compact summary:
 - the read snapshot path (`graph.snapshot`), when published by the last `gen`
 - a health-score percentage with an emoji (✅ / ⚠️ / ❌)
 - an orphan-document count
-- a savings estimate: session and all-time counts of aden calls, tool calls saved, and tokens saved vs grep-and-read
 
 `--json` emits `store_writer` (holder pid + `held_secs`, or absent) and
 `read_snapshot` (path when the file exists) alongside health, orphan, and policy fields.

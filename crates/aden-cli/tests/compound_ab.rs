@@ -324,11 +324,6 @@ fn probes() -> Vec<Probe> {
             expand: "incoming edges backlinks callers references",
         },
         Probe {
-            query: "how many tokens were avoided versus reading whole files",
-            accept: &["SavingsEstimate"],
-            expand: "savings estimate tokens baseline bytes",
-        },
-        Probe {
             query: "anchors in the graph that nothing else references",
             accept: &["scan_orphans"],
             expand: "scan orphan anchors unreferenced dangling",
@@ -366,9 +361,9 @@ fn prose_probes() -> Vec<Probe> {
             expand: "secret scanning credential",
         },
         Probe {
-            query: "context budget savings measurement",
+            query: "context budget assembly measurement",
             accept: &["token-efficiency"],
-            expand: "token efficiency savings",
+            expand: "token efficiency assembly budget",
         },
         Probe {
             query: "impact scope prior to rewrite",

@@ -5,7 +5,7 @@ use std::path::Path;
 
 use crate::util::find_project_root;
 
-/// `aden status`: a quick health + orphan + savings snapshot. Health is the
+/// `aden status`: a quick health + orphan snapshot. Health is the
 /// heal-drift metric (stale docs vs. code); orphans use the SAME classifier
 /// `check` uses, so expected metadata docs are never reported as scary orphans.
 /// Honors the global `-j/--json` flag.
@@ -116,26 +116,6 @@ pub fn cmd_status(path: &Path, json: bool) -> Result<(), Box<dyn std::error::Err
         if expected_n > 0 {
             println!("   (plus {} expected metadata doc(s) — normal)", expected_n);
         }
-    }
-
-    // Savings summary from the persistent ledger: this session + all-time.
-    let summary = crate::commands::savings_store::load_summary(&root);
-    if summary.all_time.queries == 0 {
-        println!("Savings (est.): no queries recorded yet");
-    } else {
-        use aden_core::savings::humanize_count;
-        let line = |label: &str, l: &crate::commands::savings_store::SavingsLedger| {
-            println!(
-                "{label}: {} aden call{} → est. ~{} tool calls + ~{} tokens saved vs grep-and-read",
-                l.queries,
-                if l.queries == 1 { "" } else { "s" },
-                l.tool_calls_saved,
-                humanize_count(l.saved_tokens),
-            );
-        };
-        println!("Savings estimate (vs grep-and-read) [est.]:");
-        line("  This session", &summary.session);
-        line("  All-time    ", &summary.all_time);
     }
 
     Ok(())

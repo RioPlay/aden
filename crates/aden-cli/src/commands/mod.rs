@@ -24,7 +24,7 @@ pub mod overlay;
 pub mod query;
 pub mod ready;
 pub mod review;
-pub mod savings_store;
+
 pub mod scope;
 pub mod search;
 pub mod session;

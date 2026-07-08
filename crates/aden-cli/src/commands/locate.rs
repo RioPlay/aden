@@ -297,13 +297,6 @@ pub fn cmd_understand(
             }),
         );
         let body = serde_json::to_string_pretty(&env)?;
-        let repo_root = crate::util::find_project_root(path);
-        super::savings_store::record_read_query(
-            &repo_root,
-            path,
-            std::slice::from_ref(&anchor),
-            context.len(),
-        );
         println!("{body}");
         return Ok(());
     }
@@ -358,8 +351,6 @@ pub fn cmd_understand(
     println!("## Context (budget {} tokens)", budget);
     println!();
     println!("{}", context);
-    let repo_root = crate::util::find_project_root(path);
-    super::savings_store::record_read_query(&repo_root, path, &[anchor], context.len());
     Ok(())
 }
 
@@ -557,23 +548,6 @@ pub fn cmd_locate(
                     };
                     println!("| {} | {} | {} |", r.anchor, fmt_score(r.score), snippet);
                 }
-                let repo_root = crate::util::find_project_root(path);
-                let anchors: Vec<String> = search_results
-                    .iter()
-                    .take(limit)
-                    .map(|r| r.anchor.clone())
-                    .collect();
-                let returned_bytes: usize = search_results
-                    .iter()
-                    .take(limit)
-                    .map(|r| r.anchor.len() + r.snippet.len())
-                    .sum();
-                super::savings_store::record_read_query(
-                    &repo_root,
-                    path,
-                    &super::savings_store::unique_anchors(anchors.iter()),
-                    returned_bytes,
-                );
                 return Ok(());
             }
             println!("No symbol found matching '{}'", sym);
@@ -584,31 +558,13 @@ pub fn cmd_locate(
             return Ok(());
         }
 
-        let anchors: Vec<String> = hits
-            .iter()
-            .filter_map(|h| h["anchor"].as_str().map(str::to_string))
-            .collect();
-        let returned_bytes = serde_json::to_string(&hits).unwrap_or_default().len();
-        let repo_root = crate::util::find_project_root(path);
         if want_json {
             let env = super::augment_read_json(path, serde_json::Value::Array(hits));
             println!("{}", serde_json::to_string_pretty(&env)?);
-            super::savings_store::record_read_query(
-                &repo_root,
-                path,
-                &super::savings_store::unique_anchors(anchors.iter()),
-                returned_bytes,
-            );
             return Ok(());
         }
         println!("Found {} match(es) for '{}':", matched.len(), sym);
         print_locate_results(&hits, format, context);
-        super::savings_store::record_read_query(
-            &repo_root,
-            path,
-            &super::savings_store::unique_anchors(anchors.iter()),
-            returned_bytes,
-        );
         return Ok(());
     }
 
@@ -718,18 +674,9 @@ pub fn cmd_locate(
             })
             .collect();
 
-        let repo_root = crate::util::find_project_root(path);
-        let returned_bytes = serde_json::to_string(&hits).unwrap_or_default().len();
-        let anchor_list: Vec<String> = callers.iter().take(limit).cloned().collect();
         if want_json {
             let env = super::augment_read_json(path, serde_json::Value::Array(hits));
             println!("{}", serde_json::to_string_pretty(&env)?);
-            super::savings_store::record_read_query(
-                &repo_root,
-                path,
-                &super::savings_store::unique_anchors(anchor_list.iter()),
-                returned_bytes,
-            );
             return Ok(());
         }
         println!("Found {} caller(s) of '{}':", hits.len(), target);
@@ -743,12 +690,6 @@ pub fn cmd_locate(
             };
             println!("  {}{}", h["anchor"].as_str().unwrap_or(""), loc);
         }
-        super::savings_store::record_read_query(
-            &repo_root,
-            path,
-            &super::savings_store::unique_anchors(anchor_list.iter()),
-            returned_bytes,
-        );
         return Ok(());
     }
 

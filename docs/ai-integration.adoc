@@ -357,7 +357,7 @@ Includes all Essential tools plus:
 |lint|Lint source (dead_code flags zero-caller symbols)|path, severity, fix, json, dead_code
 |test|Run tests|path, scope, filter, list
 |audit|OWASP security scan|path, lang, format, strict
-|status|Health-score glance + savings estimate|path
+|status|Health-score glance + orphan summary|path
 |diagnose|Deterministic structural graph scan + health score|path, format
 |===
 
