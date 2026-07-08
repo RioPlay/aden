@@ -89,24 +89,32 @@ aden-policy (advisory + ci)    optional enforce mode (0.3.0)
 - Policy `enforce` mode (0.3.0)
 - New `aden-compile` crate
 
-## Branch inventory (2026-07-03 — clean state)
+## Branch inventory (2026-07-08 — clean state)
 
-**Local:** only `main`. Worktrees and stash cleared. Tag
-`backup/pre-branch-integration-2026-07-03` marks pre-PPR-merge `main`.
+**Local:** only `main`. Tag `backup/pre-branch-integration-2026-07-03` marks
+pre-PPR-merge `main`.
 
 | Branch | Status |
 |--------|--------|
-| `origin/main` | **Ship from here** — golden state + gather-select/`--select` + batch gen + M16 alternates + PPR |
-| `origin/chore/dep-currency-backup` | Dep bumps (criterion/toml); skip tokenizers bump — main uses kitoken |
-| `origin/feat/lexical-overlay-perfbase` | Diverged eval branch; largely superseded — cherry-pick only if needed |
-| `origin/feat/vocab-mismatch-evals` | Diverged assembly eval harnesses — optional rebase later |
-| `origin/backup/dense-kitoken-stash` | Archived WIP (kitoken landed on main) |
+| `origin/main` | **Ship from here** — golden state + ADR-011 snapshot + gather-select/`--select` + kitoken + PPR |
 
-**Merged into `main` (2026-07-03):** `origin/perf/store-batch-ingest` production commits
-(gather-then-select, `--select`, batch fjall ingest, understand alternates, MCP parity).
+**Archived (2026-07-08):** stale diverged branches moved under `archive/*` (57–101
+commits behind `main`; do not wholesale-merge). Cherry-pick individual commits onto
+fresh branches from `main` only.
+
+| Archive ref | Was | Notes |
+|-------------|-----|-------|
+| `archive/perf-store-batch-ingest-merged-2026-07-03` | `perf/store-batch-ingest` | Production work landed on `main` 2026-07-03 |
+| `archive/vocab-mismatch-evals` | `feat/vocab-mismatch-evals` | Assembly/retrieval eval harnesses |
+| `archive/lexical-overlay-perfbase` | `feat/lexical-overlay-perfbase` | Lexicon/PPMI ablations; superseded by `ADEN_LEXICON_ON` on `main` |
+| `archive/dense-kitoken-stash` | `backup/dense-kitoken-stash` | kitoken landed on `main` |
+| `archive/dep-currency-backup` | `chore/dep-currency-backup` | criterion/toml bumps only if needed; skip tokenizers — `main` uses kitoken |
+
+**Deleted (2026-07-08):** `wip/merge-engine-phase2-snapshot` (identical to `main`).
 
 **Merged / deleted (2026-07-03):** `feat/asm-ppr-ordering`, `feat/coxn-directional-prereqs`,
-`integration/all-fixes`, `fix/audit-phase1-hygiene` (superseded or landed on `main`).
+`integration/all-fixes`, `fix/audit-phase1-hygiene`, `perf/store-batch-ingest` (production
+commits).
 
 **Merge policy:** no wholesale merges of diverged branches. Rebase + CI + focused PR.
 
