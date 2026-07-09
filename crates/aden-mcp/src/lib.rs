@@ -12,22 +12,45 @@
 use rmcp::{
     ErrorData as McpError, ServerHandler, ServiceExt,
     model::*,
-    service::{RequestContext, RoleServer},
+    service::{NotificationContext, RequestContext, RoleServer},
     transport::stdio,
 };
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 // ── Server struct ───────────────────────────────────────────
 
 #[derive(Clone)]
 pub struct AdenMcpServer {
-    project_dir: PathBuf,
+    /// Active project root (may update when the host reports new Roots).
+    project_dir: Arc<RwLock<PathBuf>>,
+    /// When true, argv/`ADEN_PROJECT` pin wins over Roots auto-detect.
+    pinned: bool,
 }
 
 impl AdenMcpServer {
     pub fn new(project_dir: PathBuf) -> Self {
-        Self { project_dir }
+        Self::with_options(project_dir, false)
+    }
+
+    pub fn with_options(project_dir: PathBuf, pinned: bool) -> Self {
+        Self {
+            project_dir: Arc::new(RwLock::new(project_dir)),
+            pinned,
+        }
+    }
+
+    fn project_dir(&self) -> PathBuf {
+        self.project_dir
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    fn set_project_dir(&self, dir: PathBuf) {
+        if let Ok(mut g) = self.project_dir.write() {
+            *g = dir;
+        }
     }
 }
 
@@ -54,9 +77,13 @@ cheaper than reading whole files.\n\
 `query backlinks=`/`impact=`) — the callers and downstream nodes at risk. Never \
 change a symbol without knowing what references it. This is aden's reason to exist.\n\n\
 The graph is fresh by construction: the read tools auto-reindex any source that \
-changed since the last run, so you do NOT need to call `gen` first. Only run \
-`gen` after large external changes — cloning a new repo, a big merge, or \
-generated code appearing outside your edits.\n\n\
+changed since the last run (shell and MCP share this), so you do NOT need to call \
+`gen` first. Only run `gen` after large external changes — cloning a new repo, a \
+big merge, or generated code appearing outside your edits. Explore tools may \
+answer from the last snapshot while a refresh runs and label `freshness`; \
+blast-radius tools (`understand`, `impact-diff`) wait briefly for that refresh.\n\
+The server auto-detects the open workspace (MCP Roots / host workspace env) — do \
+not manually re-point aden-mcp at a project path for normal use.\n\n\
 EXPLORE a codebase:\n\
 1. `grep \"pattern\"` — structure-aware content search; every hit tagged with its \
 enclosing symbol (the anchor you feed to `locate`/`asm`).\n\
@@ -997,10 +1024,16 @@ impl ServerHandler for AdenMcpServer {
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         let tool_name = request.name.as_ref();
         let args = request.arguments.unwrap_or_default();
+
+        // Auto-detect workspace from MCP Roots / host env unless explicitly pinned.
+        if !self.pinned {
+            refresh_project_from_client(self, &context).await;
+        }
+        let project_dir = self.project_dir();
 
         // Validate tool exists
         let spec = TOOLS.iter().find(|t| t.name == tool_name).ok_or_else(|| {
@@ -1012,7 +1045,7 @@ impl ServerHandler for AdenMcpServer {
         // confine paths (find_project_root will happily resolve `/etc`), so an
         // MCP client could otherwise read or write arbitrary host files via the
         // `path` argument. Reject out-of-tree paths at the boundary.
-        if let Err(e) = confine_path_args(tool_name, &args, &self.project_dir) {
+        if let Err(e) = confine_path_args(tool_name, &args, &project_dir) {
             return Ok(CallToolResult::error(vec![Content::text(e)]));
         }
 
@@ -1034,7 +1067,7 @@ impl ServerHandler for AdenMcpServer {
 
         // Run
         let output = run_aden_command(
-            &self.project_dir,
+            &project_dir,
             spec.name,
             &cmd_args.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
         )
@@ -1045,6 +1078,83 @@ impl ServerHandler for AdenMcpServer {
             Err(e) => Ok(CallToolResult::error(vec![Content::text(e)])),
         }
     }
+
+    async fn on_roots_list_changed(&self, context: NotificationContext<RoleServer>) {
+        if self.pinned {
+            return;
+        }
+        if let Ok(list) = context.peer.list_roots().await
+            && let Some(dir) = first_file_root(&list.roots)
+        {
+            self.set_project_dir(dir);
+        }
+    }
+}
+
+/// Update `project_dir` from MCP Roots, then common host workspace env vars.
+async fn refresh_project_from_client(server: &AdenMcpServer, context: &RequestContext<RoleServer>) {
+    if let Ok(list) = context.peer.list_roots().await
+        && let Some(dir) = first_file_root(&list.roots)
+    {
+        server.set_project_dir(dir);
+        return;
+    }
+    if let Some(dir) = project_from_env_hints() {
+        server.set_project_dir(dir);
+    }
+}
+
+/// First `file://` root that exists on disk (workspace folder).
+fn first_file_root(roots: &[Root]) -> Option<PathBuf> {
+    for root in roots {
+        if let Some(path) = file_uri_to_path(&root.uri) {
+            if path.is_dir() {
+                return Some(path);
+            }
+            if let Some(parent) = path.parent().filter(|p| p.is_dir()) {
+                return Some(parent.to_path_buf());
+            }
+        }
+    }
+    None
+}
+
+fn file_uri_to_path(uri: &str) -> Option<PathBuf> {
+    let rest = uri.strip_prefix("file://")?;
+    // file:///abs/path or file://localhost/abs/path
+    let path = if let Some(p) = rest.strip_prefix("localhost") {
+        p
+    } else {
+        rest
+    };
+    // URL-decode minimal cases (%20 → space) without a dependency.
+    let decoded = path.replace("%20", " ");
+    let p = PathBuf::from(decoded);
+    if p.as_os_str().is_empty() {
+        None
+    } else {
+        Some(p)
+    }
+}
+
+/// Host-specific workspace hints when Roots is empty/unsupported.
+fn project_from_env_hints() -> Option<PathBuf> {
+    // VS Code / Cursor multi-root: WORKSPACE_FOLDER_PATHS is often colon/semicolon separated.
+    for key in [
+        "WORKSPACE_FOLDER_PATHS",
+        "VSCODE_WORKSPACE_FOLDER",
+        "CURSOR_WORKSPACE",
+        "CLAUDE_PROJECT_DIR",
+    ] {
+        if let Ok(v) = std::env::var(key) {
+            let first = v.split([';', ':']).map(str::trim).find(|s| !s.is_empty())?;
+            let p = PathBuf::from(first);
+            if p.is_dir() {
+                return Some(p);
+            }
+        }
+    }
+    None
 }
 
 // ── Path confinement ────────────────────────────────────────
@@ -1202,8 +1312,11 @@ fn clean_stdout(tool: &str, raw: &str) -> String {
         .join("\n")
 }
 
-/// MCP sets `ADEN_SKIP_AUTO_GEN` only for read-only tools so write paths
-/// (`gen`, `ready`, `sync`, `heal --fix`, …) can still refresh the store.
+/// Whether this tool historically forced `ADEN_SKIP_AUTO_GEN` (pre zero-friction).
+/// Kept for tests; MCP no longer injects skip — silent gen is non-blocking
+/// single-flight, so auto-fresh is safe. Hosts may still set `ADEN_SKIP_AUTO_GEN`
+/// themselves (escape hatch; re-injected via `ADEN_*` allowlist).
+#[cfg(test)]
 fn mcp_skips_auto_gen(tool: &str) -> bool {
     TOOLS
         .iter()
@@ -1224,11 +1337,8 @@ async fn run_aden_command(project_dir: &Path, tool: &str, args: &[&str]) -> Resu
             cmd.env(&k, &v);
         }
     }
-    // Read-only tools must not silently `gen` — the host may be running `aden ready`
-    // or another writer. Rebuild/mutate tools run without skip so they can refresh.
-    if mcp_skips_auto_gen(tool) {
-        cmd.env("ADEN_SKIP_AUTO_GEN", "1");
-    }
+    // Zero-friction: do NOT force ADEN_SKIP_AUTO_GEN on reads. Silent gen
+    // fail-opens under contention; shell and MCP share auto-fresh.
 
     let child = cmd.output();
 
@@ -1333,7 +1443,11 @@ fn redact_abs_paths(s: &str) -> String {
 // ── Public serve ────────────────────────────────────────────
 
 pub async fn serve(project_dir: PathBuf) -> anyhow::Result<()> {
-    let server = AdenMcpServer::new(project_dir);
+    serve_with_options(project_dir, false).await
+}
+
+pub async fn serve_with_options(project_dir: PathBuf, pinned: bool) -> anyhow::Result<()> {
+    let server = AdenMcpServer::with_options(project_dir, pinned);
     let service = server.serve(stdio()).await?;
     service.waiting().await?;
     Ok(())
@@ -1614,15 +1728,21 @@ mod tests {
     }
 
     #[test]
-    fn skip_auto_gen_only_on_read_effect_tools() {
+    fn read_effect_tools_are_still_classified_for_docs() {
+        // Historical Effect::Read classification (used for docs/tests only).
+        // MCP no longer forces ADEN_SKIP_AUTO_GEN on these tools.
         assert!(mcp_skips_auto_gen("grep"));
         assert!(mcp_skips_auto_gen("understand"));
-        assert!(mcp_skips_auto_gen("impact-diff"));
         assert!(!mcp_skips_auto_gen("gen"));
         assert!(!mcp_skips_auto_gen("ready"));
-        assert!(!mcp_skips_auto_gen("sync"));
-        assert!(!mcp_skips_auto_gen("heal"));
-        assert!(!mcp_skips_auto_gen("ci-check"));
+    }
+
+    #[test]
+    fn file_uri_to_path_parses_absolute() {
+        let p = file_uri_to_path("file:///home/user/proj").unwrap();
+        assert_eq!(p, PathBuf::from("/home/user/proj"));
+        let p2 = file_uri_to_path("file://localhost/tmp/x").unwrap();
+        assert_eq!(p2, PathBuf::from("/tmp/x"));
     }
 
     #[test]

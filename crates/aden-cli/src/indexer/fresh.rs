@@ -2,31 +2,63 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use aden_store::Storage;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::indexer::r#gen::cmd_gen_silent;
 use crate::util::{discover_source_files, find_project_root, load_gen_cache};
 
-/// Ensure the store is up to date with the source before a read command serves
-/// from it. This is the "fresh by construction" path: a cheap mtime sweep over
-/// the gen-cache, and — only if a source file is new or modified — a quiet
-/// incremental `gen` (which skips unchanged files and re-links edges). When
-/// nothing changed it is just stat calls, so queries stay fast while never
-/// serving stale context. Deletions are intentionally ignored here (they only
-/// leave harmless orphans); `aden heal . --gc` reclaims those.
-///
-/// Best-effort: any error degrades to serving the existing store rather than
-/// failing the read.
+/// How aggressively a read path waits for an in-flight refresh.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FreshPolicy {
+    /// Never block on a writer. Trigger silent gen only if the write lock is free.
+    /// Explore tools (`grep`, `ask`, `asm`, …).
+    #[default]
+    Explore,
+    /// If the index is stale and a writer is busy, wait briefly for the refresh
+    /// to finish (blast-radius / decision tools). Never waits longer than
+    /// [`DECISION_WAIT`].
+    Decision,
+}
+
+/// Cap for [`FreshPolicy::Decision`] short-wait (seconds).
+pub const DECISION_WAIT: Duration = Duration::from_secs(5);
+
+/// Machine-readable freshness for agents (JSON envelope).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // `Unavailable` reserved for hard store failures in the wire contract
+pub enum Freshness {
+    /// Graph matches the working tree (or was just refreshed).
+    Current,
+    /// Answering from last snapshot; tree may have changed or refresh is in flight.
+    Snapshot,
+    /// Decision tools waited; graph may still lag the tree.
+    Lagging,
+    /// No store / first build in progress or unavailable.
+    Building,
+    /// Hard failure / unusable store.
+    Unavailable,
+}
+
+impl Freshness {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Current => "current",
+            Self::Snapshot => "snapshot",
+            Self::Lagging => "lagging",
+            Self::Building => "building",
+            Self::Unavailable => "unavailable",
+        }
+    }
+}
+
 /// Rebuild the store from source IF (and only if) it exists on disk but is in a
 /// storage-engine format this build cannot read (e.g. after a fjall upgrade).
 ///
 /// Returns `true` when a rebuild was triggered. Unlike [`ensure_fresh`], this
 /// does NOT regenerate on mere mtime staleness — it fires solely on the
-/// format-mismatch signal. That distinction matters for `heal`, whose whole job
-/// is to observe drift between source and the *current* store: a staleness-gen
-/// before a heal scan would reconcile the very drift heal is meant to surface,
-/// but a store in an unreadable format carries no usable baseline to drift from,
-/// so rebuilding it first is correct (and leaves heal a readable store).
+/// format-mismatch signal.
 pub(crate) fn recover_if_incompatible_store(path: &Path) -> bool {
     let root = find_project_root(path);
     let (store, _) = aden_paths::resolve_read_store(&root);
@@ -37,15 +69,6 @@ pub(crate) fn recover_if_incompatible_store(path: &Path) -> bool {
             Err(aden_store::StoreError::IncompatibleVersion(_))
         )
     {
-        // Recovery is best-effort, but its OUTCOME must be honest: return `true`
-        // only when the rebuild actually succeeded. A failure here means the
-        // store is still unreadable — most concretely a pinned/shared
-        // `$ADEN_STORE`, which `cmd_gen_inner` refuses to auto-wipe and so
-        // returns `Err`. Returning `true` regardless would make callers
-        // (`ensure_fresh`, heal) treat the store as recovered, skip their own
-        // logic, and silently degrade to empty results. Surface the error so the
-        // user understands why, and return `false` so callers do not assume
-        // success.
         return match cmd_gen_silent(&root) {
             Ok(()) => true,
             Err(e) => {
@@ -57,8 +80,8 @@ pub(crate) fn recover_if_incompatible_store(path: &Path) -> bool {
     false
 }
 
-/// True when read-path callers (MCP, coxn) own explicit `gen` and must not
-/// trigger a silent incremental regen on every query.
+/// True when callers opt out of silent incremental regen on every query.
+/// Escape hatch for CI freeze / offline snapshot reads — not the MCP default.
 pub(crate) fn skip_auto_gen_on_read() -> bool {
     match std::env::var("ADEN_SKIP_AUTO_GEN") {
         Ok(v) => {
@@ -69,14 +92,18 @@ pub(crate) fn skip_auto_gen_on_read() -> bool {
     }
 }
 
-/// Whether any indexed source file is newer than the last `gen` cache entry.
+/// Whether the index lags the working tree (presence + per-file mtime).
+///
+/// Stale when any of:
+/// - a live source is missing from the gen-cache (new file)
+/// - a live source's mtime is newer than its cache entry (edit)
+/// - a cache entry's source is no longer live (delete / rename / ignore)
+/// - the store exists, sources exist, but the cache is empty
 pub fn index_is_stale(path: &Path) -> bool {
     index_is_stale_for_root(&find_project_root(path))
 }
 
-fn index_is_stale_for_root(root: &Path) -> bool {
-    use std::time::UNIX_EPOCH;
-
+pub(crate) fn index_is_stale_for_root(root: &Path) -> bool {
     let (existing_store, _) = aden_paths::resolve_read_store(root);
     if !existing_store.exists() {
         return false;
@@ -88,14 +115,16 @@ fn index_is_stale_for_root(root: &Path) -> bool {
         Err(_) => return false,
     };
 
-    let newest_known = cache
-        .entries
-        .values()
-        .map(|e| e.source_mtime)
-        .max()
-        .unwrap_or(0);
-
-    sources.iter().any(|src| {
+    let mut live: HashMap<String, u64> = HashMap::with_capacity(sources.len());
+    for src in &sources {
+        let rel = src
+            .strip_prefix(root)
+            .unwrap_or(src)
+            .to_string_lossy()
+            .to_string();
+        if aden_core::filter::is_secret_path(Path::new(&rel)) {
+            continue;
+        }
         let mtime = src
             .metadata()
             .ok()
@@ -103,53 +132,98 @@ fn index_is_stale_for_root(root: &Path) -> bool {
             .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
             .map(|d| d.as_secs())
             .unwrap_or(0);
-        mtime > newest_known
-    })
+        live.insert(rel, mtime);
+    }
+
+    if cache.entries.is_empty() && !live.is_empty() {
+        return true;
+    }
+
+    for (rel, mtime) in &live {
+        match cache.entries.get(rel) {
+            None => return true,
+            Some(e) if *mtime > e.source_mtime => return true,
+            _ => {}
+        }
+    }
+
+    for key in cache.entries.keys() {
+        if !live.contains_key(key) {
+            return true;
+        }
+    }
+
+    false
 }
 
-pub const STALE_HINT: &str = "NOTE: index_stale=true — working tree changed since last `gen`; run `gen` or `sync` for a fresh graph.";
+pub const STALE_HINT: &str = "NOTE: index may lag the working tree — refresh in progress or last snapshot served. Blast-radius tools wait briefly; explore tools fail open.";
 
-/// Whether the index is stale for agent-facing read output (auto-gen suppressed).
+/// Whether the index is stale for agent-facing read output.
+///
+/// When auto-gen is on (default), a successful ensure_fresh leaves the graph
+/// current; we only report lag when auto-gen was skipped *or* the tree is still
+/// dirty after a non-blocking refresh attempt (writer busy).
 pub fn read_index_stale(path: &Path) -> bool {
-    skip_auto_gen_on_read() && index_is_stale(path)
+    index_is_stale(path)
 }
 
-/// Add `index_stale` (and `stale_hint` when true) to MCP read-tool JSON output.
-/// Bare arrays are wrapped as `{"index_stale": …, "items": …}` so agents always
-/// receive an object envelope.
+/// Best-effort freshness classification for JSON envelopes.
+pub fn classify_freshness(path: &Path) -> Freshness {
+    let root = find_project_root(path);
+    let (store, _) = aden_paths::resolve_read_store(&root);
+    if !store.exists() {
+        return Freshness::Building;
+    }
+    if index_is_stale_for_root(&root) {
+        if aden_paths::graph_snapshot_file(&root).is_file() {
+            return Freshness::Lagging;
+        }
+        return Freshness::Snapshot;
+    }
+    Freshness::Current
+}
+
+/// Add `freshness` / `index_stale` (and hints) to MCP read-tool JSON output.
+/// Bare arrays are wrapped as `{"freshness": …, "index_stale": …, "items": …}`.
 pub fn augment_read_json(path: &Path, value: serde_json::Value) -> serde_json::Value {
-    augment_read_json_with_stale(read_index_stale(path), value)
+    let freshness = classify_freshness(path);
+    let stale = freshness != Freshness::Current;
+    augment_read_json_with_freshness(stale, freshness, value)
 }
 
-fn augment_read_json_with_stale(stale: bool, value: serde_json::Value) -> serde_json::Value {
+fn augment_read_json_with_freshness(
+    stale: bool,
+    freshness: Freshness,
+    value: serde_json::Value,
+) -> serde_json::Value {
+    let insert = |map: &mut serde_json::Map<String, serde_json::Value>| {
+        map.insert(
+            "freshness".into(),
+            serde_json::Value::String(freshness.as_str().into()),
+        );
+        map.insert("index_stale".into(), serde_json::Value::Bool(stale));
+        if stale {
+            map.insert(
+                "stale_hint".into(),
+                serde_json::Value::String(STALE_HINT.into()),
+            );
+        }
+    };
     match value {
         serde_json::Value::Object(mut map) => {
-            map.insert("index_stale".into(), serde_json::Value::Bool(stale));
-            if stale {
-                map.insert(
-                    "stale_hint".into(),
-                    serde_json::Value::String(STALE_HINT.into()),
-                );
-            }
+            insert(&mut map);
             serde_json::Value::Object(map)
         }
         other => {
             let mut map = serde_json::Map::new();
-            map.insert("index_stale".into(), serde_json::Value::Bool(stale));
-            if stale {
-                map.insert(
-                    "stale_hint".into(),
-                    serde_json::Value::String(STALE_HINT.into()),
-                );
-            }
+            insert(&mut map);
             map.insert("items".into(), other);
             serde_json::Value::Object(map)
         }
     }
 }
 
-/// Print a stale-index hint when auto-gen is suppressed (MCP read tools).
-/// JSON mode carries `index_stale` via [`augment_read_json`] instead.
+/// Print a stale-index hint when the tree lags (JSON uses envelope fields).
 pub fn maybe_print_stale_hint(path: &Path, json: bool) {
     if !json && read_index_stale(path) {
         println!("{STALE_HINT}");
@@ -177,13 +251,19 @@ impl Drop for StaleHintGuard {
     }
 }
 
+/// Ensure the store is up to date before a read (explore policy: non-blocking).
 pub fn ensure_fresh(path: &Path) {
+    ensure_fresh_with_policy(path, FreshPolicy::Explore);
+}
+
+/// Decision-grade tools: short-wait for an in-flight gen when the index is stale.
+pub fn ensure_fresh_decision(path: &Path) {
+    ensure_fresh_with_policy(path, FreshPolicy::Decision);
+}
+
+pub fn ensure_fresh_with_policy(path: &Path, policy: FreshPolicy) {
     let root = find_project_root(path);
     let skip_auto = skip_auto_gen_on_read();
-    // No store yet → build it now. Read commands are store-first, so a fresh
-    // project must be indexed on first query (this is what makes asm/ask/locate
-    // work without an explicit `aden gen`). When auto-gen is suppressed the
-    // caller must run `aden gen` explicitly (coxn does this at boot).
     let (existing_store, _) = aden_paths::resolve_read_store(&root);
     if !existing_store.exists() {
         if !skip_auto {
@@ -192,22 +272,52 @@ pub fn ensure_fresh(path: &Path) {
         return;
     }
 
-    // The store exists but may be unreadable by this build — e.g. it was written
-    // by an older storage-engine format and this binary was just upgraded. The
-    // mtime freshness check below would see an up-to-date tree and skip the
-    // rebuild, leaving the read to open an incompatible store and degrade to
-    // empty results. Recover on the format-mismatch signal (and ONLY that), so
-    // the read auto-recovers with zero user action.
     if !skip_auto && recover_if_incompatible_store(&root) {
         return;
     }
 
-    if index_is_stale_for_root(&root) && !skip_auto {
-        // Silent incremental regen: re-parses only changed files and re-links
-        // edges, without printing anything (this runs transparently on reads).
+    if skip_auto || !index_is_stale_for_root(&root) {
+        return;
+    }
+
+    // Silent incremental regen (single-flight inside gen; fail-open if locked).
+    // Dirty re-arm: up to two more silent gens when we successfully refreshed but
+    // the tree changed again under us.
+    for _ in 0..3 {
         let _ = cmd_gen_silent(&root);
+        if !index_is_stale_for_root(&root) {
+            return;
+        }
+        // Still stale: either lock was contended or more edits landed mid-gen.
+        if policy == FreshPolicy::Decision {
+            wait_for_refresh_or_timeout(&root, DECISION_WAIT);
+            if !index_is_stale_for_root(&root) {
+                return;
+            }
+            // Continue loop for another silent attempt after the wait.
+        } else {
+            // Explore: fail-open immediately (serve last snapshot).
+            return;
+        }
     }
 }
+
+/// Poll until the index is fresh or the deadline passes (another process holds gen).
+fn wait_for_refresh_or_timeout(root: &Path, budget: Duration) {
+    let deadline = SystemTime::now() + budget;
+    let lock_path = aden_paths::store_lock_file(root);
+    while SystemTime::now() < deadline {
+        if !index_is_stale_for_root(root) {
+            return;
+        }
+        // If no writer is active, another attempt will be made by the caller.
+        if aden_core::lock::read_holder(&lock_path).is_none() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 #[cfg(test)]
 mod skip_auto_gen_tests {
     use super::*;
@@ -231,18 +341,28 @@ mod skip_auto_gen_tests {
 
     #[test]
     fn augment_read_json_wraps_arrays_and_tags_objects() {
-        let obj =
-            augment_read_json_with_stale(false, serde_json::json!({"total": 0, "matches": []}));
+        let obj = augment_read_json_with_freshness(
+            false,
+            Freshness::Current,
+            serde_json::json!({"total": 0, "matches": []}),
+        );
         assert_eq!(obj["total"], 0);
         assert_eq!(obj["index_stale"].as_bool(), Some(false));
+        assert_eq!(obj["freshness"].as_str(), Some("current"));
         assert!(obj.get("stale_hint").is_none());
 
-        let arr = augment_read_json_with_stale(false, serde_json::json!(["a"]));
+        let arr =
+            augment_read_json_with_freshness(false, Freshness::Current, serde_json::json!(["a"]));
         assert_eq!(arr["items"][0], "a");
         assert_eq!(arr["index_stale"].as_bool(), Some(false));
 
-        let stale = augment_read_json_with_stale(true, serde_json::json!({"total": 1}));
+        let stale = augment_read_json_with_freshness(
+            true,
+            Freshness::Lagging,
+            serde_json::json!({"total": 1}),
+        );
         assert_eq!(stale["index_stale"].as_bool(), Some(true));
+        assert_eq!(stale["freshness"].as_str(), Some("lagging"));
         assert_eq!(stale["stale_hint"].as_str(), Some(STALE_HINT));
     }
 
@@ -263,5 +383,12 @@ mod skip_auto_gen_tests {
         with_env("ADEN_SKIP_AUTO_GEN", Some("false"), || {
             assert!(!skip_auto_gen_on_read());
         });
+    }
+
+    #[test]
+    fn freshness_as_str_labels() {
+        assert_eq!(Freshness::Current.as_str(), "current");
+        assert_eq!(Freshness::Lagging.as_str(), "lagging");
+        assert_eq!(Freshness::Snapshot.as_str(), "snapshot");
     }
 }

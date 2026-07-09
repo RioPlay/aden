@@ -5,29 +5,29 @@
 > `grep`/`find`/`cat`-walking. Every aden result is tagged with its enclosing symbol,
 > which is the anchor you feed back into the graph.
 
-## The graph is fresh by construction (shell CLI)
+## The graph is fresh by construction (shell and MCP)
 
 Read tools (`ask`, `search`, `grep`, `locate`, `query`, `asm`, `understand`) auto-reindex
-any file that changed since the last run when invoked from the **shell**. You do **not**
-need to run `gen` before a session or after your own edits in that mode. Only run `gen`
-after large *external* changes — cloning a new repo, a big merge, or generated code
-appearing outside your edits.
+when the working tree changed. You do **not** need `gen` in the normal edit loop.
+Shell and MCP share this contract. Only run `gen` after large *external* changes —
+cloning a new repo, a big merge, or generated code appearing outside your edits.
 
-**MCP exception:** `aden-mcp` sets `ADEN_SKIP_AUTO_GEN=1` on **read-only** tools so they
-do not silently reindex while another writer may hold the store lock. Write tools
-(`gen`, `sync`, `ready`) run without skip. Over MCP, an existing store may be stale
-until you run `gen`, `sync`, or `ready`. Read-tool JSON includes `index_stale` (and
-`stale_hint` when true) — check it before trusting blast radius. After substantive
-edits, run one of those write tools before `impact-diff`. See
-`docs/adr-010-structural-remediation.adoc` and `docs/ai-integration.adoc`.
+**Freshness contract:** Explore tools may answer from the last snapshot while a refresh
+runs and label `freshness` / `index_stale` in JSON. Blast-radius tools (`understand`,
+`impact-diff`) wait briefly for an in-flight refresh. Silent gen never queues behind a
+writer for minutes — it fail-opens so agents are not frozen. Escape hatch:
+`ADEN_SKIP_AUTO_GEN=1` freezes the index (CI / offline). See
+`docs/ai-integration.adoc`.
 
-**Concurrent reads:** `gen` publishes `graph.snapshot` (ADR-011) so multiple read
-subprocesses on the same repo load the snapshot instead of opening fjall — avoiding
-`FjallError: Locked` under multi-agent workloads. Writers still serialize on
-`store.lock`; `aden status` shows the active holder and snapshot path.
+**Workspace:** `aden-mcp` auto-detects the open project (MCP Roots / host workspace env).
+Do not manually re-point the MCP server at a project path for normal multi-repo use.
+
+**Concurrent reads:** `gen` publishes `graph.snapshot` (ADR-011) so multiple readers
+load the snapshot instead of opening fjall. Writers single-flight on `store.lock`;
+`aden status` shows the active holder and snapshot path.
 
 > **Subagents:** MCP instructions are not inherited automatically — tell spawned agents
-> about the MCP freshness exception if they use aden tools over MCP.
+> to use aden tools first; they do **not** need a separate freshness protocol.
 
 ## Which tool, when
 
@@ -73,11 +73,9 @@ Use the **aden** MCP tools (or `aden <cmd>` on the shell) to navigate this
 codebase — not raw `grep`/`find`. Every aden result is tagged with its enclosing
 symbol, which is the anchor you feed back into the graph.
 
-**The graph is fresh by construction** on the shell CLI — read tools auto-reindex
-changed files. Over **MCP**, read tools skip auto-gen (`ADEN_SKIP_AUTO_GEN`); JSON
-responses include `index_stale` when the working tree changed since last `gen`. Run
-`gen`/`sync`/`ready` after substantive edits. See ADR-010. Only skip `gen` after large
-*external* changes when using the shell.
+**The graph is fresh by construction** on shell and MCP — read tools auto-reindex
+changed files. JSON may include `freshness` / `index_stale` when answering from a
+snapshot during refresh. Only run `gen` after large *external* changes.
 
 | Goal | Tool |
 | --- | --- |

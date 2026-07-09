@@ -59,17 +59,17 @@ assembles context from source it did not author. Its defenses reflect that:
 
 ### MCP freshness note
 
-MCP sets `ADEN_SKIP_AUTO_GEN=1` on **read-only** tool invocations so read tools
-do not silently reindex while another writer may hold the store lock. Write tools
-(`gen`, `sync`, `ready`) run without skip. This is a concurrency safeguard, not a
-security boundary — but agents should know that MCP read results may reflect a
-slightly stale graph until an explicit `gen`/`sync` runs. Read-tool JSON envelopes
-include `index_stale` (and `stale_hint` when true) for machine-detectable staleness.
-See [ADR-010](docs/adr-010-structural-remediation.adoc).
+Shell and MCP share auto-fresh: silent incremental `gen` on read when the tree
+changed. Silent gen is non-blocking (fail-open under writer contention) so agents
+are not frozen. Hosts may set `ADEN_SKIP_AUTO_GEN=1` as an escape hatch to freeze
+the index. JSON envelopes include `freshness` / `index_stale` when results may lag.
+See [ADR-010](docs/adr-010-structural-remediation.adoc) and
+[ai-integration](docs/ai-integration.adoc).
 
-Concurrent read subprocesses on the same project load `graph.snapshot` when fresh
-(ADR-011) instead of opening the live fjall store, reducing `FjallError: Locked`
-contention under multi-agent use. Writers still serialize on `store.lock`.
+Concurrent readers load `graph.snapshot` (ADR-011) instead of opening fjall,
+reducing `FjallError: Locked`. Writers single-flight on `store.lock`. Path
+confinement still binds MCP tools to the active project root (Roots auto-detect
+or explicit pin).
 
 For the full threat table, the include-directive rules, and the secret-scanning
 layers, see [`docs/security-model.adoc`](docs/security-model.adoc).

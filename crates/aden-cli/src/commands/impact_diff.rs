@@ -191,8 +191,8 @@ pub fn cmd_impact_diff(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let root = find_project_root(path);
     let _stale_hint = super::StaleHintGuard::new(&root, json);
-    // Keep the store fresh so span/edge resolution reflects the current code.
-    super::ensure_fresh(&root);
+    // Decision-grade: short-wait for in-flight gen so blast radius is not silently stale.
+    super::ensure_fresh_decision(&root);
 
     let diff = run_git_diff(&root, since, staged)?;
     let changed = parse_unified_diff(&diff);

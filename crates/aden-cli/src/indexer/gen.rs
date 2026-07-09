@@ -137,17 +137,27 @@ pub fn cmd_gen_silent(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
 }
 /// Lock the store for a write phase (G4). Held for the whole of `gen` so two
 /// concurrent runs against one store cannot interleave their writes and corrupt
-/// it — parallel-agent driving makes that concurrency real. Waits up to 10
-/// minutes for a live holder; a dead holder is reclaimed immediately (process
-/// liveness on Linux), so this blocks only on a genuinely active gen. The
-/// lockfile is a sibling of the store directory.
+/// it — parallel-agent driving makes that concurrency real. Explicit `gen`
+/// waits up to 10 minutes for a live holder; a dead holder is reclaimed
+/// immediately (process liveness on Linux). Silent auto-refresh never waits:
+/// if the lock is held it fail-opens so reads serve the last snapshot instead
+/// of blocking the agent (zero-friction / single-flight join).
 const WRITE_QUEUE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
 
-fn acquire_store_lock(store_path: &Path) -> std::io::Result<aden_core::lock::FileLock> {
-    aden_core::lock::FileLock::acquire_timeout_verbose(
-        aden_core::lock::store_lock_path(store_path),
-        WRITE_QUEUE_TIMEOUT,
-    )
+/// Silent read-path refresh: try-lock only (no multi-minute queue).
+const SILENT_LOCK_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(0);
+
+fn acquire_store_lock(
+    store_path: &Path,
+    silent: bool,
+) -> std::io::Result<aden_core::lock::FileLock> {
+    let lock_path = aden_core::lock::store_lock_path(store_path);
+    if silent {
+        // Fail-open immediately when another writer owns the lock.
+        aden_core::lock::FileLock::acquire_timeout(lock_path, SILENT_LOCK_TIMEOUT)
+    } else {
+        aden_core::lock::FileLock::acquire_timeout_verbose(lock_path, WRITE_QUEUE_TIMEOUT)
+    }
 }
 
 fn cmd_gen_inner(
@@ -200,16 +210,40 @@ fn cmd_gen_inner(
         }
         // G4: serialize concurrent writers. Held until this function returns,
         // covering the whole open/index/flush write phase.
-        let _store_lock = acquire_store_lock(&store_path).map_err(|e| {
-            if e.kind() == std::io::ErrorKind::WouldBlock {
-                e.to_string()
-            } else {
-                format!(
-                    "failed to acquire store lock at {}: {e}",
-                    aden_core::lock::store_lock_path(&store_path).display()
-                )
+        // Silent path: WouldBlock → Ok (fail-open; another gen is in flight).
+        let _store_lock = match acquire_store_lock(&store_path, silent) {
+            Ok(l) => l,
+            Err(e) if silent && e.kind() == std::io::ErrorKind::WouldBlock => {
+                return Ok(());
             }
-        })?;
+            Err(e) => {
+                return Err(if e.kind() == std::io::ErrorKind::WouldBlock {
+                    e.to_string().into()
+                } else {
+                    format!(
+                        "failed to acquire store lock at {}: {e}",
+                        aden_core::lock::store_lock_path(&store_path).display()
+                    )
+                    .into()
+                });
+            }
+        };
+
+        // Single-flight join: after waiting (explicit) or acquiring (silent), if
+        // another writer already refreshed the tree and we are not forcing a
+        // full rebuild, skip the expensive reparse.
+        if silent
+            && !force
+            && store_path.exists()
+            && !crate::indexer::fresh::index_is_stale_for_root(&root)
+        {
+            return Ok(());
+        }
+        // Explicit gen that waited for a concurrent writer: still run unless
+        // the user is on a dry-run path and the tree is already current — keep
+        // explicit gen as "do the work" so operators can force a reindex.
+        // (silent join above is the agent-facing coalesce.)
+
         let store_str = store_path
             .to_str()
             .expect("Store path should be valid UTF-8");
@@ -800,7 +834,7 @@ mod store_lock_tests {
         let dir = tempfile::tempdir().unwrap();
         let store_path = dir.path().join("store");
 
-        let held = acquire_store_lock(&store_path).expect("first gen takes the lock");
+        let held = acquire_store_lock(&store_path, false).expect("first gen takes the lock");
         // A second writer on the same store's sibling lockfile is blocked.
         let blocked = aden_core::lock::FileLock::acquire_timeout(
             store_path.with_extension("lock"),
@@ -808,6 +842,13 @@ mod store_lock_tests {
         );
         assert_eq!(
             blocked.expect_err("second writer must block").kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+
+        // Silent path fail-opens immediately (WouldBlock) instead of waiting.
+        let silent = acquire_store_lock(&store_path, true);
+        assert_eq!(
+            silent.expect_err("silent gen must not queue").kind(),
             std::io::ErrorKind::WouldBlock
         );
 

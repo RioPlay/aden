@@ -128,11 +128,16 @@ impl Platform {
 
     /// The JSON value to insert for the aden MCP server. Only valid for
     /// JSON-config platforms; TOML platforms (Codex) are handled separately.
-    pub fn aden_config(&self, binary: &str, project: &str, surface: Option<&str>) -> Value {
+    ///
+    /// Project path is **not** baked into args: `aden-mcp` auto-detects the open
+    /// workspace via MCP Roots / host env (zero-friction). `project` is retained
+    /// for API compatibility with callers but unused for launch args.
+    pub fn aden_config(&self, binary: &str, _project: &str, surface: Option<&str>) -> Value {
         // Bake the requested tool surface into the launch ARGS (cross-platform;
         // not every client passes an `env` block). `aden-mcp` reads
         // `--surface <essential|standard|full>`. Omitted => server default.
-        let mut args: Vec<String> = vec![project.to_string()];
+        // No project path — roots auto-detect (or ADEN_PROJECT pin).
+        let mut args: Vec<String> = Vec::new();
         if let Some(s) = surface {
             args.push("--surface".to_string());
             args.push(s.to_string());
@@ -432,11 +437,11 @@ fn write_toml(path: &Path, doc: &DocumentMut) -> Result<(), String> {
 }
 
 /// Build one `[mcp_servers.<name>]` TOML table for Codex.
-fn codex_server_table(binary: &str, project: &str, surface: Option<&str>) -> TomlTable {
+/// Project path is not baked — workspace auto-detect (see [`Platform::aden_config`]).
+fn codex_server_table(binary: &str, _project: &str, surface: Option<&str>) -> TomlTable {
     let mut tbl = TomlTable::new();
     tbl["command"] = toml_value(binary);
     let mut args = TomlArray::new();
-    args.push(project);
     if let Some(s) = surface {
         args.push("--surface");
         args.push(s);
@@ -1095,7 +1100,8 @@ mod tests {
         let v = Platform::Zed.aden_config("aden-mcp", "/proj", None);
         assert_eq!(v["source"], "custom");
         assert_eq!(v["command"], "aden-mcp");
-        assert_eq!(v["args"][0], "/proj");
+        // No baked project path — workspace auto-detect.
+        assert!(v["args"].as_array().unwrap().is_empty());
         assert_eq!(Platform::Zed.server_config_key(), "context_servers");
     }
 
@@ -1104,7 +1110,11 @@ mod tests {
         for p in [Platform::ClaudeCode, Platform::Cursor, Platform::Windsurf] {
             let v = p.aden_config("aden-mcp", "/proj", None);
             assert_eq!(v["command"], "aden-mcp", "{}", p.display_name());
-            assert_eq!(v["args"][0], "/proj", "{}", p.display_name());
+            assert!(
+                v["args"].as_array().unwrap().is_empty(),
+                "{} must not bake project path",
+                p.display_name()
+            );
         }
     }
 
@@ -1113,30 +1123,29 @@ mod tests {
         let v = Platform::OpenCode.aden_config("aden-mcp", "/proj", None);
         assert_eq!(v["type"], "local");
         assert_eq!(v["command"][0], "aden-mcp");
-        assert_eq!(v["command"][1], "/proj");
+        assert_eq!(v["command"].as_array().unwrap().len(), 1);
         assert_eq!(v["enabled"], true);
         assert_eq!(Platform::OpenCode.server_config_key(), "mcp");
     }
 
     #[test]
     fn surface_is_baked_into_launch_args() {
-        // JSON platforms: `args` carries `--surface <level>` after the project.
+        // JSON platforms: `args` carries `--surface <level>` only (no project).
         let v = Platform::Cursor.aden_config("aden-mcp", "/proj", Some("standard"));
-        assert_eq!(v["args"][0], "/proj");
-        assert_eq!(v["args"][1], "--surface");
-        assert_eq!(v["args"][2], "standard");
+        assert_eq!(v["args"][0], "--surface");
+        assert_eq!(v["args"][1], "standard");
         // OpenCode folds it into the single `command` array.
         let oc = Platform::OpenCode.aden_config("aden-mcp", "/proj", Some("full"));
-        assert_eq!(oc["command"][2], "--surface");
-        assert_eq!(oc["command"][3], "full");
+        assert_eq!(oc["command"][1], "--surface");
+        assert_eq!(oc["command"][2], "full");
         // Codex (TOML) likewise.
         let tbl = codex_server_table("aden-mcp", "/proj", Some("essential"));
         let args = tbl["args"].as_array().unwrap();
-        assert_eq!(args.get(1).and_then(|v| v.as_str()), Some("--surface"));
-        assert_eq!(args.get(2).and_then(|v| v.as_str()), Some("essential"));
-        // None => no surface flag (server default).
+        assert_eq!(args.get(0).and_then(|v| v.as_str()), Some("--surface"));
+        assert_eq!(args.get(1).and_then(|v| v.as_str()), Some("essential"));
+        // None => no args (server default surface; workspace auto-detect).
         let bare = Platform::Cursor.aden_config("aden-mcp", "/proj", None);
-        assert!(bare["args"].as_array().unwrap().len() == 1);
+        assert!(bare["args"].as_array().unwrap().is_empty());
     }
 
     #[test]
@@ -1160,12 +1169,27 @@ mod tests {
     fn codex_table_has_command_and_args() {
         let tbl = codex_server_table("aden-mcp", "/proj", None);
         assert_eq!(tbl["command"].as_str(), Some("aden-mcp"));
-        assert_eq!(
+        // Empty args when no surface — project is not baked.
+        assert!(
             tbl["args"]
+                .as_array()
+                .map(|a| a.is_empty())
+                .unwrap_or(false)
+        );
+        let tbl2 = codex_server_table("aden-mcp", "/proj", Some("full"));
+        assert_eq!(
+            tbl2["args"]
                 .as_array()
                 .and_then(|a| a.get(0))
                 .and_then(|v| v.as_str()),
-            Some("/proj")
+            Some("--surface")
+        );
+        assert_eq!(
+            tbl2["args"]
+                .as_array()
+                .and_then(|a| a.get(1))
+                .and_then(|v| v.as_str()),
+            Some("full")
         );
     }
 

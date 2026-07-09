@@ -171,7 +171,8 @@ pub fn cmd_understand(
         return Err("understand requires a directory path".into());
     }
     let _stale_hint = super::StaleHintGuard::new(path, json);
-    super::ensure_fresh(path);
+    // Decision-grade: short-wait so blast radius is not silently stale.
+    super::ensure_fresh_decision(path);
 
     // Step 1: resolve the symbol to a full store anchor. Try the shared exact
     // resolver first; fall back to suffix matching over the store's anchor keys
