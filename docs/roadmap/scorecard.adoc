@@ -42,3 +42,37 @@ the complete record-role map.
 After each milestone, compare estimated and actual effort, record repeated
 blockers, prune invalid future packets, update packet templates, and revise gates
 only through an explicit decision record.
+
+== AP-107 pre-commit gate evidence (2026-07-10 UTC)
+
+The following commands exercised the final trust gate in the implementation
+worktree. They are intentionally labelled pre-commit evidence: the release
+record must rerun them after the AP-107 commit so its source and installed
+artifact are mechanically identical.
+
+[cols="2,1,3"]
+|===
+|Command |Result |Evidence
+
+|`cargo test -p aden-cli --test trust_integration_gate`
+|pass (1/1)
+|One public CLI fixture reconciles status coverage with the persisted
+entries/dispositions universe; verifies generic/whitespace symbol resolution
+and explicit ambiguity; proves frozen stale-read recovery and no false-current
+mid-refresh mutation; and compares clean, advisory, and blocked audit outcomes.
+
+|`cargo test -p aden-mcp ap107_live_mcp_strict_budget_counts_the_serialized_transport`
+|pass (1/1)
+|A real rmcp duplex client/server call to `ask` verifies the text returned over
+the MCP transport, including its receipt, is within the caller's 15-token
+serialized-response budget. This is not a direct response-adapter test.
+
+|`FULL_INSTALL=1 scripts/measure_golden_journey.sh`
+|pass (28,040 ms; 3 commands)
+|Clean temporary install and installed `aden-mcp --version` smoke succeeded;
+the journey was `ask` → `understand` → `check`. Its emitted provenance was
+`source_commit=830ddcd1ded267b0ca607d3b2e940302922e9b77`,
+`source_tree=dirty`, and binary SHA-256
+`binary_sha256=0baecb2903aad9ef3cdc7defabaecbd665a40347219b688a588a0ddb5f2d8dad`, so this
+run is diagnostic only, not final release evidence.
+|===

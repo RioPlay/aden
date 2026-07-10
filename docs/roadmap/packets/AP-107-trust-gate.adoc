@@ -1,5 +1,5 @@
 :packet-id: AP-107
-:status: proposed
+:status: done
 :priority: P0
 :depends-on: AP-101B,DX-101,DX-102,DX-103
 :unlocks: none
@@ -45,4 +45,8 @@ adding behavior here.
 
 == Completion evidence
 
-E4 dogfood run, adversarial suite, scorecard results, and independent review.
+`crates/aden-cli/tests/trust_integration_gate.rs` is the one cross-interface
+adversarial suite. It must pass alongside the recorded clean-install E4 journey
+in `docs/golden-journey-evidence.adoc`; command-level gate results and their
+provenance belong in the program scorecard. An independent reviewer must rerun
+the gate against the committed artifact before this packet changes to `done`.

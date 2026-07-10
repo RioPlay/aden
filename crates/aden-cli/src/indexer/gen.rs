@@ -184,7 +184,24 @@ fn cmd_gen_inner(
         path
     };
     let root = find_project_root(search_start);
-    let indexed_source_fingerprint = super::fresh::source_fingerprint(&root)?;
+    // Generation must account for a source that becomes unreadable instead of
+    // aborting before the per-file pass can record `io_failed`.  Its snapshot
+    // deliberately has no freshness manifest: an unreadable source can never
+    // authoritatively bind the graph to the working tree, so reads fail closed
+    // until a later successful generation fingerprints every source.
+    let indexed_source_fingerprint = match super::fresh::source_fingerprint(&root) {
+        Ok(fingerprint) => Some(fingerprint),
+        Err(e) => {
+            if !silent {
+                eprintln!(
+                    "WARN: Cannot establish authoritative freshness before generation: {e}; \
+                     unreadable sources will be recorded and reads remain stale until recovery."
+                );
+            }
+            super::fresh::clear_freshness_manifest(&root);
+            None
+        }
+    };
 
     // Deterministic integration-test seam for the otherwise timing-sensitive
     // "tree changes while a read-triggered generation is running" case.  The
@@ -984,11 +1001,13 @@ fn cmd_gen_inner(
     if let Some((snapshot_path, bytes)) = pending_snapshot {
         match aden_graph::snapshot::publish_bytes(&snapshot_path, &bytes) {
             Ok(()) => {
-                super::fresh::publish_freshness_manifest(
-                    &root,
-                    &bytes,
-                    indexed_source_fingerprint,
-                )?;
+                if let Some(indexed_source_fingerprint) = indexed_source_fingerprint {
+                    super::fresh::publish_freshness_manifest(
+                        &root,
+                        &bytes,
+                        indexed_source_fingerprint,
+                    )?;
+                }
             }
             Err(e) => eprintln!("WARN: Failed to publish read snapshot: {e}"),
         }

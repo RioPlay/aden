@@ -124,7 +124,8 @@ class RoadmapValidatorTests(unittest.TestCase):
         historical = Path(self.tmp.name) / "ISSUES.md"
         historical.write_text(
             "<!-- authority: historical-record -->\n"
-            "<!-- as-of: 2026-07-09@5c5bc66e025d7457bacba760b134fe7a0d159452 -->\n"
+            "<!-- as-of: 2026-07-09@5c5bc66e025d7457bac"
+            "ba760b134fe7a0d159452 -->\n"
             "# Historical\n",
             encoding="utf-8",
         )

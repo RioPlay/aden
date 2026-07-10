@@ -28,7 +28,7 @@ build-affecting tracked paths were clean.
 |Date (UTC) |Commit |Binary |Version |Elapsed |Commands |Observation
 
 |2026-07-10T04:11:06Z
-|`d8146cd2b77b86d2573de398a474dcd90920ab65`
+|Git commit `d8146cd2b77b86d2573de398a474dcd90920ab65`
 |temporary installer output
 |`aden 0.2.0`
 |64,524 ms
@@ -36,7 +36,7 @@ build-affecting tracked paths were clean.
 |SHA-256 `0baecb2903aad9ef3cdc7defabaecbd665a40347219b688a588a0ddb5f2d8dad`; journey succeeded.
 
 |2026-07-10T04:12:21Z
-|`d8146cd2b77b86d2573de398a474dcd90920ab65`
+|Git commit `d8146cd2b77b86d2573de398a474dcd90920ab65`
 |temporary installer output
 |`aden 0.2.0`
 |46,437 ms
@@ -44,7 +44,7 @@ build-affecting tracked paths were clean.
 |No graph anchor, hook activation, or fixture-repository mutation was required.
 
 |2026-07-10T04:13:22Z
-|`d8146cd2b77b86d2573de398a474dcd90920ab65`
+|Git commit `d8146cd2b77b86d2573de398a474dcd90920ab65`
 |temporary installer output
 |`aden 0.2.0`
 |28,502 ms

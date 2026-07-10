@@ -2124,6 +2124,87 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ap107_live_mcp_strict_budget_counts_the_serialized_transport() {
+        // AP-107 must exercise the production rmcp duplex transport rather
+        // than the response adapter directly. The client sees exactly the
+        // serialized text handed to an LLM after MCP has added its envelope.
+        let _env = MCP_ROOT_TEST_ENV.lock().unwrap();
+        let root = mcp_root_fixture("ap107-budget", "budget_symbol");
+        let cli = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join("target/debug/aden");
+        assert!(
+            cli.is_file(),
+            "aden CLI test binary missing: {}",
+            cli.display()
+        );
+        let direct_cli = cli.clone();
+        *TEST_ADEN_BINARY.lock().unwrap() = Some(cli.into_os_string());
+
+        let roots = Arc::new(RwLock::new(vec![Root::new(file_uri(&root))]));
+        let client_handler = RootsClient { roots };
+        let (server_transport, client_transport) = tokio::io::duplex(16 * 1024);
+        let server = AdenMcpServer::new(root.clone());
+        let server_task = tokio::spawn(async move { server.serve(server_transport).await });
+        let client = client_handler.serve(client_transport).await.unwrap();
+
+        let reply = client
+            .call_tool(
+                CallToolRequestParams::new("ask").with_arguments(
+                    serde_json::json!({"question":"budget_symbol", "budget":15})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                ),
+            )
+            .await
+            .unwrap();
+        let text = reply.content[0].raw.as_text().unwrap().text.clone();
+        assert!(
+            text.len().div_ceil(4) <= 15,
+            "MCP serialized {} bytes over a 15-token strict budget: {text}",
+            text.len()
+        );
+        let response: serde_json::Value = serde_json::from_str(&text).expect("MCP JSON");
+        assert_eq!(response["context_receipt"]["schema_version"], 1);
+        assert_eq!(
+            response["incomplete"], true,
+            "tiny MCP response: {response}"
+        );
+
+        // The MCP director is a transport adapter, not a second query engine.
+        // Exercise the exact public CLI request it emits (same cwd, question,
+        // strict mode, JSON mode, and 15-token budget) and compare semantic
+        // payloads. There is no intentional delta for this bounded envelope.
+        let direct = std::process::Command::new(direct_cli)
+            .args([
+                "ask",
+                "budget_symbol",
+                "--strict",
+                "--budget",
+                "15",
+                "--json",
+            ])
+            .current_dir(&root)
+            .output()
+            .expect("equivalent public CLI ask");
+        assert!(
+            direct.status.success(),
+            "CLI stderr: {}",
+            String::from_utf8_lossy(&direct.stderr)
+        );
+        let direct: serde_json::Value = serde_json::from_slice(&direct.stdout).expect("CLI JSON");
+        assert_eq!(
+            response, direct,
+            "MCP transport changed the strict CLI receipt payload"
+        );
+
+        client.cancel().await.unwrap();
+        let _ = server_task.await;
+        *TEST_ADEN_BINARY.lock().unwrap() = None;
+    }
+
+    #[tokio::test]
     async fn every_advertised_read_tool_has_a_real_mcp_agent_contract() {
         // E3: drive every declared read surface over rmcp's duplex transport,
         // not through the response adapter directly.  A tool may legitimately

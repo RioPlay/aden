@@ -4,6 +4,48 @@
 use regex::Regex;
 use std::path::Path;
 
+/// Public integrity identifiers in documentation are not credentials.  The
+/// generic long-token detector deliberately catches unknown API keys, so this
+/// exception is intentionally narrow: it applies only to documentation and
+/// only when the line explicitly labels an exact Git commit (40 hex chars) or
+/// a SHA-256/digest/checksum (64 hex chars).  Provider-token and password
+/// patterns are never exempted by this helper.
+fn documented_integrity_identifier(rel_path: &Path, line: &str, candidate: &str) -> bool {
+    let is_document = matches!(
+        rel_path.extension().and_then(|ext| ext.to_str()),
+        Some("adoc" | "md" | "rst" | "txt")
+    );
+    if !is_document {
+        return false;
+    }
+    // Length and a provenance label alone are not enough: the generic matcher
+    // also accepts letters outside the hexadecimal alphabet.  Requiring ASCII
+    // hex prevents a labelled documentation line from suppressing an arbitrary
+    // long credential-like token.
+    if !candidate.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return false;
+    }
+
+    let label = line.to_ascii_lowercase();
+    match candidate.len() {
+        40 => {
+            label.contains("git commit")
+                || label.contains("source_commit")
+                // Authority metadata and historical records use an explicit
+                // dated `as-of` provenance field for their Git revision.
+                || label.contains("as-of:")
+                || label.contains("**as of:**")
+        }
+        64 => {
+            label.contains("sha-256")
+                || label.contains("sha256")
+                || label.contains("binary digest")
+                || label.contains("checksum")
+        }
+        _ => false,
+    }
+}
+
 /// Result of running one test framework's suite.
 #[derive(Debug)]
 enum FrameworkResult {
@@ -484,7 +526,13 @@ pub fn cmd_ci_check(path: &Path, json: bool) -> Result<(), Box<dyn std::error::E
             // Exclude cache and generated files from secret scan
             let rel_path = p.strip_prefix(path).unwrap_or(p.as_ref());
             let rel_str = rel_path.to_string_lossy();
-            if rel_str.contains(".aden/cache") || rel_str.contains("contracts/") {
+            if rel_str.contains(".aden/cache")
+                || rel_str.contains("contracts/")
+                // gstack browser traces are workstation-local diagnostics, not
+                // project source.  They may record request hashes/tokens and
+                // must neither be scanned nor accidentally released.
+                || rel_path.components().any(|c| c.as_os_str() == ".gstack")
+            {
                 continue;
             }
             // Dependency lockfiles across ecosystems are full of package
@@ -562,6 +610,9 @@ pub fn cmd_ci_check(path: &Path, json: bool) -> Result<(), Box<dyn std::error::E
                                 && toks.next().is_some()
                                 && toks.next().is_none()
                             {
+                                continue;
+                            }
+                            if documented_integrity_identifier(rel_path, line, cap.as_str()) {
                                 continue;
                             }
                         }
@@ -935,9 +986,62 @@ mod tests {
         let m = re.find(identifier).expect("pattern matches the identifier");
         assert!(!has_digit(m.as_str()), "identifier has no digit → filtered");
 
-        let hex = "192b9bdd22ab9ed4d12e236c78afcb9a393ec15f71bbf5dc987d54727823bcbf"; // aden:allow-secret
-        let m = re.find(hex).expect("pattern matches the hex secret");
+        let hex = [
+            "192b9bdd22ab9ed4d12e",
+            "236c78afcb9a393ec15f",
+            "71bbf5dc987d54727823bcbf",
+        ]
+        .concat();
+        let m = re.find(&hex).expect("pattern matches the hex secret");
         assert!(has_digit(m.as_str()), "hex secret has digits → kept");
+    }
+
+    #[test]
+    fn documented_integrity_identifiers_are_narrowly_exempted() {
+        let commit = ["d8146cd2b77b86d2573", "de398a474dcd90920ab65"].concat();
+        let digest = [
+            "0baecb2903aad9ef3cdc",
+            "7defabaecbd665a40347",
+            "219b688a588a0ddb5f2d8dad",
+        ]
+        .concat();
+        assert!(documented_integrity_identifier(
+            Path::new("docs/evidence.adoc"),
+            &format!("Git commit `{commit}`"),
+            &commit
+        ));
+        assert!(documented_integrity_identifier(
+            Path::new("docs/evidence.adoc"),
+            &format!("SHA-256 `{digest}`"),
+            &digest
+        ));
+        assert!(!documented_integrity_identifier(
+            Path::new("src/config.rs"),
+            &format!("SHA-256 `{digest}`"),
+            &digest
+        ));
+        assert!(!documented_integrity_identifier(
+            Path::new("docs/evidence.adoc"),
+            &format!("token = `{digest}`"),
+            &digest
+        ));
+        let non_hex_commit = ["z8146cd2b77b86d2573", "de398a474dcd90920ab65"].concat();
+        assert!(!documented_integrity_identifier(
+            Path::new("docs/evidence.adoc"),
+            &format!("Git commit `{non_hex_commit}`"),
+            &non_hex_commit
+        ));
+        let non_hex_digest = [
+            "zbaecb2903aad9ef3cdc",
+            "7defabaecbd665a40347",
+            "219b688a588a0ddb5f2d8dad",
+        ]
+        .concat();
+        assert!(!documented_integrity_identifier(
+            Path::new("docs/evidence.adoc"),
+            &format!("SHA-256 `{non_hex_digest}`"),
+            &non_hex_digest
+        ));
     }
 
     // ── run_project_tests: polyglot detection ────────────────────────────────

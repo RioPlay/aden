@@ -101,6 +101,18 @@ fn manifest_path(root: &Path) -> PathBuf {
     aden_paths::project_dir(root).join("freshness.json")
 }
 
+/// Remove the source-to-graph binding when generation cannot authoritatively
+/// fingerprint every candidate source.  Keeping an older manifest would let a
+/// later permission recovery compare equal to stale graph content and claim
+/// `current` without having indexed the recovered file.
+pub(crate) fn clear_freshness_manifest(root: &Path) {
+    match std::fs::remove_file(manifest_path(root)) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => eprintln!("WARN: Failed to invalidate freshness manifest: {e}"),
+    }
+}
+
 fn stable_hex(parts: impl IntoIterator<Item = impl Hash>) -> String {
     let mut hash = std::collections::hash_map::DefaultHasher::new();
     for part in parts {

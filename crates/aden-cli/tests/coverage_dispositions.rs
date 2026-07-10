@@ -37,6 +37,22 @@ fn run_with_parse_failure(project: &Path, data: &Path, path: &str, args: &[&str]
         .expect("aden binary")
 }
 
+fn run_with_env(project: &Path, data: &Path, args: &[&str], key: &str, value: &str) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_aden"))
+        .args(args)
+        .current_dir(project)
+        .env("ADEN_DATA_DIR", data)
+        .env(key, value)
+        .output()
+        .expect("aden binary")
+}
+
+fn freshness_manifest(project: &Path, data: &Path) -> PathBuf {
+    data.join("projects")
+        .join(aden_paths::project_key(project))
+        .join("freshness.json")
+}
+
 fn status(project: &Path, data: &Path) -> serde_json::Value {
     let output = run(project, data, &["-j", "status", "."]);
     assert!(
@@ -104,7 +120,27 @@ fn gen_status_accounts_for_exclusions_and_recovers_them() {
     assert_eq!(coverage["invalid_encoding"], 1);
     assert_eq!(coverage["parse_failed"], 1);
     #[cfg(unix)]
-    assert_eq!(coverage["io_failed"], 1);
+    {
+        assert_eq!(coverage["io_failed"], 1);
+        assert!(
+            !freshness_manifest(&project, &data).exists(),
+            "an EACCES generation must not leave an authoritative manifest"
+        );
+
+        // Frozen authoritative reads must fail rather than serving the
+        // coverage-degraded graph as current.
+        let blocked = run_with_env(
+            &project,
+            &data,
+            &["--require-fresh", "grep", "visible", ".", "--json"],
+            "ADEN_SKIP_AUTO_GEN",
+            "1",
+        );
+        assert_eq!(blocked.status.code(), Some(2));
+        assert!(
+            String::from_utf8_lossy(&blocked.stderr).contains("authoritative freshness required")
+        );
+    }
 
     std::fs::write(
         project.join("embedded.rs"),
@@ -151,7 +187,23 @@ fn gen_status_accounts_for_exclusions_and_recovers_them() {
         0
     );
     #[cfg(unix)]
-    assert_eq!(recovered["coverage"]["io_failed"].as_u64().unwrap_or(0), 0);
+    {
+        assert_eq!(recovered["coverage"]["io_failed"].as_u64().unwrap_or(0), 0);
+        assert!(freshness_manifest(&project, &data).is_file());
+        let authoritative = run(
+            &project,
+            &data,
+            &["--require-fresh", "grep", "visible", ".", "--json"],
+        );
+        assert!(
+            authoritative.status.success(),
+            "{}",
+            String::from_utf8_lossy(&authoritative.stderr)
+        );
+        let receipt: serde_json::Value = serde_json::from_slice(&authoritative.stdout).unwrap();
+        assert_eq!(receipt["freshness"], "current");
+        assert_eq!(receipt["context_receipt"]["freshness"], "current");
+    }
 }
 
 #[test]

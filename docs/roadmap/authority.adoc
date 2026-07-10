@@ -76,14 +76,14 @@ constraints, final evidence
 individual dated entries retain their original evidence and status language. It
 is superseded for live planning by `link:index.adoc[the Aden Improvement
 Program]` as of 2026-07-09 at
-`5c5bc66e025d7457bacba760b134fe7a0d159452`.
+Git commit `5c5bc66e025d7457bacba760b134fe7a0d159452`.
 
 [[historical-remediation-plan]]
 `link:../../AUDIT_REMEDIATION_PLAN.md[AUDIT_REMEDIATION_PLAN.md]` is preserved
 as the completed structural-remediation plan and audit record. Its phase status
 is a historical snapshot, superseded for live planning by
 `link:index.adoc[the Aden Improvement Program]` as of 2026-07-09 at
-`5c5bc66e025d7457bacba760b134fe7a0d159452`.
+Git commit `5c5bc66e025d7457bacba760b134fe7a0d159452`.
 
 Supersession changes a document's authority, never deletes its evidence. Keep
 existing headings and anchors when annotating a historical record; add a dated
