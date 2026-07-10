@@ -112,6 +112,16 @@ optional `path`. The response retains the CLI JSON semantics, including the
 versioned `context_receipt`; text-first `ask` and `asm` responses are carried
 losslessly in a versioned JSON envelope.
 
+=== Agent response contract
+
+MCP capability schemas declare `x-aden-output-mode`. Read tools use
+`json-receipt-v1`: every successful response is JSON and includes a
+`context_receipt`. When a legacy CLI read has no native receipt, MCP returns a
+truthful `freshness: "unavailable"` receipt and `incomplete: true`; agents must
+not treat it as authoritative. MCP errors are JSON too, with a sanitized
+message, `safe_to_retry`, and an exact `recovery` action. This removes any need
+to parse terminal chrome to decide how to proceed.
+
 === Security boundary
 
 * *Path confinement.* Tools operate inside the served project directory; the `path`/`--project` argument defaults to it and the server does not reach outside (including `heal`'s watch target).

@@ -276,8 +276,11 @@ fn arg_default(tool: &str, arg: &str) -> Option<serde_json::Value> {
 fn arg_enum(tool: &str, arg: &str) -> &'static [&'static str] {
     match (tool, arg) {
         // Subcommand-dispatch verbs (clap subcommands — the most stable set).
-        ("federation", "action") => &["list", "add", "remove", "config"],
-        ("mcp", "action") => &["install", "uninstall", "list"],
+        // MCP exposes only the read-only subcommands.  `add`/`remove` and
+        // `install`/`uninstall` mutate host/project configuration and must not
+        // hide behind a Read annotation.
+        ("federation", "action") => &["list", "config"],
+        ("mcp", "action") => &["list"],
         // Severity thresholds — note check uses Forbid, lint uses Error.
         ("check", "severity") => &["Suggest", "Warn", "Forbid"],
         ("lint", "severity") => &["Suggest", "Warn", "Error"],
@@ -321,6 +324,14 @@ fn validate_args(
     let present = |k: &str| args.get(k).map(|v| !v.is_null()).unwrap_or(false);
     if tool == "locate" && !present("symbol") && !present("caller_of") {
         return Err("locate requires at least one of `symbol` or `caller_of`".to_string());
+    }
+    if let Some(action) = args.get("action").and_then(serde_json::Value::as_str) {
+        let allowed = arg_enum(tool, "action");
+        if !allowed.is_empty() && !allowed.contains(&action) {
+            return Err(format!(
+                "{tool}: `{action}` is not available over MCP; use a terminal for mutating configuration actions"
+            ));
+        }
     }
     // viz has TWO optional positionals (`aden viz [ANCHOR] [DIR]`). If `path`
     // is supplied without `anchor`, clap would bind the path to the ANCHOR
@@ -405,6 +416,16 @@ fn is_subcommand_dispatch(tool: &str, arg: &str) -> bool {
 /// Lets `aden-cli` assert that no MCP-emittable flag has drifted from the CLI.
 pub fn tool_arg_specs() -> Vec<(&'static str, &'static [(&'static str, &'static str)])> {
     TOOLS.iter().map(|t| (t.name, t.args)).collect()
+}
+
+/// Every advertised read surface, exposed for end-to-end contract fixtures.
+#[doc(hidden)]
+pub fn agent_read_tools() -> Vec<&'static str> {
+    TOOLS
+        .iter()
+        .filter(|spec| spec.effect == Effect::Read)
+        .map(|spec| spec.name)
+        .collect()
 }
 
 /// Contract-test accessor: every `(tool, arg, allowed-values)` the MCP schema
@@ -605,6 +626,14 @@ fn tool_from_spec(spec: &ToolSpec) -> Tool {
     // Reject unknown/misspelled args at the schema boundary instead of silently
     // ignoring them (e.g. a typo'd `dept` for `depth` would otherwise no-op).
     schema.insert("additionalProperties".to_string(), serde_json::json!(false));
+    schema.insert(
+        "x-aden-output-mode".to_string(),
+        serde_json::json!(match spec.effect {
+            Effect::Read => "json-receipt-v1",
+            Effect::Rebuild => "text-progress",
+            Effect::Mutate => "text-result",
+        }),
+    );
     let required = required_args(spec.name);
     if !required.is_empty() {
         schema.insert("required".to_string(), serde_json::json!(required));
@@ -1221,10 +1250,13 @@ impl ServerHandler for AdenMcpServer {
 
         match output {
             Ok(clean) => {
-                let bounded = enforce_mcp_response_budget(spec.name, &args, &clean);
+                let agent_response = agent_response_for_mcp(spec.name, &clean);
+                let bounded = enforce_mcp_response_budget(spec.name, &args, &agent_response);
                 Ok(CallToolResult::success(vec![Content::text(bounded)]))
             }
-            Err(e) => Ok(CallToolResult::error(vec![Content::text(e)])),
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(
+                agent_error_for_mcp(spec.name, &e),
+            )])),
         }
     }
 
@@ -1493,7 +1525,101 @@ pub fn preserve_cli_output_for_mcp(tool: &str, raw: &str) -> String {
     serde_json::json!({
         "schema_version": 1,
         "tool": tool,
+        // Kept for AP-101A compatibility with existing MCP consumers.
         "output": cleaned,
+        "result": {"output": cleaned},
+        // Text-first CLI surfaces cannot expose a top-level payload field that
+        // collides with receipt metadata.  Keep the receipt namespaced even
+        // in this compatibility bridge; native JSON producers carry the
+        // revision/fingerprint fields verbatim instead.
+        "context_receipt": {
+            "schema_version": 1,
+            "freshness": "unavailable",
+            "refresh_cause": "mcp_transport_receipt_unavailable"
+        },
+        "incomplete": true,
+    })
+    .to_string()
+}
+
+/// Final agent-facing response contract.  MCP read calls are always JSON and
+/// always carry a receipt; this prevents a model from having to infer safety,
+/// freshness, or truncation from terminal-oriented prose.  Native CLI JSON is
+/// retained verbatim when it already contains a receipt.
+#[doc(hidden)]
+pub fn agent_response_for_mcp(tool: &str, raw: &str) -> String {
+    let raw = if serde_json::from_str::<serde_json::Value>(raw).is_ok() {
+        raw.to_string()
+    } else {
+        // Text-first read commands may inherit progress/freshness notes from
+        // the CLI. They are terminal chrome, not answer context; remove only
+        // the well-known renderer prefixes before placing the answer in the
+        // MCP receipt envelope. Native JSON remains byte-for-byte semantic
+        // equivalent to the CLI response.
+        raw.lines()
+            .filter(|line| {
+                let trimmed = line.trim_start();
+                !(trimmed.starts_with("INFO:")
+                    || trimmed.starts_with("NOTE:")
+                    || trimmed.starts_with("Generated ")
+                    || trimmed.starts_with("Emitted "))
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let cleaned = preserve_cli_output_for_mcp(tool, &raw);
+    let is_read = TOOLS
+        .iter()
+        .find(|spec| spec.name == tool)
+        .is_some_and(|spec| spec.effect == Effect::Read);
+    if !is_read {
+        return cleaned;
+    }
+    if serde_json::from_str::<serde_json::Value>(&cleaned)
+        .ok()
+        .and_then(|value| value.get("context_receipt").cloned())
+        .is_some()
+    {
+        return cleaned;
+    }
+    let payload = serde_json::from_str::<serde_json::Value>(&cleaned)
+        .unwrap_or_else(|_| serde_json::Value::String(cleaned));
+    serde_json::json!({
+        "schema_version": 1,
+        "tool": tool,
+        "result": payload,
+        "context_receipt": {
+            "schema_version": 1,
+            "freshness": "unavailable",
+            "refresh_cause": "mcp_transport_receipt_unavailable"
+        },
+        "incomplete": true
+    })
+    .to_string()
+}
+
+/// Structured, actionable MCP error.  The content remains sanitized, but the
+/// recovery instruction and safety state are machine-readable for agents.
+#[doc(hidden)]
+pub fn agent_error_for_mcp(tool: &str, raw: &str) -> String {
+    let message = sanitize_error(raw);
+    let is_read = TOOLS
+        .iter()
+        .find(|spec| spec.name == tool)
+        .is_some_and(|spec| spec.effect == Effect::Read);
+    let recovery = if message.contains("authoritative freshness required") {
+        "wait for the active writer to finish, then retry; or unset ADEN_SKIP_AUTO_GEN for a refreshable read"
+    } else if message.contains("timed out") {
+        "retry with a narrower request or run the long-running workflow from a terminal"
+    } else if !is_read {
+        "inspect the reported state before retrying; the operation may have changed project state"
+    } else {
+        "correct the named argument or project state, then retry this read; no project mutation was performed"
+    };
+    serde_json::json!({
+        "schema_version": 1,
+        "tool": tool,
+        "error": {"message": message, "safe_to_retry": is_read, "recovery": recovery}
     })
     .to_string()
 }
@@ -1997,6 +2123,77 @@ mod tests {
         *TEST_ADEN_BINARY.lock().unwrap() = None;
     }
 
+    #[tokio::test]
+    async fn every_advertised_read_tool_has_a_real_mcp_agent_contract() {
+        // E3: drive every declared read surface over rmcp's duplex transport,
+        // not through the response adapter directly.  A tool may legitimately
+        // reject a fixture request (for example a missing ADQ script), but its
+        // error must still be structured and actionable; successes must carry
+        // a receipt and never expose unstructured terminal output.
+        let _env = MCP_ROOT_TEST_ENV.lock().unwrap();
+        let root = mcp_root_fixture("read-matrix", "matrix_symbol");
+        let cli = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join("target/debug/aden");
+        assert!(
+            cli.is_file(),
+            "aden CLI test binary missing: {}",
+            cli.display()
+        );
+        *TEST_ADEN_BINARY.lock().unwrap() = Some(cli.into_os_string());
+
+        let roots = Arc::new(RwLock::new(vec![Root::new(file_uri(&root))]));
+        let client_handler = RootsClient { roots };
+        let (server_transport, client_transport) = tokio::io::duplex(16 * 1024);
+        let server = AdenMcpServer::new(root);
+        let server_task = tokio::spawn(async move { server.serve(server_transport).await });
+        let client = client_handler.serve(client_transport).await.unwrap();
+
+        let args = |tool: &str| -> serde_json::Map<String, serde_json::Value> {
+            let value = match tool {
+                "grep" => serde_json::json!({"pattern":"matrix_symbol","require_fresh":true}),
+                "understand" => serde_json::json!({"symbol":"matrix_symbol","require_fresh":true}),
+                "ask" => serde_json::json!({"question":"matrix_symbol","require_fresh":true}),
+                "locate" => serde_json::json!({"symbol":"matrix_symbol","require_fresh":true}),
+                "asm" => serde_json::json!({"from":"mod-project","require_fresh":true}),
+                "query" => serde_json::json!({"from":"mod-project","require_fresh":true}),
+                "search" => serde_json::json!({"query":"matrix_symbol"}),
+                "viz" => serde_json::json!({"anchor":"mod-project"}),
+                "federation" => serde_json::json!({"action":"config"}),
+                "mcp" => serde_json::json!({"action":"list"}),
+                "query-adq" => serde_json::json!({"script":"missing.adq"}),
+                _ => serde_json::json!({}),
+            };
+            value.as_object().unwrap().clone()
+        };
+
+        for tool in agent_read_tools() {
+            let request = CallToolRequestParams::new(tool).with_arguments(args(tool));
+            let reply = client.call_tool(request).await.unwrap();
+            let text = reply.content[0].raw.as_text().unwrap().text.clone();
+            let value: serde_json::Value = serde_json::from_str(&text).unwrap_or_else(|e| {
+                panic!("{tool} returned terminal chrome, not JSON: {e}: {text}")
+            });
+            if let Some(error) = value.get("error") {
+                assert_eq!(error["safe_to_retry"], true, "{tool}: {value}");
+                assert!(
+                    error["recovery"].as_str().is_some_and(|v| !v.is_empty()),
+                    "{tool}: {value}"
+                );
+            } else {
+                assert_eq!(
+                    value["context_receipt"]["schema_version"], 1,
+                    "{tool}: {value}"
+                );
+                assert!(value["context_receipt"].is_object(), "{tool}: {value}");
+            }
+        }
+
+        client.cancel().await.unwrap();
+        let _ = server_task.await;
+        *TEST_ADEN_BINARY.lock().unwrap() = None;
+    }
+
     #[test]
     fn mcp_envelope_is_counted_in_strict_response_budget() {
         let mut args = serde_json::Map::new();
@@ -2434,6 +2631,19 @@ mod tests {
     }
 
     #[test]
+    fn text_first_agent_responses_drop_terminal_chrome_but_keep_legacy_output() {
+        let response = agent_response_for_mcp(
+            "ask",
+            "INFO: Resolved query\nNOTE: index may lag\nuseful context",
+        );
+        let value: serde_json::Value = serde_json::from_str(&response).unwrap();
+        assert_eq!(value["output"], "useful context");
+        assert_eq!(value["result"]["output"], "useful context");
+        assert_eq!(value["context_receipt"]["schema_version"], 1);
+        assert_eq!(value["incomplete"], true);
+    }
+
+    #[test]
     fn heal_watch_is_not_on_the_mcp_surface() {
         // `heal --watch` is a daemon: it always trips the MCP request/response
         // timeout, so it must not be advertised as a callable arg.
@@ -2481,6 +2691,15 @@ mod tests {
         assert!(
             vals.contains(&"list") && vals.contains(&"config"),
             "enum should list valid subcommands, got {vals:?}"
+        );
+        let rejected = serde_json::json!({"action":"remove"})
+            .as_object()
+            .unwrap()
+            .clone();
+        assert!(
+            validate_args("federation", &rejected)
+                .unwrap_err()
+                .contains("not available over MCP")
         );
     }
 

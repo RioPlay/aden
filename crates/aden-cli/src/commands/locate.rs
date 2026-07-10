@@ -9,6 +9,24 @@ use aden_store::GraphStorage;
 
 use crate::util::{fmt_score, load_or_build_index, node_to_json, query_index};
 
+/// Normalize the human spelling of a symbol without changing its identity:
+/// whitespace is irrelevant and generic argument lists are elided. This makes
+/// `AdenGraph::bfs`, `AdenGraph < N, E > :: bfs`, and the canonical stored
+/// `AdenGraph<N, E>::bfs` comparable while preserving namespace/method order.
+fn natural_symbol_form(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    let mut generic_depth = 0usize;
+    for ch in value.chars() {
+        match ch {
+            '<' => generic_depth += 1,
+            '>' => generic_depth = generic_depth.saturating_sub(1),
+            ch if generic_depth == 0 && !ch.is_whitespace() => out.push(ch),
+            _ => {}
+        }
+    }
+    out
+}
+
 /// Rank how well `anchor` matches the query `symbol` for symbol resolution
 /// (lower is better). The anchor's trailing fragment is taken after the last
 /// `#`/`/`; BOTH the whole fragment and its last `.`/`::` component (the bare
@@ -23,10 +41,10 @@ use crate::util::{fmt_score, load_or_build_index, node_to_json, query_index};
 ///   4 — fragment starts `symbol.`/`symbol::`  (members of the queried symbol)
 ///   5 — any other substring match  (incidental)
 fn anchor_match_rank(anchor: &str, symbol: &str) -> u8 {
-    let sym_lower = symbol.to_lowercase();
-    let seg = anchor.rsplit(['#', '/']).next().unwrap_or("");
+    let sym_lower = natural_symbol_form(symbol).to_lowercase();
+    let seg = natural_symbol_form(anchor.rsplit(['#', '/']).next().unwrap_or(""));
     let seg_lower = seg.to_lowercase();
-    let leaf = seg.rsplit(['.', ':']).next().unwrap_or(seg);
+    let leaf = seg.rsplit(['.', ':']).next().unwrap_or(&seg);
     let leaf_lower = leaf.to_lowercase();
     if seg == symbol {
         0
@@ -40,8 +58,10 @@ fn anchor_match_rank(anchor: &str, symbol: &str) -> u8 {
         || seg_lower.starts_with(&format!("{sym_lower}::"))
     {
         4
-    } else {
+    } else if seg_lower.contains(&sym_lower) {
         5
+    } else {
+        u8::MAX
     }
 }
 
@@ -72,6 +92,13 @@ fn alternate_anchors<'a>(
 /// helpful "not found" message. Factored out so it is unit-testable without a live
 /// store. Shares its ranking with `cmd_locate` so the two resolvers never disagree.
 pub(crate) fn pick_symbol_anchor(symbol: &str, anchors: &[String]) -> Option<String> {
+    ranked_symbol_candidates(symbol, anchors).into_iter().next()
+}
+
+/// Return every equally-best canonical anchor for a natural symbol spelling.
+/// Callers that need a definitive target (notably `understand`) must treat more
+/// than one candidate as ambiguity instead of silently choosing lexical order.
+fn ranked_symbol_candidates(symbol: &str, anchors: &[String]) -> Vec<String> {
     let sym = symbol.to_lowercase();
     let mut matched: Vec<&String> = anchors
         .iter()
@@ -80,6 +107,7 @@ pub(crate) fn pick_symbol_anchor(symbol: &str, anchors: &[String]) -> Option<Str
             al.ends_with(&format!("#{}", sym))
                 || al.ends_with(&sym)
                 || al.contains(&format!("#{}", sym))
+                || anchor_match_rank(a, symbol) != u8::MAX
         })
         .collect();
     // Prefer an exact symbol or method-name match over an incidental substring,
@@ -91,7 +119,15 @@ pub(crate) fn pick_symbol_anchor(symbol: &str, anchors: &[String]) -> Option<Str
             .cmp(&anchor_match_rank(b, symbol))
             .then_with(|| a.cmp(b))
     });
-    matched.first().map(|a| (*a).clone())
+    let Some(best) = matched.first() else {
+        return Vec::new();
+    };
+    let rank = anchor_match_rank(best, symbol);
+    matched
+        .into_iter()
+        .filter(|anchor| anchor_match_rank(anchor, symbol) == rank)
+        .map(|anchor| anchor.clone())
+        .collect()
 }
 
 /// Backlinks of `anchor` (incoming references) as JSON nodes, one entry per
@@ -192,12 +228,12 @@ pub fn cmd_understand(
                     .into_keys()
                     .collect::<Vec<_>>()
             };
-            match pick_symbol_anchor(symbol, &anchors) {
-                Some(a) => a,
-                None => {
+            match ranked_symbol_candidates(symbol, &anchors).as_slice() {
+                [a] => a.clone(),
+                [] => {
                     let msg = format!(
-                        "No symbol found matching '{}'. Run 'aden list .' to see available anchors.",
-                        symbol
+                        "No symbol found matching '{}'. Try 'aden locate --symbol {} .' for ranked recovery candidates.",
+                        symbol, symbol
                     );
                     if json {
                         let env = super::augment_read_json(
@@ -214,6 +250,34 @@ pub fn cmd_understand(
                     }
                     return Ok(());
                 }
+                candidates => {
+                    let recovery = format!(
+                        "Ambiguous symbol '{}'; use an exact anchor or run 'aden locate --symbol {} .' to choose a candidate.",
+                        symbol, symbol
+                    );
+                    if json {
+                        let env = super::augment_read_json(
+                            path,
+                            json!({
+                                "symbol": symbol,
+                                "anchor": null,
+                                "resolution": {
+                                    "state": "ambiguous",
+                                    "complete": false,
+                                    "candidates": candidates,
+                                    "recovery": recovery,
+                                },
+                            }),
+                        );
+                        println!("{}", serde_json::to_string_pretty(&env)?);
+                    } else {
+                        println!("{recovery}");
+                        for candidate in candidates {
+                            println!("  - {candidate}");
+                        }
+                    }
+                    return Ok(());
+                }
             }
         }
     };
@@ -222,8 +286,9 @@ pub fn cmd_understand(
     let graph = aden_graph::cache::build_from_directory_cached(path)?;
     let idx = graph.get_index(&anchor).ok_or_else(|| {
         format!(
-            "Anchor '{}' not found in graph. Run 'aden list .' to see available anchors.",
+            "Anchor '{}' not found in graph. Try 'aden locate --symbol {} .' for ranked recovery candidates.",
             anchor
+            , anchor
         )
     })?;
 
@@ -479,15 +544,9 @@ pub fn cmd_locate(
             };
         let all_anchors: Vec<String> = docs.keys().cloned().collect();
 
-        let sym_lower = sym.to_lowercase();
         let mut matched: Vec<&String> = all_anchors
             .iter()
-            .filter(|a| {
-                let al = a.to_lowercase();
-                al.ends_with(&sym_lower)
-                    || al.contains(&format!("#{}", sym_lower))
-                    || al.contains(&sym_lower)
-            })
+            .filter(|a| anchor_match_rank(a, sym) != u8::MAX)
             .collect();
         // Precision: surface the exact symbol definition (and its members) before
         // incidental substring hits (doc headings, `OtherGroup`, code blocks).
@@ -857,6 +916,30 @@ mod tests {
             Some("crates/x.rs#AssembleContext".to_string())
         );
         assert_eq!(super::pick_symbol_anchor("nope_not_here", &anchors), None);
+    }
+
+    #[test]
+    fn understand_resolves_qualified_generic_shorthand_without_whitespace_sensitivity() {
+        let anchors = vec!["src/graph.rs#AdenGraph<N, E>::bfs".to_string()];
+        for spelling in ["AdenGraph::bfs", "AdenGraph <N,E> :: bfs", "adengraph::bfs"] {
+            assert_eq!(
+                super::pick_symbol_anchor(spelling, &anchors),
+                Some("src/graph.rs#AdenGraph<N, E>::bfs".to_string()),
+                "{spelling}"
+            );
+        }
+    }
+
+    #[test]
+    fn equally_ranked_natural_symbols_remain_explicitly_ambiguous() {
+        let anchors = vec![
+            "src/a.rs#AdenGraph<N, E>::bfs".to_string(),
+            "src/b.rs#AdenGraph<T, U>::bfs".to_string(),
+        ];
+        assert_eq!(
+            super::ranked_symbol_candidates("AdenGraph::bfs", &anchors),
+            anchors
+        );
     }
 
     #[test]

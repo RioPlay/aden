@@ -190,3 +190,30 @@ fn primary_mcp_read_workflows_are_versioned_json() {
         assert_eq!(version, Some(&serde_json::json!(1)), "{tool}: {value}");
     }
 }
+
+#[test]
+fn every_advertised_mcp_read_has_a_json_receipt_and_structured_recovery() {
+    for tool in aden_mcp::agent_read_tools() {
+        let response = aden_mcp::agent_response_for_mcp(tool, "terminal-oriented fixture output");
+        let value: serde_json::Value = serde_json::from_str(&response)
+            .unwrap_or_else(|e| panic!("{tool} is not agent JSON: {e}: {response}"));
+        assert_eq!(value["context_receipt"]["schema_version"], 1, "{tool}");
+        assert!(
+            value.get("result").is_some() || value.get("items").is_some(),
+            "{tool}"
+        );
+    }
+
+    let error: serde_json::Value = serde_json::from_str(&aden_mcp::agent_error_for_mcp(
+        "grep",
+        "aden: authoritative freshness required, but refresh did not complete within 5s",
+    ))
+    .unwrap();
+    assert_eq!(error["error"]["safe_to_retry"], true);
+    assert!(
+        error["error"]["recovery"]
+            .as_str()
+            .unwrap()
+            .contains("retry")
+    );
+}
