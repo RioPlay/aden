@@ -83,6 +83,11 @@ Related: `aden mcp list [--preset <PRESET>|--name <NAME>]` (platforms + install 
 
 If the tools do not appear, see <<troubleshooting>>.
 
+`aden-mcp --version` is an installation smoke test: it prints the version and
+exits without opening the JSON-RPC stdio transport. If it instead reports an
+initialization/connection error, reinstall a current Aden release before adding
+the server to a client configuration.
+
 === Argument conventions
 
 * *Use `snake_case` argument names* (`dry_run`, `caller_of`, `show_context`). The server translates them to the CLI's `--kebab-case` flags.
@@ -90,6 +95,22 @@ If the tools do not appear, see <<troubleshooting>>.
 * *Booleans must be real JSON booleans* (`true`/`false`), not strings.
 * *`locate` requires at least one of `symbol` or `caller_of`*.
 * *Anchors, not bare names.* `asm`/`query` take a full `aden://…` anchor (or a module alias like `mod-<crate>`), not a bare symbol name. Use `grep`/`locate`/`list` to resolve the anchor, then feed it to `asm`/`query` — or use `understand` to skip the chain.
+
+=== Transport-parity examples
+
+These CLI calls exercise the same structured read contracts used by the MCP
+`grep` and `locate` tools. They are run as documentation fixtures in CI:
+
+[source,bash]
+----
+aden grep --json "known_symbol" .
+aden locate --json --symbol "known_symbol" .
+----
+
+Over MCP, pass the corresponding named JSON arguments `pattern`, `symbol`, and
+optional `path`. The response retains the CLI JSON semantics, including the
+versioned `context_receipt`; text-first `ask` and `asm` responses are carried
+losslessly in a versioned JSON envelope.
 
 === Security boundary
 

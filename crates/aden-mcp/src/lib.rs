@@ -209,7 +209,9 @@ fn required_args(tool: &str) -> &'static [&'static str] {
         "search" => &["query"],
         "grep" => &["pattern"],
         "kickoff" => &["name"],
-        "new" => &["name", "lang"],
+        // The CLI defaults `--lang` to rust; requiring it over MCP would make
+        // an otherwise valid `aden new <name>` impossible for agents.
+        "new" => &["name"],
         "workflow" => &["template"],
         // `from` carries the anchor for asm; the CLI marks it required.
         "asm" => &["from"],
@@ -217,6 +219,47 @@ fn required_args(tool: &str) -> &'static [&'static str] {
         "session" => &["agent_id", "task"],
         "emergency" => &["reason"],
         _ => &[],
+    }
+}
+
+/// Schema defaults which are part of the stable CLI/MCP contract.  Keep this
+/// deliberately small: each value is also asserted against clap's help by the
+/// CLI parity tests, preventing an MCP client from receiving a stale hint.
+fn arg_default(tool: &str, arg: &str) -> Option<serde_json::Value> {
+    match (tool, arg) {
+        // Every MCP tool executes inside the resolved project when path is
+        // absent.  Exposing it makes the server's most important implicit
+        // default visible to schema-aware clients.
+        // `gen` accepts zero or more paths (`[PATH]...`) rather than the
+        // normal single `[DIR]` with clap's rendered default. Keep its schema
+        // honest: omitting it still uses the server project, but it is not a
+        // CLI `default` promise clients can display.
+        (tool, "path") if tool != "gen" => Some(serde_json::json!(".")),
+        ("ask", "budget") => Some(serde_json::json!(4096)),
+        ("grep", "limit") => Some(serde_json::json!(100)),
+        ("asm", "depth") => Some(serde_json::json!(2)),
+        ("asm", "budget") => Some(serde_json::json!(8192)),
+        ("asm", "format") => Some(serde_json::json!("llm")),
+        ("query", "depth") => Some(serde_json::json!(3)),
+        ("query", "format") => Some(serde_json::json!("json")),
+        ("locate", "format") => Some(serde_json::json!("plain")),
+        ("locate", "limit") => Some(serde_json::json!(50)),
+        ("understand", "budget") => Some(serde_json::json!(4000)),
+        ("new", "lang") => Some(serde_json::json!("rust")),
+        ("check" | "lint", "severity") => Some(serde_json::json!("Warn")),
+        ("search" | "list", "limit") => Some(serde_json::json!(50)),
+        ("search" | "list", "offset") => Some(serde_json::json!(0)),
+        ("communities", "min_size") => Some(serde_json::json!(2)),
+        ("communities", "limit") => Some(serde_json::json!(30)),
+        ("communities", "resolution") => Some(serde_json::json!(1.0)),
+        ("viz", "mode") => Some(serde_json::json!("blast")),
+        ("viz", "depth") => Some(serde_json::json!(2)),
+        ("viz", "format") => Some(serde_json::json!("mermaid")),
+        ("viz", "resolution") => Some(serde_json::json!(1.0)),
+        ("audit" | "diagnose", "format") => Some(serde_json::json!("text")),
+        ("review", "budget") => Some(serde_json::json!(2048)),
+        ("emergency", "ttl") => Some(serde_json::json!("24h")),
+        _ => None,
     }
 }
 
@@ -385,6 +428,17 @@ pub fn arg_is_positional(tool: &str, arg: &str) -> bool {
     is_positional(tool, arg)
 }
 
+/// Contract-test accessor for schema requiredness.  Kept public only so the
+/// CLI integration suite can independently pin the MCP declaration to clap.
+pub fn tool_required_args(tool: &str) -> &'static [&'static str] {
+    required_args(tool)
+}
+
+/// Contract-test accessor for documented MCP defaults.
+pub fn tool_arg_default(tool: &str, arg: &str) -> Option<serde_json::Value> {
+    arg_default(tool, arg)
+}
+
 /// Extra CLI flags the MCP appends so a read tool emits machine-readable output
 /// instead of terminal chrome. Only tools that actually have a JSON path belong
 /// here; the flags are skipped if the agent already supplied them (e.g. a
@@ -393,7 +447,8 @@ pub fn arg_is_positional(tool: &str, arg: &str) -> bool {
 fn structured_output_flags(tool: &str) -> &'static [&'static str] {
     match tool {
         // These honor the global `-j/--json` and print a structured envelope.
-        "grep" | "search" | "list" | "test" | "impact-diff" | "communities" => &["--json"],
+        "grep" | "search" | "list" | "test" | "impact-diff" | "communities" | "ask" | "asm"
+        | "query" | "locate" | "understand" => &["--json"],
         // Phase 2B: compact gate summaries for agent verify workflow.
         "check" => &["--json", "--max-issues", "20"],
         "heal" => &["--json", "--max-issues", "10"],
@@ -472,6 +527,41 @@ fn build_cli_args(
     cmd_args
 }
 
+/// MCP is an agent-facing transport, where a caller's budget must bound the
+/// text handed back to the model. Default assembly tools to the CLI's strict
+/// mode unless the caller explicitly supplied `strict` (including `false`).
+/// This is transport policy only; interactive CLI defaults do not change.
+fn apply_mcp_budget_defaults(
+    tool: &str,
+    args: &serde_json::Map<String, serde_json::Value>,
+    cmd_args: &mut Vec<String>,
+) {
+    if matches!(tool, "ask" | "asm") && !args.contains_key("strict") {
+        let insert_at = cmd_args
+            .iter()
+            .position(|arg| arg == "--")
+            .unwrap_or(cmd_args.len());
+        cmd_args.insert(insert_at, "--strict".to_string());
+    }
+}
+
+/// Build the exact CLI argv used by the MCP wrapper, including agent-facing
+/// strict-budget defaults. Public only for the cross-crate transport golden:
+/// production callers should invoke the MCP server.
+#[doc(hidden)]
+pub fn prepare_cli_args_for_mcp(
+    tool: &str,
+    args: &serde_json::Map<String, serde_json::Value>,
+) -> Result<Vec<String>, String> {
+    let spec = TOOLS
+        .iter()
+        .find(|candidate| candidate.name == tool)
+        .ok_or_else(|| format!("unknown tool: {tool}"))?;
+    let mut cmd_args = build_cli_args(spec, args, structured_output_flags(tool));
+    apply_mcp_budget_defaults(tool, args, &mut cmd_args);
+    Ok(cmd_args)
+}
+
 /// Build the JSON Schema + `Tool` for a spec. Single builder so `get_tool` and
 /// `list_tools` can never drift apart.
 fn tool_from_spec(spec: &ToolSpec) -> Tool {
@@ -485,6 +575,9 @@ fn tool_from_spec(spec: &ToolSpec) -> Tool {
         let allowed = arg_enum(spec.name, arg_name);
         if !allowed.is_empty() {
             p.insert("enum".to_string(), serde_json::json!(allowed));
+        }
+        if let Some(default) = arg_default(spec.name, arg_name) {
+            p.insert("default".to_string(), default);
         }
         props.insert(arg_name.to_string(), serde_json::Value::Object(p));
     }
@@ -1063,7 +1156,8 @@ impl ServerHandler for AdenMcpServer {
         // structured envelope instead. These extra flags must be emitted with
         // the other flags — BEFORE the `--` terminator — or clap would treat
         // them as positional data.
-        let cmd_args = build_cli_args(spec, &args, structured_output_flags(spec.name));
+        let cmd_args = prepare_cli_args_for_mcp(spec.name, &args)
+            .expect("validated MCP tool must have a CLI argument specification");
 
         // Run
         let output = run_aden_command(
@@ -1074,7 +1168,10 @@ impl ServerHandler for AdenMcpServer {
         .await;
 
         match output {
-            Ok(clean) => Ok(CallToolResult::success(vec![Content::text(clean)])),
+            Ok(clean) => {
+                let bounded = enforce_mcp_response_budget(spec.name, &args, &clean);
+                Ok(CallToolResult::success(vec![Content::text(bounded)]))
+            }
             Err(e) => Ok(CallToolResult::error(vec![Content::text(e)])),
         }
     }
@@ -1320,7 +1417,58 @@ fn clean_stdout(tool: &str, raw: &str) -> String {
 /// clients should use the server rather than calling it directly.
 #[doc(hidden)]
 pub fn preserve_cli_output_for_mcp(tool: &str, raw: &str) -> String {
-    clean_stdout(tool, raw)
+    let cleaned = clean_stdout(tool, raw);
+    if !matches!(tool, "ask" | "asm" | "query" | "locate" | "understand")
+        || serde_json::from_str::<serde_json::Value>(&cleaned).is_ok()
+    {
+        return cleaned;
+    }
+
+    // ask/asm currently render their token-dense context as text even when
+    // the global JSON switch is present. MCP still needs a versioned,
+    // machine-readable response contract, so preserve that text losslessly in
+    // a minimal envelope. Once those CLI commands gain native JSON this branch
+    // naturally disappears because the parsed JSON is returned unchanged.
+    serde_json::json!({
+        "schema_version": 1,
+        "tool": tool,
+        "output": cleaned,
+    })
+    .to_string()
+}
+
+const MINIMAL_INCOMPLETE_RECEIPT: &str =
+    r#"{"context_receipt":{"schema_version":1},"incomplete":true}"#;
+
+/// Enforce the caller's strict budget after MCP's own envelope is serialized.
+/// JSON keys and string escaping are response bytes too.
+#[doc(hidden)]
+pub fn enforce_mcp_response_budget(
+    tool: &str,
+    args: &serde_json::Map<String, serde_json::Value>,
+    response: &str,
+) -> String {
+    if !matches!(tool, "ask" | "asm") {
+        return response.to_string();
+    }
+    let strict = args
+        .get("strict")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(true);
+    if !strict {
+        return response.to_string();
+    }
+    let default_budget = if tool == "ask" { 4096 } else { 8192 };
+    let budget = args
+        .get("budget")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|value| usize::try_from(value).ok())
+        .unwrap_or(default_budget);
+    if response.len().div_ceil(4) <= budget {
+        response.to_string()
+    } else {
+        MINIMAL_INCOMPLETE_RECEIPT.to_string()
+    }
 }
 
 /// Whether this tool historically forced `ADEN_SKIP_AUTO_GEN` (pre zero-friction).
@@ -1420,6 +1568,16 @@ fn sanitize_error(raw: &str) -> String {
         msg.push_str("\n… (error output truncated)");
     }
     msg
+}
+
+/// Apply the MCP transport's error policy to real CLI stderr.
+///
+/// This is public solely for cross-crate black-box contract fixtures. Keeping
+/// the fixture on the production sanitizer prevents an imitation in the test
+/// suite from drifting away from what an MCP caller actually receives.
+#[doc(hidden)]
+pub fn preserve_cli_error_for_mcp(raw: &str) -> String {
+    sanitize_error(raw)
 }
 
 /// Replace absolute filesystem paths in `s` with a `<path>` placeholder so host
@@ -1616,6 +1774,61 @@ mod tests {
     }
 
     #[test]
+    fn mcp_defaults_assembly_tools_to_strict_before_positionals() {
+        let mut args = serde_json::Map::new();
+        args.insert("question".into(), serde_json::json!("what is X"));
+        args.insert("path".into(), serde_json::json!("src"));
+        let mut out = build_cli_args(spec("ask"), &args, &[]);
+        apply_mcp_budget_defaults("ask", &args, &mut out);
+        let strict = out.iter().position(|arg| arg == "--strict").unwrap();
+        let terminator = out.iter().position(|arg| arg == "--").unwrap();
+        assert!(
+            strict < terminator,
+            "strict must remain a CLI flag: {out:?}"
+        );
+
+        // An explicit false is an intentional caller choice, not an omitted
+        // default; preserve it for compatibility.
+        args.insert("strict".into(), serde_json::json!(false));
+        let mut explicit = build_cli_args(spec("ask"), &args, &[]);
+        apply_mcp_budget_defaults("ask", &args, &mut explicit);
+        assert!(!explicit.iter().any(|arg| arg == "--strict"));
+
+        let mut asm_args = serde_json::Map::new();
+        asm_args.insert("from".into(), serde_json::json!("mod-x"));
+        asm_args.insert("path".into(), serde_json::json!("src"));
+        let mut asm_out = build_cli_args(spec("asm"), &asm_args, &[]);
+        apply_mcp_budget_defaults("asm", &asm_args, &mut asm_out);
+        let strict = asm_out.iter().position(|arg| arg == "--strict").unwrap();
+        let terminator = asm_out.iter().position(|arg| arg == "--").unwrap();
+        assert!(
+            strict < terminator,
+            "asm strict must remain a CLI flag: {asm_out:?}"
+        );
+    }
+
+    #[test]
+    fn mcp_envelope_is_counted_in_strict_response_budget() {
+        let mut args = serde_json::Map::new();
+        args.insert("budget".into(), serde_json::json!(15));
+        let expanded = serde_json::json!({
+            "schema_version": 1,
+            "tool": "ask",
+            "output": "context that fit before JSON keys and escaping were added"
+        })
+        .to_string();
+        let bounded = enforce_mcp_response_budget("ask", &args, &expanded);
+        assert_eq!(bounded, MINIMAL_INCOMPLETE_RECEIPT);
+        assert!(bounded.len().div_ceil(4) <= 15);
+
+        args.insert("strict".into(), serde_json::json!(false));
+        assert_eq!(
+            enforce_mcp_response_budget("ask", &args, &expanded),
+            expanded
+        );
+    }
+
+    #[test]
     fn positionals_follow_a_double_dash_terminator() {
         // Security (MEDIUM-1): a leading-dash value must not smuggle a CLI flag.
         // A `--` terminator is emitted before the first value positional, so
@@ -1766,6 +1979,11 @@ mod tests {
             "test",
             "impact-diff",
             "communities",
+            "ask",
+            "asm",
+            "query",
+            "locate",
+            "understand",
         ] {
             assert_eq!(
                 structured_output_flags(t),
@@ -1789,6 +2007,42 @@ mod tests {
         // gen has no required args (path defaults to ".").
         let gen_tool = server.get_tool("gen").unwrap();
         assert!(gen_tool.input_schema.get("required").is_none());
+
+        // `aden new <name>` defaults `--lang` to rust, so the MCP schema must
+        // not turn that optional CLI default into a required agent argument.
+        let new_tool = server.get_tool("new").unwrap();
+        let new_required = new_tool
+            .input_schema
+            .get("required")
+            .unwrap()
+            .as_array()
+            .unwrap();
+        assert!(new_required.iter().any(|v| v == "name"));
+        assert!(!new_required.iter().any(|v| v == "lang"));
+    }
+
+    #[test]
+    fn schema_exposes_shared_and_assembly_defaults() {
+        let server = AdenMcpServer::new(PathBuf::from("."));
+        let asm = server.get_tool("asm").unwrap();
+        let properties = asm
+            .input_schema
+            .get("properties")
+            .unwrap()
+            .as_object()
+            .unwrap();
+        assert_eq!(properties["path"]["default"], serde_json::json!("."));
+        assert_eq!(properties["depth"]["default"], serde_json::json!(2));
+        assert_eq!(properties["budget"]["default"], serde_json::json!(8192));
+        assert_eq!(properties["format"]["default"], serde_json::json!("llm"));
+
+        // `gen [PATH]...` has no clap-rendered default, so never advertise one.
+        let gen_tool = server.get_tool("gen").unwrap();
+        assert!(
+            gen_tool.input_schema["properties"]["path"]
+                .get("default")
+                .is_none()
+        );
     }
 
     #[test]
@@ -1972,6 +2226,21 @@ mod tests {
         // survive for any non-rebuild tool (regression: over-eager filtering).
         let raw = "Found 1 match\nGenerated config helper";
         assert_eq!(clean_stdout("grep", raw), raw);
+    }
+
+    #[test]
+    fn text_first_context_tools_get_a_versioned_json_envelope() {
+        for tool in ["ask", "asm"] {
+            let value: serde_json::Value =
+                serde_json::from_str(&preserve_cli_output_for_mcp(tool, "dense context\nblock"))
+                    .unwrap();
+            assert_eq!(value["schema_version"], 1);
+            assert_eq!(value["tool"], tool);
+            assert_eq!(value["output"], "dense context\nblock");
+        }
+
+        let native = r#"{"context_receipt":{"schema_version":1},"items":[]}"#;
+        assert_eq!(preserve_cli_output_for_mcp("query", native), native);
     }
 
     #[test]

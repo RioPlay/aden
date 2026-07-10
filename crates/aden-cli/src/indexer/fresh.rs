@@ -135,8 +135,29 @@ pub(crate) fn index_is_stale_for_root(root: &Path) -> bool {
             .unwrap_or(src)
             .to_string_lossy()
             .to_string();
-        if aden_core::filter::is_secret_path(Path::new(&rel)) {
+        let path_disposition =
+            aden_core::filter::FileDisposition::for_path(Path::new(&rel), false, true);
+        if !path_disposition.is_indexed() {
             continue;
+        }
+        // Keep freshness in the same eligibility universe as generation. A
+        // previously content-redacted file becoming safe (or vice versa) must
+        // trigger regeneration even when its mtime does not advance.
+        let disposition = match std::fs::read_to_string(src) {
+            Ok(text) => aden_core::filter::FileDisposition::for_content(&text),
+            Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
+                aden_core::filter::FileDisposition::InvalidEncoding
+            }
+            Err(_) => aden_core::filter::FileDisposition::IoFailed,
+        };
+        if !disposition.is_indexed() {
+            if cache.dispositions.get(&rel).map(|entry| entry.disposition) != Some(disposition) {
+                return true;
+            }
+            continue;
+        }
+        if cache.dispositions.contains_key(&rel) {
+            return true;
         }
         let mtime = src
             .metadata()

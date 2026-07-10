@@ -5,6 +5,30 @@ use std::path::Path;
 
 use crate::util::find_project_root;
 
+fn coverage_summary(root: &Path) -> serde_json::Value {
+    let cache = crate::util::load_gen_cache(&aden_paths::gen_cache_file(root));
+    let mut dispositions = serde_json::Map::new();
+    dispositions.insert("indexed".into(), serde_json::json!(cache.entries.len()));
+    for entry in cache.dispositions.values() {
+        let key = match entry.disposition {
+            aden_core::filter::FileDisposition::Indexed => "indexed",
+            aden_core::filter::FileDisposition::Ignored => "ignored",
+            aden_core::filter::FileDisposition::Redacted => "redacted",
+            aden_core::filter::FileDisposition::SecretPath => "secret_path",
+            aden_core::filter::FileDisposition::SecretContent => "secret_content",
+            aden_core::filter::FileDisposition::Unsupported => "unsupported",
+            aden_core::filter::FileDisposition::InvalidEncoding => "invalid_encoding",
+            aden_core::filter::FileDisposition::ParseFailed => "parse_failed",
+            aden_core::filter::FileDisposition::IoFailed => "io_failed",
+        };
+        let count = dispositions
+            .entry(key)
+            .or_insert_with(|| serde_json::json!(0));
+        *count = serde_json::json!(count.as_u64().unwrap_or(0) + 1);
+    }
+    serde_json::Value::Object(dispositions)
+}
+
 /// `aden status`: a quick health + orphan snapshot. Health is the
 /// heal-drift metric (stale docs vs. code); orphans use the SAME classifier
 /// `check` uses, so expected metadata docs are never reported as scary orphans.
@@ -15,6 +39,7 @@ pub fn cmd_status(path: &Path, json: bool) -> Result<(), Box<dyn std::error::Err
     let store_path = aden_paths::store_dir(&root);
     let lock_path = aden_paths::store_lock_file(&root);
     let snapshot_path = aden_paths::graph_snapshot_file(&root);
+    let coverage = coverage_summary(&root);
 
     // Health is a heal-drift metric (stale docs vs. code), separate
     // from orphans. Keep it as the honest drift signal.
@@ -73,6 +98,7 @@ pub fn cmd_status(path: &Path, json: bool) -> Result<(), Box<dyn std::error::Err
             },
             "policy_mode": policy.mode,
             "policy_violations": policy.violations,
+            "coverage": coverage,
         });
         println!("{}", serde_json::to_string(&env)?);
         return Ok(());
@@ -81,6 +107,7 @@ pub fn cmd_status(path: &Path, json: bool) -> Result<(), Box<dyn std::error::Err
     println!("Aden Status: {}", path.display());
     println!("Active .aden: {}", aden_path.display());
     println!("Store: {}", store_path.display());
+    println!("Coverage: {}", coverage);
     if let Some(holder) = aden_core::lock::read_holder(&lock_path) {
         println!(
             "Store writer: active ({})",

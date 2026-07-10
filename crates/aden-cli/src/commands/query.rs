@@ -761,7 +761,17 @@ pub fn cmd_asm(opts: AsmOptions) -> Result<(), Box<dyn std::error::Error>> {
     if !opts.path.is_dir() {
         return Err("asm requires a directory path".into());
     }
-    let _stale_hint = super::StaleHintGuard::new(&opts.path, false);
+    if opts.strict && opts.inspect {
+        return Err("--strict cannot be combined with --inspect: inspection output is not a context assembly and has no bounded serialization contract".into());
+    }
+    if opts.strict && opts.out.is_some() {
+        return Err("--strict cannot be combined with --out: strict mode bounds the serialized stdout response; omit --out and capture stdout instead".into());
+    }
+    validate_strict_budget(opts.strict, opts.budget)?;
+    // A stale hint is ordinary terminal chrome. In strict mode it cannot be
+    // appended after the response boundary; AP-103/AP-101B will carry this in
+    // the versioned receipt instead.
+    let _stale_hint = super::StaleHintGuard::new(&opts.path, opts.strict);
     super::ensure_fresh(&opts.path);
 
     let (from_anchor, effective_budget) = if opts.auto && !opts.strict {
@@ -911,6 +921,8 @@ pub fn cmd_asm(opts: AsmOptions) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(out_path) = &opts.out {
         std::fs::write(out_path, &output)?;
         println!("Written assembly to {}", out_path.display());
+    } else if opts.strict {
+        print!("{}", strict_serialized_response(&output, effective_budget));
     } else if opts.silent {
         print!("{output}");
     } else {
@@ -1451,6 +1463,46 @@ fn substantive_token_estimate(body: &str) -> usize {
     bytes.div_ceil(4)
 }
 
+/// Clamp an already-rendered response to Aden's public byte-based token budget.
+///
+/// Assembly accounts for its own separators, but command-level framing and
+/// future supplements are independent producers. This boundary helper is the
+/// last line of defense for `ask --strict`: it preserves UTF-8 validity and
+/// guarantees `response.len().div_ceil(4) <= budget`.
+const MINIMAL_INCOMPLETE_RECEIPT: &str =
+    r#"{"context_receipt":{"schema_version":1},"incomplete":true}"#;
+const MIN_STRICT_BUDGET: usize = 15;
+
+fn validate_strict_budget(strict: bool, budget: usize) -> Result<(), Box<dyn std::error::Error>> {
+    if strict && budget < MIN_STRICT_BUDGET {
+        return Err(format!(
+            "--strict requires --budget >= {MIN_STRICT_BUDGET} so the minimal incomplete receipt can fit"
+        )
+        .into());
+    }
+    Ok(())
+}
+
+/// Serialize an agent-facing strict response at the final boundary.
+///
+/// Never cut a UTF-8/JSON/ADG/AsciiDoc response at an arbitrary byte. When an
+/// upstream producer exceeds its contract (or has no useful result), return a
+/// complete, machine-readable incomplete receipt instead.
+fn strict_serialized_response(response: &str, budget: usize) -> String {
+    // At the minimum budget only the receipt is guaranteed meaningful. A
+    // renderer may otherwise emit a syntactically complete but semantically
+    // empty shell (`[\n\n]`, a title, or separators) and imply completeness.
+    if budget > MIN_STRICT_BUDGET
+        && !response.trim().is_empty()
+        && response.len().div_ceil(4) <= budget
+    {
+        response.to_string()
+    } else {
+        debug_assert!(MINIMAL_INCOMPLETE_RECEIPT.len().div_ceil(4) <= budget);
+        MINIMAL_INCOMPLETE_RECEIPT.to_string()
+    }
+}
+
 /// For a thin-routed anchor, find its functional community and return richer
 /// replacement-seed candidates: `(seeds, label, member_count)`, with `seeds`
 /// ranked by RELEVANCE to the question (BM25-scored against it), never by
@@ -1711,7 +1763,11 @@ pub fn cmd_ask(
     if !path.is_dir() {
         return Err("ask requires a directory path".into());
     }
-    let _stale_hint = super::StaleHintGuard::new(path, false);
+    if strict && model.is_some() {
+        return Err("--strict cannot be combined with --model: model output is generated outside Aden's serialized context budget".into());
+    }
+    validate_strict_budget(strict, budget)?;
+    let _stale_hint = super::StaleHintGuard::new(path, strict);
     super::ensure_fresh(path);
 
     // Intent is classified up front so the overview signal can feed ANCHOR
@@ -1742,10 +1798,15 @@ pub fn cmd_ask(
         let idx = load_or_build_index(path)?;
         let results = query_index(&idx, question);
         if results.is_empty() {
-            println!("No relevant documents found for: {}", question);
-            println!(
-                "Tips:\n  - Use more specific keywords from the codebase.\n  - Try `aden search <term>` to see available anchors.\n  - Or pin an anchor with --from <anchor>."
+            let no_results = format!(
+                "No relevant documents found for: {}\nTips:\n  - Use more specific keywords from the codebase.\n  - Try `aden search <term>` to see available anchors.\n  - Or pin an anchor with --from <anchor>.\n",
+                question
             );
+            if strict {
+                print!("{}", strict_serialized_response("", budget));
+            } else {
+                print!("{no_results}");
+            }
             return Ok(());
         }
         let avg: f64 = results.iter().map(|r| r.score).sum::<f64>() / results.len() as f64;
@@ -1872,17 +1933,22 @@ pub fn cmd_ask(
         _ => budget,
     };
 
-    println!("// Aden Ask: '{}' → [[{}]]", question, start_anchor);
-    if from_override.is_some() {
-        println!("// (pinned by --from)");
+    // `--strict` caps the complete response, not merely the assembled body.
+    // Routing chrome is useful interactively but is outside the assembler's
+    // accounting, so it must stay out of strict output.
+    if !strict {
+        println!("// Aden Ask: '{}' → [[{}]]", question, start_anchor);
+        if from_override.is_some() {
+            println!("// (pinned by --from)");
+        }
+        // Honest low-confidence signal in the MAIN output (not just --explain),
+        // decided at routing time so it distinguishes a genuine near-tie from a
+        // deliberate overview pick (see `routing_note`).
+        if let Some(note) = &routing_note {
+            println!("{note}");
+        }
+        println!();
     }
-    // Honest low-confidence signal in the MAIN output (not just --explain),
-    // decided at routing time so it distinguishes a genuine near-tie from a
-    // deliberate overview pick (see `routing_note`).
-    if let Some(note) = &routing_note {
-        println!("{note}");
-    }
-    println!();
 
     // Step 2: Route assembly strategy from the (already classified) intent.
     // Any of intent, depth, or edge types may be pinned by the caller to bypass
@@ -1896,17 +1962,19 @@ pub fn cmd_ask(
         format!("{:?}", intent)
     };
 
-    println!(
-        "// Strategy: {} | Depth: {} | Edges: {:?}",
-        strategy_label,
-        depth,
-        edge_types
-            .iter()
-            .map(|e| format!("{:?}", e))
-            .collect::<Vec<_>>()
-            .join(", ")
-    );
-    println!();
+    if !strict {
+        println!(
+            "// Strategy: {} | Depth: {} | Edges: {:?}",
+            strategy_label,
+            depth,
+            edge_types
+                .iter()
+                .map(|e| format!("{:?}", e))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        println!();
+    }
 
     // Step 3: Resolve the starting anchor against the store (no full-graph
     // load). Prefer an unambiguous exact/suffix match; if the search-derived
@@ -2232,13 +2300,22 @@ pub fn cmd_ask(
         };
     }
 
-    // Step 4: Send to LLM or print raw context
+    // Step 4: Send to LLM or print raw context. Strict stdout is body-only:
+    // headers, receipts, alternates, and summaries are not part of the
+    // assembler budget and therefore cannot be emitted here.
     if let Some(model_spec) = model {
         if explain {
             print_ask_explain(&xp, &intent, intent_was_overridden, path, &primary_anchor);
             println!("// ────────────────────────────────────────────────");
         }
         query_llm(model_spec, question, &assembled, &start_anchor)?;
+    } else if strict {
+        // Assembly normally maintains this invariant. The final serializer
+        // protects the public boundary from future receipts/supplements.
+        print!(
+            "{}",
+            strict_serialized_response(&assembled, effective_budget)
+        );
     } else {
         // Show context with metadata for LLMs
         println!("<!-- ADEN CONTEXT ASSEMBLY -->");
@@ -2931,6 +3008,23 @@ mod tests {
         // A pinned --from anchor has no search relevance (None) → base, even
         // when not strict.
         assert_eq!(select_ask_budget(false, base, None), base);
+    }
+
+    #[test]
+    fn strict_serialized_response_never_exceeds_budget_and_preserves_utf8() {
+        let input = "café 你好 🚀 ".repeat(80);
+        for budget in [15, 16, 64] {
+            let output = strict_serialized_response(&input, budget);
+            assert!(
+                output.len().div_ceil(4) <= budget,
+                "{} tokens exceeded strict budget {}",
+                output.len().div_ceil(4),
+                budget
+            );
+            assert_eq!(output, MINIMAL_INCOMPLETE_RECEIPT);
+        }
+        assert!(validate_strict_budget(true, 14).is_err());
+        assert!(validate_strict_budget(true, 15).is_ok());
     }
 
     fn result(anchor: &str, score: f64) -> SearchResult {

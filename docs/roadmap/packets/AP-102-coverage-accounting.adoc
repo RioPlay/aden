@@ -1,5 +1,5 @@
 :packet-id: AP-102
-:status: ready
+:status: done
 :priority: P0
 :depends-on: AP-101A
 :unlocks: AP-101B,AP-103
@@ -27,12 +27,15 @@ Shared classification, generation, index, freshness, storage, status, and fixtur
 
 == Acceptance
 
-* One `FileDisposition` classifier covers indexed, ignored, redacted,
+* One `FileDisposition` wire contract covers indexed, ignored, redacted,
   secret-path, secret-content, unsupported, invalid-encoding, parse-failed, and I/O-failed files.
 * Coverage reconciles eligible files with every disposition.
 * Detector/parser changes reconsider previously excluded files.
-* Redacted metadata follows an explicit threat-model decision.
-* End-to-end fixtures cover every disposition and exclusion recovery.
+* `redacted` is reserved and non-emitted until a separate threat-model decision
+  defines metadata that is safe to preserve; its stable wire value is tested
+  without fabricating or exposing sensitive metadata.
+* End-to-end fixtures cover every currently emitted disposition and exclusion
+  recovery. Reserved states require wire-contract tests, not synthetic runtime output.
 
 == Non-goals
 
@@ -45,4 +48,5 @@ source using the last compatible classifier version.
 
 == Completion evidence
 
-Disposition manifest samples, recovery fixtures, and redaction security review.
+Disposition manifest samples, recovery fixtures, and the explicit non-emitted
+redaction decision.

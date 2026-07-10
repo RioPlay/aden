@@ -735,14 +735,14 @@ impl Index {
             .par_iter()
             .filter(|path| {
                 let rel = path.strip_prefix(dir).unwrap_or(path);
-                !aden_core::filter::is_secret_path(rel)
+                aden_core::filter::FileDisposition::for_path(rel, false, true).is_indexed()
             })
             .filter_map(|path| {
                 std::fs::read_to_string(path)
                     .ok()
                     .map(|t| (path.clone(), t))
             })
-            .filter(|(_, text)| !aden_core::filter::content_has_high_confidence_secret(text))
+            .filter(|(_, text)| aden_core::filter::FileDisposition::for_content(text).is_indexed())
             .collect();
 
         let mut index = Index::default();

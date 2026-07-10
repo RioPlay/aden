@@ -20,21 +20,55 @@
 use std::env;
 use std::path::PathBuf;
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    let mut project_pin: Option<PathBuf> = None;
-    let mut args = env::args().skip(1);
+enum StartupAction {
+    Serve {
+        project_pin: Option<PathBuf>,
+        surface: Option<String>,
+    },
+    Version,
+}
+
+/// Parse the intentionally small standalone-server CLI.  This must happen
+/// before the stdio transport starts: setup guides and package managers use
+/// `aden-mcp --version` as a non-interactive installation smoke test.
+fn parse_startup_args(args: impl IntoIterator<Item = String>) -> StartupAction {
+    let mut project_pin = None;
+    let mut surface = None;
+    let mut args = args.into_iter();
     while let Some(arg) = args.next() {
+        if arg == "--version" || arg == "-V" {
+            return StartupAction::Version;
+        }
         if arg == "--surface" {
             if let Some(level) = args.next() {
-                set_surface(&level);
+                surface = Some(level);
             }
         } else if let Some(level) = arg.strip_prefix("--surface=") {
-            set_surface(level);
+            surface = Some(level.to_string());
         } else if !arg.starts_with('-') && project_pin.is_none() {
             project_pin = Some(PathBuf::from(arg));
         }
         // Unknown flags are ignored for forward-compatibility.
+    }
+    StartupAction::Serve {
+        project_pin,
+        surface,
+    }
+}
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let StartupAction::Serve {
+        project_pin,
+        surface,
+    } = parse_startup_args(env::args().skip(1))
+    else {
+        println!("aden-mcp {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    };
+
+    if let Some(surface) = surface {
+        set_surface(&surface);
     }
 
     // Explicit pin via argv or ADEN_PROJECT; otherwise start from cwd and
@@ -52,4 +86,35 @@ async fn main() -> anyhow::Result<()> {
 fn set_surface(level: &str) {
     // SAFETY: single-threaded process startup; nothing else reads the env yet.
     unsafe { env::set_var("ADEN_MCP_SURFACE", level) };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{StartupAction, parse_startup_args};
+    use std::path::PathBuf;
+
+    #[test]
+    fn version_is_a_non_interactive_startup_action() {
+        assert!(matches!(
+            parse_startup_args(["--version".to_string()]),
+            StartupAction::Version
+        ));
+        assert!(matches!(
+            parse_startup_args(["-V".to_string()]),
+            StartupAction::Version
+        ));
+    }
+
+    #[test]
+    fn surface_and_project_pin_remain_supported() {
+        let StartupAction::Serve {
+            project_pin,
+            surface,
+        } = parse_startup_args(["--surface=standard".to_string(), "/tmp/project".to_string()])
+        else {
+            panic!("ordinary server arguments must serve");
+        };
+        assert_eq!(surface.as_deref(), Some("standard"));
+        assert_eq!(project_pin, Some(PathBuf::from("/tmp/project")));
+    }
 }

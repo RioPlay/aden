@@ -143,6 +143,342 @@ fn test_ask_returns_context() {
     );
 }
 
+/// The strict budget applies to the bytes actually returned to an agent, not
+/// only to the internal assembly. This is deliberately black-box: command
+/// headers and summaries used to make a small requested budget emit a much
+/// larger stdout response.
+#[test]
+fn test_ask_strict_stdout_stays_within_serialized_budget() {
+    let dir = temp_project::temp_dir();
+    temp_project::scaffold(&dir);
+    let budget = 32usize;
+
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
+        .args([
+            "ask",
+            "What is module a?",
+            "--budget",
+            &budget.to_string(),
+            "--strict",
+            &dir.to_string_lossy(),
+        ])
+        .output()
+        .expect("aden binary must be installed");
+
+    assert!(
+        output.status.success(),
+        "aden ask --strict failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        output.stdout.len().div_ceil(4) <= budget,
+        "strict stdout estimated at {} tokens for {} budget: {}",
+        output.stdout.len().div_ceil(4),
+        budget,
+        String::from_utf8_lossy(&output.stdout)
+    );
+}
+
+#[test]
+fn test_asm_strict_stdout_stays_within_serialized_budget() {
+    let dir = temp_project::temp_dir();
+    temp_project::scaffold(&dir);
+    let budget = 32usize;
+
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
+        .args([
+            "asm",
+            "--from",
+            "readme",
+            "--budget",
+            &budget.to_string(),
+            "--strict",
+            &dir.to_string_lossy(),
+        ])
+        .output()
+        .expect("aden binary must be built");
+
+    assert!(
+        output.status.success(),
+        "aden asm --strict failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        output.stdout.len().div_ceil(4) <= budget,
+        "strict stdout estimated at {} tokens for {} budget",
+        output.stdout.len().div_ceil(4),
+        budget
+    );
+}
+
+#[test]
+fn test_ask_strict_no_results_stays_within_serialized_budget() {
+    let dir = temp_project::temp_dir();
+    let budget = 15usize;
+
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
+        .args([
+            "ask",
+            "definitely-no-indexed-document-matches-this",
+            "--budget",
+            &budget.to_string(),
+            "--strict",
+            &dir.to_string_lossy(),
+        ])
+        .output()
+        .expect("aden binary must be built");
+
+    assert!(
+        output.status.success(),
+        "strict no-results response failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        output.stdout.len().div_ceil(4) <= budget,
+        "no-results stdout exceeded strict budget: {:?}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        r#"{"context_receipt":{"schema_version":1},"incomplete":true}"#
+    );
+}
+
+#[test]
+fn test_asm_strict_all_formats_unicode_and_tiny_receipt_are_bounded() {
+    let dir = temp_project::temp_dir();
+    temp_project::scaffold(&dir);
+    std::fs::write(
+        dir.join("unicode.adoc"),
+        "[[unicode]]\n= Unicode\n\ncafé 你好 🚀 context ".repeat(80),
+    )
+    .unwrap();
+
+    for format in ["llm", "adg", "aden"] {
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
+            .args([
+                "asm",
+                "--from",
+                "unicode",
+                "--format",
+                format,
+                "--budget",
+                "15",
+                "--strict",
+                &dir.to_string_lossy(),
+            ])
+            .output()
+            .expect("aden binary must be built");
+        assert!(
+            output.status.success(),
+            "{format}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            r#"{"context_receipt":{"schema_version":1},"incomplete":true}"#
+        );
+    }
+}
+
+#[test]
+fn test_ask_strict_receipts_provenance_alternates_and_supplements_remain_bounded() {
+    let dir = temp_project::temp_dir();
+    temp_project::scaffold(&dir);
+    std::fs::write(
+        dir.join("module-b.adoc"),
+        "[[module-b]]\n= Module B\n\nShared ambiguous module context.\n<<readme>>\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("module-c.adoc"),
+        "[[module-c]]\n= Module C\n\nShared ambiguous module context.\n<<readme>>\n",
+    )
+    .unwrap();
+    let budget = 24usize;
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
+        .args([
+            "ask",
+            "shared ambiguous module context",
+            "--explain",
+            "--strict",
+            "--budget",
+            &budget.to_string(),
+            &dir.to_string_lossy(),
+        ])
+        .output()
+        .expect("aden binary must be built");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stdout.len().div_ceil(4) <= budget);
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("routing ambiguous"));
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("Decision"));
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("source:"));
+}
+
+#[test]
+fn test_asm_auto_plus_strict_uses_exact_serialized_budget() {
+    let dir = temp_project::temp_dir();
+    temp_project::scaffold(&dir);
+    let budget = 16usize;
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
+        .args([
+            "asm",
+            "--from",
+            "readme",
+            "--auto",
+            "--strict",
+            "--budget",
+            &budget.to_string(),
+            &dir.to_string_lossy(),
+        ])
+        .output()
+        .expect("aden binary must be built");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stdout.len().div_ceil(4) <= budget);
+}
+
+#[test]
+fn test_asm_strict_stale_hint_cannot_escape_budget() {
+    let dir = temp_project::temp_dir();
+    temp_project::scaffold(&dir);
+    let generated = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
+        .args(["gen", &dir.to_string_lossy()])
+        .output()
+        .expect("aden binary must be built");
+    assert!(generated.status.success());
+    std::fs::write(dir.join("new.adoc"), "[[new]]\n= New\n\nstale marker\n").unwrap();
+
+    let budget = 16usize;
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
+        .env("ADEN_SKIP_AUTO_GEN", "1")
+        .args([
+            "asm",
+            "--from",
+            "readme",
+            "--strict",
+            "--budget",
+            &budget.to_string(),
+            &dir.to_string_lossy(),
+        ])
+        .output()
+        .expect("aden binary must be built");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stdout.len().div_ceil(4) <= budget);
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("NOTE: index may lag"));
+}
+
+#[test]
+fn test_mcp_wrapper_strict_budget_transport_golden() {
+    let dir = temp_project::temp_dir();
+    temp_project::scaffold(&dir);
+    let budget = 16usize;
+    let mut args = serde_json::Map::new();
+    args.insert("question".into(), serde_json::json!("What is module a?"));
+    args.insert("path".into(), serde_json::json!(dir.to_string_lossy()));
+    args.insert("budget".into(), serde_json::json!(budget));
+
+    let argv = aden_mcp::prepare_cli_args_for_mcp("ask", &args).unwrap();
+    assert!(argv.iter().any(|arg| arg == "--strict"));
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
+        .args(&argv)
+        .output()
+        .expect("execute MCP-directed CLI command");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let raw = String::from_utf8(output.stdout).unwrap();
+    let wrapped = aden_mcp::preserve_cli_output_for_mcp("ask", &raw);
+    let transported = aden_mcp::enforce_mcp_response_budget("ask", &args, &wrapped);
+    assert!(transported.len().div_ceil(4) <= budget);
+    assert_eq!(
+        transported,
+        r#"{"context_receipt":{"schema_version":1},"incomplete":true}"#
+    );
+}
+
+#[test]
+fn test_asm_strict_rejects_unbounded_inspect_and_out_modes() {
+    let dir = temp_project::temp_dir();
+    temp_project::scaffold(&dir);
+
+    let inspect = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
+        .args([
+            "asm",
+            "--from",
+            "readme",
+            "--strict",
+            "--inspect",
+            &dir.to_string_lossy(),
+        ])
+        .output()
+        .expect("aden binary must be built");
+    assert!(!inspect.status.success());
+    assert!(
+        String::from_utf8_lossy(&inspect.stderr)
+            .contains("--strict cannot be combined with --inspect")
+    );
+
+    let out_path = dir.join("assembly.txt");
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
+        .args([
+            "asm",
+            "--from",
+            "readme",
+            "--strict",
+            "--out",
+            &out_path.to_string_lossy(),
+            &dir.to_string_lossy(),
+        ])
+        .output()
+        .expect("aden binary must be built");
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("--strict cannot be combined with --out")
+    );
+    assert!(
+        !out_path.exists(),
+        "rejected strict --out must not write a file"
+    );
+}
+
+#[test]
+fn test_ask_strict_rejects_model_output() {
+    let dir = temp_project::temp_dir();
+    temp_project::scaffold(&dir);
+
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
+        .args([
+            "ask",
+            "What is module a?",
+            "--strict",
+            "--model",
+            "openai:irrelevant",
+            &dir.to_string_lossy(),
+        ])
+        .output()
+        .expect("aden binary must be built");
+
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("--strict cannot be combined with --model")
+    );
+}
+
 #[test]
 fn test_graph_outputs_neighborhood() {
     let dir = temp_project::temp_dir();

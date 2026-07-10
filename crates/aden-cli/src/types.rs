@@ -27,7 +27,7 @@ use std::path::PathBuf;
 ///    (Hugo frontmatter, no `= Glossary` body title) now emit Term nodes and
 ///    `DefinesTerm` edges; preprocessor-aware indexing path unchanged but
 ///    emission shape for glossary-titled files shifts.
-pub const GEN_LOGIC_VERSION: u32 = 5;
+pub const GEN_LOGIC_VERSION: u32 = 6;
 
 /// Incremental generation cache: maps contract file path → metadata.
 #[derive(Default, Serialize, Deserialize)]
@@ -36,6 +36,11 @@ pub struct GenCache {
     #[serde(default)]
     pub version: u32,
     pub entries: std::collections::HashMap<String, GenCacheEntry>,
+    /// Files considered by generation but deliberately not emitted. Keeping
+    /// these dispositions makes omissions inspectable and lets a classifier
+    /// change re-consider old exclusions after the cache logic version bumps.
+    #[serde(default)]
+    pub dispositions: std::collections::HashMap<String, FileDispositionEntry>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -48,6 +53,13 @@ pub struct GenCacheEntry {
     /// to empty for caches written before this field existed (back-compat).
     #[serde(default)]
     pub anchors: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct FileDispositionEntry {
+    pub disposition: aden_core::filter::FileDisposition,
+    pub source_mtime: u64,
+    pub source_path: String,
 }
 
 /// Intent classification for natural-language queries.

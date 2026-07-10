@@ -149,7 +149,84 @@ const EXTENSIONLESS_SOURCE_FILES: &[&str] = &[
 /// cross-ecosystem built-in ignore list so build artifacts and vendored deps
 /// are skipped for every language.
 pub fn discover_source_files(root: &Path) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
-    discover_source_files_scoped(root, root)
+    Ok(discover_file_dispositions(root)?
+        .into_iter()
+        .filter(|file| file.disposition.is_indexed())
+        .map(|file| file.path)
+        .collect())
+}
+
+/// A discovered file plus the reason it will or will not be emitted. Unlike
+/// [`discover_source_files`], this deliberately retains ignored and unsupported
+/// files so generation can persist a complete coverage manifest.
+#[derive(Debug, Clone)]
+pub struct DiscoveredFile {
+    pub path: PathBuf,
+    pub disposition: aden_core::filter::FileDisposition,
+}
+
+pub fn discover_file_dispositions(
+    root: &Path,
+) -> Result<Vec<DiscoveredFile>, Box<dyn std::error::Error>> {
+    use std::collections::HashSet;
+
+    let supported: HashSet<&'static str> = aden_parse::supported_extensions().into_iter().collect();
+    let filter = aden_core::filter::AdenFilter::from_directory(root);
+    let mut files = Vec::new();
+    walk_files_with_dispositions(root, root, &supported, &filter, &mut files)?;
+    Ok(files)
+}
+
+fn walk_files_with_dispositions(
+    dir: &Path,
+    root: &Path,
+    supported: &std::collections::HashSet<&'static str>,
+    filter: &aden_core::filter::AdenFilter,
+    out: &mut Vec<DiscoveredFile>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    for entry in std::fs::read_dir(dir).map_err(|e| format!("read_dir {}: {e}", dir.display()))? {
+        let entry = entry?;
+        let path = entry.path();
+        let file_type = entry.file_type()?;
+        if file_type.is_symlink() {
+            continue;
+        }
+        if file_type.is_dir() {
+            // A directory-level ignore is recorded by policy, but walking its
+            // entire contents (notably .git/, target/, and node_modules/) would
+            // turn a coverage receipt into an unbounded scan. Ordinary ignored
+            // files are still retained below with their exact disposition.
+            if path
+                .strip_prefix(root)
+                .ok()
+                .is_some_and(|relative| filter.should_skip(relative))
+            {
+                continue;
+            }
+            walk_files_with_dispositions(&path, root, supported, filter, out)?;
+            continue;
+        }
+        if !file_type.is_file() {
+            continue;
+        }
+        let rel = path.strip_prefix(root).unwrap_or(&path).to_path_buf();
+        let supported_file = match path.extension().and_then(|ext| ext.to_str()) {
+            Some(ext) => supported.contains(ext),
+            None => path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| EXTENSIONLESS_SOURCE_FILES.contains(&name)),
+        };
+        out.push(DiscoveredFile {
+            path,
+            disposition: aden_core::filter::FileDisposition::for_path(
+                &rel,
+                filter.should_skip(&rel),
+                supported_file,
+            ),
+        });
+    }
+    Ok(())
 }
 
 /// Like [`discover_source_files`] but walks only `scope` (a directory at or
@@ -437,6 +514,23 @@ pub fn load_gen_cache(path: &Path) -> GenCache {
         .unwrap_or_default();
     cache.version = crate::types::GEN_LOGIC_VERSION;
     cache
+}
+
+/// A cache logic/schema mismatch cannot be incrementally healed safely: the
+/// old cache is the only ownership record for anchors emitted by files that no
+/// longer exist. Callers must rebuild the store instead of silently discarding
+/// that ownership map and leaving stale graph nodes behind.
+pub fn gen_cache_requires_rebuild(path: &Path) -> bool {
+    if !path.exists() {
+        return false;
+    }
+    match std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<GenCache>(&text).ok())
+    {
+        Some(cache) => cache.version != crate::types::GEN_LOGIC_VERSION,
+        None => true,
+    }
 }
 
 /// Persist the generation cache to disk.
@@ -2036,6 +2130,85 @@ mod tests {
             doc.attributes.get("source_file").map(|s| s.as_str()),
             Some("src/lib.rs"),
             "must strip against the given root, leaking no /home/ prefix"
+        );
+    }
+
+    #[test]
+    fn disposition_discovery_accounts_for_ignored_and_unsupported_files() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("main.rs"), "fn main() {}\n").unwrap();
+        std::fs::write(dir.path().join("notes.xyz"), "unparsed\n").unwrap();
+        std::fs::write(dir.path().join(".adenignore"), "hidden.rs\n").unwrap();
+        std::fs::write(dir.path().join("hidden.rs"), "fn hidden() {}\n").unwrap();
+
+        let entries = discover_file_dispositions(dir.path()).unwrap();
+        let by_name: std::collections::HashMap<_, _> = entries
+            .iter()
+            .map(|entry| {
+                (
+                    entry
+                        .path
+                        .file_name()
+                        .unwrap()
+                        .to_string_lossy()
+                        .to_string(),
+                    entry.disposition,
+                )
+            })
+            .collect();
+        assert_eq!(
+            by_name.get("main.rs"),
+            Some(&aden_core::filter::FileDisposition::Indexed)
+        );
+        assert_eq!(
+            by_name.get("hidden.rs"),
+            Some(&aden_core::filter::FileDisposition::Ignored)
+        );
+        assert_eq!(
+            by_name.get("notes.xyz"),
+            Some(&aden_core::filter::FileDisposition::Unsupported)
+        );
+    }
+
+    #[test]
+    fn old_generation_cache_requires_a_store_rebuild() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_path = dir.path().join("gen-cache.json");
+        std::fs::write(
+            &cache_path,
+            r#"{"version":5,"entries":{"old.rs":{"source_mtime":0,"source_path":"old.rs","anchors":["old"]}}}"#,
+        )
+        .unwrap();
+        assert!(gen_cache_requires_rebuild(&cache_path));
+        assert!(load_gen_cache(&cache_path).entries.is_empty());
+
+        std::fs::write(&cache_path, "{not-json").unwrap();
+        assert!(gen_cache_requires_rebuild(&cache_path));
+        std::fs::write(&cache_path, [0xff, 0xfe]).unwrap();
+        assert!(gen_cache_requires_rebuild(&cache_path));
+    }
+
+    #[test]
+    fn cache_persists_explicit_dispositions() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_path = dir.path().join("gen-cache.json");
+        let mut cache = GenCache {
+            version: crate::types::GEN_LOGIC_VERSION,
+            ..GenCache::default()
+        };
+        cache.dispositions.insert(
+            "secret.rs".into(),
+            crate::types::FileDispositionEntry {
+                disposition: aden_core::filter::FileDisposition::SecretContent,
+                source_mtime: 1,
+                source_path: "secret.rs".into(),
+            },
+        );
+        save_gen_cache(&cache_path, &cache).unwrap();
+        let reloaded = load_gen_cache(&cache_path);
+        assert_eq!(
+            reloaded.dispositions["secret.rs"].disposition,
+            aden_core::filter::FileDisposition::SecretContent
         );
     }
 }

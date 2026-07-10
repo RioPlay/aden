@@ -84,6 +84,99 @@ const COMMANDS_WITHOUT_MCP_TOOL: &[(&str, &str)] = &[
     ),
 ];
 
+/// Extract clap positional labels from `Arguments:` (e.g. `[DIR]`,
+/// `<QUESTION>`).  This is intentionally separate from the flag parser: MCP
+/// must preserve both the *existence* and the order-sensitive nature of CLI
+/// positionals.
+fn positional_labels_in_help(help: &str) -> Vec<String> {
+    let mut labels = Vec::new();
+    let mut in_arguments = false;
+    for line in help.lines() {
+        if line.trim() == "Arguments:" {
+            in_arguments = true;
+            continue;
+        }
+        if !in_arguments {
+            continue;
+        }
+        if line.trim() == "Options:" {
+            break;
+        }
+        let label = line
+            .trim_start()
+            .split_whitespace()
+            .next()
+            .unwrap_or_default();
+        if !label.is_empty() {
+            labels.push(
+                label
+                    .trim_matches(|c| c == '[' || c == ']' || c == '<' || c == '>' || c == '.')
+                    .to_ascii_lowercase(),
+            );
+        }
+    }
+    labels
+}
+
+fn cli_help(bin: &str, tool: &str) -> String {
+    let out = Command::new(bin)
+        .args([tool, "--help"])
+        .output()
+        .unwrap_or_else(|e| panic!("failed to run `aden {tool} --help`: {e}"));
+    assert!(
+        out.status.success(),
+        "`aden {tool} --help` failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+/// Extract every clap-rendered default which belongs to an MCP-exposed
+/// argument. This is the reverse of `mcp_schema_defaults_are_documented...`:
+/// a new CLI default must not silently remain invisible to schema-aware agents.
+fn cli_defaults_in_help(tool: &str, help: &str, exposed: &[(&str, &str)]) -> Vec<(String, String)> {
+    let mut defaults = Vec::new();
+    for line in help.lines() {
+        let Some(default_start) = line.find("[default: ") else {
+            continue;
+        };
+        let value_start = default_start + "[default: ".len();
+        let Some(value_end) = line[value_start..].find(']') else {
+            continue;
+        };
+        let rendered = line[value_start..value_start + value_end].to_string();
+
+        let flag_arg = line[..default_start]
+            .split_whitespace()
+            .find(|token| token.starts_with("--"))
+            .map(|token| token.trim_start_matches('-').replace('-', "_"));
+        let positional_arg = if flag_arg.is_none() {
+            let label = line
+                .trim_start()
+                .split_whitespace()
+                .next()
+                .unwrap_or_default()
+                .trim_matches(|c| matches!(c, '[' | ']' | '<' | '>' | '.'))
+                .to_ascii_lowercase();
+            match label.as_str() {
+                "dir" => Some("path".to_string()),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        let Some(arg) = flag_arg.or(positional_arg) else {
+            continue;
+        };
+        if exposed.iter().any(|(name, _)| *name == arg) {
+            defaults.push((arg, rendered));
+        } else {
+            panic!("{tool}: CLI default for unrecognized MCP argument `{arg}`: {line}");
+        }
+    }
+    defaults
+}
+
 #[test]
 fn mcp_declared_flags_are_accepted_by_cli() {
     let bin = env!("CARGO_BIN_EXE_aden");
@@ -126,6 +219,133 @@ fn mcp_declared_flags_are_accepted_by_cli() {
         failures.is_empty(),
         "MCP\u{2194}CLI flag drift detected ({} issue(s)):\n  {}",
         failures.len(),
+        failures.join("\n  ")
+    );
+}
+
+/// Positionals are where the two transports are easiest to accidentally
+/// desynchronize: MCP uses named JSON fields while clap binds by order.  Each
+/// MCP positional must therefore be visible in clap's Arguments section.
+#[test]
+fn mcp_positionals_are_visible_in_cli_arguments() {
+    let bin = env!("CARGO_BIN_EXE_aden");
+    let mut failures = Vec::new();
+    for (tool, args) in aden_mcp::tool_arg_specs() {
+        let labels = positional_labels_in_help(&cli_help(bin, tool));
+        for (arg, _) in args {
+            // clap renders a nested command dispatcher in `Commands:` rather
+            // than `Arguments:`. `mcp_enum_values_exist_in_cli_help` below
+            // pins each advertised action to that help, so this is not an
+            // untested exception.
+            let command_dispatch = matches!((tool, *arg), ("federation" | "mcp", "action"));
+            if aden_mcp::arg_is_positional(tool, arg)
+                && !command_dispatch
+                && !labels.iter().any(|label| label == &arg.replace('_', "-"))
+                // clap calls the `from` CLI positional ANCHOR for asm-like
+                // commands; only fields declared positional reach this branch.
+                && !labels.iter().any(|label| label == "dir" && *arg == "path")
+            {
+                failures.push(format!(
+                    "{tool}.{arg}: MCP declares a positional but clap help has Arguments: {labels:?}"
+                ));
+            }
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "MCP→CLI positional drift:\n  {}",
+        failures.join("\n  ")
+    );
+}
+
+/// The only MCP-required fields must correspond to required clap positionals
+/// or flags. This catches the damaging direction where a schema makes an
+/// optional CLI input impossible for an agent to omit.
+#[test]
+fn mcp_required_args_are_required_by_cli_usage() {
+    let bin = env!("CARGO_BIN_EXE_aden");
+    let mut failures = Vec::new();
+    for (tool, _) in aden_mcp::tool_arg_specs() {
+        let help = cli_help(bin, tool);
+        let usage = help
+            .lines()
+            .find(|line| line.trim_start().starts_with("Usage:"))
+            .unwrap_or_default();
+        for arg in aden_mcp::tool_required_args(tool) {
+            let expected = if aden_mcp::arg_is_positional(tool, arg) {
+                format!("<{arg}").to_ascii_uppercase()
+            } else {
+                format!("--{} <", arg.replace('_', "-"))
+            };
+            if !usage
+                .to_ascii_lowercase()
+                .contains(&expected.to_ascii_lowercase())
+            {
+                failures.push(format!(
+                    "{tool}.{arg}: MCP marks required but CLI usage is `{usage}`"
+                ));
+            }
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "MCP requiredness drift:\n  {}",
+        failures.join("\n  ")
+    );
+}
+
+/// Schema defaults are user-facing promises. Every MCP default must still be
+/// rendered by clap, including the shared project path default.
+#[test]
+fn mcp_schema_defaults_are_documented_by_cli_help() {
+    let bin = env!("CARGO_BIN_EXE_aden");
+    let mut failures = Vec::new();
+    for (tool, args) in aden_mcp::tool_arg_specs() {
+        let help = cli_help(bin, tool);
+        for (arg, _) in args {
+            let Some(default) = aden_mcp::tool_arg_default(tool, arg) else {
+                continue;
+            };
+            let rendered = default
+                .as_str()
+                .map(str::to_owned)
+                .unwrap_or_else(|| default.to_string());
+            if !help.contains(&format!("[default: {rendered}]")) {
+                failures.push(format!(
+                    "{tool}.{arg}: MCP default `{rendered}` is absent from CLI help"
+                ));
+            }
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "MCP default drift:\n  {}",
+        failures.join("\n  ")
+    );
+}
+
+#[test]
+fn every_mcp_exposed_cli_default_is_declared_by_mcp() {
+    let bin = env!("CARGO_BIN_EXE_aden");
+    let mut failures = Vec::new();
+    for (tool, args) in aden_mcp::tool_arg_specs() {
+        for (arg, cli_default) in cli_defaults_in_help(tool, &cli_help(bin, tool), args) {
+            let mcp_default = aden_mcp::tool_arg_default(tool, &arg).map(|value| {
+                value
+                    .as_str()
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| value.to_string())
+            });
+            if mcp_default.as_deref() != Some(cli_default.as_str()) {
+                failures.push(format!(
+                    "{tool}.{arg}: CLI default `{cli_default}`, MCP default {mcp_default:?}"
+                ));
+            }
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "CLI→MCP default drift:\n  {}",
         failures.join("\n  ")
     );
 }
