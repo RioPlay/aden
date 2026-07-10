@@ -21,8 +21,8 @@ owner is *not* unmaintained: it remains subject to the normal contribution and
 review process, and contributors must not imply otherwise in issues or pull
 requests.
 
-Changes to the following protected surfaces require review by a maintainer who
-did not author the change before merge:
+Changes to the following protected surfaces require documented maintainer review
+and the applicable validation before merge:
 
 * public CLI, MCP, graph, store, or result-schema compatibility;
 * graph/store migrations and their rollback paths;
@@ -30,11 +30,16 @@ did not author the change before merge:
   vulnerability remediation; and
 * governance, licensing, contributor, or release-policy documents.
 
-When no independent maintainer is available, the change remains open for normal
-review. It must not self-declare independent approval or bypass the requirement.
-The BDFL may make an explicit, documented exception only to contain an active
-security incident or prevent immediate data loss; the rationale, scope, and
-follow-up review must be recorded in the pull request or issue.
+The BDFL may approve and merge protected changes after recording the affected
+contract, validation, and recovery or rollback path in the pull request or
+issue. When an independent maintainer is formally recorded here, that person
+must review protected changes they did not author. Until then, independent
+review is encouraged but is not a release or merge gate: no tool, agent, or
+process acting on the BDFL's direction counts as an independent reviewer.
+
+For an active security incident, critical release breakage, or credible risk of
+data loss, the BDFL may take the smallest reversible action necessary to
+contain harm and record the rationale and follow-up work afterward.
 
 [[ownership-matrix]]
 === Ownership matrix
@@ -50,42 +55,42 @@ independent owner or reviewer today.
 
 |`aden-cli`, installation, configuration, and release artifacts
 |BDFL
-|Vacant
+|None appointed; BDFL approval after documented validation
 |Single-maintainer
 
 |`aden-mcp` and published MCP schemas
 |BDFL
-|Vacant
+|None appointed; BDFL approval after documented validation
 |Single-maintainer
 
 |`aden-lsp` and editor-facing experimental interfaces
 |BDFL
-|Vacant
+|None appointed; BDFL approval after documented validation
 |Single-maintainer
 
 |`aden-core`, `aden-asm`, `aden-emit`, `aden-parse`, `aden-paths`, and `aden-policy`
 |BDFL
-|Vacant
+|None appointed; BDFL approval after documented validation
 |Single-maintainer
 
 |`aden-graph`, `aden-index`, `aden-store`, persisted schemas, and migrations
 |BDFL
-|Vacant
+|None appointed; BDFL approval after documented validation
 |Single-maintainer
 
 |`aden-diagnose`, `aden-heal`, and `aden-propose`
 |BDFL
-|Vacant
+|None appointed; BDFL approval after documented validation
 |Single-maintainer
 
 |Security policy, vulnerability intake, and incident response
 |BDFL
-|Backup responder: vacant
+|Backup responder: none appointed; BDFL is the active responder
 |Single point of contact; see <<continuity>>
 
 |Governance, licensing, contributor policy, and compatibility policy
 |BDFL
-|Vacant
+|None appointed; BDFL approval after documented validation
 |Single-maintainer
 |===
 

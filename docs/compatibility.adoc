@@ -184,7 +184,10 @@ merge:
 
 The release gate must fail when a stable fixture changes without either a
 compatible classification or an approved breaking-change record. The record
-must name the release, affected surface, migration, rollback, and reviewer.
+must name the release, affected surface, migration, rollback, and maintainer
+approval. When an independent maintainer is formally appointed, the record must
+also name that review; until then, BDFL approval after documented validation is
+sufficient for a sole-maintainer release.
 
 == Changing This Policy
 

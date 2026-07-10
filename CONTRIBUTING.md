@@ -41,8 +41,8 @@ you can, explain the user-visible outcome, and include the validation you ran.
 Avoid mixing generated artifacts, broad refactors, and behavior changes unless
 the dependency is necessary and documented.
 
-The following protected changes require review by a maintainer other than the
-author before merge:
+The following protected changes require documented maintainer review and the
+applicable validation before merge:
 
 - public CLI, MCP, graph, store, or result-schema compatibility;
 - graph/store migrations or rollback behavior;
@@ -50,11 +50,13 @@ author before merge:
   vulnerability remediation; and
 - governance, licensing, contributor, or release-policy documents.
 
-If an independent maintainer is not available, leave the change open for normal
-review; do not self-approve it or weaken its acceptance criteria. The only
-exception is a documented emergency action authorized under
-[MAINTAINERS.md](MAINTAINERS.md), followed by independent review when one is
-available.
+The BDFL may approve and merge protected changes after documenting the affected
+contract, validation, and recovery or rollback path in the pull request or
+issue. If an independent maintainer is formally recorded in
+[MAINTAINERS.md](MAINTAINERS.md), that maintainer must review protected changes
+they did not author. Until then, independent review is encouraged but does not
+block a sole-maintainer release; an AI agent or tool acting on the BDFL's
+direction is not an independent reviewer.
 
 When a change affects a public contract, migration, or security boundary, state
 in the pull request:
