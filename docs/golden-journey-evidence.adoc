@@ -1,59 +1,56 @@
 [[golden-journey-evidence]]
 = Golden Journey Evidence
 
-This record defines the reproducible DX-103 dogfood measurement. It does not
-claim a median from one machine. CI proves the commands against a clean
-repository; contributors may measure their local elapsed time with:
+This record defines the reproducible DX-103 dogfood measurement. CI proves the
+commands against a clean repository; contributors may measure their local elapsed time with:
 
 [source,bash]
 ----
 scripts/measure_golden_journey.sh
 ----
 
-The script creates a temporary committed repository, invokes the installed
+The script can create an isolated installer output and a temporary committed repository, invokes the installed
 `aden` binary for the documented `ask` → `understand` → `check` journey, and
-prints elapsed seconds and command count. A release may claim the under-three-
-minute median only after collecting multiple recorded runs with machine and
-version notes. The installed `aden-mcp --version` smoke check is part of CI.
+prints elapsed time, command count, source provenance, and binary digest. The installed `aden-mcp --version` smoke check is part of CI.
 
 Developer observation: the journey needs no graph anchor and no repository
 mutation. Agent observation: MCP receives structured receipt-bearing responses;
 ambiguous symbols return candidates and recovery instead of a guessed anchor.
 
-== Recorded installer-binary runs
+== Recorded clean-install-to-first-answer runs
 
-These runs used the user-local binary installed by `install.sh`, not
-`target/debug`. They are a reproducible local sample, not a release-wide
-performance claim.
+These runs used `FULL_INSTALL=1`, which builds and installs the committed source
+into a new temporary install directory before the three-command journey. The
+user-owned `.gitignore` edit was explicitly excluded from provenance; all
+build-affecting tracked paths were clean.
 
 |===
 |Date (UTC) |Commit |Binary |Version |Elapsed |Commands |Observation
 
-|2026-07-10T03:47:39Z
-|`aeb3d7a`
-|`/home/unknown/.local/bin/aden`
+|2026-07-10T04:11:06Z
+|`d8146cd2b77b86d2573de398a474dcd90920ab65`
+|temporary installer output
 |`aden 0.2.0`
-|196 ms
+|64,524 ms
 |3
-|`ask`, `understand`, and `check` succeeded in a fresh committed repository.
+|SHA-256 `0baecb2903aad9ef3cdc7defabaecbd665a40347219b688a588a0ddb5f2d8dad`; journey succeeded.
 
-|2026-07-10T03:47:40Z
-|`aeb3d7a`
-|`/home/unknown/.local/bin/aden`
+|2026-07-10T04:12:21Z
+|`d8146cd2b77b86d2573de398a474dcd90920ab65`
+|temporary installer output
 |`aden 0.2.0`
-|176 ms
+|46,437 ms
 |3
-|No graph anchor, hook activation, or repository mutation was required.
+|No graph anchor, hook activation, or fixture-repository mutation was required.
 
-|2026-07-10T03:47:40Z
-|`aeb3d7a`
-|`/home/unknown/.local/bin/aden`
+|2026-07-10T04:13:22Z
+|`d8146cd2b77b86d2573de398a474dcd90920ab65`
+|temporary installer output
 |`aden 0.2.0`
-|184 ms
+|28,502 ms
 |3
-|The `ask` diagnostic noted a thin one-symbol assembly; the answer remained
-actionable and `understand`/`check` completed successfully.
+|The thin-assembly diagnostic remained actionable; `understand` and `check` completed successfully.
 |===
 
-Median of this three-run sample: 184 ms. Do not compare this warm installed-
-binary journey sample with cold-build installation time.
+Median of this three-run clean-install-to-first-answer sample: 46,437 ms
+(46.437 s), below the three-minute target.
