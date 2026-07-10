@@ -5,8 +5,12 @@ set -euo pipefail
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ADEN_BIN="${ADEN_BIN:-aden}"
 SOURCE_COMMIT="$(git -C "$PROJECT_ROOT" rev-parse HEAD 2>/dev/null || printf unknown)"
+# A user-owned .gitignore edit is intentionally excluded from this program's
+# provenance gate; every build-affecting tracked path must still be clean.
 SOURCE_TREE="dirty"
-git -C "$PROJECT_ROOT" diff --quiet && git -C "$PROJECT_ROOT" diff --cached --quiet && SOURCE_TREE="clean"
+git -C "$PROJECT_ROOT" diff --quiet -- . ':(exclude).gitignore' \
+  && git -C "$PROJECT_ROOT" diff --cached --quiet -- . ':(exclude).gitignore' \
+  && SOURCE_TREE="clean_except_user_gitignore"
 repo="$(mktemp -d)"
 trap 'rm -rf "$repo"' EXIT
 mkdir -p "$repo/src"
