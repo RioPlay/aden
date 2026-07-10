@@ -3,12 +3,13 @@
 
 use aden_core::receipt::{ContextReceipt, ReceiptFreshness};
 use aden_store::Storage;
-use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+use std::time::{Duration, SystemTime};
 
 use crate::indexer::r#gen::cmd_gen_silent;
-use crate::util::{discover_source_files, find_project_root, load_gen_cache};
+use crate::util::{discover_source_files, find_project_root};
 
 /// How aggressively a read path waits for an in-flight refresh.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -25,6 +26,130 @@ pub enum FreshPolicy {
 
 /// Cap for [`FreshPolicy::Decision`] short-wait (seconds).
 pub const DECISION_WAIT: Duration = Duration::from_secs(5);
+
+static REQUIRE_FRESH: AtomicBool = AtomicBool::new(false);
+static REFRESH_CAUSE: AtomicU8 = AtomicU8::new(0);
+static NEXT_AUTHORITATIVE_DEADLINE: AtomicU64 = AtomicU64::new(1);
+static ACTIVE_AUTHORITATIVE_DEADLINE: AtomicU64 = AtomicU64::new(0);
+
+pub fn set_require_fresh(value: bool) {
+    REQUIRE_FRESH.store(value, Ordering::Relaxed);
+}
+
+fn require_fresh() -> bool {
+    REQUIRE_FRESH.load(Ordering::Relaxed)
+}
+
+/// Start the one wall-clock budget for an authoritative read.  It deliberately
+/// spans source fingerprinting, silent generation, writer waits, and retries:
+/// checking a deadline only between those operations would still let a blocked
+/// generation exceed the contract.  This runs in the command process, so
+/// terminating it cannot leave a child writer behind.
+fn begin_authoritative_deadline() -> Option<u64> {
+    if !require_fresh() {
+        return None;
+    }
+    let token = NEXT_AUTHORITATIVE_DEADLINE.fetch_add(1, Ordering::Relaxed);
+    ACTIVE_AUTHORITATIVE_DEADLINE.store(token, Ordering::Release);
+    std::thread::spawn(move || {
+        std::thread::sleep(DECISION_WAIT);
+        if ACTIVE_AUTHORITATIVE_DEADLINE.load(Ordering::Acquire) == token {
+            eprintln!(
+                "aden: authoritative freshness required, but refresh did not complete within {}s; retry after the active writer finishes or unset ADEN_SKIP_AUTO_GEN",
+                DECISION_WAIT.as_secs()
+            );
+            std::process::exit(2);
+        }
+    });
+    Some(token)
+}
+
+fn complete_authoritative_deadline(token: Option<u64>) {
+    if let Some(token) = token {
+        let _ = ACTIVE_AUTHORITATIVE_DEADLINE.compare_exchange(
+            token,
+            0,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+    }
+}
+
+fn set_refresh_cause(cause: u8) {
+    REFRESH_CAUSE.store(cause, Ordering::Relaxed);
+}
+
+fn refresh_cause() -> &'static str {
+    match REFRESH_CAUSE.load(Ordering::Relaxed) {
+        1 => "source_changed",
+        2 => "store_missing",
+        3 => "store_incompatible",
+        4 => "refresh_in_flight",
+        5 => "frozen",
+        6 => "refresh_failed",
+        _ => "none",
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) struct FreshnessManifest {
+    pub graph_revision: String,
+    pub source_fingerprint: String,
+}
+
+fn manifest_path(root: &Path) -> PathBuf {
+    aden_paths::project_dir(root).join("freshness.json")
+}
+
+fn stable_hex(parts: impl IntoIterator<Item = impl Hash>) -> String {
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    for part in parts {
+        part.hash(&mut hash);
+    }
+    format!("{:016x}", hash.finish())
+}
+
+/// Content-addressed tree fingerprint. Paths and bytes are both included, so
+/// same-second edits, rename/delete, and equal-sized rewrites cannot look fresh.
+pub(crate) fn source_fingerprint(root: &Path) -> std::io::Result<String> {
+    let mut sources = discover_source_files(root)
+        .map_err(|e| std::io::Error::other(format!("source discovery failed: {e}")))?;
+    sources.sort();
+    let mut records = Vec::with_capacity(sources.len());
+    for source in sources {
+        let relative = source.strip_prefix(root).unwrap_or(&source);
+        // A source we cannot read cannot authoritatively match an old manifest.
+        // Propagate the error so every caller fails closed rather than hashing a
+        // stable synthetic error marker as if it were indexed content.
+        let bytes = std::fs::read(&source)?;
+        records.push((relative.to_string_lossy().into_owned(), bytes));
+    }
+    Ok(stable_hex(records))
+}
+
+pub(crate) fn publish_freshness_manifest(
+    root: &Path,
+    snapshot: &[u8],
+    indexed_source_fingerprint: String,
+) -> std::io::Result<()> {
+    let manifest = FreshnessManifest {
+        graph_revision: stable_hex([snapshot]),
+        // Capture this before generation begins. If a file mutates mid-gen,
+        // the post-gen observation differs and the next read re-arms refresh.
+        source_fingerprint: indexed_source_fingerprint,
+    };
+    let path = manifest_path(root);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, serde_json::to_vec_pretty(&manifest)?)?;
+    std::fs::rename(tmp, path)
+}
+
+fn load_manifest(root: &Path) -> Option<FreshnessManifest> {
+    serde_json::from_slice(&std::fs::read(manifest_path(root)).ok()?).ok()
+}
 
 /// Machine-readable freshness for agents (JSON envelope).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -122,72 +247,16 @@ pub(crate) fn index_is_stale_for_root(root: &Path) -> bool {
         return false;
     }
 
-    let cache = load_gen_cache(&aden_paths::gen_cache_file(root));
-    let sources = match discover_source_files(root) {
-        Ok(s) => s,
-        Err(_) => return false,
-    };
-
-    let mut live: HashMap<String, u64> = HashMap::with_capacity(sources.len());
-    for src in &sources {
-        let rel = src
-            .strip_prefix(root)
-            .unwrap_or(src)
-            .to_string_lossy()
-            .to_string();
-        let path_disposition =
-            aden_core::filter::FileDisposition::for_path(Path::new(&rel), false, true);
-        if !path_disposition.is_indexed() {
-            continue;
-        }
-        // Keep freshness in the same eligibility universe as generation. A
-        // previously content-redacted file becoming safe (or vice versa) must
-        // trigger regeneration even when its mtime does not advance.
-        let disposition = match std::fs::read_to_string(src) {
-            Ok(text) => aden_core::filter::FileDisposition::for_content(&text),
-            Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
-                aden_core::filter::FileDisposition::InvalidEncoding
-            }
-            Err(_) => aden_core::filter::FileDisposition::IoFailed,
-        };
-        if !disposition.is_indexed() {
-            if cache.dispositions.get(&rel).map(|entry| entry.disposition) != Some(disposition) {
-                return true;
-            }
-            continue;
-        }
-        if cache.dispositions.contains_key(&rel) {
-            return true;
-        }
-        let mtime = src
-            .metadata()
-            .ok()
-            .and_then(|m| m.modified().ok())
-            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        live.insert(rel, mtime);
-    }
-
-    if cache.entries.is_empty() && !live.is_empty() {
+    // A valid manifest is the sole authoritative source-to-graph binding.
+    // The legacy mtime/cache fallback cannot distinguish same-second,
+    // equal-sized rewrites, so absent, corrupt, or unwriteable manifests must
+    // never yield a `current` claim.
+    let Some(manifest) = load_manifest(root) else {
         return true;
-    }
-
-    for (rel, mtime) in &live {
-        match cache.entries.get(rel) {
-            None => return true,
-            Some(e) if *mtime > e.source_mtime => return true,
-            _ => {}
-        }
-    }
-
-    for key in cache.entries.keys() {
-        if !live.contains_key(key) {
-            return true;
-        }
-    }
-
-    false
+    };
+    source_fingerprint(root)
+        .map(|observed| observed != manifest.source_fingerprint)
+        .unwrap_or(true)
 }
 
 pub const STALE_HINT: &str = "NOTE: index may lag the working tree — refresh in progress or last snapshot served. Blast-radius tools wait briefly; explore tools fail open.";
@@ -227,10 +296,20 @@ pub fn classify_freshness(path: &Path) -> Freshness {
 pub fn augment_read_json(path: &Path, value: serde_json::Value) -> serde_json::Value {
     let freshness = classify_freshness(path);
     let stale = freshness != Freshness::Current;
-    augment_read_json_with_freshness(stale, freshness, value)
+    augment_read_json_for_root(Some(path), stale, freshness, value)
 }
 
+#[cfg(test)]
 fn augment_read_json_with_freshness(
+    stale: bool,
+    freshness: Freshness,
+    value: serde_json::Value,
+) -> serde_json::Value {
+    augment_read_json_for_root(None, stale, freshness, value)
+}
+
+fn augment_read_json_for_root(
+    path: Option<&Path>,
     stale: bool,
     freshness: Freshness,
     value: serde_json::Value,
@@ -251,8 +330,21 @@ fn augment_read_json_with_freshness(
         // changing its shape would be a breaking migration. Aden-generated
         // read envelopes reserve this namespace and therefore receive v1.
         map.entry("context_receipt").or_insert_with(|| {
-            serde_json::to_value(ContextReceipt::new().with_freshness(freshness.into()))
-                .expect("ContextReceipt always serializes")
+            let root = path.map(find_project_root);
+            let manifest = root.as_deref().and_then(load_manifest);
+            let observed = root
+                .as_deref()
+                .and_then(|root| source_fingerprint(root).ok());
+            serde_json::to_value(
+                ContextReceipt::new()
+                    .with_freshness(freshness.into())
+                    .with_revision(
+                        manifest.map(|m| m.graph_revision),
+                        observed,
+                        refresh_cause(),
+                    ),
+            )
+            .expect("ContextReceipt always serializes")
         });
     };
     match value {
@@ -308,23 +400,41 @@ pub fn ensure_fresh_decision(path: &Path) {
 }
 
 pub fn ensure_fresh_with_policy(path: &Path, policy: FreshPolicy) {
+    set_refresh_cause(0);
+    let authoritative_deadline = begin_authoritative_deadline();
     let root = find_project_root(path);
     let skip_auto = skip_auto_gen_on_read();
     let (existing_store, _) = aden_paths::resolve_read_store(&root);
     if !existing_store.exists() {
+        set_refresh_cause(2);
         if !skip_auto {
             let _ = cmd_gen_silent(&root);
         }
+        enforce_authoritative(&root);
+        complete_authoritative_deadline(authoritative_deadline);
         return;
     }
 
     if !skip_auto && recover_if_incompatible_store(&root) {
+        set_refresh_cause(3);
+        enforce_authoritative(&root);
+        complete_authoritative_deadline(authoritative_deadline);
         return;
     }
 
-    if skip_auto || !index_is_stale_for_root(&root) {
+    if skip_auto {
+        if index_is_stale_for_root(&root) {
+            set_refresh_cause(5);
+            enforce_authoritative(&root);
+        }
+        complete_authoritative_deadline(authoritative_deadline);
         return;
     }
+    if !index_is_stale_for_root(&root) {
+        complete_authoritative_deadline(authoritative_deadline);
+        return;
+    }
+    set_refresh_cause(1);
 
     // Silent incremental regen (single-flight inside gen; fail-open if locked).
     // Dirty re-arm: up to two more silent gens when we successfully refreshed but
@@ -332,19 +442,37 @@ pub fn ensure_fresh_with_policy(path: &Path, policy: FreshPolicy) {
     for _ in 0..3 {
         let _ = cmd_gen_silent(&root);
         if !index_is_stale_for_root(&root) {
+            complete_authoritative_deadline(authoritative_deadline);
             return;
         }
         // Still stale: either lock was contended or more edits landed mid-gen.
-        if policy == FreshPolicy::Decision {
+        if policy == FreshPolicy::Decision || require_fresh() {
+            set_refresh_cause(4);
             wait_for_refresh_or_timeout(&root, DECISION_WAIT);
             if !index_is_stale_for_root(&root) {
+                complete_authoritative_deadline(authoritative_deadline);
                 return;
             }
             // Continue loop for another silent attempt after the wait.
         } else {
             // Explore: fail-open immediately (serve last snapshot).
+            enforce_authoritative(&root);
+            complete_authoritative_deadline(authoritative_deadline);
             return;
         }
+    }
+    set_refresh_cause(6);
+    enforce_authoritative(&root);
+    complete_authoritative_deadline(authoritative_deadline);
+}
+
+fn enforce_authoritative(root: &Path) {
+    if require_fresh() && index_is_stale_for_root(root) {
+        eprintln!(
+            "aden: authoritative freshness required, but refresh did not complete within {}s; retry after the active writer finishes or unset ADEN_SKIP_AUTO_GEN",
+            DECISION_WAIT.as_secs()
+        );
+        std::process::exit(2);
     }
 }
 

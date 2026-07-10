@@ -184,6 +184,19 @@ fn cmd_gen_inner(
         path
     };
     let root = find_project_root(search_start);
+    let indexed_source_fingerprint = super::fresh::source_fingerprint(&root)?;
+
+    // Deterministic integration-test seam for the otherwise timing-sensitive
+    // "tree changes while a read-triggered generation is running" case.  The
+    // manifest must retain the pre-generation fingerprint, causing the caller
+    // to report lag rather than a false `current`.  Release builds omit this.
+    #[cfg(debug_assertions)]
+    if let Some(relative) = std::env::var_os("ADEN_TEST_MUTATE_DURING_GEN") {
+        let target = root.join(relative);
+        let mut bytes = std::fs::read(&target)?;
+        bytes.extend_from_slice(b"\n// aden freshness test mutation\n");
+        std::fs::write(target, bytes)?;
+    }
 
     // Store-first: `gen` writes ONLY to .aden/store. Module hub nodes
     // (mod-project, mod-<crate>) are synthesized into the store by
@@ -968,10 +981,17 @@ fn cmd_gen_inner(
         }
     }
 
-    if let Some((snapshot_path, bytes)) = pending_snapshot
-        && let Err(e) = aden_graph::snapshot::publish_bytes(&snapshot_path, &bytes)
-    {
-        eprintln!("WARN: Failed to publish read snapshot: {e}");
+    if let Some((snapshot_path, bytes)) = pending_snapshot {
+        match aden_graph::snapshot::publish_bytes(&snapshot_path, &bytes) {
+            Ok(()) => {
+                super::fresh::publish_freshness_manifest(
+                    &root,
+                    &bytes,
+                    indexed_source_fingerprint,
+                )?;
+            }
+            Err(e) => eprintln!("WARN: Failed to publish read snapshot: {e}"),
+        }
     }
 
     // Invalidate caches after generating so the next query rebuilds

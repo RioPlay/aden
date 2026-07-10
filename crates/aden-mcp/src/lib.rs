@@ -558,6 +558,14 @@ pub fn prepare_cli_args_for_mcp(
         .find(|candidate| candidate.name == tool)
         .ok_or_else(|| format!("unknown tool: {tool}"))?;
     let mut cmd_args = build_cli_args(spec, args, structured_output_flags(tool));
+    if supports_authoritative_freshness(tool)
+        && args
+            .get("require_fresh")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+    {
+        cmd_args.insert(0, "--require-fresh".to_string());
+    }
     apply_mcp_budget_defaults(tool, args, &mut cmd_args);
     Ok(cmd_args)
 }
@@ -580,6 +588,16 @@ fn tool_from_spec(spec: &ToolSpec) -> Tool {
             p.insert("default".to_string(), default);
         }
         props.insert(arg_name.to_string(), serde_json::Value::Object(p));
+    }
+    if supports_authoritative_freshness(spec.name) {
+        props.insert(
+            "require_fresh".to_string(),
+            serde_json::json!({
+                "type": "boolean",
+                "default": false,
+                "description": "Wait briefly for an authoritative current graph or fail actionably"
+            }),
+        );
     }
     let mut schema = JsonObject::new();
     schema.insert("type".to_string(), serde_json::json!("object"));
@@ -608,6 +626,40 @@ fn tool_from_spec(spec: &ToolSpec) -> Tool {
     Tool::new(spec.name, spec.description, Arc::new(schema))
         .with_title(spec.title)
         .annotate(spec.effect.annotations())
+}
+
+/// Whether this MCP tool is a graph-read surface that may request an
+/// authoritative source-to-graph binding. The CLI flag is global for clap
+/// parsing, but mutation/admin tools intentionally do not advertise it.
+pub fn supports_authoritative_freshness(tool: &str) -> bool {
+    matches!(
+        tool,
+        "grep"
+            | "search"
+            | "ask"
+            | "asm"
+            | "query"
+            | "locate"
+            | "understand"
+            | "impact-diff"
+            | "communities"
+            | "scope"
+            | "viz"
+    )
+}
+
+/// Testable view of the generated MCP schema. `require_fresh` is additive to
+/// a ToolSpec rather than stored in its static argument table, so parity tests
+/// must inspect the final schema rather than only `tool_arg_specs()`.
+pub fn tool_advertises_authoritative_freshness(tool: &str) -> bool {
+    TOOLS
+        .iter()
+        .find(|spec| spec.name == tool)
+        .is_some_and(|spec| {
+            tool_from_spec(spec).input_schema["properties"]
+                .get("require_fresh")
+                .is_some()
+        })
 }
 
 /// The tool surface the operator requested, gating which tools `list_tools`
@@ -1359,6 +1411,10 @@ fn normalize_lexical(p: &Path) -> std::path::PathBuf {
 /// `"aden"` breaks whenever the MCP server runs from a context where the CLI
 /// is installed but not on `PATH` (a very common MCP-client launch setup).
 fn resolve_aden_binary() -> std::ffi::OsString {
+    #[cfg(test)]
+    if let Some(binary) = TEST_ADEN_BINARY.lock().ok().and_then(|value| value.clone()) {
+        return binary;
+    }
     if let Some(explicit) = std::env::var_os("ADEN_BIN") {
         return explicit;
     }
@@ -1372,6 +1428,11 @@ fn resolve_aden_binary() -> std::ffi::OsString {
     }
     std::ffi::OsString::from("aden")
 }
+
+/// Test-only executable override, avoiding process-global environment mutation
+/// while exercising the real MCP transport and child-process bridge.
+#[cfg(test)]
+static TEST_ADEN_BINARY: std::sync::Mutex<Option<std::ffi::OsString>> = std::sync::Mutex::new(None);
 
 /// Hard ceiling on how long a single shelled-out `aden` invocation may run.
 /// MCP tool calls are request/response, so a tool that never returns (a
@@ -1627,6 +1688,47 @@ pub async fn serve_with_options(project_dir: PathBuf, pinned: bool) -> anyhow::R
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rmcp::ClientHandler;
+    use std::sync::Mutex;
+
+    #[derive(Clone)]
+    struct RootsClient {
+        roots: Arc<RwLock<Vec<Root>>>,
+    }
+
+    impl ClientHandler for RootsClient {
+        fn get_info(&self) -> ClientInfo {
+            ClientInfo::default()
+        }
+
+        fn list_roots(
+            &self,
+            _context: rmcp::service::RequestContext<rmcp::service::RoleClient>,
+        ) -> impl std::future::Future<Output = Result<ListRootsResult, McpError>> + Send + '_
+        {
+            let roots = self
+                .roots
+                .read()
+                .map(|roots| roots.clone())
+                .unwrap_or_default();
+            std::future::ready(Ok(ListRootsResult::new(roots)))
+        }
+    }
+
+    static MCP_ROOT_TEST_ENV: Mutex<()> = Mutex::new(());
+
+    fn mcp_root_fixture(label: &str, symbol: &str) -> PathBuf {
+        let path =
+            std::env::temp_dir().join(format!("aden-mcp-roots-{label}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&path);
+        std::fs::create_dir_all(path.join("src")).unwrap();
+        std::fs::write(path.join("src/lib.rs"), format!("pub fn {symbol}() {{}}\n")).unwrap();
+        path
+    }
+
+    fn file_uri(path: &Path) -> String {
+        format!("file://{}", path.display())
+    }
 
     #[test]
     fn test_tools_table_is_non_empty() {
@@ -1805,6 +1907,94 @@ mod tests {
             strict < terminator,
             "asm strict must remain a CLI flag: {asm_out:?}"
         );
+    }
+
+    #[test]
+    fn read_tools_expose_and_forward_authoritative_freshness() {
+        let server = AdenMcpServer::new(PathBuf::from("."));
+        let tool = server.get_tool("grep").unwrap();
+        assert_eq!(
+            tool.input_schema["properties"]["require_fresh"]["default"],
+            false
+        );
+
+        let mut args = serde_json::Map::new();
+        args.insert("pattern".into(), serde_json::json!("needle"));
+        args.insert("require_fresh".into(), serde_json::json!(true));
+        let argv = prepare_cli_args_for_mcp("grep", &args).unwrap();
+        assert_eq!(argv.first().map(String::as_str), Some("--require-fresh"));
+        assert!(argv.iter().any(|arg| arg == "grep"));
+
+        assert!(
+            server.get_tool("gen").unwrap().input_schema["properties"]
+                .get("require_fresh")
+                .is_none(),
+            "mutating tools must not advertise a read-authority option"
+        );
+    }
+
+    #[tokio::test]
+    async fn mcp_roots_switch_routes_require_fresh_reads_to_the_new_workspace() {
+        // This uses rmcp's real duplex client/server transport.  It is not a
+        // direct `set_project_dir` unit test: each tool call makes the protocol
+        // `roots/list` request that a real MCP host answers.
+        let _env = MCP_ROOT_TEST_ENV.lock().unwrap();
+        let root_a = mcp_root_fixture("a", "only_a");
+        let root_b = mcp_root_fixture("b", "only_b");
+        let cli = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join("target/debug/aden");
+        assert!(
+            cli.is_file(),
+            "aden CLI test binary missing: {}",
+            cli.display()
+        );
+        *TEST_ADEN_BINARY.lock().unwrap() = Some(cli.into_os_string());
+
+        let roots = Arc::new(RwLock::new(vec![Root::new(file_uri(&root_a))]));
+        let client_handler = RootsClient {
+            roots: roots.clone(),
+        };
+        let (server_transport, client_transport) = tokio::io::duplex(16 * 1024);
+        let server = AdenMcpServer::new(root_a.clone());
+        let server_task = tokio::spawn(async move { server.serve(server_transport).await });
+        let client = client_handler.serve(client_transport).await.unwrap();
+
+        let call = |needle: &str| {
+            CallToolRequestParams::new("grep").with_arguments(
+                serde_json::json!({"pattern": needle, "require_fresh": true})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            )
+        };
+        let a = client.call_tool(call("only_a")).await.unwrap();
+        let a_text = a.content[0].raw.as_text().unwrap().text.clone();
+        assert!(a_text.contains("only_a"), "A response: {a_text}");
+        let a_json: serde_json::Value = serde_json::from_str(&a_text).unwrap();
+
+        *roots.write().unwrap() = vec![Root::new(file_uri(&root_b))];
+        let b = client.call_tool(call("only_b")).await.unwrap();
+        let b_text = b.content[0].raw.as_text().unwrap().text.clone();
+        assert!(b_text.contains("only_b"), "B response: {b_text}");
+        assert!(
+            !b_text.contains("only_a"),
+            "A leaked into B response: {b_text}"
+        );
+        let b_json: serde_json::Value = serde_json::from_str(&b_text).unwrap();
+        assert_eq!(b_json["context_receipt"]["freshness"], "current");
+        assert_ne!(
+            a_json["context_receipt"]["graph_revision"],
+            b_json["context_receipt"]["graph_revision"]
+        );
+        assert_ne!(
+            a_json["context_receipt"]["observed_source_fingerprint"],
+            b_json["context_receipt"]["observed_source_fingerprint"]
+        );
+
+        client.cancel().await.unwrap();
+        let _ = server_task.await;
+        *TEST_ADEN_BINARY.lock().unwrap() = None;
     }
 
     #[test]

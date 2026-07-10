@@ -36,6 +36,63 @@ The BDFL may make an explicit, documented exception only to contain an active
 security incident or prevent immediate data loss; the rationale, scope, and
 follow-up review must be recorded in the pull request or issue.
 
+[[ownership-matrix]]
+=== Ownership matrix
+
+This matrix makes the present single-maintainer posture explicit.  "Vacant" is
+not a request for a contributor to act; it means the project has not received
+and recorded a willing person's consent for that role.  The BDFL is the current
+accountable owner for every listed surface.  No listed surface has a named
+independent owner or reviewer today.
+
+|===
+|Surface |Current accountable owner |Independent owner/reviewer |Status
+
+|`aden-cli`, installation, configuration, and release artifacts
+|BDFL
+|Vacant
+|Single-maintainer
+
+|`aden-mcp` and published MCP schemas
+|BDFL
+|Vacant
+|Single-maintainer
+
+|`aden-lsp` and editor-facing experimental interfaces
+|BDFL
+|Vacant
+|Single-maintainer
+
+|`aden-core`, `aden-asm`, `aden-emit`, `aden-parse`, `aden-paths`, and `aden-policy`
+|BDFL
+|Vacant
+|Single-maintainer
+
+|`aden-graph`, `aden-index`, `aden-store`, persisted schemas, and migrations
+|BDFL
+|Vacant
+|Single-maintainer
+
+|`aden-diagnose`, `aden-heal`, and `aden-propose`
+|BDFL
+|Vacant
+|Single-maintainer
+
+|Security policy, vulnerability intake, and incident response
+|BDFL
+|Backup responder: vacant
+|Single point of contact; see <<continuity>>
+
+|Governance, licensing, contributor policy, and compatibility policy
+|BDFL
+|Vacant
+|Single-maintainer
+|===
+
+The matrix is deliberately an ownership record, not a delegation mechanism.
+Adding or changing a row requires the named person's explicit consent and an
+update to this file in the same reviewed change.
+
 [[emergency-authority]]
 == Emergency Authority
 
@@ -64,6 +121,41 @@ change protected surfaces without a documented transfer of authority. A future
 successor or maintainer group must be named here, accept the role explicitly,
 and preserve the project license and contributor commitments before exercising
 maintainer authority.
+
+[[decision-appeal]]
+== Decision Appeal
+
+Anyone affected by a maintainer decision may request reconsideration in a
+public issue or pull request, with the decision, the requested outcome, and the
+evidence for it.  The BDFL should respond with a durable record: acceptance,
+rejection with rationale, or an ADR for decisions that change a project-wide
+rule.  An appeal does not override a security embargo, a contributor's privacy,
+or the emergency authority above.
+
+If the BDFL is unavailable, the appeal remains pending; contributors must not
+manufacture a governing vote or transfer authority by silence.  A successor
+recorded under <<continuity>> may resolve pending appeals within the authority
+explicitly granted to them.
+
+[[lg-103-confirmation]]
+== LG-103 External Confirmation Checklist
+
+The following evidence is required before the project may state that
+maintainer-continuity coverage is complete or mark LG-103 done:
+
+* a real person has explicitly consented, in a durable project record, to be a
+  backup security responder;
+* that record gives a private reporting route, the responder's acknowledgement
+  duty and availability expectations, and authority to triage or escalate a
+  report when the BDFL is unavailable;
+* a real independent maintainer has explicitly consented to review protected
+  changes, with their permitted surfaces and any time limit recorded here; and
+* the BDFL and the consenting people have reviewed the emergency procedure and
+  confirmed that the recorded contact routes work.
+
+Until all four confirmations exist, this repository has only the preparation
+described in this document: it does not have a backup security responder or
+independent protected-change review coverage.
 
 [[maintainer-records]]
 == Maintainer Records

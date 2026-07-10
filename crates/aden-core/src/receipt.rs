@@ -20,6 +20,15 @@ pub struct ContextReceipt {
     /// Existing freshness wire label, mirrored without changing its semantics.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub freshness: Option<ReceiptFreshness>,
+    /// Revision of the published graph snapshot that served this answer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub graph_revision: Option<String>,
+    /// Fingerprint of the source tree observed by this read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_source_fingerprint: Option<String>,
+    /// Why a refresh was (or was not) attempted for this answer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refresh_cause: Option<String>,
 }
 
 impl ContextReceipt {
@@ -27,6 +36,9 @@ impl ContextReceipt {
         Self {
             schema_version: CONTEXT_RECEIPT_SCHEMA_VERSION,
             freshness: None,
+            graph_revision: None,
+            observed_source_fingerprint: None,
+            refresh_cause: None,
         }
     }
 
@@ -41,6 +53,18 @@ impl ContextReceipt {
 
     pub fn with_freshness(mut self, freshness: ReceiptFreshness) -> Self {
         self.freshness = Some(freshness);
+        self
+    }
+
+    pub fn with_revision(
+        mut self,
+        graph_revision: Option<String>,
+        observed_source_fingerprint: Option<String>,
+        refresh_cause: impl Into<String>,
+    ) -> Self {
+        self.graph_revision = graph_revision;
+        self.observed_source_fingerprint = observed_source_fingerprint;
+        self.refresh_cause = Some(refresh_cause.into());
         self
     }
 }
@@ -108,5 +132,19 @@ mod tests {
         for receipt in [ContextReceipt::default(), ContextReceipt::new()] {
             assert_eq!(serde_json::to_value(receipt).unwrap()["schema_version"], 1);
         }
+    }
+
+    #[test]
+    fn revision_metadata_is_additive_inside_v1() {
+        let receipt = ContextReceipt::new().with_revision(
+            Some("graph-7".into()),
+            Some("source-9".into()),
+            "source_changed",
+        );
+        let value = serde_json::to_value(receipt).unwrap();
+        assert_eq!(value["schema_version"], 1);
+        assert_eq!(value["graph_revision"], "graph-7");
+        assert_eq!(value["observed_source_fingerprint"], "source-9");
+        assert_eq!(value["refresh_cause"], "source_changed");
     }
 }

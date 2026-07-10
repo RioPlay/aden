@@ -659,6 +659,17 @@ pub fn cmd_check(
     if json {
         let cap = max_issues.unwrap_or(20);
         let summary = crate::util::build_gate_summary(&errors, &warnings, &info, !fails, cap);
+        let outcome = crate::commands::outcome::OutcomeEnvelope::evaluated(
+            errors.len() + if min_severity <= 1 { warnings.len() } else { 0 },
+            if min_severity <= 1 { 0 } else { warnings.len() },
+            if errors.is_empty() {
+                "healthy"
+            } else {
+                "unhealthy"
+            },
+            crate::commands::outcome::policy_label(policy.violations.len(), policy.unwired),
+            "not_evaluated",
+        );
         let env = serde_json::json!({
             "ok": summary.ok,
             "counts": summary.counts,
@@ -667,6 +678,7 @@ pub fn cmd_check(
             "policy_mode": policy.mode,
             "policy_violations": policy.violations,
             "policy_unwired": policy.unwired,
+            "result": outcome,
         });
         println!("{}", serde_json::to_string(&env)?);
         if fails {

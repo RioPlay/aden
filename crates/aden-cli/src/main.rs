@@ -40,6 +40,12 @@ struct Cli {
     #[arg(short, long, global = true, help = "Verbose output")]
     verbose: bool,
     #[arg(
+        long,
+        global = true,
+        help = "Require an authoritative current graph; wait briefly or fail actionably"
+    )]
+    require_fresh: bool,
+    #[arg(
         short = 'p',
         long,
         global = true,
@@ -1111,6 +1117,7 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
     crate::util::quiet::set_quiet(quiet);
     let _unlimited = cli.unlimited;
     let _global_json = cli.json;
+    indexer::fresh::set_require_fresh(cli.require_fresh);
 
     // ADR-003 §6: store *creation* is explicitly authorized when -p/--project
     // was given or the command is `init`. Reads never consult this flag.

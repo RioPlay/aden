@@ -23,6 +23,13 @@ use std::process::Command;
 /// its confined project root.
 const GLOBAL_FLAGS: &[&str] = &["--json", "--unlimited", "--verbose", "--project"];
 
+/// `--require-fresh` is parsed globally by clap, so it appears in every
+/// subcommand's help. It is intentionally an MCP *read-surface* capability:
+/// write/admin tools must not advertise a freshness promise that they cannot
+/// fulfill. Keep it out of the generic global list so the forward parity test
+/// still verifies every MCP read tool that exposes it.
+const READ_SURFACE_ONLY_GLOBAL_FLAG: &str = "--require-fresh";
+
 /// CLI flags deliberately NOT exposed over MCP: `(tool, flag, reason)`.
 /// Every entry must carry a reason — an empty list is the healthy state.
 /// (Positional CLI args are out of scope here: the reverse check enumerates
@@ -406,6 +413,9 @@ fn cli_flags_are_declared_on_mcp_tools() {
             if flag == "--help" || GLOBAL_FLAGS.contains(&flag.as_str()) {
                 continue;
             }
+            if flag == READ_SURFACE_ONLY_GLOBAL_FLAG {
+                continue;
+            }
             let arg_name = flag.trim_start_matches("--").replace('-', "_");
             if args.iter().any(|(a, _ty)| *a == arg_name) {
                 continue;
@@ -430,6 +440,21 @@ fn cli_flags_are_declared_on_mcp_tools() {
         failures.len(),
         failures.join("\n  ")
     );
+}
+
+#[test]
+fn require_fresh_is_exposed_only_on_authoritative_read_tools() {
+    for (tool, _) in aden_mcp::tool_arg_specs() {
+        let declared = aden_mcp::tool_advertises_authoritative_freshness(tool);
+        assert_eq!(
+            declared,
+            aden_mcp::supports_authoritative_freshness(tool),
+            "{tool}: MCP schema drifted from the authoritative read-surface classification"
+        );
+    }
+    assert!(aden_mcp::supports_authoritative_freshness("grep"));
+    assert!(!aden_mcp::supports_authoritative_freshness("gen"));
+    assert!(!aden_mcp::supports_authoritative_freshness("audit"));
 }
 
 /// Enum drift: every value the MCP schema pins in an `enum` (check/lint

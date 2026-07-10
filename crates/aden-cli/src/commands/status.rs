@@ -66,6 +66,13 @@ pub fn cmd_status(path: &Path, json: bool) -> Result<(), Box<dyn std::error::Err
             .map(|a| format!("orphan: {a}"))
             .collect();
         let policy = aden_policy::audit_policy(path);
+        let outcome = crate::commands::outcome::OutcomeEnvelope::evaluated(
+            if health < 0.8 { 1 } else { 0 },
+            actionable.len() + policy.violations.len(),
+            if health < 0.8 { "unhealthy" } else { "healthy" },
+            crate::commands::outcome::policy_label(policy.violations.len(), policy.unwired),
+            "not_evaluated",
+        );
         let env = serde_json::json!({
             "ok": ok,
             "counts": {
@@ -99,6 +106,7 @@ pub fn cmd_status(path: &Path, json: bool) -> Result<(), Box<dyn std::error::Err
             "policy_mode": policy.mode,
             "policy_violations": policy.violations,
             "coverage": coverage,
+            "result": outcome,
         });
         println!("{}", serde_json::to_string(&env)?);
         return Ok(());

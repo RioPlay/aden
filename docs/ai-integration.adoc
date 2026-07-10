@@ -145,7 +145,28 @@ wait briefly (a few seconds) for an in-flight refresh.
 | Escape hatch | Host may set `ADEN_SKIP_AUTO_GEN=1` to freeze the index |
 
 JSON envelopes include `freshness` (`current` \| `snapshot` \| `lagging` \| `building` \|
-`unavailable`) and legacy `index_stale` for older prompts.
+`unavailable`) and legacy `index_stale` for older prompts. The versioned
+`context_receipt` additionally identifies the `graph_revision`, the
+`observed_source_fingerprint`, and the `refresh_cause`. The source fingerprint
+is content-addressed (path plus bytes), so same-second and equal-sized edits do
+not inherit the old whole-second mtime blind spot.
+
+For an answer that must never silently use a lagging snapshot, pass
+`--require-fresh` to a graph read, for example:
+
+[source,bash]
+----
+aden --require-fresh query --impact aden://module/example#symbol . --json
+----
+
+The option is also exposed as `require_fresh: true` on the corresponding MCP
+tools. Aden applies one five-second wall-clock deadline across source checking,
+generation attempts, writer waits, and retries, then exits with status 2 and an
+actionable error if authority cannot be proven.
+Frozen mode (`ADEN_SKIP_AUTO_GEN=1`) therefore remains useful for offline
+snapshot exploration, but intentionally fails an authoritative read after an
+edit. Existing qualitative freshness labels remain unchanged during this
+additive receipt migration.
 
 ==== Workspace auto-detect (MCP)
 

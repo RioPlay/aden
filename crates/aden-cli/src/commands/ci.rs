@@ -45,7 +45,16 @@ fn pkg_json_has_test_script(path: &Path) -> bool {
 /// reported as SKIP rather than FAIL so that a JS-only host running a
 /// Rust+Node monorepo does not block on absent `npm`. Overall result is `Err`
 /// only if at least one framework actually failed (exit status != 0).
+#[allow(dead_code)] // Kept as the independently useful, human-reporting test runner.
 pub fn run_project_tests(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    run_project_tests_with_output(path, false)
+}
+
+/// CI's JSON envelope owns stdout, so its nested test runner must be silent.
+fn run_project_tests_with_output(
+    path: &Path,
+    quiet: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     let has_cargo = path.join("Cargo.toml").exists();
     let has_go_mod = path.join("go.mod").exists();
     let has_pkg_json = path.join("package.json").exists() && pkg_json_has_test_script(path);
@@ -242,15 +251,21 @@ pub fn run_project_tests(path: &Path) -> Result<(), Box<dyn std::error::Error>> 
     for r in &results {
         match r {
             FrameworkResult::Pass(label) => {
-                println!("  [PASS] {label}");
+                if !quiet {
+                    println!("  [PASS] {label}");
+                }
             }
             FrameworkResult::Fail(label, msg) => {
                 let trimmed = msg.trim();
-                println!("  [FAIL] {label}:\n{trimmed}");
+                if !quiet {
+                    println!("  [FAIL] {label}:\n{trimmed}");
+                }
                 failures.push(format!("{label}: {trimmed}"));
             }
             FrameworkResult::Skip(label, reason) => {
-                println!("  [SKIP] {label}: {reason}");
+                if !quiet {
+                    println!("  [SKIP] {label}: {reason}");
+                }
             }
         }
     }
@@ -333,11 +348,15 @@ pub fn cmd_ci_check(path: &Path, json: bool) -> Result<(), Box<dyn std::error::E
                     })
             });
         } else {
-            println!("[CI] SKIP: constitutional firewall — no .aden/constitution.adoc (optional)");
+            if !json {
+                println!(
+                    "[CI] SKIP: constitutional firewall — no .aden/constitution.adoc (optional)"
+                );
+            }
         }
     }
 
-    gate!("tests", { run_project_tests(path) });
+    gate!("tests", { run_project_tests_with_output(path, json) });
 
     gate!("aden lint", {
         // quiet=true: ci-check only needs the Ok/Err result and builds its own
@@ -583,14 +602,16 @@ pub fn cmd_ci_check(path: &Path, json: bool) -> Result<(), Box<dyn std::error::E
                         }
                         let snippet =
                             &text[cap.start().saturating_sub(20)..(cap.end() + 20).min(text.len())];
-                        println!(
-                            "  {}Secret ({}) in {}: ...{}...{}",
-                            red,
-                            name,
-                            p.display(),
-                            snippet.replace('\n', " "),
-                            reset
-                        );
+                        if !json {
+                            println!(
+                                "  {}Secret ({}) in {}: ...{}...{}",
+                                red,
+                                name,
+                                p.display(),
+                                snippet.replace('\n', " "),
+                                reset
+                            );
+                        }
                         found += 1;
                     }
                 }
@@ -618,7 +639,7 @@ pub fn cmd_ci_check(path: &Path, json: bool) -> Result<(), Box<dyn std::error::E
     });
 
     gate!("owasp audit", {
-        crate::commands::cmd_audit(path, None, "text", true, false)
+        crate::commands::audit::cmd_audit_with_output(path, None, "text", true, false, json)
     });
 
     gate!("merge conflict markers", {
@@ -646,13 +667,15 @@ pub fn cmd_ci_check(path: &Path, json: bool) -> Result<(), Box<dyn std::error::E
                         || trimmed.starts_with(">>>>>>> ")
                         || trimmed == "======="
                     {
-                        println!(
-                            "  {}Merge conflict marker in {}: {}{}",
-                            red,
-                            p.display(),
-                            trimmed,
-                            reset
-                        );
+                        if !json {
+                            println!(
+                                "  {}Merge conflict marker in {}: {}{}",
+                                red,
+                                p.display(),
+                                trimmed,
+                                reset
+                            );
+                        }
                         found += 1;
                     }
                 }
@@ -710,13 +733,15 @@ pub fn cmd_ci_check(path: &Path, json: bool) -> Result<(), Box<dyn std::error::E
                         continue;
                     }
                     if insecure_re.is_match(line) {
-                        println!(
-                            "  {}Insecure http:// URL in {}: {}{}",
-                            red,
-                            p.display(),
-                            line.trim(),
-                            reset
-                        );
+                        if !json {
+                            println!(
+                                "  {}Insecure http:// URL in {}: {}{}",
+                                red,
+                                p.display(),
+                                line.trim(),
+                                reset
+                            );
+                        }
                         found += 1;
                     }
                 }
@@ -829,10 +854,30 @@ pub fn cmd_ci_check(path: &Path, json: bool) -> Result<(), Box<dyn std::error::E
 
     // ── Final Verdict ─────────────────────────────────────
     if json {
+        let outcome = crate::commands::outcome::OutcomeEnvelope::evaluated(
+            if exit_code == 0 { 0 } else { 1 },
+            warnings.len(),
+            if exit_code == 0 {
+                "healthy"
+            } else {
+                "unhealthy"
+            },
+            if warnings.iter().any(|w| w.contains("constitutional")) {
+                "advisory_findings"
+            } else {
+                "clean"
+            },
+            if warnings.iter().any(|w| w.contains("freshness")) {
+                "stale"
+            } else {
+                "fresh"
+            },
+        );
         let env = serde_json::json!({
             "ok": exit_code == 0,
             "gates": gate_results,
             "warnings": warnings,
+            "result": outcome,
         });
         println!("{}", serde_json::to_string_pretty(&env)?);
         if exit_code != 0 {
@@ -856,10 +901,21 @@ pub fn cmd_ci_check(path: &Path, json: bool) -> Result<(), Box<dyn std::error::E
         );
         std::process::exit(exit_code);
     }
-    println!(
-        "\n{}[CI] ALL GATES PASSED — Ready to commit.{}",
-        green, reset
-    );
+    if warnings.is_empty() {
+        println!(
+            "\n{}[CI] ALL GATES PASSED — Ready to commit.{}",
+            green, reset
+        );
+        println!("[CI] Outcome: clean");
+    } else {
+        println!(
+            "\n{}[CI] BLOCKING GATES PASSED — {} advisory finding(s) remain.{}",
+            yellow,
+            warnings.len(),
+            reset
+        );
+        println!("[CI] Outcome: passed_with_findings");
+    }
     Ok(())
 }
 

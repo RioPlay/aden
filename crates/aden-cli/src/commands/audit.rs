@@ -308,6 +308,21 @@ pub fn cmd_audit(
     strict: bool,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    cmd_audit_with_output(path, lang_filter, format, strict, json, false)
+}
+
+/// Run the audit while allowing a parent command to reserve stdout for its own
+/// machine-readable envelope. Findings still go to stderr in that mode: CI
+/// logs retain the security evidence, while `ci-check -j` remains one JSON
+/// document on stdout.
+pub(crate) fn cmd_audit_with_output(
+    path: &Path,
+    lang_filter: Option<&str>,
+    format: &str,
+    strict: bool,
+    json: bool,
+    quiet_stdout: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut findings: Vec<OwaspFinding> = Vec::new();
 
     // Determine which languages to scan
@@ -618,8 +633,20 @@ pub fn cmd_audit(
 
     if findings.is_empty() {
         if is_json {
+            let outcome = crate::commands::outcome::OutcomeEnvelope::evaluated(
+                0,
+                0,
+                "not_applicable",
+                "not_applicable",
+                "not_applicable",
+            );
             println!(
-                "{{\"findings\": [], \"summary\": {{\"total\": 0, \"critical\": 0, \"high\": 0, \"medium\": 0, \"low\": 0, \"info\": 0, \"scanned\": {total_scanned}}}}}"
+                "{}",
+                serde_json::to_string(&serde_json::json!({
+                    "findings": [],
+                    "summary": {"total": 0, "critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0, "scanned": total_scanned},
+                    "result": outcome,
+                }))?
             );
         } else if is_adoc {
             println!(
@@ -645,6 +672,14 @@ pub fn cmd_audit(
     let info = counts(OwaspSeverity::Info);
 
     if is_json {
+        let blocking = if strict { crit + high } else { 0 };
+        let outcome = crate::commands::outcome::OutcomeEnvelope::evaluated(
+            blocking,
+            findings.len().saturating_sub(blocking),
+            "not_applicable",
+            "not_applicable",
+            "not_applicable",
+        );
         // SECURITY (audit MEDIUM-4): build JSON with serde, not string
         // concatenation. `snippet` is attacker-controlled (a line from an
         // untrusted source file); the old hand-rolled escaper only handled `"`,
@@ -666,6 +701,7 @@ pub fn cmd_audit(
                 "critical": crit, "high": high, "medium": med,
                 "low": low, "info": info, "scanned": total_scanned,
             },
+            "result": outcome,
         });
         println!(
             "{}",
@@ -680,6 +716,27 @@ pub fn cmd_audit(
         for f in &findings {
             println!(
                 "=== [{} {}] {}:{}\n\n`{}`\n\n*Description:* {}\n\n*Remediation:* {}\n",
+                f.severity,
+                f.owasp_id,
+                f.file.display(),
+                f.line,
+                f.snippet,
+                f.description,
+                f.remediation
+            );
+        }
+    } else if quiet_stdout {
+        eprintln!("  === OWASP Security Audit Findings ===");
+        eprintln!(
+            "  {} file(s) scanned | {} total finding(s)",
+            total_scanned,
+            findings.len()
+        );
+        eprintln!("  Severity counts: CRIT={crit} HIGH={high} MED={med} LOW={low} INFO={info}");
+        eprintln!();
+        for f in &findings {
+            eprintln!(
+                "  [{}] {} | {}:{}\n    Code: {}\n    {}\n    Fix: {}\n",
                 f.severity,
                 f.owasp_id,
                 f.file.display(),
