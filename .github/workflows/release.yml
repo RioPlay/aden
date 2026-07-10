@@ -3,86 +3,485 @@ name: Release
 on:
   push:
     tags:
-      - 'v*'
+      # GitHub tag filters are globs, not regular expressions. Validate the
+      # exact vX.Y.Z shape in the first job.
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Existing workspace version to package (dry run; does not publish)"
+        required: true
+        type: string
 
+# Builds only need repository contents. Publishing and provenance permissions are
+# granted to the individual jobs that need them.
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
+  validate:
+    name: Validate release request
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      tag: ${{ steps.release.outputs.tag }}
+    steps:
+      - name: Checkout tagged source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Rust 1.90
+        uses: dtolnay/rust-toolchain@0176485ebe2f605bde554dd99f804beeaf7db3e2 # 1.90.0
+
+      - name: Validate tag and workspace version
+        id: release
+        shell: bash
+        env:
+          DISPATCH_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          workspace_version="$(cargo metadata --locked --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.name == "aden") | .version')"
+          if [[ -z "$workspace_version" || "$workspace_version" == "null" ]]; then
+            echo "Could not determine the aden workspace version" >&2
+            exit 1
+          fi
+
+          if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
+            requested_tag="${GITHUB_REF_NAME}"
+            requested_version="${requested_tag#v}"
+          else
+            requested_version="${DISPATCH_VERSION#v}"
+            requested_tag="v${requested_version}"
+          fi
+
+          if [[ "$requested_version" != "$workspace_version" ]]; then
+            echo "Release request ${requested_tag} does not match workspace version ${workspace_version}" >&2
+            exit 1
+          fi
+          if [[ ! "$requested_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Release tag must have the exact form vX.Y.Z: ${requested_tag}" >&2
+            exit 1
+          fi
+          version_regex="${workspace_version//./\\.}"
+          if ! grep -Eq "^## \\[${version_regex}\\]( |$)" CHANGELOG.md; then
+            echo "CHANGELOG.md has no release heading for ${workspace_version}" >&2
+            exit 1
+          fi
+
+          # Published tags must identify reviewed code on main. A manually
+          # dispatched dry-run intentionally remains usable from a feature branch
+          # so the release machinery itself can be integration-tested pre-merge.
+          if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
+            git fetch --no-tags origin main
+            if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+              echo "Release commit ${GITHUB_SHA} is not on origin/main" >&2
+              exit 1
+            fi
+          fi
+
+          echo "version=${workspace_version}" >> "$GITHUB_OUTPUT"
+          echo "tag=${requested_tag}" >> "$GITHUB_OUTPUT"
+
+      - name: Require successful ordinary CI for this release commit
+        if: github.event_name == 'push'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Poll only push runs from ci.yml for this exact commit. This cannot
+          # select the current release workflow, a PR run, or CI for another SHA.
+          # A tag may be pushed while the main-branch CI run is still underway,
+          # so wait for at most 30 minutes (120 * 15 seconds).
+          for attempt in $(seq 1 120); do
+            runs="$(gh api --method GET \
+              "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs" \
+              -f event=push \
+              -f head_sha="$GITHUB_SHA" \
+              -f per_page=100)"
+            run="$(jq -c --arg sha "$GITHUB_SHA" \
+              '[.workflow_runs[] | select(.head_sha == $sha and .event == "push")] | sort_by(.created_at) | last // empty' \
+              <<< "$runs")"
+
+            if [[ -z "$run" ]]; then
+              echo "Waiting for ordinary CI push run for ${GITHUB_SHA} (${attempt}/120)"
+              sleep 15
+              continue
+            fi
+
+            status="$(jq -r '.status' <<< "$run")"
+            conclusion="$(jq -r '.conclusion // ""' <<< "$run")"
+            url="$(jq -r '.html_url' <<< "$run")"
+            if [[ "$status" == "completed" ]]; then
+              if [[ "$conclusion" == "success" ]]; then
+                echo "Ordinary CI succeeded for ${GITHUB_SHA}: ${url}"
+                exit 0
+              fi
+              case "$conclusion" in
+                failure|cancelled|action_required|timed_out|startup_failure|stale)
+                  echo "Ordinary CI concluded ${conclusion} for ${GITHUB_SHA}: ${url}" >&2
+                  exit 1
+                  ;;
+                *)
+                  echo "Ordinary CI completed without success (${conclusion:-unknown}) for ${GITHUB_SHA}: ${url}" >&2
+                  exit 1
+                  ;;
+              esac
+            fi
+            echo "Ordinary CI is ${status} for ${GITHUB_SHA}: ${url} (${attempt}/120)"
+            sleep 15
+          done
+          echo "Timed out after 30 minutes waiting for successful ordinary CI for ${GITHUB_SHA}" >&2
+          exit 1
+
+  test:
+    name: Release gate
+    needs: validate
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Setup Rust 1.90
+        uses: dtolnay/rust-toolchain@0176485ebe2f605bde554dd99f804beeaf7db3e2 # 1.90.0
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+
+      - name: Check every target at the exact MSRV
+        run: cargo check --locked --workspace --all-targets
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Lint workspace
+        run: cargo clippy --locked --workspace -- -D warnings
+
+      - name: Test release workspace
+        run: cargo test --locked --workspace --exclude aden-lsp --no-fail-fast
+
+      - name: Test standalone LSP
+        run: cargo test --locked -p aden-lsp --no-fail-fast
+
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --version 0.19.8 --locked
+
+      - name: Audit advisories, licenses, sources, and bans
+        run: cargo deny check
+
+      - name: Verify vendored asset checksums
+        working-directory: crates/aden-cli/assets
+        run: sha256sum --check CHECKSUMS
+
+      - name: Verify SPDX headers
+        shell: bash
+        run: |
+          set -euo pipefail
+          missing=0
+          while IFS= read -r -d '' file; do
+            if ! grep -q "SPDX-License-Identifier" "$file"; then
+              echo "Missing SPDX header: $file"
+              missing=1
+            fi
+          done < <(find crates -name '*.rs' -print0)
+          while IFS= read -r -d '' file; do
+            if ! grep -q "SPDX-License-Identifier" "$file"; then
+              echo "Missing SPDX header: $file"
+              missing=1
+            fi
+          done < <(find scripts release -type f \( -name '*.sh' -o -name '*.ps1' \) -print0)
+          test "$missing" -eq 0
+          if grep -r "All rights reserved" --include='*.rs' --include='*.sh' --include='*.ps1' crates scripts release; then
+            echo "Contradictory 'All rights reserved' block found" >&2
+            exit 1
+          fi
+
+      - name: Assert default aden-cli dependency tree stays slim
+        shell: bash
+        run: |
+          set -euo pipefail
+          forbidden="ureq ureq-proto rustls ring tar zstd"
+          tree="$(cargo tree --locked -p aden-cli --edges normal --prefix none | awk '{print $1}' | sort -u)"
+          leaked=""
+          for dependency in $forbidden; do
+            if grep -ixq "$dependency" <<< "$tree"; then
+              leaked="$leaked $dependency"
+            fi
+          done
+          if [[ -n "$leaked" ]]; then
+            echo "Default dependency tree contains opt-in dependencies:$leaked" >&2
+            exit 1
+          fi
+
+      - name: Compile every opt-in feature
+        run: cargo check --locked --workspace --exclude aden-lsp --all-features
+
+      - name: Validate documentation contracts
+        run: cargo run --locked -p aden-cli -- check . --severity Forbid
+
+      - name: Validate roadmap state
+        run: |
+          python3 scripts/validate_roadmap.py
+          python3 scripts/test_roadmap_tools.py
+
   build:
+    name: Package ${{ matrix.target }}
+    needs: [validate, test]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            archive_ext: tar.gz
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            archive_ext: tar.gz
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+            archive_ext: tar.gz
+          - runner: macos-14
+            target: aarch64-apple-darwin
+            archive_ext: tar.gz
+          - runner: windows-2025
+            target: x86_64-pc-windows-msvc
+            archive_ext: zip
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Setup Rust 1.90
+        uses: dtolnay/rust-toolchain@0176485ebe2f605bde554dd99f804beeaf7db3e2 # 1.90.0
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+        with:
+          key: release-${{ matrix.target }}
+
+      - name: Build shipped binaries
+        shell: bash
+        run: >-
+          cargo build --locked --release --target ${{ matrix.target }}
+          -p aden-cli -p aden-mcp
+
+      - name: Smoke-test built binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          suffix=""
+          [[ "${{ runner.os }}" == "Windows" ]] && suffix=".exe"
+          "target/${{ matrix.target }}/release/aden${suffix}" --version
+          "target/${{ matrix.target }}/release/aden-mcp${suffix}" --version
+
+      - name: Stage shipped binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          suffix=""
+          [[ "${{ runner.os }}" == "Windows" ]] && suffix=".exe"
+          mkdir staged
+          cp "target/${{ matrix.target }}/release/aden${suffix}" staged/
+          cp "target/${{ matrix.target }}/release/aden-mcp${suffix}" staged/
+
+      - name: Upload native binaries
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: binaries-${{ matrix.target }}
+          path: staged/
+          if-no-files-found: error
+          retention-days: 7
+
+  package:
+    name: Package ${{ matrix.target }}
+    needs: [validate, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     strategy:
       fail-fast: false
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
-            binary: aden
+            archive_ext: tar.gz
           - target: aarch64-unknown-linux-gnu
-            os: ubuntu-latest
-            binary: aden
+            archive_ext: tar.gz
           - target: x86_64-apple-darwin
-            os: macos-latest
-            binary: aden
+            archive_ext: tar.gz
           - target: aarch64-apple-darwin
-            os: macos-latest
-            binary: aden
+            archive_ext: tar.gz
           - target: x86_64-pc-windows-msvc
-            os: windows-latest
-            binary: aden.exe
-
-    runs-on: ${{ matrix.os }}
-
+            archive_ext: zip
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Checkout source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Download native binaries
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          targets: ${{ matrix.target }}
+          name: binaries-${{ matrix.target }}
+          path: staged
 
-      - name: Install cross-compilation dependencies (Linux aarch64)
-        if: contains(matrix.target, 'aarch64-unknown-linux')
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.target }}
-
-      - name: Build binary
-        # aden-lsp is standalone and not part of the release artifacts; exclude it
-        # to skip the tower-lsp stack on every cross-compile target.
-        run: cargo build --workspace --exclude aden-lsp --release --target ${{ matrix.target }}
+      - name: Create deterministic self-contained archive
+        shell: bash
         env:
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+          ADEN_RELEASE_BINARY_DIR: ${{ github.workspace }}/staged
+        run: >-
+          bash scripts/package-release.sh
+          "${{ matrix.target }}"
+          "${{ needs.validate.outputs.version }}"
+          dist
 
-      - name: Rename binary
+      - name: Validate archive structure and checksums
+        shell: bash
+        run: >-
+          bash scripts/test-release-bundle.sh
+          "dist/aden-v${{ needs.validate.outputs.version }}-${{ matrix.target }}.${{ matrix.archive_ext }}"
+          "${{ matrix.target }}"
+          "${{ needs.validate.outputs.version }}"
+
+      - name: Attest archive provenance
+        uses: actions/attest-build-provenance@96b4a1ef7235a096b17240c259729fdd70c83d45 # v2
+        with:
+          subject-path: dist/aden-v${{ needs.validate.outputs.version }}-${{ matrix.target }}.${{ matrix.archive_ext }}
+
+      - name: Upload verified archive
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-${{ matrix.target }}
+          path: |
+            dist/aden-v${{ needs.validate.outputs.version }}-${{ matrix.target }}.${{ matrix.archive_ext }}
+            dist/aden-v${{ needs.validate.outputs.version }}-${{ matrix.target }}.${{ matrix.archive_ext }}.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  consume:
+    name: Install ${{ matrix.target }} archive
+    needs: [validate, package]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            archive_ext: tar.gz
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            archive_ext: tar.gz
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+            archive_ext: tar.gz
+          - runner: macos-14
+            target: aarch64-apple-darwin
+            archive_ext: tar.gz
+          - runner: windows-2025
+            target: x86_64-pc-windows-msvc
+            archive_ext: zip
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Download packaged archive
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-${{ matrix.target }}
+          path: dist
+
+      - name: Extract, smoke, and install (Unix)
+        if: runner.os != 'Windows'
         shell: bash
         run: |
-          mv target/${{ matrix.target }}/release/${{ matrix.binary }} ${{ matrix.binary }}-${{ matrix.target }}
+          set -euo pipefail
+          archive="dist/aden-v${{ needs.validate.outputs.version }}-${{ matrix.target }}.${{ matrix.archive_ext }}"
+          mkdir extracted installed
+          tar -xzf "$archive" -C extracted
+          bundle="$(find extracted -mindepth 1 -maxdepth 1 -type d -name 'aden-*' -print -quit)"
+          test -n "$bundle"
+          "$bundle/aden" --version
+          "$bundle/aden-mcp" --version
+          "$bundle/install.sh" --install-dir "$PWD/installed"
+          "$PWD/installed/aden" --version
+          "$PWD/installed/aden-mcp" --version
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.binary }}-${{ matrix.target }}
-          path: ${{ matrix.binary }}-${{ matrix.target }}
+      - name: Extract, smoke, and install (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $archive = "dist/aden-v${{ needs.validate.outputs.version }}-${{ matrix.target }}.${{ matrix.archive_ext }}"
+          Expand-Archive -Path $archive -DestinationPath extracted
+          $bundle = Get-ChildItem extracted -Directory | Select-Object -First 1
+          if (-not $bundle) { throw "Archive has no bundle directory" }
+          & "$($bundle.FullName)/aden.exe" --version
+          & "$($bundle.FullName)/aden-mcp.exe" --version
+          & "$($bundle.FullName)/install.ps1" -InstallDir "$PWD/installed"
+          & "$PWD/installed/aden.exe" --version
+          & "$PWD/installed/aden-mcp.exe" --version
 
-  release:
-    needs: build
-    runs-on: ubuntu-latest
-
+  publish:
+    name: Publish draft GitHub Release
+    if: github.event_name == 'push'
+    needs: [validate, consume]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     steps:
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
+      - name: Download verified archives
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          path: artifacts
+          pattern: release-*
+          path: dist
+          merge-multiple: true
 
-      - name: Create Release
-        uses: softprops/action-gh-release@v2
+      - name: Create aggregate checksums
+        working-directory: dist
+        shell: bash
+        run: |
+          set -euo pipefail
+          find . -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.zip' \) -printf '%f\n' \
+            | LC_ALL=C sort \
+            | xargs sha256sum > SHA256SUMS
+          test "$(wc -l < SHA256SUMS)" -eq 5
+          sha256sum --check SHA256SUMS
+
+      - name: Attest checksum manifest provenance
+        uses: actions/attest-build-provenance@96b4a1ef7235a096b17240c259729fdd70c83d45 # v2
         with:
-          files: artifacts/**/*
-          draft: true
-          generate_release_notes: true
+          subject-path: dist/SHA256SUMS
+
+      - name: Create draft release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+        run: >-
+          gh release create "$RELEASE_TAG"
+          dist/*.tar.gz dist/*.zip dist/*.sha256 dist/SHA256SUMS
+          --verify-tag
+          --draft
+          --generate-notes
+          --title "Aden $RELEASE_TAG"
+
+  dry-run-summary:
+    name: Dry-run summary
+    if: github.event_name == 'workflow_dispatch'
+    needs: [validate, consume]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Report result
+        run: |
+          echo "Release archives for v${{ needs.validate.outputs.version }} were built, installed, smoked, and attested."
+          echo "This workflow_dispatch run intentionally did not create a GitHub Release."

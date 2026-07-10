@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 RioPlay <rioplay@rioplay.dev>
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 # Reproducible DX-103 journey probe. Set FULL_INSTALL=1 to measure the literal
 # checkout build/install -> first answer path into an isolated install directory.
 set -euo pipefail

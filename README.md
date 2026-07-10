@@ -32,6 +32,12 @@ it does not find bugs or render HTML.
 
 ## Quick Start
 
+For a release install that does not require Rust, download the archive matching
+your platform from GitHub Releases, verify its checksum, extract it, and run the
+bundled `install.sh` or `install.ps1`. See link:docs/releasing.adoc[Releasing and
+prebuilt binaries]. The repository-root installers below remain the source-build
+path for contributors.
+
 ```bash
 # Install (builds release, copies to ~/.local/bin, adds to PATH)
 ./install.sh
