@@ -1,0 +1,33 @@
+:packet-id: LG-105
+:status: proposed
+:priority: P1
+:depends-on: AP-000
+:unlocks: none
+:scope: ISSUES.md,AUDIT_REMEDIATION_PLAN.md,CHANGELOG.md,docs/architecture.adoc,docs/roadmap
+:issue: https://github.com/RioPlay/aden/issues/72
+:acceptance-version: 1
+:evidence-level: E2
+
+[[lg-105]]
+= LG-105: Roadmap source-of-truth migration
+
+== Outcome
+
+Future work, shipped behavior, durable decisions, and historical findings cannot
+silently contradict each other.
+
+== Acceptance
+
+* This program owns executable future work.
+* ADRs own decisions and `CHANGELOG.md` owns shipped deltas.
+* Historical issue and remediation material is labeled and linked, not duplicated.
+* Living state carries an `as-of` release or commit and supersession link.
+
+== Non-goals
+
+Do not delete historical evidence or rewrite accepted ADR rationale.
+
+== Failure modes and rollback
+
+Migration may break old references. Preserve anchors, add aliases where needed,
+and validate with `aden check . --severity Forbid`.

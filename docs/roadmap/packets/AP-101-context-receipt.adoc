@@ -1,0 +1,34 @@
+:packet-id: AP-101A
+:status: proposed
+:priority: P0
+:depends-on: LG-101
+:unlocks: AP-102,AP-103,AP-104,AP-105,AP-106,DX-101,DX-102,DX-103
+:scope: crates/aden-core,crates/aden-cli,crates/aden-mcp
+:issue: https://github.com/RioPlay/aden/issues/59
+:acceptance-version: 1
+:evidence-level: E3
+
+[[ap-101a]]
+= AP-101A: Context Receipt schema and migration contract
+
+== Outcome
+
+Every machine-readable result can describe its revision, freshness, coverage,
+budget, retrieval, outcome, warnings, and schema version without transport-specific
+semantics.
+
+== Acceptance
+
+* The receipt type lives outside CLI freshness implementation.
+* The envelope is extensible without field collision.
+* Existing CLI/MCP JSON migration is documented and compatibility-tested.
+* Secret content cannot enter receipt metadata.
+
+== Non-goals
+
+This phase defines the envelope skeleton; AP-102 through AP-106 own field semantics.
+
+== Failure modes and rollback
+
+Keep legacy output available through the compatibility window. Never silently
+wrap arrays or objects in shapes callers cannot negotiate.

@@ -1,0 +1,29 @@
+:packet-id: AP-101B
+:status: proposed
+:priority: P0
+:depends-on: AP-102,AP-103,AP-104,AP-105,AP-106
+:unlocks: AP-107
+:scope: crates/aden-core,crates/aden-cli,crates/aden-mcp,crates/aden-cli/tests
+:issue: https://github.com/RioPlay/aden/issues/60
+:acceptance-version: 1
+:evidence-level: E3
+
+[[ap-101b]]
+= AP-101B: Context Receipt conformance
+
+== Outcome
+
+Receipts are complete, collision-free, and semantically equivalent across the
+CLI and MCP read surface.
+
+== Acceptance
+
+* Coverage totals reconcile with every file disposition.
+* CLI and MCP report the same graph/source revisions for the same snapshot.
+* Serialized budgets include the receipt.
+* Every degraded, incomplete, ambiguous, and failed state is explicit.
+
+== Failure modes and rollback
+
+Conformance failures block AP-107. Preserve the negotiated legacy envelope until
+all public read tools pass.

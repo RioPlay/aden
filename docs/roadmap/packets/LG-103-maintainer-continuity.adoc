@@ -1,0 +1,33 @@
+:packet-id: LG-103
+:status: proposed
+:priority: P1
+:depends-on: AP-000
+:unlocks: none
+:scope: MAINTAINERS.md,SECURITY.md,.github,docs/roadmap
+:issue: https://github.com/RioPlay/aden/issues/71
+:acceptance-version: 1
+:evidence-level: E2
+
+[[lg-103]]
+= LG-103: Maintainer continuity and ownership
+
+== Outcome
+
+Aden can accept, review, release, and respond to security issues when its original
+maintainer is unavailable.
+
+== Acceptance
+
+* Crates and compatibility surfaces have owners or explicit unowned status.
+* Schema, migration, and security changes require independent review.
+* Succession, inactivity, emergency authority, and decision appeal are defined.
+* Security reporting has a backup responder.
+
+== Non-goals
+
+No foundation, trademark, funding, or multi-company governance structure.
+
+== Failure modes and rollback
+
+Paper ownership without willing people creates false confidence. Unfilled roles
+remain visibly vacant rather than naming contributors without consent.

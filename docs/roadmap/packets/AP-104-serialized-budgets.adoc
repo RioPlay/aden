@@ -1,0 +1,34 @@
+:packet-id: AP-104
+:status: proposed
+:priority: P0
+:depends-on: AP-101A
+:unlocks: AP-101B
+:scope: crates/aden-cli/src/commands/query.rs,crates/aden-asm,crates/aden-mcp
+:issue: https://github.com/RioPlay/aden/issues/63
+:acceptance-version: 1
+:evidence-level: E3
+
+[[ap-104]]
+= AP-104: Strict serialized response budgets
+
+== Outcome
+
+The complete response, not merely assembled content, remains within the caller's
+budget and documented tokenizer tolerance.
+
+== Acceptance
+
+* Headers, receipts, provenance, alternates, supplements, warnings, and wrappers count.
+* Base and effective budgets are explicit; strict mode never auto-boosts.
+* MCP read tools request strict budgeting by default.
+* Black-box tests cover all formats, Unicode, tiny budgets, stale hints, ambiguity,
+  strict/automatic behavior, and transport serialization.
+
+== Non-goals
+
+Do not replace the existing assembler budget implementation or optimize retrieval quality.
+
+== Failure modes and rollback
+
+If the receipt cannot fit, return a minimal incomplete receipt rather than an
+oversized or falsely complete response.

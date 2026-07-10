@@ -54,6 +54,9 @@ jobs:
         run: cargo run -p aden-cli -- check . --severity Forbid
         if: runner.os != 'Windows'
 
+      - name: Validate improvement program
+        run: python3 scripts/validate_roadmap.py
+
       - name: MCP golden path (grep → understand → impact-diff → check --json)
         if: runner.os != 'Windows'
         run: |

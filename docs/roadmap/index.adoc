@@ -1,0 +1,75 @@
+:proj: aden
+:author: RioPlay
+:status: active
+
+[[aden-program]]
+= Aden Improvement Program
+
+This is the authoritative execution program for Aden's long-term improvement.
+It turns product findings into dependency-ordered work packets that humans and
+agents can execute without losing the reasoning behind them.
+
+GitHub owns live assignment, discussion, and review. These documents own scope,
+dependencies, acceptance criteria, compatibility constraints, and final evidence.
+When the two disagree, the packet contract in this directory wins.
+
+== North-star contract
+
+Given a question or proposed change, Aden returns the smallest sufficient
+context, proves where it came from, states what may be missing, and verifies the
+consequences.
+
+== Control loops
+
+[source,text]
+----
+PROGRAM: Observe -> Score -> Reconcile -> Prioritize -> Unlock -> Dispatch -> Measure
+PACKET:  Discover -> Claim -> Baseline -> Implement -> Verify -> Review -> Land -> Learn
+----
+
+A landed change is not done until its promised outcome is measured.
+
+== Active sequence
+
+[source,text]
+----
+AP-000
+  +-> LG-101 +-> AP-101A +-> AP-102/AP-103/AP-104/AP-105/AP-106
+  |                         +-> AP-101B +-> AP-107
+  +-> LG-103
+  +-> LG-105
+
+AP-101A +-> DX-101/DX-102/DX-103 +-> AP-107
+AP-107 +-> Milestone 2: outcome evaluation
+----
+
+Only packets with `:status: ready` may be claimed. A claim is valid only when
+the matching GitHub issue has one assignee and an unexpired lease.
+
+== Active packet
+
+* <<ap-000>> — minimal execution control plane
+
+== Next packets
+
+These become `ready` after AP-000 lands and is measured.
+
+* <<lg-101>> — public compatibility and versioning policy
+* <<lg-103>> — maintainer continuity and ownership
+* <<lg-105>> — roadmap source-of-truth migration
+
+== Locked packets
+
+* <<ap-101a>> / <<ap-101b>> — Context Receipt schema and conformance
+* <<ap-102>> — unified coverage accounting
+* <<ap-103>> — authoritative freshness contract
+* <<ap-104>> — serialized response budgets
+* <<ap-105>> — result and exit semantics
+* <<ap-106>> — CLI/MCP/documentation parity
+* <<ap-107>> — trust integration gate
+* <<dx-101>> — symbol resolution
+* <<dx-102>> — MCP agent contract
+* <<dx-103>> — golden onboarding journeys
+
+See <<execution-protocol>> for claim and review rules and <<program-scorecard>>
+for milestone gates. Run `python3 scripts/validate_roadmap.py` after edits.

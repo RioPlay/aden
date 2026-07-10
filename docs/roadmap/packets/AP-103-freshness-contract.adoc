@@ -1,0 +1,31 @@
+:packet-id: AP-103
+:status: proposed
+:priority: P0
+:depends-on: AP-101A,AP-102
+:unlocks: AP-101B
+:scope: crates/aden-cli/src/indexer/fresh.rs,crates/aden-cli/src/indexer/gen.rs,crates/aden-graph/src/snapshot.rs,crates/aden-mcp
+:issue: https://github.com/RioPlay/aden/issues/62
+:acceptance-version: 1
+:evidence-level: E3
+
+[[ap-103]]
+= AP-103: Authoritative freshness contract
+
+== Outcome
+
+Callers can prove which source revision a graph result represents and request an
+authoritative answer that never silently serves lagging data.
+
+== Acceptance
+
+* Existing `current`, `snapshot`, `lagging`, `building`, and `unavailable` states
+  receive a compatibility-preserving migration contract.
+* Results include graph revision, observed source fingerprint, and refresh cause.
+* `--require-fresh` waits within a bound or fails actionably.
+* Tests cover same-second edits, gen-immediate-read, rename/delete, writer timeout,
+  failed gen, frozen mode, MCP root switching, multiple repos, and mid-query mutation.
+
+== Failure modes and rollback
+
+Failing authoritative reads is safer than false freshness. Preserve fail-open
+exploration only when the receipt identifies the degradation.
