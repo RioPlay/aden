@@ -1,5 +1,5 @@
 :packet-id: LG-101
-:status: proposed
+:status: ready
 :priority: P0
 :depends-on: AP-000
 :unlocks: AP-101A
@@ -15,6 +15,11 @@
 
 Users and implementers know which Aden interfaces are versioned, how breaking
 changes are introduced, and how long deprecated behavior remains supported.
+
+== Current evidence
+
+SemVer, generation logic versions, store recovery, CLI/MCP behavior, and
+environment compatibility are documented separately without one public contract.
 
 == Scope
 
@@ -37,3 +42,7 @@ No interface migration or release pipeline implementation.
 
 An overly broad promise can freeze development. Mark experimental surfaces
 explicitly and revise the policy only through a durable decision record.
+
+== Completion evidence
+
+Published surface inventory, migration policy, and compatibility test plan.

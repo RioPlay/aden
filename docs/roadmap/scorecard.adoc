@@ -37,4 +37,3 @@ unlocks satisfied dependencies, and dispatches the smallest high-value packet.
 After each milestone, compare estimated and actual effort, record repeated
 blockers, prune invalid future packets, update packet templates, and revise gates
 only through an explicit decision record.
-

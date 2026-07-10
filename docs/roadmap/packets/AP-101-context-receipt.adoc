@@ -17,6 +17,15 @@ Every machine-readable result can describe its revision, freshness, coverage,
 budget, retrieval, outcome, warnings, and schema version without transport-specific
 semantics.
 
+== Current evidence
+
+`augment_read_json` injects only freshness fields into inconsistent CLI shapes,
+and several MCP read tools do not expose structured output.
+
+== Scope
+
+Protocol-neutral receipt types plus CLI/MCP adapters and migration fixtures.
+
 == Acceptance
 
 * The receipt type lives outside CLI freshness implementation.
@@ -32,3 +41,7 @@ This phase defines the envelope skeleton; AP-102 through AP-106 own field semant
 
 Keep legacy output available through the compatibility window. Never silently
 wrap arrays or objects in shapes callers cannot negotiate.
+
+== Completion evidence
+
+Schema decision, compatibility fixtures, and reviewed CLI/MCP examples.

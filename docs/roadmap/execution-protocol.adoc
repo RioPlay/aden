@@ -11,6 +11,14 @@ Repository packet files own durable intent. GitHub issues own live coordination.
 ADRs own decisions; `CHANGELOG.md` owns shipped deltas; historical issue lists do
 not override this program.
 
+`status` is a durable repository state. `proposed` means locked, `ready` means
+dependencies are satisfied, and only `done` satisfies a dependent packet.
+`invalidated` and `abandoned` preserve terminal evidence without unlocking work.
+GitHub owns delivery state for open work: `packet-ready`, `packet-claimed`,
+`packet-review`, and `packet-blocked`. Closure is mirrored as a closed
+`packet-done` or `packet-cancelled` issue. Run `python3 scripts/reconcile_roadmap.py`
+before dispatch and at milestone review; CI runs the offline structural validator.
+
 == Packet admission
 
 A packet becomes `ready` only when it has an observable outcome, executable
@@ -46,10 +54,13 @@ or criteria to make their approach pass.
 
 == States
 
-`proposed -> ready -> claimed -> implementing -> verifying -> review -> landed -> measured -> done`
+Repository: `proposed -> ready -> done`.
+GitHub delivery: `packet-ready -> packet-claimed -> packet-review -> packet-done`.
 
-Exceptional outcomes are `blocked`, `rework`, `partial`, `invalidated`, and
-`abandoned`. Preserve evidence and rejected approaches for all terminal outcomes.
+`packet-blocked` and rework are live delivery states; they leave repository status
+unchanged. `invalidated` and `abandoned` are repository terminal states paired
+with `packet-cancelled`. Preserve evidence and rejected approaches for all
+terminal outcomes. A partial implementation remains open and never unlocks work.
 
 == Evidence levels
 
@@ -82,4 +93,3 @@ change, repeated attempts reveal a wrong boundary, or it belongs in an adapter.
 
 No more than ten percent of milestone effort should maintain this planning
 system unless it prevents a demonstrated coordination failure.
-

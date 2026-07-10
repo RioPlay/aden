@@ -16,6 +16,19 @@
 Agents never parse terminal prose to decide whether Aden data is fresh, bounded,
 complete, ambiguous, or safe to use.
 
+== Current evidence
+
+Structured output flags intentionally omit several read tools, requiring agents
+to infer freshness and truncation from prose.
+
+== Scope
+
+MCP capabilities, receipts, tool errors, and contract fixtures.
+
+== Non-goals
+
+No model-host-specific workflow or remote transport.
+
 == Acceptance
 
 * Capability discovery declares tools, effects, schemas, and output modes.
@@ -27,3 +40,7 @@ complete, ambiguous, or safe to use.
 
 Maintain protocol capability negotiation and preserve the last compatible schema
 during migration.
+
+== Completion evidence
+
+Capability snapshots, response fixtures, and agent-consumption integration tests.

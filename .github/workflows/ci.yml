@@ -55,7 +55,9 @@ jobs:
         if: runner.os != 'Windows'
 
       - name: Validate improvement program
-        run: python3 scripts/validate_roadmap.py
+        run: |
+          python3 scripts/validate_roadmap.py
+          python3 scripts/test_roadmap_tools.py
 
       - name: MCP golden path (grep → understand → impact-diff → check --json)
         if: runner.os != 'Windows'

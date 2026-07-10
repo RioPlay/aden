@@ -16,6 +16,19 @@
 Human output, JSON, and exit status distinguish structural health, policy
 findings, and freshness rather than collapsing them into one misleading pass.
 
+== Current evidence
+
+`aden ready` can report medium findings while ending with “All checks passed,”
+and health results combine integrity with policy state.
+
+== Scope
+
+Outcome modeling for ready, ci-check, check, heal, audit, diagnose, and status.
+
+== Non-goals
+
+No change from advisory to enforcing policy.
+
 == Acceptance
 
 * Define `clean`, `passed_with_findings`, `blocked`, `degraded`, and `incomplete`.
@@ -26,3 +39,7 @@ findings, and freshness rather than collapsing them into one misleading pass.
 == Failure modes and rollback
 
 Exit-code changes can break CI. Ship them only through LG-101's deprecation path.
+
+== Completion evidence
+
+Outcome inventory, human/JSON/exit matrix, and compatibility signoff.

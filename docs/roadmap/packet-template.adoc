@@ -38,4 +38,3 @@ How it can fail, how failure is detected, and how to revert independently.
 == Completion evidence
 
 Use the fields required by <<execution-protocol>>.
-

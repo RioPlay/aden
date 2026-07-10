@@ -1,5 +1,5 @@
 :packet-id: AP-000
-:status: ready
+:status: done
 :priority: P0
 :depends-on: none
 :unlocks: LG-101,LG-103,LG-105
@@ -42,3 +42,7 @@ No scheduler, bot, runtime Aden changes, or automatic issue mutation.
 
 If maintenance cost exceeds ten percent of milestone work, retain completed
 evidence, archive active state, and replace coordination without changing product code.
+
+== Completion evidence
+
+Validator output, CI result, linked issues, independent review, and clean diff check.

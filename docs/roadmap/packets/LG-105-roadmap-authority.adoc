@@ -1,5 +1,5 @@
 :packet-id: LG-105
-:status: proposed
+:status: ready
 :priority: P1
 :depends-on: AP-000
 :unlocks: none
@@ -16,6 +16,15 @@
 Future work, shipped behavior, durable decisions, and historical findings cannot
 silently contradict each other.
 
+== Current evidence
+
+`ISSUES.md`, ADRs, remediation plans, architecture, and changelog contain
+overlapping status claims with different update rules.
+
+== Scope
+
+Roadmap, issue history, remediation references, changelog links, and status metadata.
+
 == Acceptance
 
 * This program owns executable future work.
@@ -31,3 +40,7 @@ Do not delete historical evidence or rewrite accepted ADR rationale.
 
 Migration may break old references. Preserve anchors, add aliases where needed,
 and validate with `aden check . --severity Forbid`.
+
+== Completion evidence
+
+Source-of-truth map, supersession links, reference validation, and drift review.

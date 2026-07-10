@@ -16,6 +16,19 @@
 A documented workflow and its CLI/MCP forms agree on syntax, defaults, errors,
 schemas, outcomes, and meaning.
 
+== Current evidence
+
+Existing parity tests cover flags and enums, but examples and structured output
+can drift from CLI behavior.
+
+== Scope
+
+ToolSpec, MCP adapters, CLI tests, command documentation, and response fixtures.
+
+== Non-goals
+
+No new MCP transport or remote-server support.
+
 == Acceptance
 
 * Preserve existing ToolSpec and flag/enum/coverage tests.
@@ -27,3 +40,7 @@ schemas, outcomes, and meaning.
 
 Generated documentation must remain reviewable. Keep the central specification
 small and test handwritten examples against it.
+
+== Completion evidence
+
+CLI/MCP/default/error/schema fixtures and clean documentation runs.

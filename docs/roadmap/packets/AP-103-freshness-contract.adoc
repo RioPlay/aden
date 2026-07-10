@@ -16,6 +16,19 @@
 Callers can prove which source revision a graph result represents and request an
 authoritative answer that never silently serves lagging data.
 
+== Current evidence
+
+Reads can return `lagging` immediately after explicit generation, and freshness
+uses cache presence plus whole-second modification times.
+
+== Scope
+
+Freshness policy, generation revisions, snapshot reads, MCP adaptation, and tests.
+
+== Non-goals
+
+No graph daemon or retrieval-ranking changes.
+
 == Acceptance
 
 * Existing `current`, `snapshot`, `lagging`, `building`, and `unavailable` states
@@ -29,3 +42,7 @@ authoritative answer that never silently serves lagging data.
 
 Failing authoritative reads is safer than false freshness. Preserve fail-open
 exploration only when the receipt identifies the degradation.
+
+== Completion evidence
+
+Revision matrix, timeout/error fixtures, CLI/MCP parity, and updated documentation.

@@ -16,6 +16,19 @@
 The Trust Foundation works as one measured system and safely unlocks outcome
 evaluation. This packet introduces no new product behavior.
 
+== Current evidence
+
+Trust behavior is tested in separate command areas; there is no single
+cross-interface adversarial gate for receipts, coverage, and freshness together.
+
+== Scope
+
+Trust integration fixtures, scorecard evidence, and milestone unlock validation.
+
+== Non-goals
+
+Do not introduce product behavior to make the gate pass.
+
 == Acceptance
 
 * Adversarial tests cover credential-like content, stale/failed refresh, output
@@ -29,3 +42,7 @@ evaluation. This packet introduces no new product behavior.
 
 Any failed gate keeps later milestones locked. Fix the owning packet rather than
 adding behavior here.
+
+== Completion evidence
+
+E4 dogfood run, adversarial suite, scorecard results, and independent review.

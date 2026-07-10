@@ -16,6 +16,15 @@
 Developers and agents can use ordinary qualified symbol forms without copying
 opaque graph anchors or spelling generic parameters exactly.
 
+== Current evidence
+
+`understand AdenGraph::bfs` fails while `locate bfs` finds the canonical generic
+symbol, so natural shorthand has no reliable recovery path.
+
+== Scope
+
+Locate/understand resolution, ambiguity output, and symbol fixture matrix.
+
 == Acceptance
 
 * `AdenGraph::bfs` resolves canonical `AdenGraph<N, E>::bfs` fixtures.
@@ -31,3 +40,7 @@ No conceptual retrieval redesign.
 
 Prefer explicit ambiguity over a convenient incorrect match. Keep exact-anchor
 resolution as the deterministic escape hatch.
+
+== Completion evidence
+
+Canonical-equivalence success report, ambiguity fixtures, and user-journey check.

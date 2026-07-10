@@ -16,6 +16,18 @@
 Receipts are complete, collision-free, and semantically equivalent across the
 CLI and MCP read surface.
 
+== Current evidence
+
+Current JSON augmentation varies by command and MCP structured output is partial.
+
+== Scope
+
+Cross-interface receipt fixtures in `aden-core`, `aden-cli`, and `aden-mcp`.
+
+== Non-goals
+
+No retrieval or policy feature changes.
+
 == Acceptance
 
 * Coverage totals reconcile with every file disposition.
@@ -27,3 +39,7 @@ CLI and MCP read surface.
 
 Conformance failures block AP-107. Preserve the negotiated legacy envelope until
 all public read tools pass.
+
+== Completion evidence
+
+CLI/MCP golden comparisons, adversarial receipts, and compatibility review.

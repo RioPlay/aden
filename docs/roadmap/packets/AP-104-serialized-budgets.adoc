@@ -16,6 +16,15 @@
 The complete response, not merely assembled content, remains within the caller's
 budget and documented tokenizer tolerance.
 
+== Current evidence
+
+Assembler budgets exclude some CLI/MCP framing, stale hints, alternates, and
+automatic budget boosts.
+
+== Scope
+
+Assembly rendering, CLI query output, MCP wrappers, and serialization tests.
+
 == Acceptance
 
 * Headers, receipts, provenance, alternates, supplements, warnings, and wrappers count.
@@ -32,3 +41,7 @@ Do not replace the existing assembler budget implementation or optimize retrieva
 
 If the receipt cannot fit, return a minimal incomplete receipt rather than an
 oversized or falsely complete response.
+
+== Completion evidence
+
+Format measurements, strict-mode fixtures, and transport golden tests.

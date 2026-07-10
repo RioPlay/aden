@@ -1,5 +1,5 @@
 :packet-id: LG-103
-:status: proposed
+:status: ready
 :priority: P1
 :depends-on: AP-000
 :unlocks: none
@@ -16,6 +16,15 @@
 Aden can accept, review, release, and respond to security issues when its original
 maintainer is unavailable.
 
+== Current evidence
+
+`MAINTAINERS.md` names one BDFL and security reporting relies on the same contact;
+crate ownership and emergency succession are not defined.
+
+== Scope
+
+Maintainer, security, ownership, review, and contribution governance documents.
+
 == Acceptance
 
 * Crates and compatibility surfaces have owners or explicit unowned status.
@@ -31,3 +40,7 @@ No foundation, trademark, funding, or multi-company governance structure.
 
 Paper ownership without willing people creates false confidence. Unfilled roles
 remain visibly vacant rather than naming contributors without consent.
+
+== Completion evidence
+
+Role matrix, ownership map, reviewed emergency procedure, and contributor confirmation.

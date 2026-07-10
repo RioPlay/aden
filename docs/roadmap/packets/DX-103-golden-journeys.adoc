@@ -16,6 +16,19 @@
 A new developer reaches a useful, trustworthy answer without learning graph
 internals or accepting surprising repository mutations.
 
+== Current evidence
+
+Getting-started workflows require opaque anchors for advanced assembly, while
+installation can activate hooks that newcomers may not expect.
+
+== Scope
+
+Getting started, AI integration, user guide, installers, and clean-repository CI.
+
+== Non-goals
+
+Do not remove expert primitives or reduce diagnostic detail.
+
 == Acceptance
 
 * Primary docs teach `ask`, `understand`, and `verify`; opaque anchors are advanced.
@@ -28,3 +41,7 @@ internals or accepting surprising repository mutations.
 
 Keep expert primitives documented and avoid hiding failure details behind the
 three golden workflows.
+
+== Completion evidence
+
+Timed clean-install runs, documentation CI logs, and developer/agent usability notes.

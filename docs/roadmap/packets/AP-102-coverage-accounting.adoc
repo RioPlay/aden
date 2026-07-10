@@ -16,6 +16,15 @@
 No eligible file disappears without an explicit, safe, persisted reason shared
 by generation, indexing, freshness, status, and coverage.
 
+== Current evidence
+
+Generation, indexing, and freshness use different secret and eligibility filters;
+previously excluded files can remain absent after a detector changes.
+
+== Scope
+
+Shared classification, generation, index, freshness, storage, status, and fixtures.
+
 == Acceptance
 
 * One `FileDisposition` classifier covers indexed, ignored, redacted,
@@ -33,3 +42,7 @@ Do not broaden language support or expose secret-bearing content.
 
 Persisted disposition schema must be rebuildable. Roll back by rebuilding from
 source using the last compatible classifier version.
+
+== Completion evidence
+
+Disposition manifest samples, recovery fixtures, and redaction security review.
