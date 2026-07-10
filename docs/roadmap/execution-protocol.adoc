@@ -1,6 +1,9 @@
 :proj: aden
 :author: RioPlay
 :status: active
+:authority: execution-protocol
+:as-of: 2026-07-09@5c5bc66e025d7457bacba760b134fe7a0d159452
+:superseded-by: none
 
 [[execution-protocol]]
 = Aden Program Execution Protocol
@@ -10,6 +13,7 @@
 Repository packet files own durable intent. GitHub issues own live coordination.
 ADRs own decisions; `CHANGELOG.md` owns shipped deltas; historical issue lists do
 not override this program.
+The definitive record-role and supersession map is <<roadmap-authority>>.
 
 `status` is a durable repository state. `proposed` means locked, `ready` means
 dependencies are satisfied, and only `done` satisfies a dependent packet.

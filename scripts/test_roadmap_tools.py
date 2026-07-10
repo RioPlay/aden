@@ -115,6 +115,38 @@ class RoadmapValidatorTests(unittest.TestCase):
         closed_issue = {"state": "CLOSED", "labels": [{"name": "packet-done"}], "assignees": []}
         self.assertEqual(reconciler.validate_live(packet, closed_issue), [])
 
+    def test_ready_packet_may_be_honestly_blocked(self) -> None:
+        packet = {"packet-id": "AP-001", "status": "ready"}
+        blocked_issue = {"state": "OPEN", "labels": [{"name": "packet-blocked"}], "assignees": []}
+        self.assertEqual(reconciler.validate_live(packet, blocked_issue), [])
+
+    def test_authority_metadata_rejects_missing_supersession(self) -> None:
+        historical = Path(self.tmp.name) / "ISSUES.md"
+        historical.write_text(
+            "<!-- authority: historical-record -->\n"
+            "<!-- as-of: 2026-07-09@5c5bc66e025d7457bacba760b134fe7a0d159452 -->\n"
+            "# Historical\n",
+            encoding="utf-8",
+        )
+        errors = validator.validate_authority_metadata(
+            {historical: ("markdown", "historical-record", "docs/roadmap/index.adoc")}
+        )
+        self.assertTrue(any("missing superseded-by metadata" in error for error in errors))
+
+    def test_authority_metadata_rejects_invalid_as_of_commit(self) -> None:
+        program = Path(self.tmp.name) / "index.adoc"
+        program.write_text(
+            ":authority: executable-program\n"
+            ":as-of: 2026-07-09@short\n"
+            ":superseded-by: none\n\n"
+            "= Program\n",
+            encoding="utf-8",
+        )
+        errors = validator.validate_authority_metadata(
+            {program: ("asciidoc", "executable-program", "none")}
+        )
+        self.assertTrue(any("as-of must be" in error for error in errors))
+
 
 if __name__ == "__main__":
     unittest.main()

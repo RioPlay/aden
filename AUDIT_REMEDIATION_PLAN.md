@@ -1,9 +1,26 @@
+<!-- authority: historical-remediation-record -->
+<!-- as-of: 2026-07-09@5c5bc66e025d7457bacba760b134fe7a0d159452 -->
+<!-- superseded-by: docs/roadmap/index.adoc -->
+
 # Aden Structural Remediation Plan (Gstack-Reviewed)
 
 **Date**: 2026-07-02 (updated 2026-07-03)  
 **Source**: Original gstack audit + `/plan-eng-review` + `/plan-devex-review` (2026-07-02)  
 **Status**: **Golden state reached** — Phases 0–6 shipped on `main` (2026-07-03).
 ADR-011 read snapshot + writer-queue UX shipped on `main` (2026-07-03).
+
+> **Authority and status:** This is the preserved execution record for the
+> structural-remediation program. It does not own current or future work.
+> Its status claims are a historical snapshot as of 2026-07-08; use
+> [`docs/roadmap/`](docs/roadmap/index.adoc) for executable future work, ADRs
+> for durable decisions, and `CHANGELOG.md` for shipped deltas. The authority
+> map and supersession convention are in
+> [`docs/roadmap/authority.adoc`](docs/roadmap/authority.adoc).
+>
+> **As of:** `5c5bc66e025d7457bacba760b134fe7a0d159452` (2026-07-09).
+> **Superseded for live planning by:** `docs/roadmap/` (introduced by AP-000;
+> authority migration LG-105). The evidence and accepted historical decisions
+> below are intentionally retained.
 
 ---
 
@@ -37,7 +54,7 @@ Aden is in **good health** (tests green, `aden check --severity Forbid` passes, 
 
 ---
 
-## Current vs Target Architecture
+## Architecture Snapshot and Target (2026-07-03)
 
 ```
 TODAY (achieved)               NEXT
@@ -81,7 +98,7 @@ aden-policy (advisory + ci)    optional enforce mode (0.3.0)
 
 ---
 
-## Deferred (not blocking golden state)
+## Deferred at This Snapshot (not blocking golden state)
 
 - M1 parse unification (`fix/parse-canonical`) — after indexer stable 2 weeks
 - M3 BTree neighbor determinism (`fix/graph-determinism`)
@@ -131,4 +148,4 @@ commits).
 
 ---
 
-*Living document. Re-prime with aden after large refactors.*
+*Historical record. Preserve its evidence; do not treat it as a living plan.*

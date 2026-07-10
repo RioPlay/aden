@@ -1,6 +1,9 @@
 :proj: aden
 :author: RioPlay
 :status: active
+:authority: executable-program
+:as-of: 2026-07-09@5c5bc66e025d7457bacba760b134fe7a0d159452
+:superseded-by: none
 
 [[aden-program]]
 = Aden Improvement Program
@@ -12,6 +15,8 @@ agents can execute without losing the reasoning behind them.
 GitHub owns live assignment, discussion, and review. These documents own scope,
 dependencies, acceptance criteria, compatibility constraints, and final evidence.
 When the two disagree, the packet contract in this directory wins.
+See <<roadmap-authority>> for the authority map, as-of convention, and the
+superseded historical records.
 
 == North-star contract
 

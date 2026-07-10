@@ -10,6 +10,34 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PACKETS = ROOT / "docs" / "roadmap" / "packets"
+AUTHORITY_DOCUMENTS = {
+    ROOT / "ISSUES.md": ("markdown", "historical-record", "docs/roadmap/index.adoc"),
+    ROOT / "AUDIT_REMEDIATION_PLAN.md": (
+        "markdown",
+        "historical-remediation-record",
+        "docs/roadmap/index.adoc",
+    ),
+    ROOT / "docs" / "roadmap" / "index.adoc": (
+        "asciidoc",
+        "executable-program",
+        "none",
+    ),
+    ROOT / "docs" / "roadmap" / "execution-protocol.adoc": (
+        "asciidoc",
+        "execution-protocol",
+        "none",
+    ),
+    ROOT / "docs" / "roadmap" / "scorecard.adoc": (
+        "asciidoc",
+        "milestone-scorecard",
+        "none",
+    ),
+    ROOT / "docs" / "roadmap" / "authority.adoc": (
+        "asciidoc",
+        "authority-map",
+        "none",
+    ),
+}
 REQUIRED = {
     "packet-id",
     "status",
@@ -24,6 +52,8 @@ REQUIRED = {
 REPOSITORY_STATES = {"proposed", "ready", "done", "invalidated", "abandoned"}
 SATISFIES_DEPENDENCY = {"done"}
 ATTR = re.compile(r"^:([a-z0-9-]+):\s*(.*?)\s*$")
+MARKDOWN_METADATA = re.compile(r"^<!--\s*([a-z0-9-]+):\s*(.*?)\s*-->\s*$")
+AS_OF = re.compile(r"^\d{4}-\d{2}-\d{2}@[0-9a-f]{40}$")
 ISSUE_URL = re.compile(r"^https://github\.com/[^/]+/[^/]+/issues/(\d+)$")
 SECTIONS = (
     "Current evidence",
@@ -47,6 +77,48 @@ def display_path(path: Path) -> str:
         return str(path.relative_to(ROOT))
     except ValueError:
         return str(path)
+
+
+def metadata_from_text(text: str, syntax: str) -> dict[str, str]:
+    pattern = ATTR if syntax == "asciidoc" else MARKDOWN_METADATA
+    metadata: dict[str, str] = {}
+    for line in text.splitlines():
+        match = pattern.match(line)
+        if match:
+            metadata[match.group(1)] = match.group(2)
+        elif line.strip():
+            break
+    return metadata
+
+
+def validate_authority_metadata(
+    documents: dict[Path, tuple[str, str, str]] | None = None,
+) -> list[str]:
+    """Require stable authority metadata on the program and archived records."""
+    errors: list[str] = []
+    for path, (syntax, expected_authority, expected_superseded_by) in (
+        documents or AUTHORITY_DOCUMENTS
+    ).items():
+        if not path.is_file():
+            errors.append(f"missing authority document: {display_path(path)}")
+            continue
+        metadata = metadata_from_text(path.read_text(encoding="utf-8"), syntax)
+        for key in ("authority", "as-of", "superseded-by"):
+            if not metadata.get(key):
+                errors.append(f"{display_path(path)}: missing {key} metadata")
+        if metadata.get("authority") != expected_authority:
+            errors.append(
+                f"{display_path(path)}: authority must be {expected_authority!r}"
+            )
+        if metadata.get("superseded-by") != expected_superseded_by:
+            errors.append(
+                f"{display_path(path)}: superseded-by must be {expected_superseded_by!r}"
+            )
+        if metadata.get("as-of") and not AS_OF.fullmatch(metadata["as-of"]):
+            errors.append(
+                f"{display_path(path)}: as-of must be YYYY-MM-DD@40-character-commit"
+            )
+    return errors
 
 
 def load_packets() -> tuple[dict[str, dict[str, str]], list[str]]:
@@ -163,6 +235,7 @@ def validate_graph(packets: dict[str, dict[str, str]]) -> list[str]:
 def main() -> int:
     packets, errors = load_packets()
     errors.extend(validate_graph(packets))
+    errors.extend(validate_authority_metadata())
     if errors:
         for error in errors:
             print(f"ERROR: {error}")

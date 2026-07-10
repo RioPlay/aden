@@ -43,7 +43,7 @@ def validate_live(packet: dict[str, str], live: dict[str, object]) -> list[str]:
     if admission == "proposed" and "packet-proposed" not in labels:
         errors.append(f"{packet_id}: proposed packet lacks packet-proposed label")
     if admission == "ready":
-        delivery = {"packet-ready", "packet-claimed", "packet-review"}
+        delivery = {"packet-ready", "packet-claimed", "packet-review", "packet-blocked"}
         if not labels.intersection(delivery):
             errors.append(f"{packet_id}: ready packet lacks live delivery label")
         if "packet-claimed" in labels and len(assignees) != 1:

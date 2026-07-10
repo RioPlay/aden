@@ -30,6 +30,40 @@ The BDFL, RioPlay, retains the right to manage dual-licensing arrangements for t
 6. Include a `Signed-off-by` line on every commit.
 7. Open a pull request with a clear description of changes, including the exact statement: "I have read and agree to the Contributor License Agreement (CLA) for Aden."
 
+## Ownership, Review, and Protected Changes
+
+The current maintainer and continuity policy are recorded in
+[MAINTAINERS.md](MAINTAINERS.md). Do not assign maintainers, reviewers, or
+security responders in an issue or pull request without their explicit consent.
+
+For ordinary changes, make the smallest independently reviewable pull request
+you can, explain the user-visible outcome, and include the validation you ran.
+Avoid mixing generated artifacts, broad refactors, and behavior changes unless
+the dependency is necessary and documented.
+
+The following protected changes require review by a maintainer other than the
+author before merge:
+
+- public CLI, MCP, graph, store, or result-schema compatibility;
+- graph/store migrations or rollback behavior;
+- secret handling, path confinement, command execution, authentication, or
+  vulnerability remediation; and
+- governance, licensing, contributor, or release-policy documents.
+
+If an independent maintainer is not available, leave the change open for normal
+review; do not self-approve it or weaken its acceptance criteria. The only
+exception is a documented emergency action authorized under
+[MAINTAINERS.md](MAINTAINERS.md), followed by independent review when one is
+available.
+
+When a change affects a public contract, migration, or security boundary, state
+in the pull request:
+
+- the affected contract and compatibility impact;
+- the validation and rollback or recovery path;
+- any remaining limitations or follow-up work; and
+- the issue or ADR that records the durable decision, when applicable.
+
 ## Before Every Commit
 
 Run the full CI check locally:

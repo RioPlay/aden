@@ -46,6 +46,7 @@ This is the canonical entry point for all Aden documentation. Read the document 
 |<<security-model>> |Threat model and security boundaries
 |<<benchmarks>> |Measured performance: token efficiency, edge F1, retrieval quality, latency, and energy estimate
 |<<retrieval-levers>> |Dual-substrate retrieval levers: corpus PPMI for code, OEWN synonym expansion for prose, and opt-in `ADEN_LEXICON_ON` gating
+|<<compatibility>> |Public compatibility, versioning, deprecation, migration, and rollback policy
 |<<aden-program>> |Dependency-ordered improvement program and agent work packets
 |===
 

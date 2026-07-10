@@ -1,6 +1,9 @@
 :proj: aden
 :author: RioPlay
 :status: active
+:authority: milestone-scorecard
+:as-of: 2026-07-09@5c5bc66e025d7457bacba760b134fe7a0d159452
+:superseded-by: none
 
 [[program-scorecard]]
 = Aden Program Scorecard
@@ -8,6 +11,8 @@
 The program control loop runs after every landed packet and at milestone review.
 It observes results, reconciles GitHub and repository state, reprioritizes work,
 unlocks satisfied dependencies, and dispatches the smallest high-value packet.
+Its authority is limited to milestone measurement; see <<roadmap-authority>> for
+the complete record-role map.
 
 [cols="2,2,3"]
 |===

@@ -1,5 +1,5 @@
 :packet-id: LG-101
-:status: ready
+:status: done
 :priority: P0
 :depends-on: AP-000
 :unlocks: AP-101A
