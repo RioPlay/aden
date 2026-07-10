@@ -7,6 +7,24 @@ on:
     branches: [main]
 
 jobs:
+  # The workspace metadata promises Rust 1.90 compatibility. Stable-only CI can
+  # silently raise the real floor as dependencies evolve, so compile the default
+  # workspace surface with the exact minimum toolchain on every change.
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup minimum supported Rust
+        uses: dtolnay/rust-toolchain@1.90.0
+
+      - name: Cache cargo registry
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check workspace at MSRV
+        run: cargo check --workspace --all-targets
+
   build-and-test:
     strategy:
       fail-fast: false

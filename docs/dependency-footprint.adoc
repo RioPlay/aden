@@ -1,0 +1,75 @@
+[[dependency-footprint-audit]]
+= Dependency footprint audit
+
+This is the measured dependency and artifact baseline from the 2026-07-10
+production-readiness pass. Counts are unique normal-dependency package/version
+pairs from `cargo tree`; sizes are unstripped Linux release artifacts.
+
+[cols="2,1,1"]
+|===
+|Build |Production packages |Release size
+
+|CLI, default features |128 |14,361,560 bytes
+|CLI, no default features |121 |12,242,984 bytes
+|MCP server |56 |3,894,856 bytes
+|===
+
+Reproduce the package counts from the repository root with:
+
+[source,bash]
+----
+cargo tree -p aden-cli -e normal --prefix none --no-dedupe \
+  | sed -E 's/ \([^)]*\)$//' | sort -u | wc -l
+cargo tree -p aden-cli -e normal --no-default-features --prefix none --no-dedupe \
+  | sed -E 's/ \([^)]*\)$//' | sort -u | wc -l
+cargo tree -p aden-cli -e normal --features dense --prefix none --no-dedupe \
+  | sed -E 's/ \([^)]*\)$//' | sort -u | wc -l
+cargo tree -p aden-mcp -e normal --prefix none --no-dedupe \
+  | sed -E 's/ \([^)]*\)$//' | sort -u | wc -l
+----
+
+These commands deliberately count unique `name version` lines after removing
+Cargo's path/source suffix. They exclude development and build dependencies.
+The four results for this audit are 128, 121, 208, and 56 respectively.
+
+The optional dense retrieval feature increases the CLI production closure from
+128 to 208 packages. It remains opt-in. The standalone LSP binary is not in the
+CLI or installer dependency closure. Both boundaries are intentional and should
+be preserved.
+
+The default viewer accounts for approximately 1.83 MB of the CLI binary, mostly
+vendored JavaScript. File watching accounts for approximately 0.33 MB. Removing
+either from the defaults is a product-compatibility choice, not a dependency
+cleanup, so this audit leaves both defaults unchanged.
+
+== Changes accepted
+
+* Removed unused direct `regex` from `aden-asm`.
+* Removed unused development-only `serde_json` from `aden-parse`.
+* Updated `crossbeam-epoch`, `anyhow`, and dense-only `memmap2` to patched
+  versions.
+* Updated yanked `fjall`/`lsm-tree` 3.1.5 to 3.1.6. Fjall 3 requires Rust 1.90,
+  so Aden's declared MSRV now truthfully states 1.90.
+
+After these changes, `cargo machete --with-metadata` reports no unused direct
+dependencies and `cargo audit` reports no vulnerability, unsoundness,
+unmaintained, or yanked warnings. The release-size delta is negligible: +1,376
+bytes for the CLI and +72 bytes for MCP, caused by patched transitive versions;
+the two removed declarations were already present elsewhere in the shared graph.
+
+== Remaining opportunities
+
+The largest dependency/build-time opportunity is
+`tree-sitter-language-pack`. Even with runtime download support disabled, its
+build script pulls the downloader/TLS and archive stacks (`ureq`, Rustls/Ring,
+`tar`, and `zstd`). Replacing or upstreaming a selected-prebuilt-grammar path
+would materially shrink clean-build work, but it requires parser-coverage and
+cross-platform validation and is therefore not a safe release-hardening edit.
+
+The production graph also contains four `hashbrown` major/minor lines and two
+`getrandom` lines through distinct upstream consumers. These should converge
+through upstream upgrades rather than forced lockfile overrides.
+
+For a deliberately smaller distribution, add a documented slim installation
+profile that disables `view` and `watch`; do not silently change existing
+defaults. Keep dense retrieval and network model fetching opt-in.
