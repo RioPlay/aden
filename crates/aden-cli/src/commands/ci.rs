@@ -46,6 +46,38 @@ fn documented_integrity_identifier(rel_path: &Path, line: &str, candidate: &str)
     }
 }
 
+/// GitHub recommends pinning third-party Actions to immutable 40-hex commits.
+/// Treat only the exact workflow `uses: owner/action@<sha>` grammar as integrity
+/// metadata; an identical token in source, inputs, or `env:` remains scannable.
+fn github_action_commit_pin(rel_path: &Path, line: &str, candidate: &str) -> bool {
+    if candidate.len() != 40 || !candidate.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return false;
+    }
+    let components: Vec<_> = rel_path.components().collect();
+    let in_workflow = components.len() >= 3
+        && components[0].as_os_str() == ".github"
+        && components[1].as_os_str() == "workflows"
+        && matches!(
+            rel_path
+                .extension()
+                .and_then(|extension| extension.to_str()),
+            Some("yml" | "yaml")
+        );
+    if !in_workflow {
+        return false;
+    }
+
+    let trimmed = line.trim_start();
+    if !trimmed.starts_with("uses:") {
+        return false;
+    }
+    let Some(position) = trimmed.find(&format!("@{candidate}")) else {
+        return false;
+    };
+    let tail = &trimmed[position + candidate.len() + 1..];
+    tail.is_empty() || tail.starts_with(char::is_whitespace) || tail.starts_with('#')
+}
+
 /// Result of running one test framework's suite.
 #[derive(Debug)]
 enum FrameworkResult {
@@ -615,6 +647,9 @@ pub fn cmd_ci_check(path: &Path, json: bool) -> Result<(), Box<dyn std::error::E
                             if documented_integrity_identifier(rel_path, line, cap.as_str()) {
                                 continue;
                             }
+                            if github_action_commit_pin(rel_path, line, cap.as_str()) {
+                                continue;
+                            }
                         }
                         // Language-agnostic allowlist: any line bearing this
                         // marker — in a comment of ANY syntax (`//`, `#`, `--`,
@@ -1041,6 +1076,33 @@ mod tests {
             Path::new("docs/evidence.adoc"),
             &format!("SHA-256 `{non_hex_digest}`"),
             &non_hex_digest
+        ));
+    }
+
+    #[test]
+    fn github_action_commit_pins_are_narrowly_exempted() {
+        let commit = ["34e114876b0b11c390a56", "381ad16ebd13914f8d5"].concat();
+        let workflow = Path::new(".github/workflows/release.yml");
+        assert!(github_action_commit_pin(
+            workflow,
+            &format!("uses: actions/checkout@{commit} # v4"),
+            &commit
+        ));
+        assert!(!github_action_commit_pin(
+            Path::new("src/config.yml"),
+            &format!("uses: actions/checkout@{commit}"),
+            &commit
+        ));
+        assert!(!github_action_commit_pin(
+            workflow,
+            &format!("env: TOKEN={commit}"),
+            &commit
+        ));
+        let non_hex = ["z4e114876b0b11c390a56", "381ad16ebd13914f8d5"].concat();
+        assert!(!github_action_commit_pin(
+            workflow,
+            &format!("uses: actions/checkout@{non_hex}"),
+            &non_hex
         ));
     }
 
