@@ -1,0 +1,59 @@
+[[golden-journey-evidence]]
+= Golden Journey Evidence
+
+This record defines the reproducible DX-103 dogfood measurement. It does not
+claim a median from one machine. CI proves the commands against a clean
+repository; contributors may measure their local elapsed time with:
+
+[source,bash]
+----
+scripts/measure_golden_journey.sh
+----
+
+The script creates a temporary committed repository, invokes the installed
+`aden` binary for the documented `ask` → `understand` → `check` journey, and
+prints elapsed seconds and command count. A release may claim the under-three-
+minute median only after collecting multiple recorded runs with machine and
+version notes. The installed `aden-mcp --version` smoke check is part of CI.
+
+Developer observation: the journey needs no graph anchor and no repository
+mutation. Agent observation: MCP receives structured receipt-bearing responses;
+ambiguous symbols return candidates and recovery instead of a guessed anchor.
+
+== Recorded installer-binary runs
+
+These runs used the user-local binary installed by `install.sh`, not
+`target/debug`. They are a reproducible local sample, not a release-wide
+performance claim.
+
+|===
+|Date (UTC) |Commit |Binary |Version |Elapsed |Commands |Observation
+
+|2026-07-10T03:47:39Z
+|`aeb3d7a`
+|`/home/unknown/.local/bin/aden`
+|`aden 0.2.0`
+|196 ms
+|3
+|`ask`, `understand`, and `check` succeeded in a fresh committed repository.
+
+|2026-07-10T03:47:40Z
+|`aeb3d7a`
+|`/home/unknown/.local/bin/aden`
+|`aden 0.2.0`
+|176 ms
+|3
+|No graph anchor, hook activation, or repository mutation was required.
+
+|2026-07-10T03:47:40Z
+|`aeb3d7a`
+|`/home/unknown/.local/bin/aden`
+|`aden 0.2.0`
+|184 ms
+|3
+|The `ask` diagnostic noted a thin one-symbol assembly; the answer remained
+actionable and `understand`/`check` completed successfully.
+|===
+
+Median of this three-run sample: 184 ms. Do not compare this warm installed-
+binary journey sample with cold-build installation time.

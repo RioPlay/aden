@@ -73,6 +73,29 @@ jobs:
         if: runner.os != 'Windows'
         run: bash install.sh
 
+      - name: Golden onboarding journey (clean repository)
+        if: runner.os != 'Windows'
+        run: |
+          set -euo pipefail
+          repo="$(mktemp -d)"
+          mkdir -p "$repo/src"
+          cat > "$repo/src/lib.rs" <<'EOF'
+          pub fn entry_point() {}
+          EOF
+          git -C "$repo" init -q
+          git -C "$repo" config user.email ci@example.invalid
+          git -C "$repo" config user.name CI
+          git -C "$repo" add .
+          git -C "$repo" commit -qm fixture
+          # The documented two-command answer path must work from a clean repo;
+          # verify is the third, explicit trust step.
+          "$HOME/.local/bin/aden" --version
+          "$HOME/.local/bin/aden-mcp" --version
+          "$HOME/.local/bin/aden" ask "Where is entry_point?" "$repo" --strict --budget 512
+          "$HOME/.local/bin/aden" understand entry_point "$repo" --json
+          "$HOME/.local/bin/aden" check "$repo" --severity Forbid
+          ADEN_BIN="$HOME/.local/bin/aden" scripts/measure_golden_journey.sh
+
       - name: Verify install script (Windows)
         if: runner.os == 'Windows'
         run: |

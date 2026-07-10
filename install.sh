@@ -217,11 +217,17 @@ fi
 # 2 ─ Build ───────────────────────────────────────────────────────────────────
 step "Build release binaries"
 cd "$PROJECT_ROOT"
-# Aden's own checkout: activate the repo's pre-push CI gate so local pushes run
-# the same checks as CI. This configures THIS repo only — nothing global.
+# Hooks change repository behavior, so they are always explicit opt-in — even
+# for `--yes` and non-interactive installs. The installer itself must never
+# surprise a newcomer by changing how their next commit or push behaves.
 if git -C "$PROJECT_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
-    git -C "$PROJECT_ROOT" config core.hooksPath git-hooks
-    ok "git hooks activated for this checkout (pre-push CI gate; repo-local setting)"
+    note "Optional: activate this checkout's repo-local pre-push CI hook."
+    if ask_yn "Activate git hooks for this checkout?" n; then
+        git -C "$PROJECT_ROOT" config core.hooksPath git-hooks
+        ok "git hooks activated for this checkout (pre-push CI gate; repo-local setting)"
+    else
+        skip "git hooks unchanged — opt in later: git config core.hooksPath git-hooks"
+    fi
     if [ "$TTY" = "1" ] && [ -f "$PROJECT_ROOT/tools/git-hooks/pre-commit" ]; then
         note "Optional: install the pre-commit hook (secret scan + aden check + test)."
         note "Runs on every commit — heavier than pre-push but catches issues earlier."

@@ -41,8 +41,9 @@ certainty.
 aden --version
 ----
 
-`install.sh` also activates the repo's pre-push git hook (the local CI gate), so
-changes can't be pushed without passing the checks.
+The installer does not change git hooks unless you explicitly opt in. To enable
+the repository-local pre-push gate later, run
+`git config core.hooksPath git-hooks` from Aden's checkout.
 
 === Optional: hybrid (dense) search
 
@@ -66,7 +67,31 @@ With the feature off (the default), nothing changes and no extra dependencies ar
 built. Air-gapped? Place `model.onnx` + `tokenizer.json` from
 BAAI/bge-small-en-v1.5 into the cache dir by hand instead of running the script.
 
-== 1. Index your codebase
+== First useful answer (two commands)
+
+From the repository you want to understand, ask first. Read tools create or
+refresh the rebuildable graph automatically, so most newcomers do not need to
+learn graph anchors or run `gen` before getting value.
+
+[source,bash]
+----
+aden ask "Where is the main entry point?" .
+aden understand main .
+----
+
+`ask` gives a useful overview; `understand` gives the definition, callers, and
+downstream context for a concrete symbol. If a name is ambiguous, Aden returns
+candidates and recovery guidance instead of guessing. Full `aden://` anchors
+remain an advanced primitive for precise `asm` and `query` traversal.
+
+Before committing a change, verify the graph and references:
+
+[source,bash]
+----
+aden check . --severity Forbid
+----
+
+== Advanced: index your codebase explicitly
 
 [source,bash]
 ----

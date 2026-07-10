@@ -1,5 +1,5 @@
 :packet-id: DX-103
-:status: proposed
+:status: ready
 :priority: P1
 :depends-on: AP-101A,DX-101,DX-102
 :unlocks: AP-107
