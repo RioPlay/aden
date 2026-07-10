@@ -1298,6 +1298,8 @@ fn strips_index_chrome(tool: &str) -> bool {
 /// `strips_index_chrome` policy. Line-ending normalization (join with `\n`,
 /// trailing newline dropped) is identical for both paths; only the filter
 /// differs, so non-index tools are returned unchanged save normalization.
+/// In particular, the nested `context_receipt` emitted by structured CLI read
+/// commands is protocol-neutral metadata and must pass through untouched.
 fn clean_stdout(tool: &str, raw: &str) -> String {
     let strip = strips_index_chrome(tool);
     raw.lines()
@@ -1310,6 +1312,15 @@ fn clean_stdout(tool: &str, raw: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// Preserve successful CLI JSON for the MCP response channel.
+///
+/// This narrow public adapter exists for cross-crate contract fixtures; MCP
+/// clients should use the server rather than calling it directly.
+#[doc(hidden)]
+pub fn preserve_cli_output_for_mcp(tool: &str, raw: &str) -> String {
+    clean_stdout(tool, raw)
 }
 
 /// Whether this tool historically forced `ADEN_SKIP_AUTO_GEN` (pre zero-friction).
@@ -1356,7 +1367,7 @@ async fn run_aden_command(project_dir: &Path, tool: &str, args: &[&str]) -> Resu
 
     if output.status.success() {
         let raw = String::from_utf8_lossy(&output.stdout).into_owned();
-        Ok(clean_stdout(tool, &raw))
+        Ok(preserve_cli_output_for_mcp(tool, &raw))
     } else {
         let mut err = String::from_utf8_lossy(&output.stderr).into_owned();
         let out = String::from_utf8_lossy(&output.stdout);

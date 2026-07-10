@@ -1,6 +1,7 @@
 // Copyright (c) 2026 RioPlay <rioplay@rioplay.dev>
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+use aden_core::receipt::{ContextReceipt, ReceiptFreshness};
 use aden_store::Storage;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -49,6 +50,18 @@ impl Freshness {
             Self::Lagging => "lagging",
             Self::Building => "building",
             Self::Unavailable => "unavailable",
+        }
+    }
+}
+
+impl From<Freshness> for ReceiptFreshness {
+    fn from(value: Freshness) -> Self {
+        match value {
+            Freshness::Current => Self::Current,
+            Freshness::Snapshot => Self::Snapshot,
+            Freshness::Lagging => Self::Lagging,
+            Freshness::Building => Self::Building,
+            Freshness::Unavailable => Self::Unavailable,
         }
     }
 }
@@ -183,8 +196,13 @@ pub fn classify_freshness(path: &Path) -> Freshness {
     Freshness::Current
 }
 
-/// Add `freshness` / `index_stale` (and hints) to MCP read-tool JSON output.
-/// Bare arrays are wrapped as `{"freshness": …, "index_stale": …, "items": …}`.
+/// Add legacy freshness fields and the versioned Context Receipt to read JSON.
+///
+/// Migration: legacy `freshness`, `index_stale`, `stale_hint`, and `items`
+/// fields remain unchanged for the compatibility window. New consumers read the
+/// nested `context_receipt` object. The receipt is deliberately nested so its
+/// future fields cannot collide with payload fields.
+/// Bare arrays retain the established `items` wrapper.
 pub fn augment_read_json(path: &Path, value: serde_json::Value) -> serde_json::Value {
     let freshness = classify_freshness(path);
     let stale = freshness != Freshness::Current;
@@ -208,6 +226,13 @@ fn augment_read_json_with_freshness(
                 serde_json::Value::String(STALE_HINT.into()),
             );
         }
+        // A legacy producer may already own this field. Preserve it exactly;
+        // changing its shape would be a breaking migration. Aden-generated
+        // read envelopes reserve this namespace and therefore receive v1.
+        map.entry("context_receipt").or_insert_with(|| {
+            serde_json::to_value(ContextReceipt::new().with_freshness(freshness.into()))
+                .expect("ContextReceipt always serializes")
+        });
     };
     match value {
         serde_json::Value::Object(mut map) => {
@@ -350,6 +375,8 @@ mod skip_auto_gen_tests {
         assert_eq!(obj["index_stale"].as_bool(), Some(false));
         assert_eq!(obj["freshness"].as_str(), Some("current"));
         assert!(obj.get("stale_hint").is_none());
+        assert_eq!(obj["context_receipt"]["schema_version"], 1);
+        assert_eq!(obj["context_receipt"]["freshness"], "current");
 
         let arr =
             augment_read_json_with_freshness(false, Freshness::Current, serde_json::json!(["a"]));
@@ -364,6 +391,28 @@ mod skip_auto_gen_tests {
         assert_eq!(stale["index_stale"].as_bool(), Some(true));
         assert_eq!(stale["freshness"].as_str(), Some("lagging"));
         assert_eq!(stale["stale_hint"].as_str(), Some(STALE_HINT));
+        assert_eq!(stale["context_receipt"]["freshness"], "lagging");
+
+        let legacy = augment_read_json_with_freshness(
+            false,
+            Freshness::Current,
+            serde_json::json!({"context_receipt":{"legacy":true}}),
+        );
+        assert_eq!(
+            legacy["context_receipt"],
+            serde_json::json!({"legacy":true})
+        );
+
+        let array = augment_read_json_with_freshness(
+            false,
+            Freshness::Current,
+            serde_json::json!([{"context_receipt":{"payload":true}}]),
+        );
+        assert_eq!(
+            array["items"][0]["context_receipt"],
+            serde_json::json!({"payload":true})
+        );
+        assert_eq!(array["context_receipt"]["schema_version"], 1);
     }
 
     #[test]

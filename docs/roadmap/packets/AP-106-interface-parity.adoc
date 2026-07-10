@@ -1,5 +1,5 @@
 :packet-id: AP-106
-:status: proposed
+:status: ready
 :priority: P0
 :depends-on: AP-101A
 :unlocks: AP-101B

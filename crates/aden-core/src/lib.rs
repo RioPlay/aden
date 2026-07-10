@@ -9,6 +9,7 @@ pub mod contract;
 pub mod filter;
 pub mod lock;
 pub mod overlay;
+pub mod receipt;
 
 pub mod staging;
 

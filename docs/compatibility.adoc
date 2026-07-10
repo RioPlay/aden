@@ -149,6 +149,8 @@ Receipt and freshness-state changes require a transition table in their
 migration guide: old value, new value, semantic mapping, compatibility period,
 and behavior for unknown values. Consumers must ignore unknown additive fields
 and report unknown required versions rather than guessing.
+Receipt v1's additive migration and source-free metadata rules are documented in
+<<context-receipt>>.
 
 [[experimental-and-internal-interfaces]]
 == Experimental and Internal Interfaces
