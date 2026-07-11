@@ -46,6 +46,28 @@ fn documented_integrity_identifier(rel_path: &Path, line: &str, candidate: &str)
     }
 }
 
+/// Structured benchmark manifests also carry public integrity identifiers.
+/// Keep this narrower than the prose exemption: only a JSON revision field
+/// may hold a 40-hex Git commit, and only the dedicated regression lock may
+/// hold 64-hex file digests. Other JSON strings remain fully scannable.
+fn structured_integrity_identifier(rel_path: &Path, line: &str, candidate: &str) -> bool {
+    if !candidate.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return false;
+    }
+    let compact: String = line.chars().filter(|c| !c.is_whitespace()).collect();
+    match candidate.len() {
+        40 => compact == format!(r#""revision":"{candidate}""#),
+        64 => {
+            rel_path
+                .file_name()
+                .is_some_and(|name| name == "regression-lock.json")
+                && (compact.ends_with(&format!(r#""{candidate}","#))
+                    || compact.ends_with(&format!(r#""{candidate}""#)))
+        }
+        _ => false,
+    }
+}
+
 /// GitHub recommends pinning third-party Actions to immutable 40-hex commits.
 /// Treat only the exact workflow `uses: owner/action@<sha>` grammar as integrity
 /// metadata; an identical token in source, inputs, or `env:` remains scannable.
@@ -647,6 +669,9 @@ pub fn cmd_ci_check(path: &Path, json: bool) -> Result<(), Box<dyn std::error::E
                             if documented_integrity_identifier(rel_path, line, cap.as_str()) {
                                 continue;
                             }
+                            if structured_integrity_identifier(rel_path, line, cap.as_str()) {
+                                continue;
+                            }
                             if github_action_commit_pin(rel_path, line, cap.as_str()) {
                                 continue;
                             }
@@ -1076,6 +1101,38 @@ mod tests {
             Path::new("docs/evidence.adoc"),
             &format!("SHA-256 `{non_hex_digest}`"),
             &non_hex_digest
+        ));
+    }
+
+    #[test]
+    fn structured_integrity_identifiers_are_narrowly_exempted() {
+        let commit = ["ecfec5b87f78ad6ede41", "5c406eb862034999fb04"].concat();
+        let digest = [
+            "2d56057a9a04977a6dac",
+            "88f3db790c727acfac9a",
+            "49a92e3d4cae75192fd3c564",
+        ]
+        .concat();
+
+        assert!(structured_integrity_identifier(
+            Path::new("scripts/agent-bench/tasks.json"),
+            &format!(r#"      "revision": "{commit}""#),
+            &commit
+        ));
+        assert!(structured_integrity_identifier(
+            Path::new("scripts/regression-lock.json"),
+            &format!(r#"    "scripts/tasks.json": "{digest}","#),
+            &digest
+        ));
+        assert!(!structured_integrity_identifier(
+            Path::new("config.json"),
+            &format!(r#"    "token": "{commit}""#),
+            &commit
+        ));
+        assert!(!structured_integrity_identifier(
+            Path::new("other-lock.json"),
+            &format!(r#"    "file": "{digest}""#),
+            &digest
         ));
     }
 
