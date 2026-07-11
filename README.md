@@ -1,14 +1,5 @@
 # Guide
 
-The `helper_fn` routine renders a greeting. Ambiguous `dupe_name` and the
-short `shr` name must stay unlinked.
+The `helper_fn` routine renders a greeting.
 
-## Example
-
-```rust
-let s = helper_fn("hi");
-```
-
-## Glossary
-
-- **caller_fn**: the entry point of the greeting flow.
+A plain reference to [the old decision](#old-decision) — an ordinary link.

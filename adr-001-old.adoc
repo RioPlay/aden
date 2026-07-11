@@ -1,0 +1,8 @@
+:status: superseded
+
+[[adr-001]]
+= ADR-001: Old Decision
+
+== Status
+
+Superseded by <<adr-002>>.
