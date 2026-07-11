@@ -1,0 +1,21 @@
+[package]
+name = "aden-store"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Aden: Storage abstraction layer for the knowledge graph"
+
+[dependencies]
+aden-core = { path = "../aden-core" }
+postcard = { version = "1.0", default-features = false, features = ["alloc"] }
+thiserror = "2.0"
+serde = { version = "1.0", features = ["derive"] }
+# fjall (pure-Rust LSM-tree) is aden's storage engine: vs the previous sled
+# backend it gave an ~8.5x smaller store on the Linux kernel (528 MB vs 4.4 GB),
+# faster gen, faster queries, and pulls no unmaintained transitive deps.
+fjall = "3.1.6"
+
+[dev-dependencies]
+uuid = { version = "1.12", features = ["v4", "serde"] }

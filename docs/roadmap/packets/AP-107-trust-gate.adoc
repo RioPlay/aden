@@ -1,0 +1,52 @@
+:packet-id: AP-107
+:status: done
+:priority: P0
+:depends-on: AP-101B,DX-101,DX-102,DX-103
+:unlocks: none
+:scope: crates/aden-cli/tests,crates/aden-mcp,docs/roadmap/scorecard.adoc
+:issue: https://github.com/RioPlay/aden/issues/66
+:acceptance-version: 1
+:evidence-level: E4
+
+[[ap-107]]
+= AP-107: Trust integration gate
+
+== Outcome
+
+The Trust Foundation works as one measured system and safely unlocks outcome
+evaluation. This packet introduces no new product behavior.
+
+== Current evidence
+
+Trust behavior is tested in separate command areas; there is no single
+cross-interface adversarial gate for receipts, coverage, and freshness together.
+
+== Scope
+
+Trust integration fixtures, scorecard evidence, and milestone unlock validation.
+
+== Non-goals
+
+Do not introduce product behavior to make the gate pass.
+
+== Acceptance
+
+* Adversarial tests cover credential-like content, stale/failed refresh, output
+  truncation, unsupported files, advisory findings, CLI/MCP comparison, and
+  working-tree mutation during a query.
+* Receipts never expose secrets and coverage arithmetic reconciles.
+* Trust scorecard gates pass without regression.
+* A dogfood run records developer and agent outcomes at E4.
+
+== Failure modes and rollback
+
+Any failed gate keeps later milestones locked. Fix the owning packet rather than
+adding behavior here.
+
+== Completion evidence
+
+`crates/aden-cli/tests/trust_integration_gate.rs` is the one cross-interface
+adversarial suite. It must pass alongside the recorded clean-install E4 journey
+in `docs/golden-journey-evidence.adoc`; command-level gate results and their
+provenance belong in the program scorecard. An independent reviewer must rerun
+the gate against the committed artifact before this packet changes to `done`.

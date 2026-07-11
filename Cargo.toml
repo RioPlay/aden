@@ -1,0 +1,81 @@
+[package]
+name = "aden"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+aden-core = { path = "crates/aden-core" }
+aden-parse = { path = "crates/aden-parse" }
+aden-emit = { path = "crates/aden-emit" }
+aden-graph = { path = "crates/aden-graph" }
+aden-asm = { path = "crates/aden-asm" }
+
+[workspace]
+members = [
+    "crates/aden-core",
+    "crates/aden-parse",
+    "crates/aden-emit",
+    "crates/aden-asm",
+    "crates/aden-graph",
+    "crates/aden-index",
+    "crates/aden-cli",
+    "crates/aden-lsp",
+    "crates/aden-heal",
+    "crates/aden-propose",
+    "crates/aden-mcp",
+    "crates/aden-policy",
+    "crates/aden-store",
+    "crates/aden-diagnose",
+    "crates/aden-paths",
+]
+
+resolver = "3"
+
+[workspace.package]
+version = "0.3.0"
+edition = "2024"
+authors = ["RioPlay <rioplay@rioplay.dev>"]
+license = "AGPL-3.0-or-later"
+rust-version = "1.90"
+description = "Aden: A Dense Referential Context Compiler — token-dense, graph-backed context assembly for AI agents"
+repository = "https://github.com/RioPlay/aden"
+homepage = "https://aden.rioplay.dev"
+documentation = "https://docs.rs/aden"
+
+# SECURITY (CWE-190): aden does extensive byte-offset/span arithmetic on
+# UNTRUSTED source while parsing arbitrary repos. By default release builds wrap
+# integer overflow silently, which could turn a crafted file into wrong offsets
+# (and downstream out-of-range slices). Enable overflow checks in release so an
+# overflow PANICS instead — and the per-file `catch_unwind` boundary in
+# aden-parse degrades that panic to a skipped file rather than aborting the run.
+[profile.release]
+overflow-checks = true
+
+[workspace.dependencies]
+rayon = "1.10"
+dirs = "6"
+sha2 = "0.11"
+
+[dev-dependencies]
+criterion = "0.8"
+aden-store = { path = "crates/aden-store" }
+aden-core = { path = "crates/aden-core" }
+
+[[bench]]
+name = "store_perf"
+harness = false
+
+[[bench]]
+name = "token_density"
+harness = false
+
+[[bench]]
+name = "graph_construction"
+harness = false
+
+[[bench]]
+name = "assembly"
+harness = false

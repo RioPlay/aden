@@ -1,0 +1,25 @@
+# Auto-generated candidate queries (M6 Stage 1: commit -> single file).
+# UNVALIDATED: spot-check before publishing recall. query<TAB>expected_path<TAB>note
+# [spot-check: weak] Better type checking during deprecation	src/flask/__init__.py	commit 7d5d187
+Use similar code for all callback-applying methods	src/flask/app.py	commit 3f6cdbd
+Warn when registering same blueprint with same name	src/flask/blueprints.py	commit 9409be6
+Fixing issue 5342: 'The double quote is missing in the string'	src/flask/cli.py	commit 1d5abfa
+Allow for PathLike types for config file variables	src/flask/config.py	commit 2abb751
+Wait until app ctx is ready before matching url	src/flask/ctx.py	commit 1ff98a2
+# [spot-check: weak] Replace old pocoo links everywhere	src/flask/debughelpers.py	commit ef434ea
+Access names as proxies directly	src/flask/globals.py	commit 0b2f809
+Cherry-pick 7ba35c4 from master (support pathlib.Path for static_folder)	src/flask/helpers.py	commit b724832
+Update json.dumps for http_date changes	src/flask/json/__init__.py	commit 49b7341
+# [spot-check: weak] Update dev dependencies	src/flask/json/provider.py	commit b337d21
+Untag without object_hook	src/flask/json/tag.py	commit 700fc7d
+Show warning for old logger config	src/flask/logging.py	commit b08e35e
+# [spot-check: weak] Changed the static annotated type of select_jinja_autoescape method in src/flask/sansio/app.py	src/flask/sansio/app.py	commit dbd4c28
+Provide an extendable merge blueprint funcs method	src/flask/sansio/blueprints.py	commit 72c85e8
+# [spot-check: weak] Fix jinja_loader annotation	src/flask/sansio/scaffold.py	commit ecc057d
+Instance_path for namespace packages uses path closest to submodule	src/flask/scaffold.py	commit 88bcf78
+Include samesite and secure when removing session cookie	src/flask/sessions.py	commit 22987b6
+Error for render_template outside app context	src/flask/templating.py	commit 58f3536
+Fix type hint for `cli_runner.invoke`	src/flask/testing.py	commit 54c3f87
+Use bound typevar to accept Flask and Werkzeug Response classes	src/flask/typing.py	commit 8cb9506
+Support View and MethodView instances with async handlers	src/flask/views.py	commit 270eb2d
+# [spot-check: weak] Fix mypy finding with new werkzeug endpoint type	src/flask/wrappers.py	commit a363642

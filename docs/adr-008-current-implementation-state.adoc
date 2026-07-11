@@ -1,0 +1,228 @@
+:proj: aden
+:author: RioPlay
+:status: accepted
+:toc: left
+:toclevels: 3
+
+[[adr-008]]
+= ADR-008: Current Implementation State
+
+== Context
+
+This is a "state ADR." Its purpose is to capture what actually shipped as of 2026-06-20,
+covering areas where the original ADRs have since been extended by implementation. The
+original ADRs remain unchanged and authoritative for the decisions they record; this
+document is the companion that says "here is what exists now and how it extends those
+decisions."
+
+The four areas covered: Wave 3 episodic edges (extends <<adr-006>> and <<adr-007>>),
+store-first architecture (extends <<adr-003>>), MCP three-tier tool surface, and
+dual-substrate retrieval.
+
+== Decision
+
+=== 1. Wave 3 Episodic Edges (extends ADR-006 and ADR-007)
+
+ADR-006 documented Wave 1 and 2 prose cross-reference extraction under
+`GEN_LOGIC_VERSION=3`. ADR-007 documented the typed-edge model and activation policy
+through Wave 2. Wave 3 adds three edge types that capture *episodic* or *co-change*
+signal rather than structural or prose-naming signal.
+
+==== 1.1 Supersedes
+
+Prose cross-references that carry supersede language (e.g., "superseded by <<adr-002>>",
+"this document supersedes <<adr-001>>") emit a directed `Supersedes` edge from the NEW
+document to the OLD document, distinct from a plain `RelatesTo` or `Mentions` edge. The
+new document is the subject; the old document is the object: NEW Supersedes OLD.
+
+The extractor is pattern-matched in the prose parser alongside the existing Wave 1
+cross-reference extraction; the direction is fixed by the "superseded by" phrasing, not
+inferred.
+
+==== 1.2 Justifies
+
+When an ADR document (identified by path convention, e.g., `docs/adr-*.adoc`) mentions a
+code symbol, it emits two edges rather than one: the weaker `Mentions` edge (Wave 2,
+retained as the generic channel) and a stronger `Justifies` edge, ADR Justifies symbol.
+The distinction matters for impact traversal: a `Justifies` edge signals that the code
+symbol has a rationale document, not merely that a document named the symbol in passing.
+Consumers can filter on `Justifies` to answer "which decisions cover this function?"
+
+==== 1.3 AssociatedWith
+
+Files that co-change in git history accumulate `AssociatedWith` edges between them. The
+signal is Hebbian: files that change together are associated. The emitter walks the
+project's git log at `gen` time, bins file pairs by co-commit frequency, and writes
+`AssociatedWith` edges above a configurable threshold.
+
+`AssociatedWith` is undirected by convention (the edge is stored in both directions in
+the graph). It is a weaker, empirical signal than structural edges and is intentionally
+segregated from impact traversal by default; it is available to `asm` and `query` for
+exploratory use.
+
+==== 1.4 Version bump
+
+`GEN_LOGIC_VERSION` advances from 3 to 4 with Wave 3. Any store built under version 3
+is invalid and regenerated automatically on first access; no manual cache invalidation is
+required.
+
+The census discipline from ADR-007 §1 applies: all three Wave 3 types are emitter +
+consumer + census-verified before being listed as live.
+
+=== 2. Store-First Architecture (extends ADR-003)
+
+ADR-003 established the per-user store location and its separation from the working tree.
+The current implementation goes further: aden emits *no* on-disk contract files into the
+working tree at all.
+
+==== 2.1 No working-tree artifacts
+
+There are no `.adoc` contract files, no `.aden/contracts/` directory, and no generated
+artifacts placed in the project directory by `gen` or `heal`. The entire graph store
+lives in the per-user data directory, following the XDG convention on Linux:
+
+----
+~/.local/share/aden/projects/<project-key>/store
+----
+
+The `<project-key>` is a deterministic hash of the project root path. `aden store path`
+prints the resolved path for the current project.
+
+==== 2.2 Security consequence
+
+ADR-003's security model included a "malicious contract injection" threat: an attacker
+placing crafted contract files in the working tree to poison the store. That threat is
+eliminated by architecture. Because the store never reads from the working tree (it reads
+source files directly, not intermediate contract artifacts), there is no injection surface.
+The gitignore-based mitigation in ADR-003 is therefore moot; it remains harmless but
+provides no additional safety.
+
+=== 3. MCP Three-Tier Tool Surface
+
+The MCP server exposes aden's capabilities to Claude and other MCP clients. As the tool
+count grew, listing all tools in every session created noise. Three surface tiers let
+teams choose a vocabulary that matches their workflow.
+
+==== 3.1 Tiers
+
+The active tier is controlled by the `ADEN_MCP_SURFACE` environment variable or the
+`--surface` flag at install time. Three values are recognized:
+
+`essential` (default)::
+The navigation loop: `grep`, `locate`, `understand`, `ask`, `asm`, `query`.
+These six tools cover the read-before-edit and blast-radius workflows that are aden's
+core differentiator. New installs get this tier unless `--surface` is specified.
+
+`standard`::
+Essential plus: `check`, `impact-diff`, `list`, `communities`, `status`, `diagnose`,
+`test`, `lint`, `audit`.
+Adds project health and change-risk tools for teams that run aden in CI or code-review
+workflows.
+
+`full`::
+All tools. Also triggered by the legacy `ADEN_MCP_FULL=1` variable for backward
+compatibility.
+
+==== 3.2 Visibility vs. callability
+
+Tier gating affects only what appears in `list_tools` (the MCP tool-discovery response).
+All tools remain callable by name regardless of tier. A client that already knows a tool
+name can call it even on the `essential` surface; the tier only controls what a client
+*discovers* automatically.
+
+==== 3.3 Install-time baking
+
+The recommended way to set the surface is at install time:
+
+----
+aden mcp install --surface standard
+----
+
+This writes the surface selection into the MCP server configuration so it persists across
+sessions without requiring the environment variable to be set manually.
+
+=== 4. Dual-Substrate Retrieval (opt-in)
+
+Retrieval experiments (see research topic `aden-roadmap/retrieval-rank-calibration`)
+established that the best lever depends on query type: prose queries benefit from
+synonym and related-term expansion; code-shaped queries benefit from PPMI-based
+reranking. Both levers are available behind a feature gate.
+
+==== 4.1 Feature gate
+
+All dual-substrate behavior is gated behind `ADEN_LEXICON_ON`. This variable must be set
+explicitly; the feature is *off by default*. The rationale: a default-on experiment
+(PR #39) introduced regressions on external-repo queries and was reverted (PR #40).
+Opt-in is the stable default until the routing heuristics are validated across a broader
+corpus.
+
+==== 4.2 Expansion lever
+
+When `ADEN_LEXICON_ON` is set and the query is prose-shaped (plain English, no
+identifier tokens), the expansion lever fires: the query is expanded with synonyms and
+related terms drawn from the corpus-derived lexicon before retrieval. The expansion lever
+can also be forced explicitly with `ADEN_LEXICON_EXPAND=1` regardless of query type.
+
+==== 4.3 Rerank lever
+
+When `ADEN_LEXICON_ON` is set and the query is code-shaped (snake_case, camelCase, or
+`::` tokens), initial retrieval results are reranked using PPMI scores from the
+corpus-derived lexicon. The rerank lever can also be forced explicitly with
+`ADEN_PPMI_RERANK=1`.
+
+==== 4.4 Auto-gating
+
+When `ADEN_LEXICON_ON` is set (and neither `ADEN_LEXICON_EXPAND` nor `ADEN_PPMI_RERANK`
+is set), the router classifies the query automatically and applies the appropriate lever.
+Prose queries expand; code-shaped queries rerank; ambiguous queries apply neither.
+
+==== 4.5 Kill switch
+
+`ADEN_LEXICON_OFF=1` disables all dual-substrate behavior, including auto-gating, even
+when `ADEN_LEXICON_ON` is set. This allows a single process environment to suppress the
+feature without unsetting the parent variable.
+
+== Consequences
+
+Positive:
+
+. Wave 3 edges add episodic and rationale-level signal to the graph: "which ADR justifies
+  this function?" and "which files historically change together?" are now answerable.
+. The store-first architecture eliminates an entire class of supply-chain attack (contract
+  injection) without requiring any mitigation in the security model.
+. The three-tier MCP surface lets teams tune tool discovery to their workflow without
+  losing access to any capability.
+. Dual-substrate retrieval is available for teams that want it, with a kill switch that
+  prevents any regression at the repo level.
+
+Negative / costs:
+
+. `AssociatedWith` edges are empirical and noisy; including them in impact traversal by
+  default would degrade precision. They are available only to exploratory tools until a
+  precision gate is validated.
+. The `ADEN_LEXICON_ON` opt-in means retrieval improvements are invisible to users who do
+  not set the variable. Promotion to default requires corpus-validation across diverse
+  external repos before it can be reconsidered.
+. `GEN_LOGIC_VERSION=5` invalidates all version-4 stores (AsciiDoc glossary/preprocessor
+  emission). For large repos the first `gen` after upgrade is a full rebuild; incremental
+  gen resumes normally afterward.
+
+== Status
+
+Accepted. All four areas are implemented and shipped on `main` as of 2026-06-20.
+
+Wave 3 edges (`Supersedes`, `Justifies`, `AssociatedWith`) are emitted and
+census-verified. `GEN_LOGIC_VERSION` is 5 (AsciiDoc indexing hygiene on branch
+`fix/audit-coxn-hygiene`; pending merge). The store-first architecture has been in
+place since the removal of working-tree contract emission (no separate ADR was written
+at that time; this document is the record). MCP surface tiering shipped in PR #42
+(three-tier surface) and `aden mcp install --surface`. Dual-substrate retrieval shipped
+opt-in after the PR #40 revert.
+
+== Related Documents
+
+. <<adr-001>> -- Foundational architecture decisions
+. <<adr-003>> -- Per-user store location and working-tree separation
+. <<adr-006>> -- Prose as a first-class graph citizen
+. <<adr-007>> -- Typed-edge model and edge-type activation policy
+. <<architecture>> -- Pipeline and graph-build stages

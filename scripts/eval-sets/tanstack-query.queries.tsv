@@ -1,0 +1,15 @@
+# Auto-generated candidate queries (M6 Stage 1: commit -> single file).
+# UNVALIDATED: spot-check before publishing recall. query<TAB>expected_path<TAB>note
+Only attach .then and .catch onto a promise if it gets dehydrated	packages/query-core/src/hydration.ts	commit b4cd121
+# [spot-check: weak] Change persisterRestoreAll to restoreQueries with filter support	packages/query-core/src/index.ts	commit 9e0e60c
+Propagate AbortSignal reason in infiniteQueryBehavior fetchPage cancellation	packages/query-core/src/infiniteQueryBehavior.ts	commit 672c319
+Ensure onMutate runs synchronously when cache config is undefined (#8724)	packages/query-core/src/mutation.ts	commit e7258c5
+Report errors of mutation callbacks asynchronously	packages/query-core/src/mutationObserver.ts	commit 3ee1ae4
+Fix combine not updating when queries change with stable reference	packages/query-core/src/queriesObserver.ts	commit 53fc74e
+Update initialData when an observer mounts while a Query without data exists	packages/query-core/src/query.ts	commit 1c8a921
+Avoid throwing promise errors when data exists	packages/query-core/src/queryObserver.ts	commit dea1614
+Prevent reducer from being called twice in streamedQuery	packages/query-core/src/streamedQuery.ts	commit d576092
+Fix duplicated word in thenable comment	packages/query-core/src/thenable.ts	commit d34292d
+Make sure NodeJs.Timout doesn't leak	packages/query-core/src/timeoutManager.ts	commit 1f1775c
+Remove duplicate Array condition in MutationKey type	packages/query-core/src/types.ts	commit 20ef922
+# [spot-check: weak] Do not drop readonly for partial QueryFilter matching	packages/query-core/src/utils.ts	commit 8e2e174

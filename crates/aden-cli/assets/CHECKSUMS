@@ -1,0 +1,4 @@
+# Vendored, pinned third-party assets for the `view` feature (MIT). Verify with:
+#   sha256sum -c CHECKSUMS
+1008539bb9e171a0dc343453366451a1b3a6ded06028ef4f978608b658ba2d0a  force-graph.min.js
+d96e738edcca580edd524730c1c6b05ed2efce028c23ca95db1bf43033a72e42  3d-force-graph.min.js

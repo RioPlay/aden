@@ -1,0 +1,15 @@
+[[bm25-ranking]]
+BM25 lexical ranking
+
+BM25 is a bag-of-words ranking function that scores a document by how often the
+query terms appear in it, discounted by how common those terms are across the whole
+collection and adjusted for document length. A long document does not win simply by
+repeating a word; the length normalization term keeps short and long passages on a
+fair footing.
+
+Lexical ranking shines on exact symbol names, error strings, configuration keys, and
+numeric constants — the tokens that carry little semantic meaning but must match
+character for character. It is also fully deterministic and explainable: you can
+point at the term frequencies and inverse document frequencies that produced a score.
+That transparency is why keyword ranking remains a first-class retriever even where
+vector search is available.

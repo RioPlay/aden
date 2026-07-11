@@ -1,0 +1,34 @@
+# Auto-generated candidate queries (M6 Stage 1: commit -> single file).
+# UNVALIDATED: spot-check before publishing recall. query<TAB>expected_path<TAB>note
+Normalize_doc_attributes: remove leading whitespace from the doc comment opener	src/attr.rs	commit 83d1d9a
+Insert an empty line when normalizing `#[doc = ""]`	src/attr/doc_comment.rs	commit bdb7223
+Do not pass files as arguments to rustfmt when dumping the default config	src/bin/cargo-fmt.rs	commit 65c90dc
+Tweak the uncommitted file rules for git-fmt	src/bin/git-fmt.rs	commit e8bc2bf
+Rename git-fmt to git-rustfmt	src/bin/git-rustfmt.rs	commit 361a30b
+# [spot-check: weak] Replace `--dump-minimal-config` and `--dump-default-config` with `--print-config`	src/bin/main.rs	commit eca7796
+Create rustfmt-format-diff crate	src/bin/rustfmt-format-diff.rs	commit d28d7fe
+Organize command line options and start with upper case	src/bin/rustfmt.rs	commit cbd3608
+Improve error for nightly-only '--message-format' args (rust-lang/rustfmt#6780)	src/cargo-fmt/main.rs	commit 5042b96
+# [spot-check: weak] Take into account the rhs overhead when rewriting the last element of chain	src/chains.rs	commit be19bab
+# [spot-check: weak] Remove unnecessary comma	src/checkstyle.rs	commit 4241930
+# [spot-check: weak] Detect bare blocks with type ascription that were meant to be a `struct` literal	src/closures.rs	commit 48b8e45
+Add opt_span_before() to SpanUtils trait	src/codemap.rs	commit d316eba
+# [spot-check: weak] Remove a trivial redundant code. self.base.peek().is_none() case is already catched by the line above	src/comment.rs	commit d504a66
+Do not print to stderr when parsing the toml file succeeded	src/config.rs	commit 7229b26
+# [spot-check: weak] Shorten var names to comply with line len reqs	src/config/config_type.rs	commit 533d185
+# [spot-check: weak] Use <stdin> when emitting stdin as filename	src/config/file_lines.rs	commit 34d374e
+Make license doctest pass again	src/config/license.rs	commit 01f6527
+Handle skip_macro_invocations from config file	src/config/macro_names.rs	commit f2bad9c
+Support style edition differing defaults in config loading	src/config/mod.rs	commit 0c6515c
+# [spot-check: weak] Use visibility to check unused imports and delete some stmts	src/config/options.rs	commit 4335c28
+Allow dead code for `StyleEditionDefault`	src/config/style_edition.rs	commit 2db1095
+Fix line numbers in checkstyle output	src/emitter/checkstyle.rs	commit 9792ff0
+Format diff line to be easily clickable	src/emitter/diff.rs	commit 7f44a08
+Update json emitter to better handle errors	src/emitter/json.rs	commit 776baf9
+Put rhs on the same line as lhs if putting rhs on next line exceeds max width	src/expr.rs	commit e6ce65b
+# [spot-check: weak] Cargo fmt and update tests	src/file_lines.rs	commit 2915167
+Use structopt for rustfmt-format-diff arguments parsing	src/format-diff/main.rs	commit 8443262
+# [spot-check: weak] Update annotate-snippets	src/format_report_formatter.rs	commit e6bc629
+Do not look for external modules when the input is from stdin	src/formatting.rs	commit d0e96ed
+Fix auto detection of windows newlines for inputs with multibyte chars	src/formatting/newline_style.rs	commit 0f1d576
+# [spot-check: weak] Link `std` statically in `rustc_driver`	src/git-rustfmt/main.rs	commit 57af02c

@@ -1,0 +1,14 @@
+[[impact-analysis]]
+Impact analysis and blast radius
+
+Impact analysis answers the question every refactor begins with: if I change this,
+what else breaks? Starting from a single symbol, the analysis walks the graph in the
+downstream direction and collects everything transitively reachable — the functions
+that call it, the types that embed it, the modules that depend on those, and so on
+outward until the reachable set stops growing. That set is the change's blast radius.
+
+A blast radius is more useful than a flat list of direct callers because breakage
+propagates. A type whose field changes can ripple through several layers before it
+surfaces as a failure, and only a transitive walk catches the far edge of that
+ripple. Pairing the walk with a git diff lets the tool report the blast radius of a
+specific pending change and attach a coarse risk level to it before you commit.

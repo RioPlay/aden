@@ -1,0 +1,14 @@
+[[mcp-server]]
+Serving tools over MCP
+
+The Model Context Protocol is an open standard that lets an AI assistant call external
+tools through a single uniform interface. Instead of writing a bespoke integration for
+every pair of assistant and tool, a tool implements the protocol once and becomes
+usable by every client that speaks it. Messages travel as JSON-RPC, either over a
+local pipe or a network connection, and a session persists until it is closed.
+
+Exposing code-intelligence commands as MCP tools means an agent can ask a question,
+read the structured answer, and chain the next call without leaving its reasoning
+loop. The tool surface is designed for a model rather than a human terminal: each tool
+has a name, typed arguments, and a machine-readable result, so the agent composes
+graph queries the way a person composes a shell pipeline.

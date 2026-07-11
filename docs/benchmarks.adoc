@@ -1,0 +1,795 @@
+:proj: aden
+:author: RioPlay
+:lang: rust
+:toc: left
+:toclevels: 3
+
+[[benchmarks]]
+= Aden Benchmarks
+
+These are early, self-run measurements on specific corpora.
+They are not a standardized third-party benchmark.
+All numbers are reproducible from `scripts/` and
+`research/topics/aden-connection-audit/` (raw logs).
+
+Every figure is tagged with its provenance:
+`[measured]` — directly observed in a documented bench run;
+`[estimated]` — derived via a stated model with explicit assumptions;
+`[third-party]` — reported by an external publication, not an Aden measurement.
+
+Lead claim: the data supports honest interest, not marketing copy.
+If a number surprises you, check the methodology note attached to it.
+
+== Token Efficiency [measured]
+
+*Source:* `research/topics/aden-connection-audit/` bench run 2.
+Eight developer questions on Aden's own repository (244 files).
+Baseline: a grep-and-read agent that opens up to 5 full files per question.
+Token count via `ceil(chars/4)` proxy — not a BPE tokenizer.
+Failed-ask recovery costs are *included* on Aden's side (conservative).
+
+|===
+|Metric |Value
+
+|Overall ratio (sum/sum) |*10.8×* (34,739 vs 374,028 tokens)
+|Median per question |*134×* (range 3.8×–1,839×)
+|Symbol-level questions (locate/understand) |131×–1,839×
+|Conceptual `ask` questions |3.8×–5.2×
+|vs whole-repo-in-context |~152× (4.3 k mean/query vs ~660 k source tokens)
+|===
+
+The distribution is bimodal.
+Symbol and structure lookups (`locate`, `understand`, call-graph queries) show
+the largest wins because Aden returns the specific subgraph rather than raw file
+content.
+Conceptual `ask` questions show smaller gains (3.8×–5.2×) — this is where
+ask-routing can miss a relevant context cluster, driving extra round-trips.
+
+*Caveats:*
+
+* The chars/4 proxy undercounts both sides by roughly 10–30% for typical Rust/AsciiDoc
+  source; the ratio is largely insensitive to this systematic bias because it
+  affects numerator and denominator proportionally.
+* Single mid-size repository workload; results on a much larger or smaller corpus
+  may differ.
+
+== Edge-Extraction Accuracy [measured]
+
+*Source:* `research/topics/aden-connection-audit/` bench run 1.
+A 79-edge hand-authored ground truth was written *before* running `gen` on a
+purpose-built polyglot fixture (Rust / Python / TypeScript / Markdown / AsciiDoc).
+Scored at commit `31719c7`.
+
+|===
+|Metric |Value
+
+|micro-precision |*0.946* (70 TP / 4 FP)
+|micro-recall |*0.886* (70 TP / 9 FN)
+|micro-F1 |*0.915*
+|===
+
+7 of 11 edge types were perfect on this fixture.
+Weakest edge types: `Supersedes` (P/R 0.50), `Calls` (P 0.778),
+`Mentions` (P 0.857 / R 0.750).
+
+*Caveats:*
+
+* Single `gen` run; F1 is not averaged across runs.
+* Small ground-truth set; edge-type breakdowns are noisy at this sample size.
+* Scored against Aden's own edge vocabulary — a fixture crafted to exercise that
+  vocabulary is a partial-credit check, not an independent benchmark.
+
+== Retrieval Quality (BM25 vs Hybrid) [measured]
+
+*Source:* `scripts/eval-sets/README.md`.
+Deterministic build `9da0bcf` (5 fresh `gen` runs → byte-identical output).
+Reproduce with `scripts/bench.py` and the query sets under `scripts/eval-sets/`.
+
+=== Table 1 — Recorded 2026-06-07
+
+|===
+|Corpus |BM25 R@1 |Hybrid R@1 |BM25 R@5 |Hybrid R@5 |BM25 R@20 |Hybrid R@20
+
+|create-t3-app cli/src (70 q) |0.229 |0.371 |0.429 |0.643 |0.614 |0.700
+|Linux kernel subset, 4,114 .c (199 q) |0.362 |0.487 |0.472 |0.673 |0.608 |0.819
+|===
+
+=== Table 2 — M6 Five-Language Pilot (2026-06-09, validated after manual spot-check)
+
+|===
+|Repo |Lang |N |BM25 R@1 |Hybrid R@1 |BM25 R@20 |Hybrid R@20
+
+|getkin/kin-openapi |Go |22 |0.273 |0.409 |0.455 |0.591
+|rust-lang/rustfmt |Rust |21 |0.095 |0.095 |0.191 |0.238
+|unoplatform/uno |C# |20 |0.150 |0.150 |0.150 |0.300
+|pallets/flask |Python |17 |0.176 |0.176 |0.235 |0.294
+|TanStack/query |TypeScript |11 |0.091 |0.182 |0.182 |0.364
+|===
+
+*Pattern:* hybrid retrieval beats BM25 on every corpus at every recall depth.
+The gain is larger on larger corpora and at lower depths (R@1), where lexical
+matching degrades fastest.
+
+*Caveats:*
+
+* Single-target ground truth (one expected file per query) is a lower bound on
+  actual retrieval quality — any other relevant file is scored as a miss.
+* Labels are self-authored from commit subjects mapped to files; spot-check pass
+  rates 66–73%.
+* Results on corpora with very different size or style (e.g. monorepo, heavy
+  generated code) are not covered here.
+* Not a standardized benchmark (BEIR, MTEB, etc.).
+
+== Latency [measured]
+
+*Source:* `research/topics/aden-connection-audit/` bench run 3.
+Release binary, Aden's own repository (244 files, 2,592 contracts).
+5 sequential runs, values are medians.
+
+|===
+|Command |Median latency
+
+|`aden gen` cold |274 ms
+|`aden gen` warm |308 ms
+|`aden grep` |283 ms
+|`aden locate` |278 ms
+|`aden status` / backlinks / `asm` |~550 ms
+|`aden ask` (symbol-anchored) |~1,571 ms
+|`aden ask` (conceptual, escalation path) |48.2 s
+|ripgrep (reference) |6.5 ms
+|===
+
+NOTE: The latency table above was measured under `fjall` 2.11.2 and predates the
+fjall 3 upgrade described below. The store-backed rows no longer reflect current
+behavior and will be re-measured.
+
+The ~250 ms floor on all store-backed commands was caused by `fjall` 2.11.2
+`KeyspaceInner::drop`, which poll-slept ~250 ms per open/drop cycle waiting on
+background threads (confirmed via gdb). Every store-backed command paid 1–2 units
+of this cost, and the conceptual `ask` path — which opens and drops the store many
+more times during escalation — compounded it to ~48 s.
+
+This floor was eliminated by upgrading to `fjall` 3 (PR #44): fjall 3 replaces the
+poll-sleep with a `flume`-channel wake, so an open/drop cycle now completes in
+~715 µs instead of ~250 ms (measured by the `store_perf` bench), realizing the
+~10 ms-per-command target an earlier fast-path escape had predicted. An earlier
+partial mitigation also stands: `--propose` opens the store once per run instead of
+per event (commit `be92d95`).
+
+The warm `gen` anomaly (308 ms > 274 ms cold) is a side effect of the no-op skip
+path; the difference is within measurement noise for the old floor.
+
+== Energy vs an LLM [estimated — NOT measured]
+
+NOTE: No power draw was instrumented on either side of this comparison.
+These figures are derived from a stated model with explicit assumptions.
+Do not cite them as empirical measurements.
+
+*Method:* measured token savings × published LLM inference energy estimates
+(0.05–2.0 J/token; a 40× span from the literature) × an *assumed* CPU envelope
+of 15–65 W (not measured on this hardware).
+
+=== Per-question estimates
+
+|===
+|Side |Range
+
+|Aden compute (1.91 s mean, assumed watts) |29–124 J/question
+|LLM energy saved per question (conservative) |2,121 J
+|LLM energy saved per question (aggressive) |84,822 J
+|Aden compute as % of saved energy (worst case) |1.5–6%
+|Aden compute as % of saved energy (best case) |< 0.1%
+|Break-even J/token |~0.003 J (one order below any published estimate)
+|===
+
+=== At 1,000 queries/day
+
+|===
+|Scenario |Energy saved/yr |CO₂ at 400 g/kWh
+
+|Conservative |~200 kWh |~81 kg
+|Mid |~1,700 kWh |~685 kg
+|Aggressive |~8,600 kWh |~3.4 t
+|===
+
+The 40× span in the J/token assumption propagates directly into a 40× span in the
+conclusion.
+Token savings correlate with, but do not equal, measured power savings: batching,
+caching, and hardware efficiency curves at the provider side all shift the real
+ratio in ways this estimate cannot capture.
+
+*What a real comparison would need:*
+
+. RAPL or wall-meter measurement of Aden CPU during a representative query set.
+. Per-token energy figures from the LLM provider under matched batching and
+  caching conditions (not published for most commercial APIs).
+. Matched task-quality verification (same answer quality at same token budget).
+. A mixed workload covering both symbol-lookup and open-ended question types,
+  since the token ratio is bimodal.
+
+[[context-gate-calibration]]
+== Deterministic Context-Gate Calibration [measured]
+
+*Source:* `scripts/context_gate_bench.py` over the 12-task, five-repository agent
+corpus in `scripts/agent-bench/tasks.json`, recorded 2026-07-10. Budgets were
+swept at 512 and 1,024 tokens. Sufficiency required every predeclared fact and
+evidence pattern; the router could not use an LLM to choose a path.
+
+|===
+|Routing condition |Tasks sufficient |Exact minimum |Budget overhead
+
+|Graph-first `ask` |6/12 |6/6 at calibrated minimum |0 with adaptive tiers
+|Anchored/facet retrieval |6/12 |6/6 at calibrated minimum |0
+|Deterministic evidence-role gate |*12/12* |*12/12 at calibrated minimum* |*0 tokens*
+|===
+
+The two retrieval modes fail on complementary task shapes. A deterministic gate
+that sends relationship and mechanism questions through graph traversal, anchors
+explicit symbols and normative contracts, decomposes multi-part questions into
+facets, and selects distinct source roles improved measured task coverage without
+speculative context expansion. Increasing an already incomplete route from 512
+to 1,024 tokens did not repair missing evidence roles; this is a routing signal,
+not a reason to surface more context. The final calibrated set used a 512-token
+minimum for 10 tasks and 1,024 tokens for two tasks; median realized output was
+507 estimated tokens.
+
+Role-aware selection also reduced the two multi-source T3 Code tasks from roughly
+5.2 seconds to 2.9 seconds by skipping redundant 128-token assembly probes once
+facet search had already filled every role. These results measure deterministic
+pattern coverage on a small authored corpus, not semantic answer quality in the
+general case. Paired agent evaluation remains required before claiming general
+end-user quality.
+
+The user-facing contract is outcome-only: internal routing, retries, candidate
+selection, and tier expansion are hidden by default. `aden ask` emits only the
+assembled result (or model answer) in normal mode; routing metadata, summaries,
+and fallback notes require `--explain`, while receipts remain structured output.
+
+=== Native product-path verification
+
+The calibrated policy was subsequently moved into native `aden ask` and rerun
+through the release binary on all 12 tasks. Native routing reached *12/12*: nine
+tasks used 512-token caps and three concurrency/transaction tasks used 1,024.
+Median realized output was 507 estimated tokens, median wall time 634 ms, and
+mean wall time 866 ms. This verifies the product path, but it remains an in-sample
+calibration result.
+
+[[heldout-context-breadth]]
+== Held-Out Code and Prose Breadth [measured]
+
+*Source:* `scripts/heldout_context_bench.py` using previously authored,
+spot-checked labels under `scripts/eval-sets/`, recorded 2026-07-10. These
+repositories were not used to tune the evidence-role gate. `search` measures
+whether the expected file appears in ranked retrieval; `ask` measures whether
+the native chosen anchor lands in that file.
+
+|===
+|Repository |Surface |Queries |Search R@1 |Search R@20 |Native `ask`
+
+|Flask |Python code |17 |0.412 |0.529 |0.471
+|kin-openapi |Go code |22 |0.409 |0.727 |0.500
+|rustfmt |Rust code |21 |0.238 |0.429 |0.191
+|Pro Git |AsciiDoc prose |20 |0.150 |0.600 |0.300
+|===
+
+=== Conventional recursive-text baseline
+
+`scripts/conventional_nav_bench.py` runs one deterministic `rg --json` pass per
+query, ranks files by distinct query-term coverage and match count, and measures
+the context volume of reading the resulting files. This is a conventional
+lexical-navigation baseline, not an LLM-agent score.
+
+|===
+|Repository |`rg` R@1 |`rg` R@5 |`rg` R@20 |Median `rg` |Median top-file tokens
+
+|Flask |0.177 |0.471 |0.765 |16 ms |18,377
+|kin-openapi |0.182 |0.500 |0.818 |31 ms |13,230
+|rustfmt |0.095 |0.381 |0.571 |34 ms |21,022
+|Pro Git |0.200 |0.600 |0.900 |20 ms |7,365
+|===
+
+Aden search has materially better R@1 on all three code corpora (0.412, 0.409,
+and 0.238 respectively), while conventional recursive text search has better
+deep recall and is stronger on the prose corpus. Native `ask` returns roughly
+512–1,024 tokens on the calibrated product path; reading only the conventional
+top-ranked whole file costs a median 7,365–21,022 estimated tokens here (about
+14×–41× more), though `rg` itself is much faster. This frames the optimization
+target: retain Aden's first-choice compression while recovering more of the
+conventional method's candidate breadth, especially for prose.
+
+This contradicts any broad generalization from the 12/12 calibration result.
+Native arbitration improves over rank-1 search on Flask, kin-openapi, and prose,
+but leaves many recoverable top-20 candidates unselected; rustfmt is weak at both
+retrieval and arbitration. The next accuracy work must improve this held-out set
+without adding repository-specific terms or regressing the calibration suite.
+Single-target file labels also undercount queries with multiple valid sources,
+so these numbers are a strict routing diagnostic rather than end-answer quality.
+
+A generic experiment that prevented symbol-token matches from overriding clear
+search winners was rejected: the full held-out rerun fell from 29/80 to 27/80
+even though several rustfmt cases improved. It also temporarily regressed one
+calibration task. This rules out a single global score threshold; the next gate
+needs candidate-level evidence sufficiency or learned/calibrated reranking, with
+the held-out matrix serving as the acceptance test.
+
+A second label-blind prototype (`scripts/candidate_rerank_bench.py`) assembled
+128-token bodies for the top eight candidates and scored discriminative query-term
+coverage, anchor overlap, and search score. Raw reranking reached 9/22 on
+kin-openapi and 3/21 on rustfmt. A conservative promotion gate (strong score
+margin or same-file consensus, never tests) reached 28/80 across all four held-out
+corpora versus native `ask` at 29/80. It was therefore not ported. Candidate-body
+coverage alone is not a sufficient confidence signal; prose and generic utility
+code can echo a question without owning the requested behavior.
+
+=== Bounded ambiguity expansion
+
+An alternating-query train/held-out experiment evaluated adding one distinct-file
+candidate when the top two search scores are close. On the untouched half, a 5%
+relative band recovered one additional target (12/39 → 13/39) while increasing
+average candidate count from 1.0 to 1.21; wider bands added no further hit until
+candidate count exceeded 1.8. The accepted native gate therefore keeps the
+primary unchanged and adds at most one distinct-file supporting source inside
+the existing token cap when scores differ by less than 5%.
+
+The concrete held-out recovery is kin-openapi's generated `maps.sh` helper versus
+the real `openapi3/maplike.go` implementation: native 512-token output now contains
+both, totaling 269 estimated tokens. The full 12-task calibration remains 12/12.
+This is a breadth improvement, not a primary-routing accuracy claim. A new
+`ask-context` eval mode also exposed that strict output does not always carry an
+explicit primary source path when hydration emits only symbol summaries; adding
+budget-accounted provenance was therefore added opportunistically: Aden prepends
+the primary source only when existing headroom pays for the complete header, and
+otherwise preserves the body byte-for-byte. At a fixed 512-token cap, explicit
+held-out source coverage first improved from 22/80 to 25/80 (kin-openapi +1,
+rustfmt +2). Two full-budget Pro Git answers exposed duplicate prose aliases at
+the start (`alias`, blank line, `alias`, title). When a normal header cannot fit,
+Aden now replaces only that redundant prefix with a shorter `@filename` marker;
+it never grows the response or removes substantive content. Prose coverage rose
+from 4/20 to 6/20, bringing cumulative held-out provenance to 27/80. The 12-task
+calibration remained 12/12. This path-string metric is a provenance diagnostic,
+not semantic answer accuracy.
+
+=== Bounded benchmark execution
+
+Every product-path command in `scripts/eval_corpus.py` now has a hard timeout
+(`--timeout`, 30 seconds per retrieval by default); optional generation has a
+separate `--gen-timeout` bound. A timed-out case is reported immediately and
+scored as a miss instead of silently blocking the remaining corpus. Partial
+context-gate results continue to be written after every task.
+
+The routine context-gate calibration also stops after the first sufficient
+budget because budgets are tested smallest-first. `--sweep-all` retains the old
+exhaustive behavior for research into non-monotonic outputs. On the 12-task
+calibration corpus this reduced native calls from 48 to 14 and aggregate command
+time from more than the 120-second run bound to 38.1 seconds. Accuracy remained
+12/12, the selected budget was the empirical minimum for all 12 tasks, and the
+median selected context remained 506 estimated tokens.
+
+An operational stall exposed the motivating failure: an installed Aden binary
+predating the relative-scope fix treated CLI `.` as unrelated to the absolute
+project root, disabled project-relative ignores, and scanned generated sources
+under `target/`. Live file descriptors confirmed reads from Tree-sitter build
+artifacts. The fixed binary canonicalizes the search scope before discovery;
+the same `grep` probe now completes in 2.7 seconds rather than exceeding an
+8-second bound.
+
+=== Phrase expansion negative control
+
+OEWN phrase-aware expansion was prototyped against the three deliberately
+lay-vocabulary Pro Git cases. `throw away` expanded to words such as `discard`,
+`toss`, and `dispose`; `set aside` expanded to `reserve` and `suspend`; and
+`nickname` expanded to `moniker` and `sobriquet`. None improved the expected-file
+rank: the first two remained outside the top 20 and `aliases.adoc` remained at
+rank 6. OEWN captures general-language synonymy but does not provide the required
+domain bridges to `reset`, `stash`, and `alias`. Phrase expansion was therefore
+not added to the product path; it would spend context tokens without measured
+retrieval benefit.
+
+=== Prose navigation fusion
+
+A label-blind navigation backstop combines Aden's native rank with conventional
+whole-file lexical rank only when at least 80% of the first ten classifiable
+candidates are prose (`aden://doc/` or a prose source extension). A global RRF
+reranker was rejected: across the 80 held-out queries it scored 25 rank-1 hits
+versus native Aden's 26 and regressed code. The deterministic prose gate scored
+30/80 in the benchmark prototype with no repository-level regression.
+
+The native implementation is narrower than the prototype: it may promote only
+the fused winner and preserves every other candidate in native order. On Pro Git
+this improved search R@1 from 3/20 to 6/20 and MRR@20 from 0.3015 to 0.3765,
+while R@5, R@10, and R@20 remained exactly 9/20, 10/20, and 12/20. Native `ask`
+routing improved from 6/20 to 9/20, and explicit expected-source coverage in a
+fixed 512-token response improved from 6/20 to 8/20. The three code search
+corpora were unchanged. The 12-task context calibration remained 12/12, used 14
+native calls, and retained a 506-token median selected context. The gate is
+automatic and model-free; `ADEN_NAV_FUSION_OFF=1` is the diagnostic escape hatch.
+
+Latency was measured with alternating ON/OFF order across all 20 Pro Git queries.
+Before confidence short-circuiting, the whole-file pass added 14.0 ms median and
+31.1 ms p95 over a 223 ms native median. Relative score margin was rejected as a
+skip signal because useful corrections occurred even with a 32% native lead.
+The accepted label-blind shortcut instead trusts native retrieval when at least
+three of its top five candidates come from the same source file. This condition
+held only on already-correct cases in both alternating halves and preserved the
+30/80 gated benchmark result. After the shortcut, paired median overhead was
+effectively zero (-0.2 ms measurement noise); the sparse scan path remains visible
+in the paired p95 delta (49.6 ms). Search and deep-recall metrics remained
+byte-for-byte equal to the accepted gate above.
+
+An index-resident replacement for the sparse filesystem pass was also built and
+measured. It aggregated distinct query-term coverage across indexed sections and
+deduplicated repeated text per source. Retrieval quality was identical, but
+paired p95 overhead remained about 51 ms: lowercasing and aggregating every
+section cost roughly the same as reading the 109 warm Pro Git prose files. The
+rewrite was reverted because it added index-layer complexity without reducing
+latency. A future attempt should pre-aggregate file-level lexical evidence during
+index construction rather than rebuilding it for every query.
+
+That build-time variant was then implemented with a compact representation:
+lowercase token frequencies per prose source, seeded from the complete source
+file when available and from the union of store-backed sections otherwise.
+Source-first seeding matters: a first prototype kept only one emitted Markdown
+section and regressed the generation-contract calibration task; merging sections
+still let a partial derived document outrank its authoritative source. Reading
+the source once at cache construction restored the task at 512 tokens.
+
+The first cache shape still stored code-source maps and duplicate absolute/relative
+prose keys. Enforcing prose extensions and canonical repository-relative keys cut
+the accepted Pro Git cache growth from +8.1% to +4.08% (18,549,160 to 19,306,532
+bytes). Mixed repositories pay substantially less: Flask +0.25% (7,004,759 to
+7,022,352), kin-openapi +0.42% (20,030,176 to 20,114,193), and rustfmt +0.53%
+(23,364,208 to 23,488,873). Their bounded version-migration queries completed in
+0.29–0.66 seconds with peak RSS of 37–101 MB.
+
+An alternating ABBA run retained effectively zero median overhead and reduced
+warm p95 from 317 ms for the sparse filesystem rank to 292 ms for pre-aggregated
+evidence. Search stayed R@1 6/20, R@5 9/20, R@10 10/20, R@20 12/20, and MRR@20
+0.3765; `ask` stayed 9/20 and fixed-512 source coverage stayed 8/20. The complete
+context calibration returned to 12/12 at a 506-token median and 14 calls.
+Pre-aggregation is now the automatic path; `ADEN_NAV_FILESYSTEM=1` preserves the
+old ranker as a diagnostic A/B control.
+
+=== Cross-structure prose validation
+
+Two additional local held-out corpora test structures unlike the Pro Git book:
+an AI research topic knowledge base and a chronological Aden development log.
+Each contributes 12 natural-language queries whose expected files were authored
+from filenames/headings before any retrieval run. The topic KB native and
+automatic paths both score search R@1 9/12, R@5 11/12, and R@20 12/12; `ask` is
+9/12 and fixed-512 source coverage is 11/12. Conventional `rg` scores R@1 6/12.
+
+The first automatic run regressed the chronological devlog from search R@1 7/12
+to 6/12: global file fusion displaced three correct date entries while recovering
+two. A deterministic corpus-shape guard now trusts native order when at least 80%
+of classifiable top candidates are date-named (`YYYY-MM-DD`). It suppresses all
+three harmful promotions while retaining one recovery outside that confidence
+region. Final devlog search improves from 7/12 to 8/12, with R@5 11/12 and R@20
+12/12 unchanged; `ask` improves 7/12 to 8/12 and fixed-512 coverage remains
+10/12. Conventional `rg` scores R@1 7/12.
+
+Across the expanded 104-query, six-repository matrix, the authoritative compiled
+product improves rank-1 from 40/104 to 44/104 with no repository-level regression.
+A global ungated fusion scores only 36/104. The Python fusion simulation scores
+45/104 but is retained only as research instrumentation; the harness now reports
+the compiled-product arm separately and preserves unresolved-source rank-1
+candidates as misses instead of silently dropping them.
+
+=== Multi-target relevance diagnostic
+
+The eval format now accepts `|`-separated acceptable source substrings across
+search, `ask`, fixed context, conventional navigation, and fusion scoring. Existing
+commit-derived code labels remain strict single-file judgments; alternatives are
+never added after looking at a miss. A separate five-query Pro Git diagnostic was
+authored from chapter headings where both files explicitly cover the requested
+outcome (for example basic and advanced merge-conflict chapters).
+
+On this intentionally cross-chapter set, native search scores R@1 3/5 and automatic
+search 2/5; both score R@5 4/5. Native and automatic `ask` both route 4/5, fixed-512
+context covers 4/5, and conventional navigation scores R@1 2/5. The automatic
+search loss is one broad diagnostic-history question, but downstream `ask` recovers
+it. This small diagnostic is not folded into the 104-query headline and is not yet
+enough evidence for another product gate; it establishes a measured warning that
+rank-1 fusion is less reliable for intentionally multi-topic search even when final
+assembled context is unchanged.
+
+=== Passage-level bounded-context quality
+
+`scripts/passage_context_bench.py` moves beyond source paths: nine reviewed prose
+questions across the book, topic KB, and devlog carry two or three required-fact
+regex judgments authored from the source before retrieval. The harness runs the
+real serialized `ask --strict` output with navigation OFF and automatic, reporting
+fact recall, all-facts sufficiency, tokens, and latency.
+
+At 512 tokens, automatic navigation improves mean fact recall from 68.5% to 72.2%
+with the same 4/9 fully sufficient tasks and the same 420-token median. Median
+latency in this run is 230 ms native and 220 ms automatic (directional only at
+N=9). The gain comes from speculative-decoding context recovering a second of
+three required facts; no task regresses.
+
+Doubling the cap to 1,024 establishes a measured efficiency frontier rather than
+an intuition: median output grows from 420 to 565 tokens (+34.5%), while automatic
+mean fact recall remains 72.2% and sufficiency remains 4/9. The unresolved cases
+are wrong-section/selection misses, not context-cap starvation. For this suite,
+512 is therefore the better default; more context is not automatically richer.
+Regex fact presence remains a deterministic lower-bound proxy for answerability,
+not semantic answer grading.
+
+Failure tracing showed all five incomplete cases found the correct file at search
+rank 1 and routed to it, but chose one section while facts lived in siblings. A
+generic conjunction split recovered both devlog cases but initially regressed the
+already-full credential answer and inflated a sufficient budget/MMR answer. The
+accepted gate therefore reuses Aden's existing 150-token thin-stub threshold:
+only a thin prose primary with two or three explicit `and` facets may select
+distinct same-file sections, and the same 512-token cap is divided among them.
+
+With this model-free thin-facet gate, automatic mean fact recall rises from the
+original 72.2% to 79.6%, fully sufficient tasks rise from 4/9 to 6/9, and no task
+regresses. Median serialized context grows from 420 to 485 tokens (+15.5%), still
+below the fixed cap and far below the ineffective 1,024-token ablation's 565-token
+median. Strict prose routing remains 9/20, 9/12, and 8/12 across the book, topic
+KB, and devlog; the 12-task code-context calibration remains 12/12 at 506 median
+tokens. `ADEN_PROSE_FACETS_OFF=1` disables the gate for diagnostic A/B runs.
+
+The same technique was tested on the three remaining thick-section failures by
+carrying routed filename terms into each facet (`advanced merging`, `reset`, and
+`speculative decoding`). It changed selected anchors but improved zero required
+facts: manual merge stayed 0/2, reset 1/2, and speculative decoding 2/3, with
+outputs still near 512 tokens. This variant was not ported. Thick-section misses
+need better passage semantics or precomputed section summaries; lexical
+reformulation and larger budgets have both been measured ineffective.
+A second thick-only attempt required a repeated facet term and reranked section
+headings by facet overlap. Isolated anchors suggested it could recover reset's
+`Move HEAD` section, but the real store-resolution path broadened that seed to
+the generic `Role of Reset` section: recall stayed 1/2 while median context grew.
+It too was fully reverted; only the measured thin-primary rule remains enabled.
+
+A third, broader heading gate carried a missing grammatical subject from the
+complete question only when one side of an explicit conjunction had no same-file
+hit, then preferred distinct same-file headings with facet-term overlap. This was
+also rejected on the real nine-task path: automatic mean fact recall fell from
+79.6% to 77.8%, fully sufficient tasks fell from 6/9 to 5/9, and median context
+rose from 485 to 506 tokens. Although manual-merge recovered one fact, the gate
+lost one speculative-decoding fact and regressed a previously sufficient devlog
+task. The result strengthens the diagnosis: thick-document failures require
+passage-granular selection inside a section, not another section-heading proxy.
+
+The accepted thick-document gate implements that narrower mechanism. After the
+normal router confidently selects a prose file, an explicit two- or three-part
+conjunction may switch to deterministic paragraph packing only when the source
+is larger than four complete context windows. It scores paragraphs by
+within-file inverse document frequency over query terms plus fixed evidence-role
+vocabulary (preparation, risk, boundary/tradeoff, failure, and efficiency), caps
+each of four passages to one quarter of the available bytes, and reserves
+provenance headroom. Standalone headings are attached to their following
+paragraph before scoring so structural topic evidence is not discarded. It
+cannot change files, widen navigation, invoke a model, or exceed the existing
+strict budget. `ADEN_PROSE_PASSAGES_OFF=1` restores section assembly for A/B.
+
+On the real nine-task path at 512 tokens, automatic mean fact recall rises from
+79.6% to *94.4%*, fully sufficient tasks rise from 6/9 to *8/9*, and median
+serialized context falls from 485 to *420 tokens* (-13.4%). Reset and speculative
+decoding become fully sufficient; manual merge improves from 0/2 to 1/2 facts.
+The three held-out prose routing matrices remain 9/20, 9/12, and 8/12, while
+bounded expected-source coverage remains 8/20, 11/12, and 10/12. The first
+prototype applied paragraph packing to short devlog files and regressed one
+task; the four-window source-size gate removes that failure and is therefore a
+required part of the accepted policy, not a tuning detail.
+
+To reduce the risk of optimizing around those nine questions, the source-reviewed
+suite was first expanded to twelve with independent serving, MoE-routing, and
+retrieve-then-rerank questions, then to fourteen with Markdown README tasks from
+the Go `kin-openapi` and Rust `rustfmt` repositories, then to fifteen with
+Flask's reStructuredText tutorial, and finally to sixteen with Kin's generated
+plain-text API reference. Each adds two required facts;
+the RAG task allows either of two independently valid source documents. On the
+final heterogeneous suite, disabling passage selection yields 79.2% automatic
+mean fact recall and 10/16 fully sufficient tasks at a 452.5-token median. The
+accepted gate, including heading attachment and the model-free failure,
+efficiency, and installation roles, initially reached 96.9% and 15/16 while
+reducing the median to 436 tokens. The remaining manual-merge miss exposed a
+narrow compound-intent gap: `prepare for and manually resolve` selected only the
+preparation role. Normalizing `manually` to `manual` and adding manual-resolution
+action cues (`manual`, `fix`, and `command`) alongside preparation moves the
+answer-bearing `git merge-file` paragraph from rank 23 to the four-passage
+cutoff. The full release-binary matrix now reaches *100% mean fact recall* and
+*16/16 fully sufficient tasks* at the same *436-token median* and a 240.5 ms
+median elapsed time. A facet-first paragraph reservation was retested twice and
+added no net value; it remains reverted.
+
+A strict-budget frontier establishes where less stops being more on this suite.
+At 128, 192, 256, 320, 384, 448, and 512 tokens, fully sufficient tasks are
+respectively 3, 5, 9, 13, 14, 14, and 16 out of 16; mean fact recall is 36.5%,
+57.3%, 71.9%, 85.4%, 89.6%, 89.6%, and 100%. The 384-token tier is attractive
+for most direct answers, but both speculative-decoding tradeoffs and serving
+waste require the complete 512-token evidence bundle. Therefore query length or
+surface simplicity is not a safe shrink signal. Any future automatic early-stop
+must prove coverage of the selected file's retrievable query and evidence-role
+terms; otherwise the deterministic policy retains 512. A source-grounded
+coverage stop now implements that rule: it may stop only after every retrievable
+query/evidence term and the highest-scoring passage for every explicit
+conjunction facet have been selected. The facet condition prevents a generic
+mention from standing in for a mechanism explanation. It preserves 16/16 and
+100% recall, while trimming the already-complete credential-helper answer from
+360 to 139 tokens (221 total tokens, 3.5% mean-context reduction across the
+suite); the median remains 436 because most tasks still require their complete
+bundle. `ADEN_PROSE_COVERAGE_STOP_OFF=1` restores fixed four-passage packing for
+A/B. The reproducible sweep is `scripts/passage_budget_frontier.py`, with
+per-call timeouts, incremental progress, partial JSON output, and an outer
+timeout in the documented command.
+
+The Rustfmt task also exposed a routing error outside passage selection: a
+low-ranked code symbol containing the generic word `format` displaced a clearly
+winning README result. Implicit symbol-token matches now arbitrate only within
+the existing ambiguity band when the leader is prose; explicit `foo()` syntax
+still wins directly, and prose-to-prose arbitration is unchanged. The complete
+six-repository held-out matrix caught an over-broad first version of this guard
+(ProGit routing 9/20 → 8/20), so it was narrowed to code overrides and ProGit
+returned to 9/20. This is a measured example of the breadth gate preventing a
+local Markdown improvement from shipping a prose regression.
+
+The new Go/Rust README coverage is also grounded against conventional recursive
+text navigation on the full held-out code labels. On `kin-openapi`, Aden search
+R@1 is 40.9% versus 18.2% conventional, while conventional top-1 file loading
+costs a 13,230-token median. On `rustfmt`, Aden is 23.8% versus 9.5%, while the
+conventional top-1 median is 21,022 tokens. Aden's passage output remains capped
+at 512 tokens (436.5 median on the heterogeneous quality suite). These workloads
+are not identical metrics—search R@1 measures file selection and the passage
+suite measures answer-bearing facts—but together they show the intended product
+shape: better navigation accuracy without paying whole-file context costs.
+
+The RST task uncovered a support-contract mismatch: filters, diagnostics, and
+language metadata all listed `.rst`, but the parser router registered no RST
+extractor, so unchanged Flask documentation emitted zero graph nodes. RST now
+uses the existing paragraph-granular, source-spanned prose extractor as a
+fallback. On the source-reviewed Flask probe (`What is the Application
+Factory?`), Aden ranks `docs/tutorial/factory.rst` first and returns both required
+facts; conventional recursive navigation ranks it 15th, first loading an
+unrelated 2,804-token file (36,221 tokens across its top five). A dedicated RST
+heading/directive parser remains a possible refinement, but paragraph fallback
+closes the previous silent-absence failure with no new dependency or model call.
+
+RST breadth initially exposed a latency regression in Flask `ask --explain`:
+one case exceeded 45 seconds at a 4,096-token base budget although strict 512
+took 0.5 seconds. Investigation found two compounding causes. Plain-text/RST
+notes used the `aden://module` scheme, so large prose paragraphs entered the
+code-only underfull-symbol escalation ladder; and snapshot neighborhood loading
+cloned every edge into complete outgoing and incoming maps even when callers
+were not requested. Notes now use `aden://doc`, and snapshot assembly moves
+owned edges into one outgoing map while retaining only incoming edges targeting
+the seed. The reproduced case is 0.67-0.77 seconds warm at both tested budgets.
+The unchanged 17-query Flask routing batch fell from about 75 seconds to 18.4.
+Routing evaluation also pins a 512-token explain budget because it consumes only
+the receipt, preventing unused 16K auto-boosted bodies from dominating test time.
+
+The plain-text probe asks why Kin's global `IncludeOrigin` flag is unsafe for
+concurrent use. Aden ranks `.github/docs/openapi3.txt` first and returns both the
+deprecation replacement and `NewLoader` concurrency warning. Conventional
+recursive navigation misses the file entirely while loading a 10,850-token
+top-ranked source file. This confirms the doc-scheme correction works for real
+`.txt`, not only the RST fallback that exposed it.
+
+Adding those generated text paragraphs briefly regressed Kin routing from 10/22
+to 9/22: a documentation paragraph for `License.MarshalYAML` narrowly outranked
+the implementation, and explicit `MarshalYAML()` matching compared only against
+the full qualified fragment `License.MarshalYAML`. Explicit call syntax now also
+matches the final component of qualified symbols. Kin returns to 10/22 routing
+and 12/22 bounded-context coverage while ordinary prose queries can still select
+the new text nodes.
+
+The full calibration then exposed the same qualified-component gap for a
+camel-case class named without call syntax: `AgentSession` did not match
+`AgentSession._installAgentToolHooks`, so a broad extension guide displaced the
+implementation. Qualified components now participate in implicit matching when
+the query contains a genuinely mixed-case symbol token. All-caps document words
+such as `README` are explicitly not treated as camel-case; that negative guard
+keeps the Kin README task at 352 tokens instead of routing through a 510-token
+middleware detour. The 12-task context calibration returns to 12/12.
+
+== Third-Party Context [third-party]
+
+The arXiv paper "Codebase-Memory" (2603.27277) reports approximately
+10× fewer tokens, ~83% answer quality retention, and 2.1× fewer tool calls for
+a comparable graph-context approach on developer question workloads.
+
+This is cited as external corroboration that graph-based context compression is
+a real phenomenon — it is *not* an Aden measurement, and the paper's methodology
+and corpus differ from those described above.
+
+== Savings Summary [estimated — derived from measured tokens]
+
+The Token Efficiency run above (34,739 vs 374,028 tokens over 8 questions) nets
+*339,289 tokens saved* — ~42,400 per question. At a sustained 1,000 questions/day
+that is ~15.5 *billion* tokens/year an agent never has to load: the input context
+a grep-and-read agent would pull in that aden's subgraph omits.
+
+Aden reports savings in *tokens only*, on purpose. Tokens are the
+model-independent quantity it actually displaces; a dollar conversion would have
+to assume one model's price — and published prices drift — which makes it
+dishonest the moment a different model, or a new price, is in play. Anyone who
+needs a dollar figure can multiply the token count by their own current rate.
+
+*Caveats:*
+
+* Inherits the `chars/4` proxy bias (~10–30% undercount) from the source run;
+  the real-tokenizer correction (<<planned-benchmarks>>) retires it.
+* *Compression only.* This measures "less to read", not the larger *displacement*
+  effect — work the LLM never does at all (see <<planned-benchmarks>>).
+* *Prompt caching varies realized savings.* A caching agent re-loads less context,
+  so what it actually saves depends on cache state.
+* Single mid-size repo, 8 questions — same scope caveat as the source run.
+
+[[planned-benchmarks]]
+== Planned Benchmarks [planned]
+
+These complement the measured suite above. They target the two weakest rows:
+token savings (today only *compression* is measured, not *displacement*) and
+energy (today entirely modeled). The detailed methodology spec is maintained
+in the project's internal benchmark plan.
+
+*Framing.* The existing token bench answers "aden gives the agent less to read."
+These add the stronger axis: "aden does work the LLM would otherwise have to do at
+all." When a deterministic command (`check`, `lint`, `impact-diff`, `understand`,
+`heal`, `communities`) returns an answer, the work is done with *zero inference* —
+tokens and GPU-joules that are never spent, not merely reduced.
+
+=== Paired agent-task pilot
+
+The first displacement harness is available at `scripts/agent_bench.py`, with a
+12-task, five-repository pilot corpus under `scripts/agent-bench/`. It runs the
+same read-only Codex agent in conventional-navigation and Aden-assisted
+conditions, captures tool trajectories, and deterministically scores required
+facts, evidence, forbidden claims, tokens, tool calls, and latency.
+
+The pilot is infrastructure, not a published result. Run it repeatedly, review
+disputed answers blind, and expand independent task authorship before promoting
+its output to a comparative product claim.
+
+=== Token savings
+
+* *Displacement bench* — per deterministic command, tokens to *consume* aden's
+  output vs tokens an LLM agent would burn to produce the same answer. Reported as
+  a displacement ratio, separate from the compression ratio above.
+* *Real-tokenizer correction* — re-run token benches through the model's actual
+  tokenizer (`count_tokens`, not `tiktoken`), retiring the `chars/4` caveat.
+* *Scaling curve* — run both ratios across the five eval corpora already in
+  `scripts/bench.py` (Go/Rust/C#/Python/TS) to replace "single repo" with a trend.
+* *Multi-turn trajectory* — end-to-end agent token spend with vs without aden in
+  the loop, capturing the compounding fewer-tool-calls effect.
+
+=== Power savings
+
+* *Measured aden energy (RAPL)* — `scripts/energy.py` reads CPU package + DRAM
+  counters around each command (idle-subtracted, N≥20, medians). Moves aden's side
+  of the energy story from
+  `[estimated]` to `[measured]`.
+* *Frontier-LLM comparison* — hosted inference can't be instrumented, so the LLM
+  side stays modeled, calibrated to the tier actually used. The joule axis stays
+  `[estimated]` with an explicit prefill/decode split to narrow the current 40×
+  span. (No dollar axis: savings are reported in tokens — the model-independent
+  unit — not a price that drifts.)
+
+== Reproducing These Numbers
+
+All benchmarks are reproducible from this repository:
+
+[source,bash]
+----
+# Retrieval benchmarks (Tables 1 and 2 above)
+scripts/bench.py
+scripts/eval_corpus.py
+
+# Query sets used in retrieval eval
+scripts/eval-sets/
+
+# Raw logs for token efficiency, edge accuracy, and latency
+research/topics/aden-connection-audit/
+----
+
+The retrieval eval is deterministic: 5 fresh `gen` runs on the same source
+produce byte-identical output (verified at commit `9da0bcf`).
+
+== Related Documents
+
+. <<architecture>> — system internals; hybrid retrieval design
+. <<philosophy>> — design rationale and token-density goals
+. <<index>> — documentation index

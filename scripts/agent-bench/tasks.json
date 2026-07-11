@@ -1,0 +1,214 @@
+{
+  "schema_version": 1,
+  "description": "Paired Aden versus conventional-navigation pilot corpus",
+  "repositories": {
+    "aden": {
+      "path_env": "ADEN_BENCH_REPO_ADEN",
+      "default_path": "~/Projects/aden",
+      "revision": "ecfec5b87f78ad6ede415c406eb862034999fb04"
+    },
+    "fjall": {
+      "path_env": "ADEN_BENCH_REPO_FJALL",
+      "default_path": "~/Projects/fjall",
+      "revision": "11685b0d7fbca6396e4312f354748392846242c7"
+    },
+    "pi": {
+      "path_env": "ADEN_BENCH_REPO_PI",
+      "default_path": "~/Projects/pi",
+      "revision": "371adcf37130629ffb9bbeed9f5548ce08ffa93b"
+    },
+    "fcp-color": {
+      "path_env": "ADEN_BENCH_REPO_FCP_COLOR",
+      "default_path": "~/Projects/FCP_Color",
+      "revision": "93d43899bd02cd29a3092d6ac3eeeed327524998"
+    },
+    "t3code": {
+      "path_env": "ADEN_BENCH_REPO_T3CODE",
+      "default_path": "~/Projects/t3code",
+      "revision": "14637d4fbd25d57e793cb61df5abe2433ee04830"
+    }
+  },
+  "tasks": [
+    {
+      "id": "aden-mcp-command-boundary",
+      "repository": "aden",
+      "category": "symbol_explanation",
+      "question": "What security and execution boundaries does run_aden_command enforce?",
+      "required_facts": [
+        {"id": "allowlist", "any_of": ["allowlist only", "env_clear", "clears? the .*environment.*ADEN_"]},
+        {"id": "timeout", "any_of": ["timeout", "COMMAND_TIMEOUT"]},
+        {"id": "sanitize", "any_of": ["sanitiz(e|es|ed).*error", "sanitize_error"]}
+      ],
+      "expected_evidence": [
+        {"id": "implementation", "any_of": ["crates/aden-mcp/src/lib\\.rs", "run_aden_command"]}
+      ],
+      "forbidden_claims": ["inherits the (entire|full) host environment"]
+    },
+    {
+      "id": "aden-mcp-command-caller",
+      "repository": "aden",
+      "category": "dependency_trace",
+      "question": "Which MCP request path calls run_aden_command, and what validation happens first?",
+      "required_facts": [
+        {"id": "caller", "any_of": ["AdenMcpServer::call_tool", "call_tool"]},
+        {"id": "confinement", "any_of": ["confine_path_args", "confin(e|es).*path"]},
+        {"id": "arguments", "any_of": ["validate_args", "validat(e|es).*arguments"]}
+      ],
+      "expected_evidence": [
+        {"id": "caller-source", "any_of": ["crates/aden-mcp/src/lib\\.rs", "AdenMcpServer::call_tool"]}
+      ],
+      "forbidden_claims": []
+    },
+    {
+      "id": "aden-read-snapshot",
+      "repository": "aden",
+      "category": "architecture",
+      "question": "How does Aden avoid Fjall contention between concurrent graph readers and writers?",
+      "required_facts": [
+        {"id": "snapshot", "any_of": ["graph\\.snapshot", "read snapshot"]},
+        {"id": "readers", "any_of": ["readers?.*(load|use|prefer).*(snapshot)", "snapshot-first"]},
+        {"id": "writers", "any_of": ["writers?.*(store\\.lock|serial)", "store\\.lock.*writer"]}
+      ],
+      "expected_evidence": [
+        {"id": "adr", "any_of": ["adr-011-read-snapshot\\.adoc", "aden-graph/src/snapshot\\.rs"]}
+      ],
+      "forbidden_claims": ["readers? open the live Fjall store by default"]
+    },
+    {
+      "id": "aden-generation-loop",
+      "repository": "aden",
+      "category": "contract_lookup",
+      "question": "When should an agent run aden gen during the normal edit loop?",
+      "required_facts": [
+        {"id": "automatic", "any_of": ["auto(-| )?reindex", "read tools?.*auto", "do not need.*gen.*every edit"]},
+        {"id": "external", "any_of": ["large external changes", "clon(e|ing).*merge.*generated code"]}
+      ],
+      "expected_evidence": [
+        {"id": "agent-contract", "any_of": ["AGENTS\\.md", "ai-integration\\.adoc"]}
+      ],
+      "forbidden_claims": ["run .*gen after every edit"]
+    },
+    {
+      "id": "fjall-optimistic-commit",
+      "repository": "fjall",
+      "category": "dependency_trace",
+      "question": "How are optimistic write transactions committed and conflicts reported?",
+      "required_facts": [
+        {"id": "empty", "any_of": ["empty (write set|memtables)", "memtables.*empty", "(wrote|writes?) nothing", "no writes?.*return", "returns? immediately.*empty"]},
+        {"id": "oracle", "any_of": ["Oracle::with_commit", "oracle\\.with_commit", "oracle.*commit"]},
+        {"id": "conflict", "any_of": ["Ok\\(Err\\(Conflict\\)\\)", "Conflict.*rerun", "conflict.*nested result"]}
+      ],
+      "expected_evidence": [
+        {"id": "write-tx", "any_of": ["src/tx/optimistic/write_tx\\.rs", "WriteTransaction::commit"]},
+        {"id": "oracle", "any_of": ["src/tx/optimistic/oracle\\.rs", "Oracle::with_commit"]}
+      ],
+      "forbidden_claims": []
+    },
+    {
+      "id": "fjall-conflict-detection",
+      "repository": "fjall",
+      "category": "symbol_explanation",
+      "question": "What transaction history is considered when the optimistic Oracle checks for conflicts?",
+      "required_facts": [
+        {"id": "serialization", "any_of": ["write_serialize_lock", "serializ(e|es).*commit"]},
+        {"id": "range", "any_of": ["instant \\+ 1", "after the transaction started", "newer than.*instant"]},
+        {"id": "manager", "any_of": ["has_conflict", "ConflictManager"]}
+      ],
+      "expected_evidence": [
+        {"id": "oracle-source", "any_of": ["src/tx/optimistic/oracle\\.rs", "Oracle::with_commit"]}
+      ],
+      "forbidden_claims": ["checks every transaction in the complete history"]
+    },
+    {
+      "id": "pi-extension-tool-hooks",
+      "repository": "pi",
+      "category": "dependency_trace",
+      "question": "How does AgentSession intercept extension tool calls and results across extension reloads?",
+      "required_facts": [
+        {"id": "once", "any_of": ["install.*hooks once", "hooks.*installed once"]},
+        {"id": "dynamic-runner", "any_of": ["read.*_extensionRunner.*execution time", "extensionRunner.*execution time"]},
+        {"id": "events", "any_of": ["emitToolCall.*emitToolResult", "tool call.*tool result.*intercept"]}
+      ],
+      "expected_evidence": [
+        {"id": "session", "any_of": ["packages/coding-agent/src/core/agent-session\\.ts", "_installAgentToolHooks"]}
+      ],
+      "forbidden_claims": ["hooks are reinstalled on every reload"]
+    },
+    {
+      "id": "pi-dynamic-tool-registration",
+      "repository": "pi",
+      "category": "concept_discovery",
+      "question": "Where are extension tools registered, enumerated, and made active for a coding-agent session?",
+      "required_facts": [
+        {"id": "register", "any_of": ["registerTool", "register.*tool"]},
+        {"id": "enumerate", "any_of": ["getAllRegisteredTools", "getAllTools"]},
+        {"id": "active", "any_of": ["setActiveTools", "active tools"]}
+      ],
+      "expected_evidence": [
+        {"id": "runner-or-doc", "any_of": ["extensions/runner\\.ts", "docs/extensions\\.md", "agent-session\\.ts"]}
+      ],
+      "forbidden_claims": []
+    },
+    {
+      "id": "fcp-mvp-color-pipeline",
+      "repository": "fcp-color",
+      "category": "contract_lookup",
+      "question": "What is the required MVP color-processing order from source frame to output?",
+      "required_facts": [
+        {"id": "decode", "any_of": ["decode.*grade", "linearize.*grade"]},
+        {"id": "mask-display", "any_of": ["mask.*display transform", "mask.*gamma 2\\.4"]},
+        {"id": "output", "any_of": ["Rec\\.709.*(8|10).*bit", "output encoding"]}
+      ],
+      "expected_evidence": [
+        {"id": "pipeline-contract", "any_of": ["docs/color-pipeline\\.adoc", "h2mvp-pipeline"]}
+      ],
+      "forbidden_claims": ["deferred scope defines the processing order"]
+    },
+    {
+      "id": "fcp-preview-export-parity",
+      "repository": "fcp-color",
+      "category": "architecture",
+      "question": "What color-path parity is required between preview and export?",
+      "required_facts": [
+        {"id": "same-order", "any_of": ["identical transform order", "shared color pipeline"]},
+        {"id": "full-res", "any_of": ["paused.*full res", "export.*full res"]},
+        {"id": "delta", "any_of": ["delta.?E.*0\\.5", "ΔE.*0\\.5"]}
+      ],
+      "expected_evidence": [
+        {"id": "preview-contract", "any_of": ["docs/color-pipeline\\.adoc", "preview-vs-export"]}
+      ],
+      "forbidden_claims": ["preview may use a different transform order"]
+    },
+    {
+      "id": "t3-preview-session",
+      "repository": "t3code",
+      "category": "concept_discovery",
+      "question": "Which components own the desktop browser preview session and its web-facing lifecycle?",
+      "required_facts": [
+        {"id": "desktop", "any_of": ["BrowserSession", "apps/desktop/src/preview"]},
+        {"id": "web", "any_of": ["closePreviewSession", "BrowserMockup", "apps/web/src/components/preview"]},
+        {"id": "bridge", "any_of": ["PreviewConfigBridge", "previewWebviewConfigState", "webview"]}
+      ],
+      "expected_evidence": [
+        {"id": "desktop-source", "any_of": ["apps/desktop/src/preview/BrowserSession\\.ts", "BrowserSession"]},
+        {"id": "web-source", "any_of": ["apps/web/src/(components/preview|browser)"]}
+      ],
+      "forbidden_claims": []
+    },
+    {
+      "id": "t3-preview-errors",
+      "repository": "t3code",
+      "category": "architecture",
+      "question": "What explicit failure types guard preview session, webview configuration, and automation queue availability?",
+      "required_facts": [
+        {"id": "session", "any_of": ["BrowserSessionError", "BrowserSessionGetSessionError"]},
+        {"id": "webview", "any_of": ["PreviewWebviewNotInitializedError", "PreviewWebviewBridgeUnavailableError"]},
+        {"id": "queue", "any_of": ["PreviewAutomationRequestQueueClosedError", "queue.*closed"]}
+      ],
+      "expected_evidence": [
+        {"id": "preview-sources", "any_of": ["apps/(desktop|web)/src/(preview|browser)", "packages/contracts/src/previewAutomation\\.ts"]}
+      ],
+      "forbidden_claims": []
+    }
+  ]
+}

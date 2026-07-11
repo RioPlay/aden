@@ -1,0 +1,40 @@
+:packet-id: XX-000
+:status: proposed
+:priority: P2
+:depends-on: none
+:unlocks: none
+:scope: none
+:issue: pending
+:acceptance-version: 1
+:evidence-level: E3
+
+[[xx-000]]
+= XX-000: Packet title
+
+== Outcome
+
+Observable user or system outcome.
+
+== Current evidence
+
+Verified behavior with anchors, files, commands, and results.
+
+== Scope
+
+Named implementation and test surfaces.
+
+== Non-goals
+
+Explicit exclusions.
+
+== Acceptance
+
+* Executable criterion.
+
+== Failure modes and rollback
+
+How it can fail, how failure is detected, and how to revert independently.
+
+== Completion evidence
+
+Use the fields required by <<execution-protocol>>.

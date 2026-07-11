@@ -1,0 +1,14 @@
+[[knowledge-graph]]
+The code knowledge graph
+
+A knowledge graph turns a source tree into nodes and typed edges. Every function,
+type, module, and document section becomes a node identified by a stable anchor, and
+every relationship between them — imports, calls, definitions, cross-references —
+becomes an edge with a declared type. The anchor is what lets a sentence in a design
+document point at the exact symbol it describes.
+
+Representing the codebase this way makes questions answerable by traversal instead of
+by reading files. Where a flat tag file can only tell you where a name is defined, a
+typed graph can walk from a symbol to its callers, from a contract to the code that
+must satisfy it, or from a paragraph of prose to the implementation it documents. The
+graph is the substrate every other analysis is built on.

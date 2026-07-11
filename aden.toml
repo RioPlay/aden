@@ -1,0 +1,33 @@
+# Aden Configuration
+# This file controls what's visible in public vs internal mode
+
+[profile]
+mode = "Internal"  # "Internal" = all docs visible, "Public" = filtered (ADRs hidden)
+
+# Directories excluded from public-facing output
+private_dirs = [
+    ".aden/private",
+    ".ci",
+    "tools/internal",
+    "docs/adr-",      # ADRs are proposals, not implementation
+    "docs/internal/", # Internal design docs
+    ".agent/",        # Agent-only templates
+]
+
+# Document patterns that are always private (proposals, not reality)
+private_patterns = [
+    "adr-*",      # Architecture Decision Records are proposals
+    "retro-*",    # Incident retrospectives
+    "kickoff-*",  # Project kickoffs
+    "research-*", # Research notes
+    "design-*",   # Pre-implementation designs
+]
+
+# What gets redacted when mode = "public"
+redact_fields = [
+    "source_file",
+    "author_email",
+    "author",
+    "commit",
+    "internal_url",
+]

@@ -1,0 +1,15 @@
+[[community-detection]]
+Community detection
+
+Community detection groups the nodes of a graph into clusters that are more densely
+connected to each other than to the rest of the graph. Applied to a call graph, it
+surfaces the natural feature boundaries of a codebase — the sets of functions that
+work together — without relying on the directory layout, which often reflects history
+rather than cohesion.
+
+The Louvain method optimizes a quantity called modularity by repeatedly moving nodes
+into the neighbouring community that most improves it, then collapsing each community
+into a super-node and repeating. The Leiden refinement adds a guarantee that every
+detected community is internally well connected, fixing a known failure mode where
+Louvain can occasionally produce a cluster that is internally split. Either way the
+clusters make better routing targets than a single flat project hub.

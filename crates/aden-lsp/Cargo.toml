@@ -1,0 +1,22 @@
+[package]
+name = "aden-lsp"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "STANDALONE: Language Server Protocol implementation (separate binary)"
+
+[[bin]]
+name = "aden-lsp"
+path = "src/main.rs"
+
+[dependencies]
+aden-core = { path = "../aden-core" }
+aden-graph = { path = "../aden-graph" }
+tower-lsp = "0.20"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "io-std"] }
+
+[package.metadata.aden]
+status = "standalone"
+integrated = false
+notes = "LSP server for IDE integration. Runs as separate binary. Consider moving to external repo for cleaner separation."

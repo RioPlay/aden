@@ -1,0 +1,174 @@
+:proj: aden
+:author: RioPlay
+:status: accepted
+:toc: left
+:toclevels: 3
+
+[[adr-003]]
+= ADR-003: Store Location and Project Identity
+
+[sidebar]
+.What is an ADR?
+****
+Architecture Decision Records capture why a decision was made, not just what
+was decided. No code should implement this decision before the ADR is accepted.
+****
+
+== Context
+
+Aden writes a per-project knowledge graph to `.aden/` inside the project tree.
+Three independent defects combine to scatter stray `.aden/` stores through
+subdirectories ("subfolder pollution"):
+
+. *Scope and store location are conflated.* The `[DIR]`/`[PATH]` argument means
+  both "what to operate on" and "where `.aden` lives". For `aden gen src/lib.rs`
+  the path is an indexing target, but the store should still be the project root.
+. *`find_project_root` is bypassed.* The helper exists and is correct (root-marker
+  walk-up, then an `.aden/project.conf` fallback), and `gen`/`grep`/`heal` use
+  it — but `query`, `aden-graph::cache`, `aden-heal::scanner`, and
+  `aden-core::overlay` build `path.join(".aden")` straight from the raw argument.
+. *The store is auto-created on open — even by reads.* Opening a fjall store at a
+  path creates the directory. So `aden list` / `aden query` run from
+  `crates/aden-core/` materializes `crates/aden-core/.aden/store`. A read command
+  is enough to pollute; no write is required.
+
+A single clean-up of a real repo found 20 scattered `.aden` directories.
+
+The forces:
+
+. The project tree must stay pristine. Rebuildable artifacts do not belong in the
+  working copy (cf. `cargo` → `~/.cargo`, rust-analyzer, most modern tools).
+. Some `.aden/` content is *not* rebuildable and *should* travel with the repo:
+  human/agent overlays, the project constitution, git hooks.
+. Real filesystems impose constraints: read-only checkouts (CI, `/nix/store`,
+  mounted source), multi-user boxes sharing a repo, containers, and the risk of
+  resolving "root" to `$HOME` or `/` and creating a store there.
+. `/tmp` is not durable — it is wiped on reboot and may be size-capped — so it is
+  unsuitable for the primary store (constant rebuilds), though fine for scratch.
+
+== Decision
+
+=== 1. Resolve the project root once, deterministically
+
+Resolution order (highest priority first):
+
+. `-p/--project <PATH>` explicit override.
+. Git toplevel (`git rev-parse --show-toplevel`) when inside a work tree.
+. Root-marker walk-up (`aden.toml`, `.git`, `Cargo.toml`, `go.mod`,
+  `package.json`, `pyproject.toml`, …).
+. The canonical current working directory.
+
+The resolved, canonicalized root is computed once at the CLI entry point and
+threaded to every command as a distinct value from the operation *scope* (the
+file/dir to index or query). No command derives `.aden` from a raw argument.
+
+=== 2. Split storage by data class
+
+[cols="1,2,1"]
+|===
+|Data |Examples |Location
+
+|Rebuildable graph + caches |`store/`, `cache/`, `gen-cache.json`, `scan-cache.json` |Per-user data dir, keyed per project
+|Durable repo-coupled intent |`overlays/`, `constitution.adoc`, `hooks/` |In-tree, git-tracked
+|Ephemeral temp |per-run scratch (`tmp/`, verify temp) |OS temp dir (`std::env::temp_dir()`)
+|===
+
+The graph is *never* written into the project tree, so subfolder pollution
+becomes impossible by construction. The in-tree `.aden/` shrinks to a small,
+git-tracked directory holding only durable intent.
+
+[NOTE]
+====
+*Superseded in part by <<adr-005>>.* This ADR decided that durable intent is
+*committed by default*. ADR-005 reverses that default: `.aden/` is ignored by
+default and committing it ("`git.track`") becomes an explicit opt-in at
+`aden init`. The data-class split above (rebuildable vs. durable vs. ephemeral)
+still stands; only the commit-by-default decision changed.
+====
+
+=== 3. Per-user data directory (cross-platform)
+
+Resolved via the `dirs` crate (already a dependency):
+
+[source]
+----
+Linux:    $XDG_DATA_HOME/aden  (default ~/.local/share/aden)
+macOS:    ~/Library/Application Support/aden
+Windows:  %APPDATA%\aden
+override: $ADEN_DATA_DIR        (always wins; for CI / containers / monorepos)
+----
+
+Layout: `<data>/aden/projects/<key>/{store,cache,…}`.
+
+=== 4. Project identity (the key)
+
+- `key = sha256(canonical_project_root)[:16]`.
+- Each project gets its own store directory; cross-project collision is
+  impossible.
+- A `meta.json` in each store records the real root path, enabling
+  `aden store list` / `aden store prune` and detecting the (astronomically rare)
+  hash collision.
+- Two clones at different paths → distinct keys → independent stores (correct).
+  The same repo addressed from a subdir → same key → same store (the fix).
+- Moving or renaming a project orphans its store; it rebuilds on the next `gen`,
+  and `prune` reclaims the orphan.
+
+=== 5. Reads never create
+
+Add `Storage::open_existing()` that opens without creating. All read commands use
+it; a missing store yields a clear error (`run 'aden gen' at <root>`) rather than
+silently materializing a directory. Only `init`, `gen`, and `regen` create.
+
+=== 6. Safety rails on creation (not resolution)
+
+Resolution always returns *something* (frictionless reads). *Creation* is strict:
+refuse to create a store when the resolved root is `$HOME`, a filesystem root, or
+above a mount boundary, unless `-p`/`aden init`/`$ADEN_DATA_DIR` is explicit.
+
+== Consequences
+
+Positive:
+
+. Subfolder pollution eliminated by construction.
+. Works on read-only project trees (CI, `/nix/store`, mounted source).
+. Per-user separation on shared machines is automatic.
+. Durable intent (overlays, constitution, hooks) is versioned with the repo.
+. Familiar mental model (source pristine; rebuildable cache per-user, per-project).
+
+Negative / costs (with mitigations):
+
+. The store is no longer next to the code → `aden status`/`doctor` print its path;
+  `ADEN_STORE`/`ADEN_DATA_DIR` overrides for power users.
+. Orphaned stores accumulate → `aden store prune`.
+. Migration required → `gen`/`regen` write to the new location; a one-time move of
+  any existing in-tree `store/` → central; legacy in-tree stores are still read
+  (with a deprecation notice) for back-compat.
+
+== Implementation sketch
+
+. New `aden-paths` helper: `data_root()` (env → `dirs::data_dir()/aden`),
+  `project_key(root)`, `store_dir(root)`, `cache_dir(root)`, `temp_dir()`.
+. Route every `.join(".aden/store")` / cache / temp through it (removes the
+  bypass class in defect 2).
+. `Storage::open_existing()` for reads; only `init`/`gen`/`regen` create.
+. Keep `overlays/`, `constitution.adoc`, `hooks/` in-tree and git-tracked; update
+  `.gitignore` to track those while ignoring any legacy in-tree `store/`/`cache/`.
+. `aden store {path,list,prune}` subcommands + one-time migration.
+
+== Status
+
+Accepted and implemented. The graph store and caches now resolve through the
+`aden-paths` crate to a per-user, per-project data directory; reads use
+`Storage::open_existing` (never create); `gen`/`regen` create and migrate any
+legacy in-tree store; and `aden store {path,list,prune,migrate}` manages stores.
+
+One deviation from this document: the project key uses the `sha2` crate's
+`sha256` exactly as specified (note: a stable identity hash, not a security
+boundary).
+
+== Related Documents
+
+. <<adr-001>> — Foundational architecture decisions
+. <<adr-005>> — Project-tree footprint and opt-in tracking (supersedes the commit-by-default decision here)
+. <<architecture>> — Pipeline and graph-build stages
+. <<commands>> — CLI reference (store-affecting commands: `gen`, `regen`, `heal`, `sync`)

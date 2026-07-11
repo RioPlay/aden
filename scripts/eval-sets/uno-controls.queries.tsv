@@ -1,0 +1,32 @@
+# Auto-generated candidate queries (M6 Stage 1: commit -> single file).
+# UNVALIDATED: spot-check before publishing recall. query<TAB>expected_path<TAB>note
+# [spot-check: weak/generic] Revert iOS change to test if it regressed the icon appearance	AppBarButtonRenderer.iOS.cs	commit 7781fdc
+# [spot-check: weak/generic] Fix more warnings	BindableDatePicker.Android.cs	commit 8b26db9
+Unable to add removed pane back	BindableDrawerLayout.Android.cs	commit b354803
+Make sure that all DataTemplate properties are not propagating the DataContext	BindableGridView.Android.cs	commit 902ac10
+# [spot-check: weak/generic] Use InvariantCulture for int.TryParse calls	BindableImageView.Android.cs	commit e13d08d
+# [spot-check: weak/generic] Avoid calling `NSView.Layer` getter more than once / method	BindableNSView.macOS.cs	commit 3ced78d
+# [spot-check: weak/generic] Use `.ContainsKey` instead of `.Keys.Contains` (CA1841)	BindablePagerAdapter.Android.cs	commit 708d286
+# [spot-check: weak/generic] Adjust SetColorFilter usage for compat	BindableSwitchCompat.Android.cs	commit 5963ab7
+Make sure parent's shadow children collection is up-to-date in child.Loaded	BindableUIView.iOS.cs	commit 218f660
+Ensure that DependencyObject.Parent is set when adding a control to its parent	BindableView.Android.cs	commit 5126310
+# [spot-check: weak/generic] Remove unnecessary directives	AppBarButtonRenderer.Android.cs	commit a38fae9
+Test for native command bar with icon	AppBarButtonRenderer.iOS.cs	commit 066594c
+MPE Controls when nativeframe navigation	CommandBarHelper.iOS.cs	commit 06219e9
+Avoid NSObject_Disposer:Drain with custom AppBar content	CommandBarNavigationItemRenderer.iOS.cs	commit d48ddf3
+Only remove content's parent when the content is not already set as the child of the _contentContainer	CommandBarRenderer.Android.cs	commit 90fcfda
+Move to UINavigationAppearance APIs, fix unapplied background color	CommandBarRenderer.iOS.cs	commit b43d371
+Avoid calling Native getter in NativeCommandBarPresenter	NativeCommandBarPresenter.iOS.cs	commit e9c011d
+[Commandbar] SetNavigationBar throwing exception when null	CommandBarHelper.iOS.cs	commit 2340480
+[iOS] Don't fetch the internal TitleView parent on invalidate measure	CommandBarNavigationItemRenderer.iOS.cs	commit 0a9a729
+Add support for Android 11, remove Android 9 support	CommandBarRenderer.Android.cs	commit f7774e6
+Fix CommandBarRenderer Height for iOS	CommandBarRenderer.iOS.cs	commit 28cc1b6
+# [spot-check: weak/generic] Reset NSObject InFinalizerQueue after calling ReRegisterForFinalize	DisposeHelper.iOSmacOS.cs	commit 79425c9
+Significant simplification of the fallback logic for Faux gradient border	FauxGradientBorderPresenter.cs	commit 569a330
+Remove empty class ImageEx on Android	ImageEx.Android.cs	commit a4f1343
+# [spot-check: weak/generic] Adjust macos build for null refs	NSFontHelper.macOS.cs	commit 3fc2576
+CommandBar NativePresenter overlapping titles	NativeCommandBarPresenter.iOS.cs	commit f2013e8
+Fix order of operations when updating frame stack	NativeFramePresenter.Android.cs	commit 5a937be
+[iOS] Fix a bug where pre-populated frames would log errors when displayed	NativeFramePresenter.iOS.cs	commit 17c04dc
+CommandBar.Foreground affecting NavigationCommand icon	NavigationAppBarButtonRenderer.Android.cs	commit 51795d2
+# [spot-check: weak/generic] Avoid unnecessary managed/unmanaged transitions	PaintPool.Android.cs	commit d11d4e2

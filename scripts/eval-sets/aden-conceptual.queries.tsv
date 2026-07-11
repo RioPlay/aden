@@ -1,0 +1,14 @@
+# Conceptual / overview routing eval — run with eval_corpus.py --mode ask.
+# query <TAB> expected (|-separated alternatives, substring of chosen anchor OR its source file) <TAB> note
+# Conceptual questions: must route to curated prose docs, not narrow code symbols.
+What is Aden?	philosophy.adoc|README.md|index.adoc|ai-integration.adoc	broad identity question; was routing to aden-mcp/lib.rs#resolve_aden_binary
+what is the core idea behind aden	ai-integration.adoc|philosophy.adoc	was routing to mod-aden-core; the curated answers were demoted to alternates
+what is the philosophy of aden	philosophy.adoc	was picked correctly then hijacked to mod-project by the thin-stub fallback
+how does aden integrate with AI agents	ai-integration.adoc|index.adoc	already correct — must stay correct
+high-level architecture of aden	architecture.adoc	already correct — must stay correct
+how do I get started with aden	getting-started.adoc	was picked correctly then hijacked to adr-003 by the community fallback
+what problem does aden solve	philosophy.adoc|README.md|index.adoc|ai-integration.adoc	was routing to aden-mcp/lib.rs#resolve_aden_binary
+# Narrow control questions: correct today, must NOT regress to docs.
+what does infer_project_name do	extractor.rs	narrow control — exact symbol-name routing must keep winning
+how does resolve_anchor_fuzzy work	query.rs#resolve_anchor_fuzzy	narrow control — exact symbol-name routing must keep winning
+what does summarize_drift_event do	heal.rs#summarize_drift_event	narrow control — exact symbol-name routing must keep winning
