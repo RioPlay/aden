@@ -1,0 +1,15 @@
+# Held-out prose retrieval: topic-oriented AI research knowledge base.
+# Labels were authored from filenames/headings before retrieval was run.
+# query	expected_path_substring	note
+how can I shrink the memory used by attention keys and values for long conversations	kv-cache-compression.adoc	lay description of KV-cache compression
+serve many language model requests together without wasting accelerator memory	inference-serving-systems.adoc	continuous batching and serving systems
+run a model with very low precision weights and activations	weight-activation-quantization.adoc	quantization topic
+use a cheap draft model and verify its proposed tokens	speculative-and-adaptive-decoding.adoc	speculative decoding
+retrieve passages and feed them into generation	rag-architectures.adoc	retrieval-augmented generation
+process raw bytes without a conventional tokenizer	byte-and-tokenizer-free.adoc	byte/tokenizer-free models
+build fair vocabulary coverage across many languages	multilingual-tokenization.adoc	multilingual tokenization
+activate only a few expert networks for each token	moe-and-sparsity.adoc	mixture-of-experts sparsity
+adapt a pretrained model while updating very few parameters	parameter-efficient-finetuning.adoc	parameter-efficient tuning
+balance model size training tokens and compute budget	scaling-laws-and-compute-optimal.adoc	compute-optimal scaling
+know when generated answers are fabricated or poorly calibrated	hallucination-and-calibration.adoc	hallucination and uncertainty
+represent lexical relationships richer than WordNet synonym links	relation-types-beyond-wordnet.adoc	broader lexical relation schemas

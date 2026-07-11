@@ -21,7 +21,7 @@ use std::process::Command;
 /// itself where a tool has a JSON envelope (`structured_output_flags`), and
 /// `--project` is meaningless when the server already pins `current_dir` to
 /// its confined project root.
-const GLOBAL_FLAGS: &[&str] = &["--json", "--unlimited", "--verbose", "--project"];
+const GLOBAL_FLAGS: &[&str] = &["--json", "--human", "--unlimited", "--verbose", "--project"];
 
 /// `--require-fresh` is parsed globally by clap, so it appears in every
 /// subcommand's help. It is intentionally an MCP *read-surface* capability:

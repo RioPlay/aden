@@ -1,13 +1,12 @@
 // Copyright (c) 2026 RioPlay <rioplay@rioplay.dev>
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //!
-//! Plain text extractor for Aden.
+//! Plain text and reStructuredText fallback extractor for Aden.
 //!
 //! Treats plain text files as single documents.
 
 use crate::extractor::{
-    build_code_attributes, infer_project_name, infer_project_root, make_anchor,
-    project_relative_file,
+    build_code_attributes, infer_project_name, infer_project_root, project_relative_file,
 };
 use aden_core::{Block, Document, NodeType, Result};
 use std::path::Path;
@@ -32,7 +31,7 @@ impl crate::extractor::LanguageExtractor for PlainTextExtractor {
     }
 
     fn file_extensions(&self) -> &'static [&'static str] {
-        &["txt", "text"]
+        &["txt", "text", "rst"]
     }
 
     fn extract_documents(&self, source: &str, path: &Path) -> Result<Vec<Document>> {
@@ -64,7 +63,10 @@ impl crate::extractor::LanguageExtractor for PlainTextExtractor {
                 };
                 let attrs = build_code_attributes(source, "note", Some(path), Some(&span));
                 Document {
-                    anchor: make_anchor(&crate_name, &file_name, &format!("p{i}")),
+                    // Notes are prose, not code modules. The doc scheme is a
+                    // routing contract: `ask` uses it to suppress code-only
+                    // thin-symbol escalation and keep paragraph queries cheap.
+                    anchor: format!("aden://doc/{crate_name}/{file_name}#p{i}"),
                     node_type: NodeType::Note,
                     attributes: attrs,
                     blocks: vec![Block::Paragraph(para.text)],
@@ -84,7 +86,7 @@ impl crate::extractor::LanguageExtractor for PlainTextExtractor {
         let span = crate::extractor::whole_file_span(source, path);
         let attrs = build_code_attributes(source, "note", Some(path), Some(&span));
         Ok(vec![Document {
-            anchor: make_anchor(&crate_name, &file_name, "p0"),
+            anchor: format!("aden://doc/{crate_name}/{file_name}#p0"),
             node_type: NodeType::Note,
             attributes: attrs,
             blocks: vec![Block::Paragraph(format!("Plain text file: {file_name}"))],

@@ -340,7 +340,7 @@ fn router_registers_polyglot_extensions() {
     use crate::LanguageRouter;
     let router = LanguageRouter::new();
     // These should not return UnsupportedLanguage for the resolvers above.
-    let extensions = ["cs", "java", "kt", "php", "rb"];
+    let extensions = ["cs", "java", "kt", "php", "rb", "rst"];
     for ext in &extensions {
         assert!(
             router.has_extractor(ext),
@@ -348,6 +348,23 @@ fn router_registers_polyglot_extensions() {
             ext
         );
     }
+}
+
+#[test]
+fn router_extracts_rst_as_source_spanned_prose_paragraphs() {
+    use crate::LanguageRouter;
+    let docs = LanguageRouter::new()
+        .parse_file(
+            Path::new("docs/factory.rst"),
+            "Application Factory\n===================\n\nCreate the app here.\n\nRegister the blueprint next.\n",
+        )
+        .expect("RST fallback should parse");
+    assert_eq!(docs.len(), 3);
+    assert!(docs.iter().all(is_locatable));
+    assert!(
+        docs.iter()
+            .all(|doc| doc.node_type == aden_core::NodeType::Note)
+    );
 }
 
 // ── TypeScript / JavaScript duplicate-symbol regression ─────────
@@ -1518,6 +1535,10 @@ fn plaintext_splits_paragraphs_into_notes() {
         .expect("parse should succeed");
 
     assert_eq!(docs.len(), 3, "one Note node per blank-line paragraph");
+    assert!(
+        docs.iter().all(|doc| doc.anchor.starts_with("aden://doc/")),
+        "plain-text/RST notes must use the prose routing scheme"
+    );
     assert!(
         docs.iter()
             .all(|d| d.node_type == aden_core::NodeType::Note),

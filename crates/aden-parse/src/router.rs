@@ -117,6 +117,11 @@ impl LanguageRouter {
             let txt: Arc<dyn LanguageExtractor> = Arc::new(PlainTextExtractor::new());
             self.by_extension.insert("txt", Arc::clone(&txt));
             self.by_extension.insert("text", Arc::clone(&txt));
+            // RST is paragraph-oriented prose. Until a dedicated heading/
+            // directive extractor is warranted, the plain-text extractor gives
+            // it independently retrievable, source-spanned paragraphs instead
+            // of the previous silent no-node behavior.
+            self.by_extension.insert("rst", Arc::clone(&txt));
         }
         {
             let csv: Arc<dyn LanguageExtractor> = Arc::new(CsvExtractor::new());

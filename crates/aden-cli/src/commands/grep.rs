@@ -10,7 +10,7 @@
 //! search hit into a graph entry point with no second tool.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use rayon::prelude::*;
 
@@ -83,8 +83,8 @@ pub fn cmd_grep(
     let files: Vec<std::path::PathBuf> = if path.is_file() {
         vec![std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())]
     } else {
-        let scope = if path.is_dir() { path } else { root.as_path() };
-        discover_source_files_scoped(scope, &root)?
+        let scope = normalized_search_scope(path, &root);
+        discover_source_files_scoped(&scope, &root)?
     };
     let mut matches: Vec<Match> = files
         .par_iter()
@@ -170,6 +170,17 @@ pub fn cmd_grep(
         println!("  ↳ expand a hit into full context: `asm --from {sym}` (or `understand {sym}`)");
     }
     Ok(())
+}
+
+/// Resolve a caller-provided directory before applying project-relative ignore
+/// rules. CLI defaults arrive as relative `.`; passing that through unchanged
+/// makes `strip_prefix(absolute_root)` fail in discovery, which disables every
+/// built-in ignore and can walk enormous `target/` or `node_modules/` trees.
+fn normalized_search_scope(path: &Path, root: &Path) -> PathBuf {
+    if !path.is_dir() {
+        return root.to_path_buf();
+    }
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 /// Load project documents for read-side symbol attribution (ADR-011 snapshot-first).
@@ -290,7 +301,8 @@ fn looks_like_regex(pattern: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::looks_like_regex;
+    use super::{looks_like_regex, normalized_search_scope};
+    use std::path::Path;
 
     #[test]
     fn flags_regex_idioms() {
@@ -310,5 +322,11 @@ mod tests {
         assert!(!looks_like_regex("x++"));
         assert!(!looks_like_regex("value?"));
         assert!(!looks_like_regex("get_all_edges"));
+    }
+
+    #[test]
+    fn relative_default_scope_is_normalized_under_absolute_root() {
+        let root = std::fs::canonicalize(".").expect("test cwd must exist");
+        assert_eq!(normalized_search_scope(Path::new("."), &root), root);
     }
 }

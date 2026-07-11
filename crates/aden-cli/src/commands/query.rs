@@ -1,7 +1,7 @@
 // Copyright (c) 2026 RioPlay <rioplay@rioplay.dev>
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{BTreeSet, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 
 use aden_graph::Direction;
@@ -37,6 +37,400 @@ const SYMBOL_STOP_WORDS: &[&str] = &[
     "target", "mode", "level",
 ];
 
+/// Deterministically decompose a multi-part question into evidence-role search
+/// queries. This is intentionally lexical: routing never depends on an LLM.
+fn evidence_facet_queries(question: &str) -> Vec<String> {
+    let lower = question.to_lowercase();
+    let repeated_interrogative = ["how", "what", "which", "where", "who", "when", "why"]
+        .iter()
+        .any(|word| lower.contains(&format!(" and {word} ")));
+    if !lower.contains(',') && !repeated_interrogative {
+        return Vec::new();
+    }
+    let normalized = lower.replace(" and ", "|").replace(',', "|");
+    let facets: Vec<String> = normalized
+        .split('|')
+        .filter_map(|facet| {
+            let terms: BTreeSet<String> = facet
+                .split(|c: char| !c.is_alphanumeric() && c != '_')
+                .filter(|word| word.len() >= 3 && !SYMBOL_STOP_WORDS.contains(word))
+                .map(str::to_string)
+                .collect();
+            (terms.len() >= 3).then(|| terms.into_iter().collect::<Vec<_>>().join(" "))
+        })
+        .collect();
+    if (2..=3).contains(&facets.len()) {
+        facets
+    } else {
+        Vec::new()
+    }
+}
+
+fn explicit_snake_symbol(question: &str) -> Option<String> {
+    question
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
+        .find(|word| word.contains('_') && word.len() >= 3)
+        .map(str::to_string)
+}
+
+fn exact_symbol_anchor(idx: &aden_index::Index, question: &str) -> Option<String> {
+    let symbol = explicit_snake_symbol(question)?;
+    query_index(idx, &symbol)
+        .into_iter()
+        .find(|result| result.anchor.ends_with(&format!("#{symbol}")))
+        .map(|result| result.anchor)
+}
+
+fn search_result_role(result: &SearchResult) -> String {
+    result
+        .source_path
+        .components()
+        .take(5)
+        .map(|part| part.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn facet_anchor_score(facet: &str, result: &SearchResult) -> usize {
+    let terms: HashSet<&str> = facet.split_whitespace().collect();
+    let anchor = result.anchor.to_lowercase();
+    let overlap = anchor
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|token| terms.contains(token))
+        .count();
+    let section_specificity = if anchor.contains("/h3") || anchor.contains("/h4") {
+        2
+    } else if anchor.contains("/h2") {
+        1
+    } else {
+        0
+    };
+    overlap * 4 + section_specificity
+}
+
+/// Select one source per question facet, preferring distinct architectural
+/// layers. Three seeds cover the common entry/component/contract shape while
+/// keeping assembly bounded.
+fn evidence_facet_seeds(idx: &aden_index::Index, question: &str) -> Vec<String> {
+    let mut selected = Vec::new();
+    let mut files = HashSet::new();
+    let mut roles = HashSet::new();
+    let facets = evidence_facet_queries(question);
+    let rankings = std::thread::scope(|scope| {
+        let handles: Vec<_> = facets
+            .iter()
+            .map(|facet| scope.spawn(move || query_index(idx, facet)))
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap_or_default())
+            .collect::<Vec<_>>()
+    });
+    for (facet, results) in facets.iter().zip(&rankings) {
+        let allow_prose = facet.split_whitespace().any(|term| term == "adr");
+        let eligible = |result: &&SearchResult| {
+            !is_test_result(result)
+                && (allow_prose || !AnchorPattern::is_prose_doc(&result.anchor))
+                && !files.contains(&result.source_path)
+                && !roles.contains(&search_result_role(result))
+        };
+        let candidate = if allow_prose {
+            results
+                .iter()
+                .filter(eligible)
+                .max_by_key(|result| facet_anchor_score(facet, result))
+        } else {
+            results.iter().find(eligible)
+        };
+        if let Some(result) = candidate.or_else(|| {
+            results.iter().find(|result| {
+                !is_test_result(result)
+                    && (allow_prose || !AnchorPattern::is_prose_doc(&result.anchor))
+                    && !files.contains(&result.source_path)
+            })
+        }) {
+            files.insert(result.source_path.clone());
+            roles.insert(search_result_role(result));
+            selected.push(result.anchor.clone());
+            if selected.len() >= 3 {
+                break;
+            }
+        }
+    }
+    // Cross-boundary lifecycle questions often name two facets but require a
+    // third integration/component layer. Fill it from the facet rankings while
+    // preserving source-role diversity.
+    if selected.len() >= 2 && selected.len() < 3 {
+        'fill: for results in rankings.iter().rev() {
+            for result in results {
+                let role = search_result_role(result);
+                if is_test_result(result)
+                    || AnchorPattern::is_prose_doc(&result.anchor)
+                    || files.contains(&result.source_path)
+                    || roles.contains(&role)
+                {
+                    continue;
+                }
+                files.insert(result.source_path.clone());
+                roles.insert(role);
+                selected.push(result.anchor.clone());
+                break 'fill;
+            }
+        }
+    }
+    selected
+}
+
+/// Split an explicit prose conjunction into same-file section searches. This is
+/// Restricted to thin primaries: it addresses questions whose answer-bearing
+/// facts live in sibling sections without increasing the serialized budget.
+fn prose_same_file_facet_seeds(
+    idx: &aden_index::Index,
+    question: &str,
+    source: &Path,
+) -> Vec<String> {
+    let facets = prose_conjunction_facets(question);
+    if facets.len() < 2 || facets.len() > 3 {
+        return Vec::new();
+    }
+    let mut selected = Vec::new();
+    for facet in facets {
+        if let Some(result) = query_index(idx, facet).into_iter().find(|result| {
+            AnchorPattern::is_prose_doc(&result.anchor)
+                && result.source_path == source
+                && !selected.contains(&result.anchor)
+        }) {
+            selected.push(result.anchor);
+        }
+    }
+    if selected.len() >= 2 {
+        selected
+    } else {
+        Vec::new()
+    }
+}
+
+fn prose_conjunction_facets(question: &str) -> Vec<&str> {
+    question
+        .split(" and ")
+        .map(str::trim)
+        .filter(|facet| facet.split_whitespace().count() >= 3)
+        .collect()
+}
+
+/// Rank short paragraph passages across one already-selected prose file.
+/// This is deliberately a *post-file-selection* operation: it cannot pull in
+/// another file or change navigation, and its fixed four-window cap prevents a
+/// long paragraph from consuming the whole context budget. Evidence-role terms
+/// make interrogatives concrete without an LLM (preparation → prerequisites,
+/// danger → risks, "when does it stop" → boundaries/tradeoffs).
+fn focused_prose_passages(source: &str, question: &str, budget: usize) -> Option<String> {
+    use std::collections::{HashMap, HashSet};
+
+    fn terms(text: &str) -> HashSet<String> {
+        const STOP: &[&str] = &[
+            "the", "and", "for", "from", "with", "into", "what", "when", "where", "which", "does",
+            "should", "would", "could", "this", "that", "about", "versus", "how", "why", "your",
+            "have", "stay",
+        ];
+        text.split(|c: char| !c.is_ascii_alphanumeric())
+            .filter_map(|raw| {
+                let mut term = raw.to_ascii_lowercase();
+                if term.ends_with("ily") && term.len() > 5 {
+                    term.truncate(term.len() - 3);
+                    term.push('y');
+                } else if term.ends_with("ly") && term.len() > 5 {
+                    term.truncate(term.len() - 2);
+                }
+                if term.ends_with('s') && term.len() > 4 {
+                    term.pop();
+                }
+                (term.len() > 2 && !STOP.contains(&term.as_str())).then_some(term)
+            })
+            .collect()
+    }
+
+    let mut query_terms = terms(question);
+    let q = question.to_ascii_lowercase();
+    let roles: &[&str] = if q.contains("prepare") {
+        &["before", "prerequisite", "ensure", "clean", "ready"]
+    } else if q.contains("danger") || q.contains("risk") {
+        &[
+            "danger",
+            "destroy",
+            "overwrite",
+            "cannot",
+            "unrecoverable",
+            "risk",
+        ]
+    } else if q.contains("when") || q.contains("stop helping") {
+        &[
+            "threshold",
+            "below",
+            "above",
+            "limit",
+            "tradeoff",
+            "advantage",
+            "disadvantage",
+        ]
+    } else if q.contains("fail") || q.contains("failure") {
+        &[
+            "failure",
+            "fail",
+            "collapse",
+            "unbalanced",
+            "imbalance",
+            "limitation",
+            "disappear",
+        ]
+    } else if q.contains("waste") || q.contains("efficien") {
+        &[
+            "waste",
+            "fragmentation",
+            "eliminate",
+            "packing",
+            "utilization",
+            "overhead",
+        ]
+    } else if q.contains("install") || q.contains("setup") || q.contains("set up") {
+        &[
+            "install",
+            "setup",
+            "component",
+            "add",
+            "configure",
+            "rustup",
+        ]
+    } else {
+        &[]
+    };
+    query_terms.extend(roles.iter().map(|term| (*term).to_string()));
+    // Preparation and execution commonly appear as two halves of one question
+    // ("prepare for and manually resolve ..."). Keep the primary evidence role
+    // above, but also reserve lexical weight for hands-on resolution evidence.
+    // This is deliberately narrower than accumulating every matching role.
+    if q.contains("manual") && (q.contains("resolve") || q.contains("merge")) {
+        query_terms.extend(["manual", "fix", "command"].map(str::to_string));
+    }
+
+    let mut passages = Vec::new();
+    let mut pending_heading: Option<String> = None;
+    for raw in source.split("\n\n") {
+        let clean = aden_asm::traverse::strip_asciidoc_markup(raw)
+            .trim()
+            .to_string();
+        let is_heading = raw
+            .lines()
+            .any(|line| line.trim_start().starts_with('=') || line.trim_start().starts_with("# "));
+        if is_heading && clean.len() < 120 {
+            pending_heading = Some(clean);
+            continue;
+        }
+        if clean.len() < 20 {
+            continue;
+        }
+        passages.push(match pending_heading.take() {
+            Some(heading) => format!("{heading}\n{clean}"),
+            None => clean,
+        });
+    }
+    if passages.len() < 4 || query_terms.is_empty() {
+        return None;
+    }
+    let mut df: HashMap<String, usize> = HashMap::new();
+    let passage_terms: Vec<HashSet<String>> = passages
+        .iter()
+        .map(|passage| {
+            let found = terms(passage);
+            for term in query_terms.intersection(&found) {
+                *df.entry(term.clone()).or_default() += 1;
+            }
+            found
+        })
+        .collect();
+    let mut ranked: Vec<(f64, usize)> = passage_terms
+        .iter()
+        .enumerate()
+        .map(|(i, found)| {
+            let score = query_terms
+                .intersection(found)
+                .map(|term| ((passages.len() + 1) as f64 / (df[term] + 1) as f64).ln() + 1.0)
+                .sum();
+            (score, i)
+        })
+        .filter(|(score, _)| *score > 0.0)
+        .collect();
+    ranked.sort_by(|(sa, ia), (sb, ib)| sb.total_cmp(sa).then_with(|| ia.cmp(ib)));
+
+    let max_bytes = budget.saturating_mul(4);
+    let per_passage = max_bytes / 4;
+    let separator = "\n\n---\n\n";
+    let mut output = String::new();
+    let coverage_stop = std::env::var_os("ADEN_PROSE_COVERAGE_STOP_OFF").is_none();
+    let mut uncovered: HashSet<String> = if coverage_stop {
+        passage_terms
+            .iter()
+            .flat_map(|found| query_terms.intersection(found).cloned())
+            .collect()
+    } else {
+        HashSet::new()
+    };
+    let mut required_facet_passages: HashSet<usize> = if coverage_stop {
+        prose_conjunction_facets(question)
+            .into_iter()
+            .filter_map(|facet| {
+                let facet_terms = terms(facet);
+                passage_terms
+                    .iter()
+                    .enumerate()
+                    .map(|(i, found)| {
+                        let score: f64 = facet_terms
+                            .intersection(found)
+                            .filter_map(|term| df.get(term).map(|count| (term, count)))
+                            .map(|(_, count)| {
+                                ((passages.len() + 1) as f64 / (*count + 1) as f64).ln() + 1.0
+                            })
+                            .sum();
+                        (score, i)
+                    })
+                    .filter(|(score, _)| *score > 0.0)
+                    .max_by(|(sa, ia), (sb, ib)| sa.total_cmp(sb).then_with(|| ib.cmp(ia)))
+                    .map(|(_, i)| i)
+            })
+            .collect()
+    } else {
+        HashSet::new()
+    };
+    for (_, i) in ranked.into_iter().take(4) {
+        let overhead = if !output.is_empty() {
+            separator.len()
+        } else {
+            0
+        };
+        let remaining = max_bytes.saturating_sub(output.len() + overhead);
+        if remaining < 64 {
+            break;
+        }
+        let passage = &passages[i];
+        let mut take = passage.len().min(per_passage).min(remaining);
+        while take > 0 && !passage.is_char_boundary(take) {
+            take -= 1;
+        }
+        if !output.is_empty() {
+            output.push_str(separator);
+        }
+        output.push_str(passage[..take].trim_end());
+        if coverage_stop {
+            uncovered.retain(|term| !passage_terms[i].contains(term));
+            required_facet_passages.remove(&i);
+            if uncovered.is_empty() && required_facet_passages.is_empty() {
+                break;
+            }
+        }
+    }
+    (!output.is_empty()).then_some(output)
+}
+
 /// Extract explicit `func()` or `Type::method()` references from a query.
 /// These are unambiguous intent signals — the user told us exactly what they
 /// want to know about.
@@ -68,6 +462,7 @@ fn extract_explicit_symbols(query: &str) -> Vec<String> {
 /// the leader. Used both by [`resolve_anchor_fuzzy`] (structural tiebreak) and by
 /// `cmd_ask` (to decide whether routing is ambiguous enough to seed alternates).
 const ANCHOR_NOISE_BAND: f64 = 5.0;
+const ALTERNATE_RELATIVE_BAND: f64 = 0.05;
 
 /// True if an anchor points at a test/spec file. Such symbols (test fixtures,
 /// `callback` helpers, assertion-message strings) routinely share a name with
@@ -150,17 +545,33 @@ fn inband_alternate_candidates(primary: &str, results: &[SearchResult], max: usi
         return Vec::new();
     }
     let top_score = results[0].score;
+    let alternate_band = ANCHOR_NOISE_BAND.max(top_score.abs() * ALTERNATE_RELATIVE_BAND);
+    let primary_source = results
+        .iter()
+        .find(|result| result.anchor == primary)
+        .map(|result| result.source_path.clone());
+    let mut sources = HashSet::new();
+    if let Some(source) = primary_source.filter(|source| !source.as_os_str().is_empty()) {
+        sources.insert(source);
+    }
     let mut out: Vec<String> = Vec::new();
     for r in results {
-        if (top_score - r.score) > ANCHOR_NOISE_BAND {
+        if (top_score - r.score) > alternate_band {
             break; // results are score-ordered; nothing past here is in-band
         }
         // Skip the primary, dupes, and test fixtures — alternates seed extra
         // context, so a dir-only test file shouldn't pad the answer either.
-        if r.anchor == primary || out.contains(&r.anchor) || is_test_result(r) {
+        if r.anchor == primary
+            || out.contains(&r.anchor)
+            || is_test_result(r)
+            || (!r.source_path.as_os_str().is_empty() && sources.contains(&r.source_path))
+        {
             continue;
         }
         out.push(r.anchor.clone());
+        if !r.source_path.as_os_str().is_empty() {
+            sources.insert(r.source_path.clone());
+        }
         if out.len() >= max {
             break;
         }
@@ -214,7 +625,8 @@ fn has_symbolish_token(question: &str) -> bool {
             || (w.contains('.') && !w.ends_with('.'))
             // Interior capitals: "AdenConfig", "dispatchRequest" — but not a
             // capitalized first letter ("Aden"), which is just English.
-            || w.chars().skip(1).any(|c| c.is_ascii_uppercase())
+            || (w.chars().any(|c| c.is_ascii_lowercase())
+                && w.chars().skip(1).any(|c| c.is_ascii_uppercase()))
     })
 }
 
@@ -487,7 +899,12 @@ fn resolve_anchor_fuzzy_with_reason(
                 r.anchor
                     .rsplit('#')
                     .next()
-                    .map(|s| s.to_lowercase() == *sym)
+                    .map(|fragment| {
+                        let lower = fragment.to_lowercase();
+                        lower == *sym
+                            || lower.rsplit(['.', ':']).find(|part| !part.is_empty())
+                                == Some(sym.as_str())
+                    })
                     .unwrap_or(false)
             }) {
                 return (
@@ -548,6 +965,19 @@ fn resolve_anchor_fuzzy_with_reason(
         if is_test_result(result) {
             return false;
         }
+        // A generic word that happens to occur in a symbol name must not
+        // override a clearly winning prose document ("format a project" used
+        // to jump from README#Running to convert_message_format_to_*). Explicit
+        // call syntax was handled above; implicit matches only arbitrate an
+        // actual score ambiguity.
+        if AnchorPattern::is_prose_doc(&results[0].anchor)
+            && !AnchorPattern::is_prose_doc(&result.anchor)
+            && !has_symbolish_token(query)
+            && (results[0].score - result.score)
+                > ANCHOR_NOISE_BAND.max(results[0].score.abs() * ALTERNATE_RELATIVE_BAND)
+        {
+            return false;
+        }
         let Some(sym) = result.anchor.rsplit('#').next() else {
             return false;
         };
@@ -559,7 +989,12 @@ fn resolve_anchor_fuzzy_with_reason(
             return false;
         }
         let sym_stem = aden_index::tokenize(&sym_lower);
-        query_tokens.contains(&sym_lower) || sym_stem.iter().any(|st| query_tokens.contains(st))
+        query_tokens.contains(&sym_lower)
+            || sym_stem.iter().any(|st| query_tokens.contains(st))
+            || sym_lower
+                .split(['.', ':'])
+                .filter(|part| part.len() >= 3)
+                .any(|part| query_tokens.iter().any(|token| token == part))
     };
     let mut step2_best: Option<&SearchResult> = None;
     for result in results.iter().take(20).filter(|r| symbol_token_match(r)) {
@@ -899,10 +1334,15 @@ pub fn cmd_asm(opts: AsmOptions) -> Result<(), Box<dyn std::error::Error>> {
     };
     let relevance_select = relevance.is_some();
 
+    let assembly_budget = if opts.strict && opts.format == "json" {
+        effective_budget.saturating_sub(16)
+    } else {
+        effective_budget
+    };
     let asm_opts = AssemblyOptions {
         start_anchor: resolved_anchor,
         max_depth: opts.depth,
-        token_budget: effective_budget,
+        token_budget: assembly_budget,
         edge_types: opts.edge_types.clone(),
         block_filter: Vec::new(),
         include_tags: opts.include_tags.clone(),
@@ -920,10 +1360,19 @@ pub fn cmd_asm(opts: AsmOptions) -> Result<(), Box<dyn std::error::Error>> {
 
     let output = match opts.format.as_str() {
         "adg" => assemble_adg(&graph, &asm_opts)?,
+        "json" => {
+            let documents: serde_json::Value =
+                serde_json::from_str(&assemble_adg(&graph, &asm_opts)?)?;
+            serde_json::to_string(&serde_json::json!({
+                "schema_version": 1,
+                "context_receipt": { "schema_version": 1 },
+                "documents": documents,
+            }))?
+        }
         "aden" | "llm" => assemble(&graph, &asm_opts)?,
         _ => {
             return Err(format!(
-                "Unknown format: '{}'. Use 'llm' (default), 'adg', or 'aden' (raw AsciiDoc).",
+                "Unknown format: '{}'. Use 'json' (default), 'llm', 'adg', or 'aden' (raw AsciiDoc).",
                 opts.format
             )
             .into());
@@ -1515,6 +1964,44 @@ fn strict_serialized_response(response: &str, budget: usize) -> String {
     }
 }
 
+fn prepend_provenance_if_fits(response: &str, source: &str, budget: usize) -> String {
+    if source.is_empty() || response.contains(source) {
+        return response.to_string();
+    }
+    let header = format!("// source: {source}\n");
+    if (header.len() + response.len()).div_ceil(4) <= budget {
+        return format!("{header}{response}");
+    }
+
+    // Prose aliases can render twice at the front (`alias\n\nalias\nTitle`).
+    // Replace only that redundant chrome with compact provenance when a normal
+    // header has no headroom. The replacement must not grow the response.
+    let Some(first_end) = response.find('\n') else {
+        return response.to_string();
+    };
+    let leader = &response[..first_end];
+    let duplicate = format!("\n{leader}\n");
+    let remainder = &response[first_end + 1..];
+    if leader.is_empty() || !remainder.starts_with(&duplicate) {
+        return response.to_string();
+    }
+    let consumed = first_end + 1 + duplicate.len();
+    let basename = Path::new(source)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(source);
+    let compact = format!("@{basename}\n\n");
+    if compact.len() > consumed {
+        return response.to_string();
+    }
+    let candidate = format!("{compact}{}", &response[consumed..]);
+    if candidate.len().div_ceil(4) <= budget {
+        candidate
+    } else {
+        response.to_string()
+    }
+}
+
 /// For a thin-routed anchor, find its functional community and return richer
 /// replacement-seed candidates: `(seeds, label, member_count)`, with `seeds`
 /// ranked by RELEVANCE to the question (BM25-scored against it), never by
@@ -1741,9 +2228,10 @@ fn print_ask_explain(
     println!("//   Overview : {}", xp.overview_note);
     if !xp.candidates.is_empty() {
         println!(
-            "//   Candidates (top {}, * = within noise band {} of top score):",
+            "//   Candidates (top {}, * = within alternate band max({}, {:.0}% of top score)):",
             xp.candidates.len(),
-            ANCHOR_NOISE_BAND
+            ANCHOR_NOISE_BAND,
+            ALTERNATE_RELATIVE_BAND * 100.0
         );
         for line in &xp.candidates {
             println!("//     {}", line);
@@ -1771,6 +2259,7 @@ pub fn cmd_ask(
     edge_types_override: Option<Vec<aden_core::EdgeType>>,
     strict: bool,
     explain: bool,
+    json_output: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if !path.is_dir() {
         return Err("ask requires a directory path".into());
@@ -1801,128 +2290,192 @@ pub fn cmd_ask(
     // those paths assemble exactly as before. When routing is ambiguous they let us
     // seed shallow context from the alternates rather than betting the whole budget
     // on a single, possibly-misranked anchor.
-    let (start_anchor, avg_score, alt_candidates, relevance, routing_note) = if let Some(anchor) =
-        from_override
-    {
-        xp.decision = "pinned by --from (no search routing)".to_string();
-        (anchor.to_string(), None, Vec::new(), None, None)
-    } else {
-        let idx = load_or_build_index(path)?;
-        let results = query_index(&idx, question);
-        if results.is_empty() {
-            let no_results = format!(
-                "No relevant documents found for: {}\nTips:\n  - Use more specific keywords from the codebase.\n  - Try `aden search <term>` to see available anchors.\n  - Or pin an anchor with --from <anchor>.\n",
-                question
-            );
-            if strict {
-                print!("{}", strict_serialized_response("", budget));
-            } else {
-                print!("{no_results}");
+    let (start_anchor, avg_score, alt_candidates, relevance, routing_note, evidence_routed) =
+        if let Some(anchor) = from_override {
+            xp.decision = "pinned by --from (no search routing)".to_string();
+            (anchor.to_string(), None, Vec::new(), None, None, false)
+        } else {
+            let idx = load_or_build_index(path)?;
+            let results = crate::util::query_index_with_navigation(&idx, question, path);
+            if results.is_empty() {
+                let no_results = format!(
+                    "No relevant documents found for: {}\nTips:\n  - Use more specific keywords from the codebase.\n  - Try `aden search <term>` to see available anchors.\n  - Or pin an anchor with --from <anchor>.\n",
+                    question
+                );
+                if strict {
+                    print!("{}", strict_serialized_response("", budget));
+                } else {
+                    print!("{no_results}");
+                }
+                return Ok(());
             }
-            return Ok(());
-        }
-        let avg: f64 = results.iter().map(|r| r.score).sum::<f64>() / results.len() as f64;
+            let avg: f64 = results.iter().map(|r| r.score).sum::<f64>() / results.len() as f64;
 
-        // Conceptual routing: when the question is a broad/overview one, prefer
-        // substantive prose docs within the noise band (see the module-level
-        // block comment above `OVERVIEW_PHRASES`). A miss (no prose in band)
-        // falls through to the default selection unchanged.
-        let overview = is_overview_query(question, &intent);
-        xp.overview_engaged = overview;
-        xp.overview_note = if overview {
-            "engaged (broad intent + overview phrasing, no symbol-like token)".to_string()
-        } else {
-            "not engaged".to_string()
-        };
-        let token_count = |a: &str| idx.doc_token_count(a);
-        // True when overview routing deliberately promoted a prose doc over the
-        // (in-band) rank-1 result. In that case the in-band "alternates" below are
-        // that intentional bypass, not a near-tie — so the user-facing note must
-        // not cry "ambiguous".
-        let mut overview_promoted = false;
-        let primary = if overview {
-            let indegree = doc_reference_indegree(path);
-            match resolve_anchor_overview(question, &results, &token_count, &indegree) {
-                Some((anchor, why)) => {
-                    xp.decision = why;
-                    overview_promoted = true;
-                    anchor
+            // Conceptual routing: when the question is a broad/overview one, prefer
+            // substantive prose docs within the noise band (see the module-level
+            // block comment above `OVERVIEW_PHRASES`). A miss (no prose in band)
+            // falls through to the default selection unchanged.
+            let overview = is_overview_query(question, &intent);
+            xp.overview_engaged = overview;
+            xp.overview_note = if overview {
+                "engaged (broad intent + overview phrasing, no symbol-like token)".to_string()
+            } else {
+                "not engaged".to_string()
+            };
+            let token_count = |a: &str| idx.doc_token_count(a);
+            // True when overview routing deliberately promoted a prose doc over the
+            // (in-band) rank-1 result. In that case the in-band "alternates" below are
+            // that intentional bypass, not a near-tie — so the user-facing note must
+            // not cry "ambiguous".
+            let mut overview_promoted = false;
+            let mut primary = if overview {
+                let indegree = doc_reference_indegree(path);
+                match resolve_anchor_overview(question, &results, &token_count, &indegree) {
+                    Some((anchor, why)) => {
+                        xp.decision = why;
+                        overview_promoted = true;
+                        anchor
+                    }
+                    None => {
+                        let (anchor, why) =
+                            resolve_anchor_fuzzy_with_reason(question, &results, token_count);
+                        xp.decision =
+                            format!("overview engaged but no prose doc in score band; {}", why);
+                        anchor
+                    }
                 }
-                None => {
-                    let (anchor, why) =
-                        resolve_anchor_fuzzy_with_reason(question, &results, token_count);
-                    xp.decision =
-                        format!("overview engaged but no prose doc in score band; {}", why);
-                    anchor
-                }
-            }
-        } else {
-            let (anchor, why) = resolve_anchor_fuzzy_with_reason(question, &results, token_count);
-            xp.decision = why.to_string();
-            anchor
-        };
-        if explain {
-            let top_score = results[0].score;
-            xp.candidates = results
+            } else {
+                let (anchor, why) =
+                    resolve_anchor_fuzzy_with_reason(question, &results, token_count);
+                xp.decision = why.to_string();
+                anchor
+            };
+            let lower_question = question.to_lowercase();
+            let relationship_query = [" call", "caller", "request path", "impact", "depend"]
                 .iter()
-                .take(8)
-                .enumerate()
-                .map(|(i, r)| {
-                    format!(
-                        "{}. {} {} score={} pattern={:?} class={} tokens={} test={}",
-                        i + 1,
-                        if (top_score - r.score) <= ANCHOR_NOISE_BAND {
-                            "*"
-                        } else {
-                            " "
-                        },
-                        r.anchor,
-                        fmt_score(r.score),
-                        AnchorPattern::from_anchor(&r.anchor),
-                        if AnchorPattern::is_prose_doc(&r.anchor) {
-                            "doc"
-                        } else {
-                            "code"
-                        },
-                        idx.doc_token_count(&r.anchor),
-                        if is_test_result(r) { "yes" } else { "no" },
-                    )
-                })
-                .collect();
-        }
-        // Up to 2 in-band alternates, deduped against the (possibly non-rank-1)
-        // primary. Empty ⇒ clear winner ⇒ unchanged single-seed behavior below.
-        let alts = inband_alternate_candidates(&primary, &results, 2);
-        // Decide the honest low-confidence note here, where we know whether the
-        // alternates are a genuine near-tie or the deliberate overview bypass.
-        let routing_note = if alts.is_empty() {
-            None
-        } else if overview_promoted {
-            Some(format!(
-                "// note: overview routing chose a prose doc over {} in-band result(s) \
+                .any(|signal| lower_question.contains(signal));
+            let exact_anchor = if relationship_query {
+                None
+            } else {
+                exact_symbol_anchor(&idx, question)
+            };
+            let exact_routed = exact_anchor.is_some();
+            if let Some(anchor) = exact_anchor {
+                xp.decision = "exact symbol token".to_string();
+                primary = anchor;
+            }
+            if explain {
+                let top_score = results[0].score;
+                xp.candidates = results
+                    .iter()
+                    .take(8)
+                    .enumerate()
+                    .map(|(i, r)| {
+                        format!(
+                            "{}. {} {} score={} pattern={:?} class={} tokens={} test={}",
+                            i + 1,
+                            if (top_score - r.score)
+                                <= ANCHOR_NOISE_BAND.max(top_score.abs() * ALTERNATE_RELATIVE_BAND)
+                            {
+                                "*"
+                            } else {
+                                " "
+                            },
+                            r.anchor,
+                            fmt_score(r.score),
+                            AnchorPattern::from_anchor(&r.anchor),
+                            if AnchorPattern::is_prose_doc(&r.anchor) {
+                                "doc"
+                            } else {
+                                "code"
+                            },
+                            idx.doc_token_count(&r.anchor),
+                            if is_test_result(r) { "yes" } else { "no" },
+                        )
+                    })
+                    .collect();
+            }
+            // Multi-part questions need distinct evidence roles, not merely BM25
+            // near-ties. Facet seeds replace the primary only when at least two
+            // independent roles were found; otherwise preserve existing routing.
+            let precise_routed = exact_routed;
+            let prose_facet_seeds = if !precise_routed
+                && std::env::var_os("ADEN_PROSE_FACETS_OFF").is_none()
+                && AnchorPattern::is_prose_doc(&primary)
+                && idx.doc_token_count(&primary) <= THIN_STUB_TOKEN_THRESHOLD
+            {
+                results
+                    .iter()
+                    .find(|result| result.anchor == primary)
+                    .map(|result| prose_same_file_facet_seeds(&idx, question, &result.source_path))
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            let facet_seeds = if !prose_facet_seeds.is_empty() {
+                prose_facet_seeds
+            } else if precise_routed {
+                Vec::new()
+            } else {
+                evidence_facet_seeds(&idx, question)
+            };
+            let evidence_routed = facet_seeds.len() >= 2;
+            let alts = if evidence_routed {
+                primary = facet_seeds[0].clone();
+                xp.decision = format!(
+                    "deterministic evidence-role routing across {} facets",
+                    facet_seeds.len()
+                );
+                facet_seeds.into_iter().skip(1).take(2).collect()
+            } else if precise_routed {
+                Vec::new()
+            } else {
+                // Up to 2 in-band alternates, deduped against the (possibly
+                // non-rank-1) primary. Empty means a clear winner.
+                inband_alternate_candidates(&primary, &results, 1)
+            };
+            // Decide the honest low-confidence note here, where we know whether the
+            // alternates are a genuine near-tie or the deliberate overview bypass.
+            let routing_note = if alts.is_empty() {
+                None
+            } else if evidence_routed {
+                Some(format!(
+                    "// note: evidence-role routing selected {} distinct source facets.",
+                    alts.len() + 1
+                ))
+            } else if overview_promoted {
+                Some(format!(
+                    "// note: overview routing chose a prose doc over {} in-band result(s) \
                  (an intentional pick, not a tie); showing it plus shallow alternates. Pin a \
                  specific anchor with --from <anchor>.",
-                alts.len()
-            ))
-        } else {
-            Some(format!(
-                "// note: routing ambiguous — {} near-tie candidate(s); showing the primary plus \
+                    alts.len()
+                ))
+            } else {
+                Some(format!(
+                    "// note: routing ambiguous — {} near-tie candidate(s); showing the primary plus \
                  shallow alternates at a reduced budget. Re-run with --explain for scores, or pin \
                  with --from <anchor>.",
-                alts.len()
-            ))
+                    alts.len()
+                ))
+            };
+            // Forward the search relevance into assembly frontier ordering: the same
+            // hybrid (dense+BM25) scores that routed the seed now break structural
+            // ties toward query-relevant neighbors. Anchors absent from the map score
+            // 0.0 in `ordered_neighbors`, so an unmatched neighborhood degrades
+            // exactly to the prior structural (edge_priority, anchor) order.
+            let relevance: std::collections::HashMap<String, f32> = results
+                .iter()
+                .map(|r| (r.anchor.to_owned(), r.score as f32))
+                .collect();
+            (
+                primary,
+                Some(avg),
+                alts,
+                Some(relevance),
+                routing_note,
+                evidence_routed,
+            )
         };
-        // Forward the search relevance into assembly frontier ordering: the same
-        // hybrid (dense+BM25) scores that routed the seed now break structural
-        // ties toward query-relevant neighbors. Anchors absent from the map score
-        // 0.0 in `ordered_neighbors`, so an unmatched neighborhood degrades
-        // exactly to the prior structural (edge_priority, anchor) order.
-        let relevance: std::collections::HashMap<String, f32> = results
-            .iter()
-            .map(|r| (r.anchor.to_owned(), r.score as f32))
-            .collect();
-        (primary, Some(avg), alts, Some(relevance), routing_note)
-    };
 
     // Apply the relevance boost by default; `--strict` opts out and treats
     // --budget as an exact cap (deterministic size for callers/agents). The
@@ -1948,7 +2501,7 @@ pub fn cmd_ask(
     // `--strict` caps the complete response, not merely the assembled body.
     // Routing chrome is useful interactively but is outside the assembler's
     // accounting, so it must stay out of strict output.
-    if !strict {
+    if explain && !strict && !json_output {
         println!("// Aden Ask: '{}' → [[{}]]", question, start_anchor);
         if from_override.is_some() {
             println!("// (pinned by --from)");
@@ -1974,7 +2527,7 @@ pub fn cmd_ask(
         format!("{:?}", intent)
     };
 
-    if !strict {
+    if explain && !strict {
         println!(
             "// Strategy: {} | Depth: {} | Edges: {:?}",
             strategy_label,
@@ -1996,10 +2549,12 @@ pub fn cmd_ask(
         Some(a) => a,
         None => {
             if aden_graph::cache::resolve_anchor_in_store(path, "mod-project").is_some() {
-                eprintln!(
-                    "NOTE: '{}' is not a graph anchor; using project root 'mod-project'.",
-                    start_anchor
-                );
+                if explain {
+                    eprintln!(
+                        "NOTE: '{}' is not a graph anchor; using project root 'mod-project'.",
+                        start_anchor
+                    );
+                }
                 "mod-project".to_string()
             } else {
                 return Err(format!(
@@ -2070,7 +2625,12 @@ pub fn cmd_ask(
         primary_text = seed_text.clone();
         seed_text
     } else {
-        let primary_budget = effective_budget * 60 / 100;
+        let role_budget = effective_budget / (resolved_alts.len() + 1);
+        let primary_budget = if evidence_routed {
+            role_budget
+        } else {
+            effective_budget * 60 / 100
+        };
         let shallow_depth = depth.min(1);
         let (primary_seed_text, _) =
             asm.assemble_seed_with(&start_anchor, depth, primary_budget, &block_filter, false)?;
@@ -2079,13 +2639,18 @@ pub fn cmd_ask(
         let mut used = combined.len().div_ceil(4);
         for alt in &resolved_alts {
             let sep = "\n\n---\n\n";
-            let header = format!("// alternate (ambiguous match): [[{}]]\n", alt);
+            let header = format!("// supporting evidence: [[{}]]\n", alt);
             let overhead = sep.len().div_ceil(4) + header.len().div_ceil(4);
             let remaining = effective_budget.saturating_sub(used + overhead);
             if remaining < 32 {
                 break;
             }
-            let alt_text = asm.assemble_seed(alt, shallow_depth, remaining)?;
+            let alt_budget = if evidence_routed {
+                remaining.min(role_budget)
+            } else {
+                remaining
+            };
+            let alt_text = asm.assemble_seed(alt, shallow_depth, alt_budget)?;
             if alt_text.trim().is_empty() {
                 continue;
             }
@@ -2124,10 +2689,12 @@ pub fn cmd_ask(
                     if body.len().div_ceil(4) <= est {
                         return None;
                     }
-                    eprintln!(
-                        "NOTE: '{}' assembled thin (~{} tokens); broadening within the document to its canonical anchor [[{}]] (cross-reference in-degree {}).",
-                        start_anchor, est, canon, d
-                    );
+                    if explain {
+                        eprintln!(
+                            "NOTE: '{}' assembled thin (~{} tokens); broadening within the document to its canonical anchor [[{}]] (cross-reference in-degree {}).",
+                            start_anchor, est, canon, d
+                        );
+                    }
                     xp.fallback = format!(
                         "thin (~{} tokens); broadened WITHIN the document to [[{}]] (cross-reference in-degree {})",
                         est, canon, d
@@ -2137,10 +2704,12 @@ pub fn cmd_ask(
             match broadened {
                 Some(pair) => pair,
                 None => {
-                    eprintln!(
-                        "NOTE: '{}' assembled thin (~{} tokens) but is a prose document; keeping it (fallback swap suppressed).",
-                        start_anchor, est
-                    );
+                    if explain {
+                        eprintln!(
+                            "NOTE: '{}' assembled thin (~{} tokens) but is a prose document; keeping it (fallback swap suppressed).",
+                            start_anchor, est
+                        );
+                    }
                     xp.fallback = format!(
                         "suppressed: primary assembled thin (~{} tokens) but is a prose document — kept",
                         est
@@ -2148,7 +2717,8 @@ pub fn cmd_ask(
                     (assembled, start_anchor)
                 }
             }
-        } else if !AnchorPattern::is_prose_doc(&start_anchor)
+        } else if resolved_alts.is_empty()
+            && !AnchorPattern::is_prose_doc(&start_anchor)
             && substantive_token_estimate(&primary_text) < effective_budget / 2
         {
             // F3 — escalation ladder for underfull/thin CODE anchors, driven
@@ -2199,10 +2769,12 @@ pub fn cmd_ask(
             }
             if best_subst >= floor {
                 if let Some(label) = best_rung {
-                    eprintln!(
-                        "NOTE: '{}' assembled underfull (~{} substantive tokens of {} budget); escalated without changing the anchor ({}).",
-                        start_anchor, subst, effective_budget, label
-                    );
+                    if explain {
+                        eprintln!(
+                            "NOTE: '{}' assembled underfull (~{} substantive tokens of {} budget); escalated without changing the anchor ({}).",
+                            start_anchor, subst, effective_budget, label
+                        );
+                    }
                     xp.fallback = format!(
                         "underfull (~{} substantive tokens of {} budget); escalated WITHOUT changing the anchor ({})",
                         subst, effective_budget, label
@@ -2264,10 +2836,12 @@ pub fn cmd_ask(
                             if substantive_token_estimate(&combined) < floor {
                                 return None;
                             }
-                            eprintln!(
-                                "NOTE: '{}' stayed thin through escalation (~{} substantive tokens); kept, supplemented with community '{}' ({} symbols, members by query relevance).",
-                                start_anchor, best_subst, label, n
-                            );
+                            if explain {
+                                eprintln!(
+                                    "NOTE: '{}' stayed thin through escalation (~{} substantive tokens); kept, supplemented with community '{}' ({} symbols, members by query relevance).",
+                                    start_anchor, best_subst, label, n
+                                );
+                            }
                             Some(combined)
                         },
                     )
@@ -2283,10 +2857,12 @@ pub fn cmd_ask(
                         (body, start_anchor)
                     }
                     None => {
-                        eprintln!(
-                            "NOTE: '{}' assembled thin (~{} substantive tokens) and nothing cleared the floor ({}); keeping the routed anchor.",
-                            start_anchor, best_subst, floor
-                        );
+                        if explain {
+                            eprintln!(
+                                "NOTE: '{}' assembled thin (~{} substantive tokens) and nothing cleared the floor ({}); keeping the routed anchor.",
+                                start_anchor, best_subst, floor
+                            );
+                        }
                         xp.fallback = format!(
                             "thin; escalation exhausted — kept [[{}]] (nothing cleared floor {})",
                             start_anchor, floor
@@ -2312,24 +2888,120 @@ pub fn cmd_ask(
         };
     }
 
-    // Step 4: Send to LLM or print raw context. Strict stdout is body-only:
-    // headers, receipts, alternates, and summaries are not part of the
-    // assembler budget and therefore cannot be emitted here.
+    // Passage-granular path for thick, explicitly multi-facet prose. File
+    // selection remains authoritative; only the bytes chosen from that one
+    // source file change. The external passage and routing matrices establish
+    // a net quality+cost win; retain an OFF switch for diagnostic A/B runs.
+    let assembled = if std::env::var_os("ADEN_PROSE_PASSAGES_OFF").is_none()
+        && from_override.is_none()
+        && AnchorPattern::is_prose_doc(&start_anchor)
+        && prose_conjunction_facets(question).len() >= 2
+    {
+        anchor_source_file(path, &start_anchor)
+            .and_then(|source_path| {
+                std::fs::read_to_string(hydrate_root.join(&source_path))
+                    .ok()
+                    .map(|source| (source_path, source))
+            })
+            // Passage selection pays only when the file is larger than four
+            // complete context windows. Below that, normal section assembly is
+            // already selective enough and preserves useful local continuity.
+            .filter(|(_, source)| source.len() > effective_budget.saturating_mul(4 * 4))
+            .and_then(|(source_path, source)| {
+                let provenance_tokens = format!("// source: {source_path}\n").len().div_ceil(4);
+                focused_prose_passages(
+                    &source,
+                    question,
+                    effective_budget.saturating_sub(provenance_tokens),
+                )
+            })
+            .unwrap_or(assembled)
+    } else {
+        assembled
+    };
+
+    // Step 4: Send to LLM or print raw context. Strict stdout is bounded body
+    // plus an opportunistic source header only when existing headroom pays for it.
     if let Some(model_spec) = model {
         if explain {
             print_ask_explain(&xp, &intent, intent_was_overridden, path, &primary_anchor);
             println!("// ────────────────────────────────────────────────");
         }
         query_llm(model_spec, question, &assembled, &start_anchor)?;
+    } else if json_output {
+        let context = if strict {
+            anchor_source_file(path, &start_anchor)
+                .map(|source| prepend_provenance_if_fits(&assembled, &source, effective_budget))
+                .map(|body| strict_serialized_response(&body, effective_budget))
+                .unwrap_or_else(|| strict_serialized_response(&assembled, effective_budget))
+        } else {
+            assembled.clone()
+        };
+        let payload = serde_json::json!({
+            "schema_version": 1,
+            "context_receipt": { "schema_version": 1 },
+            "question": question,
+            "anchor": start_anchor,
+            "source_file": anchor_source_file(path, &start_anchor),
+            "context": context,
+            "intent": format!("{:?}", intent).to_lowercase(),
+            "depth": depth,
+            "budget": effective_budget,
+            "strict": strict,
+            "supporting_anchors": resolved_alts,
+            "explain": explain.then_some(serde_json::json!({
+                "decision": xp.decision,
+                "fallback": xp.fallback,
+                "primary_anchor": primary_anchor,
+            })),
+        });
+        if strict {
+            let max_bytes = effective_budget.saturating_mul(4);
+            let full = serde_json::to_string(&payload)?;
+            if full.len() <= max_bytes {
+                print!("{full}");
+            } else {
+                // At tight budgets the envelope itself competes with evidence.
+                // Preserve valid, versioned JSON and the largest context prefix;
+                // omit optional routing metadata rather than violating --strict.
+                let mut bounded_context = payload["context"].as_str().unwrap_or_default();
+                loop {
+                    let compact = serde_json::to_string(&serde_json::json!({
+                        "schema_version": 1,
+                        "context": bounded_context,
+                        "truncated": true,
+                    }))?;
+                    if compact.len() <= max_bytes || bounded_context.is_empty() {
+                        print!("{compact}");
+                        break;
+                    }
+                    let next = bounded_context
+                        .char_indices()
+                        .rev()
+                        .nth(15)
+                        .map(|(i, _)| i)
+                        .unwrap_or(0);
+                    bounded_context = &bounded_context[..next];
+                }
+            }
+        } else {
+            println!("{}", serde_json::to_string_pretty(&payload)?);
+        }
     } else if strict {
         // Assembly normally maintains this invariant. The final serializer
         // protects the public boundary from future receipts/supplements.
+        let strict_body = anchor_source_file(path, &start_anchor)
+            .map(|source| prepend_provenance_if_fits(&assembled, &source, effective_budget))
+            .unwrap_or_else(|| assembled.clone());
         print!(
             "{}",
-            strict_serialized_response(&assembled, effective_budget)
+            strict_serialized_response(&strict_body, effective_budget)
         );
+    } else if !explain {
+        // Outcome-only default: internal routing and arbitration are invisible.
+        print!("{}", assembled);
     } else {
-        // Show context with metadata for LLMs
+        // Explain mode shows context with routing metadata and receipts.
         println!("<!-- ADEN CONTEXT ASSEMBLY -->");
         println!("<!-- Question: {} -->", question);
         // Note the boost when the default relevance scaling raised the budget
@@ -2349,7 +3021,7 @@ pub fn cmd_ask(
             // Make the ambiguity-driven seeding transparent: these shallow seeds
             // were appended because routing was a near-tie.
             println!(
-                "<!-- Alternates (ambiguous, shallow): {} -->",
+                "<!-- Supporting evidence (shallow): {} -->",
                 resolved_alts.join(", ")
             );
         }
@@ -2384,10 +3056,7 @@ pub fn cmd_ask(
         println!("//   Question: {}", question);
         println!("//   Anchor  : [[{}]]", start_anchor);
         if !resolved_alts.is_empty() {
-            println!(
-                "//   Alts    : {} (ambiguous, shallow)",
-                resolved_alts.join(", ")
-            );
+            println!("//   Evidence: {} (shallow)", resolved_alts.join(", "));
         }
         println!("//   Strategy: {} | Depth: {}", strategy, depth);
         println!(
@@ -2775,6 +3444,157 @@ mod tests {
     use super::*;
     use crate::types::QueryIntent;
 
+    #[test]
+    fn evidence_facets_split_explicit_independent_roles_without_an_llm() {
+        let facets = evidence_facet_queries(
+            "Which services validate incoming requests, and which workers persist accepted records?",
+        );
+        assert_eq!(facets.len(), 2);
+        assert!(facets[0].contains("validate"));
+        assert!(facets[1].contains("persist"));
+    }
+
+    #[test]
+    fn evidence_facets_leave_single_intent_questions_alone() {
+        assert!(evidence_facet_queries("What does parse_file do?").is_empty());
+    }
+
+    #[test]
+    fn prose_facets_split_explicit_conjunction_without_an_llm() {
+        assert_eq!(
+            prose_conjunction_facets(
+                "How were token savings calculated and what did the timeline viewer add"
+            ),
+            vec![
+                "How were token savings calculated",
+                "what did the timeline viewer add"
+            ]
+        );
+        assert!(prose_conjunction_facets("How does reset work?").len() < 2);
+    }
+
+    #[test]
+    fn focused_prose_passages_cover_distinct_evidence_roles_within_budget() {
+        let source = [
+            "Overview\n\nA long generic introduction about the operation and its history.",
+            "Preparation\n\nBefore starting, ensure the workspace is clean and ready.",
+            "Resolution\n\nManually resolve the conflict with the merge tool.",
+            "Background\n\nUnrelated implementation history and acknowledgements.",
+            "Appendix\n\nMore unrelated notes to make this a multi-passage document.",
+        ]
+        .join("\n\n");
+        let output = focused_prose_passages(
+            &source,
+            "How should I prepare and manually resolve the conflict?",
+            128,
+        )
+        .expect("focused passages");
+        assert!(output.contains("workspace is clean"));
+        assert!(output.contains("Manually resolve"));
+        assert!(output.len() <= 128 * 4);
+    }
+
+    #[test]
+    fn focused_prose_passages_return_none_for_tiny_sources() {
+        assert!(focused_prose_passages("one short paragraph", "when does it stop?", 128).is_none());
+    }
+
+    #[test]
+    fn focused_prose_passages_keep_headings_and_route_failure_evidence() {
+        let source = [
+            "== Overview\n\nA general introduction to sparse routing.",
+            "== Normal path\n\nTokens select experts using learned scores.",
+            "== Failure boundary\n\nAt batch size 1 the balancing signal disappears and routing becomes unbalanced.",
+            "== Appendix\n\nAdditional unrelated implementation notes.",
+        ]
+        .join("\n\n");
+        let output = focused_prose_passages(&source, "Why can expert load balancing fail?", 128)
+            .expect("focused passages");
+        assert!(output.contains("Failure boundary"));
+        assert!(output.contains("signal disappears"));
+        assert!(output.len() <= 128 * 4);
+    }
+
+    #[test]
+    fn focused_prose_passages_cover_preparation_and_manual_resolution() {
+        let filler = "Complex merge conflicts can have many causes and require careful review.";
+        let source = format!(
+            "==== Merge Conflicts\n\nFirst make sure your working directory is clean before starting.\n\n{}\n\n{}\n\n{}\n\n===== Manual File Re-merging\n\nExtract all three stages into the working directory.\n\nNow manually fix the whitespace issue and re-merge with the git merge-file command.",
+            filler, filler, filler
+        );
+        let output = focused_prose_passages(
+            &source,
+            "How should I prepare for and manually resolve a complex merge conflict?",
+            256,
+        )
+        .expect("long prose should be passage-ranked");
+
+        assert!(output.contains("working directory is clean"));
+        assert!(output.contains("git merge-file command"));
+    }
+
+    #[test]
+    fn focused_prose_passages_stop_after_proving_term_coverage() {
+        let source = "==== Credential helpers\n\nCache keeps credentials in memory while store saves them on disk.\n\nAn unrelated historical paragraph supplies enough source length for passage selection.\n\nAnother unrelated implementation paragraph discusses portability concerns.\n\nA final unrelated paragraph discusses configuration syntax and examples.";
+        let output = focused_prose_passages(
+            source,
+            "How do credential cache and store helpers differ?",
+            256,
+        )
+        .expect("long prose should be passage-ranked");
+
+        assert!(output.contains("Cache keeps credentials"));
+        assert!(!output.contains("---"));
+    }
+
+    #[test]
+    fn focused_prose_passages_retain_each_conjunction_facet_winner() {
+        let source = "==== Serving\n\nPagedAttention avoids fragmentation in the KV cache.\n\nA generic serving overview mentions batching and waste.\n\nContinuous batching reconfigures the live batch after each decoding step.\n\nAn unrelated paragraph discusses deployment topology and monitoring.";
+        let output = focused_prose_passages(
+            source,
+            "How do PagedAttention and continuous batching reduce serving waste?",
+            256,
+        )
+        .expect("long prose should be passage-ranked");
+
+        assert!(output.contains("PagedAttention avoids fragmentation"));
+        assert!(output.contains("Continuous batching reconfigures"));
+    }
+
+    #[test]
+    fn evidence_facets_do_not_split_generic_conjunctions() {
+        assert!(
+            evidence_facet_queries("How are transactions committed and conflicts reported?")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn evidence_facets_split_balanced_conjunction_roles() {
+        let facets = evidence_facet_queries(
+            "How do concurrent consumers load snapshots and how do serialized producers publish updates?",
+        );
+        assert_eq!(facets.len(), 2);
+    }
+
+    #[test]
+    fn evidence_facets_do_not_inject_domain_vocabulary() {
+        let facets = evidence_facet_queries(
+            "Where are request handlers registered, which registry lists available handlers, and which runtime handlers become active?",
+        );
+        assert_eq!(facets.len(), 3);
+        assert!(facets.iter().all(|facet| !facet.contains("tool")));
+        assert!(facets.iter().all(|facet| !facet.contains("session")));
+    }
+
+    #[test]
+    fn explicit_snake_symbols_are_detected_without_call_syntax() {
+        assert_eq!(
+            explicit_snake_symbol("What boundaries does run_aden_command enforce?"),
+            Some("run_aden_command".to_string())
+        );
+    }
+
     // ---- classify_intent: previously-misrouting phrasings now route correctly.
 
     /// "what breaks if I change X" used to fall through to General (the old
@@ -3039,6 +3859,32 @@ mod tests {
         assert!(validate_strict_budget(true, 15).is_ok());
     }
 
+    #[test]
+    fn provenance_uses_only_existing_budget_headroom() {
+        let body = "useful context";
+        let with_source = prepend_provenance_if_fits(body, "src/main.rs", 32);
+        assert!(with_source.starts_with("// source: src/main.rs\n"));
+        assert!(with_source.ends_with(body));
+
+        let full = "x".repeat(128);
+        assert_eq!(prepend_provenance_if_fits(&full, "src/main.rs", 32), full);
+        assert_eq!(prepend_provenance_if_fits(body, "", 32), body);
+        assert_eq!(
+            prepend_provenance_if_fits("source: src/main.rs", "src/main.rs", 32),
+            "source: src/main.rs"
+        );
+
+        let prose = format!("_alias\n\n_alias\nTitle\n{}", "x".repeat(96));
+        let compact = prepend_provenance_if_fits(
+            &prose,
+            "book/sections/aliases.adoc",
+            prose.len().div_ceil(4),
+        );
+        assert!(compact.starts_with("@aliases.adoc\n\nTitle\n"));
+        assert!(compact.len() <= prose.len());
+        assert!(compact.ends_with(&"x".repeat(96)));
+    }
+
     fn result(anchor: &str, score: f64) -> SearchResult {
         SearchResult {
             anchor: anchor.to_string(),
@@ -3073,6 +3919,69 @@ mod tests {
         let chosen =
             resolve_anchor_fuzzy("how does a command invoke the callback", &results, |_| 100);
         assert_eq!(chosen, "aden://module/p/core.py#Command");
+    }
+
+    #[test]
+    fn ask_routing_does_not_let_generic_symbol_word_override_clear_prose_winner() {
+        let results = vec![
+            result("aden://doc/rustfmt/README.md/h2running", 40.0),
+            result(
+                "aden://module/rustfmt/src/main.rs#convert_message_format_to_args",
+                23.0,
+            ),
+        ];
+        let chosen = resolve_anchor_fuzzy(
+            "How do I install rustfmt and format an entire project?",
+            &results,
+            |_| 100,
+        );
+        assert_eq!(chosen, "aden://doc/rustfmt/README.md/h2running");
+    }
+
+    #[test]
+    fn explicit_call_matches_final_component_of_qualified_symbol() {
+        let results = vec![
+            result("aden://doc/kin/.github/docs/openapi3.txt#p315", 49.0),
+            result(
+                "aden://module/kin/openapi3/license.go#License.MarshalYAML",
+                44.0,
+            ),
+        ];
+        let chosen = resolve_anchor_fuzzy("Fix License MarshalYAML()", &results, |_| 100);
+        assert_eq!(
+            chosen,
+            "aden://module/kin/openapi3/license.go#License.MarshalYAML"
+        );
+    }
+
+    #[test]
+    fn camelcase_target_matches_component_of_qualified_method() {
+        let results = vec![
+            result("aden://doc/pi/docs/extensions.md/h1extensions", 82.0),
+            result(
+                "aden://module/pi/src/agent-session.ts#AgentSession._installAgentToolHooks",
+                43.0,
+            ),
+        ];
+        let chosen = resolve_anchor_fuzzy(
+            "How does AgentSession intercept extension tool calls?",
+            &results,
+            |_| 100,
+        );
+        assert_eq!(
+            chosen,
+            "aden://module/pi/src/agent-session.ts#AgentSession._installAgentToolHooks"
+        );
+    }
+
+    #[test]
+    fn all_caps_document_acronym_is_not_a_camelcase_symbol_target() {
+        assert!(!has_symbolish_token(
+            "What README sequence validates a request?"
+        ));
+        assert!(has_symbolish_token(
+            "How does AgentSession validate a request?"
+        ));
     }
 
     fn result_with_path(anchor: &str, source: &str, score: f64) -> SearchResult {
@@ -3188,6 +4097,17 @@ mod tests {
     fn inband_alternates_dedupes_repeated_anchors() {
         let results = vec![result("a", 30.0), result("b", 29.0), result("b", 28.0)];
         assert_eq!(inband_alternate_candidates("a", &results, 5), vec!["b"]);
+    }
+
+    #[test]
+    fn inband_alternates_use_relative_band_and_distinct_files() {
+        let results = vec![
+            result_with_path("a", "generated/maps.sh", 1500.0),
+            result_with_path("a-helper", "generated/maps.sh", 1475.0),
+            result_with_path("b", "src/maplike.go", 1429.0),
+            result_with_path("c", "src/unrelated.go", 1300.0),
+        ];
+        assert_eq!(inband_alternate_candidates("a", &results, 1), vec!["b"]);
     }
 
     // ---- conceptual/overview routing: broad questions prefer curated prose.

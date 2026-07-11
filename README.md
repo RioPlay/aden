@@ -117,6 +117,15 @@ so it no-ops where it would not help. See [`docs/retrieval-levers.adoc`](docs/re
 
 ## Core Commands
 
+CLI reads are JSON-first because Aden is primarily consumed by agents and LLM
+tooling. Use `--human` when you want clean terminal prose or tables; the legacy
+`--json` flag remains accepted for compatibility.
+
+```bash
+aden ask "How does authentication work?"          # versioned JSON envelope
+aden ask --human "How does authentication work?"  # clean context for a person
+```
+
 | Command | Purpose |
 |---------|---------|
 | `aden gen` | Compile source into the knowledge graph (symbols, call edges, docs) |

@@ -164,7 +164,10 @@ fn ready_and_ci_human_verdicts_label_clean_runs_explicitly() {
     let data = temp_project("human-data");
     let project = valid_project("human-project");
 
-    let ci = aden(&["ci-check".as_ref(), project.as_os_str()], &data);
+    let ci = aden(
+        &["--human".as_ref(), "ci-check".as_ref(), project.as_os_str()],
+        &data,
+    );
     assert!(ci.status.success());
     let ci_stdout = String::from_utf8_lossy(&ci.stdout);
     assert!(
@@ -173,7 +176,10 @@ fn ready_and_ci_human_verdicts_label_clean_runs_explicitly() {
         "stdout={ci_stdout}"
     );
 
-    let ready = aden(&["ready".as_ref(), project.as_os_str()], &data);
+    let ready = aden(
+        &["--human".as_ref(), "ready".as_ref(), project.as_os_str()],
+        &data,
+    );
     assert!(ready.status.success());
     let ready_stdout = String::from_utf8_lossy(&ready.stdout);
     assert!(
@@ -202,7 +208,10 @@ fn ci_advisories_remain_zero_exit_but_are_never_rendered_as_clean() {
     assert_eq!(doc["result"]["outcome"], "passed_with_findings");
     assert!(doc["result"]["advisory_findings"].as_u64().unwrap() > 0);
 
-    let human_out = aden(&["ci-check".as_ref(), project.as_os_str()], &data);
+    let human_out = aden(
+        &["--human".as_ref(), "ci-check".as_ref(), project.as_os_str()],
+        &data,
+    );
     assert!(human_out.status.success());
     let stdout = String::from_utf8_lossy(&human_out.stdout);
     assert!(

@@ -88,20 +88,21 @@ fn build_graph_from_docs_and_edges(
 pub fn resolve_anchor_in_store(dir: &Path, anchor: &str) -> Option<String> {
     // ADR-011: snapshot-first (lock-free) when a fresh graph.snapshot covers the store.
     // Critical for concurrent readers (MCP + heal/merge --fix, ask/asm while gen runs).
-    if let Some(graph) = try_load(dir) {
-        if graph.get_node(anchor).is_some() {
+    // Resolve directly against the document map. The old path called
+    // `try_load`, materializing every node and edge into petgraph merely to ask
+    // whether one key existed; `ask` then loaded the snapshot a second time for
+    // neighborhood assembly. On documentation-heavy repos that duplicate build
+    // dominated request latency.
+    if let Some((docs, _)) = snapshot::try_read_fresh(dir) {
+        if docs.contains_key(anchor) {
             return Some(anchor.to_string());
         }
-        let anchors: Vec<String> = graph.all_nodes().into_iter().map(|(a, _)| a).collect();
-        if anchors.contains(&anchor.to_string()) {
-            return Some(anchor.to_string());
-        }
-        let matches: Vec<String> = anchors
-            .into_iter()
-            .filter(|a| a.rsplit('#').next() == Some(anchor))
+        let matches: Vec<&String> = docs
+            .keys()
+            .filter(|candidate| candidate.rsplit('#').next() == Some(anchor))
             .collect();
         if matches.len() == 1 {
-            return Some(matches[0].clone());
+            return Some(matches[0].to_string());
         }
         return None;
     }
@@ -216,13 +217,16 @@ fn build_neighborhood_from_materialized(
     caller_filter: &dyn Fn(&str, Option<&str>) -> bool,
 ) -> Result<AdenGraph<DocumentNode, AdenEdge>, crate::graph::GraphError> {
     let mut outgoing: HashMap<String, Vec<(String, EdgeType)>> = HashMap::new();
-    let mut incoming: HashMap<String, Vec<(String, EdgeType)>> = HashMap::new();
+    // Only callers of the seed can ever be folded in. The old implementation
+    // cloned every edge into a second, whole-graph incoming map even when
+    // `caller_types` was empty (the common ask/asm path). Move owned strings
+    // into the outgoing map and retain this one targeted incoming list instead.
+    let mut incoming_start: Vec<(String, EdgeType)> = Vec::new();
     for (src, dst, et) in all_edges {
-        outgoing
-            .entry(src.clone())
-            .or_default()
-            .push((dst.clone(), et));
-        incoming.entry(dst).or_default().push((src, et));
+        if !caller_types.is_empty() && dst == start && caller_types.contains(&et) {
+            incoming_start.push((src.clone(), et));
+        }
+        outgoing.entry(src).or_default().push((dst, et));
     }
 
     const MAX_NODES: usize = 10_000;
@@ -256,10 +260,7 @@ fn build_neighborhood_from_materialized(
         l.starts_with("mod-") || l.starts_with("module-") || !l.contains('#')
     };
     if !caller_types.is_empty() {
-        let mut callers: Vec<(String, EdgeType)> = incoming
-            .get(start)
-            .cloned()
-            .unwrap_or_default()
+        let mut callers: Vec<(String, EdgeType)> = incoming_start
             .into_iter()
             .filter(|(src, et)| {
                 caller_types.contains(et) && !is_index_node(src) && !visited.contains(src)

@@ -5,7 +5,7 @@ use std::path::Path;
 
 use aden_core::AdenConfig;
 
-use crate::util::{fmt_score, load_or_build_index, query_index};
+use crate::util::{fmt_score, load_or_build_index, query_index_with_navigation};
 
 /// True if `anchor` belongs to the requested `--doc-type` (already lower-cased
 /// and validated by the caller). Matches the real anchor shapes: code symbols
@@ -47,7 +47,7 @@ pub fn cmd_search(
     let config = AdenConfig::load(path);
 
     let index = load_or_build_index(path)?;
-    let mut results = query_index(&index, query);
+    let mut results = query_index_with_navigation(&index, query, path);
 
     // Filter out private anchors (ADRs, retros, kickoffs, etc.) in public mode
     let is_public = matches!(config.profile.mode, aden_core::ProfileMode::Public);

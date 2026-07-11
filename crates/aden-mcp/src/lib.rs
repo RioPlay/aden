@@ -1575,15 +1575,20 @@ pub fn agent_response_for_mcp(tool: &str, raw: &str) -> String {
     if !is_read {
         return cleaned;
     }
-    if serde_json::from_str::<serde_json::Value>(&cleaned)
-        .ok()
-        .and_then(|value| value.get("context_receipt").cloned())
-        .is_some()
-    {
+    let parsed = serde_json::from_str::<serde_json::Value>(&cleaned).ok();
+    let already_versioned = parsed.as_ref().is_some_and(|value| {
+        value.get("context_receipt").is_some()
+            || (matches!(tool, "ask" | "asm")
+                && value
+                    .get("schema_version")
+                    .and_then(serde_json::Value::as_u64)
+                    == Some(1)
+                && (value.get("context").is_some() || value.get("documents").is_some()))
+    });
+    if already_versioned {
         return cleaned;
     }
-    let payload = serde_json::from_str::<serde_json::Value>(&cleaned)
-        .unwrap_or_else(|_| serde_json::Value::String(cleaned));
+    let payload = parsed.unwrap_or(serde_json::Value::String(cleaned));
     serde_json::json!({
         "schema_version": 1,
         "tool": tool,
@@ -2166,11 +2171,8 @@ mod tests {
             text.len()
         );
         let response: serde_json::Value = serde_json::from_str(&text).expect("MCP JSON");
-        assert_eq!(response["context_receipt"]["schema_version"], 1);
-        assert_eq!(
-            response["incomplete"], true,
-            "tiny MCP response: {response}"
-        );
+        assert_eq!(response["schema_version"], 1);
+        assert_eq!(response["truncated"], true, "tiny MCP response: {response}");
 
         // The MCP director is a transport adapter, not a second query engine.
         // Exercise the exact public CLI request it emits (same cwd, question,

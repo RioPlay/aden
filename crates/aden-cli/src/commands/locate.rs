@@ -126,7 +126,7 @@ fn ranked_symbol_candidates(symbol: &str, anchors: &[String]) -> Vec<String> {
     matched
         .into_iter()
         .filter(|anchor| anchor_match_rank(anchor, symbol) == rank)
-        .map(|anchor| anchor.clone())
+        .cloned()
         .collect()
 }
 

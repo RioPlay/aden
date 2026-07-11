@@ -45,6 +45,9 @@ pub struct Index {
     anchor_paths: HashMap<String, PathBuf>,
     /// anchor -> full file text (for snippet generation)
     anchor_text: HashMap<String, String>,
+    /// Prose source -> lowercase lexical token frequencies, pre-aggregated once.
+    #[serde(default)]
+    file_terms: HashMap<PathBuf, HashMap<String, usize>>,
     /// anchor -> token count (for BM25 scoring)
     doc_lengths: HashMap<String, usize>,
     /// Average document length across all documents
@@ -98,7 +101,11 @@ const INDEX_CACHE_BASENAME: &str = "index-cache.json";
 /// persisted index rebuilds and `EMBED_PARAM_VERSION` busts the content-addressed
 /// embedding cache in parallel. (A whole-doc mean-pool variant was trialed on this
 /// version and reverted as net-negative for retrieval — see `EMBED_PARAM_VERSION`.)
-const CURRENT_INDEX_VERSION: u32 = 10;
+/// v11: pre-aggregated per-file lexical tokens for prose navigation.
+/// v12: merge every store-backed section for a source into that evidence.
+/// v13: prefer complete source-file evidence over emitted store sections.
+/// v14: prose-only evidence and repository-relative canonical file keys.
+const CURRENT_INDEX_VERSION: u32 = 14;
 
 /// Reciprocal Rank Fusion constant — Cormack, Clarke & Buettcher, SIGIR 2009 use
 /// 60. Damps the contribution of low-ranked items so a top hit in either
@@ -720,6 +727,35 @@ pub fn rrf_fuse(rankings: &[Vec<String>], k: f64) -> Vec<(String, f64)> {
 }
 
 impl Index {
+    /// Seed complete file-level evidence. Existing evidence wins so callers can
+    /// establish the authoritative source before ingesting derived sections.
+    pub fn ingest_file_evidence(&mut self, path: PathBuf, text: &str) {
+        if self.file_terms.contains_key(&path)
+            || !matches!(
+                path.extension().and_then(|ext| ext.to_str()),
+                Some("adoc" | "aden" | "md" | "rst" | "txt")
+            )
+        {
+            return;
+        }
+        let mut frequencies = HashMap::new();
+        for token in text
+            .split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_')
+            .filter(|token| !token.is_empty())
+        {
+            *frequencies.entry(token.to_ascii_lowercase()).or_default() += 1;
+        }
+        self.file_terms.insert(path, frequencies);
+    }
+
+    fn normalize_file_terms(&mut self, root: &Path) {
+        let current = std::mem::take(&mut self.file_terms);
+        for (path, frequencies) in current {
+            let relative = path.strip_prefix(root).unwrap_or(&path).to_path_buf();
+            self.file_terms.entry(relative).or_insert(frequencies);
+        }
+    }
+
     /// Build an index from all `.adoc` and `.aden` files under `dir`.
     pub fn from_directory(dir: &Path) -> Result<Self, std::io::Error> {
         let mut files = Vec::new();
@@ -747,6 +783,7 @@ impl Index {
 
         let mut index = Index::default();
         index.ingest(entries);
+        index.normalize_file_terms(dir);
         index.finalize();
         Ok(index)
     }
@@ -763,6 +800,27 @@ impl Index {
     /// Call [`Index::finalize`] once after all `ingest` calls to recompute the
     /// BM25 average document length.
     pub fn ingest(&mut self, entries: Vec<(PathBuf, String)>) {
+        let mut pending_file_terms: HashMap<PathBuf, HashMap<String, usize>> = HashMap::new();
+        for (path, text) in &entries {
+            if self.file_terms.contains_key(path)
+                || !matches!(
+                    path.extension().and_then(|ext| ext.to_str()),
+                    Some("adoc" | "aden" | "md" | "rst" | "txt")
+                )
+            {
+                continue;
+            }
+            let frequencies = pending_file_terms.entry(path.clone()).or_default();
+            for token in text
+                .split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_')
+                .filter(|token| !token.is_empty())
+            {
+                *frequencies.entry(token.to_ascii_lowercase()).or_default() += 1;
+            }
+        }
+        for (path, frequencies) in pending_file_terms {
+            self.file_terms.entry(path).or_insert(frequencies);
+        }
         let mut parsed: Vec<_> = entries
             .into_par_iter()
             .filter_map(|(path, text)| parse_adoc(&path, &text).map(|p| (p, text)))
@@ -855,6 +913,67 @@ impl Index {
             .filter(|a| a.contains("://module") || a.contains("://symbol"))
             .count();
         code as f64 / self.anchor_text.len() as f64
+    }
+
+    /// Rank prose files from lexical evidence pre-aggregated during ingestion.
+    pub fn lexical_file_rank(&self, query: &str) -> Vec<PathBuf> {
+        use std::collections::HashSet;
+        const STOP: &[&str] = &[
+            "add", "allow", "and", "better", "change", "code", "does", "error", "file", "fix",
+            "fixing", "for", "from", "function", "handle", "into", "make", "method", "more", "not",
+            "only", "same", "should", "support", "that", "the", "this", "use", "using", "value",
+            "when", "where", "which", "with",
+        ];
+        let mut terms: Vec<String> = query
+            .split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_')
+            .map(str::to_ascii_lowercase)
+            .filter(|term| term.len() >= 3 && !STOP.contains(&term.as_str()))
+            .collect();
+        terms.sort();
+        terms.dedup();
+        terms.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
+        terms.truncate(12);
+
+        let mut ranked = Vec::new();
+        for (path, frequencies) in &self.file_terms {
+            let mut matched = 0;
+            let mut occurrences = 0;
+            for term in &terms {
+                let count: usize = frequencies
+                    .iter()
+                    .filter(|(token, _)| token.contains(term.as_str()))
+                    .map(|(_, count)| count)
+                    .sum();
+                if count > 0 {
+                    matched += 1;
+                    occurrences += count;
+                }
+            }
+            if matched == 0 {
+                continue;
+            }
+            let path_lower = path.to_string_lossy().to_ascii_lowercase();
+            let path_words: HashSet<&str> = path_lower
+                .split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_')
+                .collect();
+            let path_hits = terms
+                .iter()
+                .filter(|term| path_words.contains(term.as_str()))
+                .count();
+            ranked.push((path.clone(), matched, path_hits, occurrences));
+        }
+        ranked.sort_by(|a, b| {
+            b.1.cmp(&a.1)
+                .then_with(|| b.2.cmp(&a.2))
+                .then_with(|| b.3.cmp(&a.3))
+                .then_with(|| {
+                    a.0.to_string_lossy()
+                        .len()
+                        .cmp(&b.0.to_string_lossy().len())
+                })
+                .then_with(|| b.0.cmp(&a.0))
+        });
+        ranked.into_iter().map(|row| row.0).collect()
     }
 
     /// Recompute the BM25 average document length. Call once after ingestion.
@@ -2381,6 +2500,40 @@ hello.
         assert_eq!(results[0].anchor, "a");
         assert_eq!(results[1].anchor, "b");
         assert!(results[0].score > results[1].score);
+    }
+
+    #[test]
+    fn lexical_file_rank_prefers_distinct_query_coverage() {
+        let dir = temp_dir_with_files(&[
+            (
+                "credentials.adoc",
+                "[[credentials]]\n= Credentials\n\nRemember the username and password instead of retyping them.\n",
+            ),
+            (
+                "history.adoc",
+                "[[history]]\n= History\n\nStop and rewrite history. Stop again.\n",
+            ),
+        ]);
+        let index = Index::from_directory(dir.path()).unwrap();
+        let ranked =
+            index.lexical_file_rank("remember my username and password so I stop retyping them");
+        assert_eq!(ranked[0].file_name().unwrap(), "credentials.adoc");
+    }
+
+    #[test]
+    fn complete_file_evidence_precedes_derived_sections() {
+        let path = PathBuf::from("AGENTS.md");
+        let mut index = Index::default();
+        index.ingest_file_evidence(path.clone(), "automatic large external changes");
+        index.ingest(vec![
+            (path.clone(), "[[one]]\n= One\n\nderived only".into()),
+            (path.clone(), "[[two]]\n= Two\n\nsection only".into()),
+        ]);
+        let terms = &index.file_terms[&path];
+        assert!(terms.contains_key("automatic"));
+        assert!(terms.contains_key("external"));
+        assert!(!terms.contains_key("derived"));
+        assert!(!terms.contains_key("section"));
     }
 
     #[test]

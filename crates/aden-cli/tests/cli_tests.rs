@@ -299,6 +299,7 @@ fn test_ask_strict_receipts_provenance_alternates_and_supplements_remain_bounded
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
         .args([
             "ask",
+            "--human",
             "shared ambiguous module context",
             "--explain",
             "--strict",
@@ -316,7 +317,34 @@ fn test_ask_strict_receipts_provenance_alternates_and_supplements_remain_bounded
     assert!(output.stdout.len().div_ceil(4) <= budget);
     assert!(!String::from_utf8_lossy(&output.stdout).contains("routing ambiguous"));
     assert!(!String::from_utf8_lossy(&output.stdout).contains("Decision"));
-    assert!(!String::from_utf8_lossy(&output.stdout).contains("source:"));
+}
+
+#[test]
+fn test_ask_default_surfaces_only_assembled_outcome() {
+    let dir = temp_project::temp_dir();
+    temp_project::scaffold(&dir);
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
+        .args(["ask", "What is this project?", &dir.to_string_lossy()])
+        .output()
+        .expect("aden binary must be built");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let payload: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(payload["schema_version"], 1);
+    assert!(
+        payload["context"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty())
+    );
+    assert!(
+        payload["anchor"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty())
+    );
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("NOTE:"));
 }
 
 #[test]
@@ -404,10 +432,10 @@ fn test_mcp_wrapper_strict_budget_transport_golden() {
     let wrapped = aden_mcp::preserve_cli_output_for_mcp("ask", &raw);
     let transported = aden_mcp::enforce_mcp_response_budget("ask", &args, &wrapped);
     assert!(transported.len().div_ceil(4) <= budget);
-    assert_eq!(
-        transported,
-        r#"{"context_receipt":{"schema_version":1},"incomplete":true}"#
-    );
+    let payload: serde_json::Value = serde_json::from_str(&transported).unwrap();
+    assert_eq!(payload["schema_version"], 1);
+    assert_eq!(payload["truncated"], true);
+    assert!(payload["context"].is_string());
 }
 
 #[test]

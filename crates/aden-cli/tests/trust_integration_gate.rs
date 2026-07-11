@@ -160,9 +160,9 @@ fn adversarial_cli_and_mcp_evidence_remains_truthful_together() {
         ],
     );
     let cli_value = json(&cli);
-    assert_eq!(cli_value["context_receipt"]["schema_version"], 1);
+    assert_eq!(cli_value["schema_version"], 1);
     assert_eq!(
-        cli_value["incomplete"], true,
+        cli_value["truncated"], true,
         "tiny strict response: {cli_value}"
     );
     assert!(
