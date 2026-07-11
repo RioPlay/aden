@@ -1,0 +1,512 @@
+// Copyright (c) 2026 RioPlay <rioplay@rioplay.dev>
+// SPDX-License-Identifier: AGPL-3.0-or-later
+#![allow(clippy::module_inception)]
+#[cfg(test)]
+mod tests {
+    use crate::{AdenEdge, AdenGraph, DocumentNode, cycles, parser};
+    use aden_core::{Document, EdgeType, NodeType};
+    use petgraph::visit::EdgeRef;
+    use std::collections::HashMap;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    fn create_test_file(content: &str) -> NamedTempFile {
+        let mut file = NamedTempFile::new().unwrap();
+        file.write_all(content.as_bytes()).unwrap();
+        file.flush().unwrap();
+        file
+    }
+
+    #[test]
+    fn test_parse_file_extracts_anchor() {
+        let tmp = create_test_file("[[test-anchor]]\n= Title\n\nHello");
+        let parsed = parser::parse_file(tmp.path()).unwrap();
+        assert_eq!(parsed.anchors, vec!["test-anchor"]);
+    }
+
+    #[test]
+    fn test_parse_file_extracts_attributes() {
+        let tmp = create_test_file(":key: value\n\n[[anchor]]\n= T\n");
+        let parsed = parser::parse_file(tmp.path()).unwrap();
+        assert_eq!(parsed.attributes.get("key"), Some(&"value".to_string()));
+    }
+
+    #[test]
+    fn test_graph_build_from_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut file1 = std::fs::File::create(dir.path().join("a.adoc")).unwrap();
+        file1
+            .write_all(b"[[anchor-a]]\n= A\n\n<<anchor-b>>")
+            .unwrap();
+        let mut file2 = std::fs::File::create(dir.path().join("b.adoc")).unwrap();
+        file2.write_all(b"[[anchor-b]]\n= B\n").unwrap();
+
+        let graph = AdenGraph::build_from_directory(dir.path()).unwrap();
+        assert!(graph.get_node("anchor-a").is_some());
+        assert!(graph.get_node("anchor-b").is_some());
+    }
+
+    #[test]
+    fn test_cycle_detection_no_cycle() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.adoc"), "[[a]]\n= A\n").unwrap();
+        std::fs::write(dir.path().join("b.adoc"), "[[b]]\n= B\n").unwrap();
+        let graph = AdenGraph::build_from_directory(dir.path()).unwrap();
+        let cycles = cycles::find_cycles(&graph);
+        assert!(cycles.is_empty());
+    }
+
+    #[test]
+    fn test_cycle_detection_cycle() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.adoc"), "[[a]]\n= A\n\ninclude::b.adoc[]").unwrap();
+        std::fs::write(dir.path().join("b.adoc"), "[[b]]\n= B\n\ninclude::a.adoc[]").unwrap();
+        let graph = AdenGraph::build_from_directory(dir.path()).unwrap();
+        let cycles = cycles::find_cycles(&graph);
+        assert!(!cycles.is_empty());
+    }
+
+    #[test]
+    fn test_typed_edge_validation_valid() {
+        let mut graph = AdenGraph::<DocumentNode, AdenEdge>::new();
+        let _parsed = parser::ParsedDocument {
+            source_path: "a.adoc".to_string(),
+            attributes: HashMap::new(),
+            anchors: vec!["mod-a".to_string()],
+            refs: Vec::new(),
+            includes: Vec::new(),
+            edges: Vec::new(),
+            conditional_stack: Vec::new(),
+            raw_content: String::new(),
+            blocks: Vec::new(),
+            tagged_regions: Vec::new(),
+            conditional_regions: Vec::new(),
+            metadata: None,
+        };
+        let doc1 = Document {
+            anchor: "mod-a".to_string(),
+            node_type: NodeType::Module,
+            attributes: HashMap::new(),
+            blocks: Vec::new(),
+            source_span: None,
+            metadata: None,
+            confidence: 0.9,
+        };
+        let doc2 = Document {
+            anchor: "func-b".to_string(),
+            node_type: NodeType::Function,
+            attributes: HashMap::new(),
+            blocks: Vec::new(),
+            source_span: None,
+            metadata: None,
+            confidence: 0.9,
+        };
+        let node1 = DocumentNode {
+            doc: doc1.clone(),
+            parsed: None,
+            source_path: std::path::PathBuf::from("a.adoc"),
+        };
+        let node2 = DocumentNode {
+            doc: doc2.clone(),
+            parsed: None,
+            source_path: std::path::PathBuf::from("b.adoc"),
+        };
+        let idx1 = graph.graph.add_node(node1);
+        let idx2 = graph.graph.add_node(node2);
+        graph.anchor_to_index.insert("mod-a".to_string(), idx1);
+        graph.anchor_to_index.insert("func-b".to_string(), idx2);
+        graph.graph.add_edge(
+            idx1,
+            idx2,
+            AdenEdge {
+                edge_type: EdgeType::Uses,
+            },
+        );
+    }
+
+    // ── Structured Block Parsing Tests ───────────────────────────
+
+    #[test]
+    fn test_parse_table_blocks() {
+        let content = r#":proj: test
+[[test-anchor]]
+= Title
+
+|===
+|Name |Type
+|foo |bar
+|baz |qux
+|===
+"#;
+        let tmp = create_test_file(content);
+        let parsed = parser::parse_file(tmp.path()).unwrap();
+        let tables: Vec<_> = parsed
+            .blocks
+            .iter()
+            .filter_map(|b| match b {
+                aden_core::Block::Table(t) => Some(t),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(tables.len(), 1, "Expected one table block");
+        assert_eq!(tables[0].headers, vec!["Name", "Type"]);
+        assert_eq!(tables[0].rows.len(), 2);
+        assert_eq!(tables[0].rows[0], vec!["foo", "bar"]);
+        assert_eq!(tables[0].rows[1], vec!["baz", "qux"]);
+    }
+
+    #[test]
+    fn test_parse_listing_block() {
+        let content = r#":proj: test
+[[test-anchor]]
+= Title
+
+[source,rust]
+----
+fn main() {
+    println!("hello");
+}
+----
+"#;
+        let tmp = create_test_file(content);
+        let parsed = parser::parse_file(tmp.path()).unwrap();
+        let listings: Vec<_> = parsed
+            .blocks
+            .iter()
+            .filter_map(|b| match b {
+                aden_core::Block::Listing { language, code } => {
+                    Some((language.clone(), code.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(listings.len(), 1, "Expected one listing block");
+        assert_eq!(listings[0].0, Some("rust".to_string()));
+        assert!(listings[0].1.contains("fn main()"));
+    }
+
+    #[test]
+    fn test_parse_admonition_block() {
+        let content = r#":proj: test
+[[test-anchor]]
+= Title
+
+WARNING: Do not commit secrets.
+"#;
+        let tmp = create_test_file(content);
+        let parsed = parser::parse_file(tmp.path()).unwrap();
+        let admonitions: Vec<_> = parsed
+            .blocks
+            .iter()
+            .filter_map(|b| match b {
+                aden_core::Block::Admonition { kind, text } => Some((kind.clone(), text.clone())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(admonitions.len(), 1);
+        assert_eq!(admonitions[0].0, aden_core::AdmonitionKind::Warning);
+        assert_eq!(admonitions[0].1, "Do not commit secrets.");
+    }
+
+    #[test]
+    fn test_parse_description_list_block() {
+        let content = r#":proj: test
+[[test-anchor]]
+= Title
+
+foo:: The foo module.
+bar:: The bar module.
+"#;
+        let tmp = create_test_file(content);
+        let parsed = parser::parse_file(tmp.path()).unwrap();
+        let desc_lists: Vec<_> = parsed
+            .blocks
+            .iter()
+            .filter_map(|b| match b {
+                aden_core::Block::DescriptionList(items) => Some(items.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(desc_lists.len(), 2, "Expected two description list blocks");
+        assert_eq!(desc_lists[0][0].0, "foo");
+        assert_eq!(desc_lists[0][0].1, "The foo module.");
+        assert_eq!(desc_lists[1][0].0, "bar");
+        assert_eq!(desc_lists[1][0].1, "The bar module.");
+    }
+
+    #[test]
+    fn test_parse_paragraph_blocks() {
+        let content = r#":proj: test
+[[test-anchor]]
+= Title
+
+First paragraph.
+Still first paragraph.
+
+Second paragraph.
+"#;
+        let tmp = create_test_file(content);
+        let parsed = parser::parse_file(tmp.path()).unwrap();
+        let paragraphs: Vec<_> = parsed
+            .blocks
+            .iter()
+            .filter_map(|b| match b {
+                aden_core::Block::Paragraph(t) => Some(t.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(paragraphs.len(), 2, "Expected two paragraph blocks");
+        assert!(paragraphs[0].contains("First paragraph."));
+        assert!(paragraphs[0].contains("Still first paragraph."));
+        assert!(paragraphs[1].contains("Second paragraph."));
+    }
+
+    #[test]
+    fn test_parse_mixed_blocks() {
+        let content = r#":proj: test
+[[test-anchor]]
+= Title
+
+Intro paragraph.
+
+|===
+|A |B
+|1 |2
+|===
+
+IMPORTANT: Check this.
+
+[source,bash]
+----
+echo hi
+----
+
+Closing paragraph.
+"#;
+        let tmp = create_test_file(content);
+        let parsed = parser::parse_file(tmp.path()).unwrap();
+
+        let mut found_paragraph = false;
+        let mut found_table = false;
+        let mut found_admonition = false;
+        let mut found_listing = false;
+
+        for block in &parsed.blocks {
+            match block {
+                aden_core::Block::Paragraph(t)
+                    if (t.contains("Intro") || t.contains("Closing")) =>
+                {
+                    found_paragraph = true;
+                }
+                aden_core::Block::Table(t) if t.headers == vec!["A", "B"] => {
+                    found_table = true;
+                }
+                aden_core::Block::Admonition { kind, .. }
+                    if *kind == aden_core::AdmonitionKind::Important =>
+                {
+                    found_admonition = true;
+                }
+                aden_core::Block::Listing { language, .. }
+                    if language.as_deref() == Some("bash") =>
+                {
+                    found_listing = true;
+                }
+                _ => {}
+            }
+        }
+        assert!(found_paragraph, "Should find paragraph blocks");
+        assert!(found_table, "Should find table block");
+        assert!(found_admonition, "Should find admonition block");
+        assert!(found_listing, "Should find listing block");
+    }
+
+    #[test]
+    fn test_graph_operations() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.adoc"), "[[a]]\n= A\n\ninclude::b.adoc[]").unwrap();
+        std::fs::write(dir.path().join("b.adoc"), "[[b]]\n= B\n").unwrap();
+        std::fs::write(dir.path().join("c.adoc"), "[[c]]\n= C\n\ninclude::b.adoc[]").unwrap();
+
+        let mut graph = AdenGraph::build_from_directory(dir.path()).unwrap();
+        crate::backlinks::inject_backlinks(&mut graph);
+
+        // Test get_node
+        let node = graph.get_node("b").expect("b should exist");
+        assert_eq!(node.doc.anchor, "b");
+
+        // Test backlinks
+        let backlinks = graph.get_backlinks("b");
+        assert!(backlinks.contains(&"a".to_string()));
+        assert!(backlinks.contains(&"c".to_string()));
+
+        // Test edge traversal
+        let a_idx = graph.anchor_to_index["a"];
+        let outgoing: Vec<_> = graph
+            .graph
+            .edges(a_idx)
+            .map(|e| graph.graph[e.target()].doc.anchor.clone())
+            .collect();
+        assert!(outgoing.contains(&"b".to_string()));
+        assert_eq!(outgoing.len(), 1, "a should have 1 outgoing edge");
+
+        // Test statistics
+        assert_eq!(graph.graph.node_count(), 3);
+        assert!(graph.graph.edge_count() >= 1);
+
+        // Test anchor_to_index consistency
+        for node in graph.graph.node_weights() {
+            assert!(graph.anchor_to_index.contains_key(&node.doc.anchor));
+        }
+    }
+
+    #[test]
+    fn test_semantic_edge_types() {
+        use aden_core::EdgeType;
+
+        let mut graph = AdenGraph::<DocumentNode, AdenEdge>::new();
+
+        let parsed = parser::ParsedDocument {
+            source_path: "test.adoc".to_string(),
+            attributes: HashMap::new(),
+            anchors: vec!["concept-a".to_string()],
+            refs: Vec::new(),
+            includes: Vec::new(),
+            edges: Vec::new(),
+            conditional_stack: Vec::new(),
+            raw_content: String::new(),
+            blocks: Vec::new(),
+            tagged_regions: Vec::new(),
+            conditional_regions: Vec::new(),
+            metadata: None,
+        };
+
+        let doc1 = Document {
+            anchor: "concept-a".to_string(),
+            node_type: NodeType::Note,
+            attributes: HashMap::new(),
+            blocks: Vec::new(),
+            source_span: None,
+            metadata: None,
+            confidence: 0.9,
+        };
+        let doc2 = Document {
+            anchor: "concept-b".to_string(),
+            node_type: NodeType::Note,
+            attributes: HashMap::new(),
+            blocks: Vec::new(),
+            source_span: None,
+            metadata: None,
+            confidence: 0.9,
+        };
+
+        let node1 = DocumentNode {
+            doc: doc1,
+            parsed: Some(parsed.clone()),
+            source_path: std::path::PathBuf::from("test.adoc"),
+        };
+        let node2 = DocumentNode {
+            doc: doc2,
+            parsed: Some(parsed),
+            source_path: std::path::PathBuf::from("test2.adoc"),
+        };
+
+        let idx1 = graph.graph.add_node(node1);
+        let idx2 = graph.graph.add_node(node2);
+        graph.anchor_to_index.insert("concept-a".to_string(), idx1);
+        graph.anchor_to_index.insert("concept-b".to_string(), idx2);
+
+        // Test semantic edge types
+        let semantic_edges = vec![
+            EdgeType::IsA,
+            EdgeType::PartOf,
+            EdgeType::RelatesTo,
+            EdgeType::SimilarTo,
+            EdgeType::Causes,
+            EdgeType::Implies,
+            EdgeType::SynonymOf,
+            EdgeType::AntonymOf,
+            EdgeType::AssociatedWith,
+            EdgeType::PrerequisiteFor,
+            EdgeType::Explains,
+            EdgeType::IsEquivalentTo,
+        ];
+
+        for edge_type in semantic_edges {
+            graph.graph.add_edge(idx1, idx2, AdenEdge { edge_type });
+            let errors = graph.validate_typed_edges();
+            assert!(
+                errors.is_empty(),
+                "Semantic edge {:?} should be valid, got errors: {:?}",
+                edge_type,
+                errors
+            );
+        }
+    }
+
+    /// `build_from_storage` must load every EdgeType variant, including the
+    /// prose-to-code and glossary types (Demonstrates, Mentions, DefinesTerm)
+    /// that were silently dropped by the hand-written vec prior to this fix.
+    ///
+    /// Red-green test: with the old hand-written vec this panics because the
+    /// Demonstrates edge is absent from the rebuilt graph; with the fix (iterate
+    /// EdgeType::ALL) it passes.
+    #[test]
+    fn build_from_storage_loads_demonstrates_mentions_defines_term() {
+        use aden_store::{GraphStorage, Storage};
+
+        // Spin up a temporary on-disk store.
+        let dir = tempfile::tempdir().unwrap();
+        let storage = Storage::new(dir.path().to_str().unwrap()).unwrap();
+
+        // Two minimal documents.
+        let make_doc = |anchor: &str| Document {
+            anchor: anchor.to_string(),
+            node_type: NodeType::Module,
+            attributes: HashMap::new(),
+            blocks: Vec::new(),
+            source_span: None,
+            metadata: None,
+            confidence: 1.0,
+        };
+        storage.put_document(&make_doc("doc-src")).unwrap();
+        storage.put_document(&make_doc("doc-dst")).unwrap();
+
+        // Write all three previously-dropped edge types.
+        storage
+            .put_edge("doc-src", "doc-dst", EdgeType::Demonstrates)
+            .unwrap();
+        storage
+            .put_edge("doc-src", "doc-dst", EdgeType::Mentions)
+            .unwrap();
+        storage
+            .put_edge("doc-src", "doc-dst", EdgeType::DefinesTerm)
+            .unwrap();
+
+        // Rebuild the in-memory graph from storage.
+        let graph =
+            AdenGraph::build_from_storage(&storage).expect("build_from_storage must not fail");
+
+        // Collect all edge types present in the rebuilt graph.
+        let src_idx = *graph
+            .anchor_to_index
+            .get("doc-src")
+            .expect("doc-src node must exist after build_from_storage");
+        let edge_types_in_graph: Vec<EdgeType> = graph
+            .graph
+            .edges(src_idx)
+            .map(|e| e.weight().edge_type)
+            .collect();
+
+        for expected in [
+            EdgeType::Demonstrates,
+            EdgeType::Mentions,
+            EdgeType::DefinesTerm,
+        ] {
+            assert!(
+                edge_types_in_graph.contains(&expected),
+                "EdgeType::{expected:?} written to storage was not present in the graph \
+                 rebuilt by build_from_storage — the hand-written edge_types vec omits it"
+            );
+        }
+    }
+}

@@ -1,0 +1,58 @@
+name: 'Aden Check'
+description: 'Run Aden context compiler gates on your repository'
+branding:
+  icon: shield
+  color: blue
+
+inputs:
+  languages:
+    description: 'Comma-separated list of languages to extract (e.g. rust,python,typescript)'
+    required: false
+    default: 'rust,python,typescript,javascript,go'
+  gates:
+    description: 'Comma-separated gates: check, heal, licenses'
+    required: false
+    default: 'check'
+  working-directory:
+    description: 'Directory to run aden in'
+    required: false
+    default: '.'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Install Aden
+      shell: bash
+      run: |
+        if ! command -v aden &>/dev/null; then
+          curl -fsSL https://rioplay.dev/install | bash
+          export PATH="$HOME/.local/bin:$PATH"
+        fi
+
+    - name: Run aden init
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: aden init
+
+    - name: Generate context contracts
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: aden gen . --out-dir contracts/
+
+    - name: Run aden check
+      if: contains(inputs.gates, 'check')
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: aden check .
+
+    - name: Run aden heal (propose only)
+      if: contains(inputs.gates, 'heal')
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: aden heal --scan . --propose
+
+    - name: Generate licenses attribution
+      if: contains(inputs.gates, 'licenses')
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: aden licenses --out NOTICE.md

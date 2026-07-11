@@ -1,0 +1,52 @@
+:packet-id: AP-102
+:status: done
+:priority: P0
+:depends-on: AP-101A
+:unlocks: AP-101B,AP-103
+:scope: crates/aden-core/src/filter.rs,crates/aden-cli/src/indexer,crates/aden-index
+:issue: https://github.com/RioPlay/aden/issues/61
+:acceptance-version: 1
+:evidence-level: E3
+
+[[ap-102]]
+= AP-102: Unified file disposition and coverage accounting
+
+== Outcome
+
+No eligible file disappears without an explicit, safe, persisted reason shared
+by generation, indexing, freshness, status, and coverage.
+
+== Current evidence
+
+Generation, indexing, and freshness use different secret and eligibility filters;
+previously excluded files can remain absent after a detector changes.
+
+== Scope
+
+Shared classification, generation, index, freshness, storage, status, and fixtures.
+
+== Acceptance
+
+* One `FileDisposition` wire contract covers indexed, ignored, redacted,
+  secret-path, secret-content, unsupported, invalid-encoding, parse-failed, and I/O-failed files.
+* Coverage reconciles eligible files with every disposition.
+* Detector/parser changes reconsider previously excluded files.
+* `redacted` is reserved and non-emitted until a separate threat-model decision
+  defines metadata that is safe to preserve; its stable wire value is tested
+  without fabricating or exposing sensitive metadata.
+* End-to-end fixtures cover every currently emitted disposition and exclusion
+  recovery. Reserved states require wire-contract tests, not synthetic runtime output.
+
+== Non-goals
+
+Do not broaden language support or expose secret-bearing content.
+
+== Failure modes and rollback
+
+Persisted disposition schema must be rebuildable. Roll back by rebuilding from
+source using the last compatible classifier version.
+
+== Completion evidence
+
+Disposition manifest samples, recovery fixtures, and the explicit non-emitted
+redaction decision.

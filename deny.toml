@@ -1,0 +1,63 @@
+# cargo-deny configuration — license and source policy for Aden.
+# Run: cargo deny check
+# CI: see .github/workflows/ci.yml (license-check job)
+
+[graph]
+# Exclude dev-only targets from the analysis — they never ship in the binary.
+exclude-dev = false
+
+[licenses]
+# Permissive licenses unconditionally accepted, plus Aden's own license.
+allow = [
+    "AGPL-3.0-or-later",
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "0BSD",
+    "ISC",
+    "Unicode-3.0",
+    "BSL-1.0",
+    "CC0-1.0",
+    "Unlicense",
+    "CDLA-Permissive-2.0",
+    "Zlib",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+]
+
+# cargo-deny evaluates each crate's SPDX expression against the allow list above:
+# an `OR` passes if any operand is allowed, an `AND` requires all operands. So a
+# crate licensed `MIT OR Zlib OR Apache-2.0` already passes (MIT is allowed) —
+# only single, genuinely-required licenses belong here.
+#
+# self_cell (`Apache-2.0 OR GPL-2.0-only`) needs no exception: Apache-2.0 is
+# allowed, so the OR passes. The two MPL-2.0 crates are the only ones the allow
+# list does not cover, so they get explicit per-crate exceptions.
+exceptions = [
+    # option-ext: MPL-2.0 — file-level copyleft, used unmodified.
+    { allow = ["MPL-2.0"], name = "option-ext" },
+    # dyn-eq: MPL-2.0 — dense-feature-only transitive via tract ONNX stack.
+    { allow = ["MPL-2.0"], name = "dyn-eq" },
+]
+
+# Confidence threshold for license detection from file text.
+confidence-threshold = 0.8
+
+[sources]
+# Only crates.io and the project's own path dependencies are allowed.
+unknown-registry = "deny"
+unknown-git = "deny"
+
+[advisories]
+# Deny crates with known security advisories in the RustSec database.
+# No ignores currently needed: the former RUSTSEC-2023-0089 entry
+# (atomic-polyfill, pulled via postcard → heapless) was dropped once that
+# dependency chain left the tree — `cargo deny` now flags the ignore as
+# unmatched, so it was removed rather than left as dead config.
+ignore = []
+
+[bans]
+# Surface dependency-diamond drift (multiple versions of the same crate) without
+# failing the build — informational for a workspace of this size.
+multiple-versions = "warn"
+wildcards = "allow"

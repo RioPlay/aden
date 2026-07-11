@@ -1,0 +1,46 @@
+:packet-id: DX-101
+:status: done
+:priority: P1
+:depends-on: AP-101A
+:unlocks: AP-107
+:scope: crates/aden-cli/src/commands/locate.rs,crates/aden-cli/src/commands/query.rs,crates/aden-cli/tests
+:issue: https://github.com/RioPlay/aden/issues/67
+:acceptance-version: 1
+:evidence-level: E3
+
+[[dx-101]]
+= DX-101: Natural symbol resolution
+
+== Outcome
+
+Developers and agents can use ordinary qualified symbol forms without copying
+opaque graph anchors or spelling generic parameters exactly.
+
+== Current evidence
+
+`understand AdenGraph::bfs` fails while `locate bfs` finds the canonical generic
+symbol, so natural shorthand has no reliable recovery path.
+
+== Scope
+
+Locate/understand resolution, ambiguity output, and symbol fixture matrix.
+
+== Acceptance
+
+* `AdenGraph::bfs` resolves canonical `AdenGraph<N, E>::bfs` fixtures.
+* More than 95% of canonical-equivalent whitespace/generic/qualified forms resolve.
+* Ambiguity returns ranked candidates with no silent wrong selection.
+* Recovery recommends `locate` instead of a broad repository listing.
+
+== Non-goals
+
+No conceptual retrieval redesign.
+
+== Failure modes and rollback
+
+Prefer explicit ambiguity over a convenient incorrect match. Keep exact-anchor
+resolution as the deterministic escape hatch.
+
+== Completion evidence
+
+Canonical-equivalence success report, ambiguity fixtures, and user-journey check.

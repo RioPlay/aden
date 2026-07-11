@@ -1,0 +1,65 @@
+:proj: {project}
+:lang: {lang}
+:ai_name: {ai_name}
+:standard: {standard}
+
+[[agent-context-template]]
+= Shared Context — {project}
+
+This file is the canonical shared memory for all agent sessions on `{project}`.
+
+== Project Identity
+
+[cols="1,2"]
+|===
+|Name |{project}
+|Primary Language |{lang}
+|Runtime / Framework |{standard}
+|===
+
+== Hard Constraints
+
+. **Never commit secrets**, credentials, or private keys.
+. **Never emit files outside the working directory** without explicit confirmation.
+. **Never ignore test failures** — a failing test is a signal, not noise.
+. **Never commit generated build artifacts** (e.g. .aden/, target/, node_modules/).
+. **Always read existing code** before writing new code in the same area.
+
+== Language and Style Defaults
+
+- Primary language: `{lang}`
+- Standard / runtime: `{standard}`
+- Conventions: see `.agent/constraints.adoc` for project-specific rules.
+
+== Dependencies
+
+|===
+|Name |Purpose |Version Policy
+
+{dependencies}
+|===
+
+== Context Tools
+
+If aden is installed, it can assemble focused context from the knowledge graph:
+
+[source,bash]
+----
+aden ask "<question>"               # natural language query
+aden asm --from <anchor> --depth 2  # focused context assembly
+aden locate --symbol <name> .       # find a symbol
+----
+
+Aden is supplemental. The authoritative source of truth is always the source
+code and tests in this repository.
+
+== Next Steps
+
+. Read `.agent/onboarding.adoc` before your first session.
+. Read `.agent/constraints.adoc` to know what not to do.
+. Append your session entry to `.agent/session.adoc` before starting work.
+
+== Related Documents
+
+. <<agent-onboarding>>
+. <<agent-session>>

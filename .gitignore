@@ -1,0 +1,133 @@
+# ─────────────────────────────────────────────────────────────────────────
+# Build output & aden artifacts
+# ─────────────────────────────────────────────────────────────────────────
+/target
+# ADR-003: the rebuildable graph store/caches now live in the per-user data dir,
+# never in-tree. Ignore any legacy in-tree rebuildable artifacts, but TRACK the
+# durable, repo-coupled intent meant to travel with the repository (overlays,
+# constitution, hooks, the persisted project root).
+**/.aden/store/
+**/.aden/cache/
+**/.aden/gen-cache.json
+**/.aden/scan-cache.json
+
+**/.aden/staging/
+**/.aden/project.conf
+# Legacy on-disk contracts (aden is now store-first and emits no .adoc; these
+# remain as a safety net in case an old/in-tree generation ever runs).
+**/contracts/
+crates/**/*.adoc
+benches/**/*.adoc
+src/**/*.adoc
+# Generated stub .adoc mirrors of real .md/.ts files. A stray gen/heal once
+# committed STUB placeholders alongside (e.g. README.adoc next to README.md) and
+# overwrote hand-authored .agent docs. Ignore the locations where .adoc is NEVER
+# hand-authored. Real docs live in docs/*.adoc and .agent/*.adoc (NOT ignored).
+/*.adoc
+research/**/*.adoc
+editors/**/*.adoc
+# Cargo.lock is committed at the workspace root for CI reproducibility.
+
+# ─────────────────────────────────────────────────────────────────────────
+# Agent / tooling runtime (never commit local state, settings, or locks)
+# ─────────────────────────────────────────────────────────────────────────
+.claude/
+.opencode/
+# Host agent runtimes — session transcripts, terminal logs, local MCP state;
+# often embed absolute home paths or tool credentials. Never commit.
+.grok/
+.cursor/
+.codex/
+.windsurf/
+*.updates.jsonl
+
+# ─────────────────────────────────────────────────────────────────────────
+# Secrets & credentials — NEVER commit these.
+# Kept in lockstep with aden_core::filter::is_secret_path so the repo refuses
+# exactly what aden refuses to index. If aden becomes widely used, this is the
+# safety net that keeps a careless `git add .` from leaking a key.
+# ─────────────────────────────────────────────────────────────────────────
+# dotenv & ecosystem credential files
+.env
+.env.*
+.envrc
+.npmrc
+.pypirc
+.netrc
+_netrc
+.htpasswd
+credentials
+credentials.*
+service-account*.json
+# private keys / keystores / encrypted secrets
+*.pem
+*.key
+*.p8
+*.p12
+*.pfx
+*.keystore
+*.jks
+*.kdbx
+*.ppk
+*.asc
+*.gpg
+*.pgp
+id_rsa
+id_dsa
+id_ecdsa
+id_ed25519
+# public keys are fine to share; keep an explicit allow for placeholders
+*.pub
+!tools/keys/.gitkeep
+# credential-bearing directories
+.ssh/
+.gnupg/
+.aws/
+.azure/
+.kube/
+.docker/config.json
+secrets/
+secret/
+private/
+
+# ─────────────────────────────────────────────────────────────────────────
+# Generated signing artifacts (public material OK, private NO)
+# ─────────────────────────────────────────────────────────────────────────
+/signatures/
+*.sig
+asc/
+
+# ─────────────────────────────────────────────────────────────────────────
+# Polyglot build / dependency output (aden targets any repo; if one is nested
+# here for testing, don't accidentally vendor it in)
+# ─────────────────────────────────────────────────────────────────────────
+node_modules/
+__pycache__/
+*.pyc
+.venv/
+venv/
+dist/
+build/
+out/
+vendor/
+.gradle/
+.cache/
+coverage/
+
+# ─────────────────────────────────────────────────────────────────────────
+# Editor / OS debris
+# ─────────────────────────────────────────────────────────────────────────
+*.bak
+*.swp
+*.swo
+*.tmp
+*.temp
+.DS_Store
+Thumbs.db
+*.log
+.vscode/
+.idea/
+
+# Local scratch
+.claude-tmp/
+.gstack/

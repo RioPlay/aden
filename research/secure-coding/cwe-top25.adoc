@@ -1,0 +1,91 @@
+// Source: 2024 CWE Top 25 Most Dangerous Software Weaknesses.
+//   CWE(TM) is (c) The MITRE Corporation; used under the CWE Terms of Use
+//   (non-exclusive, royalty-free license for research/development/commercial).
+//   https://cwe.mitre.org/top25/archive/2024/2024_cwe_top25.html
+// Third-party reference material — NOT part of aden's AGPL source. See SOURCES.md.
+[[cwe-top25]]
+= CWE Top 25 Most Dangerous Software Weaknesses (2024)
+
+Source: MITRE/CISA, 2024 edition. Each weakness links to the secure-coding
+practice in <<scp-checklist>> that most directly mitigates it.
+
+[[cwe-79]]
+== CWE-79 — Cross-site Scripting (XSS)  [rank 1]
+Improper neutralization of input during web page generation. Mitigated by
+<<scp-output-encoding>> (contextual output encoding) and <<scp-input-validation>>.
+
+[[cwe-787]]
+== CWE-787 — Out-of-bounds Write  [rank 2]
+Writing past the end of a buffer. A memory-safety weakness mitigated by
+<<scp-memory-management>>. Related: <<cwe-125>>, <<cwe-119>>.
+
+[[cwe-89]]
+== CWE-89 — SQL Injection  [rank 3]
+Untrusted input concatenated into a SQL command. Mitigated by
+<<scp-input-validation>> and parameterized queries; see also <<owasp-a05>>.
+
+[[cwe-352]]
+== CWE-352 — Cross-Site Request Forgery (CSRF)  [rank 4]
+Forged authenticated requests. Mitigated by anti-CSRF tokens; see
+<<scp-general-coding>>.
+
+[[cwe-22]]
+== CWE-22 — Path Traversal  [rank 5]
+Improper limitation of a pathname to a restricted directory. Mitigated by
+<<scp-file-management>> and <<scp-input-validation>>. This is the weakness
+class behind aden's own <<finding-mcp-path>>.
+
+[[cwe-125]]
+== CWE-125 — Out-of-bounds Read  [rank 6]
+Reading past a buffer boundary. Memory-safety; see <<scp-memory-management>>.
+Related: <<cwe-787>>, <<cwe-119>>. This is the class behind aden's own
+<<finding-parse-panic>> (a reverse byte-slice).
+
+[[cwe-78]]
+== CWE-78 — OS Command Injection  [rank 7]
+Untrusted input in an OS command. Mitigated by <<scp-output-encoding>> and by
+passing arguments as an argv vector rather than a shell string; see
+<<owasp-a05>> and aden's own <<finding-arg-smuggling>>.
+
+[[cwe-416]]
+== CWE-416 — Use After Free  [rank 8]
+Referencing freed memory. Memory-safety; <<scp-memory-management>>. Largely
+prevented by memory-safe languages (Rust).
+
+[[cwe-502]]
+== CWE-502 — Deserialization of Untrusted Data  [rank 16]
+Deserializing attacker-controlled bytes. Mitigated by <<scp-general-coding>>
+(use bounds-checked deserializers, avoid gadget types).
+
+[[cwe-200]]
+== CWE-200 — Exposure of Sensitive Information  [rank 17]
+Leaking sensitive data to an unauthorized actor. Mitigated by
+<<scp-error-handling>> and <<scp-data-protection>>. This is the class behind
+aden's own <<finding-path-leak>>.
+
+[[cwe-400]]
+== CWE-400 — Uncontrolled Resource Consumption  [rank 24]
+Unbounded work from untrusted input (a DoS). Mitigated by <<scp-general-coding>>
+(timeouts, size/recursion limits). This is the class behind aden's own
+<<finding-parse-panic>> and the MCP command timeout.
+
+[[cwe-798]]
+== CWE-798 — Use of Hard-coded Credentials  [rank 22]
+Secrets embedded in source. Mitigated by <<scp-data-protection>> and secret
+scanning. Related to aden's own content-blind secret-filter limitation
+(<<finding-secret-filter>>).
+
+[[cwe-119]]
+== CWE-119 — Improper Restriction of Operations within Memory Buffer  [rank 20]
+The umbrella memory-buffer weakness. Memory-safety; <<scp-memory-management>>.
+Related: <<cwe-787>>, <<cwe-125>>.
+
+[[cwe-434]]
+== CWE-434 — Unrestricted Upload of File with Dangerous Type  [rank 10]
+Accepting uploads of executable/dangerous types. Mitigated by
+<<scp-file-management>> (validate by header, disable execute on upload dirs).
+
+[[cwe-94]]
+== CWE-94 — Code Injection  [rank 11]
+Improper control of generation of code. Mitigated by <<scp-general-coding>>
+(never pass user data to dynamic execution); see also <<owasp-a05>>.

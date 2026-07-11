@@ -1,0 +1,8 @@
+#!/bin/sh
+# Sample Pre-Commit Hook
+# Copy to .git/hooks/pre-commit and make executable: chmod +x .git/hooks/pre-commit
+# Uncomment and adapt the commands that apply to your project.
+#
+# set -e
+# <your-test-command>          # e.g. cargo test / npm test / pytest
+# aden check .                 # validate knowledge graph refs (if using aden)

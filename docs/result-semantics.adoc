@@ -1,0 +1,89 @@
+[[result-semantics]]
+= Result and exit semantics
+:toc:
+
+Aden reports three independent axes in JSON validation results:
+
+* `graph_health`: structural integrity (`healthy`, `unhealthy`, `degraded`,
+  `unknown`, or `not_applicable`).
+* `policy_outcome`: policy evaluation (`clean`, `advisory_findings`,
+  `degraded`, `unknown`, or `not_applicable`).
+* `freshness_outcome`: whether freshness was evaluated (`fresh`, `stale`,
+  `degraded`, `unknown`, `not_evaluated`, or `not_applicable`).
+
+The versioned `result` object also contains `outcome`, `result_state`,
+`blocking_findings`, `advisory_findings`, and `complete`. Consumers should use
+these fields instead of inferring success from prose.
+
+[[result-outcomes]]
+== Outcome vocabulary
+
+|===
+|Value |Meaning
+
+|`clean`
+|Evaluation completed with no findings.
+
+|`passed_with_findings`
+|Evaluation completed; findings are advisory under the selected mode.
+
+|`blocked`
+|One or more findings block the selected gate.
+
+|`degraded`
+|Evaluation completed, but a graph, policy, or freshness subsystem reported
+degraded operation.
+
+|`incomplete`
+|The requested evaluation did not complete. Inspect `result_state` and the
+command error.
+|===
+
+`result_state` is orthogonal to the outcome. `empty` is a valid, completely
+evaluated zero-result response and `complete` contains results. `partial`,
+`ambiguous`, and `error` are reserved vocabulary for context-retrieval commands
+as they adopt this envelope in AP-101B: respectively a truncated/interrupted
+answer, multiple valid interpretations, and no trustworthy evaluation. Current
+validation commands emit an envelope only after evaluation completes; an
+execution error retains the established non-zero exit and stderr contract.
+This distinction prevents an empty result from being mistaken for a failed scan
+without falsely promising an envelope that was never produced.
+
+[[result-command-matrix]]
+== Command inventory and compatibility
+
+|===
+|Command |Structured result |Existing exit behavior
+
+|`check -j`
+|Graph findings, policy outcome, freshness `not_evaluated`
+|Non-zero at the selected `--severity`; unchanged.
+
+|`heal -j`
+|Graph health and contract-freshness findings
+|Report-only scan remains zero unless execution itself errors; unchanged.
+
+|`audit -j`
+|Empty, advisory, or blocking security result
+|Non-zero for critical/high findings only with `--strict`; unchanged.
+
+|`diagnose --format json`
+|Diagnostic graph health and advisory policy findings
+|Report-only diagnosis remains zero unless execution errors; unchanged.
+
+|`status -j`
+|Health snapshot, coverage, policy, and freshness `not_evaluated`
+|Snapshot remains zero unless execution errors; unchanged.
+
+|`ready`
+|Human final line says `Outcome: clean`, `Outcome: passed_with_findings`, or
+`Outcome: blocked`
+|Any hard or soft gate failure remains non-zero; unchanged.
+
+|`ci-check -j`
+|Per-gate results plus combined result axes
+|Blocking gate failure remains non-zero; warnings remain zero; unchanged.
+|===
+
+The schema is additive at `schema_version: 1`. Existing top-level JSON fields
+and exit codes remain supported during the LG-101 compatibility window.

@@ -1,0 +1,99 @@
+:proj: aden
+:author: RioPlay
+:status: active
+:authority: execution-protocol
+:as-of: 2026-07-09@5c5bc66e025d7457bacba760b134fe7a0d159452
+:superseded-by: none
+
+[[execution-protocol]]
+= Aden Program Execution Protocol
+
+== Authority
+
+Repository packet files own durable intent. GitHub issues own live coordination.
+ADRs own decisions; `CHANGELOG.md` owns shipped deltas; historical issue lists do
+not override this program.
+The definitive record-role and supersession map is <<roadmap-authority>>.
+
+`status` is a durable repository state. `proposed` means locked, `ready` means
+dependencies are satisfied, and only `done` satisfies a dependent packet.
+`invalidated` and `abandoned` preserve terminal evidence without unlocking work.
+GitHub owns delivery state for open work: `packet-ready`, `packet-claimed`,
+`packet-review`, and `packet-blocked`. Closure is mirrored as a closed
+`packet-done` or `packet-cancelled` issue. Run `python3 scripts/reconcile_roadmap.py`
+before dispatch and at milestone review; CI runs the offline structural validator.
+
+== Packet admission
+
+A packet becomes `ready` only when it has an observable outcome, executable
+acceptance criteria, landed dependencies, named change surfaces, rollback,
+compatibility classification, and one focused-agent-sized outcome. Split work
+that crosses unrelated subsystems, cannot be reverted independently, or needs
+unrelated acceptance suites. Integration packets may span surfaces but introduce
+no new behavior.
+
+== Claim lease
+
+A claim records agent, worktree, claim time, expiry, and last progress time in
+the GitHub issue. Default lease: 24 hours. An expired claim returns to `ready`
+unless commits or evidence justify renewal. Before claiming, compare packet scope
+and `aden impact-diff` results with active packets; overlapping surfaces require
+explicit coordination.
+
+== Delivery loop
+
+. *Discover:* use `aden grep`/`locate`, then `asm`/`query`/`understand`.
+. *Claim:* assign the issue and record the lease and worktree.
+. *Baseline:* capture current behavior and targeted test results.
+. *Implement:* edit only the declared surface. Scope changes require re-admission.
+. *Verify:* run packet tests, `aden ready .`, `aden check . --severity Forbid`,
+  and `aden impact-diff --since <base> .`.
+. *Review:* a different agent verifies scope, compatibility, and evidence.
+. *Land:* merge the reviewed change.
+. *Learn:* measure the outcome, update fixtures, and record invalid assumptions.
+
+Acceptance criteria receive an `acceptance-version`. Changing them after claim
+invalidates the claim and requires readmission. Implementers may not weaken tests
+or criteria to make their approach pass.
+
+== States
+
+Repository: `proposed -> ready -> done`.
+GitHub delivery: `packet-ready -> packet-claimed -> packet-review -> packet-done`.
+
+`packet-blocked` and rework are live delivery states; they leave repository status
+unchanged. `invalidated` and `abandoned` are repository terminal states paired
+with `packet-cancelled`. Preserve evidence and rejected approaches for all
+terminal outcomes. A partial implementation remains open and never unlocks work.
+
+== Evidence levels
+
+* `E0`: assertion only
+* `E1`: unit tests
+* `E2`: integration tests
+* `E3`: adversarial and cross-interface tests
+* `E4`: measured real-world outcome
+
+Trust packets require E3. Performance and downstream-quality claims require E4.
+
+== Required completion evidence
+
+Commit(s), affected files, Aden anchors, baseline, validation commands, test
+results, impact diff, compatibility result, benchmark delta where relevant,
+known limitations, reviewer, and GitHub issue.
+
+== Priority and pruning
+
+[source,text]
+----
+priority = user harm * trust risk * affected surface * evidence confidence
+           / implementation cost / collision risk
+----
+
+Security, silent omission, stale results, and false confidence receive priority
+multipliers. Cut or invalidate work when measurement shows no benefit, it
+duplicates an existing mechanism, maintenance exceeds value, prerequisites
+change, repeated attempts reveal a wrong boundary, or it belongs in an adapter.
+
+No more than ten percent of milestone effort should maintain this planning
+system unless it prevents a demonstrated coordination failure.

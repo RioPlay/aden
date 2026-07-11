@@ -1,0 +1,122 @@
+:proj: aden
+:author: RioPlay
+:status: active
+:authority: authority-map
+:as-of: 2026-07-09@5c5bc66e025d7457bacba760b134fe7a0d159452
+:superseded-by: none
+
+[[roadmap-authority]]
+= Aden Documentation Authority Map
+
+This document assigns one authoritative role to each kind of product record so
+future work, shipped behavior, durable decisions, and historical evidence do
+not silently contradict one another.
+
+== Authority order
+
+When records disagree, resolve the conflict in this order for the question being
+asked:
+
+. Current executable work: the relevant packet under `docs/roadmap/packets/`.
+. Packet dependencies, gates, and program-wide sequencing:
+  `docs/roadmap/index.adoc`, `execution-protocol.adoc`, and `scorecard.adoc`.
+. Live assignment, claim lease, discussion, and review: the linked GitHub issue.
+. Durable architectural rationale and accepted constraints: the applicable ADR.
+. Shipped user-visible behavior: `CHANGELOG.md`, corroborated by the release tag.
+. Current implementation facts: code, tests, and reproducible command output.
+. Historical findings and completed historical plans: the archived records below.
+
+The program contract wins over GitHub only for durable packet scope and
+acceptance criteria. GitHub wins only for live delivery coordination, as defined
+by <<execution-protocol>>.
+
+== Record roles
+
+|===
+|Record |Authoritative for |Not authoritative for
+
+|`docs/roadmap/packets/`
+|Future executable work, dependencies, acceptance criteria, compatibility
+constraints, final evidence
+|Live assignment or a historical decision's rationale
+
+|`docs/roadmap/index.adoc`, `execution-protocol.adoc`, `scorecard.adoc`
+|Program sequence, execution rules, and milestone measurement
+|Detailed implementation status that belongs in a packet
+
+|Linked GitHub issue
+|Assignee, claim lease, live delivery state, review conversation
+|Changing a packet's durable acceptance contract
+
+|`docs/adr-*.adoc`
+|Accepted architectural decisions and their rationale
+|Live task priority or release notes
+
+|`CHANGELOG.md`
+|Shipped user-visible deltas
+|Unshipped future work or architectural intent
+
+|`ISSUES.md`
+|Historical findings, resolutions, and point-in-time observations
+|Live future-work priority or current support claims
+
+|`AUDIT_REMEDIATION_PLAN.md`
+|Historical structural-remediation evidence and completed phase record
+|Current executable roadmap
+
+|Code, tests, and reproducible command output
+|Current implementation behavior
+|Intent, prioritization, or release communication
+|===
+
+== Historical records and supersession
+
+[[historical-issues]]
+`link:../../ISSUES.md[ISSUES.md]` is preserved as a historical finding log. Its
+individual dated entries retain their original evidence and status language. It
+is superseded for live planning by `link:index.adoc[the Aden Improvement
+Program]` as of 2026-07-09 at
+Git commit `5c5bc66e025d7457bacba760b134fe7a0d159452`.
+
+[[historical-remediation-plan]]
+`link:../../AUDIT_REMEDIATION_PLAN.md[AUDIT_REMEDIATION_PLAN.md]` is preserved
+as the completed structural-remediation plan and audit record. Its phase status
+is a historical snapshot, superseded for live planning by
+`link:index.adoc[the Aden Improvement Program]` as of 2026-07-09 at
+Git commit `5c5bc66e025d7457bacba760b134fe7a0d159452`.
+
+Supersession changes a document's authority, never deletes its evidence. Keep
+existing headings and anchors when annotating a historical record; add a dated
+notice at its top rather than rewriting completed findings.
+
+== As-of convention
+
+Every living status-bearing document must include:
+
+* an `As of` date and commit or release tag;
+* its authoritative role; and
+* when it is no longer live, a `Superseded by` link and effective date.
+
+Use an immutable Git commit for worktree-specific claims and a release tag for
+released behavior. If a statement relies on a dirty worktree, state that
+explicitly and do not present it as a committed fact.
+
+Packet metadata and GitHub delivery state follow the separate rules in
+<<execution-protocol>>. A packet's `:status:` is not a substitute for an
+`As of` marker on a historical report.
+
+== Update procedure
+
+. Before creating a new plan, decide whether it is an ADR, a roadmap packet,
+  a changelog entry, or a historical report using the table above.
+. Link to existing evidence instead of copying status claims into a second
+  living document.
+. If replacing a living planning record, add its `As of` and `Superseded by`
+  notice while preserving its headings, anchors, and evidence.
+. Update the packet or ADR that owns the changed claim, then validate with
+  `aden check . --severity Forbid`.
+
+== Scope and limits
+
+This map establishes documentation authority only. It does not rewrite accepted
+ADR rationale, change release policy, or alter GitHub issue ownership.

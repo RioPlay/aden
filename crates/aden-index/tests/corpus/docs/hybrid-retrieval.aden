@@ -1,0 +1,14 @@
+[[hybrid-retrieval]]
+Hybrid retrieval
+
+Hybrid retrieval runs two complementary searchers over the same corpus and merges
+their results. A sparse lexical searcher matches exact terms and identifiers, while
+a dense searcher matches meaning through learned vector representations. Neither is
+strictly better: the lexical side anchors precision on rare tokens, and the dense
+side recovers relevant passages that share no words with the query.
+
+The two ranked lists are combined with Reciprocal Rank Fusion. Each document earns a
+fused score equal to the sum over retrievers of one divided by a small constant plus
+its rank in that retriever. Because the formula consumes only ranks, it needs no
+score normalization and no training, which is why it is the default way to blend a
+keyword list with a vector list. The result reliably beats either retriever alone.

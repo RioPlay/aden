@@ -1,0 +1,18 @@
+# Real-corpus eval query set.  Format: query<TAB>expected_file_stem<TAB>note
+# Lines starting with # are comments. Grow toward ~200 queries for a publishable number.
+combine keyword and vector search into one ranked list	hybrid-retrieval	fusion intent
+merge two ranked lists without any training	hybrid-retrieval	RRF paraphrase (no head term)
+score documents by term frequency and document length	bm25-ranking	lexical scoring
+rank exact error strings and identifier names	bm25-ranking	exact-match intent
+find code by meaning when the words do not match	dense-embeddings	semantic paraphrase
+what is cosine similarity used for	dense-embeddings	vector similarity
+represent a codebase as nodes and typed edges	knowledge-graph	graph model
+what else breaks if I change this function	impact-analysis	blast-radius vs backlinks
+everything reachable downstream from a symbol	impact-analysis	transitive reach
+who calls this function	backlinks	callers vs impact
+find all references to a symbol before renaming	backlinks	references
+group densely connected functions into clusters	community-detection	clustering
+detect drift between code and its documentation	contract-enforcement	drift detection
+keep the index current without a manual rebuild	incremental-reindex	freshness paraphrase
+expose tools to an AI agent over a protocol	mcp-server	protocol surface
+error tolerant incremental parser for many languages	tree-sitter-parsing	parsing

@@ -1,0 +1,134 @@
+:proj: aden
+:author: RioPlay
+:status: accepted
+:toc: left
+:toclevels: 3
+
+[[adr-007]]
+= ADR-007: The Typed-Edge Model and Edge-Type Activation Policy
+
+== Context
+
+Aden's graph is a *typed* referential network: every edge carries an `EdgeType`
+(`aden-core::EdgeType`) so traversals can mean something specific — callers vs callees,
+prose→code vs containment, downstream reach vs at-risk dependents. The enum is large
+(structural code edges plus a "brain-like" semantic set), but a census of aden's *own*
+live graph found that *only a handful of edge types ever occur*: most declared variants
+had no emitter at all. Two concrete harms followed:
+
+. *Quiet misinformation.* `Mutates`, `Implements`, `Invokes`, `Constrains` were members
+  of `impact_edge_types()` — the blast-radius filter — yet were never emitted, so they
+  were no-op filters that *read like coverage* while contributing nothing.
+. *A correctness bug masked as a missing edge.* `aden impact-diff` walked impact edges
+  *outgoing* from a changed symbol, so it reported what the symbol *depends on* (its
+  callees), not what *depends on it* (its callers). A function with 50 callers and 0
+  callees scored a blast radius of 0 / risk "none" — backwards for a change-risk gate.
+. *A polymorphism blind spot.* With no `Implements` edges, a call through a trait object
+  silently truncated the blast radius across the interface boundary.
+
+The forces: the typed graph is a core differentiator and must be *honest* (a filter that
+names an edge type implies that type carries signal); the model must stay *polyglot* (an
+edge type is a general concept, even when its first emitter is one language); and every
+addition must be *measurable* and *deterministic*.
+
+== Decision
+
+=== 1. An edge type is "real" only with emitter + consumer + eval
+
+A variant earns its place in the live graph only when all three exist:
+
+* an *emitter* — something in `gen`/parsing produces the edge deterministically;
+* a *consumer* — a traversal/filter (`ask`/`asm`/`query`/`impact-diff`/`check`) acts on it;
+* an *eval* — a query/test proving the edge changes an answer for the better.
+
+"Activated" means a *nonzero, verified count in the live graph census*, not a merged
+enum variant. A filter list (e.g. `impact_edge_types`) must not name an edge type that
+has no emitter; such a type is either given an emitter or removed from the filter.
+
+=== 2. Blast radius traverses dependents (incoming), reach traverses dependencies (outgoing)
+
+The two directions are distinct, named honestly, and must not be conflated:
+
+* `impact-diff` blast radius and risk tier traverse *incoming* impact edges
+  (`dependents_of`) — the transitive set of callers/referencers *at risk* from a change.
+* `query --impact` keeps its documented *outgoing* "downstream reach" semantics.
+
+Edges are stored referencer→referencee (caller→callee); `query --backlinks` (incoming)
+is the reference implementation of "who depends on this".
+
+=== 3. Wave 1 activations (Tests, Implements, Mutates)
+
+* *Tests* — a resolved call whose source symbol is a test (source-path markers shared
+  with `ask` routing's test detection) co-emits `Tests` alongside `Calls`. Consumer:
+  `impact-diff` gains an always-on "affected tests" section (the tests that transitively
+  cover a changed symbol).
+* *Implements* — `impl Trait for T` (Rust emitter first; the mechanism is
+  language-agnostic) emits implementor→trait edges so the incoming blast traversal
+  reaches implementor methods through a trait object. `Implements` was already in the
+  impact filter; the emitter makes it true.
+* *Mutates* — a `&mut self` method → its parent type. Emitted (not removed) because the
+  parser already carried the receiver, making it an honest <30-line signal rather than a
+  no-op filter entry.
+
+The census on aden's own repo moved from 6 live edge types to 9
+(`Tests`/`Implements`/`Mutates` nonzero), byte-identical across repeated `regen`.
+
+== Consequences
+
+Positive:
+
+. `impact-diff` answers the question a change-risk gate actually asks ("what breaks if I
+  change this, and which tests cover it"), in the correct direction.
+. The impact filter no longer overstates coverage; named edge types carry signal.
+. Polymorphic blast radius no longer truncates at trait boundaries (where `Implements`
+  is emitted).
+. A clear bar for future edge types (Wave 2: prose `Mentions`, commit `ChangedIn`, scope
+  `InScopeOf`) — each ships emitter + consumer + eval, census-verified.
+
+Negative / costs (with mitigations):
+
+. The never-emitted "semantic" variants (`SynonymOf`, `Implies`, `Causes`, …) remain a
+  schema tax until they earn an emitter (the natural one is `aden overlay`, letting
+  humans/agents *assert* semantic edges) or are pruned — tracked, not resolved here.
+. First emitters are language-specific (Rust for `Implements`/`Mutates`); cross-language
+  parity is follow-up work, stated explicitly rather than implied.
+
+== Status
+
+Accepted and implemented (Waves 1 and 2). `Tests`/`Implements`/`Mutates` are emitted
+and census-verified; `impact-diff` traverses dependents (`dependents_of`, incoming)
+and reports affected tests; `query --impact` retains outgoing reach. Covered by
+`crates/aden-cli/tests/wave1_edges.rs` and the impact-diff regression tests.
+
+Wave 2 (2026-06-10) activated `Mentions` (backtick prose naming a symbol → doc—Mentions→code,
+weaker than `Documents` by design) and `Demonstrates` (doc code listing → the symbols it
+exercises), both under the §1 policy: per-format extraction in the parsers, format-neutral
+resolution that links only unambiguous names ≥4 chars. Census on aden's own repo:
+Mentions 172, Demonstrates 12 — 11 live edge types. Evals in
+`crates/aden-cli/tests/wave2_edges.rs` (both formats, plus ambiguity/length negative
+guards).
+
+The glossary half landed the same day: Term nodes (`aden://term/<project>/<slug>`,
+`NodeType::Term`) + `DefinesTerm` edges, extracted from glossary-titled
+sections/documents (AsciiDoc description lists incl. the `[[anchor]]Name::` idiom;
+Markdown bold-term bullets), with the term's definition linking to code through the
+existing unambiguous-only `Mentions` channel. Census after: 14 Term nodes / 14
+DefinesTerm on aden's repo — *12 live edge types*. The §1 policy was also enforced
+retroactively: `Constrains`/`Invokes` (no emitter, ever) were REMOVED from
+`impact_edge_types` and the ask intent sets rather than left as no-op filter entries.
+
+Two §2/§1 violations were found and closed in the same wave: `viz --mode blast` still
+BFS'd *outgoing* edges while claiming to mirror impact-diff (fixed to incoming; the
+outgoing view survives honestly as `--mode reach`, and the impact edge SET is now a
+single shared definition), and the graph bridge loaded edges from a local hand-written
+type list — so edges of any newer type were stored but silently never loaded.
+`EdgeType::ALL` is now the canonical variant list every enumerator must use.
+
+The full roadmap (census discipline, remaining Wave 2 items, the prune-or-repurpose
+decision for the semantic set) lives in the research topic `aden-roadmap/graph-type-roadmap`.
+
+== Related Documents
+
+. <<adr-001>> — Foundational architecture decisions
+. <<adr-006>> — Prose as a first-class graph citizen (`RelatesTo` from prose references)
+. <<architecture>> — Pipeline and graph-build stages

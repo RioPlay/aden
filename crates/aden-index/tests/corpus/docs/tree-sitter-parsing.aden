@@ -1,0 +1,14 @@
+[[tree-sitter-parsing]]
+Parsing source with tree-sitter
+
+Tree-sitter is an incremental parsing library with grammars for a wide range of
+programming languages. It produces a concrete syntax tree and, crucially, tolerates
+incomplete or malformed input — a property that matters because real source files are
+edited mid-thought and rarely parse cleanly at every keystroke. When a file changes,
+the parser reuses the unchanged parts of the previous tree instead of starting over.
+
+A graph builder walks the syntax tree to extract the symbols it cares about:
+definitions, signatures, and the spans of source they occupy. Because the same
+extraction front-end can be pointed at many grammars, one pipeline covers dozens of
+languages without a separate analyzer per language. Documentation formats are parsed
+the same way, yielding headings, sections, and cross-references as nodes.

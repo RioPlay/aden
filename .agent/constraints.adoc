@@ -1,0 +1,194 @@
+:proj: aden
+
+[[agent-constraints]]
+= Agent Constraints (Hard Rules)
+
+[IMPORTANT]
+====
+THESE RULES ARE NOT OPTIONAL. Violations will cause CI failures.
+====
+
+== Diagram Standards
+
+=== MANDATORY: Mermaid for All Graphs
+
+All graphs, flowcharts, and visual diagrams MUST use Mermaid in code blocks:
+
+[source,adoc]
+----
+[mermaid, diagram-id, svg]
+----
+flowchart TD
+    A[Start] --> B[End]
+----
+----
+
+**NEVER use:**
+- ASCII art graphs (e.g., `├──`, `│`, `└─`)
+- ditaa diagrams (deprecated)
+- PlantUML (not deterministic)
+- Raw ASCII box-drawing characters
+
+**Rationale:** ASCII art is non-deterministic across editors/fonts/terminals. Mermaid is:
+- Parseable/renderable everywhere
+- Version controllable (diff-friendly)
+- Deterministic output
+
+=== File Naming
+
+- Mermaid files: `*.mmd` in the same directory as the document
+- Or inline `[mermaid]` blocks within `.adoc` files
+
+== Code Standards
+
+=== No Magic Numbers
+
+All numeric constants MUST be named constants:
+
+[source,rust]
+----
+// WRONG
+if score > 0.5 { ... }
+
+// CORRECT
+const RELEVANCE_THRESHOLD: f64 = 0.5;
+if score > RELEVANCE_THRESHOLD { ... }
+----
+
+=== Explicit Error Handling
+
+Never silently ignore errors:
+
+[source,rust]
+----
+// WRONG
+let _ = some_fn();
+
+// CORRECT
+some_fn().map_err(|e| MyError::Wrapped(e))?;
+----
+
+=== No TODO Without Tracking
+
+All TODOs MUST have a tracking issue reference:
+
+[source,rust]
+----
+// TODO[#123): Implement fuzzy matching
+//       ^^^ Link to tracking issue
+----
+
+== Documentation Standards
+
+=== Anchor Naming
+
+Anchors MUST be lowercase, alphanumeric with hyphens:
+
+[source,adoc]
+----
+[[my-valid-anchor]]
+= My Heading
+----
+
+**NOT allowed:** `[[My Anchor]]`, `[[anchor_with_underscores]]`
+
+=== Reference Style
+
+Use double-angle brackets for all references:
+
+[source,adoc]
+----
+// Example: See &lt;&lt;target-anchor&gt;&gt; for details.
+----
+
+**NOT:** `see target-anchor` or `link:target-anchor.adoc[]`
+
+=== Contract Generation
+
+Store-first: `aden gen` compiles source into the knowledge graph in the
+per-user project store (see `aden store path`; ADR-003) and emits no files —
+there are no `.adoc` contracts to hand-edit.
+Re-run `gen` whenever source changes (read commands also refresh on read):
+
+[source,bash]
+----
+aden gen src/lib.rs    # Re-index a single file
+aden gen .             # Re-index the whole project
+----
+
+== Git Standards
+
+=== No Secrets in Commit
+
+- Never commit API keys, tokens, or secrets
+- Use `.env` files (gitignored) for local secrets
+- If accidentally committed: rotate immediately
+
+=== Atomic Commits
+
+One logical change per commit:
+
+[source,bash]
+----
+# WRONG
+git commit -m "fix parser, add tests, update docs"
+
+# CORRECT
+git commit -m "fix: parser crash on empty include"
+
+git commit -m "test: add parser edge cases"
+
+git commit -m "docs: update parser contract"
+----
+
+== Testing Standards
+
+=== Minimum Coverage
+
+- New code MUST have tests
+- Regression tests for bugs MUST be added
+- Integration tests for CLI commands
+
+=== Test Naming
+
+Descriptive test names that explain what is tested:
+
+[source,rust]
+----
+// WRONG
+#[test]
+fn test1() { ... }
+
+// CORRECT
+#[test]
+fn parser_handles_empty_include_gracefully() { ... }
+----
+
+== Dependency Standards
+
+=== Minimal Dependencies
+
+Before adding a new crate:
+
+1. Can this be done with stdlib?
+2. Is the crate actively maintained?
+3. What's the dependency footprint?
+
+=== No Duplicate Functionality
+
+Check existing crates before adding new ones. Aden already has:
+- `petgraph` for graphs
+- `regex` for parsing
+- `serde` for serialization
+- `thiserror` for errors
+- `fnv` for hashing
+
+== Enforcement
+
+These constraints are enforced by:
+
+1. `aden ci-check` — runs all validations
+2. Pre-commit hooks (if configured)
+3. Code review requirements
+
+Any violation will block merge.

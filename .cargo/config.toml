@@ -1,0 +1,21 @@
+# Aden build configuration.
+#
+# `tree-sitter-language-pack` ships NO grammar sources in the published crate —
+# it points at upstream GitHub repos and, by default, downloads grammars at
+# *runtime* (needs network + a writable cache on every machine that runs aden).
+# For a tool whose whole point is to be a language-agnostic context compiler,
+# that is a trap: `aden gen` would silently fail to parse Python/Ruby/TypeScript/…
+# on any offline, air-gapped, or locked-down CI box.
+#
+# Setting TSLP_LANGUAGES makes the pack compile those grammars *statically* into
+# the binary at build time (sources fetched once during `cargo build`, which has
+# network), so the resulting `aden` parses these languages forever after with no
+# runtime download. This list is the single knob that decides which languages
+# Aden can parse out of the box.
+#
+# Default below: every language with a first-class ("deep") resolver, plus the
+# most common config/web/data languages. To bundle ALL 305 supported grammars
+# (larger binary, much longer build), build with `TSLP_LANGUAGES=all cargo build`
+# — an explicit env var overrides the value set here.
+[env]
+TSLP_LANGUAGES = "rust,python,go,javascript,typescript,tsx,c,cpp,java,kotlin,csharp,ruby,php,bash,html,css,scss,json,yaml,toml,xml,sql,lua,scala,swift"

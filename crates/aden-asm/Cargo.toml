@@ -1,0 +1,17 @@
+[package]
+name = "aden-asm"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+aden-core = { path = "../aden-core" }
+aden-parse = { path = "../aden-parse" }
+aden-graph = { version = "0.3.0", path = "../aden-graph" }
+aden-emit = { version = "0.3.0", path = "../aden-emit" }
+petgraph = "0.8.3"
+thiserror = "2.0.18"
+
+[dev-dependencies]
+tempfile = "3.27.0"

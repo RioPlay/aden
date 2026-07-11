@@ -1,0 +1,98 @@
+:proj: aden
+
+[[quick-ref]]
+= Aden Quick Reference
+
+== The Safe Path (Recommended for Humans)
+
+[cols="1,2", options="header"]
+|===
+|Task |Command
+
+|Active development |`aden watch .` (auto-updates the graph on save; requires `--features watch` — fails with an error on default builds)
+|Before every commit |`aden ready .` (fast aden-only gates)
+|Before push to remote |`aden ci-check .` (full gate suite incl. external tools)
+|One-shot symbol comprehension |`aden understand <symbol> .`
+|Review drift before fixing |`aden heal . --propose`
+|Apply fixes (if confident) |`aden heal . --fix`
+|Reconcile store after big changes |`aden sync .`
+|Rebuild the graph |`aden gen .`
+|===
+
+== Common Workflows
+
+[source,bash]
+----
+# === NEW PROJECT ===
+aden init
+aden gen src/ --auto
+aden check .
+
+# === DAILY DEVELOPMENT ===
+aden watch .                    # Terminal 1: auto-regenerate (requires --features watch)
+# ... make edits ...
+
+# === BEFORE COMMIT ===
+aden ready .                   # Fast: gen + lint + check + heal drift + audit
+
+# === IF DRIFT DETECTED ===
+aden heal . --propose > fix-review.adoc  # Review first
+# ... review the output ...
+aden heal . --fix              # Apply fixes
+
+# === PUSH ===
+aden ci-check .                # Full gate: adds tests, clippy, cargo audit, etc.
+git push
+----
+
+== Command by Use Case
+
+|===
+|Use Case |Command
+
+|Build the graph |`aden gen .`
+|Index a single file |`aden gen src/lib.rs`
+
+|Validate graph |`aden check .`
+|Fix drift |`aden heal . --fix`
+|Review fix first |`aden heal . --propose`
+|Garbage collect |`aden heal . --gc`
+
+|Ask question |`aden ask "how does X work?"`
+|Understand a symbol |`aden understand <symbol> .`
+|Get context |`aden asm --from mod-x --depth 2`
+|Find symbol |`aden locate --symbol foo`
+|Search docs |`aden search "query"`
+
+|View file history |`aden timeline <file>`
+|Interactive graph (browser) |`aden view`
+
+|Auto-regenerate |`aden watch .`  # requires --features watch
+|Pre-commit (fast) |`aden ready .`
+|Pre-push (full) |`aden ci-check .`
+|===
+
+== Severity Levels
+
+|===
+|Command |What It Does |When
+
+|`--propose` |Preview only; generates MergeReconcile proposals for store-resident contracts |Review before applying
+|`--fix` |Auto-apply via merge engine (clean merges); persist conflict proposals for manual review |Confident in the source; human overlays are preserved
+|`--apply <id>` |Apply a specific proposal; re-runs merge engine and writes to store on clean merge |After reviewing a `--propose` output
+|===
+
+== When to Use What
+
+- **Use `ci-check`** before every commit (set up hooks!)
+- **Use `watch`** during active development
+- **Use `heal --propose`** to review drift before fixing
+- **Use `heal --fix`** only when you trust the output
+
+== Emergency
+
+Bypass safety checks in an emergency:
+[source,bash]
+----
+aden emergency --reason "fast fix for production" --ttl 1h .
+----

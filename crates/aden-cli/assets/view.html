@@ -1,0 +1,2028 @@
+<!doctype html>
+<!--
+  Copyright (c) 2026 RioPlay <rioplay@rioplay.dev>
+  SPDX-License-Identifier: AGPL-3.0-or-later
+  aden view — self-contained offline graph viewer template. The aden CLI inlines the
+  graph JSON and the vendored force-graph library (MIT, see NOTICE.md) into this page.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>aden · graph</title>
+<style>
+  :root { color-scheme: dark; }
+  /* true black: on OLED the void disappears entirely and every photon is data */
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #000;
+    color: #cdd6f4; font: 13px/1.45 ui-sans-serif, system-ui, -apple-system, sans-serif; }
+  /* starfield base layer — two scales of specks, gently twinkling */
+  body::before { content: ''; position: fixed; inset: 0; pointer-events: none; z-index: 0;
+    background:
+      radial-gradient(1px 1px at 23px 41px, rgba(195,205,235,.5) 50%, transparent 52%),
+      radial-gradient(1px 1px at 97px 13px, rgba(170,185,220,.35) 50%, transparent 52%),
+      radial-gradient(1.5px 1.5px at 61px 87px, rgba(205,214,244,.4) 50%, transparent 52%),
+      radial-gradient(1px 1px at 137px 119px, rgba(150,165,205,.3) 50%, transparent 52%);
+    background-size: 173px 151px, 211px 191px, 251px 233px, 307px 281px;
+    animation: twinkle 9s ease-in-out infinite alternate; }
+  @keyframes twinkle { from { opacity: .55; } to { opacity: 1; } }
+  @media (prefers-reduced-motion: reduce) { body::before { animation: none; } }
+  #graph { position: fixed; inset: 0; z-index: 1; }
+
+  /* ── top bar ── */
+  #topbar { position: fixed; left: 14px; top: 10px; z-index: 6;
+    display: flex; align-items: center; gap: 9px; }
+  #hdr { font-weight: 600; letter-spacing: .04em; color: #b4befe;
+    text-shadow: 0 0 18px rgba(137,180,250,.35); pointer-events: none; white-space: nowrap; }
+  #hdr small { color: #6c7086; font-weight: 400; letter-spacing: 0; }
+  #staleness { font-size: 11px; color: #45475a; white-space: nowrap; cursor: default; }
+  #staleness span { color: #6c7086; }
+  .topbtn { cursor: pointer; user-select: none; white-space: nowrap;
+    background: rgba(17,21,30,.9); border: 1px solid #313244; border-radius: 8px;
+    padding: 4px 11px; color: #a6adc8; font-size: 12px; }
+  .topbtn:hover { border-color: #89b4fa; color: #cdd6f4; }
+
+  /* ── search (centred) ── */
+  #search { position: fixed; top: 10px; left: 50%; transform: translateX(-50%); width: 340px; z-index: 5; }
+  #q { width: 100%; box-sizing: border-box; background: rgba(17,21,30,.92); border: 1px solid #313244;
+    border-radius: 8px; padding: 8px 12px; color: #cdd6f4; font: 13px ui-sans-serif, system-ui, sans-serif;
+    outline: none; box-shadow: 0 8px 24px rgba(0,0,0,.35); }
+  #q:focus { border-color: #89b4fa; }
+  #results { margin-top: 5px; background: rgba(17,21,30,.97); border: 1px solid #313244; border-radius: 8px;
+    overflow: hidden; display: none; box-shadow: 0 12px 32px rgba(0,0,0,.45); }
+  #results.open { display: block; }
+  #results .r { padding: 6px 12px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #results .r:hover, #results .r.sel { background: rgba(137,180,250,.16); }
+  #results .r .k { color: #6c7086; }
+  #results .r .ghost { color: #45475a; font-style: italic; }
+  #results .r .shp { display: inline-block; width: 9px; height: 9px; margin-right: 5px; vertical-align: middle; }
+
+  /* ── right toolbar ── */
+  #toolbar { position: fixed; top: 10px; right: 14px; z-index: 6;
+    display: flex; align-items: center; gap: 6px; }
+  #amb-wrap { position: relative; }
+  #amb-menu { position: absolute; top: calc(100% + 6px); right: 0; z-index: 20;
+    background: rgba(17,21,30,.97); border: 1px solid #313244; border-radius: 10px;
+    padding: 8px 0; min-width: 210px; box-shadow: 0 12px 32px rgba(0,0,0,.5);
+    display: none; }
+  #amb-menu.open { display: block; }
+  #amb-menu .mrow { padding: 6px 14px; cursor: pointer; display: flex; align-items: center; gap: 10px; font-size: 12px; }
+  #amb-menu .mrow:hover { background: rgba(137,180,250,.1); }
+  #amb-menu .mrow.on { color: #89dceb; }
+  #amb-menu .mrow .mlbl { flex: 1; color: #a6adc8; }
+  #amb-menu .mrow.on .mlbl { color: #89dceb; }
+  #amb-menu .mrow .mkey { color: #45475a; font-size: 11px; font-family: ui-monospace, monospace; }
+  #amb-menu hr { border: none; border-top: 1px solid #1f2430; margin: 5px 0; }
+  #amb-menu .mslider { padding: 4px 14px 8px; }
+  #amb-menu .mslider label { color: #6c7086; font-size: 11px; display: flex; align-items: center;
+    justify-content: space-between; margin-bottom: 4px; }
+  #amb-menu input[type=range] { width: 100%; }
+  #replay-rows { display: none; }
+  #replay-rows.show { display: block; }
+
+  /* ── left controls (dimmed until hovered — present, not loud) ── */
+  #controls { position: fixed; left: 14px; top: 40px; z-index: 5; display: flex; align-items: center; gap: 9px;
+    background: rgba(17,21,30,.85); border: 1px solid #313244; border-radius: 8px; padding: 5px 12px;
+    opacity: .55; transition: opacity .2s; }
+  #controls:hover, #controls:focus-within { opacity: 1; }
+  #controls .lbl { color: #9399b2; font-size: 11px; }
+  #controls input[type=range] { width: 120px; }
+  #depth-wrap { display: none; align-items: center; gap: 9px; }
+  #depth-wrap input[type=range] { width: 84px; }
+
+  /* ── region hover card (top-left, below controls) ── */
+  #hover-card { position: fixed; left: 14px; top: 78px; z-index: 6; width: 240px;
+    background: rgba(17,21,30,.92); border: 1px solid #313244; border-radius: 10px;
+    padding: 10px 13px 11px; backdrop-filter: blur(6px);
+    box-shadow: 0 8px 28px rgba(0,0,0,.45);
+    opacity: 0; transform: translateY(4px);
+    transition: opacity .22s ease, transform .22s ease; pointer-events: none; }
+  #hover-card.on { opacity: 1; transform: none; }
+  #hover-card.idle { opacity: .45; transform: none; }
+  #hover-card .hc-region { display: flex; align-items: center; gap: 7px; margin-bottom: 6px; }
+  #hover-card .hc-swatch { width: 12px; height: 12px; border-radius: 3px; flex-shrink: 0; }
+  #hover-card .hc-region-name { font-size: 12px; font-weight: 600; color: #cdd6f4;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #hover-card .hc-name { font-size: 13px; color: #89b4fa; font-weight: 600;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-bottom: 2px; }
+  #hover-card .hc-type { font-size: 11px; color: #6c7086; margin-bottom: 3px; }
+  #hover-card .hc-file { font-size: 11px; color: #45475a; font-family: ui-monospace, monospace;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #hover-card .hc-hint { font-size: 11px; color: #45475a; font-style: italic; }
+  #hover-card .hc-dismiss { position: absolute; top: 6px; right: 8px; pointer-events: auto;
+    cursor: pointer; color: #45475a; font-size: 13px; line-height: 1; padding: 2px 4px;
+    border-radius: 3px; }
+  #hover-card .hc-dismiss:hover { color: #f38ba8; background: rgba(243,139,168,.1); }
+  #hover-card { position: relative; }
+  .hint-txt { font-size: 11px; color: #45475a; font-family: ui-monospace, monospace; user-select: all; }
+
+  /* ── region legend (below hover card) ── */
+  #region-legend { position: fixed; left: 14px; top: 226px; z-index: 6; width: 240px;
+    background: rgba(17,21,30,.88); border: 1px solid #313244; border-radius: 10px;
+    backdrop-filter: blur(6px); box-shadow: 0 8px 28px rgba(0,0,0,.4);
+    opacity: .45; transition: opacity .2s; overflow: hidden; }
+  #region-legend:hover { opacity: 1; }
+  #region-legend .rl-head { display: flex; align-items: center; justify-content: space-between;
+    padding: 7px 12px 6px; cursor: pointer; }
+  #region-legend .rl-title { font-size: 11px; font-weight: 600; color: #9399b2; letter-spacing: .04em; }
+  #region-legend .rl-toggle { font-size: 11px; color: #45475a; }
+  #region-legend .rl-body { padding: 0 12px 8px; max-height: 180px; overflow-y: auto; }
+  #region-legend .rl-row { display: flex; align-items: center; gap: 7px; padding: 2px 0; }
+  #region-legend .rl-dot { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; }
+  #region-legend .rl-label { font-size: 11px; color: #a6adc8;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* ── hide UI mode ── */
+  body.hideui #topbar, body.hideui #controls, body.hideui #search, body.hideui #filter,
+  body.hideui #hint, body.hideui #back, body.hideui #panel, body.hideui #toolbar,
+  body.hideui #act, body.hideui #snip, body.hideui #pivot-pill,
+  body.hideui #hover-card, body.hideui #region-legend { opacity: 0 !important; pointer-events: none; }
+
+  /* ── flyby card: tour-mode glance element (the autopilot's code preview) ── */
+  /* On manual click the code lives in the detail panel instead; this floating
+     card only appears while the tour is running. Docked clear of the panel
+     (which is ~360px wide) so the two boxes never overlap. */
+  #snip { position: fixed; right: 14px; bottom: 52px; z-index: 7; width: 340px; max-width: 33vw;
+    pointer-events: none;
+    background: rgba(10,13,20,.93); border: 1px solid #2a3040; border-radius: 10px;
+    box-shadow: 0 14px 44px rgba(0,0,0,.55); backdrop-filter: blur(6px);
+    opacity: 0; transform: translateY(6px); transition: opacity .28s ease, transform .28s ease;
+    overflow: hidden; }
+  #snip.on { opacity: 1; transform: none; }
+  /* The detail panel grows full-height with a long relations list and would
+     clobber the bottom-right card. While the panel is open, shift the card clear
+     of the panel's column so the two boxes sit side by side and never overlap. */
+  body:has(#panel.open) #snip { right: 366px; }
+  #snip .sn-head { padding: 8px 13px 6px; border-bottom: 1px solid #1f2430; }
+  #snip .sn-name { font-weight: 600; font-size: 13px; }
+  #snip .sn-meta { color: #6c7086; font-size: 11px; margin-top: 1px; }
+  #snip pre { margin: 0; padding: 9px 13px 11px; font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: #9fb0d0; white-space: pre-wrap; word-break: break-word; max-height: 180px; overflow: hidden; }
+
+  /* ── pivot pill: the active lens (blast/reach/connectivity), dismissible ── */
+  #pivot-pill { position: fixed; top: 52px; left: 50%; transform: translateX(-50%); z-index: 5;
+    display: none; align-items: center; gap: 8px; background: rgba(17,21,30,.94);
+    border: 1px solid #45475a; border-radius: 999px; padding: 5px 7px 5px 14px;
+    font-size: 12px; color: #cdd6f4; box-shadow: 0 8px 24px rgba(0,0,0,.4); }
+  #pivot-pill.on { display: flex; }
+  #pivot-pill .pp-mode { color: #89b4fa; }
+  #pivot-pill .pp-hint { font-size: 11px; opacity: .75; }
+  #pivot-pill .pp-x { cursor: pointer; color: #6c7086; border: 1px solid #313244;
+    border-radius: 50%; width: 18px; height: 18px; display: flex; align-items: center;
+    justify-content: center; font-size: 11px; }
+  #pivot-pill .pp-x:hover { color: #f38ba8; border-color: #f38ba8; }
+
+  /* ── filter chips ── */
+  #filter { position: fixed; left: 14px; bottom: 36px; display: flex; flex-wrap: wrap;
+    gap: 5px; max-width: 56%; z-index: 4; opacity: .55; transition: opacity .2s; }
+  #filter:hover { opacity: 1; }
+  #filter .chip { font-size: 11px; padding: 3px 9px 3px 8px; border-radius: 999px; cursor: pointer;
+    user-select: none; background: rgba(17,21,30,.85); border: 1px solid #313244; color: #9399b2; }
+  #filter .chip.on { color: #cdd6f4; background: rgba(255,255,255,.05); }
+  #filter .chip .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+    margin-right: 6px; vertical-align: middle; }
+  /* kind shapes in filter legend */
+  #filter .chip .shp-sq { display: inline-block; width: 8px; height: 8px; border-radius: 2px;
+    margin-right: 6px; vertical-align: middle; }
+  #filter .chip .shp-dm { display: inline-block; width: 8px; height: 8px;
+    transform: rotate(45deg); margin-right: 6px; vertical-align: middle; }
+
+  /* ── hint ── */
+  #hint { position: fixed; left: 14px; bottom: 12px; color: #585b70; pointer-events: none;
+    display: flex; align-items: center; gap: 8px; }
+  #hint-text { font-size: 12px; }
+  #helpbtn { pointer-events: all; cursor: pointer; background: rgba(17,21,30,.85); border: 1px solid #313244;
+    border-radius: 6px; padding: 2px 7px; font-size: 11px; color: #6c7086; }
+  #helpbtn:hover { color: #cdd6f4; border-color: #89b4fa; }
+
+  /* ── back button ── */
+  #back { position: fixed; left: 14px; top: 40px; display: none; cursor: pointer; color: #89b4fa;
+    background: rgba(17,21,30,.7); border: 1px solid #313244; border-radius: 6px; padding: 3px 10px; }
+  #back:hover { background: rgba(137,180,250,.14); }
+
+  /* ── replay status bar ── */
+  #act { position: fixed; bottom: 74px; left: 50%; transform: translateX(-50%); z-index: 5; display: none;
+    color: #cdd6f4; font: 12px ui-monospace, monospace; background: rgba(17,21,30,.88); padding: 5px 13px;
+    border: 1px solid #313244; border-radius: 7px; white-space: nowrap; max-width: 70vw;
+    overflow: hidden; text-overflow: ellipsis; }
+
+  /* ── side panel ── */
+  #pcollapse { float: right; cursor: pointer; color: #6c7086; font-size: 13px;
+    line-height: 1; padding: 2px 4px; }
+  #pcollapse:hover { color: #cdd6f4; }
+  #panel.collapsed { padding-bottom: 12px; }
+  #panel.collapsed #p-body, #panel.collapsed #pback { display: none; }
+  #panel.collapsed #p-title { margin-bottom: 0; }
+  #panel { position: fixed; top: 0; right: 0; width: 340px; max-height: 100%; overflow: auto;
+    z-index: 8; background: rgba(17,21,30,.92); border-left: 1px solid #1f2430;
+    padding: 16px 18px; backdrop-filter: blur(8px);
+    transform: translateX(102%); transition: transform .26s cubic-bezier(.2,.7,.2,1);
+    box-shadow: -20px 0 60px rgba(0,0,0,.35); }
+  #panel.open { transform: none; }
+  #panel h2 { margin: 0 0 4px; font-size: 14px; color: #89b4fa; word-break: break-all; line-height: 1.3; }
+  #panel .anchor-row { display: flex; align-items: flex-start; gap: 6px; margin-bottom: 10px; }
+  #panel .anchor-txt { color: #6c7086; font-size: 11px; word-break: break-all; flex: 1; }
+  #panel .copy-btn { cursor: pointer; color: #6c7086; font-size: 11px; white-space: nowrap;
+    padding: 1px 6px; border: 1px solid #313244; border-radius: 4px; flex-shrink: 0; }
+  #panel .copy-btn:hover { color: #89b4fa; border-color: #89b4fa; }
+  #panel .copy-btn.copied { color: #a6e3a1; border-color: #a6e3a1; }
+  #panel .breadcrumb { font-size: 11px; color: #6c7086; margin-bottom: 10px; }
+  #panel .breadcrumb span { cursor: pointer; }
+  #panel .breadcrumb span:hover { color: #89b4fa; text-decoration: underline; }
+  #panel .k { color: #6c7086; }
+  #panel .row { margin: 4px 0; word-break: break-all; font-size: 12px; }
+  #panel pre.p-snip { margin: 8px 0 2px; padding: 9px 11px; background: rgba(10,13,20,.5);
+    border: 1px solid #1f2430; border-radius: 7px;
+    font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: #9fb0d0; white-space: pre-wrap; word-break: break-word; max-height: 220px; overflow: auto; }
+  #panel .pivot-section { margin: 12px 0 8px; display: flex; gap: 6px; flex-wrap: wrap; }
+  #panel .pivot-btn { font-size: 11px; padding: 3px 10px; border-radius: 6px; cursor: pointer;
+    border: 1px solid #313244; background: rgba(255,255,255,.04); color: #9399b2; white-space: nowrap; }
+  #panel .pivot-btn:hover { border-color: #89b4fa; color: #cdd6f4; background: rgba(137,180,250,.08); }
+  #panel .sec { margin-top: 12px; color: #9399b2; font-weight: 600; border-top: 1px solid #1f2430;
+    padding-top: 10px; font-size: 11px; display: flex; align-items: center; justify-content: space-between; }
+  #panel .sec-count { color: #45475a; font-weight: 400; }
+  #panel .dir-group { margin-top: 8px; }
+  #panel .dir-lbl { font-size: 11px; color: #45475a; margin: 6px 0 3px; padding-left: 2px; }
+  #panel .nb { color: #a6adc8; cursor: pointer; border-radius: 4px; padding: 2px 5px; margin: 1px -5px;
+    display: flex; align-items: center; gap: 6px; font-size: 12px; }
+  #panel .nb:hover { background: rgba(137,180,250,.13); color: #cdd6f4; }
+  #panel .nb.sel { background: rgba(137,180,250,.2); color: #cdd6f4; outline: 1px solid rgba(137,180,250,.35); }
+  #panel .nb .nb-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #panel .nb .nb-type { color: #6c7086; font-size: 11px; flex-shrink: 0; }
+  #panel .show-more { font-size: 11px; color: #6c7086; cursor: pointer; padding: 3px 5px; }
+  #panel .show-more:hover { color: #89b4fa; }
+  #panel .show-more-list { max-height: 220px; overflow-y: auto; border-left: 1px solid #1f2430; padding-left: 4px; margin-top: 2px; }
+  #pback { display: none; cursor: pointer; color: #89b4fa; font-size: 12px; margin-bottom: 8px; }
+  #pback:hover { text-decoration: underline; }
+  #panel a { color: #89b4fa; }
+  #panel .ghost-node { color: #45475a; font-style: italic; font-size: 12px; margin-top: 8px; }
+
+  /* ── shortcut overlay ── */
+  #overlay { display: none; position: fixed; inset: 0; z-index: 100;
+    background: rgba(0,0,0,.6); backdrop-filter: blur(4px); }
+  #overlay.open { display: flex; align-items: center; justify-content: center; }
+  #overlay-box { background: rgba(17,21,30,.98); border: 1px solid #313244; border-radius: 12px;
+    padding: 24px 28px; max-width: 480px; width: 90%; box-shadow: 0 20px 60px rgba(0,0,0,.6); }
+  #overlay-box h3 { margin: 0 0 16px; font-size: 15px; color: #89b4fa; }
+  #overlay-box .kb-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 20px; }
+  #overlay-box .kb-row { display: flex; align-items: baseline; gap: 8px; padding: 3px 0; font-size: 12px; }
+  #overlay-box .kb-key { font-family: ui-monospace, monospace; background: rgba(255,255,255,.07);
+    border: 1px solid #45475a; border-radius: 4px; padding: 1px 6px; color: #cdd6f4; white-space: nowrap; }
+  #overlay-box .kb-desc { color: #9399b2; }
+  #overlay-box .kb-sep { grid-column: 1 / -1; border-top: 1px solid #1f2430; margin: 6px 0 2px; }
+  #overlay-close { float: right; cursor: pointer; color: #6c7086; font-size: 16px; margin: -4px -6px 0 0; }
+  #overlay-close:hover { color: #cdd6f4; }
+
+  /* ── kind legend (lives in the ? overlay; no always-on chrome) ── */
+  .kb-legend { display: flex; gap: 16px; align-items: center; margin-top: 12px;
+    padding-top: 10px; border-top: 1px solid #1f2430; }
+  .kb-legend .kl { display: flex; align-items: center; gap: 5px; font-size: 12px; color: #9399b2; }
+
+  /* ── force-graph tooltip ── */
+  .graph-tooltip { background: rgba(17,21,30,.96) !important; color: #cdd6f4 !important;
+    border: 1px solid #313244; border-radius: 6px; padding: 5px 9px !important;
+    font: 12px ui-sans-serif, system-ui, sans-serif !important; box-shadow: 0 8px 24px rgba(0,0,0,.45); }
+  .graph-tooltip b { color: #89b4fa; }
+
+  input[type=range] { accent-color: #89b4fa; cursor: pointer; height: 4px; }
+</style>
+</head>
+<body>
+
+<!-- top-left bar: title + staleness badge -->
+<div id="topbar">
+  <div id="hdr">aden <small id="hdr-sub">· graph</small></div>
+  <div id="staleness"></div>
+  <div id="fit" class="topbtn" onclick="fitAll()" title="fit full view (f)">⊙ fit</div>
+</div>
+
+<!-- depth + density controls -->
+<div id="controls">
+  <span class="lbl">density</span>
+  <input id="density" type="range" min="6" max="100" value="100" oninput="setDensity(+this.value)" title="hub-first focus" aria-label="Density: fraction of nodes shown, most-connected first">
+  <span id="depth-wrap">
+    <span class="lbl">depth</span>
+    <input id="depth" type="range" min="1" max="3" value="3" oninput="setDepth(+this.value)" title="hops from focused symbol">
+  </span>
+</div>
+
+<div id="back" onclick="showOverview()">← communities</div>
+
+<!-- region hover card: appears on node hover, top-left corner -->
+<div id="hover-card" aria-live="polite">
+  <span class="hc-dismiss" onclick="dismissHoverCard()" title="dismiss card (c to restore)">×</span>
+  <div class="hc-region">
+    <span class="hc-swatch" id="hc-swatch"></span>
+    <span class="hc-region-name" id="hc-region"></span>
+  </div>
+  <div class="hc-name" id="hc-name"></div>
+  <div class="hc-type" id="hc-type"></div>
+  <div class="hc-file" id="hc-file"></div>
+  <div class="hc-hint" id="hc-hint" style="display:none">hover a node</div>
+</div>
+
+<!-- region legend: collapsible list of all regions with their colors -->
+<div id="region-legend">
+  <div class="rl-head" onclick="toggleLegend()" title="toggle legend">
+    <span class="rl-title">REGIONS</span>
+    <span class="rl-toggle" id="rl-toggle">▾</span>
+  </div>
+  <div class="rl-body" id="rl-body"></div>
+</div>
+
+<!-- centre: search -->
+<div id="search">
+  <input id="q" type="text" placeholder="search symbols…  ( / )" autocomplete="off" spellcheck="false" aria-label="Search symbols by name, anchor, or file">
+  <div id="results"></div>
+</div>
+
+<!-- graph canvas -->
+<div id="graph"></div>
+
+<!-- replay commit label -->
+<div id="act"></div>
+
+<!-- right toolbar: ? + ambient menu -->
+<div id="toolbar">
+  <div id="helpbtn-top" class="topbtn" onclick="toggleOverlay()" title="keyboard shortcuts (?)">?</div>
+  <div id="amb-wrap">
+    <div id="amb-btn" class="topbtn" onclick="toggleAmbMenu()" title="ambient / replay">✦</div>
+    <div id="amb-menu">
+      <div class="mrow on" id="env-row" onclick="toggleEnvelopes()" role="menuitemcheckbox" aria-checked="true">
+        <span>◌</span><span class="mlbl">Module envelopes</span><span class="mkey">e</span>
+      </div>
+      <div class="mrow" id="min-row" onclick="toggleMinimal()" role="menuitemcheckbox" aria-checked="false">
+        <span>◦</span><span class="mlbl">Minimal render</span><span class="mkey">m</span>
+      </div>
+      <div class="mrow" id="syn-row" onclick="toggleSynapse()" role="menuitemcheckbox" aria-checked="false">
+        <span>⚡</span><span class="mlbl">Synapse mode</span><span class="mkey">b</span>
+      </div>
+      <hr>
+      <div class="mrow" id="play-row" onclick="togglePlay()">
+        <span id="play-icon">▶</span><span class="mlbl" id="play-lbl">Replay history</span><span class="mkey">space</span>
+      </div>
+      <div id="replay-rows">
+        <div class="mslider">
+          <label><span>scrub</span></label>
+          <input id="scrub" type="range" min="0" max="0" value="0" oninput="scrubTo(+this.value)">
+        </div>
+        <div class="mslider">
+          <label><span>speed</span><span id="speed-val">6</span></label>
+          <input id="speed" type="range" min="1" max="12" value="6" oninput="setSpeed(+this.value)">
+        </div>
+        <div class="mslider">
+          <span id="rcount" style="font:11px ui-monospace,monospace;color:#9399b2;"></span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- filter chips -->
+<div id="filter"></div>
+
+<!-- flyby code card -->
+<div id="snip" aria-hidden="true"><div class="sn-head"><div class="sn-name" id="sn-name"></div><div class="sn-meta" id="sn-meta"></div></div><pre id="sn-code"></pre></div>
+
+<!-- active pivot lens -->
+<div id="pivot-pill">
+  <span id="pp-label"><span class="pp-mode"></span></span>
+  <span class="pp-x" onclick="clearPivot()" title="back to full view (esc)">✕</span>
+</div>
+
+<!-- bottom hint -->
+<div id="hint">
+  <div id="helpbtn" onclick="toggleOverlay()">?</div>
+  <span id="hint-text">/ search · ? shortcuts</span>
+</div>
+
+<!-- side panel -->
+<div id="panel">
+  <span id="pcollapse" onclick="togglePanel()" title="collapse / expand">▾</span>
+  <div id="pback" onclick="panelBack()">← back</div>
+  <h2 id="p-title"></h2>
+  <div id="p-body"></div>
+</div>
+
+<!-- shortcut overlay -->
+<div id="overlay" onclick="closeOverlayIfBg(event)">
+  <div id="overlay-box">
+    <span id="overlay-close" onclick="toggleOverlay()">✕</span>
+    <h3>Keyboard shortcuts</h3>
+    <div class="kb-grid">
+      <div class="kb-row"><kbd class="kb-key">/</kbd><span class="kb-desc">focus search</span></div>
+      <div class="kb-row"><kbd class="kb-key">Esc</kbd><span class="kb-desc">clear / close panel</span></div>
+      <div class="kb-row"><kbd class="kb-key">f</kbd><span class="kb-desc">fit all into view</span></div>
+      <div class="kb-row"><kbd class="kb-key">h</kbd><span class="kb-desc">toggle UI chrome</span></div>
+      <div class="kb-row"><kbd class="kb-key">b</kbd><span class="kb-desc">synapse mode</span></div>
+      <div class="kb-row"><kbd class="kb-key">m</kbd><span class="kb-desc">minimal render (cheap + clean)</span></div>
+      <div class="kb-row"><kbd class="kb-key">e</kbd><span class="kb-desc">module envelopes on/off</span></div>
+      <div class="kb-row"><kbd class="kb-key">v</kbd><span class="kb-desc">view preset: focus / map / live</span></div>
+      <div class="kb-row"><kbd class="kb-key">d</kbd><span class="kb-desc">hop to the 3D view (focus carries over)</span></div>
+      <div class="kb-row"><kbd class="kb-key">t</kbd><span class="kb-desc">tour the map (any input takes over)</span></div>
+      <div class="kb-row"><kbd class="kb-key">Space</kbd><span class="kb-desc">play / pause replay</span></div>
+      <div class="kb-row"><kbd class="kb-key">o</kbd><span class="kb-desc">open focused node in editor</span></div>
+      <div class="kb-row"><kbd class="kb-key">Backspace</kbd><span class="kb-desc">back (panel history)</span></div>
+      <div class="kb-row"><kbd class="kb-key">x / r / c</kbd><span class="kb-desc">blast / reach / connectivity lens (when node focused)</span></div>
+      <div class="kb-row"><kbd class="kb-key">c</kbd><span class="kb-desc">toggle hover card (when no node focused)</span></div>
+      <div class="kb-sep"></div>
+      <div class="kb-row"><kbd class="kb-key">↑↓</kbd><span class="kb-desc">walk neighbour list</span></div>
+      <div class="kb-row"><kbd class="kb-key">Enter</kbd><span class="kb-desc">navigate to selected</span></div>
+      <div class="kb-row"><kbd class="kb-key">j / k</kbd><span class="kb-desc">next / prev neighbour</span></div>
+      <div class="kb-row"><kbd class="kb-key">right-click</kbd><span class="kb-desc">open node in editor</span></div>
+      <div class="kb-row"><kbd class="kb-key">dbl-click bg</kbd><span class="kb-desc">fit all into view</span></div>
+      <div class="kb-sep"></div>
+      <div class="kb-row"><kbd class="kb-key">?</kbd><span class="kb-desc">this help</span></div>
+    </div>
+    <div class="kb-legend">
+      <span class="kl"><svg width="10" height="10"><circle cx="5" cy="5" r="4" fill="#89b4fa" opacity=".8"/></svg>code</span>
+      <span class="kl"><svg width="10" height="10"><rect x="1" y="1" width="8" height="8" rx="2" fill="#cba6f7" opacity=".8"/></svg>doc</span>
+      <span class="kl"><svg width="10" height="10"><polygon points="5,1 9,5 5,9 1,5" fill="#f9e2af" opacity=".8"/></svg>term</span>
+      <span class="kl" style="margin-left:auto;color:#6c7086">node size = connectivity</span>
+    </div>
+  </div>
+</div>
+
+<script>/*FORCE_GRAPH_LIB*/</script>
+<script>
+// roundRect polyfill for Safari <15.4 / older Chrome
+if (!CanvasRenderingContext2D.prototype.roundRect) {
+  CanvasRenderingContext2D.prototype.roundRect = function(x, y, w, h, r) {
+    const rr = Math.min(r || 0, w / 2, h / 2);
+    this.moveTo(x + rr, y); this.lineTo(x + w - rr, y);
+    this.quadraticCurveTo(x + w, y, x + w, y + rr);
+    this.lineTo(x + w, y + h - rr);
+    this.quadraticCurveTo(x + w, y + h, x + w - rr, y + h);
+    this.lineTo(x + rr, y + h); this.quadraticCurveTo(x, y + h, x, y + h - rr);
+    this.lineTo(x, y + rr); this.quadraticCurveTo(x, y, x + rr, y);
+    this.closePath();
+  };
+}
+</script>
+<script>
+const DATA = /*ADEN_DATA*/;
+const EDITOR = "/*EDITOR*/";
+const SIBLING = "/*SIBLING*/";   // the 3D twin of this page ('' = none)
+const hasDrill = !!(DATA.drill && Object.keys(DATA.drill).length);
+// `d` hops dimensions, carrying the focused anchor across in the hash.
+function toggleDimension() {
+  if (!SIBLING) return;
+  const n = panelCur && byId[panelCur];
+  location.href = SIBLING + (n && n.anchor ? '#a=' + encodeURIComponent(n.anchor) : '');
+}
+
+// ── state ────────────────────────────────────────────────────────────────────
+let byId = {}, curLinks = [], level = 'overview';
+const highlightNodes = new Set(), highlightLinks = new Set();
+let hoverNode = null, overUI = false;
+let panelStack = [], panelCur = null, panelNbs = [], nbSel = -1;
+let activeTypes = new Set();
+let densityFrac = 1, densityVisible = null;
+let depthLimit = null, maxHop = 0;
+// Pivot lens (blast/reach/connectivity from a node): a FILTER over the current
+// view — nodes keep their positions and the simulation never restarts, so
+// pivoting is instant and bounce-free. null = no lens.
+let pivotSet = null, pivotRoot = null, pivotMode = null;
+let playing = false, actSeq = [], actIdx = 0, playTimer = null, pulseRAF = null;
+let synapse = false, fireTimer = null;
+// Minimal render: plain dots + lines, no glow/halo painting — the cheap,
+// clean mode (toggle: m). Auto-on when the OS asks for reduced motion.
+let minimal = false;
+const REDUCED_MOTION = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+let frameOff = 0, fitTick = 0;
+const REVEAL_BUDGET = 22;
+let anchorToId = {};
+let growMode = false, stepMs = 600;
+const pulses = new Map(), revealed = new Set();
+// Long-standing trails: links a signal recently crossed stay lit and fade
+// slowly (strength 1→0), and groups a signal entered glow through their
+// envelope — the "where has thought been travelling" after-image.
+const trail = new Map();       // link → strength
+const groupPulse = new Map();  // group name → strength
+const REL = 3;
+
+// ── staleness badge ───────────────────────────────────────────────────────────
+(function() {
+  const el = document.getElementById('staleness');
+  const hdrSub = document.getElementById('hdr-sub');
+  if (DATA.mode && DATA.mode !== 'graph') {
+    hdrSub.textContent = ' · ' + DATA.mode + (DATA.root ? ' · ' + shortNameA(DATA.root) : '');
+  }
+  document.title = 'aden · ' + (DATA.mode || 'graph') + (DATA.root ? ' · ' + shortNameA(DATA.root) : '');
+  if (DATA.generated_at) {
+    const d = DATA.generated_at.slice(0, 10);
+    const h = DATA.generated_at.slice(11, 16);
+    const gh = DATA.git_hash ? ` <span title="git commit">${DATA.git_hash}</span>` : '';
+    el.innerHTML = `<span title="generated at">${d} ${h}${gh}</span>`;
+    if (DATA.all_anchors_total && DATA.all_anchors_total > DATA.shown_nodes) {
+      el.innerHTML += ` <span title="${DATA.all_anchors_total} total symbols in project">(${DATA.shown_nodes}/${DATA.all_anchors_total} shown)</span>`;
+    }
+  }
+})();
+
+// ── palette: generative, vivid, evenly spaced ────────────────────────────────
+// Golden-angle hue stepping yields maximally-distinct, saturated colors for ANY
+// number of groups (the old fixed pastel set washed out and repeated at 15).
+// Emitted as hex so the alpha helper keeps working.
+function hslHex(h, s, l) {
+  const a = s * Math.min(l, 1 - l);
+  const f = k => {
+    const n = (k + h / 30) % 12;
+    const c = l - a * Math.max(-1, Math.min(n - 3, 9 - n, 1));
+    return Math.round(255 * c).toString(16).padStart(2, '0');
+  };
+  return `#${f(0)}${f(8)}${f(4)}`;
+}
+// Cosmic ramp: nebula-photography hues — violets, magentas, deep cyans,
+// teals, rare warm accents — harmonized neighbours, maximum chroma, deep
+// black between them (see the 3D view; both maps share the grade).
+const COSMIC = [265, 300, 210, 185, 330, 245, 160, 35];
+const palette = Array.from({ length: 64 }, (_, i) => {
+  const jitter = (Math.floor(i / COSMIC.length) * 9) % 24 - 12;
+  const h = ((COSMIC[i % COSMIC.length] + jitter) % 360 + 360) % 360;
+  return hslHex(h, 0.92, 0.62);
+});
+const edgePalette = Array.from({ length: 32 }, (_, i) =>
+  hslHex(((COSMIC[(i + 3) % COSMIC.length] + 20) % 360), 0.85, 0.58));
+let groupIdx = {}, typeColor = {};
+// Aurora blend: a link's ambient color is the mix of its two endpoints' hues,
+// so connection fields shimmer in gradients across regions instead of reading
+// as a uniform wire mesh. Cached per link object (links are rebuilt per view).
+function mixHex(a, b) {
+  const pa = a.replace('#', ''), pb = b.replace('#', '');
+  let out = '#';
+  for (let i = 0; i < 6; i += 2) {
+    out += Math.round((parseInt(pa.slice(i, i + 2), 16) + parseInt(pb.slice(i, i + 2), 16)) / 2)
+      .toString(16).padStart(2, '0');
+  }
+  return out;
+}
+function linkBlend(l) {
+  if (!l._c) {
+    const a = byId[idOf(l.source)], b = byId[idOf(l.target)];
+    l._c = mixHex(a ? colorOf(a) : '#89b4fa', b ? colorOf(b) : '#89b4fa');
+  }
+  return l._c;
+}
+
+// ── node shape by kind ───────────────────────────────────────────────────────
+const DOC_KINDS = new Set(['Adr','Runbook','Plan','Context','Manifest','Spec','Note']);
+const CODE_KINDS = new Set(['Module','Function','Type','Script']);
+function kindShape(k) {
+  if (!k) return 'circle';
+  if (k === 'Term') return 'diamond';
+  if (DOC_KINDS.has(k)) return 'rect';
+  return 'circle';
+}
+
+// Pivot mode hues: blast = warm danger (red-orange), reach = cool (blue),
+// connectivity = calm green. Root node always gets the brightest, most saturated
+// version; other pivot nodes are faded by hop distance (hop 0 = root = full).
+const PIVOT_HUE = { blast: '#f38ba8', reach: '#89b4fa', connectivity: '#a6e3a1' };
+function colorOf(n) {
+  if (n.root && !pivotSet) return '#f38ba8';
+  if (pivotSet && pivotSet.has(n.id)) {
+    const base = PIVOT_HUE[pivotMode] || '#89b4fa';
+    const hop = n.hop != null ? n.hop : 0;
+    // Root (hop 0) = full color. Each hop dims by ~18% (alpha on a white blend
+    // would de-saturate; we keep hue by scaling alpha against the canvas black).
+    // Fade floor at 0.35 so deep nodes are still visible.
+    if (hop === 0) return base;
+    const alpha = Math.max(0.35, 1 - hop * 0.18);
+    return hexA(base, alpha);
+  }
+  if (n.group != null && n.group in groupIdx) return palette[groupIdx[n.group] % palette.length];
+  if (n.community != null) return palette[n.community % palette.length];
+  return '#89b4fa';
+}
+const idOf = e => (e && e.id != null) ? e.id : e;
+function esc(s) { return String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+// Attribute-safe escape: also encodes the double quote, so JSON (which is full of
+// them) survives a `data-*="…"` round-trip. Plain esc() leaves `"` raw, which
+// truncates the attribute at the first quote — e.g. data-ids JSON came back as
+// `[`, and JSON.parse threw, so "(+N more)" silently did nothing.
+function escAttr(s) { return String(s).replace(/[&"<>]/g, c => ({'&':'&amp;','"':'&quot;','<':'&lt;','>':'&gt;'}[c])); }
+function row(k, v) { return `<div class="row"><span class="k">${k}:</span> ${esc(v)}</div>`; }
+
+// label from a full anchor string (for use before byId is built)
+function shortNameA(a) { return String(a).split('#').pop().split('/').pop(); }
+function shortName(n) { const a = n.label || n.anchor || n.id || ''; return shortNameA(a); }
+function context(n) {
+  if (n.size != null) return n.size + ' symbols';
+  const file = (() => { const a = n.anchor || ''; const h = a.indexOf('#'); return (h >= 0 ? a.slice(0, h) : '').split('/').pop(); })();
+  const mass = n.loc ? `${n.loc} loc` : n.words ? `${n.words} words` : '';
+  return [file, mass].filter(Boolean).join(' · ');
+}
+function breadcrumb(n) {
+  if (!n.anchor) return '';
+  const a = n.anchor;
+  const parts = a.replace('aden://', '').split('/');
+  if (parts.length < 2) return '';
+  // e.g. module / aden-cli / view.rs # cmd_view
+  const segs = [];
+  let acc = 'aden://';
+  for (let i = 0; i < parts.length; i++) {
+    acc += (i > 0 ? '/' : '') + parts[i];
+    segs.push({ label: parts[i], anchor: acc });
+  }
+  return segs.map(s => `<span onclick="searchAndGo('${esc(s.label)}')" title="${esc(s.anchor)}">${esc(s.label)}</span>`).join(' › ');
+}
+
+// ── buildData ─────────────────────────────────────────────────────────────────
+function buildData(rawNodes, rawEdges) {
+  byId = {};
+  const nodes = (rawNodes || []).map(n => { const c = { ...n, neighbors: [], adj: [] }; byId[n.id] = c; return c; });
+  const links = (rawEdges || []).map(e => ({ source: e.from, target: e.to, type: e.type }));
+  links.forEach(l => {
+    const a = byId[l.source], b = byId[l.target];
+    if (a && b) { a.neighbors.push(b); b.neighbors.push(a); a.adj.push(l); b.adj.push(l); }
+  });
+  nodes.forEach(n => n.deg = n.adj.length);
+  anchorToId = {}; nodes.forEach(n => { if (n.anchor) anchorToId[n.anchor] = n.id; });
+  const gs = [...new Set(nodes.map(n => n.group).filter(g => g != null))].sort();
+  groupIdx = {}; gs.forEach((g, i) => { groupIdx[g] = i; });
+  const ets = [...new Set(links.map(l => l.type))].sort();
+  typeColor = {}; ets.forEach((t, i) => { typeColor[t] = edgePalette[i % edgePalette.length]; });
+  highlightNodes.clear(); highlightLinks.clear(); hoverNode = null;
+  activeTypes = new Set(links.map(l => l.type));
+  // Salience-first ambient field: people don't render every inference their
+  // brain makes — they see the things, and connections surface when they
+  // attend to one. On large views the structural/advisory edge types start
+  // OFF in the ambient field (the chips re-enable any of them); a FOCUSED
+  // node always shows its full edge set regardless (see linkVisibility).
+  // Small rooted views keep everything on — there the relations ARE the view.
+  if (nodes.length > 150) {
+    ['Contains', 'PartOf', 'AssociatedWith', 'Mentions'].forEach(t => activeTypes.delete(t));
+  }
+  curLinks = links;
+  recomputeHops();
+  return { nodes, links };
+}
+
+// ── force graph setup ─────────────────────────────────────────────────────────
+const el = document.getElementById('graph');
+const Graph = ForceGraph()(el)
+  .backgroundColor('rgba(0,0,0,0)')
+  .nodeId('id')
+  .autoPauseRedraw(false)
+  .nodeLabel(n => `<b>${esc(shortName(n))}</b>${context(n) ? ` <span style="color:#6c7086">${esc(context(n))}</span>` : ''}`)
+  .nodeRelSize(REL)
+  .nodeVal(nodeSize)
+  .nodeColor(n => (highlightNodes.size && !highlightNodes.has(n)) ? hexA(colorOf(n), .34) : colorOf(n))
+  .nodeCanvasObjectMode(() => 'before')
+  .nodeCanvasObject((n, ctx, scale) => {
+    const base = REL * Math.sqrt(nodeSize(n));
+    const dim = highlightNodes.size && !highlightNodes.has(n);
+    const col = colorOf(n);
+    const shape = kindShape(n.kind);
+    if (!dim && !minimal) {
+      ctx.beginPath();
+      if (shape === 'diamond') {
+        ctx.moveTo(n.x, n.y - base * 2.1); ctx.lineTo(n.x + base * 2.1, n.y);
+        ctx.lineTo(n.x, n.y + base * 2.1); ctx.lineTo(n.x - base * 2.1, n.y); ctx.closePath();
+      } else if (shape === 'rect') {
+        const r = base * 1.8, rr = base * 0.5;
+        ctx.roundRect(n.x - r, n.y - r * 0.65, r * 2, r * 1.3, rr);
+      } else {
+        ctx.arc(n.x, n.y, base * 2.1, 0, 2 * Math.PI);
+      }
+      ctx.fillStyle = hexA(col, 0.10); ctx.fill();
+    }
+    const p = pulses.get(n.id);
+    if (p > 0) {
+      ctx.beginPath(); ctx.arc(n.x, n.y, base * (1.5 + (1 - p) * 3), 0, 2 * Math.PI);
+      ctx.fillStyle = synapse ? `rgba(137,220,235,${0.5 * p})` : `rgba(166,227,161,${0.4 * p})`;
+      ctx.fill();
+    }
+    if (n === hoverNode) {
+      ctx.beginPath(); ctx.arc(n.x, n.y, base * 1.7, 0, 2 * Math.PI);
+      ctx.fillStyle = 'rgba(137,180,250,.22)'; ctx.fill();
+    }
+    // Pivot root ring: a bright outer ring marks the focal node so it stands
+    // out against the hop-faded neighbors. Drawn regardless of highlight state.
+    if (pivotSet && n.id === pivotRoot) {
+      const ringCol = PIVOT_HUE[pivotMode] || '#89b4fa';
+      ctx.beginPath(); ctx.arc(n.x, n.y, base * 2.6, 0, 2 * Math.PI);
+      ctx.strokeStyle = hexA(ringCol, 0.85); ctx.lineWidth = 1.5 / scale; ctx.stroke();
+      ctx.beginPath(); ctx.arc(n.x, n.y, base * 3.4, 0, 2 * Math.PI);
+      ctx.strokeStyle = hexA(ringCol, 0.35); ctx.lineWidth = 1 / scale; ctx.stroke();
+    }
+    // Labels follow attention: with a focus active, label ONLY the focused
+    // neighborhood (everything else is dimmed anyway); with no focus, label
+    // spheres + hubs at readable zoom. Keeps the idle map quiet.
+    const labelled = n.size != null
+      || n === hoverNode
+      || (highlightNodes.size
+            ? (highlightNodes.has(n) && scale > 0.9)
+            : (scale > 1.6 && n.deg >= 5));
+    if (!dim && labelled) {
+      const fs = Math.max(11 / scale, 1.5);
+      ctx.font = `${fs}px ui-sans-serif, system-ui, sans-serif`;
+      ctx.fillStyle = (n.size != null) ? 'rgba(205,214,244,.92)' : 'rgba(186,194,222,.8)';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+      ctx.fillText(shortName(n), n.x, n.y + base + 3 / scale);
+    }
+  })
+  // Wisps, not wires: gentle arcs (curvature below), ambient color = the
+  // aurora blend of the two endpoints; the TYPE color appears when you
+  // attend (where it's information, not texture).
+  .linkCurvature(0.18)
+  .linkColor(l => {
+    if (isMeta(l)) return highlightLinks.has(l) ? 'rgba(180,190,220,.4)' : 'rgba(120,130,170,.12)';
+    // Pivot mode: color pivot-internal links in the mode hue, fade proportional
+    // to the deeper hop of the two endpoints so the propagation gradient extends
+    // to the edges, not just the nodes.
+    if (pivotSet) {
+      const src = idOf(l.source), dst = idOf(l.target);
+      if (pivotSet.has(src) && pivotSet.has(dst)) {
+        const base = PIVOT_HUE[pivotMode] || '#89b4fa';
+        const hopA = byId[src] && byId[src].hop != null ? byId[src].hop : 0;
+        const hopB = byId[dst] && byId[dst].hop != null ? byId[dst].hop : 0;
+        const maxH = Math.max(hopA, hopB);
+        const alpha = Math.max(0.25, 0.75 - maxH * 0.12);
+        return hexA(base, alpha);
+      }
+      return 'rgba(120,130,170,.06)';
+    }
+    if (highlightLinks.has(l)) return hexA(typeColor[l.type] || '#8088aa', .9);
+    const c = linkBlend(l);
+    const t = trail.get(l) || 0;
+    if (highlightNodes.size) return hexA(c, .06 + t * .5);
+    return hexA(c, .26 + t * .6);   // recently-travelled connections stay lit
+  })
+  .linkWidth(l => highlightLinks.has(l) ? 2 : 1 + (trail.get(l) || 0) * 1.2)
+  .nodeVisibility(n => !growMode || revealed.has(n.id))
+  // A focused node's edges bypass the ambient type filter: attending to a
+  // thing reveals ALL of its connections, even types switched off globally.
+  .linkVisibility(l => (highlightLinks.has(l) || isMeta(l) || activeTypes.has(l.type)) &&
+    (!growMode || (revealed.has(idOf(l.source)) && revealed.has(idOf(l.target)))))
+  // In pivot mode: show directional arrows on all pivot-internal links to make
+  // flow direction readable (blast = converging toward root; reach = fanning out;
+  // connectivity = undirected, no arrows). Outside pivot: arrows on hover only.
+  .linkDirectionalArrowLength(l => {
+    if (pivotSet) {
+      if (pivotMode === 'connectivity') return 0;
+      const src = idOf(l.source), dst = idOf(l.target);
+      if (pivotSet.has(src) && pivotSet.has(dst)) return 3;
+    }
+    return highlightLinks.has(l) ? 4 : 0;
+  })
+  // Arrow position: reach/default = rel=1 (arrow at target, points outward from root).
+  // blast = arrows should converge on the root, so point toward the lower-hop node.
+  // When both endpoints have hop info, place the arrow at the lower-hop end (1 = target
+  // when target hop < source hop; 0 = source end otherwise). Falls back to 1.
+  .linkDirectionalArrowRelPos(l => {
+    if (pivotSet && pivotMode === 'blast') {
+      const src = byId[idOf(l.source)], dst = byId[idOf(l.target)];
+      const hs = src && src.hop != null ? src.hop : Infinity;
+      const hd = dst && dst.hop != null ? dst.hop : Infinity;
+      // Arrow pointing toward the lower-hop (root-side) endpoint
+      return hs < hd ? 0 : 1;
+    }
+    return 1;
+  })
+  .linkLabel(l => l.type)
+  .onNodeHover(n => {
+    if (overUI) { el.style.cursor = 'default'; return; }
+    el.style.cursor = n ? 'pointer' : 'default';
+    if (n && n !== hoverNode) {
+      highlightNodes.clear(); highlightLinks.clear();
+      highlightNodes.add(n); (n.neighbors || []).forEach(x => highlightNodes.add(x));
+      (n.adj || []).forEach(l => highlightLinks.add(l));
+      hoverNode = n;
+    } else if (!n) {
+      hoverNode = null;
+    }
+    updateHoverCard(n);
+  })
+  .onNodeClick(onClick)
+  .onNodeRightClick(n => openEditor(n))
+  // A stray background click should not blow away your focus + camera (that
+  // read as "the graph jumped"). Single click just clears the hover state;
+  // double-click on empty space (or `f`/Esc) does the full re-fit.
+  .onBackgroundClick(() => {
+    highlightNodes.clear(); highlightLinks.clear(); hoverNode = null;
+    resEl.classList.remove('open');
+    updateHoverCard(null);
+  });
+el.addEventListener('contextmenu', e => e.preventDefault());
+el.addEventListener('dblclick', () => { if (!overUI && !hoverNode) fitAll(); });
+
+Graph.d3Force('charge').strength(-110).distanceMax(300);
+const _lf = Graph.d3Force('link');
+if (_lf) _lf.distance(l => l.member ? 24 : 34).strength(0.5);
+// Calm physics: pre-settle off-screen (warmupTicks) so the page never opens on
+// an exploding layout; heavier velocity damping + faster cooling so any reheat
+// (community expand, new data) settles in a beat instead of bouncing.
+Graph.warmupTicks(80).cooldownTime(4000).d3AlphaDecay(0.05).d3VelocityDecay(0.55);
+// Base particle styling so one-shot strobes (neighbor-walk, synapse) render
+// without synapse mode having to configure them first.
+Graph.linkDirectionalParticleSpeed(0.02)
+     .linkDirectionalParticleWidth(2.2)
+     .linkDirectionalParticleColor(l => hexA(typeColor[l.type] || '#89dceb', .95));
+function collideForce(radius, strength) {
+  let nodes = [];
+  const f = alpha => {
+    const s = strength == null ? 0.8 : strength;
+    for (let i = 0; i < nodes.length; i++) {
+      const a = nodes[i];
+      for (let j = i + 1; j < nodes.length; j++) {
+        const b = nodes[j];
+        let dx = b.x - a.x, dy = b.y - a.y, d2 = dx * dx + dy * dy;
+        const rr = radius(a) + radius(b);
+        if (d2 < rr * rr) {
+          if (d2 < 1e-6) { dx = Math.random() - .5; dy = Math.random() - .5; d2 = dx * dx + dy * dy; }
+          const d = Math.sqrt(d2), push = (rr - d) / d * s * alpha;
+          a.vx -= dx * push; a.vy -= dy * push; b.vx += dx * push; b.vy += dy * push;
+        }
+      }
+    }
+  };
+  f.initialize = n => { nodes = n; };
+  return f;
+}
+Graph.d3Force('collide', collideForce(n => REL * Math.sqrt(nodeSize(n)) * 1.5 + 6, 1));
+// Group gravity: same-module nodes drift toward their module's centroid, so
+// each module becomes a spatially coherent cluster — the body the envelope
+// membrane (below) wraps. Gentle on purpose: cross-module links still pull
+// related clusters near each other.
+function groupGravity(strength) {
+  let nodes = [];
+  const f = alpha => {
+    const cents = new Map();
+    for (const n of nodes) {
+      if (n.group == null) continue;
+      let c = cents.get(n.group);
+      if (!c) cents.set(n.group, c = { x: 0, y: 0, m: 0 });
+      c.x += n.x; c.y += n.y; c.m++;
+    }
+    cents.forEach(c => { c.x /= c.m; c.y /= c.m; });
+    for (const n of nodes) {
+      const c = n.group != null && cents.get(n.group);
+      if (!c || c.m < 2) continue;
+      n.vx += (c.x - n.x) * strength * alpha;
+      n.vy += (c.y - n.y) * strength * alpha;
+    }
+  };
+  f.initialize = ns => { nodes = ns; };
+  return f;
+}
+Graph.d3Force('groupGravity', groupGravity(0.06));
+
+// ── envelopes: each module drawn as one soft membrane around its members ──
+// The "big idea" orb: its size is not styled, it EMERGES from the contents —
+// a module with more (and bigger) symbols simply has a bigger body. Labelled
+// with the module name + aggregate mass, so zoomed out you read modules, and
+// zooming in reads the symbols inside them.
+let envelopes = true;
+function toggleEnvelopes() {
+  envelopes = !envelopes;
+  const row = document.getElementById('env-row');
+  if (row) { row.classList.toggle('on', envelopes); row.setAttribute('aria-checked', String(envelopes)); }
+}
+function hullOf(pts) {   // Andrew monotone chain convex hull
+  pts = pts.slice().sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const cross = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+  const lo = [], hi = [];
+  for (const p of pts) { while (lo.length >= 2 && cross(lo[lo.length - 2], lo[lo.length - 1], p) <= 0) lo.pop(); lo.push(p); }
+  for (const p of pts.reverse()) { while (hi.length >= 2 && cross(hi[hi.length - 2], hi[hi.length - 1], p) <= 0) hi.pop(); hi.push(p); }
+  lo.pop(); hi.pop();
+  return lo.concat(hi);
+}
+Graph.onRenderFramePre((ctx, scale) => {
+  if (!envelopes || minimal) return;
+  const groups = new Map();
+  Object.values(byId).forEach(n => {
+    if (n.group == null || n.x == null || !idVisible(n.id)) return;
+    let g = groups.get(n.group);
+    if (!g) groups.set(n.group, g = []);
+    g.push(n);
+  });
+  groups.forEach((members, gname) => {
+    const col0 = palette[(groupIdx[gname] || 0) % palette.length];
+    // Nebula field: a huge, ultra-soft, slowly-breathing color cloud behind
+    // each cluster — the module's atmosphere. Drawn even for small groups.
+    if (members.length >= 2) {
+      let ncx = 0, ncy = 0;
+      members.forEach(n => { ncx += n.x; ncy += n.y; });
+      ncx /= members.length; ncy /= members.length;
+      let nr = 70;
+      members.forEach(n => { nr = Math.max(nr, Math.hypot(n.x - ncx, n.y - ncy)); });
+      nr += 70;
+      const breathe = REDUCED_MOTION ? 1
+        : 1 + Math.sin(Date.now() / 2400 + (groupIdx[gname] || 0)) * 0.06;
+      const glow0 = groupPulse.get(gname) || 0;
+      const grad = ctx.createRadialGradient(ncx, ncy, 0, ncx, ncy, nr * breathe);
+      grad.addColorStop(0, hexA(col0, 0.05 + glow0 * 0.06));
+      grad.addColorStop(1, hexA(col0, 0));
+      ctx.beginPath(); ctx.arc(ncx, ncy, nr * breathe, 0, 2 * Math.PI);
+      ctx.fillStyle = grad; ctx.fill();
+    }
+    if (members.length < 3) return;
+    const hull = hullOf(members.map(n => [n.x, n.y]));
+    if (hull.length < 3) return;
+    let cx = 0, cy = 0;
+    hull.forEach(([x, y]) => { cx += x; cy += y; });
+    cx /= hull.length; cy /= hull.length;
+    // pad outward from the centroid, then smooth through edge midpoints for a
+    // soft organic membrane instead of a hard polygon
+    const pad = 18;
+    const ex = hull.map(([x, y]) => {
+      const dx = x - cx, dy = y - cy, d = Math.hypot(dx, dy) || 1;
+      return [x + dx / d * pad, y + dy / d * pad];
+    });
+    ctx.beginPath();
+    for (let i = 0; i < ex.length; i++) {
+      const [x1, y1] = ex[i], [x2, y2] = ex[(i + 1) % ex.length];
+      const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
+      if (i === 0) ctx.moveTo(mx, my); else ctx.quadraticCurveTo(x1, y1, mx, my);
+      if (i === ex.length - 1) ctx.quadraticCurveTo(x2, y2, (ex[0][0] + ex[1][0]) / 2, (ex[0][1] + ex[1][1]) / 2);
+    }
+    ctx.closePath();
+    const col = palette[(groupIdx[gname] || 0) % palette.length];
+    const glow = groupPulse.get(gname) || 0;   // sections recently entered glow
+    ctx.fillStyle = hexA(col, 0.045 + glow * 0.10); ctx.fill();
+    ctx.strokeStyle = hexA(col, 0.16 + glow * 0.35); ctx.lineWidth = (1.5 + glow * 1.5) / scale; ctx.stroke();
+    if (scale > 0.45) {
+      const loc = members.reduce((s, n) => s + (n.loc || 0), 0);
+      const mass = loc >= 1000 ? `${(loc / 1000).toFixed(1)}k loc` : loc ? `${loc} loc` : `${members.length} items`;
+      ctx.font = `${Math.max(12 / scale, 3)}px ui-sans-serif, system-ui, sans-serif`;
+      ctx.fillStyle = hexA(col, 0.55);
+      ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
+      const top = Math.min(...ex.map(p => p[1]));
+      ctx.fillText(`${gname} · ${mass}`, cx, top - 4 / scale);
+    }
+  });
+});
+let fitPending = false;
+Graph.onEngineStop(() => { if (fitPending) { Graph.zoomToFit(600, 70); fitPending = false; } });
+function fit() { Graph.width(innerWidth).height(innerHeight); }
+addEventListener('resize', fit); fit();
+
+// Content mass — orbs scale with what's actually inside them: community
+// spheres by symbol count, code by real lines (span data), prose by word
+// count (≈8 words to a line), with connectivity as the fallback when no
+// span was recorded.
+function massOf(n) {
+  if (n.size != null) return n.size * 6;
+  if (n.loc) return n.loc;
+  if (n.words) return n.words / 8;
+  return (n.deg || 0) * 4;
+}
+function nodeSize(n) { return Math.min(1 + Math.sqrt(massOf(n)) * 0.55, 14); }
+function hexA(hex, a) { const m = hex.replace('#',''); return `rgba(${parseInt(m.slice(0,2),16)},${parseInt(m.slice(2,4),16)},${parseInt(m.slice(4,6),16)},${a})`; }
+// ── file / editor helpers ─────────────────────────────────────────────────────
+// fileOf: returns n.file when present, otherwise tries to parse the file path
+// from the anchor. Anchor format: aden://module/{project}/{relpath}#{symbol}
+// where {relpath} may contain '/' (e.g. src/commands/view.rs).
+// Synthesized aggregate nodes (mod-*) with no resolvable file return null.
+function fileOf(n) {
+  if (n && n.file) return n.file;
+  if (n && n.anchor) {
+    // Strip scheme, split off the fragment (#symbol), then peel {type}/{project}
+    const noScheme = n.anchor.replace(/^aden:\/\//, '');
+    const hashIdx = noScheme.indexOf('#');
+    const path = hashIdx >= 0 ? noScheme.slice(0, hashIdx) : noScheme;
+    const parts = path.split('/');
+    // parts[0] = type (module/doc/…), parts[1] = project, parts[2..] = relpath
+    if (parts.length >= 3 && parts[2]) {
+      return parts.slice(2).join('/');
+    }
+  }
+  return null;
+}
+// editorUrl: uses fileOf so the link is derivable even when n.file is absent.
+// Guards against a literal un-substituted /*EDITOR*/ placeholder (happens when
+// the user did not configure --editor and auto-detect found nothing). In that
+// case return null so the panel hides the link instead of emitting a broken href.
+function editorUrl(n) {
+  const f = fileOf(n);
+  if (!f) return null;
+  if (!EDITOR || EDITOR.includes('/*EDITOR*/')) return null;
+  return EDITOR.replace('{file}', f).replace('{line}', n.line || 1);
+}
+function openEditor(n) { const u = editorUrl(n); if (u) window.location.href = u; }
+
+// ── region hover card ─────────────────────────────────────────────────────────
+// Extracts the codebase region from a node: uses the node's `group` field
+// (already the project/crate component of the anchor, e.g. "aden-core"), with
+// fallbacks for synthesized aggregate nodes (mod-{X}) and anchor-parseable nodes.
+// No node should fall to "?" when its project is derivable.
+function regionOf(n) {
+  if (n.group != null) return String(n.group);
+  // Synthesized aggregate nodes: id like "mod-aden-cli" → "aden-cli"
+  const id = String(n.id || '');
+  if (id.startsWith('mod-')) {
+    const suffix = id.slice(4);
+    if (suffix === 'project' || !suffix) return 'project';
+    return suffix;
+  }
+  // Fallback: parse from anchor: aden://module/{project}/... → {project}
+  if (n.anchor) {
+    const stripped = n.anchor.replace(/^aden:\/\//, '');
+    const parts = stripped.split('/');
+    if (parts.length >= 2 && parts[1] && parts[1] !== '?') return parts[1];
+    if (parts.length >= 1 && parts[0] && parts[0] !== 'module' && parts[0] !== 'doc') return parts[0];
+  }
+  return n.kind || 'other';
+}
+
+const hoverCardEl = document.getElementById('hover-card');
+// cardDismissed: session flag — × hides the card; `c` (when no node is focused)
+// toggles it back. The card never intercepts pointer events (pointer-events:none
+// on the surface); only the × button is pointer-events:auto.
+let cardDismissed = false;
+function dismissHoverCard() {
+  cardDismissed = true;
+  hoverCardEl.classList.remove('on', 'idle');
+}
+function toggleCardDismiss() {
+  cardDismissed = !cardDismissed;
+  if (!cardDismissed) updateHoverCard(hoverNode);   // re-show with current state
+  else hoverCardEl.classList.remove('on', 'idle');
+}
+function updateHoverCard(n) {
+  if (cardDismissed) return;   // user dismissed — keep hidden until toggled back
+  const hint = document.getElementById('hc-hint');
+  if (!n) {
+    // No node hovered — show idle state
+    hoverCardEl.classList.remove('on');
+    hoverCardEl.classList.add('idle');
+    document.getElementById('hc-name').textContent = '';
+    document.getElementById('hc-type').textContent = '';
+    document.getElementById('hc-file').textContent = '';
+    document.getElementById('hc-region').textContent = '';
+    document.getElementById('hc-swatch').style.background = 'transparent';
+    if (hint) hint.style.display = 'block';
+    return;
+  }
+  if (hint) hint.style.display = 'none';
+  const region = regionOf(n);
+  const col = colorOf(n);
+  document.getElementById('hc-swatch').style.background = col;
+  document.getElementById('hc-swatch').style.boxShadow = `0 0 6px ${hexA(col, .5)}`;
+  document.getElementById('hc-region').textContent = region;
+  document.getElementById('hc-region').style.color = col;
+  document.getElementById('hc-name').textContent = shortName(n);
+  document.getElementById('hc-name').style.color = col;
+  const typeStr = [n.kind, n.size != null ? n.size + ' symbols' : null, n.loc ? n.loc + ' loc' : n.words ? n.words + ' words' : null].filter(Boolean).join(' · ');
+  document.getElementById('hc-type').textContent = typeStr;
+  const filePath = fileOf(n);
+  document.getElementById('hc-file').textContent = filePath ? filePath.split('/').slice(-2).join('/') : '';
+  hoverCardEl.classList.remove('idle');
+  hoverCardEl.classList.add('on');
+}
+
+// ── region legend ─────────────────────────────────────────────────────────────
+// Rebuilt whenever the graph data changes (buildData). Lists each unique region
+// (group) in the current view with its deterministic palette color.
+let legendCollapsed = false;
+function buildLegend() {
+  const body = document.getElementById('rl-body');
+  if (!body) return;
+  // Collect unique regions from current nodes, sorted by name
+  const regions = Object.keys(groupIdx).sort();
+  if (!regions.length) {
+    body.innerHTML = '<div class="rl-row"><span class="rl-label" style="color:#45475a;font-style:italic">no regions</span></div>';
+    return;
+  }
+  body.innerHTML = regions.map(r => {
+    const col = palette[groupIdx[r] % palette.length];
+    return `<div class="rl-row" style="cursor:pointer" title="Jump to region" onclick="jumpToRegion(${JSON.stringify(r)})">
+      <span class="rl-dot" style="background:${col};box-shadow:0 0 4px ${hexA(col,.4)}"></span>
+      <span class="rl-label" title="${esc(r)}">${esc(r)}</span>
+    </div>`;
+  }).join('');
+}
+function jumpToRegion(r) {
+  const matching = Object.values(byId).filter(n => idVisible(n.id) && regionOf(n) === r);
+  if (!matching.length) return;   // guard: no visible nodes in this region
+  // Briefly highlight the region's nodes using existing machinery
+  highlightNodes.clear(); highlightLinks.clear();
+  matching.forEach(n => {
+    highlightNodes.add(n);
+    (n.adj || []).forEach(l => highlightLinks.add(l));
+  });
+  refreshViz();
+  Graph.zoomToFit(700, 80, n => idVisible(n.id) && regionOf(n) === r);
+}
+function toggleLegend() {
+  legendCollapsed = !legendCollapsed;
+  const body = document.getElementById('rl-body');
+  const tog = document.getElementById('rl-toggle');
+  if (body) body.style.display = legendCollapsed ? 'none' : '';
+  if (tog) tog.textContent = legendCollapsed ? '▸' : '▾';
+}
+// Position the legend below the hover card (accounts for card height ~148px + gap)
+function positionLegend() {
+  const legend = document.getElementById('region-legend');
+  if (!legend) return;
+  const cardH = hoverCardEl ? hoverCardEl.offsetHeight : 148;
+  legend.style.top = (78 + cardH + 8) + 'px';
+}
+// Reposition on each animation frame when card is transitioning (cheap)
+(function legendPosLoop() {
+  requestAnimationFrame(legendPosLoop);
+  positionLegend();
+})();
+
+// ── show / showOverview / showCommunity ───────────────────────────────────────
+function show(rawNodes, rawEdges) {
+  fitPending = true;
+  panelStack = []; panelCur = null;
+  stopTour(); hideCard();
+  pivotSet = null; pivotRoot = null; pivotMode = null;
+  document.getElementById('pivot-pill').classList.remove('on');
+  stopPlay(); pulses.clear(); actSeq = []; actIdx = 0; frameOff = 0; fitTick = 0; growMode = false; revealed.clear();
+  const LOD = 360, nN = (rawNodes || []).length;
+  densityFrac = nN > LOD ? Math.max(0.06, LOD / nN) : 1;
+  densityVisible = null;
+  const dEl = document.getElementById('density'); if (dEl) dEl.value = Math.round(densityFrac * 100);
+  document.getElementById('act').style.display = 'none';
+  document.getElementById('scrub').value = 0;
+  document.getElementById('rcount').textContent = '';
+  document.getElementById('replay-rows').classList.remove('show');
+  Graph.graphData(buildData(rawNodes, rawEdges));
+  depthLimit = maxHop || null;
+  const dw = document.getElementById('depth-wrap');
+  if (dw) {
+    dw.style.display = maxHop > 1 ? 'inline-flex' : 'none';
+    const sl = document.getElementById('depth'); if (sl) { sl.max = maxHop; sl.value = maxHop; }
+  }
+  syncSearch(); syncFilter(); applyDensity();
+  buildLegend();
+  updateHoverCard(null);
+}
+function showOverview() {
+  level = 'overview';
+  document.getElementById('back').style.display = 'none';
+  document.getElementById('panel').classList.remove('open');
+  updateHash('');
+  show(DATA.nodes, DATA.edges);
+}
+function showCommunity(cid, lbl) {
+  const d = DATA.drill[cid]; if (!d) return;
+  level = 'community';
+  const b = document.getElementById('back');
+  b.textContent = '← ' + (lbl || 'communities'); b.style.display = 'block';
+  document.getElementById('panel').classList.remove('open');
+  updateHash('c=' + cid);
+  show(d.nodes, d.edges);
+}
+function onClick(n) {
+  if (overUI) return;
+  if (hasDrill && n.anchor == null && DATA.drill[n.id]) { toggleCommunity(n.id); return; }
+  navTo(n);
+}
+
+// ── pivot lens: blast/reach/connectivity as a FILTER on the current view ─────
+// No data rebuild, no simulation restart: every node keeps its position and
+// the camera glides to the surviving subset. This is what makes pivoting feel
+// like focusing a lens instead of detonating the layout.
+const PIVOT_LABEL = { blast: '↙ blast radius', reach: '↗ reach', connectivity: '⊛ connectivity' };
+function clientPivot(nodeId, mode) {
+  const root = byId[nodeId]; if (!root) return;
+  // Directional BFS over the full link set, recording hop distance — the
+  // depth slider then dials the lens in/out live.
+  const hop = new Map([[nodeId, 0]]);
+  const queue = [nodeId];
+  while (queue.length) {
+    const id = queue.shift();
+    const d = hop.get(id);
+    curLinks.forEach(l => {
+      if (isMeta(l)) return;
+      const src = idOf(l.source), dst = idOf(l.target);
+      let nb = null;
+      if (mode === 'blast' && dst === id) nb = src;
+      else if (mode === 'reach' && src === id) nb = dst;
+      else if (mode === 'connectivity') nb = src === id ? dst : (dst === id ? src : null);
+      if (nb && !hop.has(nb)) { hop.set(nb, d + 1); queue.push(nb); }
+    });
+  }
+  pivotSet = new Set(hop.keys()); pivotRoot = nodeId; pivotMode = mode;
+  // Hops drive the existing depth slider, now relative to the pivot root.
+  Object.values(byId).forEach(n => { n.hop = hop.get(n.id); });
+  maxHop = Math.max(0, ...hop.values());
+  depthLimit = maxHop || null;
+  const dw = document.getElementById('depth-wrap');
+  if (dw) {
+    dw.style.display = maxHop > 1 ? 'inline-flex' : 'none';
+    const sl = document.getElementById('depth'); if (sl) { sl.max = maxHop; sl.value = maxHop; }
+  }
+  const PIVOT_HINT = {
+    blast: `<span class="pp-hint" style="color:#f38ba8">● warm = what breaks</span>`,
+    reach: `<span class="pp-hint" style="color:#89b4fa">● cool = dependencies</span>`,
+    connectivity: `<span class="pp-hint" style="color:#a6e3a1">● green = neighbors</span>`,
+  };
+  document.getElementById('pp-label').innerHTML =
+    `<span class="pp-mode">${PIVOT_LABEL[mode] || mode}</span>&nbsp;· ${esc(shortName(root))} · ${pivotSet.size} nodes&nbsp;` +
+    (PIVOT_HINT[mode] || '');
+  document.getElementById('pivot-pill').classList.add('on');
+  updateHash('pivot=' + encodeURIComponent(root.anchor || nodeId) + '&mode=' + mode);
+  refreshViz();
+  Graph.zoomToFit(dur(700), 80, n => pivotSet.has(n.id) && idVisible(n.id));
+}
+function clearPivot() {
+  if (!pivotSet) return;
+  pivotSet = null; pivotRoot = null; pivotMode = null;
+  document.getElementById('pivot-pill').classList.remove('on');
+  // Restore hops/depth relative to the view's own root (anchor views), if any.
+  recomputeHops();
+  const dw = document.getElementById('depth-wrap');
+  if (dw) {
+    dw.style.display = maxHop > 1 ? 'inline-flex' : 'none';
+    const sl = document.getElementById('depth'); if (sl) { sl.max = Math.max(maxHop, 1); sl.value = Math.max(maxHop, 1); }
+  }
+  depthLimit = maxHop || null;
+  updateHash(panelCur && byId[panelCur] ? 'a=' + encodeURIComponent(byId[panelCur].anchor || panelCur) : '');
+  refreshViz();
+  fitAll();
+}
+// (Re)compute hop distances from the view's root node (undefined when none).
+function recomputeHops() {
+  const nodes = Object.values(byId);
+  nodes.forEach(n => { n.hop = undefined; });
+  const rootN = nodes.find(n => n.root);
+  if (rootN) {
+    rootN.hop = 0; const q = [rootN];
+    while (q.length) {
+      const c = q.shift();
+      (c.neighbors || []).forEach(nb => { if (nb.hop === undefined) { nb.hop = c.hop + 1; q.push(nb); } });
+    }
+  }
+  maxHop = rootN ? nodes.reduce((m, n) => Math.max(m, n.hop || 0), 0) : 0;
+}
+
+// ── community expand/collapse ─────────────────────────────────────────────────
+function rebuildAdj(nodes, links) {
+  byId = {};
+  nodes.forEach(n => { n.neighbors = []; n.adj = []; byId[n.id] = n; });
+  links.forEach(l => { const a = byId[idOf(l.source)], b = byId[idOf(l.target)]; if (a && b) { a.neighbors.push(b); b.neighbors.push(a); a.adj.push(l); b.adj.push(l); } });
+  nodes.forEach(n => n.deg = n.adj.length);
+}
+function recolorMaps(nodes, links) {
+  const gs = [...new Set(nodes.map(n => n.group).filter(g => g != null))].sort();
+  groupIdx = {}; gs.forEach((g, i) => { groupIdx[g] = i; });
+  const ets = [...new Set(links.map(l => l.type).filter(t => t && t !== '·'))].sort();
+  typeColor = {}; ets.forEach((t, i) => { typeColor[t] = edgePalette[i % edgePalette.length]; });
+  activeTypes = new Set(ets);
+  anchorToId = {}; nodes.forEach(n => { if (n.anchor) anchorToId[n.anchor] = n.id; });
+}
+function applyExplore() {
+  const nodes = Object.values(byId);
+  rebuildAdj(nodes, curLinks); recolorMaps(nodes, curLinks);
+  Graph.graphData({ nodes, links: curLinks });
+  syncFilter(); applyDensity(); Graph.d3ReheatSimulation();
+}
+function expandCommunity(cid) {
+  const core = byId[cid], d = DATA.drill[cid]; if (!core || !d) return;
+  core.expanded = true;
+  const N = d.nodes.length;
+  d.nodes.forEach((m, i) => {
+    const id = cid + ':' + m.id; if (byId[id]) return;
+    const ang = (i / N) * 2 * Math.PI;
+    byId[id] = { ...m, id, x: (core.x || 0) + 30 * Math.cos(ang), y: (core.y || 0) + 30 * Math.sin(ang), neighbors: [], adj: [] };
+  });
+  d.nodes.forEach(m => curLinks.push({ source: cid, target: cid + ':' + m.id, type: '·', member: true }));
+  d.edges.forEach(e => curLinks.push({ source: cid + ':' + e.from, target: cid + ':' + e.to, type: e.type }));
+  applyExplore();
+}
+function collapseCommunity(cid) {
+  const core = byId[cid]; if (core) core.expanded = false;
+  const pre = cid + ':';
+  Object.keys(byId).forEach(id => { if (id.startsWith(pre)) delete byId[id]; });
+  curLinks = curLinks.filter(l => !(String(idOf(l.source)).startsWith(pre) || String(idOf(l.target)).startsWith(pre)));
+  applyExplore();
+}
+function toggleCommunity(cid) { const c = byId[cid]; if (c && c.expanded) collapseCommunity(cid); else expandCommunity(cid); }
+
+// ── panel ─────────────────────────────────────────────────────────────────────
+function togglePanel() {
+  const p = document.getElementById('panel');
+  p.classList.toggle('collapsed');
+  document.getElementById('pcollapse').textContent = p.classList.contains('collapsed') ? '▸' : '▾';
+}
+function fitAll() {
+  highlightNodes.clear(); highlightLinks.clear(); hoverNode = null;
+  Graph.zoomToFit(dur(600), 60, n => idVisible(n.id));
+}
+function goNode(n) {
+  panelCur = n.id;
+  highlightNodes.clear(); highlightLinks.clear();
+  highlightNodes.add(n); (n.neighbors || []).forEach(x => highlightNodes.add(x));
+  (n.adj || []).forEach(l => highlightLinks.add(l)); hoverNode = n;
+  const ids = new Set([n.id, ...(n.neighbors || []).map(x => x.id)]);
+  Graph.zoomToFit(dur(600), 90, x => ids.has(x.id));
+  showPanel(n);
+  // The code now lives in the panel; the floating card is the tour's glance
+  // element only — never pop it over the canvas on a manual click.
+  if (touring) showCard(n); else hideCard();
+}
+function navTo(n) {
+  stopTour();   // the user called something to its place — autopilot yields
+  if (panelCur && panelCur !== n.id) panelStack.push(panelCur);
+  updateHash('a=' + encodeURIComponent(n.anchor || n.id));
+  goNode(n);
+}
+function focusNode(id) { const n = byId[id]; if (n) navTo(n); }
+function panelBack() {
+  const prev = panelStack.pop(); if (prev == null) return;
+  const n = byId[prev]; if (n) goNode(n);
+}
+// Walking the neighbour list previews each node IN CONTEXT: the current node
+// stays lit (your anchor), the neighbour's own ring expands out around it, and
+// a particle strobes along the connecting edge from where you are to where
+// you're looking — the correlation is drawn, not implied.
+let lastPreviewId = null;
+function previewNode(id, center) {
+  const n = byId[id]; if (!n) return;
+  stopTour();   // walking the list is taking the wheel (same rule as 3D)
+  highlightNodes.clear(); highlightLinks.clear();
+  const cur = panelCur && byId[panelCur];
+  if (cur) highlightNodes.add(cur);
+  highlightNodes.add(n); (n.neighbors || []).forEach(x => highlightNodes.add(x));
+  (n.adj || []).forEach(l => highlightLinks.add(l)); hoverNode = n;
+  if (cur && id !== lastPreviewId && !REDUCED_MOTION && !minimal) {
+    (cur.adj || []).forEach(l => {
+      const s = idOf(l.source), t = idOf(l.target);
+      if (s === id || t === id) {
+        highlightLinks.add(l);
+        trail.set(l, 1);
+        try { Graph.emitParticle(l); } catch (e) {}
+      }
+    });
+    pulses.set(id, 1); startPulseAnim();
+  }
+  lastPreviewId = id;
+  if (touring) showCard(n);   // hover-preview strobes the edge; no floating card
+  if (center && n.x != null) Graph.centerAt(n.x, n.y, dur(350));
+}
+function restoreFocus() {
+  const n = panelCur && byId[panelCur]; if (!n) return;
+  highlightNodes.clear(); highlightLinks.clear();
+  highlightNodes.add(n); (n.neighbors || []).forEach(x => highlightNodes.add(x));
+  (n.adj || []).forEach(l => highlightLinks.add(l)); hoverNode = n;
+}
+
+// Build grouped neighbour list: {dir, type} → [{id, name}]
+function groupedNeighbours(n) {
+  const groups = {};
+  curLinks.forEach(l => {
+    const s = idOf(l.source), t = idOf(l.target);
+    if (s !== n.id && t !== n.id) return;
+    const isOut = s === n.id;
+    const key = (isOut ? '→' : '←') + '\0' + (l.type || '');
+    if (!groups[key]) groups[key] = { dir: isOut ? '→' : '←', type: l.type || '', items: [] };
+    groups[key].items.push(isOut ? t : s);
+  });
+  return Object.values(groups).sort((a, b) => b.items.length - a.items.length);
+}
+
+function showPanel(n) {
+  lastPreviewId = null;   // fresh focus → previews strobe again
+  const rows = [];
+  if (n.size != null) rows.push(row('symbols', n.size));
+  if (n.kind) rows.push(row('kind', n.kind));
+  if (n.line) rows.push(row('line', n.line));
+  if (n.loc) rows.push(row('loc', n.loc));
+  if (n.words) rows.push(row('words', n.words));
+  if (n.community != null) rows.push(row('community', n.community));
+  rows.push(row('degree', n.deg));
+
+  const anchor = n.anchor || '';
+  const ed = editorUrl(n);
+  const bc = breadcrumb(n);
+
+  // pivot verbs — client-side BFS from this node
+  const pivotHtml = `<div class="pivot-section">
+    <span class="pivot-btn" onclick="clientPivot('${esc(n.id)}','blast')" title="who breaks if this changes? (x)">↙ blast radius</span>
+    <span class="pivot-btn" onclick="clientPivot('${esc(n.id)}','reach')" title="what does this depend on? (r)">↗ reach</span>
+    <span class="pivot-btn" onclick="clientPivot('${esc(n.id)}','connectivity')" title="everything around it (c)">⊛ connectivity</span>
+  </div>`;
+
+  // grouped neighbours
+  const groups = groupedNeighbours(n);
+  const totalNbs = groups.reduce((s, g) => s + g.items.length, 0);
+  panelNbs = groups.flatMap(g => g.items); nbSel = -1;
+
+  const INLINE_PER_GROUP = 6;
+  let nbHtml = '', flatIdx = 0;
+  groups.forEach(g => {
+    const dirLabel = g.dir === '→'
+      ? `outgoing — <em>${esc(g.type)}</em>`
+      : `incoming — <em>${esc(g.type)}</em>`;
+    nbHtml += `<div class="dir-lbl">${dirLabel} (${g.items.length})</div>`;
+    const show = g.items.slice(0, INLINE_PER_GROUP);
+    show.forEach(id => {
+      const nb = byId[id] || { id };
+      const i = flatIdx++;
+      nbHtml += `<div class="nb" id="nb-${i}" onclick="focusNode('${esc(id)}')" onmouseenter="previewNode('${esc(id)}', false)">
+        <span class="nb-name">${esc(shortName(nb))}</span>
+        <span class="nb-type">${esc(regionOf(nb))}</span>
+      </div>`;
+    });
+    if (g.items.length > INLINE_PER_GROUP) {
+      const rest = g.items.slice(INLINE_PER_GROUP);
+      const groupId = 'more-' + flatIdx;
+      nbHtml += `<span class="show-more" onclick="showMoreGroup('${groupId}', this)" data-ids="${escAttr(JSON.stringify(rest))}" data-start="${flatIdx}">(+${rest.length} more)</span><div id="${groupId}"></div>`;
+    }
+  });
+
+  document.getElementById('p-title').textContent = shortName(n);
+  document.getElementById('p-body').innerHTML =
+    (bc ? `<div class="breadcrumb">${bc}</div>` : '') +
+    (anchor ? `<div class="anchor-row"><span class="anchor-txt" title="${esc(anchor)}">${esc(anchor)}</span><span class="copy-btn" onclick="copyAnchor('${esc(anchor)}', this)">copy</span></div>` : '') +
+    rows.join('') +
+    (ed ? `<div class="row"><a href="${ed}">open in editor →</a></div>` : '') +
+    (n.file ? `<div class="row hint-txt">↔ history: aden timeline ${esc(n.file)}</div>` : '') +
+    (n.snippet ? `<div class="sec"><span>source</span></div><pre class="p-snip">${esc(n.snippet)}</pre>` : '') +
+    pivotHtml +
+    `<div class="sec"><span>neighbours</span><span class="sec-count">${totalNbs}</span></div>` +
+    `<div class="dir-group">${nbHtml}</div>`;
+
+  document.getElementById('pback').style.display = panelStack.length ? 'block' : 'none';
+  document.getElementById('panel').classList.add('open');
+}
+
+function showMoreGroup(groupId, btn) {
+  const ids = JSON.parse(btn.getAttribute('data-ids'));
+  const start = +btn.getAttribute('data-start');
+  const container = document.getElementById(groupId);
+  if (!container) return;
+  let innerHtml = '';
+  ids.forEach((id, i) => {
+    const nb = byId[id] || { id };
+    const fi = start + i;
+    innerHtml += `<div class="nb" id="nb-${fi}" onclick="focusNode('${esc(id)}')" onmouseenter="previewNode('${esc(id)}', false)">
+      <span class="nb-name">${esc(shortName(nb))}</span>
+      <span class="nb-type">${esc(regionOf(nb))}</span>
+    </div>`;
+  });
+  // Wrap in scrollable container so long lists don't expand the panel unbounded
+  container.innerHTML = `<div class="show-more-list">${innerHtml}</div>`;
+  btn.remove();
+}
+
+function copyAnchor(anchor, btn) {
+  navigator.clipboard.writeText(anchor).then(() => {
+    btn.textContent = 'copied!'; btn.classList.add('copied');
+    setTimeout(() => { btn.textContent = 'copy'; btn.classList.remove('copied'); }, 1500);
+  }).catch(() => {
+    btn.textContent = anchor; // fallback: show the anchor text to select+copy
+  });
+}
+function searchAndGo(q) {
+  const qEl = document.getElementById('q'); if (!qEl) return;
+  qEl.value = q; runSearch();
+}
+
+// ── search ─────────────────────────────────────────────────────────────────────
+const qEl = document.getElementById('q'), resEl = document.getElementById('results');
+let matches = [], selIdx = 0;
+
+// Visible graph nodes
+function inViewCandidates() {
+  const list = [], seen = new Set();
+  Object.values(byId).forEach(n => { list.push(n); seen.add(n.id); });
+  if (hasDrill && DATA.drill) {
+    Object.keys(DATA.drill).forEach(cid => DATA.drill[cid].nodes.forEach(m => {
+      const id = cid + ':' + m.id;
+      if (!seen.has(id)) { list.push({ ...m, id, _cid: cid }); seen.add(id); }
+    }));
+  }
+  return list;
+}
+
+// Global anchor index from DATA (symbols not in the current slice)
+function allAnchorCandidates(q) {
+  if (!Array.isArray(DATA.all_anchors)) return [];
+  return DATA.all_anchors
+    .filter(e => (e.n + ' ' + e.a + ' ' + e.g).toLowerCase().includes(q))
+    .map(e => ({ _global: true, id: e.a, anchor: e.a, label: e.n, group: e.g, kind: e.k, deg: e.d || 0 }));
+}
+
+function resultShape(k) {
+  const s = kindShape(k);
+  if (s === 'diamond') return '<span class="shp" style="display:inline-block;width:9px;height:9px;transform:rotate(45deg);background:#f9e2af;opacity:.7;vertical-align:middle;margin-right:5px;"></span>';
+  if (s === 'rect') return '<span class="shp" style="display:inline-block;width:9px;height:7px;border-radius:2px;background:#cba6f7;opacity:.7;vertical-align:middle;margin-right:5px;"></span>';
+  return '<span class="shp" style="display:inline-block;width:9px;height:9px;border-radius:50%;background:#89b4fa;opacity:.7;vertical-align:middle;margin-right:5px;"></span>';
+}
+
+function resultCtx(n) {
+  if (n.file) return n.file.split('/').pop();
+  if (n.label && n.label !== shortName(n)) return n.label;
+  return n.group || '';
+}
+
+function runSearch() {
+  const q = qEl.value.trim().toLowerCase();
+  highlightNodes.clear(); highlightLinks.clear(); hoverNode = null;
+  if (!q) { matches = []; resEl.classList.remove('open'); resEl.innerHTML = ''; refreshViz(); return; }
+
+  // in-view candidates (ranked by degree)
+  const inView = inViewCandidates()
+    .filter(n => (shortName(n) + ' ' + (n.label || '') + ' ' + (n.anchor || '') + ' ' + (n.file || '')).toLowerCase().includes(q))
+    .sort((a, b) => (b.deg || 0) - (a.deg || 0))
+    .slice(0, 8);
+  const inViewAnchors = new Set(inView.map(n => n.anchor).filter(Boolean));
+
+  // global candidates not already in-view
+  const globalHits = allAnchorCandidates(q)
+    .filter(e => !inViewAnchors.has(e.anchor))
+    .sort((a, b) => b.deg - a.deg)
+    .slice(0, 6)
+    .map(e => ({ ...e, _ghost: !byId[e.id] }));
+
+  matches = [...inView, ...globalHits].slice(0, 14);
+  selIdx = 0;
+
+  resEl.innerHTML = matches.map((n, i) => {
+    const ghost = n._ghost ? ' <span class="ghost">(not in view)</span>' : '';
+    const shp = resultShape(n.kind);
+    return `<div class="r${i === 0 ? ' sel' : ''}" onclick="pickResult(${i})">${shp}${esc(shortName(n))} <span class="k">${esc(resultCtx(n))}${ghost}</span></div>`;
+  }).join('');
+  resEl.classList.toggle('open', matches.length > 0);
+  matches.forEach(n => { if (byId[n.id]) highlightNodes.add(byId[n.id]); });
+  refreshViz();
+}
+function pickResult(i) {
+  const n = matches[i]; if (!n) return;
+  qEl.value = ''; resEl.classList.remove('open'); matches = [];
+  // Hand the keyboard back to the graph: without this, j/k/arrows keep
+  // typing into the (now empty) search box instead of walking the panel.
+  qEl.blur();
+  if (n._ghost) {
+    // Not in current slice — show it in the panel with a hint
+    showGhostPanel(n); return;
+  }
+  if (n._cid && !byId[n.id]) expandCommunity(n._cid);
+  const real = byId[n.id] || n;
+  if (hasDrill && real.anchor == null && DATA.drill[real.id]) { toggleCommunity(real.id); return; }
+  navTo(real);
+}
+function showGhostPanel(n) {
+  document.getElementById('p-title').textContent = shortName(n);
+  document.getElementById('p-body').innerHTML =
+    `<div class="anchor-row"><span class="anchor-txt">${esc(n.anchor || '')}</span><span class="copy-btn" onclick="copyAnchor('${esc(n.anchor||'')}', this)">copy</span></div>` +
+    (n.kind ? row('kind', n.kind) : '') +
+    (n.group ? row('module', n.group) : '') +
+    `<div class="ghost-node">Symbol not in current view.<br>Run <code>aden view --anchor ${esc(shortName(n))}</code> to focus it.</div>`;
+  document.getElementById('pback').style.display = panelStack.length ? 'block' : 'none';
+  document.getElementById('panel').classList.add('open');
+}
+function updateSel() { [...resEl.children].forEach((c, i) => c.classList.toggle('sel', i === selIdx)); }
+qEl.addEventListener('input', runSearch);
+qEl.addEventListener('keydown', e => {
+  if (e.key === 'Escape') { qEl.value = ''; runSearch(); qEl.blur(); return; }
+  if (!matches.length) return;
+  if (e.key === 'ArrowDown') { selIdx = Math.min(selIdx + 1, matches.length - 1); updateSel(); e.preventDefault(); }
+  else if (e.key === 'ArrowUp') { selIdx = Math.max(selIdx - 1, 0); updateSel(); e.preventDefault(); }
+  else if (e.key === 'Enter') { pickResult(selIdx); e.preventDefault(); }
+});
+function syncSearch() { if (qEl) { qEl.value = ''; resEl.classList.remove('open'); matches = []; } }
+
+// ── filter chips ──────────────────────────────────────────────────────────────
+const filterEl = document.getElementById('filter');
+let filterTypes = [];
+function renderChips() {
+  filterEl.innerHTML = filterTypes.map(t => {
+    const c = typeColor[t] || '#8088aa', on = activeTypes.has(t);
+    return `<span class="chip${on ? ' on' : ''}" data-t="${esc(t)}" style="${on ? `border-color:${c}` : ''}" onclick="toggleType('${esc(t)}')"><span class="dot" style="background:${on ? c : '#45475a'}"></span>${esc(t)}</span>`;
+  }).join('');
+}
+function syncFilter() {
+  filterTypes = [...new Set(curLinks.filter(l => !isMeta(l)).map(l => l.type))].sort();
+  renderChips();
+}
+function toggleType(t) {
+  if (activeTypes.has(t)) activeTypes.delete(t); else activeTypes.add(t);
+  renderChips(); refreshViz();
+}
+
+// ── URL hash state + browser history ─────────────────────────────────────────
+function updateHash(h) {
+  const url = h ? '#' + h : location.pathname + location.search;
+  history.pushState({ h }, '', h ? '#' + h : location.pathname + location.search);
+}
+window.addEventListener('popstate', e => {
+  const h = (e.state && e.state.h) || location.hash.slice(1);
+  restoreFromHash(h);
+});
+function restoreFromHash(hash) {
+  if (!hash) { showOverview(); return; }
+  const p = new URLSearchParams(hash);
+  if (p.has('pivot')) {
+    const key = decodeURIComponent(p.get('pivot'));
+    const node = Object.values(byId).find(n => n.anchor === key || n.id === key);
+    if (node) { goNode(node); clientPivot(node.id, p.get('mode') || 'connectivity'); return; }
+  }
+  if (p.has('a')) {
+    const anchor = decodeURIComponent(p.get('a'));
+    // find by anchor first, then by id
+    const node = Object.values(byId).find(n => n.anchor === anchor || n.id === anchor);
+    if (node) { goNode(node); return; }
+  }
+  if (p.has('c')) { showCommunity(p.get('c')); return; }
+  showOverview();
+}
+
+// ── activity replay ───────────────────────────────────────────────────────────
+function buildActivitySeq() {
+  if (Array.isArray(DATA.activity) && DATA.activity.length) {
+    return DATA.activity
+      .map(f => ({ label: f.label || '', date: f.date || '', ids: (f.anchors || []).map(a => anchorToId[a]).filter(Boolean) }))
+      .filter(f => f.ids.length);
+  }
+  const all = Object.values(byId); if (!all.length) return [];
+  let cur = all.find(n => n.root) || all.slice().sort((a, b) => b.deg - a.deg)[0];
+  const seq = [], visited = new Set(), kinds = ['read', 'query', 'edit', 'read'];
+  for (let i = 0; i < Math.min(all.length, 400) && cur; i++) {
+    seq.push({ label: kinds[i % 4] + ' · ' + shortName(cur), ids: [cur.id] });
+    visited.add(cur.id);
+    const nbrs = cur.neighbors || [], fresh = nbrs.filter(x => !visited.has(x.id));
+    const pool = fresh.length ? fresh : nbrs;
+    cur = pool.length ? pool[Math.floor(Math.random() * pool.length)] : all.find(n => !visited.has(n.id));
+  }
+  return seq;
+}
+// Camera animation duration honoring prefers-reduced-motion (0 = jump cut).
+function dur(ms) { return REDUCED_MOTION ? 0 : ms; }
+
+// ── flyby card: the code floats beside the node you're visiting ──────────────
+let cardNode = null, cardAuto = true;
+const snipEl = document.getElementById('snip');
+function showCard(n) {
+  if (!cardAuto || !n || (!n.snippet && !n.file)) { hideCard(); return; }
+  cardNode = n;
+  document.getElementById('sn-name').textContent = shortName(n);
+  document.getElementById('sn-name').style.color = colorOf(n);
+  const mass = n.loc ? `${n.loc} loc` : n.words ? `${n.words} words` : '';
+  document.getElementById('sn-meta').textContent =
+    [n.group, mass, (n.file || '').split('/').pop()].filter(Boolean).join(' · ');
+  document.getElementById('sn-code').textContent = n.snippet || '';
+  snipEl.classList.add('on');
+  snipEl.setAttribute('aria-hidden', 'false');
+}
+function hideCard() {
+  cardNode = null;
+  snipEl.classList.remove('on');
+  snipEl.setAttribute('aria-hidden', 'true');
+}
+// The code now lives in the detail panel (showPanel); this floating card only
+// appears during tour mode. Docked bottom-right via CSS, clear of the panel —
+// no per-frame screen-tracking needed.
+
+// ── tour mode: the map shows itself (2D edition) ─────────────────────────────
+// Same autopilot as the 3D view: mostly follows real connections, sometimes
+// pulls back to the full map and dives into a new area; each stop opens the
+// panel + flyby card and strobes the node's edges into the trail. Any
+// interaction (drag, wheel, click, search) hands control back; only `t`
+// re-engages.
+let touring = false, tourTimer = null;
+function tourPick() {
+  const cur = panelCur && byId[panelCur];
+  const nbs = cur ? (cur.neighbors || []).filter(n => idVisible(n.id)) : [];
+  if (cur && nbs.length && Math.random() < 0.7) {
+    return { node: nbs[Math.floor(Math.random() * nbs.length)], leap: false };
+  }
+  const pool = Object.values(byId).filter(n => idVisible(n.id));
+  if (!pool.length) return { node: null, leap: false };
+  const tot = pool.reduce((s, n) => s + n.deg + 1, 0);
+  let r = Math.random() * tot;
+  for (const n of pool) { r -= n.deg + 1; if (r <= 0) return { node: n, leap: true }; }
+  return { node: pool[0], leap: true };
+}
+function tourArrive(n) {
+  if (!touring) return;
+  goNode(n);
+  if (!REDUCED_MOTION && !minimal) {
+    (n.adj || []).slice(0, 5).forEach((l, i) => setTimeout(() => {
+      try { Graph.emitParticle(l); } catch (e) {}
+      trail.set(l, 1);
+    }, 250 + i * 160));
+    startPulseAnim();
+  }
+  const a = document.getElementById('act');
+  a.textContent = `✦ touring · ${shortName(n)} — t to stop`;
+  a.style.display = 'block';
+  tourTimer = setTimeout(tourStep, 3400 + Math.random() * 3400);
+}
+function tourStep() {
+  if (!touring) return;
+  const { node: next, leap } = tourPick();
+  if (!next) { stopTour(); return; }
+  if (leap && !REDUCED_MOTION) {
+    Graph.zoomToFit(dur(700), 60, n => idVisible(n.id));   // see where you're going
+    tourTimer = setTimeout(() => tourArrive(next), 900);
+  } else {
+    tourArrive(next);
+  }
+}
+function startTour() {
+  if (touring) return;
+  stopPlay();   // tour and replay share the status line — one driver at a time
+  touring = true;
+  tourStep();
+}
+function stopTour() {
+  if (!touring) return;
+  touring = false;
+  clearTimeout(tourTimer);
+  hideCard();   // the float is tour-only; clear it when the tour ends
+  if (!playing) document.getElementById('act').style.display = 'none';
+}
+function toggleTour() { touring ? stopTour() : startTour(); }
+// any deliberate interaction hands control back
+el.addEventListener('pointerdown', stopTour);
+el.addEventListener('wheel', stopTour, { passive: true });
+qEl.addEventListener('focus', stopTour);
+
+// ── verbosity presets: one key, three ways of working ─────────────────────────
+// focus — minimal render, no envelopes, no synapse: a quiet instrument.
+// map   — envelopes + salience defaults: read the architecture (default).
+// live  — everything breathing, synapse firing: the show.
+const VMODES = ['focus', 'map', 'live'];
+let vmode = localStorage.getItem('aden2d-verbosity') || 'map';
+function applyVerbosity(m, announce) {
+  vmode = m;
+  try { localStorage.setItem('aden2d-verbosity', m); } catch (e) {}
+  if (m === 'focus') {
+    if (!minimal) toggleMinimal();
+    if (envelopes) toggleEnvelopes();
+    if (synapse) toggleSynapse();
+    cardAuto = false; hideCard(); stopTour();
+  } else if (m === 'map') {
+    if (minimal) toggleMinimal();
+    if (!envelopes) toggleEnvelopes();
+    if (synapse) toggleSynapse();
+    cardAuto = true;
+  } else {
+    if (minimal) toggleMinimal();
+    if (!envelopes) toggleEnvelopes();
+    if (!synapse && !REDUCED_MOTION) toggleSynapse();
+    cardAuto = true;
+  }
+  if (announce) toast(`view: ${m}`);
+}
+function cycleVerbosity() {
+  applyVerbosity(VMODES[(VMODES.indexOf(vmode) + 1) % VMODES.length], true);
+}
+function toast(text) {
+  const a = document.getElementById('act');
+  a.textContent = text; a.style.display = 'block';
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => { if (!playing) a.style.display = 'none'; }, 1600);
+}
+
+function toggleMinimal() {
+  minimal = !minimal;
+  const row = document.getElementById('min-row');
+  if (row) { row.classList.toggle('on', minimal); row.setAttribute('aria-checked', String(minimal)); }
+  if (minimal && synapse) toggleSynapse();   // minimal means minimal
+}
+
+function startPulseAnim() {
+  if (REDUCED_MOTION || minimal) return;   // respect the OS setting; keep minimal still
+  if (pulseRAF) return;
+  const tick = () => {
+    let any = false;
+    pulses.forEach((v, k) => { const nv = v - 0.02; if (nv <= 0) pulses.delete(k); else { pulses.set(k, nv); any = true; } });
+    // trails + section glow decay much slower — connections linger
+    trail.forEach((v, k) => { const nv = v - 0.004; if (nv <= 0) trail.delete(k); else { trail.set(k, nv); any = true; } });
+    groupPulse.forEach((v, k) => { const nv = v - 0.006; if (nv <= 0) groupPulse.delete(k); else { groupPulse.set(k, nv); any = true; } });
+    pulseRAF = any ? requestAnimationFrame(tick) : null;
+  };
+  pulseRAF = requestAnimationFrame(tick);
+}
+
+// ── synapse mode ──────────────────────────────────────────────────────────────
+const SYN_FAN = 4;
+function fireNode(n, depth) {
+  if (!synapse || !n) return;
+  pulses.set(n.id, 1); startPulseAnim();
+  const p = depth === 0 ? 0.85 : 0.4;
+  let edges = (n.adj || []).filter(l => (isMeta(l) || activeTypes.has(l.type)) && idVisible(idOf(l.source)) && idVisible(idOf(l.target)));
+  if (edges.length > SYN_FAN) edges = sample(edges, SYN_FAN);
+  edges.forEach(l => {
+    if (Math.random() > p) return;
+    try { Graph.emitParticle(l); } catch (e) {}
+    trail.set(l, 1);   // the signal leaves a lingering trail on every crossing
+    if (depth >= 4) return;
+    const otherId = idOf(l.source) === n.id ? idOf(l.target) : idOf(l.source);
+    const nb = byId[otherId];
+    if (nb && idVisible(nb.id)) {
+      if (nb.group != null) groupPulse.set(nb.group, 1);   // the section it entered glows
+      setTimeout(() => fireNode(nb, depth + 1), 360 + Math.random() * 280);
+    }
+  });
+}
+function sample(arr, k) {
+  const a = arr.slice();
+  for (let i = 0; i < k && i < a.length; i++) {
+    const j = i + Math.floor(Math.random() * (a.length - i)); [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a.slice(0, k);
+}
+function seedFire() {
+  if (!synapse) return;
+  const ids = curLinks.length ? [...new Set(curLinks.flatMap(l => [idOf(l.source), idOf(l.target)]))] : Object.keys(byId);
+  const pick = ids.filter(id => idVisible(id));
+  if (pick.length) fireNode(byId[pick[Math.floor(Math.random() * pick.length)]], 0);
+}
+function toggleSynapse() {
+  synapse = !synapse;
+  const row = document.getElementById('syn-row');
+  if (row) row.classList.toggle('on', synapse);
+  if (synapse) {
+    Graph.linkDirectionalParticleSpeed(0.014)
+         .linkDirectionalParticleWidth(2.4)
+         .linkDirectionalParticleColor(l => hexA(typeColor[l.type] || '#89dceb', .95));
+    seedFire(); seedFire();
+    fireTimer = setInterval(seedFire, 620);
+  } else {
+    clearInterval(fireTimer); fireTimer = null;
+    Graph.linkDirectionalParticles(0);
+    pulses.clear();
+  }
+}
+
+// ── visibility + density + depth ─────────────────────────────────────────────
+function isMeta(l) { return l.member || /\bedges$/.test(l.type || ''); }
+function idVisible(id) {
+  const n = byId[id];
+  if (growMode && !revealed.has(id)) return false;
+  if (pivotSet && !pivotSet.has(id)) return false;
+  if (densityVisible && !densityVisible.has(id)) return false;
+  if (depthLimit != null && n && n.hop != null && n.hop > depthLimit) return false;
+  return true;
+}
+function setDepth(v) { depthLimit = v; refreshViz(); }
+function refreshViz() {
+  Graph.nodeVisibility(n => idVisible(n.id));
+  Graph.linkVisibility(l => (highlightLinks.has(l) || isMeta(l) || activeTypes.has(l.type)) &&
+    idVisible(idOf(l.source)) && idVisible(idOf(l.target)));
+}
+function applyDensity() {
+  const nodes = Object.values(byId);
+  if (densityFrac >= 0.999 || !nodes.length) { densityVisible = null; }
+  else {
+    const sorted = nodes.slice().sort((a, b) => b.deg - a.deg);
+    const k = Math.max(2, Math.round(nodes.length * densityFrac));
+    densityVisible = new Set(sorted.slice(0, k).map(n => n.id));
+    if (panelCur) densityVisible.add(panelCur);
+    if (hoverNode) densityVisible.add(hoverNode.id);
+  }
+  refreshViz();
+}
+function setDensity(v) { densityFrac = v / 100; applyDensity(); }
+
+// ── replay ────────────────────────────────────────────────────────────────────
+function readout(f) {
+  const a = document.getElementById('act');
+  a.textContent = `[${actIdx}/${actSeq.length}] ${f ? (f.date ? f.date + ' · ' : '') + f.label : ''}`; a.style.display = 'block';
+  document.getElementById('rcount').textContent = revealed.size + ' / ' + Object.keys(byId).length + ' items';
+  document.getElementById('scrub').value = actIdx;
+}
+function revealBatch(ids, f) {
+  highlightNodes.clear(); highlightLinks.clear();
+  ids.forEach(id => {
+    revealed.add(id); pulses.set(id, 1);
+    const n = byId[id]; if (n) { highlightNodes.add(n); (n.neighbors || []).forEach(x => highlightNodes.add(x)); (n.adj || []).forEach(l => highlightLinks.add(l)); }
+  });
+  startPulseAnim();
+  const first = byId[ids[0]]; if (first) hoverNode = first;
+  if ((fitTick++ % 3) === 0) Graph.zoomToFit(Math.min(stepMs * 0.9, 600), 55, n => revealed.has(n.id));
+}
+function step() {
+  if (!playing) return;
+  if (actIdx >= actSeq.length) { Object.keys(byId).forEach(id => revealed.add(id)); refreshViz(); stopPlay(); return; }
+  const f = actSeq[actIdx];
+  const batch = f.ids.slice(frameOff, frameOff + REVEAL_BUDGET);
+  revealBatch(batch, f); frameOff += batch.length;
+  if (frameOff >= f.ids.length) { actIdx++; frameOff = 0; }
+  refreshViz(); readout(f);
+  playTimer = setTimeout(step, stepMs);
+}
+function startPlay() {
+  if (playing) return;
+  if (!actSeq.length) actSeq = buildActivitySeq();
+  if (!actSeq.length) return;
+  if (actIdx >= actSeq.length) { revealed.clear(); actIdx = 0; frameOff = 0; }
+  growMode = true; playing = true;
+  document.getElementById('replay-rows').classList.add('show');
+  document.getElementById('scrub').max = actSeq.length;
+  document.getElementById('play-icon').textContent = '⏸';
+  document.getElementById('play-lbl').textContent = 'Pause';
+  refreshViz(); step();
+}
+function stopPlay() {
+  playing = false; clearTimeout(playTimer);
+  document.getElementById('play-icon').textContent = '▶';
+  document.getElementById('play-lbl').textContent = 'Replay history';
+  // BUG FIX: growMode was left `true` after stopPlay/scrubTo, causing community-
+  // expanded nodes (added to byId but not to `revealed`) to stay invisible on
+  // subsequent navigation.  Reset here so the full graph is visible once replay
+  // is not actively running.
+  growMode = false; revealed.clear(); refreshViz();
+}
+function togglePlay() { playing ? stopPlay() : startPlay(); }
+function setSpeed(v) {
+  stepMs = Math.round(1500 / v);
+  document.getElementById('speed-val').textContent = v;
+}
+function scrubTo(v) {
+  stopPlay();
+  if (!actSeq.length) actSeq = buildActivitySeq();
+  if (!actSeq.length) return;
+  growMode = true; actIdx = Math.max(0, Math.min(v, actSeq.length)); frameOff = 0;
+  revealed.clear();
+  for (let i = 0; i < actIdx; i++) actSeq[i].ids.forEach(id => revealed.add(id));
+  refreshViz(); readout(actSeq[Math.max(0, actIdx - 1)]);
+  Graph.zoomToFit(400, 55, n => revealed.has(n.id));
+}
+
+// ── ambient menu ──────────────────────────────────────────────────────────────
+function toggleAmbMenu() {
+  document.getElementById('amb-menu').classList.toggle('open');
+}
+// Close ambient menu when clicking outside
+document.addEventListener('click', e => {
+  const wrap = document.getElementById('amb-wrap');
+  if (wrap && !wrap.contains(e.target)) {
+    document.getElementById('amb-menu').classList.remove('open');
+  }
+});
+
+// ── shortcut overlay ──────────────────────────────────────────────────────────
+function toggleOverlay() { document.getElementById('overlay').classList.toggle('open'); }
+function closeOverlayIfBg(e) { if (e.target === document.getElementById('overlay')) toggleOverlay(); }
+
+// ── keyboard ──────────────────────────────────────────────────────────────────
+function selNb() {
+  for (let i = 0; i < 80; i++) { const r = document.getElementById('nb-' + i); if (r) r.classList.toggle('sel', i === nbSel); }
+  const cur = document.getElementById('nb-' + nbSel); if (cur) cur.scrollIntoView({ block: 'nearest' });
+  if (panelNbs[nbSel]) previewNode(panelNbs[nbSel], true);
+}
+addEventListener('keydown', e => {
+  if (document.activeElement === qEl) return;
+  if (e.key === '?') { e.preventDefault(); toggleOverlay(); return; }
+  if (e.key === '/') { e.preventDefault(); qEl.focus(); return; }
+  if (e.key === ' ') { e.preventDefault(); togglePlay(); return; }
+  if (e.key === 'Backspace' || (e.altKey && e.key === 'ArrowLeft')) { e.preventDefault(); panelBack(); return; }
+  if (e.key === 'Escape') {
+    // Escalating escape: help → menu → pivot lens → panel+camera. One layer
+    // per press, so you always know what Esc will do next.
+    const overlay = document.getElementById('overlay');
+    if (overlay.classList.contains('open')) { overlay.classList.remove('open'); return; }
+    const amb = document.getElementById('amb-menu');
+    if (amb.classList.contains('open')) { amb.classList.remove('open'); return; }
+    if (touring) { stopTour(); return; }
+    if (pivotSet) { clearPivot(); return; }
+    document.getElementById('panel').classList.remove('open');
+    hideCard();
+    fitAll(); return;
+  }
+  if (e.key === 'f' || e.key === 'F') { fitAll(); return; }
+  if (e.key === 'h' || e.key === 'H') { document.body.classList.toggle('hideui'); return; }
+  if (e.key === 'b' || e.key === 'B') { toggleSynapse(); return; }
+  if (e.key === 'm' || e.key === 'M') { toggleMinimal(); return; }
+  if (e.key === 'e' || e.key === 'E') { toggleEnvelopes(); return; }
+  if (e.key === 'v' || e.key === 'V') { cycleVerbosity(); return; }
+  if (e.key === 'd' || e.key === 'D') { toggleDimension(); return; }
+  if (e.key === 't' || e.key === 'T') { toggleTour(); return; }
+  if ((e.key === 'o' || e.key === 'O') && panelCur && byId[panelCur]) { openEditor(byId[panelCur]); return; }
+  // Pivot lenses from the keyboard — the focused node (panel) is the root.
+  if (panelCur && byId[panelCur]) {
+    if (e.key === 'x' || e.key === 'X') { clientPivot(panelCur, 'blast'); return; }
+    if (e.key === 'r' || e.key === 'R') { clientPivot(panelCur, 'reach'); return; }
+    if (e.key === 'c' || e.key === 'C') { clientPivot(panelCur, 'connectivity'); return; }
+  }
+  // `c` with no focused node toggles the hover card (dismiss/restore).
+  if (e.key === 'c' || e.key === 'C') { toggleCardDismiss(); return; }
+  const open = document.getElementById('panel').classList.contains('open');
+  const max = Math.min(panelNbs.length, 80);
+  if (!open || !max) return;
+  if (e.key === 'ArrowDown' || e.key === 'j') { nbSel = Math.min(nbSel + 1, max - 1); selNb(); e.preventDefault(); }
+  else if (e.key === 'ArrowUp' || e.key === 'k') { nbSel = nbSel < 0 ? 0 : Math.max(nbSel - 1, 0); selNb(); e.preventDefault(); }
+  else if (e.key === 'Enter' && nbSel >= 0) { focusNode(panelNbs[nbSel]); e.preventDefault(); }
+});
+
+// ── overUI detection ──────────────────────────────────────────────────────────
+['panel','controls','search','filter','toolbar','amb-menu','act','hint','back','region-legend'].forEach(id => {
+  const e = document.getElementById(id);
+  if (!e) return;
+  e.addEventListener('pointerenter', () => { overUI = true; });
+  e.addEventListener('pointerleave', () => { overUI = false; });
+});
+document.getElementById('panel').addEventListener('mouseleave', restoreFocus);
+
+// ── init ──────────────────────────────────────────────────────────────────────
+showOverview();
+applyVerbosity(vmode, false);
+// Restore focused node from URL hash (deep link)
+const initHash = location.hash.slice(1);
+if (initHash) setTimeout(() => restoreFromHash(initHash), 300);
+if (hasDrill) document.getElementById('hint-text').textContent = 'click sphere to expand · f fit · / search · ? shortcuts';
+</script>
+</body>
+</html>

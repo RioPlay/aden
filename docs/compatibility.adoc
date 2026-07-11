@@ -1,0 +1,198 @@
+:toc: left
+:toclevels: 3
+
+[[compatibility]]
+= Compatibility and Versioning Policy
+
+This policy defines Aden's public compatibility commitments. It applies to
+released artifacts and their documented behavior; it does not turn every
+internal implementation detail into a stable API.
+
+== Principles
+
+* Aden uses Semantic Versioning for released binaries and Rust crates.
+* A user or integration must be able to determine whether a change is safe to
+  adopt, how to migrate, and how to recover if migration fails.
+* Local graph data is a rebuildable cache, not irreplaceable user data. Store
+  recovery follows <<adr-009>>.
+* Compatibility claims are observable: each stable surface has a CI-testable
+  contract.
+
+== Versioned Public Surfaces
+
+|===
+|Surface |Owner |Compatibility commitment |Required verification
+
+|CLI
+|CLI maintainers
+|Documented commands, positional arguments, flags, defaults, machine-readable
+output fields, and exit-code meanings are stable within a supported release
+line.
+|Command help, golden output/exit fixtures, and documentation examples run in CI.
+
+|MCP server
+|MCP maintainers
+|Published tool names, input schemas, output schemas, capability metadata, and
+error semantics are stable within a supported release line.
+|Schema snapshots and CLI/MCP semantic-parity fixtures run in CI.
+
+|Language Server Protocol (`aden-lsp`)
+|LSP maintainers
+|`aden-lsp` is a standalone, unshipped experimental binary. Its LSP methods,
+capabilities, and editor configuration are not yet a stable released surface;
+they may change or be removed as described in <<experimental-and-internal-interfaces>>.
+|The standalone binary, protocol smoke fixture, and VS Code configuration fixture run in CI.
+
+|Context Receipt
+|Context-contract maintainers
+|The receipt schema is independently versioned. Additive optional fields are
+compatible; removing, renaming, or changing the meaning of a required field is
+a receipt-schema major change.
+|Versioned receipt fixtures validate required fields, enums, and migrations.
+
+|Graph schema
+|Graph maintainers
+|Document/node fields, edge types, and graph-level invariants are versioned
+when persisted or emitted for external consumption.
+|Old/new graph fixtures validate read, rebuild, and incompatibility behavior.
+
+|Store and cache formats
+|Store maintainers
+|On-disk formats are explicitly versioned. They may change between minor
+releases while Aden either migrates them or safely rebuilds them from source.
+|Upgrade, downgrade, incompatible-format, and rebuild-path tests run in CI.
+
+|Configuration and environment
+|CLI maintainers
+|Documented configuration keys, environment variables, accepted values, and
+defaults remain stable within a supported release line.
+|Configuration parsing and environment-variable fixtures run in CI.
+
+|Distribution, installation, and generated guidance
+|Release and CLI maintainers
+|Released installer behavior, documented install/uninstall commands, MCP
+install/uninstall integration, and generated agent guidance are stable within a
+supported release line. Generated guidance must remain compatible with the
+released binary that creates it.
+|Clean-install, uninstall, MCP lifecycle, and generated-guidance fixtures run in CI.
+
+|Public Rust APIs
+|Owning crate maintainers
+|Items documented as public API follow the crate's SemVer version. Items marked
+experimental do not carry that guarantee.
+|Public API/feature compilation matrix and downstream fixture crates run in CI.
+|===
+
+The owner is the maintainer responsible for approving compatibility changes in
+that area. Until formal ownership metadata exists, the release maintainer owns
+all rows and must obtain review from the affected subsystem maintainer.
+
+== Release Rules
+
+=== Stable Releases
+
+For 1.0 and later, Aden follows SemVer:
+
+* Patch releases fix defects without intentional public-contract changes.
+* Minor releases may add backward-compatible behavior and deprecate existing
+  behavior.
+* Major releases may remove deprecated behavior or make incompatible changes.
+
+=== Pre-1.0 Releases
+
+Before 1.0, minor releases (`0.y.0`) may contain breaking changes. Patch
+releases (`0.y.z`) must remain backward compatible except for a security fix
+where preserving the old behavior would leave users exposed. Such an exception
+must be called out in the release notes with the affected surface, risk, and
+migration or rollback path.
+
+Even before 1.0, breaking changes must not be silent: they require a changelog
+entry, migration guidance, and updated compatibility fixtures.
+
+== Deprecation and Removal
+
+Deprecations must state the replacement, first deprecated release, planned
+removal release, and any behavior difference.
+
+* Stable public surfaces are supported for at least one subsequent minor
+  release and for at least 90 days after deprecation, whichever is longer.
+* A major release may remove a deprecated stable surface after that window.
+* A pre-1.0 minor release may remove it after the same notice window; the
+  removal must be listed as breaking.
+* Emergency security removals may bypass the window, but must provide the
+  safest feasible replacement or mitigation.
+
+Deprecations should preserve old syntax or fields with a warning where doing
+so is safe. Warnings must identify the replacement and removal target; they
+must not make machine-readable output invalid.
+
+== Migration and Rollback
+
+Every incompatible change must include these release artifacts:
+
+* a migration guide with before/after examples;
+* an explicit compatibility classification for each affected surface;
+* automated migration where user-owned data cannot be regenerated;
+* a backup or atomic migration step before modifying user-owned data; and
+* rollback instructions compatible with the previously supported release.
+
+The graph store and cache are derived from repository source. On the default
+per-project store, an incompatible store format is a typed cache miss: both
+read and creation paths automatically rebuild it from source. Aden must never
+delete a store in response to an unrelated I/O, corruption, or permission
+error. A downgrade follows the same automatic incompatible-store rebuild path.
+When `$ADEN_STORE` selects a pinned/shared store, Aden must not auto-wipe it;
+it must return an actionable recovery path instead. User-authored source,
+configuration, and credentials are never treated as rebuildable cache.
+
+Receipt and freshness-state changes require a transition table in their
+migration guide: old value, new value, semantic mapping, compatibility period,
+and behavior for unknown values. Consumers must ignore unknown additive fields
+and report unknown required versions rather than guessing.
+Receipt v1's additive migration and source-free metadata rules are documented in
+<<context-receipt>>.
+
+[[experimental-and-internal-interfaces]]
+== Experimental and Internal Interfaces
+
+An interface is exempt from the stable guarantees only when all of these are
+true:
+
+* it is explicitly labeled `experimental` or `internal` in its help, schema,
+  and documentation;
+* it is not the only documented path for a supported workflow; and
+* release notes identify any material behavior change or removal.
+
+Experimental interfaces may change in any release, but must retain honest
+machine-readable version/capability information. Internal modules, generated
+files, cache implementation details, undocumented environment variables, and
+private Rust items are not public APIs.
+
+== CI Compatibility Gate
+
+Changes to a versioned surface must add or update the relevant checks before
+merge:
+
+* CLI and MCP schemas, examples, defaults, errors, and exit meanings;
+* standalone LSP protocol smoke coverage and editor-configuration fixtures;
+* receipt schema and freshness enum compatibility;
+* graph/store fixture migration, rebuild, and downgrade behavior;
+* configuration and environment-variable parsing;
+* clean install, uninstall, MCP lifecycle, and generated-guidance compatibility;
+* public Rust API and feature compatibility; and
+* changelog and migration-guide presence for an intentional breaking change.
+
+The release gate must fail when a stable fixture changes without either a
+compatible classification or an approved breaking-change record. The record
+must name the release, affected surface, migration, rollback, and maintainer
+approval. When an independent maintainer is formally appointed, the record must
+also name that review; until then, BDFL approval after documented validation is
+sufficient for a sole-maintainer release.
+
+== Changing This Policy
+
+This policy is itself a public project contract. Changes require a durable
+architecture decision record, release-note entry, and an update to its
+CI-testable obligations. See <<adr-009>> for the existing store-format recovery
+decision and <<aden-program>> for the improvement program that introduced this
+policy.

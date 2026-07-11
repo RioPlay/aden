@@ -1,0 +1,3 @@
+# Allow determinism contracts to be included in graph
+contracts/determinisms/
+contracts/

@@ -1,0 +1,110 @@
+name: Manual Quality
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: manual-quality-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  quality:
+    name: Deep quality gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout requested commit
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Setup Rust 1.90
+        uses: dtolnay/rust-toolchain@0176485ebe2f605bde554dd99f804beeaf7db3e2 # 1.90.0
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Check workspace and all features
+        run: |
+          cargo check --locked --workspace --all-targets
+          cargo check --locked --workspace --exclude aden-lsp --all-features
+
+      - name: Lint workspace
+        run: cargo clippy --locked --workspace -- -D warnings
+
+      - name: Test workspace
+        run: |
+          cargo test --locked --workspace --exclude aden-lsp --no-fail-fast
+          cargo test --locked -p aden-lsp --no-fail-fast
+
+      - name: Verify regression definitions and harnesses
+        run: |
+          python3 scripts/verify_regression_lock.py
+          python3 -m unittest discover -s scripts -p 'test_*.py'
+
+      - name: Validate documentation and roadmap contracts
+        run: |
+          cargo run --locked -p aden-cli -- --human check . --severity Forbid
+          python3 scripts/validate_roadmap.py
+          python3 scripts/test_roadmap_tools.py
+
+      - name: Assert default dependency tree stays slim
+        shell: bash
+        run: |
+          set -euo pipefail
+          forbidden="ureq ureq-proto rustls ring tar zstd"
+          tree="$(cargo tree --locked -p aden-cli --edges normal --prefix none | awk '{print $1}' | sort -u)"
+          for dependency in $forbidden; do
+            if grep -ixq "$dependency" <<< "$tree"; then
+              echo "Default dependency tree contains opt-in dependency: $dependency" >&2
+              exit 1
+            fi
+          done
+
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --version 0.19.8 --locked
+
+      - name: Audit dependencies and vendored assets
+        run: |
+          cargo deny check
+          (cd crates/aden-cli/assets && sha256sum --check CHECKSUMS)
+
+      - name: Verify source license headers
+        shell: bash
+        run: |
+          set -euo pipefail
+          missing=0
+          while IFS= read -r -d '' file; do
+            grep -q 'SPDX-License-Identifier' "$file" || { echo "Missing SPDX: $file"; missing=1; }
+          done < <(find crates -name '*.rs' -print0)
+          while IFS= read -r -d '' file; do
+            grep -q 'SPDX-License-Identifier' "$file" || { echo "Missing SPDX: $file"; missing=1; }
+          done < <(find scripts release -type f \( -name '*.sh' -o -name '*.ps1' \) -print0)
+          test "$missing" -eq 0
+
+      - name: Write quality verdict
+        if: always()
+        env:
+          QUALITY_RESULT: ${{ job.status }}
+        run: |
+          jq -n \
+            --arg commit "$GITHUB_SHA" \
+            --arg result "$QUALITY_RESULT" \
+            --arg run_id "$GITHUB_RUN_ID" \
+            '{schema_version:1, commit:$commit, result:$result, workflow_run:$run_id}' \
+            > quality-verdict.json
+
+      - name: Upload quality verdict
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: quality-verdict-${{ github.sha }}
+          path: quality-verdict.json
+          if-no-files-found: error
+          retention-days: 30

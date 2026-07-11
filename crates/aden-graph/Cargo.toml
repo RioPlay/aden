@@ -1,0 +1,20 @@
+[package]
+name = "aden-graph"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+aden-core = { path = "../aden-core" }
+aden-paths = { path = "../aden-paths" }
+aden-store = { path = "../aden-store" }
+postcard = { version = "1.0", default-features = false, features = ["alloc"] }
+petgraph = "0.8.3"
+regex = "1.12.3"
+serde = { version = "1.0", features = ["derive"] }
+thiserror = "2.0.18"
+rayon.workspace = true
+
+[dev-dependencies]
+tempfile = "3.27.0"
