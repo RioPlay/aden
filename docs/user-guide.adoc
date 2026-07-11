@@ -12,27 +12,17 @@ You have just cloned a repo and need to understand it fast.
 
 [source,bash]
 ----
-# 1. Initialize Aden scaffolding
-aden init
-
-# 2. Generate contracts for the whole project
-aden gen src/ --auto
-
-# 3. Validate the graph
-aden check .
-
-# 4. Ask high-level questions
+# First useful answer: no anchor or setup knowledge required.
 aden ask "What is the main entry point?"
-aden ask "Which modules handle authentication?"
-
-# 5. See the codebase's functional clusters (subsystems), independent of folders
-aden communities --min-size 5
-
-# 6. Drill into a specific module
-#    First resolve a name to a real anchor, then traverse from it:
-aden locate --symbol authenticate          # copy an aden://… line from the output
-aden query --from "aden://module/<crate>/<module-doc>.adoc#code_block_3" --depth 2
+# Drill into a concrete symbol; ambiguity returns candidates rather than guessing.
+aden understand main .
+# Verify before acting on the answer.
+aden check . --severity Forbid
 ----
+
+`init`, explicit `gen`, communities, and anchor-based `query` remain useful
+advanced workflows; use them after this first answer when you need setup,
+orientation, or exact traversal control.
 
 NOTE: `aden query`/`aden asm` take a full `aden://…` anchor (or a module alias
 like `mod-<crate>`), **not** a bare symbol name. Always run `aden locate`,

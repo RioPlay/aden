@@ -83,6 +83,11 @@ Related: `aden mcp list [--preset <PRESET>|--name <NAME>]` (platforms + install 
 
 If the tools do not appear, see <<troubleshooting>>.
 
+`aden-mcp --version` is an installation smoke test: it prints the version and
+exits without opening the JSON-RPC stdio transport. If it instead reports an
+initialization/connection error, reinstall a current Aden release before adding
+the server to a client configuration.
+
 === Argument conventions
 
 * *Use `snake_case` argument names* (`dry_run`, `caller_of`, `show_context`). The server translates them to the CLI's `--kebab-case` flags.
@@ -90,6 +95,32 @@ If the tools do not appear, see <<troubleshooting>>.
 * *Booleans must be real JSON booleans* (`true`/`false`), not strings.
 * *`locate` requires at least one of `symbol` or `caller_of`*.
 * *Anchors, not bare names.* `asm`/`query` take a full `aden://…` anchor (or a module alias like `mod-<crate>`), not a bare symbol name. Use `grep`/`locate`/`list` to resolve the anchor, then feed it to `asm`/`query` — or use `understand` to skip the chain.
+
+=== Transport-parity examples
+
+These CLI calls exercise the same structured read contracts used by the MCP
+`grep` and `locate` tools. They are run as documentation fixtures in CI:
+
+[source,bash]
+----
+aden grep --json "known_symbol" .
+aden locate --json --symbol "known_symbol" .
+----
+
+Over MCP, pass the corresponding named JSON arguments `pattern`, `symbol`, and
+optional `path`. The response retains the CLI JSON semantics, including the
+versioned `context_receipt`; text-first `ask` and `asm` responses are carried
+losslessly in a versioned JSON envelope.
+
+=== Agent response contract
+
+MCP capability schemas declare `x-aden-output-mode`. Read tools use
+`json-receipt-v1`: every successful response is JSON and includes a
+`context_receipt`. When a legacy CLI read has no native receipt, MCP returns a
+truthful `freshness: "unavailable"` receipt and `incomplete: true`; agents must
+not treat it as authoritative. MCP errors are JSON too, with a sanitized
+message, `safe_to_retry`, and an exact `recovery` action. This removes any need
+to parse terminal chrome to decide how to proceed.
 
 === Security boundary
 
@@ -99,62 +130,78 @@ If the tools do not appear, see <<troubleshooting>>.
 * *`watch` is terminal-only.* The continuous file-watch / live-reindex mode is not exposed over MCP — run `aden watch` in a terminal; use `gen`/`sync` for one-shot updates.
 
 [[mcp-freshness]]
-=== Graph freshness over MCP
+=== Graph freshness (shell and MCP)
 
-Shell CLI and MCP do not behave identically for incremental indexing. See <<adr-010>>
-for the full rationale.
+Shell CLI and MCP share one freshness contract. See <<adr-010>> for historical
+context; the zero-friction model supersedes the old MCP skip-auto-gen default.
 
-==== Shell (default)
+==== Shared behavior
 
 Read tools (`grep`, `ask`, `locate`, `asm`, `query`, `search`, `understand`) call
-`ensure_fresh()` before serving results. When the working tree has changed since the
-last `gen`, a silent incremental reindex runs — you do **not** need `gen` after every
-edit in a normal shell session.
-
-==== MCP (current 0.2.x)
-
-`aden-mcp` sets `ADEN_SKIP_AUTO_GEN=1` on **read-only** tool invocations only. Write
-tools (`gen`, `sync`, `ready`, `heal --fix`, …) run without skip so they can refresh
-the store. This prevents read tools from silently acquiring the store lock while the
-host may be running `aden ready` or another writer. Trade-off: **existing stores may
-be stale** relative to recent edits until you run an explicit write tool.
+`ensure_fresh()` before serving results. When the working tree has changed (edits,
+new files, **deletes/renames**), a silent incremental reindex runs — you do **not**
+need `gen` after every edit. Silent gen is **single-flight** and **non-blocking** on
+the read path: if another writer holds `store.lock`, explore tools serve the last
+`graph.snapshot` instead of waiting. Decision tools (`understand`, `impact-diff`)
+wait briefly (a few seconds) for an in-flight refresh.
 
 | Situation | What happens |
 |-----------|--------------|
-| No store yet (first query) | Initial `gen` still runs — read tools work out of the box |
-| Store exists, files changed | MCP read tools may return graph from last `gen`; JSON includes `index_stale: true` |
-| After your edits | Run MCP `gen`, `sync`, or `ready` (or shell `aden gen`) before trusting blast radius |
-| Large external change (clone, merge) | Always run `gen` regardless of transport |
+| No store yet (first query) | Initial `gen` runs — tools work out of the box |
+| Store exists, files changed/deleted | Silent incremental gen (or join in-flight writer) |
+| Writer busy during explore read | Answer from last snapshot; JSON `freshness` / `index_stale` |
+| Blast-radius tool during writer | Short wait, then answer; may label `freshness: lagging` |
+| Large external change (clone, merge) | Run `gen` regardless of transport |
+| Escape hatch | Host may set `ADEN_SKIP_AUTO_GEN=1` to freeze the index |
 
-Read-tool JSON envelopes include `index_stale` (and `stale_hint` when true). Shell output
-prints a `NOTE: index_stale=true` line when auto-gen is suppressed and the tree changed.
+JSON envelopes include `freshness` (`current` \| `snapshot` \| `lagging` \| `building` \|
+`unavailable`) and legacy `index_stale` for older prompts. The versioned
+`context_receipt` additionally identifies the `graph_revision`, the
+`observed_source_fingerprint`, and the `refresh_cause`. The source fingerprint
+is content-addressed (path plus bytes), so same-second and equal-sized edits do
+not inherit the old whole-second mtime blind spot.
 
-IMPORTANT: The core agent loop (`understand` → edit → `impact-diff`) depends on an
-up-to-date graph for blast-radius accuracy. After substantive edits over MCP, run `gen`
-or `sync` before `impact-diff` — or use the shell CLI for read tools when you need
-automatic freshness.
+For an answer that must never silently use a lagging snapshot, pass
+`--require-fresh` to a graph read, for example:
+
+[source,bash]
+----
+aden --require-fresh query --impact aden://module/example#symbol . --json
+----
+
+The option is also exposed as `require_fresh: true` on the corresponding MCP
+tools. Aden applies one five-second wall-clock deadline across source checking,
+generation attempts, writer waits, and retries, then exits with status 2 and an
+actionable error if authority cannot be proven.
+Frozen mode (`ADEN_SKIP_AUTO_GEN=1`) therefore remains useful for offline
+snapshot exploration, but intentionally fails an authoritative read after an
+edit. Existing qualitative freshness labels remain unchanged during this
+additive receipt migration.
+
+==== Workspace auto-detect (MCP)
+
+`aden-mcp` does **not** require a baked project path in client config. It resolves
+the open workspace from MCP Roots (`roots/list`, `roots/list_changed`) and common
+host env vars (`WORKSPACE_FOLDER_PATHS`, …). Optional pin: pass a path argument or
+set `ADEN_PROJECT`. Re-run `aden mcp install` to drop legacy absolute paths from
+older installs.
 
 ==== Concurrent reads within one project (ADR-011)
 
-Several MCP sessions or shell read commands on the *same* repository used to contend
-for fjall's process-level store lock (`FjallError: Locked`). That is separate from
-MCP's `ADEN_SKIP_AUTO_GEN` staleness trade-off above.
-
 After each successful `gen`, aden publishes `graph.snapshot` beside the per-user store.
-Read commands load from that snapshot when it is fresher than the live `store/`
-directory, then fold in-tree overlays in memory. Writers (`gen`, `ready`, `sync`) still
-open fjall under `store.lock`; a second writer waits with holder `pid`/age notes instead
-of failing immediately.
+Read commands prefer that snapshot (even if the live store is briefly newer under a
+concurrent writer), then fold in-tree overlays in memory. Explicit `gen`/`ready`/`sync`
+still open fjall under `store.lock` (single-flight; second explicit writer waits).
 
 | Situation | What happens |
 |-----------|--------------|
 | N concurrent read tools, no writer | Each loads `graph.snapshot` — no fjall open |
-| `gen` running while reads are active | Reads use the last published snapshot; writer holds `store.lock` |
-| Snapshot missing or stale vs store | Falls back to opening fjall (today's path) |
-| Working tree changed since last `gen` | Unchanged — still check `index_stale` over MCP |
+| `gen` running while reads are active | Reads use the last published snapshot |
+| Snapshot missing | Fall back to opening fjall |
+| Silent gen while lock held | Fail-open (no multi-minute queue) |
 
 `aden status` (and `--json`) reports the active store writer and read-snapshot path.
-See <<adr-011>> for format and freshness rules.
+See <<adr-011>> for format and publish rules.
 
 == How `aden ask` Works
 

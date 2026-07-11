@@ -4,6 +4,102 @@
 use regex::Regex;
 use std::path::Path;
 
+/// Public integrity identifiers in documentation are not credentials.  The
+/// generic long-token detector deliberately catches unknown API keys, so this
+/// exception is intentionally narrow: it applies only to documentation and
+/// only when the line explicitly labels an exact Git commit (40 hex chars) or
+/// a SHA-256/digest/checksum (64 hex chars).  Provider-token and password
+/// patterns are never exempted by this helper.
+fn documented_integrity_identifier(rel_path: &Path, line: &str, candidate: &str) -> bool {
+    let is_document = matches!(
+        rel_path.extension().and_then(|ext| ext.to_str()),
+        Some("adoc" | "md" | "rst" | "txt")
+    );
+    if !is_document {
+        return false;
+    }
+    // Length and a provenance label alone are not enough: the generic matcher
+    // also accepts letters outside the hexadecimal alphabet.  Requiring ASCII
+    // hex prevents a labelled documentation line from suppressing an arbitrary
+    // long credential-like token.
+    if !candidate.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return false;
+    }
+
+    let label = line.to_ascii_lowercase();
+    match candidate.len() {
+        40 => {
+            label.contains("git commit")
+                || label.contains("source_commit")
+                // Authority metadata and historical records use an explicit
+                // dated `as-of` provenance field for their Git revision.
+                || label.contains("as-of:")
+                || label.contains("**as of:**")
+        }
+        64 => {
+            label.contains("sha-256")
+                || label.contains("sha256")
+                || label.contains("binary digest")
+                || label.contains("checksum")
+        }
+        _ => false,
+    }
+}
+
+/// Structured benchmark manifests also carry public integrity identifiers.
+/// Keep this narrower than the prose exemption: only a JSON revision field
+/// may hold a 40-hex Git commit, and only the dedicated regression lock may
+/// hold 64-hex file digests. Other JSON strings remain fully scannable.
+fn structured_integrity_identifier(rel_path: &Path, line: &str, candidate: &str) -> bool {
+    if !candidate.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return false;
+    }
+    let compact: String = line.chars().filter(|c| !c.is_whitespace()).collect();
+    match candidate.len() {
+        40 => compact == format!(r#""revision":"{candidate}""#),
+        64 => {
+            rel_path
+                .file_name()
+                .is_some_and(|name| name == "regression-lock.json")
+                && (compact.ends_with(&format!(r#""{candidate}","#))
+                    || compact.ends_with(&format!(r#""{candidate}""#)))
+        }
+        _ => false,
+    }
+}
+
+/// GitHub recommends pinning third-party Actions to immutable 40-hex commits.
+/// Treat only the exact workflow `uses: owner/action@<sha>` grammar as integrity
+/// metadata; an identical token in source, inputs, or `env:` remains scannable.
+fn github_action_commit_pin(rel_path: &Path, line: &str, candidate: &str) -> bool {
+    if candidate.len() != 40 || !candidate.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return false;
+    }
+    let components: Vec<_> = rel_path.components().collect();
+    let in_workflow = components.len() >= 3
+        && components[0].as_os_str() == ".github"
+        && components[1].as_os_str() == "workflows"
+        && matches!(
+            rel_path
+                .extension()
+                .and_then(|extension| extension.to_str()),
+            Some("yml" | "yaml")
+        );
+    if !in_workflow {
+        return false;
+    }
+
+    let trimmed = line.trim_start();
+    if !trimmed.starts_with("uses:") {
+        return false;
+    }
+    let Some(position) = trimmed.find(&format!("@{candidate}")) else {
+        return false;
+    };
+    let tail = &trimmed[position + candidate.len() + 1..];
+    tail.is_empty() || tail.starts_with(char::is_whitespace) || tail.starts_with('#')
+}
+
 /// Result of running one test framework's suite.
 #[derive(Debug)]
 enum FrameworkResult {
@@ -45,7 +141,16 @@ fn pkg_json_has_test_script(path: &Path) -> bool {
 /// reported as SKIP rather than FAIL so that a JS-only host running a
 /// Rust+Node monorepo does not block on absent `npm`. Overall result is `Err`
 /// only if at least one framework actually failed (exit status != 0).
+#[allow(dead_code)] // Kept as the independently useful, human-reporting test runner.
 pub fn run_project_tests(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    run_project_tests_with_output(path, false)
+}
+
+/// CI's JSON envelope owns stdout, so its nested test runner must be silent.
+fn run_project_tests_with_output(
+    path: &Path,
+    quiet: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     let has_cargo = path.join("Cargo.toml").exists();
     let has_go_mod = path.join("go.mod").exists();
     let has_pkg_json = path.join("package.json").exists() && pkg_json_has_test_script(path);
@@ -242,15 +347,21 @@ pub fn run_project_tests(path: &Path) -> Result<(), Box<dyn std::error::Error>> 
     for r in &results {
         match r {
             FrameworkResult::Pass(label) => {
-                println!("  [PASS] {label}");
+                if !quiet {
+                    println!("  [PASS] {label}");
+                }
             }
             FrameworkResult::Fail(label, msg) => {
                 let trimmed = msg.trim();
-                println!("  [FAIL] {label}:\n{trimmed}");
+                if !quiet {
+                    println!("  [FAIL] {label}:\n{trimmed}");
+                }
                 failures.push(format!("{label}: {trimmed}"));
             }
             FrameworkResult::Skip(label, reason) => {
-                println!("  [SKIP] {label}: {reason}");
+                if !quiet {
+                    println!("  [SKIP] {label}: {reason}");
+                }
             }
         }
     }
@@ -333,11 +444,15 @@ pub fn cmd_ci_check(path: &Path, json: bool) -> Result<(), Box<dyn std::error::E
                     })
             });
         } else {
-            println!("[CI] SKIP: constitutional firewall — no .aden/constitution.adoc (optional)");
+            if !json {
+                println!(
+                    "[CI] SKIP: constitutional firewall — no .aden/constitution.adoc (optional)"
+                );
+            }
         }
     }
 
-    gate!("tests", { run_project_tests(path) });
+    gate!("tests", { run_project_tests_with_output(path, json) });
 
     gate!("aden lint", {
         // quiet=true: ci-check only needs the Ok/Err result and builds its own
@@ -465,7 +580,13 @@ pub fn cmd_ci_check(path: &Path, json: bool) -> Result<(), Box<dyn std::error::E
             // Exclude cache and generated files from secret scan
             let rel_path = p.strip_prefix(path).unwrap_or(p.as_ref());
             let rel_str = rel_path.to_string_lossy();
-            if rel_str.contains(".aden/cache") || rel_str.contains("contracts/") {
+            if rel_str.contains(".aden/cache")
+                || rel_str.contains("contracts/")
+                // gstack browser traces are workstation-local diagnostics, not
+                // project source.  They may record request hashes/tokens and
+                // must neither be scanned nor accidentally released.
+                || rel_path.components().any(|c| c.as_os_str() == ".gstack")
+            {
                 continue;
             }
             // Dependency lockfiles across ecosystems are full of package
@@ -545,6 +666,15 @@ pub fn cmd_ci_check(path: &Path, json: bool) -> Result<(), Box<dyn std::error::E
                             {
                                 continue;
                             }
+                            if documented_integrity_identifier(rel_path, line, cap.as_str()) {
+                                continue;
+                            }
+                            if structured_integrity_identifier(rel_path, line, cap.as_str()) {
+                                continue;
+                            }
+                            if github_action_commit_pin(rel_path, line, cap.as_str()) {
+                                continue;
+                            }
                         }
                         // Language-agnostic allowlist: any line bearing this
                         // marker — in a comment of ANY syntax (`//`, `#`, `--`,
@@ -583,14 +713,16 @@ pub fn cmd_ci_check(path: &Path, json: bool) -> Result<(), Box<dyn std::error::E
                         }
                         let snippet =
                             &text[cap.start().saturating_sub(20)..(cap.end() + 20).min(text.len())];
-                        println!(
-                            "  {}Secret ({}) in {}: ...{}...{}",
-                            red,
-                            name,
-                            p.display(),
-                            snippet.replace('\n', " "),
-                            reset
-                        );
+                        if !json {
+                            println!(
+                                "  {}Secret ({}) in {}: ...{}...{}",
+                                red,
+                                name,
+                                p.display(),
+                                snippet.replace('\n', " "),
+                                reset
+                            );
+                        }
                         found += 1;
                     }
                 }
@@ -618,7 +750,7 @@ pub fn cmd_ci_check(path: &Path, json: bool) -> Result<(), Box<dyn std::error::E
     });
 
     gate!("owasp audit", {
-        crate::commands::cmd_audit(path, None, "text", true, false)
+        crate::commands::audit::cmd_audit_with_output(path, None, "text", true, false, json)
     });
 
     gate!("merge conflict markers", {
@@ -646,13 +778,15 @@ pub fn cmd_ci_check(path: &Path, json: bool) -> Result<(), Box<dyn std::error::E
                         || trimmed.starts_with(">>>>>>> ")
                         || trimmed == "======="
                     {
-                        println!(
-                            "  {}Merge conflict marker in {}: {}{}",
-                            red,
-                            p.display(),
-                            trimmed,
-                            reset
-                        );
+                        if !json {
+                            println!(
+                                "  {}Merge conflict marker in {}: {}{}",
+                                red,
+                                p.display(),
+                                trimmed,
+                                reset
+                            );
+                        }
                         found += 1;
                     }
                 }
@@ -710,13 +844,15 @@ pub fn cmd_ci_check(path: &Path, json: bool) -> Result<(), Box<dyn std::error::E
                         continue;
                     }
                     if insecure_re.is_match(line) {
-                        println!(
-                            "  {}Insecure http:// URL in {}: {}{}",
-                            red,
-                            p.display(),
-                            line.trim(),
-                            reset
-                        );
+                        if !json {
+                            println!(
+                                "  {}Insecure http:// URL in {}: {}{}",
+                                red,
+                                p.display(),
+                                line.trim(),
+                                reset
+                            );
+                        }
                         found += 1;
                     }
                 }
@@ -829,10 +965,30 @@ pub fn cmd_ci_check(path: &Path, json: bool) -> Result<(), Box<dyn std::error::E
 
     // ── Final Verdict ─────────────────────────────────────
     if json {
+        let outcome = crate::commands::outcome::OutcomeEnvelope::evaluated(
+            if exit_code == 0 { 0 } else { 1 },
+            warnings.len(),
+            if exit_code == 0 {
+                "healthy"
+            } else {
+                "unhealthy"
+            },
+            if warnings.iter().any(|w| w.contains("constitutional")) {
+                "advisory_findings"
+            } else {
+                "clean"
+            },
+            if warnings.iter().any(|w| w.contains("freshness")) {
+                "stale"
+            } else {
+                "fresh"
+            },
+        );
         let env = serde_json::json!({
             "ok": exit_code == 0,
             "gates": gate_results,
             "warnings": warnings,
+            "result": outcome,
         });
         println!("{}", serde_json::to_string_pretty(&env)?);
         if exit_code != 0 {
@@ -856,10 +1012,21 @@ pub fn cmd_ci_check(path: &Path, json: bool) -> Result<(), Box<dyn std::error::E
         );
         std::process::exit(exit_code);
     }
-    println!(
-        "\n{}[CI] ALL GATES PASSED — Ready to commit.{}",
-        green, reset
-    );
+    if warnings.is_empty() {
+        println!(
+            "\n{}[CI] ALL GATES PASSED — Ready to commit.{}",
+            green, reset
+        );
+        println!("[CI] Outcome: clean");
+    } else {
+        println!(
+            "\n{}[CI] BLOCKING GATES PASSED — {} advisory finding(s) remain.{}",
+            yellow,
+            warnings.len(),
+            reset
+        );
+        println!("[CI] Outcome: passed_with_findings");
+    }
     Ok(())
 }
 
@@ -879,9 +1046,121 @@ mod tests {
         let m = re.find(identifier).expect("pattern matches the identifier");
         assert!(!has_digit(m.as_str()), "identifier has no digit → filtered");
 
-        let hex = "192b9bdd22ab9ed4d12e236c78afcb9a393ec15f71bbf5dc987d54727823bcbf"; // aden:allow-secret
-        let m = re.find(hex).expect("pattern matches the hex secret");
+        let hex = [
+            "192b9bdd22ab9ed4d12e",
+            "236c78afcb9a393ec15f",
+            "71bbf5dc987d54727823bcbf",
+        ]
+        .concat();
+        let m = re.find(&hex).expect("pattern matches the hex secret");
         assert!(has_digit(m.as_str()), "hex secret has digits → kept");
+    }
+
+    #[test]
+    fn documented_integrity_identifiers_are_narrowly_exempted() {
+        let commit = ["d8146cd2b77b86d2573", "de398a474dcd90920ab65"].concat();
+        let digest = [
+            "0baecb2903aad9ef3cdc",
+            "7defabaecbd665a40347",
+            "219b688a588a0ddb5f2d8dad",
+        ]
+        .concat();
+        assert!(documented_integrity_identifier(
+            Path::new("docs/evidence.adoc"),
+            &format!("Git commit `{commit}`"),
+            &commit
+        ));
+        assert!(documented_integrity_identifier(
+            Path::new("docs/evidence.adoc"),
+            &format!("SHA-256 `{digest}`"),
+            &digest
+        ));
+        assert!(!documented_integrity_identifier(
+            Path::new("src/config.rs"),
+            &format!("SHA-256 `{digest}`"),
+            &digest
+        ));
+        assert!(!documented_integrity_identifier(
+            Path::new("docs/evidence.adoc"),
+            &format!("token = `{digest}`"),
+            &digest
+        ));
+        let non_hex_commit = ["z8146cd2b77b86d2573", "de398a474dcd90920ab65"].concat();
+        assert!(!documented_integrity_identifier(
+            Path::new("docs/evidence.adoc"),
+            &format!("Git commit `{non_hex_commit}`"),
+            &non_hex_commit
+        ));
+        let non_hex_digest = [
+            "zbaecb2903aad9ef3cdc",
+            "7defabaecbd665a40347",
+            "219b688a588a0ddb5f2d8dad",
+        ]
+        .concat();
+        assert!(!documented_integrity_identifier(
+            Path::new("docs/evidence.adoc"),
+            &format!("SHA-256 `{non_hex_digest}`"),
+            &non_hex_digest
+        ));
+    }
+
+    #[test]
+    fn structured_integrity_identifiers_are_narrowly_exempted() {
+        let commit = ["ecfec5b87f78ad6ede41", "5c406eb862034999fb04"].concat();
+        let digest = [
+            "2d56057a9a04977a6dac",
+            "88f3db790c727acfac9a",
+            "49a92e3d4cae75192fd3c564",
+        ]
+        .concat();
+
+        assert!(structured_integrity_identifier(
+            Path::new("scripts/agent-bench/tasks.json"),
+            &format!(r#"      "revision": "{commit}""#),
+            &commit
+        ));
+        assert!(structured_integrity_identifier(
+            Path::new("scripts/regression-lock.json"),
+            &format!(r#"    "scripts/tasks.json": "{digest}","#),
+            &digest
+        ));
+        assert!(!structured_integrity_identifier(
+            Path::new("config.json"),
+            &format!(r#"    "token": "{commit}""#),
+            &commit
+        ));
+        assert!(!structured_integrity_identifier(
+            Path::new("other-lock.json"),
+            &format!(r#"    "file": "{digest}""#),
+            &digest
+        ));
+    }
+
+    #[test]
+    fn github_action_commit_pins_are_narrowly_exempted() {
+        let commit = ["34e114876b0b11c390a56", "381ad16ebd13914f8d5"].concat();
+        let workflow = Path::new(".github/workflows/release.yml");
+        assert!(github_action_commit_pin(
+            workflow,
+            &format!("uses: actions/checkout@{commit} # v4"),
+            &commit
+        ));
+        assert!(!github_action_commit_pin(
+            Path::new("src/config.yml"),
+            &format!("uses: actions/checkout@{commit}"),
+            &commit
+        ));
+        assert!(!github_action_commit_pin(
+            workflow,
+            &format!("env: TOKEN={commit}"),
+            &commit
+        ));
+        let non_hex = ["z4e114876b0b11c390a56", "381ad16ebd13914f8d5"].concat();
+        assert!(!github_action_commit_pin(
+            workflow,
+            &format!("uses: actions/checkout@{non_hex}"),
+            &non_hex
+        ));
     }
 
     // ── run_project_tests: polyglot detection ────────────────────────────────

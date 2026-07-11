@@ -20,6 +20,7 @@ pub mod lint;
 pub mod locate;
 #[cfg(feature = "model-fetch")]
 pub mod model;
+pub mod outcome;
 pub mod overlay;
 pub mod query;
 pub mod ready;
@@ -48,7 +49,9 @@ pub use diagnose::cmd_diagnose;
 pub use doctor::cmd_doctor;
 pub use emergency::cmd_emergency;
 pub use federation::cmd_federation;
-pub use generate::{StaleHintGuard, augment_read_json, cmd_gen, cmd_gen_opts, ensure_fresh};
+pub use generate::{
+    StaleHintGuard, augment_read_json, cmd_gen, cmd_gen_opts, ensure_fresh, ensure_fresh_decision,
+};
 pub use grep::cmd_grep;
 #[cfg(feature = "watch")]
 pub use heal::cmd_heal_watch;

@@ -42,11 +42,25 @@ def result_path(result):
     return m.group(1) if m else ""
 
 
-def run_search(bin_path, repo, query, limit):
-    out = subprocess.run(
+def run_bounded(command, timeout, label):
+    """Run one product-path case without allowing a wedged command to stall a corpus."""
+    try:
+        return subprocess.run(
+            command, capture_output=True, text=True, timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        print(f"  ! TIMEOUT after {timeout:.1f}s: {label}", file=sys.stderr, flush=True)
+        return None
+
+
+def run_search(bin_path, repo, query, limit, timeout):
+    out = run_bounded(
         [bin_path, "search", query, repo, "--json", "--limit", str(limit)],
-        capture_output=True, text=True,
+        timeout,
+        f"search {query!r}",
     )
+    if out is None:
+        return []
     if out.returncode != 0:
         print(f"  ! search failed for {query!r}: {out.stderr.strip()[:200]}", file=sys.stderr)
         return []
@@ -56,10 +70,15 @@ def run_search(bin_path, repo, query, limit):
         return []
 
 
+def expected_alternatives(expected):
+    """Return non-empty `|`-separated acceptable source substrings."""
+    return [part.strip().lower() for part in expected.split("|") if part.strip()]
+
+
 def rank_of(results, expected):
-    exp = expected.lower()
+    alternatives = expected_alternatives(expected)
     for i, r in enumerate(results, start=1):
-        if exp in result_path(r).lower():
+        if any(exp in result_path(r).lower() for exp in alternatives):
             return i
     return None
 
@@ -72,19 +91,28 @@ ASK_FINAL_ANCHOR_RE = re.compile(r"^//\s+Anchor\s*:\s*\[\[(.+?)\]\]", re.MULTILI
 ASK_PRIMARY_RE = re.compile(r"^//\s+Primary\s*:\s*(\S+)(?:\s+\(source:\s*(.*?)\))?", re.MULTILINE)
 
 
-def run_ask(bin_path, repo, query):
+def run_ask(bin_path, repo, query, timeout):
     """Run `aden ask --explain` and return (final_anchor, primary, primary_source)."""
-    out = subprocess.run(
-        [bin_path, "ask", query, repo, "--explain"],
-        capture_output=True, text=True,
+    out = run_bounded(
+        # Routing evaluation consumes only the explain receipt, not a large
+        # answer body. Pin the base budget so confidence auto-boost cannot turn
+        # 17 anchor checks into hundreds of thousands of unused output tokens.
+            [bin_path, "ask", "--human", query, repo, "--explain", "--budget", "512"],
+        timeout,
+        f"ask --explain {query!r}",
     )
+    if out is None:
+        return None, None, None
     if out.returncode != 0:
         # Older binaries predate --explain; the final-anchor summary line still
         # carries the routing verdict (bare doc-root anchors then judge by name).
-        out = subprocess.run(
-            [bin_path, "ask", query, repo],
-            capture_output=True, text=True,
+        out = run_bounded(
+            [bin_path, "ask", "--human", query, repo],
+            timeout,
+            f"ask {query!r}",
         )
+    if out is None:
+        return None, None, None
     if out.returncode != 0:
         print(f"  ! ask failed for {query!r}: {out.stderr.strip()[:200]}", file=sys.stderr)
         return None, None, None
@@ -97,6 +125,18 @@ def run_ask(bin_path, repo, query):
     )
 
 
+def run_ask_context(bin_path, repo, query, budget, timeout):
+    """Return bounded native context for end-to-end expected-source coverage."""
+    out = run_bounded(
+            [bin_path, "ask", "--human", query, repo, "--strict", "--budget", str(budget)],
+        timeout,
+        f"ask --strict {query!r}",
+    )
+    if out is None:
+        return ""
+    return out.stdout if out.returncode == 0 else ""
+
+
 def ask_case_passes(expected, final_anchor, primary, primary_source):
     """`expected` is a |-separated list of acceptable substrings, matched against
     the FINAL anchor (post-fallback). The primary's source file only counts when
@@ -107,8 +147,8 @@ def ask_case_passes(expected, final_anchor, primary, primary_source):
     hay = [final_anchor.lower()]
     if primary and final_anchor == primary:
         hay.append((primary_source or "").lower())
-    return any(alt.strip().lower() in h
-               for alt in expected.split("|") if alt.strip()
+    return any(alt in h
+               for alt in expected_alternatives(expected)
                for h in hay)
 
 
@@ -133,11 +173,17 @@ def main():
     ap.add_argument("--repo", required=True, help="path to the target repository")
     ap.add_argument("--queries", required=True, help="TSV: query<TAB>expected_path<TAB>note")
     ap.add_argument("--limit", type=int, default=20)
-    ap.add_argument("--mode", choices=["search", "ask"], default="search",
+    ap.add_argument("--mode", choices=["search", "ask", "ask-context"], default="search",
                     help="search: rank expected file in `aden search` results (default). "
                          "ask: judge `aden ask` ROUTING — does the chosen anchor land on "
                          "the expected document/symbol (expected may be |-separated "
-                         "alternatives)")
+                         "alternatives); ask-context: expected source appears in bounded context")
+    ap.add_argument("--budget", type=int, default=512,
+                    help="strict context budget for --mode ask-context")
+    ap.add_argument("--timeout", type=float, default=30.0,
+                    help="hard timeout in seconds for each retrieval command (default: 30)")
+    ap.add_argument("--gen-timeout", type=float, default=600.0,
+                    help="hard timeout in seconds for optional generation (default: 600)")
     ap.add_argument("--gen", action="store_true", help="run `aden gen` first")
     ap.add_argument("--json", action="store_true", help="emit metrics as JSON")
     ap.add_argument("--quiet", action="store_true", help="suppress per-query lines")
@@ -145,18 +191,49 @@ def main():
 
     if args.gen:
         print(f"[eval] aden gen {args.repo} …", file=sys.stderr)
-        subprocess.run([args.bin, "gen", args.repo, "--auto"], check=False,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            subprocess.run([args.bin, "gen", args.repo, "--auto"], check=False,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                           timeout=args.gen_timeout)
+        except subprocess.TimeoutExpired:
+            sys.exit(f"aden gen timed out after {args.gen_timeout:.1f}s")
 
     cases = load_queries(args.queries)
     if not cases:
         sys.exit(f"no queries in {args.queries}")
 
+    if args.mode == "ask-context":
+        passes = 0
+        fails = []
+        for q, expected, note in cases:
+            context = run_ask_context(args.bin, args.repo, q, args.budget, args.timeout)
+            ok = any(alt in context.lower() for alt in expected_alternatives(expected))
+            passes += ok
+            if not ok:
+                fails.append(q)
+            if not args.quiet:
+                print(f"  [{'PASS' if ok else 'FAIL'}] {q!r} -> {expected}  ({note})")
+        n = len(cases)
+        metrics = {
+            "queries": n,
+            "context_pass": passes,
+            "context_coverage": round(passes / n, 4),
+            "budget": args.budget,
+            "failures": fails,
+        }
+        if args.json:
+            print(json.dumps(metrics, indent=2))
+        else:
+            print(f"\n  N={n}  context coverage={passes}/{n} ({passes / n:.0%})")
+        sys.exit(0 if passes == n else 1)
+
     if args.mode == "ask":
         passes = 0
         fails = []
         for q, expected, note in cases:
-            final_anchor, primary, primary_source = run_ask(args.bin, args.repo, q)
+            final_anchor, primary, primary_source = run_ask(
+                args.bin, args.repo, q, args.timeout
+            )
             ok = ask_case_passes(expected, final_anchor, primary, primary_source)
             passes += ok
             if not ok:
@@ -176,7 +253,7 @@ def main():
 
     ranks = []
     for q, expected, note in cases:
-        results = run_search(args.bin, args.repo, q, args.limit)
+        results = run_search(args.bin, args.repo, q, args.limit, args.timeout)
         rank = rank_of(results, expected)
         ranks.append(rank)
         if not args.quiet:

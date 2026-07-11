@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "aden"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "aden-asm",
  "aden-core",
@@ -17,21 +17,20 @@ dependencies = [
 
 [[package]]
 name = "aden-asm"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "aden-core",
  "aden-emit",
  "aden-graph",
  "aden-parse",
  "petgraph",
- "regex",
  "tempfile",
  "thiserror 2.0.18",
 ]
 
 [[package]]
 name = "aden-cli"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "aden-asm",
  "aden-core",
@@ -64,7 +63,7 @@ dependencies = [
 
 [[package]]
 name = "aden-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "fnv",
  "serde",
@@ -75,7 +74,7 @@ dependencies = [
 
 [[package]]
 name = "aden-diagnose"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "aden-core",
  "aden-graph",
@@ -86,7 +85,7 @@ dependencies = [
 
 [[package]]
 name = "aden-emit"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "aden-core",
  "regex",
@@ -96,7 +95,7 @@ dependencies = [
 
 [[package]]
 name = "aden-graph"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "aden-core",
  "aden-paths",
@@ -112,7 +111,7 @@ dependencies = [
 
 [[package]]
 name = "aden-heal"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "aden-core",
  "aden-emit",
@@ -129,7 +128,7 @@ dependencies = [
 
 [[package]]
 name = "aden-index"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "aden-core",
  "aden-paths",
@@ -146,7 +145,7 @@ dependencies = [
 
 [[package]]
 name = "aden-lsp"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "aden-core",
  "aden-graph",
@@ -156,7 +155,7 @@ dependencies = [
 
 [[package]]
 name = "aden-mcp"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "rmcp",
@@ -166,12 +165,11 @@ dependencies = [
 
 [[package]]
 name = "aden-parse"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "aden-core",
  "dirs",
  "regex",
- "serde_json",
  "tempfile",
  "thiserror 2.0.18",
  "tree-sitter",
@@ -180,7 +178,7 @@ dependencies = [
 
 [[package]]
 name = "aden-paths"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "dirs",
  "serde",
@@ -191,7 +189,7 @@ dependencies = [
 
 [[package]]
 name = "aden-policy"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "aden-core",
  "serde",
@@ -199,11 +197,11 @@ dependencies = [
 
 [[package]]
 name = "aden-propose"
-version = "0.2.0"
+version = "0.3.0"
 
 [[package]]
 name = "aden-store"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "aden-core",
  "fjall",
@@ -280,9 +278,9 @@ checksum = "940b3a0ca603d1eade50a4846a2afffd5ef57a9feac2c0e2ec2e14f9ead76000"
 
 [[package]]
 name = "anyhow"
-version = "1.0.102"
+version = "1.0.103"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
+checksum = "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3"
 
 [[package]]
 name = "anymap3"
@@ -685,9 +683,9 @@ dependencies = [
 
 [[package]]
 name = "crossbeam-epoch"
-version = "0.9.18"
+version = "0.9.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5b82ac4a3c2ca9c3460964f020e1402edd5753411d7737aa39c3714ad1b5420e"
+checksum = "2d6914041f254d6e9176c01941b21115dcfb7089e55135a35411081bd106ef3f"
 dependencies = [
  "crossbeam-utils",
 ]
@@ -1015,9 +1013,9 @@ checksum = "1d674e81391d1e1ab681a28d99df07927c6d4aa5b027d7da16ba32d1d21ecd99"
 
 [[package]]
 name = "fjall"
-version = "3.1.5"
+version = "3.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "038acd422d607e0eca09e093f299f9eccf9bd097554343d93746afff81a45113"
+checksum = "9fcdc69609906151dff9b534e30eaf8515082055d36f628e382bd0b5d6a1d362"
 dependencies = [
  "byteorder-lite",
  "byteview",
@@ -1676,9 +1674,9 @@ checksum = "0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad"
 
 [[package]]
 name = "lsm-tree"
-version = "3.1.5"
+version = "3.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8ef86c3c797c10eefcc73407c43ae48c19d4df686131a8334b2895a513e91df4"
+checksum = "39ca67401338b98d58447387dd5230552d2241bc388206e491d137b18dfea9d6"
 dependencies = [
  "byteorder-lite",
  "byteview",
@@ -1742,9 +1740,9 @@ checksum = "88904434abc2901f197fe8cc55f0445e7ded921dba5911dad2e2b39b48e663c4"
 
 [[package]]
 name = "memmap2"
-version = "0.9.10"
+version = "0.9.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "714098028fe011992e1c3962653c96b2d578c4b4bce9036e15ff220319b1e0e3"
+checksum = "d1219ed1b7f229ee7104d281dd01d6802fe28bb6e95d292942c4daacdeb798c0"
 dependencies = [
  "libc",
 ]
@@ -2333,6 +2331,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-stream",
  "tokio-util",
  "tracing",
 ]
@@ -2938,6 +2937,17 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "tokio-stream"
+version = "0.1.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32da49809aab5c3bc678af03902d4ccddea2a87d028d86392a4b1560c6906c70"
+dependencies = [
+ "futures-core",
+ "pin-project-lite",
+ "tokio",
 ]
 
 [[package]]

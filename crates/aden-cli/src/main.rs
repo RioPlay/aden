@@ -35,10 +35,28 @@ use std::path::PathBuf;
 struct Cli {
     #[arg(long, global = true, help = "Remove all limits (show full results)")]
     unlimited: bool,
-    #[arg(short, long, global = true, help = "Output JSON where supported")]
+    #[arg(
+        short,
+        long,
+        global = true,
+        help = "Output JSON where supported (compatibility flag; JSON is the default)"
+    )]
     json: bool,
+    #[arg(
+        long,
+        global = true,
+        conflicts_with = "json",
+        help = "Render clean human-readable terminal output instead of JSON"
+    )]
+    human: bool,
     #[arg(short, long, global = true, help = "Verbose output")]
     verbose: bool,
+    #[arg(
+        long,
+        global = true,
+        help = "Require an authoritative current graph; wait briefly or fail actionably"
+    )]
+    require_fresh: bool,
     #[arg(
         short = 'p',
         long,
@@ -240,7 +258,7 @@ enum Commands {
             long,
             value_name = "FORMAT",
             default_value = "llm",
-            help = "Output format: llm (default, stripped prose for LLMs), adg (compact JSON), aden (raw AsciiDoc)"
+            help = "Output format: json (default versioned envelope), adg (bare array), llm (stripped prose), aden (raw AsciiDoc); --human selects llm"
         )]
         format: String,
         #[arg(long, help = "Silent mode: skip intro, output only context")]
@@ -1110,7 +1128,8 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
     let quiet = !cli.verbose;
     crate::util::quiet::set_quiet(quiet);
     let _unlimited = cli.unlimited;
-    let _global_json = cli.json;
+    let machine_json = cli.json || !cli.human;
+    indexer::fresh::set_require_fresh(cli.require_fresh);
 
     // ADR-003 §6: store *creation* is explicitly authorized when -p/--project
     // was given or the command is `init`. Reads never consult this flag.
@@ -1207,7 +1226,7 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
             path,
             severity,
             max_issues,
-        } => commands::cmd_check(&path, &severity, cli.json, max_issues),
+        } => commands::cmd_check(&path, &severity, machine_json, max_issues),
         Commands::Complete {
             path,
             dry_run,
@@ -1224,7 +1243,7 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
             &path,
             &severity,
             fix,
-            json,
+            json || machine_json,
             dead_code,
             include_public,
             false,
@@ -1235,13 +1254,19 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
             path,
             budget,
             json,
-        } => commands::cmd_understand(&symbol, &path, budget, json),
+        } => commands::cmd_understand(&symbol, &path, budget, json || machine_json),
         Commands::Test {
             path,
             scope,
             filter,
             list,
-        } => commands::cmd_test(&path, scope.as_deref(), filter.as_deref(), list, cli.json),
+        } => commands::cmd_test(
+            &path,
+            scope.as_deref(),
+            filter.as_deref(),
+            list,
+            machine_json,
+        ),
         Commands::Asm {
             from,
             depth,
@@ -1263,7 +1288,12 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
                 .map(|s| util::parse_edge_types_validated(&s))
                 .transpose()?
                 .unwrap_or_default();
-            let (effective_format, effective_budget, effective_auto) = (asm_format, budget, auto);
+            let effective_format = if machine_json && asm_format == "llm" {
+                "json".to_string()
+            } else {
+                asm_format
+            };
+            let (effective_budget, effective_auto) = (budget, auto);
             commands::cmd_asm(AsmOptions {
                 path,
                 from,
@@ -1297,7 +1327,11 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
             depth,
             backlinks.as_deref(),
             impact.as_deref(),
-            &format,
+            if cli.human && format == "json" {
+                "table"
+            } else {
+                &format
+            },
         ),
         Commands::QueryAdq { script, path } => commands::cmd_query_adq(&path, &script),
         Commands::Ask {
@@ -1327,6 +1361,7 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
                 edge_types_override,
                 strict,
                 explain,
+                machine_json,
             )
         }
         Commands::Search {
@@ -1345,7 +1380,7 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
                 offset,
                 doc_type.as_deref(),
                 semantics,
-                cli.json,
+                machine_json,
             )
         }
         Commands::List {
@@ -1369,7 +1404,7 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
                 effective_limit,
                 offset,
                 semantics,
-                cli.json,
+                machine_json,
             )
         }
         Commands::Grep {
@@ -1388,7 +1423,7 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
                 ignore_case,
                 symbol_only,
                 effective_limit,
-                cli.json,
+                machine_json,
             )
         }
         Commands::Communities {
@@ -1398,14 +1433,20 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
             path,
         } => {
             let effective_limit = if cli.unlimited { usize::MAX } else { limit };
-            commands::cmd_communities(&path, min_size, effective_limit, resolution, cli.json)
+            commands::cmd_communities(&path, min_size, effective_limit, resolution, machine_json)
         }
         Commands::ImpactDiff {
             since,
             staged,
             scope,
             path,
-        } => commands::cmd_impact_diff(&path, since.as_deref(), staged, cli.json, scope.as_deref()),
+        } => commands::cmd_impact_diff(
+            &path,
+            since.as_deref(),
+            staged,
+            machine_json,
+            scope.as_deref(),
+        ),
         Commands::Scope {
             name,
             seeds,
@@ -1416,7 +1457,7 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
             if agents {
                 commands::cmd_scope_agents(&path, &name, &seeds, budget)
             } else {
-                commands::cmd_scope(&path, &name, &seeds, budget, cli.json)
+                commands::cmd_scope(&path, &name, &seeds, budget, machine_json)
             }
         }
         Commands::Config { action } => match action {
@@ -1442,7 +1483,7 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
             depth,
             &format,
             &mode,
-            cli.json,
+            machine_json,
             full,
             scope.as_deref(),
             resolution,
@@ -1491,10 +1532,10 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
                 &format,
                 effective_limit,
                 show_context,
-                cli.json,
+                machine_json,
             )
         }
-        Commands::Status { path } => commands::cmd_status(&path, cli.json),
+        Commands::Status { path } => commands::cmd_status(&path, machine_json),
         Commands::Sync { path, no_gc } => commands::cmd_sync(&path, no_gc, cli.unlimited),
         Commands::Watch {
             path,
@@ -1543,13 +1584,13 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
                     fix,
                     gc,
                     cli.unlimited,
-                    cli.json,
+                    machine_json && !propose && !fix && !gc,
                     max_issues,
                 )
             }
         }
-        Commands::CiCheck { path } => commands::cmd_ci_check(&path, cli.json),
-        Commands::Doctor { path } => commands::cmd_doctor(&path, cli.json),
+        Commands::CiCheck { path } => commands::cmd_ci_check(&path, machine_json),
+        Commands::Doctor { path } => commands::cmd_doctor(&path, machine_json),
         Commands::Review {
             path,
             budget,
@@ -1575,7 +1616,7 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
             status.as_deref().unwrap_or("in_progress"),
         ),
         Commands::Licenses { path, out, full } => {
-            commands::cmd_licenses(&path, out.as_deref(), full, cli.json)
+            commands::cmd_licenses(&path, out.as_deref(), full, machine_json)
         }
         Commands::Federation { action } => commands::cmd_federation(&action),
         Commands::Audit {
@@ -1583,7 +1624,7 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
             lang,
             format,
             strict,
-        } => commands::cmd_audit(&path, lang.as_deref(), &format, strict, cli.json),
+        } => commands::cmd_audit(&path, lang.as_deref(), &format, strict, machine_json),
         Commands::New { name, lang, path } => commands::cmd_new(&name, &lang, &path),
         Commands::Overlay { anchor, path } => commands::overlay::cmd_overlay(&path, &anchor),
         Commands::Kickoff {
@@ -1652,7 +1693,7 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Emergency { reason, ttl, path } => commands::cmd_emergency(&path, &reason, &ttl),
         Commands::Suggest { intent } => commands::cmd_suggest(&intent),
         Commands::Diagnose { path, format } => {
-            let effective_format = if cli.json && format == "text" {
+            let effective_format = if machine_json && format == "text" {
                 "json".to_string()
             } else {
                 format

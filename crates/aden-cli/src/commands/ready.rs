@@ -21,6 +21,7 @@ pub fn cmd_ready(path: &Path, fix: bool) -> Result<(), Box<dyn std::error::Error
     let mut hard_failure: Option<String> = None;
     // Soft failure: recorded for the final verdict but does NOT block later steps.
     let mut soft_failure: Option<String> = None;
+    let mut advisory_findings = 0usize;
 
     // Helper: run a hard gate unless we have already failed fast.
     macro_rules! step {
@@ -122,6 +123,7 @@ pub fn cmd_ready(path: &Path, fix: bool) -> Result<(), Box<dyn std::error::Error
             )
         };
         let hard_events: Vec<_> = events.iter().filter(|e| is_hard(e)).cloned().collect();
+        advisory_findings += events.len().saturating_sub(hard_events.len());
         let report = generate(hard_events, path);
         let critical = events.iter().filter(|e| is_hard(e)).count();
         if critical > 0 {
@@ -157,6 +159,7 @@ pub fn cmd_ready(path: &Path, fix: bool) -> Result<(), Box<dyn std::error::Error
 
     let any_failure = hard_failure.or(soft_failure);
     if let Some(reason) = any_failure {
+        println!("[ready] Outcome: blocked (graph/policy/freshness reported independently above)");
         println!(
             "\n{}[ready] NOT commit-ready — fix the failing step: {}{}",
             red, reason, reset
@@ -164,10 +167,19 @@ pub fn cmd_ready(path: &Path, fix: bool) -> Result<(), Box<dyn std::error::Error
         return Err(reason.into());
     }
 
-    println!(
-        "\n{}[ready] All checks passed — tree looks commit-ready.{}",
-        green, reset
-    );
+    if advisory_findings > 0 {
+        println!(
+            "\n{}[ready] Blocking checks passed with {} advisory finding(s).{}",
+            yellow, advisory_findings, reset
+        );
+        println!("[ready] Outcome: passed_with_findings");
+    } else {
+        println!(
+            "\n{}[ready] All checks passed — tree looks commit-ready.{}",
+            green, reset
+        );
+        println!("[ready] Outcome: clean");
+    }
     Ok(())
 }
 

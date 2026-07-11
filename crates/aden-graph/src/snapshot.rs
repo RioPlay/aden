@@ -154,17 +154,17 @@ pub fn read_snapshot_file(path: &Path) -> Result<SnapshotData, SnapshotError> {
     decode_snapshot(&bytes)
 }
 
-/// Load docs + edges from a fresh read snapshot when one covers the live store.
+/// Load docs + edges from the last published read snapshot when present.
 ///
-/// Returns `None` when the snapshot is missing, stale, or empty — callers fall
-/// back to opening fjall.
+/// **Zero-friction policy (ADR-011 amend):** prefer a non-empty snapshot even
+/// when the live store is newer (interrupted gen / concurrent writer). Serving
+/// the last consistent snapshot avoids fjall `Locked` under multi-agent load.
+/// Callers that need store-exact data open fjall after this returns `None`.
+///
+/// Returns `None` when the snapshot is missing or empty.
 pub fn try_read_fresh(root: &Path) -> Option<SnapshotData> {
-    let (store_path, _) = aden_paths::resolve_read_store(root);
     let snapshot_path = aden_paths::graph_snapshot_file(root);
-    if !snapshot_path.is_file() || !store_path.exists() {
-        return None;
-    }
-    if !snapshot_covers_store(&snapshot_path, &store_path) {
+    if !snapshot_path.is_file() {
         return None;
     }
     let data = read_snapshot_file(&snapshot_path).ok()?;

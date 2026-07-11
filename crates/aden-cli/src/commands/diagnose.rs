@@ -17,8 +17,19 @@ pub fn cmd_diagnose(path: &Path, format: &str) -> Result<(), Box<dyn std::error:
 
     match format {
         "json" => {
-            let mut value: serde_json::Value =
-                serde_json::from_str(&aden_diagnose::diagnose_json_with_rules(path, &rules)?)?;
+            let diagnosis = aden_diagnose::diagnose_with_rules(path, &rules)?;
+            let outcome = crate::commands::outcome::OutcomeEnvelope::evaluated(
+                diagnosis.error_count,
+                diagnosis.warning_count + diagnosis.info_count + policy.violations.len(),
+                if diagnosis.error_count > 0 {
+                    "unhealthy"
+                } else {
+                    "healthy"
+                },
+                crate::commands::outcome::policy_label(policy.violations.len(), policy.unwired),
+                "not_evaluated",
+            );
+            let mut value = serde_json::to_value(&diagnosis)?;
             if let Some(obj) = value.as_object_mut() {
                 obj.insert("policy_mode".to_string(), serde_json::json!(policy.mode));
                 obj.insert(
@@ -29,6 +40,7 @@ pub fn cmd_diagnose(path: &Path, format: &str) -> Result<(), Box<dyn std::error:
                     "policy_violations".to_string(),
                     serde_json::json!(policy.violations),
                 );
+                obj.insert("result".to_string(), serde_json::to_value(outcome)?);
             }
             println!("{}", serde_json::to_string(&value)?);
         }

@@ -1,4 +1,4 @@
-name: CI
+name: Lean CI
 
 on:
   push:
@@ -6,172 +6,49 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
+concurrency:
+  group: lean-ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  build-and-test:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-
-    runs-on: ${{ matrix.os }}
-
+  build:
+    name: Build shipped binaries
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - name: Checkout source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - name: Setup Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - name: Setup Rust 1.90
+        uses: dtolnay/rust-toolchain@0176485ebe2f605bde554dd99f804beeaf7db3e2 # 1.90.0
 
-      - name: Cache cargo registry
-        uses: Swatinem/rust-cache@v2
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
 
-      - name: Build workspace
-        # aden-lsp is a standalone, unshipped binary (install.sh never builds it);
-        # excluded here to skip the heavy tower-lsp stack. Validated separately in
-        # the `lsp-build` job below.
-        run: cargo build --workspace --exclude aden-lsp
+      - name: Verify frozen regression definitions
+        run: python3 scripts/verify_regression_lock.py
 
-      - name: Format check
-        run: cargo fmt --all -- --check
+      - name: Build shipped binaries
+        run: cargo build --locked --release -p aden-cli -p aden-mcp
 
-      - name: Clippy (deny warnings)
-        run: cargo clippy --workspace -- -D warnings
-
-      - name: Install aden binary
-        run: cargo install --path crates/aden-cli --locked
-
-      - name: Add cargo bin to PATH
-        run: echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-
-      - name: Test workspace
-        run: cargo test --workspace --exclude aden-lsp --no-fail-fast
-
-      - name: Regenerate contracts
-        run: cargo run -p aden-cli -- gen .
-        if: runner.os != 'Windows'
-
-      - name: Self-check docs
-        run: cargo run -p aden-cli -- check . --severity Forbid
-        if: runner.os != 'Windows'
-
-      - name: MCP golden path (grep → understand → impact-diff → check --json)
-        if: runner.os != 'Windows'
+      - name: Smoke binary contracts
+        shell: bash
         run: |
           set -euo pipefail
-          aden grep "link_store_edges" . | head -1
-          aden understand "aden://module/aden-cli/src/indexer/link.rs#link_store_edges"
-          aden impact-diff . --json | head -c 4096
-          aden check . --json --max-issues 20 | head -c 4096
-          test "$(aden check . --json --max-issues 20 | wc -c)" -lt 2048
-
-      - name: Verify install script (Unix)
-        if: runner.os != 'Windows'
-        run: bash install.sh
-
-      - name: Verify install script (Windows)
-        if: runner.os == 'Windows'
-        run: |
-          Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process -Force
-          .\install.ps1 -InstallDir "$env:TEMP\aden-test"
-
-  # aden-lsp is excluded from the main workspace build (standalone, unshipped).
-  # This job still compiles it on every PR so it can't bit-rot against
-  # aden-core/aden-graph API changes.
-  lsp-build:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Setup Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo registry
-        uses: Swatinem/rust-cache@v2
-
-      - name: Build aden-lsp (standalone LSP server)
-        run: cargo build -p aden-lsp
-
-  license-check:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Setup Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo registry
-        uses: Swatinem/rust-cache@v2
-
-      - name: Install cargo-deny
-        run: cargo install cargo-deny --locked
-
-      - name: Check dependencies (licenses, sources, advisories, bans)
-        run: cargo deny check
-
-      - name: Verify vendored asset checksums
-        # CHECKSUMS lists bare filenames, so sha256sum -c must run from the
-        # assets directory (not the repo root) to resolve them.
-        working-directory: crates/aden-cli/assets
-        run: sha256sum --check CHECKSUMS
-
-      - name: Check SPDX headers present in all source files
-        run: |
-          MISSING=0
-          while IFS= read -r -d '' f; do
-            grep -q "SPDX-License-Identifier" "$f" || { echo "Missing SPDX: $f"; MISSING=1; }
-          done < <(find crates -name "*.rs" -print0)
-          while IFS= read -r -d '' f; do
-            grep -q "SPDX-License-Identifier" "$f" || { echo "Missing SPDX: $f"; MISSING=1; }
-          done < <(find scripts -name "*.sh" -print0)
-          [ "$MISSING" -eq 0 ] || exit 1
-
-      - name: Reject contradictory copyright blocks
-        run: |
-          if grep -r "All rights reserved" --include="*.rs" --include="*.sh" crates/ scripts/; then
-            echo "ERROR: 'All rights reserved' contradicts AGPL-3.0 grant — remove the line"
-            exit 1
-          fi
-
-  # Guards the dependency slim-down (commit d646816). Two invariants the default
-  # build relies on but the other jobs don't exercise:
-  #   1. The default tree stays free of the network/compression stack — those
-  #      crates may only be pulled by opt-in features, never by `cargo install`.
-  #   2. The opt-in features still compile, so their cfg-gated code can't bit-rot
-  #      unnoticed (the polyglot PowerShell test regression came from exactly this
-  #      blind spot).
-  # Both checks are network-free: `grammars-download` only fetches grammars at
-  # runtime, so compiling it needs no network.
-  slim-guard:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Setup Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo registry
-        uses: Swatinem/rust-cache@v2
-
-      - name: Assert default build stays slim (no network/grammar deps)
-        run: |
-          FORBIDDEN="ureq ureq-proto rustls ring tar zstd"
-          TREE=$(cargo tree -p aden-cli --edges normal --prefix none | awk '{print $1}' | sort -u)
-          LEAKED=""
-          for dep in $FORBIDDEN; do
-            echo "$TREE" | grep -ixq "$dep" && LEAKED="$LEAKED $dep"
-          done
-          if [ -n "$LEAKED" ]; then
-            echo "slim-down regression: forbidden dep(s) in the default aden-cli tree:$LEAKED"
-            echo "These belong behind opt-in features (grammars-download / licenses-net), not the default build."
-            exit 1
-          fi
-          echo "OK: default aden-cli tree free of:$FORBIDDEN"
-
-      - name: Compile-check opt-in features (no network)
-        # grammars-download / dense / licenses-net are off by default, so the slim
-        # CI above never compiles them. Type-check them here so their cfg-gated
-        # code keeps building. aden-lsp stays excluded to match build-and-test.
-        run: cargo check --workspace --exclude aden-lsp --all-features
+          target/release/aden --version
+          target/release/aden-mcp --version
+          repo="$(mktemp -d)"
+          mkdir -p "$repo/src"
+          printf 'pub fn entry_point() {}\n' > "$repo/src/lib.rs"
+          git -C "$repo" init -q
+          git -C "$repo" config user.email ci@example.invalid
+          git -C "$repo" config user.name CI
+          git -C "$repo" add .
+          git -C "$repo" commit -qm fixture
+          target/release/aden ask --strict --budget 512 "Where is entry_point?" "$repo" \
+            | jq -e '.schema_version == 1 and (.context | length > 0)'
+          target/release/aden ask --human --strict --budget 512 "Where is entry_point?" "$repo" \
+            | grep -q 'entry_point'

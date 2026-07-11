@@ -149,7 +149,84 @@ const EXTENSIONLESS_SOURCE_FILES: &[&str] = &[
 /// cross-ecosystem built-in ignore list so build artifacts and vendored deps
 /// are skipped for every language.
 pub fn discover_source_files(root: &Path) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
-    discover_source_files_scoped(root, root)
+    Ok(discover_file_dispositions(root)?
+        .into_iter()
+        .filter(|file| file.disposition.is_indexed())
+        .map(|file| file.path)
+        .collect())
+}
+
+/// A discovered file plus the reason it will or will not be emitted. Unlike
+/// [`discover_source_files`], this deliberately retains ignored and unsupported
+/// files so generation can persist a complete coverage manifest.
+#[derive(Debug, Clone)]
+pub struct DiscoveredFile {
+    pub path: PathBuf,
+    pub disposition: aden_core::filter::FileDisposition,
+}
+
+pub fn discover_file_dispositions(
+    root: &Path,
+) -> Result<Vec<DiscoveredFile>, Box<dyn std::error::Error>> {
+    use std::collections::HashSet;
+
+    let supported: HashSet<&'static str> = aden_parse::supported_extensions().into_iter().collect();
+    let filter = aden_core::filter::AdenFilter::from_directory(root);
+    let mut files = Vec::new();
+    walk_files_with_dispositions(root, root, &supported, &filter, &mut files)?;
+    Ok(files)
+}
+
+fn walk_files_with_dispositions(
+    dir: &Path,
+    root: &Path,
+    supported: &std::collections::HashSet<&'static str>,
+    filter: &aden_core::filter::AdenFilter,
+    out: &mut Vec<DiscoveredFile>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    for entry in std::fs::read_dir(dir).map_err(|e| format!("read_dir {}: {e}", dir.display()))? {
+        let entry = entry?;
+        let path = entry.path();
+        let file_type = entry.file_type()?;
+        if file_type.is_symlink() {
+            continue;
+        }
+        if file_type.is_dir() {
+            // A directory-level ignore is recorded by policy, but walking its
+            // entire contents (notably .git/, target/, and node_modules/) would
+            // turn a coverage receipt into an unbounded scan. Ordinary ignored
+            // files are still retained below with their exact disposition.
+            if path
+                .strip_prefix(root)
+                .ok()
+                .is_some_and(|relative| filter.should_skip(relative))
+            {
+                continue;
+            }
+            walk_files_with_dispositions(&path, root, supported, filter, out)?;
+            continue;
+        }
+        if !file_type.is_file() {
+            continue;
+        }
+        let rel = path.strip_prefix(root).unwrap_or(&path).to_path_buf();
+        let supported_file = match path.extension().and_then(|ext| ext.to_str()) {
+            Some(ext) => supported.contains(ext),
+            None => path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| EXTENSIONLESS_SOURCE_FILES.contains(&name)),
+        };
+        out.push(DiscoveredFile {
+            path,
+            disposition: aden_core::filter::FileDisposition::for_path(
+                &rel,
+                filter.should_skip(&rel),
+                supported_file,
+            ),
+        });
+    }
+    Ok(())
 }
 
 /// Like [`discover_source_files`] but walks only `scope` (a directory at or
@@ -437,6 +514,23 @@ pub fn load_gen_cache(path: &Path) -> GenCache {
         .unwrap_or_default();
     cache.version = crate::types::GEN_LOGIC_VERSION;
     cache
+}
+
+/// A cache logic/schema mismatch cannot be incrementally healed safely: the
+/// old cache is the only ownership record for anchors emitted by files that no
+/// longer exist. Callers must rebuild the store instead of silently discarding
+/// that ownership map and leaving stale graph nodes behind.
+pub fn gen_cache_requires_rebuild(path: &Path) -> bool {
+    if !path.exists() {
+        return false;
+    }
+    match std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<GenCache>(&text).ok())
+    {
+        Some(cache) => cache.version != crate::types::GEN_LOGIC_VERSION,
+        None => true,
+    }
 }
 
 /// Persist the generation cache to disk.
@@ -1063,6 +1157,21 @@ pub fn load_or_build_index(path: &Path) -> Result<aden_index::Index, Box<dyn std
     // Merge store-backed contracts (disk entries already ingested take priority).
     let store_entries = collect_store_entries(path);
     if !store_entries.is_empty() {
+        let mut seeded = HashSet::new();
+        for (source, _) in &store_entries {
+            let relative = source.strip_prefix("./").unwrap_or(source);
+            if !seeded.insert(relative.to_path_buf()) {
+                continue;
+            }
+            let full = if relative.is_absolute() {
+                relative.to_path_buf()
+            } else {
+                path.join(relative)
+            };
+            if let Ok(text) = std::fs::read_to_string(full) {
+                index.ingest_file_evidence(relative.to_path_buf(), &text);
+            }
+        }
         index.ingest(store_entries);
         index.finalize();
     }
@@ -1352,6 +1461,241 @@ pub fn query_index(index: &aden_index::Index, query: &str) -> Vec<aden_index::Se
     } else {
         ranked
     }
+}
+
+/// Deterministic recall backstop for prose-heavy candidate sets.
+///
+/// Native BM25/hybrid remains the only retrieval pass for code. When at least
+/// 80% of the first ten classifiable candidates are prose documents, a cheap
+/// whole-file lexical ranking participates in winner selection. Only a single
+/// existing candidate can be promoted; all remaining native order is preserved,
+/// so deep recall cannot be scattered. `ADEN_NAV_FUSION_OFF=1` disables the gate.
+pub fn query_index_with_navigation(
+    index: &aden_index::Index,
+    query: &str,
+    root: &Path,
+) -> Vec<aden_index::SearchResult> {
+    let base = query_index(index, query);
+    if std::env::var_os("ADEN_NAV_FUSION_OFF").is_some()
+        || !results_are_predominantly_prose(&base)
+        || results_are_chronological(&base)
+        || native_top_file_consensus(&base, root) >= 3
+    {
+        return base;
+    }
+    fuse_conventional_file_rank(index, base, query, root)
+}
+
+fn results_are_predominantly_prose(results: &[aden_index::SearchResult]) -> bool {
+    let mut votes = Vec::new();
+    for result in results.iter().take(10) {
+        let ext = result
+            .source_path
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if result.anchor.starts_with("aden://doc/")
+            || matches!(ext.as_str(), "adoc" | "aden" | "md" | "rst" | "txt")
+        {
+            votes.push(true);
+        } else if result.anchor.starts_with("aden://module/")
+            || result.anchor.starts_with("aden://symbol/")
+            || matches!(
+                ext.as_str(),
+                "rs" | "go" | "py" | "ts" | "tsx" | "js" | "jsx" | "cs" | "c" | "h"
+            )
+        {
+            votes.push(false);
+        }
+    }
+    !votes.is_empty() && votes.iter().filter(|vote| **vote).count() * 5 >= votes.len() * 4
+}
+
+fn native_top_file_consensus(results: &[aden_index::SearchResult], root: &Path) -> usize {
+    let Some(top) = results.first() else {
+        return 0;
+    };
+    let top_file = source_key(&top.source_path, root);
+    if top_file.is_empty() {
+        return 0;
+    }
+    results
+        .iter()
+        .take(5)
+        .filter(|result| source_key(&result.source_path, root) == top_file)
+        .count()
+}
+
+fn results_are_chronological(results: &[aden_index::SearchResult]) -> bool {
+    let mut votes = 0;
+    let mut dated = 0;
+    for result in results.iter().take(10) {
+        let Some(stem) = result
+            .source_path
+            .file_stem()
+            .and_then(|value| value.to_str())
+        else {
+            continue;
+        };
+        votes += 1;
+        let bytes = stem.as_bytes();
+        if bytes.len() == 10
+            && bytes[4] == b'-'
+            && bytes[7] == b'-'
+            && bytes
+                .iter()
+                .enumerate()
+                .all(|(index, byte)| index == 4 || index == 7 || byte.is_ascii_digit())
+        {
+            dated += 1;
+        }
+    }
+    votes > 0 && dated * 5 >= votes * 4
+}
+
+fn source_key(path: &Path, root: &Path) -> String {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .trim_start_matches("./")
+        .to_ascii_lowercase()
+}
+
+fn navigation_terms(query: &str) -> Vec<String> {
+    const STOP: &[&str] = &[
+        "add", "allow", "and", "better", "change", "code", "does", "error", "file", "fix",
+        "fixing", "for", "from", "function", "handle", "into", "make", "method", "more", "not",
+        "only", "same", "should", "support", "that", "the", "this", "use", "using", "value",
+        "when", "where", "which", "with",
+    ];
+    let mut terms: Vec<String> = query
+        .split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_')
+        .map(str::to_ascii_lowercase)
+        .filter(|term| term.len() >= 3 && !STOP.contains(&term.as_str()))
+        .collect();
+    terms.sort();
+    terms.dedup();
+    terms.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
+    terms.truncate(12);
+    terms
+}
+
+fn conventional_file_rank(root: &Path, query: &str) -> Vec<String> {
+    let terms = navigation_terms(query);
+    if terms.is_empty() {
+        return Vec::new();
+    }
+    let Ok(files) = discover_source_files(root) else {
+        return Vec::new();
+    };
+    let mut scored = Vec::new();
+    for file in files {
+        let Ok(content) = std::fs::read_to_string(&file) else {
+            continue;
+        };
+        let content = content.to_ascii_lowercase();
+        let key = source_key(&file, root);
+        let path_words: HashSet<&str> = key
+            .split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_')
+            .collect();
+        let distinct = terms
+            .iter()
+            .filter(|term| content.contains(term.as_str()))
+            .count();
+        if distinct == 0 {
+            continue;
+        }
+        let path_hits = terms
+            .iter()
+            .filter(|term| path_words.contains(term.as_str()))
+            .count();
+        let occurrences: usize = terms
+            .iter()
+            .map(|term| content.match_indices(term.as_str()).count())
+            .sum();
+        scored.push((key, distinct, path_hits, occurrences));
+    }
+    scored.sort_by(|a, b| {
+        b.1.cmp(&a.1)
+            .then_with(|| b.2.cmp(&a.2))
+            .then_with(|| b.3.cmp(&a.3))
+            .then_with(|| a.0.len().cmp(&b.0.len()))
+            .then_with(|| b.0.cmp(&a.0))
+    });
+    scored.into_iter().map(|row| row.0).collect()
+}
+
+fn fuse_conventional_file_rank(
+    index: &aden_index::Index,
+    mut base: Vec<aden_index::SearchResult>,
+    query: &str,
+    root: &Path,
+) -> Vec<aden_index::SearchResult> {
+    use std::collections::HashMap;
+    const K: f64 = 60.0;
+    const CONVENTIONAL_WEIGHT: f64 = 1.5;
+    let conventional: Vec<String> = if std::env::var_os("ADEN_NAV_FILESYSTEM").is_none() {
+        let mut seen = HashSet::new();
+        index
+            .lexical_file_rank(query)
+            .iter()
+            .map(|path| source_key(path, root))
+            .filter(|path| seen.insert(path.clone()))
+            .collect()
+    } else {
+        conventional_file_rank(root, query)
+    };
+    if conventional.is_empty() {
+        return base;
+    }
+    let mut score: HashMap<String, f64> = HashMap::new();
+    // Match the measured candidate window. Aggregating every anchor lets a
+    // large file win merely because it was split into many indexed sections.
+    for (rank, result) in base.iter().take(20).enumerate() {
+        *score
+            .entry(source_key(&result.source_path, root))
+            .or_default() += 1.0 / (K + (rank + 1) as f64);
+    }
+    for (rank, path) in conventional.iter().take(20).enumerate() {
+        *score.entry(path.clone()).or_default() += CONVENTIONAL_WEIGHT / (K + (rank + 1) as f64);
+    }
+    let mut original_scores: Vec<f64> = base.iter().map(|result| result.score).collect();
+    original_scores.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+    let winner = base
+        .iter()
+        .enumerate()
+        .max_by(|(_, a), (_, b)| {
+            let a_score = score
+                .get(&source_key(&a.source_path, root))
+                .copied()
+                .unwrap_or(0.0);
+            let b_score = score
+                .get(&source_key(&b.source_path, root))
+                .copied()
+                .unwrap_or(0.0);
+            a_score
+                .partial_cmp(&b_score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| {
+                    a.score
+                        .partial_cmp(&b.score)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .then_with(|| b.anchor.cmp(&a.anchor))
+        })
+        .map(|(index, _)| index)
+        .unwrap_or(0);
+    if winner > 0 {
+        let promoted = base.remove(winner);
+        base.insert(0, promoted);
+    }
+    // Downstream routing uses score bands and assumes descending scores. Preserve
+    // the native score distribution while assigning it to the fused ordering.
+    for (result, score) in base.iter_mut().zip(original_scores) {
+        result.score = score;
+    }
+    base
 }
 
 /// Run the base ranking for `q`: hybrid (BM25+dense) when embeddings are present, else BM25.
@@ -1785,6 +2129,74 @@ pub fn cochange_pairs(
 mod tests {
     use super::*;
 
+    fn retrieval_result(anchor: &str, path: &str, score: f64) -> aden_index::SearchResult {
+        aden_index::SearchResult {
+            anchor: anchor.to_string(),
+            source_path: PathBuf::from(path),
+            score,
+            snippet: String::new(),
+        }
+    }
+
+    #[test]
+    fn navigation_gate_requires_four_fifths_prose_votes() {
+        let mut results: Vec<_> = (0..8)
+            .map(|i| retrieval_result(&format!("aden://doc/repo/{i}"), "guide.adoc", 1.0))
+            .collect();
+        results.extend(
+            (0..2).map(|i| retrieval_result(&format!("aden://module/repo/{i}"), "main.rs", 1.0)),
+        );
+        assert!(results_are_predominantly_prose(&results));
+        results[0] = retrieval_result("aden://module/repo/extra", "lib.rs", 1.0);
+        assert!(!results_are_predominantly_prose(&results));
+    }
+
+    #[test]
+    fn navigation_terms_are_bounded_and_drop_common_noise() {
+        let terms = navigation_terms(
+            "remember my username and password so I stop retyping them with the tool",
+        );
+        assert!(terms.contains(&"username".to_string()));
+        assert!(terms.contains(&"password".to_string()));
+        assert!(!terms.contains(&"with".to_string()));
+        assert!(terms.len() <= 12);
+    }
+
+    #[test]
+    fn navigation_consensus_counts_top_file_only_within_top_five() {
+        let root = Path::new("/repo");
+        let results = vec![
+            retrieval_result("a", "/repo/guide.adoc", 5.0),
+            retrieval_result("b", "/repo/other.adoc", 4.0),
+            retrieval_result("c", "/repo/guide.adoc", 3.0),
+            retrieval_result("d", "/repo/guide.adoc", 2.0),
+            retrieval_result("e", "/repo/third.adoc", 1.0),
+            retrieval_result("f", "/repo/guide.adoc", 0.5),
+        ];
+        assert_eq!(native_top_file_consensus(&results, root), 3);
+    }
+
+    #[test]
+    fn navigation_detects_date_named_timeline_candidates() {
+        let dated: Vec<_> =
+            (1..=8)
+                .map(|day| {
+                    retrieval_result(
+                        &format!("aden://doc/log/{day}"),
+                        &format!("log/2026-06-{day:02}.adoc"),
+                        1.0,
+                    )
+                })
+                .chain((0..2).map(|i| {
+                    retrieval_result(&format!("aden://doc/roadmap/{i}"), "roadmap.adoc", 1.0)
+                }))
+                .collect();
+        assert!(results_are_chronological(&dated));
+        let mut mixed = dated;
+        mixed[0] = retrieval_result("a", "guide.adoc", 1.0);
+        assert!(!results_are_chronological(&mixed));
+    }
+
     #[test]
     fn prefer_native_picks_native_or_falls_back_to_existing_legacy() {
         let native = std::path::PathBuf::from("/native/aden/x");
@@ -2036,6 +2448,85 @@ mod tests {
             doc.attributes.get("source_file").map(|s| s.as_str()),
             Some("src/lib.rs"),
             "must strip against the given root, leaking no /home/ prefix"
+        );
+    }
+
+    #[test]
+    fn disposition_discovery_accounts_for_ignored_and_unsupported_files() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("main.rs"), "fn main() {}\n").unwrap();
+        std::fs::write(dir.path().join("notes.xyz"), "unparsed\n").unwrap();
+        std::fs::write(dir.path().join(".adenignore"), "hidden.rs\n").unwrap();
+        std::fs::write(dir.path().join("hidden.rs"), "fn hidden() {}\n").unwrap();
+
+        let entries = discover_file_dispositions(dir.path()).unwrap();
+        let by_name: std::collections::HashMap<_, _> = entries
+            .iter()
+            .map(|entry| {
+                (
+                    entry
+                        .path
+                        .file_name()
+                        .unwrap()
+                        .to_string_lossy()
+                        .to_string(),
+                    entry.disposition,
+                )
+            })
+            .collect();
+        assert_eq!(
+            by_name.get("main.rs"),
+            Some(&aden_core::filter::FileDisposition::Indexed)
+        );
+        assert_eq!(
+            by_name.get("hidden.rs"),
+            Some(&aden_core::filter::FileDisposition::Ignored)
+        );
+        assert_eq!(
+            by_name.get("notes.xyz"),
+            Some(&aden_core::filter::FileDisposition::Unsupported)
+        );
+    }
+
+    #[test]
+    fn old_generation_cache_requires_a_store_rebuild() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_path = dir.path().join("gen-cache.json");
+        std::fs::write(
+            &cache_path,
+            r#"{"version":5,"entries":{"old.rs":{"source_mtime":0,"source_path":"old.rs","anchors":["old"]}}}"#,
+        )
+        .unwrap();
+        assert!(gen_cache_requires_rebuild(&cache_path));
+        assert!(load_gen_cache(&cache_path).entries.is_empty());
+
+        std::fs::write(&cache_path, "{not-json").unwrap();
+        assert!(gen_cache_requires_rebuild(&cache_path));
+        std::fs::write(&cache_path, [0xff, 0xfe]).unwrap();
+        assert!(gen_cache_requires_rebuild(&cache_path));
+    }
+
+    #[test]
+    fn cache_persists_explicit_dispositions() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_path = dir.path().join("gen-cache.json");
+        let mut cache = GenCache {
+            version: crate::types::GEN_LOGIC_VERSION,
+            ..GenCache::default()
+        };
+        cache.dispositions.insert(
+            "secret.rs".into(),
+            crate::types::FileDispositionEntry {
+                disposition: aden_core::filter::FileDisposition::SecretContent,
+                source_mtime: 1,
+                source_path: "secret.rs".into(),
+            },
+        );
+        save_gen_cache(&cache_path, &cache).unwrap();
+        let reloaded = load_gen_cache(&cache_path);
+        assert_eq!(
+            reloaded.dispositions["secret.rs"].disposition,
+            aden_core::filter::FileDisposition::SecretContent
         );
     }
 }

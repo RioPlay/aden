@@ -15,7 +15,8 @@ Complete reference for every aden command, flag, and option.
 |Flag |Description |Example
 
 |--unlimited |Remove all result limits |`aden list --unlimited`
-|-j, --json |Output JSON where supported |`aden query --json`
+|-j, --json |Compatibility flag for explicit JSON; JSON is already the default where supported |`aden query --json`
+|--human |Render clean human-readable terminal output instead of JSON |`aden --human ask "..."`
 |-v, --verbose |Verbose output |`aden --verbose ask "..."`
 |-p, --project <PATH> |Aden project path (overrides CWD for this run) |`aden -p ../repo status`
 |-h, --help |Show help |`aden --help`
@@ -278,7 +279,7 @@ aden asm --from mod-aden-core --set-attr mode=production
 |--budget |Token budget (bytes/4 heuristic) |8192
 |--edge-types |Comma-separated edge types |All
 |--out |Output file path |stdout
-|--format |Output format: `llm` (default), `adg`, `aden` |llm
+|--format |Output format: `json` (default versioned envelope), `adg` (bare document array), `llm`, `aden`; `--human` selects `llm` |json
 |--silent |Skip intro, output only context |false
 |--auto |Adjust budget based on relevance |false
 |--strict |Never exceed budget |false
@@ -304,11 +305,8 @@ aden query --backlinks mod-aden-core
 # Impact analysis (transitive closure)
 aden query --impact mod-aden-core
 
-# JSON output
-aden query --from mod-aden-core --json
-
-# Table output
-aden query --from mod-aden-core --format table
+# Human table output
+aden query --human --from mod-aden-core
 ----
 
 |===
@@ -341,6 +339,9 @@ Natural-language question to subgraph assembly.
 # Basic question
 aden ask "How does authentication work?"
 
+# Clean terminal prose instead of the default JSON envelope
+aden ask --human "How does authentication work?"
+
 # Pin starting anchor
 aden ask "How does authentication work?" --from mod-auth
 
@@ -361,6 +362,13 @@ aden ask "Explain the parser" --model ollama:llama3
 # Routing transparency: top candidates, scores, tiebreak, intent, fallback
 aden ask "How does the parser work?" --explain
 ----
+
+Without `--human`, `ask` returns a versioned JSON object containing the selected
+anchor, source file, intent, effective budget, supporting anchors, and assembled
+context. This is the stable default for agents and scripts. `--human` emits only
+the clean assembled context (plus requested `--explain` details). `--strict`
+caps the complete serialized response in either mode; at very small JSON budgets,
+optional routing metadata is omitted before evidence is truncated.
 
 |===
 |Flag |Description |Default

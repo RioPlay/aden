@@ -2,7 +2,59 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Path filter: `.adenignore` and `.adenallow` support.
 
+use serde::{Deserialize, Serialize};
 use std::path::Path;
+
+/// Why a discovered file was not emitted into the graph.
+///
+/// This is deliberately shared by generation, freshness, and coverage
+/// reporting.  A file may be safe to search ephemerally while still being
+/// unsafe to persist in the graph; callers must record that distinction rather
+/// than silently making the file disappear.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FileDisposition {
+    Indexed,
+    Ignored,
+    /// Reserved for a future policy that can preserve safe metadata while
+    /// proving it does not disclose sensitive paths. Current secret handling
+    /// emits `SecretPath`/`SecretContent`, never this variant.
+    Redacted,
+    SecretPath,
+    SecretContent,
+    Unsupported,
+    InvalidEncoding,
+    ParseFailed,
+    IoFailed,
+}
+
+impl FileDisposition {
+    /// Classify a path before it is read. Content and parser outcomes are
+    /// classified by the generation pipeline after this initial check.
+    pub fn for_path(relative: &Path, ignored: bool, supported: bool) -> Self {
+        if ignored {
+            Self::Ignored
+        } else if is_secret_path(relative) {
+            Self::SecretPath
+        } else if !supported {
+            Self::Unsupported
+        } else {
+            Self::Indexed
+        }
+    }
+
+    pub fn for_content(content: &str) -> Self {
+        if content_has_high_confidence_secret(content) {
+            Self::SecretContent
+        } else {
+            Self::Indexed
+        }
+    }
+
+    pub fn is_indexed(self) -> bool {
+        self == Self::Indexed
+    }
+}
 
 /// Smart built-in exclusion patterns. These are always applied; a user
 /// `.adenignore` extends (never replaces) them — see [`AdenFilter::from_directory`].
@@ -173,9 +225,12 @@ pub fn is_secret_path(relative: &Path) -> bool {
 /// must still be able to find a secret in order to fix it.
 pub fn content_has_high_confidence_secret(content: &str) -> bool {
     // PEM private-key blocks (RSA/EC/OPENSSH/generic): `-----BEGIN ... PRIVATE KEY-----`.
+    // The markers must occur in the SAME armored header. Checking them as two
+    // independent substrings classified this module itself as a secret because
+    // its explanatory prose contains both fragments in different sentences.
     let pem_start = "-----BEGIN ";
     let pem_end = ["PRIVATE", " KEY-----"].concat();
-    if content.contains(pem_start) && content.contains(&pem_end) {
+    if has_armored_header(content, pem_start, &pem_end) {
         return true;
     }
     // PGP armored PRIVATE key blocks end `PRIVATE KEY BLOCK-----`, not `PRIVATE KEY-----`,
@@ -186,7 +241,7 @@ pub fn content_has_high_confidence_secret(content: &str) -> bool {
     // concat (like `pem_end`) so this source file never contains the contiguous marker and
     // thus never flags itself as a secret.
     let pgp_priv_end = ["PGP PRIVATE", " KEY BLOCK-----"].concat();
-    if content.contains(&pgp_priv_end) {
+    if has_armored_header(content, pem_start, &pgp_priv_end) {
         return true;
     }
     // Provider tokens: a fixed prefix followed by N token chars. Scanning by
@@ -211,6 +266,24 @@ pub fn content_has_high_confidence_secret(content: &str) -> bool {
         return true;
     }
     false
+}
+
+/// True when an armored header beginning with `start` contains `end` before
+/// its newline. This keeps secret detection structural and avoids matching
+/// documentation that discusses the two fragments separately.
+fn has_armored_header(content: &str, start: &str, end: &str) -> bool {
+    content.match_indices(start).any(|(offset, _)| {
+        let header = content[offset..].lines().next().unwrap_or_default();
+        let Some(end_offset) = header.find(end) else {
+            return false;
+        };
+        // Armored labels are uppercase words (e.g. RSA, OPENSSH, PGP).
+        // Requiring that restricted form avoids prose such as
+        // `-----BEGIN ... PRIVATE KEY-----`.
+        header[start.len()..end_offset]
+            .bytes()
+            .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b' ')
+    })
 }
 
 /// True if `content` contains `prefix` immediately followed by at least
@@ -590,6 +663,70 @@ mod tests {
             assert!(
                 !content_has_high_confidence_secret(src),
                 "false positive on: {src:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn disposition_keeps_normal_filter_source_indexable() {
+        // Regression for the original AP-102 report: the detector's own
+        // implementation must never classify as credential content merely
+        // because it describes credential patterns.
+        let source = include_str!("filter.rs");
+        assert_eq!(
+            FileDisposition::for_path(Path::new("crates/aden-core/src/filter.rs"), false, true),
+            FileDisposition::Indexed
+        );
+        assert_eq!(
+            FileDisposition::for_content(source),
+            FileDisposition::Indexed
+        );
+    }
+
+    #[test]
+    fn disposition_records_path_and_content_secret_separately() {
+        assert_eq!(
+            FileDisposition::for_path(Path::new("secrets/deploy.rs"), false, true),
+            FileDisposition::SecretPath
+        );
+        let token = String::from_utf8_lossy(&[
+            103, 104, 112, 95, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 97, 98, 99, 100, 101, 102,
+            103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119,
+            120, 121, 122,
+        ]);
+        assert_eq!(
+            FileDisposition::for_content(&token),
+            FileDisposition::SecretContent
+        );
+    }
+
+    #[test]
+    fn disposition_serialization_keeps_redaction_reserved_and_explicit() {
+        let encoded = serde_json::to_string(&FileDisposition::Redacted).unwrap();
+        assert_eq!(encoded, "\"redacted\"");
+        assert_eq!(
+            serde_json::from_str::<FileDisposition>(&encoded).unwrap(),
+            FileDisposition::Redacted
+        );
+    }
+
+    #[test]
+    fn every_disposition_has_a_stable_wire_value() {
+        for disposition in [
+            FileDisposition::Indexed,
+            FileDisposition::Ignored,
+            FileDisposition::Redacted,
+            FileDisposition::SecretPath,
+            FileDisposition::SecretContent,
+            FileDisposition::Unsupported,
+            FileDisposition::InvalidEncoding,
+            FileDisposition::ParseFailed,
+            FileDisposition::IoFailed,
+        ] {
+            let encoded = serde_json::to_string(&disposition).unwrap();
+            assert_eq!(
+                serde_json::from_str::<FileDisposition>(&encoded).unwrap(),
+                disposition
             );
         }
     }

@@ -1,4 +1,20 @@
-# Aden Issues - Future Work
+<!-- authority: historical-record -->
+<!-- as-of: 2026-07-09@5c5bc66e025d7457bacba760b134fe7a0d159452 -->
+<!-- superseded-by: docs/roadmap/index.adoc -->
+
+# Aden Issues - Historical Findings and Resolved Work
+
+> **Authority and status:** This file is a preserved historical record, not the
+> live future-work backlog. Its statements are accurate only as of the dates in
+> their individual sections; the repository state may have changed afterward.
+> For executable future work, use the packet program in
+> [`docs/roadmap/`](docs/roadmap/index.adoc); for the complete authority map and
+> supersession rules, see
+> [`docs/roadmap/authority.adoc`](docs/roadmap/authority.adoc).
+>
+> **As of:** `5c5bc66e025d7457bacba760b134fe7a0d159452` (2026-07-09).
+> **Superseded for live planning by:** `docs/roadmap/` (introduced by AP-000;
+> authority migration LG-105). Historical evidence below is intentionally kept.
 
 ## 2026-06-07 — `build_snippet` panics on non-ASCII (char-boundary slice)
 
@@ -77,7 +93,7 @@ junk; both are fixed:
   truncation as data instead of parsing human tables or the "... and N more"
   footer.
 
-### Still open
+### Open at this snapshot
 - ~~`ask` can route to a thin stub anchor (a bare module declaration → ~10 tokens)
   with no "result too thin, broaden" fallback. Phase 3.~~ **FIXED** — `ask` now
   detects assembled output < 150 tokens and falls back to `mod-project`.
@@ -113,7 +129,7 @@ and fixed the root causes:
   NOTE, the generic `module:: This symbol is part of the parent module.` line,
   and dangling empty `Relationships:` headers from llm-mode output.
 
-### Still open (lower priority)
+### Open at this snapshot (lower priority)
 - ~~Doc-heading anchors (`aden://doc/...`) remain orphans — not linked to the
   symbols/sections they document.~~ **FIXED** (Phase 5) — `link_store_edges` now emits
   `Contains`/`PartOf` edges from doc-heading sections to their file representative;
@@ -148,7 +164,7 @@ and fixed the root causes:
 | **TypeScript** | ✅ | ✅ | ✅ | ✅ | Added in later polyglot sweep |
 | **Python** | ✅ | ✅ | ✅ | ✅ | Working (uses tree-sitter-language-pack) |
 
-## Confirmed Issues
+## Findings Recorded at This Snapshot
 
 ### 1. JavaScript Duplicate Contracts
 **Severity:** Low
@@ -175,7 +191,7 @@ Python files ARE being parsed correctly via tree-sitter-language-pack. The earli
 ### JavaScript Duplicate - Cosmetic Only
 The duplicates appear during "Stored" phase but don't affect final anchor list. Low priority.
 
-## Priority Order
+## Priority Order at This Snapshot
 1. Persistent active project setting
 2. JavaScript duplicate store entries
 3. Virtual project structure support

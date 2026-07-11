@@ -9,7 +9,14 @@ All notable changes to aden are documented here. Format follows
 
 ## [Unreleased]
 
-Post-0.2.0 work on main — not yet tagged.
+Post-0.3.0 work on main — not yet tagged.
+
+## [0.3.0] - 2026-07-10
+
+This release makes successful CLI reads JSON-first, adds explicit `--human`
+rendering, improves deterministic context retrieval and prose support, and
+hardens graph freshness and lookup performance. See
+`docs/migrations/0.3.0.adoc` before upgrading terminal-output consumers.
 
 ### Added
 - **Read snapshot for concurrent graph loads** (2026-07-03) — ADR-011: `gen`
@@ -40,6 +47,12 @@ Post-0.2.0 work on main — not yet tagged.
   Bare-array JSON outputs are wrapped as `{"index_stale": …, "items": …}`.
 
 ### Changed
+- **JSON-first CLI reads** (2026-07-10) — read commands now emit structured JSON
+  by default for agent/LLM consumers; `--human` explicitly selects clean terminal
+  prose or tables, while `--json` remains a compatibility flag. `ask` and `asm`
+  now return versioned JSON envelopes, and `--strict` caps the complete serialized
+  envelope. Mutating `heal --propose/--fix/--gc` paths retain their established
+  execution output so selecting a renderer can never skip the requested action.
 - **Docs synced with ADR-011 read snapshot** (2026-07-03) — `architecture.adoc`,
   `commands.adoc`, `ai-integration.adoc`, `adr-010`, `AGENTS.md`, and `SECURITY.md`
   document `graph.snapshot`, writer-queue UX, and `aden status` diagnostics.

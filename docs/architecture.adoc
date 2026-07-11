@@ -524,8 +524,8 @@ Honest snapshot of structural and behavioral gaps documented in <<adr-010>>:
 |Parsing |`aden-parse` + `aden-graph/parser.rs` overlap; CSV/tabular is best-effort |Unify on separate branch (`fix/parse-canonical`)
 |Policy |Advisory mode (`ADEN_POLICY_MODE=advisory`); `ci-check` bootstrap still enforces |Optional `enforce` in 0.3.0+
 |Doc-heading edges |Section nodes linked via `Contains`/`PartOf` to file representatives |Monitor orphan census
-|MCP freshness |Read tools skip auto-gen; write tools run fresh |Document explicit `gen`/`sync` after external edits
-|Intra-project read contention |Read snapshot + `store.lock` writer queue (<<adr-011>>) |Phase 3: in-process MCP snapshot cache
+|MCP freshness |Shell/MCP shared auto-fresh; silent gen non-blocking single-flight; Roots workspace detect |In-process MCP snapshot cache; optional `graphd`
+|Intra-project read contention |Read snapshot + `store.lock` single-flight writers (<<adr-011>>) |Phase 3: in-process MCP snapshot cache
 |===
 
 [[target-architecture]]

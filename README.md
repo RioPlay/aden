@@ -32,6 +32,12 @@ it does not find bugs or render HTML.
 
 ## Quick Start
 
+For a release install that does not require Rust, download the archive matching
+your platform from GitHub Releases, verify its checksum, extract it, and run the
+bundled `install.sh` or `install.ps1`. See link:docs/releasing.adoc[Releasing and
+prebuilt binaries]. The repository-root installers below remain the source-build
+path for contributors.
+
 ```bash
 # Install (builds release, copies to ~/.local/bin, adds to PATH)
 ./install.sh
@@ -110,6 +116,15 @@ negative on natural multi-word queries over external repos); opt in with `ADEN_L
 so it no-ops where it would not help. See [`docs/retrieval-levers.adoc`](docs/retrieval-levers.adoc).
 
 ## Core Commands
+
+CLI reads are JSON-first because Aden is primarily consumed by agents and LLM
+tooling. Use `--human` when you want clean terminal prose or tables; the legacy
+`--json` flag remains accepted for compatibility.
+
+```bash
+aden ask "How does authentication work?"          # versioned JSON envelope
+aden ask --human "How does authentication work?"  # clean context for a person
+```
 
 | Command | Purpose |
 |---------|---------|

@@ -153,7 +153,7 @@ pub fn cmd_lint(
 
     // The banner is human chrome — keep it off stdout in --json mode so the
     // output is valid JSON for programmatic consumers.
-    if !json {
+    if !json && !quiet {
         println!("Aden Universal Linter");
         println!("=====================");
         println!("Scanning: {}", path.display());

@@ -38,6 +38,21 @@ fn emit_heal_json(
     let cap = max_issues.unwrap_or(20);
     let summary = crate::util::build_gate_summary(&errors, &warnings, &info, ok, cap);
     let policy = aden_policy::audit_policy(path);
+    let outcome = crate::commands::outcome::OutcomeEnvelope::evaluated(
+        errors.len(),
+        warnings.len() + info.len() + policy.violations.len(),
+        if errors.is_empty() {
+            "healthy"
+        } else {
+            "unhealthy"
+        },
+        crate::commands::outcome::policy_label(policy.violations.len(), policy.unwired),
+        if report.events.is_empty() {
+            "fresh"
+        } else {
+            "stale"
+        },
+    );
     let env = serde_json::json!({
         "ok": summary.ok,
         "counts": summary.counts,
@@ -45,6 +60,7 @@ fn emit_heal_json(
         "truncated": summary.truncated,
         "health_score": report.overall_score,
         "policy_mode": policy.mode,
+        "result": outcome,
     });
     println!("{}", serde_json::to_string(&env)?);
     Ok(())

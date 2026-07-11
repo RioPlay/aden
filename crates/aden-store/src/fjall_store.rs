@@ -396,10 +396,10 @@ impl GraphStorage for FjallStorage {
             let key_str = String::from_utf8_lossy(&key);
             if let Some(suffix) = key_str.strip_prefix(&prefix) {
                 let parts: Vec<&str> = suffix.split(KEY_SEP).collect();
-                if parts.len() == 3 {
-                    if let Some(&et) = type_map.get(parts[2]) {
-                        edges.push((parts[0].to_string(), parts[1].to_string(), et));
-                    }
+                if parts.len() == 3
+                    && let Some(&et) = type_map.get(parts[2])
+                {
+                    edges.push((parts[0].to_string(), parts[1].to_string(), et));
                 }
             }
         }
@@ -450,10 +450,10 @@ impl GraphStorage for FjallStorage {
                 continue;
             }
             for (dst, et) in self.get_outgoing_edges(&current)? {
-                if let Some(want) = edge_type {
-                    if &et != want {
-                        continue;
-                    }
+                if let Some(want) = edge_type
+                    && &et != want
+                {
+                    continue;
                 }
                 results.push((current.clone(), dst.clone()));
                 if visited.insert(dst.clone()) {

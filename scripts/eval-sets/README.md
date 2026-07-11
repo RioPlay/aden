@@ -12,8 +12,12 @@ that one is hermetic and runs in CI; these point at large external repos that ar
 **not vendored**, so you reproduce them by cloning the repo yourself.
 
 A query set is a TSV of `query <TAB> expected_path <TAB> note`, where `expected_path`
-is a distinctive substring of the source file that should rank top. The harness keys
-on the `:source_file:` path in each result, computes Recall@{1,5,10,20} and MRR@20.
+is a distinctive substring of the source file that should rank top. Multiple
+repository-proven acceptable sources may be separated with `|`; the first matching
+source determines rank. Do not add alternatives merely because retrieval returned
+them: author judgments from source ownership/content before inspecting ranks. The
+harness keys on the `:source_file:` path in each result and computes
+Recall@{1,5,10,20} and MRR@20.
 
 ## BM25 vs hybrid
 
@@ -53,9 +57,9 @@ Hybrid's lead *widens* at scale: R@1 +35% relative, R@5 +43%, MRR +37%, and miss
 halve (78→36 of 199). On a large, unfamiliar C codebase, dense recovers a lot of
 queries BM25's exact-term matching misses.
 
-> **Read these as a lower bound, not a leaderboard.** Ground truth is
-> *single-target* (exactly one expected file per query), so a result that surfaces
-> an equally-valid sibling file counts as a miss — real usefulness is higher than
+> **Read these as a lower bound, not a leaderboard.** Most historical ground truth is
+> *single-target*. The harness now supports pre-authored multi-target judgments, but
+> an unjudged equally-valid sibling file still counts as a miss — real usefulness is higher than
 > the raw recall. The numbers are *self-run on one corpus with labels we authored*:
 > indicative of how dense compares to BM25 here, **not** a standardized benchmark,
 > and your repo will differ. The point of shipping the harness + query sets is so

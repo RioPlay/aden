@@ -8,12 +8,12 @@ use std::path::Path;
 
 use crate::indexer::link::{CalleeStats, EdgeRecords, link_include_edges, link_store_edges};
 use crate::indexer::merge::{slim_doc_for_store, write_merge_proposals};
-use crate::types::GenCacheEntry;
+use crate::types::{FileDispositionEntry, GenCacheEntry};
 use crate::util::{
-    cochange_pairs, discover_source_files, extract_callees, extract_demonstrates,
+    cochange_pairs, discover_file_dispositions, extract_callees, extract_demonstrates,
     extract_doc_includes, extract_doc_mentions, extract_doc_refs, extract_doc_supersedes,
-    extract_doc_terms, extract_edge_macro, extract_uses, find_project_root, load_gen_cache,
-    sanitize_source_file, save_gen_cache,
+    extract_doc_terms, extract_edge_macro, extract_uses, find_project_root,
+    gen_cache_requires_rebuild, load_gen_cache, sanitize_source_file, save_gen_cache,
 };
 
 /// One stored symbol plus the compact data the linker needs. Carrying callee
@@ -75,6 +75,12 @@ struct EmittedSymbol {
 /// symbols. `Skip` is reserved for files whose mtime is unchanged.
 enum WorkItem {
     Skip,
+    Excluded {
+        cache_key: String,
+        source_mtime: u64,
+        source_path: String,
+        disposition: aden_core::filter::FileDisposition,
+    },
     Reindexed {
         cache_key: String,
         source_mtime: u64,
@@ -137,17 +143,27 @@ pub fn cmd_gen_silent(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
 }
 /// Lock the store for a write phase (G4). Held for the whole of `gen` so two
 /// concurrent runs against one store cannot interleave their writes and corrupt
-/// it — parallel-agent driving makes that concurrency real. Waits up to 10
-/// minutes for a live holder; a dead holder is reclaimed immediately (process
-/// liveness on Linux), so this blocks only on a genuinely active gen. The
-/// lockfile is a sibling of the store directory.
+/// it — parallel-agent driving makes that concurrency real. Explicit `gen`
+/// waits up to 10 minutes for a live holder; a dead holder is reclaimed
+/// immediately (process liveness on Linux). Silent auto-refresh never waits:
+/// if the lock is held it fail-opens so reads serve the last snapshot instead
+/// of blocking the agent (zero-friction / single-flight join).
 const WRITE_QUEUE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
 
-fn acquire_store_lock(store_path: &Path) -> std::io::Result<aden_core::lock::FileLock> {
-    aden_core::lock::FileLock::acquire_timeout_verbose(
-        aden_core::lock::store_lock_path(store_path),
-        WRITE_QUEUE_TIMEOUT,
-    )
+/// Silent read-path refresh: try-lock only (no multi-minute queue).
+const SILENT_LOCK_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(0);
+
+fn acquire_store_lock(
+    store_path: &Path,
+    silent: bool,
+) -> std::io::Result<aden_core::lock::FileLock> {
+    let lock_path = aden_core::lock::store_lock_path(store_path);
+    if silent {
+        // Fail-open immediately when another writer owns the lock.
+        aden_core::lock::FileLock::acquire_timeout(lock_path, SILENT_LOCK_TIMEOUT)
+    } else {
+        aden_core::lock::FileLock::acquire_timeout_verbose(lock_path, WRITE_QUEUE_TIMEOUT)
+    }
 }
 
 fn cmd_gen_inner(
@@ -168,6 +184,36 @@ fn cmd_gen_inner(
         path
     };
     let root = find_project_root(search_start);
+    // Generation must account for a source that becomes unreadable instead of
+    // aborting before the per-file pass can record `io_failed`.  Its snapshot
+    // deliberately has no freshness manifest: an unreadable source can never
+    // authoritatively bind the graph to the working tree, so reads fail closed
+    // until a later successful generation fingerprints every source.
+    let indexed_source_fingerprint = match super::fresh::source_fingerprint(&root) {
+        Ok(fingerprint) => Some(fingerprint),
+        Err(e) => {
+            if !silent {
+                eprintln!(
+                    "WARN: Cannot establish authoritative freshness before generation: {e}; \
+                     unreadable sources will be recorded and reads remain stale until recovery."
+                );
+            }
+            super::fresh::clear_freshness_manifest(&root);
+            None
+        }
+    };
+
+    // Deterministic integration-test seam for the otherwise timing-sensitive
+    // "tree changes while a read-triggered generation is running" case.  The
+    // manifest must retain the pre-generation fingerprint, causing the caller
+    // to report lag rather than a false `current`.  Release builds omit this.
+    #[cfg(debug_assertions)]
+    if let Some(relative) = std::env::var_os("ADEN_TEST_MUTATE_DURING_GEN") {
+        let target = root.join(relative);
+        let mut bytes = std::fs::read(&target)?;
+        bytes.extend_from_slice(b"\n// aden freshness test mutation\n");
+        std::fs::write(target, bytes)?;
+    }
 
     // Store-first: `gen` writes ONLY to .aden/store. Module hub nodes
     // (mod-project, mod-<crate>) are synthesized into the store by
@@ -175,16 +221,21 @@ fn cmd_gen_inner(
     let mut pending_snapshot: Option<(std::path::PathBuf, Vec<u8>)> = None;
     {
         // A single file re-indexes just itself; a directory indexes the project.
-        let mut sources = if path.is_file() {
-            vec![path.to_path_buf()]
+        let mut discovered = if path.is_file() {
+            vec![crate::util::DiscoveredFile {
+                path: path.to_path_buf(),
+                disposition: aden_core::filter::FileDisposition::Indexed,
+            }]
         } else {
-            discover_source_files(&root)?
+            discover_file_dispositions(&root)?
         };
-        if sources.is_empty() {
-            eprintln!(
-                "No source files discovered in {}. Is this a supported project?",
-                root.display()
-            );
+        let mut sources: Vec<_> = discovered
+            .iter()
+            .filter(|file| file.disposition.is_indexed())
+            .map(|file| file.path.clone())
+            .collect();
+        if discovered.is_empty() {
+            eprintln!("No files discovered in {}.", root.display());
             return Ok(());
         }
 
@@ -200,16 +251,40 @@ fn cmd_gen_inner(
         }
         // G4: serialize concurrent writers. Held until this function returns,
         // covering the whole open/index/flush write phase.
-        let _store_lock = acquire_store_lock(&store_path).map_err(|e| {
-            if e.kind() == std::io::ErrorKind::WouldBlock {
-                e.to_string()
-            } else {
-                format!(
-                    "failed to acquire store lock at {}: {e}",
-                    aden_core::lock::store_lock_path(&store_path).display()
-                )
+        // Silent path: WouldBlock → Ok (fail-open; another gen is in flight).
+        let _store_lock = match acquire_store_lock(&store_path, silent) {
+            Ok(l) => l,
+            Err(e) if silent && e.kind() == std::io::ErrorKind::WouldBlock => {
+                return Ok(());
             }
-        })?;
+            Err(e) => {
+                return Err(if e.kind() == std::io::ErrorKind::WouldBlock {
+                    e.to_string().into()
+                } else {
+                    format!(
+                        "failed to acquire store lock at {}: {e}",
+                        aden_core::lock::store_lock_path(&store_path).display()
+                    )
+                    .into()
+                });
+            }
+        };
+
+        // Single-flight join: after waiting (explicit) or acquiring (silent), if
+        // another writer already refreshed the tree and we are not forcing a
+        // full rebuild, skip the expensive reparse.
+        if silent
+            && !force
+            && store_path.exists()
+            && !crate::indexer::fresh::index_is_stale_for_root(&root)
+        {
+            return Ok(());
+        }
+        // Explicit gen that waited for a concurrent writer: still run unless
+        // the user is on a dry-run path and the tree is already current — keep
+        // explicit gen as "do the work" so operators can force a reindex.
+        // (silent join above is the agent-facing coalesce.)
+
         let store_str = store_path
             .to_str()
             .expect("Store path should be valid UTF-8");
@@ -218,7 +293,32 @@ fn cmd_gen_inner(
         // stale and must be ignored, or every file would be skipped as
         // "unchanged" against an empty store and the rebuild would silently
         // produce nothing (the recovery-from-deletion trap).
-        let mut full_rebuild = force || !store_path.exists();
+        let cache_path = aden_paths::gen_cache_file(&root);
+        let cache_requires_rebuild = gen_cache_requires_rebuild(&cache_path);
+        let mut full_rebuild = force || !store_path.exists() || cache_requires_rebuild;
+        if cache_requires_rebuild && store_path.exists() {
+            if std::env::var_os("ADEN_STORE").is_some() {
+                return Err("generation-cache schema changed while $ADEN_STORE is pinned/shared; run `aden regen` with a per-project store to rebuild safely".into());
+            }
+            progress!(
+                silent,
+                "Generation cache schema changed — rebuilding store from source."
+            );
+            std::fs::remove_dir_all(&store_path).map_err(|error| {
+                format!(
+                    "failed to remove stale store {} for generation-cache migration: {error}",
+                    store_path.display()
+                )
+            })?;
+            if path.is_file() {
+                discovered = discover_file_dispositions(&root)?;
+                sources = discovered
+                    .iter()
+                    .filter(|file| file.disposition.is_indexed())
+                    .map(|file| file.path.clone())
+                    .collect();
+            }
+        }
         let storage = match Storage::new_with_retry(store_str, WRITE_QUEUE_TIMEOUT) {
             Ok(s) => s,
             Err(aden_store::StoreError::IncompatibleVersion(_)) => {
@@ -251,7 +351,12 @@ fn cmd_gen_inner(
                 // now repopulate the whole project — otherwise the rebuild would
                 // re-index just that one file and leave a near-empty graph.
                 if path.is_file() {
-                    sources = discover_source_files(&root)?;
+                    discovered = discover_file_dispositions(&root)?;
+                    sources = discovered
+                        .iter()
+                        .filter(|file| file.disposition.is_indexed())
+                        .map(|file| file.path.clone())
+                        .collect();
                 }
                 Storage::new(store_str).map_err(|e| {
                     format!("Failed to rebuild store at {}: {}", store_path.display(), e)
@@ -269,6 +374,46 @@ fn cmd_gen_inner(
         let mut cache = load_gen_cache(&cache_path);
         let mut generated = Vec::new();
         let mut skipped = 0usize;
+
+        // Persist every path-level disposition before parsing. This keeps
+        // ignored, unsupported, and secret-path files visible to coverage and
+        // prunes symbols that were indexed before a rule changed.
+        if !path.is_file() {
+            for file in &discovered {
+                if file.disposition.is_indexed() {
+                    continue;
+                }
+                let key = file
+                    .path
+                    .strip_prefix(&root)
+                    .unwrap_or(&file.path)
+                    .to_string_lossy()
+                    .to_string();
+                if let Some(previous) = cache.entries.remove(&key) {
+                    // Pruning is completed by the ordinary stale-anchor pass
+                    // below after all parser outcomes are known.
+                    for anchor in previous.anchors {
+                        let _ = storage.delete_node(&anchor);
+                    }
+                }
+                let mtime = file
+                    .path
+                    .metadata()
+                    .ok()
+                    .and_then(|m| m.modified().ok())
+                    .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|duration| duration.as_secs())
+                    .unwrap_or(0);
+                cache.dispositions.insert(
+                    key,
+                    FileDispositionEntry {
+                        disposition: file.disposition,
+                        source_mtime: mtime,
+                        source_path: file.path.to_string_lossy().to_string(),
+                    },
+                );
+            }
+        }
 
         // Anchors that have an intent overlay on disk. Computed once: only these
         // symbols can produce a merge conflict, so the gate skips the per-symbol
@@ -295,8 +440,18 @@ fn cmd_gen_inner(
                 // Security floor: never index credential material into the store
                 // (where ask/asm would assemble it into LLM context). Search
                 // (grep/locate/audit) can still see these files to fix them.
-                if aden_core::filter::is_secret_path(src_rel) {
-                    return None;
+                let path_disposition = aden_core::filter::FileDisposition::for_path(
+                    src_rel,
+                    false,
+                    true,
+                );
+                if !path_disposition.is_indexed() {
+                    return Some(WorkItem::Excluded {
+                        cache_key: src_rel.to_string_lossy().to_string(),
+                        source_mtime: mtime_secs,
+                        source_path: src_path.to_string_lossy().to_string(),
+                        disposition: path_disposition,
+                    });
                 }
                 let cache_key = src_rel.to_string_lossy().to_string();
                 // `--force-regen`/`--propose` and a full rebuild (new/empty/
@@ -316,12 +471,24 @@ fn cmd_gen_inner(
                 // Read source
                 let source = match std::fs::read_to_string(src_path) {
                     Ok(s) => s,
-                    Err(e) if e.kind() == std::io::ErrorKind::InvalidData => return None,
+                    Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
+                        return Some(WorkItem::Excluded {
+                            cache_key,
+                            source_mtime: mtime_secs,
+                            source_path: src_path.to_string_lossy().to_string(),
+                            disposition: aden_core::filter::FileDisposition::InvalidEncoding,
+                        });
+                    }
                     Err(e) => {
                         if !quiet {
                             eprintln!("WARN: Failed to read {}: {}", src_path.display(), e);
                         }
-                        return None;
+                        return Some(WorkItem::Excluded {
+                            cache_key,
+                            source_mtime: mtime_secs,
+                            source_path: src_path.to_string_lossy().to_string(),
+                            disposition: aden_core::filter::FileDisposition::IoFailed,
+                        });
                     }
                 };
 
@@ -331,25 +498,56 @@ fn cmd_gen_inner(
                 // (AWS/GitHub/OpenAI/Slack keys, PEM private keys) and refuse to
                 // index such a file into the store, where ask/asm would otherwise
                 // assemble it into LLM context (CWE-798/CWE-200).
-                if aden_core::filter::content_has_high_confidence_secret(&source) {
+                let content_disposition = aden_core::filter::FileDisposition::for_content(&source);
+                if !content_disposition.is_indexed() {
                     if !silent {
                         eprintln!(
                             "WARN: Skipping {} — file content matches a credential pattern (not indexed). Add to .adenignore if intentional.",
                             src_rel.display()
                         );
                     }
-                    return None;
+                    return Some(WorkItem::Excluded {
+                        cache_key,
+                        source_mtime: mtime_secs,
+                        source_path: src_path.to_string_lossy().to_string(),
+                        disposition: content_disposition,
+                    });
                 }
 
                 // Parse
+                // Deterministic integration-test seam for the otherwise rare
+                // parser-error branch. It is compiled out of release builds
+                // and requires an exact root-relative path, so production
+                // classification remains entirely parser-driven.
+                #[cfg(debug_assertions)]
+                if std::env::var_os("ADEN_TEST_FORCE_PARSE_FAILED")
+                    .is_some_and(|value| value == src_rel.as_os_str())
+                {
+                    return Some(WorkItem::Excluded {
+                        cache_key,
+                        source_mtime: mtime_secs,
+                        source_path: src_path.to_string_lossy().to_string(),
+                        disposition: aden_core::filter::FileDisposition::ParseFailed,
+                    });
+                }
                 let docs = match aden_parse::parse_file(src_path, &source) {
                     Ok(d) => d,
-                    Err(aden_core::Error::UnsupportedLanguage(_)) => return None,
+                    Err(aden_core::Error::UnsupportedLanguage(_)) => return Some(WorkItem::Excluded {
+                        cache_key,
+                        source_mtime: mtime_secs,
+                        source_path: src_path.to_string_lossy().to_string(),
+                        disposition: aden_core::filter::FileDisposition::Unsupported,
+                    }),
                     Err(e) => {
                         if !silent {
                             eprintln!("WARN: Parse failed for {}: {}", src_path.display(), e);
                         }
-                        return None;
+                        return Some(WorkItem::Excluded {
+                            cache_key,
+                            source_mtime: mtime_secs,
+                            source_path: src_path.to_string_lossy().to_string(),
+                            disposition: aden_core::filter::FileDisposition::ParseFailed,
+                        });
                     }
                 };
 
@@ -488,6 +686,7 @@ fn cmd_gen_inner(
         fn work_key(w: &WorkItem) -> &str {
             match w {
                 WorkItem::Reindexed { source_path, .. } => source_path.as_str(),
+                WorkItem::Excluded { source_path, .. } => source_path.as_str(),
                 WorkItem::Skip => "",
             }
         }
@@ -495,6 +694,27 @@ fn cmd_gen_inner(
         for item in work_items {
             match item {
                 WorkItem::Skip => skipped += 1,
+                WorkItem::Excluded {
+                    cache_key,
+                    source_mtime,
+                    source_path,
+                    disposition,
+                } => {
+                    // A file that was once indexed may now be redacted or fail
+                    // parsing. Remove its old symbols and persist the reason so
+                    // it is never a silent omission.
+                    if let Some(previous) = cache.entries.remove(&cache_key) {
+                        stale_anchors.extend(previous.anchors);
+                    }
+                    cache.dispositions.insert(
+                        cache_key,
+                        FileDispositionEntry {
+                            disposition,
+                            source_mtime,
+                            source_path,
+                        },
+                    );
+                }
                 WorkItem::Reindexed {
                     cache_key,
                     source_mtime,
@@ -531,6 +751,7 @@ fn cmd_gen_inner(
                             }
                         }
                     }
+                    cache.dispositions.remove(&cache_key);
                     cache.entries.insert(
                         cache_key,
                         GenCacheEntry {
@@ -604,11 +825,12 @@ fn cmd_gen_inner(
         // source file is no longer in the discovered set is gone — prune all
         // anchors it owned and drop the entry.
         if !path.is_file() {
-            let live: std::collections::HashSet<String> = sources
+            let live: std::collections::HashSet<String> = discovered
                 .iter()
-                .map(|p| {
-                    p.strip_prefix(&root)
-                        .unwrap_or(p)
+                .map(|file| {
+                    file.path
+                        .strip_prefix(&root)
+                        .unwrap_or(&file.path)
                         .to_string_lossy()
                         .to_string()
                 })
@@ -624,6 +846,7 @@ fn cmd_gen_inner(
                     stale_anchors.extend(entry.anchors);
                 }
             }
+            cache.dispositions.retain(|key, _| live.contains(key));
         }
 
         // Prune stale nodes (deleted symbols / deleted files). delete_node
@@ -775,10 +998,19 @@ fn cmd_gen_inner(
         }
     }
 
-    if let Some((snapshot_path, bytes)) = pending_snapshot
-        && let Err(e) = aden_graph::snapshot::publish_bytes(&snapshot_path, &bytes)
-    {
-        eprintln!("WARN: Failed to publish read snapshot: {e}");
+    if let Some((snapshot_path, bytes)) = pending_snapshot {
+        match aden_graph::snapshot::publish_bytes(&snapshot_path, &bytes) {
+            Ok(()) => {
+                if let Some(indexed_source_fingerprint) = indexed_source_fingerprint {
+                    super::fresh::publish_freshness_manifest(
+                        &root,
+                        &bytes,
+                        indexed_source_fingerprint,
+                    )?;
+                }
+            }
+            Err(e) => eprintln!("WARN: Failed to publish read snapshot: {e}"),
+        }
     }
 
     // Invalidate caches after generating so the next query rebuilds
@@ -800,7 +1032,7 @@ mod store_lock_tests {
         let dir = tempfile::tempdir().unwrap();
         let store_path = dir.path().join("store");
 
-        let held = acquire_store_lock(&store_path).expect("first gen takes the lock");
+        let held = acquire_store_lock(&store_path, false).expect("first gen takes the lock");
         // A second writer on the same store's sibling lockfile is blocked.
         let blocked = aden_core::lock::FileLock::acquire_timeout(
             store_path.with_extension("lock"),
@@ -808,6 +1040,13 @@ mod store_lock_tests {
         );
         assert_eq!(
             blocked.expect_err("second writer must block").kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+
+        // Silent path fail-opens immediately (WouldBlock) instead of waiting.
+        let silent = acquire_store_lock(&store_path, true);
+        assert_eq!(
+            silent.expect_err("silent gen must not queue").kind(),
             std::io::ErrorKind::WouldBlock
         );
 
