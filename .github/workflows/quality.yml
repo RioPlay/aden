@@ -30,10 +30,15 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
-      - name: Check workspace and all features
+      - name: Check shipped surface at MSRV
+        run: cargo check --locked --workspace --all-targets
+
+      - name: Setup current stable for opt-in features
+        run: rustup toolchain install stable --profile minimal
+
+      - name: Check every opt-in feature
         run: |
-          cargo check --locked --workspace --all-targets
-          cargo check --locked --workspace --exclude aden-lsp --all-features
+          cargo +stable check --locked --workspace --exclude aden-lsp --all-features
 
       - name: Lint workspace
         run: cargo clippy --locked --workspace -- -D warnings
