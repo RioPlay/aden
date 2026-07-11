@@ -25,6 +25,9 @@ STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
 BUNDLE="$STAGE/$NAME"
 mkdir -p "$BUNDLE" "$OUTPUT_DIR"
+# The zip command runs from the staging directory for deterministic member
+# paths, so keep the caller's output directory absolute across that chdir.
+OUTPUT_DIR="$(cd "$OUTPUT_DIR" && pwd)"
 cp "$BINARY_DIR/aden$EXT" "$BUNDLE/aden$EXT"
 cp "$BINARY_DIR/aden-mcp$EXT" "$BUNDLE/aden-mcp$EXT"
 cp "$ROOT/release/README.md" "$BUNDLE/README.md"
