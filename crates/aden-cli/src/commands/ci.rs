@@ -443,12 +443,8 @@ pub fn cmd_ci_check(path: &Path, json: bool) -> Result<(), Box<dyn std::error::E
                         format!("Invalid bootstrap constitution: {}", e).into()
                     })
             });
-        } else {
-            if !json {
-                println!(
-                    "[CI] SKIP: constitutional firewall — no .aden/constitution.adoc (optional)"
-                );
-            }
+        } else if !json {
+            println!("[CI] SKIP: constitutional firewall — no .aden/constitution.adoc (optional)");
         }
     }
 
