@@ -21,6 +21,8 @@ jobs:
 
       - name: Setup Rust 1.90
         uses: dtolnay/rust-toolchain@0176485ebe2f605bde554dd99f804beeaf7db3e2 # 1.90.0
+        with:
+          components: rustfmt, clippy
 
       - name: Cache Cargo
         uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
