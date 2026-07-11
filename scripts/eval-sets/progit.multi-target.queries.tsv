@@ -1,8 +1,0 @@
-# Multi-target relevance diagnostic, kept separate from the strict held-out set.
-# Each query has two repository-proven acceptable chapters.
-# query	expected_path_substrings (`|` separated)	note
-understand merge conflicts from the basic workflow through manual resolution	basic-branching-and-merging.adoc|advanced-merging.adoc	both chapters explicitly cover merge conflicts
-learn the different ways to discard restore or reset local changes	undoing.adoc|reset.adoc	undoing and reset chapters cover the same user outcome at different depth
-work with remote repositories tracking branches fetching pulling and pushing	remotes.adoc|remote-branches.adoc	remote setup and remote branch workflow
-reorder reshape or replay commits to clean up project history	rebasing.adoc|rewriting-history.adoc	rebase and interactive history rewriting
-search history to locate the exact commit that introduced a defect	searching.adoc|debugging.adoc	log searching and binary-search debugging

@@ -1,3 +1,0 @@
-# Source-reviewed plain-text retrieval probe.
-# query<TAB>expected_path<TAB>note
-Why is the global IncludeOrigin not safe for concurrent use?	.github/docs/openapi3.txt	Generated Go API reference in plain text

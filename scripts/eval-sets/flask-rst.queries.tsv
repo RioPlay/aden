@@ -1,3 +1,0 @@
-# Source-reviewed reStructuredText retrieval probe.
-# query<TAB>expected_path<TAB>note
-What is the Application Factory?	docs/tutorial/factory.rst	Flask tutorial RST paragraph
