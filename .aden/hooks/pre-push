@@ -1,9 +1,0 @@
-#!/bin/sh
-# Sample Pre-Push Hook
-# Copy to .git/hooks/pre-push and make executable: chmod +x .git/hooks/pre-push
-# Uncomment and adapt the commands that apply to your project.
-#
-# set -e
-# <your-build-command>         # e.g. cargo build / npm run build
-# <your-lint-command>          # e.g. cargo clippy / eslint / flake8
-# aden gen src/ --auto         # regenerate knowledge graph contracts (if using aden)
