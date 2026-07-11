@@ -43,6 +43,11 @@ jobs:
       - name: Lint workspace
         run: cargo clippy --locked --workspace -- -D warnings
 
+      - name: Build test binaries
+        run: |
+          cargo build --locked -p aden-cli -p aden-mcp
+          echo "$GITHUB_WORKSPACE/target/debug" >> "$GITHUB_PATH"
+
       - name: Test workspace
         run: |
           cargo test --locked --workspace --exclude aden-lsp --no-fail-fast
