@@ -109,11 +109,7 @@ fn positional_labels_in_help(help: &str) -> Vec<String> {
         if line.trim() == "Options:" {
             break;
         }
-        let label = line
-            .trim_start()
-            .split_whitespace()
-            .next()
-            .unwrap_or_default();
+        let label = line.split_whitespace().next().unwrap_or_default();
         if !label.is_empty() {
             labels.push(
                 label
@@ -159,7 +155,6 @@ fn cli_defaults_in_help(tool: &str, help: &str, exposed: &[(&str, &str)]) -> Vec
             .map(|token| token.trim_start_matches('-').replace('-', "_"));
         let positional_arg = if flag_arg.is_none() {
             let label = line
-                .trim_start()
                 .split_whitespace()
                 .next()
                 .unwrap_or_default()

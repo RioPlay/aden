@@ -9,7 +9,12 @@ All notable changes to aden are documented here. Format follows
 
 ## [Unreleased]
 
-Post-0.3.0 work on main — not yet tagged.
+## [0.3.1] - 2026-07-12
+
+### Fixed
+- **Local release-bundle validation** — the documented maintainer command now
+  packages and verifies the archive for the workspace version, rather than an
+  obsolete fixed version.
 
 ## [0.3.0] - 2026-07-10
 

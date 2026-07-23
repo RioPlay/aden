@@ -1820,7 +1820,7 @@ pub async fn serve_with_options(project_dir: PathBuf, pinned: bool) -> anyhow::R
 mod tests {
     use super::*;
     use rmcp::ClientHandler;
-    use std::sync::Mutex;
+    use tokio::sync::Mutex as AsyncMutex;
 
     #[derive(Clone)]
     struct RootsClient {
@@ -1846,7 +1846,7 @@ mod tests {
         }
     }
 
-    static MCP_ROOT_TEST_ENV: Mutex<()> = Mutex::new(());
+    static MCP_ROOT_TEST_ENV: AsyncMutex<()> = AsyncMutex::const_new(());
 
     fn mcp_root_fixture(label: &str, symbol: &str) -> PathBuf {
         let path =
@@ -2069,7 +2069,7 @@ mod tests {
         // This uses rmcp's real duplex client/server transport.  It is not a
         // direct `set_project_dir` unit test: each tool call makes the protocol
         // `roots/list` request that a real MCP host answers.
-        let _env = MCP_ROOT_TEST_ENV.lock().unwrap();
+        let _env = MCP_ROOT_TEST_ENV.lock().await;
         let root_a = mcp_root_fixture("a", "only_a");
         let root_b = mcp_root_fixture("b", "only_b");
         let cli = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -2133,7 +2133,7 @@ mod tests {
         // AP-107 must exercise the production rmcp duplex transport rather
         // than the response adapter directly. The client sees exactly the
         // serialized text handed to an LLM after MCP has added its envelope.
-        let _env = MCP_ROOT_TEST_ENV.lock().unwrap();
+        let _env = MCP_ROOT_TEST_ENV.lock().await;
         let root = mcp_root_fixture("ap107-budget", "budget_symbol");
         let cli = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
@@ -2213,7 +2213,7 @@ mod tests {
         // reject a fixture request (for example a missing ADQ script), but its
         // error must still be structured and actionable; successes must carry
         // a receipt and never expose unstructured terminal output.
-        let _env = MCP_ROOT_TEST_ENV.lock().unwrap();
+        let _env = MCP_ROOT_TEST_ENV.lock().await;
         let root = mcp_root_fixture("read-matrix", "matrix_symbol");
         let cli = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../..")

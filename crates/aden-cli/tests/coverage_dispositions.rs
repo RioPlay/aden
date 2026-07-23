@@ -82,7 +82,7 @@ fn fixture() -> (PathBuf, PathBuf) {
         std::fs::write(project.join("unreadable.rs"), "pub fn unreadable() {}\n").unwrap();
         std::fs::set_permissions(
             project.join("unreadable.rs"),
-            std::fs::Permissions::from_mode(0),
+            std::fs::Permissions::from_mode(0o0),
         )
         .unwrap();
     }

@@ -11,6 +11,7 @@ Every agent that modifies files must append an entry here before completing.
 
 |===
 |Timestamp |Agent |Task |Files |Status |Confidence
+|2026-07-22T22:10:00Z |pi-composer |Prepare scoped Aden 0.3.1 release metadata, repair draft-release repository targeting, and remediate inherited all-target clippy failures |Cargo.toml, Cargo.lock, CHANGELOG.md, docs/releasing.adoc, .github/workflows/release.yml, crates/aden-mcp/src/lib.rs, crates/aden-cli/tests/mcp_flag_parity.rs, crates/aden-cli/tests/coverage_dispositions.rs |complete |High
 |===
 
 == How to Append
