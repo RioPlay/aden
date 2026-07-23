@@ -33,9 +33,12 @@ The authoritative workflow is `.github/workflows/release.yml`.
 . Update the workspace version and `Cargo.lock`.
 . Move the relevant changelog entries under an exact `## [X.Y.Z]` heading.
 . Merge the release commit to `main` and ensure ordinary CI is green.
-. Run the Release workflow manually with version `X.Y.Z`. This dry run builds,
-  packages, attests, downloads, installs, and smokes all target bundles without
-  publishing a GitHub Release.
+. Run the Manual Quality workflow for that exact commit and verify it succeeds.
+  The Release workflow requires this verdict even for a manual dry run.
+. Run the Release workflow manually from that same commit with version `X.Y.Z`.
+  The dry run validates an exact SemVer, workspace-version, and changelog-heading
+  match before it builds, packages, attests, downloads, installs, and smokes all
+  target bundles without publishing a GitHub Release.
 . Create and push annotated tag `vX.Y.Z` at the reviewed commit.
 . The tag workflow repeats the release gate and creates a *draft* GitHub Release.
 . Review generated notes, bundle list, `SHA256SUMS`, and attestations, then publish
@@ -49,9 +52,11 @@ missing changelog headings, and published tag commits that are not on `main`.
 [source,bash]
 ----
 host="$(rustc -vV | sed -n 's/^host: //p')"
+version="$(cargo metadata --locked --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "aden") | .version')"
+case "$host" in *windows*) archive_ext=zip ;; *) archive_ext=tar.gz ;; esac
 cargo build --locked --release --target "$host" -p aden-cli -p aden-mcp
-scripts/package-release.sh "$host" 0.2.0 dist
-scripts/test-release-bundle.sh
+scripts/package-release.sh "$host" "$version" dist
+scripts/test-release-bundle.sh "dist/aden-v$version-$host.$archive_ext" "$host" "$version"
 ----
 
 `scripts/test-release-bundle.sh` uses fixture executables to prove deterministic
