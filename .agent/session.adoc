@@ -22,6 +22,7 @@ Every agent that modifies files must append an entry here before completing.
 |2026-08-06T11:45:44Z |codex |Make source installers transactional and path-safe, add PowerShell uninstall/native defaults, and exercise PowerShell 7/5.1 installation in Windows CI |install.sh, install.ps1, README.md, CHANGELOG.md, .github/workflows/ci.yml |complete_with_branch_migration_required |High
 |2026-08-06T13:24:45Z |codex |Recover the disconnected release work onto a clean origin/main-based candidate and validate the full local release, installer, and portability gates |all release-candidate changes |ready_for_version_and_release_decision |High
 |2026-08-06T13:41:32Z |codex |Prepare and verify the 0.4.0 release candidate, including workspace version consistency, changelog finalization, independent coverage and pre-landing review, and fresh release gates |all release-candidate changes |ready_for_pull_request |High
+|2026-08-06T13:50:32Z |codex |Investigate the GitHub build failure and refresh the regression-lock hashes for the intentionally changed benchmark task and query datasets |scripts/regression-lock.json, .agent/session.adoc |complete |High
 |===
 
 == How to Append

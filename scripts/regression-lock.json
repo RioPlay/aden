@@ -4,7 +4,7 @@
   "purpose": "Regression-only. These tuned datasets must not be cited as held-out or blind evidence.",
   "files": {
     "scripts/passage-context/tasks.json": "2d56057a9a04977a6dac88f3db790c727acfac9a49a92e3d4cae75192fd3c564",
-    "scripts/agent-bench/tasks.json": "35895a49b26fa7ec3e129dcb986486fd432a7e94fbf1e4ced6f98273cbeb3ab4",
+  "scripts/agent-bench/tasks.json": "454a7df976880edc7b56a23520eb5bf3a843398ec288e26bfc159e8695678d65",
     "scripts/heldout-context/repos.json": "6dd53187810ee39dbdff26efc740f2ac2cbf97aaf1f6ed516a18125fdd68c8ce",
     "scripts/eval-sets/aden-conceptual.queries.tsv": "48b9283cef1ce09ecc4913f075ca5daa3ca0b168aa7772d1c77d5971873b915f",
     "scripts/eval-sets/aden-devlog.queries.tsv": "c90d454b998faaff631933842a65336fba7b3479eb5d71c3b677dadcbf4fd450",
@@ -15,7 +15,7 @@
     "scripts/eval-sets/kin-plaintext.queries.tsv": "fa6492fb5b77f33defe7e77b4a23c65f9323173fa92e603901ca1f19b1190a27",
     "scripts/eval-sets/linux-subset.queries.tsv": "e0fbd3f689d223562b6eb1b07611d4b09238785da1e67cca2f220287b9f09467",
     "scripts/eval-sets/progit.multi-target.queries.tsv": "434fd6c9ee7c260842bf5c07303e2ae2be71eb02466f2a284212c076448d8d70",
-    "scripts/eval-sets/progit.queries.tsv": "2e6ff3ca8593393a1ec6a9b17f77aec552c886c64d540119b72698318a798ea2",
+  "scripts/eval-sets/progit.queries.tsv": "f22e9a3753debfe049ab05f607cbf944c958b4f550406667c5817343841b880b",
     "scripts/eval-sets/rustfmt.queries.tsv": "8ab094d6df84197b3f6746a85fdfd40052fcf4a99906c1397bf1e8290fecd020",
     "scripts/eval-sets/t3-cli-src.queries.tsv": "97ec9198f83847432261ec23c95b6e1889e5785df0112efc68f0f925cb20a262",
     "scripts/eval-sets/tanstack-query.queries.tsv": "da44441156e246732a8b2b4e34ba5a23b1e891b037fe641a52b9126f1907ad05",
