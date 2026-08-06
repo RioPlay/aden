@@ -37,7 +37,8 @@ pub fn cmd_doctor(path: &Path, json: bool) -> Result<(), Box<dyn std::error::Err
     let git_ok = std::process::Command::new("git")
         .arg("--version")
         .output()
-        .is_ok();
+        .map(|output| output.status.success())
+        .unwrap_or(false);
     chk!(
         "git",
         git_ok,
@@ -56,7 +57,8 @@ pub fn cmd_doctor(path: &Path, json: bool) -> Result<(), Box<dyn std::error::Err
             let ok = std::process::Command::new(tool)
                 .arg("--version")
                 .output()
-                .is_ok();
+                .map(|output| output.status.success())
+                .unwrap_or(false);
             chk!(
                 format!("{tool} (Rust)"),
                 ok,
@@ -79,7 +81,8 @@ pub fn cmd_doctor(path: &Path, json: bool) -> Result<(), Box<dyn std::error::Err
                 let ok = std::process::Command::new(tool)
                     .arg("--version")
                     .output()
-                    .is_ok();
+                    .map(|output| output.status.success())
+                    .unwrap_or(false);
                 chk!(
                     tool,
                     ok,
@@ -94,18 +97,53 @@ pub fn cmd_doctor(path: &Path, json: bool) -> Result<(), Box<dyn std::error::Err
         }
     }
 
-    // aden CLI
-    let aden_ok = std::process::Command::new("aden")
-        .arg("--version")
-        .output()
-        .is_ok();
+    // Aden binary pair. Agent integrations launch `aden-mcp`, which in turn
+    // directs the `aden` CLI; checking only one half lets partial installs and
+    // stale upgrades look healthy.
+    let binary_version = |name: &str| -> Option<String> {
+        let output = std::process::Command::new(name)
+            .arg("--version")
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .next()
+            .and_then(|line| line.split_whitespace().nth(1))
+            .map(str::to_string)
+    };
+    let aden_version = binary_version("aden");
+    let mcp_version = binary_version("aden-mcp");
     chk!(
         "aden CLI",
-        aden_ok,
-        if aden_ok {
-            "aden found in PATH"
-        } else {
-            "aden NOT in PATH"
+        aden_version.is_some(),
+        aden_version
+            .as_deref()
+            .map(|version| format!("aden {version} found in PATH"))
+            .unwrap_or_else(|| "aden NOT in PATH".to_string()),
+        true
+    );
+    chk!(
+        "aden MCP",
+        mcp_version.is_some(),
+        mcp_version
+            .as_deref()
+            .map(|version| format!("aden-mcp {version} found in PATH"))
+            .unwrap_or_else(|| "aden-mcp NOT in PATH — run the Aden installer".to_string()),
+        true
+    );
+    let versions_match = aden_version.is_some() && aden_version == mcp_version;
+    chk!(
+        "Aden binary version parity",
+        versions_match,
+        match (&aden_version, &mcp_version) {
+            (Some(aden), Some(mcp)) if aden == mcp => format!("aden and aden-mcp are both {aden}"),
+            (Some(aden), Some(mcp)) => format!(
+                "aden is {aden}, aden-mcp is {mcp} — reinstall together and restart the AI client"
+            ),
+            _ => "cannot compare until both binaries are installed".to_string(),
         },
         true
     );
@@ -146,24 +184,25 @@ pub fn cmd_doctor(path: &Path, json: bool) -> Result<(), Box<dyn std::error::Err
         false
     );
 
-    // Repo scaffold
+    // Optional project files. Their absence is the zero-footprint default, not
+    // degraded health; Aden's index and built-in exclusions live per-user.
     chk!(
         ".agent/",
-        path.join(".agent").is_dir(),
+        true,
         if path.join(".agent").is_dir() {
-            ".agent/ present"
+            "optional templates present"
         } else {
-            "not present — run 'aden init'"
+            "not configured (normal; use 'aden init --templates' only if wanted)"
         },
         false
     );
     chk!(
         ".adenignore",
-        path.join(".adenignore").exists(),
+        true,
         if path.join(".adenignore").exists() {
-            "present"
+            "optional project exclusions present"
         } else {
-            "not present — built-in defaults used"
+            "not configured (built-in exclusions active)"
         },
         false
     );
@@ -251,7 +290,12 @@ pub fn cmd_doctor(path: &Path, json: bool) -> Result<(), Box<dyn std::error::Err
         }
     }
     println!("\n— Aden —");
-    for c in checks.iter().filter(|c| c.name == "aden CLI") {
+    for c in checks.iter().filter(|c| {
+        matches!(
+            c.name.as_str(),
+            "aden CLI" | "aden MCP" | "Aden binary version parity"
+        )
+    }) {
         println!("{} {}", if c.ok { "✓" } else { "✗" }, c.detail);
     }
     for c in checks.iter().filter(|c| c.name == "signing key") {

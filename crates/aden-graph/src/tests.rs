@@ -115,13 +115,27 @@ mod tests {
         let idx2 = graph.graph.add_node(node2);
         graph.anchor_to_index.insert("mod-a".to_string(), idx1);
         graph.anchor_to_index.insert("func-b".to_string(), idx2);
-        graph.graph.add_edge(
+        let e = graph.graph.add_edge(
             idx1,
             idx2,
             AdenEdge {
                 edge_type: EdgeType::Uses,
             },
         );
+
+        // Verify the edge was created with the correct type
+        let edge_weight = graph.graph.edge_weight(e).unwrap();
+        assert_eq!(edge_weight.edge_type, EdgeType::Uses);
+
+        // Verify both nodes are addressable by anchor
+        assert_eq!(graph.anchor_to_index.get("mod-a"), Some(&idx1));
+        assert_eq!(graph.anchor_to_index.get("func-b"), Some(&idx2));
+
+        // Verify the nodes store the expected data
+        assert_eq!(graph.graph[idx1].doc.anchor, "mod-a");
+        assert_eq!(graph.graph[idx2].doc.anchor, "func-b");
+        assert_eq!(graph.graph[idx1].doc.node_type, NodeType::Module);
+        assert_eq!(graph.graph[idx2].doc.node_type, NodeType::Function);
     }
 
     // ── Structured Block Parsing Tests ───────────────────────────

@@ -55,6 +55,7 @@ ATTR = re.compile(r"^:([a-z0-9-]+):\s*(.*?)\s*$")
 MARKDOWN_METADATA = re.compile(r"^<!--\s*([a-z0-9-]+):\s*(.*?)\s*-->\s*$")
 AS_OF = re.compile(r"^\d{4}-\d{2}-\d{2}@[0-9a-f]{40}$")
 ISSUE_URL = re.compile(r"^https://github\.com/[^/]+/[^/]+/issues/(\d+)$")
+OPTIONAL_ISSUE = {"", "none", "optional"}
 SECTIONS = (
     "Current evidence",
     "Outcome",
@@ -162,8 +163,8 @@ def load_packets() -> tuple[dict[str, dict[str, str]], list[str]]:
             errors.append(f"{packet_id}: evidence-level must be E0..E4")
         if not attrs["acceptance-version"].isdigit():
             errors.append(f"{packet_id}: acceptance-version must be an integer")
-        if not ISSUE_URL.fullmatch(attrs["issue"]):
-            errors.append(f"{packet_id}: issue must be a GitHub issue URL")
+        if attrs["issue"].strip().lower() not in OPTIONAL_ISSUE and not ISSUE_URL.fullmatch(attrs["issue"]):
+            errors.append(f"{packet_id}: issue must be a GitHub issue URL or none")
         anchor = packet_id.lower().replace("-", "-")
         if f"[[{anchor}]]" not in text:
             errors.append(f"{packet_id}: missing stable anchor [[{anchor}]]")

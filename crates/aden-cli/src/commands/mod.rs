@@ -36,6 +36,7 @@ pub mod sync;
 pub mod test_cmd;
 #[cfg(feature = "view")]
 pub mod timeline;
+pub mod tree;
 #[cfg(feature = "view")]
 pub mod view;
 pub mod viz;
@@ -65,7 +66,7 @@ pub use locate::{cmd_locate, cmd_understand};
 pub use model::cmd_model_fetch;
 #[cfg(feature = "watch")]
 pub use query::cmd_watch;
-pub use query::{cmd_ask, cmd_asm, cmd_check, cmd_query, cmd_query_adq};
+pub use query::{QueryOptions, cmd_ask, cmd_asm, cmd_check, cmd_query, cmd_query_adq};
 pub use ready::cmd_ready;
 pub use review::{cmd_review, cmd_review_since};
 pub use scope::{cmd_scope, cmd_scope_agents};
@@ -78,6 +79,7 @@ pub use sync::cmd_sync;
 pub use test_cmd::cmd_test;
 #[cfg(feature = "view")]
 pub use timeline::cmd_timeline;
+pub use tree::cmd_tree;
 #[cfg(feature = "view")]
 pub use view::cmd_view;
 pub use viz::cmd_viz;

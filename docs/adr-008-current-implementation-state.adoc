@@ -123,12 +123,13 @@ workflows.
 All tools. Also triggered by the legacy `ADEN_MCP_FULL=1` variable for backward
 compatibility.
 
-==== 3.2 Visibility vs. callability
+==== 3.2 Visibility and callability
 
-Tier gating affects only what appears in `list_tools` (the MCP tool-discovery response).
-All tools remain callable by name regardless of tier. A client that already knows a tool
-name can call it even on the `essential` surface; the tier only controls what a client
-*discovers* automatically.
+Tier gating controls both what appears in `list_tools` (the MCP tool-discovery response)
+and what `call_tool` may execute. A client that already knows a hidden tool name receives a
+structured `tool_surface_disabled` error until the operator explicitly enables the required
+surface. This prevents accidental build/setup/admin subprocesses while preserving deliberate
+opt-in through `ADEN_MCP_SURFACE` or install-time baking.
 
 ==== 3.3 Install-time baking
 

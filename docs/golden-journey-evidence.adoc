@@ -19,10 +19,11 @@ ambiguous symbols return candidates and recovery instead of a guessed anchor.
 
 == Recorded clean-install-to-first-answer runs
 
-These runs used `FULL_INSTALL=1`, which builds and installs the committed source
-into a new temporary install directory before the three-command journey. The
-user-owned `.gitignore` edit was explicitly excluded from provenance; all
-build-affecting tracked paths were clean.
+These are historical pre-0.3.1 runs using `FULL_INSTALL=1`; they build and install
+the committed source into a new temporary install directory before the
+three-command journey. They are retained as baseline evidence, not as 0.3.1
+release validation. The user-owned `.gitignore` edit was explicitly excluded
+from provenance; all build-affecting tracked paths were clean.
 
 |===
 |Date (UTC) |Commit |Binary |Version |Elapsed |Commands |Observation

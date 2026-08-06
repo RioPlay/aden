@@ -37,10 +37,66 @@ The optional dense retrieval feature increases the CLI production closure from
 CLI or installer dependency closure. Both boundaries are intentional and should
 be preserved.
 
+[[feature-boundary-policy]]
+== Feature-boundary policy
+
+Aden does not remove supported capabilities merely to reduce a package count.
+Each capability has one explicit build and delivery boundary so users can choose
+the cost without receiving a partial or silently degraded feature.
+
+[cols="1,1,2"]
+|===
+|Capability |Boundary |Product contract
+
+|Core CLI, viewer, and file watching
+|`aden-cli` default features
+|The normal installation is complete: `view`, `watch`, and `heal --watch` remain
+available. A future slim profile must be explicit and documented; it must never
+replace the default.
+
+|MCP integration
+|Separate `aden-mcp` binary
+|MCP dependencies and the Tokio runtime do not inflate the CLI closure. The
+installer builds and installs both first-class binaries.
+
+|Dense retrieval
+|`aden-cli --features dense`
+|Local hybrid retrieval is an opt-in, complete capability with its model and
+tokenizer stack; default lexical search remains fully supported.
+
+|Network-backed licenses and model retrieval
+|`licenses-net` and `model-fetch` features
+|Network clients are opt-in, preserving an offline default rather than offering
+a reduced offline implementation.
+
+|Long-tail parser grammars
+|`grammars-download` feature
+|The default uses only its statically linked, supported grammar set and never
+loads parser libraries from disk. Source builders who need the long tail opt in
+to the complete, versioned, platform-aware downloader path.
+
+|LSP
+|Standalone `aden-lsp` binary
+|IDE protocol support remains available without being linked into ordinary CLI
+or MCP installations.
+|===
+
+Dependency work must first remove unused declarations, then isolate genuinely
+optional capabilities behind documented feature flags. Replacing a foundational
+dependency or changing a default requires equivalent feature coverage, release
+size/build-time measurements, and cross-platform regression evidence.
+
 The default viewer accounts for approximately 1.83 MB of the CLI binary, mostly
 vendored JavaScript. File watching accounts for approximately 0.33 MB. Removing
 either from the defaults is a product-compatibility choice, not a dependency
 cleanup, so this audit leaves both defaults unchanged.
+
+Portable grammar linkage intentionally trades size for a self-contained parser.
+On x86_64 Linux, the statically linked candidate CLI is approximately 60 MB
+uncompressed and the complete two-binary `.tar.gz` is approximately 11 MB,
+compared with 15 MB and 6.7 MB for the broken v0.3.1 dynamic-grammar bundle.
+The release workflow repeats the functional parse check on every native target;
+archive size alone is not accepted as evidence that grammars were bundled.
 
 == Changes accepted
 

@@ -10,21 +10,19 @@ aden-core = { path = "../aden-core" }
 regex = "1.12.3"
 thiserror = "2.0.18"
 tree-sitter = { version = "0.26", optional = true }
-# Slim by default: `dynamic-loading` (no `download`) drops the ureq/sha2/tar/zstd
-# stack tslp's default `download` feature would pull. The build-time grammars
-# (TSLP_LANGUAGES in .cargo/config.toml) still load; the long tail is opt-in via
-# the `grammars-download` feature below.
-tree-sitter-language-pack = { version = "1.8", optional = true, default-features = false, features = ["dynamic-loading"] }
-# Used (slim path only) to locate the on-disk grammar cache; see lib.rs TS_REGISTRY.
-dirs = { version = "6", optional = true }
+# Release/default builds contain only statically linked grammars. Keeping both
+# `dynamic-loading` and `download` disabled removes build-directory .so/.dylib/.dll
+# paths from the shipped CLI. The opt-in downloader feature below enables the
+# language pack's versioned, platform-native dynamic cache for long-tail parsers.
+tree-sitter-language-pack = { version = "1.8", optional = true, default-features = false }
 
 [dev-dependencies]
 tempfile = "3"
 
 [features]
 default = ["tree-sitter", "generic"]
-generic = ["tree-sitter", "tree-sitter-language-pack", "dep:dirs"]
-# Restore on-demand fetching of the full 300+ tree-sitter grammar pack. Off by
-# default — pulls tslp's `download` feature (ureq + sha2 + tar + zstd). With it
-# off, parsing falls back to the build-time grammars + locally cached `.so`s.
+generic = ["tree-sitter", "tree-sitter-language-pack"]
+# Restore on-demand fetching of the full 300+ tree-sitter grammar pack. The
+# upstream `download` feature also enables its platform-aware dynamic loader and
+# versioned cache; default release binaries never consult that cache.
 grammars-download = ["generic", "tree-sitter-language-pack/download"]

@@ -23,10 +23,11 @@
 //! | Iterator yields `Result<(key, val)>` | Iterator yields `Guard`; call `.into_inner()` |
 
 use crate::{
-    GraphStorage, KEY_SEP, StoreError, TreeName, base_key, deserialize, deserialize_document,
-    doc_key, edge_key, incoming_key, meta_key, outgoing_key, serialize, serialize_document,
+    GraphStorage, KEY_SEP, StoreError, SymbolCandidateLookup, TreeName, base_key, deserialize,
+    deserialize_document, doc_key, edge_key, incoming_key, meta_key, outgoing_key, serialize,
+    serialize_document,
 };
-use aden_core::{Document, EdgeType};
+use aden_core::{Document, EdgeType, SourceSpan};
 use fjall::{Database, Keyspace, KeyspaceCreateOptions, PersistMode};
 use std::collections::{HashMap, HashSet};
 use std::thread::sleep;
@@ -54,6 +55,7 @@ pub struct FjallStorage {
     // Database must outlive the keyspaces; kept for `persist` (flush).
     db: Database,
     docs: Keyspace,
+    source_spans: Keyspace,
     edges: Keyspace,
     outgoing: Keyspace,
     incoming: Keyspace,
@@ -67,6 +69,61 @@ pub const FJALL_OPEN_RETRY_TIMEOUT: Duration = Duration::from_secs(600);
 
 fn store_error_is_locked(err: &StoreError) -> bool {
     matches!(err, StoreError::Io(msg) if msg.contains("Locked"))
+}
+
+// v2 indexes language-native backslash-qualified symbols (notably PHP).
+pub const SYMBOL_LEXICON_VERSION: &str = "2";
+const SYMBOL_LEXICON_META_KEY: &str = "symbol_lexicon_version";
+const SYMBOL_EXACT_PREFIX: &str = "se";
+const SYMBOL_RECORD_PREFIX: &str = "sr";
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SymbolLexiconRecord {
+    segment_lower: String,
+    leaf_lower: String,
+    segment_len: usize,
+    leaf_len: usize,
+}
+
+fn symbol_exact_key(form: &str, anchor: &str) -> String {
+    format!("{SYMBOL_EXACT_PREFIX}{KEY_SEP}{form}{KEY_SEP}{anchor}")
+}
+
+fn symbol_record_key(anchor: &str) -> String {
+    format!("{SYMBOL_RECORD_PREFIX}{KEY_SEP}{anchor}")
+}
+
+fn symbol_index_entries(anchor: &str) -> Result<(Vec<String>, Vec<u8>), StoreError> {
+    let forms = aden_core::symbol::natural_anchor_forms(anchor);
+    let mut keys = vec![
+        symbol_exact_key(&forms.segment, anchor),
+        symbol_exact_key(&forms.segment_lower, anchor),
+        symbol_exact_key(&forms.leaf, anchor),
+        symbol_exact_key(&forms.leaf_lower, anchor),
+    ];
+    keys.extend(
+        forms
+            .qualified_prefixes_lower
+            .iter()
+            .map(|prefix| symbol_exact_key(prefix, anchor)),
+    );
+    keys.sort();
+    keys.dedup();
+    let record = SymbolLexiconRecord {
+        segment_len: forms.segment_lower.chars().count(),
+        leaf_len: forms.leaf_lower.chars().count(),
+        segment_lower: forms.segment_lower,
+        leaf_lower: forms.leaf_lower,
+    };
+    Ok((keys, serialize(&record)?))
+}
+
+/// Symbols historically persisted spans in attributes and rehydrated the
+/// struct field on reads. Keep the projection compatible with both forms.
+fn effective_source_span(doc: &Document) -> Option<SourceSpan> {
+    doc.source_span
+        .clone()
+        .or_else(|| SourceSpan::from_attributes(&doc.attributes))
 }
 
 impl FjallStorage {
@@ -120,6 +177,7 @@ impl FjallStorage {
         };
         Ok(Self {
             docs: open(TreeName::Docs.name())?,
+            source_spans: open(TreeName::SourceSpans.name())?,
             edges: open(TreeName::Edges.name())?,
             outgoing: open(TreeName::Outgoing.name())?,
             incoming: open(TreeName::Incoming.name())?,
@@ -167,16 +225,67 @@ impl GraphStorage for FjallStorage {
         Ok(docs)
     }
 
+    fn get_source_spans(&self) -> Result<Vec<(String, SourceSpan)>, StoreError> {
+        let mut spans = Vec::with_capacity(self.source_spans.approximate_len());
+        for guard in self.source_spans.iter() {
+            let (anchor, value) = guard.into_inner()?;
+            spans.push((
+                String::from_utf8(anchor.to_vec()).map_err(|e| {
+                    StoreError::Serialization(format!("source-span anchor is not UTF-8: {e}"))
+                })?,
+                deserialize(&value)?,
+            ));
+        }
+        if !spans.is_empty() || self.docs.is_empty()? {
+            return Ok(spans);
+        }
+
+        // Compatibility fallback for pinned/shared stores that cannot be
+        // auto-rebuilt during the layout migration. It is intentionally
+        // read-only; normal per-project stores rebuild once and stay on the
+        // compact partition thereafter.
+        for guard in self.docs.iter() {
+            let (key, value) = guard.into_inner()?;
+            let key = String::from_utf8_lossy(&key);
+            let Some(anchor) = key.strip_prefix("doc:") else {
+                continue;
+            };
+            if let Some(span) = deserialize_document(&value)?.source_span {
+                spans.push((anchor.to_string(), span));
+            }
+        }
+        Ok(spans)
+    }
+
     fn put_document(&self, doc: &Document) -> Result<(), StoreError> {
-        self.docs
-            .insert(doc_key(&doc.anchor), serialize_document(doc)?)?;
+        let (symbol_keys, symbol_record) = symbol_index_entries(&doc.anchor)?;
+        let mut batch = self.db.batch();
+        batch.insert(&self.docs, doc_key(&doc.anchor), serialize_document(doc)?);
+        if let Some(span) = effective_source_span(doc) {
+            batch.insert(&self.source_spans, &doc.anchor, serialize(&span)?);
+        } else {
+            batch.remove(&self.source_spans, &doc.anchor);
+        }
+        batch.insert(&self.index, symbol_record_key(&doc.anchor), symbol_record);
+        for key in symbol_keys {
+            batch.insert(&self.index, key, b"");
+        }
+        batch.commit()?;
         Ok(())
     }
 
     fn delete_document(&self, anchor: &str) -> Result<(), StoreError> {
-        self.docs.remove(doc_key(anchor))?;
+        let (symbol_keys, _) = symbol_index_entries(anchor)?;
+        let mut batch = self.db.batch();
+        batch.remove(&self.docs, doc_key(anchor));
+        batch.remove(&self.source_spans, anchor);
+        batch.remove(&self.index, symbol_record_key(anchor));
+        for key in symbol_keys {
+            batch.remove(&self.index, key);
+        }
         // A document's base snapshot is meaningless without the document.
-        self.bases.remove(base_key(anchor))?;
+        batch.remove(&self.bases, base_key(anchor));
+        batch.commit()?;
         Ok(())
     }
 
@@ -199,8 +308,18 @@ impl GraphStorage for FjallStorage {
         }
         let mut batch = self.db.batch();
         for (doc, snapshot) in docs {
+            let (symbol_keys, symbol_record) = symbol_index_entries(&doc.anchor)?;
             batch.insert(&self.docs, doc_key(&doc.anchor), serialize_document(doc)?);
+            if let Some(span) = effective_source_span(doc) {
+                batch.insert(&self.source_spans, &doc.anchor, serialize(&span)?);
+            } else {
+                batch.remove(&self.source_spans, &doc.anchor);
+            }
             batch.insert(&self.bases, base_key(&doc.anchor), snapshot.as_bytes());
+            batch.insert(&self.index, symbol_record_key(&doc.anchor), symbol_record);
+            for key in symbol_keys {
+                batch.insert(&self.index, key, b"");
+            }
         }
         batch.commit()?;
         Ok(())
@@ -257,11 +376,18 @@ impl GraphStorage for FjallStorage {
     }
 
     fn put_edges_bulk(&self, edges: &[(String, String, EdgeType)]) -> Result<(), StoreError> {
+        if edges.is_empty() {
+            return Ok(());
+        }
+
+        // Read and merge each affected adjacency list once, then commit the
+        // canonical edge records and both adjacency mirrors in one journal
+        // batch. The former implementation grouped adjacency rewrites but
+        // still issued one Fjall write per edge, leaving a large batch only
+        // partially visible after a crash and amplifying journal traffic.
         let mut out_add: HashMap<&str, Vec<(String, EdgeType)>> = HashMap::new();
         let mut in_add: HashMap<&str, Vec<(String, EdgeType)>> = HashMap::new();
         for (src, dst, edge_type) in edges {
-            self.edges
-                .insert(edge_key(src, dst, edge_type), &[] as &[u8])?;
             out_add
                 .entry(src.as_str())
                 .or_default()
@@ -271,6 +397,8 @@ impl GraphStorage for FjallStorage {
                 .or_default()
                 .push((src.clone(), *edge_type));
         }
+
+        let mut outgoing_updates = Vec::with_capacity(out_add.len());
         for (src, mut adds) in out_add {
             let key = outgoing_key(src);
             let mut cur: Vec<(String, EdgeType)> = match self.outgoing.get(&key)? {
@@ -282,8 +410,10 @@ impl GraphStorage for FjallStorage {
             // EdgeType has no Ord, so dedup via a seen-set, preserving order.
             let mut seen = HashSet::new();
             cur.retain(|e| seen.insert(e.clone()));
-            self.outgoing.insert(&key, serialize(&cur)?)?;
+            outgoing_updates.push((key, serialize(&cur)?));
         }
+
+        let mut incoming_updates = Vec::with_capacity(in_add.len());
         for (dst, mut adds) in in_add {
             let key = incoming_key(dst);
             let mut cur: Vec<(String, EdgeType)> = match self.incoming.get(&key)? {
@@ -293,8 +423,20 @@ impl GraphStorage for FjallStorage {
             cur.append(&mut adds);
             let mut seen = HashSet::new();
             cur.retain(|e| seen.insert(e.clone()));
-            self.incoming.insert(&key, serialize(&cur)?)?;
+            incoming_updates.push((key, serialize(&cur)?));
         }
+
+        let mut batch = self.db.batch();
+        for (src, dst, edge_type) in edges {
+            batch.insert(&self.edges, edge_key(src, dst, edge_type), &[] as &[u8]);
+        }
+        for (key, value) in outgoing_updates {
+            batch.insert(&self.outgoing, key, value);
+        }
+        for (key, value) in incoming_updates {
+            batch.insert(&self.incoming, key, value);
+        }
+        batch.commit()?;
         Ok(())
     }
 
@@ -321,46 +463,80 @@ impl GraphStorage for FjallStorage {
     }
 
     fn delete_node(&self, anchor: &str) -> Result<(), StoreError> {
-        // Remove the doc record and its merge base — a stale snapshot would
-        // make a future re-gen of the same anchor merge against a ghost.
-        self.docs.remove(doc_key(anchor))?;
-        self.bases.remove(base_key(anchor))?;
-
-        // Outgoing: for each (dst, et), drop the edge key and remove anchor from
-        // dst's incoming mirror list.
+        // Load the affected lists before committing. Grouping removals by
+        // neighbour is essential: a pair can have several edge types, and
+        // independently staging each rewrite would make the last batch entry
+        // resurrect entries removed by an earlier one.
         let out: Vec<(String, EdgeType)> = match self.outgoing.get(outgoing_key(anchor))? {
             Some(b) => deserialize(&b)?,
             None => vec![],
         };
-        for (dst, et) in &out {
-            self.edges.remove(edge_key(anchor, dst, et))?;
-            let in_key = incoming_key(dst);
-            if let Some(b) = self.incoming.get(&in_key)? {
-                let mut inc: Vec<(String, EdgeType)> = deserialize(&b)?;
-                inc.retain(|(n, t)| !(n == anchor && t == et));
-                self.incoming.insert(&in_key, serialize(&inc)?)?;
-            }
-        }
-
-        // Incoming: for each (src, et), drop the edge key and remove anchor from
-        // src's outgoing mirror list.
         let inc: Vec<(String, EdgeType)> = match self.incoming.get(incoming_key(anchor))? {
             Some(b) => deserialize(&b)?,
             None => vec![],
         };
+
+        let mut incoming_removals: HashMap<&str, HashSet<EdgeType>> = HashMap::new();
+        for (dst, et) in &out {
+            incoming_removals
+                .entry(dst.as_str())
+                .or_default()
+                .insert(*et);
+        }
+        let mut outgoing_removals: HashMap<&str, HashSet<EdgeType>> = HashMap::new();
         for (src, et) in &inc {
-            self.edges.remove(edge_key(src, anchor, et))?;
-            let out_key = outgoing_key(src);
-            if let Some(b) = self.outgoing.get(&out_key)? {
-                let mut o: Vec<(String, EdgeType)> = deserialize(&b)?;
-                o.retain(|(n, t)| !(n == anchor && t == et));
-                self.outgoing.insert(&out_key, serialize(&o)?)?;
+            outgoing_removals
+                .entry(src.as_str())
+                .or_default()
+                .insert(*et);
+        }
+
+        let mut incoming_updates = Vec::with_capacity(incoming_removals.len());
+        for (dst, types) in incoming_removals {
+            let key = incoming_key(dst);
+            if let Some(b) = self.incoming.get(&key)? {
+                let mut neighbors: Vec<(String, EdgeType)> = deserialize(&b)?;
+                neighbors.retain(|(node, et)| !(node == anchor && types.contains(et)));
+                incoming_updates.push((key, serialize(&neighbors)?));
+            }
+        }
+        let mut outgoing_updates = Vec::with_capacity(outgoing_removals.len());
+        for (src, types) in outgoing_removals {
+            let key = outgoing_key(src);
+            if let Some(b) = self.outgoing.get(&key)? {
+                let mut neighbors: Vec<(String, EdgeType)> = deserialize(&b)?;
+                neighbors.retain(|(node, et)| !(node == anchor && types.contains(et)));
+                outgoing_updates.push((key, serialize(&neighbors)?));
             }
         }
 
+        let (symbol_keys, _) = symbol_index_entries(anchor)?;
+        let mut batch = self.db.batch();
+        // Remove the doc record and its merge base — a stale snapshot would
+        // make a future re-gen of the same anchor merge against a ghost.
+        batch.remove(&self.docs, doc_key(anchor));
+        batch.remove(&self.source_spans, anchor);
+        batch.remove(&self.bases, base_key(anchor));
+        batch.remove(&self.index, symbol_record_key(anchor));
+        for key in symbol_keys {
+            batch.remove(&self.index, key);
+        }
+        for (dst, et) in &out {
+            batch.remove(&self.edges, edge_key(anchor, dst, et));
+        }
+        for (src, et) in &inc {
+            batch.remove(&self.edges, edge_key(src, anchor, et));
+        }
+        for (key, value) in incoming_updates {
+            batch.insert(&self.incoming, key, value);
+        }
+        for (key, value) in outgoing_updates {
+            batch.insert(&self.outgoing, key, value);
+        }
         // Finally drop the anchor's own adjacency lists.
-        self.outgoing.remove(outgoing_key(anchor))?;
-        self.incoming.remove(incoming_key(anchor))?;
+        batch.remove(&self.outgoing, outgoing_key(anchor));
+        batch.remove(&self.incoming, incoming_key(anchor));
+        batch.commit()?;
         Ok(())
     }
 
@@ -406,6 +582,35 @@ impl GraphStorage for FjallStorage {
         Ok(edges)
     }
 
+    fn incoming_counts_by_target(
+        &self,
+        edge_types: &[EdgeType],
+    ) -> Result<HashMap<String, usize>, StoreError> {
+        let requested: HashSet<String> = edge_types
+            .iter()
+            .map(|edge_type| format!("{edge_type:?}"))
+            .collect();
+        let prefix = format!("edge{KEY_SEP}");
+        let mut counts = HashMap::new();
+        for guard in self.edges.iter() {
+            let (key, _) = guard.into_inner()?;
+            let key = String::from_utf8_lossy(&key);
+            let Some(suffix) = key.strip_prefix(&prefix) else {
+                continue;
+            };
+            let mut parts = suffix.split(KEY_SEP);
+            let (Some(_source), Some(target), Some(edge_type), None) =
+                (parts.next(), parts.next(), parts.next(), parts.next())
+            else {
+                continue;
+            };
+            if requested.is_empty() || requested.contains(edge_type) {
+                *counts.entry(target.to_string()).or_insert(0) += 1;
+            }
+        }
+        Ok(counts)
+    }
+
     fn edge_exists(&self, src: &str, dst: &str, edge_type: &EdgeType) -> Result<bool, StoreError> {
         Ok(self.edges.contains_key(edge_key(src, dst, edge_type))?)
     }
@@ -420,6 +625,114 @@ impl GraphStorage for FjallStorage {
             }
         }
         Ok(anchors)
+    }
+
+    fn lookup_symbol_candidates(
+        &self,
+        symbol: &str,
+    ) -> Result<Option<SymbolCandidateLookup>, StoreError> {
+        let version = self.meta.get(meta_key(SYMBOL_LEXICON_META_KEY))?;
+        if version.as_deref() != Some(SYMBOL_LEXICON_VERSION.as_bytes()) {
+            return Ok(None);
+        }
+
+        let natural = aden_core::symbol::natural_symbol_form(symbol);
+        let lower = natural.to_lowercase();
+        let probes = [natural.as_str(), lower.as_str()];
+        let mut exact = HashSet::new();
+        for form in probes {
+            let prefix = format!("{SYMBOL_EXACT_PREFIX}{KEY_SEP}{form}{KEY_SEP}");
+            for guard in self.index.prefix(prefix.as_bytes()) {
+                let (key, _) = guard.into_inner()?;
+                let key = String::from_utf8_lossy(&key);
+                if let Some(anchor) = key.strip_prefix(&prefix) {
+                    exact.insert(anchor.to_string());
+                }
+            }
+        }
+        if !exact.is_empty() {
+            let mut anchors: Vec<String> = exact.into_iter().collect();
+            anchors.sort();
+            return Ok(Some(SymbolCandidateLookup {
+                anchors,
+                records_scanned: 0,
+                distance_evaluations: 0,
+                exact_index_hit: true,
+            }));
+        }
+
+        let symbol_len = lower.chars().count();
+        let max_distance = aden_core::symbol::typo_max_distance(symbol_len);
+        let record_prefix = format!("{SYMBOL_RECORD_PREFIX}{KEY_SEP}");
+        let mut substring = Vec::new();
+        let mut typo = Vec::new();
+        let mut records_scanned = 0usize;
+        let mut distance_evaluations = 0usize;
+        for guard in self.index.prefix(record_prefix.as_bytes()) {
+            let (key, value) = guard.into_inner()?;
+            records_scanned += 1;
+            let key = String::from_utf8_lossy(&key);
+            let Some(anchor) = key.strip_prefix(&record_prefix) else {
+                continue;
+            };
+            let record: SymbolLexiconRecord = deserialize(&value)?;
+            if !lower.is_empty() && record.segment_lower.contains(&lower) {
+                substring.push(anchor.to_string());
+                continue;
+            }
+            let Some(max_distance) = max_distance else {
+                continue;
+            };
+            let distance = [
+                (record.segment_lower.as_str(), record.segment_len),
+                (record.leaf_lower.as_str(), record.leaf_len),
+            ]
+            .into_iter()
+            .filter(|(_, len)| len.abs_diff(symbol_len) <= max_distance)
+            .map(|(candidate, _)| {
+                distance_evaluations += 1;
+                aden_core::symbol::edit_distance(&lower, candidate)
+            })
+            .min();
+            if let Some(distance) = distance.filter(|distance| *distance <= max_distance) {
+                typo.push((distance, anchor.to_string()));
+            }
+        }
+
+        let anchors = if !substring.is_empty() {
+            substring.sort();
+            substring.dedup();
+            substring.into_iter().take(8).collect()
+        } else {
+            typo.sort_by(
+                |(left_distance, left_anchor), (right_distance, right_anchor)| {
+                    left_distance
+                        .cmp(right_distance)
+                        .then_with(|| left_anchor.cmp(right_anchor))
+                },
+            );
+            typo.dedup_by(|left, right| left.1 == right.1);
+            typo.into_iter().take(8).map(|(_, anchor)| anchor).collect()
+        };
+        Ok(Some(SymbolCandidateLookup {
+            anchors,
+            records_scanned,
+            distance_evaluations,
+            exact_index_hit: false,
+        }))
+    }
+
+    fn invalidate_symbol_lexicon(&self) -> Result<(), StoreError> {
+        self.meta.remove(meta_key(SYMBOL_LEXICON_META_KEY))?;
+        Ok(())
+    }
+
+    fn finalize_symbol_lexicon(&self) -> Result<(), StoreError> {
+        self.meta.insert(
+            meta_key(SYMBOL_LEXICON_META_KEY),
+            SYMBOL_LEXICON_VERSION.as_bytes(),
+        )?;
+        Ok(())
     }
 
     fn get_meta(&self, key: &str) -> Result<Option<String>, StoreError> {
@@ -506,11 +819,13 @@ impl GraphStorage for FjallStorage {
     fn clear(&self) -> Result<(), StoreError> {
         for part in [
             &self.docs,
+            &self.source_spans,
             &self.edges,
             &self.outgoing,
             &self.incoming,
             &self.index,
             &self.meta,
+            &self.bases,
         ] {
             let keys: Vec<_> = part
                 .iter()
@@ -526,5 +841,167 @@ impl GraphStorage for FjallStorage {
     fn flush(&self) -> Result<(), StoreError> {
         self.db.persist(PersistMode::SyncAll)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    fn test_store_path(name: &str) -> std::path::PathBuf {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        std::env::temp_dir().join(format!(
+            "aden-fjall-store-test-{}-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed),
+            name
+        ))
+    }
+
+    fn symbol_doc(anchor: &str) -> Document {
+        Document {
+            anchor: anchor.to_string(),
+            node_type: aden_core::NodeType::Function,
+            attributes: HashMap::new(),
+            blocks: vec![],
+            source_span: None,
+            metadata: None,
+            confidence: 1.0,
+        }
+    }
+
+    #[test]
+    fn symbol_lexicon_uses_exact_keys_and_bounds_typo_candidates() {
+        let path = test_store_path("symbol-lexicon");
+        let storage = FjallStorage::new(path.to_str().unwrap()).unwrap();
+        for anchor in [
+            "aden://module/a.rs#parse",
+            "aden://module/b.rs#parse",
+            "aden://module/c.rs#parse_document",
+        ] {
+            storage.put_document(&symbol_doc(anchor)).unwrap();
+        }
+        for index in 0..1000 {
+            storage
+                .put_document(&symbol_doc(&format!(
+                    "aden://module/noise.rs#very_long_generated_symbol_{index}"
+                )))
+                .unwrap();
+        }
+        assert_eq!(storage.lookup_symbol_candidates("parse").unwrap(), None);
+        storage.finalize_symbol_lexicon().unwrap();
+        assert!(
+            storage.index.approximate_len() <= 3 * 1003,
+            "symbol lexicon exceeded three keys per simple anchor"
+        );
+
+        let exact = storage.lookup_symbol_candidates("parse").unwrap().unwrap();
+        assert!(exact.exact_index_hit);
+        assert_eq!(exact.records_scanned, 0);
+        assert_eq!(exact.distance_evaluations, 0);
+        assert_eq!(
+            exact.anchors,
+            [
+                "aden://module/a.rs#parse".to_string(),
+                "aden://module/b.rs#parse".to_string()
+            ]
+        );
+
+        let substring = storage
+            .lookup_symbol_candidates("document")
+            .unwrap()
+            .unwrap();
+        assert_eq!(substring.anchors, ["aden://module/c.rs#parse_document"]);
+        assert!(!substring.exact_index_hit);
+
+        let typo = storage.lookup_symbol_candidates("prase").unwrap().unwrap();
+        assert!(typo.records_scanned >= 1003);
+        assert!(typo.distance_evaluations <= 6, "{typo:?}");
+        assert_eq!(typo.anchors.len(), 2);
+        assert!(typo.anchors.iter().all(|anchor| anchor.ends_with("#parse")));
+
+        storage.invalidate_symbol_lexicon().unwrap();
+        assert_eq!(storage.lookup_symbol_candidates("parse").unwrap(), None);
+        storage.finalize_symbol_lexicon().unwrap();
+        storage.delete_node("aden://module/a.rs#parse").unwrap();
+        let exact = storage.lookup_symbol_candidates("parse").unwrap().unwrap();
+        assert_eq!(exact.anchors, ["aden://module/b.rs#parse"]);
+        drop(storage);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn symbol_lexicon_indexes_php_backslash_shorthand() {
+        let path = test_store_path("php-symbol-lexicon");
+        let storage = FjallStorage::new(path.to_str().unwrap()).unwrap();
+        let anchor = r"aden://module/shop/Service.php#App\Billing\InvoiceService\send";
+        storage.put_document(&symbol_doc(anchor)).unwrap();
+        storage.finalize_symbol_lexicon().unwrap();
+
+        for shorthand in ["send", r"App\Billing", r"App\Billing\InvoiceService"] {
+            let result = storage
+                .lookup_symbol_candidates(shorthand)
+                .unwrap()
+                .unwrap_or_else(|| panic!("missing PHP shorthand {shorthand}"));
+            assert!(result.exact_index_hit, "{shorthand}: {result:?}");
+            assert_eq!(result.anchors, [anchor.to_string()]);
+        }
+
+        drop(storage);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn legacy_docs_without_projection_still_return_source_spans() {
+        let path = test_store_path("legacy-source-spans");
+        let storage = FjallStorage::new(path.to_str().unwrap()).unwrap();
+        let anchor = "aden://module/example.rs#entry";
+        let doc = Document {
+            anchor: anchor.to_string(),
+            node_type: aden_core::NodeType::Function,
+            attributes: HashMap::new(),
+            blocks: vec![],
+            source_span: Some(SourceSpan {
+                file: "/repo/example.rs".to_string(),
+                start_line: 3,
+                end_line: 5,
+                start_byte: 10,
+                end_byte: 30,
+            }),
+            metadata: None,
+            confidence: 1.0,
+        };
+        // Bypass put_document to model a store created before source_spans.
+        storage
+            .docs
+            .insert(doc_key(anchor), serialize_document(&doc).unwrap())
+            .unwrap();
+
+        let spans = storage.get_source_spans().unwrap();
+        assert_eq!(spans, vec![(anchor.to_string(), doc.source_span.unwrap())]);
+        assert_eq!(storage.lookup_symbol_candidates("entry").unwrap(), None);
+        drop(storage);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn clear_removes_base_snapshots() {
+        let path = test_store_path("clear-bases");
+        let storage = FjallStorage::new(path.to_str().unwrap()).unwrap();
+        storage
+            .put_base_snapshot("aden://module/example.rs#entry", "old base")
+            .unwrap();
+
+        storage.clear().unwrap();
+
+        assert_eq!(
+            storage
+                .get_base_snapshot("aden://module/example.rs#entry")
+                .unwrap(),
+            None
+        );
+        drop(storage);
+        std::fs::remove_dir_all(path).unwrap();
     }
 }

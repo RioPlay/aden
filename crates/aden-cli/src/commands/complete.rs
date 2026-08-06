@@ -8,13 +8,10 @@ use aden_asm::traverse::{AssemblyOptions, assemble};
 use aden_graph::cache::build_from_directory_cached;
 use walkdir::WalkDir;
 
-/// Scan for incomplete contracts and optionally fill them using LLM.
+/// Scan incomplete contracts and preview the context/prompts needed to complete them.
 ///
-/// This command:
-/// 1. Finds all contracts with [must-complete] markers
-/// 2. Uses aden asm to get context for each contract
-/// 3. Queries LLM to fill in required fields
-/// 4. Updates the contract with completed documentation
+/// This command is currently report-only: it never invokes an LLM or writes contract
+/// files. The model argument is reserved for a future explicit integration.
 pub fn cmd_complete(
     path: &Path,
     dry_run: bool,
@@ -39,7 +36,7 @@ pub fn cmd_complete(
 
     if dry_run {
         println!("Dry-run mode: no changes made.");
-        println!("Use --dry-run=false to actually complete contracts.");
+        println!("Use without --dry-run to preview the context and prompt.");
         return Ok(());
     }
 
@@ -103,11 +100,17 @@ using the module's anchor (e.g. <<mod-mypackage,mypackage>>).]
             anchor, anchor, context
         );
 
-        // For now, just show the prompt - full LLM integration would go here
-        println!("  Would query LLM with prompt ({} chars)", prompt.len());
+        // Report-only by design: no model invocation or file mutation occurs.
+        println!(
+            "  Prompt preview: {} chars (no files changed)",
+            prompt.len()
+        );
     }
 
-    println!("\nComplete: Processed {} contract(s)", incomplete.len());
+    println!(
+        "\nPreview complete: inspected {} contract(s); no files changed",
+        incomplete.len()
+    );
     Ok(())
 }
 

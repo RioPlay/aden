@@ -2,8 +2,9 @@
 = Migrating to Aden 0.3.0
 
 Aden 0.3.0 intentionally changes successful read-command output to JSON by
-default. This is a pre-1.0 breaking CLI contract change; stores and indexes do
-not require migration.
+default. This is a pre-1.0 breaking CLI contract change; durable Fjall stores do
+not require migration. Rebuildable BM25 caches automatically upgrade as
+described below.
 
 == Who is affected
 
@@ -37,6 +38,16 @@ aden asm --human --from my_anchor
 
 The legacy `--json` flag remains accepted. `--json` and `--human` conflict so a
 caller cannot silently request two renderers.
+
+== BM25 cache v15
+
+The disposable `aden-index` cache now uses numeric document IDs and covering
+postings `(document_id, term_frequency, document_length)`. Durable Fjall graph
+and document data is unchanged.
+
+A v14 cache is rejected by the normal version gate and rebuilt automatically on
+the next search/read. No manual conversion or deletion is required. The reverse
+anchor-to-ID map is reconstructed in memory and is not duplicated on disk.
 
 == Strict budgets
 

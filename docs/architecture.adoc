@@ -141,9 +141,13 @@ Extracts symbols, signatures, and relationships from source code using tree-sitt
 
 Discovery is **language-agnostic**: `aden gen --auto` walks the whole project and
 keeps every file whose extension a parser can handle (the canonical set is
-`aden_parse::supported_extensions()`), honoring `.adenignore`. It does *not* gate
-on the build manifest, so a polyglot repo — or a Rust repo with Python scripts and
-Markdown docs — is fully covered rather than reduced to a single language.
+`aden_parse::supported_extensions()`), honoring polyglot built-in exclusions plus
+`.adenignore`/`.adenallow`. The built-in policy fingerprint is persisted in both
+the generation cache and freshness manifest; an upgraded binary rebuilds rather
+than continuing to trust anchors admitted under older exclusion rules. Discovery
+does *not* gate on the build manifest, so a polyglot repo — or a Rust repo with
+Python scripts and Markdown docs — is fully covered rather than reduced to a
+single language.
 
 Grammars are compiled into the binary at build time via `TSLP_LANGUAGES` (set in
 `.cargo/config.toml`); the language pack would otherwise download them at runtime,
@@ -196,10 +200,24 @@ the project tree on any run.
 
 After linking edges, `gen` also publishes an atomic **read snapshot**
 (`graph.snapshot` beside the store; see <<adr-011>>): a Postcard-encoded copy of
-docs + edges that read commands load when fresh, so concurrent readers avoid
-fjall's process-level `Locked` errors under multi-agent workloads. Writers still
-serialize on `store.lock`; a second `gen` waits (with holder diagnostics) rather
-than failing immediately.
+docs + edges used by full-graph reads and as a lock-free fallback, so concurrent
+readers avoid fjall's process-level `Locked` errors under multi-agent workloads.
+Snapshot publication and loading stream the encoded form: readers do not retain
+a second byte vector the size of `graph.snapshot` while decoding (the decoded
+document/edge collections still occupy their normal full-graph memory). Decode
+scratch starts at 64 KiB and grows only for an individual larger owned field.
+Selective reads query fjall keys and adjacency lists first instead of
+deserializing the whole snapshot. Natural-symbol resolution uses a persistent
+lexicon: exact forms hit bounded prefix keys, while misses scan compact
+pre-normalized records and run edit distance only on length-eligible entries.
+The lexicon is invalidated before multi-batch generation and marked complete only
+after document, prune, and synthesized-hub writes are durably flushed; older
+stores fall back to canonical document keys until their one-time layout rebuild.
+Source outlines use a dedicated compact `source_spans` partition, and conceptual routing can count selected edge targets
+without materializing documents or a petgraph. A generation-layout version in
+`freshness.json` makes upgraded stores rebuild once to populate required
+projections. Writers still serialize on `store.lock`; a second `gen` waits (with holder
+diagnostics) rather than failing immediately.
 
 The **source of truth** is the source code itself; the per-user store is the
 **durable, rebuildable artifact** derived from it. If the store is missing,
@@ -215,21 +233,25 @@ A read command like `aden ask "How does auth work?"` runs end to end as:
 1. **Auto-reindex** — any source file changed since the last run is re-parsed
    and the graph updated, so reads are always against a fresh graph (no manual
    `aden gen` required).
-2. **Store lookup / rehydrate** — the compiled graph is loaded snapshot-first
-   (`graph.snapshot` when fresher than the live store; see <<adr-011>>), then from
-   the per-user fjall store; if absent it is rebuilt from source.
+2. **Store lookup / rehydrate** — exact anchors and bounded neighborhoods are
+   projected directly from fjall; complete-graph reads and writer-contention
+   fallbacks use `graph.snapshot` (see <<adr-011>>). If both are absent, the
+   graph is rebuilt from source.
 3. **Search (aden-index)** — the question is matched to find the best
    entry-point anchors. BM25 by default; when the `dense` feature is built and a
    local model is present, this is a hybrid search (BM25 + dense embeddings fused
-   via Reciprocal Rank Fusion). Broad conceptual questions ("What is Aden?",
+   via Reciprocal Rank Fusion). Exact definition questions use depth-zero
+   retrieval. Thin-result community expansion is opt-in through `--expand`, so
+   a normal bounded question never triggers whole-project clustering merely to
+   pad its context. Broad conceptual questions ("What is Aden?",
    philosophy, architecture) are detected and routed to curated prose anchors
    via `RelatesTo`/`Documents` in-degree rather than code symbols, so project-
    identity queries land in entry docs instead of implementation internals.
 4. **Assemble (aden-asm)** — a BFS traversal walks outward from those anchors
    along selected edge types, estimating tokens per document with the
-   bytes ÷ 4 heuristic. `ask` boosts its base `--budget` (default 4096) by the
-   match relevance by default — up to ~4x, capped at 32k — so a strong match
-   gets more context; pass `ask --strict` for an exact cap. Source lines are
+   bytes ÷ 4 heuristic. Normal `ask` context stays within `--budget` (default
+   4096). `--expand` explicitly opts into relevance-based growth up to ~4x,
+   capped at 32k; `--strict` caps the complete serialized response. Source lines are
    hydrated into responses when budget allows (source hash verified; stale spans
    emit a note rather than stale content).
 5. **Result** — the selected documents are concatenated into a single assembled
@@ -522,7 +544,7 @@ Honest snapshot of structural and behavioral gaps documented in <<adr-010>>:
 |Write pipeline |Extracted to `aden-cli/src/indexer/`; `generate.rs` is a thin re-export shell |`query.rs` (~3,200 LOC) next
 |Query pipeline |`query.rs` (~3,200 LOC); `locate.rs` + `search.rs` split out |Further strangler extraction deferred
 |Parsing |`aden-parse` + `aden-graph/parser.rs` overlap; CSV/tabular is best-effort |Unify on separate branch (`fix/parse-canonical`)
-|Policy |Advisory mode (`ADEN_POLICY_MODE=advisory`); `ci-check` bootstrap still enforces |Optional `enforce` in 0.3.0+
+|Policy |Aden 0.4.0 defaults to advisory mode (`ADEN_POLICY_MODE=advisory`); `ci-check` bootstrap still enforces |Optional `enforce` remains future work after census and maintainer review
 |Doc-heading edges |Section nodes linked via `Contains`/`PartOf` to file representatives |Monitor orphan census
 |MCP freshness |Shell/MCP shared auto-fresh; silent gen non-blocking single-flight; Roots workspace detect |In-process MCP snapshot cache; optional `graphd`
 |Intra-project read contention |Read snapshot + `store.lock` single-flight writers (<<adr-011>>) |Phase 3: in-process MCP snapshot cache
@@ -565,7 +587,7 @@ Optional future crate `aden-compile` may absorb `indexer/` once stable 2+ weeks.
 |===
 |Command |Purpose |Example
 
-|`aden init` |Scaffold .agent/ templates |`aden init .`
+|`aden init` |Build the per-user index with zero project footprint (`--templates` opts into legacy scaffolding) |`aden init .`
 
 |`aden gen` |Compile source into the per-user store |`aden gen .`, `aden gen src/lib.rs`
 

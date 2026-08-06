@@ -142,27 +142,23 @@ pub fn cmd_view(
     let render = |template: &str, lib: &str, sibling: &str| {
         template
             .replace("/*FORCE_GRAPH_LIB*/", lib)
-            // Substitute ONLY the double-quoted `const EDITOR = "/*EDITOR*/"`
-            // assignment — NOT the single-quoted `EDITOR.includes('/*EDITOR*/')`
-            // guard in editorUrl(). A blunt global replace of the bare token would
-            // rewrite the guard's needle to the template too, so `EDITOR.includes(
-            // <template>)` (EDITOR === <template>) is always true and every
-            // open-in-editor link is suppressed. Targeting the quoted form leaves
-            // the guard intact: it still fires only when the placeholder survives.
+            // Replace only the quoted assignments. JSON string encoding handles
+            // Windows backslashes, quotes, Unicode, and `</script>` safely while
+            // leaving the placeholder guard in editorUrl() untouched.
             .replace(
                 "\"/*EDITOR*/\"",
-                &format!("\"{}\"", editor_template(editor)),
+                &script_json_string(&editor_template(editor)),
             )
-            .replace("/*SIBLING*/", sibling)
+            .replace("\"/*SIBLING*/\"", &script_json_string(sibling))
             .replace("/*ADEN_DATA*/", &data)
     };
     let sib_href = sibling_path
         .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
+        .map(|name| uri_component(&name.to_string_lossy()))
         .unwrap_or_default();
     let out_href = out_path
         .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
+        .map(|name| uri_component(&name.to_string_lossy()))
         .unwrap_or_default();
     let (tpl, lib, sib_tpl, sib_lib) = if threed {
         (VIEW3D_HTML, FORCE_GRAPH_3D_JS, VIEW_HTML, FORCE_GRAPH_JS)
@@ -263,6 +259,27 @@ fn git_activity(root: &Path, max: usize) -> Vec<serde_json::Value> {
     out
 }
 
+/// Encode a JavaScript string literal embedded in an HTML `<script>` element.
+fn script_json_string(value: &str) -> String {
+    serde_json::to_string(value)
+        .expect("serializing a string cannot fail")
+        .replace("</", "<\\/")
+}
+
+/// Percent-encode one relative URI component (used for sibling viewer files).
+fn uri_component(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            encoded.push(char::from(byte));
+        } else {
+            use std::fmt::Write as _;
+            write!(&mut encoded, "%{byte:02X}").expect("writing to String cannot fail");
+        }
+    }
+    encoded
+}
+
 /// Map an editor alias (or a custom `{file}`/`{line}` URI template) to the template
 /// the viewer uses for "open in editor" links. Browsers route the registered custom
 /// scheme straight to the desktop app, so no server is involved.
@@ -340,23 +357,116 @@ fn binary_on_path(bin: &str) -> bool {
     })
 }
 
+fn uri_path(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~' | b'/' | b':') {
+            encoded.push(char::from(byte));
+        } else {
+            use std::fmt::Write as _;
+            write!(&mut encoded, "%{byte:02X}").expect("writing to String cannot fail");
+        }
+    }
+    encoded
+}
+
+fn file_url_from_native(native: &str, windows_style: bool) -> String {
+    let normalized = if windows_style {
+        let slashed = native.replace('\\', "/");
+        if let Some(rest) = slashed.strip_prefix("//?/UNC/") {
+            format!("//{rest}")
+        } else {
+            slashed.strip_prefix("//?/").unwrap_or(&slashed).to_string()
+        }
+    } else {
+        native.to_string()
+    };
+    let rooted = if normalized.starts_with('/') {
+        normalized
+    } else {
+        format!("/{normalized}")
+    };
+    let encoded = uri_path(&rooted);
+    if windows_style && encoded.starts_with("//") {
+        format!("file:{encoded}")
+    } else {
+        format!("file://{encoded}")
+    }
+}
+
 /// Best-effort: open a path in the OS default browser. Never blocks; a missing
 /// opener (headless/CI) is reported, not fatal — `--no-open` is the explicit path.
 fn open_in_browser(p: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    let target = p.to_string_lossy().to_string();
     let mut cmd = if cfg!(target_os = "macos") {
-        let mut c = std::process::Command::new("open");
-        c.arg(&target);
-        c
+        let mut command = std::process::Command::new("open");
+        command.arg(p);
+        command
     } else if cfg!(target_os = "windows") {
-        let mut c = std::process::Command::new("cmd");
-        c.args(["/C", "start", "", &target]);
-        c
+        // Avoid `cmd /C start`: cmd.exe reparses metacharacters in legitimate
+        // filenames. FileProtocolHandler receives one encoded URL argument and
+        // invokes the registered HTML browser without a shell.
+        let url = file_url_from_native(&p.to_string_lossy(), true);
+        let mut command = std::process::Command::new("rundll32.exe");
+        command.arg("url.dll,FileProtocolHandler").arg(url);
+        command
     } else {
-        let mut c = std::process::Command::new("xdg-open");
-        c.arg(&target);
-        c
+        let mut command = std::process::Command::new("xdg-open");
+        command.arg(p);
+        command
     };
     cmd.spawn()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{VIEW_HTML, VIEW3D_HTML, file_url_from_native, script_json_string, uri_component};
+
+    #[test]
+    fn hover_cards_remain_fixed_overlays() {
+        for template in [VIEW_HTML, VIEW3D_HTML] {
+            assert!(template.contains("#hover-card { position: fixed;"));
+            assert!(!template.contains("#hover-card { position: relative;"));
+        }
+    }
+
+    #[test]
+    fn three_d_keeps_ambient_links_available_for_focus() {
+        assert!(VIEW3D_HTML.contains("const links = allLinks;"));
+        assert!(VIEW3D_HTML.contains(
+            ".linkVisibility(l => !largeGraph || !AMBIENT_OFF.has(l.type) || highlightLinks.has(l))"
+        ));
+        assert!(VIEW3D_HTML.contains(".linkVisibility(Graph.linkVisibility())"));
+    }
+
+    #[test]
+    fn viewer_uses_separate_native_and_editor_paths() {
+        for template in [VIEW_HTML, VIEW3D_HTML] {
+            assert!(template.contains("n.editor_file"));
+            assert!(template.contains("split(/[\\\\/]/)"));
+            assert!(!template.contains("EDITOR.replace('{file}', f)"));
+        }
+    }
+
+    #[test]
+    fn embedded_links_are_uri_and_script_safe() {
+        assert_eq!(
+            file_url_from_native(r"C:\viewer path\graph #1.html", true),
+            "file:///C:/viewer%20path/graph%20%231.html"
+        );
+        assert_eq!(
+            file_url_from_native(r"\\server\share\graph #1.html", true),
+            "file://server/share/graph%20%231.html"
+        );
+        assert_eq!(
+            file_url_from_native(r"\\?\C:\viewer\graph.html", true),
+            "file:///C:/viewer/graph.html"
+        );
+        assert_eq!(uri_component("view #1 Š.html"), "view%20%231%20%C5%A0.html");
+        let encoded = script_json_string("C:\\repo\\\"x\"</script>.rs");
+        assert!(encoded.starts_with('"') && encoded.ends_with('"'));
+        assert!(encoded.contains("C:\\\\repo"));
+        assert!(encoded.contains("<\\/script>"));
+        assert!(!encoded.contains("</script>"));
+    }
 }

@@ -7,11 +7,11 @@
 # that is a trap: `aden gen` would silently fail to parse Python/Ruby/TypeScript/…
 # on any offline, air-gapped, or locked-down CI box.
 #
-# Setting TSLP_LANGUAGES makes the pack compile those grammars *statically* into
-# the binary at build time (sources fetched once during `cargo build`, which has
-# network), so the resulting `aden` parses these languages forever after with no
-# runtime download. This list is the single knob that decides which languages
-# Aden can parse out of the box.
+# TSLP_LANGUAGES selects the grammars built with Aden, and TSLP_LINK_MODE=static
+# links them into the executable rather than leaving platform-specific
+# .so/.dylib/.dll files in Cargo's build directory. Both settings are required:
+# the language pack defaults to dynamic linkage even when a language list is set.
+# A release binary must remain portable after the build directory is deleted.
 #
 # Default below: every language with a first-class ("deep") resolver, plus the
 # most common config/web/data languages. To bundle ALL 305 supported grammars
@@ -19,3 +19,4 @@
 # — an explicit env var overrides the value set here.
 [env]
 TSLP_LANGUAGES = "rust,python,go,javascript,typescript,tsx,c,cpp,java,kotlin,csharp,ruby,php,bash,html,css,scss,json,yaml,toml,xml,sql,lua,scala,swift"
+TSLP_LINK_MODE = "static"

@@ -104,8 +104,10 @@ pub const BUILT_IN_IGNORES: &[&str] = &[
     "dist/",
     "out/",
     "obj/",
-    // Rust / Cargo
+    // Rust / Cargo. Cargo accepts alternate target directories (commonly
+    // `target-<toolchain>`); these are build residue just like `target/`.
     "target/",
+    "target-*/",
     ".cargo/",
     // Node / JS / TS
     "node_modules/",
@@ -132,6 +134,28 @@ pub const BUILT_IN_IGNORES: &[&str] = &[
     ".cache/",
     "coverage/",
 ];
+
+fn ignore_fingerprint(patterns: &[&str]) -> u64 {
+    // Stable FNV-1a rather than DefaultHasher, whose algorithm is not a durable
+    // cache contract. A separator prevents concatenation-equivalent lists from
+    // colliding (`["ab", "c"]` versus `["a", "bc"]`).
+    let mut hash = 0xcbf29ce484222325_u64;
+    for pattern in patterns {
+        for byte in pattern.as_bytes() {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+        hash ^= 0xff;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
+/// Stable identity of the built-in path policy. Persist this beside generated
+/// artifacts so an upgraded binary never trusts a graph built under old rules.
+pub fn built_in_ignore_fingerprint() -> u64 {
+    ignore_fingerprint(BUILT_IN_IGNORES)
+}
 
 /// Universal credential/secret detection. This is a security floor applied at
 /// the **indexing** boundary (`gen` → the persistent store), so secret material
@@ -407,7 +431,17 @@ fn dir_rule_matches(path: &str, dir: &str) -> bool {
         return true;
     }
     if !dir.contains('/') {
-        return path.split('/').any(|seg| seg == dir);
+        let segments: Vec<_> = path.split('/').collect();
+        return segments.iter().enumerate().any(|(index, seg)| {
+            if dir.contains('*') {
+                // This is a directory rule, so a wildcard match must be an
+                // ancestor segment. Matching the final segment would silently
+                // drop source files such as `target-helper.rs`.
+                index + 1 < segments.len() && match_glob(seg, dir)
+            } else {
+                *seg == dir
+            }
+        });
     }
     false
 }
@@ -463,9 +497,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_builtin_policy_fingerprint_is_stable_and_content_sensitive() {
+        assert_eq!(
+            built_in_ignore_fingerprint(),
+            ignore_fingerprint(BUILT_IN_IGNORES)
+        );
+        assert_ne!(
+            ignore_fingerprint(&["ab", "c"]),
+            ignore_fingerprint(&["a", "bc"])
+        );
+        let mut changed = BUILT_IN_IGNORES.to_vec();
+        changed.push("generated-checkout-*/");
+        assert_ne!(built_in_ignore_fingerprint(), ignore_fingerprint(&changed));
+    }
+
+    #[test]
     fn test_builtin_skips_target() {
         let filter = AdenFilter::from_directory(&std::env::temp_dir().join("aden-nonexistent"));
         assert!(filter.should_skip(Path::new("target/debug/incremental")));
+        assert!(filter.should_skip(Path::new("target-0.4/debug/deps")));
+        assert!(filter.should_skip(Path::new("crates/widget/target-nightly/debug/widget")));
+        assert!(!filter.should_skip(Path::new("src/target-helper.rs")));
         assert!(filter.should_skip(Path::new(".git/hooks/pre-commit")));
         assert!(filter.should_skip(Path::new("node_modules/lodash")));
         assert!(!filter.should_skip(Path::new("src/lib.rs")));

@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "aden"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "aden-asm",
  "aden-core",
@@ -17,7 +17,7 @@ dependencies = [
 
 [[package]]
 name = "aden-asm"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "aden-core",
  "aden-emit",
@@ -30,7 +30,7 @@ dependencies = [
 
 [[package]]
 name = "aden-cli"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "aden-asm",
  "aden-core",
@@ -63,7 +63,7 @@ dependencies = [
 
 [[package]]
 name = "aden-core"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "fnv",
  "serde",
@@ -74,7 +74,7 @@ dependencies = [
 
 [[package]]
 name = "aden-diagnose"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "aden-core",
  "aden-graph",
@@ -85,7 +85,7 @@ dependencies = [
 
 [[package]]
 name = "aden-emit"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "aden-core",
  "regex",
@@ -95,7 +95,7 @@ dependencies = [
 
 [[package]]
 name = "aden-graph"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "aden-core",
  "aden-paths",
@@ -111,7 +111,7 @@ dependencies = [
 
 [[package]]
 name = "aden-heal"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "aden-core",
  "aden-emit",
@@ -128,10 +128,11 @@ dependencies = [
 
 [[package]]
 name = "aden-index"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "aden-core",
  "aden-paths",
+ "criterion",
  "dirs",
  "kitoken",
  "rayon",
@@ -145,7 +146,7 @@ dependencies = [
 
 [[package]]
 name = "aden-lsp"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "aden-core",
  "aden-graph",
@@ -155,9 +156,10 @@ dependencies = [
 
 [[package]]
 name = "aden-mcp"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "anyhow",
+ "percent-encoding",
  "rmcp",
  "serde_json",
  "tokio",
@@ -165,10 +167,9 @@ dependencies = [
 
 [[package]]
 name = "aden-parse"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "aden-core",
- "dirs",
  "regex",
  "tempfile",
  "thiserror 2.0.18",
@@ -178,7 +179,7 @@ dependencies = [
 
 [[package]]
 name = "aden-paths"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "dirs",
  "serde",
@@ -189,7 +190,7 @@ dependencies = [
 
 [[package]]
 name = "aden-policy"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "aden-core",
  "serde",
@@ -197,11 +198,11 @@ dependencies = [
 
 [[package]]
 name = "aden-propose"
-version = "0.3.1"
+version = "0.4.0"
 
 [[package]]
 name = "aden-store"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "aden-core",
  "fjall",
@@ -1013,9 +1014,9 @@ checksum = "1d674e81391d1e1ab681a28d99df07927c6d4aa5b027d7da16ba32d1d21ecd99"
 
 [[package]]
 name = "fjall"
-version = "3.1.6"
+version = "3.1.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9fcdc69609906151dff9b534e30eaf8515082055d36f628e382bd0b5d6a1d362"
+checksum = "420a84699b8ccbb1ed573e38e88f4f23637b45beab6432066452f834be469c57"
 dependencies = [
  "byteorder-lite",
  "byteview",
@@ -1674,9 +1675,9 @@ checksum = "0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad"
 
 [[package]]
 name = "lsm-tree"
-version = "3.1.6"
+version = "3.1.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "39ca67401338b98d58447387dd5230552d2241bc388206e491d137b18dfea9d6"
+checksum = "055a908d502129cf63bedae52f2db222e4436d2da32a69df9b84ac9fb9147761"
 dependencies = [
  "byteorder-lite",
  "byteview",

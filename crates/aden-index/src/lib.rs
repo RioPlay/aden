@@ -30,6 +30,21 @@ pub struct SearchResult {
     pub snippet: String,
 }
 
+type DocumentId = u32;
+
+/// Fixed-shape covering posting. Tuple serialization avoids repeating JSON
+/// field names for every posting and maps directly to a future binary record.
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+struct Posting(DocumentId, u32, u32); // (document_id, term_frequency, document_length)
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct IndexedDocument {
+    anchor: String,
+    source_path: PathBuf,
+    text: String,
+    token_count: u32,
+}
+
 /// In-memory inverted index built from a directory of `.adoc`/`.aden` files.
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Index {
@@ -39,17 +54,16 @@ pub struct Index {
     /// deserializes to `0` and is rejected by [`try_load`].
     #[serde(default)]
     version: u32,
-    /// token -> [(anchor, occurrences_in_document)]
-    inverted: HashMap<String, Vec<(String, usize)>>,
-    /// anchor -> source path
-    anchor_paths: HashMap<String, PathBuf>,
-    /// anchor -> full file text (for snippet generation)
-    anchor_text: HashMap<String, String>,
+    /// token -> [(document_id, term_frequency, document_length)]
+    inverted: HashMap<String, Vec<Posting>>,
+    /// Dense document table; postings carry only compact numeric IDs.
+    documents: Vec<IndexedDocument>,
+    /// Rebuilt after deserialization; never duplicated in the cache.
+    #[serde(skip)]
+    anchor_to_id: HashMap<String, DocumentId>,
     /// Prose source -> lowercase lexical token frequencies, pre-aggregated once.
     #[serde(default)]
     file_terms: HashMap<PathBuf, HashMap<String, usize>>,
-    /// anchor -> token count (for BM25 scoring)
-    doc_lengths: HashMap<String, usize>,
     /// Average document length across all documents
     avg_doc_length: f64,
     /// anchor -> dense embedding vector (for hybrid retrieval). Empty unless an
@@ -81,6 +95,12 @@ const BM25_B: f64 = 0.75;
 /// (`crates/aden-index/tests/eval.rs`); see [`Index::query`].
 const COVERAGE_WEIGHT: f64 = 1.0;
 
+/// Exact adjacent query terms express a stronger intent than the same terms
+/// scattered through a document. This deterministic lexical signal resolves
+/// coverage ties without requiring a model: `orphan anchors` should beat a
+/// document that happens to contain both `detect` and `anchor` far apart.
+const PHRASE_BOOST: f64 = 1.5;
+
 const INDEX_CACHE_BASENAME: &str = "index-cache.json";
 
 /// Current tokenizer/format version. Bumped on ANY change to how tokens are
@@ -105,7 +125,8 @@ const INDEX_CACHE_BASENAME: &str = "index-cache.json";
 /// v12: merge every store-backed section for a source into that evidence.
 /// v13: prefer complete source-file evidence over emitted store sections.
 /// v14: prose-only evidence and repository-relative canonical file keys.
-const CURRENT_INDEX_VERSION: u32 = 14;
+/// v15: numeric document IDs and covering BM25 postings.
+const CURRENT_INDEX_VERSION: u32 = 15;
 
 /// Reciprocal Rank Fusion constant — Cormack, Clarke & Buettcher, SIGIR 2009 use
 /// 60. Damps the contribution of low-ranked items so a top hit in either
@@ -120,12 +141,13 @@ pub fn try_load(dir: &std::path::Path) -> Option<Index> {
         return None;
     }
     let text = std::fs::read_to_string(&index_path).ok()?;
-    let index: Index = serde_json::from_str(&text).ok()?;
+    let mut index: Index = serde_json::from_str(&text).ok()?;
     // Reject a cache built by an older tokenizer (e.g. pre-stemming). Returning
     // `None` forces `load_or_build_index` to rebuild from source.
     if index.version != CURRENT_INDEX_VERSION {
         return None;
     }
+    index.rebuild_anchor_ids();
     Some(index)
 }
 
@@ -134,7 +156,10 @@ pub fn save(index: &Index, dir: &std::path::Path) -> Result<(), Box<dyn std::err
     let cache_dir = aden_paths::cache_dir(dir);
     std::fs::create_dir_all(&cache_dir)?;
     let index_path = cache_dir.join(INDEX_CACHE_BASENAME);
-    let json = serde_json::to_string_pretty(index)?;
+    // This is a rebuildable machine cache, not a hand-edited document. Compact
+    // JSON avoids whitespace amplification across hundreds of thousands of
+    // fixed-shape postings.
+    let json = serde_json::to_string(index)?;
     std::fs::write(&index_path, json)?;
     Ok(())
 }
@@ -727,6 +752,25 @@ pub fn rrf_fuse(rankings: &[Vec<String>], k: f64) -> Vec<(String, f64)> {
 }
 
 impl Index {
+    fn rebuild_anchor_ids(&mut self) {
+        self.anchor_to_id = self
+            .documents
+            .iter()
+            .enumerate()
+            .map(|(id, document)| (document.anchor.clone(), id as DocumentId))
+            .collect();
+    }
+
+    fn document(&self, id: DocumentId) -> Option<&IndexedDocument> {
+        self.documents.get(id as usize)
+    }
+
+    fn document_by_anchor(&self, anchor: &str) -> Option<&IndexedDocument> {
+        self.anchor_to_id
+            .get(anchor)
+            .and_then(|id| self.document(*id))
+    }
+
     /// Seed complete file-level evidence. Existing evidence wins so callers can
     /// establish the authoritative source before ingesting derived sections.
     pub fn ingest_file_evidence(&mut self, path: PathBuf, text: &str) {
@@ -836,19 +880,31 @@ impl Index {
         parsed.sort_by(|a, b| a.0.0.cmp(&b.0.0).then_with(|| a.0.1.cmp(&b.0.1)));
 
         for ((anchor, source_path, counts), text) in parsed {
-            if self.doc_lengths.contains_key(&anchor) {
+            if self.anchor_to_id.contains_key(&anchor) {
                 continue; // already indexed (e.g. an on-disk copy) — don't double count
             }
-            self.anchor_paths.insert(anchor.clone(), source_path);
+            let doc_id = DocumentId::try_from(self.documents.len())
+                .expect("aden-index supports at most u32::MAX documents");
             let doc_len: usize = counts.values().sum();
-            self.doc_lengths.insert(anchor.clone(), doc_len);
+            let compact_len =
+                u32::try_from(doc_len).expect("one indexed document cannot exceed u32::MAX tokens");
+            self.documents.push(IndexedDocument {
+                anchor: anchor.clone(),
+                source_path,
+                text,
+                token_count: compact_len,
+            });
+            self.anchor_to_id.insert(anchor, doc_id);
             for (token, count) in &counts {
                 self.inverted
                     .entry(token.clone())
                     .or_default()
-                    .push((anchor.clone(), *count));
+                    .push(Posting(
+                        doc_id,
+                        u32::try_from(*count).expect("one term frequency cannot exceed u32::MAX"),
+                        compact_len,
+                    ));
             }
-            self.anchor_text.insert(anchor, text);
         }
     }
 
@@ -857,7 +913,9 @@ impl Index {
     /// which `ask` routing should pass over in favour of the symbol that carries
     /// the real content.
     pub fn doc_token_count(&self, anchor: &str) -> usize {
-        self.doc_lengths.get(anchor).copied().unwrap_or(0)
+        self.document_by_anchor(anchor)
+            .map(|document| document.token_count as usize)
+            .unwrap_or(0)
     }
 
     /// Whether the index has any posting for `term` (an already-tokenized term). Used by
@@ -876,7 +934,7 @@ impl Index {
 
     /// Number of indexed documents — the denominator for document-frequency bands.
     pub fn corpus_len(&self) -> usize {
-        self.doc_lengths.len()
+        self.documents.len()
     }
 
     /// Whether `term` is *discriminative*: its document frequency sits in the band
@@ -904,15 +962,17 @@ impl Index {
     /// for natural-language queries (the NL-over-code case), a prose corpus does not. Returns 0.0
     /// for an empty index.
     pub fn code_anchor_fraction(&self) -> f64 {
-        if self.anchor_text.is_empty() {
+        if self.documents.is_empty() {
             return 0.0;
         }
         let code = self
-            .anchor_text
-            .keys()
-            .filter(|a| a.contains("://module") || a.contains("://symbol"))
+            .documents
+            .iter()
+            .filter(|document| {
+                document.anchor.contains("://module") || document.anchor.contains("://symbol")
+            })
             .count();
-        code as f64 / self.anchor_text.len() as f64
+        code as f64 / self.documents.len() as f64
     }
 
     /// Rank prose files from lexical evidence pre-aggregated during ingestion.
@@ -978,8 +1038,12 @@ impl Index {
 
     /// Recompute the BM25 average document length. Call once after ingestion.
     pub fn finalize(&mut self) {
-        let total_len: usize = self.doc_lengths.values().sum();
-        let doc_count = self.doc_lengths.len();
+        let total_len: usize = self
+            .documents
+            .iter()
+            .map(|document| document.token_count as usize)
+            .sum();
+        let doc_count = self.documents.len();
         self.avg_doc_length = if doc_count > 0 {
             total_len as f64 / doc_count as f64
         } else {
@@ -1057,25 +1121,42 @@ impl Index {
         &self,
         token: &str,
         n: f64,
-        scores: &mut HashMap<String, f64>,
-        coverage: &mut HashMap<String, usize>,
+        scores: &mut HashMap<DocumentId, f64>,
+        coverage: &mut HashMap<DocumentId, usize>,
     ) {
         if let Some(postings) = self.inverted.get(token) {
             let df = postings.len() as f64;
             let idf = ((n - df + 0.5) / (df + 0.5) + 1.0).ln().max(0.0);
 
-            for (anchor, tf) in postings {
-                let doc_len = self.doc_lengths.get(anchor).copied().unwrap_or(1);
-                let tf_normalized = (*tf as f64 * (BM25_K1 + 1.0))
-                    / (*tf as f64
-                        + BM25_K1 * (1.0 - BM25_B + BM25_B * doc_len as f64 / self.avg_doc_length));
-                *scores.entry(anchor.clone()).or_insert(0.0) += idf * tf_normalized;
+            for posting in postings {
+                let tf = posting.1 as f64;
+                let tf_normalized = (tf * (BM25_K1 + 1.0))
+                    / (tf
+                        + BM25_K1
+                            * (1.0 - BM25_B + BM25_B * posting.2 as f64 / self.avg_doc_length));
+                *scores.entry(posting.0).or_insert(0.0) += idf * tf_normalized;
                 // One increment per distinct query token (postings hold each
-                // anchor once per token), so this is the count of distinct query
-                // terms the document matches.
-                *coverage.entry(anchor.clone()).or_insert(0) += 1;
+                // document once per token), so this is the coordination level.
+                *coverage.entry(posting.0).or_insert(0) += 1;
             }
         }
+    }
+
+    /// True when two adjacent query terms occur adjacently in `text`.
+    /// `tokenize` keeps phrase matching aligned with indexing: both sides stem,
+    /// discard stop words, and recognize identifier boundaries. Matching a
+    /// query bigram lets `orphan anchors` signal intent in a longer request
+    /// such as `detect orphan anchors`.
+    fn contains_query_bigram(text: &str, query_tokens: &[String]) -> bool {
+        if query_tokens.len() < 2 {
+            return false;
+        }
+        let document_tokens = tokenize(text);
+        query_tokens.windows(2).any(|query_bigram| {
+            document_tokens
+                .windows(2)
+                .any(|document_bigram| document_bigram == query_bigram)
+        })
     }
 
     /// Query the index with semantic normalization and BM25 scoring.
@@ -1133,9 +1214,9 @@ impl Index {
             return Vec::new();
         }
 
-        let mut scores: HashMap<String, f64> = HashMap::new();
-        // anchor -> number of DISTINCT query tokens it matched (coordination level).
-        let mut coverage: HashMap<String, usize> = HashMap::new();
+        let mut scores: HashMap<DocumentId, f64> = HashMap::new();
+        // document ID -> number of DISTINCT query tokens matched.
+        let mut coverage: HashMap<DocumentId, usize> = HashMap::new();
 
         // Phase 1: Direct BM25 scoring (already includes normalized forms)
         for token in &tokens {
@@ -1155,10 +1236,27 @@ impl Index {
         // ties against a lone rare term. Deterministic; validated by the
         // retrieval eval harness (`crates/aden-index/tests/eval.rs`).
         if tokens.len() > 1 {
-            for (anchor, score) in scores.iter_mut() {
-                let matched = coverage.get(anchor).copied().unwrap_or(1);
+            for (doc_id, score) in scores.iter_mut() {
+                let matched = coverage.get(doc_id).copied().unwrap_or(1);
                 if matched > 1 {
                     *score *= 1.0 + COVERAGE_WEIGHT * (matched - 1) as f64;
+                }
+            }
+        }
+
+        // Adjacent multi-term matches break a remaining coverage tie. A query
+        // like "detect orphan anchors" contains the meaningful phrase "orphan
+        // anchors"; a document that preserves that phrase has stronger lexical
+        // evidence than one that merely mentions both words elsewhere. This is
+        // deliberately applied after BM25 and coverage, so it cannot create a
+        // result for a document without normal term matches.
+        if tokens.len() > 1 {
+            for (doc_id, score) in scores.iter_mut() {
+                if self
+                    .document(*doc_id)
+                    .is_some_and(|document| Self::contains_query_bigram(&document.text, &tokens))
+                {
+                    *score *= PHRASE_BOOST;
                 }
             }
         }
@@ -1174,9 +1272,13 @@ impl Index {
             .filter(|t| !is_stop_word(t))
             .map(stem)
             .collect();
-        for (anchor, score) in scores.iter_mut() {
+        for (doc_id, score) in scores.iter_mut() {
+            let Some(document) = self.document(*doc_id) else {
+                continue;
+            };
+            let anchor = &document.anchor;
             let anchor_lower = anchor.to_lowercase();
-            let source_path = self.anchor_paths.get(anchor);
+            let source_path = Some(&document.source_path);
 
             // Penalize .agent/ templates - they're for AI agents, not human-facing docs
             if let Some(path) = source_path {
@@ -1239,10 +1341,10 @@ impl Index {
             // Title match (first line of document text). Uses the same stemmed,
             // stop-word-filtered tokens and the same token-boundary rule so the
             // title boost is consistent with the anchor boost and BM25.
-            let title_match = self
-                .anchor_text
-                .get(anchor)
-                .and_then(|text| text.lines().next())
+            let title_match = document
+                .text
+                .lines()
+                .next()
                 .map(|first_line| {
                     let first_line_lower = first_line.to_lowercase();
                     significant_query_tokens
@@ -1266,13 +1368,12 @@ impl Index {
 
         let mut results: Vec<SearchResult> = scores
             .into_iter()
-            .filter_map(|(anchor, score)| {
-                let source_path = self.anchor_paths.get(&anchor)?.clone();
-                let text = self.anchor_text.get(&anchor)?;
-                let snippet = build_snippet(text, &tokens);
+            .filter_map(|(doc_id, score)| {
+                let document = self.document(doc_id)?;
+                let snippet = build_snippet(&document.text, &tokens);
                 Some(SearchResult {
-                    anchor,
-                    source_path,
+                    anchor: document.anchor.clone(),
+                    source_path: document.source_path.clone(),
                     score,
                     snippet,
                 })
@@ -1315,7 +1416,8 @@ impl Index {
         let mut fuzzy_matches: Vec<(String, f64)> = Vec::new();
         let query_term = &tokens[0].to_lowercase();
 
-        for anchor in self.anchor_paths.keys() {
+        for document in &self.documents {
+            let anchor = &document.anchor;
             let anchor_lower = anchor.to_lowercase();
             // Match either against the whole anchor or its symbol-fragment / last
             // path segment, whichever is closer — a small edit distance on a long
@@ -1352,12 +1454,11 @@ impl Index {
         fuzzy_matches
             .into_iter()
             .filter_map(|(anchor, score)| {
-                let source_path = self.anchor_paths.get(&anchor)?.clone();
-                let doc_text = self.anchor_text.get(&anchor)?.clone();
-                let snippet = build_snippet(&doc_text, tokens);
+                let document = self.document_by_anchor(&anchor)?;
+                let snippet = build_snippet(&document.text, tokens);
                 Some(SearchResult {
                     anchor,
-                    source_path,
+                    source_path: document.source_path.clone(),
                     score,
                     snippet,
                 })
@@ -1385,13 +1486,15 @@ impl Index {
         // cache loaded before the version bump) is trusted as current — but the
         // version bump means that case does not arise in practice.
         let stale: Vec<(String, String)> = self
-            .anchor_text
+            .documents
             .iter()
-            .filter(|(anchor, text)| match self.embedding_hashes.get(*anchor) {
-                Some(stored) => *stored != embed_key(anchor, text),
-                None => !self.embeddings.contains_key(*anchor),
-            })
-            .map(|(a, t)| (a.clone(), stable_embed_text(t)))
+            .filter(
+                |document| match self.embedding_hashes.get(&document.anchor) {
+                    Some(stored) => *stored != embed_key(&document.anchor, &document.text),
+                    None => !self.embeddings.contains_key(&document.anchor),
+                },
+            )
+            .map(|document| (document.anchor.clone(), stable_embed_text(&document.text)))
             .collect();
 
         // Embed only the stale set, in parallel (the dominant cost).
@@ -1401,14 +1504,19 @@ impl Index {
             .collect();
 
         // Rebuild over the CURRENT doc set: take a fresh vector if we just made
-        // one, else reuse the stored vector; anchors absent from `anchor_text`
-        // (deleted symbols) fall out. Record each kept vector's stable key.
-        let mut embeddings = HashMap::with_capacity(self.anchor_text.len());
-        let mut hashes = HashMap::with_capacity(self.anchor_text.len());
-        for (anchor, text) in &self.anchor_text {
-            if let Some(vec) = fresh.get(anchor).or_else(|| self.embeddings.get(anchor)) {
-                embeddings.insert(anchor.clone(), vec.clone());
-                hashes.insert(anchor.clone(), embed_key(anchor, text));
+        // one, else reuse the stored vector; deleted documents fall out.
+        let mut embeddings = HashMap::with_capacity(self.documents.len());
+        let mut hashes = HashMap::with_capacity(self.documents.len());
+        for document in &self.documents {
+            if let Some(vec) = fresh
+                .get(&document.anchor)
+                .or_else(|| self.embeddings.get(&document.anchor))
+            {
+                embeddings.insert(document.anchor.clone(), vec.clone());
+                hashes.insert(
+                    document.anchor.clone(),
+                    embed_key(&document.anchor, &document.text),
+                );
             }
         }
         self.embeddings = embeddings;
@@ -1434,9 +1542,14 @@ impl Index {
         // Dedup by hash so identical content (common for boilerplate) embeds once.
         let mut seen = std::collections::HashSet::new();
         let missing: Vec<(String, String)> = self
-            .anchor_text
+            .documents
             .iter()
-            .map(|(anchor, text)| (embed_key(anchor, text).to_string(), stable_embed_text(text)))
+            .map(|document| {
+                (
+                    embed_key(&document.anchor, &document.text).to_string(),
+                    stable_embed_text(&document.text),
+                )
+            })
             .filter(|(key, _)| !cache.contains_key(key) && seen.insert(key.clone()))
             .collect();
 
@@ -1447,13 +1560,13 @@ impl Index {
         cache.extend(fresh);
 
         // Project the cache onto the current anchors by each symbol's stable key.
-        let mut embeddings = HashMap::with_capacity(self.anchor_text.len());
-        let mut hashes = HashMap::with_capacity(self.anchor_text.len());
-        for (anchor, text) in &self.anchor_text {
-            let key = embed_key(anchor, text);
+        let mut embeddings = HashMap::with_capacity(self.documents.len());
+        let mut hashes = HashMap::with_capacity(self.documents.len());
+        for document in &self.documents {
+            let key = embed_key(&document.anchor, &document.text);
             if let Some(vec) = cache.get(&key.to_string()) {
-                embeddings.insert(anchor.clone(), vec.clone());
-                hashes.insert(anchor.clone(), key);
+                embeddings.insert(document.anchor.clone(), vec.clone());
+                hashes.insert(document.anchor.clone(), key);
             }
         }
         self.embeddings = embeddings;
@@ -1490,12 +1603,11 @@ impl Index {
         scored
             .into_iter()
             .filter_map(|(anchor, score)| {
-                let source_path = self.anchor_paths.get(&anchor)?.clone();
-                let text = self.anchor_text.get(&anchor)?;
-                let snippet = build_snippet(text, &query_tokens);
+                let document = self.document_by_anchor(&anchor)?;
+                let snippet = build_snippet(&document.text, &query_tokens);
                 Some(SearchResult {
                     anchor,
-                    source_path,
+                    source_path: document.source_path.clone(),
                     score: score as f64,
                     snippet,
                 })
@@ -1619,22 +1731,22 @@ impl Index {
         const MAX_DF_FRAC: f64 = 0.20;
         const W_REL: f64 = 2.0;
 
-        let n = self.doc_lengths.len();
+        let n = self.documents.len();
         if n == 0 || base.is_empty() {
             return base;
         }
         let max_df = (MAX_DF_FRAC * n as f64) as usize;
         let df = |t: &str| self.inverted.get(t).map_or(0, |v| v.len());
         let in_band = |t: &str| (MIN_DF..=max_df).contains(&df(t));
-        let posting_set = |t: &str| -> std::collections::HashSet<&str> {
+        let posting_set = |t: &str| -> std::collections::HashSet<DocumentId> {
             self.inverted
                 .get(t)
-                .map(|v| v.iter().map(|(a, _)| a.as_str()).collect())
+                .map(|postings| postings.iter().map(|posting| posting.0).collect())
                 .unwrap_or_default()
         };
 
         // Posting sets for the in-band query terms (computed once).
-        let q_sets: Vec<std::collections::HashSet<&str>> = tokenize(query)
+        let q_sets: Vec<std::collections::HashSet<DocumentId>> = tokenize(query)
             .into_iter()
             .filter(|t| in_band(t))
             .map(|t| posting_set(&t))
@@ -1644,7 +1756,7 @@ impl Index {
         }
 
         // PPMI of two terms via their posting (anchor) sets: max(0, log2(co*n / (dfa*dfb))).
-        let ppmi = |qset: &std::collections::HashSet<&str>, ct: &str| -> f64 {
+        let ppmi = |qset: &std::collections::HashSet<DocumentId>, ct: &str| -> f64 {
             let clen = df(ct);
             if clen == 0 || qset.is_empty() {
                 return 0.0;
@@ -1668,9 +1780,8 @@ impl Index {
         let mut head: Vec<(usize, f64)> = (0..k)
             .map(|i| {
                 let card: std::collections::HashSet<String> = self
-                    .anchor_text
-                    .get(&base[i].anchor)
-                    .map(|t| tokenize(t).into_iter().collect())
+                    .document_by_anchor(&base[i].anchor)
+                    .map(|document| tokenize(&document.text).into_iter().collect())
                     .unwrap_or_default();
                 // Each query term scores its single best (max-PPMI) in-band card term; sum over
                 // query terms. Mirrors the validated `rel_score` minus the dictionary bonus.
@@ -1826,8 +1937,11 @@ mod tests {
         // Change one document's text -> exactly one re-embed; its vector updates.
         let old_a = index.embeddings["a"].clone();
         index
-            .anchor_text
-            .insert("a".to_string(), "alpha text CHANGED".to_string());
+            .documents
+            .iter_mut()
+            .find(|document| document.anchor == "a")
+            .unwrap()
+            .text = "alpha text CHANGED".to_string();
         index.embed_documents(&emb);
         assert_eq!(emb.count(), 4, "one changed doc -> one re-embed");
         assert_ne!(
@@ -1837,7 +1951,8 @@ mod tests {
         assert_eq!(index.embeddings.len(), 3);
 
         // Removing a document drops its vector and embeds nothing.
-        index.anchor_text.remove("b");
+        index.documents.retain(|document| document.anchor != "b");
+        index.rebuild_anchor_ids();
         index.embed_documents(&emb);
         assert_eq!(emb.count(), 4, "removal embeds nothing");
         assert!(!index.embeddings.contains_key("b"));
@@ -2417,6 +2532,44 @@ New content after rebuild.
             results_old.is_empty(),
             "Old content should not be in rebuilt index"
         );
+    }
+
+    #[test]
+    fn v15_cache_uses_numeric_covering_postings_and_rebuilds_anchor_ids() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_data, _guard) = isolated_data_dir();
+        let mut index = Index::default();
+        index.ingest(vec![
+            (
+                PathBuf::from("a.adoc"),
+                "[[alpha]]\n= Topic\n\nshared widget".to_string(),
+            ),
+            (
+                PathBuf::from("b.adoc"),
+                "[[beta]]\n= Topic\n\nshared widget".to_string(),
+            ),
+        ]);
+        index.finalize();
+        save(&index, dir.path()).unwrap();
+
+        let cache =
+            std::fs::read_to_string(aden_paths::cache_dir(dir.path()).join(INDEX_CACHE_BASENAME))
+                .unwrap();
+        let json: serde_json::Value = serde_json::from_str(&cache).unwrap();
+        assert_eq!(json["version"], CURRENT_INDEX_VERSION);
+        assert!(json["documents"].is_array());
+        assert!(json.get("doc_lengths").is_none());
+        assert!(json.get("anchor_paths").is_none());
+        assert!(json.get("anchor_to_id").is_none());
+        let posting = json["inverted"]["share"][0].as_array().unwrap();
+        assert_eq!(posting.len(), 3);
+        assert!(posting[0].is_u64(), "posting stores numeric document ID");
+        assert!(posting[1].is_u64(), "posting stores term frequency");
+        assert!(posting[2].is_u64(), "posting covers document length");
+
+        let loaded = try_load(dir.path()).expect("v15 cache loads");
+        assert_eq!(loaded.anchor_to_id.len(), 2);
+        assert_eq!(loaded.query("shared")[0].anchor, "alpha");
     }
 
     #[test]

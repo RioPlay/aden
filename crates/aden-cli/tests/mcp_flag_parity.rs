@@ -71,6 +71,10 @@ const COMMANDS_WITHOUT_MCP_TOOL: &[(&str, &str)] = &[
         "suggest",
         "meta command recommender; an MCP agent picks tools from the registry",
     ),
+    (
+        "commands",
+        "human-facing catalog of hidden compatibility commands; MCP already has tool discovery",
+    ),
     ("overlay", "interactive authoring flow (opens an editor)"),
     (
         "agents-md",
@@ -312,7 +316,12 @@ fn mcp_schema_defaults_are_documented_by_cli_help() {
                 .as_str()
                 .map(str::to_owned)
                 .unwrap_or_else(|| default.to_string());
-            if !help.contains(&format!("[default: {rendered}]")) {
+            let documented = if aden_mcp::tool_arg_default_is_transport_override(tool, arg) {
+                help.contains(&format!("MCP default: {rendered}"))
+            } else {
+                help.contains(&format!("[default: {rendered}]"))
+            };
+            if !documented {
                 failures.push(format!(
                     "{tool}.{arg}: MCP default `{rendered}` is absent from CLI help"
                 ));
@@ -518,6 +527,27 @@ fn top_level_commands(help: &str) -> Vec<String> {
 /// the conscious exemption list. A new CLI command therefore fails this test
 /// until someone adds a ToolSpec or an explicit exemption with a reason.
 #[test]
+fn cli_short_flags_remain_available_for_common_workflows() {
+    let bin = env!("CARGO_BIN_EXE_aden");
+    let expectations: &[(&str, &[&str])] = &[
+        ("gen", &["-a", "-q", "-P", "-f"]),
+        ("check", &["-m"]),
+        ("complete", &["-n", "-M"]),
+        ("lint", &["-f", "-j", "-d", "-p"]),
+        ("test", &["-s", "-f", "-l"]),
+    ];
+    for (tool, flags) in expectations {
+        let help = cli_help(bin, tool);
+        for flag in *flags {
+            assert!(
+                help.contains(flag),
+                "{tool} help should expose {flag}: {help}"
+            );
+        }
+    }
+}
+
+#[test]
 fn cli_commands_without_mcp_tools_are_expressly_exempt() {
     let bin = env!("CARGO_BIN_EXE_aden");
     let out = Command::new(bin)
@@ -527,9 +557,11 @@ fn cli_commands_without_mcp_tools_are_expressly_exempt() {
     let help = String::from_utf8_lossy(&out.stdout);
 
     let commands = top_level_commands(&help);
+    // Top-level help is intentionally focused; optional compatibility commands
+    // live in `aden commands` and remain covered by flag/default parity tests.
     assert!(
-        commands.len() > 20,
-        "suspiciously few commands parsed from `aden --help` — parser broken? got: {commands:?}"
+        commands.len() >= 10,
+        "focused command parser looks broken; got: {commands:?}"
     );
 
     let tools: Vec<&str> = aden_mcp::tool_arg_specs()
@@ -553,14 +585,16 @@ fn cli_commands_without_mcp_tools_are_expressly_exempt() {
             _ => {}
         }
     }
-    // Every MCP tool must correspond to a real CLI command (catches a tool
-    // outliving a removed/renamed command). Feature-gated exempt commands
-    // (view/watch) may legitimately be absent from --help, so only tools are
-    // checked, not exemptions.
+    // Hidden compatibility commands do not appear in focused top-level help,
+    // so validate MCP names by asking clap to parse each command directly.
     for tool in &tools {
-        if !commands.iter().any(|c| c == tool) {
+        let exists = Command::new(bin)
+            .args([*tool, "--help"])
+            .output()
+            .is_ok_and(|output| output.status.success());
+        if !exists {
             failures.push(format!(
-                "MCP tool `{tool}` has no matching `aden {tool}` command in `aden --help`"
+                "MCP tool `{tool}` has no matching callable `aden {tool}` command"
             ));
         }
     }

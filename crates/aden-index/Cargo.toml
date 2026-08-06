@@ -28,6 +28,11 @@ kitoken = { version = "0.11", optional = true, default-features = false, feature
 dense = ["dep:tract-onnx", "dep:kitoken"]
 
 [dev-dependencies]
+criterion = "0.8"
 tempfile = "3.27.0"
 # Cross-platform home-dir resolution for eval-harness tests (no $HOME on Windows).
 dirs = "6"
+
+[[bench]]
+name = "covering_postings"
+harness = false

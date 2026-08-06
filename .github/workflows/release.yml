@@ -143,7 +143,7 @@ jobs:
           echo "Timed out after 30 minutes waiting for successful ordinary CI for ${GITHUB_SHA}" >&2
           exit 1
 
-      - name: Require successful manual quality run for this commit
+      - name: Require successful quality gate for this commit
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -151,18 +151,17 @@ jobs:
           set -euo pipefail
           runs="$(gh api --method GET \
             "repos/${GITHUB_REPOSITORY}/actions/workflows/quality.yml/runs" \
-            -f event=workflow_dispatch \
-            -f head_sha="$GITHUB_SHA" \
+                        -f head_sha="$GITHUB_SHA" \
             -f per_page=100)"
           run="$(jq -c --arg sha "$GITHUB_SHA" \
-            '[.workflow_runs[] | select(.head_sha == $sha and .event == "workflow_dispatch" and .status == "completed" and .conclusion == "success")] | sort_by(.created_at) | last // empty' \
+            '[.workflow_runs[] | select(.head_sha == $sha and (.event == "push" or .event == "pull_request" or .event == "workflow_dispatch") and .status == "completed" and .conclusion == "success")] | sort_by(.created_at) | last // empty' \
             <<< "$runs")"
           if [[ -z "$run" ]]; then
-            echo "No successful Manual Quality run exists for release commit ${GITHUB_SHA}." >&2
-            echo "Run quality.yml manually for this exact commit before releasing." >&2
+            echo "No successful Quality Gate run exists for release commit ${GITHUB_SHA}." >&2
+            echo "Wait for quality.yml to pass for this exact commit before releasing." >&2
             exit 1
           fi
-          echo "Manual quality accepted: $(jq -r '.html_url' <<< "$run")"
+          echo "Quality gate accepted: $(jq -r '.html_url' <<< "$run")"
 
   build:
     name: Package ${{ matrix.target }}
@@ -203,6 +202,10 @@ jobs:
 
       - name: Build shipped binaries
         shell: bash
+        env:
+          # Defense in depth: .cargo/config.toml carries the same invariant,
+          # while the release job makes it explicit and non-ambient.
+          TSLP_LINK_MODE: static
         run: >-
           cargo build --locked --release --target ${{ matrix.target }}
           -p aden-cli -p aden-mcp
@@ -215,6 +218,8 @@ jobs:
           [[ "${{ runner.os }}" == "Windows" ]] && suffix=".exe"
           "target/${{ matrix.target }}/release/aden${suffix}" --version
           "target/${{ matrix.target }}/release/aden-mcp${suffix}" --version
+          # Keep the binary contract behind the published AmpCode release note.
+          "target/${{ matrix.target }}/release/aden${suffix}" mcp install --platform amp --scope user --surface essential --dry-run >/dev/null
 
       - name: Stage shipped binaries
         shell: bash
@@ -341,9 +346,24 @@ jobs:
           test -n "$bundle"
           "$bundle/aden" --version
           "$bundle/aden-mcp" --version
+          "$bundle/aden" mcp install --platform amp --scope user --surface essential --dry-run >/dev/null
           "$bundle/install.sh" --install-dir "$PWD/installed"
           "$PWD/installed/aden" --version
           "$PWD/installed/aden-mcp" --version
+
+          # Exercise multiple bundled grammars only after artifact transfer and
+          # installation. The consume runner has no build tree, so a grammar
+          # linked as a Cargo build-directory .so/.dylib fails here instead of
+          # reaching users.
+          smoke="$PWD/release-parse-smoke"
+          mkdir "$smoke"
+          printf 'pub fn rust_release_smoke() {}\n' > "$smoke/lib.rs"
+          printf 'package smoke\nfunc GoReleaseSmoke() {}\n' > "$smoke/smoke.go"
+          "$PWD/installed/aden" gen "$smoke" --auto --json >/dev/null
+          "$PWD/installed/aden" locate --symbol rust_release_smoke "$smoke" --json \
+            | grep -q 'rust_release_smoke'
+          "$PWD/installed/aden" locate --symbol GoReleaseSmoke "$smoke" --json \
+            | grep -q 'GoReleaseSmoke'
 
       - name: Extract, smoke, and install (Windows)
         if: runner.os == 'Windows'
@@ -356,9 +376,37 @@ jobs:
           if (-not $bundle) { throw "Archive has no bundle directory" }
           & "$($bundle.FullName)/aden.exe" --version
           & "$($bundle.FullName)/aden-mcp.exe" --version
+          & "$($bundle.FullName)/aden.exe" mcp install --platform amp --scope user --surface essential --dry-run | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "Packaged aden.exe does not support AmpCode MCP enrollment" }
           & "$($bundle.FullName)/install.ps1" -InstallDir "$PWD/installed"
           & "$PWD/installed/aden.exe" --version
           & "$PWD/installed/aden-mcp.exe" --version
+
+          # Parse after artifact transfer and installation so no grammar can be
+          # resolved accidentally from the build runner's target directory.
+          $smoke = Join-Path $PWD "release-parse-smoke"
+          New-Item -ItemType Directory -Path $smoke | Out-Null
+          Set-Content -Path (Join-Path $smoke "lib.rs") -Value 'pub fn rust_release_smoke() {}' -NoNewline
+          Set-Content -Path (Join-Path $smoke "smoke.go") -Value "package smoke`nfunc GoReleaseSmoke() {}" -NoNewline
+          & "$PWD/installed/aden.exe" gen $smoke --auto --json | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "Installed aden.exe failed its parser smoke test" }
+          $rustLocated = & "$PWD/installed/aden.exe" locate --symbol rust_release_smoke $smoke --json | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or -not $rustLocated.items -or $rustLocated.items.Count -eq 0) {
+            throw "Installed aden.exe did not index its statically linked Rust grammar"
+          }
+          $goLocated = & "$PWD/installed/aden.exe" locate --symbol GoReleaseSmoke $smoke --json | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or -not $goLocated.items -or $goLocated.items.Count -eq 0) {
+            throw "Installed aden.exe did not index its statically linked Go grammar"
+          }
+
+          # install.ps1 promises Windows PowerShell 5.1 compatibility; `pwsh`
+          # above only verifies PowerShell 7. Exercise the in-box Windows
+          # PowerShell host explicitly so a Core-only syntax regression cannot
+          # ship in a Windows bundle.
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$($bundle.FullName)/install.ps1" -InstallDir "$PWD/installed-windows-powershell"
+          if ($LASTEXITCODE -ne 0) { throw "Windows PowerShell 5.1 installer smoke test failed: exit $LASTEXITCODE" }
+          & "$PWD/installed-windows-powershell/aden.exe" --version
+          & "$PWD/installed-windows-powershell/aden-mcp.exe" --version
 
   publish:
     name: Publish draft GitHub Release

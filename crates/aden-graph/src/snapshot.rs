@@ -10,7 +10,7 @@ use crate::bridge::GraphBridge;
 use aden_core::{Document, EdgeType};
 use aden_store::{GraphStorage, StoreError};
 use std::collections::HashMap;
-use std::io;
+use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -37,21 +37,26 @@ pub enum SnapshotError {
     Store(#[from] StoreError),
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(serde::Deserialize)]
 struct SnapshotPayload {
     docs: HashMap<String, Document>,
     edges: Vec<(String, String, EdgeType)>,
 }
 
-/// Serialize docs + edges into the ADR-011 v1 wire format.
+#[derive(serde::Serialize)]
+struct SnapshotPayloadRef<'a> {
+    docs: &'a HashMap<String, Document>,
+    edges: &'a [(String, String, EdgeType)],
+}
+
+/// Serialize docs + edges into the ADR-011 v1 wire format without cloning the
+/// complete graph. At kernel scale, cloning here doubled the largest live data
+/// structures immediately before allocating the encoded snapshot bytes.
 pub fn encode_snapshot(
     docs: &HashMap<String, Document>,
     edges: &[(String, String, EdgeType)],
 ) -> Result<Vec<u8>, SnapshotError> {
-    let payload = SnapshotPayload {
-        docs: docs.clone(),
-        edges: edges.to_vec(),
-    };
+    let payload = SnapshotPayloadRef { docs, edges };
     let body = postcard::to_allocvec(&payload).map_err(|e| SnapshotError::Encode(e.to_string()))?;
     let mut out = Vec::with_capacity(MAGIC.len() + 4 + body.len());
     out.extend_from_slice(MAGIC);
@@ -60,23 +65,67 @@ pub fn encode_snapshot(
     Ok(out)
 }
 
-/// Decode a snapshot file. Returns `(docs, edges)`.
-pub fn decode_snapshot(bytes: &[u8]) -> Result<SnapshotData, SnapshotError> {
-    if bytes.len() < MAGIC.len() + 4 {
+const HEADER_LEN: usize = MAGIC.len() + 4;
+const INITIAL_DECODE_SCRATCH: usize = 64 * 1024;
+
+fn validate_header(header: &[u8]) -> Result<(), SnapshotError> {
+    if header.len() < HEADER_LEN {
         return Err(SnapshotError::Incompatible("truncated header".into()));
     }
-    if &bytes[..MAGIC.len()] != MAGIC {
+    if &header[..MAGIC.len()] != MAGIC {
         return Err(SnapshotError::Incompatible("bad magic".into()));
     }
-    let version = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
+    let version = u32::from_le_bytes(header[8..12].try_into().unwrap());
     if version != SNAPSHOT_VERSION {
         return Err(SnapshotError::Incompatible(format!(
             "unsupported snapshot version {version} (expected {SNAPSHOT_VERSION})"
         )));
     }
-    let payload: SnapshotPayload =
-        postcard::from_bytes(&bytes[12..]).map_err(|e| SnapshotError::Decode(e.to_string()))?;
+    Ok(())
+}
+
+/// Decode snapshot bytes already held by a caller. Returns `(docs, edges)`.
+pub fn decode_snapshot(bytes: &[u8]) -> Result<SnapshotData, SnapshotError> {
+    validate_header(bytes)?;
+    let payload: SnapshotPayload = postcard::from_bytes(&bytes[HEADER_LEN..])
+        .map_err(|e| SnapshotError::Decode(e.to_string()))?;
     Ok((payload.docs, payload.edges))
+}
+
+fn decode_snapshot_reader<R: Read + Seek>(
+    mut reader: R,
+    file_len: u64,
+    initial_scratch: usize,
+) -> Result<SnapshotData, SnapshotError> {
+    let mut header = [0_u8; HEADER_LEN];
+    match reader.read_exact(&mut header) {
+        Ok(()) => validate_header(&header)?,
+        Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => {
+            return Err(SnapshotError::Incompatible("truncated header".into()));
+        }
+        Err(error) => return Err(SnapshotError::Io(error)),
+    }
+
+    let payload_len = file_len.saturating_sub(HEADER_LEN as u64);
+    let payload_len: usize = payload_len.try_into().map_err(|_| {
+        SnapshotError::Incompatible("snapshot is too large for this platform".into())
+    })?;
+    let mut scratch_len = payload_len.clamp(1, initial_scratch.max(1));
+
+    loop {
+        reader.seek(SeekFrom::Start(HEADER_LEN as u64))?;
+        let mut scratch = vec![0_u8; scratch_len];
+        match postcard::from_io::<SnapshotPayload, _>((&mut reader, &mut scratch)) {
+            Ok((payload, _)) => return Ok((payload.docs, payload.edges)),
+            Err(postcard::Error::DeserializeUnexpectedEnd) if scratch_len < payload_len => {
+                // Postcard's IO flavor uses caller scratch for temporary string/
+                // byte borrows. Owned fields reuse it, so normal snapshots stay
+                // at 64 KiB; a single larger field retries with bounded growth.
+                scratch_len = scratch_len.saturating_mul(2).min(payload_len);
+            }
+            Err(error) => return Err(SnapshotError::Decode(error.to_string())),
+        }
+    }
 }
 
 /// True when `snapshot` exists and is at least as new as every file under `store`.
@@ -130,13 +179,53 @@ pub fn publish_bytes(dest: &Path, bytes: &[u8]) -> Result<(), SnapshotError> {
     Ok(())
 }
 
-/// Encode a snapshot from live storage without writing it yet.
+fn temporary_path(dest: &Path) -> PathBuf {
+    dest.with_extension("snapshot.tmp")
+}
+
+fn write_snapshot_to_temp(
+    dest: &Path,
+    docs: &HashMap<String, Document>,
+    edges: &[(String, String, EdgeType)],
+) -> Result<(), SnapshotError> {
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let file = std::fs::File::create(temporary_path(dest))?;
+    let mut writer = BufWriter::new(file);
+    writer.write_all(MAGIC)?;
+    writer.write_all(&SNAPSHOT_VERSION.to_le_bytes())?;
+    let payload = SnapshotPayloadRef { docs, edges };
+    let mut writer =
+        postcard::to_io(&payload, writer).map_err(|e| SnapshotError::Encode(e.to_string()))?;
+    writer.flush()?;
+    Ok(())
+}
+
+/// Serialize a snapshot into `dest.tmp` without retaining its encoded bytes.
 ///
-/// Call [`publish_bytes`] after the storage handle is dropped so a final fjall
-/// flush cannot make the on-disk store newer than the snapshot file.
-pub fn prepare_from_storage<S: GraphStorage>(storage: &S) -> Result<Vec<u8>, SnapshotError> {
+/// Call [`publish_prepared`] after the storage handle is dropped so a final
+/// fjall flush cannot make the on-disk store newer than the snapshot file.
+pub fn prepare_from_storage<S: GraphStorage>(
+    dest: &Path,
+    storage: &S,
+) -> Result<(), SnapshotError> {
     let (docs, edges) = GraphBridge::load_from_storage(storage)?;
-    encode_snapshot(&docs, &edges)
+    write_snapshot_to_temp(dest, &docs, &edges)
+}
+
+/// Atomically rename a successfully prepared snapshot into place.
+pub fn publish_prepared(dest: &Path) -> Result<(), SnapshotError> {
+    let tmp = temporary_path(dest);
+    // Preparing happens while Fjall is still open; refresh the temporary file's
+    // mtime after that handle has dropped so the renamed snapshot covers its
+    // final flush.
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&tmp)?
+        .set_modified(SystemTime::now())?;
+    std::fs::rename(tmp, dest)?;
+    Ok(())
 }
 
 /// Load docs + edges from storage and publish to `dest`.
@@ -144,14 +233,15 @@ pub fn publish_from_storage<S: GraphStorage>(
     dest: &Path,
     storage: &S,
 ) -> Result<(), SnapshotError> {
-    let bytes = prepare_from_storage(storage)?;
-    publish_bytes(dest, &bytes)
+    prepare_from_storage(dest, storage)?;
+    publish_prepared(dest)
 }
 
-/// Read a snapshot file from disk.
+/// Read a snapshot file without retaining its complete encoded byte stream.
 pub fn read_snapshot_file(path: &Path) -> Result<SnapshotData, SnapshotError> {
-    let bytes = std::fs::read(path)?;
-    decode_snapshot(&bytes)
+    let file = std::fs::File::open(path)?;
+    let file_len = file.metadata()?.len();
+    decode_snapshot_reader(BufReader::new(file), file_len, INITIAL_DECODE_SCRATCH)
 }
 
 /// Load docs + edges from the last published read snapshot when present.
@@ -200,6 +290,94 @@ mod tests {
         assert_eq!(docs2.len(), 1);
         assert_eq!(edges2.len(), 1);
         assert_eq!(edges2[0].2, EdgeType::Calls);
+    }
+
+    #[test]
+    fn streamed_snapshot_matches_v1_wire_format() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("graph.snapshot");
+        let mut docs = HashMap::new();
+        docs.insert(
+            "aden://module/foo.adoc#bar".into(),
+            Document {
+                anchor: "aden://module/foo.adoc#bar".into(),
+                node_type: NodeType::Function,
+                attributes: HashMap::new(),
+                blocks: vec![],
+                source_span: None,
+                metadata: None,
+                confidence: 1.0,
+            },
+        );
+        let edges = vec![("a".into(), "b".into(), EdgeType::Calls)];
+
+        let expected = encode_snapshot(&docs, &edges).unwrap();
+        write_snapshot_to_temp(&dest, &docs, &edges).unwrap();
+        assert_eq!(std::fs::read(temporary_path(&dest)).unwrap(), expected);
+        publish_prepared(&dest).unwrap();
+        assert_eq!(read_snapshot_file(&dest).unwrap().1, edges);
+    }
+
+    #[test]
+    fn streaming_reader_grows_scratch_for_one_large_owned_field() {
+        let mut attributes = HashMap::new();
+        attributes.insert("body".into(), "x".repeat(200_000));
+        let mut docs = HashMap::new();
+        docs.insert(
+            "aden://module/foo.adoc#large".into(),
+            Document {
+                anchor: "aden://module/foo.adoc#large".into(),
+                node_type: NodeType::Function,
+                attributes,
+                blocks: vec![],
+                source_span: None,
+                metadata: None,
+                confidence: 1.0,
+            },
+        );
+        let bytes = encode_snapshot(&docs, &[]).unwrap();
+        let (decoded, _) =
+            decode_snapshot_reader(std::io::Cursor::new(&bytes), bytes.len() as u64, 8).unwrap();
+        assert_eq!(
+            decoded["aden://module/foo.adoc#large"].attributes["body"].len(),
+            200_000
+        );
+    }
+
+    #[test]
+    fn streaming_reader_preserves_header_and_corruption_diagnostics() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("graph.snapshot");
+
+        std::fs::write(&path, b"ADENSNAP").unwrap();
+        assert!(matches!(
+            read_snapshot_file(&path),
+            Err(SnapshotError::Incompatible(message)) if message == "truncated header"
+        ));
+
+        let mut bad_magic = [0_u8; HEADER_LEN];
+        bad_magic[8..12].copy_from_slice(&SNAPSHOT_VERSION.to_le_bytes());
+        std::fs::write(&path, bad_magic).unwrap();
+        assert!(matches!(
+            read_snapshot_file(&path),
+            Err(SnapshotError::Incompatible(message)) if message == "bad magic"
+        ));
+
+        let mut unsupported = Vec::from(MAGIC.as_slice());
+        unsupported.extend_from_slice(&(SNAPSHOT_VERSION + 1).to_le_bytes());
+        std::fs::write(&path, unsupported).unwrap();
+        assert!(matches!(
+            read_snapshot_file(&path),
+            Err(SnapshotError::Incompatible(message)) if message.contains("unsupported snapshot version")
+        ));
+
+        let mut valid = encode_snapshot(&HashMap::new(), &[]).unwrap();
+        valid.pop();
+        std::fs::write(&path, valid).unwrap();
+        assert!(matches!(
+            read_snapshot_file(&path),
+            Err(SnapshotError::Decode(_))
+        ));
     }
 
     #[test]

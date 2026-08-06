@@ -120,6 +120,16 @@ class RoadmapValidatorTests(unittest.TestCase):
         blocked_issue = {"state": "OPEN", "labels": [{"name": "packet-blocked"}], "assignees": []}
         self.assertEqual(reconciler.validate_live(packet, blocked_issue), [])
 
+    def test_closed_blocked_ready_packet_is_resumable(self) -> None:
+        packet = {"packet-id": "AP-001", "status": "ready"}
+        blocked_issue = {"state": "CLOSED", "labels": [{"name": "packet-blocked"}], "assignees": []}
+        self.assertEqual(reconciler.validate_live(packet, blocked_issue), [])
+
+    def test_closed_ready_packet_without_blocked_label_is_invalid(self) -> None:
+        packet = {"packet-id": "AP-001", "status": "ready"}
+        closed_issue = {"state": "CLOSED", "labels": [{"name": "aden-program"}], "assignees": []}
+        self.assertTrue(reconciler.validate_live(packet, closed_issue))
+
     def test_authority_metadata_rejects_missing_supersession(self) -> None:
         historical = Path(self.tmp.name) / "ISSUES.md"
         historical.write_text(

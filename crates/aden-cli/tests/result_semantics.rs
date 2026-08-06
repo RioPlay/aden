@@ -97,6 +97,35 @@ fn audit_json_distinguishes_empty_findings_and_blocked_without_exit_migration() 
 }
 
 #[test]
+fn ask_empty_result_keeps_machine_json_contract() {
+    let data = temp_project("ask-empty-data");
+    let project = valid_project("ask-empty");
+    let out = aden(
+        &[
+            "-j".as_ref(),
+            "ask".as_ref(),
+            "zzzz_no_such_anchor_7f31".as_ref(),
+            project.as_os_str(),
+        ],
+        &data,
+    );
+    assert!(
+        out.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let doc = json(&out);
+    assert_eq!(doc["schema_version"], 1);
+    assert_eq!(doc["result_state"], "empty");
+    assert_eq!(doc["context"], "");
+    assert!(
+        doc["recovery"]
+            .as_array()
+            .is_some_and(|items| !items.is_empty())
+    );
+}
+
+#[test]
 fn check_json_keeps_graph_policy_and_freshness_axes_stable() {
     let data = temp_project("check-data");
     let project = temp_project("check-project");
@@ -195,7 +224,10 @@ fn ci_advisories_remain_zero_exit_but_are_never_rendered_as_clean() {
     let project = valid_project("ci-advisory-project");
     std::fs::write(
         project.join("src/lib.rs"),
-        "pub const FIXTURE_URL: &str = \"http://example.invalid\";\n",
+        format!(
+            "pub const FIXTURE_URL: &str = \"{}{}\";\n",
+            "http", "://example.invalid"
+        ),
     )
     .unwrap();
 

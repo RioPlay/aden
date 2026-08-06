@@ -43,8 +43,8 @@ pub fn cmd_suggest(intent: &str) -> Result<(), Box<dyn std::error::Error>> {
         ),
         (
             vec!["graph", "depend", "neighbor", "related"],
-            "graph",
-            "aden graph --from <anchor> --depth 2",
+            "query",
+            "aden query --from <anchor> --depth 2",
             "Show graph neighborhood",
         ),
         (

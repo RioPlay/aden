@@ -6,6 +6,30 @@ use std::process::Command;
 
 const AI_INTEGRATION_GUIDE: &str = include_str!("../../../docs/ai-integration.adoc");
 
+fn assert_authoritative_receipt(value: &serde_json::Value, tool: &str) {
+    let receipt = &value["context_receipt"];
+    assert_eq!(receipt["schema_version"], 1, "{tool}: {value}");
+    assert_eq!(receipt["freshness"], "current", "{tool}: {value}");
+    assert!(
+        receipt["graph_revision"]
+            .as_str()
+            .is_some_and(|revision| !revision.is_empty()),
+        "{tool} omitted the graph revision: {value}"
+    );
+    assert!(
+        receipt["observed_source_fingerprint"]
+            .as_str()
+            .is_some_and(|fingerprint| !fingerprint.is_empty()),
+        "{tool} omitted the observed source fingerprint: {value}"
+    );
+    assert!(
+        receipt["refresh_cause"].as_str().is_some(),
+        "{tool} omitted the refresh cause: {value}"
+    );
+    assert_eq!(value["freshness"], "current", "{tool}: {value}");
+    assert_eq!(value["index_stale"], false, "{tool}: {value}");
+}
+
 #[test]
 fn cli_json_receipt_survives_the_mcp_bridge() {
     let dir = tempfile::tempdir().unwrap();
@@ -189,6 +213,123 @@ fn primary_mcp_read_workflows_are_versioned_json() {
             .or_else(|| value.pointer("/context_receipt/schema_version"));
         assert_eq!(version, Some(&serde_json::json!(1)), "{tool}: {value}");
     }
+}
+
+#[test]
+fn llm_default_journey_needs_no_explicit_budget_and_proves_its_graph_revision() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("example.rs"),
+        "/// Entry point for the receipt fixture.\nfn main() { helper(); }\nfn helper() {}\n",
+    )
+    .unwrap();
+
+    // Exercise the defaults exactly as an LLM-facing caller does: structured
+    // output, automatic freshness, and no explicit token budget.
+    let ask = Command::new(env!("CARGO_BIN_EXE_aden"))
+        .args(["ask", "Where is the main entry point?", "."])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(
+        ask.status.success(),
+        "{}",
+        String::from_utf8_lossy(&ask.stderr)
+    );
+    let ask_value: serde_json::Value = serde_json::from_slice(&ask.stdout).unwrap();
+    assert_authoritative_receipt(&ask_value, "ask");
+    let anchor = ask_value["anchor"]
+        .as_str()
+        .expect("ask must select an anchor for the fixture");
+    assert!(ask_value["context"].as_str().unwrap().contains("main"));
+
+    let asm = Command::new(env!("CARGO_BIN_EXE_aden"))
+        .args(["asm", "--from", anchor, "."])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(
+        asm.status.success(),
+        "{}",
+        String::from_utf8_lossy(&asm.stderr)
+    );
+    let asm_value: serde_json::Value = serde_json::from_slice(&asm.stdout).unwrap();
+    assert_authoritative_receipt(&asm_value, "asm");
+    assert!(
+        asm_value["documents"]
+            .as_array()
+            .is_some_and(|docs| !docs.is_empty())
+    );
+}
+
+#[test]
+fn strict_agent_defaults_keep_full_receipts_when_they_fit() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("example.rs"),
+        "/// Entry point for strict receipt QA.\nfn main() {}\n",
+    )
+    .unwrap();
+
+    let ask = Command::new(env!("CARGO_BIN_EXE_aden"))
+        .args(["ask", "--strict", "Where is the entry point?", "."])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(
+        ask.status.success(),
+        "{}",
+        String::from_utf8_lossy(&ask.stderr)
+    );
+    let ask_value: serde_json::Value = serde_json::from_slice(&ask.stdout).unwrap();
+    assert_authoritative_receipt(&ask_value, "strict ask");
+    let anchor = ask_value["anchor"].as_str().unwrap();
+
+    let asm = Command::new(env!("CARGO_BIN_EXE_aden"))
+        .args(["asm", "--strict", "--from", anchor, "."])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(
+        asm.status.success(),
+        "{}",
+        String::from_utf8_lossy(&asm.stderr)
+    );
+    let asm_value: serde_json::Value = serde_json::from_slice(&asm.stdout).unwrap();
+    assert_authoritative_receipt(&asm_value, "strict asm");
+    assert!(
+        asm_value["documents"]
+            .as_array()
+            .is_some_and(|docs| !docs.is_empty())
+    );
+}
+
+#[test]
+fn empty_default_ask_reports_truthful_building_freshness() {
+    let dir = tempfile::tempdir().unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_aden"))
+        .args(["ask", "definitely absent symbol", "."])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["result_state"], "empty");
+    assert_eq!(value["freshness"], "building");
+    assert_eq!(value["index_stale"], true);
+    assert_eq!(value["context_receipt"]["schema_version"], 1);
+    assert_eq!(value["context_receipt"]["freshness"], "building");
+    assert_eq!(value["context_receipt"]["refresh_cause"], "store_missing");
+    assert!(
+        value["context_receipt"]["observed_source_fingerprint"]
+            .as_str()
+            .is_some_and(|fingerprint| !fingerprint.is_empty())
+    );
+    assert!(value["context_receipt"].get("graph_revision").is_none());
 }
 
 #[test]

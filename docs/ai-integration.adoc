@@ -15,7 +15,7 @@ The answer is assembled dynamically from the knowledge graph, not hard-coded in 
 [[mcp-setup]]
 == MCP Setup
 
-Run Aden as a link:https://modelcontextprotocol.io[Model Context Protocol] server so an AI client (Claude, Cursor, Codex, Zed, Windsurf, opencode, …) queries your codebase graph directly — no copy-pasting CLI output.
+Run Aden as a link:https://modelcontextprotocol.io[Model Context Protocol] server so an AI client (Amp, Claude, Cursor, Codex, Zed, Windsurf, opencode, …) queries your codebase graph directly — no copy-pasting CLI output.
 
 `aden-mcp` is a *thin director*: it exposes Aden's CLI as MCP tools, each mapping 1:1 to an `aden` subcommand. There is no separate logic path — calling the `grep` tool runs the same code as `aden grep`, so everything documented for the CLI applies verbatim to the tools. The server operates on the target project you point it at; nothing it returns is specific to Aden's own source.
 
@@ -39,31 +39,33 @@ NOTE: `cargo install --path crates/aden-cli` installs only the `aden` CLI and *o
 aden mcp install --platform <platform>
 ----
 
-Supported `<platform>` values: `opencode`, `claude`, `cursor`, `codex`, `zed`, `windsurf`.
+Supported `<platform>` values: `amp`, `opencode`, `claude`, `cursor`, `codex`, `zed`, `windsurf`.
 
 Useful flags:
 
-* `--project <PATH>` — pin the project directory the server serves (defaults to CWD).
+* `--project <PATH>` — select the project whose local client configuration is changed during installation. It does not pin that path into the server command; at runtime `aden-mcp` follows the client's MCP Roots/workspace environment.
 * `--binary <PATH>` — point at a specific `aden-mcp` binary if it is not on `PATH`.
-* `--scope <SCOPE>` — `user` (global) or `project` (local). Default: user for Claude Code, project otherwise.
+* `--scope <SCOPE>` — `user` (global) or `project` (local). Default: one user-global server for every platform; at runtime it follows MCP Roots/the host workspace, so it works across folders without per-project installation.
 * `--preset <PRESET>` — workflow preset: `explore`, `verify`, or `admin`. Sets the default config name and tool surface.
 * `--name <NAME>` — config entry name (default: `aden`). Use this to keep multiple local MCP profiles side by side.
 * `--surface <LEVEL>` — override the preset/default tool surface: `essential`, `standard`, or `full`.
 * `--dry-run` — print what would be written without touching any config.
 * `--all` — install for every supported platform, not just detected ones.
 
+IMPORTANT: Amp's default `user` scope writes `amp.mcpServers` to the global Amp settings file, which avoids workspace MCP approval. A project-scoped Amp entry in `.amp/settings.json` may require approval in Amp. Amp also accepts JSONC settings; Aden targets the plain `.json` settings path because its existing config merger does not preserve comments.
+
 IMPORTANT: Claude Code's default `user` scope registers one global server named
 `aden`; it is not a separate per-folder install. If you want each repository to
 have its own Aden MCP server, run `aden mcp install --platform claude --scope
 project` inside each repository (or pass `--project <PATH>` explicitly).
 
-For token-controlled local setups, install separate workflow presets instead of
-one oversized tool surface:
+For token-controlled setups, install separate workflow presets instead of one
+oversized tool surface. These are global by default and work in every workspace:
 
 [source,bash]
 ----
-aden mcp install --platform codex --scope project --preset explore
-aden mcp install --platform codex --scope project --preset verify
+aden mcp install --platform codex --preset explore
+aden mcp install --platform codex --preset verify
 ----
 
 `explore` maps to the essential navigation surface (`aden-explore`), `verify`
@@ -73,6 +75,8 @@ sessions; it lists more tools and gives the
 model more irrelevant choices during normal planning or implementation work.
 
 Related: `aden mcp list [--preset <PRESET>|--name <NAME>]` (platforms + install status), `aden mcp uninstall --platform <platform>`, `aden mcp serve` (HTTP endpoint for CI/agent integration).
+
+NOTE: Installation is currently explicit and non-interactive. Aden does not silently edit client configuration on first launch. Run `aden mcp install --dry-run` to inspect the proposed changes before opting in. A future first-launch prompt should preserve that consent boundary.
 
 === Verify it works
 
@@ -94,7 +98,34 @@ the server to a client configuration.
 * *Unknown arguments are rejected* at the schema boundary — a typo like `dept` for `depth` fails fast.
 * *Booleans must be real JSON booleans* (`true`/`false`), not strings.
 * *`locate` requires at least one of `symbol` or `caller_of`*.
-* *Anchors, not bare names.* `asm`/`query` take a full `aden://…` anchor (or a module alias like `mod-<crate>`), not a bare symbol name. Use `grep`/`locate`/`list` to resolve the anchor, then feed it to `asm`/`query` — or use `understand` to skip the chain.
+* *Natural names or anchors.* `asm` and every `query` mode accept a unique symbol name, a module alias such as `mod-<crate>`, or a full `aden://…` anchor. Exact anchors and aliases win; equally ranked names return deterministic candidates instead of guessing. Use `locate` when a name is common or ambiguous. Substring/fuzzy matches are suggestions only and are never silently selected.
+
+=== Tool choice and correctness limits
+
+The MCP registry orders compact orientation and deterministic discovery before
+heuristic routing: `tree --symbols` → `grep` → `locate` → `understand` →
+`ask` → `query` → `asm`.
+
+* `grep` is the default exact-content discovery tool. For architecture,
+  performance, security, or completeness audits, use multiple materially
+  different patterns and verify against targeted source reads.
+* `locate` resolves canonical definitions and reports whether it fell back to
+  full text. Use it before `understand` for short or common names.
+* `understand` is strongest for a known canonical symbol. Nested/local/test
+  symbols, generated code, macros, and dynamic calls may not be represented;
+  no graph result does not prove absence.
+* `ask` heuristically chooses one primary anchor for one bounded question.
+  Recognizable repository-wide audits, exhaustive lists, rankings, and
+  remaining-work questions return `needs_narrowing` without context. This guard
+  catches common unsafe shapes, not every possible wording: inspect
+  `question_fit`, `routing_confidence`, and the selected anchor. Corroborate
+  consequential claims with `grep` and source evidence.
+* `asm` context is a bounded graph neighborhood, not a complete source file.
+  Read the located source range before making subtle edits.
+* Aden does not replace Git history/status, filesystem inventory or metadata,
+  compilation, tests, or source editing. Use the host tools for those jobs.
+* Treat `freshness`, `index_stale`, `truncated`, and incomplete receipts as
+  correctness signals, not optional metadata.
 
 === Transport-parity examples
 
@@ -110,7 +141,23 @@ aden locate --json --symbol "known_symbol" .
 Over MCP, pass the corresponding named JSON arguments `pattern`, `symbol`, and
 optional `path`. The response retains the CLI JSON semantics, including the
 versioned `context_receipt`; text-first `ask` and `asm` responses are carried
-losslessly in a versioned JSON envelope.
+losslessly in a versioned JSON envelope. Non-strict MCP responses also include
+an `execution` receipt with selected root, scope-selection source, elapsed time,
+deadline, and subprocess status. Strict `ask`/`asm` omit this optional metadata
+so observability can never displace evidence from the caller's hard budget.
+
+The omitted `path` defaults to the workspace supplied by the MCP client. For
+repository-bound read operations in a multi-repository workspace—including
+`ask`, `grep`, `locate`, graph traversal, and verification—Aden selects a
+repository only when there is one candidate or the request contains one exact,
+unique repository name. Otherwise it fails quickly with bounded candidate paths
+and asks the caller to retry with `path`; it never silently chooses root zero or
+launches a broad query and waits for a timeout. An explicit `path` always wins and may select any
+of the client's declared MCP roots. Prefer `grep` for exact content discovery
+and `ask` for a bounded semantic question.
+Aden intentionally does not replace filesystem metadata or version-control
+operations such as listing files by modification time or reading `git log`; use
+the host's filesystem and Git tools for those operations.
 
 === Agent response contract
 
@@ -119,14 +166,25 @@ MCP capability schemas declare `x-aden-output-mode`. Read tools use
 `context_receipt`. When a legacy CLI read has no native receipt, MCP returns a
 truthful `freshness: "unavailable"` receipt and `incomplete: true`; agents must
 not treat it as authoritative. MCP errors are JSON too, with a sanitized
-message, `safe_to_retry`, and an exact `recovery` action. This removes any need
+message, `safe_to_retry`, and an exact `recovery` action. Symbol-resolution
+failures add typed `ambiguous_symbol`/`anchor_not_found` codes and structured
+`error.candidates`/`error.suggestions`; MCP requests this machine envelope from
+the CLI directly rather than scraping human error lines. This removes any need
 to parse terminal chrome to decide how to proceed.
 
 === Security boundary
 
 * *Path confinement.* Tools operate inside the served project directory; the `path`/`--project` argument defaults to it and the server does not reach outside (including `heal`'s watch target).
 * *Error sanitization.* CLI errors are scrubbed of panic backtraces and absolute paths, and capped in length.
-* *Timeout.* Long-running tools are bounded by a 120-second guard.
+* *Timeout.* Tool calls use cost-class deadlines: 30 seconds for cheap discovery,
+  60 seconds for graph traversal, and 120 seconds for verification/build paths.
+* *Concurrency.* Identical read calls for the same resolved project and
+  arguments are single-flight: they share one CLI child and its bounded result.
+  Distinct work admits at most two CLI children; batch independent requests in
+  groups of two or fewer. Additional distinct calls fail fast with a retryable
+  `server_busy` response instead of queueing behind a slow graph build. The
+  response includes the `concurrency_limit`; retry only the rejected call after
+  an active call completes.
 * *`watch` is terminal-only.* The continuous file-watch / live-reindex mode is not exposed over MCP — run `aden watch` in a terminal; use `gen`/`sync` for one-shot updates.
 
 [[mcp-freshness]]
@@ -205,7 +263,10 @@ See <<adr-011>> for format and publish rules.
 
 == How `aden ask` Works
 
-`aden ask` is the primary interface for AI agents. It is not a chatbot wrapper around an LLM. It is a **context retrieval engine**.
+`aden ask` is an opt-in convenience interface for bounded, exploratory context
+retrieval. It is not a chatbot wrapper around an LLM. It uses heuristic search,
+anchor selection, and intent routing, so it is not authoritative discovery and
+must not be treated as proof of repository-wide coverage.
 
 Invocation:
 
@@ -216,6 +277,13 @@ aden ask "How does the authentication flow work?"
 
 What happens internally:
 
+0. **Scope guard**: Unless `--from` pins a known anchor, recognizable
+   repository-wide audits, exhaustive lists, rankings, and remaining-work
+   questions stop immediately with `result_state: "needs_narrowing"`, an empty
+   context, and recovery actions. This avoids indexing and spending context
+   tokens merely to produce a misleading local answer. The deterministic guard
+   covers common unsafe wording; callers must still inspect `question_fit` and
+   `routing_confidence`.
 1. **Search**: The question is tokenized and searched against the in-memory inverted index built from all `.adoc` / `.aden` contracts. Ranking is BM25 by default; when built with the `dense` cargo feature (and the local embedding model is present), it becomes hybrid — BM25 plus offline, deterministic local dense embeddings fused via Reciprocal Rank Fusion (RRF).
 2. **Anchor resolution**: The top-ranked document anchor becomes the starting node (or you pin it with `--from`).
 3. **Intent classification**: The question is classified into one of nine intents (the per-intent code edges below; every intent additionally traverses the semantic edges IsA, RelatesTo, SimilarTo, AssociatedWith, Explains, and `Calls` is always included):
@@ -229,7 +297,7 @@ What happens internally:
    - `Count` --- "how many X" → depth 1, edges: Documents, Uses
    - `General` --- fallback → depth 2, edges: Uses, Documents, Constrains
 4. **Graph traversal**: A BFS walk collects neighbors along the selected edge types, stopping at `max_depth`. Each node's neighbors are expanded in deterministic edge-priority order (most load-bearing types such as `Calls` first), so the budget favors the most relevant context and the output is reproducible.
-5. **Token budgeting**: Each collected document is estimated with a bytes/4 heuristic; documents are included until the cumulative total (inter-document separators counted) would exceed the budget, and an overflowing final document is truncated at a word boundary. `asm` treats `--budget` (default 8192) as a hard cap — output never exceeds it. `ask` instead *boosts* the budget by the match relevance by default (up to ~4x, capped at 32k), treating `--budget` (default 4096) as a base; pass `ask --strict` to make it an exact cap.
+5. **Token budgeting**: Each collected document is estimated with a bytes/4 heuristic; documents are included until the cumulative total (inter-document separators counted) would exceed the budget, and an overflowing final document is truncated at a word boundary. `asm` and normal `ask` context stay within their declared budgets. `ask --expand` explicitly opts into relevance-based growth (up to ~4x, capped at 32k); `ask --strict` caps the complete serialized response including receipts.
 6. **Assembly**: Documents are concatenated with `\n\n---\n\n` separators. Output is stripped of AsciiDoc markup (anchors, refs, attribute lines, block delimiters) so every token carries signal.
 
 === Example Output
@@ -269,7 +337,38 @@ If the context does not contain enough information, say so explicitly.
 [context from aden ask goes here]
 ----
 
-This guarantees the agent reasons from real source structure rather than hallucinating APIs.
+This grounds the agent in real source structure, but it does not prove that the
+selected neighborhood is complete. Inspect the selected anchor and receipt, and
+use deterministic discovery for consequential claims.
+
+=== Good and Bad `ask` Questions
+
+|===
+|Use `ask` for |Do not rely on `ask` for
+
+|A bounded orientation question with a likely primary symbol: “What does
+`assemble` do?”
+|Exhaustive or negative claims: “Find every authentication path” or “Does this
+repository contain no unsafe code?”
+
+|A conceptual explanation after confirming the symbol with `grep` or `locate`.
+|A decision that depends on all call sites, dependencies, tests, files, or
+security-relevant occurrences.
+
+|A first-pass context bundle that you will verify from its selected anchor.
+|Ambiguous multi-concept questions such as “How does the whole system work?”
+or questions whose answer must be reproducible without routing heuristics.
+|===
+
+The right-column shapes normally return `needs_narrowing` with no assembled
+context. Do not evade that result by paraphrasing until the heuristic accepts
+it; decompose the task into independent `grep`/`locate` evidence or pin a known
+anchor when one neighborhood is genuinely sufficient.
+
+For a consequential question, start with exact `grep` or `locate`, resolve the
+canonical anchor, inspect `query`/backlinks or impact as needed, then use `asm`
+for a controlled context bundle. Pin `ask --from <anchor> --strict` only when
+its convenience is useful after that deterministic discovery.
 
 == When to Use `aden asm` Instead
 
@@ -340,7 +439,8 @@ aden suggest "find all tests in the project"
 |===
 |Task |Command
 
-|Explore structure |`aden ask "what is X"`
+|Explore structure |`aden grep "X" .`, then `aden locate --symbol X .`
+|Get a bounded exploratory explanation after resolving a symbol |`aden ask --from <anchor> --strict "What does it do?"`
 |Find symbol |`aden locate --symbol X .`
 |Grep with structure (each hit tagged with its enclosing symbol) |`aden grep "pattern" .`
 |Who references this symbol (blast radius) |`aden query --backlinks X .`
@@ -368,21 +468,23 @@ default tool list stays focused on the navigation loop:
 * *Full* (`ADEN_MCP_SURFACE=full`) — all tools, including setup/admin commands.
   The legacy `ADEN_MCP_FULL=1` env var is an alias for this level.
 
-All tools remain *callable by name* regardless of tier — tier only gates what
-appears in the tool list. Set `ADEN_MCP_SURFACE` in the server environment (or
-bake it in at install time with `aden mcp install --surface <level>`).
+Tiering is both discovery and execution policy: a hidden Standard/Full tool is
+rejected until that surface is explicitly enabled. Set `ADEN_MCP_SURFACE` in the
+server environment (or bake it in at install time with `aden mcp install
+--surface <level>`).
 
 === Essential (listed by default)
 
 .Read / comprehend
 |===
 |Tool|Purpose|Key Arguments
-|grep|Structure-aware content search (hit + enclosing symbol)|pattern, regex, ignore_case, symbol_only, limit
-|understand|One-shot symbol comprehension (locate + backlinks + impact + asm); surfaces `alternates` when the name is defined in more than one place|symbol, budget, json
-|ask|Natural language Q&A|question, budget, from
-|locate|Symbol definitions (requires at least one of `symbol`/`caller_of`)|symbol, caller_of, show_context, limit, format
-|asm|Graph-traversed context; `--select` gathers the neighborhood then selects to budget by query relevance (opt-in)|from, depth, budget, select, format (llm = default LLM-dense prose, adg = compact JSON, aden = raw AsciiDoc)
-|query|Structured JSON graph neighborhood|from, depth, backlinks, impact, edge_type (applies to from/backlinks/impact)
+|tree|Bounded symbol map grouped by file, with line ranges; scope `path` when truncated|symbols, path
+|grep|Structure-aware content search (hit + enclosing symbol)|pattern, path, regex
+|understand|One-shot symbol comprehension (definition + backlinks + impact + bounded context)|symbol, path
+|ask|One bounded natural-language question; unsafe broad shapes return `needs_narrowing`|question, path, from
+|locate|Canonical definitions/callers plus alternatives|symbol, caller_of, path
+|asm|Bounded context for a resolved anchor|from, path
+|query|Structured graph traversal|from, backlinks, impact, path
 |===
 
 === Standard (set `ADEN_MCP_SURFACE=standard`)
@@ -490,83 +592,49 @@ Use `aden heal . --fix` for auto-fixing high-confidence issues.
 
 Aden is designed with token scarcity in mind. Follow these rules:
 
-- **Prefer `aden ask` over dumping the whole repo.** It stays within budget automatically.
+- **Prefer bounded retrieval over dumping the whole repo.** Start with `grep` or
+  `locate`; use `ask` only for a bounded exploratory bundle, or use `asm` when
+  you need reproducible traversal.
 - **Use `--from` to avoid search ambiguity.** One good anchor is worth ten vague keywords.
 - **Lower `--budget` for focused tasks.** 2048 tokens is enough for most refactor questions.
-- **Review the summary footer.** `aden ask` prints node count, bytes consumed, and budget status. If it says "OVER BUDGET", raise the limit or reduce depth.
+- **Inspect machine signals before context.** Stop on `needs_narrowing`; treat
+  `routing_confidence: "ambiguous"`, stale receipts, and truncation as reasons to
+  refine discovery rather than consuming more context.
 
 == Security Notes for Agents
 
 - Aden assumes contracts are build artifacts. Never commit `.aden/`.
-- `aden init` generates `.adenignore` with security defaults. Do not remove entries that skip `*.env`, `secrets/`, or `target/`.
+- Built-in exclusions skip common secrets, dependencies, and build output without
+  a project file. `aden init --templates` adds a customizable `.adenignore` only
+  when that larger project footprint is explicitly wanted.
 - Include directives are bounded to the project root. Path traversal outside the repo is rejected at parse time.
 
-== LLM System Prompt
+== Compact LLM System Prompt
 
-When an aden MCP tool is available, include this in your system context:
+The MCP schemas already describe arguments. Do not duplicate the full command
+catalog in every model turn. This compact policy is sufficient:
 
 [source]
 ----
-You have access to Aden, a knowledge graph compiler for codebases.
+Use Aden for bounded code navigation.
 
-## Aden Tools Available:
-- `ask(question)`: Natural-language question about the codebase — best first tool for exploration
-- `search(query)`: Full-text search (BM25; hybrid BM25+dense via RRF when built with the `dense` feature). The `--semantics` flag is separate — it expands results along knowledge-graph edges, not dense embeddings.
-- `asm(from, depth, select)`: Assemble context from a starting anchor (passed as `from`); `select=true` enables query-aware gather-then-select when relevance is available
-- `query(anchor, depth)`: Get structured graph neighborhood as JSON
-- `locate(symbol)`: Find symbol definitions and call sites, --show-context N for surrounding code
-- `understand(symbol)`: One-shot comprehension — definition + backlinks + impact + context in one call; includes `alternates` when the symbol name is ambiguous; replaces locate + query --backlinks + query --impact + asm
-- `list()`: List all available anchors, --semantics for semantic nodes
-- `grep(pattern)`: Structure-aware search — every hit tagged with its enclosing symbol
-- `communities(min_size, limit)`: Detect functional clusters of densely-connected symbols (Louvain modularity), independent of directory layout
-- `impact_diff(since, staged)`: Map a git diff to the symbols it touches and report the downstream blast radius before committing
-- `heal()`: Check documentation health, --fix for auto-fix, --gc for orphan cleanup
-- `status()`: Get health score and actionable orphan count
-- `ready()`: Fast pre-commit gate — gen + lint + check + heal drift + audit (aden-only, no external tools)
-- `sync()`: Reconcile store — gen + check + heal with gc; use after merges or file deletions, NOT as a pre-commit step
-- `ci-check()`: Full gate suite including external tools (clippy, cargo audit, etc.); use before push
-- `gen()`: Generate contracts, --auto for whole project, --quiet for summary only
-- `check()`: Validate all references
-- `lint()`: Lint source files; --dead-code for graph-based unreferenced symbol detection
-- `test()`: Run tests
-- `complete()`: report contracts that need completion (automatic LLM filling is not yet implemented)
-
-## Best Practices:
-
-1. START WITH `ask()` for exploratory questions
-   - Good: "How does authentication work?"
-   - Good: "What is the main entry point?"
-   - Bad: "Show me everything" (too vague)
-
-2. USE `search()` when you know specific terms
-   - Good: `search("token budget")`
-   - Good: `search("AdenGraph struct")`
-
-3. USE `asm()` or `query()` when you have an anchor
-   - Good: `asm("module-aden-core", depth=2)`
-   - Good: `query("auth-module", depth=1)`
-
-4. USE `locate()` for symbols
-   - Good: `locate("main")`
-   - Good: `locate("authenticate_user")`
-
-5. CITE YOUR SOURCES
-   - Always mention which documents informed your answer
-   - Use the anchor names as citations
-
-## Understanding Aden Output:
-
-Aden returns **LLM-dense prose by default** — stripped of AsciiDoc markup noise:
-- No `[[anchor]]` lines (anchors are in the header comment only)
-- No `|===` table syntax (tables rendered as key: value pairs)
-- No `:key: value` attribute lines
-- No block delimiters (`----`, `====`, etc.)
-- Headings converted to plain text
-
-**Every token carries signal.**
+1. Use tree(symbols=true) once for a compact codebase map, then grep for
+   independent evidence; locate ambiguous symbol names.
+2. Use understand for a known symbol, query for backlinks/impact, and asm for a
+   bounded context bundle around a resolved anchor.
+3. Use ask only for one bounded question about a named symbol, file, subsystem,
+   or relationship. Stop and decompose the task when result_state is
+   needs_narrowing. Treat ambiguous routing, stale receipts, and truncation as
+   incomplete evidence.
+4. Never infer repository-wide completeness or absence from one graph result.
+   Verify consequential claims with distinct searches, targeted source reads,
+   tests, builds, and Git/filesystem tools as appropriate.
+5. Cite returned anchors. Omit tuning arguments and budgets unless the default
+   bounded response is demonstrably insufficient.
 ----
 
-If you need raw AsciiDoc (e.g. for an IDE renderer), opt in explicitly:
+Read responses are JSON with context receipts by default. Request human/LLM
+prose only for direct display. Raw AsciiDoc remains available explicitly:
 
 [source]
 ----
@@ -579,29 +647,29 @@ aden asm --from mod-aden-core --format aden .
 
 [source]
 ----
-1. ask("What is this project about?")
-2. ask("What are the main components?")
-3. list()  # See available anchors
-4. asm("architecture", depth=2)  # Get architecture context
+1. grep(pattern="entry point|main")
+2. locate(symbol="main")
+3. understand(symbol="main")
+4. ask(question="How does startup reach request handling?", from=<main-anchor>)
 ----
 
 === Pattern 2: Finding How Something Works
 
 [source]
 ----
-1. search("authentication")  # Find relevant docs
-2. locate("authenticate")  # Find the function
-3. asm("auth-function", depth=2)  # Get full context
+1. grep(pattern="authenticate")  # Independent content evidence
+2. locate(symbol="authenticate") # Resolve the canonical anchor
+3. asm(from=<auth-anchor>)         # Bounded context with defaults
 ----
 
 === Pattern 3: Making Changes Safely
 
 [source]
 ----
-1. locate("function_to_change")
-2. query("function_to_change", depth=2)  # See what depends on it
-3. ask("What breaks if I change X?")
-4. check()  # Validate no broken refs
+1. locate(symbol="function_to_change")
+2. query(impact=<resolved-anchor>) # See downstream risk
+3. Read the returned source ranges and make the edit
+4. Run project tests/build plus the configured Aden gate
 ----
 
 == Anti-Patterns
@@ -620,9 +688,17 @@ aden asm --from mod-aden-core --format aden .
 
 == Troubleshooting
 
+=== `aden ask` returns `needs_narrowing`
+
+Do not paraphrase until the guard stops firing. Split the request into distinct
+`grep` evidence queries, resolve each hit with `locate`, and use `query` or
+`asm` on the resulting anchors. If the question genuinely concerns one known
+neighborhood, pin that anchor with `from`.
+
 === `aden ask` returns "No relevant documents found"
 
-Try more specific keywords from actual anchors. Run `aden search <keyword>` to see what anchors exist.
+Try specific identifiers from the source. Run `aden grep <pattern>` to discover
+enclosing symbols and then resolve them with `locate`.
 
 === Output is too short
 

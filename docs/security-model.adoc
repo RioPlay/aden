@@ -133,9 +133,9 @@ Read-only access to resources.
 The `[constitution]` block declares governance rules with precedence-ranked directives:
 
 |===
-|Directive |Behavior (0.2.x advisory mode)
+|Directive |Behavior (0.3.x advisory mode)
 
-|`Forbid` |Reported in `diagnose`/`lint`/`check --json`; hard block deferred to enforce mode (0.3.0+)
+|`Forbid` |Reported in `diagnose`/`lint`/`check --json`; Aden 0.4.0 does not enable policy-engine hard blocking by default
 |`Warn` |Surfaces in output, CI passes
 |`Suggest` |Non-blocking recommendation
 |`Allow` |Explicitly permits an otherwise forbidden pattern
@@ -143,7 +143,7 @@ The `[constitution]` block declares governance rules with precedence-ranked dire
 
 Overrides require `:justification:` and `:reviewer:` attributes.
 
-NOTE: As of 0.2.x, `PolicyEngine` enforcement is **advisory** outside `ci-check`
+NOTE: As of 0.3.x, `PolicyEngine` enforcement is **advisory** outside `ci-check`
 bootstrap (`PolicyEngine::load_bootstrap` when `.aden/constitution.adoc` exists).
 `aden check` reference integrity (unresolved `<<ref>>`, orphans) is separate from
 constitutional policy. Full wiring is tracked in <<adr-010>> Phase 3.

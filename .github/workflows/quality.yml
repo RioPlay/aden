@@ -1,6 +1,10 @@
-name: Manual Quality
+name: Quality Gate
 
 on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -37,8 +41,7 @@ jobs:
         run: rustup toolchain install stable --profile minimal
 
       - name: Check every opt-in feature
-        run: |
-          cargo +stable check --locked --workspace --exclude aden-lsp --all-features
+        run: cargo +stable check --locked --workspace --exclude aden-lsp --all-features
 
       - name: Lint workspace
         run: cargo clippy --locked --workspace -- -D warnings

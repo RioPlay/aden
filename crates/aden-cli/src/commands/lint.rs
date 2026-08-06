@@ -229,25 +229,32 @@ pub fn cmd_lint(
         // Always valid JSON, including `[]` when there are no findings, so a
         // standalone `aden lint --json | jq` never sees empty/invalid stdout.
         println!("{}", serde_json::to_string_pretty(&filtered)?);
-    } else if filtered.is_empty() {
-        println!("No lint issues found.");
     } else {
-        println!(
-            "Issues found: {} error, {} warning, {} suggestion",
-            error_count, warn_count, suggest_count
-        );
-        println!();
-
-        for result in &filtered {
-            let severity_str = match result.severity {
-                LintSeverity::Error => "ERROR",
-                LintSeverity::Warn => "WARN",
-                LintSeverity::Suggest => "SUGGEST",
-            };
+        if filtered.is_empty() {
+            println!("No lint issues found.");
+        } else {
             println!(
-                "{}:{}:{} [{}] {}: {}",
-                result.file, result.line, result.column, severity_str, result.rule, result.message
+                "Issues found: {} error, {} warning, {} suggestion",
+                error_count, warn_count, suggest_count
             );
+            println!();
+
+            for result in &filtered {
+                let severity_str = match result.severity {
+                    LintSeverity::Error => "ERROR",
+                    LintSeverity::Warn => "WARN",
+                    LintSeverity::Suggest => "SUGGEST",
+                };
+                println!(
+                    "{}:{}:{} [{}] {}: {}",
+                    result.file,
+                    result.line,
+                    result.column,
+                    severity_str,
+                    result.rule,
+                    result.message
+                );
+            }
         }
     }
 

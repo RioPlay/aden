@@ -86,6 +86,22 @@ Overlay folding (`aden_core::overlay::fold_overlay`) still runs in memory after
 load — overlays stay in-tree under `.aden/overlays/` and are not embedded in the
 snapshot.
 
+==== Selective-read amendment
+
+Snapshot-first remains the contract for commands that need the complete graph.
+Keyed anchor lookup and bounded neighborhood traversal instead open fjall first
+and read only reached keys/adjacency lists. Symbol outlines read a compact
+`source_spans` keyspace rather than decoding complete documents, while routing
+signals can stream selected edge keys into target counts without constructing a
+petgraph. If a concurrent writer makes fjall unavailable, these paths fall back
+to the immutable snapshot. This preserves lock-free multi-agent behavior without
+deserializing 66,000 documents and all edges to answer a one-symbol question.
+Normal reads run a freshness pass before these projections, so the live store is
+authoritative; an index-layout version forces one automatic rebuild when a new
+required projection is introduced. Pinned/shared stores that cannot be safely
+auto-rebuilt retain a read-only full-document fallback. Full-graph and
+writer-contention paths retain the snapshot's consistency role.
+
 === 4. Writer queue + retry UX (Phase 2 — shipped)
 
 Writers (`gen`, and therefore `ready`/`sync`) already serialized via
@@ -137,9 +153,11 @@ immediately; failure only after the full timeout with holder details.
 |Path helper |`aden_paths::graph_snapshot_file`
 |Encode/decode + publish |`aden-graph/src/snapshot.rs`
 |Publish hook |`aden-cli/src/indexer/gen.rs` (end of `cmd_gen_inner`)
-|Snapshot-first load |`aden-graph/src/cache.rs::try_load`
+|Snapshot-first full-graph load |`aden-graph/src/cache.rs::try_load`
 |Shared snapshot reader |`aden-graph/src/snapshot.rs::try_read_fresh`
-|Depth-bounded neighborhood |`aden-graph/src/cache.rs::build_neighborhood_from_materialized`
+|Selective store-first neighborhood |`aden-graph/src/cache.rs::build_neighborhood_impl`
+|Compact source-span and edge-count projections |`aden-store/src/fjall_store.rs`
+|Snapshot neighborhood fallback |`aden-graph/src/cache.rs::build_neighborhood_from_materialized`
 |Unit test |round-trip serialize + freshness gate
 |Integration test |`store_directory_equivalence::gen_publishes_read_snapshot`
 |===

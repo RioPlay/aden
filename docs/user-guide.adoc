@@ -13,25 +13,27 @@ You have just cloned a repo and need to understand it fast.
 [source,bash]
 ----
 # First useful answer: no anchor or setup knowledge required.
-aden ask "What is the main entry point?"
+aden ask --human "What is the main entry point?"
 # Drill into a concrete symbol; ambiguity returns candidates rather than guessing.
-aden understand main .
+aden understand --human main .
 # Verify before acting on the answer.
 aden check . --severity Forbid
 ----
 
-`init`, explicit `gen`, communities, and anchor-based `query` remain useful
+`init`, explicit `gen`, communities, and explicit graph traversal remain useful
 advanced workflows; use them after this first answer when you need setup,
 orientation, or exact traversal control.
 
-NOTE: `aden query`/`aden asm` take a full `aden://…` anchor (or a module alias
-like `mod-<crate>`), **not** a bare symbol name. Always run `aden locate`,
-`aden grep`, or `aden list .` first to get the real anchor — a bare name returns
-`Anchor not found or ambiguous`.
+NOTE: `aden query` and `aden asm` accept a unique natural symbol name, a module
+alias such as `mod-<crate>`, or a full `aden://…` anchor. Exact anchors win;
+ambiguous names return sorted candidates without guessing. Run `aden locate` or
+`aden grep` first only when the name is repeated or you need canonical evidence.
 
 === What Each Step Gives You
 
-- `aden init` scaffolds `.agent/` with templates and `.adenignore`.
+- `aden init` builds the per-user index without adding project files. Use
+  `aden init --templates` only when the legacy `.agent/` governance workspace
+  and customizable `.adenignore` are wanted.
 - `aden gen` compiles every function, struct, and trait (public *and* private) into the per-user project store (run `aden store path` to see its location; store-first — no files are emitted into your working tree).
 - `aden check` guarantees there are no broken references or duplicate anchors.
 - `aden ask` gives you a token-bounded context prompt. Paste it into ChatGPT, Claude, or your local LLM and ask follow-ups.
@@ -56,7 +58,7 @@ aden locate --symbol old_function_name
 aden query --impact "$ANCHOR" --format json | jq '.[] | .anchor'
 
 # 3. Get context for the change
-aden ask "What breaks if I rename old_function_name?"
+aden ask --human "What breaks if I rename old_function_name?"
 #    (or, anchored:  aden asm --from "$ANCHOR" --depth 4 --budget 8192)
 
 # 4. Make your edits in your IDE, then regenerate affected contracts
@@ -128,7 +130,9 @@ NOTE: `aden new --lang` only scaffolds **rust**, **go**, or **typescript**
 `Language '<x>' not yet supported`. This is the *scaffold* language for a fresh
 skeleton — unrelated to the 300+ languages `aden gen` can *index*.
 
-Scaffolding produces `Cargo.toml` (workspace structure), `.agent/` (templates, constraints, session log), `.adenignore` (security-first defaults), and `docs/kickoff-my-project.adoc` (goals and acceptance criteria).
+`aden new` produces only the language's standard starter files and a per-user
+index. Agent guidance, governance templates, and kickoff documents are separate
+opt-ins; they are not added merely because Aden indexed the project.
 
 == Token Budgeting Strategies
 
@@ -152,7 +156,7 @@ If `aden ask` prints `OVER BUDGET` in the summary footer, it stopped early. Eith
 
 | `DuplicateAnchor` | Two files declare the same `[[anchor]]` | Rename one anchor
 | `UnresolvedReference` | A `<<ref>>` points to a missing anchor | Create the target doc or fix the typo
-| `Anchor '<name>' not found or ambiguous` | A bare symbol/file name passed to `asm`/`query` `--from`/`--backlinks`/`--impact` | Resolve it to a real `aden://…` anchor first with `aden grep`, `aden locate --symbol <name>`, or `aden list .`
+| `Ambiguous symbol '<name>'` | Several definitions have the same best natural-name match | Choose one listed candidate anchor, or run `aden locate --symbol <name>` for source context
 | `No relevant documents found` | Search keywords do not match anchors | Use `aden search` to discover anchor names
 | Empty `aden ask` output | Token budget exhausted on first node | Lower depth or raise budget
 | Generated contracts have empty signatures | The parser does not recognize the language | Add a language adapter or write manual `.adoc`
@@ -177,7 +181,7 @@ aden ask "How does assemble() work?"
 aden ask --from "aden://doc/aden/aden---module-aden-asm-traverse.rs-assemble.adoc/h2signature" "How does it work?"
 
 # Or qualify with crate/module prefix
-aden ask "How does aden_asm::traverse::assemble work?"
+aden ask --human "How does aden_asm::traverse::assemble work?"
 ----
 
 Prevention: run `aden sync .` (gen + check + heal) after large refactors.
@@ -243,8 +247,10 @@ are indexed via tree-sitter, but call sites are _not_ resolved; no call edges ar
 emitted. Applies to all other languages wired in `ext_to_language_pack_id`
 (currently ~113 language IDs covering ~156 extensions — including PowerShell
 `.ps1`/`.psm1`/`.psd1`, Zig, Swift, Haskell, Elixir, Lua, Solidity, and more).
-The bundled grammar pack contains 305+ grammars; expose additional languages by
-adding entries to `ext_to_language_pack_id` in `crates/aden-parse/src/router.rs`.
+The default binary statically bundles the deep-language set plus common
+config/web/data grammars. Build with `TSLP_LANGUAGES=all` to include all 305
+available grammars; expose additional languages by adding entries to
+`ext_to_language_pack_id` in `crates/aden-parse/src/router.rs`.
 
 Queries that traverse call edges (`aden asm --depth N`, `aden query backlinks`) will
 return richer results for deep-tier languages.
@@ -263,7 +269,7 @@ Every use case follows the same arc: **Ingest** raw material, **Extract** entiti
 
 === 1. Software Engineering (Implemented Today)
 
-Aden extracts symbols, call graphs, and API contracts from source (deep-extractor languages: Rust, Python, Go, TypeScript/JavaScript, Java, C#, C, Ruby, PHP, Kotlin), or symbols and structure only for all other languages, producing a machine-readable graph that AI agents and humans query without reading every file. The real refactor flow is *find* the symbol, then *assemble* context from its stable `aden://…` anchor — you copy the anchor the tool returns rather than hand-typing it.
+Aden extracts symbols, call graphs, and API contracts from source (deep-extractor languages: Rust, Python, Go, TypeScript/JavaScript, Java, C#, C, Ruby, PHP, Kotlin), or symbols and structure only for all other languages, producing a machine-readable graph that AI agents and humans query without reading every file. The shortest refactor flow uses a unique natural symbol name directly; canonical `aden://…` anchors remain available when a name is repeated or evidence must be pinned exactly.
 
 [source,bash]
 ----
@@ -271,17 +277,13 @@ Aden extracts symbols, call graphs, and API contracts from source (deep-extracto
 $ aden grep "fn cmd_asm"
 crates/aden-cli/src/commands/query.rs:231  (cmd_asm): pub fn cmd_asm(opts: AsmOptions) -> ...
 
-# 2. Resolve the name to its stable anchor
-$ aden locate --symbol cmd_asm
-aden://doc/aden/aden---module-aden-cli-query.rs-cmd_asm.adoc/h2signature   heading ...
-
-# 3. Assemble token-dense context (BFS under a budget: signature + referenced symbols)
-$ aden asm --from "aden://doc/aden/aden---module-aden-cli-query.rs-cmd_asm.adoc/h2signature" --depth 1
+# 2. Assemble token-dense context directly from the unique symbol name
+$ aden asm --from cmd_asm --depth 1
 Signature: Name cmd_asm  Visibility Private  param opts: AsmOptions  Returns Result<(), ...>
 ensure_fresh, load_or_build_index, resolve_anchor_fuzzy, assemble_adg, ... (callees within budget)
 
-# 4. Blast radius via the graph
-$ aden query --backlinks "aden://module/aden/aden---module-aden-cli-query.rs-cmd_asm.adoc#code_block_3"
+# 3. Blast radius via the same natural name
+$ aden query --backlinks cmd_asm
 [ { "anchor": "mod-aden", "depth": 1, "node_type": "Module" } ]
 ----
 

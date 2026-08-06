@@ -443,8 +443,12 @@ pub fn cmd_ci_check(path: &Path, json: bool) -> Result<(), Box<dyn std::error::E
                         format!("Invalid bootstrap constitution: {}", e).into()
                     })
             });
-        } else if !json {
-            println!("[CI] SKIP: constitutional firewall — no .aden/constitution.adoc (optional)");
+        } else {
+            if !json {
+                println!(
+                    "[CI] SKIP: constitutional firewall — no .aden/constitution.adoc (optional)"
+                );
+            }
         }
     }
 
@@ -582,6 +586,15 @@ pub fn cmd_ci_check(path: &Path, json: bool) -> Result<(), Box<dyn std::error::E
                 // project source.  They may record request hashes/tokens and
                 // must neither be scanned nor accidentally released.
                 || rel_path.components().any(|c| c.as_os_str() == ".gstack")
+                // Cargo permits alternate target directories (for example,
+                // `CARGO_TARGET_DIR=target-0.4`). They contain compiler metadata
+                // and commit hashes, never source; scanning them creates false
+                // credential alarms and makes CI depend on local build residue.
+                || rel_path.components().any(|c| {
+                    c.as_os_str()
+                        .to_str()
+                        .is_some_and(|name| name == "target" || name.starts_with("target-"))
+                })
             {
                 continue;
             }

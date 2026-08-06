@@ -37,13 +37,14 @@ load the snapshot instead of opening fjall. Writers single-flight on `store.lock
 | Natural-language question over the code/docs | `ask "how does X work?"` |
 | Keyword retrieval of relevant context | `search "keywords"` |
 | Find a symbol's definition + call sites | `locate --symbol <name>` |
-| Assemble a token-budgeted context bundle around an anchor | `asm <anchor>` |
-| Blast radius — what references this (before a refactor) | `query --backlinks <anchor>` |
-| Blast radius — downstream reach | `query --impact <anchor>` |
-| Walk the graph N hops from an anchor | `query --from <anchor> --depth 2` |
+| Assemble token-budgeted context around a unique name or anchor | `asm --from <name-or-anchor>` |
+| Blast radius — what references this (before a refactor) | `query --backlinks <name-or-anchor>` |
+| Blast radius — downstream reach | `query --impact <name-or-anchor>` |
+| Walk the graph N hops | `query --from <name-or-anchor> --depth 2` |
 
-**Canonical flow:** `grep` to find the structure → take the enclosing symbol it returns
-→ feed that anchor to `asm`/`query` to traverse → `ask` for an explanation.
+**Canonical flow:** use `ask` for one bounded question; use `asm`/`query` directly
+for a known unique symbol; use `grep`/`locate` for discovery or disambiguation.
+Exact anchors remain available for precision, and ambiguous names return candidates.
 
 ## Validate, heal, test
 
@@ -69,25 +70,33 @@ load the snapshot instead of opening fjall. Writers single-flight on `store.lock
 <!-- BEGIN aden:guidance (managed by `aden init` — edit outside this block) -->
 ## Using aden
 
-Use the **aden** MCP tools (or `aden <cmd>` on the shell) to navigate this
-codebase — not raw `grep`/`find`. Every aden result is tagged with its enclosing
-symbol, which is the anchor you feed back into the graph.
+**Use the aden MCP tools (or `aden <cmd>` on the shell) for ALL code navigation —
+not raw `grep`/`find`/`cat`.** They are structure-aware (every result is tagged
+with its enclosing symbol = the anchor you feed back into the graph) and far
+cheaper in tokens than reading whole files. This applies to any subagents you
+spawn too — tell them to use aden, since they do not inherit this guidance.
 
-**The graph is fresh by construction** on shell and MCP — read tools auto-reindex
-changed files. JSON may include `freshness` / `index_stale` when answering from a
-snapshot during refresh. Only run `gen` after large *external* changes.
+**The graph is fresh by construction.** Read tools (`ask`, `search`, `grep`,
+`locate`, `query`, `asm`) auto-reindex any file changed since the last run. You do
+**not** need `gen` before a session or after your own edits — only after large
+*external* changes (cloning, a big merge, generated code).
 
 | Goal | Tool |
 | --- | --- |
 | Structure-aware search (returns enclosing symbol = anchor) | `grep "pattern"` |
 | Natural-language question over the code | `ask "how does X work?"` |
 | Find a symbol's definition + call sites | `locate --symbol <name>` |
-| Token-budgeted context bundle around an anchor | `asm <anchor>` |
-| Blast radius — what references this | `query --backlinks <anchor>` |
-| Blast radius — downstream reach | `query --impact <anchor>` |
+| Token-budgeted context around a unique symbol or anchor | `asm --from <name-or-anchor>` |
+| Blast radius — what references this | `query --backlinks <name-or-anchor>` |
+| Blast radius — downstream reach | `query --impact <name-or-anchor>` |
 
-**Flow:** `grep` → take the enclosing symbol → `asm`/`query` to traverse → `ask`
-to explain. Validate with `check . --severity Forbid`; resync drift with `heal`.
+Unique natural symbol names work directly in `asm` and `query`. Exact anchors
+remain available for repeated names; ambiguity returns sorted candidates and
+Aden never guesses from fuzzy/substring suggestions.
+
+**Flow:** use `ask` for one bounded question; use `asm`/`query` directly for a
+known unique symbol; use `grep`/`locate` when discovery or disambiguation is
+needed. Validate with `check . --severity Forbid`; resync drift with `heal`.
 
 See `.agent/aden-guide.adoc` for the full reference.
 <!-- END aden:guidance -->

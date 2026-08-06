@@ -21,7 +21,10 @@ read results and is preserved verbatim by the MCP CLI bridge:
   "index_stale": false,
   "context_receipt": {
     "schema_version": 1,
-    "freshness": "current"
+    "freshness": "current",
+    "graph_revision": "7cc7e6af741f2658",
+    "observed_source_fingerprint": "df66a930273e405b",
+    "refresh_cause": "none"
   }
 }
 ----
@@ -40,9 +43,16 @@ legacy shape does not receive a v1 receipt until its producer migrates the key.
 == Schema v1
 
 `schema_version` is required. `freshness` is optional and mirrors Aden's legacy
-freshness label. Receipt v1 intentionally defines no revision, coverage, budget,
-retrieval, outcome, or warning fields; their owning packets add them only after
-their semantics are settled.
+freshness label. Current structured reads also include additive revision proof:
+`graph_revision` identifies the published graph snapshot,
+`observed_source_fingerprint` identifies the source tree seen by the read, and
+`refresh_cause` records why a refresh was or was not attempted. Consumers must
+still tolerate a minimal version-only receipt when a strict transport budget is
+too small for optional metadata.
+
+Receipt v1 intentionally defines no coverage, budget, retrieval, outcome, or
+warning fields; their owning packets add them only after their semantics are
+settled.
 
 Receipt producers must not include
 source text, query text, credentials, tokens, arbitrary diagnostic messages, or

@@ -36,13 +36,55 @@ python3 scripts/agent_bench.py \
   --md /tmp/aden-agent-bench.md
 ```
 
-Add `--model <model>` to pin a Codex model. A complete pilot is 24 model runs:
+Add `--model <model>` to pin a Codex model. A complete pilot is 28 model runs, including a misspelled-symbol journey that
+measures whether agents follow Aden's deterministic suggestions without treating
+them as automatically selected traversal targets:
 
 ```bash
 python3 scripts/agent_bench.py --runs 1 --json results.json --md results.md
 ```
 
-Use `--runs 3` for comparison-quality results. The deterministic scorer is a
+Use `--runs 3` for comparison-quality results.
+
+## Multiple providers
+
+Use the provider-neutral command engine for Anthropic, OpenAI, Google, local,
+or future agent CLIs through a small adapter executable:
+
+```bash
+python3 scripts/agent_bench.py \
+  --engine command \
+  --agent-command './provider-adapter' \
+  --provider anthropic \
+  --model claude-example \
+  --runs 1
+```
+
+The command is parsed directly into an argument vector and is never evaluated
+by a shell. The harness prompt requires read-only work, but the external adapter
+must enforce its provider's read-only sandbox. It runs in the selected repository
+and receives:
+
+* `ADEN_BENCH_PROMPT_FILE`
+* `ADEN_BENCH_SCHEMA_FILE`
+* `ADEN_BENCH_ANSWER_FILE`
+* `ADEN_BENCH_TRAJECTORY_FILE`
+* `ADEN_BENCH_REPOSITORY`
+* `ADEN_BENCH_CONDITION`
+* `ADEN_BENCH_PROVIDER`
+* `ADEN_BENCH_MODEL`
+
+It must write the schema-conforming JSON answer to `ADEN_BENCH_ANSWER_FILE`, or
+print that JSON on stdout. It may write a JSON array of `{tool, name, command}`
+records to `ADEN_BENCH_TRAJECTORY_FILE` (maximum 1,000 records; strings are
+bounded). Aden-condition runs without a reported Aden invocation remain
+method-noncompliant rather than receiving assumed credit.
+
+Keep authentication, sandboxing, and provider SDKs in the external adapter; the
+committed harness remains provider-neutral. Adapter trajectories are
+self-reported evidence, not a security boundary, so published comparisons should
+include the adapter and raw records. Reports record engine, provider, and model
+so results cannot be accidentally conflated. The deterministic scorer is a
 regression gate, not a prose-quality judge: publish its raw records and manually
 or blindly review disputed answers before making product claims.
 

@@ -18,10 +18,18 @@ The definitive record-role and supersession map is <<roadmap-authority>>.
 `status` is a durable repository state. `proposed` means locked, `ready` means
 dependencies are satisfied, and only `done` satisfies a dependent packet.
 `invalidated` and `abandoned` preserve terminal evidence without unlocking work.
-GitHub owns delivery state for open work: `packet-ready`, `packet-claimed`,
-`packet-review`, and `packet-blocked`. Closure is mirrored as a closed
-`packet-done` or `packet-cancelled` issue. Run `python3 scripts/reconcile_roadmap.py`
-before dispatch and at milestone review; CI runs the offline structural validator.
+GitHub issues are optional delivery mirrors, not prerequisites for repository work.
+When a packet has a linked issue, GitHub owns its live coordination state:
+`packet-ready`, `packet-claimed`, `packet-review`, and `packet-blocked`; closure is
+mirrored as a closed `packet-done` or `packet-cancelled` issue. Issues created by
+RioPlay for Aden work receive the highest coordination weight.
+Third-party issues, proposals, or changes that introduce a new dependency,
+compatibility surface, security posture, or governance commitment require BDFL
+review and explicit approval before admission or implementation. Other external
+issues are advisory input and receive lower priority. Run
+`python3 scripts/reconcile_roadmap.py` before dispatch and at milestone review;
+linked issues are checked, while packets without issues remain valid. CI runs the
+offline structural validator.
 
 == Packet admission
 
@@ -35,8 +43,9 @@ no new behavior.
 == Claim lease
 
 A claim records agent, worktree, claim time, expiry, and last progress time in
-the GitHub issue. Default lease: 24 hours. An expired claim returns to `ready`
-unless commits or evidence justify renewal. Before claiming, compare packet scope
+the linked GitHub issue when one exists; otherwise it belongs in the packet's
+delivery record or active session record. Default lease: 24 hours. An expired
+claim returns to `ready` unless commits or evidence justify renewal. Before claiming, compare packet scope
 and `aden impact-diff` results with active packets; overlapping surfaces require
 explicit coordination.
 
@@ -59,12 +68,16 @@ or criteria to make their approach pass.
 == States
 
 Repository: `proposed -> ready -> done`.
-GitHub delivery: `packet-ready -> packet-claimed -> packet-review -> packet-done`.
+Optional GitHub delivery: `packet-ready -> packet-claimed -> packet-review ->
+packet-done`.
 
 `packet-blocked` and rework are live delivery states; they leave repository status
-unchanged. `invalidated` and `abandoned` are repository terminal states paired
-with `packet-cancelled`. Preserve evidence and rejected approaches for all
-terminal outcomes. A partial implementation remains open and never unlocks work.
+unchanged. If maintainers close a blocked issue administratively, it retains the
+`packet-blocked` label and the repository packet remains `ready`, so the work can
+be resumed without silently unlocking dependents. `invalidated` and `abandoned`
+are repository terminal states paired with `packet-cancelled`. Preserve evidence
+and rejected approaches for all terminal outcomes. A partial implementation
+remains open and never unlocks work.
 
 == Evidence levels
 

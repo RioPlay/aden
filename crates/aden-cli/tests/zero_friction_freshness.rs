@@ -104,6 +104,47 @@ fn store_path(project: &Path, data: &Path) -> PathBuf {
 }
 
 #[test]
+fn old_layout_manifest_and_gen_cache_trigger_one_automatic_rebuild() {
+    let (project, data) = scaffold();
+    let first = json(&project, &data, &["tree", "--symbols", "."]);
+    assert_eq!(first["freshness"], "current");
+
+    let state_dir = store_path(&project, &data)
+        .parent()
+        .expect("store has project-state parent")
+        .to_path_buf();
+    let manifest_path = state_dir.join("freshness.json");
+    let cache_path = state_dir.join("gen-cache.json");
+
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+    manifest
+        .as_object_mut()
+        .unwrap()
+        .remove("index_layout_version");
+    std::fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+
+    let mut cache: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&cache_path).unwrap()).unwrap();
+    cache["version"] = 6.into();
+    std::fs::write(&cache_path, serde_json::to_vec(&cache).unwrap()).unwrap();
+
+    let rebuilt = json(&project, &data, &["tree", "--symbols", "."]);
+    assert_eq!(rebuilt["freshness"], "current");
+    assert!(rebuilt["returned_symbol_count"].as_u64().unwrap_or(0) >= 2);
+
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(manifest_path).unwrap()).unwrap();
+    assert_eq!(manifest["index_layout_version"], 3);
+    let cache: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(cache_path).unwrap()).unwrap();
+    assert_eq!(cache["version"], 8);
+
+    let _ = std::fs::remove_dir_all(project);
+    let _ = std::fs::remove_dir_all(data);
+}
+
+#[test]
 fn delete_source_makes_index_stale_then_grep_prunes() {
     let (project, data) = scaffold();
     let gen_out = run(&project, &data, &["gen", "."]);

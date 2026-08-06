@@ -1135,11 +1135,14 @@ Hello world.
             .iter()
             .any(|e| matches!(e, DriftEvent::BrokenReference { .. }));
 
-        // OrphanAnchor detection depends on the graph build; BrokenReference is more likely
-        if !has_orphan && !has_broken_ref {
-            // If no structural issues detected, the scanner at least ran without panicking
-            // Scanner ran successfully; structural checks depend on graph construction details
-        }
+        // The document references <<nonexistent>>, so a BrokenReference must be
+        // detected regardless of graph-build internals. OrphanAnchor depends on
+        // graph structure but BrokenReference is a direct referential check.
+        assert!(
+            has_orphan || has_broken_ref,
+            "Scanner must detect orphan anchor or broken reference for <<nonexistent>>. Events: {:?}",
+            events
+        );
     }
 
     #[test]

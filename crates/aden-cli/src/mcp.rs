@@ -3,7 +3,7 @@
 //! MCP (Model Context Protocol) integration installer.
 //!
 //! Configures the `aden-mcp` binary as an MCP server for popular AI agent
-//! platforms: opencode, Claude Code, Cursor, Codex, Zed, and Windsurf.
+//! platforms: Amp, opencode, Claude Code, Cursor, Codex, Zed, and Windsurf.
 
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -16,6 +16,7 @@ const DEFAULT_SERVER_NAME: &str = "aden";
 /// Supported MCP platforms.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Platform {
+    Amp,
     OpenCode,
     ClaudeCode,
     Cursor,
@@ -27,6 +28,7 @@ pub enum Platform {
 impl Platform {
     pub fn all() -> &'static [Platform] {
         &[
+            Platform::Amp,
             Platform::OpenCode,
             Platform::ClaudeCode,
             Platform::Cursor,
@@ -38,6 +40,7 @@ impl Platform {
 
     pub fn from_name(name: &str) -> Option<Platform> {
         match name.to_lowercase().as_str() {
+            "amp" | "ampcode" | "amp-code" => Some(Platform::Amp),
             "opencode" | "open-code" | "open_code" => Some(Platform::OpenCode),
             "claude" | "claude-code" | "claudecode" => Some(Platform::ClaudeCode),
             "cursor" => Some(Platform::Cursor),
@@ -50,6 +53,7 @@ impl Platform {
 
     pub fn display_name(&self) -> &'static str {
         match self {
+            Platform::Amp => "Amp",
             Platform::OpenCode => "opencode",
             Platform::ClaudeCode => "Claude Code",
             Platform::Cursor => "Cursor",
@@ -63,6 +67,16 @@ impl Platform {
     pub fn config_paths(&self) -> Vec<PathBuf> {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"));
         match self {
+            // Amp stores MCP servers in its normal user/workspace settings,
+            // under the literal `amp.mcpServers` setting key. JSONC is also
+            // supported by Amp; plain JSON is the safe write target because
+            // Aden's config merger preserves JSON values, not comments.
+            Platform::Amp => vec![
+                PathBuf::from(".amp/settings.json"),
+                PathBuf::from(".amp/settings.jsonc"),
+                home.join(".config/amp/settings.json"),
+                home.join(".config/amp/settings.jsonc"),
+            ],
             Platform::OpenCode => vec![
                 PathBuf::from(".opencode/opencode.json"),
                 PathBuf::from(".opencode/opencode.jsonc"),
@@ -103,6 +117,10 @@ impl Platform {
     /// their config files/directories existing.
     pub fn is_detected(&self) -> bool {
         match self {
+            Platform::Amp => {
+                executable_on_path("amp").is_some()
+                    || self.config_paths().iter().any(|p| p.exists())
+            }
             Platform::ClaudeCode => {
                 claude_code_installed() || self.config_paths().iter().any(|p| p.exists())
             }
@@ -119,6 +137,7 @@ impl Platform {
     /// For TOML platforms (Codex) this is the table name (`mcp_servers`).
     pub fn server_config_key(&self) -> &'static str {
         match self {
+            Platform::Amp => "amp.mcpServers",
             Platform::OpenCode => "mcp",
             Platform::ClaudeCode | Platform::Cursor | Platform::Windsurf => "mcpServers",
             Platform::Codex => "mcp_servers",
@@ -143,6 +162,10 @@ impl Platform {
             args.push(s.to_string());
         }
         match self {
+            Platform::Amp => serde_json::json!({
+                "command": binary,
+                "args": args,
+            }),
             Platform::OpenCode => {
                 let mut command = vec![binary.to_string()];
                 command.extend(args.iter().cloned());
@@ -235,14 +258,12 @@ impl Preset {
     }
 }
 
-/// The scope to use when the user didn't pass `--scope`. Claude Code's canonical
-/// MCP install is user-scoped (`claude mcp add -s user` / `~/.claude.json`);
-/// Windsurf only has a user-global config. Everything else defaults to project.
-fn default_scope(platform: &Platform) -> Scope {
-    match platform {
-        Platform::ClaudeCode | Platform::Windsurf => Scope::User,
-        _ => Scope::Project,
-    }
+/// The default is one user-global server. `aden-mcp` selects the active
+/// repository from MCP Roots or the host workspace at runtime, so a global
+/// registration works across folders without baking a project path into config.
+/// `--scope project` remains available for an explicitly repository-bound setup.
+fn default_scope(_platform: &Platform) -> Scope {
+    Scope::User
 }
 
 /// True if Claude Code appears installed on this machine — the user-global
@@ -303,7 +324,12 @@ fn run_claude_cli(args: &[&str]) -> Result<(), String> {
 
 /// Install aden as a user-scoped Claude Code MCP server via the `claude` CLI.
 /// We shell out rather than hand-edit the large, stateful `~/.claude.json`.
-fn install_claude_user(binary: &str, server_name: &str, dry_run: bool) -> Result<(), String> {
+fn install_claude_user(
+    binary: &str,
+    surface: Option<&str>,
+    server_name: &str,
+    dry_run: bool,
+) -> Result<(), String> {
     if claude_user_configured(server_name) {
         println!("  ✓ {server_name} already configured (user scope) in ~/.claude.json");
         println!(
@@ -311,12 +337,28 @@ fn install_claude_user(binary: &str, server_name: &str, dry_run: bool) -> Result
         );
         return Ok(());
     }
+    let mut owned = vec![
+        "mcp".to_string(),
+        "add".to_string(),
+        server_name.to_string(),
+        "-s".to_string(),
+        "user".to_string(),
+        "--".to_string(),
+        binary.to_string(),
+    ];
+    if let Some(surface) = surface {
+        owned.extend(["--surface".to_string(), surface.to_string()]);
+    }
+    let args: Vec<_> = owned.iter().map(String::as_str).collect();
     if dry_run {
-        println!("  [dry-run] Would run: claude mcp add {server_name} -s user -- {binary}");
+        println!("  [dry-run] Would run: claude {}", owned.join(" "));
         return Ok(());
     }
-    run_claude_cli(&["mcp", "add", server_name, "-s", "user", "--", binary])?;
-    println!("  ✓ Configured (user scope) via: claude mcp add {server_name} -s user -- {binary}");
+    run_claude_cli(&args)?;
+    println!(
+        "  ✓ Configured (user scope) via: claude {}",
+        owned.join(" ")
+    );
     Ok(())
 }
 
@@ -348,6 +390,15 @@ fn config_path_for_scope(platform: &Platform, scope: Scope) -> PathBuf {
     .unwrap_or_else(|| paths[0].clone())
 }
 
+fn config_path_for_install(platform: &Platform, scope: Scope, project: &Path) -> PathBuf {
+    let selected = config_path_for_scope(platform, scope);
+    if selected.is_relative() {
+        project.join(selected)
+    } else {
+        selected
+    }
+}
+
 /// Make a path absolute without requiring it to exist.
 fn absolute_path(path: &Path) -> Result<PathBuf, String> {
     if path.is_absolute() {
@@ -357,6 +408,15 @@ fn absolute_path(path: &Path) -> Result<PathBuf, String> {
             .map(|cwd| cwd.join(path))
             .map_err(|e| e.to_string())
     }
+}
+
+/// Resolve an executable through PATH without adding a dependency.
+fn executable_on_path(name: &str) -> Option<PathBuf> {
+    std::env::var_os("PATH").and_then(|paths| {
+        std::env::split_paths(&paths)
+            .map(|dir| dir.join(name))
+            .find(|candidate| candidate.is_file())
+    })
 }
 
 /// Read a JSON config file, or return an empty object.
@@ -494,16 +554,12 @@ fn install_platform(
     // than writing a project file (the canonical, common-case install).
     let scope = requested_scope.unwrap_or_else(|| default_scope(platform));
     if matches!(platform, Platform::ClaudeCode) && scope == Scope::User {
-        return install_claude_user(&binary, server_name, dry_run);
+        return install_claude_user(&binary, surface, server_name, dry_run);
     }
 
-    // File-based install. With an explicit scope, pick the matching config
-    // path; otherwise keep the historical "first existing, else project-local"
-    // auto behavior so other platforms are unaffected.
-    let config_path = match requested_scope {
-        Some(s) => config_path_for_scope(platform, s),
-        None => active_config_path(platform),
-    };
+    // Scope is a policy decision, not "whichever config happens to exist".
+    // Resolve project-local paths against --project rather than process CWD.
+    let config_path = config_path_for_install(platform, scope, Path::new(project.as_ref()));
     let key = platform.server_config_key();
 
     if platform.is_toml() {
@@ -553,6 +609,7 @@ fn install_platform(
 /// Remove aden MCP from one platform.
 fn uninstall_platform(
     platform: &Platform,
+    project: Option<&Path>,
     requested_scope: Option<Scope>,
     server_name: &str,
     dry_run: bool,
@@ -562,9 +619,11 @@ fn uninstall_platform(
         return uninstall_claude_user(server_name, dry_run);
     }
 
-    let config_path = match requested_scope {
-        Some(s) => config_path_for_scope(platform, s),
-        None => active_config_path(platform),
+    // Project-scoped uninstall must resolve relative client config paths
+    // against the same `--project` directory used by install, never CWD.
+    let config_path = match (scope, project) {
+        (Scope::Project, Some(project)) => config_path_for_install(platform, scope, project),
+        _ => config_path_for_scope(platform, scope),
     };
     if !config_path.exists() {
         println!("  ✗ No config file: {}", config_path.display());
@@ -752,21 +811,29 @@ pub fn run_install(
     // `aden` CLI — configuring `aden <project>` as the command would fail (it
     // isn't a subcommand). Default to the `aden-mcp` sibling of the running
     // executable; honor an explicit --bin override.
+    let mcp_name = if cfg!(windows) {
+        "aden-mcp.exe"
+    } else {
+        "aden-mcp"
+    };
     let binary = if let Some(b) = binary_override {
-        b.to_path_buf()
+        let resolved = absolute_path(b)?;
+        if !resolved.is_file() {
+            return Err(format!("MCP binary does not exist: {}", resolved.display()).into());
+        }
+        resolved
     } else {
         let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-        let mcp_name = if cfg!(windows) {
-            "aden-mcp.exe"
-        } else {
-            "aden-mcp"
-        };
         exe.parent()
             .map(|d| d.join(mcp_name))
-            .filter(|p| p.exists())
-            .unwrap_or_else(|| PathBuf::from("aden-mcp"))
+            .filter(|p| p.is_file())
+            .or_else(|| executable_on_path(mcp_name))
+            .ok_or_else(|| {
+                format!(
+                    "Could not find {mcp_name} beside aden or on PATH. Install aden-mcp before modifying client configuration."
+                )
+            })?
     };
-    let binary = absolute_path(&binary)?;
 
     // Resolve project
     let project = if let Some(p) = project_override {
@@ -825,12 +892,19 @@ pub fn run_install(
     println!();
     println!("Important: Restart your AI agent platform for changes to take effect.");
 
+    if fail > 0 {
+        return Err(std::io::Error::other(format!(
+            "MCP installation failed for {fail} platform(s)"
+        ))
+        .into());
+    }
     Ok(())
 }
 
 /// Remove aden MCP from selected platforms.
 pub fn run_uninstall(
     names: &[String],
+    project: Option<&Path>,
     scope_name: Option<&str>,
     preset_name: Option<&str>,
     server_name: Option<&str>,
@@ -838,6 +912,7 @@ pub fn run_uninstall(
     dry_run: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let scope = parse_scope(scope_name);
+    let project = project.map(absolute_path).transpose()?;
     let preset = parse_preset(preset_name)?;
     let server_name = resolve_server_name(preset, server_name)?;
     let platforms: Vec<Platform> = if names.is_empty() {
@@ -887,7 +962,7 @@ pub fn run_uninstall(
             platform.display_name(),
             eff.label()
         );
-        match uninstall_platform(platform, scope, &server_name, dry_run) {
+        match uninstall_platform(platform, project.as_deref(), scope, &server_name, dry_run) {
             Ok(()) => ok += 1,
             Err(e) => {
                 eprintln!("  Error: {}", e);
@@ -903,6 +978,11 @@ pub fn run_uninstall(
         println!("Done. Updated {} platform(s). {} failed.", ok, fail);
     }
 
+    if fail > 0 {
+        return Err(
+            std::io::Error::other(format!("MCP uninstall failed for {fail} platform(s)")).into(),
+        );
+    }
     Ok(())
 }
 
@@ -947,7 +1027,10 @@ pub fn run_list(
                 )
             }
         } else {
-            let config_path = active_config_path(platform);
+            // List the same user-global location that a default install writes.
+            // Do not let an unrelated project config make a global installation
+            // look absent when the command is run from another folder.
+            let config_path = config_path_for_scope(platform, default_scope(platform));
             let configured = config_path.exists()
                 && is_configured_at(&config_path, platform, &server_name).unwrap_or(false);
             let path_str = if config_path.exists() {
@@ -982,12 +1065,14 @@ pub fn run_list(
         "To uninstall: aden mcp uninstall [--platform <platform>] [--scope user|project] [--preset explore|verify|admin] [--name {server_name}] [--all]"
     );
     println!();
-    println!("Scope: Claude Code defaults to user (global, via `claude mcp add -s user`);");
-    println!("       this is one global `aden` server, not one server per folder.");
-    println!("       Use `--scope project` inside each repo for per-folder servers.");
+    println!("Scope: every platform defaults to one user/global server that follows MCP Roots.");
+    println!("       Use `--scope project` only for an intentionally repository-local server.");
+    println!(
+        "       Amp project config lives in `.amp/settings.json` and may require Amp approval."
+    );
+    println!("       Claude Code uses `claude mcp add -s user` for its global server.");
     println!("       Use `--preset explore|verify|admin` for token-scoped local profiles.");
     println!("       Use `--name` and `--surface` only when overriding a preset.");
-    println!("       Other platforms default to a project-local config file.");
 
     Ok(())
 }
@@ -1060,6 +1145,7 @@ mod tests {
     fn only_codex_is_toml() {
         assert!(Platform::Codex.is_toml());
         for p in [
+            Platform::Amp,
             Platform::ClaudeCode,
             Platform::Cursor,
             Platform::OpenCode,
@@ -1068,6 +1154,29 @@ mod tests {
         ] {
             assert!(!p.is_toml(), "{} should be JSON", p.display_name());
         }
+    }
+
+    #[test]
+    fn amp_uses_settings_mcp_namespace() {
+        assert_eq!(Platform::from_name("amp"), Some(Platform::Amp));
+        assert_eq!(Platform::from_name("ampcode"), Some(Platform::Amp));
+        let paths = Platform::Amp.config_paths();
+        assert!(
+            paths
+                .iter()
+                .any(|p| p == &PathBuf::from(".amp/settings.json"))
+        );
+        assert!(
+            paths
+                .iter()
+                .any(|p| p.ends_with(".config/amp/settings.json"))
+        );
+        assert_eq!(Platform::Amp.server_config_key(), "amp.mcpServers");
+        assert_eq!(default_scope(&Platform::Amp), Scope::User);
+
+        let value = Platform::Amp.aden_config("aden-mcp", "/proj", Some("standard"));
+        assert_eq!(value["command"], "aden-mcp");
+        assert_eq!(value["args"], serde_json::json!(["--surface", "standard"]));
     }
 
     #[test]
@@ -1320,17 +1429,14 @@ mod tests {
     }
 
     #[test]
-    fn claude_and_windsurf_default_to_user_scope() {
-        assert_eq!(default_scope(&Platform::ClaudeCode), Scope::User);
-        assert_eq!(default_scope(&Platform::Windsurf), Scope::User);
-        // Everything else stays project-local by default.
-        for p in [
-            Platform::Cursor,
-            Platform::Codex,
-            Platform::Zed,
-            Platform::OpenCode,
-        ] {
-            assert_eq!(default_scope(&p), Scope::Project, "{}", p.display_name());
+    fn every_platform_defaults_to_one_user_scoped_server() {
+        for platform in Platform::all() {
+            assert_eq!(
+                default_scope(platform),
+                Scope::User,
+                "{}",
+                platform.display_name()
+            );
         }
     }
 
@@ -1349,11 +1455,78 @@ mod tests {
     }
 
     #[test]
+    fn project_install_path_is_resolved_against_project_not_cwd() {
+        let project = Path::new("/chosen/repository");
+        assert_eq!(
+            config_path_for_install(&Platform::Cursor, Scope::Project, project),
+            project.join(".cursor/mcp.json")
+        );
+        assert_eq!(
+            config_path_for_install(&Platform::Codex, Scope::Project, project),
+            project.join(".codex/config.toml")
+        );
+        assert!(
+            config_path_for_install(&Platform::Cursor, Scope::User, project).is_absolute(),
+            "user scope must not be rebased under --project"
+        );
+    }
+
+    #[test]
+    fn default_global_configs_are_not_project_relative() {
+        for platform in [
+            Platform::Amp,
+            Platform::OpenCode,
+            Platform::Cursor,
+            Platform::Codex,
+            Platform::Zed,
+            Platform::Windsurf,
+        ] {
+            assert!(
+                config_path_for_scope(&platform, default_scope(&platform)).is_absolute(),
+                "{} default must use its global configuration",
+                platform.display_name()
+            );
+        }
+    }
+
+    #[test]
+    fn project_uninstall_uses_the_requested_project_directory() {
+        let project =
+            std::env::temp_dir().join(format!("aden-mcp-uninstall-project-{}", std::process::id()));
+        let config = project.join(".amp/settings.json");
+        let _ = std::fs::remove_dir_all(&project);
+        std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+        std::fs::write(
+            &config,
+            r#"{"amp.mcpServers":{"aden":{"command":"aden-mcp"},"other":{}}}"#,
+        )
+        .unwrap();
+
+        uninstall_platform(
+            &Platform::Amp,
+            Some(&project),
+            Some(Scope::Project),
+            "aden",
+            false,
+        )
+        .unwrap();
+
+        let config = read_config(&config).unwrap();
+        assert!(!json_has_server(&config, "amp.mcpServers", "aden"));
+        assert!(json_has_server(&config, "amp.mcpServers", "other"));
+        std::fs::remove_dir_all(project).unwrap();
+    }
+
+    #[test]
     fn json_has_server_detects_aden() {
         let cfg = serde_json::json!({
             "mcpServers": { "aden": { "command": "aden-mcp" }, "other": {} }
         });
         assert!(json_has_server(&cfg, "mcpServers", "aden"));
+        let amp = serde_json::json!({
+            "amp.mcpServers": { "aden": { "command": "aden-mcp" } }
+        });
+        assert!(json_has_server(&amp, "amp.mcpServers", "aden"));
         assert!(!json_has_server(&cfg, "mcpServers", "missing"));
         assert!(!json_has_server(&cfg, "wrongKey", "aden"));
         let empty = serde_json::json!({});

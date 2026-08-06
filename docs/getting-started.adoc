@@ -18,8 +18,9 @@ a large codebase without reading every file.
   contains its symbols, and the inverse), `Documents` (prose that documents a
   code symbol), and `RelatesTo` (doc `<<cross-references>>`).
 - **Language-agnostic**: deep extraction for Rust, Python, Go, TypeScript/JS,
-  Java, C#, C, Ruby, PHP, Kotlin; generic symbol extraction for 300+ more — all
-  via tree-sitter grammars compiled into the binary (fully offline).
+  Java, C#, C, Ruby, PHP, Kotlin; generic symbol extraction for ~113 more mapped
+  languages. The default binary bundles common grammars; `TSLP_LANGUAGES=all`
+  opts into the full 305-grammar pack at build time (fully offline at runtime).
 
 == When to use Aden vs. plain grep
 
@@ -35,15 +36,24 @@ certainty.
 
 == Install
 
+For end users, install the prebuilt archive for your platform from
+https://github.com/RioPlay/aden/releases and run its bundled installer; no Rust
+toolchain is required. The repository-root script below is the contributor
+source-build path and requires Rust 1.90 or newer.
+
 [source,bash]
 ----
-./install.sh        # builds release, installs aden + aden-mcp to ~/.local/bin, adds to PATH
+./install.sh        # contributor source build: installs aden + aden-mcp
 aden --version
 ----
 
-The installer does not change git hooks unless you explicitly opt in. To enable
-the repository-local pre-push gate later, run
-`git config core.hooksPath git-hooks` from Aden's checkout.
+The installer does not change git hooks unless you explicitly opt in. When it
+replaces an existing installation, restart open MCP/editor/agent sessions: a
+running MCP process keeps the previous binary inode until it exits. `aden
+--version` reports the source revision/state, feature set, and graph-format
+identities so the active build is auditable. To enable the repository-local
+pre-push gate later, run `git config core.hooksPath git-hooks` from Aden's
+checkout.
 
 === Optional: hybrid (dense) search
 
@@ -67,22 +77,30 @@ With the feature off (the default), nothing changes and no extra dependencies ar
 built. Air-gapped? Place `model.onnx` + `tokenizer.json` from
 BAAI/bge-small-en-v1.5 into the cache dir by hand instead of running the script.
 
-== First useful answer (two commands)
+== First useful map and answer
 
-From the repository you want to understand, ask first. Read tools create or
-refresh the rebuildable graph automatically, so most newcomers do not need to
-learn graph anchors or run `gen` before getting value.
+From the repository you want to understand, start with a compact map, concrete
+evidence, or one bounded question. Read tools create or refresh the rebuildable
+graph automatically, so most newcomers do not need graph anchors, `init`, or
+`gen` before getting value.
 
 [source,bash]
 ----
-aden ask "Where is the main entry point?" .
-aden understand main .
+aden tree --human --symbols .
+aden grep "main"
+aden understand --human main .
+aden ask --human "Where is the main entry point?" .
 ----
 
-`ask` gives a useful overview; `understand` gives the definition, callers, and
-downstream context for a concrete symbol. If a name is ambiguous, Aden returns
-candidates and recovery guidance instead of guessing. Full `aden://` anchors
-remain an advanced primitive for precise `asm` and `query` traversal.
+`tree --symbols` gives exact names and line ranges without source bodies. Its
+normal output is bounded; when a large repository reports truncation, rerun it
+on a relevant subtree. `grep` provides independent textual evidence. `ask`
+returns one bounded neighborhood; `understand` gives the definition, callers,
+and downstream context for a concrete symbol. If a name is ambiguous,
+Aden returns candidates and recovery guidance instead of guessing. Broad audit,
+ranking, exhaustive, and remaining-work questions return `needs_narrowing`
+instead of a misleading local answer. Full `aden://` anchors remain an advanced
+primitive for precise `asm` and `query` traversal.
 
 Before committing a change, verify the graph and references:
 
@@ -105,36 +123,25 @@ automatically (see <<fresh>>).
 
 == 2. Ask a question
 
-`aden ask` resolves your question to the most relevant symbol and assembles a
-token-budgeted neighborhood around it — signatures and call graph inline.
+`aden ask` resolves a bounded question to a primary symbol and assembles a
+token-budgeted neighborhood. The default agent response is JSON, so callers can
+check routing before consuming context:
 
-Real output is wrapped in `aden://…` anchor lines and `<!-- ADEN CONTEXT
-ASSEMBLY -->` comments (so the assembling tool can see exactly which anchor,
-depth, and budget produced it). For example, asking about a real symbol in this
-repo:
-
-[source]
+[source,json]
 ----
-$ aden ask "How does cmd_new scaffold a project?"
-// Aden Ask: 'How does cmd_new scaffold a project?' → [[aden://doc/aden/aden---module-aden-cli-init.rs-cmd_new.adoc#...#cmd_new]]
-// Strategy: Explain | Depth: 2 | Edges: "Uses, Calls, Implements, Documents, ..."
-
-<!-- ADEN CONTEXT ASSEMBLY -->
-<!-- Question: How does cmd_new scaffold a project? -->
-<!-- Anchor: aden://doc/aden/aden---module-aden-cli-init.rs-cmd_new.adoc#...#cmd_new | Depth: 2 | Budget: 4096 -->
-
-cmd_new
-Create a new project from a language template.
-Scaffolds build system, aden workspace, and initial documents.
-
-// ────────────────────────────────────────────────
-// Aden Ask Summary
-//   Nodes   : 1 | ~42 tokens (167 bytes) / 4096 budget (on budget)
-// ────────────────────────────────────────────────
+{
+  "result_state": "bounded",
+  "question_fit": "bounded",
+  "routing_confidence": "clear",
+  "anchor": "aden://module/aden-cli/src/commands/init.rs#cmd_new",
+  "context": "cmd_new\nCreate a new project from a language template…",
+  "completeness": "bounded",
+  "context_receipt": { "schema_version": 1, "freshness": "current" }
+}
 ----
 
-Feed that straight into an LLM prompt — it is already dense, and the comment
-lines tell the model precisely what context it is looking at.
+Stop and narrow when `result_state` is `needs_narrowing`, and verify an
+`ambiguous` route with `grep`/`locate`. Use `--human` for direct terminal prose.
 
 == 3. Search with structure (`grep`)
 
@@ -171,24 +178,25 @@ aden://doc/aden/aden---module-aden-cli-init.rs-cmd_new.adoc/h2signature  heading
 aden://module/aden/aden---module-aden-cli-init.rs-cmd_new.adoc#code_block_3  code ...
 ----
 
-Copy one of those `aden://…` lines — that is your anchor for `asm`/`query`.
+The returned `aden://…` line is the canonical anchor. You may copy it for
+maximum precision, but `asm` and `query` also accept a unique natural symbol
+name such as `cmd_new`.
 
 [IMPORTANT]
 ====
-**Bare symbol names are not anchors.** `aden asm --from cmd_new` returns
-`Anchor 'cmd_new' not found or ambiguous`. Always resolve a name to a full
-`aden://…` URI first via `aden grep`, `aden locate`, or `aden list .` and then
-pass that URI to `--from` / `--backlinks` / `--impact`.
+Aden never guesses between equally ranked definitions. An ambiguous name returns
+sorted candidates; retry with one exact `aden://…` anchor. Substring and fuzzy
+matches are suggestions only, not automatic traversal targets.
 ====
 
 == 5. Blast radius before a refactor
 
-`--backlinks` answers "what references this anchor?" — the set you must check
-before changing it. Use a real anchor (from step 4):
+`--backlinks` answers "what references this symbol?" — the set you must check
+before changing it. A unique natural name is enough:
 
 [source]
 ----
-$ aden query --backlinks "aden://module/aden/aden---module-aden-cli-init.rs-cmd_new.adoc#code_block_3" --format table
+$ aden query --backlinks cmd_new --format table
 | Anchor | Depth | Node Type |
 |=== |
 | "mod-aden" | 1 | "Module" |
@@ -199,23 +207,18 @@ closure; `--backlinks` walks incoming references.)
 
 == 6. Assemble a module overview
 
-Pass a resolved anchor and a token budget to bound the output. The two-step flow
-is always: **find the anchor, then assemble it.**
+Pass a unique symbol name directly to `asm`. Normal output is bounded
+automatically:
 
 [source,bash]
 ----
-# Step 1: resolve the name to an anchor
-aden locate --symbol cmd_new          # copy an aden://… line from the output
-
-# Step 2: assemble context from that anchor
-aden asm --from "aden://doc/aden/aden---module-aden-cli-init.rs-cmd_new.adoc/h2signature" --depth 1 --budget 2048
-
-# A module-level anchor (mod-<crate> or an aden://module/… URI) gives a broader sweep
-aden asm --from "aden://module/aden/aden---module-aden-cli-init.rs-cmd_new.adoc#code_block_3" --depth 1 --budget 4096
+aden asm --from cmd_new
 ----
 
-If an anchor is unknown or ambiguous, `asm`/`ask` fail clearly rather than
-emitting unrelated context.
+If a name is ambiguous, Aden lists deterministic candidates. Use `aden locate
+--symbol cmd_new` only when you need to inspect those alternatives or pin one
+canonical anchor. Unknown or ambiguous inputs never emit unrelated context. Depth and budget controls remain available for
+expert tuning, but normal callers should omit them.
 
 [[fresh]]
 == Fresh by construction
@@ -251,10 +254,12 @@ agent can call `ask`, `grep`, `asm`, `query`, `locate`, etc. directly:
 
 [source,bash]
 ----
-aden mcp install --platform claude      # or: opencode, cursor, codex, zed, windsurf
+aden mcp install --platform claude --dry-run  # inspect; changes nothing
+aden mcp install --platform claude            # or: amp, opencode, cursor, codex, zed, windsurf
 ----
 
-This writes the MCP server config for your client (it uses the `aden-mcp`
+MCP setup is an explicit opt-in; Aden does not silently edit client configuration
+on first launch. The install command writes the MCP server config for your client (it uses the `aden-mcp`
 binary that `./install.sh` already put on your PATH). After running it: confirm
 the binary is reachable with `aden-mcp --version`, then **fully restart your AI
 client** so it picks up the new server. Your agent should then list the `aden`

@@ -32,6 +32,37 @@ fn assert_has_node_type(docs: &[aden_core::Document], ty: aden_core::NodeType) {
     );
 }
 
+#[cfg(feature = "generic")]
+#[test]
+fn configured_grammars_are_statically_linked() {
+    let configured = env!("TSLP_LANGUAGES");
+    assert_eq!(
+        env!("TSLP_LINK_MODE"),
+        "static",
+        "release grammars must be linked into the executable"
+    );
+    for language in configured
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        assert!(
+            tree_sitter_language_pack::has_parser(language),
+            "configured grammar '{language}' is not statically linked"
+        );
+        let grammar = crate::get_ts_language(language)
+            .unwrap_or_else(|error| panic!("linked grammar '{language}' failed to load: {error}"));
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&grammar)
+            .unwrap_or_else(|error| panic!("linked grammar '{language}' is incompatible: {error}"));
+        assert!(
+            parser.parse("", None).is_some(),
+            "linked grammar '{language}' failed to create a syntax tree"
+        );
+    }
+}
+
 // ── C# ──────────────────────────────────────────────────────────
 
 #[test]
@@ -477,6 +508,21 @@ fn empty_block_comment_does_not_panic() {
         assert!(
             result.is_ok(),
             "parse_file({name}) on '/**/' must not error/panic, got {result:?}"
+        );
+        let docs = result.unwrap();
+        assert!(
+            !docs.is_empty(),
+            "parse_file({name}) must produce at least one document"
+        );
+        // The declaration after the empty comment must still be parsed
+        // (Function for Rust/Kotlin/PHP, Class for Java)
+        assert!(
+            docs.iter().any(|d| matches!(
+                d.node_type,
+                aden_core::NodeType::Function | aden_core::NodeType::Type
+            )),
+            "parse_file({name}) must detect a declaration despite empty comment, got types: {:?}",
+            docs.iter().map(|d| &d.node_type).collect::<Vec<_>>()
         );
     }
 }

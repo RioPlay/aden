@@ -9,12 +9,84 @@ All notable changes to aden are documented here. Format follows
 
 ## [Unreleased]
 
-## [0.3.1] - 2026-07-12
+## [0.4.0] - 2026-08-06
 
-### Fixed
-- **Local release-bundle validation** — the documented maintainer command now
-  packages and verifies the archive for the workspace version, rather than an
-  obsolete fixed version.
+This feature release makes Aden faster and more predictable on large repositories,
+reduces recurring agent context, and hardens installation and release portability
+across Linux, macOS, and Windows.
+
+### Changed
+- **Transactional source installers** — Unix and PowerShell contributor installs
+  stage and smoke-check `aden` plus `aden-mcp` before replacing either binary,
+  restore the previous pair on failure, honor custom Cargo/install directories,
+  and handle paths containing spaces. PowerShell now also supports `-Uninstall`
+  and is exercised under both PowerShell 7 and Windows PowerShell 5.1 in CI.
+- **Portable release parsing** — default binaries statically link their selected
+  tree-sitter grammars instead of resolving `.so`, `.dylib`, or `.dll` files from
+  the CI build directory. Release consumption now indexes real Rust and Go source
+  fixtures after installation on every supported operating system.
+- **Low-friction agent context** — `asm` now advertises its actual JSON wire
+  default, honors an explicit `--format llm`, and keeps full freshness/revision
+  receipts in normal strict CLI and MCP responses without requiring callers to
+  repeat budget arguments. Tiny explicit budgets retain the bounded minimal
+  receipt fallback.
+- **Bounded `ask` contract** — recognizable repository-wide audits, exhaustive
+  lists, rankings, and remaining-work questions now return compact
+  `needs_narrowing` guidance instead of spending context on one misleading
+  anchor. Accepted responses expose `question_fit` and `routing_confidence`.
+  Context remains at the declared budget unless `--expand` is explicit. Exact
+  definition questions now prefer the named production symbol over a method or
+  same-named test fixture and use a depth-zero definition path instead of
+  graph-wide thin-result escalation. This is verified against Flask and a
+  66,000-symbol Linux subset.
+- **Token-lean LLM surface** — `tree --symbols` emits an exact code-symbol and
+  line-range outline without source bodies or prose headings. It now honors
+  subtree paths and bounds normal output to 4,096 symbols / 96 KiB with explicit
+  truncation counts and recovery guidance; `--unlimited` remains opt-in. The
+  default MCP registry exposes this map while hiding expert tuning knobs;
+  compact schemas and startup guidance cut recurring transport context
+  substantially. A read-only upstream gauntlet now exercises Python, Go, Rust,
+  TypeScript, Uno, and Linux repositories without changing their working trees.
+- **Large-repository read performance** — selective anchor resolution, source
+  spans, and neighborhood assembly now project directly from fjall and retain
+  the read snapshot as a writer-contention fallback. Normal `ask` no longer runs
+  whole-project community detection unless `--expand` is explicit. On the
+  66,639-symbol Linux subset, a conceptual release-mode `ask` fell from over
+  180 seconds (timed out) / ~704 MiB to ~4.1 seconds / ~290 MiB. A dedicated
+  source-span partition reduced a warm symbol map from ~454 MiB / 1.34 seconds
+  to ~145 MiB / 0.83 seconds, while edge-target projections prevent conceptual
+  routing from constructing a full graph merely to rank documentation. Borrowed
+  snapshot serialization also removed a full docs+edges clone, reducing cold
+  Linux indexing peak from ~1.68 GiB to ~1.32 GiB in release mode. Existing
+  per-project stores rebuild once automatically to populate the new projection;
+  pinned/shared stores retain a compatible read-only fallback. The storage
+  layer moves to fjall/lsm-tree 3.1.8 after these changes passed the external
+  corpus.
+- **Focused command discovery** — normal `aden --help` shows the navigation and
+  impact-analysis product rather than every governance and generic-wrapper
+  command. `aden commands` categorizes the still-callable compatibility surface
+  and directs developers toward native test/lint/audit tooling.
+- **Zero-footprint defaults** — `aden init`, `aden new`, and `--project` no longer
+  create `.aden`, `.agent`, `.adenignore`, or project metadata by default.
+  Per-user indexing remains automatic; legacy governance/templates require the
+  explicit `aden init --templates` opt-in.
+- **Cross-platform viewer paths** — viewer payloads keep native filesystem paths
+  separate from percent-encoded editor URI paths, so Windows commands and file
+  access retain `C:\\...`/UNC semantics while editor links use URL separators.
+  Sibling-view and custom-editor values are also URI/JavaScript encoded.
+
+## [0.3.1] - 2026-07-15
+
+This patch release adds Amp MCP installer support and hardens MCP execution
+limits and deadlines.
+
+### Added
+- **Amp MCP installer support** — `aden mcp install --platform amp` writes the
+  `amp.mcpServers` entry used by Amp's global or workspace settings, with
+  `--scope user|project` and matching uninstall/list detection.
+- **MCP execution tier hardening** — hidden Standard/Full tools now require
+  explicit surface opt-in; each server admits at most two CLI children and
+  applies 30s/60s/120s cost-class deadlines instead of queueing unbounded work.
 
 ## [0.3.0] - 2026-07-10
 
@@ -85,14 +157,13 @@ hardens graph freshness and lookup performance. See
   `check` strips monospace/passthrough spans before path-link scanning so
   illustrative `` `xref:file.adoc#frag` `` examples do not false-flag.
   `GEN_LOGIC_VERSION` bumped **4 → 5** (one-time regen required).
-- **Dual-substrate retrieval levers, on by default** (2026-06-19): `search`/`ask` route by
-  detected text, a corpus-derived PPMI rerank for code (MRR 0.216 to 0.289) and grounded OEWN
-  synonym expansion for prose (BM25 R@1 1/42 to 41/42; end-to-end 0/15 to 15/15). Auto-gating
-  is enabled by default after an OFF vs ON bench confirmed it never regresses; disable with
-  `ADEN_LEXICON_OFF`, or force a single lever with `ADEN_LEXICON_EXPAND` / `ADEN_PPMI_RERANK`.
-  Both levers are grounded and corpus-gated, so they no-op where they would not help (the prose
-  lever needs the OEWN store). Validated by the lexical ablations (dictionaries dilute code,
-  dense captures only half of prose synonymy); ConceptNet excluded (CC-BY-SA). The MCP server
+- **Dual-substrate retrieval levers, opt-in** (2026-06-19): `search`/`ask` can route by
+  detected text, using a corpus-derived PPMI rerank for code and grounded OEWN synonym
+  expansion for prose. Auto-gating remains off by default after follow-up testing found
+  regressions on external repositories; enable it with `ADEN_LEXICON_ON`, disable it with
+  `ADEN_LEXICON_OFF`, or force a single lever with `ADEN_LEXICON_EXPAND` /
+  `ADEN_PPMI_RERANK`. Both levers are grounded and corpus-gated, so they no-op where they
+  would not help. ConceptNet is excluded (CC-BY-SA). The MCP server
   inherits the levers via the CLI subprocess. See `docs/retrieval-levers.adoc`.
 - **Query-aware assembly + MMR context selection** (2026-06-16) — `ask` now
   spends its token budget on *distinct, query-relevant* context. The assembly
