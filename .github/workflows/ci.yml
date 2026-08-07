@@ -36,7 +36,7 @@ jobs:
       # shared path resolver. This catches drive-letter, UNC, URI, separator,
       # and CLI/MCP argv drift without tripling the full workspace CI cost.
       - name: Test MCP and filesystem contracts
-        run: cargo test --locked -p aden-mcp -p aden-paths
+        run: cargo build --locked -p aden-cli && cargo test --locked -p aden-mcp -p aden-paths
 
       - name: Smoke source PowerShell installer
         if: runner.os == 'Windows'
