@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 RioPlay <rioplay@rioplay.dev>
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 # Build Aden into an isolated Cargo target, copy only the shipped binaries,
 # delete the build tree, then prove bundled Rust and Go grammars still parse.
 

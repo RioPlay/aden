@@ -67,8 +67,19 @@ Write-Host "  Install to: $InstallDir"
 
 Push-Location $PROJECT_ROOT
 try {
-    cargo build --locked --release -p aden-cli -p aden-mcp 2>&1 | ForEach-Object { Write-Host $_ }
-    if ($LASTEXITCODE -ne 0) { Die "Build failed" }
+    # Windows PowerShell 5.1 wraps a native program's stderr as error records.
+    # Cargo writes ordinary progress there, so ErrorActionPreference=Stop would
+    # abort on the first "Compiling" line even while the build is succeeding.
+    $SavedErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        cargo build --locked --release -p aden-cli -p aden-mcp 2>&1 | ForEach-Object { Write-Host $_ }
+        $BuildExitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $SavedErrorActionPreference
+    }
+    if ($BuildExitCode -ne 0) { Die "Build failed" }
 }
 finally {
     Pop-Location

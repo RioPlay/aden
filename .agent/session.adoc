@@ -25,6 +25,7 @@ Every agent that modifies files must append an entry here before completing.
 |2026-08-06T13:50:32Z |codex |Investigate the GitHub build failure and refresh the regression-lock hashes for the intentionally changed benchmark task and query datasets |scripts/regression-lock.json, .agent/session.adoc |complete |High
 |2026-08-06T14:12:00Z |codex |Repair release-candidate CI by satisfying strict Clippy and building the CLI required by live MCP contract tests on Linux, macOS, and Windows |.github/workflows/ci.yml, crates/aden-cli/src/commands/ci.rs, crates/aden-cli/src/commands/lint.rs, .agent/session.adoc |complete |High
 |2026-08-07T15:20:00Z |codex |Fix the Windows MCP roots-switch CI fixture to emit a valid file URI and add a host-platform round-trip regression test |crates/aden-mcp/src/lib.rs, .agent/session.adoc |complete |High
+|2026-08-07T15:35:00Z |codex |Diagnose the latest PR CI failures, make Cargo progress streaming compatible with Windows PowerShell 5.1, and add the required release-portability script license header |install.ps1, scripts/test-release-portability.sh, .agent/session.adoc |complete |High
 |===
 
 == How to Append
