@@ -7,6 +7,28 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
+sha256_files() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$@"
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$@"
+    else
+        echo "SHA-256 generation requires sha256sum or shasum" >&2
+        return 1
+    fi
+}
+
+check_sha256_file() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum -c "$1"
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 -c "$1"
+    else
+        echo "SHA-256 verification requires sha256sum or shasum" >&2
+        return 1
+    fi
+}
+
 validate_archive() {
     local archive="$1" target="$2" version="${3#v}" name extension bundle
     name="aden-v$version-$target"
@@ -20,7 +42,7 @@ validate_archive() {
     }
     [ -f "$archive" ] || { echo "Archive not found: $archive" >&2; return 1; }
     if [ -f "$archive.sha256" ]; then
-        (cd "$(dirname "$archive")" && sha256sum -c "$(basename "$archive").sha256")
+        (cd "$(dirname "$archive")" && check_sha256_file "$(basename "$archive").sha256")
     fi
     if [ "$extension" = "zip" ]; then
         command -v unzip >/dev/null || { echo "unzip is required to validate Windows bundles" >&2; return 1; }
@@ -47,7 +69,7 @@ validate_archive() {
     fi
     grep -Fqx "Aden v$version" "$bundle/MANIFEST.txt"
     grep -Fqx "Target: $target" "$bundle/MANIFEST.txt"
-    (cd "$bundle" && sha256sum -c SHA256SUMS)
+    (cd "$bundle" && check_sha256_file SHA256SUMS)
     echo "Validated release archive: $(basename "$archive")"
 }
 
@@ -58,21 +80,23 @@ if [ "$#" -ne 0 ]; then
     exit 0
 fi
 
-BIN="$TMP/bin"
-mkdir -p "$BIN" "$TMP/out-a" "$TMP/out-b"
+BIN="$TMP/bin fixtures"
+OUT_A="$TMP/out a"
+OUT_B="$TMP/out b"
+mkdir -p "$BIN" "$OUT_A" "$OUT_B"
 for name in aden aden-mcp; do
     printf '#!/usr/bin/env sh\necho "%s 0.0.0-test"\n' "$name" > "$BIN/$name"
     chmod +x "$BIN/$name"
 done
-ADEN_RELEASE_BINARY_DIR="$BIN" "$ROOT/scripts/package-release.sh" x86_64-unknown-linux-gnu 0.0.0-test "$TMP/out-a"
-ADEN_RELEASE_BINARY_DIR="$BIN" "$ROOT/scripts/package-release.sh" x86_64-unknown-linux-gnu 0.0.0-test "$TMP/out-b"
-cmp "$TMP/out-a/aden-v0.0.0-test-x86_64-unknown-linux-gnu.tar.gz" "$TMP/out-b/aden-v0.0.0-test-x86_64-unknown-linux-gnu.tar.gz"
-cmp "$TMP/out-a/aden-v0.0.0-test-x86_64-unknown-linux-gnu.tar.gz.sha256" "$TMP/out-b/aden-v0.0.0-test-x86_64-unknown-linux-gnu.tar.gz.sha256"
+ADEN_RELEASE_BINARY_DIR="$BIN" "$ROOT/scripts/package-release.sh" x86_64-unknown-linux-gnu 0.0.0-test "$OUT_A"
+ADEN_RELEASE_BINARY_DIR="$BIN" "$ROOT/scripts/package-release.sh" x86_64-unknown-linux-gnu 0.0.0-test "$OUT_B"
+cmp "$OUT_A/aden-v0.0.0-test-x86_64-unknown-linux-gnu.tar.gz" "$OUT_B/aden-v0.0.0-test-x86_64-unknown-linux-gnu.tar.gz"
+cmp "$OUT_A/aden-v0.0.0-test-x86_64-unknown-linux-gnu.tar.gz.sha256" "$OUT_B/aden-v0.0.0-test-x86_64-unknown-linux-gnu.tar.gz.sha256"
 mkdir -p "$TMP/extracted"
-validate_archive "$TMP/out-a/aden-v0.0.0-test-x86_64-unknown-linux-gnu.tar.gz" x86_64-unknown-linux-gnu 0.0.0-test
+validate_archive "$OUT_A/aden-v0.0.0-test-x86_64-unknown-linux-gnu.tar.gz" x86_64-unknown-linux-gnu 0.0.0-test
 mv "$TMP/extracted/aden-v0.0.0-test-x86_64-unknown-linux-gnu" "$TMP/aden-v0.0.0-test-x86_64-unknown-linux-gnu"
 BUNDLE="$TMP/aden-v0.0.0-test-x86_64-unknown-linux-gnu"
-DEST="$TMP/installed"
+DEST="$TMP/installed path"
 "$BUNDLE/install.sh" --install-dir "$DEST"
 test "$("$DEST/aden" --version)" = "aden 0.0.0-test"
 if "$BUNDLE/install.sh" --install-dir "$DEST" 2>/dev/null; then
@@ -104,7 +128,7 @@ test "$("$DEST/aden-mcp" --version)" = "aden-mcp 0.0.0-test"
 cp "$BUNDLE/aden-mcp" "$TMP/good-aden-mcp"
 printf '#!/usr/bin/env sh\nexit 17\n' > "$BUNDLE/aden-mcp"
 chmod +x "$BUNDLE/aden-mcp"
-(cd "$BUNDLE" && sha256sum aden aden-mcp > SHA256SUMS)
+(cd "$BUNDLE" && sha256_files aden aden-mcp > SHA256SUMS)
 if "$BUNDLE/install.sh" --install-dir "$DEST" --force 2>/dev/null; then
     echo "Installer accepted a staged binary that failed its smoke check" >&2; exit 1
 fi

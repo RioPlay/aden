@@ -12,7 +12,7 @@ use crate::commands::complete::cmd_complete;
 use crate::commands::query::AsmOptions;
 use crate::util::find_project_root;
 
-use clap::{Parser, Subcommand, ValueHint};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand, ValueHint};
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -30,10 +30,16 @@ use std::path::PathBuf;
         "\nSource for any network-accessible instance is the repository above,",
         "\nas required by AGPL-3.0 section 13."
     ),
-    about = "Aden — A Dense Referential Context Compiler"
+    about = "Aden — A Dense Referential Context Compiler",
+    after_help = "Use `aden commands` to see optional compatibility and project-governance commands."
 )]
 struct Cli {
-    #[arg(long, global = true, help = "Remove all limits (show full results)")]
+    #[arg(
+        short = 'u',
+        long,
+        global = true,
+        help = "Remove all limits (show full results)"
+    )]
     unlimited: bool,
     #[arg(
         short,
@@ -71,10 +77,15 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Scaffold .agent/ templates in target repository
+    /// Index a project without adding project files; legacy templates are opt-in
+    #[command(hide = true)]
     Init {
         #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
         path: PathBuf,
+        /// Scaffold the legacy .agent/.aden governance templates. Most projects
+        /// do not need these; normal indexing and MCP use are zero-footprint.
+        #[arg(long)]
+        templates: bool,
         /// Also scaffold secure-coding reference stubs (CWE Top 25 + OWASP SCP
         /// index, with citations) into .agent/secure-coding-refs/
         #[arg(long)]
@@ -88,11 +99,13 @@ enum Commands {
     /// Seed/refresh the append-only aden usage block in a repo-root AGENTS.md,
     /// without the full `init` scaffolding (ADR-004). Idempotent; only ever
     /// touches its own marked block. Remove the block to opt out.
+    #[command(hide = true)]
     AgentsMd {
         #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
         path: PathBuf,
     },
-    /// Create a new project from a language template with aden scaffolding
+    /// Create a minimal language project; Aden state stays outside the project tree
+    #[command(hide = true)]
     New {
         #[arg(value_name = "NAME")]
         name: String,
@@ -101,8 +114,12 @@ enum Commands {
         #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
         path: PathBuf,
     },
+    /// Explain the focused core and list opt-in compatibility commands
+    #[command(name = "commands")]
+    Catalog,
     /// Author an intent overlay for a symbol: durable [human]/[agent] notes that
     /// survive `aden gen` and are delivered to readers (asm/ask).
+    #[command(hide = true)]
     Overlay {
         #[arg(value_name = "ANCHOR", help = "Anchor or bare symbol name to annotate")]
         anchor: String,
@@ -110,6 +127,7 @@ enum Commands {
         path: PathBuf,
     },
     /// Create a kickoff document for a new initiative (interactive or from a brief)
+    #[command(hide = true)]
     Kickoff {
         #[arg(long, value_name = "NAME")]
         name: String,
@@ -119,6 +137,7 @@ enum Commands {
         path: PathBuf,
     },
     /// Workflow engine: instantiate templates with substitutions and chain documents
+    #[command(hide = true)]
     Workflow {
         #[arg(
             value_name = "TEMPLATE",
@@ -136,6 +155,7 @@ enum Commands {
     /// path`) from scratch: clears the gen/graph caches first, then regenerates. The
     /// full-rebuild counterpart to the incremental `aden gen .` (not a transparent
     /// alias — it always re-stores all).
+    #[command(hide = true)]
     Regen {
         #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
         path: PathBuf,
@@ -143,28 +163,33 @@ enum Commands {
     /// Compile source into the per-user project store (see `aden store path`). A
     /// directory indexes the whole project; a single file re-indexes just that file.
     /// Store-first: `gen` writes only to that store, never to the working tree.
+    #[command(hide = true)]
     Gen {
         #[arg(value_name = "PATH", value_hint = ValueHint::AnyPath)]
         paths: Vec<PathBuf>,
         #[arg(
+            short = 'a',
             long,
-            help = "Auto-discover source files for the whole project (default when PATH is a directory)"
+            help = "Compatibility flag; directory paths are auto-discovered by default"
         )]
         auto: bool,
-        #[arg(long, help = "Suppress per-file output (summary only)")]
+        #[arg(short = 'q', long, help = "Suppress per-file output (summary only)")]
         quiet: bool,
         #[arg(
+            short = 'P',
             long,
             help = "Dry-run: reconcile and write conflict proposals without changing the store"
         )]
         propose: bool,
         #[arg(
+            short = 'f',
             long,
             help = "Bypass the merge gate and overwrite the store (may clobber [human]/[agent] overlay collisions)"
         )]
         force_regen: bool,
     },
     /// Verify all <<refs>> resolve to existing [[anchors]]
+    #[command(hide = true)]
     Check {
         #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::AnyPath)]
         path: PathBuf,
@@ -176,6 +201,7 @@ enum Commands {
         )]
         severity: String,
         #[arg(
+            short = 'm',
             long,
             value_name = "N",
             help = "Cap issues in summary output (MCP default: 20)"
@@ -183,16 +209,19 @@ enum Commands {
         max_issues: Option<usize>,
     },
     /// Complete incomplete contracts by filling in required documentation
+    #[command(hide = true)]
     Complete {
         #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::AnyPath)]
         path: PathBuf,
         #[arg(
+            short = 'n',
             long,
             help = "Dry-run mode (don't actually complete)",
             default_value = "false"
         )]
         dry_run: bool,
         #[arg(
+            short = 'M',
             long,
             value_name = "MODEL",
             help = "LLM model to use (e.g., ollama:llama3)"
@@ -200,6 +229,7 @@ enum Commands {
         model: Option<String>,
     },
     /// Lint source files using fast, language-agnostic line-based heuristics
+    #[command(hide = true)]
     Lint {
         #[arg(value_name = "PATH", default_value = ".", value_hint = ValueHint::AnyPath)]
         path: PathBuf,
@@ -210,9 +240,9 @@ enum Commands {
             help = "Minimum severity to report: Suggest, Warn, Error"
         )]
         severity: String,
-        #[arg(long, help = "Fix issues where possible")]
+        #[arg(short = 'f', long, help = "Fix issues where possible")]
         fix: bool,
-        #[arg(long, help = "Output JSON format")]
+        #[arg(short = 'j', long, help = "Output JSON format")]
         json: bool,
         #[arg(
             long,
@@ -223,6 +253,7 @@ enum Commands {
         include_public: bool,
     },
     /// Discover and run tests across all languages
+    #[command(hide = true)]
     Test {
         #[arg(value_name = "PATH", default_value = ".", value_hint = ValueHint::AnyPath)]
         path: PathBuf,
@@ -239,33 +270,38 @@ enum Commands {
     },
     /// Assemble a context prompt from the knowledge graph
     Asm {
-        #[arg(long, value_name = "ANCHOR")]
+        #[arg(short = 'f', long, value_name = "ANCHOR")]
         from: String,
         #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
         path: PathBuf,
         // Default matches the library's AssemblyOptions default (max_depth 2):
         // a focused neighborhood beats a whole-crate dump on the first call.
         // Raise --depth for wider context; the token budget still caps output.
-        #[arg(long, value_name = "N", default_value = "2")]
+        #[arg(short = 'd', long, value_name = "N", default_value = "2")]
         depth: usize,
-        #[arg(long, value_name = "TOKENS", default_value = "8192")]
+        #[arg(short = 'b', long, value_name = "TOKENS", default_value = "8192")]
         budget: usize,
-        #[arg(long, value_name = "TYPES")]
+        #[arg(short = 'e', long, value_name = "TYPES")]
         edge_types: Option<String>,
-        #[arg(long, value_name = "FILE")]
+        #[arg(short = 'o', long, value_name = "FILE")]
         out: Option<PathBuf>,
         #[arg(
+            short = 'F',
             long,
             value_name = "FORMAT",
-            default_value = "llm",
-            help = "Output format: json (default versioned envelope), adg (bare array), llm (stripped prose), aden (raw AsciiDoc); --human selects llm"
+            default_value = "json",
+            help = "Output format: json (default versioned envelope), adg (bare array), llm (stripped prose), aden (raw AsciiDoc); --human changes the default json format to llm"
         )]
         format: String,
         #[arg(long, help = "Silent mode: skip intro, output only context")]
         silent: bool,
         #[arg(long, help = "Auto mode: adjust budget based on relevance scores")]
         auto: bool,
-        #[arg(long, help = "Strict mode: never exceed budget (disable auto-boost)")]
+        #[arg(
+            short = 's',
+            long,
+            help = "Strict mode: never exceed budget (disable auto-boost)"
+        )]
         strict: bool,
         #[arg(long, help = "Inspect: show what would be included without outputting")]
         inspect: bool,
@@ -297,17 +333,25 @@ enum Commands {
     Query {
         #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::AnyPath)]
         path: PathBuf,
-        #[arg(long, value_name = "ANCHOR")]
+        #[arg(short = 'f', long, value_name = "ANCHOR")]
         from: Option<String>,
-        #[arg(long, value_name = "TYPE")]
+        #[arg(short = 'e', long, value_name = "TYPE")]
         edge_type: Option<String>,
-        #[arg(long, value_name = "N", default_value = "3")]
+        #[arg(short = 'd', long, value_name = "N", default_value = "3")]
         depth: usize,
-        #[arg(long, value_name = "ANCHOR")]
+        #[arg(short = 'b', long, value_name = "ANCHOR")]
         backlinks: Option<String>,
-        #[arg(long, value_name = "ANCHOR")]
+        #[arg(short = 'i', long, value_name = "ANCHOR")]
         impact: Option<String>,
         #[arg(
+            long,
+            value_name = "N",
+            default_value = "1000",
+            help = "Maximum results to return (bounds large responses)"
+        )]
+        max_results: usize,
+        #[arg(
+            short = 'F',
             long,
             value_name = "FORMAT",
             default_value = "json",
@@ -316,6 +360,7 @@ enum Commands {
         format: String,
     },
     /// Execute an Aden Query (.adq) script
+    #[command(hide = true)]
     QueryAdq {
         #[arg(
             value_name = "SCRIPT",
@@ -325,15 +370,18 @@ enum Commands {
         #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
         path: PathBuf,
     },
-    /// Ask a natural-language question; Aden resolves it to a subgraph and assembles context.
+    /// Ask one bounded question about a symbol, file, subsystem, or relationship
+    #[command(
+        long_about = "Ask one bounded question about a named symbol, file, subsystem, or relationship.\n\nGood fits:\n  aden ask \"Where is session authentication enforced?\"\n  aden ask \"How does parse_config validate input?\"\n  aden ask \"What calls MergeProposal::apply?\"\n\nAden deliberately refuses repo-wide audits, exhaustive lists, rankings, and remaining-work questions instead of routing them to one misleading anchor. Use grep/locate/query for those, or pin a known anchor with --from.\n\nThe default JSON response reports question_fit and routing_confidence. Omit --budget normally; use --strict only when an exact transport cap is required."
+    )]
     Ask {
         #[arg(value_name = "QUESTION")]
         question: String,
         #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
         path: PathBuf,
-        #[arg(long, value_name = "ANCHOR")]
+        #[arg(short = 'f', long, value_name = "ANCHOR")]
         from: Option<String>,
-        #[arg(long, value_name = "TOKENS", default_value = "4096")]
+        #[arg(short = 'b', long, value_name = "TOKENS", default_value = "4096")]
         budget: usize,
         #[arg(
             long,
@@ -342,14 +390,21 @@ enum Commands {
         )]
         model: Option<String>,
         #[arg(
+            short = 'i',
             long,
             value_name = "INTENT",
             help = "Override intent classification: debug, usage, explain, refactor, impact, list, compare, count, general"
         )]
         intent: Option<String>,
-        #[arg(long, value_name = "N", help = "Override the intent's traversal depth")]
+        #[arg(
+            short = 'd',
+            long,
+            value_name = "N",
+            help = "Override the intent's traversal depth"
+        )]
         depth: Option<usize>,
         #[arg(
+            short = 'e',
             long,
             value_name = "TYPES",
             help = "Override the intent's edge types (comma-separated)"
@@ -357,16 +412,24 @@ enum Commands {
         edge_types: Option<String>,
         #[arg(
             long,
-            help = "Strict mode: use --budget as an exact cap (disable the relevance boost)"
+            help = "Opt in to relevance-based context expansion beyond --budget (up to 32k tokens)"
+        )]
+        expand: bool,
+        #[arg(
+            short = 's',
+            long,
+            help = "Cap the complete serialized response at --budget; overrides --expand"
         )]
         strict: bool,
         #[arg(
+            short = 'x',
             long,
             help = "Explain routing: top candidates with scores/patterns, the tiebreak decision, intent, overview signal, and any fallback swap"
         )]
         explain: bool,
     },
     /// Search the knowledge graph for documents matching a query
+    #[command(hide = true)]
     Search {
         #[arg(value_name = "QUERY")]
         query: String,
@@ -396,7 +459,7 @@ enum Commands {
         semantics: bool,
     },
     /// List all anchors and contracts in the knowledge graph (alias: ls)
-    #[command(alias = "ls")]
+    #[command(alias = "ls", hide = true)]
     List {
         #[arg(
             long,
@@ -427,22 +490,25 @@ enum Commands {
         #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
         path: PathBuf,
     },
-    /// Locate a symbol definition or its call sites in the knowledge graph
-    /// Structure-aware content search: find a pattern and tag each hit with the
-    /// symbol it lives inside (a graph-aware replacement for grep).
+    /// Search content and tag each hit with its enclosing symbol
     Grep {
         #[arg(
             value_name = "PATTERN",
             help = "Text (or regex with --regex) to search for"
         )]
         pattern: String,
-        #[arg(long, help = "Treat PATTERN as a regular expression")]
+        #[arg(short = 'r', long, help = "Treat PATTERN as a regular expression")]
         regex: bool,
         #[arg(short = 'i', long, help = "Case-insensitive match")]
         ignore_case: bool,
-        #[arg(long, help = "Only report matches that fall inside a known symbol")]
+        #[arg(
+            short = 's',
+            long,
+            help = "Only report matches that fall inside a known symbol"
+        )]
         symbol_only: bool,
         #[arg(
+            short = 'n',
             long,
             value_name = "N",
             default_value = "100",
@@ -453,6 +519,7 @@ enum Commands {
         path: PathBuf,
     },
     /// Detect functional communities (clusters of densely-connected symbols)
+    #[command(hide = true)]
     Communities {
         #[arg(
             long,
@@ -479,6 +546,7 @@ enum Commands {
         path: PathBuf,
     },
     /// Export a graph slice as a text diagram (Mermaid/DOT/JSON) for docs, PRs, or CI.
+    #[command(hide = true)]
     Viz {
         #[arg(
             value_name = "ANCHOR",
@@ -529,6 +597,7 @@ enum Commands {
     },
     /// Render a graph slice in the browser — interactive, offline, with git-history replay.
     #[cfg(feature = "view")]
+    #[command(hide = true)]
     View {
         #[arg(
             value_name = "ANCHOR",
@@ -624,6 +693,7 @@ enum Commands {
     /// With `--agents`, splits the task into disjoint sub-scopes, writes one
     /// manifest per sub-scope under `.aden/agents/`, and emits the partition
     /// index to stdout (tab-separated: id, role, manifest-path, depends_on).
+    #[command(hide = true)]
     Scope {
         #[arg(value_name = "NAME", help = "Task name; labels the scope")]
         name: String,
@@ -649,24 +719,38 @@ enum Commands {
         path: PathBuf,
     },
     /// Get or set runtime configuration in .aden/config.toml
+    #[command(hide = true)]
     Config {
         #[command(subcommand)]
         action: ConfigAction,
     },
+    /// Resolve a symbol or caller query to canonical anchors and source ranges
     Locate {
-        #[arg(long, value_name = "SYMBOL", help = "Find definition of this symbol")]
+        #[arg(
+            short = 's',
+            long,
+            value_name = "SYMBOL",
+            help = "Find definition of this symbol"
+        )]
         symbol: Option<String>,
-        #[arg(long, value_name = "SYMBOL", help = "Find call sites of this symbol")]
+        #[arg(
+            short = 'c',
+            long,
+            value_name = "SYMBOL",
+            help = "Find call sites of this symbol"
+        )]
         caller_of: Option<String>,
-        #[arg(long, value_name = "FORMAT", default_value = "plain")]
+        #[arg(short = 'F', long, value_name = "FORMAT", default_value = "plain")]
         format: String,
         #[arg(
+            short = 'C',
             long,
             value_name = "N",
             help = "Include N lines of context around symbol"
         )]
         show_context: Option<usize>,
         #[arg(
+            short = 'n',
             long,
             value_name = "N",
             default_value = "50",
@@ -681,17 +765,50 @@ enum Commands {
         #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
         path: PathBuf,
     },
-    /// Run gen + check + heal (with gc) in sequence to sync everything
+    /// Render an index-aware source tree; --symbols adds names and line ranges
+    Tree {
+        #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
+        path: PathBuf,
+        #[arg(
+            short = 'd',
+            long,
+            value_name = "N",
+            default_value_t = 4,
+            help = "Maximum directory depth"
+        )]
+        depth: usize,
+        #[arg(
+            long,
+            help = "Emit a bounded outline with exact symbol names and line ranges (scope DIR for large repos; MCP default: true)"
+        )]
+        symbols: bool,
+        #[arg(
+            long,
+            value_name = "N",
+            default_value_t = 0,
+            help = "Show nested symbols in the graphical tree to this lexical depth (0 hides symbols)"
+        )]
+        symbol_depth: usize,
+    },
+    /// Run gen + check + heal in sequence to sync everything
+    #[command(hide = true)]
     Sync {
         #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
         path: PathBuf,
         #[arg(
             long,
-            help = "Skip garbage-collection of deleted symbols/files from the store"
+            help = "Also garbage-collect deleted symbols/files from the store (destructive)"
+        )]
+        gc: bool,
+        #[arg(
+            long,
+            conflicts_with = "gc",
+            help = "Deprecated compatibility alias; sync no longer garbage-collects by default"
         )]
         no_gc: bool,
     },
     /// Watch source files for changes and auto-regenerate contracts
+    #[command(hide = true)]
     Watch {
         #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
         path: PathBuf,
@@ -706,6 +823,7 @@ enum Commands {
         sync: bool,
     },
     /// Self-healing documentation engine: scan for drift, propose patches, apply reviewed changes
+    #[command(hide = true)]
     Heal {
         #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
         path: PathBuf,
@@ -743,6 +861,7 @@ enum Commands {
         max_issues: Option<usize>,
     },
     /// Fast pre-commit combo: gen + lint + check + heal drift scan + audit
+    #[command(hide = true)]
     Ready {
         #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
         path: PathBuf,
@@ -759,23 +878,26 @@ enum Commands {
         #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
         path: PathBuf,
         /// Token budget for the assembled context block
-        #[arg(long, value_name = "TOKENS", default_value = "4000")]
+        #[arg(short = 'b', long, value_name = "TOKENS", default_value = "4000")]
         budget: usize,
         /// Emit a single JSON object instead of a human report
         #[arg(long)]
         json: bool,
     },
     /// Run all local CI gates before committing (check, heal, test, secret-scan)
+    #[command(hide = true)]
     CiCheck {
         #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
         path: PathBuf,
     },
     /// Diagnose the environment: tool versions, repo health, signing keys
+    #[command(hide = true)]
     Doctor {
         #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
         path: PathBuf,
     },
     /// Semantic review: validate low-confidence proposals with token budgeting
+    #[command(hide = true)]
     Review {
         #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::AnyPath)]
         path: PathBuf,
@@ -789,6 +911,7 @@ enum Commands {
         budget: usize,
     },
     /// Atomic session lock: append entry to .agent/session.adoc
+    #[command(hide = true)]
     Session {
         #[arg(long, value_name = "ID")]
         agent_id: String,
@@ -802,6 +925,7 @@ enum Commands {
         path: PathBuf,
     },
     /// Generate third-party accreditation report (Cargo, npm, PyPI, Go)
+    #[command(hide = true)]
     Licenses {
         #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
         path: PathBuf,
@@ -818,11 +942,13 @@ enum Commands {
         full: bool,
     },
     /// Multi-repository workspace management
+    #[command(hide = true)]
     Federation {
         #[command(subcommand)]
         action: FederationAction,
     },
     /// OWASP-aligned security audit: scan source for vulnerabilities
+    #[command(hide = true)]
     Audit {
         #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
         path: PathBuf,
@@ -848,11 +974,13 @@ enum Commands {
         action: McpAction,
     },
     /// Manage per-user, per-project graph stores (ADR-003)
+    #[command(hide = true)]
     Store {
         #[command(subcommand)]
         action: StoreAction,
     },
     /// Emergency override: downgrade global Forbid to Warn, auto-expires
+    #[command(hide = true)]
     Emergency {
         #[arg(
             long,
@@ -871,6 +999,7 @@ enum Commands {
         path: PathBuf,
     },
     /// AI assistant: describe what you want to do, get the right aden command
+    #[command(hide = true)]
     Suggest {
         #[arg(
             value_name = "INTENT",
@@ -879,6 +1008,7 @@ enum Commands {
         intent: String,
     },
     /// Deterministic diagnostic scanner for knowledge graphs
+    #[command(hide = true)]
     Diagnose {
         // Positional DIR for consistency with check/lint/audit/doctor (previously
         // the lone command that required `--path`). `aden diagnose .` now works.
@@ -900,6 +1030,7 @@ enum Commands {
     /// Time-travel file viewer: bake every historical version of a file into
     /// a self-contained HTML page with client-side comparison.
     #[cfg(feature = "view")]
+    #[command(hide = true)]
     Timeline {
         /// File path, repo-relative path, or aden:// anchor URI
         #[arg(value_name = "PATH")]
@@ -949,7 +1080,7 @@ enum McpAction {
         #[arg(
             long,
             value_name = "PLATFORM",
-            help = "Target platform: opencode, claude, cursor, codex, zed, windsurf"
+            help = "Target platform: amp, opencode, claude, cursor, codex, zed, windsurf"
         )]
         platform: Option<String>,
         #[arg(long, value_name = "PATH", help = "Path to aden-mcp binary")]
@@ -989,6 +1120,12 @@ enum McpAction {
     Uninstall {
         #[arg(long, value_name = "PLATFORM", help = "Target platform")]
         platform: Option<String>,
+        #[arg(
+            long,
+            value_name = "PATH",
+            help = "Project directory whose local config should be updated"
+        )]
+        project: Option<PathBuf>,
         #[arg(
             long,
             value_name = "SCOPE",
@@ -1110,12 +1247,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let child = std::thread::Builder::new()
         .name("main".into())
         .stack_size(64 * 1024 * 1024)
-        .spawn(|| {
-            real_main().unwrap_or_else(|e| {
-                eprintln!("Error: {e}");
-                std::process::exit(1);
-            })
-        })
+        .spawn(
+            || match std::panic::catch_unwind(std::panic::AssertUnwindSafe(real_main)) {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    print_command_error(e.as_ref());
+                    std::process::exit(1);
+                }
+                Err(payload) if is_broken_pipe_panic(&payload) => {}
+                Err(payload) => std::panic::resume_unwind(payload),
+            },
+        )
         .expect("failed to spawn aden worker thread");
     match child.join() {
         Ok(()) => Ok(()),
@@ -1123,8 +1265,62 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
+fn print_command_error(error: &(dyn std::error::Error + 'static)) {
+    if std::env::var("ADEN_MCP_MACHINE_ERRORS").as_deref() == Ok("1")
+        && let Some(resolution) = error.downcast_ref::<commands::query::SymbolResolutionError>()
+    {
+        eprintln!("{}", resolution.machine_json());
+    } else {
+        eprintln!("Error: {error}");
+    }
+}
+
+fn is_broken_pipe_panic(payload: &Box<dyn std::any::Any + Send>) -> bool {
+    payload
+        .downcast_ref::<&str>()
+        .is_some_and(|message| message.contains("failed printing to stdout: Broken pipe"))
+        || payload
+            .downcast_ref::<String>()
+            .is_some_and(|message| message.contains("failed printing to stdout: Broken pipe"))
+}
+
+fn build_long_version() -> &'static str {
+    let revision = option_env!("ADEN_BUILD_REVISION").unwrap_or("dev");
+    let state = option_env!("ADEN_BUILD_STATE").unwrap_or("source-tree");
+    let mut features = Vec::new();
+    if cfg!(feature = "dense") {
+        features.push("dense");
+    }
+    if cfg!(feature = "model-fetch") {
+        features.push("model-fetch");
+    }
+    if cfg!(feature = "view") {
+        features.push("view");
+    }
+    if features.is_empty() {
+        features.push("standard");
+    }
+    Box::leak(
+        format!(
+            "{}\nBuild:   {} ({})\nFeatures: {}\nFormats: snapshot-v{}, index-layout-v{}, gen-logic-v{}, symbol-lexicon-v{}\nLicense: AGPL-3.0-or-later\nSource:  https://github.com/RioPlay/aden\nThis is free software with ABSOLUTELY NO WARRANTY. The Corresponding\nSource for any network-accessible instance is the repository above,\nas required by AGPL-3.0 section 13.",
+            env!("CARGO_PKG_VERSION"),
+            revision,
+            state,
+            features.join(","),
+            aden_graph::snapshot::SNAPSHOT_VERSION,
+            indexer::fresh::INDEX_LAYOUT_VERSION,
+            types::GEN_LOGIC_VERSION,
+            aden_store::fjall_store::SYMBOL_LEXICON_VERSION
+        )
+        .into_boxed_str(),
+    )
+}
+
 fn real_main() -> Result<(), Box<dyn std::error::Error>> {
-    let cli = Cli::parse();
+    let matches = Cli::command()
+        .long_version(build_long_version())
+        .get_matches();
+    let cli = Cli::from_arg_matches(&matches)?;
     let quiet = !cli.verbose;
     crate::util::quiet::set_quiet(quiet);
     let _unlimited = cli.unlimited;
@@ -1141,11 +1337,6 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
         if project_path.exists() && project_path.is_dir() {
             std::env::set_current_dir(project_path)?;
             eprintln!("Switched to aden project: {}", project_path.display());
-            // Persist the resolved root so future calls without --project pick it up.
-            let resolved = find_project_root(project_path);
-            if let Err(e) = util::write_project_conf(&resolved) {
-                eprintln!("Warning: could not write project.conf: {}", e);
-            }
         } else {
             eprintln!(
                 "Warning: Project path does not exist: {}",
@@ -1157,9 +1348,10 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
     match cli.command {
         Commands::Init {
             path,
+            templates,
             with_secure_refs,
             agents_md,
-        } => commands::cmd_init(&path, with_secure_refs, agents_md),
+        } => commands::cmd_init(&path, templates, with_secure_refs, agents_md),
         Commands::AgentsMd { path } => commands::cmd_agents_md(&path),
         Commands::Regen { path } => {
             let root = find_project_root(&path);
@@ -1210,17 +1402,24 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Commands::Gen {
             paths,
-            auto: _,
+            auto,
             quiet,
             propose,
             force_regen,
         } => {
-            let effective_path = if paths.is_empty() {
-                std::path::PathBuf::from(".")
+            // `--auto` deliberately selects the project directory when no PATH
+            // is supplied; every explicit PATH is processed rather than silently
+            // discarding all but the first one.
+            let effective_paths = if paths.is_empty() {
+                vec![std::path::PathBuf::from(".")]
             } else {
-                paths[0].clone()
+                paths
             };
-            commands::cmd_gen_opts(&effective_path, quiet, propose, force_regen)
+            let _auto_discover = auto;
+            for path in effective_paths {
+                commands::cmd_gen_opts(&path, quiet, propose, force_regen)?;
+            }
+            Ok(())
         }
         Commands::Check {
             path,
@@ -1288,9 +1487,12 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
                 .map(|s| util::parse_edge_types_validated(&s))
                 .transpose()?
                 .unwrap_or_default();
-            let effective_format = if machine_json && asm_format == "llm" {
-                "json".to_string()
+            let effective_format = if cli.human && asm_format == "json" {
+                "llm".to_string()
             } else {
+                // Explicit --format values always win. In particular,
+                // `--format llm` must not be rewritten to JSON merely because
+                // JSON is the global default for other agent-facing reads.
                 asm_format
             };
             let (effective_budget, effective_auto) = (budget, auto);
@@ -1318,21 +1520,23 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
             depth,
             backlinks,
             impact,
+            max_results,
             format,
             path,
-        } => commands::cmd_query(
-            &path,
-            from.as_deref(),
-            edge_type.as_deref(),
+        } => commands::cmd_query(commands::QueryOptions {
+            path: &path,
+            from: from.as_deref(),
+            edge_type: edge_type.as_deref(),
             depth,
-            backlinks.as_deref(),
-            impact.as_deref(),
-            if cli.human && format == "json" {
+            backlinks: backlinks.as_deref(),
+            impact: impact.as_deref(),
+            format: if cli.human && format == "json" {
                 "table"
             } else {
                 &format
             },
-        ),
+            max_results: Some(max_results),
+        }),
         Commands::QueryAdq { script, path } => commands::cmd_query_adq(&path, &script),
         Commands::Ask {
             question,
@@ -1343,6 +1547,7 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
             intent,
             depth,
             edge_types,
+            expand,
             strict,
             explain,
         } => {
@@ -1359,6 +1564,7 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
                 intent_override,
                 depth,
                 edge_types_override,
+                expand,
                 strict,
                 explain,
                 machine_json,
@@ -1536,7 +1742,22 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
             )
         }
         Commands::Status { path } => commands::cmd_status(&path, machine_json),
-        Commands::Sync { path, no_gc } => commands::cmd_sync(&path, no_gc, cli.unlimited),
+        Commands::Tree {
+            path,
+            depth,
+            symbols,
+            symbol_depth,
+        } => commands::cmd_tree(
+            &path,
+            depth,
+            symbol_depth,
+            symbols,
+            cli.unlimited,
+            machine_json,
+        ),
+        Commands::Sync { path, gc, no_gc } => {
+            commands::cmd_sync(&path, gc && !no_gc, cli.unlimited)
+        }
         Commands::Watch {
             path,
             graph_sync,
@@ -1626,6 +1847,12 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
             strict,
         } => commands::cmd_audit(&path, lang.as_deref(), &format, strict, machine_json),
         Commands::New { name, lang, path } => commands::cmd_new(&name, &lang, &path),
+        Commands::Catalog => {
+            println!(
+                "Core navigation:\n  tree --symbols, grep, locate, understand, ask, query, asm, impact-diff\n\nProject integration:\n  init, new, gen, check, status, view, doctor, mcp, store\n\nOptional Aden methodology (hidden from normal help):\n  agents-md, overlay, kickoff, workflow, complete, heal, review, session, federation, emergency\n\nAdvanced graph/visualization compatibility:\n  regen, query-adq, search, list, communities, viz, scope, config, sync, watch, suggest, diagnose, timeline\n\nPrefer native project tools over Aden wrappers:\n  lint, test, audit, ready, ci-check, licenses\n\nAll remain callable. Run `aden help <command>` for details."
+            );
+            Ok(())
+        }
         Commands::Overlay { anchor, path } => commands::overlay::cmd_overlay(&path, &anchor),
         Commands::Kickoff {
             name,
@@ -1665,6 +1892,7 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
             }
             McpAction::Uninstall {
                 platform,
+                project,
                 scope,
                 name,
                 preset,
@@ -1674,6 +1902,7 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
                 let platforms = platform.map_or_else(Vec::new, |p| vec![p]);
                 mcp::run_uninstall(
                     &platforms,
+                    project.as_deref(),
                     scope.as_deref(),
                     preset.as_deref(),
                     name.as_deref(),

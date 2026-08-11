@@ -9,60 +9,55 @@ use aden_store::GraphStorage;
 
 use crate::util::{fmt_score, load_or_build_index, node_to_json, query_index};
 
-/// Normalize the human spelling of a symbol without changing its identity:
-/// whitespace is irrelevant and generic argument lists are elided. This makes
-/// `AdenGraph::bfs`, `AdenGraph < N, E > :: bfs`, and the canonical stored
-/// `AdenGraph<N, E>::bfs` comparable while preserving namespace/method order.
-fn natural_symbol_form(value: &str) -> String {
-    let mut out = String::with_capacity(value.len());
-    let mut generic_depth = 0usize;
-    for ch in value.chars() {
-        match ch {
-            '<' => generic_depth += 1,
-            '>' => generic_depth = generic_depth.saturating_sub(1),
-            ch if generic_depth == 0 && !ch.is_whitespace() => out.push(ch),
-            _ => {}
-        }
-    }
-    out
+fn locate_envelope(
+    mode: &str,
+    match_kind: &str,
+    total: usize,
+    items: Vec<serde_json::Value>,
+) -> serde_json::Value {
+    let returned = items.len();
+    serde_json::json!({
+        "mode": mode,
+        "match_kind": match_kind,
+        "total": total,
+        "returned": returned,
+        "truncated": returned < total,
+        // `items` remains for compatibility; new consumers use the explicit
+        // result metadata plus this stable collection field.
+        "items": items,
+    })
 }
 
-/// Rank how well `anchor` matches the query `symbol` for symbol resolution
-/// (lower is better). The anchor's trailing fragment is taken after the last
-/// `#`/`/`; BOTH the whole fragment and its last `.`/`::` component (the bare
-/// method/function name) are considered, so a method like `Scaffold.errorhandler`
-/// is preferred for the query `errorhandler` over a substring superset such as
-/// `Blueprint.app_errorhandler`. Shared by `cmd_locate` and `pick_symbol_anchor`
-/// so the two resolvers can never disagree on what an exact match is.
-///   0 — whole fragment == symbol, same case   (the exact definition)
-///   1 — whole fragment == symbol, any case
-///   2 — last `.`/`::` component == symbol, same case  (exact method name)
-///   3 — last component == symbol, any case
-///   4 — fragment starts `symbol.`/`symbol::`  (members of the queried symbol)
-///   5 — any other substring match  (incidental)
-fn anchor_match_rank(anchor: &str, symbol: &str) -> u8 {
-    let sym_lower = natural_symbol_form(symbol).to_lowercase();
-    let seg = natural_symbol_form(anchor.rsplit(['#', '/']).next().unwrap_or(""));
-    let seg_lower = seg.to_lowercase();
-    let leaf = seg.rsplit(['.', ':']).next().unwrap_or(&seg);
-    let leaf_lower = leaf.to_lowercase();
-    if seg == symbol {
-        0
-    } else if seg_lower == sym_lower {
-        1
-    } else if leaf == symbol {
-        2
-    } else if leaf_lower == sym_lower {
-        3
-    } else if seg_lower.starts_with(&format!("{sym_lower}."))
-        || seg_lower.starts_with(&format!("{sym_lower}::"))
-    {
-        4
-    } else if seg_lower.contains(&sym_lower) {
-        5
-    } else {
-        u8::MAX
-    }
+fn with_anchor_resolution(
+    mut envelope: serde_json::Value,
+    resolution: &aden_graph::cache::AnchorResolution,
+) -> serde_json::Value {
+    use aden_graph::cache::AnchorResolution;
+    envelope["resolution"] = match resolution {
+        AnchorResolution::Exact(anchor) => serde_json::json!({
+            "state": "exact",
+            "complete": true,
+            "anchor": anchor,
+        }),
+        AnchorResolution::Unique { anchor } => serde_json::json!({
+            "state": "unique",
+            "complete": true,
+            "anchor": anchor,
+        }),
+        AnchorResolution::Ambiguous { candidates } => serde_json::json!({
+            "state": "ambiguous",
+            "complete": false,
+            "candidates": candidates,
+            "recovery": "retry with one exact candidate anchor",
+        }),
+        AnchorResolution::NotFound { suggestions } => serde_json::json!({
+            "state": "not_found",
+            "complete": false,
+            "suggestions": suggestions,
+            "recovery": "inspect suggestions or broaden the search; suggestions are never selected automatically",
+        }),
+    };
+    envelope
 }
 
 /// Other store anchors that share `symbol`'s trailing `#symbol` segment, excluding
@@ -87,7 +82,7 @@ fn alternate_anchors<'a>(
 
 /// Resolve a bare symbol name to a single full store anchor (the `understand`
 /// resolver). Filters to anchors that contain the symbol, then picks the best by
-/// [`anchor_match_rank`] (exact fragment > exact method-name > member > substring),
+/// [`aden_graph::cache::anchor_match_rank`] (exact fragment > exact method-name > member > substring),
 /// tie-broken by anchor. `None` when nothing matches — callers turn that into a
 /// helpful "not found" message. Factored out so it is unit-testable without a live
 /// store. Shares its ranking with `cmd_locate` so the two resolvers never disagree.
@@ -99,35 +94,21 @@ pub(crate) fn pick_symbol_anchor(symbol: &str, anchors: &[String]) -> Option<Str
 /// Callers that need a definitive target (notably `understand`) must treat more
 /// than one candidate as ambiguity instead of silently choosing lexical order.
 fn ranked_symbol_candidates(symbol: &str, anchors: &[String]) -> Vec<String> {
-    let sym = symbol.to_lowercase();
-    let mut matched: Vec<&String> = anchors
-        .iter()
-        .filter(|a| {
-            let al = a.to_lowercase();
-            al.ends_with(&format!("#{}", sym))
-                || al.ends_with(&sym)
-                || al.contains(&format!("#{}", sym))
-                || anchor_match_rank(a, symbol) != u8::MAX
-        })
-        .collect();
-    // Prefer an exact symbol or method-name match over an incidental substring,
-    // so `errorhandler` resolves to `…#Scaffold.errorhandler` (method-name match)
-    // not the substring superset `…#Blueprint.app_errorhandler`. Deterministic
-    // tie-break by anchor string.
-    matched.sort_by(|a, b| {
-        anchor_match_rank(a, symbol)
-            .cmp(&anchor_match_rank(b, symbol))
-            .then_with(|| a.cmp(b))
-    });
-    let Some(best) = matched.first() else {
-        return Vec::new();
-    };
-    let rank = anchor_match_rank(best, symbol);
-    matched
-        .into_iter()
-        .filter(|anchor| anchor_match_rank(anchor, symbol) == rank)
-        .cloned()
-        .collect()
+    aden_graph::cache::ranked_anchor_candidates(symbol, anchors)
+}
+
+/// Definitive natural-name matches only. Rank-5 substring hits remain useful
+/// locate suggestions but must never become structural query targets.
+fn definitive_symbol_candidates(symbol: &str, anchors: &[String]) -> Vec<String> {
+    let candidates = ranked_symbol_candidates(symbol, anchors);
+    if candidates
+        .first()
+        .is_some_and(|anchor| aden_graph::cache::anchor_match_rank(anchor, symbol) < 5)
+    {
+        candidates
+    } else {
+        Vec::new()
+    }
 }
 
 /// Backlinks of `anchor` (incoming references) as JSON nodes, one entry per
@@ -166,13 +147,15 @@ fn collect_unique_backlinks(
 /// traversal / assembly internals the individual commands use.
 /// Downstream-impact reach: BFS over OUTGOING edges from `start`, keeping a
 /// neighbor when ANY parallel edge between the pair is an impact edge. Returns
-/// `(node, depth)` in BFS order. Multigraph-correct — `find_edge` returns one
-/// arbitrary edge and would drop a neighbor whose impact edge (e.g. `Calls`)
-/// coexists with a non-impact one (e.g. `Contains`). Mirrors `query --impact`.
+/// `(node, depth)` in BFS order, limited to `max_depth`. Multigraph-correct —
+/// `find_edge` returns one arbitrary edge and would drop a neighbor whose
+/// impact edge (e.g. `Calls`) coexists with a non-impact one (e.g. `Contains`).
+/// Mirrors the bounded `query --impact` traversal.
 fn impact_reachable(
     graph: &aden_graph::AdenGraph<aden_graph::DocumentNode, aden_graph::AdenEdge>,
     start: aden_graph::NodeIndex,
     impact_types: &[aden_core::EdgeType],
+    max_depth: usize,
 ) -> Vec<(aden_graph::NodeIndex, usize)> {
     let mut out = Vec::new();
     let mut visited = HashSet::new();
@@ -180,6 +163,9 @@ fn impact_reachable(
     visited.insert(start);
     queue.push_back((start, 0usize));
     while let Some((node, d)) = queue.pop_front() {
+        if d >= max_depth {
+            continue;
+        }
         for neighbor in graph.graph.neighbors_directed(node, Direction::Outgoing) {
             let is_impact = graph
                 .graph
@@ -210,75 +196,68 @@ pub fn cmd_understand(
     // Decision-grade: short-wait so blast radius is not silently stale.
     super::ensure_fresh_decision(path);
 
-    // Step 1: resolve the symbol to a full store anchor. Try the shared exact
-    // resolver first; fall back to suffix matching over the store's anchor keys
-    // (same strategy `locate` uses) so a bare symbol name still resolves.
-    let anchor = match aden_graph::cache::resolve_anchor_in_store(path, symbol) {
-        Some(a) => a,
-        None => {
-            // Prefer snapshot for the anchor list in bare symbol fallback (lock-free).
-            let anchors = if let Some((docs, _)) = aden_graph::snapshot::try_read_fresh(path) {
-                docs.keys().cloned().collect::<Vec<_>>()
+    // Step 1: use the same definitive resolver as asm/query. Substring matches
+    // remain suggestions and are never silently promoted to a resolved symbol.
+    let anchor = match aden_graph::cache::resolve_anchor_detailed(path, symbol) {
+        aden_graph::cache::AnchorResolution::Exact(anchor)
+        | aden_graph::cache::AnchorResolution::Unique { anchor } => anchor,
+        aden_graph::cache::AnchorResolution::NotFound { suggestions } => {
+            let msg = format!(
+                "No symbol found matching '{}'. Try 'aden locate --symbol {} .' for ranked recovery candidates.",
+                symbol, symbol
+            );
+            if json {
+                let env = super::augment_read_json(
+                    path,
+                    json!({
+                        "symbol": symbol,
+                        "anchor": null,
+                        "error": msg,
+                        "resolution": {
+                            "state": "not_indexed",
+                            "complete": false,
+                            "suggestions": suggestions,
+                            "limitations": "nested/local/test symbols, generated code, macros, and dynamic definitions may not have graph anchors",
+                            "recovery": [
+                                format!("run locate(symbol={symbol:?}) to inspect full-text fallback candidates"),
+                                format!("run grep(pattern={symbol:?}) because no graph result does not prove absence"),
+                            ],
+                        },
+                    }),
+                );
+                println!("{}", serde_json::to_string_pretty(&env)?);
             } else {
-                let (store_path, _) = aden_paths::resolve_read_store(path);
-                aden_store::Storage::open_existing(store_path.to_str().ok_or("invalid store path")?)
-                    .ok()
-                    .and_then(|s| s.get_all_documents().ok())
-                    .unwrap_or_default()
-                    .into_keys()
-                    .collect::<Vec<_>>()
-            };
-            match ranked_symbol_candidates(symbol, &anchors).as_slice() {
-                [a] => a.clone(),
-                [] => {
-                    let msg = format!(
-                        "No symbol found matching '{}'. Try 'aden locate --symbol {} .' for ranked recovery candidates.",
-                        symbol, symbol
-                    );
-                    if json {
-                        let env = super::augment_read_json(
-                            path,
-                            json!({
-                                "symbol": symbol,
-                                "anchor": null,
-                                "error": msg,
-                            }),
-                        );
-                        println!("{}", serde_json::to_string_pretty(&env)?);
-                    } else {
-                        println!("{}", msg);
-                    }
-                    return Ok(());
-                }
-                candidates => {
-                    let recovery = format!(
-                        "Ambiguous symbol '{}'; use an exact anchor or run 'aden locate --symbol {} .' to choose a candidate.",
-                        symbol, symbol
-                    );
-                    if json {
-                        let env = super::augment_read_json(
-                            path,
-                            json!({
-                                "symbol": symbol,
-                                "anchor": null,
-                                "resolution": {
-                                    "state": "ambiguous",
-                                    "complete": false,
-                                    "candidates": candidates,
-                                    "recovery": recovery,
-                                },
-                            }),
-                        );
-                        println!("{}", serde_json::to_string_pretty(&env)?);
-                    } else {
-                        println!("{recovery}");
-                        for candidate in candidates {
-                            println!("  - {candidate}");
-                        }
-                    }
-                    return Ok(());
+                println!("{}", msg);
+            }
+            return Ok(());
+        }
+        aden_graph::cache::AnchorResolution::Ambiguous { candidates } => {
+            let recovery = format!(
+                "Ambiguous symbol '{}'; use an exact anchor or run 'aden locate --symbol {} .' to choose a candidate.",
+                symbol, symbol
+            );
+            if json {
+                let env = super::augment_read_json(
+                    path,
+                    json!({
+                        "symbol": symbol,
+                        "anchor": null,
+                        "resolution": {
+                            "state": "ambiguous",
+                            "complete": false,
+                            "candidates": candidates,
+                            "recovery": recovery,
+                        },
+                    }),
+                );
+                println!("{}", serde_json::to_string_pretty(&env)?);
+            } else {
+                println!("{recovery}");
+                for candidate in candidates {
+                    println!("  - {candidate}");
                 }
             }
+            return Ok(());
         }
     };
 
@@ -323,7 +302,11 @@ pub fn cmd_understand(
     // silently drifted (it was missing Implements/Mutates, so understand's
     // impact view truncated at trait boundaries that `query --impact` crossed).
     let impact_types = crate::util::impact_edge_types();
-    let impact: Vec<serde_json::Value> = impact_reachable(&graph, idx, &impact_types)
+    // Keep all three views (backlinks, impact, assembled context) within the
+    // same fixed three-hop comprehension neighborhood. An unbounded impact
+    // list could otherwise overwhelm the MCP response before its bounded
+    // context section reached the caller.
+    let impact: Vec<serde_json::Value> = impact_reachable(&graph, idx, &impact_types, 3)
         .into_iter()
         .map(|(n, d)| node_to_json(&graph.graph[n], d))
         .collect();
@@ -543,27 +526,16 @@ pub fn cmd_locate(
                 storage.get_all_documents().unwrap_or_default()
             };
         let all_anchors: Vec<String> = docs.keys().cloned().collect();
-
-        let mut matched: Vec<&String> = all_anchors
-            .iter()
-            .filter(|a| anchor_match_rank(a, sym) != u8::MAX)
-            .collect();
-        // Precision: surface the exact symbol definition (and its members) before
-        // incidental substring hits (doc headings, `OtherGroup`, code blocks).
-        // Shared with `understand`'s resolver via `anchor_match_rank`, which also
-        // ranks a method-name match (`Scaffold.errorhandler` for `errorhandler`)
-        // above an unrelated substring superset (`Blueprint.app_errorhandler`).
-        matched.sort_by(|a, b| {
-            anchor_match_rank(a, sym)
-                .cmp(&anchor_match_rank(b, sym))
-                .then_with(|| a.cmp(b))
-        });
+        let aden_graph::cache::AnchorResolutionAnalysis {
+            resolution,
+            ranked_matches: matched,
+        } = aden_graph::cache::analyze_anchor_list(sym, &all_anchors);
 
         let hits: Vec<serde_json::Value> = matched
             .iter()
             .take(limit)
             .filter_map(|a| {
-                let doc = docs.get(*a)?;
+                let doc = docs.get(a.as_str())?;
                 let attrs = &doc.attributes;
                 Some(json!({
                     "anchor": a,
@@ -588,7 +560,13 @@ pub fn cmd_locate(
                     .take(limit)
                     .map(|r| json!({ "anchor": r.anchor, "score": r.score, "snippet": r.snippet }))
                     .collect();
-                let env = super::augment_read_json(path, serde_json::Value::Array(arr));
+                let env = super::augment_read_json(
+                    path,
+                    with_anchor_resolution(
+                        locate_envelope("symbol", "full_text_fallback", search_results.len(), arr),
+                        &resolution,
+                    ),
+                );
                 println!("{}", serde_json::to_string_pretty(&env)?);
                 return Ok(());
             }
@@ -611,6 +589,15 @@ pub fn cmd_locate(
                 return Ok(());
             }
             println!("No symbol found matching '{}'", sym);
+            if let aden_graph::cache::AnchorResolution::NotFound { suggestions } = &resolution
+                && !suggestions.is_empty()
+            {
+                println!("Did you mean one of these canonical anchors?");
+                for suggestion in suggestions {
+                    println!("  - {suggestion}");
+                }
+                println!("Suggestions are recovery hints only and were not selected.");
+            }
             println!(
                 "Hint: Try 'aden search \"{}\"' to find related anchors",
                 sym
@@ -619,11 +606,33 @@ pub fn cmd_locate(
         }
 
         if want_json {
-            let env = super::augment_read_json(path, serde_json::Value::Array(hits));
+            let match_kind = match &resolution {
+                aden_graph::cache::AnchorResolution::Ambiguous { .. } => "ambiguous_definitions",
+                aden_graph::cache::AnchorResolution::NotFound { .. } => "symbol_suggestions",
+                _ => "definition",
+            };
+            let env = super::augment_read_json(
+                path,
+                with_anchor_resolution(
+                    locate_envelope("symbol", match_kind, matched.len(), hits),
+                    &resolution,
+                ),
+            );
             println!("{}", serde_json::to_string_pretty(&env)?);
             return Ok(());
         }
-        println!("Found {} match(es) for '{}':", matched.len(), sym);
+        if matches!(
+            resolution,
+            aden_graph::cache::AnchorResolution::NotFound { .. }
+        ) {
+            println!(
+                "Found {} suggestion(s) for '{}'; no definitive symbol was selected:",
+                matched.len(),
+                sym
+            );
+        } else {
+            println!("Found {} match(es) for '{}':", matched.len(), sym);
+        }
         print_locate_results(&hits, format, context);
         return Ok(());
     }
@@ -638,21 +647,29 @@ pub fn cmd_locate(
 
         let graph = aden_graph::cache::build_from_directory_cached(path)?;
 
-        // A bare symbol (e.g. `assemble`) may resolve to several anchors across
-        // modules; union the callers of every matching definition.
-        let tl = target.to_lowercase();
+        // A bare symbol may have the same exact natural name in several modules;
+        // union those definitions, but never include substring supersets such as
+        // `reparse` for `parse`.
+        let anchors: Vec<String> = graph
+            .graph
+            .node_indices()
+            .map(|i| graph.graph[i].doc.anchor.clone())
+            .collect();
+        let target_anchors: HashSet<String> = definitive_symbol_candidates(target, &anchors)
+            .into_iter()
+            .collect();
         let targets: Vec<_> = graph
             .graph
             .node_indices()
-            .filter(|&i| {
-                let al = graph.graph[i].doc.anchor.to_lowercase();
-                al.ends_with(&tl) || al.contains(&format!("#{}", tl))
-            })
+            .filter(|&i| target_anchors.contains(&graph.graph[i].doc.anchor))
             .collect();
 
         if targets.is_empty() {
             if want_json {
-                let env = super::augment_read_json(path, serde_json::json!([]));
+                let env = super::augment_read_json(
+                    path,
+                    locate_envelope("callers", "target_not_found", 0, Vec::new()),
+                );
                 println!("{}", serde_json::to_string_pretty(&env)?);
                 return Ok(());
             }
@@ -664,14 +681,8 @@ pub fn cmd_locate(
             return Ok(());
         }
 
-        // The matched definitions themselves are never their own callers. A bare
-        // name matches loosely (`#fold_overlay` also matches `#fold_overlay_blocks`),
-        // so a target that legitimately calls a sibling target would otherwise be
-        // reported as a self-caller on its own definition line — exclude them.
-        let target_anchors: HashSet<String> = targets
-            .iter()
-            .map(|&i| graph.graph[i].doc.anchor.clone())
-            .collect();
+        // The matched definitions themselves are never their own callers.
+        // Exclude them when duplicate exact definitions call one another.
 
         // Collect unique callers via incoming `Calls` edges.
         let mut seen = HashSet::new();
@@ -696,7 +707,10 @@ pub fn cmd_locate(
 
         if callers.is_empty() {
             if want_json {
-                let env = super::augment_read_json(path, serde_json::json!([]));
+                let env = super::augment_read_json(
+                    path,
+                    locate_envelope("callers", "call_edges", 0, Vec::new()),
+                );
                 println!("{}", serde_json::to_string_pretty(&env)?);
                 return Ok(());
             }
@@ -735,7 +749,10 @@ pub fn cmd_locate(
             .collect();
 
         if want_json {
-            let env = super::augment_read_json(path, serde_json::Value::Array(hits));
+            let env = super::augment_read_json(
+                path,
+                locate_envelope("callers", "call_edges", callers.len(), hits),
+            );
             println!("{}", serde_json::to_string_pretty(&env)?);
             return Ok(());
         }
@@ -847,7 +864,7 @@ mod tests {
                 .add_edge(caller, callee, aden_graph::AdenEdge { edge_type: et });
         }
         let impact_types = crate::util::impact_edge_types();
-        let reached: Vec<String> = super::impact_reachable(&g, caller, &impact_types)
+        let reached: Vec<String> = super::impact_reachable(&g, caller, &impact_types, 3)
             .into_iter()
             .map(|(n, _)| g.graph[n].doc.anchor.clone())
             .collect();
@@ -855,6 +872,29 @@ mod tests {
             reached.contains(&"callee".to_string()),
             "impact must include the callee reachable via a parallel Calls edge; got: {reached:?}"
         );
+    }
+
+    #[test]
+    fn understand_impact_respects_depth_bound() {
+        let mut g = aden_graph::AdenGraph::<aden_graph::DocumentNode, aden_graph::AdenEdge>::new();
+        let root = g.add_node(backlink_fixture_node("root")).unwrap();
+        let middle = g.add_node(backlink_fixture_node("middle")).unwrap();
+        let leaf = g.add_node(backlink_fixture_node("leaf")).unwrap();
+        for (from, to) in [(root, middle), (middle, leaf)] {
+            g.graph.add_edge(
+                from,
+                to,
+                aden_graph::AdenEdge {
+                    edge_type: aden_core::EdgeType::Calls,
+                },
+            );
+        }
+
+        let impact_types = crate::util::impact_edge_types();
+        let reached = super::impact_reachable(&g, root, &impact_types, 1);
+        assert_eq!(reached.len(), 1);
+        assert_eq!(g.graph[reached[0].0].doc.anchor, "middle");
+        assert_eq!(reached[0].1, 1);
     }
 
     /// An anchor missing from the graph yields no backlinks (and no panic).
@@ -939,6 +979,36 @@ mod tests {
         assert_eq!(
             super::ranked_symbol_candidates("AdenGraph::bfs", &anchors),
             anchors
+        );
+    }
+
+    #[test]
+    fn caller_targets_require_symbol_boundaries() {
+        let anchors = vec![
+            "src/a.rs#parse".to_string(),
+            "src/b.rs#reparse".to_string(),
+            "src/c.rs#unparse".to_string(),
+        ];
+        assert_eq!(
+            super::definitive_symbol_candidates("parse", &anchors),
+            vec!["src/a.rs#parse".to_string()]
+        );
+    }
+
+    #[test]
+    fn caller_targets_keep_duplicate_exact_definitions() {
+        let anchors = vec![
+            "src/b.rs#Parse".to_string(),
+            "src/a.rs#parse".to_string(),
+            "src/c.rs#parse_document".to_string(),
+        ];
+        assert_eq!(
+            super::definitive_symbol_candidates("parse", &anchors),
+            vec!["src/a.rs#parse".to_string()]
+        );
+        assert_eq!(
+            super::definitive_symbol_candidates("PARSE", &anchors),
+            vec!["src/a.rs#parse".to_string(), "src/b.rs#Parse".to_string()]
         );
     }
 

@@ -218,7 +218,7 @@ fn cmd_gen_inner(
     // Store-first: `gen` writes ONLY to .aden/store. Module hub nodes
     // (mod-project, mod-<crate>) are synthesized into the store by
     // link_store_edges — no .adoc files or contracts/ directory are emitted.
-    let mut pending_snapshot: Option<(std::path::PathBuf, Vec<u8>)> = None;
+    let mut pending_snapshot: Option<std::path::PathBuf> = None;
     {
         // A single file re-indexes just itself; a directory indexes the project.
         let mut discovered = if path.is_file() {
@@ -372,7 +372,7 @@ fn cmd_gen_inner(
 
         let cache_path = aden_paths::gen_cache_file(&root);
         let mut cache = load_gen_cache(&cache_path);
-        let mut generated = Vec::new();
+        let mut generated = 0usize;
         let mut skipped = 0usize;
 
         // Persist every path-level disposition before parsing. This keeps
@@ -691,6 +691,15 @@ fn cmd_gen_inner(
             }
         }
         work_items.sort_by(|a, b| work_key(a).cmp(work_key(b)));
+        if !propose {
+            // Resolution must never trust a lexicon from a partially completed
+            // multi-batch generation. Readers use the last snapshot while this
+            // writer holds the store; a crash leaves the marker absent and
+            // selective resolution falls back to the canonical doc keys.
+            storage
+                .invalidate_symbol_lexicon()
+                .map_err(|e| format!("Failed to invalidate symbol lexicon: {e}"))?;
+        }
         for item in work_items {
             match item {
                 WorkItem::Skip => skipped += 1,
@@ -764,7 +773,7 @@ fn cmd_gen_inner(
                         // Count only symbols actually written to the store, so the
                         // summary never claims to have stored a conflict-held doc.
                         if sym.wrote {
-                            generated.push(sym.anchor.clone());
+                            generated += 1;
                         }
                         if !sym.refs.is_empty() {
                             ref_records.push((sym.anchor.clone(), sym.refs));
@@ -868,11 +877,6 @@ fn cmd_gen_inner(
             }
         }
 
-        // Flush store to persist all documents
-        storage
-            .flush()
-            .map_err(|e| format!("Store flush failed: {}", e))?;
-
         // Connect the graph: persist module<->symbol containment and call edges
         // so the store-first graph used by asm/ask/query is actually traversable.
         let cochange = cochange_pairs(&root, &cache);
@@ -907,12 +911,41 @@ fn cmd_gen_inner(
             eprintln!("WARN: Failed to link include edges: {}", e);
         }
 
-        // ADR-011: encode the read snapshot while storage is open; publish after
-        // the store handle drops so a final fjall flush cannot age the store
-        // past the snapshot file.
+        // Every document write, stale-node prune, and synthesized hub write is
+        // now complete. Publish the marker last, then durably flush both graph
+        // and lexicon before preparing a snapshot that may reference them.
+        storage
+            .finalize_symbol_lexicon()
+            .map_err(|e| format!("Failed to finalize symbol lexicon: {e}"))?;
+        storage
+            .flush()
+            .map_err(|e| format!("Store flush failed: {}", e))?;
+
+        // Linking is complete. Release extraction-only strings before loading
+        // docs + edges for the read snapshot; retaining both sets made cold
+        // kernel-scale indexing carry the call/reference corpus twice.
+        drop((
+            link_records,
+            use_records,
+            ref_records,
+            include_records,
+            impl_records,
+            mutates_records,
+            member_of_records,
+            mention_records,
+            supersede_records,
+            demo_records,
+            term_records,
+            test_anchors,
+        ));
+        drop(cochange);
+
+        // ADR-011: serialize the read snapshot to its temporary file while
+        // storage is open; publish after the store handle drops so a final fjall
+        // flush cannot age the store past the snapshot file.
         let snapshot_path = aden_paths::graph_snapshot_file(&root);
-        match aden_graph::snapshot::prepare_from_storage(&storage) {
-            Ok(bytes) => pending_snapshot = Some((snapshot_path, bytes)),
+        match aden_graph::snapshot::prepare_from_storage(&snapshot_path, &storage) {
+            Ok(()) => pending_snapshot = Some(snapshot_path),
             Err(e) => eprintln!("WARN: Failed to prepare read snapshot: {e}"),
         }
 
@@ -924,7 +957,7 @@ fn cmd_gen_inner(
             progress!(
                 silent,
                 "\nStored {} contracts. Skipped {} unchanged files. Pruned {} stale symbol(s).",
-                generated.len(),
+                generated,
                 skipped,
                 pruned
             );
@@ -932,11 +965,11 @@ fn cmd_gen_inner(
             progress!(
                 silent,
                 "\nStored {} contracts. Skipped {} unchanged files.",
-                generated.len(),
+                generated,
                 skipped
             );
         }
-        if skipped == 0 && generated.len() == sources.len() {
+        if skipped == 0 && generated == sources.len() {
             progress!(
                 silent,
                 "(All files were skipped — nothing changed since last run)"
@@ -998,13 +1031,14 @@ fn cmd_gen_inner(
         }
     }
 
-    if let Some((snapshot_path, bytes)) = pending_snapshot {
-        match aden_graph::snapshot::publish_bytes(&snapshot_path, &bytes) {
+    if let Some(snapshot_path) = pending_snapshot {
+        match aden_graph::snapshot::publish_prepared(&snapshot_path) {
             Ok(()) => {
                 if let Some(indexed_source_fingerprint) = indexed_source_fingerprint {
+                    let graph_revision = super::fresh::snapshot_revision(&snapshot_path)?;
                     super::fresh::publish_freshness_manifest(
                         &root,
-                        &bytes,
+                        graph_revision,
                         indexed_source_fingerprint,
                     )?;
                 }

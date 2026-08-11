@@ -34,8 +34,8 @@ fn coverage_summary(root: &Path) -> serde_json::Value {
 /// `check` uses, so expected metadata docs are never reported as scary orphans.
 /// Honors the global `-j/--json` flag.
 pub fn cmd_status(path: &Path, json: bool) -> Result<(), Box<dyn std::error::Error>> {
-    let aden_path = path.join(".aden");
     let root = find_project_root(path);
+    let aden_path = root.join(".aden");
     let store_path = aden_paths::store_dir(&root);
     let lock_path = aden_paths::store_lock_file(&root);
     let snapshot_path = aden_paths::graph_snapshot_file(&root);
@@ -84,6 +84,8 @@ pub fn cmd_status(path: &Path, json: bool) -> Result<(), Box<dyn std::error::Err
             "truncated": actionable.len() > 20,
             "path": path.display().to_string(),
             "aden_dir": aden_path.display().to_string(),
+            "aden_dir_exists": aden_path.is_dir(),
+            "project_footprint": if aden_path.is_dir() { "opt_in" } else { "none" },
             "store": store_path.display().to_string(),
             "store_writer": aden_core::lock::read_holder(&lock_path).map(|h| {
                 serde_json::json!({
@@ -113,8 +115,12 @@ pub fn cmd_status(path: &Path, json: bool) -> Result<(), Box<dyn std::error::Err
     }
 
     println!("Aden Status: {}", path.display());
-    println!("Active .aden: {}", aden_path.display());
-    println!("Store: {}", store_path.display());
+    if aden_path.is_dir() {
+        println!("Optional project state: {}", aden_path.display());
+    } else {
+        println!("Project footprint: none");
+    }
+    println!("Per-user store: {}", store_path.display());
     println!("Coverage: {}", coverage);
     if let Some(holder) = aden_core::lock::read_holder(&lock_path) {
         println!(

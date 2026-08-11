@@ -5,6 +5,16 @@
 set -euo pipefail
 
 usage() { echo "Usage: $0 <target> <version> [dist-dir]"; }
+sha256_files() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$@"
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$@"
+    else
+        echo "SHA-256 generation requires sha256sum or shasum" >&2
+        return 1
+    fi
+}
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 [ "$#" -ge 2 ] && [ "$#" -le 3 ] || { usage >&2; exit 2; }
 TARGET="$1"
@@ -39,12 +49,14 @@ else
     cp "$ROOT/release/install.sh" "$BUNDLE/install.sh"
     chmod 755 "$BUNDLE/aden" "$BUNDLE/aden-mcp" "$BUNDLE/install.sh"
 fi
-(cd "$BUNDLE" && sha256sum "aden$EXT" "aden-mcp$EXT" > SHA256SUMS)
+(cd "$BUNDLE" && sha256_files "aden$EXT" "aden-mcp$EXT" > SHA256SUMS)
 {
     echo "Aden v$VERSION"
     echo "Target: $TARGET"
     echo "Files:"
-    (cd "$BUNDLE" && find . -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort | sed 's/^/  /')
+    for file in "$BUNDLE"/*; do
+        [ -f "$file" ] && basename "$file"
+    done | LC_ALL=C sort | sed 's/^/  /'
 } > "$BUNDLE/MANIFEST.txt"
 # Normalize metadata so identical inputs produce identical archives.
 find "$BUNDLE" -exec touch -h -t 198001010000.00 {} +
@@ -52,8 +64,14 @@ if [ "$FORMAT" = "zip" ]; then
     (cd "$STAGE" && find "$NAME" -type f -print | LC_ALL=C sort | zip -X -q "$OUTPUT_DIR/$NAME.zip" -@)
     ARTIFACT="$OUTPUT_DIR/$NAME.zip"
 else
-    tar --sort=name --owner=0 --group=0 --numeric-owner --mtime='1980-01-01 UTC' -C "$STAGE" -cf - "$NAME" | gzip -n > "$OUTPUT_DIR/$NAME.tar.gz"
+    if tar --version 2>/dev/null | grep -q 'GNU tar'; then
+        tar --sort=name --owner=0 --group=0 --numeric-owner --mtime='1980-01-01 UTC' -C "$STAGE" -cf - "$NAME" | gzip -n > "$OUTPUT_DIR/$NAME.tar.gz"
+    else
+        # macOS ships bsdtar. File mtimes were normalized above; these flags
+        # normalize ownership while the sorted file list fixes member order.
+        (cd "$STAGE" && find "$NAME" -print | LC_ALL=C sort | tar --uid 0 --gid 0 --uname root --gname root -cf - -T -) | gzip -n > "$OUTPUT_DIR/$NAME.tar.gz"
+    fi
     ARTIFACT="$OUTPUT_DIR/$NAME.tar.gz"
 fi
-(cd "$OUTPUT_DIR" && sha256sum "$(basename "$ARTIFACT")" > "$(basename "$ARTIFACT").sha256")
+(cd "$OUTPUT_DIR" && sha256_files "$(basename "$ARTIFACT")" > "$(basename "$ARTIFACT").sha256")
 echo "$ARTIFACT"

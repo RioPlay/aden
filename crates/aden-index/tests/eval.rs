@@ -8,10 +8,10 @@
 //! from the fixtures and scores `query()` against the expectations, reporting
 //! Recall@1, Recall@5, and Mean Reciprocal Rank (MRR).
 //!
-//! Why this exists: ranking changes (the M14 rare-verb fix here, and the future
-//! hybrid-retrieval work) must be *measured*, not guessed. This is the baseline
-//! to beat. Run with `cargo test -p aden-index --test eval -- --nocapture` to
-//! see the metric report.
+//! Why this exists: ranking changes (the M14 rare-verb/phrase-resolution fix
+//! here, and future hybrid-retrieval work) must be *measured*, not guessed. This
+//! is the baseline to beat. Run with `cargo test -p aden-index --test eval --
+//! --nocapture` to see the metric report.
 //!
 //! Adding a case: append an [`EvalCase`] to `query_set()`. Adding a document:
 //! append to `corpus()`. Keep both small and legible — this is a regression
@@ -317,23 +317,14 @@ fn retrieval_eval_report() {
     );
 }
 
-/// The M14 rare-verb case — a KNOWN LIMITATION of pure-lexical retrieval.
+/// The M14 rare-verb tie regression.
 ///
 /// For `detect orphan anchors`, the rare verb "detect" (df=1, high IDF) matches
-/// `detect_node_type`, which ALSO matches the common term "anchor" — so it ties
-/// the coverage count with `scan_orphans` (orphan + anchor) and then wins on the
-/// rare verb's IDF. The coverage boost cannot break this tie: both documents
-/// match two distinct query terms.
-///
-/// This is not solvable in BM25 alone without external knowledge (a verb list /
-/// POS tagging), which we deliberately avoid. It is the textbook symptom of
-/// lexical-only retrieval and dissolves with hybrid dense + sparse retrieval
-/// (RRF) — the planned Gap-1 work. Kept (ignored) as an executable record of the
-/// exact case the hybrid retriever must fix; flip `#[ignore]` off once it lands.
+/// `detect_node_type`, which also matches the common term "anchor". It ties the
+/// coverage count with `scan_orphans` (orphan + anchor), then wins on the rare
+/// verb's IDF. The adjacent `orphan anchors` phrase is stronger lexical evidence
+/// of the user's intent and must break that tie without a model.
 #[test]
-#[ignore = "M14 rare-verb tie: needs hybrid retrieval (Gap 1); pure BM25 cannot \
-            rank a subject noun over a rarer verb when the distractor shares a \
-            common query term"]
 fn m14_rare_verb_does_not_dominate() {
     let index = build_index();
     let results = index.query("detect orphan anchors");

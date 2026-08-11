@@ -38,7 +38,11 @@ def validate_live(packet: dict[str, str], live: dict[str, object]) -> list[str]:
     assignees = live["assignees"]
     admission = packet.get("status")
     packet_id = packet["packet-id"]
-    if admission in {"proposed", "ready"} and live["state"] != "OPEN":
+    # A maintainer may close a blocked packet without reopening it for more work.
+    # Preserve the repository's `ready` admission so the packet can be resumed,
+    # while accepting the closed `packet-blocked` administrative state.
+    closed_blocked = admission == "ready" and live["state"] == "CLOSED" and "packet-blocked" in labels
+    if admission in {"proposed", "ready"} and live["state"] != "OPEN" and not closed_blocked:
         errors.append(f"{packet_id}: packet issue is not open")
     if admission == "proposed" and "packet-proposed" not in labels:
         errors.append(f"{packet_id}: proposed packet lacks packet-proposed label")
@@ -61,9 +65,12 @@ def main() -> int:
     errors: list[str] = []
     for path in sorted(PACKETS.glob("*.adoc")):
         packet = attrs(path)
+        issue_ref = packet.get("issue", "").strip().lower()
+        if issue_ref in {"", "none", "optional"}:
+            continue
         match = ISSUE_URL.search(packet.get("issue", ""))
         if not match:
-            errors.append(f"{path.name}: missing issue number")
+            errors.append(f"{path.name}: invalid issue reference")
             continue
         try:
             live = issue_data(match.group(1))

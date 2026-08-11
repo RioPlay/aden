@@ -63,8 +63,8 @@ hard blocking is enabled.
 
 | Phase | Behavior |
 |-------|----------|
-| 0.2.x (current) | Advisory only — violations reported, CI/`gen` not blocked by policy engine |
-| 0.3.0+ (future) | Optional `ADEN_POLICY_MODE=enforce` may block `gen`/`ci-check` after census |
+| 0.4.0 (current) | Advisory by default — violations are reported; `ci-check` bootstrap enforcement remains independent of the policy engine |
+| Future release | Optional `ADEN_POLICY_MODE=enforce` may block `gen`/`ci-check` after the policy census and maintainer review |
 
 `PolicyEngine::load_bootstrap` in `ci.rs` remains the only wired enforcement path until
 Phase 3 lands. `aden check` reference integrity (orphan anchors, unresolved `<<ref>>`)

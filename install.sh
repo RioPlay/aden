@@ -17,9 +17,9 @@
 #                              essential (default, 6 tools) | standard (15) | full (36)
 #   ./install.sh --uninstall   guided removal
 #
-# Environment overrides: INSTALL_DIR (default ~/.local/bin), PROJECT_ROOT
-# (default: this checkout), ADEN_DENSE=1 (same as --dense), ADEN_MCP_SURFACE
-# (same as --surface=).
+# Environment overrides: INSTALL_DIR or ADEN_INSTALL_DIR (default ~/.local/bin),
+# PROJECT_ROOT (default: this checkout), ADEN_DENSE=1 (same as --dense),
+# ADEN_MCP_SURFACE (same as --surface=).
 #
 # Non-interactive runs (no TTY, e.g. piped from curl or CI) perform only the
 # self-contained steps — build, copy binaries — and PRINT instructions for the
@@ -29,7 +29,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INVOKE_DIR="$(pwd)" # captured before any cd — used as the AGENTS.md default
-INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
+INSTALL_DIR="${INSTALL_DIR:-${ADEN_INSTALL_DIR:-$HOME/.local/bin}}"
 PROJECT_ROOT="${PROJECT_ROOT:-$SCRIPT_DIR}"
 
 YES=0
@@ -109,7 +109,7 @@ choose_surface() {
     note "  essential   6 tools  find -> comprehend -> blast-radius   [default]"
     note "  standard   15 tools  + impact-diff, list, test, lint, audit, diagnose, …"
     note "  full       36 tools  + build / setup / admin tooling"
-    note "(every tool stays callable by name at any level; this gates the listing.)"
+    note "(hidden tools also require explicit surface opt-in; busy servers fail fast instead of queueing.)"
     printf "   Surface [essential/standard/full]: "
     read -r reply || reply=""
     case "$(printf '%s' "$reply" | tr '[:upper:]' '[:lower:]')" in
@@ -128,12 +128,22 @@ case "$SHELL_NAME" in
     *) PROFILE="$HOME/.profile" ;;
 esac
 if [ "$SHELL_NAME" = "fish" ]; then
-    PATH_LINE="set -gx PATH $INSTALL_DIR \$PATH"
+    PATH_LINE="set -gx PATH \"$INSTALL_DIR\" \$PATH"
 else
     PATH_LINE="export PATH=\"$INSTALL_DIR:\$PATH\""
 fi
 
 in_path() { echo "$PATH" | tr ':' '\n' | grep -qx "$INSTALL_DIR"; }
+active_aden() { command -v aden 2>/dev/null || true; }
+installed_aden_is_active() { [ "$(active_aden)" = "$INSTALL_DIR/aden" ]; }
+install_hint() {
+    local active
+    active="$(active_aden)"
+    note "'$INSTALL_DIR/aden' was installed, but PATH resolves '$active' first."
+    note "To replace the active user-local installation, rerun with:"
+    note "    INSTALL_DIR=$(dirname "$active") ./install.sh --yes"
+    note "Or place $INSTALL_DIR before $(dirname "$active") in your shell PATH."
+}
 
 # -------------------------------------------------------------- uninstall ---
 if [ "$UNINSTALL" = "1" ]; then
@@ -241,35 +251,87 @@ if git -C "$PROJECT_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
         fi
     fi
 fi
+if [ -z "${ADEN_BUILD_REVISION:-}" ]; then
+    ADEN_BUILD_REVISION="$(git --git-dir="$PROJECT_ROOT/.git" rev-parse --short=12 HEAD 2>/dev/null || printf unknown)"
+fi
+if [ -n "${SOURCE_DATE_EPOCH:-}" ]; then
+    ADEN_BUILD_STATE="reproducible"
+elif git --git-dir="$PROJECT_ROOT/.git" --work-tree="$PROJECT_ROOT" status --porcelain --untracked-files=no 2>/dev/null | grep -q .; then
+    ADEN_BUILD_STATE="dirty"
+else
+    ADEN_BUILD_STATE="clean"
+fi
+export ADEN_BUILD_REVISION ADEN_BUILD_STATE
+note "Build identity: $ADEN_BUILD_REVISION ($ADEN_BUILD_STATE); no timestamp embedded."
 if [ "$DENSE" = "1" ]; then
     note "Building WITH dense/hybrid search: adds the tract + bge embedding stack."
     note "The MCP server spawns this same binary, so hybrid search turns on for both."
-    cargo build --release -p aden-cli --features dense 2>&1 | tail -3
-    cargo build --release -p aden-mcp 2>&1 | tail -3
+    cargo build --locked --release -p aden-cli --features dense 2>&1 | tail -3
+    cargo build --locked --release -p aden-mcp 2>&1 | tail -3
 else
     note "Building the standard binaries (lexical search; --dense adds hybrid)."
-    cargo build --release -p aden-cli -p aden-mcp 2>&1 | tail -3
+    cargo build --locked --release -p aden-cli -p aden-mcp 2>&1 | tail -3
 fi
-ok "built target/release/{aden, aden-mcp}"
+
+TARGET_DIR="${CARGO_TARGET_DIR:-$PROJECT_ROOT/target}"
+case "$TARGET_DIR" in
+    /*) ;;
+    *) TARGET_DIR="$PROJECT_ROOT/$TARGET_DIR" ;;
+esac
+RELEASE_DIR="$TARGET_DIR/release"
+[ -x "$RELEASE_DIR/aden" ] || { note "✗ built aden not found at $RELEASE_DIR/aden"; exit 1; }
+[ -x "$RELEASE_DIR/aden-mcp" ] || { note "✗ built aden-mcp not found at $RELEASE_DIR/aden-mcp"; exit 1; }
+ok "built $RELEASE_DIR/{aden, aden-mcp}"
 
 # 3 ─ Copy binaries ───────────────────────────────────────────────────────────
 step "Install binaries → $INSTALL_DIR"
 note "Why here: user-local bin dir — no sudo, no system files, trivially undoable."
 mkdir -p "$INSTALL_DIR"
-# `install`, not `cp`: it unlinks the destination first, so replacing a binary
-# that is currently running (e.g. aden-mcp held open by an editor session)
-# succeeds with a fresh inode instead of failing with ETXTBSY. The running
-# process keeps the old inode until it restarts.
-install -m 755 "$PROJECT_ROOT/target/release/aden" "$INSTALL_DIR/aden"
-install -m 755 "$PROJECT_ROOT/target/release/aden-mcp" "$INSTALL_DIR/aden-mcp"
+STAGE="$(mktemp -d "$INSTALL_DIR/.aden-install.XXXXXX")"
+COMMIT_STARTED=0
+SUCCESS=0
+HAD_ADEN=0
+HAD_MCP=0
+rollback_install() {
+    status=$?
+    if [ "$SUCCESS" != "1" ] && [ "$COMMIT_STARTED" = "1" ]; then
+        rm -f "$INSTALL_DIR/aden" "$INSTALL_DIR/aden-mcp"
+        [ "$HAD_ADEN" = "1" ] && mv -f "$STAGE/backup-aden" "$INSTALL_DIR/aden"
+        [ "$HAD_MCP" = "1" ] && mv -f "$STAGE/backup-aden-mcp" "$INSTALL_DIR/aden-mcp"
+        note "Install failed; restored the previous Aden binary pair."
+    fi
+    rm -rf "$STAGE"
+    return "$status"
+}
+trap rollback_install EXIT
+
+# Stage and smoke the complete pair before changing either live destination.
+# Moving the staged files into place also replaces running binaries with fresh
+# inodes; existing processes keep the old inode until they restart.
+install -m 755 "$RELEASE_DIR/aden" "$STAGE/aden"
+install -m 755 "$RELEASE_DIR/aden-mcp" "$STAGE/aden-mcp"
+"$STAGE/aden" --version >/dev/null
+"$STAGE/aden-mcp" --version >/dev/null
+COMMIT_STARTED=1
+if [ -e "$INSTALL_DIR/aden" ]; then mv "$INSTALL_DIR/aden" "$STAGE/backup-aden"; HAD_ADEN=1; fi
+if [ -e "$INSTALL_DIR/aden-mcp" ]; then mv "$INSTALL_DIR/aden-mcp" "$STAGE/backup-aden-mcp"; HAD_MCP=1; fi
+mv "$STAGE/aden" "$INSTALL_DIR/aden"
+mv "$STAGE/aden-mcp" "$INSTALL_DIR/aden-mcp"
+"$INSTALL_DIR/aden" --version >/dev/null
+"$INSTALL_DIR/aden-mcp" --version >/dev/null
+SUCCESS=1
+rm -rf "$STAGE"
+trap - EXIT
 ok "aden      → $INSTALL_DIR/aden       (the CLI)"
 ok "aden-mcp  → $INSTALL_DIR/aden-mcp   (the MCP server your AI tools spawn)"
+if [ -n "$EXISTING" ]; then
+    note "IMPORTANT: running MCP/editor/agent processes still hold the previous binary."
+    note "Restart those sessions after install so they load this updated aden-mcp."
+fi
 
 # 4 ─ PATH ────────────────────────────────────────────────────────────────────
 step "PATH"
-if in_path; then
-    ok "$INSTALL_DIR is already in your PATH — nothing to do."
-else
+if ! in_path; then
     note "$INSTALL_DIR is NOT in your PATH. To fix it, this exact line:"
     note "    $PATH_LINE"
     note "would be appended to: $PROFILE"
@@ -280,6 +342,18 @@ else
         ok "added — run 'source $PROFILE' (or open a new shell) to activate"
     else
         skip "skipped — add the line above to your shell profile when ready."
+    fi
+elif installed_aden_is_active; then
+    ok "$INSTALL_DIR is first for aden in your PATH — nothing to do."
+else
+    install_hint
+    if [ "$TTY" = "0" ]; then
+        skip "non-interactive: NOT editing $PROFILE — use one of the remedies above."
+    elif ask_yn "Put $INSTALL_DIR before the existing aden directory in $PROFILE?" y; then
+        printf '%s\n' "$PATH_LINE" >>"$PROFILE"
+        ok "added — open a new shell so aden resolves to $INSTALL_DIR/aden"
+    else
+        skip "PATH unchanged — this shell will continue using $(active_aden)."
     fi
 fi
 
@@ -363,7 +437,16 @@ fi
 # 8 ─ Verify + summary ────────────────────────────────────────────────────────
 step "Verify"
 if VERSION_OUT="$("$INSTALL_DIR/aden" --version 2>&1)"; then
-    ok "$VERSION_OUT runs from $INSTALL_DIR"
+    case "$VERSION_OUT" in
+        *"Build:"*"Formats:"*) ok "installed binary reports build + format identity" ;;
+        *) note "✗ installed binary did not report build/format identity" ;;
+    esac
+    if installed_aden_is_active; then
+        ok "$VERSION_OUT runs from $INSTALL_DIR"
+    else
+        note "✓ $VERSION_OUT is installed at $INSTALL_DIR"
+        install_hint
+    fi
 else
     note "✗ '$INSTALL_DIR/aden --version' failed — something is wrong: $VERSION_OUT"
 fi
@@ -375,10 +458,12 @@ if ! in_path; then
     echo "  PATH           → see step above            undo: remove the line from $PROFILE"
 fi
 echo "  MCP entries    → each platform's config    undo: aden mcp uninstall"
-echo "  graph stores   → ~/.local/share/aden/      (created on first 'gen'; safe to delete, rebuilt from source)"
+echo "  graph stores   → ~/.local/share/aden/      (created by the first read; safe to delete)"
+if [ -n "$EXISTING" ]; then
+    echo "  restart        → open MCP/editor/agent sessions (they keep the old process until restart)"
+fi
 echo ""
-echo "First steps in any repo:"
-echo "  aden gen .          index it (or just run a query — reads auto-index)"
-echo "  aden ask \"how does X work\""
-echo "  aden view           explore the graph in your browser"
-echo "  aden doctor         check the environment end-to-end"
+echo "First steps in any repo (no init or project files required):"
+echo "  aden tree --human --symbols .   compact symbol + line-range map"
+echo "  aden grep \"known_symbol\"       structure-aware evidence"
+echo "  aden mcp install --platform <client>   expose the focused tools to an LLM"

@@ -6,8 +6,7 @@ use std::path::Path;
 use crate::util::quiet;
 use crate::util::validate_name;
 
-/// Create a new project from a language template.
-/// Scaffolds build system, aden workspace, and initial documents.
+/// Create a minimal project from a language template and index it externally.
 pub fn cmd_new(name: &str, lang: &str, parent: &Path) -> Result<(), Box<dyn std::error::Error>> {
     validate_name(name)?;
     let project_dir = parent.join(name);
@@ -30,65 +29,15 @@ pub fn cmd_new(name: &str, lang: &str, parent: &Path) -> Result<(), Box<dyn std:
         }
     }
 
-    // Run aden init in the new project (refs are opt-in via `aden init`).
-    // A freshly scaffolded project has no user-owned AGENTS.md to respect, so
-    // seed the guidance block by default (ADR-004).
-    cmd_init(&project_dir, false, true)?;
-
-    // Create initial docs directory (hidden under .aden)
-    let aden_docs_dir = project_dir.join(".aden").join("docs");
-    std::fs::create_dir_all(&aden_docs_dir)?;
-
-    // Create README with project identity, stored under .aden/docs
-    let readme = format!(
-        r###"= {name}
-:proj: {name}
-:lang: {lang}
-
-[[readme]]
-= {name}
-
-Project scaffolded by `aden new {name} --lang={lang}`.
-
-== Quick Start
-
-[source,bash]
-----
-# Build
-<your-build-command>
-
-# Check aden graph integrity
-aden check .
-
-# Generate contracts after code changes
-aden gen src/ --auto
-
-# Run CI gates
-aden ci-check .
-----
-
-== Documentation
-
-* xref:kickoff.adoc[Project Kickoff]
-* xref:design.adoc[Design Document]
-* xref:spec.adoc[Specification]
-* xref:adr-001.adoc[Architecture Decisions]
-
-== Navigation
-
-. <<kickoff-{name}>>
-. <<design-{name}>>
-"###,
-        name = name,
-        lang = lang_lower
-    );
-    std::fs::write(aden_docs_dir.join("README.adoc"), readme)?;
+    // A new language project needs no Aden-specific files. Build only the
+    // per-user index; guidance/templates remain explicit opt-ins.
+    cmd_init(&project_dir, false, false, false)?;
 
     if !quiet::is_quiet() {
         println!("✓ Created project {} in {}", name, project_dir.display());
     }
     println!("✓ Language: {}", lang_lower);
-    println!("✓ Scaffolding: aden init, .aden/docs, build system");
+    println!("✓ Aden index: per-user (no .aden directory created)");
     println!("  Next steps:");
     println!("    cd {}", project_dir.display());
     println!("    aden kickoff --interactive --name {}", name);
@@ -122,12 +71,17 @@ spawn too — tell them to use aden, since they do not inherit this guidance.
 | Structure-aware search (returns enclosing symbol = anchor) | `grep "pattern"` |
 | Natural-language question over the code | `ask "how does X work?"` |
 | Find a symbol's definition + call sites | `locate --symbol <name>` |
-| Token-budgeted context bundle around an anchor | `asm <anchor>` |
-| Blast radius — what references this | `query --backlinks <anchor>` |
-| Blast radius — downstream reach | `query --impact <anchor>` |
+| Token-budgeted context around a unique symbol or anchor | `asm --from <name-or-anchor>` |
+| Blast radius — what references this | `query --backlinks <name-or-anchor>` |
+| Blast radius — downstream reach | `query --impact <name-or-anchor>` |
 
-**Flow:** `grep` → take the enclosing symbol → `asm`/`query` to traverse → `ask`
-to explain. Validate with `check . --severity Forbid`; resync drift with `heal`.
+Unique natural symbol names work directly in `asm` and `query`. Exact anchors
+remain available for repeated names; ambiguity returns sorted candidates and
+Aden never guesses from fuzzy/substring suggestions.
+
+**Flow:** use `ask` for one bounded question; use `asm`/`query` directly for a
+known unique symbol; use `grep`/`locate` when discovery or disambiguation is
+needed. Validate with `check . --severity Forbid`; resync drift with `heal`.
 
 See `.agent/aden-guide.adoc` for the full reference."#;
 
@@ -268,7 +222,8 @@ fn scaffold_js(dir: &Path, name: &str) -> Result<(), Box<dyn std::error::Error>>
     Ok(())
 }
 
-/// Scaffold `.agent/` workspace in a target repository.
+/// Initialize Aden for a target repository. The default writes only the
+/// per-user index; `templates=true` opts into the legacy project scaffolding.
 ///
 /// IMPORTANT: Templates are embedded via `include_str!`. If you modify
 /// any template file under `.agent/templates/`, you MUST rebuild the
@@ -278,9 +233,23 @@ fn scaffold_js(dir: &Path, name: &str) -> Result<(), Box<dyn std::error::Error>>
 /// See CONTRIBUTING.md for the full stable binary ritual.
 pub fn cmd_init(
     target: &Path,
+    templates: bool,
     with_secure_refs: bool,
     agents_md: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    if !templates {
+        if with_secure_refs {
+            return Err("--with-secure-refs requires --templates".into());
+        }
+        if agents_md {
+            println!("{}", seed_agents_md(target)?);
+        }
+        println!("Initializing Aden's per-user index (no project files will be created)...");
+        crate::commands::generate::cmd_gen(target, false)?;
+        println!("Project ready. Normal reads auto-refresh; no .aden directory is required.");
+        return Ok(());
+    }
+
     let agent_dir = target.join(".agent");
     let templates_dir = agent_dir.join("templates");
     std::fs::create_dir_all(&templates_dir)?;
@@ -636,4 +605,19 @@ Always verify that third-party licenses are compatible with your project's licen
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AGENTS_GUIDANCE;
+
+    #[test]
+    fn generated_agent_guidance_prefers_direct_safe_symbol_navigation() {
+        assert!(AGENTS_GUIDANCE.contains("asm --from <name-or-anchor>"));
+        assert!(AGENTS_GUIDANCE.contains("query --impact <name-or-anchor>"));
+        assert!(AGENTS_GUIDANCE.contains("Unique natural symbol names work directly"));
+        assert!(AGENTS_GUIDANCE.contains("ambiguity returns sorted candidates"));
+        assert!(AGENTS_GUIDANCE.contains("never guesses"));
+        assert!(!AGENTS_GUIDANCE.contains("take the enclosing symbol →"));
+    }
 }

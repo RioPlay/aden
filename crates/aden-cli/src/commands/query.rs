@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use aden_graph::Direction;
 use aden_store::GraphStorage;
 
+use crate::indexer::fresh::augment_read_json;
 use crate::types::{AnchorPattern, QueryIntent};
 use crate::util::{
     find_project_root, fmt_score, load_or_build_index, node_to_json, parse_single_edge_type,
@@ -73,12 +74,54 @@ fn explicit_snake_symbol(question: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-fn exact_symbol_anchor(idx: &aden_index::Index, question: &str) -> Option<String> {
-    let symbol = explicit_snake_symbol(question)?;
-    query_index(idx, &symbol)
-        .into_iter()
-        .find(|result| result.anchor.ends_with(&format!("#{symbol}")))
-        .map(|result| result.anchor)
+fn is_definition_lookup(question: &str) -> bool {
+    let normalized = question.to_lowercase();
+    ["where is", "defined", "definition", "located", "find the"]
+        .iter()
+        .any(|phrase| normalized.contains(phrase))
+}
+
+fn exact_symbol_anchors(idx: &aden_index::Index, question: &str) -> Vec<String> {
+    let definition_lookup = is_definition_lookup(question);
+    let candidates: Vec<String> = if let Some(symbol) = explicit_snake_symbol(question) {
+        vec![symbol]
+    } else if definition_lookup {
+        question
+            .split(|c: char| !c.is_alphanumeric() && c != '_')
+            .filter(|word| word.len() >= 3)
+            .filter(|word| {
+                let lower = word.to_lowercase();
+                !SYMBOL_STOP_WORDS.contains(&lower.as_str())
+                    && !matches!(
+                        lower.as_str(),
+                        "where" | "defined" | "definition" | "located" | "find" | "the"
+                    )
+            })
+            .map(str::to_string)
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    for symbol in candidates {
+        let mut anchors: Vec<String> = query_index(idx, &symbol)
+            .into_iter()
+            .filter(|result| !is_test_result(result))
+            .filter(|result| {
+                result.anchor.rsplit('#').next().is_some_and(|fragment| {
+                    fragment == symbol
+                        || fragment.rsplit(['.', ':']).find(|part| !part.is_empty())
+                            == Some(symbol.as_str())
+                })
+            })
+            .map(|result| result.anchor)
+            .collect();
+        anchors.dedup();
+        if !anchors.is_empty() {
+            return anchors;
+        }
+    }
+    Vec::new()
 }
 
 fn search_result_role(result: &SearchResult) -> String {
@@ -824,28 +867,37 @@ fn same_file_canonical_anchor(
         .map(|(a, d)| (a.clone(), *d))
 }
 
-/// Incoming `RelatesTo`/`Documents` in-degree for every prose doc anchor in the
-/// graph — the live "explanatory importance" signal: prose cross-references are
-/// real graph edges (ADR-006), so heavily-referenced documents are exactly the
-/// pillar overviews a conceptual question wants. Built only when the overview
-/// signal fires; the graph load is cached.
+/// Incoming `RelatesTo`/`Documents` in-degree for every prose doc anchor — the
+/// live "explanatory importance" signal: heavily-referenced documents are the
+/// pillar overviews a conceptual question wants. The normal path scans only
+/// edge keys and retains target counts; a writer-contended store falls back to
+/// ADR-011's immutable full snapshot.
 fn doc_reference_indegree(path: &Path) -> std::collections::HashMap<String, usize> {
+    let edge_types = [
+        aden_core::EdgeType::RelatesTo,
+        aden_core::EdgeType::Documents,
+    ];
+    let (store_path, _) = aden_paths::resolve_read_store(path);
+    if let Some(store_path) = store_path.to_str()
+        && let Ok(storage) = aden_store::Storage::open_existing(store_path)
+        && let Ok(mut counts) = storage.incoming_counts_by_target(&edge_types)
+    {
+        counts.retain(|anchor, _| AnchorPattern::is_prose_doc(anchor));
+        return counts;
+    }
+
     let mut map = std::collections::HashMap::new();
     let Ok(graph) = aden_graph::cache::build_from_directory_cached(path) else {
         return map;
     };
-    for e in graph.graph.edge_indices() {
-        let et = graph.graph[e].edge_type;
-        if !matches!(
-            et,
-            aden_core::EdgeType::RelatesTo | aden_core::EdgeType::Documents
-        ) {
+    for edge in graph.graph.edge_indices() {
+        if !edge_types.contains(&graph.graph[edge].edge_type) {
             continue;
         }
-        let Some((_, tgt)) = graph.graph.edge_endpoints(e) else {
+        let Some((_, target)) = graph.graph.edge_endpoints(edge) else {
             continue;
         };
-        let anchor = &graph.graph[tgt].doc.anchor;
+        let anchor = &graph.graph[target].doc.anchor;
         if AnchorPattern::is_prose_doc(anchor) {
             *map.entry(anchor.clone()).or_insert(0) += 1;
         }
@@ -1202,6 +1254,114 @@ fn auto_boosted_budget(base: usize, avg_score: f64) -> usize {
     ((base as f64 * (1.0 + boost)).round() as usize).min(AUTO_BUDGET_CAP)
 }
 
+#[derive(Debug)]
+pub(crate) enum SymbolResolutionError {
+    Ambiguous {
+        input: String,
+        candidates: Vec<String>,
+    },
+    NotFound {
+        input: String,
+        suggestions: Vec<String>,
+    },
+}
+
+impl SymbolResolutionError {
+    pub(crate) fn machine_json(&self) -> serde_json::Value {
+        match self {
+            Self::Ambiguous { input, candidates } => serde_json::json!({
+                "schema_version": 1,
+                "error": {
+                    "code": "ambiguous_symbol",
+                    "input": input,
+                    "message": self.to_string(),
+                    "candidates": candidates,
+                }
+            }),
+            Self::NotFound { input, suggestions } => serde_json::json!({
+                "schema_version": 1,
+                "error": {
+                    "code": "anchor_not_found",
+                    "input": input,
+                    "message": self.to_string(),
+                    "suggestions": suggestions,
+                }
+            }),
+        }
+    }
+}
+
+impl std::fmt::Display for SymbolResolutionError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Ambiguous { input, candidates } => {
+                let listed = candidates
+                    .iter()
+                    .map(|candidate| format!("  - {candidate}"))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let example = candidates.first().map_or(String::new(), |candidate| {
+                    format!(" (for example --from '{candidate}')")
+                });
+                write!(
+                    formatter,
+                    "Ambiguous symbol '{input}'.\nCandidates:\n{listed}\nRecovery: retry with one exact candidate above{example}, or run 'aden locate --symbol {input} .' to inspect candidates."
+                )
+            }
+            Self::NotFound { input, suggestions } => {
+                let hint = if suggestions.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        "\nSuggestions:\n{}",
+                        suggestions
+                            .iter()
+                            .map(|candidate| format!("  - {candidate}"))
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    )
+                };
+                let recovery = suggestions.first().map_or_else(
+                    || {
+                        format!(
+                            "run 'aden locate --symbol {input} .' or 'aden grep {input}' to find a canonical target"
+                        )
+                    },
+                    |candidate| {
+                        format!(
+                            "retry with an exact suggestion above (for example --from '{candidate}')"
+                        )
+                    },
+                );
+                write!(
+                    formatter,
+                    "Symbol or anchor '{input}' not found.{hint}\nRecovery: {recovery}."
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for SymbolResolutionError {}
+
+fn resolve_required_anchor(path: &Path, input: &str) -> Result<String, Box<dyn std::error::Error>> {
+    use aden_graph::cache::AnchorResolution;
+
+    match aden_graph::cache::resolve_anchor_detailed(path, input) {
+        AnchorResolution::Exact(anchor) | AnchorResolution::Unique { anchor } => Ok(anchor),
+        AnchorResolution::Ambiguous { candidates } => Err(SymbolResolutionError::Ambiguous {
+            input: input.to_string(),
+            candidates,
+        }
+        .into()),
+        AnchorResolution::NotFound { suggestions } => Err(SymbolResolutionError::NotFound {
+            input: input.to_string(),
+            suggestions,
+        }
+        .into()),
+    }
+}
+
 pub fn cmd_asm(opts: AsmOptions) -> Result<(), Box<dyn std::error::Error>> {
     use aden_asm::traverse::{AssemblyOptions, assemble, assemble_adg};
 
@@ -1259,13 +1419,7 @@ pub fn cmd_asm(opts: AsmOptions) -> Result<(), Box<dyn std::error::Error>> {
     // symbol/module name resolves to a single full anchor by `#suffix` match;
     // unknown/ambiguous is a hard error. We never silently substitute a fuzzy
     // match — emitting an unrelated node is the worst failure mode for an LLM.
-    let resolved_anchor = aden_graph::cache::resolve_anchor_in_store(&opts.path, &from_anchor)
-        .ok_or_else(|| {
-            format!(
-                "Anchor '{}' not found or ambiguous. Run 'aden list .' to see available anchors.",
-                from_anchor
-            )
-        })?;
+    let resolved_anchor = resolve_required_anchor(&opts.path, &from_anchor)?;
 
     // Stream the read path: load only the neighborhood reachable from the start
     // within depth, not the entire graph. At kernel scale a full load OOMs / takes
@@ -1335,7 +1489,11 @@ pub fn cmd_asm(opts: AsmOptions) -> Result<(), Box<dyn std::error::Error>> {
     let relevance_select = relevance.is_some();
 
     let assembly_budget = if opts.strict && opts.format == "json" {
-        effective_budget.saturating_sub(16)
+        // Leave room for the versioned freshness receipt and JSON envelope.
+        // The final serializer still enforces the exact caller budget; this
+        // reserve prevents a normal full assembly from collapsing to the tiny
+        // incomplete receipt merely because trustworthy metadata was added.
+        effective_budget.saturating_sub(128)
     } else {
         effective_budget
     };
@@ -1363,11 +1521,11 @@ pub fn cmd_asm(opts: AsmOptions) -> Result<(), Box<dyn std::error::Error>> {
         "json" => {
             let documents: serde_json::Value =
                 serde_json::from_str(&assemble_adg(&graph, &asm_opts)?)?;
-            serde_json::to_string(&serde_json::json!({
+            let payload = serde_json::json!({
                 "schema_version": 1,
-                "context_receipt": { "schema_version": 1 },
                 "documents": documents,
-            }))?
+            });
+            serde_json::to_string(&augment_read_json(&opts.path, payload))?
         }
         "aden" | "llm" => assemble(&graph, &asm_opts)?,
         _ => {
@@ -1414,40 +1572,54 @@ fn annotate_edge_provenance(node: &mut serde_json::Value, via: &[aden_core::Edge
     }
 }
 
-pub fn cmd_query(
-    path: &Path,
-    from: Option<&str>,
-    edge_type: Option<&str>,
-    depth: usize,
-    backlinks: Option<&str>,
-    impact: Option<&str>,
-    format: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
+pub struct QueryOptions<'a> {
+    pub path: &'a Path,
+    pub from: Option<&'a str>,
+    pub edge_type: Option<&'a str>,
+    pub depth: usize,
+    pub backlinks: Option<&'a str>,
+    pub impact: Option<&'a str>,
+    pub format: &'a str,
+    pub max_results: Option<usize>,
+}
+
+pub fn cmd_query(opts: QueryOptions) -> Result<(), Box<dyn std::error::Error>> {
+    let QueryOptions {
+        path,
+        from,
+        edge_type,
+        depth,
+        backlinks,
+        impact,
+        format,
+        max_results,
+    } = opts;
     if !path.is_dir() {
         return Err("query requires a directory path".into());
     }
     let _stale_hint = super::StaleHintGuard::new(path, format == "json");
     super::ensure_fresh(path);
 
-    let graph = aden_graph::cache::build_from_directory_cached(path)?;
-
     let mode_count = from.is_some() as u8 + backlinks.is_some() as u8 + impact.is_some() as u8;
     if mode_count != 1 {
         return Err("exactly one of --from, --backlinks, or --impact must be specified".into());
     }
 
-    // Resolve bare/suffix names to the full store anchors the graph uses.
-    let from = from.map(|a| {
-        aden_graph::cache::resolve_anchor_in_store(path, a).unwrap_or_else(|| a.to_string())
-    });
-    let backlinks = backlinks.map(|a| {
-        aden_graph::cache::resolve_anchor_in_store(path, a).unwrap_or_else(|| a.to_string())
-    });
-    let impact = impact.map(|a| {
-        aden_graph::cache::resolve_anchor_in_store(path, a).unwrap_or_else(|| a.to_string())
-    });
+    // Resolve exact anchors and unique natural symbol names before loading a
+    // graph. Ambiguity is a hard error with deterministic recovery candidates.
+    let from = from
+        .map(|input| resolve_required_anchor(path, input))
+        .transpose()?;
+    let backlinks = backlinks
+        .map(|input| resolve_required_anchor(path, input))
+        .transpose()?;
+    let impact = impact
+        .map(|input| resolve_required_anchor(path, input))
+        .transpose()?;
 
     let mut results = Vec::new();
+    let result_limit = max_results.unwrap_or(usize::MAX);
+    let mut truncated = false;
 
     // Parse the --edge-type filter once up front so every mode (--from,
     // --backlinks, --impact) can honor it.
@@ -1459,6 +1631,18 @@ pub fn cmd_query(
         )
     } else {
         None
+    };
+
+    // A forward query needs only its bounded outgoing neighborhood. Avoid
+    // materializing the entire store graph (the old unconditional path) for
+    // the common `query --from <anchor> --depth N` MCP request. Reverse and
+    // impact views retain the full graph because they need incoming edges or
+    // typed reachability constrained by their impact-edge filter.
+    let graph = if let Some(anchor) = &from {
+        let edge_types: Vec<aden_core::EdgeType> = filter_type.iter().copied().collect();
+        aden_graph::cache::build_neighborhood_cached(path, anchor, depth, &edge_types)?
+    } else {
+        aden_graph::cache::build_from_directory_cached(path)?
     };
 
     // Collect the edge types of ALL parallel edges from `a` to `b`. petgraph is a
@@ -1485,10 +1669,17 @@ pub fn cmd_query(
         let mut queue = VecDeque::new();
         visited.insert(start_idx);
         queue.push_back((start_idx, 0usize));
-        results.push(node_to_json(&graph.graph[start_idx], 0));
+        if result_limit == 0 {
+            truncated = true;
+        } else {
+            results.push(node_to_json(&graph.graph[start_idx], 0));
+        }
 
-        while let Some((node, d)) = queue.pop_front() {
-            if d > depth {
+        'from_traversal: while let Some((node, d)) = queue.pop_front() {
+            // Do not discover a node beyond the requested hop limit. Checking
+            // `d > depth` here was one hop too late: a depth-N node still
+            // enqueued and emitted all of its depth-(N+1) neighbors.
+            if d >= depth {
                 continue;
             }
             for neighbor in graph.graph.neighbors_directed(node, Direction::Outgoing) {
@@ -1506,6 +1697,10 @@ pub fn cmd_query(
                     continue;
                 }
                 if visited.insert(neighbor) {
+                    if results.len() >= result_limit {
+                        truncated = true;
+                        break 'from_traversal;
+                    }
                     let mut nj = node_to_json(&graph.graph[neighbor], d + 1);
                     annotate_edge_provenance(&mut nj, &via);
                     results.push(nj);
@@ -1520,24 +1715,59 @@ pub fn cmd_query(
                 anchor
             )
         })?;
-        let mut seen = HashSet::new();
-        for neighbor in graph
-            .graph
-            .neighbors_directed(target_idx, Direction::Incoming)
-        {
-            // Honor --edge-type: keep an incoming neighbor only if at least one
-            // edge from it to the target matches the requested type. Check ALL
-            // parallel edges (a source may link via several edge types).
-            let via = edges_between(neighbor, target_idx);
-            if let Some(ft) = filter_type
-                && !via.contains(&ft)
-            {
+        let mut visited = HashSet::new();
+        let mut queue = VecDeque::new();
+        visited.insert(target_idx);
+        queue.push_back((target_idx, 0usize));
+        if result_limit == 0 {
+            truncated = true;
+        } else {
+            results.push(node_to_json(&graph.graph[target_idx], 0));
+        }
+
+        // `--backlinks` is the reverse-direction counterpart to `--from`.
+        // Honor the same depth contract instead of silently returning exactly
+        // one hop regardless of the caller's requested limit.
+        'backlinks_traversal: while let Some((node, d)) = queue.pop_front() {
+            if d >= depth {
                 continue;
             }
-            if seen.insert(neighbor) {
-                let mut nj = node_to_json(&graph.graph[neighbor], 1);
-                annotate_edge_provenance(&mut nj, &via);
-                results.push(nj);
+            for neighbor in graph.graph.neighbors_directed(node, Direction::Incoming) {
+                // Honor --edge-type: keep an incoming neighbor only if at least one
+                // edge from it to the target matches the requested type. Check ALL
+                // parallel edges (a source may link via several edge types).
+                let via = edges_between(neighbor, node);
+                if let Some(ft) = filter_type
+                    && !via.contains(&ft)
+                {
+                    continue;
+                }
+                // Default backlinks answer "what references this?", not "what
+                // container owns this?" Following containment from a symbol to
+                // its module and project makes depth-3 MCP calls fan out across
+                // nearly the entire repository. Keep structural membership
+                // available when the caller explicitly requests that edge type.
+                if filter_type.is_none()
+                    && !via.is_empty()
+                    && via.iter().all(|edge| {
+                        matches!(
+                            edge,
+                            aden_core::EdgeType::Contains | aden_core::EdgeType::PartOf
+                        )
+                    })
+                {
+                    continue;
+                }
+                if visited.insert(neighbor) {
+                    if results.len() >= result_limit {
+                        truncated = true;
+                        break 'backlinks_traversal;
+                    }
+                    let mut nj = node_to_json(&graph.graph[neighbor], d + 1);
+                    annotate_edge_provenance(&mut nj, &via);
+                    results.push(nj);
+                    queue.push_back((neighbor, d + 1));
+                }
             }
         }
     } else if let Some(anchor) = &impact {
@@ -1555,9 +1785,19 @@ pub fn cmd_query(
         let mut queue = VecDeque::new();
         visited.insert(start_idx);
         queue.push_back((start_idx, 0usize));
-        results.push(node_to_json(&graph.graph[start_idx], 0));
+        if result_limit == 0 {
+            truncated = true;
+        } else {
+            results.push(node_to_json(&graph.graph[start_idx], 0));
+        }
 
-        while let Some((node, d)) = queue.pop_front() {
+        'impact_traversal: while let Some((node, d)) = queue.pop_front() {
+            // Keep impact reach bounded too. Previously this branch did not
+            // inspect `depth` at all, so a depth-1 MCP request could traverse
+            // the entire downstream graph.
+            if d >= depth {
+                continue;
+            }
             for neighbor in graph.graph.neighbors_directed(node, Direction::Outgoing) {
                 // Parallel edges: keep the neighbor if ANY edge between the pair
                 // is an impact edge, instead of testing only `find_edge`'s
@@ -1567,6 +1807,10 @@ pub fn cmd_query(
                     continue;
                 }
                 if visited.insert(neighbor) {
+                    if results.len() >= result_limit {
+                        truncated = true;
+                        break 'impact_traversal;
+                    }
                     let mut nj = node_to_json(&graph.graph[neighbor], d + 1);
                     annotate_edge_provenance(&mut nj, &via);
                     results.push(nj);
@@ -1584,7 +1828,16 @@ pub fn cmd_query(
             }
         }
         "json" => {
-            let env = super::augment_read_json(path, serde_json::Value::Array(results));
+            let returned = results.len();
+            let payload = serde_json::json!({
+                "schema_version": 1,
+                "items": results,
+                "returned": returned,
+                "limit": max_results,
+                "truncated": truncated,
+                "result_state": if truncated { "truncated" } else { "complete" },
+            });
+            let env = super::augment_read_json(path, payload);
             println!("{}", serde_json::to_string_pretty(&env)?);
         }
         _ => {
@@ -2072,20 +2325,19 @@ fn community_seeds_for(
 /// `ask --explain` uses it so a bare doc anchor can be judged by the file it
 /// lives in (e.g. `…#philosophy` → `docs/philosophy.adoc`).
 fn anchor_source_file(path: &Path, anchor: &str) -> Option<String> {
-    // ADR-011: prefer graph.snapshot (via try_read_fresh) for lock-free reads.
-    if let Some((docs, _)) = aden_graph::snapshot::try_read_fresh(path)
-        && let Some(d) = docs.get(anchor)
-    {
-        return d.attributes.get("source_file").cloned();
-    }
-
+    // A keyed store projection avoids deserializing a whole graph snapshot for
+    // one source_file attribute. Preserve ADR-011 lock-free reads by falling
+    // back to the immutable snapshot when a concurrent writer owns fjall.
     let (store_path, _) = aden_paths::resolve_read_store(path);
-    let storage = aden_store::Storage::open_existing(store_path.to_str()?).ok()?;
-    storage
-        .get_document(anchor)
-        .ok()
-        .flatten()
-        .and_then(|d| d.attributes.get("source_file").cloned())
+    if let Some(store_path) = store_path.to_str()
+        && let Ok(storage) = aden_store::Storage::open_existing(store_path)
+        && let Ok(Some(document)) = storage.get_document(anchor)
+    {
+        return document.attributes.get("source_file").cloned();
+    }
+    aden_graph::snapshot::try_read_fresh(path)
+        .and_then(|(docs, _)| docs.get(anchor).cloned())
+        .and_then(|document| document.attributes.get("source_file").cloned())
 }
 
 /// Routing transparency payload for `ask --explain`: top candidates with the
@@ -2247,6 +2499,92 @@ fn print_ask_explain(
     }
 }
 
+/// Reject question shapes that a one-anchor retrieval primitive cannot answer
+/// honestly. `ask` is intentionally a bounded context router, not a repository
+/// auditor. Failing small here avoids spending thousands of tokens on a locally
+/// relevant answer that looks like evidence for a global conclusion.
+fn ask_scope_mismatch(question: &str) -> Option<(&'static str, &'static str)> {
+    let normalized = question
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase();
+
+    let repository_wide = [
+        "repository-wide",
+        "repo-wide",
+        "codebase-wide",
+        "across the repository",
+        "across the repo",
+        "across the codebase",
+        "entire repository",
+        "entire repo",
+        "entire codebase",
+        "whole repository",
+        "whole repo",
+        "whole codebase",
+        "overall architecture",
+    ];
+    if repository_wide
+        .iter()
+        .any(|phrase| normalized.contains(phrase))
+    {
+        return Some((
+            "repository_wide",
+            "ask retrieves a bounded neighborhood around one primary anchor, so it cannot support repository-wide conclusions",
+        ));
+    }
+
+    let exhaustive = [
+        "find all ",
+        "list all ",
+        "show all ",
+        "every issue",
+        "every problem",
+        "every vulnerability",
+        "complete list",
+        "all security issues",
+        "all vulnerabilities",
+        "all performance issues",
+        "remaining work",
+        "work remains",
+        "what remains",
+        "what is left to do",
+        "list the public api",
+    ];
+    if exhaustive.iter().any(|phrase| normalized.contains(phrase)) {
+        return Some((
+            "exhaustive",
+            "ask cannot prove completeness from a bounded graph neighborhood",
+        ));
+    }
+
+    let ranking_or_audit = [
+        "security audit",
+        "performance audit",
+        "architecture audit",
+        "audit the ",
+        "most complex",
+        "most complexity",
+        "biggest problem",
+        "biggest issue",
+        "weakest part",
+        "best part",
+        "worst part",
+    ];
+    if ranking_or_audit
+        .iter()
+        .any(|phrase| normalized.contains(phrase))
+    {
+        return Some((
+            "comparative_audit",
+            "ask cannot rank or audit a repository from one routed anchor",
+        ));
+    }
+
+    None
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn cmd_ask(
     path: &Path,
@@ -2257,6 +2595,7 @@ pub fn cmd_ask(
     intent_override: Option<QueryIntent>,
     depth_override: Option<usize>,
     edge_types_override: Option<Vec<aden_core::EdgeType>>,
+    expand: bool,
     strict: bool,
     explain: bool,
     json_output: bool,
@@ -2268,6 +2607,50 @@ pub fn cmd_ask(
         return Err("--strict cannot be combined with --model: model output is generated outside Aden's serialized context budget".into());
     }
     validate_strict_budget(strict, budget)?;
+
+    // A pinned anchor makes even a broadly-worded question bounded. Without a
+    // pin, reject question shapes that would turn one local retrieval into a
+    // misleading global claim. Do this before auto-indexing: narrowing guidance
+    // should be immediate and cheap even in a cold repository.
+    if from_override.is_none()
+        && let Some((kind, reason)) = ask_scope_mismatch(question)
+    {
+        let recovery = [
+            "Ask about one named symbol, file, subsystem, or relationship.",
+            "Use `aden grep <pattern>` for independent evidence, then `aden locate`/`aden query` for each anchor.",
+            "Pin a known anchor with `aden ask --from <anchor> <question>` when one bounded neighborhood is intended.",
+        ];
+        if json_output {
+            let payload = augment_read_json(
+                path,
+                serde_json::json!({
+                    "schema_version": 1,
+                    "result_state": "needs_narrowing",
+                    "question": question,
+                    "question_fit": kind,
+                    "reason": reason,
+                    "context": "",
+                    "recovery": recovery,
+                    "strict": strict,
+                }),
+            );
+            let serialized = serde_json::to_string(&payload)?;
+            if strict && serialized.len() > budget.saturating_mul(4) {
+                print!("{MINIMAL_INCOMPLETE_RECEIPT}");
+            } else {
+                print!("{serialized}");
+            }
+        } else {
+            println!("This question needs narrowing ({kind}).");
+            println!("{reason}.");
+            println!("Try:");
+            for tip in recovery {
+                println!("  - {tip}");
+            }
+        }
+        return Ok(());
+    }
+
     let _stale_hint = super::StaleHintGuard::new(path, strict);
     super::ensure_fresh(path);
 
@@ -2281,207 +2664,254 @@ pub fn cmd_ask(
     let mut xp = AskExplain::default();
 
     // Step 1: Resolve question to an anchor via search, or use override.
-    // `ask` is the fuzzy "answer my question well" path, so it leans on the
-    // relevance boost BY DEFAULT (unlike `asm`, which is hard-cap and opt-in via
-    // --auto). Capture the average search relevance so the budget can be scaled;
-    // a pinned --from anchor has no search relevance, so it stays at base.
+    // `ask` is the fuzzy "answer my question well" path. Capture average search
+    // relevance so an explicit --expand can scale the budget; unlike historical
+    // behavior, normal calls keep the requested token ceiling.
+    // A pinned --from anchor has no search relevance, so it stays at base.
     // `alt_candidates` are near-tie runner-up anchors (search-space names, not yet
     // store-resolved). They stay empty for a clear winner or a pinned `--from`, so
     // those paths assemble exactly as before. When routing is ambiguous they let us
     // seed shallow context from the alternates rather than betting the whole budget
     // on a single, possibly-misranked anchor.
-    let (start_anchor, avg_score, alt_candidates, relevance, routing_note, evidence_routed) =
-        if let Some(anchor) = from_override {
-            xp.decision = "pinned by --from (no search routing)".to_string();
-            (anchor.to_string(), None, Vec::new(), None, None, false)
-        } else {
-            let idx = load_or_build_index(path)?;
-            let results = crate::util::query_index_with_navigation(&idx, question, path);
-            if results.is_empty() {
-                let no_results = format!(
-                    "No relevant documents found for: {}\nTips:\n  - Use more specific keywords from the codebase.\n  - Try `aden search <term>` to see available anchors.\n  - Or pin an anchor with --from <anchor>.\n",
-                    question
-                );
-                if strict {
-                    print!("{}", strict_serialized_response("", budget));
+    let (
+        start_anchor,
+        avg_score,
+        alt_candidates,
+        relevance,
+        routing_note,
+        evidence_routed,
+        precise_definition_routed,
+    ) = if let Some(anchor) = from_override {
+        // An explicit pin is a structural target, not fuzzy question routing.
+        // Apply the same exact/unique/ambiguous/suggestion contract as asm and
+        // query; never hide a bad pin behind the project-root fallback below.
+        let anchor = resolve_required_anchor(path, anchor)?;
+        xp.decision = "pinned by --from (no search routing)".to_string();
+        (anchor, None, Vec::new(), None, None, false, false)
+    } else {
+        let idx = load_or_build_index(path)?;
+        let results = crate::util::query_index_with_navigation(&idx, question, path);
+        if results.is_empty() {
+            let recovery = [
+                "Use more specific keywords from the codebase.",
+                "Try `aden search <term>` to see available anchors.",
+                "Pin an anchor with --from <anchor>.",
+            ];
+            if json_output {
+                let payload = serde_json::json!({
+                    "schema_version": 1,
+                    "result_state": "empty",
+                    "question": question,
+                    "anchor": null,
+                    "context": "",
+                    "recovery": recovery,
+                    "strict": strict,
+                });
+                let payload = augment_read_json(path, payload);
+                let serialized = serde_json::to_string(&payload)?;
+                if strict && serialized.len() > budget.saturating_mul(4) {
+                    print!("{MINIMAL_INCOMPLETE_RECEIPT}");
                 } else {
-                    print!("{no_results}");
+                    print!("{serialized}");
                 }
-                return Ok(());
+            } else {
+                println!("No relevant documents found for: {question}");
+                println!("Tips:");
+                for tip in recovery {
+                    println!("  - {tip}");
+                }
             }
-            let avg: f64 = results.iter().map(|r| r.score).sum::<f64>() / results.len() as f64;
+            return Ok(());
+        }
+        let avg: f64 = results.iter().map(|r| r.score).sum::<f64>() / results.len() as f64;
 
-            // Conceptual routing: when the question is a broad/overview one, prefer
-            // substantive prose docs within the noise band (see the module-level
-            // block comment above `OVERVIEW_PHRASES`). A miss (no prose in band)
-            // falls through to the default selection unchanged.
-            let overview = is_overview_query(question, &intent);
-            xp.overview_engaged = overview;
-            xp.overview_note = if overview {
-                "engaged (broad intent + overview phrasing, no symbol-like token)".to_string()
+        // Conceptual routing: when the question is a broad/overview one, prefer
+        // substantive prose docs within the noise band (see the module-level
+        // block comment above `OVERVIEW_PHRASES`). A miss (no prose in band)
+        // falls through to the default selection unchanged.
+        let overview = is_overview_query(question, &intent);
+        xp.overview_engaged = overview;
+        xp.overview_note = if overview {
+            "engaged (broad intent + overview phrasing, no symbol-like token)".to_string()
+        } else {
+            "not engaged".to_string()
+        };
+        let token_count = |a: &str| idx.doc_token_count(a);
+        // True when overview routing deliberately promoted a prose doc over the
+        // (in-band) rank-1 result. In that case the in-band "alternates" below are
+        // that intentional bypass, not a near-tie — so the user-facing note must
+        // not cry "ambiguous".
+        let mut overview_promoted = false;
+        let mut primary = if overview {
+            // Cross-reference in-degree only participates in project-identity
+            // tie-breaking. Other overview questions trust BM25's top in-band
+            // prose result, so scanning every edge would add work with no
+            // possible effect on selection.
+            let indegree = if query_is_project_identity(question, &results) {
+                doc_reference_indegree(path)
             } else {
-                "not engaged".to_string()
+                std::collections::HashMap::new()
             };
-            let token_count = |a: &str| idx.doc_token_count(a);
-            // True when overview routing deliberately promoted a prose doc over the
-            // (in-band) rank-1 result. In that case the in-band "alternates" below are
-            // that intentional bypass, not a near-tie — so the user-facing note must
-            // not cry "ambiguous".
-            let mut overview_promoted = false;
-            let mut primary = if overview {
-                let indegree = doc_reference_indegree(path);
-                match resolve_anchor_overview(question, &results, &token_count, &indegree) {
-                    Some((anchor, why)) => {
-                        xp.decision = why;
-                        overview_promoted = true;
-                        anchor
-                    }
-                    None => {
-                        let (anchor, why) =
-                            resolve_anchor_fuzzy_with_reason(question, &results, token_count);
-                        xp.decision =
-                            format!("overview engaged but no prose doc in score band; {}", why);
-                        anchor
-                    }
+            match resolve_anchor_overview(question, &results, &token_count, &indegree) {
+                Some((anchor, why)) => {
+                    xp.decision = why;
+                    overview_promoted = true;
+                    anchor
                 }
+                None => {
+                    let (anchor, why) =
+                        resolve_anchor_fuzzy_with_reason(question, &results, token_count);
+                    xp.decision =
+                        format!("overview engaged but no prose doc in score band; {}", why);
+                    anchor
+                }
+            }
+        } else {
+            let (anchor, why) = resolve_anchor_fuzzy_with_reason(question, &results, token_count);
+            xp.decision = why.to_string();
+            anchor
+        };
+        let lower_question = question.to_lowercase();
+        let relationship_query = [" call", "caller", "request path", "impact", "depend"]
+            .iter()
+            .any(|signal| lower_question.contains(signal));
+        let exact_anchors = if relationship_query {
+            Vec::new()
+        } else {
+            exact_symbol_anchors(&idx, question)
+        };
+        let exact_routed = !exact_anchors.is_empty();
+        let exact_alternates: Vec<String> = exact_anchors.iter().skip(1).cloned().collect();
+        if let Some(anchor) = exact_anchors.first() {
+            xp.decision = if exact_alternates.is_empty() {
+                "exact symbol token".to_string()
             } else {
-                let (anchor, why) =
-                    resolve_anchor_fuzzy_with_reason(question, &results, token_count);
-                xp.decision = why.to_string();
-                anchor
+                format!(
+                    "exact symbol token with {} alternate definition(s)",
+                    exact_alternates.len()
+                )
             };
-            let lower_question = question.to_lowercase();
-            let relationship_query = [" call", "caller", "request path", "impact", "depend"]
+            primary = anchor.clone();
+        }
+        if explain {
+            let top_score = results[0].score;
+            xp.candidates = results
                 .iter()
-                .any(|signal| lower_question.contains(signal));
-            let exact_anchor = if relationship_query {
-                None
-            } else {
-                exact_symbol_anchor(&idx, question)
-            };
-            let exact_routed = exact_anchor.is_some();
-            if let Some(anchor) = exact_anchor {
-                xp.decision = "exact symbol token".to_string();
-                primary = anchor;
-            }
-            if explain {
-                let top_score = results[0].score;
-                xp.candidates = results
-                    .iter()
-                    .take(8)
-                    .enumerate()
-                    .map(|(i, r)| {
-                        format!(
-                            "{}. {} {} score={} pattern={:?} class={} tokens={} test={}",
-                            i + 1,
-                            if (top_score - r.score)
-                                <= ANCHOR_NOISE_BAND.max(top_score.abs() * ALTERNATE_RELATIVE_BAND)
-                            {
-                                "*"
-                            } else {
-                                " "
-                            },
-                            r.anchor,
-                            fmt_score(r.score),
-                            AnchorPattern::from_anchor(&r.anchor),
-                            if AnchorPattern::is_prose_doc(&r.anchor) {
-                                "doc"
-                            } else {
-                                "code"
-                            },
-                            idx.doc_token_count(&r.anchor),
-                            if is_test_result(r) { "yes" } else { "no" },
-                        )
-                    })
-                    .collect();
-            }
-            // Multi-part questions need distinct evidence roles, not merely BM25
-            // near-ties. Facet seeds replace the primary only when at least two
-            // independent roles were found; otherwise preserve existing routing.
-            let precise_routed = exact_routed;
-            let prose_facet_seeds = if !precise_routed
-                && std::env::var_os("ADEN_PROSE_FACETS_OFF").is_none()
-                && AnchorPattern::is_prose_doc(&primary)
-                && idx.doc_token_count(&primary) <= THIN_STUB_TOKEN_THRESHOLD
-            {
-                results
-                    .iter()
-                    .find(|result| result.anchor == primary)
-                    .map(|result| prose_same_file_facet_seeds(&idx, question, &result.source_path))
-                    .unwrap_or_default()
-            } else {
-                Vec::new()
-            };
-            let facet_seeds = if !prose_facet_seeds.is_empty() {
-                prose_facet_seeds
-            } else if precise_routed {
-                Vec::new()
-            } else {
-                evidence_facet_seeds(&idx, question)
-            };
-            let evidence_routed = facet_seeds.len() >= 2;
-            let alts = if evidence_routed {
-                primary = facet_seeds[0].clone();
-                xp.decision = format!(
-                    "deterministic evidence-role routing across {} facets",
-                    facet_seeds.len()
-                );
-                facet_seeds.into_iter().skip(1).take(2).collect()
-            } else if precise_routed {
-                Vec::new()
-            } else {
-                // Up to 2 in-band alternates, deduped against the (possibly
-                // non-rank-1) primary. Empty means a clear winner.
-                inband_alternate_candidates(&primary, &results, 1)
-            };
-            // Decide the honest low-confidence note here, where we know whether the
-            // alternates are a genuine near-tie or the deliberate overview bypass.
-            let routing_note = if alts.is_empty() {
-                None
-            } else if evidence_routed {
-                Some(format!(
-                    "// note: evidence-role routing selected {} distinct source facets.",
-                    alts.len() + 1
-                ))
-            } else if overview_promoted {
-                Some(format!(
-                    "// note: overview routing chose a prose doc over {} in-band result(s) \
+                .take(8)
+                .enumerate()
+                .map(|(i, r)| {
+                    format!(
+                        "{}. {} {} score={} pattern={:?} class={} tokens={} test={}",
+                        i + 1,
+                        if (top_score - r.score)
+                            <= ANCHOR_NOISE_BAND.max(top_score.abs() * ALTERNATE_RELATIVE_BAND)
+                        {
+                            "*"
+                        } else {
+                            " "
+                        },
+                        r.anchor,
+                        fmt_score(r.score),
+                        AnchorPattern::from_anchor(&r.anchor),
+                        if AnchorPattern::is_prose_doc(&r.anchor) {
+                            "doc"
+                        } else {
+                            "code"
+                        },
+                        idx.doc_token_count(&r.anchor),
+                        if is_test_result(r) { "yes" } else { "no" },
+                    )
+                })
+                .collect();
+        }
+        // Multi-part questions need distinct evidence roles, not merely BM25
+        // near-ties. Facet seeds replace the primary only when at least two
+        // independent roles were found; otherwise preserve existing routing.
+        let precise_routed = exact_routed;
+        let prose_facet_seeds = if !precise_routed
+            && std::env::var_os("ADEN_PROSE_FACETS_OFF").is_none()
+            && AnchorPattern::is_prose_doc(&primary)
+            && idx.doc_token_count(&primary) <= THIN_STUB_TOKEN_THRESHOLD
+        {
+            results
+                .iter()
+                .find(|result| result.anchor == primary)
+                .map(|result| prose_same_file_facet_seeds(&idx, question, &result.source_path))
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let facet_seeds = if !prose_facet_seeds.is_empty() {
+            prose_facet_seeds
+        } else if precise_routed {
+            Vec::new()
+        } else {
+            evidence_facet_seeds(&idx, question)
+        };
+        let evidence_routed = facet_seeds.len() >= 2;
+        let alts = if evidence_routed {
+            primary = facet_seeds[0].clone();
+            xp.decision = format!(
+                "deterministic evidence-role routing across {} facets",
+                facet_seeds.len()
+            );
+            facet_seeds.into_iter().skip(1).take(2).collect()
+        } else if precise_routed {
+            exact_alternates.into_iter().take(2).collect()
+        } else {
+            // Up to 2 in-band alternates, deduped against the (possibly
+            // non-rank-1) primary. Empty means a clear winner.
+            inband_alternate_candidates(&primary, &results, 1)
+        };
+        // Decide the honest low-confidence note here, where we know whether the
+        // alternates are a genuine near-tie or the deliberate overview bypass.
+        let routing_note = if alts.is_empty() {
+            None
+        } else if evidence_routed {
+            Some(format!(
+                "// note: evidence-role routing selected {} distinct source facets.",
+                alts.len() + 1
+            ))
+        } else if overview_promoted {
+            Some(format!(
+                "// note: overview routing chose a prose doc over {} in-band result(s) \
                  (an intentional pick, not a tie); showing it plus shallow alternates. Pin a \
                  specific anchor with --from <anchor>.",
-                    alts.len()
-                ))
-            } else {
-                Some(format!(
-                    "// note: routing ambiguous — {} near-tie candidate(s); showing the primary plus \
+                alts.len()
+            ))
+        } else {
+            Some(format!(
+                "// note: routing ambiguous — {} near-tie candidate(s); showing the primary plus \
                  shallow alternates at a reduced budget. Re-run with --explain for scores, or pin \
                  with --from <anchor>.",
-                    alts.len()
-                ))
-            };
-            // Forward the search relevance into assembly frontier ordering: the same
-            // hybrid (dense+BM25) scores that routed the seed now break structural
-            // ties toward query-relevant neighbors. Anchors absent from the map score
-            // 0.0 in `ordered_neighbors`, so an unmatched neighborhood degrades
-            // exactly to the prior structural (edge_priority, anchor) order.
-            let relevance: std::collections::HashMap<String, f32> = results
-                .iter()
-                .map(|r| (r.anchor.to_owned(), r.score as f32))
-                .collect();
-            (
-                primary,
-                Some(avg),
-                alts,
-                Some(relevance),
-                routing_note,
-                evidence_routed,
-            )
+                alts.len()
+            ))
         };
+        // Forward the search relevance into assembly frontier ordering: the same
+        // hybrid (dense+BM25) scores that routed the seed now break structural
+        // ties toward query-relevant neighbors. Anchors absent from the map score
+        // 0.0 in `ordered_neighbors`, so an unmatched neighborhood degrades
+        // exactly to the prior structural (edge_priority, anchor) order.
+        let relevance: std::collections::HashMap<String, f32> = results
+            .iter()
+            .map(|r| (r.anchor.to_owned(), r.score as f32))
+            .collect();
+        (
+            primary,
+            Some(avg),
+            alts,
+            Some(relevance),
+            routing_note,
+            evidence_routed,
+            exact_routed && is_definition_lookup(question),
+        )
+    };
 
-    // Apply the relevance boost by default; `--strict` opts out and treats
-    // --budget as an exact cap (deterministic size for callers/agents). The
-    // user's --budget is the BASE the boost multiplies.
-    let effective_budget = match (strict, avg_score) {
-        (false, Some(avg)) => {
+    // Less is the default: the requested budget bounds context unless the
+    // caller explicitly opts into relevance-based expansion. `--strict` is
+    // stronger still and caps the complete serialized response.
+    let effective_budget = match (expand, strict, avg_score) {
+        (true, false, Some(avg)) => {
             let boosted = auto_boosted_budget(budget, avg);
             // Confidence gating: in-band alternates mean routing is ambiguous —
             // there is no clear winner. Betting a fully-boosted budget on a
@@ -2519,7 +2949,13 @@ pub fn cmd_ask(
     // Any of intent, depth, or edge types may be pinned by the caller to bypass
     // automatic routing (`aden ask --intent/--depth/--edge-types`).
     let edge_types = edge_types_override.unwrap_or_else(|| edge_types_for_intent(&intent));
-    let depth = depth_override.unwrap_or_else(|| depth_for_intent(&intent));
+    let depth = depth_override.unwrap_or_else(|| {
+        if precise_definition_routed {
+            0
+        } else {
+            depth_for_intent(&intent)
+        }
+    });
 
     let strategy_label = if intent_was_overridden {
         format!("{:?} (override)", intent)
@@ -2542,26 +2978,32 @@ pub fn cmd_ask(
     }
 
     // Step 3: Resolve the starting anchor against the store (no full-graph
-    // load). Prefer an unambiguous exact/suffix match; if the search-derived
-    // anchor cannot be resolved, fall back to the deterministic project root
-    // rather than a random node, so the agent gets a coherent overview.
-    let start_anchor = match aden_graph::cache::resolve_anchor_in_store(path, &start_anchor) {
-        Some(a) => a,
-        None => {
-            if aden_graph::cache::resolve_anchor_in_store(path, "mod-project").is_some() {
-                if explain {
-                    eprintln!(
-                        "NOTE: '{}' is not a graph anchor; using project root 'mod-project'.",
+    // load). Explicit --from pins were already resolved above. If a
+    // search-derived anchor cannot be resolved, fall back to the deterministic
+    // project root rather than a random node, so the agent gets a coherent
+    // overview.
+    let start_anchor = if from_override.is_some() {
+        // Already canonicalized by resolve_required_anchor above.
+        start_anchor
+    } else {
+        match aden_graph::cache::resolve_anchor_in_store(path, &start_anchor) {
+            Some(a) => a,
+            None => {
+                if aden_graph::cache::resolve_anchor_in_store(path, "mod-project").is_some() {
+                    if explain {
+                        eprintln!(
+                            "NOTE: '{}' is not a graph anchor; using project root 'mod-project'.",
+                            start_anchor
+                        );
+                    }
+                    "mod-project".to_string()
+                } else {
+                    return Err(format!(
+                        "Anchor '{}' not found. Run 'aden list .' to see available anchors.",
                         start_anchor
-                    );
+                    )
+                    .into());
                 }
-                "mod-project".to_string()
-            } else {
-                return Err(format!(
-                    "Anchor '{}' not found. Run 'aden list .' to see available anchors.",
-                    start_anchor
-                )
-                .into());
             }
         }
     };
@@ -2718,6 +3160,7 @@ pub fn cmd_ask(
                 }
             }
         } else if resolved_alts.is_empty()
+            && !precise_definition_routed
             && !AnchorPattern::is_prose_doc(&start_anchor)
             && substantive_token_estimate(&primary_text) < effective_budget / 2
         {
@@ -2782,9 +3225,13 @@ pub fn cmd_ask(
                 }
                 (best_body, start_anchor)
             } else {
-                // (d) Community supplement — the routed anchor's own
-                // neighborhood is exhausted below the floor, so the remaining
-                // budget is packed with the assemblies of the community's most
+                // (d) Explicit community supplement — the routed anchor's own
+                // neighborhood is exhausted below the floor. Whole-project
+                // community detection is intentionally gated by `--expand`:
+                // on very large repositories it is the only unbounded-compute
+                // rung and can cost minutes merely to pad a truthful thin result.
+                // When requested, the remaining budget is packed with the
+                // assemblies of the community's most
                 // QUERY-RELEVANT members (never its highest-degree hub: degree
                 // ≠ relevance, and a degree pick re-created the M14
                 // hub-over-leaf bias here, swapping a correct anchor for a
@@ -2794,7 +3241,7 @@ pub fn cmd_ask(
                 // Every appended byte (headers and separators included) is
                 // charged against the budget before assembling each member, so
                 // the combined body stays within it.
-                let supplemented = if from_override.is_none() {
+                let supplemented = if from_override.is_none() && expand {
                     community_seeds_for(path, &start_anchor, question, 3).and_then(
                         |(seeds, label, n)| {
                             let mut combined = best_body.clone();
@@ -2937,24 +3384,45 @@ pub fn cmd_ask(
         } else {
             assembled.clone()
         };
-        let payload = serde_json::json!({
-            "schema_version": 1,
-            "context_receipt": { "schema_version": 1 },
-            "question": question,
-            "anchor": start_anchor,
-            "source_file": anchor_source_file(path, &start_anchor),
-            "context": context,
-            "intent": format!("{:?}", intent).to_lowercase(),
-            "depth": depth,
-            "budget": effective_budget,
-            "strict": strict,
-            "supporting_anchors": resolved_alts,
-            "explain": explain.then_some(serde_json::json!({
-                "decision": xp.decision,
-                "fallback": xp.fallback,
-                "primary_anchor": primary_anchor,
-            })),
-        });
+        let routing_confidence = if from_override.is_some() {
+            "pinned"
+        } else if evidence_routed {
+            "multi_anchor"
+        } else if resolved_alts.is_empty() {
+            "clear"
+        } else if routing_note
+            .as_deref()
+            .is_some_and(|note| note.contains("overview routing"))
+        {
+            "overview"
+        } else {
+            "ambiguous"
+        };
+        let payload = augment_read_json(
+            path,
+            serde_json::json!({
+                "schema_version": 1,
+                "result_state": "bounded",
+                "question": question,
+                "question_fit": "bounded",
+                "routing_confidence": routing_confidence,
+                "anchor": start_anchor,
+                "source_file": anchor_source_file(path, &start_anchor),
+                "context": context,
+                "intent": format!("{:?}", intent).to_lowercase(),
+                "depth": depth,
+                "budget": effective_budget,
+                "expanded": effective_budget > budget,
+                "strict": strict,
+                "supporting_anchors": resolved_alts,
+                "completeness": "bounded",
+                "explain": explain.then_some(serde_json::json!({
+                    "decision": xp.decision,
+                    "fallback": xp.fallback,
+                    "primary_anchor": primary_anchor,
+                })),
+            }),
+        );
         if strict {
             let max_bytes = effective_budget.saturating_mul(4);
             let full = serde_json::to_string(&payload)?;
@@ -2968,11 +3436,25 @@ pub fn cmd_ask(
                 loop {
                     let compact = serde_json::to_string(&serde_json::json!({
                         "schema_version": 1,
+                        "context_receipt": payload["context_receipt"].clone(),
+                        "anchor": payload["anchor"].clone(),
                         "context": bounded_context,
                         "truncated": true,
+                        "incomplete": true,
                     }))?;
                     if compact.len() <= max_bytes || bounded_context.is_empty() {
-                        print!("{compact}");
+                        if compact.len() <= max_bytes {
+                            print!("{compact}");
+                        } else {
+                            // The receipt itself may exceed an extremely small
+                            // transport budget; preserve the stable minimal envelope.
+                            let minimal = serde_json::json!({
+                                "schema_version": 1,
+                                "context": "",
+                                "truncated": true,
+                            });
+                            print!("{}", serde_json::to_string(&minimal)?);
+                        }
                         break;
                     }
                     let next = bounded_context
@@ -3004,9 +3486,8 @@ pub fn cmd_ask(
         // Explain mode shows context with routing metadata and receipts.
         println!("<!-- ADEN CONTEXT ASSEMBLY -->");
         println!("<!-- Question: {} -->", question);
-        // Note the boost when the default relevance scaling raised the budget
-        // above the user's base, so the effective cap the assembler used is
-        // transparent.
+        // Note an explicitly requested expansion when relevance scaling raised
+        // the budget, so the effective cap remains transparent.
         let boosted = effective_budget > budget;
         let budget_note = if boosted {
             format!("{} (boosted from {})", effective_budget, budget)
@@ -3445,6 +3926,49 @@ mod tests {
     use crate::types::QueryIntent;
 
     #[test]
+    fn symbol_resolution_errors_keep_human_and_machine_contracts() {
+        let error = SymbolResolutionError::Ambiguous {
+            input: "parse".into(),
+            candidates: vec![
+                "aden://module/a.rs#parse".into(),
+                "aden://module/b.rs#parse".into(),
+            ],
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("Candidates:\n  - aden://module/a.rs#parse")
+        );
+        let machine = error.machine_json();
+        assert_eq!(machine["error"]["code"], "ambiguous_symbol");
+        assert_eq!(machine["error"]["candidates"].as_array().unwrap().len(), 2);
+
+        let boxed: Box<dyn std::error::Error> = Box::new(error);
+        assert!(boxed.downcast_ref::<SymbolResolutionError>().is_some());
+    }
+
+    #[test]
+    fn ask_scope_guard_rejects_global_claims_but_keeps_bounded_questions() {
+        assert_eq!(
+            ask_scope_mismatch("Find all security issues across the repository")
+                .map(|(kind, _)| kind),
+            Some("repository_wide")
+        );
+        assert_eq!(
+            ask_scope_mismatch("Which part of the CLI has the most complexity?")
+                .map(|(kind, _)| kind),
+            Some("comparative_audit")
+        );
+        assert_eq!(
+            ask_scope_mismatch("What work remains before release?").map(|(kind, _)| kind),
+            Some("exhaustive")
+        );
+        assert!(ask_scope_mismatch("Where is session authentication enforced?").is_none());
+        assert!(ask_scope_mismatch("How does the whole authentication flow work?").is_none());
+        assert!(ask_scope_mismatch("What calls MergeProposal::apply?").is_none());
+    }
+
+    #[test]
     fn evidence_facets_split_explicit_independent_roles_without_an_llm() {
         let facets = evidence_facet_queries(
             "Which services validate incoming requests, and which workers persist accepted records?",
@@ -3800,46 +4324,38 @@ mod tests {
         assert_eq!(auto_boosted_budget(1_234, 0.25), 1_851);
     }
 
-    // ---- ask budget selection: boost by default, --strict opts out.
-    //
-    // The full `cmd_ask` path requires a built index / store (I/O), so we cannot
-    // drive it from a unit test without a fixture. Instead we guard the pure
-    // budget-selection expression `match (strict, avg_score)` that `cmd_ask`
-    // uses (query.rs ~line 785): with search relevance present and strict=false
-    // the boost helper is applied; strict=true (or no relevance) returns the
-    // base budget unchanged. The behavioral stage covers the end-to-end wiring.
-    fn select_ask_budget(strict: bool, budget: usize, avg_score: Option<f64>) -> usize {
-        match (strict, avg_score) {
-            (false, Some(avg)) => auto_boosted_budget(budget, avg),
+    // ---- ask budget selection: bounded by default, expansion is opt-in.
+    fn select_ask_budget(
+        expand: bool,
+        strict: bool,
+        budget: usize,
+        avg_score: Option<f64>,
+    ) -> usize {
+        match (expand, strict, avg_score) {
+            (true, false, Some(avg)) => auto_boosted_budget(budget, avg),
             _ => budget,
         }
     }
 
     #[test]
-    fn ask_boosts_budget_by_default() {
-        // Default (non-strict) ask with positive relevance scales the budget via
-        // the shared boost helper — not the raw --budget.
+    fn ask_keeps_base_budget_by_default_and_expands_only_when_requested() {
         let base = 1_000usize;
         let avg = 0.3f64;
+        assert_eq!(select_ask_budget(false, false, base, Some(avg)), base);
         assert_eq!(
-            select_ask_budget(false, base, Some(avg)),
+            select_ask_budget(true, false, base, Some(avg)),
             auto_boosted_budget(base, avg)
         );
-        assert!(
-            select_ask_budget(false, base, Some(avg)) > base,
-            "boost must exceed base for positive relevance"
-        );
+        assert!(select_ask_budget(true, false, base, Some(avg)) > base);
     }
 
     #[test]
     fn ask_strict_uses_exact_budget() {
-        // --strict bypasses the boost entirely: budget is the exact cap.
         let base = 1_000usize;
-        assert_eq!(select_ask_budget(true, base, Some(0.3)), base);
-        assert_eq!(select_ask_budget(true, base, Some(1_000.0)), base);
-        // A pinned --from anchor has no search relevance (None) → base, even
-        // when not strict.
-        assert_eq!(select_ask_budget(false, base, None), base);
+        assert_eq!(select_ask_budget(true, true, base, Some(0.3)), base);
+        assert_eq!(select_ask_budget(true, true, base, Some(1_000.0)), base);
+        // A pinned --from anchor has no search relevance (None) → base.
+        assert_eq!(select_ask_budget(true, false, base, None), base);
     }
 
     #[test]

@@ -86,21 +86,33 @@ pub fn cmd_grep(
         let scope = normalized_search_scope(path, &root);
         discover_source_files_scoped(&scope, &root)?
     };
-    let mut matches: Vec<Match> = files
+    // Count every match, but retain at most `limit` hits per file. Keeping each
+    // file's earliest hits is sufficient for the final deterministic
+    // file/line top-K and prevents `--limit` from allocating for every match in
+    // a huge or generated corpus.
+    let per_file: Vec<(usize, Vec<Match>)> = files
         .par_iter()
-        .flat_map_iter(|file| {
+        .map(|file| {
             let rel = file.strip_prefix(&root).unwrap_or(file);
             let rel_str = rel.to_string_lossy().to_string();
             let content = match std::fs::read_to_string(file) {
                 Ok(c) => c,
-                Err(_) => return Vec::new().into_iter(), // binary / unreadable — skip
+                Err(_) => return (0, Vec::new()), // binary / unreadable — skip
             };
             let spans = spans_by_file.get(&rel_str);
             let mut hits = Vec::new();
+            let mut count = 0usize;
             for (i, line) in content.lines().enumerate() {
-                if line_matches(line) {
-                    let line_no = i + 1;
-                    let enclosing = spans.and_then(|s| enclosing_symbol(s, line_no));
+                if !line_matches(line) {
+                    continue;
+                }
+                let line_no = i + 1;
+                let enclosing = spans.and_then(|s| enclosing_symbol(s, line_no));
+                if symbol_only && enclosing.is_none() {
+                    continue;
+                }
+                count += 1;
+                if hits.len() < limit {
                     hits.push(Match {
                         file: rel_str.clone(),
                         line: line_no,
@@ -110,14 +122,16 @@ pub fn cmd_grep(
                     });
                 }
             }
-            hits.into_iter()
+            (count, hits)
         })
-        .filter(|m| !symbol_only || m.symbol.is_some())
         .collect();
+    let total = per_file.iter().map(|(count, _)| count).sum();
+    let mut matches: Vec<Match> = per_file.into_iter().flat_map(|(_, hits)| hits).collect();
 
-    // Deterministic ordering: by file, then line.
+    // Deterministic ordering: by file, then line; discard per-file candidates
+    // that fall beyond the global top-K.
     matches.sort_by(|a, b| a.file.cmp(&b.file).then(a.line.cmp(&b.line)));
-    let total = matches.len();
+    matches.truncate(limit);
 
     // A literal search that finds nothing but whose pattern carries regex
     // metacharacters is almost always a misfired regex — e.g. `Ready|ready`
@@ -135,7 +149,7 @@ pub fn cmd_grep(
     });
 
     if json {
-        print_json(&root, &matches, limit, regex_hint.as_deref());
+        print_json(&root, &matches, total, limit, regex_hint.as_deref());
         return Ok(());
     }
 
@@ -183,52 +197,43 @@ fn normalized_search_scope(path: &Path, root: &Path) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
-/// Load project documents for read-side symbol attribution (ADR-011 snapshot-first).
-fn load_docs_for_spans(root: &Path) -> HashMap<String, aden_core::Document> {
-    use aden_graph::snapshot;
+/// Load `source_file -> [span]` so each match can be attributed to its
+/// enclosing symbol. The normal path streams a lightweight projection from
+/// fjall; if a concurrent writer owns the store, ADR-011's immutable snapshot
+/// remains the lock-free fallback.
+pub(crate) fn load_symbol_spans(root: &Path) -> HashMap<String, Vec<Span>> {
     use aden_store::{GraphStorage, Storage};
 
-    if let Some((docs, _)) = snapshot::try_read_fresh(root) {
-        return docs;
-    }
     let (store_path, _) = aden_paths::resolve_read_store(root);
-    let Some(store_str) = store_path.to_str() else {
-        return HashMap::new();
-    };
-    let Ok(storage) = Storage::open_existing(store_str) else {
-        return HashMap::new();
-    };
-    storage.get_all_documents().unwrap_or_default()
-}
+    let projected = store_path
+        .to_str()
+        .and_then(|path| Storage::open_existing(path).ok())
+        .and_then(|storage| storage.get_source_spans().ok());
+    let records = projected.unwrap_or_else(|| {
+        aden_graph::snapshot::try_read_fresh(root)
+            .map(|(docs, _)| {
+                docs.into_iter()
+                    .filter_map(|(anchor, document)| {
+                        document.source_span.map(|span| (anchor, span))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    });
 
-/// Load `source_file -> [span]` from the store so each match can be attributed
-/// to the symbol that encloses it.
-pub(crate) fn load_symbol_spans(root: &Path) -> HashMap<String, Vec<Span>> {
     let mut by_file: HashMap<String, Vec<Span>> = HashMap::new();
-    let docs = load_docs_for_spans(root);
-    for (anchor, doc) in docs {
-        let (Some(file), Some(start), Some(end)) = (
-            doc.attributes.get("source_file"),
-            doc.attributes
-                .get("start_line")
-                .and_then(|s| s.parse::<usize>().ok()),
-            doc.attributes
-                .get("end_line")
-                .and_then(|s| s.parse::<usize>().ok()),
-        ) else {
-            continue;
-        };
-        // Normalize the stored path to be relative to the project root so it
-        // matches the relative paths used while scanning.
-        let rel = Path::new(file)
+    for (anchor, span) in records {
+        let file = Path::new(&span.file);
+        let rel = file
             .strip_prefix(root)
-            .unwrap_or(Path::new(file))
+            .unwrap_or(file)
             .to_string_lossy()
             .to_string();
-        by_file
-            .entry(rel)
-            .or_default()
-            .push(Span { anchor, start, end });
+        by_file.entry(rel).or_default().push(Span {
+            anchor,
+            start: span.start_line,
+            end: span.end_line,
+        });
     }
     by_file
 }
@@ -255,8 +260,7 @@ fn short_name(anchor: &str) -> String {
 /// needs the total count and an explicit `truncated` flag — the human footer
 /// ("... and N more (raise --limit)") is noise to a program. `returned` is how
 /// many of `total` matches are in the array after `limit` applies.
-fn print_json(root: &Path, matches: &[Match], limit: usize, hint: Option<&str>) {
-    let total = matches.len();
+fn print_json(root: &Path, matches: &[Match], total: usize, limit: usize, hint: Option<&str>) {
     let returned = total.min(limit);
     let page: Vec<serde_json::Value> = matches
         .iter()

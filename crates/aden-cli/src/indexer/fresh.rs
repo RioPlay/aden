@@ -3,7 +3,7 @@
 
 use aden_core::receipt::{ContextReceipt, ReceiptFreshness};
 use aden_store::Storage;
-use std::hash::{Hash, Hasher};
+use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
@@ -91,8 +91,19 @@ fn refresh_cause() -> &'static str {
     }
 }
 
+/// Increment when a generated store gains a required derived projection.
+/// A mismatch makes the next ordinary read run one silent rebuild, so users do
+/// not keep an old-but-source-current layout indefinitely after upgrading.
+pub const INDEX_LAYOUT_VERSION: u16 = 3;
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct FreshnessManifest {
+    #[serde(default)]
+    pub index_layout_version: u16,
+    /// Stable identity of the built-in path exclusion policy used to discover
+    /// the sources bound by this manifest.
+    #[serde(default)]
+    pub filter_fingerprint: u64,
     pub graph_revision: String,
     pub source_fingerprint: String,
 }
@@ -113,39 +124,96 @@ pub(crate) fn clear_freshness_manifest(root: &Path) {
     }
 }
 
-fn stable_hex(parts: impl IntoIterator<Item = impl Hash>) -> String {
-    let mut hash = std::collections::hash_map::DefaultHasher::new();
-    for part in parts {
-        part.hash(&mut hash);
+struct StableFnv(u64);
+
+impl StableFnv {
+    fn new() -> Self {
+        Self(0xcbf29ce484222325)
     }
-    format!("{:016x}", hash.finish())
+
+    fn write(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            self.0 ^= u64::from(*byte);
+            self.0 = self.0.wrapping_mul(0x100000001b3);
+        }
+    }
+
+    fn write_len(&mut self, len: u64) {
+        self.write(&len.to_le_bytes());
+    }
+
+    fn finish_hex(self) -> String {
+        format!("{:016x}", self.0)
+    }
+}
+
+#[cfg(test)]
+fn stable_hex(parts: impl IntoIterator<Item = (String, Vec<u8>)>) -> String {
+    let mut hash = StableFnv::new();
+    for (path, bytes) in parts {
+        hash.write_len(path.len() as u64);
+        hash.write(path.as_bytes());
+        hash.write_len(bytes.len() as u64);
+        hash.write(&bytes);
+    }
+    hash.finish_hex()
 }
 
 /// Content-addressed tree fingerprint. Paths and bytes are both included, so
 /// same-second edits, rename/delete, and equal-sized rewrites cannot look fresh.
+/// Files are hashed in bounded chunks to avoid a second whole-source allocation.
 pub(crate) fn source_fingerprint(root: &Path) -> std::io::Result<String> {
     let mut sources = discover_source_files(root)
         .map_err(|e| std::io::Error::other(format!("source discovery failed: {e}")))?;
     sources.sort();
-    let mut records = Vec::with_capacity(sources.len());
+    let mut hash = StableFnv::new();
+    let mut buffer = [0_u8; 64 * 1024];
     for source in sources {
         let relative = source.strip_prefix(root).unwrap_or(&source);
+        let relative = relative.to_string_lossy();
+        hash.write_len(relative.len() as u64);
+        hash.write(relative.as_bytes());
+
         // A source we cannot read cannot authoritatively match an old manifest.
         // Propagate the error so every caller fails closed rather than hashing a
         // stable synthetic error marker as if it were indexed content.
-        let bytes = std::fs::read(&source)?;
-        records.push((relative.to_string_lossy().into_owned(), bytes));
+        let mut reader = BufReader::new(std::fs::File::open(&source)?);
+        hash.write_len(reader.get_ref().metadata()?.len());
+        loop {
+            let read = reader.read(&mut buffer)?;
+            if read == 0 {
+                break;
+            }
+            hash.write(&buffer[..read]);
+        }
     }
-    Ok(stable_hex(records))
+    Ok(hash.finish_hex())
+}
+
+/// Hash a snapshot file in bounded chunks for the freshness manifest.
+pub(crate) fn snapshot_revision(path: &Path) -> std::io::Result<String> {
+    let mut reader = BufReader::new(std::fs::File::open(path)?);
+    let mut hash = StableFnv::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = reader.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hash.write(&buffer[..read]);
+    }
+    Ok(hash.finish_hex())
 }
 
 pub(crate) fn publish_freshness_manifest(
     root: &Path,
-    snapshot: &[u8],
+    graph_revision: String,
     indexed_source_fingerprint: String,
 ) -> std::io::Result<()> {
     let manifest = FreshnessManifest {
-        graph_revision: stable_hex([snapshot]),
+        index_layout_version: INDEX_LAYOUT_VERSION,
+        filter_fingerprint: aden_core::filter::built_in_ignore_fingerprint(),
+        graph_revision,
         // Capture this before generation begins. If a file mutates mid-gen,
         // the post-gen observation differs and the next read re-arms refresh.
         source_fingerprint: indexed_source_fingerprint,
@@ -161,6 +229,11 @@ pub(crate) fn publish_freshness_manifest(
 
 fn load_manifest(root: &Path) -> Option<FreshnessManifest> {
     serde_json::from_slice(&std::fs::read(manifest_path(root)).ok()?).ok()
+}
+
+fn manifest_policy_is_current(manifest: &FreshnessManifest) -> bool {
+    manifest.index_layout_version == INDEX_LAYOUT_VERSION
+        && manifest.filter_fingerprint == aden_core::filter::built_in_ignore_fingerprint()
 }
 
 /// Machine-readable freshness for agents (JSON envelope).
@@ -266,6 +339,9 @@ pub(crate) fn index_is_stale_for_root(root: &Path) -> bool {
     let Some(manifest) = load_manifest(root) else {
         return true;
     };
+    if !manifest_policy_is_current(&manifest) {
+        return true;
+    }
     source_fingerprint(root)
         .map(|observed| observed != manifest.source_fingerprint)
         .unwrap_or(true)
@@ -523,6 +599,59 @@ mod skip_auto_gen_tests {
             Some(v) => unsafe { std::env::set_var(key, v) },
             None => unsafe { std::env::remove_var(key) },
         }
+    }
+
+    #[test]
+    fn manifests_bind_the_builtin_filter_policy() {
+        let legacy: FreshnessManifest = serde_json::from_value(serde_json::json!({
+            "index_layout_version": INDEX_LAYOUT_VERSION,
+            "graph_revision": "old",
+            "source_fingerprint": "source"
+        }))
+        .unwrap();
+        assert_eq!(legacy.filter_fingerprint, 0);
+        assert!(!manifest_policy_is_current(&legacy));
+
+        let current = FreshnessManifest {
+            index_layout_version: INDEX_LAYOUT_VERSION,
+            filter_fingerprint: aden_core::filter::built_in_ignore_fingerprint(),
+            graph_revision: "current".into(),
+            source_fingerprint: "source".into(),
+        };
+        assert!(manifest_policy_is_current(&current));
+    }
+
+    #[test]
+    fn streaming_source_fingerprint_matches_collecting_algorithm() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("z.rs"), b"fn z() {}\n").unwrap();
+        std::fs::write(dir.path().join("a.rs"), b"fn a() {}\n").unwrap();
+
+        let mut sources = discover_source_files(dir.path()).unwrap();
+        sources.sort();
+        let records: Vec<_> = sources
+            .into_iter()
+            .map(|source| {
+                let relative = source.strip_prefix(dir.path()).unwrap();
+                (
+                    relative.to_string_lossy().into_owned(),
+                    std::fs::read(source).unwrap(),
+                )
+            })
+            .collect();
+
+        assert_eq!(source_fingerprint(dir.path()).unwrap(), stable_hex(records));
+    }
+
+    #[test]
+    fn snapshot_revision_is_stable_across_chunk_boundaries() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("graph.snapshot");
+        let bytes: Vec<u8> = (0..150_000).map(|index| (index % 251) as u8).collect();
+        std::fs::write(&path, &bytes).unwrap();
+        let mut expected = StableFnv::new();
+        expected.write(&bytes);
+        assert_eq!(snapshot_revision(&path).unwrap(), expected.finish_hex());
     }
 
     #[test]

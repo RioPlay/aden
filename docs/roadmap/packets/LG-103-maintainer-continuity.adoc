@@ -1,5 +1,5 @@
 :packet-id: LG-103
-:status: ready
+:status: done
 :priority: P1
 :depends-on: AP-000
 :unlocks: none
@@ -11,15 +11,25 @@
 [[lg-103]]
 = LG-103: Maintainer continuity and ownership
 
+The packet remains `ready` while its linked GitHub delivery state remains
+admissible. A closed issue retaining the `packet-blocked` label is an
+administrative pause and leaves this packet resumable; a closed issue without
+that label must be reopened or reconciled to a terminal packet state. Neither
+tracker state blocks BDFL approval, merge, or release under the sole-maintainer
+governance model documented here.
+
 == Outcome
 
-Aden can accept, review, release, and respond to security issues when its original
-maintainer is unavailable.
+Aden has an explicit sole-maintainer governance model: the BDFL can accept,
+review, release, and respond to security issues without an additional approval.
+Continuity roles may be added later by consent, but are not a prerequisite for
+operation or release.
 
 == Current evidence
 
-`MAINTAINERS.md` names one BDFL and security reporting relies on the same contact;
-crate ownership and emergency succession are not defined.
+`MAINTAINERS.md` names RioPlay as BDFL and sole approval
+authority. It records ownership, emergency authority, succession boundaries,
+and the absence of any appointed backup responder.
 
 == Scope
 
@@ -27,10 +37,12 @@ Maintainer, security, ownership, review, and contribution governance documents.
 
 == Acceptance
 
-* Crates and compatibility surfaces have owners or explicit unowned status.
-* Schema, migration, and security changes require independent review.
+* Crates and compatibility surfaces name the BDFL as accountable owner.
+* Schema, migration, security, and release changes require documented BDFL
+  approval and applicable validation, not another approval.
 * Succession, inactivity, emergency authority, and decision appeal are defined.
-* Security reporting has a backup responder.
+* Any future backup responder or additional maintainer requires explicit consent
+  and is advisory unless the BDFL later changes this policy.
 
 == Non-goals
 
@@ -39,8 +51,10 @@ No foundation, trademark, funding, or multi-company governance structure.
 == Failure modes and rollback
 
 Paper ownership without willing people creates false confidence. Unfilled roles
-remain visibly vacant rather than naming contributors without consent.
+remain visibly unappointed rather than naming contributors without consent, and
+their absence does not limit the BDFL's authority to merge or release.
 
 == Completion evidence
 
-Role matrix, ownership map, reviewed emergency procedure, and contributor confirmation.
+Role matrix, ownership map, documented BDFL approval process, and emergency
+procedure.

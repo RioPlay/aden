@@ -27,7 +27,11 @@ use std::path::PathBuf;
 ///    (Hugo frontmatter, no `= Glossary` body title) now emit Term nodes and
 ///    `DefinesTerm` edges; preprocessor-aware indexing path unchanged but
 ///    emission shape for glossary-titled files shifts.
-pub const GEN_LOGIC_VERSION: u32 = 6;
+/// 7: Persist the compact source-span projection used by `tree --symbols` and
+///    `grep`; unchanged files must re-emit once so upgraded stores are complete.
+/// 8: Persist the natural-symbol lexicon used by exact and typo resolution.
+///    Every document must re-emit once so upgraded stores have complete keys.
+pub const GEN_LOGIC_VERSION: u32 = 8;
 
 /// Incremental generation cache: maps contract file path → metadata.
 #[derive(Default, Serialize, Deserialize)]
@@ -35,6 +39,10 @@ pub struct GenCache {
     /// See [`GEN_LOGIC_VERSION`]. `default` (0) marks pre-versioning caches.
     #[serde(default)]
     pub version: u32,
+    /// Stable hash of `aden_core::filter::BUILT_IN_IGNORES`. A mismatch requires
+    /// a rebuild so anchors admitted by an older policy cannot survive upgrades.
+    #[serde(default)]
+    pub filter_fingerprint: u64,
     pub entries: std::collections::HashMap<String, GenCacheEntry>,
     /// Files considered by generation but deliberately not emitted. Keeping
     /// these dispositions makes omissions inspectable and lets a classifier

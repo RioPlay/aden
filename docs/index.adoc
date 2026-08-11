@@ -14,7 +14,7 @@ This is the canonical entry point for all Aden documentation. Read the document 
 |===
 |Document |What You'll Learn |Time
 
-|<<getting-started>> |Install, initialize, generate contracts, ask your first question |10 minutes
+|<<getting-started>> |Install, map a codebase, and retrieve your first bounded answer |10 minutes
 |<<user-guide>> |Daily workflows: onboarding, refactoring, code review, merge |30 minutes
 |<<commands>> |Complete CLI reference with every flag and option |15 minutes
 |===
@@ -24,7 +24,7 @@ This is the canonical entry point for all Aden documentation. Read the document 
 |===
 |Document |What You'll Learn |Time
 
-|<<ai-integration>> |Use `aden ask`, `asm`, `query`, `locate` as an agent; includes <<mcp-setup>> for installing the MCP server |30 minutes
+|<<ai-integration>> |Use the focused `tree`, `grep`, `locate`, `query`, and `asm` workflow; includes <<mcp-setup>> |30 minutes
 |===
 
 == For Contributors
@@ -79,23 +79,21 @@ This is the canonical entry point for all Aden documentation. Read the document 
 # NOTE: `cargo install --path crates/aden-cli` installs ONLY the `aden` binary
 # and silently omits the `aden-mcp` server. Use ./install.sh if you want MCP.
 
-# Initialize a project
-aden init
+# Compact map (reads auto-index; no init or project files)
+aden tree --human --symbols .
 
-# Generate contracts from source
-aden gen . --auto
+# Structure-aware evidence and canonical symbol location
+aden grep "SessionToken"
+aden locate --symbol SessionToken
 
-# Validate the graph
-aden check .
+# One bounded question about a named subsystem
+aden ask --human "Where is SessionToken validated?"
 
-# Ask a question
-aden ask "How does authentication work?"
+# Explicit backlinks / downstream impact
+aden query --impact "aden://module/<crate>/<file>#SessionToken"
 
-# Detect drift
-aden heal .
-
-# Full CI gates
-aden ci-check .
+# Optional compatibility and methodology catalog
+aden commands
 ----
 
 === Command Categories
@@ -103,13 +101,12 @@ aden ci-check .
 |===
 |Category |Commands
 
-|Core |`init`, `new`, `gen`, `check`
-|Query |`ask`, `search`, `list`, `locate`, `asm`, `query`, `query-adq`
-|Graph analysis |`communities`, `impact-diff`
-|Healing |`heal`, `review`, `sync`, `watch`
-|CI/Security |`ci-check`, `audit`, `emergency`
-|Tooling |`doctor`, `licenses`, `session`, `suggest`, `complete`
-|Workspace |`federation`, `mcp`, `workflow`, `kickoff`
+|Core navigation |`tree --symbols`, `grep`, `locate`, `understand`, `ask`, `query`, `asm`, `impact-diff`
+|LLM integration |`mcp`
+|Project integration (optional) |`init`, `new`, `gen`, `check`, `status`, `view`, `doctor`, `store`
+|Methodology (optional) |`agents-md`, `overlay`, `kickoff`, `workflow`, `complete`, `heal`, `review`, `session`, `federation`, `emergency`
+|Advanced compatibility |`search`, `list`, `communities`, `viz`, `sync`, `watch`, `diagnose`
+|Native-tool wrappers |`lint`, `test`, `audit`, `ready`, `ci-check`, `licenses`
 |===
 
 == Related Documents

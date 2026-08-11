@@ -32,57 +32,54 @@ it does not find bugs or render HTML.
 
 ## Quick Start
 
-For a release install that does not require Rust, download the archive matching
-your platform from GitHub Releases, verify its checksum, extract it, and run the
-bundled `install.sh` or `install.ps1`. See link:docs/releasing.adoc[Releasing and
-prebuilt binaries]. The repository-root installers below remain the source-build
-path for contributors.
+For a frictionless install, download the prebuilt archive matching your platform
+from [GitHub Releases](https://github.com/RioPlay/aden/releases), verify its
+checksum, extract it, and run the bundled `install.sh` or `install.ps1`. See
+[Releasing and prebuilt binaries](docs/releasing.adoc). No Rust toolchain is
+required.
+
+The repository-root installer below is the source-build path for contributors and
+requires Rust 1.90 or newer.
 
 ```bash
-# Install (builds release, copies to ~/.local/bin, adds to PATH)
+# Contributor install (builds release, copies to ~/.local/bin, adds to PATH)
 ./install.sh
 
-# Initialize your project (optional — read commands auto-build the index)
 cd your-project
-aden init
 
-# Compile the whole codebase into the knowledge graph
-aden gen . --auto
+# Bounded map: exact symbols and affected line ranges, no source bodies
+aden tree --human --symbols .   # scope DIR if a very large repo is truncated
 
-# Ask a natural-language question — returns dense, connected context
-aden ask "How does login work?"
-
-# Structure-aware search: every match tagged with its enclosing symbol
+# Structure-aware evidence, canonical location, then bounded comprehension
 aden grep "hash_password"
-
-# Find a symbol's definition AND its real aden:// anchor
 aden locate --symbol login
+aden understand --human Database::connect .
 
-# One-shot symbol comprehension (replaces locate + backlinks + impact + asm)
-aden understand Database::connect .
+# One bounded conceptual question (broad audits fail with needs_narrowing)
+aden ask --human "Where is session authentication enforced?"
 
-# Blast radius before a refactor — who depends on this symbol?
-# query/asm take a full aden:// anchor (from locate/grep/list), not a bare name:
-aden query --backlinks "aden://module/<crate>/<module-doc>.adoc#code_block_3"
+# Blast radius before a refactor — unique natural names resolve directly
+aden query --impact Database::connect
 
-# Assemble a module (or symbol) overview within a token budget
-aden asm --from "aden://module/<crate>/<module-doc>.adoc#code_block_3" --depth 1
-
-# Before every commit (fast, aden-only gates)
-aden ready .
-
-# Visualise the graph — text (mermaid/dot/json) or an interactive offline browser view
-aden viz --mode communities --format mermaid     # text diagram for a PR/README
-aden view                                         # whole graph in the browser, with
-                                                  # git-history replay (on by default)
-
-# Expose Aden's commands to your AI client as MCP tools
-aden mcp install --platform claude   # see docs/mcp-intro.md
+# Expose the same focused navigation tools to an AI client
+aden mcp install --platform claude
 ```
 
-The graph is **fresh by construction**: read commands (`ask`/`asm`/`query`/
-`locate`/`grep`) detect changed source and re-index it automatically, so you
-rarely need to run `gen` by hand.
+Windows contributors can run the equivalent source installer from PowerShell:
+
+```powershell
+.\install.ps1
+# Existing binaries require -Force; remove only the binaries with -Uninstall.
+```
+
+Both source installers stage and smoke-check the `aden`/`aden-mcp` pair before
+replacement and restore the previous pair if installation fails. Set
+`ADEN_INSTALL_DIR` (or pass `-InstallDir` on PowerShell) for a custom location.
+
+The graph is **fresh by construction**: reads detect changed source and update
+the per-user store automatically. Normal use creates no `.aden` or other
+Aden-specific project files; `init`, explicit `gen`, templates, and governance
+are optional.
 
 ## Hybrid (dense) search — optional
 
@@ -128,21 +125,19 @@ aden ask --human "How does authentication work?"  # clean context for a person
 
 | Command | Purpose |
 |---------|---------|
-| `aden gen` | Compile source into the knowledge graph (symbols, call edges, docs) |
-| `aden ask` | Natural-language question → dense, graph-traversed context |
-| `aden understand` | One-shot symbol comprehension: definition + callers + impact + context |
-| `aden grep` | Structure-aware search — every hit tagged with its enclosing symbol |
-| `aden asm` | Assemble context from an anchor within a token budget |
-| `aden query` | Graph queries: `--from`, `--backlinks` (callers), `--impact` |
-| `aden locate` | Find symbol definitions with exact line numbers |
-| `aden check` | Validate referential integrity |
-| `aden lint` | Fast, language-agnostic heuristic checks; `--dead-code` for graph-based detection |
-| `aden heal` | Detect drift between code and contracts |
-| `aden ready` | Fast pre-commit gate: gen → lint → check → heal drift → audit |
-| `aden sync` | Reconcile store after merges or file deletions (gen + check + heal with gc) |
-| `aden ci-check` | Full CI gate suite including external tools; use before push |
-| `aden view` | Interactive graph viewer in the browser — offline, with git-history replay |
-| `aden timeline` | Time-travel file viewer: bake every git version of a file into a self-contained offline HTML page with client-side diff |
+| `aden tree --symbols` | Bounded symbol and line-range map; scope to a subtree when truncated |
+| `aden grep` | Structure-aware evidence; each hit includes its enclosing symbol |
+| `aden locate` | Resolve names to canonical anchors and source ranges |
+| `aden understand` | Definition, callers, downstream impact, and bounded context |
+| `aden ask` | One bounded conceptual question; unsafe broad shapes fail small |
+| `aden query` | Explicit backlinks, impact, and graph traversal |
+| `aden asm` | Bounded context around a unique symbol name or canonical anchor |
+| `aden impact-diff` | Map a change to affected symbols and downstream risk |
+
+`aden --help` shows this focused product surface. Existing setup, governance,
+visualization, and generic wrapper commands remain available through the
+categorized `aden commands` compatibility catalog. Prefer native project test,
+lint, audit, and CI tools.
 
 ## Why AsciiDoc?
 
@@ -161,8 +156,10 @@ indexes Markdown/AsciiDoc documentation alongside code.
   TypeScript/JavaScript, Java, C#, C, Ruby, PHP, Kotlin.
 - **Generic extraction** (symbols + structure, no call edges): ~113 further languages
   wired via `ext_to_language_pack_id` in `router.rs` (.ps1/.psm1/.psd1 PowerShell
-  included); 305+ grammars available in the bundled pack — add entries to
-  `ext_to_language_pack_id` in `crates/aden-parse/src/router.rs` to expose more.
+  included). The default binary statically bundles the deep-language set plus
+  common config/web/data grammars; builds can opt into all 305 grammars with
+  `TSLP_LANGUAGES=all`. Add entries to `ext_to_language_pack_id` in
+  `crates/aden-parse/src/router.rs` to expose more.
 
 Grammars are compiled into the binary at build time (see `.cargo/config.toml` /
 `TSLP_LANGUAGES`), so parsing works fully offline — no runtime downloads.

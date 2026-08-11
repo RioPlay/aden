@@ -114,17 +114,6 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Persist the active project root to `.aden/project.conf` so subsequent
-/// commands without `--project` can find it via [`find_project_root`].
-pub fn write_project_conf(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    let aden_dir = root.join(".aden");
-    std::fs::create_dir_all(&aden_dir)?;
-    let conf = aden_dir.join("project.conf");
-    let abs = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-    std::fs::write(conf, format!("{}\n", abs.display()))?;
-    Ok(())
-}
-
 /// Source files without an extension that Aden's parser recognizes by name
 /// (the router maps these to languages such as `make`, `dockerfile`, `bzl`).
 const EXTENSIONLESS_SOURCE_FILES: &[&str] = &[
@@ -507,12 +496,17 @@ pub fn parse_edge_types_validated(
 /// returned cache is always stamped with the current version, so a
 /// subsequent `save_gen_cache` persists it.
 pub fn load_gen_cache(path: &Path) -> GenCache {
+    let filter_fingerprint = aden_core::filter::built_in_ignore_fingerprint();
     let mut cache = std::fs::read_to_string(path)
         .ok()
         .and_then(|s| serde_json::from_str::<GenCache>(&s).ok())
-        .filter(|c| c.version == crate::types::GEN_LOGIC_VERSION)
+        .filter(|c| {
+            c.version == crate::types::GEN_LOGIC_VERSION
+                && c.filter_fingerprint == filter_fingerprint
+        })
         .unwrap_or_default();
     cache.version = crate::types::GEN_LOGIC_VERSION;
+    cache.filter_fingerprint = filter_fingerprint;
     cache
 }
 
@@ -528,7 +522,10 @@ pub fn gen_cache_requires_rebuild(path: &Path) -> bool {
         .ok()
         .and_then(|text| serde_json::from_str::<GenCache>(&text).ok())
     {
-        Some(cache) => cache.version != crate::types::GEN_LOGIC_VERSION,
+        Some(cache) => {
+            cache.version != crate::types::GEN_LOGIC_VERSION
+                || cache.filter_fingerprint != aden_core::filter::built_in_ignore_fingerprint()
+        }
         None => true,
     }
 }
@@ -2500,6 +2497,17 @@ mod tests {
         assert!(gen_cache_requires_rebuild(&cache_path));
         assert!(load_gen_cache(&cache_path).entries.is_empty());
 
+        let wrong_policy = serde_json::json!({
+            "version": crate::types::GEN_LOGIC_VERSION,
+            "filter_fingerprint": 1,
+            "entries": {
+                "old.rs": {"source_mtime": 0, "source_path": "old.rs", "anchors": ["old"]}
+            }
+        });
+        std::fs::write(&cache_path, serde_json::to_vec(&wrong_policy).unwrap()).unwrap();
+        assert!(gen_cache_requires_rebuild(&cache_path));
+        assert!(load_gen_cache(&cache_path).entries.is_empty());
+
         std::fs::write(&cache_path, "{not-json").unwrap();
         assert!(gen_cache_requires_rebuild(&cache_path));
         std::fs::write(&cache_path, [0xff, 0xfe]).unwrap();
@@ -2512,6 +2520,7 @@ mod tests {
         let cache_path = dir.path().join("gen-cache.json");
         let mut cache = GenCache {
             version: crate::types::GEN_LOGIC_VERSION,
+            filter_fingerprint: aden_core::filter::built_in_ignore_fingerprint(),
             ..GenCache::default()
         };
         cache.dispositions.insert(

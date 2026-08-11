@@ -12,6 +12,7 @@ pub mod overlay;
 pub mod receipt;
 
 pub mod staging;
+pub mod symbol;
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

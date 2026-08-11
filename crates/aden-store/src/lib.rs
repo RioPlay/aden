@@ -15,6 +15,7 @@
 //! | Tree | Key | Value |
 //! |---|---|---|
 //! | `docs` | `doc:{anchor}` | Serialized Document |
+//! | `source_spans` | `{anchor}` | Serialized SourceSpan projection |
 //! | `edges` | `edge<US>{src}<US>{dst}<US>{type}` | () (edge existence) |
 //! | `outgoing` | `out:{anchor}` | Vec<(anchor, edge_type)> |
 //! | `incoming` | `in:{anchor}` | Vec<(anchor, edge_type)> |
@@ -22,7 +23,7 @@
 //! | `meta` | `meta:{key}` | value |
 //! | `bases` | `base:{anchor}` | canonical contract text as of last gen (UTF-8) |
 
-use aden_core::{Document, EdgeType};
+use aden_core::{Document, EdgeType, SourceSpan};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use thiserror::Error;
@@ -119,6 +120,7 @@ pub fn base_key(anchor: &str) -> String {
 /// Tree names in the Sled database.
 pub enum TreeName {
     Docs,
+    SourceSpans,
     Edges,
     Outgoing,
     Incoming,
@@ -131,6 +133,7 @@ impl TreeName {
     pub fn name(&self) -> &'static str {
         match self {
             Self::Docs => "docs",
+            Self::SourceSpans => "source_spans",
             Self::Edges => "edges",
             Self::Outgoing => "outgoing",
             Self::Incoming => "incoming",
@@ -143,6 +146,19 @@ impl TreeName {
 
 // ─── Graph Storage Trait ─────────────────────────────────────────────────────
 
+/// Bounded candidate set returned by a persistent natural-symbol lexicon.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SymbolCandidateLookup {
+    pub anchors: Vec<String>,
+    /// Compact lexicon records inspected after exact-key probes. Zero means an
+    /// exact natural-name index hit avoided a full anchor/record scan.
+    pub records_scanned: usize,
+    /// Number of records that passed cheap length/substring gates and required
+    /// Levenshtein evaluation.
+    pub distance_evaluations: usize,
+    pub exact_index_hit: bool,
+}
+
 /// The storage interface for the Aden knowledge graph.
 ///
 /// This trait abstracts away the underlying storage engine. Implementations
@@ -154,6 +170,17 @@ pub trait GraphStorage: Send + Sync {
 
     /// Get all documents (for full graph rebuild).
     fn get_all_documents(&self) -> Result<HashMap<String, Document>, StoreError>;
+
+    /// Read only anchor + source-span projections. Implementations should stream
+    /// documents rather than retaining full bodies; navigation commands need
+    /// these four fields and should not pay full-graph memory for them.
+    fn get_source_spans(&self) -> Result<Vec<(String, SourceSpan)>, StoreError> {
+        Ok(self
+            .get_all_documents()?
+            .into_iter()
+            .filter_map(|(anchor, document)| document.source_span.map(|span| (anchor, span)))
+            .collect())
+    }
 
     /// Put a document.
     fn put_document(&self, doc: &Document) -> Result<(), StoreError>;
@@ -270,11 +297,47 @@ pub trait GraphStorage: Send + Sync {
         Ok(edges)
     }
 
+    /// Count incoming edges by target for the requested types. This projection
+    /// supports routing signals such as documentation reference importance
+    /// without materializing a full graph.
+    fn incoming_counts_by_target(
+        &self,
+        edge_types: &[EdgeType],
+    ) -> Result<HashMap<String, usize>, StoreError> {
+        let mut counts = HashMap::new();
+        for (_, target, edge_type) in self.get_all_edges()? {
+            if edge_types.is_empty() || edge_types.contains(&edge_type) {
+                *counts.entry(target).or_insert(0) += 1;
+            }
+        }
+        Ok(counts)
+    }
+
     /// Check if an edge exists.
     fn edge_exists(&self, src: &str, dst: &str, edge_type: &EdgeType) -> Result<bool, StoreError>;
 
     /// Get all anchors in the graph.
     fn get_all_anchors(&self) -> Result<HashSet<String>, StoreError>;
+
+    /// Resolve a natural spelling to a bounded candidate set using a persistent
+    /// lexicon. `None` means this store predates the lexicon and callers must use
+    /// the compatibility full-anchor scan.
+    fn lookup_symbol_candidates(
+        &self,
+        _symbol: &str,
+    ) -> Result<Option<SymbolCandidateLookup>, StoreError> {
+        Ok(None)
+    }
+
+    /// Mark the lexicon unavailable before a multi-batch generation begins.
+    fn invalidate_symbol_lexicon(&self) -> Result<(), StoreError> {
+        Ok(())
+    }
+
+    /// Publish lexicon completeness after every document/prune batch succeeds.
+    fn finalize_symbol_lexicon(&self) -> Result<(), StoreError> {
+        Ok(())
+    }
 
     /// Get a metadata value.
     fn get_meta(&self, key: &str) -> Result<Option<String>, StoreError>;
@@ -584,6 +647,48 @@ mod tests {
     }
 
     #[test]
+    fn put_edges_bulk_updates_canonical_and_mirrored_indexes() {
+        let path = temp_path();
+        let storage = Storage::new(&path).unwrap();
+        for anchor in ["src", "left", "right"] {
+            storage.put_document(&note_doc(anchor)).unwrap();
+        }
+        let edges = vec![
+            ("src".to_string(), "left".to_string(), EdgeType::Calls),
+            ("src".to_string(), "right".to_string(), EdgeType::Uses),
+            // Replaying an edge must not grow either adjacency list.
+            ("src".to_string(), "left".to_string(), EdgeType::Calls),
+        ];
+        storage.put_edges_bulk(&edges).unwrap();
+
+        assert_eq!(storage.count_edges().unwrap(), 2);
+        assert_eq!(storage.get_outgoing_edges("src").unwrap().len(), 2);
+        assert_eq!(storage.get_incoming_edges("left").unwrap().len(), 1);
+        assert_eq!(storage.get_incoming_edges("right").unwrap().len(), 1);
+        assert_eq!(
+            storage
+                .incoming_counts_by_target(&[EdgeType::Uses])
+                .unwrap(),
+            HashMap::from([("right".to_string(), 1)])
+        );
+        assert_eq!(
+            storage.incoming_counts_by_target(&[]).unwrap(),
+            HashMap::from([("left".to_string(), 1), ("right".to_string(), 1)])
+        );
+        assert!(
+            storage
+                .edge_exists("src", "left", &EdgeType::Calls)
+                .unwrap()
+        );
+        assert!(
+            storage
+                .edge_exists("src", "right", &EdgeType::Uses)
+                .unwrap()
+        );
+        fs::remove_dir_all(&path).ok();
+    }
+
+    #[test]
     fn test_bfs_traversal() {
         let path = temp_path();
         let storage = Storage::new(&path).unwrap();
@@ -695,8 +800,14 @@ mod tests {
         for a in &["center", "up", "down"] {
             storage.put_document(&note(a)).unwrap();
         }
-        storage.put_edge("up", "center", EdgeType::Calls).unwrap();
-        storage.put_edge("center", "down", EdgeType::Calls).unwrap();
+        storage
+            .put_edges_bulk(&[
+                ("up".to_string(), "center".to_string(), EdgeType::Calls),
+                ("up".to_string(), "center".to_string(), EdgeType::Uses),
+                ("center".to_string(), "down".to_string(), EdgeType::Calls),
+                ("center".to_string(), "down".to_string(), EdgeType::Uses),
+            ])
+            .unwrap();
 
         storage.delete_node("center").unwrap();
 
@@ -719,7 +830,17 @@ mod tests {
         );
         assert!(
             !storage
+                .edge_exists("up", "center", &EdgeType::Uses)
+                .unwrap()
+        );
+        assert!(
+            !storage
                 .edge_exists("center", "down", &EdgeType::Calls)
+                .unwrap()
+        );
+        assert!(
+            !storage
+                .edge_exists("center", "down", &EdgeType::Uses)
                 .unwrap()
         );
         // Neighbours themselves survive.
@@ -814,6 +935,47 @@ mod tests {
         let bytes = serialize_document(&doc).unwrap();
         let retrieved = deserialize_document(&bytes).unwrap();
         assert!(retrieved.source_span.is_none());
+    }
+
+    #[test]
+    fn source_span_projection_omits_full_bodies_and_spanless_nodes() {
+        let path = temp_path();
+        let storage = Storage::new(&path).unwrap();
+        let mut attributes = HashMap::new();
+        attributes.insert("source_file".to_string(), "/repo/src/lib.rs".to_string());
+        attributes.insert("start_line".to_string(), "4".to_string());
+        attributes.insert("end_line".to_string(), "9".to_string());
+        storage
+            .put_document(&Document {
+                anchor: "aden://module/app/src/lib.rs#run".to_string(),
+                node_type: aden_core::NodeType::Function,
+                attributes,
+                blocks: vec![],
+                source_span: None,
+                metadata: None,
+                confidence: 1.0,
+            })
+            .unwrap();
+        storage.put_document(&note_doc("spanless")).unwrap();
+
+        let spans = storage.get_source_spans().unwrap();
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].0, "aden://module/app/src/lib.rs#run");
+        assert_eq!(spans[0].1.file, "/repo/src/lib.rs");
+        assert_eq!(spans[0].1.start_line, 4);
+        assert_eq!(spans[0].1.end_line, 9);
+
+        // Replacing a symbol with a spanless node must not leave a stale
+        // projection behind, and deleting it must cascade identically.
+        let mut replacement = note_doc("replacement");
+        replacement.anchor = "aden://module/app/src/lib.rs#run".to_string();
+        storage.put_document(&replacement).unwrap();
+        assert!(storage.get_source_spans().unwrap().is_empty());
+        storage
+            .delete_document("aden://module/app/src/lib.rs#run")
+            .unwrap();
+        assert!(storage.get_source_spans().unwrap().is_empty());
+        fs::remove_dir_all(&path).ok();
     }
 
     #[test]

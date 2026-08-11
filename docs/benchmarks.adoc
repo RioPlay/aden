@@ -768,12 +768,121 @@ its output to a comparative product claim.
   span. (No dollar axis: savings are reported in tokens — the model-independent
   unit — not a price that drifts.)
 
+== BM25 covering-postings experiment [measured]
+
+A synthetic, deterministic 5,000-document corpus tests the current
+`token -> [(anchor, tf)]` representation against
+`token -> [(document_id, tf, document_length)]`, with a compact document table.
+The benchmark asserts bit-identical BM25 scores and exact ranking order before
+measuring either arm; it does not alter the production index.
+
+[source,bash]
+----
+cargo bench -p aden-index --bench covering_postings
+----
+
+One local release-mode run (597,716 postings, six-term query) measured:
+
+|===
+|Metric |String postings |Covering ID postings |Observed change
+
+|BM25 query median |60.66 µs |45.75 µs |25% faster
+|Layout build median |109.75 ms |30.47 ms |72% faster
+|JSON load median |41.81 ms |14.87 ms |64% faster
+|Serialized JSON |39,461,194 bytes |8,957,658 bytes |77% smaller
+|Estimated postings heap |52,599,008 bytes |11,503,104 bytes |78% smaller
+|Ranking/score parity |reference |bit-identical |pass
+|===
+
+The same benchmark can consume an existing production cache without modifying it:
+
+[source,bash]
+----
+ADEN_POSTINGS_CACHE=/path/to/index-cache.json \
+  cargo bench -p aden-index --bench covering_postings
+----
+
+Three real caches reproduced the win. Numbers below are raw medians from each
+run; Criterion's cross-run “change” percentage is intentionally ignored because
+the corpus changed between invocations.
+
+|===
+|Corpus |Documents / postings |Query: string → covering |Lexical JSON reduction |Postings heap estimate reduction |Load: string → covering
+
+|aden-devlog (small) |311 / 39,881 |136.12 → 64.58 µs (*53%*) |74% |81% |10.96 → 5.39 ms
+|aegis (medium) |6,143 / 294,336 |997.41 → 727.40 µs (*27%*) |72% |83% |81.77 → 26.68 ms
+|query eval repo (large) |8,682 / 342,384 |936.92 → 587.85 µs (*37%*) |71% |85% |40.07 → 15.15 ms
+|===
+
+Both synthetic and real-cache arms use the production BM25 denominator and
+assert bit-identical scoring-phase scores and exact ranking before timing. They
+also serialize, reload, and re-score the compact layout to prove cache
+round-trip parity. The first struct-as-JSON-object arm regressed small-cache load by 35%. Replacing
+per-posting objects with fixed-shape numeric tuples removed that regression and
+also provides a direct path to a future binary record without committing to a
+new serialization dependency. The complete `aden-index` unit, tokenizer,
+file-indexing, deterministic retrieval, and corpus retrieval suites pass.
+
+=== Production v15 validation
+
+After the synthetic and three real-cache A/B wins, index cache v15 adopted the
+covering tuple layout. A release-mode before/after process test on aden-devlog
+measured the complete `aden search` path, not just the scoring loop:
+
+|===
+|Metric |v14 string postings |v15 covering tuples |Change
+
+|Cache size |5,918,637 bytes |1,308,100 bytes |*78% smaller*
+|Warm process RSS (5-run range) |22,844–23,448 KiB |14,180–14,320 KiB |*~39% lower*
+|Warm process wall time |0.03 s median |0.02 s median |*~33% faster*
+|Top result anchors and scores |reference |exactly equal |parity pass
+|===
+
+Old caches are not migrated in place: the version gate rejects v14 and rebuilds
+the disposable index from source/Fjall, then saves compact v15 JSON. The reverse
+anchor-to-ID map is rebuilt in memory after load and is never duplicated on disk.
+Fjall remains the durable graph/document backend and its format is unchanged.
+
+=== Symbol-recovery and snapshot-reader exploratory validation
+
+A local provider-neutral run exercised the intentional misspelling
+`resovle_anchor_detailed` against LM Studio's
+`qwen3.5-9b-the-defiant-fable-uncensored-heretic-neo-imatrix-max-mtp`. The first
+three-run attempt after correcting explicit `ask --from` fallback produced two
+successful records: both had 100% required-fact recall, 100% evidence recall,
+100% method compliance, and no forbidden claims. Median successful wall time was
+236.97 seconds with 17 tool calls. The third adapter run produced no final model
+message. This is exploratory evidence, not a product comparison: later repeated
+attempts became unusable when LM Studio's `llama-server` aborted (`SIGABRT`)
+while loading both the Fable model and a standard Qwen 3.5 9B fallback. Those
+provider-runtime failures are reported rather than scored as Aden failures or
+silently discarded.
+
+The recovery output now gives a ready-to-retry exact `--from` example, and the
+paired prompt permits exactly that one canonical retry before synthesis. The
+committed corpus and adapter trajectory contract remain provider-neutral; a
+stable provider run is still required before claiming a tool-call reduction.
+
+A three-pair process RSS probe compared the previously installed slice decoder
+with the streaming reader on this repository's 4,770,461-byte snapshot. Old RSS
+was 30,240–30,324 KiB; new RSS was 30,300–30,560 KiB, so the small corpus showed
+*no measurable RSS reduction above process noise*. The implementation removes
+one allocation equal to encoded snapshot size, but kernel-scale validation is
+still needed to quantify total RSS because decoded documents and edges dominate.
+The persistent symbol-lexicon test separately verifies 1,003 anchors with exact
+lookup requiring zero record scans, typo output capped at eight, at most six
+Levenshtein evaluations despite 1,003 compact records, and no more than three
+index keys per simple anchor.
+
 == Reproducing These Numbers
 
 All benchmarks are reproducible from this repository:
 
 [source,bash]
 ----
+# BM25 posting-layout A/B
+cargo bench -p aden-index --bench covering_postings
+
 # Retrieval benchmarks (Tables 1 and 2 above)
 scripts/bench.py
 scripts/eval_corpus.py

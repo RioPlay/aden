@@ -122,7 +122,6 @@
   #hover-card .hc-type { font-size: 11px; color: #6c7086; margin-bottom: 3px; }
   #hover-card .hc-file { font-size: 11px; color: #45475a; font-family: ui-monospace, monospace;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  #hover-card { position: relative; }
   #hover-card .hc-dismiss { position: absolute; top: 6px; right: 8px; pointer-events: auto;
     cursor: pointer; color: #45475a; font-size: 13px; line-height: 1; padding: 2px 4px;
     border-radius: 3px; }
@@ -263,6 +262,7 @@ function dimOf(hex, f = 0.4) {
   return v;
 }
 function esc(s) { return String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+function escAttr(s) { return String(s).replace(/[&"<>]/g, c => ({'&':'&amp;','"':'&quot;','<':'&lt;','>':'&gt;'}[c])); }
 function shortName(n) { const a = n.label || n.anchor || n.id || ''; return String(a).split('#').pop().split('/').pop(); }
 const idOf = e => (e && e.id != null) ? e.id : e;
 // Content mass: orbs scale with what's inside — symbols for communities,
@@ -322,7 +322,7 @@ function updateHoverCard3d(n) {
   const typeStr = [n.kind, n.loc ? n.loc + ' loc' : n.words ? n.words + ' words' : null].filter(Boolean).join(' · ');
   document.getElementById('hc-type').textContent = typeStr;
   const filePath3d = fileOf(n);
-  document.getElementById('hc-file').textContent = filePath3d ? filePath3d.split('/').slice(-2).join('/') : '';
+  document.getElementById('hc-file').textContent = filePath3d ? fileTail(filePath3d) : '';
   hoverCardEl3d.classList.remove('idle');
   hoverCardEl3d.classList.add('on');
 }
@@ -381,7 +381,11 @@ const AMBIENT_OFF = new Set(['Contains', 'PartOf', 'AssociatedWith', 'Mentions']
 const byId = {};
 const nodes = (DATA.nodes || []).map(n => { const c = { ...n, neighbors: [], adj: [] }; byId[n.id] = c; return c; });
 const allLinks = (DATA.edges || []).map(e => ({ source: e.from, target: e.to, type: e.type }));
-const links = nodes.length > 150 ? allLinks.filter(l => !AMBIENT_OFF.has(l.type)) : allLinks;
+// Keep every relation in the graph data. On large views, ambient structural
+// links are hidden by linkVisibility below, but a focused node reveals its full
+// neighborhood and shortest-path travel still follows every stored relation.
+const links = allLinks;
+const largeGraph = nodes.length > 150;
 links.forEach(l => {
   const a = byId[idOf(l.source)], b = byId[idOf(l.target)];
   if (a && b) { a.neighbors.push(b); b.neighbors.push(a); a.adj.push(l); b.adj.push(l); }
@@ -426,6 +430,7 @@ const Graph = ForceGraph3D({ controlType: 'orbit' })(el)
   // connection fields shimmer in gradients across regions instead of reading
   // as straight gray wires; trails brighten the same hue.
   .linkCurvature(0.25)
+  .linkVisibility(l => !largeGraph || !AMBIENT_OFF.has(l.type) || highlightLinks.has(l))
   .linkColor(l => {
     if (highlightLinks.has(l)) return '#9ec5ff';
     const base = linkBlend(l);
@@ -604,9 +609,12 @@ function toggleSpin() {
   if (controls.autoRotate) controls.autoRotateSpeed = focusNodeRef ? 0.8 : 0.45;
 }
 
-// fileOf: returns n.file when set, or parses the file path from the anchor.
-// Anchor format: aden://module/{project}/{relpath}#{symbol}
-// Synthesized aggregate nodes (mod-*) with no resolvable file return null.
+// Keep native filesystem paths (`file`) separate from encoded editor URI paths
+// (`editor_file`). This is essential on Windows, where `/C:/...` is valid inside
+// an editor URI but is not a native path for commands, display, or file access.
+function fileParts(path) { return String(path || '').split(/[\\/]/).filter(Boolean); }
+function fileName(path) { const parts = fileParts(path); return parts.length ? parts[parts.length - 1] : ''; }
+function fileTail(path, count = 2) { return fileParts(path).slice(-count).join('/'); }
 function fileOf(n) {
   if (n && n.file) return n.file;
   if (n && n.anchor) {
@@ -619,10 +627,9 @@ function fileOf(n) {
   return null;
 }
 function editorUrl(n) {
-  const f = fileOf(n);
-  if (!f) return null;
+  if (!n || !n.editor_file) return null;
   if (!EDITOR || EDITOR.includes('/*EDITOR*/')) return null;
-  return EDITOR.replace('{file}', f).replace('{line}', n.line || 1);
+  return EDITOR.replace('{file}', n.editor_file).replace('{line}', n.line || 1);
 }
 
 // Focus: camera glides to a comfortable distance in front of the node,
@@ -630,8 +637,8 @@ function editorUrl(n) {
 // Re-trigger every accessor that depends on highlight/focus state.
 function repaint() {
   Graph.nodeColor(Graph.nodeColor()).nodeVal(Graph.nodeVal())
-       .linkColor(Graph.linkColor()).linkWidth(Graph.linkWidth())
-       .linkDirectionalParticles(Graph.linkDirectionalParticles());
+       .linkVisibility(Graph.linkVisibility()).linkColor(Graph.linkColor())
+       .linkWidth(Graph.linkWidth()).linkDirectionalParticles(Graph.linkDirectionalParticles());
   setTimeout(enliven, 60);   // accessor refresh can swap materials — re-juice
 }
 
@@ -912,7 +919,7 @@ function showPanel(n) {
     (n.loc ? `<div class="row"><span class="k">loc:</span> ${n.loc}</div>` : '') +
     (n.words ? `<div class="row"><span class="k">words:</span> ${n.words}</div>` : '') +
     `<div class="row"><span class="k">connections:</span> ${n.deg}</div>` +
-    (ed ? `<div class="row"><a href="${ed}">open in editor →</a></div>` : '') +
+    (ed ? `<div class="row"><a href="${escAttr(ed)}">open in editor →</a></div>` : '') +
     (n.snippet ? `<div class="sec">source</div><pre class="p-snip">${esc(n.snippet)}</pre>` : '') +
     `<div class="sec">connected (${(n.neighbors || []).length})</div>` + rows;
   document.getElementById('panel').classList.add('open');
@@ -935,7 +942,7 @@ function showCard(n) {
   document.getElementById('sn-name').style.color = colorOf(n);
   const mass = n.loc ? `${n.loc} loc` : n.words ? `${n.words} words` : '';
   document.getElementById('sn-meta').textContent =
-    [n.group, mass, f3d ? f3d.split('/').pop() : null].filter(Boolean).join(' · ');
+    [n.group, mass, f3d ? fileName(f3d) : null].filter(Boolean).join(' · ');
   document.getElementById('sn-code').textContent = n.snippet || '';
   snipEl.classList.add('on');
   snipEl.setAttribute('aria-hidden', 'false');

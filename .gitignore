@@ -2,6 +2,9 @@
 # Build output & aden artifacts
 # ─────────────────────────────────────────────────────────────────────────
 /target
+# Alternate Cargo target directories are equally rebuildable (for example,
+# CARGO_TARGET_DIR=target-0.4 during release/toolchain validation).
+/target-*/
 # ADR-003: the rebuildable graph store/caches now live in the per-user data dir,
 # never in-tree. Ignore any legacy in-tree rebuildable artifacts, but TRACK the
 # durable, repo-coupled intent meant to travel with the repository (overlays,
@@ -39,6 +42,8 @@ editors/**/*.adoc
 .cursor/
 .codex/
 .windsurf/
+# Local DI session journal/state.
+.di/
 *.updates.jsonl
 
 # ─────────────────────────────────────────────────────────────────────────

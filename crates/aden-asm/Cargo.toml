@@ -8,8 +8,8 @@ license.workspace = true
 [dependencies]
 aden-core = { path = "../aden-core" }
 aden-parse = { path = "../aden-parse" }
-aden-graph = { version = "0.3.1", path = "../aden-graph" }
-aden-emit = { version = "0.3.1", path = "../aden-emit" }
+aden-graph = { version = "0.4.0", path = "../aden-graph" }
+aden-emit = { version = "0.4.0", path = "../aden-emit" }
 petgraph = "0.8.3"
 thiserror = "2.0.18"
 

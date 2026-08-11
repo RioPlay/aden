@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Disk cache for the Aden knowledge graph.
 //!
-//! Store-first: the graph is read from the ADR-011 read snapshot when present
-//! and fresh, otherwise from the fjall (LSM-tree) store at `store/`, which
-//! `aden gen` writes.
+//! Full-graph reads prefer the lock-free ADR-011 snapshot. Selective anchor and
+//! neighborhood reads use fjall's keyed documents/adjacency lists first so a
+//! small question does not deserialize an entire repository; they fall back to
+//! the snapshot when a concurrent writer makes the store unavailable.
 
 use crate::bridge::GraphBridge;
 use crate::graph::AdenGraph;
@@ -79,53 +80,222 @@ fn build_graph_from_docs_and_edges(
     graph
 }
 
-/// Resolve a user anchor against the store without loading the whole graph.
-///
-/// Returns the anchor unchanged if it exists exactly; otherwise resolves a bare
-/// symbol/module name to a single full anchor by `#suffix` match (reading only
-/// the anchor *keys*). Returns `None` if unknown or ambiguous — callers should
-/// treat that as "not found" rather than guessing.
-pub fn resolve_anchor_in_store(dir: &Path, anchor: &str) -> Option<String> {
-    // ADR-011: snapshot-first (lock-free) when a fresh graph.snapshot covers the store.
-    // Critical for concurrent readers (MCP + heal/merge --fix, ask/asm while gen runs).
-    // Resolve directly against the document map. The old path called
-    // `try_load`, materializing every node and edge into petgraph merely to ask
-    // whether one key existed; `ask` then loaded the snapshot a second time for
-    // neighborhood assembly. On documentation-heavy repos that duplicate build
-    // dominated request latency.
-    if let Some((docs, _)) = snapshot::try_read_fresh(dir) {
-        if docs.contains_key(anchor) {
-            return Some(anchor.to_string());
+/// How a user-supplied anchor or natural symbol name resolved.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AnchorResolution {
+    Exact(String),
+    Unique { anchor: String },
+    Ambiguous { candidates: Vec<String> },
+    NotFound { suggestions: Vec<String> },
+}
+
+impl AnchorResolution {
+    /// Return a definitive anchor only when resolution did not require guessing.
+    pub fn resolved(self) -> Option<String> {
+        match self {
+            Self::Exact(anchor) | Self::Unique { anchor } => Some(anchor),
+            Self::Ambiguous { .. } | Self::NotFound { .. } => None,
         }
-        let matches: Vec<&String> = docs
-            .keys()
-            .filter(|candidate| candidate.rsplit('#').next() == Some(anchor))
+    }
+}
+
+/// Normalize generic and whitespace-heavy human symbol spellings.
+pub fn natural_symbol_form(value: &str) -> String {
+    aden_core::symbol::natural_symbol_form(value)
+}
+
+/// Rank an anchor against a natural symbol spelling. Lower is better; rank 5
+/// is a substring suggestion and must never be selected automatically.
+pub fn anchor_match_rank(anchor: &str, symbol: &str) -> u8 {
+    let sym = natural_symbol_form(symbol);
+    let sym_lower = sym.to_lowercase();
+    let seg = natural_symbol_form(anchor.rsplit(['#', '/']).next().unwrap_or(""));
+    let seg_lower = seg.to_lowercase();
+    let leaf = seg.rsplit(['.', ':']).next().unwrap_or(&seg);
+    let leaf_lower = leaf.to_lowercase();
+    if seg == sym {
+        0
+    } else if seg_lower == sym_lower {
+        1
+    } else if leaf == sym {
+        2
+    } else if leaf_lower == sym_lower {
+        3
+    } else if seg_lower.starts_with(&format!("{sym_lower}."))
+        || seg_lower.starts_with(&format!("{sym_lower}::"))
+    {
+        4
+    } else if !sym_lower.is_empty() && seg_lower.contains(&sym_lower) {
+        5
+    } else {
+        u8::MAX
+    }
+}
+
+fn ranked_anchor_matches<'a>(
+    symbol: &str,
+    anchors: &'a [String],
+) -> (Option<&'a String>, Vec<(u8, &'a String)>) {
+    let mut exact = None;
+    let mut matched = Vec::new();
+    for anchor in anchors {
+        if anchor == symbol {
+            exact = Some(anchor);
+        }
+        let rank = anchor_match_rank(anchor, symbol);
+        if rank != u8::MAX {
+            matched.push((rank, anchor));
+        }
+    }
+    matched.sort_by(|(left_rank, left_anchor), (right_rank, right_anchor)| {
+        left_rank
+            .cmp(right_rank)
+            .then_with(|| left_anchor.cmp(right_anchor))
+    });
+    (exact, matched)
+}
+
+/// Return every equally-best natural-name candidate in deterministic order.
+pub fn ranked_anchor_candidates(symbol: &str, anchors: &[String]) -> Vec<String> {
+    let (_, matched) = ranked_anchor_matches(symbol, anchors);
+    let Some((best_rank, _)) = matched.first() else {
+        return Vec::new();
+    };
+    matched
+        .iter()
+        .take_while(|(rank, _)| rank == best_rank)
+        .map(|(_, anchor)| (*anchor).clone())
+        .collect()
+}
+
+/// Return typo recovery candidates without ever promoting them to resolutions.
+/// Short queries are excluded to avoid noisy suggestions; results are bounded and
+/// ordered by edit distance, then canonical anchor for deterministic clients.
+fn typo_anchor_suggestions(symbol: &str, anchors: &[String]) -> Vec<String> {
+    let symbol = natural_symbol_form(symbol).to_lowercase();
+    let symbol_len = symbol.chars().count();
+    let Some(max_distance) = aden_core::symbol::typo_max_distance(symbol_len) else {
+        return Vec::new();
+    };
+    let mut suggestions = Vec::new();
+    for anchor in anchors {
+        let segment = natural_symbol_form(anchor.rsplit(['#', '/']).next().unwrap_or(""));
+        let segment = segment.to_lowercase();
+        let leaf = segment.rsplit(['.', ':']).next().unwrap_or(&segment);
+        let distance = [segment.as_str(), leaf]
+            .into_iter()
+            .filter(|candidate| candidate.chars().count().abs_diff(symbol_len) <= max_distance)
+            .map(|candidate| aden_core::symbol::edit_distance(&symbol, candidate))
+            .min();
+        if let Some(distance) = distance.filter(|distance| *distance <= max_distance) {
+            suggestions.push((distance, anchor.clone()));
+        }
+    }
+    suggestions.sort_by(
+        |(left_distance, left_anchor), (right_distance, right_anchor)| {
+            left_distance
+                .cmp(right_distance)
+                .then_with(|| left_anchor.cmp(right_anchor))
+        },
+    );
+    suggestions.dedup_by(|left, right| left.1 == right.1);
+    suggestions
+        .into_iter()
+        .take(8)
+        .map(|(_, anchor)| anchor)
+        .collect()
+}
+
+/// Resolution plus every ranked discovery match from the same anchor scan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnchorResolutionAnalysis {
+    pub resolution: AnchorResolution,
+    pub ranked_matches: Vec<String>,
+}
+
+/// Analyze an already-loaded anchor set once. Structural commands consume the
+/// resolution; discovery commands can also present the broader ranked matches.
+pub fn analyze_anchor_list(anchor: &str, anchors: &[String]) -> AnchorResolutionAnalysis {
+    let (exact, matched) = ranked_anchor_matches(anchor, anchors);
+    let mut ranked_matches = Vec::with_capacity(matched.len() + usize::from(exact.is_some()));
+    if let Some(exact) = exact {
+        ranked_matches.push(exact.clone());
+    }
+    ranked_matches.extend(
+        matched
+            .iter()
+            .filter(|(_, candidate)| Some(*candidate) != exact)
+            .map(|(_, candidate)| (*candidate).clone()),
+    );
+
+    let resolution = if exact.is_some() {
+        AnchorResolution::Exact(anchor.to_string())
+    } else if let Some((best_rank, _)) = matched.first() {
+        let candidates: Vec<String> = matched
+            .iter()
+            .take_while(|(rank, _)| rank == best_rank)
+            .map(|(_, candidate)| (*candidate).clone())
             .collect();
-        if matches.len() == 1 {
-            return Some(matches[0].to_string());
+        if *best_rank >= 5 {
+            AnchorResolution::NotFound {
+                suggestions: candidates.into_iter().take(8).collect(),
+            }
+        } else if candidates.len() == 1 {
+            AnchorResolution::Unique {
+                anchor: candidates.into_iter().next().unwrap(),
+            }
+        } else {
+            AnchorResolution::Ambiguous { candidates }
         }
-        return None;
+    } else {
+        AnchorResolution::NotFound {
+            suggestions: typo_anchor_suggestions(anchor, anchors),
+        }
+    };
+
+    AnchorResolutionAnalysis {
+        resolution,
+        ranked_matches,
+    }
+}
+
+/// Resolve against an already-loaded anchor set. This is the shared deterministic
+/// contract used by read commands that have already paid to load the index.
+pub fn resolve_anchor_from_list(anchor: &str, anchors: &[String]) -> AnchorResolution {
+    analyze_anchor_list(anchor, anchors).resolution
+}
+
+/// Resolve an exact anchor, module alias, or natural symbol name without loading
+/// the complete graph. Ambiguity is preserved rather than collapsed to missing.
+pub fn resolve_anchor_detailed(dir: &Path, anchor: &str) -> AnchorResolution {
+    let (store_path, _) = aden_paths::resolve_read_store(dir);
+    if let Some(store_path) = store_path.to_str()
+        && let Ok(storage) = Storage::open_existing(store_path)
+    {
+        if matches!(storage.get_document(anchor), Ok(Some(_))) {
+            return AnchorResolution::Exact(anchor.to_string());
+        }
+        if let Ok(Some(lookup)) = storage.lookup_symbol_candidates(anchor) {
+            return resolve_anchor_from_list(anchor, &lookup.anchors);
+        }
+        if let Ok(anchors) = storage.get_all_anchors() {
+            let anchors = anchors.into_iter().collect::<Vec<_>>();
+            return resolve_anchor_from_list(anchor, &anchors);
+        }
     }
 
-    // Fallback to direct fjall (may see Locked under active readers/writers).
-    let (store_path, _) = aden_paths::resolve_read_store(dir);
-    let storage = Storage::open_existing(store_path.to_str()?).ok()?;
-    if matches!(storage.get_document(anchor), Ok(Some(_))) {
-        return Some(anchor.to_string());
+    if let Some((docs, _)) = snapshot::try_read_fresh(dir) {
+        let anchors = docs.into_keys().collect::<Vec<_>>();
+        return resolve_anchor_from_list(anchor, &anchors);
     }
-    let anchors = storage.get_all_anchors().ok()?;
-    if anchors.contains(anchor) {
-        return Some(anchor.to_string());
+    AnchorResolution::NotFound {
+        suggestions: Vec::new(),
     }
-    let matches: Vec<&String> = anchors
-        .iter()
-        .filter(|a| a.rsplit('#').next() == Some(anchor))
-        .collect();
-    if matches.len() == 1 {
-        Some(matches[0].clone())
-    } else {
-        None
-    }
+}
+
+/// Compatibility wrapper for callers that only need a definitive anchor.
+pub fn resolve_anchor_in_store(dir: &Path, anchor: &str) -> Option<String> {
+    resolve_anchor_detailed(dir, anchor).resolved()
 }
 
 /// Build a graph containing only the neighborhood reachable from `start` within
@@ -303,27 +473,33 @@ fn build_neighborhood_impl(
     caller_types: &[EdgeType],
     caller_filter: &dyn Fn(&str, Option<&str>) -> bool,
 ) -> Result<AdenGraph<DocumentNode, AdenEdge>, crate::graph::GraphError> {
-    // ADR-011: snapshot-first, depth-bounded BFS in memory (lock-free reads).
-    if let Some(data) = snapshot::try_read_fresh(dir) {
-        return build_neighborhood_from_materialized(
-            data,
-            dir,
-            start,
-            depth,
-            edge_types,
-            caller_types,
-            caller_filter,
-        );
-    }
-
     const MAX_NODES: usize = 10_000;
     let (store_path, _) = aden_paths::resolve_read_store(dir);
-    let storage = Storage::open_existing(
-        store_path
-            .to_str()
-            .ok_or_else(|| crate::graph::GraphError::Io("invalid store path".into()))?,
-    )
-    .map_err(|e| crate::graph::GraphError::Io(e.to_string()))?;
+    let store_path = store_path
+        .to_str()
+        .ok_or_else(|| crate::graph::GraphError::Io("invalid store path".into()))?;
+    // Selective traversal is why this function exists: read only adjacency
+    // lists and documents reached from the seed. Snapshot-first behavior used
+    // to deserialize every document and edge at kernel scale before discarding
+    // almost all of them. A concurrent writer can make fjall unavailable; in
+    // that case the immutable ADR-011 snapshot remains the lock-free fallback.
+    let storage = match Storage::open_existing(store_path) {
+        Ok(storage) => storage,
+        Err(store_error) => {
+            if let Some(data) = snapshot::try_read_fresh(dir) {
+                return build_neighborhood_from_materialized(
+                    data,
+                    dir,
+                    start,
+                    depth,
+                    edge_types,
+                    caller_types,
+                    caller_filter,
+                );
+            }
+            return Err(crate::graph::GraphError::Io(store_error.to_string()));
+        }
+    };
 
     let mut visited: HashSet<String> = HashSet::new();
     visited.insert(start.to_string());
@@ -418,4 +594,85 @@ pub fn build_from_directory_cached(
         return Ok(cached);
     }
     crate::graph::AdenGraph::build_from_directory(dir)
+}
+
+#[cfg(test)]
+mod resolution_tests {
+    use super::*;
+
+    #[test]
+    fn exact_anchor_wins_over_natural_matches() {
+        let anchors = vec![
+            "mod-project".to_string(),
+            "aden://module/a.rs#mod-project".to_string(),
+            "aden://module/a.rs#mod-project.member".to_string(),
+        ];
+        let analysis = analyze_anchor_list("mod-project", &anchors);
+        assert_eq!(
+            analysis.resolution,
+            AnchorResolution::Exact("mod-project".to_string())
+        );
+        assert_eq!(analysis.ranked_matches, anchors);
+    }
+
+    #[test]
+    fn natural_resolution_is_unique_or_explicitly_ambiguous() {
+        let unique = vec!["aden://module/a.rs#GraphBridge".to_string()];
+        assert_eq!(
+            resolve_anchor_from_list("graphbridge", &unique),
+            AnchorResolution::Unique {
+                anchor: unique[0].clone()
+            }
+        );
+
+        let ambiguous = vec![
+            "aden://module/b.rs#parse".to_string(),
+            "aden://module/a.rs#parse".to_string(),
+        ];
+        assert_eq!(
+            resolve_anchor_from_list("parse", &ambiguous),
+            AnchorResolution::Ambiguous {
+                candidates: vec![ambiguous[1].clone(), ambiguous[0].clone()]
+            }
+        );
+    }
+
+    #[test]
+    fn substring_matches_are_suggestions_not_resolutions() {
+        let anchors = vec!["aden://module/a.rs#parse_document".to_string()];
+        assert_eq!(
+            resolve_anchor_from_list("document", &anchors),
+            AnchorResolution::NotFound {
+                suggestions: anchors
+            }
+        );
+    }
+
+    #[test]
+    fn typos_are_bounded_deterministic_suggestions_not_resolutions() {
+        let anchors = vec![
+            "aden://module/z.rs#resolve_anchor_detail".to_string(),
+            "aden://module/b.rs#resolve_anchor_detailed".to_string(),
+            "aden://module/a.rs#resolve_anchor_detailed".to_string(),
+            "aden://module/x.rs#unrelated".to_string(),
+        ];
+        assert_eq!(
+            resolve_anchor_from_list("resovle_anchor_detailed", &anchors),
+            AnchorResolution::NotFound {
+                suggestions: vec![anchors[2].clone(), anchors[1].clone()]
+            }
+        );
+        assert_eq!(
+            resolve_anchor_from_list("prase", &["aden://module/a.rs#parse".to_string()]),
+            AnchorResolution::NotFound {
+                suggestions: vec!["aden://module/a.rs#parse".to_string()]
+            }
+        );
+        assert_eq!(
+            resolve_anchor_from_list("xy", &anchors),
+            AnchorResolution::NotFound {
+                suggestions: Vec::new()
+            }
+        );
+    }
 }

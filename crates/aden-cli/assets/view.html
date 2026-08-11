@@ -112,7 +112,6 @@
     cursor: pointer; color: #45475a; font-size: 13px; line-height: 1; padding: 2px 4px;
     border-radius: 3px; }
   #hover-card .hc-dismiss:hover { color: #f38ba8; background: rgba(243,139,168,.1); }
-  #hover-card { position: relative; }
   .hint-txt { font-size: 11px; color: #45475a; font-family: ui-monospace, monospace; user-select: all; }
 
   /* ── region legend (below hover card) ── */
@@ -972,34 +971,28 @@ function massOf(n) {
 function nodeSize(n) { return Math.min(1 + Math.sqrt(massOf(n)) * 0.55, 14); }
 function hexA(hex, a) { const m = hex.replace('#',''); return `rgba(${parseInt(m.slice(0,2),16)},${parseInt(m.slice(2,4),16)},${parseInt(m.slice(4,6),16)},${a})`; }
 // ── file / editor helpers ─────────────────────────────────────────────────────
-// fileOf: returns n.file when present, otherwise tries to parse the file path
-// from the anchor. Anchor format: aden://module/{project}/{relpath}#{symbol}
-// where {relpath} may contain '/' (e.g. src/commands/view.rs).
-// Synthesized aggregate nodes (mod-*) with no resolvable file return null.
+// `file` is a native filesystem path for display/copying (including `C:\\...`
+// on Windows). `editor_file` is a separately encoded URI path. Never feed the
+// URI form back into filesystem-oriented UI or turn a native path into a URL in
+// JavaScript: Rust emitted both representations using the host's path rules.
+function fileParts(path) { return String(path || '').split(/[\\/]/).filter(Boolean); }
+function fileName(path) { const parts = fileParts(path); return parts.length ? parts[parts.length - 1] : ''; }
+function fileTail(path, count = 2) { return fileParts(path).slice(-count).join('/'); }
 function fileOf(n) {
   if (n && n.file) return n.file;
   if (n && n.anchor) {
-    // Strip scheme, split off the fragment (#symbol), then peel {type}/{project}
     const noScheme = n.anchor.replace(/^aden:\/\//, '');
     const hashIdx = noScheme.indexOf('#');
     const path = hashIdx >= 0 ? noScheme.slice(0, hashIdx) : noScheme;
     const parts = path.split('/');
-    // parts[0] = type (module/doc/…), parts[1] = project, parts[2..] = relpath
-    if (parts.length >= 3 && parts[2]) {
-      return parts.slice(2).join('/');
-    }
+    if (parts.length >= 3 && parts[2]) return parts.slice(2).join('/');
   }
   return null;
 }
-// editorUrl: uses fileOf so the link is derivable even when n.file is absent.
-// Guards against a literal un-substituted /*EDITOR*/ placeholder (happens when
-// the user did not configure --editor and auto-detect found nothing). In that
-// case return null so the panel hides the link instead of emitting a broken href.
 function editorUrl(n) {
-  const f = fileOf(n);
-  if (!f) return null;
+  if (!n || !n.editor_file) return null;
   if (!EDITOR || EDITOR.includes('/*EDITOR*/')) return null;
-  return EDITOR.replace('{file}', f).replace('{line}', n.line || 1);
+  return EDITOR.replace('{file}', n.editor_file).replace('{line}', n.line || 1);
 }
 function openEditor(n) { const u = editorUrl(n); if (u) window.location.href = u; }
 
@@ -1068,7 +1061,7 @@ function updateHoverCard(n) {
   const typeStr = [n.kind, n.size != null ? n.size + ' symbols' : null, n.loc ? n.loc + ' loc' : n.words ? n.words + ' words' : null].filter(Boolean).join(' · ');
   document.getElementById('hc-type').textContent = typeStr;
   const filePath = fileOf(n);
-  document.getElementById('hc-file').textContent = filePath ? filePath.split('/').slice(-2).join('/') : '';
+  document.getElementById('hc-file').textContent = filePath ? fileTail(filePath) : '';
   hoverCardEl.classList.remove('idle');
   hoverCardEl.classList.add('on');
 }
@@ -1433,7 +1426,7 @@ function showPanel(n) {
     (bc ? `<div class="breadcrumb">${bc}</div>` : '') +
     (anchor ? `<div class="anchor-row"><span class="anchor-txt" title="${esc(anchor)}">${esc(anchor)}</span><span class="copy-btn" onclick="copyAnchor('${esc(anchor)}', this)">copy</span></div>` : '') +
     rows.join('') +
-    (ed ? `<div class="row"><a href="${ed}">open in editor →</a></div>` : '') +
+    (ed ? `<div class="row"><a href="${escAttr(ed)}">open in editor →</a></div>` : '') +
     (n.file ? `<div class="row hint-txt">↔ history: aden timeline ${esc(n.file)}</div>` : '') +
     (n.snippet ? `<div class="sec"><span>source</span></div><pre class="p-snip">${esc(n.snippet)}</pre>` : '') +
     pivotHtml +
@@ -1509,7 +1502,7 @@ function resultShape(k) {
 }
 
 function resultCtx(n) {
-  if (n.file) return n.file.split('/').pop();
+  if (n.file) return fileName(n.file);
   if (n.label && n.label !== shortName(n)) return n.label;
   return n.group || '';
 }
@@ -1658,7 +1651,7 @@ function showCard(n) {
   document.getElementById('sn-name').style.color = colorOf(n);
   const mass = n.loc ? `${n.loc} loc` : n.words ? `${n.words} words` : '';
   document.getElementById('sn-meta').textContent =
-    [n.group, mass, (n.file || '').split('/').pop()].filter(Boolean).join(' · ');
+    [n.group, mass, fileName(n.file)].filter(Boolean).join(' · ');
   document.getElementById('sn-code').textContent = n.snippet || '';
   snipEl.classList.add('on');
   snipEl.setAttribute('aria-hidden', 'false');

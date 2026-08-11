@@ -5,9 +5,12 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import shlex
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -18,11 +21,21 @@ SPEC.loader.exec_module(bench)
 
 
 class AgentBenchTests(unittest.TestCase):
-    def test_committed_corpus_has_twelve_valid_tasks(self) -> None:
+    def test_committed_corpus_has_fourteen_valid_tasks(self) -> None:
         corpus = bench.load_tasks(bench.DEFAULT_TASKS)
-        self.assertEqual(len(corpus["tasks"]), 12)
-        self.assertEqual(len({task["id"] for task in corpus["tasks"]}), 12)
+        self.assertEqual(len(corpus["tasks"]), 14)
+        self.assertEqual(len({task["id"] for task in corpus["tasks"]}), 14)
         self.assertGreaterEqual(len({task["repository"] for task in corpus["tasks"]}), 5)
+
+        typo_task = next(
+            task for task in corpus["tasks"] if task["id"] == "aden-typo-symbol-recovery"
+        )
+        self.assertEqual(typo_task["aden_from"], "resovle_anchor_detailed")
+        self.assertTrue(typo_task["forbidden_claims"])
+        prompt = bench.prompt_for(typo_task, "aden")
+        self.assertIn("--from resovle_anchor_detailed", prompt)
+        self.assertIn("retry the same command exactly once", prompt)
+        self.assertIn("canonical anchor substituted", prompt)
 
     def test_score_requires_facts_evidence_and_no_forbidden_claim(self) -> None:
         task = {
@@ -95,7 +108,43 @@ class AgentBenchTests(unittest.TestCase):
         self.assertTrue(bench.method_compliance("aden", graph))
         self.assertTrue(bench.method_compliance("aden", quoted_graph))
         self.assertFalse(bench.method_compliance("aden", conventional))
+        self.assertFalse(bench.method_compliance("aden", []))
         self.assertTrue(bench.method_compliance("aden", conventional, aden_expected=False))
+
+    def test_external_command_engine_uses_provider_neutral_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            adapter = root / "adapter.py"
+            adapter.write_text(
+                """import json, os
+from pathlib import Path
+prompt = Path(os.environ["ADEN_BENCH_PROMPT_FILE"]).read_text()
+answer = {
+    "answer": f"{os.environ['ADEN_BENCH_PROVIDER']}:{os.environ['ADEN_BENCH_MODEL']}:{'Question:' in prompt}",
+    "evidence": [{"path": "src/lib.rs", "line": 1, "anchor": None}],
+}
+Path(os.environ["ADEN_BENCH_ANSWER_FILE"]).write_text(json.dumps(answer))
+trajectory = [{"tool": "command_execution", "command": "aden ask --project . question"}]
+Path(os.environ["ADEN_BENCH_TRAJECTORY_FILE"]).write_text(json.dumps(trajectory))
+""",
+                encoding="utf-8",
+            )
+            args = SimpleNamespace(
+                agent_command=f"{shlex.quote(sys.executable)} {shlex.quote(str(adapter))}",
+                provider="example-provider",
+                model="example-model",
+                timeout=10,
+            )
+            outcome = bench.run_command(
+                root,
+                {"question": "Where is the entry point?", "category": "architecture"},
+                "aden",
+                args,
+            )
+        self.assertNotIn("error", outcome)
+        self.assertEqual(outcome["response"]["answer"], "example-provider:example-model:True")
+        self.assertTrue(bench.method_compliance("aden", outcome["trajectory"]))
+        self.assertEqual(outcome["trajectory"][0]["tool"], "command_execution")
 
     def test_deterministic_prompt_pins_route_and_budget(self) -> None:
         normal_prompt = bench.prompt_for(
@@ -108,9 +157,19 @@ class AgentBenchTests(unittest.TestCase):
         self.assertIn("ask --strict --budget 512", normal_prompt)
         self.assertIn("ask --strict --budget 1024", risk_prompt)
         self.assertIn("Do not choose a routing strategy", normal_prompt)
-        self.assertIn("Do not run `rg`", normal_prompt)
+        self.assertIn("Do not run `rg`, `grep`, `find`, `sed`", normal_prompt)
+        self.assertIn("retry the same command exactly once", normal_prompt)
         self.assertIn("--project .", normal_prompt)
         self.assertIn("Do not call an Aden MCP tool", normal_prompt)
+        from_prompt = bench.prompt_for(
+            {
+                "question": "Who calls it?",
+                "category": "dependency_trace",
+                "aden_from": "resolve_anchor_detailed",
+            },
+            "aden",
+        )
+        self.assertIn("--from resolve_anchor_detailed", from_prompt)
 
 
 if __name__ == "__main__":

@@ -37,40 +37,101 @@ type Graph = aden_graph::AdenGraph<aden_graph::DocumentNode, aden_graph::AdenEdg
 /// A typed node/edge slice: a flat set of anchors + the edges among them.
 type Slice = (BTreeSet<String>, BTreeSet<(String, String, String)>);
 
-/// Anchor → (absolute source file, 1-based start line, line count), for
-/// "open in editor" links and content-mass node sizing.
-type SrcMap = BTreeMap<String, (String, usize, usize)>;
-
-/// Make a (possibly relative) source path URI-ready for `vscode://file{file}` on
-/// every OS: absolute, forward slashes, leading slash (Windows `C:\x` → `/C:/x`).
-fn uri_path(root: &Path, file: &str) -> String {
-    let abs = if Path::new(file).is_absolute() {
-        file.to_string()
-    } else {
-        root.join(file).to_string_lossy().into_owned()
-    };
-    let s = abs.replace('\\', "/");
-    if s.starts_with('/') {
-        s
-    } else {
-        format!("/{s}")
-    }
+/// One source location in three deliberately separate representations.
+///
+/// `path` is the native filesystem path used by Rust file I/O and scope checks;
+/// `display` preserves that native spelling for commands shown to the user;
+/// `editor` is an RFC 3986-safe URL path for editor URI templates. Conflating
+/// these was the source of `/C:/...` being fed back into Windows filesystem APIs.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct SourceLocation {
+    path: std::path::PathBuf,
+    display: String,
+    editor: String,
+    line: usize,
+    loc: usize,
 }
 
-/// Build anchor → (URI-ready file, 1-based line) from the store's symbol spans —
-/// the same source `impact-diff` uses — for "open in editor" links. (A graph node's
-/// own `source_span` is empty for symbols; the spans live in the store.)
-fn build_src_map(root: &Path) -> SrcMap {
-    let mut m: SrcMap = BTreeMap::new();
-    for (file, spans) in super::grep::load_symbol_spans(root) {
-        let uri = uri_path(root, &file);
-        for sp in spans {
-            let loc = sp.end.saturating_sub(sp.start) + 1;
-            m.entry(sp.anchor)
-                .or_insert_with(|| (uri.clone(), sp.start, loc));
+/// Anchor → source location, for editor links, snippets, and node sizing.
+type SrcMap = BTreeMap<String, SourceLocation>;
+
+fn absolute_source_path(root: &Path, file: &str) -> std::path::PathBuf {
+    let path = Path::new(file);
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        root.join(path)
+    };
+    absolute.canonicalize().unwrap_or(absolute)
+}
+
+/// Convert Windows verbatim paths to the normal native spelling users and
+/// editors understand, while retaining the original `PathBuf` for filesystem I/O.
+fn native_display_path(path: &Path, windows_style: bool) -> String {
+    let value = path.to_string_lossy();
+    if !windows_style {
+        return value.into_owned();
+    }
+    if let Some(rest) = value.strip_prefix(r"\\?\UNC\") {
+        return format!(r"\\{rest}");
+    }
+    value.strip_prefix(r"\\?\").unwrap_or(&value).to_string()
+}
+
+/// Percent-encode an absolute native path for use inside editor URI templates.
+/// URI path separators are `/` on every platform, while the native path remains
+/// untouched elsewhere. `windows_style` is explicit so drive and UNC behavior is
+/// regression-testable on non-Windows CI.
+fn editor_path_from_native(native: &str, windows_style: bool) -> String {
+    let normalized = if windows_style {
+        native.replace('\\', "/")
+    } else {
+        native.to_string()
+    };
+    let rooted = if normalized.starts_with('/') {
+        normalized
+    } else {
+        format!("/{normalized}")
+    };
+    let mut encoded = String::with_capacity(rooted.len());
+    for byte in rooted.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~' | b'/' | b':') {
+            encoded.push(char::from(byte));
+        } else {
+            use std::fmt::Write as _;
+            write!(&mut encoded, "%{byte:02X}").expect("writing to String cannot fail");
         }
     }
-    m
+    encoded
+}
+
+fn add_source_fields(obj: &mut serde_json::Value, source: &SourceLocation, line: usize) {
+    obj["file"] = serde_json::json!(source.display);
+    obj["editor_file"] = serde_json::json!(source.editor);
+    obj["line"] = serde_json::json!(line);
+    obj["loc"] = serde_json::json!(source.loc);
+}
+
+/// Build source locations from the store's symbol spans. Filesystem operations
+/// always receive `path`; only browser/editor links receive `editor`.
+fn build_src_map(root: &Path) -> SrcMap {
+    let mut map = SrcMap::new();
+    for (file, spans) in super::grep::load_symbol_spans(root) {
+        let path = absolute_source_path(root, &file);
+        let display = native_display_path(&path, cfg!(windows));
+        let editor = editor_path_from_native(&display, cfg!(windows));
+        for span in spans {
+            let loc = span.end.saturating_sub(span.start) + 1;
+            map.entry(span.anchor).or_insert_with(|| SourceLocation {
+                path: path.clone(),
+                display: display.clone(),
+                editor: editor.clone(),
+                line: span.start,
+                loc,
+            });
+        }
+    }
+    map
 }
 
 /// Word count of a doc node's prose blocks — the prose analogue of LOC, for
@@ -98,13 +159,14 @@ const SNIPPET_MAX_CHARS: usize = 380;
 /// the working tree at export time — the snippet shows what's on disk NOW,
 /// which is exactly what the viewer's "open in editor" lands on.
 fn collect_snippets(src: &SrcMap, kept: &BTreeSet<String>) -> BTreeMap<String, String> {
-    let mut by_file: BTreeMap<&str, Vec<(&str, usize, usize)>> = BTreeMap::new();
-    for a in kept {
-        if let Some((file, start, loc)) = src.get(a) {
-            by_file
-                .entry(file.as_str())
-                .or_default()
-                .push((a.as_str(), *start, *loc));
+    let mut by_file: BTreeMap<&Path, Vec<(&str, usize, usize)>> = BTreeMap::new();
+    for anchor in kept {
+        if let Some(source) = src.get(anchor) {
+            by_file.entry(source.path.as_path()).or_default().push((
+                anchor.as_str(),
+                source.line,
+                source.loc,
+            ));
         }
     }
     let mut out: BTreeMap<String, String> = BTreeMap::new();
@@ -168,12 +230,11 @@ fn scoped_subgraph(
     scope: &str,
 ) -> Result<Graph, Box<dyn std::error::Error>> {
     let src = build_src_map(root);
-    let scope_uri = uri_path(root, scope);
-    let prefix = format!("{}/", scope_uri.trim_end_matches('/'));
+    let scope_path = absolute_source_path(root, scope);
     let allowed: HashSet<&str> = src
         .iter()
-        .filter(|(_, (file, _, _))| file.starts_with(&prefix) || *file == scope_uri)
-        .map(|(a, _)| a.as_str())
+        .filter(|(_, source)| source.path == scope_path || source.path.starts_with(&scope_path))
+        .map(|(anchor, _)| anchor.as_str())
         .collect();
     if allowed.is_empty() {
         return Err(format!(
@@ -562,15 +623,12 @@ fn render_whole_graph_json(graph: &Graph, root: &Path, cap: usize, resolution: f
             if let Some(&c) = comm_of.get(a) {
                 obj["community"] = serde_json::json!(c);
             }
-            if let Some((file, line, loc)) = src.get(a) {
-                obj["file"] = serde_json::json!(file);
-                obj["line"] = serde_json::json!(line);
-                obj["loc"] = serde_json::json!(loc);
+            if let Some(source) = src.get(a) {
+                add_source_fields(&mut obj, source, source.line);
             } else if let Some(rest) = a.strip_prefix("mod-") {
                 // Aggregate hub: no own span — aim "open in editor" at the crate entry.
-                if let Some(file) = module_entry_file(rest, &src) {
-                    obj["file"] = serde_json::json!(file);
-                    obj["line"] = serde_json::json!(1);
+                if let Some(source) = module_entry_file(rest, &src) {
+                    add_source_fields(&mut obj, source, 1);
                 }
             }
             // Prose mass: word count for doc/term nodes (no source span).
@@ -932,10 +990,8 @@ fn render_communities_view_json(
             .iter()
             .map(|m| {
                 let mut obj = serde_json::json!({ "id": local[m.as_str()], "anchor": m, "label": label(m), "community": i, "group": group_of(m) });
-                if let Some((file, line, loc)) = src.get(m) {
-                    obj["file"] = serde_json::json!(file);
-                    obj["line"] = serde_json::json!(line);
-                    obj["loc"] = serde_json::json!(loc);
+                if let Some(source) = src.get(m) {
+                    add_source_fields(&mut obj, source, source.line);
                 }
                 obj
             })
@@ -1001,22 +1057,30 @@ fn group_of(anchor: &str) -> &str {
 /// link despite having no span of its own. Prefers `src/lib.rs`, then
 /// `src/main.rs`, then any `lib.rs`/`main.rs`/`mod.rs`, else the shortest member
 /// path. Members are every indexed anchor whose group resolves to this crate.
-fn module_entry_file<'a>(crate_name: &str, src: &'a SrcMap) -> Option<&'a str> {
-    let mut files: Vec<&str> = src
+fn module_entry_file<'a>(crate_name: &str, src: &'a SrcMap) -> Option<&'a SourceLocation> {
+    let mut files: Vec<&SourceLocation> = src
         .iter()
         .filter(|(anchor, _)| group_of(anchor) == crate_name)
-        .map(|(_, (f, _, _))| f.as_str())
+        .map(|(_, source)| source)
         .collect();
-    files.sort_unstable();
-    files.dedup();
+    files.sort_unstable_by(|a, b| a.path.cmp(&b.path));
+    files.dedup_by(|a, b| a.path == b.path);
     files
         .iter()
-        .find(|f| f.ends_with("/src/lib.rs"))
-        .or_else(|| files.iter().find(|f| f.ends_with("/src/main.rs")))
-        .or_else(|| files.iter().find(|f| f.ends_with("/lib.rs")))
-        .or_else(|| files.iter().find(|f| f.ends_with("/main.rs")))
-        .or_else(|| files.iter().find(|f| f.ends_with("/mod.rs")))
-        .or_else(|| files.iter().min_by_key(|f| f.len()))
+        .find(|source| source.path.ends_with(Path::new("src").join("lib.rs")))
+        .or_else(|| {
+            files
+                .iter()
+                .find(|source| source.path.ends_with(Path::new("src").join("main.rs")))
+        })
+        .or_else(|| files.iter().find(|source| source.path.ends_with("lib.rs")))
+        .or_else(|| files.iter().find(|source| source.path.ends_with("main.rs")))
+        .or_else(|| files.iter().find(|source| source.path.ends_with("mod.rs")))
+        .or_else(|| {
+            files
+                .iter()
+                .min_by_key(|source| source.path.as_os_str().len())
+        })
         .copied()
 }
 
@@ -1372,15 +1436,12 @@ fn render_json(
                 "kind": kind,
                 "root": a == root,
             });
-            if let Some((file, line, loc)) = src.get(a) {
-                obj["file"] = serde_json::json!(file);
-                obj["line"] = serde_json::json!(line);
-                obj["loc"] = serde_json::json!(loc);
+            if let Some(source) = src.get(a) {
+                add_source_fields(&mut obj, source, source.line);
             } else if let Some(rest) = a.strip_prefix("mod-") {
                 // Aggregate hub: no own span — aim "open in editor" at the crate entry.
-                if let Some(file) = module_entry_file(rest, src) {
-                    obj["file"] = serde_json::json!(file);
-                    obj["line"] = serde_json::json!(1);
+                if let Some(source) = module_entry_file(rest, src) {
+                    add_source_fields(&mut obj, source, 1);
                 }
             }
             if (a.starts_with("aden://doc/") || a.starts_with("aden://term/"))
@@ -1603,6 +1664,70 @@ mod tests {
         // ids cross-reference the other formats; root node is flagged.
         assert_eq!(v["nodes"][0]["id"], "n0");
         assert_eq!(v["nodes"][0]["root"], true);
+    }
+
+    #[test]
+    fn editor_paths_are_encoded_without_changing_native_path_syntax() {
+        assert_eq!(
+            native_display_path(Path::new(r"\\?\C:\repo\src\lib.rs"), true),
+            r"C:\repo\src\lib.rs"
+        );
+        assert_eq!(
+            native_display_path(Path::new(r"\\?\UNC\server\share\lib.rs"), true),
+            r"\\server\share\lib.rs"
+        );
+        assert_eq!(
+            editor_path_from_native(r"C:\Users\Ada Lovelace\repo#1\src\lib.rs", true),
+            "/C:/Users/Ada%20Lovelace/repo%231/src/lib.rs"
+        );
+        assert_eq!(
+            editor_path_from_native(r"\\server\share\dir name\lib.rs", true),
+            "//server/share/dir%20name/lib.rs"
+        );
+        assert_eq!(
+            editor_path_from_native("/tmp/back\\slash/a b.rs", false),
+            "/tmp/back%5Cslash/a%20b.rs"
+        );
+    }
+
+    #[test]
+    fn viewer_json_separates_native_and_editor_paths() {
+        let source = SourceLocation {
+            path: std::path::PathBuf::from(r"C:\repo dir\src\lib.rs"),
+            display: r"C:\repo dir\src\lib.rs".to_string(),
+            editor: "/C:/repo%20dir/src/lib.rs".to_string(),
+            line: 7,
+            loc: 3,
+        };
+        let mut value = serde_json::json!({});
+        add_source_fields(&mut value, &source, source.line);
+        assert_eq!(value["file"], r"C:\repo dir\src\lib.rs");
+        assert_eq!(value["editor_file"], "/C:/repo%20dir/src/lib.rs");
+        assert_eq!(value["line"], 7);
+        assert_eq!(value["loc"], 3);
+    }
+
+    #[test]
+    fn snippet_reads_use_native_filesystem_paths() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let file = temp.path().join("source with space.rs");
+        std::fs::write(&file, "fn native_path() {}\n").expect("write fixture");
+        let anchor = "aden://module/test/source.rs#native_path".to_string();
+        let source = SourceLocation {
+            path: file.clone(),
+            display: file.to_string_lossy().into_owned(),
+            editor: editor_path_from_native(&file.to_string_lossy(), cfg!(windows)),
+            line: 1,
+            loc: 1,
+        };
+        let snippets = collect_snippets(
+            &SrcMap::from([(anchor.clone(), source)]),
+            &BTreeSet::from([anchor.clone()]),
+        );
+        assert_eq!(
+            snippets.get(&anchor).map(String::as_str),
+            Some("fn native_path() {}")
+        );
     }
 
     #[test]

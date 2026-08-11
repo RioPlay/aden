@@ -20,30 +20,38 @@ Complete reference for every aden command, flag, and option.
 |-v, --verbose |Verbose output |`aden --verbose ask "..."`
 |-p, --project <PATH> |Aden project path (overrides CWD for this run) |`aden -p ../repo status`
 |-h, --help |Show help |`aden --help`
-|-V, --version |Print version |`aden --version`
+|-V, --version |Print release, source revision/state, enabled features, graph-format identities, license, and source offer |`aden --version`
 |===
+
+`aden --help` intentionally shows only the navigation/impact product. Existing
+methodology, governance, and generic wrapper commands remain callable but do not
+compete for attention. Run `aden commands` for the categorized compatibility
+catalog; prefer each project's native test, lint, audit, and CI tools.
 
 == Core Commands
 
 === init
 
-Scaffold `.agent/` templates in a target repository.
+Initialize Aden's per-user index without adding files to the project. Normal
+read commands already auto-index, so `init` is optional.
 
 [source,bash]
 ----
-aden init [DIR]
-aden init . --with-secure-refs
+aden init [DIR]                  # zero project-tree footprint
+aden init [DIR] --agents-md      # explicitly add only AGENTS.md guidance
+aden init [DIR] --templates      # opt into legacy governance/templates
 ----
 
-Creates:
-- `.agent/` — templates, onboarding docs, constraints, session log
-- `.adenignore` — security-first defaults (skips `*.env`, `*.key`, `target/`)
+The default creates no `.aden/`, `.agent/`, `.adenignore`, or other project
+file. Less is the product default; templates and shared governance appear only
+when explicitly requested.
 
 |===
 |Flag |Description
 
-|--with-secure-refs |Scaffolds CWE Top 25 / OWASP SCP reference stubs under `.agent/secure-coding-refs/`
-|--agents-md |Also seed a short, append-only aden usage block into the repo-root `AGENTS.md` (ADR-004). Idempotent; only ever touches its own marked block
+|--templates |Opt into the legacy `.agent/`, `.aden/` governance, hooks, and `.adenignore` scaffolding
+|--with-secure-refs |With `--templates`, add CWE Top 25 / OWASP SCP reference stubs under `.agent/secure-coding-refs/`
+|--agents-md |Explicitly seed a short, append-only aden usage block into repo-root `AGENTS.md` (ADR-004)
 |===
 
 === agents-md
@@ -61,18 +69,17 @@ aden agents-md [DIR]
 
 === new
 
-Create a new project from a language template with Aden scaffolding.
+Create a minimal project from a language template and build its per-user Aden
+index. No Aden-specific files or directories are added to the new project.
 
 [source,bash]
 ----
 aden new NAME --lang rust|go|js [DIR]
 ----
 
-Scaffolds:
-- `Cargo.toml` and a starter `src/main.rs` (for the Rust template)
-- `.agent/` with templates and constraints
-- `.adenignore` with security defaults
-- `.aden/docs/README.adoc` with project identity and quick-start steps
+Creates only the selected language's standard starter files (for example,
+`Cargo.toml` and `src/main.rs` for Rust). Add guidance or templates later with
+`aden agents-md` or `aden init --templates` if wanted.
 
 === gen
 
@@ -100,7 +107,7 @@ aden gen . --quiet
 |===
 |Flag |Description
 
-|--auto |Auto-discover source files for the whole project (default when PATH is a directory)
+|--auto |Compatibility flag; directory paths are auto-discovered by default
 |--quiet |Suppress per-file output (summary only)
 |--propose |Dry-run: reconcile and write conflict proposals without changing the store
 |--force-regen |Bypass the merge gate and overwrite the store (may clobber `[human]`/`[agent]` overlay collisions)
@@ -224,17 +231,20 @@ Supports:
 - Go: `func Test*`
 - TypeScript: `describe/it/test`, `@Test`
 - Java: `@Test`, `@ParameterizedTest`
-- ~113 further languages via the generic tree-sitter extractor (305+ grammars bundled; add entries to `ext_to_language_pack_id` in `router.rs` to expose more)
+- ~113 further languages via the generic tree-sitter extractor; the default binary bundles the deep-language set plus common config/web/data grammars, while `TSLP_LANGUAGES=all` opts into all 305 grammars (add entries to `ext_to_language_pack_id` in `router.rs` to expose more)
 
 == Graph Commands
 
 === asm
 
-Assemble a context prompt from the knowledge graph.
+Assemble a context prompt from a unique natural symbol name, module alias, or canonical anchor. Exact anchors take priority; ambiguous natural names return sorted candidates, and substring/fuzzy suggestions are never selected automatically.
 
 [source,bash]
 ----
-# Basic usage
+# Basic usage with a unique natural symbol
+aden asm --from resolve_anchor_detailed
+
+# Module aliases and canonical aden:// anchors also work
 aden asm --from mod-aden-core
 
 # With depth and budget
@@ -274,7 +284,7 @@ aden asm --from mod-aden-core --set-attr mode=production
 |===
 |Flag |Description |Default
 
-|--from |Starting anchor (required) |—
+|--from |Starting natural symbol name, module alias, or canonical anchor (required) |—
 |--depth |BFS traversal depth |2
 |--budget |Token budget (bytes/4 heuristic) |8192
 |--edge-types |Comma-separated edge types |All
@@ -292,18 +302,18 @@ aden asm --from mod-aden-core --set-attr mode=production
 
 === query
 
-Query the knowledge graph and emit JSON.
+Query the knowledge graph from a unique natural symbol name, module alias, or canonical anchor and emit JSON. Ambiguous names return deterministic candidates rather than selecting one.
 
 [source,bash]
 ----
 # Reachable nodes
-aden query --from mod-aden-core --depth 2
+aden query --from resolve_anchor_detailed --depth 2
 
-# Backlinks (everything referencing this anchor)
-aden query --backlinks mod-aden-core
+# Backlinks (everything referencing this symbol)
+aden query --backlinks resolve_anchor_detailed
 
 # Impact analysis (transitive closure)
-aden query --impact mod-aden-core
+aden query --impact resolve_anchor_detailed
 
 # Human table output
 aden query --human --from mod-aden-core
@@ -312,10 +322,10 @@ aden query --human --from mod-aden-core
 |===
 |Flag |Description
 
-|--from |Starting anchor
+|--from |Starting natural symbol name, module alias, or canonical anchor
 |--depth |BFS traversal depth
-|--backlinks |Find all documents referencing this anchor
-|--impact |Find transitive closure over dependency edges
+|--backlinks |Find all documents referencing this symbol or anchor
+|--impact |Find transitive closure from this symbol or anchor over dependency edges
 |--edge-type |Restrict traversal to a single edge type (e.g. `Uses`, `Calls`)
 |--format |Output format: `json` (default), `table`
 |===
@@ -342,14 +352,17 @@ aden ask "How does authentication work?"
 # Clean terminal prose instead of the default JSON envelope
 aden ask --human "How does authentication work?"
 
-# Pin starting anchor
-aden ask "How does authentication work?" --from mod-auth
+# Pin a unique natural symbol, module alias, or exact anchor
+aden ask "How does resolution work?" --from resolve_anchor_detailed
 
-# --budget is the BASE the relevance boost scales from (not a hard cap)
-aden ask "What breaks if I rename this?" --budget 8192
+# Context stays within this budget by default
+aden ask "What breaks if I rename this?" --budget 4096
 
-# Exact budget, no boost — deterministic size for scripts/agents
-aden ask "List the public API" --budget 4096 --strict
+# More context is explicit, never automatic (may grow up to 32k)
+aden ask "How does request routing work?" --expand
+
+# Strict also caps the complete serialized response
+aden ask "What validates SessionToken?" --budget 4096 --strict
 
 # Override the auto-classified intent / depth / edge types
 aden ask "Explain the parser" --intent impact
@@ -364,18 +377,39 @@ aden ask "How does the parser work?" --explain
 ----
 
 Without `--human`, `ask` returns a versioned JSON object containing the selected
-anchor, source file, intent, effective budget, supporting anchors, and assembled
-context. This is the stable default for agents and scripts. `--human` emits only
-the clean assembled context (plus requested `--explain` details). `--strict`
-caps the complete serialized response in either mode; at very small JSON budgets,
-optional routing metadata is omitted before evidence is truncated.
+anchor, source file, intent, effective budget, supporting anchors, assembled
+context, `question_fit`, and `routing_confidence`. This is the stable default for
+agents and scripts. Definition/location questions such as `Where is Flask
+defined?` prefer an exact production-symbol match and a depth-zero definition
+response; same-named production alternatives remain ambiguous, while test
+fixtures do not displace the production definition. `--human` emits only clean context or actionable
+narrowing guidance. `--strict` caps the complete serialized response in either mode; at
+very small JSON budgets, optional routing metadata is omitted before evidence is
+truncated.
+
+[IMPORTANT]
+====
+`ask` is a one-neighborhood context router. It accepts bounded questions about a
+named symbol, file, subsystem, or relationship. Without `--from`, it fails small
+with `result_state: "needs_narrowing"` for recognizable repository-wide audits,
+exhaustive lists, rankings, and remaining-work questions rather than selecting
+one misleading anchor. An explicit `--from` uses the same deterministic resolver
+as `asm` and `query`: unique natural names work directly, while ambiguous names
+or typos return candidates/suggestions and never fall back to the project root.
+This guard is deterministic, not a proof that every poorly scoped wording will
+be detected. For consequential work, resolve symbols
+with `grep`/`locate`, inspect `query` backlinks or impact, and use `asm` with
+explicit traversal controls. A pinned `--from` makes the retrieval bounded and
+therefore bypasses the question-shape guard.
+====
 
 |===
 |Flag |Description |Default
 
-|--from |Pin starting anchor |—
-|--budget |Base budget in bytes (boosted by relevance unless --strict) |4096
-|--strict |Use --budget as an exact cap; no boost |false
+|--from |Pin a unique natural symbol, module alias, or exact anchor |—
+|--budget |Context token ceiling |4096
+|--expand |Opt into relevance-based expansion beyond `--budget` (up to 32k) |false
+|--strict |Cap the complete serialized response at `--budget`; overrides `--expand` |false
 |--intent |Override intent classification (`debug`, `usage`, `explain`, `refactor`, `impact`, `list`, `compare`, `count`, `general`) |auto
 |--depth |Override BFS traversal depth |intent-driven
 |--edge-types |Override edge types (comma-separated) |intent-driven
@@ -398,10 +432,10 @@ Internally:
 4. BFS traversal from the matched anchor(s), ordering the frontier by query
    relevance (relevant neighbors first) and pruning near-duplicate neighbors via
    MMR (token-Jaccard, τ=0.8) so a tight budget is spent on distinct context
-5. Token budgeting with a ~4-bytes-per-token heuristic. Unlike `asm` (a hard
-   cap), `ask` *boosts* the budget by match relevance by default (up to ~4x,
-   capped at 32k), treating `--budget` as a base; pass `--strict` to use
-   `--budget` as an exact cap instead.
+5. Token budgeting with a ~4-bytes-per-token heuristic. `ask` keeps context at
+   `--budget` (default 4096). `--expand` explicitly opts into a relevance-based
+   increase of up to ~4x, capped at 32k. `--strict` instead caps the complete
+   serialized response, including receipts and routing metadata.
 6. Assemble context with AsciiDoc markup stripped
 
 |===
@@ -542,9 +576,16 @@ array — `{total, returned, truncated, matches: [{file, line, symbol, anchor,
 text}]}` — so a program reads the total and truncation state as data instead of
 the human "... and N more" footer.
 
+[IMPORTANT]
+====
+`grep` reads raw working-tree text. It is not secret-redacted; use it only when
+those file contents are safe to expose to the terminal or agent transport.
+====
+
 === locate
 
-Find symbol definitions or call sites.
+Find symbol definitions or call sites. Results may include raw source snippets;
+`locate` does not redact secrets from working-tree content.
 
 [source,bash]
 ----
@@ -557,7 +598,7 @@ aden locate --caller-of assemble
 # With context
 aden locate --symbol assemble --show-context 5
 
-# JSON output (locate ignores the global -j; use --format json)
+# JSON output is the default; -j and --format json remain compatible
 aden locate --symbol assemble --format json
 
 # Limit results
@@ -573,6 +614,14 @@ aden locate --symbol Error --limit 10
 |--show-context |Include N lines of context |—
 |--limit |Max results |50
 |===
+
+JSON output includes `{mode, match_kind, total, returned, truncated, items}`.
+Symbol lookups also include `resolution` with an exact, unique, ambiguous, or
+not-found state plus canonical candidates or suggestions. Suggestions include
+bounded typo recovery and are never selected automatically. `match_kind`
+distinguishes definitive or ambiguous definitions, symbol suggestions, full-text
+fallback, call edges, and a missing caller target. The `items` field remains stable for existing consumers while
+totals make result limits explicit.
 
 === communities
 
@@ -865,7 +914,7 @@ Aden is store-first: contracts live in the per-user project store (see
 - `MissingContract` is reported as *advisory*: rather than materializing a
   hand-written stub (which has no recorded `source_hash` and would immediately
   re-flag as `StaleHash` and self-drift), the proposal points at the source file
-  and emits the regeneration command (`aden gen <src> --auto .`) to populate the
+  and emits the regeneration command (`aden gen <src>`) to populate the
   store-resident contract.
 - `aden heal --apply <id>` for a `MergeReconcile` proposal re-runs the merge
   engine and writes the result to the store on a clean merge; conflicting
@@ -890,9 +939,9 @@ aden doctor --verbose
 Checks:
 - Git availability
 - Rust toolchain (rustc, cargo)
-- Aden CLI in PATH
+- `aden` and `aden-mcp` in PATH, including exact version parity (a mismatch requires reinstalling the pair and restarting the AI client)
 - `.agent/` directory present
-- `.adenignore` present
+- built-in exclusions active (`.adenignore` is optional)
 - Knowledge graph health score
 
 === ready
@@ -1068,6 +1117,7 @@ Model Context Protocol integration.
 aden mcp install --all
 
 # Install for specific platform
+aden mcp install --platform amp
 aden mcp install --platform opencode
 aden mcp install --platform claude
 aden mcp install --platform cursor
@@ -1085,9 +1135,12 @@ aden mcp serve --port 3030
 ----
 
 Each platform reads MCP servers from its own config file and schema. `aden mcp
-install` writes the project-local file when one applies, falling back to the
-user-global path, and merges the named server entry into any existing config without
-disturbing other servers.
+install` uses the requested `--scope`, defaulting to one `user`-global server
+for every platform. At runtime that server auto-detects the active workspace, so
+it works across folders without a separate registration per repository. Use
+`--scope project` only when you deliberately want a repository-local entry. The
+installer merges the named server entry into existing configuration without
+disturbing other servers. Use `--dry-run` to inspect the change before opting in.
 
 Claude Code defaults to `user` scope, which registers one global server named
 `aden` via `claude mcp add -s user`. Running that command again from a different
@@ -1095,14 +1148,14 @@ folder does not create another folder-bound server. For one Aden MCP server per
 repository, use `aden mcp install --platform claude --scope project` from each
 repository, or pass `--project <PATH>` explicitly.
 
-For local agent orchestration, prefer presets over one broad MCP entry. For
-example, a Codex project can keep a small exploration profile and a broader
-verification profile in the same `.codex/config.toml`:
+For agent orchestration, prefer presets over one broad MCP entry. A global
+Codex installation can keep a small exploration profile and a broader
+verification profile across every workspace in `~/.codex/config.toml`:
 
 [source,bash]
 ----
-aden mcp install --platform codex --scope project --preset explore
-aden mcp install --platform codex --scope project --preset verify
+aden mcp install --platform codex --preset explore
+aden mcp install --platform codex --preset verify
 ----
 
 `install`/`uninstall` flags:
@@ -1110,13 +1163,13 @@ aden mcp install --platform codex --scope project --preset verify
 |===
 |Flag |Description
 
-|--platform <PLATFORM> |Target one platform: `opencode`, `claude`, `cursor`, `codex`, `zed`, `windsurf`
+|--platform <PLATFORM> |Target one platform: `amp`, `opencode`, `claude`, `cursor`, `codex`, `zed`, `windsurf`
 |--all |Apply to all platforms, not just detected ones
-|--scope <SCOPE> |`user` (global) or `project` (local). Default: `user` for Claude Code, `project` otherwise
+|--scope <SCOPE> |`user` (global) or `project` (local). Default: `user` for every platform; runtime workspace selection follows MCP Roots/host environment
 |--preset <PRESET> |Workflow preset: `explore` (`aden-explore`, essential), `verify` (`aden-verify`, standard), or `admin` (`aden-admin`, full)
 |--name <NAME> |Override the MCP server entry name to install, list, or uninstall. Default: `aden`
 |--binary <PATH> |Path to the `aden-mcp` binary to register
-|--project <PATH> |Project directory the server should serve
+|--project <PATH> |Project used for local configuration during installation; runtime workspace selection follows MCP Roots/host workspace environment
 |--dry-run |Show what would change without writing files
 |--surface <LEVEL> |Override the preset/default tool surface: `essential`, `standard`, or `full` |essential
 |===
@@ -1124,6 +1177,7 @@ aden mcp install --platform codex --scope project --preset verify
 |===
 |Platform |Config Path |Format
 
+|amp |`.amp/settings.json` or `~/.config/amp/settings.json` |JSON, `amp.mcpServers` key; project scope may require Amp approval
 |opencode |`.opencode/opencode.json` or `~/.config/opencode/opencode.json` |JSON, `mcp` key (`type: local`)
 |claude |`.mcp.json` (project-scoped) |JSON, `mcpServers` key
 |cursor |`.cursor/mcp.json` or `~/.cursor/mcp.json` |JSON, `mcpServers` key
@@ -1365,8 +1419,8 @@ These commands default to formats optimized for AI agents consuming context:
 |===
 |Command |Default Format |What It Means
 
-|`aden asm` |`--format llm` |Stripped prose — no `[[anchors]]`, no `|===` tables, no `:key: value` lines. Every token carries signal.
-|`aden ask` |Uses `asm` internally |Same stripped prose default. No `--format` flag needed.
+|`aden asm` |`--format json` |Versioned bounded context plus a freshness receipt; use `--human` or `--format llm` for direct prose.
+|`aden ask` |JSON |Question fit, routing confidence, bounded context, and freshness proof.
 |`aden query` |`--format json` |Structured JSON for programmatic consumption.
 |===
 
@@ -1376,6 +1430,41 @@ To get raw AsciiDoc from these commands (e.g. for an IDE renderer), opt in expli
 ----
 aden asm --from mod-aden-core --format aden
 aden query --from mod-aden-core --format table
+----
+
+=== tree
+
+Render a compact, index-aware project outline. It uses the same source-discovery
+rules as `gen`, so build output, vendored dependencies, and optional ignore
+paths are omitted. Use `--symbols` for a token-lean code map: exact
+copy/pasteable symbol names and affected line ranges grouped by source file,
+without source bodies or prose-document headings. Normal symbol output is
+bounded to 4,096 symbols and 96 KiB. A truncated JSON result reports total and
+returned counts plus a recovery action; rerun on a project-relative subtree or
+use global `--unlimited` explicitly. The default JSON wraps the outline in one
+string so it does not repeat field names per symbol. Use `--depth` for the
+graphical folder view and `--symbol-depth` for nested definitions there.
+
+[source,bash]
+----
+aden tree --symbols .             # bounded LLM/codebase summary
+aden tree --symbols crates/api    # scope a large repository
+aden --unlimited tree --symbols . # explicitly request the complete outline
+aden tree --human --symbols .     # same outline without JSON receipt
+aden tree --human . --depth 2     # graphical folder view
+aden tree --human . --depth 3 --symbol-depth 2
+----
+
+[source,text]
+----
+# 3 code files; 7 symbols
+src/lib.rs:
+4-18 run
+20-31 parse_config
+src/main.rs:
+3-9 main
+scripts/release.py:
+7-22 publish
 ----
 
 === Human-Facing Commands

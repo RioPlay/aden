@@ -25,12 +25,12 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 /// Poll interval while waiting for a contended lock.
 const POLL: Duration = Duration::from_millis(50);
 
-/// A lockfile older than this is presumed stale (its holder crashed) on
-/// platforms without a process-liveness check. Generous so a long but healthy
-/// `gen` is never reclaimed out from under itself.
+/// A lockfile older than this is presumed stale on platforms without a
+/// process-liveness check. On Linux, a live holder is never reclaimed solely
+/// because it is old.
 pub const STALE_TTL: Duration = Duration::from_secs(15 * 60);
 
-/// Identity recorded in a held lockfile (`pid` on line 1, unix secs on line 2).
+/// Holder identity recorded in a lockfile (`pid` on line 1, unix secs on line 2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LockHolder {
     pub pid: u32,
@@ -57,19 +57,19 @@ pub fn describe_holder(holder: LockHolder) -> String {
 #[derive(Debug)]
 pub struct FileLock {
     path: PathBuf,
+    token: String,
 }
 
 impl FileLock {
     /// Acquire the lock at `path`, waiting up to `timeout` for a current holder
-    /// to release it. Reclaims a stale lock (dead holder, or older than
-    /// [`STALE_TTL`]). Returns [`io::ErrorKind::WouldBlock`] if a live holder
-    /// keeps the lock for the whole `timeout`.
+    /// to release it. Reclaims a dead holder on Linux and a lock older than
+    /// [`STALE_TTL`] only where process liveness is unavailable. Returns
+    /// [`io::ErrorKind::WouldBlock`] if a live holder keeps the lock for the
+    /// whole `timeout`.
     ///
-    /// The parent directory must already exist. The stale-reclaim path has a
-    /// small inherent TOCTOU window (a contender can, in the rare crash-recovery
-    /// case, remove a lockfile a third party just recreated); the TTL is kept
-    /// generous to make false-stale reclaim during a healthy write effectively
-    /// impossible.
+    /// The parent directory must already exist. Each guard retains an ownership
+    /// token and removes the lockfile only when that token still matches, so a
+    /// delayed drop cannot release a replacement holder's lock.
     pub fn acquire_timeout(path: impl AsRef<Path>, timeout: Duration) -> io::Result<Self> {
         Self::acquire_timeout_inner(path, timeout, false)
     }
@@ -94,7 +94,7 @@ impl FileLock {
 
         loop {
             match create_exclusive(&path) {
-                Ok(()) => return Ok(FileLock { path }),
+                Ok(token) => return Ok(FileLock { path, token }),
                 Err(e)
                     if e.kind() == io::ErrorKind::AlreadyExists
                         || e.kind() == io::ErrorKind::PermissionDenied =>
@@ -143,15 +143,18 @@ impl FileLock {
 ///
 /// The identity is written to a unique temp file and then `hard_link`ed into
 /// place: `link(2)` fails if the target exists, so creation is atomic AND the
-/// lockfile is never visible without its PID/timestamp. A plain `create_new`
-/// would expose an empty file between create and write, which a contender would
-/// misread as stale and reclaim — letting two writers in at once.
-fn create_exclusive(path: &Path) -> io::Result<()> {
+/// lockfile is never visible without its holder identity and ownership token.
+/// A plain `create_new` would expose an empty file between create and write,
+/// which a contender would misread as stale and reclaim — letting two writers
+/// in at once.
+fn create_exclusive(path: &Path) -> io::Result<String> {
     let tmp = unique_temp(path);
+    let token = unique_token();
     {
         let mut f = OpenOptions::new().write(true).create_new(true).open(&tmp)?;
         writeln!(f, "{}", std::process::id())?;
-        write!(f, "{}", now_secs())?;
+        writeln!(f, "{}", now_secs())?;
+        write!(f, "{token}")?;
         f.sync_all()?;
     }
     let link_res = fs::hard_link(&tmp, path);
@@ -159,7 +162,7 @@ fn create_exclusive(path: &Path) -> io::Result<()> {
     // either way (on success the link keeps the inode; on failure it is garbage).
     let _ = fs::remove_file(&tmp);
     match link_res {
-        Ok(()) => Ok(()),
+        Ok(()) => Ok(token),
         Err(e) if path.exists() => {
             // Normalize to AlreadyExists on any link failure *if* the target now
             // exists. This is required for Windows, where hard_link to an existing
@@ -179,18 +182,32 @@ fn create_exclusive(path: &Path) -> io::Result<()> {
 /// monotonic counter keeps it unique across threads and calls without needing a
 /// randomness dependency.
 fn unique_temp(path: &Path) -> PathBuf {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let n = next_unique_counter();
     let suffix = format!(".tmp.{}.{}", std::process::id(), n);
     let mut name = path.file_name().unwrap_or_default().to_os_string();
     name.push(suffix);
     path.with_file_name(name)
 }
 
+fn unique_token() -> String {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    format!("{}-{nanos}-{}", std::process::id(), next_unique_counter())
+}
+
+fn next_unique_counter() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    COUNTER.fetch_add(1, Ordering::Relaxed)
+}
+
 impl Drop for FileLock {
     fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
+        if lock_token(&self.path).as_deref() == Some(self.token.as_str()) {
+            let _ = fs::remove_file(&self.path);
+        }
     }
 }
 
@@ -202,9 +219,10 @@ fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
-/// If the lockfile at `path` is stale (holder dead or past [`STALE_TTL`]), remove
-/// it and return `Ok(true)`. A lockfile that vanished underneath us (the holder
-/// released it) also returns `Ok(true)`.
+/// If the lockfile at `path` is stale (dead holder on Linux, or past
+/// [`STALE_TTL`] where liveness is unavailable), remove it and return `Ok(true)`.
+/// A lockfile that vanished underneath us (the holder released it) also returns
+/// `Ok(true)`.
 fn read_lock_body(path: &Path) -> Option<String> {
     let mut buf = String::new();
     File::open(path).ok()?.read_to_string(&mut buf).ok()?;
@@ -218,6 +236,10 @@ fn parse_holder(buf: &str) -> Option<LockHolder> {
     Some(LockHolder { pid, acquired_secs })
 }
 
+fn lock_token(path: &Path) -> Option<String> {
+    read_lock_body(path)?.lines().nth(2).map(str::to_owned)
+}
+
 fn reclaim_if_stale(path: &Path) -> io::Result<bool> {
     let buf = match read_lock_body(path) {
         Some(b) => b,
@@ -228,12 +250,12 @@ fn reclaim_if_stale(path: &Path) -> io::Result<bool> {
         }
     };
 
-    let holder = parse_holder(&buf);
-    let dead = holder.is_none_or(|h| !process_alive(h.pid));
-    let expired =
-        holder.is_none_or(|h| now_secs().saturating_sub(h.acquired_secs) > STALE_TTL.as_secs());
+    let stale = match parse_holder(&buf) {
+        None => true,
+        Some(holder) => holder_is_stale(holder),
+    };
 
-    if dead || expired {
+    if stale {
         match fs::remove_file(path) {
             Ok(()) => Ok(true),
             Err(e)
@@ -251,17 +273,15 @@ fn reclaim_if_stale(path: &Path) -> io::Result<bool> {
     }
 }
 
-/// Whether a process with `pid` is currently alive.
-#[cfg(target_os = "linux")]
-fn process_alive(pid: u32) -> bool {
-    Path::new(&format!("/proc/{pid}")).exists()
-}
-
-/// Without a dependency there is no portable liveness probe, so off Linux a lock
-/// is only ever reclaimed via the [`STALE_TTL`] timeout.
-#[cfg(not(target_os = "linux"))]
-fn process_alive(_pid: u32) -> bool {
-    true
+fn holder_is_stale(holder: LockHolder) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        !Path::new(&format!("/proc/{}", holder.pid)).exists()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        now_secs().saturating_sub(holder.acquired_secs) > STALE_TTL.as_secs()
+    }
 }
 
 #[cfg(test)]
@@ -299,20 +319,64 @@ mod tests {
     fn drop_releases_the_lock() {
         let path = lock_path("release");
         {
-            let _g = FileLock::acquire_timeout(&path, Duration::from_secs(5)).unwrap();
+            let g = FileLock::acquire_timeout(&path, Duration::from_secs(5)).unwrap();
+            // Verify the lock file exists while held
+            assert!(path.exists(), "lock file must exist while held");
+            drop(g);
         }
-        // After the guard drops, a fresh acquire succeeds immediately.
-        let _g2 = FileLock::acquire_timeout(&path, Duration::from_millis(100)).unwrap();
+        // After the guard drops, the lock file may remain (stale) but the
+        // exclusive hold is released: a fresh acquire succeeds immediately.
+        let g2 = FileLock::acquire_timeout(&path, Duration::from_millis(100))
+            .expect("lock must be acquirable after guard drops");
+        // Clean up
+        drop(g2);
+        let _ = fs::remove_file(&path);
     }
 
     #[test]
-    fn stale_lock_is_reclaimed_by_ttl() {
+    fn drop_does_not_release_a_replacement_lock() {
+        let path = lock_path("replacement");
+        let original = FileLock::acquire_timeout(&path, Duration::from_secs(5)).unwrap();
+        fs::remove_file(&path).unwrap();
+        fs::write(
+            &path,
+            format!("{}\n{}\nreplacement", std::process::id(), now_secs()),
+        )
+        .unwrap();
+        drop(original);
+        assert!(
+            path.exists(),
+            "original guard must not remove replacement lock"
+        );
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn stale_lock_is_reclaimed() {
         let path = lock_path("stale");
-        // A lockfile from a plausibly-live PID but an ancient timestamp.
-        fs::write(&path, format!("{}\n0", std::process::id())).unwrap();
-        // Should be reclaimed via the TTL (timestamp 0 is far past STALE_TTL).
-        let _g = FileLock::acquire_timeout(&path, Duration::from_millis(200))
-            .expect("ancient lock must be reclaimed");
+        // PID 0 is dead on Linux; off Linux the ancient timestamp exceeds TTL.
+        fs::write(&path, "0\n0\nexpired").unwrap();
+        assert!(path.exists(), "stale lock file must exist before reclaim");
+        let g = FileLock::acquire_timeout(&path, Duration::from_millis(200))
+            .expect("stale lock must be reclaimed");
+        // After reclaim, the lock file is re-written with our PID and
+        // the acquired guard must be functional (can't be re-acquired).
+        let err = FileLock::acquire_timeout(&path, Duration::from_millis(100))
+            .expect_err("reclaimed lock must block second acquire");
+        assert_eq!(err.kind(), io::ErrorKind::WouldBlock);
+        drop(g);
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn aged_live_holder_is_not_reclaimed() {
+        let path = lock_path("live-aged");
+        fs::write(&path, format!("{}\n0\nlive", std::process::id())).unwrap();
+        let err = FileLock::acquire_timeout(&path, Duration::from_millis(100))
+            .expect_err("a live holder must not be reclaimed solely by age");
+        assert_eq!(err.kind(), io::ErrorKind::WouldBlock);
+        fs::remove_file(path).unwrap();
     }
 
     #[test]
@@ -324,10 +388,18 @@ mod tests {
         let acquired = FileLock::acquire_timeout(&path, Duration::from_millis(200));
         if cfg!(target_os = "linux") {
             assert!(acquired.is_ok(), "dead holder must be reclaimed on Linux");
+            // After reclaim the lock must block a second acquire
+            let err = FileLock::acquire_timeout(&path, Duration::from_millis(100))
+                .expect_err("reclaimed lock must block");
+            assert_eq!(err.kind(), io::ErrorKind::WouldBlock);
         } else {
             // Off Linux, liveness is unknown; the TTL governs instead.
-            let _ = acquired;
+            // At minimum verify the acquire doesn't panic.
+            if let Ok(g) = acquired {
+                drop(g);
+            }
         }
+        let _ = fs::remove_file(&path);
     }
 
     #[test]

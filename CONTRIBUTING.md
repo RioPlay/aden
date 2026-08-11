@@ -14,7 +14,7 @@ This line attests that you have the right to submit the code under the AGPL lice
 
 ## Copyright and Contributor License Agreement
 
-The Project's principal copyright holder is RioPlay <rioplay@rioplay.dev>; contributors retain copyright in their own contributions, licensed to the Maintainer under the CLA below.
+The Project's principal copyright holder and Maintainer is RioPlay <rioplay@rioplay.dev>; contributors retain copyright in their own contributions, licensed to the Maintainer under the CLA below.
 
 All contributions are made under the terms of the [Contributor License Agreement (CLA)](CLA.md). By contributing, you agree to the CLA, which grants the Maintainer a broad license to your contributions — including the right to relicense them under commercial terms — while you retain ownership of your work. In return, the CLA commits the Maintainer to keeping every contribution, as incorporated into a published open release of the Project, publicly available under the AGPL or another FSF/OSI-recognized open source license (CLA Section 5).
 
@@ -52,11 +52,9 @@ applicable validation before merge:
 
 The BDFL may approve and merge protected changes after documenting the affected
 contract, validation, and recovery or rollback path in the pull request or
-issue. If an independent maintainer is formally recorded in
-[MAINTAINERS.md](MAINTAINERS.md), that maintainer must review protected changes
-they did not author. Until then, independent review is encouraged but does not
-block a sole-maintainer release; an AI agent or tool acting on the BDFL's
-direction is not an independent reviewer.
+issue. The BDFL is the sole approval authority. Independent review is optional
+and advisory; it never blocks a sole-maintainer release. An AI agent or tool
+acting on the BDFL's direction is not an independent reviewer.
 
 When a change affects a public contract, migration, or security boundary, state
 in the pull request:
@@ -82,7 +80,7 @@ does not run `aden heal`.
 
 ### Sample Pre-Commit Hooks (Recommended)
 
-Run `aden init` to scaffold sample git hooks under `.aden/hooks/`. These are
+Run `aden init --templates` to explicitly scaffold sample git hooks under `.aden/hooks/`. These are
 templates: every command in them is commented out, so you must uncomment and
 adapt the lines that fit your project before they do anything. Install them by
 copying into `.git/hooks/` and making them executable:
@@ -128,14 +126,17 @@ cargo clippy --workspace
 Aden parses source via `tree-sitter-language-pack`, which by default *downloads*
 grammars at runtime. That would make `aden gen` fail to parse first-class
 languages on any offline / air-gapped / locked-down CI box. To avoid that,
-`.cargo/config.toml` pins `TSLP_LANGUAGES`, which compiles those grammars
-*statically into the binary* at build time (sources are fetched once during
-`cargo build`, which has network):
+`.cargo/config.toml` pins both `TSLP_LANGUAGES` and `TSLP_LINK_MODE=static`,
+which compiles those grammars *into the binary* at build time (sources are
+fetched once during `cargo build`, which has network). The link mode is required:
+the language pack otherwise emits platform-specific shared libraries under
+Cargo's temporary build directory:
 
 ```toml
 # .cargo/config.toml
 [env]
 TSLP_LANGUAGES = "rust,python,go,typescript,tsx,javascript,c,...,swift"
+TSLP_LINK_MODE = "static"
 ```
 
 - Editing that list changes which languages parse offline. The deep-resolver

@@ -2,12 +2,13 @@
 
 ## Supported Versions
 
-aden is pre-1.0. Security fixes are applied to the latest `0.2.x` release line
+aden is pre-1.0. Security fixes are applied to the latest `0.3.x` release line
 only; there is no backporting to older point releases.
 
 | Version | Supported          |
 |---------|--------------------|
-| 0.2.x   | :white_check_mark: |
+| 0.3.x   | :white_check_mark: |
+| 0.2.x   | :x:                |
 | < 0.2   | :x:                |
 
 ## Reporting a Vulnerability

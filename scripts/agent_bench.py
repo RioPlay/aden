@@ -3,10 +3,10 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Paired end-to-end agent benchmark for conventional and Aden navigation.
 
-The benchmark runs the same repository question through two read-only Codex
-conditions, captures the complete JSONL trajectory, and scores the final answer
-against deterministic fact/evidence patterns.  A fixture engine keeps the
-harness itself cheap and deterministic to test.
+The benchmark runs the same repository question through two read-only agent
+conditions and scores the final answer against deterministic fact/evidence
+patterns. Codex has a native adapter; any other provider can use the external
+command contract. A fixture engine keeps the harness cheap and deterministic.
 """
 
 from __future__ import annotations
@@ -173,14 +173,20 @@ repository discovery such as `rg`, file reads, and read-only Git commands.
         "ADEN_BENCH_BIN", str(default_aden) if default_aden.is_file() else "aden"
     )
     aden_command = shlex.quote(aden_bin)
+    from_arg = (
+        f" --from {shlex.quote(task['aden_from'])}" if task.get("aden_from") else ""
+    )
     return shared + f"""
 Condition: Aden deterministic context navigation. Run this exact retrieval command first:
-`{aden_command} ask --strict --budget {budget} --project . "{task['question']}"`.
+`{aden_command} ask --strict --budget {budget}{from_arg} --project . "{task['question']}"`.
 Do not choose a routing strategy: Aden performs evidence-role routing, facet expansion, and source
 arbitration internally. Treat its source bodies, paths, and anchors as verified evidence. Synthesize
-immediately from that result. Do not run `rg`, `sed`, `aden asm`, or another retrieval command unless
-the first command returns an explicit empty/error response; missing confidence alone is not a reason
-to add tools. Mention no methodology in the answer.
+immediately from that result. If the first command returns an explicit symbol-resolution error with
+canonical candidates or suggestions, retry the same command exactly once with the first returned
+canonical anchor substituted for `--from`, then synthesize; do not use raw search for that recovery.
+For other explicit empty/error responses, one narrower retrieval is allowed. Missing confidence alone
+is not a reason to add tools. Do not run `rg`, `grep`, `find`, `sed`, or `aden asm`. Mention no
+methodology in the answer.
 Use the Aden CLI with an explicit `--project .` argument. Do not call an Aden MCP tool; benchmark
 runs disable user MCP configuration so each task stays isolated to its assigned repository.
 """
@@ -284,6 +290,91 @@ def run_codex(repo: Path, task: dict[str, Any], condition: str, args: argparse.N
         }
 
 
+def run_command(
+    repo: Path, task: dict[str, Any], condition: str, args: argparse.Namespace
+) -> dict[str, Any]:
+    """Run a provider adapter without shell evaluation.
+
+    The adapter reads file paths and run metadata from ADEN_BENCH_* environment
+    variables and writes ANSWER_FILE, or emits the answer JSON on stdout.
+    """
+    with tempfile.TemporaryDirectory(prefix="aden-agent-bench-") as tmp:
+        tmp_path = Path(tmp)
+        prompt_path = tmp_path / "prompt.txt"
+        schema_path = tmp_path / "answer.schema.json"
+        answer_path = tmp_path / "answer.json"
+        trajectory_path = tmp_path / "trajectory.json"
+        prompt_path.write_text(prompt_for(task, condition), encoding="utf-8")
+        schema_path.write_text(json.dumps(ANSWER_SCHEMA), encoding="utf-8")
+        env = os.environ.copy()
+        env.update({
+            "ADEN_BENCH_PROMPT_FILE": str(prompt_path),
+            "ADEN_BENCH_SCHEMA_FILE": str(schema_path),
+            "ADEN_BENCH_ANSWER_FILE": str(answer_path),
+            "ADEN_BENCH_TRAJECTORY_FILE": str(trajectory_path),
+            "ADEN_BENCH_REPOSITORY": str(repo),
+            "ADEN_BENCH_CONDITION": condition,
+            "ADEN_BENCH_PROVIDER": args.provider,
+            "ADEN_BENCH_MODEL": args.model or "",
+        })
+        command = shlex.split(args.agent_command)
+        if not command:
+            return {"error": "--agent-command produced an empty argument list", "wall_ms": 0}
+        started = time.monotonic()
+        result = subprocess.run(
+            command,
+            cwd=repo,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=args.timeout,
+        )
+        wall_ms = round((time.monotonic() - started) * 1000)
+        if result.returncode != 0:
+            return {
+                "error": f"provider adapter exited {result.returncode}: {result.stderr[-500:]}",
+                "wall_ms": wall_ms,
+                "trajectory": [],
+                "usage": {},
+            }
+        raw = answer_path.read_text(encoding="utf-8") if answer_path.is_file() else result.stdout
+        try:
+            response = json.loads(raw)
+        except json.JSONDecodeError as error:
+            return {"error": f"invalid structured answer: {error}", "wall_ms": wall_ms}
+
+        trajectory: list[dict[str, Any]] = []
+        if trajectory_path.is_file():
+            try:
+                reported = json.loads(trajectory_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as error:
+                return {"error": f"invalid adapter trajectory: {error}", "wall_ms": wall_ms}
+            if not isinstance(reported, list) or len(reported) > 1000:
+                return {
+                    "error": "invalid adapter trajectory: expected at most 1000 records",
+                    "wall_ms": wall_ms,
+                }
+            for index, item in enumerate(reported):
+                if not isinstance(item, dict):
+                    return {
+                        "error": f"invalid adapter trajectory record {index}: expected object",
+                        "wall_ms": wall_ms,
+                    }
+                record = {
+                    key: value[:4096]
+                    for key in ("tool", "name", "command")
+                    if isinstance((value := item.get(key)), str)
+                }
+                if record:
+                    trajectory.append(record)
+        return {
+            "response": response,
+            "wall_ms": wall_ms,
+            "trajectory": trajectory,
+            "usage": {},
+        }
+
+
 def run_fixture(task: dict[str, Any], condition: str, run: int, args: argparse.Namespace) -> dict[str, Any]:
     path = args.fixture_dir / f"{task['id']}.{condition}.{run}.json"
     return {"response": json.loads(path.read_text(encoding="utf-8")), "wall_ms": 0, "trajectory": [], "usage": {}}
@@ -312,7 +403,8 @@ def render_markdown(report: dict[str, Any]) -> str:
         "",
         f"Corpus: `{report['corpus']}`  ",
         f"Runs per task/condition: {report['runs_per_condition']}  ",
-        f"Engine: `{report['engine']}`",
+        f"Engine: `{report['engine']}`  ",
+        f"Provider: `{report.get('provider', report['engine'])}`",
         "",
         "| Condition | Successful runs | Grounded completion | Fact recall | Evidence recall | Method compliance | Median wall | Tool calls | Errors |",
         "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
@@ -341,9 +433,14 @@ def main() -> None:
     parser.add_argument("--task", action="append", help="run only this task id (repeatable)")
     parser.add_argument("--condition", choices=[*CONDITIONS, "both"], default="both")
     parser.add_argument("--runs", type=int, default=1)
-    parser.add_argument("--engine", choices=["codex", "fixture"], default="codex")
+    parser.add_argument("--engine", choices=["codex", "command", "fixture"], default="codex")
     parser.add_argument("--fixture-dir", type=Path)
     parser.add_argument("--codex-bin", default="codex")
+    parser.add_argument(
+        "--agent-command",
+        help="external provider adapter command (parsed as argv, never through a shell)",
+    )
+    parser.add_argument("--provider", help="provider label recorded in reports (defaults to engine)")
     parser.add_argument("--model")
     parser.add_argument("--timeout", type=int, default=300)
     parser.add_argument("--allow-revision-mismatch", action="store_true")
@@ -353,8 +450,11 @@ def main() -> None:
     args = parser.parse_args()
     if args.runs < 1:
         parser.error("--runs must be positive")
+    args.provider = args.provider or args.engine
     if args.engine == "fixture" and not args.fixture_dir:
         parser.error("--fixture-dir is required for fixture engine")
+    if args.engine == "command" and not args.agent_command:
+        parser.error("--agent-command is required for command engine")
 
     corpus = load_tasks(args.tasks)
     selected = [task for task in corpus["tasks"] if not args.task or task["id"] in args.task]
@@ -362,6 +462,22 @@ def main() -> None:
     if unknown:
         parser.error(f"unknown task ids: {', '.join(unknown)}")
     conditions = CONDITIONS if args.condition == "both" else (args.condition,)
+
+    if args.dry_run:
+        repositories = sorted({
+            str(resolve_repo(corpus["repositories"][task["repository"]])) for task in selected
+        })
+        print(json.dumps({
+            "valid": True,
+            "tasks": len(selected),
+            "conditions": list(conditions),
+            "planned_runs": len(selected) * len(conditions) * args.runs,
+            "repositories": repositories,
+            "engine": args.engine,
+            "provider": args.provider,
+            "model": args.model,
+        }, indent=2))
+        return
 
     prepared = []
     for task in selected:
@@ -375,27 +491,18 @@ def main() -> None:
             raise SystemExit(f"{task['id']}: revision mismatch at {repo}: expected {expected}, got {actual}")
         prepared.append((task, repo, actual))
 
-    if args.dry_run:
-        print(json.dumps({
-            "valid": True,
-            "tasks": len(prepared),
-            "conditions": list(conditions),
-            "planned_runs": len(prepared) * len(conditions) * args.runs,
-            "repositories": sorted({str(repo) for _, repo, _ in prepared}),
-        }, indent=2))
-        return
-
     records = []
     for task, repo, revision in prepared:
         for run in range(1, args.runs + 1):
             for condition in conditions:
                 print(f"[agent-bench] {task['id']} {condition} run {run}", file=sys.stderr)
                 try:
-                    outcome = (
-                        run_codex(repo, task, condition, args)
-                        if args.engine == "codex"
-                        else run_fixture(task, condition, run, args)
-                    )
+                    if args.engine == "codex":
+                        outcome = run_codex(repo, task, condition, args)
+                    elif args.engine == "command":
+                        outcome = run_command(repo, task, condition, args)
+                    else:
+                        outcome = run_fixture(task, condition, run, args)
                 except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError) as error:
                     outcome = {"error": str(error), "wall_ms": args.timeout * 1000}
                 record = {
@@ -420,6 +527,8 @@ def main() -> None:
         "schema_version": 1,
         "corpus": str(args.tasks),
         "engine": args.engine,
+        "provider": args.provider,
+        "model": args.model,
         "runs_per_condition": args.runs,
         "records": records,
         "summary": aggregate(records),

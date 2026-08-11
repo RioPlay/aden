@@ -89,6 +89,39 @@
       "forbidden_claims": ["run .*gen after every edit"]
     },
     {
+      "id": "aden-bare-symbol-resolution",
+      "repository": "aden",
+      "category": "dependency_trace",
+      "question": "How does resolve_anchor_detailed protect asm and graph queries from ambiguous or fuzzy symbol matches?",
+      "aden_from": "resolve_anchor_detailed",
+      "required_facts": [
+        {"id": "consumers", "any_of": ["resolve_required_anchor", "asm.*query", "cmd_asm.*cmd_query"]},
+        {"id": "ambiguity", "any_of": ["Ambiguous.*candidates", "ambigu.*hard error", "never.*guess"]},
+        {"id": "fuzzy", "any_of": ["substring.*suggestion", "rank.?5.*suggest", "not.*selected automatically"]}
+      ],
+      "expected_evidence": [
+        {"id": "resolver", "any_of": ["crates/aden-graph/src/cache\\.rs", "resolve_anchor_detailed"]},
+        {"id": "consumers", "any_of": ["crates/aden-cli/src/commands/query\\.rs", "resolve_required_anchor"]}
+      ],
+      "forbidden_claims": ["silently (chooses|selects).*ambiguous"]
+    },
+    {
+      "id": "aden-typo-symbol-recovery",
+      "repository": "aden",
+      "category": "symbol_explanation",
+      "question": "A user enters the misspelled symbol resovle_anchor_detailed. What recovery does Aden provide, and why is the suggestion not used automatically as a structural traversal target?",
+      "aden_from": "resovle_anchor_detailed",
+      "required_facts": [
+        {"id": "bounded", "any_of": ["bounded.*suggest", "up to 8", "take\\(8\\)", "edit.?distance"]},
+        {"id": "deterministic", "any_of": ["deterministic", "edit distance.*anchor", "distance.*canonical"]},
+        {"id": "safety", "any_of": ["never.*(selected|resolved) automatically", "NotFound.*suggestions", "suggestion.*not.*structural"]}
+      ],
+      "expected_evidence": [
+        {"id": "resolver", "any_of": ["crates/aden-graph/src/cache\\.rs", "typo_anchor_suggestions", "analyze_anchor_list"]}
+      ],
+      "forbidden_claims": ["silently (resolves|selects|chooses).*resovle_anchor_detailed", "automatically traverses.*suggest"]
+    },
+    {
       "id": "fjall-optimistic-commit",
       "repository": "fjall",
       "category": "dependency_trace",
