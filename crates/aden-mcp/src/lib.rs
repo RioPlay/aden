@@ -2566,6 +2566,36 @@ async fn await_shared_read(
     }
 }
 
+/// Host env keys the MCP-spawned `aden` child may inherit (case-insensitive).
+fn is_allowed_child_env(key: &str) -> bool {
+    const ALLOWED: &[&str] = &[
+        "PATH",
+        "PATHEXT",
+        "HOME",
+        "USER",
+        "USERPROFILE",
+        "USERNAME",
+        "SHELL",
+        "SystemRoot",
+        "windir",
+        "COMSPEC",
+        "TEMP",
+        "TMP",
+        "TMPDIR",
+        "APPDATA",
+        "LOCALAPPDATA",
+        "ProgramData",
+        "ProgramFiles",
+        "ProgramFiles(x86)",
+        "NUMBER_OF_PROCESSORS",
+        "PROCESSOR_ARCHITECTURE",
+        "OS",
+    ];
+    ALLOWED
+        .iter()
+        .any(|allowed| key.eq_ignore_ascii_case(allowed))
+}
+
 async fn run_aden_command_with_timeout(
     project_dir: &Path,
     tool: &str,
@@ -2577,10 +2607,16 @@ async fn run_aden_command_with_timeout(
 
     // SECURITY: do not leak host env (model keys, tokens, etc.) to the child `aden`.
     // Allowlist only what is required for basic operation (ADEN_* for config,
-    // PATH/HOME for binaries and dirs, USER for some tools).
+    // PATH/HOME for binaries and dirs, USER for some tools). On Windows the
+    // process also needs USERPROFILE/APPDATA/LOCALAPPDATA/SystemRoot/TEMP so
+    // path resolution and child process startup match a normal shell spawn.
+    //
+    // Matching is case-insensitive: Windows commonly exposes `Path` and
+    // `SystemRoot` rather than `PATH`/`SYSTEMROOT`. A case-sensitive allowlist
+    // drops them after `env_clear` and the child fails with empty stderr.
     cmd.env_clear();
     for (k, v) in std::env::vars() {
-        if k.starts_with("ADEN_") || matches!(k.as_str(), "PATH" | "HOME" | "USER" | "SHELL") {
+        if k.starts_with("ADEN_") || is_allowed_child_env(&k) {
             cmd.env(&k, &v);
         }
     }
@@ -3830,6 +3866,21 @@ mod tests {
     #[test]
     fn non_read_tools_get_no_structured_flags() {
         assert!(structured_output_flags("gen").is_empty());
+    }
+
+    #[test]
+    fn child_env_allowlist_is_case_insensitive() {
+        // Windows surfaces `Path` / `SystemRoot`; a case-sensitive gate would
+        // drop them after env_clear and leave the CLI child unusable.
+        assert!(is_allowed_child_env("PATH"));
+        assert!(is_allowed_child_env("Path"));
+        assert!(is_allowed_child_env("path"));
+        assert!(is_allowed_child_env("SystemRoot"));
+        assert!(is_allowed_child_env("SYSTEMROOT"));
+        assert!(is_allowed_child_env("USERPROFILE"));
+        assert!(is_allowed_child_env("UserProfile"));
+        assert!(!is_allowed_child_env("AWS_SECRET_ACCESS_KEY"));
+        assert!(!is_allowed_child_env("OPENAI_API_KEY"));
     }
 
     #[test]

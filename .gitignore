@@ -13,7 +13,9 @@
 **/.aden/cache/
 **/.aden/gen-cache.json
 **/.aden/scan-cache.json
-
+# Orphan from the pre-0.3.x runtime savings ledger (sunset in 5ff24c4). Keep
+# ignored so leftover sidecars never reappear as untracked noise.
+**/.aden/savings.json
 **/.aden/staging/
 **/.aden/project.conf
 # Legacy on-disk contracts (aden is now store-first and emits no .adoc; these

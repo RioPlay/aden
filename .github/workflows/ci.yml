@@ -17,7 +17,7 @@ jobs:
   platform-contracts:
     name: MCP/path contracts (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 25
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -32,11 +32,30 @@ jobs:
       - name: Cache Cargo
         uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
 
-      # Keep the cross-platform gate focused on the raw MCP boundary and the
-      # shared path resolver. This catches drive-letter, UNC, URI, separator,
-      # and CLI/MCP argv drift without tripling the full workspace CI cost.
+      # Cross-platform gate: path/MCP contracts plus product CLI/MCP gauntlets.
+      # Catches drive-letter, UNC, separator, install, and argv drift without a
+      # full workspace test matrix on every OS.
       - name: Test MCP and filesystem contracts
-        run: cargo build --locked -p aden-cli && cargo test --locked -p aden-mcp -p aden-paths
+        run: cargo build --locked -p aden-cli -p aden-mcp && cargo test --locked -p aden-mcp -p aden-paths
+
+      - name: Product CLI gauntlet, cli_tests, and regression lock
+        run: >
+          cargo test --locked -p aden-cli
+          --test low_friction_gauntlet
+          --test cli_tests
+          --test regression_lock
+
+      - name: Live MCP product gauntlet
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            export ADEN_BIN="${GITHUB_WORKSPACE}/target/debug/aden.exe"
+          else
+            export ADEN_BIN="${GITHUB_WORKSPACE}/target/debug/aden"
+          fi
+          test -f "$ADEN_BIN"
+          cargo test --locked -p aden-mcp --test mcp_live_gauntlet -- --nocapture
 
       - name: Smoke source PowerShell installer
         if: runner.os == 'Windows'
@@ -73,7 +92,7 @@ jobs:
         uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
 
       - name: Verify frozen regression definitions
-        run: python3 scripts/verify_regression_lock.py
+        run: cargo test --locked -p aden-cli --test regression_lock
 
       - name: Build shipped binaries
         run: cargo build --locked --release -p aden-cli -p aden-mcp
@@ -81,7 +100,7 @@ jobs:
       - name: Run workspace regression tests
         run: cargo test --locked --workspace --exclude aden-lsp --no-fail-fast
 
-      - name: Smoke binary contracts
+      - name: Smoke release binary contracts
         shell: bash
         run: |
           set -euo pipefail
@@ -103,8 +122,8 @@ jobs:
           target/release/aden ask --human --strict --budget 512 "Where is entry_point?" "$repo" \
             | grep -q 'entry_point'
 
-          # Product-level loop: cold start, output modes, strict boundaries,
-          # same-size refresh, and a real standalone MCP ask -> asm journey.
-          python3 scripts/test-low-friction-gauntlet.py \
-            --aden-bin target/release/aden \
-            --mcp-bin target/release/aden-mcp
+          # Release-profile product gauntlet (debug gauntlets already run on the
+          # multi-OS platform matrix).
+          cargo test --locked --release -p aden-cli --test low_friction_gauntlet -- --nocapture
+          ADEN_BIN="${GITHUB_WORKSPACE}/target/release/aden" \
+            cargo test --locked --release -p aden-mcp --test mcp_live_gauntlet -- --nocapture

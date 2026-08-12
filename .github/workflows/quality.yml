@@ -58,7 +58,8 @@ jobs:
 
       - name: Verify regression definitions and harnesses
         run: |
-          python3 scripts/verify_regression_lock.py
+          cargo test --locked -p aden-cli --test regression_lock
+          # Offline eval/roadmap harness unit tests remain Python for now.
           python3 -m unittest discover -s scripts -p 'test_*.py'
 
       - name: Validate documentation and roadmap contracts

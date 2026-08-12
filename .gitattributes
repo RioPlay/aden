@@ -1,0 +1,7 @@
+# Frozen regression datasets are hashed as LF-canonical content. Keep working
+# trees LF on Windows so local tools and lock checks stay aligned.
+scripts/regression-lock.json text eol=lf
+scripts/eval-sets/** text eol=lf
+scripts/agent-bench/** text eol=lf
+scripts/heldout-context/** text eol=lf
+scripts/passage-context/** text eol=lf

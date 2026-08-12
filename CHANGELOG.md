@@ -9,6 +9,30 @@ All notable changes to aden are documented here. Format follows
 
 ## [Unreleased]
 
+### Fixed
+- **Windows path separators in graph keys** — `source_file` attributes, gen
+  cache keys, heal GC live-sets, and span maps used by `tree`/`grep` now
+  normalize to `/`, so nested files no longer lose symbols or get over-pruned
+  when the store and discovery used different separators.
+- **MCP child env on Windows** — the allowlist after `env_clear` is
+  case-insensitive, so host `Path`/`SystemRoot`/`USERPROFILE`/AppData vars are
+  preserved and shelled-out `aden` no longer fails with empty stderr.
+- **MCP user config discovery** — Amp, OpenCode, and Zed user-scope paths also
+  consider `%APPDATA%` in addition to XDG `~/.config`.
+
+### Changed
+- **Product gauntlet is Rust** — Lean CI runs
+  `cargo test -p aden-cli --test low_friction_gauntlet` and
+  `cargo test -p aden-mcp --test mcp_live_gauntlet` instead of Python scripts
+  (scripts remain for offline experiments only).
+- **Cross-OS product matrix** — Lean CI platform jobs (Ubuntu, macOS, Windows)
+  run the CLI gauntlet, `cli_tests`, live MCP gauntlet, and regression-lock
+  check — not only path/MCP unit contracts.
+- **Regression lock is Rust** — `cargo test -p aden-cli --test regression_lock`
+  replaces `scripts/verify_regression_lock.py` in Lean and Quality CI. The
+  checker normalizes CRLF→LF before hashing so Windows working trees match the
+  LF-canonical lock (and `.gitattributes` pins those datasets to `eol=lf`).
+
 ## [0.4.0] - 2026-08-06
 
 This feature release makes Aden faster and more predictable on large repositories,

@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Fail if a tuned regression dataset changes without an explicit lock update."""
+"""DEPRECATED: use `cargo test -p aden-cli --test regression_lock`.
+
+Fail if a tuned regression dataset changes without an explicit lock update.
+Kept for offline/manual use; CI uses the Rust port.
+"""
 
 from __future__ import annotations
 
@@ -17,7 +21,12 @@ def main() -> None:
     failures = []
     for relative, expected in lock["files"].items():
         path = ROOT / relative
-        actual = hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else "missing"
+        if path.is_file():
+            # Match git-canonical LF hashes even when the working tree has CRLF.
+            data = path.read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+            actual = hashlib.sha256(data).hexdigest()
+        else:
+            actual = "missing"
         if actual != expected:
             failures.append(f"{relative}: expected {expected}, got {actual}")
     if failures:

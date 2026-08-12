@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
-"""Drive the standalone aden-mcp stdio server as a minimal LLM client.
+"""DEPRECATED: use `cargo test -p aden-mcp --test mcp_live_gauntlet`.
+
+Drive the standalone aden-mcp stdio server as a minimal LLM client.
 
 The journey deliberately omits budget and strict arguments. Transport defaults
 must remain bounded without forcing every model call to repeat boilerplate.
+Kept for offline experiments; Lean CI uses the Rust port.
 """
 
 from __future__ import annotations
@@ -11,10 +14,11 @@ import argparse
 import json
 import os
 from pathlib import Path
-import select
+import queue
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 
 
@@ -58,29 +62,56 @@ def main() -> None:
     )
     assert process.stdin and process.stdout and process.stderr
 
+    # select() does not work on subprocess pipes on Windows (WSAStartup /
+    # WinError 10093). Threaded readers are portable for stdio JSON-RPC.
+    stdout_lines: queue.Queue[str | None] = queue.Queue()
+    stderr_lines: queue.Queue[str] = queue.Queue()
+
+    def _pump_stdout() -> None:
+        assert process.stdout is not None
+        for line in process.stdout:
+            stdout_lines.put(line)
+        stdout_lines.put(None)
+
+    def _pump_stderr() -> None:
+        assert process.stderr is not None
+        for line in process.stderr:
+            stderr_lines.put(line)
+
+    threading.Thread(target=_pump_stdout, daemon=True).start()
+    threading.Thread(target=_pump_stderr, daemon=True).start()
+
     def send(message: dict[str, object]) -> None:
         process.stdin.write(json.dumps(message, separators=(",", ":")) + "\n")
         process.stdin.flush()
 
+    def drain_stderr() -> None:
+        while True:
+            try:
+                line = stderr_lines.get_nowait()
+            except queue.Empty:
+                return
+            if line.strip():
+                print(f"aden-mcp: {line.rstrip()}", file=os.sys.stderr)
+
     def receive(request_id: int, timeout: float = 60.0) -> dict[str, object]:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            ready, _, _ = select.select(
-                [process.stdout, process.stderr], [], [], 0.5
-            )
-            for stream in ready:
-                line = stream.readline()
-                if stream is process.stderr:
-                    if line.strip():
-                        print(f"aden-mcp: {line.rstrip()}", file=os.sys.stderr)
-                    continue
-                if not line:
-                    raise RuntimeError("aden-mcp closed stdout")
-                message = json.loads(line)
-                if message.get("id") == request_id:
-                    return message
-            if process.poll() is not None:
-                raise RuntimeError(f"aden-mcp exited with {process.returncode}")
+            drain_stderr()
+            remaining = max(0.0, deadline - time.monotonic())
+            try:
+                line = stdout_lines.get(timeout=min(0.5, remaining))
+            except queue.Empty:
+                if process.poll() is not None:
+                    drain_stderr()
+                    raise RuntimeError(f"aden-mcp exited with {process.returncode}")
+                continue
+            if line is None:
+                raise RuntimeError("aden-mcp closed stdout")
+            message = json.loads(line)
+            if message.get("id") == request_id:
+                return message
+        drain_stderr()
         raise TimeoutError(f"timed out waiting for MCP response {request_id}")
 
     def tool_call(request_id: int, name: str, arguments: dict[str, object]) -> dict:

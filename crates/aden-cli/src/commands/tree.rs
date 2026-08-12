@@ -351,6 +351,26 @@ mod tests {
     }
 
     #[test]
+    fn outline_lookup_key_matches_nested_windows_style_paths() {
+        // tree joins spans with `/`-normalized keys; load_symbol_spans must
+        // produce the same form or nested files (src\lib.rs) vanish on Windows.
+        let mut files = BTreeMap::new();
+        files.insert(
+            PathBuf::from("src").join("lib.rs"),
+            vec![Symbol {
+                name: "included".into(),
+                start: 1,
+                end: 1,
+                is_code: true,
+            }],
+        );
+        let outline = symbol_outline(&files, true);
+        assert_eq!(outline.file_count, 1);
+        assert!(outline.text.contains("src/lib.rs:"), "{}", outline.text);
+        assert!(outline.text.contains("included"), "{}", outline.text);
+    }
+
+    #[test]
     fn symbols_sort_enclosing_spans_before_children() {
         let symbols = symbols_for(&[
             Span {

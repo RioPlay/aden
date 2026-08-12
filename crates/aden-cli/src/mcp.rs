@@ -71,18 +71,31 @@ impl Platform {
             // under the literal `amp.mcpServers` setting key. JSONC is also
             // supported by Amp; plain JSON is the safe write target because
             // Aden's config merger preserves JSON values, not comments.
-            Platform::Amp => vec![
-                PathBuf::from(".amp/settings.json"),
-                PathBuf::from(".amp/settings.jsonc"),
-                home.join(".config/amp/settings.json"),
-                home.join(".config/amp/settings.jsonc"),
-            ],
-            Platform::OpenCode => vec![
-                PathBuf::from(".opencode/opencode.json"),
-                PathBuf::from(".opencode/opencode.jsonc"),
-                home.join(".config/opencode/opencode.json"),
-                home.join(".config/opencode/opencode.jsonc"),
-            ],
+            // User scope: XDG `~/.config/amp` plus Windows `%APPDATA%\amp`.
+            Platform::Amp => {
+                let mut paths = vec![
+                    PathBuf::from(".amp/settings.json"),
+                    PathBuf::from(".amp/settings.jsonc"),
+                ];
+                paths.extend(user_config_candidates(
+                    &home,
+                    &["amp", "settings.json"],
+                    &["amp", "settings.jsonc"],
+                ));
+                paths
+            }
+            Platform::OpenCode => {
+                let mut paths = vec![
+                    PathBuf::from(".opencode/opencode.json"),
+                    PathBuf::from(".opencode/opencode.jsonc"),
+                ];
+                paths.extend(user_config_candidates(
+                    &home,
+                    &["opencode", "opencode.json"],
+                    &["opencode", "opencode.jsonc"],
+                ));
+                paths
+            }
             // Claude Code reads MCP servers from a project-scoped `.mcp.json`
             // (committed, discoverable) — NOT `~/.claude/settings.json`. We write
             // only the project file and never rewrite the user's `~/.claude.json`
@@ -100,10 +113,15 @@ impl Platform {
                 PathBuf::from(".codex/config.toml"),
                 home.join(".codex/config.toml"),
             ],
-            Platform::Zed => vec![
-                PathBuf::from(".zed/settings.json"),
-                home.join(".config/zed/settings.json"),
-            ],
+            Platform::Zed => {
+                let mut paths = vec![PathBuf::from(".zed/settings.json")];
+                paths.extend(user_config_candidates(
+                    &home,
+                    &["zed", "settings.json"],
+                    &[],
+                ));
+                paths
+            }
             // Windsurf (Cascade) reads only a single user-global config at
             // `~/.codeium/windsurf/mcp_config.json` — there is no project scope.
             Platform::Windsurf => vec![home.join(".codeium/windsurf/mcp_config.json")],
@@ -494,6 +512,39 @@ fn write_toml(path: &Path, doc: &DocumentMut) -> Result<(), String> {
         )
     })?;
     Ok(())
+}
+
+/// User-scope config candidates: XDG `~/.config/...` first, then Windows
+/// `%APPDATA%\...` when distinct. Existing files win via [`active_config_path`].
+fn user_config_candidates(
+    home: &Path,
+    primary: &[&str],
+    alternate: &[&str],
+) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let push_under = |base: PathBuf, segments: &[&str], out: &mut Vec<PathBuf>| {
+        if segments.is_empty() {
+            return;
+        }
+        let mut path = base;
+        for segment in segments {
+            path = path.join(segment);
+        }
+        if !out.iter().any(|existing| existing == &path) {
+            out.push(path);
+        }
+    };
+    push_under(home.join(".config"), primary, &mut out);
+    if !alternate.is_empty() {
+        push_under(home.join(".config"), alternate, &mut out);
+    }
+    if let Some(appdata) = std::env::var_os("APPDATA").map(PathBuf::from) {
+        push_under(appdata.clone(), primary, &mut out);
+        if !alternate.is_empty() {
+            push_under(appdata, alternate, &mut out);
+        }
+    }
+    out
 }
 
 /// Build one `[mcp_servers.<name>]` TOML table for Codex.
@@ -1169,7 +1220,10 @@ mod tests {
         assert!(
             paths
                 .iter()
-                .any(|p| p.ends_with(".config/amp/settings.json"))
+                .any(|p| p.ends_with(".config/amp/settings.json")
+                    || p.ends_with(r"AppData\Roaming\amp\settings.json")
+                    || p.components().any(|c| c.as_os_str() == "amp")),
+            "expected an XDG or AppData amp settings path, got {paths:?}"
         );
         assert_eq!(Platform::Amp.server_config_key(), "amp.mcpServers");
         assert_eq!(default_scope(&Platform::Amp), Scope::User);
