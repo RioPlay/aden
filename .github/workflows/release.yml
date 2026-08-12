@@ -173,18 +173,25 @@ jobs:
           - runner: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             archive_ext: tar.gz
+            cargo_build_jobs: ""
           - runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             archive_ext: tar.gz
+            # Serial codegen: concurrent LLVM opt on GHA arm runners has
+            # SIGSEGV'd compiling aden-graph even with a raised stack.
+            cargo_build_jobs: "1"
           - runner: macos-15-intel
             target: x86_64-apple-darwin
             archive_ext: tar.gz
+            cargo_build_jobs: ""
           - runner: macos-14
             target: aarch64-apple-darwin
             archive_ext: tar.gz
+            cargo_build_jobs: ""
           - runner: windows-2025
             target: x86_64-pc-windows-msvc
             archive_ext: zip
+            cargo_build_jobs: ""
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Checkout source
@@ -206,13 +213,21 @@ jobs:
           # Defense in depth: .cargo/config.toml carries the same invariant,
           # while the release job makes it explicit and non-ambient.
           TSLP_LINK_MODE: static
-          # GitHub aarch64 Linux runners have hit rustc SIGSEGV in LLVM
-          # BranchProbabilityInfo under default stack during opt-level=3 builds
-          # of aden-graph (rustc 1.90). Raise the stack before packaging.
-          RUST_MIN_STACK: "16777216"
-        run: >-
-          cargo build --locked --release --target ${{ matrix.target }}
-          -p aden-cli -p aden-mcp
+          # GitHub aarch64 Linux runners hit rustc SIGSEGV in LLVM
+          # BranchProbabilityInfo during opt-level=3 builds of aden-graph
+          # (rustc 1.90). rustc suggests 32 MiB; use 64 MiB for margin.
+          RUST_MIN_STACK: "67108864"
+          MATRIX_TARGET: ${{ matrix.target }}
+          MATRIX_CARGO_BUILD_JOBS: ${{ matrix.cargo_build_jobs }}
+        run: |
+          set -euo pipefail
+          jobs_args=()
+          if [[ -n "${MATRIX_CARGO_BUILD_JOBS}" ]]; then
+            jobs_args=(-j "${MATRIX_CARGO_BUILD_JOBS}")
+          fi
+          cargo build --locked --release --target "${MATRIX_TARGET}" \
+            "${jobs_args[@]}" \
+            -p aden-cli -p aden-mcp
 
       - name: Smoke-test built binaries
         shell: bash
