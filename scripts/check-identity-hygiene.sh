@@ -51,7 +51,9 @@ scan_commit_names() {
   while IFS= read -r name; do
     [[ -z "$name" ]] && continue
     if [[ "$name" == "RioPlay ("* ]]; then
-      fail "forbidden author/committer form (parenthetical expansion): ${name}"
+      # Do not echo the author string — it may contain a private legal name
+      # and would land in CI logs. Inspect locally with git log --format='%an'.
+      fail "forbidden author/committer form (parenthetical expansion; details omitted)"
     fi
   done < <(git log "${rev_args[@]}" --format='%an%n%cn' 2>/dev/null || true)
 }
