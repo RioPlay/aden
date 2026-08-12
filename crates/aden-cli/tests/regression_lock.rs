@@ -40,9 +40,7 @@ fn frozen_regression_datasets_match_lock() {
             "missing".to_string()
         };
         if actual != expected {
-            failures.push(format!(
-                "{relative}: expected {expected}, got {actual}"
-            ));
+            failures.push(format!("{relative}: expected {expected}, got {actual}"));
         }
     }
 

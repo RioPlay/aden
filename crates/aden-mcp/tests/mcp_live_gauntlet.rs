@@ -25,10 +25,7 @@ fn ensure_aden_cli() {
     if std::env::var_os("ADEN_BIN").is_some() {
         return;
     }
-    let sibling = mcp_bin().with_file_name(format!(
-        "aden{}",
-        std::env::consts::EXE_SUFFIX
-    ));
+    let sibling = mcp_bin().with_file_name(format!("aden{}", std::env::consts::EXE_SUFFIX));
     if sibling.is_file() {
         // SAFETY: test process isolation; points MCP at the workspace CLI.
         unsafe {
@@ -122,7 +119,10 @@ impl McpClient {
                 self.drain_stderr();
                 panic!("timed out waiting for MCP response {request_id}");
             }
-            match self.stdout_rx.recv_timeout(remaining.min(Duration::from_millis(500))) {
+            match self
+                .stdout_rx
+                .recv_timeout(remaining.min(Duration::from_millis(500)))
+            {
                 Ok(Some(line)) => {
                     let message: Value = serde_json::from_str(&line)
                         .unwrap_or_else(|e| panic!("bad json from mcp: {e}\n{line}"));
@@ -206,7 +206,10 @@ fn live_mcp_bounded_ask_asm_and_path_confinement() {
         .and_then(|v| v.as_str())
         .map(|s| s.len())
         .unwrap_or(0);
-    assert!(instruction_bytes < 1_600, "instructions too large: {instruction_bytes}");
+    assert!(
+        instruction_bytes < 1_600,
+        "instructions too large: {instruction_bytes}"
+    );
 
     client.send(&serde_json::json!({
         "jsonrpc": "2.0",
@@ -222,12 +225,21 @@ fn live_mcp_bounded_ask_asm_and_path_confinement() {
     }));
     let listed = client.receive(2, Duration::from_secs(30));
     let tools = listed["result"]["tools"].as_array().expect("tools array");
-    let names: std::collections::HashSet<_> = tools
-        .iter()
-        .filter_map(|t| t["name"].as_str())
-        .collect();
-    for required in ["tree", "ask", "asm", "grep", "locate", "query", "understand"] {
-        assert!(names.contains(required), "missing tool {required}: {names:?}");
+    let names: std::collections::HashSet<_> =
+        tools.iter().filter_map(|t| t["name"].as_str()).collect();
+    for required in [
+        "tree",
+        "ask",
+        "asm",
+        "grep",
+        "locate",
+        "query",
+        "understand",
+    ] {
+        assert!(
+            names.contains(required),
+            "missing tool {required}: {names:?}"
+        );
     }
     let schemas: std::collections::HashMap<_, _> = tools
         .iter()
@@ -237,23 +249,27 @@ fn live_mcp_bounded_ask_asm_and_path_confinement() {
         })
         .collect();
     assert!(
-        schemas["ask"]["properties"]
-            .get("budget")
-            .is_none(),
+        schemas["ask"]["properties"].get("budget").is_none(),
         "ask must not require budget"
     );
     assert!(schemas["ask"]["properties"].get("strict").is_none());
     assert!(schemas["asm"]["properties"].get("budget").is_none());
     assert!(schemas["asm"]["properties"].get("format").is_none());
     let registry_bytes = serde_json::to_string(&tools).unwrap().len();
-    assert!(registry_bytes < 5_000, "registry too large: {registry_bytes}");
+    assert!(
+        registry_bytes < 5_000,
+        "registry too large: {registry_bytes}"
+    );
 
     let ask = client.tool_call(
         3,
         "ask",
         serde_json::json!({ "question": "Where is the main entry point?" }),
     );
-    assert!(ask.get("anchor").and_then(|v| v.as_str()).is_some(), "{ask}");
+    assert!(
+        ask.get("anchor").and_then(|v| v.as_str()).is_some(),
+        "{ask}"
+    );
     assert!(
         ask.get("context")
             .and_then(|v| v.as_str())
@@ -276,11 +292,7 @@ fn live_mcp_bounded_ask_asm_and_path_confinement() {
         );
     }
 
-    let assembly = client.tool_call(
-        4,
-        "asm",
-        serde_json::json!({ "from": ask["anchor"] }),
-    );
+    let assembly = client.tool_call(4, "asm", serde_json::json!({ "from": ask["anchor"] }));
     assert!(
         assembly
             .get("documents")
@@ -306,8 +318,7 @@ fn live_mcp_bounded_ask_asm_and_path_confinement() {
     assert_eq!(outline["result_state"], "complete", "{outline}");
     assert_eq!(outline["truncated"], false, "{outline}");
     assert_eq!(
-        outline["symbol_count"],
-        outline["returned_symbol_count"],
+        outline["symbol_count"], outline["returned_symbol_count"],
         "{outline}"
     );
     let outline_text = outline["outline"].as_str().unwrap_or("");

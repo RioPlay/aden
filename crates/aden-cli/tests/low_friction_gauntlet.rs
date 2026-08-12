@@ -59,12 +59,16 @@ fn run_ok(project: &Path, args: &[&str]) -> String {
 
 fn run_json(project: &Path, args: &[&str]) -> Value {
     let stdout = run_ok(project, args);
-    serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("json parse for {args:?}: {e}\n{stdout}"))
+    serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("json parse for {args:?}: {e}\n{stdout}"))
 }
 
 fn ask(project: &Path) -> Value {
     let value = run_json(project, &["ask", "Where is the main entry point?", "."]);
-    assert!(value.get("anchor").and_then(|v| v.as_str()).is_some(), "{value}");
+    assert!(
+        value.get("anchor").and_then(|v| v.as_str()).is_some(),
+        "{value}"
+    );
     assert!(
         value
             .get("context")
@@ -84,7 +88,10 @@ fn ask(project: &Path) -> Value {
         "refresh_cause",
     ] {
         assert!(
-            receipt.get(field).and_then(|v| v.as_str()).is_some_and(|s| !s.is_empty()),
+            receipt
+                .get(field)
+                .and_then(|v| v.as_str())
+                .is_some_and(|s| !s.is_empty()),
             "missing receipt field {field}: {value}"
         );
     }
@@ -144,7 +151,11 @@ fn low_friction_cli_gauntlet() {
     let broad: Value = serde_json::from_str(&broad_raw).unwrap();
     assert_eq!(broad["result_state"], "needs_narrowing");
     assert_eq!(broad["context"], "");
-    assert!(broad_raw.len() < 2_000, "broad ask too large: {}", broad_raw.len());
+    assert!(
+        broad_raw.len() < 2_000,
+        "broad ask too large: {}",
+        broad_raw.len()
+    );
 
     let top_help = run_ok(&project, &["--help"]);
     assert!(top_help.contains("  tree "), "{top_help}");
@@ -152,13 +163,13 @@ fn low_friction_cli_gauntlet() {
     assert!(!top_help.contains("  overlay "), "{top_help}");
     assert!(!top_help.contains("  audit "), "{top_help}");
     let commands = run_ok(&project, &["commands"]);
-    assert!(
-        commands.contains("Optional Aden methodology"),
-        "{commands}"
-    );
+    assert!(commands.contains("Optional Aden methodology"), "{commands}");
 
     // 3/6 output-mode and strict-boundary matrix
-    let llm = run_ok(&project, &["asm", "--format", "llm", "--from", &anchor, "."]);
+    let llm = run_ok(
+        &project,
+        &["asm", "--format", "llm", "--from", &anchor, "."],
+    );
     assert!(llm.contains("main"), "{llm}");
     assert!(!llm.trim_start().starts_with('{'), "{llm}");
     let human = run_ok(&project, &["--human", "asm", "--from", &anchor, "."]);
@@ -191,7 +202,10 @@ fn low_friction_cli_gauntlet() {
         ],
     );
     let approx_tokens = (tiny_raw.len() + 3) / 4;
-    assert!(approx_tokens <= 15, "tiny ask over budget: {approx_tokens}\n{tiny_raw}");
+    assert!(
+        approx_tokens <= 15,
+        "tiny ask over budget: {approx_tokens}\n{tiny_raw}"
+    );
     let tiny: Value = serde_json::from_str(&tiny_raw).unwrap();
     assert!(
         tiny.get("incomplete")
@@ -239,7 +253,10 @@ fn low_friction_cli_gauntlet() {
     std::fs::write(focused.join("focus.rs"), "fn only_this_subtree() {}\n").unwrap();
 
     let bounded_outline = run_json(&project, &["tree", "--symbols", "."]);
-    assert_eq!(bounded_outline["result_state"], "truncated", "{bounded_outline}");
+    assert_eq!(
+        bounded_outline["result_state"], "truncated",
+        "{bounded_outline}"
+    );
     assert_eq!(bounded_outline["truncated"], true, "{bounded_outline}");
     assert!(
         bounded_outline["returned_symbol_count"].as_u64().unwrap()
@@ -247,7 +264,10 @@ fn low_friction_cli_gauntlet() {
         "{bounded_outline}"
     );
     let outline_bytes = bounded_outline["outline"].as_str().unwrap_or("").len();
-    assert!(outline_bytes <= 96 * 1024, "outline too large: {outline_bytes}");
+    assert!(
+        outline_bytes <= 96 * 1024,
+        "outline too large: {outline_bytes}"
+    );
     let next = bounded_outline["next_action"]
         .as_str()
         .unwrap_or("")
@@ -266,7 +286,10 @@ fn low_friction_cli_gauntlet() {
     );
 
     let scoped_outline = run_json(&project, &["tree", "--symbols", "focused"]);
-    assert_eq!(scoped_outline["result_state"], "complete", "{scoped_outline}");
+    assert_eq!(
+        scoped_outline["result_state"], "complete",
+        "{scoped_outline}"
+    );
     assert_eq!(scoped_outline["file_count"], 1, "{scoped_outline}");
     let scoped_text = scoped_outline["outline"].as_str().unwrap_or("");
     assert!(

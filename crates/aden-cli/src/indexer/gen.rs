@@ -838,9 +838,7 @@ fn cmd_gen_inner(
         if !path.is_file() {
             let live: std::collections::HashSet<String> = discovered
                 .iter()
-                .map(|file| {
-                    normalize_sep(file.path.strip_prefix(&root).unwrap_or(&file.path))
-                })
+                .map(|file| normalize_sep(file.path.strip_prefix(&root).unwrap_or(&file.path)))
                 .collect();
             let dead_keys: Vec<String> = cache
                 .entries

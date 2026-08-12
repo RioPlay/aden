@@ -516,11 +516,7 @@ fn write_toml(path: &Path, doc: &DocumentMut) -> Result<(), String> {
 
 /// User-scope config candidates: XDG `~/.config/...` first, then Windows
 /// `%APPDATA%\...` when distinct. Existing files win via [`active_config_path`].
-fn user_config_candidates(
-    home: &Path,
-    primary: &[&str],
-    alternate: &[&str],
-) -> Vec<PathBuf> {
+fn user_config_candidates(home: &Path, primary: &[&str], alternate: &[&str]) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let push_under = |base: PathBuf, segments: &[&str], out: &mut Vec<PathBuf>| {
         if segments.is_empty() {
