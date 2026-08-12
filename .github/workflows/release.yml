@@ -206,6 +206,10 @@ jobs:
           # Defense in depth: .cargo/config.toml carries the same invariant,
           # while the release job makes it explicit and non-ambient.
           TSLP_LINK_MODE: static
+          # GitHub aarch64 Linux runners have hit rustc SIGSEGV in LLVM
+          # BranchProbabilityInfo under default stack during opt-level=3 builds
+          # of aden-graph (rustc 1.90). Raise the stack before packaging.
+          RUST_MIN_STACK: "16777216"
         run: >-
           cargo build --locked --release --target ${{ matrix.target }}
           -p aden-cli -p aden-mcp
