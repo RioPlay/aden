@@ -25,12 +25,22 @@ jobs:
     steps:
       - name: Checkout source
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Rust 1.90
         uses: dtolnay/rust-toolchain@0176485ebe2f605bde554dd99f804beeaf7db3e2 # 1.90.0
 
       - name: Cache Cargo
         uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+
+      # Identity hygiene once per OS matrix row is cheap and keeps Windows/macOS
+      # checkouts honest too (author metadata + Cargo authors contract).
+      - name: Maintainer identity hygiene
+        shell: bash
+        env:
+          IDENTITY_FORBIDDEN_PATTERNS: ${{ secrets.IDENTITY_FORBIDDEN_PATTERNS }}
+        run: bash scripts/check-identity-hygiene.sh --all
 
       # Cross-platform gate: path/MCP contracts plus product CLI/MCP gauntlets.
       # Catches drive-letter, UNC, separator, install, and argv drift without a

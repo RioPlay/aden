@@ -20,6 +20,13 @@ cd "$ROOT"
 while IFS= read -r var; do
   unset "$var"
 done < <(git rev-parse --local-env-vars)
+
+# Cheap identity gate first: Cargo authors + commit metadata + optional private
+# blocklist (.identity-blocklist, gitignored). Blocks re-poisoning before the
+# expensive build/test gate.
+echo "[pre-push] maintainer identity hygiene"
+bash scripts/check-identity-hygiene.sh --all
+
 echo "[pre-push] running CI gate (build → test → aden ci-check)…"
 
 # aden-lsp is standalone/unshipped; exclude it from the default gate (CI's

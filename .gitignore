@@ -138,3 +138,9 @@ Thumbs.db
 # Local scratch
 .claude-tmp/
 .gstack/
+
+# ─────────────────────────────────────────────────────────────────────────
+# Private identity hygiene (never commit personal legal-name patterns)
+# ─────────────────────────────────────────────────────────────────────────
+.identity-blocklist
+.identity-blocklist.local
