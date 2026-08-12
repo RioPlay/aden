@@ -36,19 +36,24 @@ pub fn cmd_tree(
     let root = find_project_root(path);
     let scope = std::fs::canonicalize(path)
         .map_err(|error| format!("Cannot inspect '{}': {error}", path.display()))?;
-    if !scope.starts_with(&root) {
+    // Windows: git root is often `C:/…` while canonicalize yields `\\?\C:\…`.
+    // Compare via aden_paths so those spellings of the same directory match.
+    if !aden_paths::is_under(&root, &scope) {
         return Err(format!("Tree scope '{}' is outside project root", path.display()).into());
     }
     super::ensure_fresh(&root);
-    let files = discover_source_files(&root)?
-        .into_iter()
-        .filter(|file| file == &scope || file.starts_with(&scope));
+    let scope_norm = aden_paths::strip_verbatim(&scope);
+    let files = discover_source_files(&root)?.into_iter().filter(|file| {
+        let file_norm = aden_paths::strip_verbatim(file);
+        file_norm == scope_norm || file_norm.starts_with(&scope_norm)
+    });
     let spans = load_symbol_spans(&root);
     let mut by_file: BTreeMap<PathBuf, Vec<Symbol>> = BTreeMap::new();
     let mut dirs = BTreeSet::new();
 
     for file in files {
-        let relative = file.strip_prefix(&root).unwrap_or(&file).to_path_buf();
+        let relative = aden_paths::relative_to(&root, &file)
+            .unwrap_or_else(|| file.strip_prefix(&root).unwrap_or(&file).to_path_buf());
         let parent = relative.parent().unwrap_or(Path::new(""));
         let mut current = PathBuf::new();
         for component in parent.components() {
@@ -66,7 +71,7 @@ pub fn cmd_tree(
     if symbols_only {
         let outline = symbol_outline(&by_file, unlimited);
         if json_output {
-            let relative_scope = scope.strip_prefix(&root).unwrap_or(Path::new(""));
+            let relative_scope = aden_paths::relative_to(&root, &scope).unwrap_or_default();
             let payload = super::augment_read_json(
                 &root,
                 serde_json::json!({
@@ -332,6 +337,20 @@ mod tests {
     use crate::commands::grep::Span;
     use std::collections::BTreeMap;
     use std::path::{Path, PathBuf};
+
+    #[test]
+    fn scope_under_root_accepts_verbatim_vs_plain() {
+        // Mirrors the Windows product failure: git root vs canonicalize spelling.
+        assert!(aden_paths::is_under(
+            Path::new(r"C:\Users\me\proj"),
+            Path::new(r"\\?\C:\Users\me\proj"),
+        ));
+        let dir = tempfile::tempdir().unwrap();
+        let nested = dir.path().join("crates").join("cli");
+        std::fs::create_dir_all(&nested).unwrap();
+        assert!(aden_paths::is_under(dir.path(), dir.path()));
+        assert!(aden_paths::is_under(dir.path(), &nested));
+    }
 
     #[test]
     fn outline_keeps_exact_copy_pasteable_symbol_names() {

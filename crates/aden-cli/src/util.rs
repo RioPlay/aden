@@ -265,6 +265,23 @@ fn walk_supported_files(
     filter: &aden_core::filter::AdenFilter,
     out: &mut Vec<PathBuf>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // Normalize the project root once. Per-entry canonicalize is too expensive
+    // on large trees; read_dir children inherit the walk root's spelling, so a
+    // single strip_verbatim of root + each path is enough for ignore keys.
+    let root_norm = aden_paths::strip_verbatim(
+        &std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf()),
+    );
+    walk_supported_files_inner(dir, root, &root_norm, supported, filter, out)
+}
+
+fn walk_supported_files_inner(
+    dir: &Path,
+    root: &Path,
+    root_norm: &Path,
+    supported: &std::collections::HashSet<&'static str>,
+    filter: &aden_core::filter::AdenFilter,
+    out: &mut Vec<PathBuf>,
+) -> Result<(), Box<dyn std::error::Error>> {
     for entry in std::fs::read_dir(dir).map_err(|e| format!("read_dir {}: {}", dir.display(), e))? {
         let entry = entry?;
         let p = entry.path();
@@ -276,14 +293,25 @@ fn walk_supported_files(
         }
 
         // Honor .adenignore / .adenallow / built-in ignores (relative to root).
-        if let Ok(rel) = p.strip_prefix(root)
-            && filter.should_skip(rel)
-        {
-            continue;
+        // Windows: `\\?\` vs plain drive roots used to make strip_prefix fail
+        // and disable every ignore — grep then walked target/ for ~30s.
+        let rel = {
+            let p_norm = aden_paths::strip_verbatim(&p);
+            p_norm
+                .strip_prefix(root_norm)
+                .ok()
+                .map(|r| r.to_path_buf())
+                .or_else(|| p.strip_prefix(root).ok().map(|r| r.to_path_buf()))
+                .or_else(|| aden_paths::relative_to(root, &p))
+        };
+        match rel {
+            Some(rel) if filter.should_skip(&rel) => continue,
+            None => continue, // outside project root — never index
+            Some(_) => {}
         }
 
         if file_type.is_dir() {
-            walk_supported_files(&p, root, supported, filter, out)?;
+            walk_supported_files_inner(&p, root, root_norm, supported, filter, out)?;
         } else if file_type.is_file() {
             let keep = match p.extension().and_then(|e| e.to_str()) {
                 Some(ext) => supported.contains(ext),
@@ -368,8 +396,12 @@ pub fn sanitize_terminal(text: &str) -> String {
 
 /// Normalize path separators for cross-platform skip-pattern matching.
 /// On Windows, `to_string_lossy()` yields backslashes; we unify to `/`.
+/// Also strips extended-length (`\\?\`) prefixes so agent-facing paths stay
+/// human-readable (`C:/…` instead of `//?/C:/…`).
 pub fn normalize_sep(path: &Path) -> String {
-    path.to_string_lossy().replace('\\', "/")
+    aden_paths::strip_verbatim(path)
+        .to_string_lossy()
+        .replace('\\', "/")
 }
 
 /// Sanitize an anchor into a safe filename stem.
