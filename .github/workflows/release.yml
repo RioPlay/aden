@@ -173,25 +173,36 @@ jobs:
           - runner: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             archive_ext: tar.gz
-            cargo_build_jobs: ""
+            cargo_build_jobs: "0"
+            release_opt_level: "3"
+            rust_min_stack: "16777216"
           - runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             archive_ext: tar.gz
-            # Serial codegen: concurrent LLVM opt on GHA arm runners has
-            # SIGSEGV'd compiling aden-graph even with a raised stack.
+            # GHA arm Linux: rustc 1.90 SIGSEGVs in LLVM BranchProbabilityInfo
+            # while compiling aden-graph at opt-level=3. Serial jobs + lower
+            # opt + 128 MiB stack (rustc's latest suggestion) unblocks packaging.
             cargo_build_jobs: "1"
+            release_opt_level: "2"
+            rust_min_stack: "134217728"
           - runner: macos-15-intel
             target: x86_64-apple-darwin
             archive_ext: tar.gz
-            cargo_build_jobs: ""
+            cargo_build_jobs: "0"
+            release_opt_level: "3"
+            rust_min_stack: "16777216"
           - runner: macos-14
             target: aarch64-apple-darwin
             archive_ext: tar.gz
-            cargo_build_jobs: ""
+            cargo_build_jobs: "0"
+            release_opt_level: "3"
+            rust_min_stack: "16777216"
           - runner: windows-2025
             target: x86_64-pc-windows-msvc
             archive_ext: zip
-            cargo_build_jobs: ""
+            cargo_build_jobs: "0"
+            release_opt_level: "3"
+            rust_min_stack: "16777216"
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Checkout source
@@ -205,7 +216,7 @@ jobs:
       - name: Cache Cargo
         uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
         with:
-          key: release-${{ matrix.target }}
+          key: release-${{ matrix.target }}-opt${{ matrix.release_opt_level }}
 
       - name: Build shipped binaries
         shell: bash
@@ -213,21 +224,22 @@ jobs:
           # Defense in depth: .cargo/config.toml carries the same invariant,
           # while the release job makes it explicit and non-ambient.
           TSLP_LINK_MODE: static
-          # GitHub aarch64 Linux runners hit rustc SIGSEGV in LLVM
-          # BranchProbabilityInfo during opt-level=3 builds of aden-graph
-          # (rustc 1.90). rustc suggests 32 MiB; use 64 MiB for margin.
-          RUST_MIN_STACK: "67108864"
+          RUST_MIN_STACK: ${{ matrix.rust_min_stack }}
+          CARGO_PROFILE_RELEASE_OPT_LEVEL: ${{ matrix.release_opt_level }}
           MATRIX_TARGET: ${{ matrix.target }}
           MATRIX_CARGO_BUILD_JOBS: ${{ matrix.cargo_build_jobs }}
         run: |
           set -euo pipefail
-          jobs_args=()
-          if [[ -n "${MATRIX_CARGO_BUILD_JOBS}" ]]; then
-            jobs_args=(-j "${MATRIX_CARGO_BUILD_JOBS}")
+          # macOS ships bash 3.x: empty "${array[@]}" under `set -u` is an
+          # unbound-variable error. Use -j only when explicitly limited.
+          if [[ "${MATRIX_CARGO_BUILD_JOBS}" != "0" ]]; then
+            cargo build --locked --release --target "${MATRIX_TARGET}" \
+              -j "${MATRIX_CARGO_BUILD_JOBS}" \
+              -p aden-cli -p aden-mcp
+          else
+            cargo build --locked --release --target "${MATRIX_TARGET}" \
+              -p aden-cli -p aden-mcp
           fi
-          cargo build --locked --release --target "${MATRIX_TARGET}" \
-            "${jobs_args[@]}" \
-            -p aden-cli -p aden-mcp
 
       - name: Smoke-test built binaries
         shell: bash
