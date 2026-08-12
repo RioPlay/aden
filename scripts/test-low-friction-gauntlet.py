@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""Adversarial low-friction product loop for Aden's public CLI and MCP paths."""
+"""DEPRECATED: product gauntlet lives in Rust integration tests.
+
+Use:
+  cargo test -p aden-cli --test low_friction_gauntlet
+  ADEN_BIN=target/debug/aden cargo test -p aden-mcp --test mcp_live_gauntlet
+
+This script remains for local/offline experiments only; Lean CI no longer runs it.
+"""
 
 from __future__ import annotations
 

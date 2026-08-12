@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 use rayon::prelude::*;
 
-use crate::util::{discover_source_files_scoped, find_project_root};
+use crate::util::{discover_source_files_scoped, find_project_root, normalize_sep};
 
 /// A single content match, enriched with its enclosing symbol.
 struct Match {
@@ -94,7 +94,7 @@ pub fn cmd_grep(
         .par_iter()
         .map(|file| {
             let rel = file.strip_prefix(&root).unwrap_or(file);
-            let rel_str = rel.to_string_lossy().to_string();
+            let rel_str = normalize_sep(rel);
             let content = match std::fs::read_to_string(file) {
                 Ok(c) => c,
                 Err(_) => return (0, Vec::new()), // binary / unreadable — skip
@@ -224,11 +224,11 @@ pub(crate) fn load_symbol_spans(root: &Path) -> HashMap<String, Vec<Span>> {
     let mut by_file: HashMap<String, Vec<Span>> = HashMap::new();
     for (anchor, span) in records {
         let file = Path::new(&span.file);
-        let rel = file
-            .strip_prefix(root)
-            .unwrap_or(file)
-            .to_string_lossy()
-            .to_string();
+        // Canonicalize to forward slashes. On Windows, Path display and stored
+        // `source_file` attributes often keep backslashes; tree/grep/impact-diff
+        // look up with `/`-normalized keys (or git paths), so unnormalized keys
+        // drop every nested file's symbols from outlines and attribution.
+        let rel = normalize_sep(file.strip_prefix(root).unwrap_or(file));
         by_file.entry(rel).or_default().push(Span {
             anchor,
             start: span.start_line,

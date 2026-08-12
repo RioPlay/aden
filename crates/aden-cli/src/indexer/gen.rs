@@ -13,7 +13,8 @@ use crate::util::{
     cochange_pairs, discover_file_dispositions, extract_callees, extract_demonstrates,
     extract_doc_includes, extract_doc_mentions, extract_doc_refs, extract_doc_supersedes,
     extract_doc_terms, extract_edge_macro, extract_uses, find_project_root,
-    gen_cache_requires_rebuild, load_gen_cache, sanitize_source_file, save_gen_cache,
+    gen_cache_requires_rebuild, load_gen_cache, normalize_sep, sanitize_source_file,
+    save_gen_cache,
 };
 
 /// One stored symbol plus the compact data the linker needs. Carrying callee
@@ -447,13 +448,14 @@ fn cmd_gen_inner(
                 );
                 if !path_disposition.is_indexed() {
                     return Some(WorkItem::Excluded {
-                        cache_key: src_rel.to_string_lossy().to_string(),
+                        // `/`-normalized so Windows cache keys match store source_file.
+                        cache_key: normalize_sep(src_rel),
                         source_mtime: mtime_secs,
                         source_path: src_path.to_string_lossy().to_string(),
                         disposition: path_disposition,
                     });
                 }
-                let cache_key = src_rel.to_string_lossy().to_string();
+                let cache_key = normalize_sep(src_rel);
                 // `--force-regen`/`--propose` and a full rebuild (new/empty/
                 // recovered store) must re-examine every file even when its mtime
                 // is unchanged: force needs to overwrite, the dry-run needs to
@@ -836,13 +838,7 @@ fn cmd_gen_inner(
         if !path.is_file() {
             let live: std::collections::HashSet<String> = discovered
                 .iter()
-                .map(|file| {
-                    file.path
-                        .strip_prefix(&root)
-                        .unwrap_or(&file.path)
-                        .to_string_lossy()
-                        .to_string()
-                })
+                .map(|file| normalize_sep(file.path.strip_prefix(&root).unwrap_or(&file.path)))
                 .collect();
             let dead_keys: Vec<String> = cache
                 .entries

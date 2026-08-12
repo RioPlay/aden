@@ -58,9 +58,11 @@ scripts/test-release-bundle.sh
 # delete the entire Cargo build tree, then parse Rust and Go.
 scripts/test-release-portability.sh
 
-# Product gauntlet: defaults, strict bounds, refresh, huge outlines, and live MCP confinement.
+# Product gauntlet (Rust; no Python): defaults, strict bounds, refresh,
+# huge outlines, live MCP confinement, and frozen regression datasets.
 cargo build -p aden-cli -p aden-mcp
-scripts/test-low-friction-gauntlet.py
+cargo test -p aden-cli --test low_friction_gauntlet --test regression_lock
+ADEN_BIN="$(pwd)/target/debug/aden" cargo test -p aden-mcp --test mcp_live_gauntlet
 ----
 
 `scripts/test-release-bundle.sh` uses fixture executables to prove deterministic

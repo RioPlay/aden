@@ -1453,15 +1453,10 @@ pub fn cmd_heal_gc(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|e| format!("Failed to open store: {}", e))?;
 
     // Live source files, relative to root — the same form sanitize_source_file
-    // writes into each doc's `source_file` attribute.
+    // writes into each doc's `source_file` attribute (`/` separators).
     let live: std::collections::HashSet<String> = discover_source_files(&root)?
         .iter()
-        .map(|s| {
-            s.strip_prefix(&root)
-                .unwrap_or(s)
-                .to_string_lossy()
-                .to_string()
-        })
+        .map(|s| crate::util::normalize_sep(s.strip_prefix(&root).unwrap_or(s)))
         .collect();
 
     let docs = storage

@@ -335,7 +335,10 @@ pub fn sanitize_source_file(doc: &mut aden_core::Document, root: &Path) {
                 }
             });
         if let Some(rel) = rel {
-            doc.attributes.insert("source_file".to_string(), rel);
+            // Persist with forward slashes so stores built on Windows match the
+            // `/`-normalized keys used by tree, grep, and impact-diff lookups.
+            doc.attributes
+                .insert("source_file".to_string(), rel.replace('\\', "/"));
         }
     }
 }
