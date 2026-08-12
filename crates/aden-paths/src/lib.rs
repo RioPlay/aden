@@ -155,6 +155,105 @@ fn canonical(root: &Path) -> PathBuf {
     root.canonicalize().unwrap_or_else(|_| root.to_path_buf())
 }
 
+/// Strip Windows extended-length prefixes so two spellings of the same path
+/// compare equal.
+///
+/// On Windows, `Path::canonicalize` often yields `\\?\C:\…` (or `\\?\UNC\…`),
+/// while `git rev-parse --show-toplevel` returns a normal `C:/…` form. Bytewise
+/// `starts_with` / `strip_prefix` then fail even when the paths are the same
+/// directory — which broke `aden tree` scope checks and disabled
+/// `.adenignore` during discovery (walking `target/` made `grep` take tens of
+/// seconds).
+///
+/// Pure string transform: safe to call with non-existent paths and on non-Windows
+/// hosts (no-op unless the path literally carries the prefix).
+pub fn strip_verbatim(path: &Path) -> PathBuf {
+    let value = path.to_string_lossy();
+    if let Some(rest) = value.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{rest}"));
+    }
+    if let Some(rest) = value.strip_prefix(r"\\?\") {
+        return PathBuf::from(rest);
+    }
+    // Forward-slash variants sometimes appear after separator normalization.
+    if let Some(rest) = value.strip_prefix("//?/") {
+        if let Some(unc) = rest.strip_prefix("UNC/") {
+            return PathBuf::from(format!("//{unc}"));
+        }
+        return PathBuf::from(rest);
+    }
+    path.to_path_buf()
+}
+
+/// Normalize a path for containment checks: strip verbatim prefixes and unify
+/// separators. On Windows, also case-fold because NTFS is case-insensitive.
+fn compare_key(path: &Path) -> PathBuf {
+    let stripped = strip_verbatim(path);
+    let unified = stripped
+        .to_string_lossy()
+        .replace(['/', '\\'], std::path::MAIN_SEPARATOR_STR);
+    #[cfg(windows)]
+    {
+        PathBuf::from(unified.to_ascii_lowercase())
+    }
+    #[cfg(not(windows))]
+    {
+        PathBuf::from(unified)
+    }
+}
+
+/// True when `path` is `root` or a descendant.
+///
+/// Both sides are canonicalized when possible and compared after
+/// [`strip_verbatim`], so Windows `\\?\` vs plain drive paths agree.
+pub fn is_under(root: &Path, path: &Path) -> bool {
+    let root_key = compare_key(&canonical(root));
+    let path_key = compare_key(&path.canonicalize().unwrap_or_else(|_| path.to_path_buf()));
+    path_key.starts_with(&root_key)
+}
+
+/// Project-relative path of `path` under `root`, if any.
+///
+/// Returns `None` when `path` is outside `root`. Prefer this over bare
+/// `Path::strip_prefix` anywhere ignore rules or display keys need a relative
+/// path on Windows.
+pub fn relative_to(root: &Path, path: &Path) -> Option<PathBuf> {
+    let root_raw = strip_verbatim(&canonical(root));
+    let path_raw = strip_verbatim(&path.canonicalize().unwrap_or_else(|_| path.to_path_buf()));
+
+    if let Ok(rel) = path_raw.strip_prefix(&root_raw) {
+        return Some(rel.to_path_buf());
+    }
+
+    // Case-insensitive / mixed-separator fallback (Windows + odd git paths).
+    let root_comps: Vec<_> = root_raw.components().collect();
+    let path_comps: Vec<_> = path_raw.components().collect();
+    if path_comps.len() < root_comps.len() {
+        return None;
+    }
+    for (root_c, path_c) in root_comps.iter().zip(path_comps.iter()) {
+        let a = root_c.as_os_str();
+        let b = path_c.as_os_str();
+        #[cfg(windows)]
+        {
+            if !a.eq_ignore_ascii_case(b) {
+                return None;
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            if a != b {
+                return None;
+            }
+        }
+    }
+    let mut out = PathBuf::new();
+    for component in path_comps.into_iter().skip(root_comps.len()) {
+        out.push(component);
+    }
+    Some(out)
+}
+
 /// Stable 16-hex-char project identity: `sha256(canonical_root)[:8 bytes]`.
 ///
 /// The same repo addressed from any subdirectory resolves to the same root and
@@ -407,6 +506,58 @@ mod tests {
         assert_eq!(k1, k2, "key must be deterministic");
         assert_eq!(k1.len(), KEY_HEX_LEN);
         assert!(k1.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn strip_verbatim_removes_windows_extended_prefix() {
+        assert_eq!(
+            strip_verbatim(Path::new(r"\\?\C:\Users\me\proj")),
+            PathBuf::from(r"C:\Users\me\proj")
+        );
+        assert_eq!(
+            strip_verbatim(Path::new(r"\\?\UNC\server\share\repo")),
+            PathBuf::from(r"\\server\share\repo")
+        );
+        assert_eq!(
+            strip_verbatim(Path::new("//?/C:/Users/me/proj")),
+            PathBuf::from("C:/Users/me/proj")
+        );
+        // Non-verbatim paths are unchanged.
+        assert_eq!(
+            strip_verbatim(Path::new("/home/me/proj")),
+            PathBuf::from("/home/me/proj")
+        );
+    }
+
+    #[test]
+    fn compare_key_unifies_verbatim_and_plain_drive_spellings() {
+        // Simulate the Windows tree/grep failure: git root is plain, canonicalize
+        // is verbatim. Containment must treat them as one hierarchy.
+        let root = compare_key(Path::new(r"C:\Users\me\proj"));
+        let scope = compare_key(Path::new(r"\\?\C:\Users\me\proj"));
+        let nested = compare_key(Path::new(r"\\?\C:\Users\me\proj\crates\cli"));
+        let outside = compare_key(Path::new(r"\\?\C:\Users\me\other"));
+        assert_eq!(root, scope);
+        assert!(nested.starts_with(&root));
+        assert!(!outside.starts_with(&root));
+    }
+
+    #[test]
+    fn relative_to_and_is_under_agree_on_real_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let child = root.join("src").join("lib.rs");
+        std::fs::create_dir_all(child.parent().unwrap()).unwrap();
+        std::fs::write(&child, b"fn x() {}").unwrap();
+
+        assert!(is_under(root, &child));
+        assert!(is_under(root, root));
+        let rel = relative_to(root, &child).expect("child is under root");
+        assert_eq!(rel, PathBuf::from("src").join("lib.rs"));
+
+        let outsider = tempfile::tempdir().unwrap();
+        assert!(!is_under(root, outsider.path()));
+        assert!(relative_to(root, outsider.path()).is_none());
     }
 
     #[test]

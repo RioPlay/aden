@@ -93,8 +93,12 @@ pub fn cmd_grep(
     let per_file: Vec<(usize, Vec<Match>)> = files
         .par_iter()
         .map(|file| {
-            let rel = file.strip_prefix(&root).unwrap_or(file);
-            let rel_str = normalize_sep(rel);
+            let rel_str = aden_paths::relative_to(&root, file)
+                .map(|rel| normalize_sep(&rel))
+                .unwrap_or_else(|| {
+                    let rel = file.strip_prefix(&root).unwrap_or(file);
+                    normalize_sep(rel)
+                });
             let content = match std::fs::read_to_string(file) {
                 Ok(c) => c,
                 Err(_) => return (0, Vec::new()), // binary / unreadable — skip
@@ -190,11 +194,27 @@ pub fn cmd_grep(
 /// rules. CLI defaults arrive as relative `.`; passing that through unchanged
 /// makes `strip_prefix(absolute_root)` fail in discovery, which disables every
 /// built-in ignore and can walk enormous `target/` or `node_modules/` trees.
+///
+/// Prefer a path that sits under `root` after Windows verbatim normalization so
+/// `relative_to` / ignore rules keep working even when canonicalize returns
+/// `\\?\…` while the project root came from git as `C:/…`.
 fn normalized_search_scope(path: &Path, root: &Path) -> PathBuf {
     if !path.is_dir() {
         return root.to_path_buf();
     }
-    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+    let canon = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    if aden_paths::is_under(root, &canon) {
+        // Walk from the plain project root when the scope *is* the root so
+        // child paths from read_dir share the root's spelling and strip cleanly.
+        if aden_paths::relative_to(root, &canon)
+            .map(|rel| rel.as_os_str().is_empty())
+            .unwrap_or(false)
+        {
+            return std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+        }
+        return canon;
+    }
+    root.to_path_buf()
 }
 
 /// Load `source_file -> [span]` so each match can be attributed to its
@@ -224,11 +244,16 @@ pub(crate) fn load_symbol_spans(root: &Path) -> HashMap<String, Vec<Span>> {
     let mut by_file: HashMap<String, Vec<Span>> = HashMap::new();
     for (anchor, span) in records {
         let file = Path::new(&span.file);
-        // Canonicalize to forward slashes. On Windows, Path display and stored
-        // `source_file` attributes often keep backslashes; tree/grep/impact-diff
-        // look up with `/`-normalized keys (or git paths), so unnormalized keys
-        // drop every nested file's symbols from outlines and attribution.
-        let rel = normalize_sep(file.strip_prefix(root).unwrap_or(file));
+        // Forward-slash relative keys. Prefer aden_paths::relative_to so Windows
+        // absolute/`\\?\` stored paths still join tree/grep lookups that use
+        // project-relative `/`-normalized keys.
+        let rel = if file.is_absolute() {
+            aden_paths::relative_to(root, file)
+                .map(|r| normalize_sep(&r))
+                .unwrap_or_else(|| normalize_sep(file.strip_prefix(root).unwrap_or(file)))
+        } else {
+            normalize_sep(file)
+        };
         by_file.entry(rel).or_default().push(Span {
             anchor,
             start: span.start_line,
