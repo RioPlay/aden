@@ -84,7 +84,7 @@ fn long_version_reports_reproducible_build_identity_and_formats() {
     assert!(version.contains("Features:"), "{version}");
     assert!(version.contains("snapshot-v1"), "{version}");
     assert!(version.contains("index-layout-v3"), "{version}");
-    assert!(version.contains("gen-logic-v8"), "{version}");
+    assert!(version.contains("gen-logic-v9"), "{version}");
     assert!(version.contains("symbol-lexicon-v2"), "{version}");
     assert!(
         !version.contains("Built at:"),

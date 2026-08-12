@@ -31,7 +31,12 @@ use std::path::PathBuf;
 ///    `grep`; unchanged files must re-emit once so upgraded stores are complete.
 /// 8: Persist the natural-symbol lexicon used by exact and typo resolution.
 ///    Every document must re-emit once so upgraded stores have complete keys.
-pub const GEN_LOGIC_VERSION: u32 = 8;
+/// 9: Windows path-key alignment — project-relative cache/fingerprint/
+///    `source_file` keys now strip via `project_relative` so git roots (`C:/…`)
+///    and verbatim canonicalize forms (`\\?\C:\…`) share one spelling. Without
+///    a full re-emit, incremental caches can leave `locate`/`tree --symbols`
+///    looking empty while `tree` still lists files.
+pub const GEN_LOGIC_VERSION: u32 = 9;
 
 /// Incremental generation cache: maps contract file path → metadata.
 #[derive(Default, Serialize, Deserialize)]
