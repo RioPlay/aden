@@ -384,12 +384,7 @@ fn cmd_gen_inner(
                 if file.disposition.is_indexed() {
                     continue;
                 }
-                let key = file
-                    .path
-                    .strip_prefix(&root)
-                    .unwrap_or(&file.path)
-                    .to_string_lossy()
-                    .to_string();
+                let key = crate::util::project_relative_key(&root, &file.path);
                 if let Some(previous) = cache.entries.remove(&key) {
                     // Pruning is completed by the ordinary stale-anchor pass
                     // below after all parser outcomes are known.
@@ -437,25 +432,25 @@ fn cmd_gen_inner(
                     .as_secs();
 
                 // Check mtime cache — if match, return Skip
-                let src_rel = src_path.strip_prefix(&root).unwrap_or(src_path);
+                let src_rel = crate::util::project_relative(&root, src_path);
                 // Security floor: never index credential material into the store
                 // (where ask/asm would assemble it into LLM context). Search
                 // (grep/locate/audit) can still see these files to fix them.
                 let path_disposition = aden_core::filter::FileDisposition::for_path(
-                    src_rel,
+                    &src_rel,
                     false,
                     true,
                 );
                 if !path_disposition.is_indexed() {
                     return Some(WorkItem::Excluded {
                         // `/`-normalized so Windows cache keys match store source_file.
-                        cache_key: normalize_sep(src_rel),
+                        cache_key: normalize_sep(&src_rel),
                         source_mtime: mtime_secs,
                         source_path: src_path.to_string_lossy().to_string(),
                         disposition: path_disposition,
                     });
                 }
-                let cache_key = normalize_sep(src_rel);
+                let cache_key = normalize_sep(&src_rel);
                 // `--force-regen`/`--propose` and a full rebuild (new/empty/
                 // recovered store) must re-examine every file even when its mtime
                 // is unchanged: force needs to overwrite, the dry-run needs to
@@ -838,7 +833,7 @@ fn cmd_gen_inner(
         if !path.is_file() {
             let live: std::collections::HashSet<String> = discovered
                 .iter()
-                .map(|file| normalize_sep(file.path.strip_prefix(&root).unwrap_or(&file.path)))
+                .map(|file| crate::util::project_relative_key(&root, &file.path))
                 .collect();
             let dead_keys: Vec<String> = cache
                 .entries

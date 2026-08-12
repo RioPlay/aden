@@ -169,8 +169,8 @@ pub(crate) fn source_fingerprint(root: &Path) -> std::io::Result<String> {
     let mut hash = StableFnv::new();
     let mut buffer = [0_u8; 64 * 1024];
     for source in sources {
-        let relative = source.strip_prefix(root).unwrap_or(&source);
-        let relative = relative.to_string_lossy();
+        // Windows-safe relative key (git root vs \\?\ canonicalize).
+        let relative = crate::util::project_relative_key(root, &source);
         hash.write_len(relative.len() as u64);
         hash.write(relative.as_bytes());
 

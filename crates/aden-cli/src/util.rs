@@ -374,10 +374,9 @@ pub fn sanitize_source_file(doc: &mut aden_core::Document, root: &Path) {
         // another. The bare-filename fallback only applies to genuinely
         // host-absolute paths, so relative paths that simply don't match the
         // root are left untouched.
-        let rel = p
-            .strip_prefix(root)
-            .ok()
-            .map(|r| r.to_string_lossy().to_string())
+        let rel = aden_paths::relative_to(root, p)
+            .or_else(|| p.strip_prefix(root).ok().map(|r| r.to_path_buf()))
+            .map(|r| r.to_string_lossy().replace('\\', "/"))
             .or_else(|| {
                 if p.is_absolute() {
                     p.file_name().map(|f| f.to_string_lossy().to_string())
@@ -388,8 +387,7 @@ pub fn sanitize_source_file(doc: &mut aden_core::Document, root: &Path) {
         if let Some(rel) = rel {
             // Persist with forward slashes so stores built on Windows match the
             // `/`-normalized keys used by tree, grep, and impact-diff lookups.
-            doc.attributes
-                .insert("source_file".to_string(), rel.replace('\\', "/"));
+            doc.attributes.insert("source_file".to_string(), rel);
         }
     }
 }
@@ -425,6 +423,21 @@ pub fn normalize_sep(path: &Path) -> String {
     aden_paths::strip_verbatim(path)
         .to_string_lossy()
         .replace('\\', "/")
+}
+
+/// Project-relative path for cache keys, coverage, and fingerprints.
+///
+/// Prefer this over bare `Path::strip_prefix(root)` so Windows git roots
+/// (`C:/…`) and canonicalize forms (`\\?\C:\…`) still strip cleanly.
+pub fn project_relative(root: &Path, path: &Path) -> PathBuf {
+    aden_paths::relative_to(root, path)
+        .or_else(|| path.strip_prefix(root).ok().map(|p| p.to_path_buf()))
+        .unwrap_or_else(|| path.to_path_buf())
+}
+
+/// `project_relative` with `/`-normalized string form (store keys, greps).
+pub fn project_relative_key(root: &Path, path: &Path) -> String {
+    normalize_sep(&project_relative(root, path))
 }
 
 /// Sanitize an anchor into a safe filename stem.
@@ -1610,9 +1623,7 @@ fn results_are_chronological(results: &[aden_index::SearchResult]) -> bool {
 }
 
 fn source_key(path: &Path, root: &Path) -> String {
-    path.strip_prefix(root)
-        .unwrap_or(path)
-        .to_string_lossy()
+    project_relative_key(root, path)
         .trim_start_matches("./")
         .to_ascii_lowercase()
 }
