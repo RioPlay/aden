@@ -173,6 +173,21 @@ fn walk_files_with_dispositions(
     filter: &aden_core::filter::AdenFilter,
     out: &mut Vec<DiscoveredFile>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // Same Windows root spelling trap as walk_supported_files: normalize once.
+    let root_norm = aden_paths::strip_verbatim(
+        &std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf()),
+    );
+    walk_files_with_dispositions_inner(dir, root, &root_norm, supported, filter, out)
+}
+
+fn walk_files_with_dispositions_inner(
+    dir: &Path,
+    root: &Path,
+    root_norm: &Path,
+    supported: &std::collections::HashSet<&'static str>,
+    filter: &aden_core::filter::AdenFilter,
+    out: &mut Vec<DiscoveredFile>,
+) -> Result<(), Box<dyn std::error::Error>> {
     for entry in std::fs::read_dir(dir).map_err(|e| format!("read_dir {}: {e}", dir.display()))? {
         let entry = entry?;
         let path = entry.path();
@@ -180,25 +195,33 @@ fn walk_files_with_dispositions(
         if file_type.is_symlink() {
             continue;
         }
+        let rel = {
+            let path_norm = aden_paths::strip_verbatim(&path);
+            path_norm
+                .strip_prefix(root_norm)
+                .ok()
+                .map(|r| r.to_path_buf())
+                .or_else(|| path.strip_prefix(root).ok().map(|r| r.to_path_buf()))
+                .or_else(|| aden_paths::relative_to(root, &path))
+        };
         if file_type.is_dir() {
             // A directory-level ignore is recorded by policy, but walking its
             // entire contents (notably .git/, target/, and node_modules/) would
             // turn a coverage receipt into an unbounded scan. Ordinary ignored
             // files are still retained below with their exact disposition.
-            if path
-                .strip_prefix(root)
-                .ok()
+            if rel
+                .as_ref()
                 .is_some_and(|relative| filter.should_skip(relative))
             {
                 continue;
             }
-            walk_files_with_dispositions(&path, root, supported, filter, out)?;
+            walk_files_with_dispositions_inner(&path, root, root_norm, supported, filter, out)?;
             continue;
         }
         if !file_type.is_file() {
             continue;
         }
-        let rel = path.strip_prefix(root).unwrap_or(&path).to_path_buf();
+        let rel = rel.unwrap_or_else(|| path.clone());
         let supported_file = match path.extension().and_then(|ext| ext.to_str()) {
             Some(ext) => supported.contains(ext),
             None => path

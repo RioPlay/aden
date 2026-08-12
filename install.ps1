@@ -65,6 +65,23 @@ Banner -Text "Building Aden"
 Write-Host "  Project: $PROJECT_ROOT"
 Write-Host "  Install to: $InstallDir"
 
+# Compile-time identity for `aden --version` (mirrors install.sh).
+if (-not $env:ADEN_BUILD_REVISION) {
+    $rev = git -C $PROJECT_ROOT rev-parse --short=12 HEAD 2>$null
+    if ($LASTEXITCODE -eq 0 -and $rev) { $env:ADEN_BUILD_REVISION = "$rev".Trim() }
+    else { $env:ADEN_BUILD_REVISION = "unknown" }
+}
+if (-not $env:ADEN_BUILD_STATE) {
+    if ($env:SOURCE_DATE_EPOCH) {
+        $env:ADEN_BUILD_STATE = "reproducible"
+    } else {
+        $porcelain = git -C $PROJECT_ROOT status --porcelain --untracked-files=no 2>$null
+        if ($LASTEXITCODE -eq 0 -and $porcelain) { $env:ADEN_BUILD_STATE = "dirty" }
+        else { $env:ADEN_BUILD_STATE = "clean" }
+    }
+}
+Write-Host "  Build identity: $($env:ADEN_BUILD_REVISION) ($($env:ADEN_BUILD_STATE)); no timestamp embedded."
+
 Push-Location $PROJECT_ROOT
 try {
     # Windows PowerShell 5.1 wraps a native program's stderr as error records.

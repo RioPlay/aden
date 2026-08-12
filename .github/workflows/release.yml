@@ -228,8 +228,14 @@ jobs:
           CARGO_PROFILE_RELEASE_OPT_LEVEL: ${{ matrix.release_opt_level }}
           MATRIX_TARGET: ${{ matrix.target }}
           MATRIX_CARGO_BUILD_JOBS: ${{ matrix.cargo_build_jobs }}
+          # Compile-time identity for `aden --version` (option_env! in main.rs).
+          # Without these, shipped archives report "dev (source-tree)".
+          ADEN_BUILD_REVISION: ${{ github.sha }}
+          ADEN_BUILD_STATE: release
         run: |
           set -euo pipefail
+          # Short git-style revision for the banner (first 12 hex chars).
+          export ADEN_BUILD_REVISION="${ADEN_BUILD_REVISION:0:12}"
           # macOS ships bash 3.x: empty "${array[@]}" under `set -u` is an
           # unbound-variable error. Use -j only when explicitly limited.
           if [[ "${MATRIX_CARGO_BUILD_JOBS}" != "0" ]]; then
@@ -247,8 +253,18 @@ jobs:
           set -euo pipefail
           suffix=""
           [[ "${{ runner.os }}" == "Windows" ]] && suffix=".exe"
-          "target/${{ matrix.target }}/release/aden${suffix}" --version
+          version="$("target/${{ matrix.target }}/release/aden${suffix}" --version)"
+          printf '%s\n' "$version"
           "target/${{ matrix.target }}/release/aden-mcp${suffix}" --version
+          # Shipped archives must not look like a local source-tree build.
+          if grep -q 'source-tree' <<<"$version"; then
+            echo "Release binary still reports source-tree identity" >&2
+            exit 1
+          fi
+          if ! grep -q 'release' <<<"$version"; then
+            echo "Release binary does not report release build state" >&2
+            exit 1
+          fi
           # Keep the binary contract behind the published AmpCode release note.
           "target/${{ matrix.target }}/release/aden${suffix}" mcp install --platform amp --scope user --surface essential --dry-run >/dev/null
 
