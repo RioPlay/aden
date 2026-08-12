@@ -173,6 +173,21 @@ fn walk_files_with_dispositions(
     filter: &aden_core::filter::AdenFilter,
     out: &mut Vec<DiscoveredFile>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // Same Windows root spelling trap as walk_supported_files: normalize once.
+    let root_norm = aden_paths::strip_verbatim(
+        &std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf()),
+    );
+    walk_files_with_dispositions_inner(dir, root, &root_norm, supported, filter, out)
+}
+
+fn walk_files_with_dispositions_inner(
+    dir: &Path,
+    root: &Path,
+    root_norm: &Path,
+    supported: &std::collections::HashSet<&'static str>,
+    filter: &aden_core::filter::AdenFilter,
+    out: &mut Vec<DiscoveredFile>,
+) -> Result<(), Box<dyn std::error::Error>> {
     for entry in std::fs::read_dir(dir).map_err(|e| format!("read_dir {}: {e}", dir.display()))? {
         let entry = entry?;
         let path = entry.path();
@@ -180,25 +195,33 @@ fn walk_files_with_dispositions(
         if file_type.is_symlink() {
             continue;
         }
+        let rel = {
+            let path_norm = aden_paths::strip_verbatim(&path);
+            path_norm
+                .strip_prefix(root_norm)
+                .ok()
+                .map(|r| r.to_path_buf())
+                .or_else(|| path.strip_prefix(root).ok().map(|r| r.to_path_buf()))
+                .or_else(|| aden_paths::relative_to(root, &path))
+        };
         if file_type.is_dir() {
             // A directory-level ignore is recorded by policy, but walking its
             // entire contents (notably .git/, target/, and node_modules/) would
             // turn a coverage receipt into an unbounded scan. Ordinary ignored
             // files are still retained below with their exact disposition.
-            if path
-                .strip_prefix(root)
-                .ok()
+            if rel
+                .as_ref()
                 .is_some_and(|relative| filter.should_skip(relative))
             {
                 continue;
             }
-            walk_files_with_dispositions(&path, root, supported, filter, out)?;
+            walk_files_with_dispositions_inner(&path, root, root_norm, supported, filter, out)?;
             continue;
         }
         if !file_type.is_file() {
             continue;
         }
-        let rel = path.strip_prefix(root).unwrap_or(&path).to_path_buf();
+        let rel = rel.unwrap_or_else(|| path.clone());
         let supported_file = match path.extension().and_then(|ext| ext.to_str()) {
             Some(ext) => supported.contains(ext),
             None => path
@@ -351,10 +374,9 @@ pub fn sanitize_source_file(doc: &mut aden_core::Document, root: &Path) {
         // another. The bare-filename fallback only applies to genuinely
         // host-absolute paths, so relative paths that simply don't match the
         // root are left untouched.
-        let rel = p
-            .strip_prefix(root)
-            .ok()
-            .map(|r| r.to_string_lossy().to_string())
+        let rel = aden_paths::relative_to(root, p)
+            .or_else(|| p.strip_prefix(root).ok().map(|r| r.to_path_buf()))
+            .map(|r| r.to_string_lossy().replace('\\', "/"))
             .or_else(|| {
                 if p.is_absolute() {
                     p.file_name().map(|f| f.to_string_lossy().to_string())
@@ -365,8 +387,7 @@ pub fn sanitize_source_file(doc: &mut aden_core::Document, root: &Path) {
         if let Some(rel) = rel {
             // Persist with forward slashes so stores built on Windows match the
             // `/`-normalized keys used by tree, grep, and impact-diff lookups.
-            doc.attributes
-                .insert("source_file".to_string(), rel.replace('\\', "/"));
+            doc.attributes.insert("source_file".to_string(), rel);
         }
     }
 }
@@ -402,6 +423,21 @@ pub fn normalize_sep(path: &Path) -> String {
     aden_paths::strip_verbatim(path)
         .to_string_lossy()
         .replace('\\', "/")
+}
+
+/// Project-relative path for cache keys, coverage, and fingerprints.
+///
+/// Prefer this over bare `Path::strip_prefix(root)` so Windows git roots
+/// (`C:/…`) and canonicalize forms (`\\?\C:\…`) still strip cleanly.
+pub fn project_relative(root: &Path, path: &Path) -> PathBuf {
+    aden_paths::relative_to(root, path)
+        .or_else(|| path.strip_prefix(root).ok().map(|p| p.to_path_buf()))
+        .unwrap_or_else(|| path.to_path_buf())
+}
+
+/// `project_relative` with `/`-normalized string form (store keys, greps).
+pub fn project_relative_key(root: &Path, path: &Path) -> String {
+    normalize_sep(&project_relative(root, path))
 }
 
 /// Sanitize an anchor into a safe filename stem.
@@ -1587,9 +1623,7 @@ fn results_are_chronological(results: &[aden_index::SearchResult]) -> bool {
 }
 
 fn source_key(path: &Path, root: &Path) -> String {
-    path.strip_prefix(root)
-        .unwrap_or(path)
-        .to_string_lossy()
+    project_relative_key(root, path)
         .trim_start_matches("./")
         .to_ascii_lowercase()
 }

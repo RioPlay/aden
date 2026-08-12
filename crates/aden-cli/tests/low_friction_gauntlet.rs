@@ -144,6 +144,25 @@ fn low_friction_cli_gauntlet() {
     );
     assert!(!outline.contains("helper();"), "{outline}");
 
+    // Grep must stay project-scoped (ignore target/ etc.) and return relative
+    // paths — the Windows path-normalization regression that walked the whole
+    // cargo tree for ~30s and printed //?/C:/… extended paths.
+    let grep_payload = run_json(&project, &["grep", "helper", "."]);
+    let total = grep_payload["total"].as_u64().unwrap_or(u64::MAX);
+    assert!(
+        total > 0 && total < 50,
+        "grep should hit fixture source, not a huge tree: {grep_payload}"
+    );
+    let matches = grep_payload["matches"].as_array().expect("matches array");
+    assert!(
+        matches.iter().all(|m| {
+            m.get("file").and_then(|f| f.as_str()).is_some_and(|f| {
+                !f.contains("//?/") && !f.contains(r"\\?\") && !Path::new(f).is_absolute()
+            })
+        }),
+        "grep paths must be project-relative, not extended absolute: {grep_payload}"
+    );
+
     let broad_raw = run_ok(
         &project,
         &["ask", "Find all security issues across the repository", "."],
