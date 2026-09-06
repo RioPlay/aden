@@ -32,10 +32,33 @@ members = [
     "crates/aden-paths",
 ]
 
+# The root package exists only to host benches/. Without this, a plain
+# `cargo build`/`cargo test` at the root compiles dependency crates and then
+# finishes without producing the `aden` binary or running any tests — a
+# silent no-op for the crates you actually want. aden-lsp is excluded to
+# match the CI full-suite gate (`--workspace --exclude aden-lsp`); build or
+# test it explicitly with `-p aden-lsp`.
+default-members = [
+    "crates/aden-core",
+    "crates/aden-parse",
+    "crates/aden-emit",
+    "crates/aden-asm",
+    "crates/aden-graph",
+    "crates/aden-index",
+    "crates/aden-cli",
+    "crates/aden-heal",
+    "crates/aden-propose",
+    "crates/aden-mcp",
+    "crates/aden-policy",
+    "crates/aden-store",
+    "crates/aden-diagnose",
+    "crates/aden-paths",
+]
+
 resolver = "3"
 
 [workspace.package]
-version = "0.4.0"
+version = "0.4.1"
 edition = "2024"
 authors = ["RioPlay <rioplay@rioplay.dev>"]
 license = "AGPL-3.0-or-later"

@@ -61,6 +61,9 @@ Exact anchors remain available for precision, and ambiguous names return candida
 - **Never hand-edit the knowledge graph** — rebuild with `gen`
 - **Never commit `.aden/`** — build artifact, in `.gitignore`
 - **Never ignore test failures**
+- Plain `cargo build` / `cargo test` at the root cover every crate **except**
+  `aden-lsp` (use `-p aden-lsp`). The root package only hosts `benches/` —
+  run them with `cargo bench -p aden`.
 - This repo uses **AsciiDoc** (`.adoc`): `[[anchors]]` precede titles, `<<anchor>>`
   cross-references must resolve. Run `check . --severity Forbid` after editing `.adoc`.
 
