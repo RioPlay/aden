@@ -731,6 +731,12 @@ enum Commands {
     },
     /// Resolve a symbol or caller query to canonical anchors and source ranges
     Locate {
+        /// Symbol to locate (bare positional; equivalent to --symbol). A bare
+        /// `aden locate <named-project>` invocation cannot mean "list DIR" —
+        //  DIR alone without a symbol was never a valid invocation, so the
+        //  first positional is always the symbol.
+        #[arg(value_name = "SYMBOL", help = "Find definition of this symbol (equivalent to --symbol)")]
+        symbol_pos: Option<String>,
         #[arg(
             short = 's',
             long,
@@ -1786,6 +1792,7 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
             resolution,
         ),
         Commands::Locate {
+            symbol_pos,
             symbol,
             caller_of,
             format,
@@ -1794,6 +1801,20 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
             limit,
         } => {
             let effective_limit = if cli.unlimited { usize::MAX } else { limit };
+            // Precedence: `locate SYM [DIR]` (no flags) reads the first
+            // positional as the symbol; with -s/-c the first positional is
+            // the DIR. Giving both would be ambiguous — error instead of guessing.
+            let (symbol, path) = if let Some(pos) = symbol_pos {
+                if symbol.is_none() && caller_of.is_none() {
+                    (Some(pos), path)
+                } else if path == PathBuf::from(".") {
+                    (symbol, PathBuf::from(pos))
+                } else {
+                    return Err("locate: DIR given both as the first positional and as the second positional — keep only one".into());
+                }
+            } else {
+                (symbol, path)
+            };
             commands::cmd_locate(
                 &path,
                 symbol.as_deref(),
