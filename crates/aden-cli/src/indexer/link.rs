@@ -128,13 +128,19 @@ fn is_adr_doc_anchor(anchor: &str) -> bool {
 /// `Self::foo`) resolve exactly to a method on the caller's own enclosing type —
 /// the one OOP case with zero ambiguity; (2) the full callee; (3) the trailing
 /// segment after the last `.`/`:` so receiver/qualified calls link
-/// (`c.ExecuteC` → `ExecuteC`, `click.echo` → `echo`, `Path::new` → `new`).
+/// (`c.ExecuteC` → `ExecuteC`, `click.echo` → `echo`).
 /// When a name is ambiguous (defined in several
 /// places) we disambiguate by locality: prefer a candidate in the caller's own
 /// FILE, then in its crate. Most calls are intra-file/intra-crate, so this
 /// resolves the common case (e.g. a private `node_text` helper copied into every
 /// extractor file) instead of dropping the edge — without guessing across
 /// modules, which would forge false edges.
+///
+/// Trailing-segment matches also require that locality. A unique-in-the-repo
+/// `finalize` must not absorb `hasher.finalize()`: the stored symbol is often
+/// an unrelated method (`Index::finalize`) while the call is an external trait
+/// method. Bare exact names may still unique-win across crates (real public
+/// API calls); only the `recv.method` / `Type::method` fallback is strict.
 fn resolve_callee<'a>(
     callee: &str,
     caller: &str,
@@ -168,7 +174,7 @@ fn resolve_callee<'a>(
     if base != callee
         && !base.is_empty()
         && let Some(t) = name_index.get(base)
-        && let Some(r) = pick(t)
+        && let Some(r) = pick_local_same_module(t, caller_file, caller_crate.as_deref())
     {
         return Some(r);
     }
@@ -187,7 +193,24 @@ fn pick_local<'a>(
 ) -> Option<&'a str> {
     match cands {
         [] => None,
-        [one] => Some(*one),
+        [one] => {
+            if (caller_file.is_some() && anchor_file(one) == caller_file)
+                || (caller_crate.is_some() && module_from_anchor(one).as_deref() == caller_crate)
+            {
+                return Some(*one);
+            }
+            // Unique in the repo but not local. A free function is a plausible
+            // public API call (`resolve_root` from another crate). A method
+            // (`Index::finalize`) is almost always a bare `x.finalize()` whose
+            // type the parser does not know — the rust extractor says those
+            // "get dropped at link time" when the name is ambiguous; a unique
+            // in-repo method must not resurrect them.
+            if is_method_symbol(one) {
+                None
+            } else {
+                Some(*one)
+            }
+        }
         many => {
             // Ambiguous: prefer the caller's own file, then its crate.
             if let Some(cf) = caller_file {
@@ -209,6 +232,32 @@ fn pick_local<'a>(
             if same.len() == 1 { Some(same[0]) } else { None }
         }
     }
+}
+
+fn is_method_symbol(anchor: &str) -> bool {
+    anchor
+        .rsplit('#')
+        .next()
+        .is_some_and(|frag| frag.contains("::") || frag.contains('.'))
+}
+
+/// Trailing-segment picker: keep [`pick_local`]'s file-then-crate tiebreak,
+/// but never unique-win a candidate in another crate. `hasher.finalize()`
+/// in `aden-paths` must not become a `Calls` edge to `Index::finalize`.
+fn pick_local_same_module<'a>(
+    cands: &[&'a str],
+    caller_file: Option<&str>,
+    caller_crate: Option<&str>,
+) -> Option<&'a str> {
+    let local: Vec<&'a str> = cands
+        .iter()
+        .copied()
+        .filter(|anchor| {
+            (caller_file.is_some() && anchor_file(anchor) == caller_file)
+                || (caller_crate.is_some() && module_from_anchor(anchor).as_deref() == caller_crate)
+        })
+        .collect();
+    pick_local(&local, caller_file, caller_crate)
 }
 
 /// Minimum name length for the Wave-2 prose-mention / listing-reference
@@ -1097,6 +1146,72 @@ mod link_tests {
         assert_eq!(
             resolve_callee("foo", "aden://module/c/b.rs#bar", &idx),
             Some("aden://module/c/a.rs#foo")
+        );
+    }
+
+    #[test]
+    fn trailing_segment_does_not_guess_unique_foreign_crate_method() {
+        // The agent-facing failure: `hasher.finalize()` in aden-paths is the
+        // only `finalize` in the repo *as a stored symbol*, so unique-win
+        // forged a Calls edge to Index::finalize and asm/ask dragged in
+        // aden-index.
+        let mut idx: HashMap<&str, Vec<&str>> = HashMap::new();
+        idx.insert(
+            "finalize",
+            vec!["aden://module/aden-index/src/lib.rs#Index::finalize"],
+        );
+        assert_eq!(
+            resolve_callee(
+                "hasher.finalize",
+                "aden://module/aden-paths/src/lib.rs#project_key",
+                &idx
+            ),
+            None
+        );
+        assert_eq!(
+            resolve_callee(
+                "Sha256::finalize",
+                "aden://module/aden-paths/src/lib.rs#project_key",
+                &idx
+            ),
+            None
+        );
+        // Same-crate receiver still links — this is a real intra-crate method.
+        idx.insert(
+            "compare_key",
+            vec!["aden://module/aden-paths/src/lib.rs#compare_key"],
+        );
+        assert_eq!(
+            resolve_callee(
+                "paths.compare_key",
+                "aden://module/aden-paths/src/lib.rs#project_key",
+                &idx
+            ),
+            Some("aden://module/aden-paths/src/lib.rs#compare_key")
+        );
+        // Bare `finalize()` is how the rust extractor records `hasher.finalize()`
+        // (no method_call_expression). Unique-win must not treat that as a
+        // cross-crate call to Index::finalize.
+        assert_eq!(
+            resolve_callee(
+                "finalize",
+                "aden://module/aden-paths/src/lib.rs#project_key",
+                &idx
+            ),
+            None
+        );
+        // Unique free functions may still link across crates (real public API).
+        idx.insert(
+            "resolve_root",
+            vec!["aden://module/aden-paths/src/lib.rs#resolve_root"],
+        );
+        assert_eq!(
+            resolve_callee(
+                "resolve_root",
+                "aden://module/aden-cli/src/util.rs#find_project_root",
+                &idx
+            ),
+            Some("aden://module/aden-paths/src/lib.rs#resolve_root")
         );
     }
 

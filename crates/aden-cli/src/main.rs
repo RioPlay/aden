@@ -191,8 +191,13 @@ enum Commands {
     /// Verify all <<refs>> resolve to existing [[anchors]]
     #[command(hide = true)]
     Check {
-        #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::AnyPath)]
-        path: PathBuf,
+        #[arg(
+            value_name = "DIR",
+            default_value = ".",
+            num_args = 1..=8,
+            value_hint = ValueHint::AnyPath
+        )]
+        paths: Vec<PathBuf>,
         #[arg(
             long,
             value_name = "SEVERITY",
@@ -1080,10 +1085,10 @@ enum McpAction {
         #[arg(
             long,
             value_name = "PLATFORM",
-            help = "Target platform: amp, opencode, claude, cursor, codex, zed, windsurf"
+            help = "Target platform: amp, opencode, claude, cursor, codex, zed, windsurf, grok"
         )]
         platform: Option<String>,
-        #[arg(long, value_name = "PATH", help = "Path to aden-mcp binary")]
+        #[arg(long, value_name = "PATH", help = "Path to aden or aden-mcp binary")]
         binary: Option<PathBuf>,
         #[arg(long, value_name = "PATH", help = "Project directory to serve")]
         project: Option<PathBuf>,
@@ -1170,6 +1175,17 @@ enum McpAction {
         port: u16,
         #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
         path: PathBuf,
+    },
+    /// Speak MCP JSON-RPC on stdio from this `aden` binary (no aden-mcp sibling)
+    Stdio {
+        #[arg(
+            long,
+            value_name = "LEVEL",
+            help = "Tool surface: essential, standard, or full"
+        )]
+        surface: Option<String>,
+        #[arg(value_name = "DIR", value_hint = ValueHint::DirPath)]
+        project: Option<PathBuf>,
     },
 }
 
@@ -1266,12 +1282,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn print_command_error(error: &(dyn std::error::Error + 'static)) {
-    if std::env::var("ADEN_MCP_MACHINE_ERRORS").as_deref() == Ok("1")
-        && let Some(resolution) = error.downcast_ref::<commands::query::SymbolResolutionError>()
-    {
-        eprintln!("{}", resolution.machine_json());
-    } else {
-        eprintln!("Error: {error}");
+    if std::env::var("ADEN_MCP_MACHINE_ERRORS").as_deref() == Ok("1") {
+        if let Some(resolution) = error.downcast_ref::<commands::query::SymbolResolutionError>()
+        {
+            eprintln!("{}", resolution.machine_json());
+            return;
+        }
+        if let Some(agent) = error.downcast_ref::<commands::AgentCliError>() {
+            eprintln!("{}", agent.machine_json());
+            return;
+        }
+    }
+    eprintln!("Error: {error}");
+}
+
+/// Old `aden-mcp` shells out to this CLI without declaring its version.
+/// Fail named so an agent stops retrying a stale locked director.
+fn reject_stale_mcp_director() -> Result<(), Box<dyn std::error::Error>> {
+    if std::env::var("ADEN_MCP_MACHINE_ERRORS").as_deref() != Ok("1") {
+        return Ok(());
+    }
+    let ours = env!("CARGO_PKG_VERSION");
+    match std::env::var("ADEN_MCP_VERSION") {
+        Ok(theirs) if theirs == ours => Ok(()),
+        Ok(theirs) => Err(Box::new(commands::AgentCliError::new(
+            "director_stale",
+            format!("MCP director is {theirs}, this aden is {ours}"),
+            "restart the host so it launches `aden mcp stdio` (same binary you just installed)",
+        ))),
+        Err(_) => Err(Box::new(commands::AgentCliError::new(
+            "director_stale",
+            "MCP director did not declare ADEN_MCP_VERSION (stale aden-mcp)",
+            "restart the host onto `aden mcp stdio`; do not retry this transport",
+        ))),
     }
 }
 
@@ -1326,6 +1369,14 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
     let _unlimited = cli.unlimited;
     let machine_json = cli.json || !cli.human;
     indexer::fresh::set_require_fresh(cli.require_fresh);
+    if !matches!(
+        cli.command,
+        Commands::Mcp {
+            action: McpAction::Stdio { .. }
+        }
+    ) {
+        reject_stale_mcp_director()?;
+    }
 
     // ADR-003 §6: store *creation* is explicitly authorized when -p/--project
     // was given or the command is `init`. Reads never consult this flag.
@@ -1422,10 +1473,22 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(())
         }
         Commands::Check {
-            path,
+            paths,
             severity,
             max_issues,
-        } => commands::cmd_check(&path, &severity, machine_json, max_issues),
+        } => {
+            if paths.len() != 1 {
+                return Err(Box::new(commands::AgentCliError::new(
+                    "invalid_args",
+                    format!(
+                        "check takes one directory; you passed {} paths",
+                        paths.len()
+                    ),
+                    "run `aden check .` or pass a single project directory",
+                )));
+            }
+            commands::cmd_check(&paths[0], &severity, machine_json, max_issues)
+        }
         Commands::Complete {
             path,
             dry_run,
@@ -1447,7 +1510,7 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
             include_public,
             false,
         ),
-        Commands::Ready { path, fix } => commands::cmd_ready(&path, fix),
+        Commands::Ready { path, fix } => commands::cmd_ready(&path, fix, machine_json),
         Commands::Understand {
             symbol,
             path,
@@ -1912,6 +1975,7 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
             }
             McpAction::List { name, preset } => mcp::run_list(preset.as_deref(), name.as_deref()),
             McpAction::Serve { port, path } => mcp::run_http_server(&path, port),
+            McpAction::Stdio { surface, project } => mcp::run_stdio(surface.as_deref(), project),
         },
         Commands::Store { action } => match action {
             StoreAction::Path { path } => commands::cmd_store_path(&path),

@@ -254,16 +254,23 @@ pub fn relative_to(root: &Path, path: &Path) -> Option<PathBuf> {
     Some(out)
 }
 
-/// Stable 16-hex-char project identity: `sha256(canonical_root)[:8 bytes]`.
+/// Stable 16-hex-char project identity: `sha256(identity_root)[:8 bytes]`.
 ///
 /// The same repo addressed from any subdirectory resolves to the same root and
 /// thus the same key (the fix). Two clones at different paths get distinct keys
 /// (correct — independent stores).
+///
+/// The hash input is [`compare_key`] of the resolved root, not the raw
+/// `resolve_root` bytes. On Windows, `git rev-parse --show-toplevel` returns
+/// `C:/…` while a marker walk (no git on `PATH`) returns `canonicalize`'s
+/// `\\?\C:\…`. Hashing those spellings verbatim split one repo across two
+/// stores — MCP children that could not see `git` rebuilt an empty graph
+/// beside the shell's populated one.
 pub fn project_key(root: &Path) -> String {
     use sha2::{Digest, Sha256};
-    let canon = resolve_root(root);
+    let identity = compare_key(&canonical(&resolve_root(root)));
     let mut hasher = Sha256::new();
-    hasher.update(canon.as_os_str().as_encoded_bytes());
+    hasher.update(identity.to_string_lossy().as_bytes());
     let digest = hasher.finalize();
     let mut out = String::with_capacity(KEY_HEX_LEN);
     for byte in digest.iter().take(KEY_HEX_LEN / 2) {
@@ -506,6 +513,19 @@ mod tests {
         assert_eq!(k1, k2, "key must be deterministic");
         assert_eq!(k1.len(), KEY_HEX_LEN);
         assert!(k1.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn project_key_unifies_git_style_and_verbatim_spellings() {
+        // These paths do not exist, so resolve_root cannot prefer git or a
+        // marker and returns the input. The key must still treat the three
+        // Windows spellings of one directory as one project.
+        let git_style = Path::new(r"Z:/aden-does-not-exist-key-test/repo");
+        let verbatim = Path::new(r"\\?\Z:\aden-does-not-exist-key-test\repo");
+        let backslash = Path::new(r"Z:\aden-does-not-exist-key-test\repo");
+        assert_eq!(project_key(git_style), project_key(verbatim));
+        assert_eq!(project_key(git_style), project_key(backslash));
+        assert_eq!(project_key(git_style).len(), KEY_HEX_LEN);
     }
 
     #[test]

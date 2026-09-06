@@ -14,8 +14,11 @@ use std::path::{Path, PathBuf};
 
 // Leave headroom for the JSON/context receipt so agent-facing responses stay
 // near 32 KiB instead of consuming a large fraction of a model turn.
-const DEFAULT_OUTLINE_BYTES: usize = 28 * 1024;
-const DEFAULT_OUTLINE_SYMBOLS: usize = 4_096;
+// Agent session-starter bound. A whole-repo outline used to dump ~28 KiB /
+// 4k symbols into the first `tree` call; that is a map, not a dump, only
+// when it stays small. `--unlimited` or a subtree path remains the escape.
+const DEFAULT_OUTLINE_BYTES: usize = 12 * 1024;
+const DEFAULT_OUTLINE_SYMBOLS: usize = 768;
 
 #[derive(Clone)]
 struct Symbol {
@@ -68,6 +71,11 @@ pub fn cmd_tree(
         by_file.insert(relative, symbols);
     }
 
+    // JSON is the CLI default and the only useful agent view. The graphical
+    // directory tree is `--human` (and `--human --symbols` for a text outline).
+    // Without this, `aden tree` dumps box-drawing art at an LLM even though
+    // `-j` / "JSON is the default" is advertised globally.
+    let symbols_only = symbols_only || json_output;
     if symbols_only {
         let outline = symbol_outline(&by_file, unlimited);
         if json_output {
@@ -77,14 +85,20 @@ pub fn cmd_tree(
                 serde_json::json!({
                     "schema_version": 1,
                     "result_state": if outline.truncated { "truncated" } else { "complete" },
-                    "format": "symbol-outline-v1",
+                    "format": outline.format,
                     "scope": if relative_scope.as_os_str().is_empty() { ".".into() } else { relative_scope.to_string_lossy().replace('\\', "/") },
                     "file_count": outline.file_count,
                     "symbol_count": outline.symbol_count,
                     "returned_file_count": outline.returned_file_count,
                     "returned_symbol_count": outline.returned_symbol_count,
                     "truncated": outline.truncated,
-                    "next_action": outline.truncated.then_some("Rerun tree --symbols on a project-relative subtree, or use --unlimited explicitly."),
+                    "next_action": outline.truncated.then_some(
+                        if outline.format == "file-map-v1" {
+                            "Rerun tree on a project-relative subtree for symbol names and line ranges, or use --unlimited."
+                        } else {
+                            "Rerun tree --symbols on a project-relative subtree, or use --unlimited explicitly."
+                        }
+                    ),
                     "outline": outline.text,
                 }),
             );
@@ -106,6 +120,7 @@ pub fn cmd_tree(
 
 struct SymbolOutline {
     text: String,
+    format: &'static str,
     file_count: usize,
     symbol_count: usize,
     returned_file_count: usize,
@@ -140,6 +155,11 @@ fn symbol_outline(files: &BTreeMap<PathBuf, Vec<Symbol>>, unlimited: bool) -> Sy
     } else {
         DEFAULT_OUTLINE_SYMBOLS
     };
+    // A truncated name dump is not a map. When the symbol list will not fit,
+    // emit file + count only so the first call stays orienting.
+    if !unlimited && symbols_would_exceed(&code_files, symbol_count, byte_limit, symbol_limit) {
+        return file_map_outline(&code_files, symbol_count, byte_limit);
+    }
     let mut body = String::new();
     let mut returned_file_count = 0;
     let mut returned_symbol_count = 0;
@@ -199,11 +219,73 @@ fn symbol_outline(files: &BTreeMap<PathBuf, Vec<Symbol>>, unlimited: bool) -> Sy
 
     SymbolOutline {
         text,
+        format: "symbol-outline-v1",
         file_count: code_files.len(),
         symbol_count,
         returned_file_count,
         returned_symbol_count,
         truncated,
+    }
+}
+
+fn symbols_would_exceed(
+    code_files: &[(&PathBuf, &Vec<Symbol>)],
+    symbol_count: usize,
+    byte_limit: usize,
+    symbol_limit: usize,
+) -> bool {
+    if symbol_count > symbol_limit {
+        return true;
+    }
+    let mut estimated = 80usize;
+    for (file, symbols) in code_files {
+        estimated = estimated.saturating_add(file.to_string_lossy().len() + 2);
+        for symbol in symbols.iter().filter(|symbol| symbol.is_code) {
+            estimated = estimated.saturating_add(8 + symbol.name.len());
+            if estimated > byte_limit {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn file_map_outline(
+    code_files: &[(&PathBuf, &Vec<Symbol>)],
+    symbol_count: usize,
+    byte_limit: usize,
+) -> SymbolOutline {
+    use std::fmt::Write as _;
+
+    let mut body = String::new();
+    let mut returned_file_count = 0;
+    for (file, symbols) in code_files {
+        let count = symbols.iter().filter(|symbol| symbol.is_code).count();
+        let line = format!(
+            "{}  ({count})\n",
+            file.to_string_lossy().replace('\\', "/")
+        );
+        if body.len().saturating_add(line.len()) > byte_limit {
+            break;
+        }
+        body.push_str(&line);
+        returned_file_count += 1;
+    }
+    let mut text = String::new();
+    let _ = writeln!(
+        text,
+        "# {} code files; {symbol_count} symbols (file map — pass a subtree for names)",
+        code_files.len()
+    );
+    text.push_str(&body);
+    SymbolOutline {
+        text,
+        format: "file-map-v1",
+        file_count: code_files.len(),
+        symbol_count,
+        returned_file_count,
+        returned_symbol_count: 0,
+        truncated: true,
     }
 }
 
@@ -424,10 +506,12 @@ mod tests {
 
         let bounded = symbol_outline(&files, false);
         assert!(bounded.truncated);
+        assert_eq!(bounded.format, "file-map-v1");
         assert_eq!(bounded.symbol_count, 4_100);
-        assert!(bounded.returned_symbol_count > 0);
-        assert!(bounded.returned_symbol_count < bounded.symbol_count);
-        assert!(bounded.text.len() <= 28 * 1024);
+        assert_eq!(bounded.returned_symbol_count, 0);
+        assert!(bounded.text.contains("src/large.rs  (4100)"), "{}", bounded.text);
+        assert!(bounded.text.contains("file map"), "{}", bounded.text);
+        assert!(bounded.text.len() <= 12 * 1024);
 
         let full = symbol_outline(&files, true);
         assert!(!full.truncated);

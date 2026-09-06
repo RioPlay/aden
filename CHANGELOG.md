@@ -9,6 +9,21 @@ All notable changes to aden are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-08-13
+
+This patch makes Aden safer to upgrade and cheaper for LLM day-to-day use:
+one CLI binary can be the MCP server, Windows path spelling no longer splits
+a repo across two stores, and default `tree`/`ask`/`ready` stay JSON and bounded.
+
+### Added
+- **`aden mcp stdio`** — the CLI binary can be the MCP server. `aden mcp
+  install` now writes `command: aden`, `args: [mcp, stdio, …]` so hosts launch
+  the same binary you just installed instead of a locked sibling `aden-mcp.exe`.
+  Standalone `aden-mcp` still works when `--binary` points at it.
+- **`aden mcp install --platform grok`** — writes `[mcp_servers.aden]` to
+  `~/.grok/config.toml` (or project `.grok/config.toml`) so Grok launches
+  `aden mcp stdio`.
+
 ### Fixed
 - **Windows path separators in graph keys** — `source_file` attributes, gen
   cache keys, heal GC live-sets, and span maps used by `tree`/`grep` now
@@ -17,8 +32,48 @@ All notable changes to aden are documented here. Format follows
 - **MCP child env on Windows** — the allowlist after `env_clear` is
   case-insensitive, so host `Path`/`SystemRoot`/`USERPROFILE`/AppData vars are
   preserved and shelled-out `aden` no longer fails with empty stderr.
+- **MCP empty-stderr failures name the exit code** — when the aden child dies
+  before printing (typical Windows `0xC0000135` / `STATUS_DLL_NOT_FOUND` after
+  a stripped environment), the MCP envelope includes the exit code instead of
+  a bare "no error output".
+- **Project identity ignores Windows path spelling** — `project_key` hashes a
+  separator-and-case-normalized root, so `git`'s `C:/…` and `canonicalize`'s
+  `\\?\C:\…` no longer open two stores for the same repository.
+- **Receiver calls no longer steal unique foreign methods** — `hasher.finalize()`
+  no longer becomes a `Calls` edge to the only stored `finalize` in the repo
+  (`Index::finalize`). `ask`/`asm` on a pinned symbol stay in that crate
+  instead of dragging in an unrelated module. Bumps gen logic to 11 so existing
+  stores re-link.
+- **Default `tree` is the symbol outline JSON** — the graphical directory tree
+  was ignoring the global "JSON is the default" contract, so agents that
+  invoked `aden tree` (or a CLI child without `--symbols`) got box-drawing
+  art. `--human` keeps the old view.
+- **Default `ready` is a JSON envelope** — the pre-commit gate always printed
+  ANSI PASS/FAIL lines, even when `--json` was the advertised default. `--human`
+  keeps the progress view.
+- **`ask` no longer pads a good answer with callers** — "what is X?" / "how
+  does X work?" now take the depth-zero definition path when X looks like a
+  symbol, and leftover budget no longer pulls in callers just to look fuller.
+  A pinned `--from` also skips that padding.
+- **`asm`/`understand` no longer climb `mod-*` hubs** — following PartOf to a
+  synthetic crate node used to fan out every sibling into the assembly.
+- **Default `tree` outline is 12 KiB / 768 symbols** — whole-repo first calls
+  stay a map; `--unlimited` or a subtree is the escape. `understand` walks
+  depth 2 instead of 3.
 - **MCP user config discovery** — Amp, OpenCode, and Zed user-scope paths also
   consider `%APPDATA%` in addition to XDG `~/.config`.
+- **Stale MCP director fails named** — a locked old `aden-mcp` that shells out
+  to a newer CLI now returns `director_stale` (`restart onto aden mcp stdio`)
+  instead of `command_failed` / empty stderr. Agents should not retry that
+  transport.
+- **`grep` rejects regex-shaped literals** — `foo|bar`, `.*`, and escapes
+  without `--regex` / `regex=true` error with `needs_regex` instead of
+  returning zero hits.
+- **`tree` returns a file map when names will not fit** — a first whole-repo
+  call lists `path (N)` instead of dumping hundreds of symbol names.
+  Subtrees still get the name+line outline.
+- **`check` names extra paths** — `aden check a.adoc b.adoc` is
+  `invalid_args` ("one directory"), not a clap usage dump.
 
 ### Changed
 - **Product gauntlet is Rust** — Lean CI runs

@@ -69,6 +69,13 @@ fn ordered_neighbors(
     }
     let mut neighbors: Vec<(u8, f32, &str, NodeIndex)> = best
         .into_iter()
+        .filter(|(target, _)| {
+            // Synthetic crate hubs (`mod-aden-cli`) exist so `asm --from
+            // mod-foo` can open a module. Following PartOf/Contains *to* them
+            // from a symbol climbs the hub and then fans out to every sibling —
+            // the context bomb ISSUES.md already called out for ask.
+            !graph.graph[*target].doc.anchor.starts_with("mod-")
+        })
         .map(|(target, prio)| {
             let anchor = graph.graph[target].doc.anchor.as_str();
             // 0.0 when there is no relevance map or no entry for this target — so
@@ -1562,6 +1569,34 @@ mod tests {
             vec!["calls-a", "calls-b", "c-uses", "d-documents"],
             "neighbors must be ordered by (edge_priority, anchor)"
         );
+    }
+
+    #[test]
+    fn ordered_neighbors_skips_synthetic_module_hubs() {
+        let mut graph = AdenGraph::<DocumentNode, AdenEdge>::new();
+        let src = graph.graph.add_node(node("src"));
+        let hub = graph.graph.add_node(node("mod-aden-paths"));
+        let callee = graph.graph.add_node(node("compare_key"));
+        graph.graph.add_edge(
+            src,
+            hub,
+            AdenEdge {
+                edge_type: EdgeType::PartOf,
+            },
+        );
+        graph.graph.add_edge(
+            src,
+            callee,
+            AdenEdge {
+                edge_type: EdgeType::Calls,
+            },
+        );
+        let anchors: Vec<&str> = ordered_neighbors(&graph, src, &[], None)
+            .iter()
+            .map(|&idx| graph.graph[idx].doc.anchor.as_str())
+            .collect();
+        assert_eq!(anchors, vec!["compare_key"]);
+        assert!(!anchors.iter().any(|a| a.starts_with("mod-")));
     }
 
     /// The `edge_types` filter must drop non-matching neighbors entirely while

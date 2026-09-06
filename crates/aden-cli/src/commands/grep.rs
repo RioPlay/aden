@@ -44,6 +44,19 @@ pub fn cmd_grep(
     limit: usize,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // Fail before walking the repo. A literal search for `foo|bar` returns
+    // zero hits and an agent treats that as "absent". Alternation/wildcard/
+    // escapes must opt into `--regex`.
+    if !regex && requires_regex_flag(pattern) {
+        return Err(Box::new(super::AgentCliError::new(
+            "needs_regex",
+            format!(
+                "pattern '{pattern}' looks like a regex (alternation/wildcard/escape) but was used as a literal"
+            ),
+            "retry with regex=true (CLI: --regex). Use a plain substring for literal search.",
+        )));
+    }
+
     let root = find_project_root(path);
     let _stale_hint = super::StaleHintGuard::new(&root, json);
     // Keep the graph current so enclosing-symbol resolution is accurate.
@@ -313,6 +326,16 @@ fn print_json(root: &Path, matches: &[Match], total: usize, limit: usize, hint: 
     println!("{}", serde_json::to_string(&env).unwrap_or_default());
 }
 
+/// Strong regex intent: searching these as a literal is almost never useful
+/// and an empty result is a lie. Weaker signals (`(`, `[`) stay a zero-hit
+/// hint so `foo(` / `items[0]` still search.
+fn requires_regex_flag(pattern: &str) -> bool {
+    pattern.contains('|')
+        || pattern.contains('\\')
+        || pattern.contains(".*")
+        || pattern.contains(".+")
+}
+
 /// Heuristic: does a *literal* (non-regex) pattern look like it was actually
 /// meant as a regex? Used only to nudge `regex=true` on a zero-result literal
 /// search — a soft hint, never a behavior change. Flags the high-signal regex
@@ -320,17 +343,14 @@ fn print_json(root: &Path, matches: &[Match], total: usize, limit: usize, hint: 
 /// deliberately skips bare `.`/`*`/`+`/`?`, which appear in literal code
 /// searches too often (`foo.bar`, `x++`, globs) to be a reliable signal.
 fn looks_like_regex(pattern: &str) -> bool {
-    pattern.contains('|')
+    requires_regex_flag(pattern)
         || pattern.contains('[')
         || pattern.contains('(')
-        || pattern.contains('\\')
-        || pattern.contains(".*")
-        || pattern.contains(".+")
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{looks_like_regex, normalized_search_scope};
+    use super::{looks_like_regex, normalized_search_scope, requires_regex_flag};
     use std::path::Path;
 
     #[test]
@@ -340,6 +360,16 @@ mod tests {
         assert!(looks_like_regex("fn (foo|bar)")); // group + alternation
         assert!(looks_like_regex(r"\bword\b")); // escape
         assert!(looks_like_regex("foo.*bar")); // wildcard
+    }
+
+    #[test]
+    fn strong_regex_intent_requires_the_flag() {
+        assert!(requires_regex_flag("Ready|ready"));
+        assert!(requires_regex_flag("foo.*bar"));
+        assert!(requires_regex_flag(r"\bword\b"));
+        assert!(!requires_regex_flag("foo("));
+        assert!(!requires_regex_flag("items[0]"));
+        assert!(!requires_regex_flag("foo.bar"));
     }
 
     #[test]

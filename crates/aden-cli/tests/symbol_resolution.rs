@@ -47,6 +47,7 @@ fn aden_machine_error(
         .current_dir(root)
         .env("ADEN_DATA_DIR", data)
         .env("ADEN_MCP_MACHINE_ERRORS", "1")
+        .env("ADEN_MCP_VERSION", env!("CARGO_PKG_VERSION"))
         .output()
         .unwrap()
 }

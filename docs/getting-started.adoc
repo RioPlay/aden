@@ -255,15 +255,15 @@ agent can call `ask`, `grep`, `asm`, `query`, `locate`, etc. directly:
 [source,bash]
 ----
 aden mcp install --platform claude --dry-run  # inspect; changes nothing
-aden mcp install --platform claude            # or: amp, opencode, cursor, codex, zed, windsurf
+aden mcp install --platform claude            # or: amp, opencode, cursor, codex, zed, windsurf, grok
 ----
 
 MCP setup is an explicit opt-in; Aden does not silently edit client configuration
-on first launch. The install command writes the MCP server config for your client (it uses the `aden-mcp`
-binary that `./install.sh` already put on your PATH). After running it: confirm
-the binary is reachable with `aden-mcp --version`, then **fully restart your AI
-client** so it picks up the new server. Your agent should then list the `aden`
-tools (`grep`, `ask`, `asm`, `query`, `locate`, …).
+on first launch. The install command writes `command: aden` with
+`args: [mcp, stdio]`. After running it: confirm `aden --version` and
+`aden mcp stdio --help`, then **fully restart your AI client** so it picks up
+the new server. Your agent should then list the `aden` tools (`grep`, `ask`,
+`asm`, `query`, `locate`, …).
 
 See <<mcp-setup>> for the full MCP setup guide, <<ai-integration>> for the
 agent workflow and recommended system prompt, and <<troubleshooting>> if the

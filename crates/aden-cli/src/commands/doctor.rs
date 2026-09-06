@@ -97,9 +97,8 @@ pub fn cmd_doctor(path: &Path, json: bool) -> Result<(), Box<dyn std::error::Err
         }
     }
 
-    // Aden binary pair. Agent integrations launch `aden-mcp`, which in turn
-    // directs the `aden` CLI; checking only one half lets partial installs and
-    // stale upgrades look healthy.
+    // MCP is `aden mcp stdio` in the CLI. A leftover standalone `aden-mcp`
+    // should match when present; it is no longer required.
     let binary_version = |name: &str| -> Option<String> {
         let output = std::process::Command::new(name)
             .arg("--version")
@@ -127,14 +126,19 @@ pub fn cmd_doctor(path: &Path, json: bool) -> Result<(), Box<dyn std::error::Err
     );
     chk!(
         "aden MCP",
-        mcp_version.is_some(),
-        mcp_version
-            .as_deref()
-            .map(|version| format!("aden-mcp {version} found in PATH"))
-            .unwrap_or_else(|| "aden-mcp NOT in PATH — run the Aden installer".to_string()),
+        aden_version.is_some(),
+        if aden_version.is_some() {
+            "aden mcp stdio is built into the CLI".to_string()
+        } else {
+            "aden NOT in PATH — hosts cannot launch `aden mcp stdio`".to_string()
+        },
         true
     );
-    let versions_match = aden_version.is_some() && aden_version == mcp_version;
+    let versions_match = match (&aden_version, &mcp_version) {
+        (Some(aden), Some(mcp)) => aden == mcp,
+        (Some(_), None) => true,
+        _ => false,
+    };
     chk!(
         "Aden binary version parity",
         versions_match,
@@ -143,7 +147,10 @@ pub fn cmd_doctor(path: &Path, json: bool) -> Result<(), Box<dyn std::error::Err
             (Some(aden), Some(mcp)) => format!(
                 "aden is {aden}, aden-mcp is {mcp} — reinstall together and restart the AI client"
             ),
-            _ => "cannot compare until both binaries are installed".to_string(),
+            (Some(_), None) => {
+                "standalone aden-mcp not required; hosts can launch `aden mcp stdio`".to_string()
+            }
+            _ => "cannot compare until aden is installed".to_string(),
         },
         true
     );

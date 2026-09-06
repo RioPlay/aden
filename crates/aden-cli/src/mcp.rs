@@ -1,9 +1,10 @@
 // Copyright (c) 2026 RioPlay <rioplay@rioplay.dev>
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! MCP (Model Context Protocol) integration installer.
+//! MCP (Model Context Protocol) integration installer and stdio entry.
 //!
-//! Configures the `aden-mcp` binary as an MCP server for popular AI agent
-//! platforms: Amp, opencode, Claude Code, Cursor, Codex, Zed, and Windsurf.
+//! Hosts should launch this same `aden` binary as `aden mcp stdio`. Standalone
+//! `aden-mcp` remains valid when `--binary` points at it. Configures Amp,
+//! opencode, Claude Code, Cursor, Codex, Zed, and Windsurf.
 
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -23,6 +24,7 @@ pub enum Platform {
     Codex,
     Zed,
     Windsurf,
+    Grok,
 }
 
 impl Platform {
@@ -35,6 +37,7 @@ impl Platform {
             Platform::Codex,
             Platform::Zed,
             Platform::Windsurf,
+            Platform::Grok,
         ]
     }
 
@@ -47,6 +50,7 @@ impl Platform {
             "codex" | "openai-codex" | "openai_codex" => Some(Platform::Codex),
             "zed" => Some(Platform::Zed),
             "windsurf" | "windsurf-editor" => Some(Platform::Windsurf),
+            "grok" | "grok-tui" | "grok-build" => Some(Platform::Grok),
             _ => None,
         }
     }
@@ -60,6 +64,7 @@ impl Platform {
             Platform::Codex => "Codex (OpenAI)",
             Platform::Zed => "Zed",
             Platform::Windsurf => "Windsurf",
+            Platform::Grok => "Grok",
         }
     }
 
@@ -100,7 +105,7 @@ impl Platform {
             // (committed, discoverable) — NOT `~/.claude/settings.json`. We write
             // only the project file and never rewrite the user's `~/.claude.json`
             // state; for a user-scoped install use `claude mcp add aden -s user
-            // -- aden-mcp`.
+            // -- aden mcp stdio`.
             Platform::ClaudeCode => vec![PathBuf::from(".mcp.json")],
             Platform::Cursor => vec![
                 PathBuf::from(".cursor/mcp.json"),
@@ -125,6 +130,12 @@ impl Platform {
             // Windsurf (Cascade) reads only a single user-global config at
             // `~/.codeium/windsurf/mcp_config.json` — there is no project scope.
             Platform::Windsurf => vec![home.join(".codeium/windsurf/mcp_config.json")],
+            // Grok reads `[mcp_servers.<id>]` from TOML. Project-scoped
+            // `.grok/config.toml` wins; the user file is `~/.grok/config.toml`.
+            Platform::Grok => vec![
+                PathBuf::from(".grok/config.toml"),
+                home.join(".grok/config.toml"),
+            ],
         }
     }
 
@@ -148,7 +159,7 @@ impl Platform {
 
     /// True if this platform's config file is TOML rather than JSON.
     pub fn is_toml(&self) -> bool {
-        matches!(self, Platform::Codex)
+        matches!(self, Platform::Codex | Platform::Grok)
     }
 
     /// The config key/table under which MCP servers live for this platform.
@@ -158,7 +169,7 @@ impl Platform {
             Platform::Amp => "amp.mcpServers",
             Platform::OpenCode => "mcp",
             Platform::ClaudeCode | Platform::Cursor | Platform::Windsurf => "mcpServers",
-            Platform::Codex => "mcp_servers",
+            Platform::Codex | Platform::Grok => "mcp_servers",
             Platform::Zed => "context_servers",
         }
     }
@@ -166,19 +177,15 @@ impl Platform {
     /// The JSON value to insert for the aden MCP server. Only valid for
     /// JSON-config platforms; TOML platforms (Codex) are handled separately.
     ///
-    /// Project path is **not** baked into args: `aden-mcp` auto-detects the open
+    /// Project path is **not** baked into args: the server auto-detects the open
     /// workspace via MCP Roots / host env (zero-friction). `project` is retained
     /// for API compatibility with callers but unused for launch args.
     pub fn aden_config(&self, binary: &str, _project: &str, surface: Option<&str>) -> Value {
         // Bake the requested tool surface into the launch ARGS (cross-platform;
-        // not every client passes an `env` block). `aden-mcp` reads
-        // `--surface <essential|standard|full>`. Omitted => server default.
-        // No project path — roots auto-detect (or ADEN_PROJECT pin).
-        let mut args: Vec<String> = Vec::new();
-        if let Some(s) = surface {
-            args.push("--surface".to_string());
-            args.push(s.to_string());
-        }
+        // not every client passes an `env` block). The stdio server is either
+        // `aden mcp stdio` (same CLI binary) or standalone `aden-mcp`.
+        // Omitted surface => server default. No project path — roots auto-detect.
+        let args = mcp_stdio_args(binary, surface);
         match self {
             Platform::Amp => serde_json::json!({
                 "command": binary,
@@ -203,11 +210,37 @@ impl Platform {
                 "command": binary,
                 "args": args,
             }),
-            Platform::Codex => {
-                unreachable!("Codex uses a TOML config; handled by the TOML install path")
+            Platform::Codex | Platform::Grok => {
+                unreachable!("TOML platforms are handled by the TOML install path")
             }
         }
     }
+}
+
+/// True when `binary` is the Aden CLI (`aden` / `aden.exe`), not the standalone
+/// `aden-mcp` director.
+fn is_aden_cli_name(binary: &str) -> bool {
+    let name = Path::new(binary)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(binary);
+    let stem = name.strip_suffix(".exe").unwrap_or(name);
+    stem.eq_ignore_ascii_case("aden")
+}
+
+/// Launch args for an MCP stdio server. The CLI binary needs `mcp stdio`;
+/// standalone `aden-mcp` takes only optional `--surface`.
+fn mcp_stdio_args(binary: &str, surface: Option<&str>) -> Vec<String> {
+    let mut args = Vec::new();
+    if is_aden_cli_name(binary) {
+        args.push("mcp".to_string());
+        args.push("stdio".to_string());
+    }
+    if let Some(s) = surface {
+        args.push("--surface".to_string());
+        args.push(s.to_string());
+    }
+    args
 }
 
 /// Install scope: user-global vs project-local.
@@ -364,9 +397,7 @@ fn install_claude_user(
         "--".to_string(),
         binary.to_string(),
     ];
-    if let Some(surface) = surface {
-        owned.extend(["--surface".to_string(), surface.to_string()]);
-    }
+    owned.extend(mcp_stdio_args(binary, surface));
     let args: Vec<_> = owned.iter().map(String::as_str).collect();
     if dry_run {
         println!("  [dry-run] Would run: claude {}", owned.join(" "));
@@ -549,9 +580,8 @@ fn codex_server_table(binary: &str, _project: &str, surface: Option<&str>) -> To
     let mut tbl = TomlTable::new();
     tbl["command"] = toml_value(binary);
     let mut args = TomlArray::new();
-    if let Some(s) = surface {
-        args.push("--surface");
-        args.push(s);
+    for arg in mcp_stdio_args(binary, surface) {
+        args.push(arg);
     }
     tbl["args"] = toml_value(args);
     tbl
@@ -854,15 +884,9 @@ pub fn run_install(
         return Ok(());
     }
 
-    // Resolve the MCP server binary. The stdio server is `aden-mcp`, NOT the
-    // `aden` CLI — configuring `aden <project>` as the command would fail (it
-    // isn't a subcommand). Default to the `aden-mcp` sibling of the running
-    // executable; honor an explicit --bin override.
-    let mcp_name = if cfg!(windows) {
-        "aden-mcp.exe"
-    } else {
-        "aden-mcp"
-    };
+    // Prefer this `aden` binary as the stdio server so hosts launch the same
+    // exe we just installed. Standalone `aden-mcp` remains valid via --binary
+    // or as a fallback when current_exe is not the CLI.
     let binary = if let Some(b) = binary_override {
         let resolved = absolute_path(b)?;
         if !resolved.is_file() {
@@ -871,15 +895,24 @@ pub fn run_install(
         resolved
     } else {
         let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-        exe.parent()
-            .map(|d| d.join(mcp_name))
-            .filter(|p| p.is_file())
-            .or_else(|| executable_on_path(mcp_name))
-            .ok_or_else(|| {
-                format!(
-                    "Could not find {mcp_name} beside aden or on PATH. Install aden-mcp before modifying client configuration."
-                )
-            })?
+        if is_aden_cli_name(&exe.to_string_lossy()) {
+            exe
+        } else {
+            let mcp_name = if cfg!(windows) {
+                "aden-mcp.exe"
+            } else {
+                "aden-mcp"
+            };
+            exe.parent()
+                .map(|d| d.join(mcp_name))
+                .filter(|p| p.is_file())
+                .or_else(|| executable_on_path(mcp_name))
+                .ok_or_else(|| {
+                    format!(
+                        "Could not find aden or {mcp_name} to register as the MCP server."
+                    )
+                })?
+        }
     };
 
     // Resolve project
@@ -1124,6 +1157,25 @@ pub fn run_list(
     Ok(())
 }
 
+/// Speak MCP JSON-RPC on stdio from this `aden` binary.
+pub fn run_stdio(
+    surface: Option<&str>,
+    project: Option<PathBuf>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let surface = validate_surface(surface)?;
+    if let Some(level) = surface {
+        // SAFETY: process startup, before the stdio server and before any
+        // child `aden` spawn. Matches standalone `aden-mcp` main.
+        unsafe { std::env::set_var("ADEN_MCP_SURFACE", level) };
+    }
+    let pinned = project.is_some() || std::env::var_os("ADEN_PROJECT").is_some();
+    let project_dir = project
+        .or_else(|| std::env::var_os("ADEN_PROJECT").map(PathBuf::from))
+        .unwrap_or(std::env::current_dir()?);
+    aden_mcp::serve_blocking(project_dir, pinned)?;
+    Ok(())
+}
+
 /// Start a simple HTTP server for CI/agent integration.
 /// Exposes core aden commands via HTTP JSON-RPC.
 pub fn run_http_server(_project_dir: &Path, port: u16) -> Result<(), Box<dyn std::error::Error>> {
@@ -1189,8 +1241,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_codex_is_toml() {
+    fn only_codex_and_grok_are_toml() {
         assert!(Platform::Codex.is_toml());
+        assert!(Platform::Grok.is_toml());
         for p in [
             Platform::Amp,
             Platform::ClaudeCode,
@@ -1255,6 +1308,25 @@ mod tests {
     }
 
     #[test]
+    fn grok_path_is_toml_with_mcp_servers_table() {
+        assert_eq!(Platform::from_name("grok"), Some(Platform::Grok));
+        assert_eq!(Platform::from_name("grok-build"), Some(Platform::Grok));
+        let paths = Platform::Grok.config_paths();
+        assert!(
+            paths
+                .iter()
+                .all(|p| p.extension().and_then(|e| e.to_str()) == Some("toml")),
+            "grok must use .toml files: {paths:?}"
+        );
+        assert!(
+            paths.iter().any(|p| p == &PathBuf::from(".grok/config.toml")),
+            "expected project .grok/config.toml, got {paths:?}"
+        );
+        assert_eq!(Platform::Grok.server_config_key(), "mcp_servers");
+        assert_eq!(default_scope(&Platform::Grok), Scope::User);
+    }
+
+    #[test]
     fn zed_requires_source_custom() {
         let v = Platform::Zed.aden_config("aden-mcp", "/proj", None);
         assert_eq!(v["source"], "custom");
@@ -1305,6 +1377,38 @@ mod tests {
         // None => no args (server default surface; workspace auto-detect).
         let bare = Platform::Cursor.aden_config("aden-mcp", "/proj", None);
         assert!(bare["args"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn is_aden_cli_name_does_not_match_director() {
+        assert!(is_aden_cli_name("aden"));
+        assert!(is_aden_cli_name("aden.exe"));
+        assert!(is_aden_cli_name("C:/bin/aden.exe"));
+        assert!(is_aden_cli_name(r"C:\Users\me\.local\bin\aden.exe"));
+        assert!(!is_aden_cli_name("aden-mcp"));
+        assert!(!is_aden_cli_name("aden-mcp.exe"));
+        assert!(!is_aden_cli_name("C:/bin/aden-mcp.exe"));
+    }
+
+    #[test]
+    fn aden_config_for_cli_binary_uses_mcp_stdio() {
+        let v = Platform::Cursor.aden_config("C:/bin/aden.exe", "/proj", Some("standard"));
+        assert_eq!(v["command"], "C:/bin/aden.exe");
+        assert_eq!(
+            v["args"],
+            serde_json::json!(["mcp", "stdio", "--surface", "standard"])
+        );
+
+        let bare = Platform::Cursor.aden_config("aden", "/proj", None);
+        assert_eq!(bare["args"], serde_json::json!(["mcp", "stdio"]));
+
+        let mcp = Platform::Cursor.aden_config("aden-mcp", "/proj", Some("standard"));
+        assert_eq!(mcp["args"], serde_json::json!(["--surface", "standard"]));
+
+        let tbl = codex_server_table("C:/bin/aden.exe", "/proj", None);
+        let args = tbl["args"].as_array().unwrap();
+        assert_eq!(args.get(0).and_then(|v| v.as_str()), Some("mcp"));
+        assert_eq!(args.get(1).and_then(|v| v.as_str()), Some("stdio"));
     }
 
     #[test]
@@ -1530,6 +1634,7 @@ mod tests {
             Platform::Codex,
             Platform::Zed,
             Platform::Windsurf,
+            Platform::Grok,
         ] {
             assert!(
                 config_path_for_scope(&platform, default_scope(&platform)).is_absolute(),

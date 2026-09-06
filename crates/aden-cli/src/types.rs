@@ -36,7 +36,15 @@ use std::path::PathBuf;
 ///    and verbatim canonicalize forms (`\\?\C:\…`) share one spelling. Without
 ///    a full re-emit, incremental caches can leave `locate`/`tree --symbols`
 ///    looking empty while `tree` still lists files.
-pub const GEN_LOGIC_VERSION: u32 = 9;
+/// 10: Trailing-segment call resolution requires file/crate locality. Unique
+///     in-repo method names (`finalize`, `update`) no longer absorb
+///     `hasher.finalize()`-style external calls, which previously poisoned
+///     `ask`/`asm` with unrelated crates.
+/// 11: Bare unique method names (`finalize` as recorded for `x.finalize()`)
+///     also refuse cross-crate unique-win. v10 only closed the qualified
+///     `hasher.finalize` / `Sha256::finalize` spellings; the rust extractor
+///     emits the bare field name for non-self receivers.
+pub const GEN_LOGIC_VERSION: u32 = 11;
 
 /// Incremental generation cache: maps contract file path → metadata.
 #[derive(Default, Serialize, Deserialize)]

@@ -17,20 +17,21 @@ The answer is assembled dynamically from the knowledge graph, not hard-coded in 
 
 Run Aden as a link:https://modelcontextprotocol.io[Model Context Protocol] server so an AI client (Amp, Claude, Cursor, Codex, Zed, Windsurf, opencode, …) queries your codebase graph directly — no copy-pasting CLI output.
 
-`aden-mcp` is a *thin director*: it exposes Aden's CLI as MCP tools, each mapping 1:1 to an `aden` subcommand. There is no separate logic path — calling the `grep` tool runs the same code as `aden grep`, so everything documented for the CLI applies verbatim to the tools. The server operates on the target project you point it at; nothing it returns is specific to Aden's own source.
+The MCP server is a *thin director*: it exposes Aden's CLI as MCP tools, each mapping 1:1 to an `aden` subcommand. There is no separate logic path — calling the `grep` tool runs the same code as `aden grep`, so everything documented for the CLI applies verbatim to the tools. The server operates on the target project you point it at; nothing it returns is specific to Aden's own source.
 
 === Prerequisites
 
-The MCP server is a separate binary, `aden-mcp`. The repo's `./install.sh` builds and installs *both* `aden` and `aden-mcp` to `~/.local/bin`:
+Hosts should launch the same `aden` binary they just installed:
 
 [source,bash]
 ----
-./install.sh
+aden mcp stdio
 aden --version
-aden-mcp --version
 ----
 
-NOTE: `cargo install --path crates/aden-cli` installs only the `aden` CLI and *omits* `aden-mcp`. Use `./install.sh` (or build `crates/aden-mcp` explicitly) for the MCP server.
+`aden mcp install` writes `command: aden` with `args: [mcp, stdio, …]`. A standalone `aden-mcp` binary still works when `--binary` points at it.
+
+NOTE: `cargo install --path crates/aden-cli` now includes the stdio server. The standalone `aden-mcp` binary remains available from `./install.sh` for hosts that still launch it directly.
 
 === Install into a client
 
@@ -39,12 +40,12 @@ NOTE: `cargo install --path crates/aden-cli` installs only the `aden` CLI and *o
 aden mcp install --platform <platform>
 ----
 
-Supported `<platform>` values: `amp`, `opencode`, `claude`, `cursor`, `codex`, `zed`, `windsurf`.
+Supported `<platform>` values: `amp`, `opencode`, `claude`, `cursor`, `codex`, `zed`, `windsurf`, `grok`.
 
 Useful flags:
 
-* `--project <PATH>` — select the project whose local client configuration is changed during installation. It does not pin that path into the server command; at runtime `aden-mcp` follows the client's MCP Roots/workspace environment.
-* `--binary <PATH>` — point at a specific `aden-mcp` binary if it is not on `PATH`.
+* `--project <PATH>` — select the project whose local client configuration is changed during installation. It does not pin that path into the server command; at runtime the server follows the client's MCP Roots/workspace environment.
+* `--binary <PATH>` — point at a specific `aden` or `aden-mcp` binary if the default (this `aden` exe) is not what the host should launch.
 * `--scope <SCOPE>` — `user` (global) or `project` (local). Default: one user-global server for every platform; at runtime it follows MCP Roots/the host workspace, so it works across folders without per-project installation.
 * `--preset <PRESET>` — workflow preset: `explore`, `verify`, or `admin`. Sets the default config name and tool surface.
 * `--name <NAME>` — config entry name (default: `aden`). Use this to keep multiple local MCP profiles side by side.
@@ -80,17 +81,15 @@ NOTE: Installation is currently explicit and non-interactive. Aden does not sile
 
 === Verify it works
 
-1. Confirm the binary is reachable: `aden-mcp --version`.
+1. Confirm the CLI is reachable: `aden --version`. Confirm the stdio entry exists: `aden mcp stdio --help`.
 2. Check the client config was written: `aden mcp list`.
 3. *Fully restart your AI client* so it loads the new server.
 4. In the client, confirm the `aden` tools appear (e.g. `grep`, `ask`, `asm`, `query`, `locate`). Ask it to `grep` a known string and confirm matches come back tagged with their enclosing symbol.
 
 If the tools do not appear, see <<troubleshooting>>.
 
-`aden-mcp --version` is an installation smoke test: it prints the version and
-exits without opening the JSON-RPC stdio transport. If it instead reports an
-initialization/connection error, reinstall a current Aden release before adding
-the server to a client configuration.
+`aden --version` is the installation smoke test. `aden mcp stdio` opens the
+JSON-RPC stdio transport and should only be launched by an MCP host.
 
 === Argument conventions
 
@@ -238,11 +237,11 @@ additive receipt migration.
 
 ==== Workspace auto-detect (MCP)
 
-`aden-mcp` does **not** require a baked project path in client config. It resolves
-the open workspace from MCP Roots (`roots/list`, `roots/list_changed`) and common
-host env vars (`WORKSPACE_FOLDER_PATHS`, …). Optional pin: pass a path argument or
-set `ADEN_PROJECT`. Re-run `aden mcp install` to drop legacy absolute paths from
-older installs.
+The MCP server does **not** require a baked project path in client config. It
+resolves the open workspace from MCP Roots (`roots/list`, `roots/list_changed`)
+and common host env vars (`WORKSPACE_FOLDER_PATHS`, …). Optional pin: pass a
+path argument or set `ADEN_PROJECT`. Re-run `aden mcp install` to drop legacy
+absolute paths from older installs.
 
 ==== Concurrent reads within one project (ADR-011)
 

@@ -83,3 +83,41 @@ pub use tree::cmd_tree;
 #[cfg(feature = "view")]
 pub use view::cmd_view;
 pub use viz::cmd_viz;
+
+/// Machine-readable CLI error for MCP and JSON agents. Printed as JSON on
+/// stderr when `ADEN_MCP_MACHINE_ERRORS=1`, otherwise as prose.
+#[derive(Debug)]
+pub struct AgentCliError {
+    pub code: &'static str,
+    pub message: String,
+    pub recovery: String,
+}
+
+impl AgentCliError {
+    pub fn new(code: &'static str, message: impl Into<String>, recovery: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+            recovery: recovery.into(),
+        }
+    }
+
+    pub fn machine_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "schema_version": 1,
+            "error": {
+                "code": self.code,
+                "message": self.message,
+                "recovery": self.recovery,
+            }
+        })
+    }
+}
+
+impl std::fmt::Display for AgentCliError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}\n  ↳ {}", self.message, self.recovery)
+    }
+}
+
+impl std::error::Error for AgentCliError {}

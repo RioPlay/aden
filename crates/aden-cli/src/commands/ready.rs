@@ -9,11 +9,16 @@ use std::path::Path;
 /// focuses on aden's own correctness plus documentation drift. Each step prints
 /// a clear PASS/FAIL line; the run fails fast on the first hard error but always
 /// emits a final commit-readiness summary. Returns Err if any hard gate failed.
-pub fn cmd_ready(path: &Path, fix: bool) -> Result<(), Box<dyn std::error::Error>> {
-    let green = "\x1b[0;32m";
-    let red = "\x1b[0;31m";
-    let yellow = "\x1b[1;33m";
-    let reset = "\x1b[0m";
+///
+/// `json` is the CLI/MCP default (`machine_json`). `--human` is the ANSI
+/// progress view. Child steps are quiet on stdout so the envelope stays one
+/// JSON document.
+pub fn cmd_ready(path: &Path, fix: bool, json: bool) -> Result<(), Box<dyn std::error::Error>> {
+    let (green, red, yellow, reset) = if json {
+        ("", "", "", "")
+    } else {
+        ("\x1b[0;32m", "\x1b[0;31m", "\x1b[1;33m", "\x1b[0m")
+    };
 
     // (step label, passed?) — recorded for the final summary.
     let mut results: Vec<(&str, bool)> = Vec::new();
@@ -27,21 +32,29 @@ pub fn cmd_ready(path: &Path, fix: bool) -> Result<(), Box<dyn std::error::Error
     macro_rules! step {
         ($name:expr, $body:expr) => {{
             if hard_failure.is_some() {
-                println!(
-                    "{}[ready] SKIP: {} (earlier step failed){}",
-                    yellow, $name, reset
-                );
+                if !json {
+                    println!(
+                        "{}[ready] SKIP: {} (earlier step failed){}",
+                        yellow, $name, reset
+                    );
+                }
                 results.push(($name, false));
             } else {
-                println!("[ready] Running: {} ...", $name);
+                if !json {
+                    println!("[ready] Running: {} ...", $name);
+                }
                 match $body {
                     Ok(()) => {
-                        println!("{}[ready] PASS: {}{}", green, $name, reset);
+                        if !json {
+                            println!("{}[ready] PASS: {}{}", green, $name, reset);
+                        }
                         results.push(($name, true));
                     }
                     Err(e) => {
                         let e: Box<dyn std::error::Error> = e;
-                        println!("{}[ready] FAIL: {} — {}{}", red, $name, e, reset);
+                        if !json {
+                            println!("{}[ready] FAIL: {} — {}{}", red, $name, e, reset);
+                        }
                         results.push(($name, false));
                         hard_failure = Some(format!("{}: {}", $name, e));
                     }
@@ -53,15 +66,21 @@ pub fn cmd_ready(path: &Path, fix: bool) -> Result<(), Box<dyn std::error::Error
     // Used for heal drift, which is a doc-quality signal, not a code-safety gate.
     macro_rules! soft_step {
         ($name:expr, $body:expr) => {{
-            println!("[ready] Running: {} ...", $name);
+            if !json {
+                println!("[ready] Running: {} ...", $name);
+            }
             match $body {
                 Ok(()) => {
-                    println!("{}[ready] PASS: {}{}", green, $name, reset);
+                    if !json {
+                        println!("{}[ready] PASS: {}{}", green, $name, reset);
+                    }
                     results.push(($name, true));
                 }
                 Err(e) => {
                     let e: Box<dyn std::error::Error> = e;
-                    println!("{}[ready] WARN: {} — {}{}", yellow, $name, e, reset);
+                    if !json {
+                        println!("{}[ready] WARN: {} — {}{}", yellow, $name, e, reset);
+                    }
                     results.push(($name, false));
                     // Record as a soft failure so the final verdict still fails,
                     // but don't set hard_failure — let remaining steps (e.g. audit) run.
@@ -73,14 +92,24 @@ pub fn cmd_ready(path: &Path, fix: bool) -> Result<(), Box<dyn std::error::Error
         }};
     }
 
-    println!("aden ready — pre-commit checks for {}\n", path.display());
+    if !json {
+        println!("aden ready — pre-commit checks for {}\n", path.display());
+    }
 
     // (1) gen — recompile the project into the knowledge graph.
-    step!("gen", { crate::commands::cmd_gen(path, true) });
+    // Silent in JSON mode: even `--quiet` gen still prints the "Stored N
+    // contracts" summary on stdout, which would break the ready envelope.
+    step!("gen", {
+        if json {
+            crate::commands::generate::cmd_gen_silent(path)
+        } else {
+            crate::commands::cmd_gen(path, true)
+        }
+    });
 
     // (2) lint — fast line-based heuristics. --fix forwards to the linter.
     step!("lint", {
-        crate::commands::cmd_lint(path, "Error", fix, false, false, false, false)
+        crate::commands::cmd_lint(path, "Error", fix, false, false, false, json)
     });
 
     // (3) check refs — validate every <<ref>> resolves to an [[anchor]].
@@ -143,10 +172,38 @@ pub fn cmd_ready(path: &Path, fix: bool) -> Result<(), Box<dyn std::error::Error
 
     // (5) audit — OWASP-aligned source scan (in-process, no external tools).
     step!("owasp audit", {
-        crate::commands::cmd_audit(path, None, "text", true, false)
+        crate::commands::audit::cmd_audit_with_output(path, None, "text", true, false, json)
     });
 
-    // ── Final verdict ─────────────────────────────────────
+    let any_failure = hard_failure.or(soft_failure);
+    if json {
+        let (ok, outcome) = if any_failure.is_some() {
+            (false, "blocked")
+        } else if advisory_findings > 0 {
+            (true, "passed_with_findings")
+        } else {
+            (true, "clean")
+        };
+        let env = serde_json::json!({
+            "schema_version": 1,
+            "command": "ready",
+            "ok": ok,
+            "result_state": if ok { "complete" } else { "failed" },
+            "outcome": outcome,
+            "advisory_findings": advisory_findings,
+            "hard_failure": any_failure.as_ref().map(|s| s.as_str()),
+            "steps": results.iter().map(|(name, passed)| {
+                serde_json::json!({"name": name, "passed": passed})
+            }).collect::<Vec<_>>(),
+        });
+        println!("{}", serde_json::to_string(&env)?);
+        if let Some(reason) = any_failure {
+            return Err(reason.into());
+        }
+        return Ok(());
+    }
+
+    // ── Human verdict ─────────────────────────────────────
     println!("\n[ready] Summary:");
     for (name, passed) in &results {
         let (mark, color) = if *passed {
@@ -157,7 +214,6 @@ pub fn cmd_ready(path: &Path, fix: bool) -> Result<(), Box<dyn std::error::Error
         println!("  {}{:>4}{} {}", color, mark, reset, name);
     }
 
-    let any_failure = hard_failure.or(soft_failure);
     if let Some(reason) = any_failure {
         println!("[ready] Outcome: blocked (graph/policy/freshness reported independently above)");
         println!(
@@ -202,14 +258,14 @@ mod tests {
         std::fs::write(dir.join("src/lib.rs"), "pub fn noop() {}\n").unwrap();
 
         // Must complete without panicking and yield a verdict (Ok or Err).
-        let _verdict = cmd_ready(&dir, false);
+        let _verdict = cmd_ready(&dir, false, false);
         let _ = std::fs::remove_dir_all(&dir);
 
         // A non-directory path is a hard failure at the "check refs" gate, so
         // ready must report NOT commit-ready (Err).
         let missing = dir.join("does-not-exist");
         assert!(
-            cmd_ready(&missing, false).is_err(),
+            cmd_ready(&missing, false, false).is_err(),
             "ready should fail when the target path is not a directory"
         );
     }

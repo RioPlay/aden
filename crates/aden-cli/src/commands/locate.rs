@@ -306,18 +306,20 @@ pub fn cmd_understand(
     // same fixed three-hop comprehension neighborhood. An unbounded impact
     // list could otherwise overwhelm the MCP response before its bounded
     // context section reached the caller.
-    let impact: Vec<serde_json::Value> = impact_reachable(&graph, idx, &impact_types, 3)
+    let impact: Vec<serde_json::Value> = impact_reachable(&graph, idx, &impact_types, 2)
         .into_iter()
         .map(|(n, d)| node_to_json(&graph.graph[n], d))
         .collect();
 
     // Step 4: assemble a context block from the anchor within budget, via the
     // same neighborhood-stream + assemble path `asm` uses.
+    // Depth 2 matches ask's explain default: definition + direct callees,
+    // not a three-hop walk that climbs the crate hub.
     let edge_types: Vec<aden_core::EdgeType> = Vec::new();
-    let neigh = aden_graph::cache::build_neighborhood_cached(path, &anchor, 3, &edge_types)?;
+    let neigh = aden_graph::cache::build_neighborhood_cached(path, &anchor, 2, &edge_types)?;
     let asm_opts = AssemblyOptions {
         start_anchor: anchor.clone(),
-        max_depth: 3,
+        max_depth: 2,
         token_budget: budget,
         edge_types,
         block_filter: Vec::new(),

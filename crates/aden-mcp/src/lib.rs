@@ -701,7 +701,7 @@ fn structured_output_flags(tool: &str) -> &'static [&'static str] {
         // Phase 2B: compact gate summaries for agent verify workflow.
         "check" => &["-j", "--max-issues", "20"],
         "heal" => &["-j", "--max-issues", "10"],
-        "status" => &["-j"],
+        "status" | "ready" => &["-j"],
         _ => &[],
     }
 }
@@ -1043,7 +1043,7 @@ static TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "tree",
         title: "Outline the codebase",
-        description: "Bounded codebase map. MCP defaults to symbols=true for exact names and line ranges grouped by file; set symbols=false for a human-style directory tree. If truncated, rerun with path set to a project-relative subtree.",
+        description: "Bounded codebase map. MCP defaults to symbols=true. Large scopes return a file map (path + symbol counts); pass a subtree for names and line ranges. Set symbols=false for a human-style directory tree.",
         args: &[
             ("path", "string"),
             ("symbols", "boolean"),
@@ -2136,10 +2136,10 @@ fn normalize_lexical(p: &Path) -> std::path::PathBuf {
 
 /// Resolve the `aden` CLI binary.
 ///
-/// Order: `ADEN_BIN` env override → a sibling of the running `aden-mcp`
-/// executable (the usual install layout) → bare `aden` on `PATH`. Hardcoding
-/// `"aden"` breaks whenever the MCP server runs from a context where the CLI
-/// is installed but not on `PATH` (a very common MCP-client launch setup).
+/// Order: `ADEN_BIN` env override → `aden` next to the running server
+/// (`aden mcp stdio` or standalone `aden-mcp`) → bare `aden` on `PATH`.
+/// Hardcoding `"aden"` breaks whenever the MCP server runs from a context
+/// where the CLI is installed but not on `PATH` (a common MCP-client launch).
 fn resolve_aden_binary() -> std::ffi::OsString {
     #[cfg(test)]
     if let Some(binary) = TEST_ADEN_BINARY.lock().ok().and_then(|value| value.clone()) {
@@ -2360,10 +2360,30 @@ fn machine_resolution_error(raw: &str) -> Option<serde_json::Value> {
         .find_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())?;
     let error = value.get("error")?;
     let code = error.get("code")?.as_str()?;
-    if !matches!(code, "ambiguous_symbol" | "anchor_not_found") {
+    if !matches!(
+        code,
+        "ambiguous_symbol" | "anchor_not_found" | "director_stale" | "needs_regex" | "invalid_args"
+    ) {
         return None;
     }
     let message = sanitize_error(error.get("message")?.as_str()?);
+    let recovery = error
+        .get("recovery")
+        .and_then(|v| v.as_str())
+        .map(sanitize_error);
+    if matches!(code, "director_stale" | "needs_regex" | "invalid_args") {
+        let mut err = serde_json::json!({
+            "code": code,
+            "message": message,
+        });
+        if let Some(recovery) = recovery {
+            err["recovery"] = serde_json::Value::String(recovery);
+        }
+        return Some(serde_json::json!({
+            "schema_version": 1,
+            "error": err,
+        }));
+    }
     let collection_field = if code == "ambiguous_symbol" {
         "candidates"
     } else {
@@ -2396,21 +2416,32 @@ pub fn agent_error_for_mcp(tool: &str, raw: &str) -> String {
         let error = &machine["error"];
         let code = error["code"].as_str().unwrap_or("command_failed");
         let message = error["message"].as_str().unwrap_or("aden command failed");
-        let recovery = if code == "ambiguous_symbol" {
-            "retry with one exact candidate anchor from error.candidates"
-        } else {
-            "inspect error.suggestions, then retry with one exact canonical anchor"
-        };
-        let response = boundary_error_for_mcp(tool, code, message, true, recovery);
+        let recovery = error
+            .get("recovery")
+            .and_then(|v| v.as_str())
+            .unwrap_or(match code {
+                "ambiguous_symbol" => {
+                    "retry with one exact candidate anchor from error.candidates"
+                }
+                "director_stale" => {
+                    "restart the host onto `aden mcp stdio`; do not retry this transport"
+                }
+                "needs_regex" => "retry with regex=true (CLI: --regex)",
+                "invalid_args" => "correct the arguments and retry once",
+                _ => "inspect error.suggestions, then retry with one exact canonical anchor",
+            });
+        let response = boundary_error_for_mcp(tool, code, message, code != "director_stale", recovery);
         let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&response) else {
             return response;
         };
-        let field = if code == "ambiguous_symbol" {
-            "candidates"
-        } else {
-            "suggestions"
-        };
-        value["error"][field] = error[field].clone();
+        if matches!(code, "ambiguous_symbol" | "anchor_not_found") {
+            let field = if code == "ambiguous_symbol" {
+                "candidates"
+            } else {
+                "suggestions"
+            };
+            value["error"][field] = error[field].clone();
+        }
         return value.to_string();
     }
 
@@ -2437,6 +2468,12 @@ pub fn agent_error_for_mcp(tool: &str, raw: &str) -> String {
         "timeout"
     } else if message.contains("authoritative freshness required") {
         "freshness_required"
+    } else if message.contains("looks like a regex") {
+        "needs_regex"
+    } else if message.contains("ADEN_MCP_VERSION") || message.contains("MCP director is") {
+        "director_stale"
+    } else if message.contains("check takes") {
+        "invalid_args"
     } else if message.contains("Ambiguous symbol") {
         "ambiguous_symbol"
     } else if message.contains("Symbol or anchor") && message.contains("not found") {
@@ -2444,7 +2481,7 @@ pub fn agent_error_for_mcp(tool: &str, raw: &str) -> String {
     } else {
         "command_failed"
     };
-    let response = boundary_error_for_mcp(tool, code, &message, is_read, recovery);
+    let response = boundary_error_for_mcp(tool, code, &message, is_read && code != "director_stale", recovery);
     let collection_field = match code {
         "ambiguous_symbol" => "candidates",
         "anchor_not_found" => "suggestions",
@@ -2623,6 +2660,7 @@ async fn run_aden_command_with_timeout(
     // Request typed stderr only for this MCP-owned child. This overrides any
     // inherited ADEN_* value and leaves normal terminal CLI prose unchanged.
     cmd.env("ADEN_MCP_MACHINE_ERRORS", "1");
+    cmd.env("ADEN_MCP_VERSION", env!("CARGO_PKG_VERSION"));
     // Zero-friction: do NOT force ADEN_SKIP_AUTO_GEN on reads. Silent gen
     // fail-opens under contention; shell and MCP share auto-fresh.
 
@@ -2652,7 +2690,33 @@ async fn run_aden_command_with_timeout(
         if !out.trim().is_empty() {
             err.push_str(&format!("\n(stdout): {}", out));
         }
+        if err.trim().is_empty() {
+            // Windows STATUS_DLL_NOT_FOUND (0xC0000135) is the usual result
+            // when env_clear dropped SystemRoot/Path: the child dies before
+            // Rust can print anything. The exit code is the only signal.
+            err = empty_child_stderr_message(output.status.code());
+        }
         Err(preserve_cli_error_for_mcp(&err))
+    }
+}
+
+/// Agent-facing fallback when the aden child fails with empty stderr.
+fn empty_child_stderr_message(code: Option<i32>) -> String {
+    match code {
+        Some(code) => format!(
+            "aden command failed (no error output; exit {})",
+            format_child_exit(code)
+        ),
+        None => "aden command failed (no error output; child terminated)".to_string(),
+    }
+}
+
+fn format_child_exit(code: i32) -> String {
+    let unsigned = code as u32;
+    if unsigned >= 0xC000_0000 {
+        format!("0x{unsigned:08X}")
+    } else {
+        code.to_string()
     }
 }
 
@@ -2789,6 +2853,13 @@ fn redact_abs_paths(s: &str) -> String {
 
 pub async fn serve(project_dir: PathBuf) -> anyhow::Result<()> {
     serve_with_options(project_dir, false).await
+}
+
+/// Blocking entry for `aden mcp stdio` so the CLI binary can be the MCP
+/// server. Hosts then launch the same `aden.exe` they just installed —
+/// no second binary to go stale or stay locked.
+pub fn serve_blocking(project_dir: PathBuf, pinned: bool) -> anyhow::Result<()> {
+    tokio::runtime::Runtime::new()?.block_on(serve_with_options(project_dir, pinned))
 }
 
 pub async fn serve_with_options(project_dir: PathBuf, pinned: bool) -> anyhow::Result<()> {
@@ -4192,6 +4263,27 @@ mod tests {
         assert!(
             confine_path_args("heal", &esc, &proj).is_err(),
             "heal watch=/etc must be refused"
+        );
+    }
+
+    #[test]
+    fn empty_child_stderr_includes_windows_ntstatus() {
+        assert_eq!(
+            empty_child_stderr_message(Some(-1073741515)),
+            "aden command failed (no error output; exit 0xC0000135)"
+        );
+        assert_eq!(
+            empty_child_stderr_message(Some(1)),
+            "aden command failed (no error output; exit 1)"
+        );
+        assert_eq!(
+            empty_child_stderr_message(None),
+            "aden command failed (no error output; child terminated)"
+        );
+        let wrapped = agent_error_for_mcp("tree", &empty_child_stderr_message(Some(-1073741515)));
+        assert!(
+            wrapped.contains("0xC0000135"),
+            "agent envelope dropped exit code: {wrapped}"
         );
     }
 
