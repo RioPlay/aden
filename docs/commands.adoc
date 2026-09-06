@@ -382,7 +382,11 @@ context, `question_fit`, and `routing_confidence`. This is the stable default fo
 agents and scripts. Definition/location questions such as `Where is Flask
 defined?` prefer an exact production-symbol match and a depth-zero definition
 response; same-named production alternatives remain ambiguous, while test
-fixtures do not displace the production definition. `--human` emits only clean context or actionable
+fixtures do not displace the production definition. When no symbol matches a
+definition-shaped question, `ask` fails small with `result_state: "empty"` and
+`locate`/`grep` recovery guidance instead of returning a prose document that
+merely mentions the term; questions naming a CLI command route to its handler
+symbol (`cmd_*`/`run_*` conventions) ahead of prose mentions. `--human` emits only clean context or actionable
 narrowing guidance. `--strict` caps the complete serialized response in either mode; at
 very small JSON budgets, optional routing metadata is omitted before evidence is
 truncated.
@@ -939,7 +943,7 @@ aden doctor --verbose
 Checks:
 - Git availability
 - Rust toolchain (rustc, cargo)
-- `aden` and `aden-mcp` in PATH, including exact version parity (a mismatch requires reinstalling the pair and restarting the AI client)
+- `aden` in PATH (`aden mcp stdio` is the MCP server). A leftover standalone `aden-mcp` should match the CLI version when present.
 - `.agent/` directory present
 - built-in exclusions active (`.adenignore` is optional)
 - Knowledge graph health score
@@ -1121,6 +1125,7 @@ aden mcp install --platform amp
 aden mcp install --platform opencode
 aden mcp install --platform claude
 aden mcp install --platform cursor
+aden mcp install --platform grok
 
 # Uninstall
 aden mcp uninstall --all
@@ -1129,6 +1134,9 @@ aden mcp uninstall --platform opencode
 # List configured platforms
 aden mcp list
 aden mcp list --name aden-plan
+
+# Speak MCP JSON-RPC on stdio from this aden binary
+aden mcp stdio
 
 # Start HTTP server for CI/agents
 aden mcp serve --port 3030
@@ -1163,12 +1171,12 @@ aden mcp install --platform codex --preset verify
 |===
 |Flag |Description
 
-|--platform <PLATFORM> |Target one platform: `amp`, `opencode`, `claude`, `cursor`, `codex`, `zed`, `windsurf`
+|--platform <PLATFORM> |Target one platform: `amp`, `opencode`, `claude`, `cursor`, `codex`, `zed`, `windsurf`, `grok`
 |--all |Apply to all platforms, not just detected ones
 |--scope <SCOPE> |`user` (global) or `project` (local). Default: `user` for every platform; runtime workspace selection follows MCP Roots/host environment
 |--preset <PRESET> |Workflow preset: `explore` (`aden-explore`, essential), `verify` (`aden-verify`, standard), or `admin` (`aden-admin`, full)
 |--name <NAME> |Override the MCP server entry name to install, list, or uninstall. Default: `aden`
-|--binary <PATH> |Path to the `aden-mcp` binary to register
+|--binary <PATH> |Path to the `aden` or `aden-mcp` binary to register. Default: this `aden` exe
 |--project <PATH> |Project used for local configuration during installation; runtime workspace selection follows MCP Roots/host workspace environment
 |--dry-run |Show what would change without writing files
 |--surface <LEVEL> |Override the preset/default tool surface: `essential`, `standard`, or `full` |essential

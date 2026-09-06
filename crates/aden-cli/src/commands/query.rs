@@ -76,9 +76,26 @@ fn explicit_snake_symbol(question: &str) -> Option<String> {
 
 fn is_definition_lookup(question: &str) -> bool {
     let normalized = question.to_lowercase();
-    ["where is", "defined", "definition", "located", "find the"]
+    let classic = ["where is", "defined", "definition", "located", "find the"]
         .iter()
-        .any(|phrase| normalized.contains(phrase))
+        .any(|phrase| normalized.contains(phrase));
+    if classic {
+        return true;
+    }
+    // "what is project_key?" / "how does resolve_anchor work?" are the same
+    // user intent as "where is X defined". The old phrase list missed them, so
+    // ask walked depth-2 and padded leftover budget with callers.
+    let naming = [
+        "what is ",
+        "what's ",
+        "what does ",
+        "how does ",
+        "how do ",
+        "how is ",
+    ]
+    .iter()
+    .any(|phrase| normalized.contains(phrase));
+    naming && has_symbolish_token(question)
 }
 
 fn exact_symbol_anchors(idx: &aden_index::Index, question: &str) -> Vec<String> {
@@ -104,14 +121,17 @@ fn exact_symbol_anchors(idx: &aden_index::Index, question: &str) -> Vec<String> 
     };
 
     for symbol in candidates {
+        let lower = symbol.to_lowercase();
         let mut anchors: Vec<String> = query_index(idx, &symbol)
             .into_iter()
             .filter(|result| !is_test_result(result))
             .filter(|result| {
                 result.anchor.rsplit('#').next().is_some_and(|fragment| {
-                    fragment == symbol
-                        || fragment.rsplit(['.', ':']).find(|part| !part.is_empty())
-                            == Some(symbol.as_str())
+                    // Case-insensitive: Python/Rust class symbols are
+                    // conventionally capitalized (`#Flask`) while queries
+                    // usually type them lowercase.
+                    let frag = fragment.to_lowercase();
+                    frag == lower || frag.rsplit(['.', ':']).find(|part| !part.is_empty()) == Some(lower.as_str())
                 })
             })
             .map(|result| result.anchor)
@@ -119,6 +139,45 @@ fn exact_symbol_anchors(idx: &aden_index::Index, question: &str) -> Vec<String> 
         anchors.dedup();
         if !anchors.is_empty() {
             return anchors;
+        }
+    }
+    Vec::new()
+}
+
+/// Route a natural-language query that names a CLI command to its handler
+/// symbol. BM25 ranks prose mentions of the command ("runs `aden grep` in a
+/// shell") above the handler itself, so the handler must be queried for
+/// directly, not searched for within the results. Detection is generic: any
+/// non-stop-word query word W is tried against the project's handler naming
+/// conventions (`cmd_W`, `run_W`) via the lexical index — nothing is
+/// aden-specific. Returns empty when no handler anchor exists (or the query
+/// has a symbol-like token, which means routing already has a precise target).
+fn command_handler_anchors(idx: &aden_index::Index, question: &str) -> Vec<String> {
+    if has_symbolish_token(question) {
+        return Vec::new();
+    }
+    let words: Vec<String> = question
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
+        .filter(|s| s.len() >= 3)
+        .map(str::to_lowercase)
+        .filter(|s| !SYMBOL_STOP_WORDS.contains(&s.as_str()))
+        .collect();
+    for word in words {
+        for prefix in ["cmd_", "run_"] {
+            let candidate = format!("{prefix}{word}");
+            let anchors: Vec<String> = query_index(idx, &candidate)
+                .into_iter()
+                .filter(|result| !is_test_result(result))
+                .filter(|result| {
+                    result.anchor.rsplit('#').next().is_some_and(|fragment| {
+                        fragment == candidate || fragment.ends_with(&candidate)
+                    })
+                })
+                .map(|result| result.anchor)
+                .collect();
+            if !anchors.is_empty() {
+                return anchors;
+            }
         }
     }
     Vec::new()
@@ -779,7 +838,9 @@ fn resolve_anchor_overview(
     if results.is_empty() {
         return None;
     }
+
     let top_score = results[0].score;
+
     let mut docs: Vec<&SearchResult> = Vec::new();
     let mut seen: HashSet<&str> = HashSet::new();
     for r in results {
@@ -943,6 +1004,7 @@ fn resolve_anchor_fuzzy_with_reason(
     }
 
     // Step 1: explicit `func()` syntax — highest confidence.
+
     let explicit = extract_explicit_symbols(query);
     if !explicit.is_empty() {
         // Search all results (not just top-10) for an exact symbol name match.
@@ -1121,7 +1183,11 @@ pub fn cmd_check(
     max_issues: Option<usize>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if !path.is_dir() {
-        return Err("check requires a directory path".into());
+        return Err(Box::new(super::AgentCliError::new(
+            "invalid_args",
+            "check takes a directory (the project), not a file",
+            "run `aden check .` — check validates the project graph, not individual files",
+        )));
     }
 
     let min_severity = match severity.to_lowercase().as_str() {
@@ -2692,11 +2758,21 @@ pub fn cmd_ask(
         let idx = load_or_build_index(path)?;
         let results = crate::util::query_index_with_navigation(&idx, question, path);
         if results.is_empty() {
-            let recovery = [
-                "Use more specific keywords from the codebase.",
-                "Try `aden search <term>` to see available anchors.",
-                "Pin an anchor with --from <anchor>.",
-            ];
+            // A definition-shaped question that the index cannot see at all
+            // gets symbol-hunting advice, not generic keyword advice.
+            let recovery: &[&str] = if is_definition_lookup(question) {
+                &[
+                    "No symbol matched the name in this question.",
+                    "Run `aden locate <symbol>` for ranked candidates and typo suggestions.",
+                    "Use `aden grep <term>` to find where the concept is discussed.",
+                ]
+            } else {
+                &[
+                    "Use more specific keywords from the codebase.",
+                    "Try `aden search <term>` to see available anchors.",
+                    "Pin an anchor with --from <anchor>.",
+                ]
+            };
             if json_output {
                 let payload = serde_json::json!({
                     "schema_version": 1,
@@ -2742,45 +2818,154 @@ pub fn cmd_ask(
         // that intentional bypass, not a near-tie — so the user-facing note must
         // not cry "ambiguous".
         let mut overview_promoted = false;
-        let mut primary = if overview {
-            // Cross-reference in-degree only participates in project-identity
-            // tie-breaking. Other overview questions trust BM25's top in-band
-            // prose result, so scanning every edge would add work with no
-            // possible effect on selection.
-            let indegree = if query_is_project_identity(question, &results) {
-                doc_reference_indegree(path)
-            } else {
-                std::collections::HashMap::new()
-            };
-            match resolve_anchor_overview(question, &results, &token_count, &indegree) {
-                Some((anchor, why)) => {
-                    xp.decision = why;
-                    overview_promoted = true;
-                    anchor
-                }
-                None => {
-                    let (anchor, why) =
-                        resolve_anchor_fuzzy_with_reason(question, &results, token_count);
-                    xp.decision =
-                        format!("overview engaged but no prose doc in score band; {}", why);
-                    anchor
+    let mut primary = if overview {
+        // Cross-reference in-degree only participates in project-identity
+        // tie-breaking. Other overview questions trust BM25's top in-band
+        // prose result, so scanning every edge would add work with no
+        // possible effect on selection.
+        let indegree = if query_is_project_identity(question, &results) {
+            doc_reference_indegree(path)
+        } else {
+            std::collections::HashMap::new()
+        };
+        match resolve_anchor_overview(question, &results, &token_count, &indegree) {
+            Some((anchor, why)) => {
+                xp.decision = why;
+                overview_promoted = true;
+                anchor
+            }
+            None => {
+                let (anchor, why) =
+                    resolve_anchor_fuzzy_with_reason(question, &results, token_count);
+                xp.decision =
+                    format!("overview engaged but no prose doc in score band; {}", why);
+                anchor
+            }
+        }
+    } else {
+        let (anchor, why) = resolve_anchor_fuzzy_with_reason(question, &results, token_count);
+        xp.decision = why.to_string();
+        anchor
+    };
+
+        // Prose-to-Code Linkage: If the primary result is a prose document, 
+        // look for an outbound edge (RelatesTo, Documents) to a code symbol 
+        // to augment the assembly context.
+        let mut prose_bridge: Option<String> = None;
+        if AnchorPattern::is_prose_doc(&primary) {
+            if let Ok(graph) = aden_graph::cache::build_from_directory_cached(path) {
+                if let Some(node) = graph.get_index(&primary) {
+                    // Rank outbound code neighbors by how well they answer the
+                    // question: symbol-name token overlap with the question
+                    // first, semantic doc→code edges (Documents/Explains) as a
+                    // bonus, RelatesTo as a lesser one. (Longest-anchor-name
+                    // was the previous proxy — it picked whichever symbol had
+                    // the most verbose path, not the relevant one.)
+                    let question_terms: HashSet<String> = question
+                        .split(|c: char| !c.is_alphanumeric() && c != '_')
+                        .filter(|s| s.len() >= 3)
+                        .map(|s| s.to_lowercase())
+                        .filter(|s| !SYMBOL_STOP_WORDS.contains(&s.as_str()))
+                        .collect();
+                    let mut best: Option<(usize, String)> = None;
+                    for neighbor in graph.graph.neighbors_directed(node, Direction::Outgoing) {
+                        let anchor = graph.graph[neighbor].doc.anchor.clone();
+                        if AnchorPattern::is_prose_doc(&anchor) {
+                            continue;
+                        }
+                        let fragment = anchor
+                            .rsplit('#')
+                            .next()
+                            .unwrap_or(&anchor)
+                            .to_lowercase();
+                        let overlap = fragment
+                            .split(|c: char| !c.is_alphanumeric() && c != '_')
+                            .filter(|t| question_terms.contains(*t))
+                            .count();
+                        let edge_bonus = graph
+                            .graph
+                            .find_edge(node, neighbor)
+                            .map(|e| match graph.graph[e].edge_type {
+                                aden_core::EdgeType::Documents | aden_core::EdgeType::Explains => 2,
+                                aden_core::EdgeType::RelatesTo => 1,
+                                _ => 0,
+                            })
+                            .unwrap_or(0);
+                        let score = overlap * 3 + edge_bonus;
+                        if best.as_ref().map_or(true, |(top, _)| score > *top) {
+                            best = Some((score, anchor));
+                        }
+                    }
+                    if let Some((_, code_anchor)) = best {
+                        prose_bridge = aden_graph::cache::resolve_anchor_in_store(path, &code_anchor);
+                    }
                 }
             }
-        } else {
-            let (anchor, why) = resolve_anchor_fuzzy_with_reason(question, &results, token_count);
-            xp.decision = why.to_string();
-            anchor
-        };
+        }
         let lower_question = question.to_lowercase();
         let relationship_query = [" call", "caller", "request path", "impact", "depend"]
             .iter()
             .any(|signal| lower_question.contains(signal));
         let exact_anchors = if relationship_query {
             Vec::new()
-        } else {
+        } else if has_symbolish_token(question) {
             exact_symbol_anchors(&idx, question)
+        } else {
+            // No symbol-like token: a fuzzy natural-language question. Try the
+            // handler-convention lookup first (queries naming a CLI command
+            // route to its handler, which BM25 prose mentions drown out), then
+            // fall back to the general exact-symbol path.
+            let exact = exact_symbol_anchors(&idx, question);
+            if exact.is_empty() {
+                command_handler_anchors(&idx, question)
+            } else {
+                exact
+            }
         };
         let exact_routed = !exact_anchors.is_empty();
+        // A definition-shaped question ("Where is X defined?", "How does X
+        // work?" with a symbolish X) that matched NO symbol is a misroute
+        // waiting to happen: falling through to fuzzy selection returns the
+        // top prose document that merely mentions the term, presented as the
+        // answer. Fail small instead — point at the tools that rank
+        // candidates and typo suggestions.
+        if !exact_routed
+            && !relationship_query
+            && is_definition_lookup(question)
+        {
+            let recovery = [
+                "No symbol matched the name in this question.",
+                "Run `aden locate <symbol>` for ranked candidates and typo suggestions.",
+                "Use `aden grep <term>` to find where the concept is discussed.",
+            ];
+            if json_output {
+                let payload = augment_read_json(
+                    path,
+                    serde_json::json!({
+                        "schema_version": 1,
+                        "result_state": "empty",
+                        "question": question,
+                        "anchor": null,
+                        "context": "",
+                        "recovery": recovery,
+                        "strict": strict,
+                    }),
+                );
+                let serialized = serde_json::to_string(&payload)?;
+                if strict && serialized.len() > budget.saturating_mul(4) {
+                    print!("{MINIMAL_INCOMPLETE_RECEIPT}");
+                } else {
+                    print!("{serialized}");
+                }
+            } else {
+                println!("No symbol matched the name in: {question}");
+                println!("Tips:");
+                for tip in recovery {
+                    println!("  - {tip}");
+                }
+            }
+            return Ok(());
+        }
         let exact_alternates: Vec<String> = exact_anchors.iter().skip(1).cloned().collect();
         if let Some(anchor) = exact_anchors.first() {
             xp.decision = if exact_alternates.is_empty() {
@@ -2855,13 +3040,31 @@ pub fn cmd_ask(
                 "deterministic evidence-role routing across {} facets",
                 facet_seeds.len()
             );
-            facet_seeds.into_iter().skip(1).take(2).collect()
+            let mut a: Vec<String> = facet_seeds.into_iter().skip(1).take(2).collect();
+            if let Some(bridge) = prose_bridge {
+                if !a.contains(&bridge) {
+                    a.insert(0, bridge);
+                }
+            }
+            a
         } else if precise_routed {
-            exact_alternates.into_iter().take(2).collect()
+            let mut a: Vec<String> = exact_alternates.into_iter().take(2).collect();
+            if let Some(bridge) = prose_bridge {
+                if !a.contains(&bridge) {
+                    a.insert(0, bridge);
+                }
+            }
+            a
         } else {
             // Up to 2 in-band alternates, deduped against the (possibly
             // non-rank-1) primary. Empty means a clear winner.
-            inband_alternate_candidates(&primary, &results, 1)
+            let mut a = inband_alternate_candidates(&primary, &results, 1);
+            if let Some(bridge) = prose_bridge {
+                if !a.contains(&bridge) {
+                    a.insert(0, bridge);
+                }
+            }
+            a
         };
         // Decide the honest low-confidence note here, where we know whether the
         // alternates are a genuine near-tie or the deliberate overview bypass.
@@ -3161,8 +3364,10 @@ pub fn cmd_ask(
             }
         } else if resolved_alts.is_empty()
             && !precise_definition_routed
+            && from_override.is_none()
             && !AnchorPattern::is_prose_doc(&start_anchor)
-            && substantive_token_estimate(&primary_text) < effective_budget / 2
+            && substantive_token_estimate(&primary_text)
+                < THIN_STUB_TOKEN_THRESHOLD.max(effective_budget * 15 / 100)
         {
             // F3 — escalation ladder for underfull/thin CODE anchors, driven
             // by SUBSTANTIVE tokens (not raw bytes — bare titles and `calls:`

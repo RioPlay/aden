@@ -84,7 +84,7 @@ fn long_version_reports_reproducible_build_identity_and_formats() {
     assert!(version.contains("Features:"), "{version}");
     assert!(version.contains("snapshot-v1"), "{version}");
     assert!(version.contains("index-layout-v3"), "{version}");
-    assert!(version.contains("gen-logic-v9"), "{version}");
+    assert!(version.contains("gen-logic-v11"), "{version}");
     assert!(version.contains("symbol-lexicon-v2"), "{version}");
     assert!(
         !version.contains("Built at:"),
@@ -348,6 +348,78 @@ fn ask_definition_lookup_prefers_the_exact_production_symbol() {
     assert!(
         anchor.ends_with("/src/app.py#Flask") && !anchor.contains("/tests/"),
         "definition lookup must not route to Flask.open_resource or the test fixture: {anchor}"
+    );
+}
+
+#[test]
+fn ask_definition_lookup_without_a_match_fails_small_instead_of_prose_routing() {
+    let dir = temp_project::temp_dir();
+    std::fs::write(dir.join("app.py"), "class Flask:\n    pass\n").unwrap();
+    // A prose mention so the index has results for the term but no symbol
+    // named `Controller` exists — the exact case where fuzzy routing used to
+    // present a doc mention as the definition.
+    std::fs::write(
+        dir.join("README.md"),
+        "# Guide\n\nThe Controller orchestrates incoming requests.\n",
+    )
+    .unwrap();
+
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
+        .args(["ask", "Where is Controller defined?", &dir.to_string_lossy()])
+        .output()
+        .expect("aden binary must be built");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let payload: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(payload["result_state"], "empty", "{payload}");
+    assert!(payload["anchor"].is_null(), "{payload}");
+    assert_eq!(payload["context"], "", "no context may be assembled: {payload}");
+    let recovery = payload["recovery"].as_array().unwrap();
+    assert!(
+        recovery
+            .iter()
+            .any(|tip| tip.as_str().unwrap_or("").contains("locate")),
+        "recovery must point at `aden locate`: {recovery:?}"
+    );
+}
+
+#[test]
+fn ask_how_does_symbol_work_stays_on_the_definition() {
+    let dir = temp_project::temp_dir();
+    std::fs::write(
+        dir.join("lib.rs"),
+        "/// Open a resource file.\nfn open_resource() {}\nfn helper() { open_resource(); }\n",
+    )
+    .unwrap();
+
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
+        .args([
+            "ask",
+            "how does open_resource work?",
+            &dir.to_string_lossy(),
+        ])
+        .output()
+        .expect("aden binary must be built");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let payload: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(payload["result_state"], "bounded", "{payload}");
+    assert_eq!(payload["depth"], 0, "{payload}");
+    let anchor = payload["anchor"].as_str().unwrap();
+    assert!(
+        anchor.ends_with("#open_resource"),
+        "should stay on the named symbol: {anchor}"
+    );
+    let context = payload["context"].as_str().unwrap_or("");
+    assert!(
+        !context.contains("supporting evidence"),
+        "definition ask must not pad with callers: {context}"
     );
 }
 
@@ -796,6 +868,80 @@ fn test_graph_outputs_neighborhood() {
         stdout.contains("module-a"),
         "Should show module-a in graph. stdout:\n{}",
         stdout
+    );
+}
+
+#[test]
+fn grep_regex_shaped_literal_is_needs_regex() {
+    let dir = temp_project::temp_dir();
+    std::fs::write(dir.join("app.rs"), "fn ready() {}\n").unwrap();
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
+        .args(["grep", "ready|Ready", &dir.to_string_lossy()])
+        .output()
+        .expect("aden binary must be built");
+    assert!(!output.status.success(), "regex-shaped literal must fail");
+    let err = String::from_utf8_lossy(&output.stderr);
+    assert!(err.contains("looks like a regex"), "{err}");
+    assert!(err.contains("--regex") || err.contains("regex=true"), "{err}");
+}
+
+#[test]
+fn check_rejects_multiple_paths() {
+    let dir = temp_project::temp_dir();
+    temp_project::scaffold(&dir);
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
+        .args([
+            "check",
+            &dir.join("README.adoc").to_string_lossy(),
+            &dir.join("module-a.adoc").to_string_lossy(),
+        ])
+        .output()
+        .expect("aden binary must be built");
+    assert!(!output.status.success());
+    let err = String::from_utf8_lossy(&output.stderr);
+    assert!(err.contains("one directory"), "{err}");
+    assert!(!err.contains("unexpected argument"), "{err}");
+}
+
+#[test]
+fn tree_default_json_is_the_symbol_outline() {
+    // JSON is the global default. `aden tree` without --human must not dump
+    // the graphical directory tree at an agent.
+    let dir = temp_project::temp_dir();
+    std::fs::write(dir.join("app.rs"), "fn parse_config() {}\n").unwrap();
+
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
+        .args(["tree", &dir.to_string_lossy()])
+        .output()
+        .expect("aden binary must be built");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.trim_start().starts_with('{'),
+        "default tree must be JSON, got: {stdout}"
+    );
+    let payload: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(payload["format"], "symbol-outline-v1");
+    assert!(
+        payload["outline"]
+            .as_str()
+            .is_some_and(|o| o.contains("parse_config")),
+        "{payload}"
+    );
+
+    let human = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
+        .args(["--human", "tree", &dir.to_string_lossy()])
+        .output()
+        .expect("aden binary must be built");
+    assert!(human.status.success());
+    let human_out = String::from_utf8_lossy(&human.stdout);
+    assert!(
+        !human_out.trim_start().starts_with('{'),
+        "--human tree must stay graphical: {human_out}"
     );
 }
 
