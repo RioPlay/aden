@@ -188,6 +188,40 @@ fn locate_and_understand_accept_generic_qualified_symbol_shorthand() {
 }
 
 #[test]
+fn scheme_stripped_anchor_spelling_resolves_exactly() {
+    let (root, data) = fixture();
+    assert!(aden(&root, &data, &["gen", "."]).status.success());
+
+    let natural = aden(&root, &data, &["-j", "locate", "--symbol", "bfs", "."]);
+    let natural: serde_json::Value = serde_json::from_slice(&natural.stdout).unwrap();
+    let canonical = natural["resolution"]["anchor"].as_str().unwrap();
+    assert!(
+        canonical.starts_with("aden://module/"),
+        "expected canonical scheme anchor: {canonical}"
+    );
+    // The spelling users actually paste: canonical anchor minus the scheme.
+    let stripped = canonical.trim_start_matches("aden://module/");
+
+    for args in [
+        vec!["asm", "--from", stripped, "."],
+        vec!["understand", stripped, "."],
+        vec!["query", "--from", stripped, "--depth", "0", "."],
+    ] {
+        let run = aden(&root, &data, &args);
+        assert!(
+            run.status.success(),
+            "{args:?} rejected the scheme-stripped spelling: {}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&run.stdout).contains("bfs"),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&run.stdout)
+        );
+    }
+}
+
+#[test]
 fn asm_and_all_query_modes_accept_a_unique_bare_symbol() {
     let (root, data) = fixture();
     assert!(aden(&root, &data, &["gen", "."]).status.success());

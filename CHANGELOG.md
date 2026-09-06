@@ -9,6 +9,25 @@ All notable changes to aden are documented here. Format follows
 
 ## [Unreleased]
 
+### Fixed
+- **`aden locate <symbol>` shorthand** — a bare positional symbol now behaves
+  like `--symbol <symbol>` instead of clap's "unexpected argument" dump; with
+  `-s`/`-c` present, a single positional is still the DIR as before.
+- **Scheme-stripped anchor spellings resolve** — `asm`/`query`/`understand`
+  accept `proj/path#symbol` (the canonical anchor minus the `aden://module/`
+  or `aden://doc/` scheme) instead of `anchor_not_found` with an unhelpful
+  recovery. Resolution is exact: the scheme-prefixed form must exist.
+- **`ask` command questions route to handlers** — queries naming a CLI
+  command (e.g. "How does mcp install work?") route to its `cmd_*`/`run_*`
+  handler symbol instead of a prose mention; definition questions with no
+  matching symbol fail small (`result_state: "empty"` + `locate` recovery)
+  instead of returning an unrelated document.
+- **Case-insensitive definition lookups** — `Where is Flask defined?` matches
+  a production symbol `#Flask` for a depth-0 definition answer.
+- **Plain `cargo build`/`cargo test` covers the workspace** —
+  `default-members` mirrors the CI gate (all crates except `aden-lsp`); the
+  root package only hosts benches (`cargo bench -p aden`).
+
 ## [0.4.1] - 2026-08-13
 
 This patch makes Aden safer to upgrade and cheaper for LLM day-to-day use:

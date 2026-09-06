@@ -216,6 +216,29 @@ pub struct AnchorResolutionAnalysis {
 /// Analyze an already-loaded anchor set once. Structural commands consume the
 /// resolution; discovery commands can also present the broader ranked matches.
 pub fn analyze_anchor_list(anchor: &str, anchors: &[String]) -> AnchorResolutionAnalysis {
+    // A scheme-stripped anchor — `proj/path#symbol` as printed in docs or
+    // hand-trimmed from `aden://module/proj/path#symbol` — normalizes to its
+    // canonical scheme-prefixed form when that form exists. This is an exact
+    // lookup, never fuzzy: if neither scheme-prefixed form is in the anchor
+    // set, the input flows through unchanged.
+    let normalized: String;
+    let anchor = if !anchor.contains("://") && anchor.contains('#') {
+        let module = format!("aden://module/{anchor}");
+        if anchors.iter().any(|candidate| candidate == &module) {
+            normalized = module;
+            &normalized
+        } else {
+            let doc = format!("aden://doc/{anchor}");
+            if anchors.iter().any(|candidate| candidate == &doc) {
+                normalized = doc;
+                &normalized
+            } else {
+                anchor
+            }
+        }
+    } else {
+        anchor
+    };
     let (exact, matched) = ranked_anchor_matches(anchor, anchors);
     let mut ranked_matches = Vec::with_capacity(matched.len() + usize::from(exact.is_some()));
     if let Some(exact) = exact {
@@ -274,6 +297,19 @@ pub fn resolve_anchor_detailed(dir: &Path, anchor: &str) -> AnchorResolution {
     {
         if matches!(storage.get_document(anchor), Ok(Some(_))) {
             return AnchorResolution::Exact(anchor.to_string());
+        }
+        // Scheme-stripped anchor spelling (`proj/path#sym`, as pasted minus
+        // the `aden://` scheme): probe the two canonical scheme forms
+        // exactly. This must happen before the symbol-lexicon shortcut —
+        // the lexicon returns an empty candidate set for path-shaped input
+        // and would otherwise end resolution with a bare not-found.
+        if !anchor.contains("://") && anchor.contains('#') {
+            for prefix in ["aden://module/", "aden://doc/"] {
+                let candidate = format!("{prefix}{anchor}");
+                if matches!(storage.get_document(&candidate), Ok(Some(_))) {
+                    return AnchorResolution::Exact(candidate);
+                }
+            }
         }
         if let Ok(Some(lookup)) = storage.lookup_symbol_candidates(anchor) {
             return resolve_anchor_from_list(anchor, &lookup.anchors);
