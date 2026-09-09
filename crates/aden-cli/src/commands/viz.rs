@@ -402,6 +402,7 @@ pub(crate) fn viz_json_for(
     depth: usize,
     scope: Option<&str>,
     resolution: f64,
+    simple: bool,
 ) -> Result<String, Box<dyn std::error::Error>> {
     // `view` shares the positional trap (`aden view .`): same guard.
     reject_directory_anchor(anchor)?;
@@ -413,9 +414,9 @@ pub(crate) fn viz_json_for(
         graph = scoped_subgraph(&graph, &root, sub)?;
     }
     match mode {
-        "graph" => Ok(render_whole_graph_json(
-            &graph, &root, GRAPH_CAP, resolution,
-        )),
+        // The offline viewer must retain every anchor and relationship. Its
+        // density control limits drawing, not the navigable graph payload.
+        "graph" => Ok(render_graph_json(&graph, &root, 0, resolution, !simple)),
         "communities" => {
             render_communities_view_json(&graph, &root, 2, resolution, MAX_COMMUNITIES, DRILL_CAP)
         }
@@ -528,6 +529,16 @@ const GRAPH_CAP: usize = 800;
 /// for: aden computes the rich, whole-graph, code+prose view model *once* and any
 /// consumer (viewer, agent, CI gate) lenses it, instead of each re-deriving it.
 fn render_whole_graph_json(graph: &Graph, root: &Path, cap: usize, resolution: f64) -> String {
+    render_graph_json(graph, root, cap, resolution, true)
+}
+
+fn render_graph_json(
+    graph: &Graph,
+    root: &Path,
+    cap: usize,
+    resolution: f64,
+    communities: bool,
+) -> String {
     // Total (in+out) degree per node — the importance signal the cap ranks on, and a
     // first-class field every consumer wants (centrality without a re-derivation).
     let mut degree: BTreeMap<String, usize> = BTreeMap::new();
@@ -545,7 +556,11 @@ fn render_whole_graph_json(graph: &Graph, root: &Path, cap: usize, resolution: f
     }
 
     // Community of every member + a human label per community (the most common group).
-    let comms = aden_graph::community::detect_communities(graph, resolution);
+    let comms = if communities {
+        aden_graph::community::detect_communities(graph, resolution)
+    } else {
+        Vec::new()
+    };
     let mut comm_of: BTreeMap<String, usize> = BTreeMap::new();
     let mut comm_meta: Vec<serde_json::Value> = Vec::new();
     for (i, members) in comms.iter().enumerate() {
@@ -569,12 +584,10 @@ fn render_whole_graph_json(graph: &Graph, root: &Path, cap: usize, resolution: f
             .then_with(|| a.cmp(b))
     });
     let total = ranked.len();
-    // Compact global search index — all anchors ranked by degree, capped so the page stays
-    // fast. Each entry uses short keys {n,a,k,g,d} to minimise payload.
-    const ALL_ANCHORS_CAP: usize = 4000;
+    // Keep search complete even when a text export caps the displayed graph.
+    // Each entry uses short keys {n,a,k,g,d} to minimise payload.
     let all_anchors: Vec<serde_json::Value> = ranked
         .iter()
-        .take(ALL_ANCHORS_CAP)
         .map(|a| {
             let k = graph
                 .get_index(a)
@@ -592,6 +605,9 @@ fn render_whole_graph_json(graph: &Graph, root: &Path, cap: usize, resolution: f
     if cap > 0 && ranked.len() > cap {
         ranked.truncate(cap);
     }
+    // Preserve useful source previews on large exports instead of dropping
+    // every snippet as soon as the graph crosses the snippet budget.
+    let snippet_anchors: BTreeSet<String> = ranked.iter().take(SNIPPET_NODE_CAP).cloned().collect();
     let kept: BTreeSet<String> = ranked.into_iter().collect();
     let ids: BTreeMap<&str, String> = kept
         .iter()
@@ -600,11 +616,7 @@ fn render_whole_graph_json(graph: &Graph, root: &Path, cap: usize, resolution: f
         .collect();
 
     let src = build_src_map(root);
-    let snippets = if kept.len() <= SNIPPET_NODE_CAP {
-        collect_snippets(&src, &kept)
-    } else {
-        BTreeMap::new()
-    };
+    let snippets = collect_snippets(&src, &snippet_anchors);
     let nodes_json: Vec<serde_json::Value> = kept
         .iter()
         .map(|a| {
@@ -639,7 +651,7 @@ fn render_whole_graph_json(graph: &Graph, root: &Path, cap: usize, resolution: f
                 if w > 0 {
                     obj["words"] = serde_json::json!(w);
                 }
-                if kept.len() <= SNIPPET_NODE_CAP
+                if snippet_anchors.contains(a)
                     && let Some(s) = doc_snippet(&graph.graph[i].doc)
                 {
                     obj["snippet"] = serde_json::json!(s);
@@ -921,6 +933,7 @@ fn render_communities_view_json(
             serde_json::json!({
                 "id": format!("c{i}"),
                 "label": community_label(members),
+                "group": community_label(members),
                 "community": i,
                 "size": members.len(),
             })

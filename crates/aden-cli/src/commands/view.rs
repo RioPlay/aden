@@ -22,6 +22,7 @@ const FORCE_GRAPH_3D_JS: &str = include_str!("../../assets/3d-force-graph.min.js
 const VIEW_HTML: &str = include_str!("../../assets/view.html");
 /// The `--3d` orbital-brain template (same placeholders, same data contract).
 const VIEW3D_HTML: &str = include_str!("../../assets/view3d.html");
+const SIMPLE_HTML: &str = include_str!("../../assets/view-simple.html");
 
 // A CLI command handler — its parameters mirror the subcommand's flags 1:1, so a
 // bundle struct would only add indirection.
@@ -39,7 +40,11 @@ pub fn cmd_view(
     max: usize,
     scope: Option<&str>,
     resolution: f64,
+    simple: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    if simple && (threed || replay) {
+        return Err("--simple cannot be combined with --3d or --replay".into());
+    }
     if threed && replay {
         return Err(
             "--3d and --replay don't combine: replay is a 2D analytical view; \
@@ -81,13 +86,13 @@ pub fn cmd_view(
             Err(_) => base,
         }
     } else {
-        let base = super::viz::viz_json_for(path, anchor, mode, depth, scope, resolution)?;
+        let base = super::viz::viz_json_for(path, anchor, mode, depth, scope, resolution, simple)?;
         // The whole-graph view is also the canonical *replay* surface: attach the full
         // git-history activity log so the viewer can play the entire project populating,
         // piece by piece, across every commit — over the real 800-node graph rather than
         // a synthetic walk. (Touched anchors not in the importance cap simply don't light;
         // the lens reveals the kept graph in commit order.)
-        if mode == "graph" {
+        if mode == "graph" && !simple {
             let root = crate::util::find_project_root(path);
             let activity = git_activity(&root, max);
             if !activity.is_empty() {
@@ -109,7 +114,8 @@ pub fn cmd_view(
     // script element and allow HTML/script injection when viewing an untrusted repo.
     // `<\/` is an identical JSON escape for `/` (parses to the same value) but does not
     // match the HTML end-tag tokenizer — the standard JSON-in-<script> hardening.
-    let data = data.replace("</", "<\\/");
+    let simple_data = viewer_payload(&data, true)?;
+    let data = viewer_payload(&data, false)?;
 
     let out_path: PathBuf = match out {
         Some(p) => p.to_path_buf(),
@@ -122,7 +128,13 @@ pub fn cmd_view(
             let anchor_slug = anchor
                 .map(|a| format!("-{}", slug(a.rsplit(['#', '/']).next().unwrap_or(a))))
                 .unwrap_or_default();
-            let dim = if threed { "-3d" } else { "" };
+            let dim = if simple {
+                "-simple"
+            } else if threed {
+                "-3d"
+            } else {
+                ""
+            };
             std::env::temp_dir().join(format!("aden-view-{project}{anchor_slug}{dim}.html"))
         }
     };
@@ -139,9 +151,34 @@ pub fn cmd_view(
         };
         out_path.with_file_name(sib_name)
     };
+    let simple_path = out_path.with_file_name(format!(
+        "{}-simple.html",
+        out_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("aden-view")
+    ));
+    let simple_link = if simple || replay {
+        String::new()
+    } else {
+        format!(
+            "<a id=\"simple-view\" class=\"topbtn\" href=\"{}\">Simple view</a>",
+            uri_component(&simple_path.file_name().unwrap().to_string_lossy())
+        )
+    };
+    let rich_href = if simple {
+        String::new()
+    } else {
+        uri_component(&out_path.file_name().unwrap().to_string_lossy())
+    };
     let render = |template: &str, lib: &str, sibling: &str| {
         template
+            .replace("/*SIMPLE_LINK*/", &simple_link)
             .replace("/*FORCE_GRAPH_LIB*/", lib)
+            .replace(
+                "/*SEARCH_HELPERS*/",
+                include_str!("../../assets/viewer-search.js"),
+            )
             // Replace only the quoted assignments. JSON string encoding handles
             // Windows backslashes, quotes, Unicode, and `</script>` safely while
             // leaving the placeholder guard in editorUrl() untouched.
@@ -150,7 +187,15 @@ pub fn cmd_view(
                 &script_json_string(&editor_template(editor)),
             )
             .replace("\"/*SIBLING*/\"", &script_json_string(sibling))
-            .replace("/*ADEN_DATA*/", &data)
+            .replace("\"/*RICH_VIEW*/\"", &script_json_string(&rich_href))
+            .replace(
+                "/*ADEN_DATA*/",
+                if template == SIMPLE_HTML {
+                    &simple_data
+                } else {
+                    &data
+                },
+            )
     };
     let sib_href = sibling_path
         .file_name()
@@ -160,7 +205,9 @@ pub fn cmd_view(
         .file_name()
         .map(|name| uri_component(&name.to_string_lossy()))
         .unwrap_or_default();
-    let (tpl, lib, sib_tpl, sib_lib) = if threed {
+    let (tpl, lib, sib_tpl, sib_lib) = if simple {
+        (SIMPLE_HTML, "", "", "")
+    } else if threed {
         (VIEW3D_HTML, FORCE_GRAPH_3D_JS, VIEW_HTML, FORCE_GRAPH_JS)
     } else {
         (VIEW_HTML, FORCE_GRAPH_JS, VIEW3D_HTML, FORCE_GRAPH_3D_JS)
@@ -171,8 +218,9 @@ pub fn cmd_view(
         &out_path,
         render(tpl, lib, if replay { "" } else { sib_href.as_str() }),
     )?;
-    if !replay {
+    if !replay && !simple {
         std::fs::write(&sibling_path, render(sib_tpl, sib_lib, &out_href))?;
+        std::fs::write(&simple_path, render(SIMPLE_HTML, "", ""))?;
         println!(
             "Wrote {} (+ sibling {})",
             out_path.display(),
@@ -189,6 +237,22 @@ pub fn cmd_view(
         }
     }
     Ok(())
+}
+
+/// Keep offline exports compact without removing any graph nodes or edges.
+fn viewer_payload(data: &str, simple: bool) -> Result<String, serde_json::Error> {
+    let mut value: serde_json::Value = serde_json::from_str(data)?;
+    if simple && let Some(object) = value.as_object_mut() {
+        for key in [
+            "activity",
+            "all_anchors",
+            "all_anchors_total",
+            "communities",
+        ] {
+            object.remove(key);
+        }
+    }
+    Ok(serde_json::to_string(&value)?.replace("</", "<\\/"))
 }
 
 /// Build a per-commit activity log from git history (oldest → newest): each frame is
@@ -450,6 +514,14 @@ mod tests {
 
     #[test]
     fn embedded_links_are_uri_and_script_safe() {
+        assert_eq!(
+            file_url_from_native("/tmp/viewer path/graph #1 Š.html", false),
+            "file:///tmp/viewer%20path/graph%20%231%20%C5%A0.html"
+        );
+        assert_eq!(
+            file_url_from_native(r"/tmp/literal\backslash.html", false),
+            "file:///tmp/literal%5Cbackslash.html"
+        );
         assert_eq!(
             file_url_from_native(r"C:\viewer path\graph #1.html", true),
             "file:///C:/viewer%20path/graph%20%231.html"

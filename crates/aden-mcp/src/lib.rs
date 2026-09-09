@@ -2420,9 +2420,7 @@ pub fn agent_error_for_mcp(tool: &str, raw: &str) -> String {
             .get("recovery")
             .and_then(|v| v.as_str())
             .unwrap_or(match code {
-                "ambiguous_symbol" => {
-                    "retry with one exact candidate anchor from error.candidates"
-                }
+                "ambiguous_symbol" => "retry with one exact candidate anchor from error.candidates",
                 "director_stale" => {
                     "restart the host onto `aden mcp stdio`; do not retry this transport"
                 }
@@ -2430,7 +2428,8 @@ pub fn agent_error_for_mcp(tool: &str, raw: &str) -> String {
                 "invalid_args" => "correct the arguments and retry once",
                 _ => "inspect error.suggestions, then retry with one exact canonical anchor",
             });
-        let response = boundary_error_for_mcp(tool, code, message, code != "director_stale", recovery);
+        let response =
+            boundary_error_for_mcp(tool, code, message, code != "director_stale", recovery);
         let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&response) else {
             return response;
         };
@@ -2481,7 +2480,13 @@ pub fn agent_error_for_mcp(tool: &str, raw: &str) -> String {
     } else {
         "command_failed"
     };
-    let response = boundary_error_for_mcp(tool, code, &message, is_read && code != "director_stale", recovery);
+    let response = boundary_error_for_mcp(
+        tool,
+        code,
+        &message,
+        is_read && code != "director_stale",
+        recovery,
+    );
     let collection_field = match code {
         "ambiguous_symbol" => "candidates",
         "anchor_not_found" => "suggestions",
@@ -2829,10 +2834,12 @@ fn redact_abs_paths(s: &str) -> String {
         if token_start
             && ((c == '\\' && tail.as_bytes().get(1) == Some(&b'\\'))
                 || (c == '/' && tail.as_bytes().get(1) == Some(&b'/')))
-            && tail
+            && (tail
                 .as_bytes()
                 .get(2)
                 .is_some_and(u8::is_ascii_alphanumeric)
+                || (matches!(tail.as_bytes().get(2), Some(b'?' | b'.'))
+                    && matches!(tail.as_bytes().get(3), Some(b'\\' | b'/'))))
         {
             while let Some(&(_, nc)) = chars.peek() {
                 if nc.is_whitespace() || matches!(nc, '\'' | '"' | ')' | ']' | ',') {
@@ -4301,6 +4308,16 @@ mod tests {
 
     #[test]
     fn redact_abs_paths_handles_windows_drive_letters() {
+        for path in [
+            r"\\?\C:\Users\repo\main.rs",
+            r"\\?\UNC\server\share\file",
+            r"\\.\pipe\aden",
+        ] {
+            assert_eq!(
+                redact_abs_paths(&format!("Error at {path}")),
+                "Error at <path>"
+            );
+        }
         // Unix-style absolute path
         let out = redact_abs_paths("Error at /home/user/repo/src/main.rs:42");
         assert!(out.contains("<path>"), "Unix path not redacted: {out}");

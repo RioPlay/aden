@@ -139,7 +139,7 @@ fn old_layout_manifest_and_gen_cache_trigger_one_automatic_rebuild() {
     let cache: serde_json::Value =
         serde_json::from_slice(&std::fs::read(cache_path).unwrap()).unwrap();
     // Pinned to the current GEN_LOGIC_VERSION (types.rs): bump together.
-    assert_eq!(cache["version"], 11);
+    assert_eq!(cache["version"], 12);
 
     let _ = std::fs::remove_dir_all(project);
     let _ = std::fs::remove_dir_all(data);

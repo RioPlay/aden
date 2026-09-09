@@ -1038,6 +1038,11 @@ fn extract_call_sites(node: tree_sitter::Node, source: &str) -> Vec<(String, usi
     if node.kind() == "call_expression"
         && let Some(func) = node.child_by_field_name("function")
     {
+        // A local closure is not a global function with the same spelling.
+        // Keep calls inside its body, but do not invent an edge for invoking it.
+        if func.kind() == "identifier" && is_local_closure(func, source) {
+            return calls;
+        }
         let callee = resolve_callee_name(func, source);
         if !callee.is_empty() && callee.len() >= 3 && !SKIP_CALLEES.contains(&callee.as_str()) {
             let line = func.start_position().row + 1;
@@ -1045,6 +1050,55 @@ fn extract_call_sites(node: tree_sitter::Node, source: &str) -> Vec<(String, usi
         }
     }
     calls
+}
+
+fn is_local_closure(call: tree_sitter::Node, source: &str) -> bool {
+    let name = node_text(call, source);
+    let mut ancestor = call.parent();
+    while let Some(scope) = ancestor {
+        if scope.kind() == "block" {
+            let mut cursor = scope.walk();
+            // The nearest preceding binding shadows any outer binding.
+            let bindings: Vec<_> = scope
+                .named_children(&mut cursor)
+                .filter(|n| n.kind() == "let_declaration" && n.end_byte() <= call.start_byte())
+                .collect();
+            for binding in bindings.into_iter().rev() {
+                if binding
+                    .child_by_field_name("pattern")
+                    .is_some_and(|p| p.kind() == "identifier" && node_text(p, source) == name)
+                {
+                    return binding
+                        .child_by_field_name("value")
+                        .is_some_and(|v| v.kind() == "closure_expression");
+                }
+            }
+        }
+        // Nested function items cannot capture bindings in the outer function.
+        if scope.kind() == "function_item" {
+            break;
+        }
+        ancestor = scope.parent();
+    }
+    false
+}
+
+#[cfg(test)]
+mod closure_call_tests {
+    use super::*;
+
+    #[test]
+    fn closure_calls_do_not_escape_their_lexical_scope() {
+        let source = "fn caller() { render(); { let render = || helper(); render(); { render(); } } render(); }";
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&crate::get_ts_language("rust").unwrap())
+            .unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        let calls = extract_call_sites(tree.root_node(), source);
+        assert_eq!(calls.iter().filter(|(name, _)| name == "render").count(), 2);
+        assert_eq!(calls.iter().filter(|(name, _)| name == "helper").count(), 1);
+    }
 }
 
 fn resolve_callee_name(node: tree_sitter::Node, source: &str) -> String {

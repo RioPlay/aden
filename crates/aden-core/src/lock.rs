@@ -20,7 +20,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::thread::sleep;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// Poll interval while waiting for a contended lock.
 const POLL: Duration = Duration::from_millis(50);
@@ -87,8 +87,7 @@ impl FileLock {
         verbose: bool,
     ) -> io::Result<Self> {
         let path = path.as_ref().to_path_buf();
-        let deadline = SystemTime::now() + timeout;
-        let started = SystemTime::now();
+        let started = Instant::now();
         let mut last_note = started;
         const NOTE_EVERY: Duration = Duration::from_secs(5);
 
@@ -99,12 +98,10 @@ impl FileLock {
                     if e.kind() == io::ErrorKind::AlreadyExists
                         || e.kind() == io::ErrorKind::PermissionDenied =>
                 {
-                    if reclaim_if_stale(&path)? {
-                        continue;
-                    }
-                    let now = SystemTime::now();
-                    if verbose && now.duration_since(last_note).unwrap_or_default() >= NOTE_EVERY {
-                        let waited = now.duration_since(started).unwrap_or_default();
+                    let reclaimed = reclaim_if_stale(&path)?;
+                    let now = Instant::now();
+                    if verbose && now.duration_since(last_note) >= NOTE_EVERY {
+                        let waited = now.duration_since(started);
                         let detail = read_holder(&path)
                             .map(describe_holder)
                             .unwrap_or_else(|| "unknown holder".into());
@@ -115,7 +112,7 @@ impl FileLock {
                         );
                         last_note = now;
                     }
-                    if now >= deadline {
+                    if now.duration_since(started) >= timeout {
                         let detail = read_holder(&path)
                             .map(describe_holder)
                             .unwrap_or_else(|| "unknown holder".into());
@@ -129,7 +126,9 @@ impl FileLock {
                             ),
                         ));
                     }
-                    sleep(POLL);
+                    if !reclaimed {
+                        sleep(POLL.min(timeout.saturating_sub(started.elapsed())));
+                    }
                 }
                 Err(e) => return Err(e),
             }
@@ -148,6 +147,15 @@ impl FileLock {
 /// which a contender would misread as stale and reclaim — letting two writers
 /// in at once.
 fn create_exclusive(path: &Path) -> io::Result<String> {
+    // Avoid a temp-file write and fsync on every poll while a holder is visible.
+    // This is only a contention fast path: hard_link below still arbitrates
+    // acquisition atomically if another contender arrives after this check.
+    if path.try_exists()? {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "lock target exists",
+        ));
+    }
     let tmp = unique_temp(path);
     let token = unique_token();
     {
@@ -313,6 +321,20 @@ mod tests {
             FileLock::acquire_timeout(&path, Duration::from_millis(100)).expect_err("must block");
         assert_eq!(err.kind(), io::ErrorKind::WouldBlock);
         drop(held);
+    }
+
+    #[test]
+    fn unreadable_lock_does_not_bypass_timeout() {
+        let path = lock_path("unreadable");
+        // An unexpected directory cannot be read as a holder. Retrying a
+        // seemingly vanished lock must still respect the caller's deadline.
+        fs::create_dir(&path).unwrap();
+        let started = Instant::now();
+        let err = FileLock::acquire_timeout(&path, Duration::from_millis(100))
+            .expect_err("unreadable holder must not retry forever");
+        fs::remove_dir(&path).unwrap();
+        assert_eq!(err.kind(), io::ErrorKind::WouldBlock);
+        assert!(started.elapsed() < Duration::from_secs(5));
     }
 
     #[test]

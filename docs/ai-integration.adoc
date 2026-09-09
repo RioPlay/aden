@@ -91,6 +91,9 @@ If the tools do not appear, see <<troubleshooting>>.
 `aden --version` is the installation smoke test. `aden mcp stdio` opens the
 JSON-RPC stdio transport and should only be launched by an MCP host.
 
+For installations that still ship the standalone compatibility server,
+`aden-mcp --version` verifies that binary without opening its stdio transport.
+
 === Argument conventions
 
 * *Use `snake_case` argument names* (`dry_run`, `caller_of`, `show_context`). The server translates them to the CLI's `--kebab-case` flags.

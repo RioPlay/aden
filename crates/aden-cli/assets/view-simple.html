@@ -1,0 +1,354 @@
+<!doctype html>
+<!-- Copyright (c) 2026 RioPlay. SPDX-License-Identifier: AGPL-3.0-or-later -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Aden · Simple graph</title>
+<script>
+try { if (localStorage.getItem('aden-simple-theme') === 'light') document.documentElement.dataset.theme = 'light'; } catch {}
+</script>
+<style>
+:root { color-scheme:dark; --bg:#11161d; --surface:#171e27; --ink:#dce4ee; --muted:#9aaabd; --line:#344253; --blue:#86baff; --wash:#20354f; --edge:#7f93ac; }
+:root[data-theme="light"] { color-scheme:light; --bg:#fff; --surface:#fafbfc; --ink:#202b38; --muted:#657181; --line:#dce2e8; --blue:#245c9c; --wash:#edf4fc; --edge:#8c9cab; }
+* { box-sizing:border-box; }
+[hidden] { display:none !important; }
+body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.5 system-ui,sans-serif; }
+button,input,select { font:inherit; }
+button,select { background:var(--surface); color:var(--ink); border:1px solid var(--line); border-radius:5px; padding:5px 10px; }
+button { cursor:pointer; } button:hover:not(:disabled) { background:var(--wash); }
+button:disabled { opacity:.45; cursor:default; }
+:focus-visible { outline:2px solid var(--blue); outline-offset:2px; }
+a { color:var(--blue); } h1,h2,p { margin:0; } h1 { font-size:20px; line-height:1.35; overflow-wrap:anywhere; }
+h2 { font-size:14px; font-weight:600; } .muted { color:var(--muted); } .small { font-size:12px; }
+header { min-height:58px; padding:12px 22px; border-bottom:1px solid var(--line); display:flex; gap:16px; align-items:center; }
+header strong { font-size:17px; } header .muted { flex:1; } header button { white-space:nowrap; }
+.layout { display:grid; grid-template-columns:280px minmax(0,1fr); min-height:calc(100vh - 58px); }
+aside { border-right:1px solid var(--line); padding:18px 14px; background:var(--surface); }
+label { display:block; font-size:12px; color:var(--muted); }
+#search { width:100%; padding:8px 10px; border:1px solid var(--line); background:var(--bg); color:var(--ink); border-radius:5px; margin:6px 0 10px; }
+#symbols { display:grid; gap:2px; margin:10px 0; max-height:calc(100vh - 240px); overflow:auto; }
+.symbol { text-align:left; border-color:transparent; background:transparent; min-width:0; padding:7px 9px; }
+.symbol span { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.symbol.active { background:var(--wash); border-color:var(--blue); color:var(--blue); }
+.pager { display:flex; align-items:center; justify-content:space-between; gap:8px; font-size:12px; }
+main { padding:22px 28px 40px; min-width:0; }
+.title-row { display:flex; align-items:flex-start; gap:12px; margin-bottom:12px; }
+.title-row>div { flex:1; min-width:0; }
+#anchor { display:block; font:12px/1.6 ui-monospace,monospace; color:var(--muted); overflow-wrap:anywhere; margin:8px 0; }
+.filters { display:flex; flex-wrap:wrap; gap:12px; align-items:end; margin:18px 0 12px; }
+.filters select { display:block; margin-top:4px; }
+.check { display:flex; align-items:center; gap:6px; min-height:34px; color:var(--ink); }
+.diagram { border:1px solid var(--line); border-radius:6px; overflow:auto; background:var(--bg); }
+svg { display:block; width:100%; min-width:690px; }
+svg text { font:12px system-ui,sans-serif; fill:var(--ink); }
+svg .sub { font-size:10px; fill:var(--muted); }
+svg .node { cursor:pointer; } svg .node:focus { outline:none; }
+svg .node:focus rect,svg .node:hover rect { stroke:var(--blue); stroke-width:2; }
+.diagram-footer { display:flex; align-items:center; justify-content:space-between; gap:16px; padding:10px 0 20px; }
+.section-head { display:flex; justify-content:space-between; align-items:center; margin:12px 0 8px; }
+.table-wrap { overflow:auto; border-top:1px solid var(--line); }
+table { border-collapse:collapse; width:100%; font-size:12px; }
+th,td { padding:9px 10px; text-align:left; border-bottom:1px solid var(--line); vertical-align:top; }
+th { color:var(--muted); font-weight:500; background:var(--surface); }
+td button { padding:0; border:0; border-radius:0; text-align:left; color:var(--blue); overflow-wrap:anywhere; }
+td .location { display:block; max-width:320px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+#relations tr.selected { background:var(--wash); }
+details { border:1px solid var(--line); border-radius:5px; margin-top:20px; padding:10px 12px; }
+summary { cursor:pointer; font-size:12px; } pre { overflow:auto; font:12px/1.6 ui-monospace,monospace; max-height:260px; }
+.empty { padding:24px; color:var(--muted); text-align:center; }
+dialog { background:var(--surface); color:var(--ink); border:1px solid var(--line); border-radius:8px; padding:24px; max-width:520px; width:calc(100% - 32px); }
+dialog::backdrop { background:#202b3840; } dialog p { margin:10px 0; }
+kbd { font:12px ui-monospace,monospace; background:var(--bg); padding:2px 5px; border:1px solid var(--line); border-radius:3px; }
+@media(max-width:900px) { .layout { grid-template-columns:220px minmax(0,1fr); } main { padding:18px; } }
+@media(max-width:620px) { header { padding:12px; flex-wrap:wrap; gap:8px; } .layout { display:block; } aside { border-right:0; border-bottom:1px solid var(--line); } #symbols { max-height:180px; overflow:auto; } main { padding:16px 12px; } .diagram-footer { align-items:start; flex-direction:column; } }
+</style>
+</head>
+<body>
+<header><strong>Aden</strong><span class="muted">Simple graph</span><span id="totals" class="small muted"></span><a id="rich-view" hidden>Graph view</a><button id="theme" aria-label="Light mode" aria-pressed="false">Light mode</button><button id="help">Keyboard help</button></header>
+<div class="layout">
+<aside aria-label="Symbol browser">
+  <label for="search">Find a symbol <span class="muted">/</span></label>
+  <input id="search" type="search" placeholder="Name, anchor, or file" autocomplete="off" spellcheck="false">
+  <div id="search-count" class="small muted" aria-live="polite"></div>
+  <nav id="symbols" aria-label="Symbols"></nav>
+  <div class="pager"><button id="symbols-prev" aria-label="Previous symbols">←</button><span id="symbols-page"></span><button id="symbols-next" aria-label="Next symbols">→</button></div>
+</aside>
+<main>
+  <div class="title-row"><button id="back" title="Previous symbol (h)">← Back</button><div><h1 id="title">Choose a symbol</h1><div id="meta" class="small muted"></div></div><button id="copy">Copy anchor</button></div>
+  <code id="anchor"></code><a id="editor" hidden>Open in editor</a>
+  <p id="scope-summary" class="small muted"></p>
+  <div class="filters">
+    <label>Direction<select id="direction"><option value="both">Both directions</option><option value="in">Incoming</option><option value="out">Outgoing</option></select></label>
+    <label>Relationship<select id="edge-type"><option value="">All types</option></select></label>
+    <label class="check"><input id="structural" type="checkbox" checked>Include Contains / PartOf</label>
+  </div>
+  <div class="diagram" id="diagram-wrap"><svg id="diagram" role="group" aria-label="Directed relationships of selected symbol"></svg><div id="empty" class="empty" hidden></div></div>
+  <div class="diagram-footer"><span class="small muted">Incoming → selected symbol → outgoing. Select a node to follow it.</span><div class="pager"><button id="graph-prev">Previous</button><span id="graph-page" aria-live="polite"></span><button id="graph-next">Next</button></div></div>
+  <div class="section-head"><h2>Relationships</h2><span id="relation-count" class="small muted" aria-live="polite"></span></div>
+  <div class="table-wrap"><table><thead><tr><th>From</th><th>Relationship</th><th>To</th></tr></thead><tbody id="relations"></tbody></table></div>
+  <div class="pager" style="margin-top:12px"><button id="rows-prev">Previous rows</button><span id="rows-page"></span><button id="rows-next">Next rows</button></div>
+  <details id="source" hidden><summary>Source preview</summary><pre id="snippet"></pre></details>
+</main>
+</div>
+<dialog id="shortcuts"><h2>Keyboard navigation</h2><p><kbd>/</kbd> Find a symbol. <kbd>↑</kbd> <kbd>↓</kbd> or <kbd>Ctrl N</kbd> <kbd>Ctrl P</kbd> choose a result, <kbd>Enter</kbd> opens it.</p><p><kbd>j</kbd> <kbd>k</kbd> Next / previous relationship. <kbd>g</kbd> <kbd>G</kbd> First / last relationship.</p><p><kbd>l</kbd> or <kbd>Enter</kbd> Follow the selected relationship. <kbd>h</kbd> Back. <kbd>y</kbd> Copy anchor.</p><p><kbd>Esc</kbd> Clear search or close help. <kbd>?</kbd> Open help.</p><form method="dialog"><button>Close</button></form></dialog>
+<script>
+'use strict';
+const DATA = /*ADEN_DATA*/;
+const EDITOR = "/*EDITOR*/";
+const RICH_VIEW = "/*RICH_VIEW*/";
+/*SEARCH_HELPERS*/
+const PAGE = 40, GRAPH_PAGE = 8, ROW_PAGE = 24;
+const $ = id => document.getElementById(id);
+const nameOf = n => (n.anchor || n.label || n.id).replace(/#$/, '').split('#').pop().split('/').pop();
+const locationOf = n => n.anchor?.includes('://') ? n.anchor.split('#')[0].replace(/^aden:\/\/(module|doc)\//, '') : n.file || n.group || n.kind || '';
+const idOf = value => typeof value === 'object' ? value.id : value;
+
+// Build indexes once. Rendering uses only the selected node's adjacency list.
+function indexGraph(data) {
+  const nodes = new Map((data.nodes || []).map(n => [n.id, { ...n }]));
+  const raw = [...(data.edges || [])];
+  for (const [cid, drill] of Object.entries(data.drill || {})) {
+    for (const n of drill.nodes || []) {
+      nodes.set(cid + ':' + n.id, { ...n, id: cid + ':' + n.id });
+      raw.push({ from: cid, to: cid + ':' + n.id, type: 'Contains' });
+    }
+    for (const e of drill.edges || []) raw.push({ ...e, from: cid + ':' + e.from, to: cid + ':' + e.to });
+  }
+  const incoming = new Map(), outgoing = new Map(), anchors = new Map();
+  for (const n of nodes.values()) {
+    incoming.set(n.id, []); outgoing.set(n.id, []);
+    if (n.anchor) anchors.set(n.anchor, n.id);
+    n.searchText = [nameOf(n), n.label, n.anchor, n.file, n.group].filter(Boolean).join(' ').toLowerCase();
+  }
+  const edges = raw.map(e => ({ from: idOf(e.from ?? e.source), to: idOf(e.to ?? e.target), type: e.type || 'Related' }))
+    .filter(e => nodes.has(e.from) && nodes.has(e.to));
+  edges.forEach((e, i) => { e.key = i; outgoing.get(e.from).push(e); incoming.get(e.to).push(e); });
+  return { nodes, edges, incoming, outgoing, anchors };
+}
+const graph = indexGraph(DATA);
+const allNodes = [...graph.nodes.values()].sort((a,b) => nameOf(a).localeCompare(nameOf(b)) || a.id.localeCompare(b.id));
+let current = null, symbolPage = 0, graphPage = 0, rowPage = 0, rowSelection = -1, searchSelection = 0;
+let found = allNodes, relations = [], inEdges = [], outEdges = [];
+const historyStack = [];
+// Restore after our paged rows exist; native restoration races with rendering.
+history.scrollRestoration = 'manual';
+const navigationStates = new Map();
+const navigationSession = Date.now().toString(36);
+let navigationSequence = 0, activeNavigation = null;
+function rememberNavigation() {
+  if (!activeNavigation) return;
+  navigationStates.set(activeNavigation, {view:captureNavigation(),trail:[...historyStack]});
+}
+function recordNavigation(push) {
+  if (push || !activeNavigation) activeNavigation = navigationSession + ':' + (++navigationSequence);
+  rememberNavigation();
+  const state = {adenSimple:{key:activeNavigation,snapshot:navigationStates.get(activeNavigation)}};
+  const n = graph.nodes.get(current);
+  history[push ? 'pushState' : 'replaceState'](state,'','#a=' + encodeURIComponent(n.anchor || n.id));
+}
+function button(text, action, className) {
+  const el = document.createElement('button'); el.type = 'button'; el.textContent = text;
+  if (className) el.className = className;
+  el.addEventListener('click', action); return el;
+}
+function pager(prefix, page, length, size) {
+  const pages = Math.max(1, Math.ceil(length / size));
+  $(prefix + '-prev').disabled = page <= 0; $(prefix + '-next').disabled = page >= pages - 1;
+  $(prefix + '-page').textContent = `${page + 1} / ${pages}`;
+}
+function renderSymbols() {
+  $('symbols').replaceChildren();
+  const start = symbolPage * PAGE;
+  for (const [offset,n] of found.slice(start,start + PAGE).entries()) {
+    const el = button('', () => selectNode(n.id), 'symbol');
+    el.classList.toggle('active', n.id === current);
+    if (n.id === current) el.setAttribute('aria-current','true');
+    el.title = n.anchor || n.label || n.id;
+    const title = document.createElement('span'); title.textContent = nameOf(n);
+    const detail = document.createElement('span'); detail.className = 'small muted'; detail.textContent = locationOf(n);
+    el.append(title, detail); el.dataset.index = start + offset;
+    if ($('search').value && start + offset === searchSelection) el.style.outline = '1px solid var(--blue)';
+    $('symbols').append(el);
+  }
+  if (!found.length) { const p = document.createElement('p'); p.textContent = 'No matching symbols.'; $('symbols').append(p); }
+  $('search-count').textContent = `${found.length.toLocaleString()} of ${allNodes.length.toLocaleString()} symbols`;
+  pager('symbols',symbolPage,found.length,PAGE);
+}
+function searchSymbols() {
+  const q = $('search').value.trim().toLowerCase();
+  found = q ? allNodes.filter(n=>n.searchText.includes(q)).sort((a,b)=>AdenSearch.rank(a,nameOf(a),q)-AdenSearch.rank(b,nameOf(b),q)) : allNodes;
+  symbolPage = 0; searchSelection = 0; renderSymbols();
+}
+function captureNavigation() {
+  return { id:current, graphPage, rowPage, rowSelection, symbolPage, searchSelection,
+    query:$('search').value, direction:$('direction').value, type:$('edge-type').value,
+    structural:$('structural').checked, scrollX, scrollY, symbolsScroll:$('symbols').scrollTop };
+}
+function selectNode(id, push = true) {
+  if (!graph.nodes.has(id)) return;
+  if (push && current === id) return;
+  if (push && current) { rememberNavigation(); recordNavigation(false); }
+  if (push && current) historyStack.push(captureNavigation());
+  current = id; graphPage = 0; rowPage = 0; rowSelection = -1;
+  const n = graph.nodes.get(id);
+  $('title').textContent = nameOf(n); $('anchor').textContent = n.anchor || n.label || id;
+  $('meta').textContent = [n.kind, n.group, n.file ? n.file + (n.line ? ':' + n.line : '') : null].filter(Boolean).join(' · ');
+  $('back').disabled = !historyStack.length; $('copy').disabled = !n.anchor;
+  $('copy').textContent = 'Copy anchor';
+  $('rich-view').hidden = !RICH_VIEW || RICH_VIEW.includes('/*');
+  if (!$('rich-view').hidden) $('rich-view').href = RICH_VIEW + '#a=' + encodeURIComponent(n.anchor || id);
+  const file = n.editor_file;
+  $('editor').hidden = !file || !EDITOR || EDITOR.includes('/*');
+  if (!$('editor').hidden) $('editor').href = EDITOR.replaceAll('{file}',file).replaceAll('{line}',String(n.line || 1));
+  $('source').hidden = !n.snippet; $('snippet').textContent = n.snippet || '';
+  $('edge-type').replaceChildren(new Option('All types',''));
+  [...new Set([...graph.incoming.get(id),...graph.outgoing.get(id)].map(e=>e.type))].sort().forEach(t=>$('edge-type').add(new Option(t,t)));
+  renderSymbols(); filterRelations();
+  if (push) { $('title').scrollIntoView({block:'start'}); recordNavigation(true); }
+}
+function filterRelations() {
+  const direction = $('direction').value, type = $('edge-type').value;
+  const accept = e => (!type || e.type === type) && ($('structural').checked || !['Contains','PartOf'].includes(e.type));
+  inEdges = current && direction !== 'out' ? graph.incoming.get(current).filter(accept) : [];
+  outEdges = current && direction !== 'in' ? graph.outgoing.get(current).filter(accept) : [];
+  const order = (a,b) => a.type.localeCompare(b.type) || nameOf(graph.nodes.get(a.from===current?a.to:a.from)).localeCompare(nameOf(graph.nodes.get(b.from===current?b.to:b.from)));
+  inEdges.sort(order); outEdges.sort(order);
+  relations = [...new Map([...inEdges,...outEdges].map(e=>[e.key,e])).values()];
+  graphPage=0; rowPage=0; rowSelection=-1; renderDiagram(); renderRows();
+  const total = current ? new Set([...graph.incoming.get(current),...graph.outgoing.get(current)]).size : 0;
+  $('relation-count').textContent = `${relations.length.toLocaleString()} of ${total.toLocaleString()} relationships`;
+}
+const NS='http://www.w3.org/2000/svg';
+function svg(tag, attrs={}, text) {
+  const el=document.createElementNS(NS,tag); Object.entries(attrs).forEach(([k,v])=>el.setAttribute(k,v));
+  if(text!==undefined) el.textContent=text; return el;
+}
+function renderDiagram() {
+  const host=$('diagram'); host.replaceChildren();
+  $('empty').hidden=!!current; host.toggleAttribute('hidden', !current);
+  if(!current) { $('empty').textContent='No symbols in this export.'; pager('graph',0,0,GRAPH_PAGE); return; }
+  const left=inEdges.slice(graphPage*GRAPH_PAGE,(graphPage+1)*GRAPH_PAGE), right=outEdges.slice(graphPage*GRAPH_PAGE,(graphPage+1)*GRAPH_PAGE);
+  const count=Math.max(left.length,right.length,1), height=Math.max(210,count*66+100), centerY=height/2;
+  host.setAttribute('viewBox',`0 0 1000 ${height}`);
+  const defs=svg('defs'), marker=svg('marker',{id:'arrow',viewBox:'0 0 10 10',refX:9,refY:5,markerWidth:6,markerHeight:6,orient:'auto-start-reverse'});
+  marker.append(svg('path',{d:'M 0 0 L 10 5 L 0 10 z',fill:'var(--edge)'})); defs.append(marker); host.append(defs);
+  for(const [x,title] of [[30,`Incoming (${inEdges.length})`],[390,'Selected symbol'],[720,`Outgoing (${outEdges.length})`]]) host.append(svg('text',{x,y:28,fill:'#657181'},title));
+  function node(n,x,y,selected=false) {
+    const g=svg('g',{class:'node',role:'button',tabindex:0,'aria-label':nameOf(n)});
+    g.append(svg('title',{},n.anchor || n.label || n.id));
+    g.append(svg('rect',{x,y:y-22,width:250,height:44,rx:4,fill:selected?'var(--wash)':'var(--surface)',stroke:selected?'var(--blue)':'var(--edge)'}));
+    const label=nameOf(n); g.append(svg('text',{x:x+12,y:y-3},label.length>32?label.slice(0,30)+'…':label));
+    const place=locationOf(n); g.append(svg('text',{x:x+12,y:y+14,class:'sub'},place.length>39?'…'+place.slice(-37):place));
+    g.addEventListener('click',()=>selectNode(n.id));
+    g.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();e.stopPropagation();selectNode(n.id);}});
+    host.append(g);
+  }
+  for(const [items,incoming] of [[left,true],[right,false]]) items.forEach((e,i)=>{
+    const y=72+i*66, x1=incoming?280:640, x2=incoming?390:720, y1=incoming?y:centerY, y2=incoming?centerY:y;
+    host.append(svg('path',{d:`M ${x1} ${y1} C ${(x1+x2)/2} ${y1}, ${(x1+x2)/2} ${y2}, ${x2} ${y2}`,fill:'none',stroke:'var(--edge)','marker-end':'url(#arrow)'}));
+    node(graph.nodes.get(incoming?e.from:e.to),incoming?30:720,y);
+    host.append(svg('text',{x:incoming?42:732,y:y+36,class:'sub'},e.type));
+  });
+  node(graph.nodes.get(current),390,centerY,true);
+  if(!relations.length) host.append(svg('text',{x:500,y:centerY+62,'text-anchor':'middle',class:'sub'},'No relationships match these filters.'));
+  pager('graph',graphPage,Math.max(inEdges.length,outEdges.length),GRAPH_PAGE);
+}
+function renderRows() {
+  $('relations').replaceChildren();
+  relations.slice(rowPage*ROW_PAGE,(rowPage+1)*ROW_PAGE).forEach((e,i)=>{
+    const row=document.createElement('tr'); row.dataset.index=rowPage*ROW_PAGE+i;
+    row.classList.toggle('selected',Number(row.dataset.index)===rowSelection);
+    for(const value of [e.from,null,e.to]) { const cell=document.createElement('td');
+      if(value===null) cell.textContent=e.type; else {
+        const n=graph.nodes.get(value), link=button(nameOf(n),()=>selectNode(value));link.title=n.anchor||n.id;cell.append(link);
+        const place=document.createElement('span');place.className='small muted location';place.textContent=locationOf(n);place.title=place.textContent;cell.append(place);
+      }
+      row.append(cell);
+    } $('relations').append(row);
+  });
+  pager('rows',rowPage,relations.length,ROW_PAGE);
+}
+function walkRows(next) {
+  if(!relations.length) return;
+  rowSelection=Math.max(0,Math.min(relations.length-1,next)); rowPage=Math.floor(rowSelection/ROW_PAGE); renderRows();
+  $('relations').querySelector('.selected')?.scrollIntoView({block:'nearest'});
+}
+function restoreNavigation(saved) {
+  $('search').value=saved.query; searchSymbols();
+  $('direction').value=saved.direction; $('structural').checked=saved.structural;
+  selectNode(saved.id,false);
+  $('edge-type').value=saved.type; filterRelations();
+  ({graphPage,rowPage,rowSelection,symbolPage,searchSelection}=saved);
+  renderSymbols(); renderDiagram(); renderRows();
+  $('symbols').scrollTop=saved.symbolsScroll;
+  scrollTo(saved.scrollX,saved.scrollY);
+}
+function back() { if(historyStack.length) history.back(); }
+addEventListener('popstate', event => {
+  const entry = event.state?.adenSimple;
+  if (!entry) return;
+  rememberNavigation();
+  activeNavigation = entry.key;
+  const saved = navigationStates.get(entry.key) || entry.snapshot;
+  historyStack.splice(0,historyStack.length,...saved.trail);
+  restoreNavigation(saved.view);
+});
+async function copyAnchor() {
+  const n=graph.nodes.get(current); if(!n?.anchor) return;
+  try { await navigator.clipboard.writeText(n.anchor); $('copy').textContent='Copied'; }
+  catch { const range=document.createRange();range.selectNodeContents($('anchor'));const selection=getSelection();selection.removeAllRanges();selection.addRange(range);$('copy').textContent='Select and copy'; }
+}
+$('search').addEventListener('input',searchSymbols);
+$('search').addEventListener('keydown',e=>{
+  if(e.key==='Escape') {$('search').value='';searchSymbols();$('search').blur();e.stopPropagation();return;}
+  if(e.key==='ArrowDown'||e.key==='ArrowUp'||(e.ctrlKey&&['n','p'].includes(e.key))) {
+    const delta=e.key==='ArrowDown'||e.key==='n'?1:-1;searchSelection=Math.max(0,Math.min(found.length-1,searchSelection+delta));symbolPage=Math.floor(searchSelection/PAGE);renderSymbols();e.preventDefault();
+  } else if(e.key==='Enter'&&found[searchSelection]) {selectNode(found[searchSelection].id);$('search').blur();e.preventDefault();e.stopPropagation();}
+});
+for(const id of ['direction','edge-type','structural']) $(id).addEventListener('change',filterRelations);
+for(const [prefix,size,length,render] of [['symbols',PAGE,()=>found.length,renderSymbols],['graph',GRAPH_PAGE,()=>Math.max(inEdges.length,outEdges.length),renderDiagram],['rows',ROW_PAGE,()=>relations.length,renderRows]]) {
+  for(const [suffix,delta] of [['prev',-1],['next',1]]) $(prefix+'-'+suffix).addEventListener('click',()=>{
+    const old=prefix==='symbols'?symbolPage:prefix==='graph'?graphPage:rowPage;
+    const page=Math.max(0,Math.min(Math.max(0,Math.ceil(length()/size)-1),old+delta));
+    if(prefix==='symbols') {symbolPage=page;searchSelection=page*PAGE;} else if(prefix==='graph') graphPage=page; else {rowPage=page;rowSelection=-1;}
+    render();
+  });
+}
+$('back').addEventListener('click',back); $('copy').addEventListener('click',copyAnchor);
+$('help').addEventListener('click',()=>$('shortcuts').showModal());
+function syncThemeButton() {
+  const light = document.documentElement.dataset.theme === 'light';
+  $('theme').textContent = light ? 'Dark mode' : 'Light mode';
+  $('theme').setAttribute('aria-pressed', String(light));
+}
+$('theme').addEventListener('click', () => {
+  const theme = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light';
+  document.documentElement.dataset.theme = theme;
+  try { localStorage.setItem('aden-simple-theme', theme); } catch {}
+  syncThemeButton();
+});
+syncThemeButton();
+document.addEventListener('keydown',e=>{
+  if($('shortcuts').open||e.ctrlKey||e.metaKey||e.altKey) return;
+  if(document.activeElement.matches('input,select,textarea,[contenteditable=true]')) return;
+  if(e.key==='Enter'&&document.activeElement.matches('button,a,[role=button]')) return;
+  if(e.key==='/') {$('search').focus();$('search').select();e.preventDefault();}
+  else if(e.key==='?') $('shortcuts').showModal();
+  else if(e.key==='h') back();
+  else if(e.key==='y') copyAnchor();
+  else if(e.key==='j') {walkRows(rowSelection+1);e.preventDefault();}
+  else if(e.key==='k') {walkRows(rowSelection<0?0:rowSelection-1);e.preventDefault();}
+  else if(e.key==='g') walkRows(0);
+  else if(e.key==='G') walkRows(relations.length-1);
+  else if((e.key==='Enter'||e.key==='l')&&relations[rowSelection]) {const e=relations[rowSelection];selectNode(e.from===current?e.to:e.from);}
+});
+function fromHash() {const anchor=new URLSearchParams(location.hash.slice(1)).get('a'); return graph.anchors.get(anchor)|| (graph.nodes.has(anchor)?anchor:null);}
+addEventListener('hashchange',()=>{const id=fromHash();if(id && id!==current){selectNode(id,false);recordNavigation(false);}});
+$('totals').textContent=`${graph.nodes.size.toLocaleString()} symbols · ${graph.edges.length.toLocaleString()} relationships`;
+const initial=fromHash() || graph.anchors.get(DATA.root) || [...allNodes].filter(n=>n.anchor?.includes('#')).sort((a,b)=>(b.degree||0)-(a.degree||0))[0]?.id || allNodes[0]?.id;
+$('scope-summary').textContent = DATA.mode === 'graph' ? 'Complete exported graph. Filters affect this view only.' : 'Exported graph slice. Relationships outside this export are not included.';
+renderSymbols(); if(initial) {selectNode(initial,false);recordNavigation(false);} else { $('back').disabled=true; $('copy').disabled=true; filterRelations(); }
+</script>
+</body>
+</html>

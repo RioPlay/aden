@@ -710,6 +710,7 @@ default (the `view` cargo feature is on); disable with `--no-default-features`.
 [source,bash]
 ----
 aden view                                       # the WHOLE graph + full git-history replay
+aden view --simple                              # lightweight static relationship browser
 aden view cmd_understand                        # blast radius centred on a symbol
 aden view --mode communities                    # community overview → click to drill in
 aden view cmd_understand --mode connectivity    # callers + callees
@@ -721,14 +722,42 @@ aden view cmd_understand --editor zed            # 'open in editor' uses Zed
 A bare `aden view` (no anchor) opens the *whole-graph* view — the full importance-ranked
 graph — which also carries the git-history activity log, so ▶ replay walks the entire
 project populating from the first commit. Big commits reveal in bounded batches so growth
-stays smooth, and a level-of-detail filter keeps large graphs responsive (the density
-slider dials the rest in).
+stays smooth. Every anchor and relationship is retained in the offline graph; density
+only controls what is drawn. The counter reports visible versus loaded nodes, and
+*All symbols* clears display filters to reveal the full graph. Search includes every
+loaded anchor and reveals a selected symbol's neighborhood even when density hid it.
+Source previews are retained for the 1,500 highest-ranked nodes on large exports;
+source locations and editor links remain available for the other indexed symbols.
+
+`aden view --simple` opens a separate, plain relationship browser. It retains the
+dark theme by default; light mode is an explicit toggle saved in the browser. It keeps the
+complete graph, searches names, anchors and files, and shows incoming → selected →
+outgoing relationships in a static diagram. Neighbors and relationship rows are
+paged, so large graphs remain readable without hiding access to any relationships.
+It uses no graph library, animation loop or force simulation, and skips community
+clustering and git-history collection for whole-graph exports. The regular 2D
+viewer also links to a generated *Simple view* beside its HTML file.
+
+In the simple view, `/` searches, `j` / `k` select relationships, `g` / `G` jump to
+the first / last relationship, `l` or Enter follows it, `h` goes back, and `y` copies
+the anchor. `?` shows keyboard help. Direction, relationship type and structural
+edge filters are available above the diagram.
+Following a relationship brings the new symbol's heading into view. Back restores
+the previous filters, selected row, page and scroll position. Source paths distinguish
+symbols with the same name in search results and relationship rows.
+Browser Back/Forward also navigates symbol visits in Simple view. The links between
+the regular viewer and its Simple view preserve the selected anchor. Both viewers
+rank exact names and anchors ahead of prefixes and broader text matches.
+Simple exports omit replay history and duplicate anchor indexes; all exported
+nodes and relationships remain available. The page states whether it contains the
+whole graph or a bounded slice.
 
 |===
 |Flag |Description |Default
 
 |--mode |`graph` (whole graph; the bare-`view` default), `blast` (dependents at risk), `reach` (dependencies), `connectivity`, or `communities` (overview with click-to-drill) |blast¹
 |--depth |Max hops (blast/reach/connectivity) |2
+|--simple |Static relationship browser; cannot combine with `--3d` or `--replay` |false
 |--replay |Graph the git history: the graph is the symbols touched across commits, and a ▶ replay (scrubber, speed, date, item count) plays the project *populating* over time — nodes appear as commits introduce them |false
 |--max |Replay: commits to include, oldest→newest (`0` = entire history) |0
 |--editor |Editor for "open in editor" links: `auto` (probe PATH for code/codium/cursor/zed/idea and use the first installed), `vscode`, `cursor`, `vscodium`, `zed`, `idea`, or a custom `{file}`/`{line}` URI template |auto
@@ -744,8 +773,23 @@ name, click for details, and *right-click a node* (or use the panel link) to ope
 source at the right line in your editor via a `vscode://file…`-style URI — the browser
 routes the scheme to the desktop app, so no server is involved. The community view is
 *hierarchical*: clicking a cluster expands into its connected core, with a `← back`
-control. Keyboard: `/` search, space play/pause, `f` fit, `b` *synapse mode* (the graph
-fires like a neural net — signals travel the edges), `h` hide UI, `o` open in editor.
+control. The 2D viewer has keyboard navigation built in:
+
+|===
+|Keys |Action
+|`/` |Focus search; arrows or Ctrl+N / Ctrl+P choose a result, Enter follows it
+|`h j k l` |Pan the canvas when the detail panel is closed
+|`j / k`, `g / G` |Next / previous, first / last relation in the detail panel; collapsed groups expand as needed
+|`Enter` or `l`, `h` |Follow the selected relation, return to the previous symbol
+|`gg` or `f`, `ga` |Fit the graph, reveal all loaded symbols
+|`+ / -`, `L` |Zoom in / out, toggle symbol labels
+|`x / r / c` |Focus blast radius / dependencies / connectivity around the selected symbol
+|`Esc`, `?` |Dismiss the current layer, open keyboard help
+|`H`, `o`, space |Hide UI, open selected symbol in editor, play / pause replay
+|===
+
+Shortcuts do not intercept normal typing or native control activation. The density
+slider, region buttons, and *Labels* control offer the same exploration by mouse.
 Cross-platform: the browser opener and editor URIs work on Linux, macOS, and Windows.
 
 === timeline

@@ -1,3 +1,6 @@
+# Shell entry points must run from Windows/WSL checkouts and release bundles.
+*.sh text eol=lf
+
 # Frozen regression datasets are hashed as LF-canonical content. Keep working
 # trees LF on Windows so local tools and lock checks stay aligned.
 scripts/regression-lock.json text eol=lf

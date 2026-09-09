@@ -272,7 +272,9 @@ fn strict_agent_defaults_keep_full_receipts_when_they_fit() {
     .unwrap();
 
     let ask = Command::new(env!("CARGO_BIN_EXE_aden"))
-        .args(["ask", "--strict", "Where is the entry point?", "."])
+        // Strict definition questions now require a named symbol. This fixture
+        // checks receipt preservation, rather than ambiguous question routing.
+        .args(["ask", "--strict", "Where is main defined?", "."])
         .current_dir(dir.path())
         .output()
         .unwrap();

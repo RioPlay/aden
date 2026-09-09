@@ -426,6 +426,11 @@ fn parse_directives_from_content(content: &str) -> Vec<Directive> {
             rule_severity = Some(sev);
             continue;
         }
+        // A new section or block ends the preceding rule's bullet list.
+        // Invalid rule headers must not inherit a previous severity either.
+        if trimmed.starts_with('[') || trimmed.starts_with("= ") || trimmed.starts_with("==") {
+            rule_severity = None;
+        }
         if let Some(text) = trimmed
             .strip_prefix("- ")
             .or_else(|| trimmed.strip_prefix("* "))
@@ -482,7 +487,7 @@ fn parse_directives_from_content(content: &str) -> Vec<Directive> {
                             },
                         },
                     ),
-                    "precedence" | "author" => continue, // metadata, not directives
+                    "precedence" | "author" | "status" | "version" => continue, // metadata
                     _ => (
                         DirectiveSeverity::Forbid,
                         DirectiveKind::Custom {
@@ -534,29 +539,7 @@ fn directive_matches_kind(directive: &Directive, kind: &DirectiveKind) -> bool {
 
 /// Very simple glob-like matcher. Supports `*` anywhere.
 fn glob_match(text: &str, pattern: &str) -> bool {
-    if !pattern.contains('*') {
-        return text == pattern;
-    }
-    let parts: Vec<&str> = pattern.split('*').collect();
-    let mut rest = text;
-    for (i, part) in parts.iter().enumerate() {
-        if part.is_empty() {
-            continue;
-        }
-        if let Some(pos) = rest.find(part) {
-            if i == 0 && pos != 0 {
-                return false; // first segment must match at start
-            }
-            rest = &rest[pos + part.len()..];
-        } else {
-            return false;
-        }
-    }
-    // If pattern doesn't end with *, rest should be empty
-    if !pattern.ends_with('*') && !rest.is_empty() {
-        return false;
-    }
-    true
+    aden_core::glob_match(text, pattern)
 }
 
 #[cfg(test)]
@@ -665,6 +648,9 @@ mod tests {
         assert!(glob_match("foo::bar::baz", "*::baz"));
         assert!(glob_match("foo::bar::baz", "foo::*::baz"));
         assert!(!glob_match("foo::bar", "bar::foo"));
+        assert!(glob_match("foo::bar::bar", "*::bar"));
+        assert!(glob_match("ababa", "a*ba"));
+        assert!(!glob_match("aba", "aba*aba"));
     }
 
     #[test]
@@ -676,11 +662,18 @@ mod tests {
         std::fs::create_dir_all(&aden).unwrap();
         std::fs::write(
             aden.join("constitution.adoc"),
-            r#"[constitution]
+            r#":status: draft
+:version: 1.0
+:precedence: 100
+
+[constitution]
 [rule="Forbid"]
 - Never commit secrets
 [rule="Warn"]
 - Run tests before commit
+
+== Notes
+- This is explanatory prose
 "#,
         )
         .unwrap();
@@ -691,6 +684,12 @@ mod tests {
             .map(|c| c.directives.len())
             .sum();
         assert_eq!(n, 2, "bootstrap fallback should load rule bullets");
+        let audit = audit_policy(&dir);
+        assert_eq!(audit.directive_count, 2);
+        assert!(!audit.unwired);
+        assert_eq!(audit.violations.len(), 2);
+        assert_eq!(audit.violations[0].message, "Never commit secrets");
+        assert_eq!(audit.violations[1].message, "Run tests before commit");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -705,6 +704,24 @@ mod tests {
         assert_eq!(directives.len(), 2);
         assert_eq!(directives[0].severity, DirectiveSeverity::Forbid);
         assert_eq!(directives[1].severity, DirectiveSeverity::Warn);
+    }
+
+    #[test]
+    fn bootstrap_metadata_is_not_a_directive() {
+        let directives = parse_directives_from_content(
+            ":status: draft\n:version: 1.0\n:precedence: 100\n:author: team\n[rule=\"Warn\"]\n- Run tests\n",
+        );
+        assert_eq!(directives.len(), 1);
+        assert_eq!(directives[0].severity, DirectiveSeverity::Warn);
+    }
+
+    #[test]
+    fn rule_severity_does_not_leak_into_other_sections() {
+        for boundary in ["== Notes", "[rule=\"Unknown\"]", "[source,rust]"] {
+            let content = format!("[rule=\"Forbid\"]\n- A rule\n\n{boundary}\n- Not a rule\n");
+            let directives = parse_directives_from_content(&content);
+            assert_eq!(directives.len(), 1, "boundary: {boundary}");
+        }
     }
 }
 

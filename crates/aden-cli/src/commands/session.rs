@@ -318,6 +318,8 @@ pub fn cmd_session(
     let temp_path = session_path.with_extension(format!("tmp.{}", std::process::id()));
     std::fs::write(&temp_path, &content)?;
     std::fs::rename(&temp_path, &session_path)?;
+    // A slow output consumer must not keep other appenders waiting on the log.
+    drop(_lock);
 
     println!(
         "Session entry logged for agent '{}': {}",

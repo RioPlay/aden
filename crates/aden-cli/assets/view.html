@@ -214,7 +214,7 @@
   #panel { position: fixed; top: 0; right: 0; width: 340px; max-height: 100%; overflow: auto;
     z-index: 8; background: rgba(17,21,30,.92); border-left: 1px solid #1f2430;
     padding: 16px 18px; backdrop-filter: blur(8px);
-    transform: translateX(102%); transition: transform .26s cubic-bezier(.2,.7,.2,1);
+    transform: translateX(calc(100% + 32px)); transition: transform .26s cubic-bezier(.2,.7,.2,1);
     box-shadow: -20px 0 60px rgba(0,0,0,.35); }
   #panel.open { transform: none; }
   #panel h2 { margin: 0 0 4px; font-size: 14px; color: #89b4fa; word-break: break-all; line-height: 1.3; }
@@ -284,6 +284,44 @@
   .graph-tooltip b { color: #89b4fa; }
 
   input[type=range] { accent-color: #89b4fa; cursor: pointer; height: 4px; }
+
+  /* Keep the controls readable while the canvas carries the visual detail. */
+  button { font: inherit; }
+  button:focus-visible, [tabindex]:focus-visible { outline: 2px solid #89b4fa; outline-offset: 3px; }
+  #controls, #region-legend, #filter { opacity: 1; }
+  #hover-card.idle { opacity: .85; }
+  #staleness, #staleness span, #hdr small, #hover-card .hc-type,
+  #hover-card .hc-file, #hover-card .hc-hint, #results .r .k { color: #a6adc8; }
+  #controls { flex-wrap: wrap; max-width: 390px; }
+  #density-count { font-size: 11px; color: #bac2de; }
+  #results { max-height: min(520px, 70vh); overflow-y: auto; }
+  #results .r { display: block; width: 100%; border: 0; background: none; color: inherit; text-align: left; }
+  #results .empty { padding: 14px; color: #bac2de; white-space: normal; }
+  #region-legend .rl-row { width: 100%; border: 0; background: none; text-align: left; cursor: pointer; }
+  #region-legend .rl-row:hover { background: rgba(137,180,250,.12); }
+  #labels-btn[aria-pressed=true] { border-color: #89b4fa; color: #cdd6f4; }
+  #panel { top: 54px; right: 14px; max-height: calc(100vh - 100px); border: 1px solid #313244; border-radius: 10px; }
+  #panel .anchor-txt, #panel .copy-btn, #panel .breadcrumb, #panel .k { color: #a6adc8; }
+  #overlay-box { box-sizing: border-box; max-height: calc(100vh - 40px); overflow-y: auto; }
+  @media (max-width: 1000px) {
+    #staleness { display: none; }
+    #search { width: min(340px, 40vw); }
+  }
+  @media (max-width: 640px) {
+    #search { top: 50px; left: 14px; right: 14px; width: auto; transform: none; }
+    #controls { top: 98px; right: 14px; max-width: none; }
+    #hover-card, #region-legend { display: none; }
+    #panel { width: calc(100vw - 66px); top: 154px; max-height: calc(100vh - 198px); }
+    #filter { max-width: calc(100% - 28px); }
+  }
+  @media (max-width: 480px) {
+    #toolbar { top: 46px; left: 14px; right: auto; }
+    #search { top: 84px; }
+    #controls { top: 132px; }
+    #panel { top: 190px; max-height: calc(100vh - 234px); }
+    #filter { max-height: 90px; overflow-y: auto; }
+    #overlay-box .kb-grid { grid-template-columns: 1fr; }
+  }
 </style>
 </head>
 <body>
@@ -292,13 +330,14 @@
 <div id="topbar">
   <div id="hdr">aden <small id="hdr-sub">· graph</small></div>
   <div id="staleness"></div>
-  <div id="fit" class="topbtn" onclick="fitAll()" title="fit full view (f)">⊙ fit</div>
+  <button id="fit" class="topbtn" onclick="fitAll()" title="fit full view (f)">Fit graph</button>
 </div>
 
 <!-- depth + density controls -->
 <div id="controls">
   <span class="lbl">density</span>
-  <input id="density" type="range" min="6" max="100" value="100" oninput="setDensity(+this.value)" title="hub-first focus" aria-label="Density: fraction of nodes shown, most-connected first">
+  <input id="density" type="range" min="1" max="100" value="100" oninput="setDensity(+this.value)" title="hub-first focus" aria-label="Density: fraction of nodes shown, most-connected first">
+  <output id="density-count" for="density" aria-live="polite"></output>
   <span id="depth-wrap">
     <span class="lbl">depth</span>
     <input id="depth" type="range" min="1" max="3" value="3" oninput="setDepth(+this.value)" title="hops from focused symbol">
@@ -332,7 +371,7 @@
 <!-- centre: search -->
 <div id="search">
   <input id="q" type="text" placeholder="search symbols…  ( / )" autocomplete="off" spellcheck="false" aria-label="Search symbols by name, anchor, or file">
-  <div id="results"></div>
+  <div id="results" aria-label="Search results" aria-live="polite"></div>
 </div>
 
 <!-- graph canvas -->
@@ -343,7 +382,10 @@
 
 <!-- right toolbar: ? + ambient menu -->
 <div id="toolbar">
-  <div id="helpbtn-top" class="topbtn" onclick="toggleOverlay()" title="keyboard shortcuts (?)">?</div>
+  /*SIMPLE_LINK*/
+  <button id="show-all" class="topbtn" onclick="showAllSymbols()" title="Clear display filters and reveal every loaded symbol">All symbols</button>
+  <button id="labels-btn" class="topbtn" onclick="toggleLabels()" aria-pressed="false">Labels</button>
+  <button id="helpbtn-top" class="topbtn" onclick="toggleOverlay()" title="keyboard shortcuts (?)">Help</button>
   <div id="amb-wrap">
     <div id="amb-btn" class="topbtn" onclick="toggleAmbMenu()" title="ambient / replay">✦</div>
     <div id="amb-menu">
@@ -392,7 +434,7 @@
 <!-- bottom hint -->
 <div id="hint">
   <div id="helpbtn" onclick="toggleOverlay()">?</div>
-  <span id="hint-text">/ search · ? shortcuts</span>
+  <span id="hint-text">/ search · hjkl navigate · gg fit · ? help</span>
 </div>
 
 <!-- side panel -->
@@ -412,7 +454,12 @@
       <div class="kb-row"><kbd class="kb-key">/</kbd><span class="kb-desc">focus search</span></div>
       <div class="kb-row"><kbd class="kb-key">Esc</kbd><span class="kb-desc">clear / close panel</span></div>
       <div class="kb-row"><kbd class="kb-key">f</kbd><span class="kb-desc">fit all into view</span></div>
-      <div class="kb-row"><kbd class="kb-key">h</kbd><span class="kb-desc">toggle UI chrome</span></div>
+      <div class="kb-row"><kbd class="kb-key">h j k l</kbd><span class="kb-desc">pan canvas; in panel: back / next / previous / follow</span></div>
+      <div class="kb-row"><kbd class="kb-key">gg / ga</kbd><span class="kb-desc">fit graph / reveal all symbols</span></div>
+      <div class="kb-row"><kbd class="kb-key">+ / −</kbd><span class="kb-desc">zoom in / out</span></div>
+      <div class="kb-row"><kbd class="kb-key">L / H</kbd><span class="kb-desc">toggle labels / UI chrome</span></div>
+      <div class="kb-row"><kbd class="kb-key">Ctrl N / P</kbd><span class="kb-desc">next / previous search result</span></div>
+      <div class="kb-row"><kbd class="kb-key">g / G</kbd><span class="kb-desc">first / last relation in panel</span></div>
       <div class="kb-row"><kbd class="kb-key">b</kbd><span class="kb-desc">synapse mode</span></div>
       <div class="kb-row"><kbd class="kb-key">m</kbd><span class="kb-desc">minimal render (cheap + clean)</span></div>
       <div class="kb-row"><kbd class="kb-key">e</kbd><span class="kb-desc">module envelopes on/off</span></div>
@@ -477,6 +524,7 @@ let hoverNode = null, overUI = false;
 let panelStack = [], panelCur = null, panelNbs = [], nbSel = -1;
 let activeTypes = new Set();
 let densityFrac = 1, densityVisible = null;
+let showLabels = false;
 let depthLimit = null, maxHop = 0;
 // Pivot lens (blast/reach/connectivity from a node): a FILTER over the current
 // view — nodes keep their positions and the simulation never restarts, so
@@ -709,7 +757,7 @@ const Graph = ForceGraph()(el)
     // Labels follow attention: with a focus active, label ONLY the focused
     // neighborhood (everything else is dimmed anyway); with no focus, label
     // spheres + hubs at readable zoom. Keeps the idle map quiet.
-    const labelled = n.size != null
+    const labelled = showLabels || n.size != null
       || n === hoverNode
       || (highlightNodes.size
             ? (highlightNodes.has(n) && scale > 0.9)
@@ -813,7 +861,10 @@ if (_lf) _lf.distance(l => l.member ? 24 : 34).strength(0.5);
 // Calm physics: pre-settle off-screen (warmupTicks) so the page never opens on
 // an exploding layout; heavier velocity damping + faster cooling so any reheat
 // (community expand, new data) settles in a beat instead of bouncing.
-Graph.warmupTicks(80).cooldownTime(4000).d3AlphaDecay(0.05).d3VelocityDecay(0.55);
+// Warmup is synchronous: cap its work as payloads grow so controls become
+// interactive promptly even when the full project contains thousands of nodes.
+Graph.warmupTicks(Math.min(80, Math.max(0, Math.floor(16000 / Math.max(1, DATA.nodes.length)))))
+  .cooldownTime(4000).d3AlphaDecay(0.05).d3VelocityDecay(0.55);
 // Base particle styling so one-shot strobes (neighbor-walk, synapse) render
 // without synapse mode having to configure them first.
 Graph.linkDirectionalParticleSpeed(0.02)
@@ -1081,14 +1132,15 @@ function buildLegend() {
   }
   body.innerHTML = regions.map(r => {
     const col = palette[groupIdx[r] % palette.length];
-    return `<div class="rl-row" style="cursor:pointer" title="Jump to region" onclick="jumpToRegion(${JSON.stringify(r)})">
+    return `<button class="rl-row" title="Jump to region" onclick="jumpToRegion(${escAttr(JSON.stringify(r))})">
       <span class="rl-dot" style="background:${col};box-shadow:0 0 4px ${hexA(col,.4)}"></span>
       <span class="rl-label" title="${esc(r)}">${esc(r)}</span>
-    </div>`;
+    </button>`;
   }).join('');
 }
 function jumpToRegion(r) {
-  const matching = Object.values(byId).filter(n => idVisible(n.id) && regionOf(n) === r);
+  const matching = Object.values(byId).filter(n => regionOf(n) === r);
+  if (densityVisible) matching.forEach(n => densityVisible.add(n.id));
   if (!matching.length) return;   // guard: no visible nodes in this region
   // Briefly highlight the region's nodes using existing machinery
   highlightNodes.clear(); highlightLinks.clear();
@@ -1127,8 +1179,8 @@ function show(rawNodes, rawEdges) {
   pivotSet = null; pivotRoot = null; pivotMode = null;
   document.getElementById('pivot-pill').classList.remove('on');
   stopPlay(); pulses.clear(); actSeq = []; actIdx = 0; frameOff = 0; fitTick = 0; growMode = false; revealed.clear();
-  const LOD = 360, nN = (rawNodes || []).length;
-  densityFrac = nN > LOD ? Math.max(0.06, LOD / nN) : 1;
+  const LOD = 800, nN = (rawNodes || []).length;
+  densityFrac = nN > LOD ? Math.max(0.01, LOD / nN) : 1;
   densityVisible = null;
   const dEl = document.getElementById('density'); if (dEl) dEl.value = Math.round(densityFrac * 100);
   document.getElementById('act').style.display = 'none';
@@ -1146,11 +1198,11 @@ function show(rawNodes, rawEdges) {
   buildLegend();
   updateHoverCard(null);
 }
-function showOverview() {
+function showOverview(recordHistory = true) {
   level = 'overview';
   document.getElementById('back').style.display = 'none';
   document.getElementById('panel').classList.remove('open');
-  updateHash('');
+  if (recordHistory) updateHash('');
   show(DATA.nodes, DATA.edges);
 }
 function showCommunity(cid, lbl) {
@@ -1305,6 +1357,13 @@ function goNode(n) {
   highlightNodes.add(n); (n.neighbors || []).forEach(x => highlightNodes.add(x));
   (n.adj || []).forEach(l => highlightLinks.add(l)); hoverNode = n;
   const ids = new Set([n.id, ...(n.neighbors || []).map(x => x.id)]);
+  // Explicit navigation reveals its neighborhood even after density/replay
+  // hid it. A search result must never focus an invisible point.
+  if (pivotSet && !pivotSet.has(n.id)) clearPivot();
+  growMode = false; stopPlay();
+  if (densityVisible) ids.forEach(id => densityVisible.add(id));
+  if (depthLimit != null && n.hop > depthLimit) depthLimit = n.hop;
+  refreshViz();
   Graph.zoomToFit(dur(600), 90, x => ids.has(x.id));
   showPanel(n);
   // The code now lives in the panel; the floating card is the tour's glance
@@ -1320,7 +1379,7 @@ function navTo(n) {
 function focusNode(id) { const n = byId[id]; if (n) navTo(n); }
 function panelBack() {
   const prev = panelStack.pop(); if (prev == null) return;
-  const n = byId[prev]; if (n) goNode(n);
+  const n = byId[prev]; if (n) { updateHash('a=' + encodeURIComponent(n.anchor || n.id)); goNode(n); }
 }
 // Walking the neighbour list previews each node IN CONTEXT: the current node
 // stays lit (your anchor), the neighbour's own ring expands out around it, and
@@ -1418,6 +1477,7 @@ function showPanel(n) {
       const rest = g.items.slice(INLINE_PER_GROUP);
       const groupId = 'more-' + flatIdx;
       nbHtml += `<span class="show-more" onclick="showMoreGroup('${groupId}', this)" data-ids="${escAttr(JSON.stringify(rest))}" data-start="${flatIdx}">(+${rest.length} more)</span><div id="${groupId}"></div>`;
+      flatIdx += rest.length;
     }
   });
 
@@ -1487,10 +1547,12 @@ function inViewCandidates() {
 }
 
 // Global anchor index from DATA (symbols not in the current slice)
+/*SEARCH_HELPERS*/
+function searchRank(n,q) { return AdenSearch.rank(n,shortName(n),q); }
 function allAnchorCandidates(q) {
   if (!Array.isArray(DATA.all_anchors)) return [];
   return DATA.all_anchors
-    .filter(e => (e.n + ' ' + e.a + ' ' + e.g).toLowerCase().includes(q))
+    .filter(e => AdenSearch.text(e, e.n + ' ' + e.a + ' ' + e.g).includes(q))
     .map(e => ({ _global: true, id: e.a, anchor: e.a, label: e.n, group: e.g, kind: e.k, deg: e.d || 0 }));
 }
 
@@ -1502,6 +1564,7 @@ function resultShape(k) {
 }
 
 function resultCtx(n) {
+  if (n.anchor) return n.anchor.split('#')[0].replace(/^aden:\/\/(module|doc)\//, '');
   if (n.file) return fileName(n.file);
   if (n.label && n.label !== shortName(n)) return n.label;
   return n.group || '';
@@ -1514,27 +1577,28 @@ function runSearch() {
 
   // in-view candidates (ranked by degree)
   const inView = inViewCandidates()
-    .filter(n => (shortName(n) + ' ' + (n.label || '') + ' ' + (n.anchor || '') + ' ' + (n.file || '')).toLowerCase().includes(q))
-    .sort((a, b) => (b.deg || 0) - (a.deg || 0))
+    .filter(n => AdenSearch.text(n,shortName(n)).includes(q))
+    .sort((a, b) => searchRank(a,q) - searchRank(b,q) || (b.deg || 0) - (a.deg || 0))
     .slice(0, 8);
   const inViewAnchors = new Set(inView.map(n => n.anchor).filter(Boolean));
 
   // global candidates not already in-view
   const globalHits = allAnchorCandidates(q)
     .filter(e => !inViewAnchors.has(e.anchor))
-    .sort((a, b) => b.deg - a.deg)
+    .sort((a, b) => searchRank(a,q) - searchRank(b,q) || b.deg - a.deg)
     .slice(0, 6)
-    .map(e => ({ ...e, _ghost: !byId[e.id] }));
+    .map(e => anchorToId[e.anchor] ? byId[anchorToId[e.anchor]] : { ...e, _ghost: true });
 
-  matches = [...inView, ...globalHits].slice(0, 14);
+  matches = [...inView, ...globalHits].sort((a,b)=>searchRank(a,q)-searchRank(b,q)).slice(0, 14);
   selIdx = 0;
 
   resEl.innerHTML = matches.map((n, i) => {
     const ghost = n._ghost ? ' <span class="ghost">(not in view)</span>' : '';
     const shp = resultShape(n.kind);
-    return `<div class="r${i === 0 ? ' sel' : ''}" onclick="pickResult(${i})">${shp}${esc(shortName(n))} <span class="k">${esc(resultCtx(n))}${ghost}</span></div>`;
+    return `<button class="r${i === 0 ? ' sel' : ''}" onclick="pickResult(${i})">${shp}${esc(shortName(n))} <span class="k">${esc(resultCtx(n))}${ghost}</span></button>`;
   }).join('');
-  resEl.classList.toggle('open', matches.length > 0);
+  if (!matches.length) resEl.innerHTML = '<div class="empty">No matching symbols in this export. Try a symbol name, anchor, or file.</div>';
+  resEl.classList.add('open');
   matches.forEach(n => { if (byId[n.id]) highlightNodes.add(byId[n.id]); });
   refreshViz();
 }
@@ -1559,17 +1623,20 @@ function showGhostPanel(n) {
     `<div class="anchor-row"><span class="anchor-txt">${esc(n.anchor || '')}</span><span class="copy-btn" onclick="copyAnchor('${esc(n.anchor||'')}', this)">copy</span></div>` +
     (n.kind ? row('kind', n.kind) : '') +
     (n.group ? row('module', n.group) : '') +
-    `<div class="ghost-node">Symbol not in current view.<br>Run <code>aden view --anchor ${esc(shortName(n))}</code> to focus it.</div>`;
+    `<div class="ghost-node">Symbol not in current view.<br>Run <code>aden view &quot;${esc(n.anchor || shortName(n))}&quot;</code> to focus it.</div>`;
   document.getElementById('pback').style.display = panelStack.length ? 'block' : 'none';
   document.getElementById('panel').classList.add('open');
 }
-function updateSel() { [...resEl.children].forEach((c, i) => c.classList.toggle('sel', i === selIdx)); }
+function updateSel() {
+  [...resEl.children].forEach((c, i) => c.classList.toggle('sel', i === selIdx));
+  resEl.children[selIdx]?.scrollIntoView({ block: 'nearest' });
+}
 qEl.addEventListener('input', runSearch);
 qEl.addEventListener('keydown', e => {
   if (e.key === 'Escape') { qEl.value = ''; runSearch(); qEl.blur(); return; }
   if (!matches.length) return;
-  if (e.key === 'ArrowDown') { selIdx = Math.min(selIdx + 1, matches.length - 1); updateSel(); e.preventDefault(); }
-  else if (e.key === 'ArrowUp') { selIdx = Math.max(selIdx - 1, 0); updateSel(); e.preventDefault(); }
+  if (e.key === 'ArrowDown' || (e.ctrlKey && e.key === 'n')) { selIdx = Math.min(selIdx + 1, matches.length - 1); updateSel(); e.preventDefault(); }
+  else if (e.key === 'ArrowUp' || (e.ctrlKey && e.key === 'p')) { selIdx = Math.max(selIdx - 1, 0); updateSel(); e.preventDefault(); }
   else if (e.key === 'Enter') { pickResult(selIdx); e.preventDefault(); }
 });
 function syncSearch() { if (qEl) { qEl.value = ''; resEl.classList.remove('open'); matches = []; } }
@@ -1593,7 +1660,9 @@ function toggleType(t) {
 }
 
 // ── URL hash state + browser history ─────────────────────────────────────────
+let restoringHash = false;
 function updateHash(h) {
+  if (restoringHash) return;
   const url = h ? '#' + h : location.pathname + location.search;
   history.pushState({ h }, '', h ? '#' + h : location.pathname + location.search);
 }
@@ -1602,15 +1671,19 @@ window.addEventListener('popstate', e => {
   restoreFromHash(h);
 });
 function restoreFromHash(hash) {
+  restoringHash = true;
+  try { applyHashState(hash); } finally { restoringHash = false; }
+}
+function applyHashState(hash) {
   if (!hash) { showOverview(); return; }
   const p = new URLSearchParams(hash);
   if (p.has('pivot')) {
-    const key = decodeURIComponent(p.get('pivot'));
+    const key = p.get('pivot');
     const node = Object.values(byId).find(n => n.anchor === key || n.id === key);
     if (node) { goNode(node); clientPivot(node.id, p.get('mode') || 'connectivity'); return; }
   }
   if (p.has('a')) {
-    const anchor = decodeURIComponent(p.get('a'));
+    const anchor = p.get('a');
     // find by anchor first, then by id
     const node = Object.values(byId).find(n => n.anchor === anchor || n.id === anchor);
     if (node) { goNode(node); return; }
@@ -1854,6 +1927,29 @@ function refreshViz() {
   Graph.nodeVisibility(n => idVisible(n.id));
   Graph.linkVisibility(l => (highlightLinks.has(l) || isMeta(l) || activeTypes.has(l.type)) &&
     idVisible(idOf(l.source)) && idVisible(idOf(l.target)));
+  const count = Object.keys(byId).filter(idVisible).length;
+  const out = document.getElementById('density-count');
+  if (out) out.textContent = `${count.toLocaleString()} / ${Object.keys(byId).length.toLocaleString()} visible`;
+}
+document.getElementById('simple-view')?.addEventListener('click', e => {
+  const n = byId[panelCur];
+  if (n) e.currentTarget.hash = 'a=' + encodeURIComponent(n.anchor || n.id);
+});
+function toggleLabels() {
+  showLabels = !showLabels;
+  document.getElementById('labels-btn').setAttribute('aria-pressed', String(showLabels));
+  refreshViz();
+}
+function showAllSymbols() {
+  stopTour(); stopPlay(); growMode = false;
+  if (pivotSet) clearPivot();
+  depthLimit = null;
+  densityFrac = 1;
+  document.getElementById('density').value = 100;
+  if (hasDrill) {
+    Object.keys(DATA.drill).forEach(cid => { if (byId[cid] && !byId[cid].expanded) expandCommunity(cid); });
+  }
+  applyDensity(); fitAll();
 }
 function applyDensity() {
   const nodes = Object.values(byId);
@@ -1952,12 +2048,52 @@ function closeOverlayIfBg(e) { if (e.target === document.getElementById('overlay
 
 // ── keyboard ──────────────────────────────────────────────────────────────────
 function selNb() {
-  for (let i = 0; i < 80; i++) { const r = document.getElementById('nb-' + i); if (r) r.classList.toggle('sel', i === nbSel); }
+  // Keyboard navigation crosses collapsed groups, including lists over 80.
+  if (!document.getElementById('nb-' + nbSel)) {
+    document.querySelectorAll('.show-more').forEach(btn => {
+      const start = +btn.dataset.start, ids = JSON.parse(btn.dataset.ids);
+      if (nbSel >= start && nbSel < start + ids.length) btn.click();
+    });
+  }
+  document.querySelectorAll('#panel .nb').forEach(r => r.classList.toggle('sel', r.id === 'nb-' + nbSel));
   const cur = document.getElementById('nb-' + nbSel); if (cur) cur.scrollIntoView({ block: 'nearest' });
   if (panelNbs[nbSel]) previewNode(panelNbs[nbSel], true);
 }
+let pendingG = 0;
 addEventListener('keydown', e => {
-  if (document.activeElement === qEl) return;
+  const target = document.activeElement;
+  if (target?.matches('input, textarea, select, [contenteditable=true]')) return;
+  if (e.ctrlKey || e.metaKey || (e.altKey && e.key !== 'ArrowLeft')) return;
+  // Native controls retain Enter/Space activation; other navigation stays global.
+  if (target?.matches('button, a') && (e.key === 'Enter' || e.key === ' ')) return;
+  if (resEl.classList.contains('open') && matches.length && (e.key === 'j' || e.key === 'k')) {
+    selIdx = Math.max(0, Math.min(matches.length - 1, selIdx + (e.key === 'j' ? 1 : -1)));
+    updateSel(); resEl.children[selIdx]?.focus(); e.preventDefault(); return;
+  }
+  const open = document.getElementById('panel').classList.contains('open');
+  const max = panelNbs.length;
+  if (document.getElementById('overlay').classList.contains('open')) {
+    if (e.key === 'Escape' || e.key === '?') { toggleOverlay(); e.preventDefault(); }
+    return;
+  }
+  if (e.key === 'g' && Date.now() - pendingG < 700) { pendingG = 0; fitAll(); e.preventDefault(); return; }
+  if (e.key === 'a' && Date.now() - pendingG < 700) { pendingG = 0; showAllSymbols(); e.preventDefault(); return; }
+  pendingG = e.key === 'g' ? Date.now() : 0;
+  if (e.key === 'g' || e.key === 'G') {
+    if (open && max) { nbSel = e.key === 'G' ? max - 1 : 0; selNb(); }
+    e.preventDefault(); return;
+  }
+  if (e.key === '+' || e.key === '=' || e.key === '-') {
+    Graph.zoom(Graph.zoom() * (e.key === '-' ? 1 / 1.25 : 1.25), dur(180)); e.preventDefault(); return;
+  }
+  if (e.key === 'L') { toggleLabels(); e.preventDefault(); return; }
+  if (!open && ['h', 'j', 'k', 'l'].includes(e.key)) {
+    stopTour(); const center = Graph.centerAt(), step = 80 / Graph.zoom();
+    Graph.centerAt(center.x + (e.key === 'h' ? -step : e.key === 'l' ? step : 0),
+      center.y + (e.key === 'k' ? -step : e.key === 'j' ? step : 0), dur(120));
+    e.preventDefault(); return;
+  }
+  if (open && e.key === 'h') { panelBack(); e.preventDefault(); return; }
   if (e.key === '?') { e.preventDefault(); toggleOverlay(); return; }
   if (e.key === '/') { e.preventDefault(); qEl.focus(); return; }
   if (e.key === ' ') { e.preventDefault(); togglePlay(); return; }
@@ -1976,7 +2112,7 @@ addEventListener('keydown', e => {
     fitAll(); return;
   }
   if (e.key === 'f' || e.key === 'F') { fitAll(); return; }
-  if (e.key === 'h' || e.key === 'H') { document.body.classList.toggle('hideui'); return; }
+  if (e.key === 'H') { document.body.classList.toggle('hideui'); return; }
   if (e.key === 'b' || e.key === 'B') { toggleSynapse(); return; }
   if (e.key === 'm' || e.key === 'M') { toggleMinimal(); return; }
   if (e.key === 'e' || e.key === 'E') { toggleEnvelopes(); return; }
@@ -1992,12 +2128,10 @@ addEventListener('keydown', e => {
   }
   // `c` with no focused node toggles the hover card (dismiss/restore).
   if (e.key === 'c' || e.key === 'C') { toggleCardDismiss(); return; }
-  const open = document.getElementById('panel').classList.contains('open');
-  const max = Math.min(panelNbs.length, 80);
   if (!open || !max) return;
   if (e.key === 'ArrowDown' || e.key === 'j') { nbSel = Math.min(nbSel + 1, max - 1); selNb(); e.preventDefault(); }
   else if (e.key === 'ArrowUp' || e.key === 'k') { nbSel = nbSel < 0 ? 0 : Math.max(nbSel - 1, 0); selNb(); e.preventDefault(); }
-  else if (e.key === 'Enter' && nbSel >= 0) { focusNode(panelNbs[nbSel]); e.preventDefault(); }
+  else if ((e.key === 'Enter' || e.key === 'l') && nbSel >= 0) { focusNode(panelNbs[nbSel]); e.preventDefault(); }
 });
 
 // ── overUI detection ──────────────────────────────────────────────────────────
@@ -2010,10 +2144,10 @@ addEventListener('keydown', e => {
 document.getElementById('panel').addEventListener('mouseleave', restoreFocus);
 
 // ── init ──────────────────────────────────────────────────────────────────────
-showOverview();
+const initHash = location.hash.slice(1);
+showOverview(false);
 applyVerbosity(vmode, false);
 // Restore focused node from URL hash (deep link)
-const initHash = location.hash.slice(1);
 if (initHash) setTimeout(() => restoreFromHash(initHash), 300);
 if (hasDrill) document.getElementById('hint-text').textContent = 'click sphere to expand · f fit · / search · ? shortcuts';
 </script>

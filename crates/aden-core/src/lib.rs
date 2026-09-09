@@ -384,14 +384,66 @@ impl AdenConfig {
     }
 }
 
-fn glob_match(text: &str, pattern: &str) -> bool {
-    // Simple glob matching: adr-* matches adr-001, adr-005, etc.
-    if let Some(star_pos) = pattern.find('*') {
-        let prefix = &pattern[..star_pos];
-        let suffix = &pattern[star_pos + 1..];
-        text.starts_with(prefix) && (suffix.is_empty() || text.ends_with(suffix))
-    } else {
-        text == pattern
+/// Match a whole string with `*` standing for zero or more characters.
+/// All other characters, including path separators and `?`, are literal.
+pub fn glob_match(text: &str, pattern: &str) -> bool {
+    let Some((prefix, remainder)) = pattern.split_once('*') else {
+        return text == pattern;
+    };
+    let Some(mut rest) = text.strip_prefix(prefix) else {
+        return false;
+    };
+    let mut parts = remainder.rsplitn(2, '*');
+    let suffix = parts.next().unwrap_or_default();
+    let Some(middle_text) = rest.strip_suffix(suffix) else {
+        return false;
+    };
+    rest = middle_text;
+    if let Some(middle) = parts.next() {
+        for part in middle.split('*').filter(|part| !part.is_empty()) {
+            let Some(pos) = rest.find(part) else {
+                return false;
+            };
+            rest = &rest[pos + part.len()..];
+        }
+    }
+    true
+}
+
+#[cfg(test)]
+mod wildcard_tests {
+    use super::*;
+
+    #[test]
+    fn wildcard_matching_handles_repetition_and_nonoverlapping_literals() {
+        for (text, pattern, expected) in [
+            ("", "", true),
+            ("", "**", true),
+            ("abc", "", false),
+            ("abc", "a**c", true),
+            ("foo::bar::bar", "*::bar", true),
+            ("ababa", "a*ba", true),
+            ("aba", "aba*aba", false),
+            ("abc", "*b*b*", false),
+            ("abc", "a?c", false),
+            ("é/秘密/秘密", "é*秘密", true),
+        ] {
+            assert_eq!(
+                glob_match(text, pattern),
+                expected,
+                "{text:?} / {pattern:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn private_patterns_support_multiple_wildcards() {
+        let mut config = AdenConfig::default();
+        config.profile.mode = ProfileMode::Public;
+        config.profile.private_patterns = vec!["*private*notes*".to_string()];
+        assert!(config.is_private(std::path::Path::new("docs/private/team/notes.adoc")));
+        assert!(config.is_private_anchor("aden://doc/private/team/notes"));
+        assert!(!config.is_private_anchor("aden://doc/public/notes"));
     }
 }
 

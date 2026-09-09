@@ -628,6 +628,8 @@ enum Commands {
             help = "Orbital 3D view — a slow-rotating spatial picture of the project (2D is the analytical view: lenses, replay, filters)"
         )]
         three_d: bool,
+        #[arg(long, conflicts_with_all = ["three_d", "replay"], help = "Lightweight static graph and relationship browser (no animation or graph library)")]
+        simple: bool,
         #[arg(long = "no-open", help = "Write the HTML but do not open a browser")]
         no_open: bool,
         #[arg(
@@ -735,7 +737,10 @@ enum Commands {
         /// `aden locate <named-project>` invocation cannot mean "list DIR" —
         //  DIR alone without a symbol was never a valid invocation, so the
         //  first positional is always the symbol.
-        #[arg(value_name = "SYMBOL", help = "Find definition of this symbol (equivalent to --symbol)")]
+        #[arg(
+            value_name = "SYMBOL",
+            help = "Find definition of this symbol (equivalent to --symbol)"
+        )]
         symbol_pos: Option<String>,
         #[arg(
             short = 's',
@@ -1289,8 +1294,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 fn print_command_error(error: &(dyn std::error::Error + 'static)) {
     if std::env::var("ADEN_MCP_MACHINE_ERRORS").as_deref() == Ok("1") {
-        if let Some(resolution) = error.downcast_ref::<commands::query::SymbolResolutionError>()
-        {
+        if let Some(resolution) = error.downcast_ref::<commands::query::SymbolResolutionError>() {
             eprintln!("{}", resolution.machine_json());
             return;
         }
@@ -1769,6 +1773,7 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
             mode,
             depth,
             three_d,
+            simple,
             no_open,
             out,
             scope,
@@ -1790,6 +1795,7 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
             max,
             scope.as_deref(),
             resolution,
+            simple,
         ),
         Commands::Locate {
             symbol_pos,

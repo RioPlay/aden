@@ -2,7 +2,7 @@ name: Lean CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, codex/release-readiness]
   pull_request:
     branches: [main]
 
@@ -46,7 +46,10 @@ jobs:
       # Catches drive-letter, UNC, separator, install, and argv drift without a
       # full workspace test matrix on every OS.
       - name: Test MCP and filesystem contracts
-        run: cargo build --locked -p aden-cli -p aden-mcp && cargo test --locked -p aden-mcp -p aden-paths
+        run: cargo build --locked -p aden-cli -p aden-mcp && cargo test --locked -p aden-core -p aden-mcp -p aden-paths
+
+      - name: CLI unit and session contention regressions
+        run: cargo test --locked -p aden-cli --bin aden
 
       - name: Product CLI gauntlet, cli_tests, and regression lock
         run: >
@@ -54,6 +57,19 @@ jobs:
           --test low_friction_gauntlet
           --test cli_tests
           --test regression_lock
+          --test viewer_completeness
+          --test viz_direction
+          --test zero_friction_freshness
+
+      - name: Offline viewer navigation and search regressions
+        run: node --test scripts/test_viewer.cjs scripts/test_simple_viewer.cjs
+
+      - name: Shell entry point syntax
+        shell: bash
+        run: |
+          for script in install.sh release/install.sh scripts/*.sh; do
+            bash -n "$script"
+          done
 
       - name: Live MCP product gauntlet
         shell: bash

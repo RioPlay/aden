@@ -44,7 +44,9 @@ use std::path::PathBuf;
 ///     also refuse cross-crate unique-win. v10 only closed the qualified
 ///     `hasher.finalize` / `Sha256::finalize` spellings; the rust extractor
 ///     emits the bare field name for non-self receivers.
-pub const GEN_LOGIC_VERSION: u32 = 11;
+/// 12: Rust local closure invocations no longer link to unrelated global
+///     functions that happen to share the closure binding's name.
+pub const GEN_LOGIC_VERSION: u32 = 12;
 
 /// Incremental generation cache: maps contract file path → metadata.
 #[derive(Default, Serialize, Deserialize)]
