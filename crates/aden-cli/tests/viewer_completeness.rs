@@ -1,3 +1,5 @@
+// Copyright (c) 2026 RioPlay <rioplay@rioplay.dev>
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! An offline viewer must not discard anchors before the user can search them.
 #![cfg(feature = "view")]
 
