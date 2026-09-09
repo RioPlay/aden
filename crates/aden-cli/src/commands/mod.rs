@@ -94,7 +94,11 @@ pub struct AgentCliError {
 }
 
 impl AgentCliError {
-    pub fn new(code: &'static str, message: impl Into<String>, recovery: impl Into<String>) -> Self {
+    pub fn new(
+        code: &'static str,
+        message: impl Into<String>,
+        recovery: impl Into<String>,
+    ) -> Self {
         Self {
             code,
             message: message.into(),

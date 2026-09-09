@@ -131,7 +131,9 @@ fn exact_symbol_anchors(idx: &aden_index::Index, question: &str) -> Vec<String> 
                     // conventionally capitalized (`#Flask`) while queries
                     // usually type them lowercase.
                     let frag = fragment.to_lowercase();
-                    frag == lower || frag.rsplit(['.', ':']).find(|part| !part.is_empty()) == Some(lower.as_str())
+                    frag == lower
+                        || frag.rsplit(['.', ':']).find(|part| !part.is_empty())
+                            == Some(lower.as_str())
                 })
             })
             .map(|result| result.anchor)
@@ -2818,38 +2820,38 @@ pub fn cmd_ask(
         // that intentional bypass, not a near-tie — so the user-facing note must
         // not cry "ambiguous".
         let mut overview_promoted = false;
-    let mut primary = if overview {
-        // Cross-reference in-degree only participates in project-identity
-        // tie-breaking. Other overview questions trust BM25's top in-band
-        // prose result, so scanning every edge would add work with no
-        // possible effect on selection.
-        let indegree = if query_is_project_identity(question, &results) {
-            doc_reference_indegree(path)
+        let mut primary = if overview {
+            // Cross-reference in-degree only participates in project-identity
+            // tie-breaking. Other overview questions trust BM25's top in-band
+            // prose result, so scanning every edge would add work with no
+            // possible effect on selection.
+            let indegree = if query_is_project_identity(question, &results) {
+                doc_reference_indegree(path)
+            } else {
+                std::collections::HashMap::new()
+            };
+            match resolve_anchor_overview(question, &results, &token_count, &indegree) {
+                Some((anchor, why)) => {
+                    xp.decision = why;
+                    overview_promoted = true;
+                    anchor
+                }
+                None => {
+                    let (anchor, why) =
+                        resolve_anchor_fuzzy_with_reason(question, &results, token_count);
+                    xp.decision =
+                        format!("overview engaged but no prose doc in score band; {}", why);
+                    anchor
+                }
+            }
         } else {
-            std::collections::HashMap::new()
+            let (anchor, why) = resolve_anchor_fuzzy_with_reason(question, &results, token_count);
+            xp.decision = why.to_string();
+            anchor
         };
-        match resolve_anchor_overview(question, &results, &token_count, &indegree) {
-            Some((anchor, why)) => {
-                xp.decision = why;
-                overview_promoted = true;
-                anchor
-            }
-            None => {
-                let (anchor, why) =
-                    resolve_anchor_fuzzy_with_reason(question, &results, token_count);
-                xp.decision =
-                    format!("overview engaged but no prose doc in score band; {}", why);
-                anchor
-            }
-        }
-    } else {
-        let (anchor, why) = resolve_anchor_fuzzy_with_reason(question, &results, token_count);
-        xp.decision = why.to_string();
-        anchor
-    };
 
-        // Prose-to-Code Linkage: If the primary result is a prose document, 
-        // look for an outbound edge (RelatesTo, Documents) to a code symbol 
+        // Prose-to-Code Linkage: If the primary result is a prose document,
+        // look for an outbound edge (RelatesTo, Documents) to a code symbol
         // to augment the assembly context.
         let mut prose_bridge: Option<String> = None;
         if AnchorPattern::is_prose_doc(&primary) {
@@ -2873,11 +2875,7 @@ pub fn cmd_ask(
                         if AnchorPattern::is_prose_doc(&anchor) {
                             continue;
                         }
-                        let fragment = anchor
-                            .rsplit('#')
-                            .next()
-                            .unwrap_or(&anchor)
-                            .to_lowercase();
+                        let fragment = anchor.rsplit('#').next().unwrap_or(&anchor).to_lowercase();
                         let overlap = fragment
                             .split(|c: char| !c.is_alphanumeric() && c != '_')
                             .filter(|t| question_terms.contains(*t))
@@ -2897,7 +2895,8 @@ pub fn cmd_ask(
                         }
                     }
                     if let Some((_, code_anchor)) = best {
-                        prose_bridge = aden_graph::cache::resolve_anchor_in_store(path, &code_anchor);
+                        prose_bridge =
+                            aden_graph::cache::resolve_anchor_in_store(path, &code_anchor);
                     }
                 }
             }
@@ -2929,10 +2928,7 @@ pub fn cmd_ask(
         // top prose document that merely mentions the term, presented as the
         // answer. Fail small instead — point at the tools that rank
         // candidates and typo suggestions.
-        if !exact_routed
-            && !relationship_query
-            && is_definition_lookup(question)
-        {
+        if !exact_routed && !relationship_query && is_definition_lookup(question) {
             let recovery = [
                 "No symbol matched the name in this question.",
                 "Run `aden locate <symbol>` for ranked candidates and typo suggestions.",

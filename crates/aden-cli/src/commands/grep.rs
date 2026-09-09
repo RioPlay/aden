@@ -343,9 +343,7 @@ fn requires_regex_flag(pattern: &str) -> bool {
 /// deliberately skips bare `.`/`*`/`+`/`?`, which appear in literal code
 /// searches too often (`foo.bar`, `x++`, globs) to be a reliable signal.
 fn looks_like_regex(pattern: &str) -> bool {
-    requires_regex_flag(pattern)
-        || pattern.contains('[')
-        || pattern.contains('(')
+    requires_regex_flag(pattern) || pattern.contains('[') || pattern.contains('(')
 }
 
 #[cfg(test)]

@@ -261,10 +261,7 @@ fn file_map_outline(
     let mut returned_file_count = 0;
     for (file, symbols) in code_files {
         let count = symbols.iter().filter(|symbol| symbol.is_code).count();
-        let line = format!(
-            "{}  ({count})\n",
-            file.to_string_lossy().replace('\\', "/")
-        );
+        let line = format!("{}  ({count})\n", file.to_string_lossy().replace('\\', "/"));
         if body.len().saturating_add(line.len()) > byte_limit {
             break;
         }
@@ -509,7 +506,11 @@ mod tests {
         assert_eq!(bounded.format, "file-map-v1");
         assert_eq!(bounded.symbol_count, 4_100);
         assert_eq!(bounded.returned_symbol_count, 0);
-        assert!(bounded.text.contains("src/large.rs  (4100)"), "{}", bounded.text);
+        assert!(
+            bounded.text.contains("src/large.rs  (4100)"),
+            "{}",
+            bounded.text
+        );
         assert!(bounded.text.contains("file map"), "{}", bounded.text);
         assert!(bounded.text.len() <= 12 * 1024);
 

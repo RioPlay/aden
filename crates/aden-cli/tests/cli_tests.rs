@@ -365,7 +365,11 @@ fn ask_definition_lookup_without_a_match_fails_small_instead_of_prose_routing() 
     .unwrap();
 
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
-        .args(["ask", "Where is Controller defined?", &dir.to_string_lossy()])
+        .args([
+            "ask",
+            "Where is Controller defined?",
+            &dir.to_string_lossy(),
+        ])
         .output()
         .expect("aden binary must be built");
     assert!(
@@ -376,7 +380,10 @@ fn ask_definition_lookup_without_a_match_fails_small_instead_of_prose_routing() 
     let payload: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(payload["result_state"], "empty", "{payload}");
     assert!(payload["anchor"].is_null(), "{payload}");
-    assert_eq!(payload["context"], "", "no context may be assembled: {payload}");
+    assert_eq!(
+        payload["context"], "",
+        "no context may be assembled: {payload}"
+    );
     let recovery = payload["recovery"].as_array().unwrap();
     assert!(
         recovery
@@ -882,7 +889,10 @@ fn grep_regex_shaped_literal_is_needs_regex() {
     assert!(!output.status.success(), "regex-shaped literal must fail");
     let err = String::from_utf8_lossy(&output.stderr);
     assert!(err.contains("looks like a regex"), "{err}");
-    assert!(err.contains("--regex") || err.contains("regex=true"), "{err}");
+    assert!(
+        err.contains("--regex") || err.contains("regex=true"),
+        "{err}"
+    );
 }
 
 #[test]
