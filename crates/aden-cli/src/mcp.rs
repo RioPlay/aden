@@ -220,12 +220,11 @@ impl Platform {
 /// True when `binary` is the Aden CLI (`aden` / `aden.exe`), not the standalone
 /// `aden-mcp` director.
 fn is_aden_cli_name(binary: &str) -> bool {
-    let name = Path::new(binary)
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or(binary);
-    let stem = name.strip_suffix(".exe").unwrap_or(name);
-    stem.eq_ignore_ascii_case("aden")
+    // Configuration may refer to a Windows executable from a Unix host (WSL,
+    // imported settings). Native Path parsing would treat backslashes as part
+    // of the filename there and omit the CLI's required `mcp stdio` arguments.
+    let name = binary.rsplit(['/', '\\']).next().unwrap_or(binary);
+    name.eq_ignore_ascii_case("aden") || name.eq_ignore_ascii_case("aden.exe")
 }
 
 /// Launch args for an MCP stdio server. The CLI binary needs `mcp stdio`;
@@ -908,9 +907,7 @@ pub fn run_install(
                 .filter(|p| p.is_file())
                 .or_else(|| executable_on_path(mcp_name))
                 .ok_or_else(|| {
-                    format!(
-                        "Could not find aden or {mcp_name} to register as the MCP server."
-                    )
+                    format!("Could not find aden or {mcp_name} to register as the MCP server.")
                 })?
         }
     };
@@ -1319,7 +1316,9 @@ mod tests {
             "grok must use .toml files: {paths:?}"
         );
         assert!(
-            paths.iter().any(|p| p == &PathBuf::from(".grok/config.toml")),
+            paths
+                .iter()
+                .any(|p| p == &PathBuf::from(".grok/config.toml")),
             "expected project .grok/config.toml, got {paths:?}"
         );
         assert_eq!(Platform::Grok.server_config_key(), "mcp_servers");
@@ -1385,13 +1384,26 @@ mod tests {
         assert!(is_aden_cli_name("aden.exe"));
         assert!(is_aden_cli_name("C:/bin/aden.exe"));
         assert!(is_aden_cli_name(r"C:\Users\me\.local\bin\aden.exe"));
+        assert!(is_aden_cli_name(r"\\server\tools\ADEN.EXE"));
+        assert!(is_aden_cli_name("/usr/local/bin/aden"));
         assert!(!is_aden_cli_name("aden-mcp"));
         assert!(!is_aden_cli_name("aden-mcp.exe"));
         assert!(!is_aden_cli_name("C:/bin/aden-mcp.exe"));
+        assert!(!is_aden_cli_name(r"C:\aden.exe\aden-mcp.exe"));
+        assert!(!is_aden_cli_name("/opt/aden/bin/not-aden"));
     }
 
     #[test]
     fn aden_config_for_cli_binary_uses_mcp_stdio() {
+        for binary in [
+            r"C:\tools\aden.exe",
+            r"\\server\tools\ADEN.EXE",
+            "/usr/bin/aden",
+        ] {
+            let config = Platform::Cursor.aden_config(binary, "/proj", None);
+            assert_eq!(config["command"], binary);
+            assert_eq!(config["args"], serde_json::json!(["mcp", "stdio"]));
+        }
         let v = Platform::Cursor.aden_config("C:/bin/aden.exe", "/proj", Some("standard"));
         assert_eq!(v["command"], "C:/bin/aden.exe");
         assert_eq!(
