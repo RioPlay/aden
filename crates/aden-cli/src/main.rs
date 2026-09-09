@@ -600,7 +600,7 @@ enum Commands {
         #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
         path: PathBuf,
     },
-    /// Render a graph slice in the browser — interactive, offline, with git-history replay.
+    /// Browse graph relationships offline — simple by default; opt into 2D, 3D, or replay.
     #[cfg(feature = "view")]
     #[command(hide = true)]
     View {
@@ -628,7 +628,13 @@ enum Commands {
             help = "Orbital 3D view — a slow-rotating spatial picture of the project (2D is the analytical view: lenses, replay, filters)"
         )]
         three_d: bool,
-        #[arg(long, conflicts_with_all = ["three_d", "replay"], help = "Lightweight static graph and relationship browser (no animation or graph library)")]
+        #[arg(
+            long = "2d",
+            conflicts_with = "three_d",
+            help = "Interactive 2D graph with lenses, filters, and replay controls"
+        )]
+        two_d: bool,
+        #[arg(long, conflicts_with_all = ["two_d", "three_d", "replay"], help = "Lightweight static relationship browser (default; no animation or graph library)")]
         simple: bool,
         #[arg(long = "no-open", help = "Write the HTML but do not open a browser")]
         no_open: bool,
@@ -1773,6 +1779,7 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
             mode,
             depth,
             three_d,
+            two_d,
             simple,
             no_open,
             out,
@@ -1795,7 +1802,7 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
             max,
             scope.as_deref(),
             resolution,
-            simple,
+            simple || !(two_d || three_d || replay),
         ),
         Commands::Locate {
             symbol_pos,

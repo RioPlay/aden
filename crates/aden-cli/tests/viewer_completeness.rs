@@ -16,7 +16,7 @@ fn viewer_keeps_symbols_beyond_both_former_export_caps() {
     std::fs::write(project.join("symbols.rs"), source).unwrap();
     let output_path = dir.path().join("viewer.html");
     let output = Command::new(env!("CARGO_BIN_EXE_aden"))
-        .args(["view", "--no-open", "--out"])
+        .args(["view", "--2d", "--no-open", "--out"])
         .arg(&output_path)
         .arg("--project")
         .arg(&project)
@@ -83,26 +83,29 @@ fn simple_export_is_standalone_and_rejects_animation_flags() {
     )
     .unwrap();
     let output_path = dir.path().join("plain #1 Š.html");
-    let output = Command::new(env!("CARGO_BIN_EXE_aden"))
-        .args(["view", "--simple", "--no-open", "--out"])
-        .arg(&output_path)
-        .arg("--project")
-        .arg(&project)
-        .env("ADEN_DATA_DIR", dir.path().join("data"))
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let html = std::fs::read_to_string(output_path).unwrap();
-    assert!(html.contains("#caller") && html.contains("#callee"));
-    assert!(!html.contains("ForceGraph") && !html.contains("requestAnimationFrame"));
-    assert!(!html.contains("/*ADEN_DATA*/"));
-    assert!(!dir.path().join("plain #1 Š-3d.html").exists());
-    assert!(!dir.path().join("plain #1 Š-simple.html").exists());
-    for flag in ["--3d", "--replay"] {
+    for flags in [vec!["view"], vec!["view", "--simple"]] {
+        let output = Command::new(env!("CARGO_BIN_EXE_aden"))
+            .args(flags)
+            .args(["--no-open", "--out"])
+            .arg(&output_path)
+            .arg("--project")
+            .arg(&project)
+            .env("ADEN_DATA_DIR", dir.path().join("data"))
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let html = std::fs::read_to_string(&output_path).unwrap();
+        assert!(html.contains("#caller") && html.contains("#callee"));
+        assert!(!html.contains("ForceGraph") && !html.contains("requestAnimationFrame"));
+        assert!(!html.contains("/*ADEN_DATA*/"));
+        assert!(!dir.path().join("plain #1 Š-3d.html").exists());
+        assert!(!dir.path().join("plain #1 Š-simple.html").exists());
+    }
+    for flag in ["--2d", "--3d", "--replay"] {
         let result = Command::new(env!("CARGO_BIN_EXE_aden"))
             .args(["view", "--simple", flag, "--no-open"])
             .output()

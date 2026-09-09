@@ -709,8 +709,10 @@ default (the `view` cargo feature is on); disable with `--no-default-features`.
 
 [source,bash]
 ----
-aden view                                       # the WHOLE graph + full git-history replay
-aden view --simple                              # lightweight static relationship browser
+aden view                                       # lightweight static relationship browser (default)
+aden view --simple                              # explicitly choose the default simple view
+aden view --2d                                  # interactive graph + full git-history replay
+aden view --3d                                  # orbital 3D graph
 aden view cmd_understand                        # blast radius centred on a symbol
 aden view --mode communities                    # community overview → click to drill in
 aden view cmd_understand --mode connectivity    # callers + callees
@@ -719,8 +721,11 @@ aden view cmd_understand --no-open --out g.html  # just write the file (CI / rem
 aden view cmd_understand --editor zed            # 'open in editor' uses Zed
 ----
 
-A bare `aden view` (no anchor) opens the *whole-graph* view — the full importance-ranked
-graph — which also carries the git-history activity log, so ▶ replay walks the entire
+A bare `aden view` (no anchor) opens the complete graph in the *Simple view* described
+below. Use `--2d` for the interactive graph, `--3d` for the orbital graph, or
+`--replay` for the 2D history view. No saved setting is needed for the simple default.
+
+`aden view --2d` also carries the git-history activity log, so ▶ replay walks the entire
 project populating from the first commit. Big commits reveal in bounded batches so growth
 stays smooth. Every anchor and relationship is retained in the offline graph; density
 only controls what is drawn. The counter reports visible versus loaded nodes, and
@@ -729,7 +734,7 @@ loaded anchor and reveals a selected symbol's neighborhood even when density hid
 Source previews are retained for the 1,500 highest-ranked nodes on large exports;
 source locations and editor links remain available for the other indexed symbols.
 
-`aden view --simple` opens a separate, plain relationship browser. It retains the
+`aden view` (or `aden view --simple`) opens a plain relationship browser. It retains the
 dark theme by default; light mode is an explicit toggle saved in the browser. It keeps the
 complete graph, searches names, anchors and files, and shows incoming → selected →
 outgoing relationships in a static diagram. Neighbors and relationship rows are
@@ -757,7 +762,9 @@ whole graph or a bounded slice.
 
 |--mode |`graph` (whole graph; the bare-`view` default), `blast` (dependents at risk), `reach` (dependencies), `connectivity`, or `communities` (overview with click-to-drill) |blast¹
 |--depth |Max hops (blast/reach/connectivity) |2
-|--simple |Static relationship browser; cannot combine with `--3d` or `--replay` |false
+|--simple |Static relationship browser; cannot combine with `--2d`, `--3d`, or `--replay` |default view
+|--2d |Interactive graph with lenses, filters, and replay controls |false
+|--3d |Orbital 3D graph; cannot combine with `--2d` |false
 |--replay |Graph the git history: the graph is the symbols touched across commits, and a ▶ replay (scrubber, speed, date, item count) plays the project *populating* over time — nodes appear as commits introduce them |false
 |--max |Replay: commits to include, oldest→newest (`0` = entire history) |0
 |--editor |Editor for "open in editor" links: `auto` (probe PATH for code/codium/cursor/zed/idea and use the first installed), `vscode`, `cursor`, `vscodium`, `zed`, `idea`, or a custom `{file}`/`{line}` URI template |auto
@@ -768,7 +775,7 @@ whole graph or a bounded slice.
 ¹ The `--mode` flag defaults to `blast`, but a bare `aden view` with no anchor opens the
 whole-graph view (it has no single symbol to centre on).
 
-The page is dark, community-coloured, and degree-sized; hover for the short symbol
+The interactive 2D page is dark, community-coloured, and degree-sized; hover for the short symbol
 name, click for details, and *right-click a node* (or use the panel link) to open its
 source at the right line in your editor via a `vscode://file…`-style URI — the browser
 routes the scheme to the desktop app, so no server is involved. The community view is
