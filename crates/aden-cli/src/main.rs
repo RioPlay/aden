@@ -1813,7 +1813,7 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
             let (symbol, path) = if let Some(pos) = symbol_pos {
                 if symbol.is_none() && caller_of.is_none() {
                     (Some(pos), path)
-                } else if path == PathBuf::from(".") {
+                } else if path == std::path::Path::new(".") {
                     (symbol, PathBuf::from(pos))
                 } else {
                     return Err("locate: DIR given both as the first positional and as the second positional — keep only one".into());

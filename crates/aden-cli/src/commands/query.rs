@@ -2854,51 +2854,49 @@ pub fn cmd_ask(
         // look for an outbound edge (RelatesTo, Documents) to a code symbol
         // to augment the assembly context.
         let mut prose_bridge: Option<String> = None;
-        if AnchorPattern::is_prose_doc(&primary) {
-            if let Ok(graph) = aden_graph::cache::build_from_directory_cached(path) {
-                if let Some(node) = graph.get_index(&primary) {
-                    // Rank outbound code neighbors by how well they answer the
-                    // question: symbol-name token overlap with the question
-                    // first, semantic doc→code edges (Documents/Explains) as a
-                    // bonus, RelatesTo as a lesser one. (Longest-anchor-name
-                    // was the previous proxy — it picked whichever symbol had
-                    // the most verbose path, not the relevant one.)
-                    let question_terms: HashSet<String> = question
-                        .split(|c: char| !c.is_alphanumeric() && c != '_')
-                        .filter(|s| s.len() >= 3)
-                        .map(|s| s.to_lowercase())
-                        .filter(|s| !SYMBOL_STOP_WORDS.contains(&s.as_str()))
-                        .collect();
-                    let mut best: Option<(usize, String)> = None;
-                    for neighbor in graph.graph.neighbors_directed(node, Direction::Outgoing) {
-                        let anchor = graph.graph[neighbor].doc.anchor.clone();
-                        if AnchorPattern::is_prose_doc(&anchor) {
-                            continue;
-                        }
-                        let fragment = anchor.rsplit('#').next().unwrap_or(&anchor).to_lowercase();
-                        let overlap = fragment
-                            .split(|c: char| !c.is_alphanumeric() && c != '_')
-                            .filter(|t| question_terms.contains(*t))
-                            .count();
-                        let edge_bonus = graph
-                            .graph
-                            .find_edge(node, neighbor)
-                            .map(|e| match graph.graph[e].edge_type {
-                                aden_core::EdgeType::Documents | aden_core::EdgeType::Explains => 2,
-                                aden_core::EdgeType::RelatesTo => 1,
-                                _ => 0,
-                            })
-                            .unwrap_or(0);
-                        let score = overlap * 3 + edge_bonus;
-                        if best.as_ref().map_or(true, |(top, _)| score > *top) {
-                            best = Some((score, anchor));
-                        }
-                    }
-                    if let Some((_, code_anchor)) = best {
-                        prose_bridge =
-                            aden_graph::cache::resolve_anchor_in_store(path, &code_anchor);
-                    }
+        if AnchorPattern::is_prose_doc(&primary)
+            && let Ok(graph) = aden_graph::cache::build_from_directory_cached(path)
+            && let Some(node) = graph.get_index(&primary)
+        {
+            // Rank outbound code neighbors by how well they answer the
+            // question: symbol-name token overlap with the question
+            // first, semantic doc→code edges (Documents/Explains) as a
+            // bonus, RelatesTo as a lesser one. (Longest-anchor-name
+            // was the previous proxy — it picked whichever symbol had
+            // the most verbose path, not the relevant one.)
+            let question_terms: HashSet<String> = question
+                .split(|c: char| !c.is_alphanumeric() && c != '_')
+                .filter(|s| s.len() >= 3)
+                .map(|s| s.to_lowercase())
+                .filter(|s| !SYMBOL_STOP_WORDS.contains(&s.as_str()))
+                .collect();
+            let mut best: Option<(usize, String)> = None;
+            for neighbor in graph.graph.neighbors_directed(node, Direction::Outgoing) {
+                let anchor = graph.graph[neighbor].doc.anchor.clone();
+                if AnchorPattern::is_prose_doc(&anchor) {
+                    continue;
                 }
+                let fragment = anchor.rsplit('#').next().unwrap_or(&anchor).to_lowercase();
+                let overlap = fragment
+                    .split(|c: char| !c.is_alphanumeric() && c != '_')
+                    .filter(|t| question_terms.contains(*t))
+                    .count();
+                let edge_bonus = graph
+                    .graph
+                    .find_edge(node, neighbor)
+                    .map(|e| match graph.graph[e].edge_type {
+                        aden_core::EdgeType::Documents | aden_core::EdgeType::Explains => 2,
+                        aden_core::EdgeType::RelatesTo => 1,
+                        _ => 0,
+                    })
+                    .unwrap_or(0);
+                let score = overlap * 3 + edge_bonus;
+                if best.as_ref().is_none_or(|(top, _)| score > *top) {
+                    best = Some((score, anchor));
+                }
+            }
+            if let Some((_, code_anchor)) = best {
+                prose_bridge = aden_graph::cache::resolve_anchor_in_store(path, &code_anchor);
             }
         }
         let lower_question = question.to_lowercase();
@@ -3037,28 +3035,28 @@ pub fn cmd_ask(
                 facet_seeds.len()
             );
             let mut a: Vec<String> = facet_seeds.into_iter().skip(1).take(2).collect();
-            if let Some(bridge) = prose_bridge {
-                if !a.contains(&bridge) {
-                    a.insert(0, bridge);
-                }
+            if let Some(bridge) = prose_bridge
+                && !a.contains(&bridge)
+            {
+                a.insert(0, bridge);
             }
             a
         } else if precise_routed {
             let mut a: Vec<String> = exact_alternates.into_iter().take(2).collect();
-            if let Some(bridge) = prose_bridge {
-                if !a.contains(&bridge) {
-                    a.insert(0, bridge);
-                }
+            if let Some(bridge) = prose_bridge
+                && !a.contains(&bridge)
+            {
+                a.insert(0, bridge);
             }
             a
         } else {
             // Up to 2 in-band alternates, deduped against the (possibly
             // non-rank-1) primary. Empty means a clear winner.
             let mut a = inband_alternate_candidates(&primary, &results, 1);
-            if let Some(bridge) = prose_bridge {
-                if !a.contains(&bridge) {
-                    a.insert(0, bridge);
-                }
+            if let Some(bridge) = prose_bridge
+                && !a.contains(&bridge)
+            {
+                a.insert(0, bridge);
             }
             a
         };

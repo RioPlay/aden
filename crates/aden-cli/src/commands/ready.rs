@@ -191,7 +191,7 @@ pub fn cmd_ready(path: &Path, fix: bool, json: bool) -> Result<(), Box<dyn std::
             "result_state": if ok { "complete" } else { "failed" },
             "outcome": outcome,
             "advisory_findings": advisory_findings,
-            "hard_failure": any_failure.as_ref().map(|s| s.as_str()),
+            "hard_failure": any_failure.as_deref(),
             "steps": results.iter().map(|(name, passed)| {
                 serde_json::json!({"name": name, "passed": passed})
             }).collect::<Vec<_>>(),
