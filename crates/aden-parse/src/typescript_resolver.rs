@@ -150,9 +150,10 @@ fn walk_program<'a>(
                 symbols.push(sym);
             }
         }
-        "arrow_function" => {
-            // Could be assigned to a variable; name comes from parent variable_declarator
-            if let Some(sym) = extract_arrow_function_symbol(node, source) {
+        "function_expression" | "arrow_function" => {
+            // CommonJS APIs commonly assign functions to properties, e.g.
+            // `res.json = function json(...) { ... }`.
+            if let Some(sym) = extract_assigned_function_symbol(node, source) {
                 symbols.push(sym);
             }
         }
@@ -256,38 +257,41 @@ fn extract_function_symbol<'a>(
     })
 }
 
-fn extract_arrow_function_symbol<'a>(
+fn extract_assigned_function_symbol<'a>(
     node: tree_sitter::Node<'a>,
     source: &str,
 ) -> Option<TsSymbol<'a>> {
-    // Only treat the arrow as a named function when it is the *direct value* of a
-    // variable declarator, i.e. `const f = () => {...}`. An arrow that is merely
-    // nested inside the initializer — e.g. an argument to a builder call like
-    // `export const ZodFile = base$(() => {...})` or `$ZodIssueTooSmall = z(...)` —
-    // does NOT name a function; the declared symbol is a value/type, not a
-    // callable. Walking up to *any* ancestor declarator (the old behaviour)
-    // mislabeled every such schema/value as a Function, which is what made the
-    // zod corpus 73% false-dead. Require the declarator's `value` field to be
-    // exactly this arrow node.
+    // Only a direct binding names the function. Never promote callbacks nested
+    // inside factory calls (`const Schema = build(() => {})`) into API symbols.
     let parent = node.parent()?;
-    if parent.kind() != "variable_declarator" {
-        return None;
-    }
-    match parent.child_by_field_name("value") {
+    let (value_field, name_field) = match parent.kind() {
+        "variable_declarator" => ("value", "name"),
+        "assignment_expression" => ("right", "left"),
+        _ => return None,
+    };
+    match parent.child_by_field_name(value_field) {
         Some(v) if v.id() == node.id() => {}
         _ => return None,
     }
-    let name_node = parent.child_by_field_name("name")?;
+    let name_node = parent.child_by_field_name(name_field)?;
+    if !matches!(name_node.kind(), "identifier" | "member_expression") {
+        return None;
+    }
     let name = node_text(name_node, source).to_string();
     let params = extract_ts_params(node, source);
-    let doc = extract_ts_doc_comment(parent, source);
+    let doc = extract_ts_doc_comment(parent.parent().unwrap_or(parent), source);
+    let is_async = {
+        let mut cursor = node.walk();
+        node.children(&mut cursor)
+            .any(|child| child.kind() == "async")
+    };
     Some(TsSymbol {
         name,
         kind: NodeType::Function,
         node,
         params,
         doc_comment: doc,
-        is_async: false,
+        is_async,
         is_export: false,
     })
 }
@@ -643,7 +647,11 @@ fn emit_ts_symbol<'a>(
 
     // Resolve call sites. Methods are named `Class.method`; the part before the
     // last `.` is the enclosing class, used to resolve `this.x()` → `Class.x`.
-    let enclosing_class = sym.name.rsplit_once('.').map(|(c, _)| c);
+    let enclosing_class = if sym.node.kind() == "arrow_function" {
+        None // Arrow functions keep lexical `this`, even when assigned to a property.
+    } else {
+        sym.name.rsplit_once('.').map(|(c, _)| c)
+    };
     let calls = resolve_ts_call_sites(sym.node, source, all_symbols, imports, enclosing_class);
     if !calls.is_empty() {
         let call_rows: Vec<Vec<String>> = calls

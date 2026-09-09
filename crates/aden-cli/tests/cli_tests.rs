@@ -84,7 +84,7 @@ fn long_version_reports_reproducible_build_identity_and_formats() {
     assert!(version.contains("Features:"), "{version}");
     assert!(version.contains("snapshot-v1"), "{version}");
     assert!(version.contains("index-layout-v3"), "{version}");
-    assert!(version.contains("gen-logic-v12"), "{version}");
+    assert!(version.contains("gen-logic-v13"), "{version}");
     assert!(version.contains("symbol-lexicon-v2"), "{version}");
     assert!(
         !version.contains("Built at:"),
@@ -349,6 +349,55 @@ fn ask_definition_lookup_prefers_the_exact_production_symbol() {
         anchor.ends_with("/src/app.py#Flask") && !anchor.contains("/tests/"),
         "definition lookup must not route to Flask.open_resource or the test fixture: {anchor}"
     );
+}
+
+#[test]
+fn ask_definition_lookup_resolves_qualified_snake_case_methods() {
+    let dir = temp_project::temp_dir();
+    std::fs::write(
+        dir.join("app.py"),
+        "class Application:\n    def full_dispatch_request(self):\n        return self.dispatch_request()\n    def dispatch_request(self):\n        return 'response'\n",
+    ).unwrap();
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
+        .args([
+            "ask",
+            "Where is full_dispatch_request defined?",
+            &dir.to_string_lossy(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let payload: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(
+        payload["anchor"]
+            .as_str()
+            .is_some_and(|anchor| anchor.ends_with("/app.py#Application.full_dispatch_request")),
+        "{payload}"
+    );
+    assert_eq!(payload["routing_confidence"], "clear", "{payload}");
+}
+
+#[test]
+fn ask_definition_lookup_preserves_property_qualification() {
+    let dir = temp_project::temp_dir();
+    std::fs::write(dir.join("response.js"), "res.json = function (value) { return value; };\nexports.json = function (value) { return value; };\n").unwrap();
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
+        .args(["ask", "Where is res.json defined?", &dir.to_string_lossy()])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let payload: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(
+        payload["anchor"]
+            .as_str()
+            .is_some_and(|anchor| anchor.ends_with("/response.js#res.json")),
+        "{payload}"
+    );
+    assert_eq!(payload["routing_confidence"], "clear", "{payload}");
 }
 
 #[test]

@@ -908,6 +908,35 @@ impl Index {
         }
     }
 
+    /// Resolve an exact symbol name independently of lexical tokenization.
+    /// Qualified names and their final component are accepted; substrings are not.
+    pub fn exact_symbol_matches(&self, symbol: &str) -> Vec<SearchResult> {
+        let lower = symbol.to_lowercase();
+        let mut results: Vec<_> = self
+            .documents
+            .iter()
+            .filter(|document| {
+                document
+                    .anchor
+                    .split_once('#')
+                    .is_some_and(|(_, fragment)| {
+                        let fragment = fragment.to_lowercase();
+                        fragment == lower
+                            || fragment.rsplit(['.', ':']).find(|part| !part.is_empty())
+                                == Some(lower.as_str())
+                    })
+            })
+            .map(|document| SearchResult {
+                anchor: document.anchor.clone(),
+                source_path: document.source_path.clone(),
+                score: 1.0,
+                snippet: String::new(),
+            })
+            .collect();
+        results.sort_by(|a, b| a.anchor.cmp(&b.anchor));
+        results
+    }
+
     /// Indexed token count for an anchor's document (0 if unknown). A proxy for
     /// substantiveness: a tiny count means a thin stub (abstract method, shim),
     /// which `ask` routing should pass over in favour of the symbol that carries
@@ -2227,6 +2256,42 @@ mod tests {
             "stemmed query should rank the overlay-delivery doc first, got: {:?}",
             results.iter().map(|r| &r.anchor).collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn exact_symbols_do_not_depend_on_lexical_postings() {
+        let index = Index {
+            documents: [
+                "Application.full_dispatch_request",
+                "Other.full_dispatch_request",
+                "Application.full_dispatch_request_extra",
+            ]
+            .into_iter()
+            .map(|name| IndexedDocument {
+                anchor: format!("aden://module/demo/app.py#{name}"),
+                source_path: PathBuf::from("app.py"),
+                text: String::new(),
+                token_count: 0,
+            })
+            .collect(),
+            ..Index::default()
+        };
+        assert!(index.query("full_dispatch_request").is_empty());
+        let matches = index.exact_symbol_matches("FULL_DISPATCH_REQUEST");
+        assert_eq!(matches.len(), 2);
+        assert!(
+            matches[0]
+                .anchor
+                .ends_with("#Application.full_dispatch_request")
+        );
+        assert!(matches[1].anchor.ends_with("#Other.full_dispatch_request"));
+        assert_eq!(
+            index
+                .exact_symbol_matches("Application.full_dispatch_request")
+                .len(),
+            1
+        );
+        assert!(index.exact_symbol_matches("dispatch_request").is_empty());
     }
 
     #[test]

@@ -100,6 +100,10 @@ pub const INDEX_LAYOUT_VERSION: u16 = 3;
 pub(crate) struct FreshnessManifest {
     #[serde(default)]
     pub index_layout_version: u16,
+    /// Parser/linker semantics can change without either sources or layout
+    /// changing. Upgrades must refresh those otherwise apparently current stores.
+    #[serde(default)]
+    pub gen_logic_version: u32,
     /// Stable identity of the built-in path exclusion policy used to discover
     /// the sources bound by this manifest.
     #[serde(default)]
@@ -212,6 +216,7 @@ pub(crate) fn publish_freshness_manifest(
 ) -> std::io::Result<()> {
     let manifest = FreshnessManifest {
         index_layout_version: INDEX_LAYOUT_VERSION,
+        gen_logic_version: crate::types::GEN_LOGIC_VERSION,
         filter_fingerprint: aden_core::filter::built_in_ignore_fingerprint(),
         graph_revision,
         // Capture this before generation begins. If a file mutates mid-gen,
@@ -233,6 +238,7 @@ fn load_manifest(root: &Path) -> Option<FreshnessManifest> {
 
 fn manifest_policy_is_current(manifest: &FreshnessManifest) -> bool {
     manifest.index_layout_version == INDEX_LAYOUT_VERSION
+        && manifest.gen_logic_version == crate::types::GEN_LOGIC_VERSION
         && manifest.filter_fingerprint == aden_core::filter::built_in_ignore_fingerprint()
 }
 
@@ -614,11 +620,15 @@ mod skip_auto_gen_tests {
 
         let current = FreshnessManifest {
             index_layout_version: INDEX_LAYOUT_VERSION,
+            gen_logic_version: crate::types::GEN_LOGIC_VERSION,
             filter_fingerprint: aden_core::filter::built_in_ignore_fingerprint(),
             graph_revision: "current".into(),
             source_fingerprint: "source".into(),
         };
         assert!(manifest_policy_is_current(&current));
+        let mut outdated = current;
+        outdated.gen_logic_version = 0;
+        assert!(!manifest_policy_is_current(&outdated));
     }
 
     #[test]

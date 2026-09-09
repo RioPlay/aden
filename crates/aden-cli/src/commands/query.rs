@@ -67,10 +67,13 @@ fn evidence_facet_queries(question: &str) -> Vec<String> {
     }
 }
 
-fn explicit_snake_symbol(question: &str) -> Option<String> {
+fn explicit_symbol_token(question: &str) -> Option<String> {
     question
-        .split(|c: char| !c.is_alphanumeric() && c != '_')
-        .find(|word| word.contains('_') && word.len() >= 3)
+        .split(|c: char| !c.is_alphanumeric() && !matches!(c, '_' | '.' | ':'))
+        .map(|word| word.trim_matches(['.', ':']))
+        .find(|word| {
+            (word.contains('_') || word.contains('.') || word.contains("::")) && word.len() >= 3
+        })
         .map(str::to_string)
 }
 
@@ -100,7 +103,7 @@ fn is_definition_lookup(question: &str) -> bool {
 
 fn exact_symbol_anchors(idx: &aden_index::Index, question: &str) -> Vec<String> {
     let definition_lookup = is_definition_lookup(question);
-    let candidates: Vec<String> = if let Some(symbol) = explicit_snake_symbol(question) {
+    let candidates: Vec<String> = if let Some(symbol) = explicit_symbol_token(question) {
         vec![symbol]
     } else if definition_lookup {
         question
@@ -121,21 +124,10 @@ fn exact_symbol_anchors(idx: &aden_index::Index, question: &str) -> Vec<String> 
     };
 
     for symbol in candidates {
-        let lower = symbol.to_lowercase();
-        let mut anchors: Vec<String> = query_index(idx, &symbol)
+        let mut anchors: Vec<String> = idx
+            .exact_symbol_matches(&symbol)
             .into_iter()
             .filter(|result| !is_test_result(result))
-            .filter(|result| {
-                result.anchor.rsplit('#').next().is_some_and(|fragment| {
-                    // Case-insensitive: Python/Rust class symbols are
-                    // conventionally capitalized (`#Flask`) while queries
-                    // usually type them lowercase.
-                    let frag = fragment.to_lowercase();
-                    frag == lower
-                        || frag.rsplit(['.', ':']).find(|part| !part.is_empty())
-                            == Some(lower.as_str())
-                })
-            })
             .map(|result| result.anchor)
             .collect();
         anchors.dedup();
@@ -2758,7 +2750,36 @@ pub fn cmd_ask(
         (anchor, None, Vec::new(), None, None, false, false)
     } else {
         let idx = load_or_build_index(path)?;
-        let results = crate::util::query_index_with_navigation(&idx, question, path);
+        let lower_question = question.to_lowercase();
+        let relationship_query = [" call", "caller", "request path", "impact", "depend"]
+            .iter()
+            .any(|signal| lower_question.contains(signal));
+        let exact_anchors = if relationship_query {
+            Vec::new()
+        } else if has_symbolish_token(question) {
+            exact_symbol_anchors(&idx, question)
+        } else {
+            // No symbol-like token: a fuzzy natural-language question. Try the
+            // handler-convention lookup first (queries naming a CLI command
+            // route to its handler, which BM25 prose mentions drown out), then
+            // fall back to the general exact-symbol path.
+            let exact = exact_symbol_anchors(&idx, question);
+            if exact.is_empty() {
+                command_handler_anchors(&idx, question)
+            } else {
+                exact
+            }
+        };
+        let mut results = crate::util::query_index_with_navigation(&idx, question, path);
+        // Exact definitions must survive an empty lexical result set too.
+        if results.is_empty() {
+            results.extend(exact_anchors.iter().map(|anchor| SearchResult {
+                anchor: anchor.clone(),
+                source_path: std::path::PathBuf::new(),
+                score: 1.0,
+                snippet: String::new(),
+            }));
+        }
         if results.is_empty() {
             // A definition-shaped question that the index cannot see at all
             // gets symbol-hunting advice, not generic keyword advice.
@@ -2899,26 +2920,6 @@ pub fn cmd_ask(
                 prose_bridge = aden_graph::cache::resolve_anchor_in_store(path, &code_anchor);
             }
         }
-        let lower_question = question.to_lowercase();
-        let relationship_query = [" call", "caller", "request path", "impact", "depend"]
-            .iter()
-            .any(|signal| lower_question.contains(signal));
-        let exact_anchors = if relationship_query {
-            Vec::new()
-        } else if has_symbolish_token(question) {
-            exact_symbol_anchors(&idx, question)
-        } else {
-            // No symbol-like token: a fuzzy natural-language question. Try the
-            // handler-convention lookup first (queries naming a CLI command
-            // route to its handler, which BM25 prose mentions drown out), then
-            // fall back to the general exact-symbol path.
-            let exact = exact_symbol_anchors(&idx, question);
-            if exact.is_empty() {
-                command_handler_anchors(&idx, question)
-            } else {
-                exact
-            }
-        };
         let exact_routed = !exact_anchors.is_empty();
         // A definition-shaped question ("Where is X defined?", "How does X
         // work?" with a symbolish X) that matched NO symbol is a misroute
@@ -4311,10 +4312,22 @@ mod tests {
     }
 
     #[test]
-    fn explicit_snake_symbols_are_detected_without_call_syntax() {
+    fn explicit_symbols_preserve_qualification_without_call_syntax() {
         assert_eq!(
-            explicit_snake_symbol("What boundaries does run_aden_command enforce?"),
+            explicit_symbol_token("What boundaries does run_aden_command enforce?"),
             Some("run_aden_command".to_string())
+        );
+        assert_eq!(
+            explicit_symbol_token("Where is `res.json` defined?"),
+            Some("res.json".into())
+        );
+        assert_eq!(
+            explicit_symbol_token("Find Application.full_dispatch_request."),
+            Some("Application.full_dispatch_request".into())
+        );
+        assert_eq!(
+            explicit_symbol_token("Where is FileLock::acquire_timeout defined?"),
+            Some("FileLock::acquire_timeout".into())
         );
     }
 

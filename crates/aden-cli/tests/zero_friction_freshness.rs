@@ -139,10 +139,49 @@ fn old_layout_manifest_and_gen_cache_trigger_one_automatic_rebuild() {
     let cache: serde_json::Value =
         serde_json::from_slice(&std::fs::read(cache_path).unwrap()).unwrap();
     // Pinned to the current GEN_LOGIC_VERSION (types.rs): bump together.
-    assert_eq!(cache["version"], 12);
+    assert_eq!(cache["version"], 13);
 
     let _ = std::fs::remove_dir_all(project);
     let _ = std::fs::remove_dir_all(data);
+}
+
+#[test]
+fn parser_upgrade_refreshes_unchanged_sources_once() {
+    let (project, data) = scaffold();
+    let initial = json(&project, &data, &["tree", "--symbols", "."]);
+    let state = store_path(&project, &data).parent().unwrap().to_path_buf();
+    let manifest_path = state.join("freshness.json");
+    let cache_path = state.join("gen-cache.json");
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+    let version = manifest["gen_logic_version"].as_u64().unwrap();
+    manifest
+        .as_object_mut()
+        .unwrap()
+        .remove("gen_logic_version");
+    std::fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+    let mut cache: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&cache_path).unwrap()).unwrap();
+    cache["version"] = 0.into();
+    std::fs::write(&cache_path, serde_json::to_vec(&cache).unwrap()).unwrap();
+
+    let refreshed = json(&project, &data, &["tree", "--symbols", "."]);
+    assert_eq!(refreshed["freshness"], "current");
+    assert_ne!(refreshed["context_receipt"]["refresh_cause"], "none");
+    assert_eq!(
+        initial["context_receipt"]["observed_source_fingerprint"],
+        refreshed["context_receipt"]["observed_source_fingerprint"]
+    );
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+    assert_eq!(manifest["gen_logic_version"], version);
+    let cache: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&cache_path).unwrap()).unwrap();
+    assert_eq!(cache["version"], version);
+    let next = json(&project, &data, &["tree", "--symbols", "."]);
+    assert_eq!(next["context_receipt"]["refresh_cause"], "none");
+    std::fs::remove_dir_all(project).unwrap();
+    std::fs::remove_dir_all(data).unwrap();
 }
 
 #[test]

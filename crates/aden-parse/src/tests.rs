@@ -1170,6 +1170,60 @@ func main() {}
 
 // ── TypeScript ───────────────────────────────────────────────────────────────
 
+#[test]
+fn js_commonjs_assigned_functions_keep_api_names_docs_and_calls() {
+    let src = r#"
+res.send = function (body) { return body; };
+/** Send a JSON response. */
+res.json = function json(obj) { return this.send(JSON.stringify(obj)); };
+module.exports = function createApplication() {};
+const build = async function (options) { return options; };
+exports.load = async () => build({});
+const Schema = factory(() => {});
+exports.schema = factory(function () {});
+"#;
+    let docs = crate::typescript_resolver::TypeScriptResolver::new()
+        .extract_documents(src, Path::new("lib/response.js"))
+        .unwrap();
+    for name in [
+        "res.send",
+        "res.json",
+        "module.exports",
+        "build",
+        "exports.load",
+    ] {
+        assert_eq!(
+            docs.iter()
+                .filter(|d| d.anchor.ends_with(&format!("#{name}")))
+                .count(),
+            1,
+            "{name}"
+        );
+    }
+    for name in ["json", "createApplication", "Schema", "exports.schema"] {
+        assert!(
+            !docs.iter().any(|d| d.anchor.ends_with(&format!("#{name}"))),
+            "invented API binding: {name}"
+        );
+    }
+    let json = docs
+        .iter()
+        .find(|d| d.anchor.ends_with("#res.json"))
+        .unwrap();
+    assert!(json.blocks.iter().any(
+        |b| matches!(b, aden_core::Block::Paragraph(text) if text.contains("Send a JSON response"))
+    ));
+    assert!(json.blocks.iter().any(|b| matches!(b, aden_core::Block::Listing { code, .. } if code.contains("edge::calls[res.send]"))));
+    assert!(json.source_span.is_some());
+    for name in ["build", "exports.load"] {
+        assert!(doc_is_async(
+            docs.iter()
+                .find(|d| d.anchor.ends_with(&format!("#{name}")))
+                .unwrap()
+        ));
+    }
+}
+
 /// `import { x } from './mod'` must emit `edge::imports[./mod]`.
 #[test]
 fn ts_named_import_emits_imports_edge() {
