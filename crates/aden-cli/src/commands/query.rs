@@ -101,6 +101,122 @@ fn is_definition_lookup(question: &str) -> bool {
     naming && has_symbolish_token(question)
 }
 
+fn prose_bridge_score(overlap: usize, edge_bonus: usize) -> usize {
+    // Documents/Explains provide explicit evidence even without shared terms.
+    // Mere mentions or general relatedness cannot justify an unrelated neighbor.
+    if overlap == 0 && edge_bonus < 2 {
+        0
+    } else {
+        overlap * 3 + edge_bonus
+    }
+}
+
+fn is_selection_implementation_query(question: &str) -> bool {
+    let lower = question.to_lowercase();
+    let words: HashSet<&str> = lower.split(|c: char| !c.is_alphanumeric()).collect();
+    let implementation = lower.starts_with("where ")
+        || lower.starts_with("how does ")
+        || lower.starts_with("which function ")
+        || lower.starts_with("which method ");
+    implementation
+        && (words.contains("between") || words.contains("whether"))
+        && [
+            "choose", "chooses", "decide", "decides", "select", "selects", "switch", "switches",
+        ]
+        .iter()
+        .any(|word| words.contains(word))
+        && ![
+            "flag",
+            "flags",
+            "option",
+            "options",
+            "guide",
+            "documentation",
+            "example",
+        ]
+        .iter()
+        .any(|word| words.contains(word))
+}
+
+/// Selection logic often lives one call above the operation named in prose.
+/// Preserve that evidence chain instead of globally boosting all code results.
+fn selection_caller_seeds(path: &Path, results: &[SearchResult]) -> Vec<String> {
+    use aden_core::{EdgeType, NodeType};
+    use aden_graph::EdgeRef;
+    let seeds: Vec<_> = results
+        .iter()
+        .take(10)
+        .filter(|r| {
+            !AnchorPattern::is_prose_doc(&r.anchor) && r.anchor.contains('#') && !is_test_result(r)
+        })
+        .take(3)
+        .collect();
+    if seeds.is_empty() {
+        return Vec::new();
+    }
+    let Ok(graph) = aden_graph::cache::build_from_directory_cached(path) else {
+        return Vec::new();
+    };
+    let mut candidates: std::collections::BTreeMap<String, (usize, usize, Vec<String>)> =
+        Default::default();
+    for seed in seeds {
+        let Some(index) = graph.get_index(&seed.anchor) else {
+            continue;
+        };
+        if graph.graph[index].doc.node_type != NodeType::Function {
+            continue;
+        }
+        let mut callers: Vec<_> = graph
+            .graph
+            .edges_directed(index, Direction::Incoming)
+            .filter(|edge| edge.weight().edge_type == EdgeType::Calls)
+            .map(|edge| edge.source())
+            .collect();
+        callers.sort_by(|a, b| graph.graph[*a].doc.anchor.cmp(&graph.graph[*b].doc.anchor));
+        callers.dedup();
+        for caller in callers.into_iter().take(32) {
+            let doc = &graph.graph[caller].doc;
+            if doc.node_type != NodeType::Function
+                || is_test_anchor(&doc.anchor)
+                || doc.anchor == seed.anchor
+            {
+                continue;
+            }
+            let source = doc.attributes.get("source_file");
+            if source.is_some_and(|s| is_test_source_path(s)) {
+                continue;
+            }
+            // A wrapper with one outgoing operation provides no evidence of a choice.
+            let targets: HashSet<_> = graph
+                .graph
+                .edges_directed(caller, Direction::Outgoing)
+                .filter(|edge| edge.weight().edge_type == EdgeType::Calls)
+                .map(|edge| edge.target())
+                .collect();
+            if targets.len() < 2 {
+                continue;
+            }
+            let row = candidates.entry(doc.anchor.clone()).or_default();
+            row.0 += 1;
+            row.1 += usize::from(
+                doc.anchor.split_once('#').map(|v| v.0) == seed.anchor.split_once('#').map(|v| v.0),
+            );
+            row.2.push(seed.anchor.clone());
+        }
+    }
+    let mut ranked: Vec<_> = candidates.into_iter().collect();
+    ranked.sort_by(|a, b| {
+        b.1.0
+            .cmp(&a.1.0)
+            .then_with(|| b.1.1.cmp(&a.1.1))
+            .then_with(|| a.0.cmp(&b.0))
+    });
+    let Some((caller, (_, _, operations))) = ranked.into_iter().next() else {
+        return Vec::new();
+    };
+    std::iter::once(caller).chain(operations).take(3).collect()
+}
+
 fn exact_symbol_anchors(idx: &aden_index::Index, question: &str) -> Vec<String> {
     let definition_lookup = is_definition_lookup(question);
     let candidates: Vec<String> = if let Some(symbol) = explicit_symbol_token(question) {
@@ -1070,7 +1186,7 @@ fn resolve_anchor_fuzzy_with_reason(
     // test-file symbol must not win here just because its name echoes a query
     // word; it falls through to the relaxation fallback if nothing better exists.
     let symbol_token_match = |result: &SearchResult| -> bool {
-        if is_test_result(result) {
+        if is_test_result(result) || AnchorPattern::is_prose_doc(&result.anchor) {
             return false;
         }
         // A generic word that happens to occur in a symbol name must not
@@ -1086,7 +1202,7 @@ fn resolve_anchor_fuzzy_with_reason(
         {
             return false;
         }
-        let Some(sym) = result.anchor.rsplit('#').next() else {
+        let Some((_, sym)) = result.anchor.split_once('#') else {
             return false;
         };
         if sym.len() < 3 {
@@ -1617,7 +1733,7 @@ pub fn cmd_asm(opts: AsmOptions) -> Result<(), Box<dyn std::error::Error>> {
 /// narrower than "semantic": authored conceptual edges (`Mentions`, `IsA`,
 /// `PartOf`) are semantic but NOT inferred, so they read as hard facts here.
 /// Purely additive: only inserts keys, so existing JSON consumers are unaffected.
-fn annotate_edge_provenance(node: &mut serde_json::Value, via: &[aden_core::EdgeType]) {
+pub(crate) fn annotate_edge_provenance(node: &mut serde_json::Value, via: &[aden_core::EdgeType]) {
     if let Some(obj) = node.as_object_mut() {
         let names: Vec<serde_json::Value> = via
             .iter()
@@ -2841,7 +2957,22 @@ pub fn cmd_ask(
         // that intentional bypass, not a near-tie — so the user-facing note must
         // not cry "ambiguous".
         let mut overview_promoted = false;
-        let mut primary = if overview {
+        let usage_document = if matches!(intent, QueryIntent::Usage) && exact_anchors.is_empty() {
+            // Rank within the retrieved prose candidates. Numerous matching
+            // code symbols must not crowd usage documentation out of a mixed
+            // top-ten window (for example Flask's logging guide).
+            results
+                .iter()
+                .find(|result| AnchorPattern::is_prose_doc(&result.anchor))
+        } else {
+            None
+        };
+        let usage_promoted = usage_document.is_some();
+        let mut primary = if let Some(document) = usage_document {
+            xp.decision =
+                "explicit usage intent selected a retrieved documentation candidate".to_string();
+            document.anchor.clone()
+        } else if overview {
             // Cross-reference in-degree only participates in project-identity
             // tie-breaking. Other overview questions trust BM25's top in-band
             // prose result, so scanning every edge would add work with no
@@ -2899,7 +3030,7 @@ pub fn cmd_ask(
                 }
                 let fragment = anchor.rsplit('#').next().unwrap_or(&anchor).to_lowercase();
                 let overlap = fragment
-                    .split(|c: char| !c.is_alphanumeric() && c != '_')
+                    .split(|c: char| !c.is_alphanumeric())
                     .filter(|t| question_terms.contains(*t))
                     .count();
                 let edge_bonus = graph
@@ -2911,8 +3042,12 @@ pub fn cmd_ask(
                         _ => 0,
                     })
                     .unwrap_or(0);
-                let score = overlap * 3 + edge_bonus;
-                if best.as_ref().is_none_or(|(top, _)| score > *top) {
+                let score = prose_bridge_score(overlap, edge_bonus);
+                if score > 0
+                    && best.as_ref().is_none_or(|(top, previous)| {
+                        score > *top || (score == *top && anchor < *previous)
+                    })
+                {
                     best = Some((score, anchor));
                 }
             }
@@ -3021,7 +3156,15 @@ pub fn cmd_ask(
         } else {
             Vec::new()
         };
-        let facet_seeds = if !prose_facet_seeds.is_empty() {
+        let selection_seeds = if !precise_routed && is_selection_implementation_query(question) {
+            selection_caller_seeds(path, &results)
+        } else {
+            Vec::new()
+        };
+        let selection_routed = !selection_seeds.is_empty();
+        let facet_seeds = if selection_routed {
+            selection_seeds
+        } else if !prose_facet_seeds.is_empty() {
             prose_facet_seeds
         } else if precise_routed {
             Vec::new()
@@ -3031,10 +3174,14 @@ pub fn cmd_ask(
         let evidence_routed = facet_seeds.len() >= 2;
         let alts = if evidence_routed {
             primary = facet_seeds[0].clone();
-            xp.decision = format!(
-                "deterministic evidence-role routing across {} facets",
-                facet_seeds.len()
-            );
+            xp.decision = if selection_routed {
+                "bounded caller exploration for an implementation-selection question".to_string()
+            } else {
+                format!(
+                    "deterministic evidence-role routing across {} facets",
+                    facet_seeds.len()
+                )
+            };
             let mut a: Vec<String> = facet_seeds.into_iter().skip(1).take(2).collect();
             if let Some(bridge) = prose_bridge
                 && !a.contains(&bridge)
@@ -3070,6 +3217,11 @@ pub fn cmd_ask(
                 "// note: evidence-role routing selected {} distinct source facets.",
                 alts.len() + 1
             ))
+        } else if usage_promoted {
+            Some(
+                "// note: usage intent selected documentation; showing supporting evidence."
+                    .to_string(),
+            )
         } else if overview_promoted {
             Some(format!(
                 "// note: overview routing chose a prose doc over {} in-band result(s) \
@@ -3161,7 +3313,7 @@ pub fn cmd_ask(
         format!("{:?}", intent)
     };
 
-    if explain && !strict {
+    if explain && !strict && !json_output {
         println!(
             "// Strategy: {} | Depth: {} | Edges: {:?}",
             strategy_label,
@@ -4123,6 +4275,42 @@ pub fn cmd_watch(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn selection_routing_requires_implementation_and_alternatives() {
+        for question in [
+            "Where does Engine choose between fast and safe search?",
+            "Which function decides whether to use buffered output?",
+            "How does Engine switch between workers?",
+        ] {
+            assert!(is_selection_implementation_query(question), "{question}");
+        }
+        for question in [
+            "How do I choose between fast and safe search?",
+            "Which flag selects between modes?",
+            "Where does the guide explain whether to select a mode?",
+            "Where is select_backend defined?",
+            "How does Engine search files?",
+        ] {
+            assert!(!is_selection_implementation_query(question), "{question}");
+        }
+    }
+
+    #[test]
+    fn prose_bridges_require_query_overlap_or_explicit_documentation() {
+        assert_eq!(prose_bridge_score(0, 0), 0);
+        assert_eq!(prose_bridge_score(0, 1), 0);
+        assert!(prose_bridge_score(1, 0) > 0);
+        assert!(prose_bridge_score(0, 2) > 0);
+    }
+
+    #[test]
+    fn repository_name_in_document_uri_is_not_a_symbol_match() {
+        let results = [result("aden://doc/demo/GUIDE.md/overview", 100.0)];
+        let (_, reason) =
+            resolve_anchor_fuzzy_with_reason("How does demo work?", &results, |_| 200);
+        assert!(!reason.contains("symbol name"), "{reason}");
+    }
     use crate::types::QueryIntent;
 
     #[test]

@@ -14,7 +14,7 @@
 //!   • Dynamic imports `import('./path')`
 
 use crate::extractor::{
-    LanguageExtractor, build_code_attributes, infer_project_name, infer_project_root, make_anchor,
+    CodeSource, LanguageExtractor, infer_project_name, infer_project_root, make_anchor,
     project_relative_file,
 };
 use aden_core::{Block, Document, NodeType, Parameter, Result};
@@ -68,10 +68,17 @@ impl LanguageExtractor for TypeScriptResolver {
         walk_program(tree.root_node(), source, &mut symbols, &mut imports);
 
         let mut docs = Vec::new();
+        let file_source = CodeSource::new(source, path);
         for sym in &symbols {
-            if let Some(doc) =
-                emit_ts_symbol(sym, source, path, &symbols, &imports, &proj_name, file_name)
-            {
+            if let Some(doc) = emit_ts_symbol(
+                sym,
+                source,
+                &file_source,
+                &symbols,
+                &imports,
+                &proj_name,
+                file_name,
+            ) {
                 docs.push(doc);
             }
         }
@@ -536,20 +543,15 @@ fn extract_ts_doc_comment(node: tree_sitter::Node, source: &str) -> Option<Strin
 fn emit_ts_symbol<'a>(
     sym: &TsSymbol<'a>,
     source: &str,
-    path: &Path,
+    file_source: &CodeSource<'_>,
     all_symbols: &[TsSymbol<'a>],
     imports: &[TsImport],
     proj_name: &str,
     file_name: &str,
 ) -> Option<Document> {
     let anchor = make_anchor(proj_name, file_name, &sym.name);
-    let span = node_to_span(sym.node, path);
-    let attrs = build_code_attributes(
-        source,
-        &format!("{:?}", sym.kind).to_lowercase(),
-        Some(path),
-        Some(&span),
-    );
+    let span = node_to_span(sym.node, file_source.path);
+    let attrs = file_source.attributes(&format!("{:?}", sym.kind).to_lowercase(), &span);
     let mut blocks = Vec::new();
 
     if sym.is_export {
@@ -645,6 +647,18 @@ fn emit_ts_symbol<'a>(
         }
     }
 
+    let mut ancestor = sym.node.parent();
+    while let Some(node) = ancestor {
+        if let Some(owner) = all_symbols.iter().find(|candidate| candidate.node == node) {
+            blocks.push(Block::Listing {
+                language: None,
+                code: format!("edge::member_of[{}]", owner.name),
+            });
+            break;
+        }
+        ancestor = node.parent();
+    }
+
     // Resolve call sites. Methods are named `Class.method`; the part before the
     // last `.` is the enclosing class, used to resolve `this.x()` → `Class.x`.
     let enclosing_class = if sym.node.kind() == "arrow_function" {
@@ -728,6 +742,34 @@ fn resolve_ts_call_sites<'a>(
     let mut calls = Vec::new();
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
+        if matches!(
+            child.kind(),
+            "method_definition"
+                | "class_declaration"
+                | "class"
+                | "function_declaration"
+                | "function"
+                | "function_expression"
+                | "arrow_function"
+        ) && all_symbols.iter().any(|symbol| symbol.node == child)
+        {
+            // Separately indexed methods, functions, and classes own their
+            // calls. Anonymous callbacks still contribute to their enclosing
+            // symbol until the graph has a distinct owner for them.
+            if child.kind() == "method_definition"
+                && let Some(name) = child.child_by_field_name("name")
+                && name.kind() == "computed_property_name"
+            {
+                calls.extend(resolve_ts_call_sites(
+                    name,
+                    source,
+                    all_symbols,
+                    imports,
+                    enclosing_class,
+                ));
+            }
+            continue;
+        }
         calls.extend(resolve_ts_call_sites(
             child,
             source,

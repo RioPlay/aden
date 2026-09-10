@@ -364,20 +364,37 @@ pub fn read_index_stale(path: &Path) -> bool {
     index_is_stale(path)
 }
 
-/// Best-effort freshness classification for JSON envelopes.
-pub fn classify_freshness(path: &Path) -> Freshness {
+/// One observation supplies both the classification and its receipt. Re-reading
+/// the entire tree for each field doubled output-time I/O on large projects and
+/// could attach a different source fingerprint to the classification.
+fn observe_freshness(path: &Path) -> (Freshness, ContextReceipt) {
     let root = find_project_root(path);
     let (store, _) = aden_paths::resolve_read_store(&root);
-    if !store.exists() {
-        return Freshness::Building;
-    }
-    if index_is_stale_for_root(&root) {
+    let manifest = load_manifest(&root);
+    let observed = source_fingerprint(&root).ok();
+    let current = manifest.as_ref().is_some_and(|manifest| {
+        manifest_policy_is_current(manifest)
+            && observed.as_ref() == Some(&manifest.source_fingerprint)
+    });
+    let freshness = if !store.exists() {
+        Freshness::Building
+    } else if !current {
         if aden_paths::graph_snapshot_file(&root).is_file() {
-            return Freshness::Lagging;
+            Freshness::Lagging
+        } else {
+            Freshness::Snapshot
         }
-        return Freshness::Snapshot;
-    }
-    Freshness::Current
+    } else {
+        Freshness::Current
+    };
+    let receipt = ContextReceipt::new()
+        .with_freshness(freshness.into())
+        .with_revision(
+            manifest.map(|m| m.graph_revision),
+            observed,
+            refresh_cause(),
+        );
+    (freshness, receipt)
 }
 
 /// Add legacy freshness fields and the versioned Context Receipt to read JSON.
@@ -388,9 +405,9 @@ pub fn classify_freshness(path: &Path) -> Freshness {
 /// future fields cannot collide with payload fields.
 /// Bare arrays retain the established `items` wrapper.
 pub fn augment_read_json(path: &Path, value: serde_json::Value) -> serde_json::Value {
-    let freshness = classify_freshness(path);
+    let (freshness, receipt) = observe_freshness(path);
     let stale = freshness != Freshness::Current;
-    augment_read_json_for_root(Some(path), stale, freshness, value)
+    augment_read_json_for_root(Some(receipt), stale, freshness, value)
 }
 
 #[cfg(test)]
@@ -403,7 +420,7 @@ fn augment_read_json_with_freshness(
 }
 
 fn augment_read_json_for_root(
-    path: Option<&Path>,
+    receipt: Option<ContextReceipt>,
     stale: bool,
     freshness: Freshness,
     value: serde_json::Value,
@@ -424,19 +441,8 @@ fn augment_read_json_for_root(
         // changing its shape would be a breaking migration. Aden-generated
         // read envelopes reserve this namespace and therefore receive v1.
         map.entry("context_receipt").or_insert_with(|| {
-            let root = path.map(find_project_root);
-            let manifest = root.as_deref().and_then(load_manifest);
-            let observed = root
-                .as_deref()
-                .and_then(|root| source_fingerprint(root).ok());
             serde_json::to_value(
-                ContextReceipt::new()
-                    .with_freshness(freshness.into())
-                    .with_revision(
-                        manifest.map(|m| m.graph_revision),
-                        observed,
-                        refresh_cause(),
-                    ),
+                receipt.unwrap_or_else(|| ContextReceipt::new().with_freshness(freshness.into())),
             )
             .expect("ContextReceipt always serializes")
         });

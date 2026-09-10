@@ -45,6 +45,7 @@ pub use nodes::aden::{AdenEdge, DocumentNode};
 pub use nodes::{GraphEdge, GraphNode};
 pub use petgraph::Direction;
 pub use petgraph::graph::NodeIndex;
+pub use petgraph::visit::EdgeRef;
 pub use ppr::personalized_pagerank;
 
 #[cfg(test)]

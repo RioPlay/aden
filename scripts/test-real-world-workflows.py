@@ -5,8 +5,8 @@
 
 Use clean checkouts named flask, express, and ripgrep under --root. The report
 records their commits. Index state is isolated, and a temporary Flask edit is
-restored byte-for-byte. No upstream code is executed. Conceptual routing misses
-are observations, not suppressed failures; mechanical contracts fail the run.
+restored byte-for-byte. No upstream code is executed. Established conceptual
+queries are regression gates; new usage probes remain explicit observations.
 """
 import argparse
 from datetime import datetime, timezone
@@ -31,6 +31,11 @@ EXPECTED_BACKLINKS = {
     "flask": {"/src/flask/app.py#Flask.wsgi_app"},
     "express": {"/lib/response.js#res.send"},
     "ripgrep": {"/crates/core/main.rs#run", "/crates/core/index/enabled.rs#read"},
+}
+USAGE_QUESTIONS = {
+    "flask": "How do I configure logging in Flask?",
+    "express": "How do I install Express?",
+    "ripgrep": "How do I choose between parallel and single-threaded search in ripgrep?",
 }
 
 
@@ -88,8 +93,14 @@ def main():
     parser.add_argument("--root", required=True, type=Path)
     parser.add_argument("--aden-bin", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--large-repo", type=Path, help="Optional additional clean checkout for a scalability smoke test")
+    parser.add_argument("--large-symbol", default="DisposableStore", help="Known unique symbol in --large-repo")
+    parser.add_argument("--large-source", help="Expected project-relative definition file when the symbol is ambiguous")
     args = parser.parse_args()
     root, binary = args.root.resolve(), args.aden_bin.resolve()
+    repo_paths = {name: root/name for name in REPOS}
+    if args.large_repo:
+        repo_paths["large"] = args.large_repo.resolve()
     args.output.parent.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix="aden-trial-", dir=args.output.parent))
     env = dict(os.environ, ADEN_DATA_DIR=str(work / "data"))
@@ -107,8 +118,19 @@ def main():
         print(f"{repo}: {name}: {'PASS' if passed else 'MISS'}", flush=True)
     def run(repo, label, *command):
         started = time.perf_counter()
-        result = subprocess.run([str(binary), *command], cwd=root/repo, env=env,
-                                capture_output=True, timeout=180)
+        try:
+            result = subprocess.run([str(binary), *command], cwd=repo_paths[repo], env=env,
+                                    capture_output=True, timeout=900 if label == "large-gen" else 180)
+        except subprocess.TimeoutExpired as error:
+            report["repositories"][repo]["runs"][label] = dict(
+                command=list(command), seconds=round(time.perf_counter()-started, 3),
+                returncode=None, timed_out=True,
+                stdout=(error.stdout or b"").decode("utf-8", "replace"),
+                stderr=(error.stderr or b"").decode("utf-8", "replace"),
+            )
+            check(repo, f"{label} completes within its time limit", False)
+            save()
+            raise
         record = dict(command=list(command), seconds=round(time.perf_counter()-started, 3),
                       bytes=len(result.stdout), returncode=result.returncode,
                       stderr=result.stderr.decode("utf-8", "replace"))
@@ -122,7 +144,7 @@ def main():
             raise RuntimeError((repo, command, record))
         return record["output"]
     def git(repo, *command):
-        return subprocess.check_output(["git", "-C", str(root/repo), *command]).decode("utf-8").strip()
+        return subprocess.check_output(["git", "-C", str(repo_paths[repo]), *command]).decode("utf-8").strip()
     try:
         for repo, (symbol, question, conceptual_target) in REPOS.items():
             before = git(repo, "status", "--porcelain=v1", "--untracked-files=all")
@@ -136,15 +158,21 @@ def main():
                 located = run(repo, f"locate-{iteration}", "locate", symbol)
                 check(repo, f"exact definition {iteration+1}", located.get("resolution", {}).get("anchor", "").endswith("#"+expected))
             record["warm_locate_median_seconds"] = statistics.median(record["runs"][f"locate-{i}"]["seconds"] for i in range(3))
-            answer = run(repo, "named-ask", "ask", f"Where is {symbol} defined?")
+            answer = run(repo, "named-ask", "ask", f"Where is {symbol} defined?", "--json", "--explain")
             check(repo, "named question resolves implementation", (answer.get("anchor") or "").endswith("#"+expected))
             conceptual = run(repo, "conceptual-ask", "ask", question)
-            check(repo, "conceptual question resolves implementation", (conceptual.get("anchor") or "").endswith("#"+conceptual_target), required=False)
+            check(repo, "conceptual question resolves implementation", (conceptual.get("anchor") or "").endswith("#"+conceptual_target))
+            usage = run(repo, "usage-ask", "ask", USAGE_QUESTIONS[repo])
+            check(repo, "usage question routes to documentation", (usage.get("anchor") or "").startswith("aden://doc/"), required=False)
             understood = run(repo, "understand", "understand", symbol)
             backlinks = [item.get("anchor", "") for item in understood.get("backlinks", [])]
             check(repo, "relationship context includes source-verified callers",
                   all(any(anchor.endswith(suffix) for anchor in backlinks)
                       for suffix in EXPECTED_BACKLINKS[repo]))
+            if repo == "flask":
+                callers = run(repo, "direct-callers", "locate", "--caller-of", symbol)
+                check(repo, "class is not reported as its method's caller",
+                      not any(item.get("anchor", "").endswith("#Flask") for item in callers.get("items", [])))
             missing = run(repo, "missing", "ask", "Where is aden_nonexistent_validation_symbol defined?")
             check(repo, "missing definition fails small", missing.get("anchor") is None and missing.get("result_state") == "empty")
             started = time.perf_counter()
@@ -173,6 +201,43 @@ def main():
         restored = run("flask", "freshness-restore", "locate", "aden_validation_added_symbol")
         check("flask", "ordinary read prunes restored symbol", restored.get("resolution", {}).get("state") == "not_found" and restored.get("freshness") == "current")
         check("flask", "edit restored byte-for-byte", source.read_bytes() == original and not git("flask", "status", "--porcelain=v1", "--untracked-files=all"))
+
+        if args.large_repo:
+            if git("large", "status", "--porcelain=v1", "--untracked-files=all"):
+                raise RuntimeError("use a clean large checkout")
+            large = report["repositories"]["large"] = dict(
+                path=str(repo_paths["large"]), commit=git("large", "rev-parse", "HEAD"),
+                tracked_files=len(git("large", "ls-files").splitlines()), runs={},
+            )
+            # Explicit generation is appropriate for this large external clone.
+            run("large", "large-gen", "gen")
+            outline = run("large", "tree", "tree", "--symbols")
+            check("large", "indexed outline is current and bounded", outline.get("freshness") == "current" and outline.get("truncated") is True)
+            for iteration in range(3):
+                located = run("large", f"locate-{iteration}", "locate", args.large_symbol)
+                if args.large_source:
+                    definitions = [item for item in located.get("items", [])
+                                   if item.get("file", "").replace("\\", "/") == args.large_source.replace("\\", "/")
+                                   and item.get("anchor", "").endswith("#" + args.large_symbol)]
+                    expected_anchor = definitions[0]["anchor"] if len(definitions) == 1 else None
+                    resolution = located.get("resolution", {})
+                    resolved = expected_anchor is not None and (
+                        resolution.get("anchor") == expected_anchor or
+                        expected_anchor in resolution.get("candidates", []))
+                else:
+                    expected_anchor = located.get("resolution", {}).get("anchor")
+                    resolved = located.get("resolution", {}).get("state") == "unique"
+                check("large", f"expected definition {iteration+1}", resolved)
+            large["warm_locate_median_seconds"] = statistics.median(large["runs"][f"locate-{i}"]["seconds"] for i in range(3))
+            pin = ("--from", expected_anchor) if args.large_source and expected_anchor else ()
+            answer = run("large", "named-ask", "ask", f"Where is {args.large_symbol} defined?", "--json", "--explain", *pin)
+            check("large", "named question matches exact definition", expected_anchor is not None and answer.get("anchor") == expected_anchor)
+            started = time.perf_counter()
+            large["mcp"] = mcp_locate(binary, repo_paths["large"], env, expected_anchor or args.large_symbol)
+            large["mcp"]["seconds"] = round(time.perf_counter()-started, 3)
+            check("large", "MCP matches exact definition", expected_anchor is not None and large["mcp"]["output"].get("resolution", {}).get("anchor") == expected_anchor)
+            check("large", "checkout unchanged", not git("large", "status", "--porcelain=v1", "--untracked-files=all"))
+            save()
     finally:
         save()
     failures = [c for c in report["checks"] if c["required"] and not c["passed"]]

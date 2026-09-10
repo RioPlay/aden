@@ -84,7 +84,7 @@ fn long_version_reports_reproducible_build_identity_and_formats() {
     assert!(version.contains("Features:"), "{version}");
     assert!(version.contains("snapshot-v1"), "{version}");
     assert!(version.contains("index-layout-v3"), "{version}");
-    assert!(version.contains("gen-logic-v13"), "{version}");
+    assert!(version.contains("gen-logic-v14"), "{version}");
     assert!(version.contains("symbol-lexicon-v2"), "{version}");
     assert!(
         !version.contains("Built at:"),
@@ -314,6 +314,160 @@ fn test_ask_returns_context() {
         "Should mention module-a and its body in the default agent response. stdout:\n{}",
         stdout
     );
+}
+
+#[test]
+fn class_members_remain_reachable_without_becoming_aggregate_callers() {
+    for (filename, source) in [
+        (
+            "app.py",
+            "def leaf():\n    return 1\nclass Example:\n    def method(self):\n        return leaf()\n",
+        ),
+        (
+            "app.ts",
+            "function leaf() { return 1; }\nclass Example { method() { return leaf(); } }\n",
+        ),
+    ] {
+        let dir = temp_project::temp_dir();
+        std::fs::write(dir.join(filename), source).unwrap();
+        let run = |args: &[&str]| {
+            let output = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
+                .args(args)
+                .arg(&dir)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap()
+        };
+        let callers = run(&["locate", "--caller-of", "leaf"]);
+        let items = callers["items"].as_array().unwrap();
+        assert_eq!(items.len(), 1, "{filename}: {callers}");
+        assert!(
+            items[0]["anchor"]
+                .as_str()
+                .unwrap()
+                .ends_with("#Example.method"),
+            "{callers}"
+        );
+        let context = run(&[
+            "query",
+            "--from",
+            "Example",
+            "--depth",
+            "1",
+            "--edge-type",
+            "Contains",
+        ]);
+        assert!(
+            context["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["anchor"]
+                    .as_str()
+                    .unwrap_or("")
+                    .ends_with("#Example.method")),
+            "{filename}: {context}"
+        );
+    }
+}
+
+#[test]
+fn selection_questions_follow_callers_without_stealing_usage_questions() {
+    let dir = temp_project::temp_dir();
+    std::fs::write(
+        dir.join("search.rs"),
+        r#"
+/// Fast search scans files with concurrent workers.
+fn fast_search() { println!("fast"); }
+/// Safe search scans files with a single worker.
+fn safe_search() { println!("safe"); }
+fn choose_backend(fast: bool) { if fast { fast_search(); } else { safe_search(); } }
+fn wrapper() { fast_search(); }
+"#,
+    )
+    .unwrap();
+    std::fs::write(dir.join("README.md"), "# Choosing search modes\n\nTo choose between fast and safe search in Demo, use the fast or safe search setting. Fast search uses concurrent workers; safe search uses one worker. Choose fast search for speed and safe search for stable ordering.\n").unwrap();
+    for (question, implementation) in [
+        ("Where does Demo choose between fast and safe search?", true),
+        ("How do I choose between fast and safe search?", false),
+    ] {
+        if !implementation {
+            // Code matches must not crowd usage prose out of the mixed top ten.
+            let distractors: String = (0..12)
+                .map(|i| {
+                    format!(
+                        "/// Choose between fast and safe search.\nfn fast_safe_search_{i}() {{}}\n"
+                    )
+                })
+                .collect();
+            std::fs::write(dir.join("modes.rs"), distractors).unwrap();
+        }
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
+            .args(["ask", question, &dir.to_string_lossy(), "--explain"])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let payload: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        let anchor = payload["anchor"].as_str().unwrap();
+        if implementation {
+            assert!(anchor.ends_with("#choose_backend"), "{payload}");
+            assert!(
+                payload["supporting_anchors"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|v| v.as_str().unwrap_or("").ends_with("#fast_search")),
+                "{payload}"
+            );
+        } else {
+            assert!(anchor.contains("/README.md/"), "{payload}");
+        }
+    }
+}
+
+#[test]
+fn ask_explain_keeps_json_parseable() {
+    let dir = temp_project::temp_dir();
+    std::fs::write(
+        dir.join("app.py"),
+        "def process_request():\n    return 'response'\n",
+    )
+    .unwrap();
+    for flags in [
+        vec!["--explain"],
+        vec!["--json", "--explain"],
+        vec!["--json", "--explain", "--strict"],
+    ] {
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
+            .args([
+                "ask",
+                "Where is process_request defined?",
+                &dir.to_string_lossy(),
+            ])
+            .args(flags)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let payload: serde_json::Value =
+            serde_json::from_slice(&output.stdout).unwrap_or_else(|error| {
+                panic!(
+                    "invalid JSON: {error}: {}",
+                    String::from_utf8_lossy(&output.stdout)
+                )
+            });
+        assert!(payload["explain"].is_object(), "{payload}");
+        assert!(
+            payload["anchor"]
+                .as_str()
+                .unwrap()
+                .ends_with("#process_request")
+        );
+    }
 }
 
 #[test]

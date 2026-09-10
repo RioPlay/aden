@@ -909,17 +909,9 @@ pub fn cmd_ci_check(path: &Path, json: bool) -> Result<(), Box<dyn std::error::E
                 Ok(())
             } else {
                 let stderr = String::from_utf8_lossy(&output.stderr);
-                if stderr.contains("not found") || stderr.contains("No such file") {
-                    Err(Box::<dyn std::error::Error>::from(
-                        "cargo audit not installed. Install with: cargo install cargo-audit"
-                            .to_string(),
-                    ))
-                } else {
-                    Err(Box::<dyn std::error::Error>::from(format!(
-                        "cargo audit found vulnerabilities:\n{}",
-                        stderr
-                    )))
-                }
+                Err(Box::<dyn std::error::Error>::from(
+                    cargo_audit_failure_message(&stderr),
+                ))
             }
         }
     });
@@ -1035,9 +1027,36 @@ pub fn cmd_ci_check(path: &Path, json: bool) -> Result<(), Box<dyn std::error::E
     Ok(())
 }
 
+fn cargo_audit_failure_message(stderr: &str) -> String {
+    if stderr.contains("no such command: `audit`") || stderr.contains("no such subcommand: `audit`")
+    {
+        "cargo audit is unavailable. Install it with: cargo install cargo-audit".to_string()
+    } else {
+        // Network, configuration, and advisory findings can all produce a
+        // nonzero status. Preserve the evidence without inventing a finding.
+        format!("cargo audit failed:\n{stderr}")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn audit_errors_distinguish_missing_tool_from_audit_failures() {
+        assert!(
+            cargo_audit_failure_message("error: no such command: `audit`").contains("unavailable")
+        );
+        let network =
+            cargo_audit_failure_message("advisory database not found: network unavailable");
+        assert!(network.starts_with("cargo audit failed:"));
+        assert!(!network.contains("Install it"));
+        assert!(!network.contains("vulnerabilities"));
+        assert!(
+            cargo_audit_failure_message("1 vulnerability found: RUSTSEC-example")
+                .contains("RUSTSEC-example")
+        );
+    }
 
     #[test]
     fn long_hex_secret_filter_drops_alpha_identifiers_keeps_hex() {

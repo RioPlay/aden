@@ -12,7 +12,8 @@ fixes accompany this report.
 
 Run on Windows on 2026-09-09 UTC (2026-09-08/09 locally), starting with Aden 0.4.1
 at Git commit `1f0163410488cc6d4e0b3b02df96f1d2d316c0e3`, generation logic version 12.
-The corrected build uses generation logic version 13.
+The first corrected build uses generation logic version 13. The follow-up below
+uses version 14 and includes a larger checkout.
 
 [cols="1,1,3,1",options="header"]
 |===
@@ -61,7 +62,7 @@ Implementation and caller expectations were checked against upstream source.
 [[real-world-validation-results]]
 == Results and limits
 
-The corrected build passed all 33 required workflow checks. Two of the three
+The version-13 build passed all 33 required workflow checks. Two of the three
 conceptual questions reached the expected implementation; the remaining miss
 is described below. No upstream files were left modified.
 
@@ -94,16 +95,99 @@ The views opened dark, loaded no external resources, and rendered bounded local
 neighborhoods without a force simulation. Express interactions were verified
 through DOM clicks after the browser automation click transport proved unreliable.
 
-Conceptual retrieval remains uneven: the question asking where ripgrep chooses
+Version 13's conceptual retrieval was uneven: the question asking where ripgrep chooses
 parallel versus single-threaded search routes to the guide, not the implementation
-in `run`. Naming `search_parallel` succeeds. This miss remains visible in the
-harness; it is not counted as a mechanical success.
+in `run`. Naming `search_parallel` succeeded. The follow-up fixes this miss and
+promotes the three established implementation questions to required regressions.
 
-Call relationships are heuristic. Flask's caller output includes the containing
+Call relationships are heuristic. Version 13's Flask caller output included the containing
 class aggregate as well as the actual `wsgi_app` method, and deeper dynamic-call
 resolution can add noise. These results support navigation, not compiler-precise
 proof of exhaustive callers or safe deletion. Computed JavaScript properties and
 dynamic aliases are also outside the direct-assignment fix.
+
+[[real-world-validation-follow-up]]
+== Correctness and scale follow-up
+
+The follow-up on 2026-09-10 UTC (2026-09-09 locally) addresses the next failures
+observed while using the tool:
+
+* `ask --json --explain` now emits valid JSON without a human strategy header.
+* Implementation-selection questions can follow a bounded set of direct callers
+  above retrieved operations. Ripgrep's choice between parallel and single-threaded
+  search now reaches `run`. This is a navigation heuristic, not proof that a
+  function contains the relevant branch. Exact names still take precedence.
+* Explicit usage questions prefer retrieved documentation. Matching code symbols
+  no longer crowd Flask's logging guide out of a mixed top-ten window. A document
+  URI's repository name is no longer mistaken for a symbol-name match, and weak
+  prose relationships need query overlap before promoting a code neighbor.
+* Python and TypeScript named nested definitions own their call sites. Classes
+  retain initialization calls and connect to members through `Contains`, without
+  inheriting calls from method bodies. Unindexed anonymous callbacks remain
+  conservatively attributed to the enclosing symbol. `understand` backlinks now
+  label their relationship types, including parallel relationships.
+* Missing `cargo audit` is reported as unavailable. Other audit failures preserve
+  the actual diagnostic instead of claiming that every failure found vulnerabilities.
+* Ignore rules treat dots literally. The old `.vs/` rule also excluded `vs/`,
+  silently omitting VS Code's main source tree. Regression cases cover Windows
+  and slash-separated paths while retaining the actual editor-directory exclusion.
+* A freshness classification and its receipt share one content observation,
+  removing a redundant full-tree read and keeping their evidence consistent.
+  Equal-sized edits and timestamp-preserving rewrites still use content checks.
+* Python and TypeScript reuse one source hash per parser input. Previously,
+  symbol metadata reopened and hashed the complete file for every symbol.
+  VS Code's 8.5 MB `test-checker.ts` fixture alone has 6,815 symbols, causing
+  approximately 58 GB of repeated file reads. Reuse also keeps the metadata
+  hash tied to the actual parsed buffer when it differs from disk.
+
+The larger checkout is https://github.com/microsoft/vscode[VS Code], with 18,732
+tracked files at Git commit `a0a429cd4ac624c0add568597f00b052c225ae56`.
+The initial scale trial indexed only 3,555 code files / 38,640 symbols in 207.31 s
+because of the ignore bug. Its warm lookup median was 10.24 s, and the central
+`src/vs/base/common/lifecycle.ts` definition was absent. These failed results are
+retained; they are not a successful large-repository baseline.
+
+`DisposableStore` has several real definitions in this checkout. The corrected
+scale workflow checks that the expected source definition is among the explicit
+candidates, then pins its anchor for the question and MCP lookup. It does not
+count an ambiguous name as unique or compare two missing anchors as a success.
+
+With discovery fixed, the full checkout reports 11,937 code files / 173,664
+symbols and 208,068 stored contracts. Cold `gen` took 493.46 s before hash reuse
+and 143.62 s afterward, with the same contract count and 186,981 linked internal
+calls. The final run passes all 44 required checks across the four repositories
+and all three usage-routing observations. This is a single-machine comparison
+with uncontrolled cache and background load, not a guaranteed speedup.
+
+Large-project read startup remains the next performance target. The first outline
+after generation took 60.51 s; subsequent exact-name lookups had a 12.83 s median,
+the pinned question took 19.05 s, and fresh-process MCP lookup took 14.47 s.
+The outline is explicitly truncated. These measurements validate bounded
+navigation on this checkout, not complete call resolution or instant monorepo
+responses. Further work should profile source verification and read-index loading
+before introducing persistent caching or changing freshness guarantees.
+
+The final small-project rerun passes all 37 required checks and all three new
+usage-routing observations. Each implementation question reaches its expected
+source; Flask logging, Express installation, and ripgrep search-mode usage reach
+documentation. No upstream files remain modified.
+
+[cols="1,1,1,1",options="header"]
+|===
+|Project |Cold index + tree |Warm locate median |Fresh-process MCP locate
+|Flask |5.35 s |0.52 s |0.61 s
+|Express |3.31 s |0.42 s |0.51 s
+|ripgrep |9.91 s |0.80 s |0.61 s
+|===
+
+The timing samples are observations from this machine, not a controlled speedup
+measurement. Background compilation and filesystem caching vary between trials.
+
+The updated Flask simple export was also used in the browser: dispatch shows
+`wsgi_app` through `Calls` and the containing class through `Contains`. Hiding
+structural relationships leaves the callable neighborhood intact; `/` focuses
+search and the page opens dark. This does not certify browser performance on the
+entire VS Code graph.
 
 [[real-world-validation-reproduce]]
 == Reproduce
@@ -118,5 +202,13 @@ python scripts/test-real-world-workflows.py --root <checkouts> --aden-bin <aden-
 
 The JSON report retains binary version and hash, platform, upstream commits,
 wall-clock timings, raw CLI and MCP receipts, every check, and exported-view paths.
-Required mechanical failures exit nonzero. Conceptual routing misses are retained
-separately. Temporary index state and HTML remain beside the report for inspection.
+Required mechanical and established implementation-query failures exit nonzero.
+New usage probes remain explicitly recorded observations. Temporary index state
+and HTML remain beside the report for inspection.
+
+For the optional VS Code scale workflow, append:
+
+[source,shell]
+----
+--large-repo <vscode-checkout> --large-symbol DisposableStore --large-source src/vs/base/common/lifecycle.ts
+----

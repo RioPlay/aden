@@ -404,15 +404,9 @@ impl GlobRule {
     fn matches(&self, path: &str) -> bool {
         if self.is_dir_rule {
             let trimmed = self.pattern.trim_end_matches('/');
-            if dir_rule_matches(path, trimmed) {
-                return true;
-            }
-            // A dotted rule (".agent/") also matches its undotted form ("agent/").
-            if let Some(without_dot) = trimmed.strip_prefix('.') {
-                dir_rule_matches(path, without_dot)
-            } else {
-                false
-            }
+            // Dots are literal: `.vs/` is editor state, while `src/vs/`
+            // contains the main source tree in VS Code.
+            dir_rule_matches(path, trimmed)
         } else {
             match_glob(path, &self.pattern)
         }
@@ -521,8 +515,11 @@ mod tests {
         assert!(filter.should_skip(Path::new(".git/hooks/pre-commit")));
         assert!(filter.should_skip(Path::new("node_modules/lodash")));
         assert!(!filter.should_skip(Path::new("src/lib.rs")));
-        assert!(filter.should_skip(Path::new("agent/file.adoc")));
+        assert!(!filter.should_skip(Path::new("agent/file.adoc")));
         assert!(filter.should_skip(Path::new(".agent/file.adoc")));
+        assert!(filter.should_skip(Path::new("src/.vs/cache")));
+        assert!(!filter.should_skip(Path::new("src/vs/base/common/lifecycle.ts")));
+        assert!(!filter.should_skip(Path::new("src\\vs\\base\\common\\lifecycle.ts")));
     }
 
     #[test]
@@ -581,12 +578,12 @@ mod tests {
             allow_patterns: Vec::new(),
         };
         assert!(
-            filter.should_skip(Path::new("agent/file.adoc")),
-            "Should match agent/"
+            !filter.should_skip(Path::new("agent/file.adoc")),
+            "Dots in directory rules are literal"
         );
         assert!(
-            filter.should_skip(Path::new("agent/templates/foo.adoc")),
-            "Should match agent/templates/"
+            filter.should_skip(Path::new(".agent/templates/foo.adoc")),
+            "Should match .agent/templates/"
         );
         assert!(!filter.should_skip(Path::new("src/main.rs")));
     }

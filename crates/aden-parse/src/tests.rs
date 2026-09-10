@@ -14,6 +14,40 @@
 use crate::extractor::LanguageExtractor;
 use std::path::Path;
 
+#[test]
+fn python_and_typescript_hash_the_parsed_buffer_for_every_symbol() {
+    let dir = tempfile::tempdir().unwrap();
+    for (filename, source) in [
+        (
+            "app.py",
+            "def leaf():\n    return 1\nclass Example:\n    def method(self):\n        return leaf()\n",
+        ),
+        (
+            "app.ts",
+            "function leaf() { return 1; }\nclass Example { method() { return leaf(); } }\n",
+        ),
+    ] {
+        let path = dir.path().join(filename);
+        std::fs::write(&path, "disk content differs from the parsed buffer").unwrap();
+        for buffer in [source.to_string(), source.replace("return 1", "return 2")] {
+            let docs = crate::parse_file(&path, &buffer).unwrap();
+            assert!(
+                docs.len() >= 3,
+                "{filename}: expected function, class, and method"
+            );
+            let expected = aden_core::hash_source(&buffer);
+            for doc in docs {
+                assert_eq!(
+                    doc.attributes.get("source_hash"),
+                    Some(&expected),
+                    "{}",
+                    doc.anchor
+                );
+            }
+        }
+    }
+}
+
 fn assert_has_anchor(docs: &[aden_core::Document], needle: &str) {
     assert!(
         docs.iter().any(|d| d.anchor.contains(needle)),
@@ -237,6 +271,82 @@ fn python_resolver_call_sites() {
         calls_text.contains("edge::calls[function_b]"),
         "expected `edge::calls[function_b]` in function_a's Listing blocks; got: {calls_text}"
     );
+}
+
+#[test]
+fn python_calls_stay_with_their_owning_scope() {
+    let src = r#"
+def leaf(): pass
+def initialize(): return 1
+class Example:
+    value = initialize()
+    def method(self, value=initialize()):
+        return leaf()
+def outer():
+    def inner(value=initialize()):
+        return leaf()
+    return inner
+"#;
+    let docs = crate::python_resolver::PythonResolver::new()
+        .extract_documents(src, Path::new("app.py"))
+        .unwrap();
+    let calls = |name: &str| symbol_call_listing(&docs, name);
+    assert!(calls("Example").contains("edge::calls[initialize]"));
+    assert!(!calls("Example").contains("edge::calls[leaf]"));
+    assert!(calls("Example.method").contains("edge::calls[leaf]"));
+    assert!(calls("Example.method").contains("edge::member_of[Example]"));
+    assert!(!calls("Example.method").contains("edge::calls[initialize]"));
+    assert!(calls("outer").contains("edge::calls[initialize]"));
+    assert!(!calls("outer").contains("edge::calls[leaf]"));
+    assert!(calls("inner").contains("edge::calls[leaf]"));
+    assert!(calls("inner").contains("edge::member_of[outer]"));
+}
+
+fn symbol_call_listing(docs: &[aden_core::Document], name: &str) -> String {
+    let doc = docs
+        .iter()
+        .find(|doc| doc.anchor.ends_with(&format!("#{name}")))
+        .unwrap();
+    doc.blocks
+        .iter()
+        .filter_map(|block| match block {
+            aden_core::Block::Listing { code, .. } => Some(code.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn typescript_calls_stay_with_named_owners_and_keep_initializers_and_callbacks() {
+    let src = r#"
+function leaf() { return 1; }
+function initialize() { return 2; }
+class Example {
+    value = initialize();
+    method(value = initialize()) { return leaf(); }
+}
+function outer() {
+    function inner() { return leaf(); }
+    const assigned = () => leaf();
+    return inner;
+}
+function callbackOwner() { register(() => leaf()); }
+"#;
+    let docs = crate::typescript_resolver::TypeScriptResolver::new()
+        .extract_documents(src, Path::new("app.ts"))
+        .unwrap();
+    let calls = |name: &str| symbol_call_listing(&docs, name);
+    assert!(calls("Example").contains("edge::calls[initialize]"));
+    assert!(!calls("Example").contains("edge::calls[leaf]"));
+    assert!(calls("Example.method").contains("edge::calls[leaf]"));
+    assert!(calls("Example.method").contains("edge::calls[initialize]"));
+    assert!(calls("Example.method").contains("edge::member_of[Example]"));
+    assert!(!calls("outer").contains("edge::calls[leaf]"));
+    assert!(calls("inner").contains("edge::calls[leaf]"));
+    assert!(calls("assigned").contains("edge::calls[leaf]"));
+    assert!(calls("assigned").contains("edge::member_of[outer]"));
+    assert!(calls("callbackOwner").contains("edge::calls[leaf]"));
 }
 
 #[test]

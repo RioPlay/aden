@@ -127,7 +127,16 @@ fn collect_unique_backlinks(
     let mut seen = HashSet::new();
     for neighbor in graph.graph.neighbors_directed(idx, Direction::Incoming) {
         if seen.insert(neighbor) {
-            out.push(node_to_json(&graph.graph[neighbor], 1));
+            let mut node = node_to_json(&graph.graph[neighbor], 1);
+            let mut via: Vec<_> = graph
+                .graph
+                .edges_connecting(neighbor, idx)
+                .map(|edge| edge.weight().edge_type)
+                .collect();
+            via.sort_by_key(|edge| format!("{edge:?}"));
+            via.dedup();
+            super::query::annotate_edge_provenance(&mut node, &via);
+            out.push(node);
         }
     }
     out
@@ -844,6 +853,15 @@ mod tests {
         );
         assert!(anchors.contains(&"mod-caller"), "got {anchors:?}");
         assert!(anchors.contains(&"other-caller"), "got {anchors:?}");
+        let module = backlinks
+            .iter()
+            .find(|b| b["anchor"] == "mod-caller")
+            .unwrap();
+        assert_eq!(
+            module["via_edge_types"],
+            serde_json::json!(["Calls", "Contains", "Uses"])
+        );
+        assert_eq!(module["inferred"], false);
     }
 
     /// `understand`'s downstream impact must keep a neighbor reachable via a

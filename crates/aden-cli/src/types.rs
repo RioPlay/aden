@@ -46,7 +46,7 @@ use std::path::PathBuf;
 ///     emits the bare field name for non-self receivers.
 /// 12: Rust local closure invocations no longer link to unrelated global
 ///     functions that happen to share the closure binding's name.
-pub const GEN_LOGIC_VERSION: u32 = 13;
+pub const GEN_LOGIC_VERSION: u32 = 14;
 
 /// Incremental generation cache: maps contract file path → metadata.
 #[derive(Default, Serialize, Deserialize)]

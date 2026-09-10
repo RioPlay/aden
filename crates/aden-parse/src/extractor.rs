@@ -207,8 +207,6 @@ pub(crate) fn build_code_attributes(
     source_file: Option<&std::path::Path>,
     span: Option<&aden_core::SourceSpan>,
 ) -> std::collections::HashMap<String, String> {
-    let mut attrs = std::collections::HashMap::new();
-
     let hash_source = if let Some(path) = source_file {
         // Try to read file, skip on binary/invalid UTF-8
 
@@ -222,10 +220,47 @@ pub(crate) fn build_code_attributes(
     } else {
         source.to_string()
     };
-    attrs.insert(
-        "source_hash".to_string(),
-        aden_core::hash_source(&hash_source),
-    );
+    build_code_attributes_hashed(
+        &aden_core::hash_source(&hash_source),
+        node_type,
+        source_file,
+        span,
+    )
+}
+
+/// Metadata for one complete parser input. Reuse its hash across symbols rather
+/// than reopening and hashing the physical file for every method or function.
+/// The hash describes the same bytes as the AST, even for an unsaved buffer.
+pub(crate) struct CodeSource<'a> {
+    pub path: &'a Path,
+    hash: String,
+}
+
+impl<'a> CodeSource<'a> {
+    pub fn new(source: &str, path: &'a Path) -> Self {
+        Self {
+            path,
+            hash: aden_core::hash_source(source),
+        }
+    }
+
+    pub fn attributes(
+        &self,
+        node_type: &str,
+        span: &aden_core::SourceSpan,
+    ) -> std::collections::HashMap<String, String> {
+        build_code_attributes_hashed(&self.hash, node_type, Some(self.path), Some(span))
+    }
+}
+
+fn build_code_attributes_hashed(
+    source_hash: &str,
+    node_type: &str,
+    source_file: Option<&Path>,
+    span: Option<&aden_core::SourceSpan>,
+) -> std::collections::HashMap<String, String> {
+    let mut attrs = std::collections::HashMap::new();
+    attrs.insert("source_hash".to_string(), source_hash.to_string());
     attrs.insert("last-verified".to_string(), aden_core::rfc3339_now());
     attrs.insert("node-type".to_string(), node_type.to_string());
     if let Some(path) = source_file {

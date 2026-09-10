@@ -9,7 +9,7 @@
 //!   • Emits `edge::calls[]` macros for graph ingestion
 
 use crate::extractor::{
-    LanguageExtractor, build_code_attributes, infer_project_name, infer_project_root, make_anchor,
+    CodeSource, LanguageExtractor, infer_project_name, infer_project_root, make_anchor,
     project_relative_file,
 };
 use crate::tree_sitter_common::node_to_span;
@@ -67,8 +67,10 @@ impl LanguageExtractor for PythonResolver {
 
         // Phase 2: emit Documents with call-site resolution.
         let mut docs = Vec::new();
+        let file_source = CodeSource::new(source, path);
         for sym in &ctx.symbols {
-            if let Some(doc) = emit_symbol_document(sym, source, path, &ctx, &proj_name, file_name)
+            if let Some(doc) =
+                emit_symbol_document(sym, source, &file_source, &ctx, &proj_name, file_name)
             {
                 docs.push(doc);
             }
@@ -442,7 +444,7 @@ fn find_alias(node: tree_sitter::Node, source: &str) -> Option<String> {
 fn emit_symbol_document<'a>(
     sym: &SymbolInfo<'a>,
     source: &str,
-    path: &Path,
+    file_source: &CodeSource<'_>,
     ctx: &ExtractionContext<'a>,
     proj_name: &str,
     file_name: &str,
@@ -453,14 +455,21 @@ fn emit_symbol_document<'a>(
     // silently overwrote the first in the store (data loss). Top-level functions
     // have `qualified_name == name`, so their anchors are unchanged.
     let anchor = make_anchor(proj_name, file_name, &sym.qualified_name);
-    let span = node_to_span(sym.node, path);
-    let attrs = build_code_attributes(
-        source,
-        &format!("{:?}", sym.kind).to_lowercase(),
-        Some(path),
-        Some(&span),
-    );
+    let span = node_to_span(sym.node, file_source.path);
+    let attrs = file_source.attributes(&format!("{:?}", sym.kind).to_lowercase(), &span);
     let mut blocks = Vec::new();
+
+    let mut ancestor = sym.node.parent();
+    while let Some(node) = ancestor {
+        if let Some(owner) = ctx.symbols.iter().find(|candidate| candidate.node == node) {
+            blocks.push(Block::Listing {
+                language: None,
+                code: format!("edge::member_of[{}]", owner.qualified_name),
+            });
+            break;
+        }
+        ancestor = node.parent();
+    }
 
     if let Some(ref doc) = sym.doc_comment {
         blocks.push(Block::Paragraph(doc.clone()));
@@ -529,7 +538,14 @@ fn emit_symbol_document<'a>(
     }
 
     // Resolve call sites inside the symbol body
-    let calls = resolve_call_sites(sym.node, source, ctx);
+    // Function defaults/decorators execute in the defining scope, not when
+    // this function is called. A class retains its initialization statements.
+    let call_root = if sym.kind == NodeType::Function {
+        sym.node.child_by_field_name("body").unwrap_or(sym.node)
+    } else {
+        sym.node
+    };
+    let calls = resolve_call_sites(call_root, source, ctx);
     if !calls.is_empty() {
         let call_rows: Vec<Vec<String>> = calls
             .iter()
@@ -621,7 +637,22 @@ fn resolve_call_sites<'a>(
     let mut calls = Vec::new();
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        calls.extend(resolve_call_sites(child, source, ctx));
+        if matches!(
+            child.kind(),
+            "function_definition" | "async_function_definition" | "class_definition"
+        ) {
+            // Nested definitions own their bodies. Keep definition-time
+            // expressions (defaults, bases, annotations) in this scope.
+            let body = child.child_by_field_name("body");
+            let mut definition_cursor = child.walk();
+            for expression in child.children(&mut definition_cursor) {
+                if Some(expression) != body {
+                    calls.extend(resolve_call_sites(expression, source, ctx));
+                }
+            }
+        } else {
+            calls.extend(resolve_call_sites(child, source, ctx));
+        }
     }
 
     if node.kind() == "call"
