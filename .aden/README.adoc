@@ -1,19 +1,18 @@
 [[manifest]]
-= Aden Workspace — Private by Default
+= Legacy Repository Configuration
 
-== Security Posture
-Contract files (`.aden`, `.adoc` in `contracts/`) are *build artifacts*,
-not source code. They must never be committed to version control.
-They contain derived code signatures, source paths, and architecture metadata
-that could be weaponized if exposed.
+== What remains here
+This repository retains its previously tracked constitution and sample hooks.
+The constitution is optional project policy loaded by Aden; the hook files are
+inactive examples unless explicitly installed. `NOTICE.md` is historical
+attribution guidance, not the release's third-party notice.
 
-== Generated Contract Policy
-. `contracts/` is always excluded from git via `.gitignore`.
-. Contracts are local-only unless explicitly exported with `aden export`.
-. Never share `.aden/` or `contracts/` directories.
-. If a contract leaks, treat it as a credential rotation event for the repo.
+== Generated state
+The graph store and caches live in the per-user data directory, outside the
+checkout. `.gitignore` also excludes new `.aden` contents, legacy contracts,
+snapshots and locks if an older tool creates them locally. Existing tracked
+configuration remains tracked; ignoring a directory does not untrack files.
 
-== Why This Matters
-A malicious actor who can modify or inject contracts can silently
-redirect every downstream developer toward insecure patterns.
-Contracts are part of the software supply chain. Guard them accordingly.
+== Release files
+The maintained license and attribution files are `LICENSE` and `NOTICE.md` at
+the repository root. Release bundles contain those files, not this directory.

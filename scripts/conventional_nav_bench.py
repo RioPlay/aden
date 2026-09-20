@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Benchmark conventional recursive-text navigation on the held-out labels."""
 
 from __future__ import annotations

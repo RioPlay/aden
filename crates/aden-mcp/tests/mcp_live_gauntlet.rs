@@ -21,17 +21,13 @@ fn mcp_bin() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_aden-mcp"))
 }
 
-fn ensure_aden_cli() {
-    if std::env::var_os("ADEN_BIN").is_some() {
-        return;
+fn ensure_aden_cli() -> Option<PathBuf> {
+    if let Some(aden_bin) = std::env::var_os("ADEN_BIN") {
+        return Some(PathBuf::from(aden_bin));
     }
     let sibling = mcp_bin().with_file_name(format!("aden{}", std::env::consts::EXE_SUFFIX));
     if sibling.is_file() {
-        // SAFETY: test process isolation; points MCP at the workspace CLI.
-        unsafe {
-            std::env::set_var("ADEN_BIN", &sibling);
-        }
-        return;
+        return Some(sibling);
     }
     // Fall back to PATH; fail clearly if neither works.
     let probe = Command::new("aden").arg("--version").output();
@@ -40,6 +36,7 @@ fn ensure_aden_cli() {
         "aden CLI not found: set ADEN_BIN or build aden next to aden-mcp ({})",
         sibling.display()
     );
+    None
 }
 
 struct McpClient {
@@ -50,10 +47,13 @@ struct McpClient {
 }
 
 impl McpClient {
-    fn spawn(project: &Path, data: &Path) -> Self {
-        let mut child = Command::new(mcp_bin())
-            .arg(project)
-            .env("ADEN_DATA_DIR", data)
+    fn spawn(project: &Path, data: &Path, aden_bin: Option<&Path>) -> Self {
+        let mut command = Command::new(mcp_bin());
+        command.arg(project).env("ADEN_DATA_DIR", data);
+        if let Some(aden_bin) = aden_bin {
+            command.env("ADEN_BIN", aden_bin);
+        }
+        let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -167,7 +167,7 @@ impl Drop for McpClient {
 
 #[test]
 fn live_mcp_bounded_ask_asm_and_path_confinement() {
-    ensure_aden_cli();
+    let aden_bin = ensure_aden_cli();
 
     let work = tempfile::tempdir().expect("tempdir");
     let project = work.path().join("project");
@@ -187,7 +187,7 @@ fn live_mcp_bounded_ask_asm_and_path_confinement() {
     )
     .unwrap();
 
-    let mut client = McpClient::spawn(&project, &data);
+    let mut client = McpClient::spawn(&project, &data, aden_bin.as_deref());
 
     client.send(&serde_json::json!({
         "jsonrpc": "2.0",
@@ -260,6 +260,53 @@ fn live_mcp_bounded_ask_asm_and_path_confinement() {
         registry_bytes < 5_000,
         "registry too large: {registry_bytes}"
     );
+
+    // Replay the actual startup examples before any discovery call: a known
+    // unique symbol must not require tree/grep/locate boilerplate.
+    let instructions = initialized["result"]["instructions"].as_str().unwrap();
+    eprintln!("startup={instruction_bytes} bytes; registry={registry_bytes} bytes");
+    for (id, name, result_key) in [(20, "asm", "documents"), (21, "query", "items")] {
+        let prefix = format!("{name}(");
+        let example = instructions
+            .split_once(&prefix)
+            .unwrap_or_else(|| panic!("missing executable {name} startup example"))
+            .1
+            .split_once(')')
+            .unwrap()
+            .0;
+        let arguments: Value = serde_json::from_str(example).expect("JSON example arguments");
+        let guide = include_str!("../../../docs/ai-integration.adoc");
+        assert!(guide.contains(&format!("{name}({example})")));
+        let mut cli = Command::new(aden_bin.as_deref().unwrap_or_else(|| Path::new("aden")));
+        cli.arg(name)
+            .current_dir(&project)
+            .env("ADEN_DATA_DIR", &data);
+        for key in arguments.as_object().unwrap().keys() {
+            assert!(schemas[name]["properties"].get(key).is_some());
+            let value = arguments[key].as_str().expect("symbol argument");
+            cli.arg(format!("--{key}")).arg(value);
+            assert!(guide.contains(&format!("aden {name} --{key} {value}")));
+        }
+        let result = client.tool_call(id, name, arguments);
+        assert!(result.get("error").is_none(), "{result}");
+        assert!(
+            result[result_key].as_array().is_some_and(|a| !a.is_empty()),
+            "{result}"
+        );
+        assert_eq!(
+            result["context_receipt"]["freshness"], "current",
+            "{result}"
+        );
+        assert!(result.to_string().contains("helper"), "{result}");
+        let output = cli.output().expect("run documented CLI example");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let cli_result: Value = serde_json::from_slice(&output.stdout).expect("CLI JSON");
+        assert_eq!(cli_result[result_key], result[result_key]);
+    }
 
     let ask = client.tool_call(
         3,
@@ -361,4 +408,86 @@ fn live_mcp_bounded_ask_asm_and_path_confinement() {
             .is_some_and(|s| !s.is_empty()),
         "{escaped}"
     );
+}
+
+#[test]
+fn live_mcp_ambiguous_asm_requires_exact_candidate() {
+    let aden_bin = ensure_aden_cli();
+
+    let work = tempfile::tempdir().expect("tempdir");
+    let project = work.path().join("project");
+    let data = work.path().join("data");
+    let src = project.join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::create_dir_all(&data).unwrap();
+    std::fs::write(
+        project.join("Cargo.toml"),
+        "[package]\nname = \"mcp-live-ambiguous\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    )
+    .unwrap();
+    std::fs::write(src.join("first.rs"), "pub fn reset() {}\n").unwrap();
+    std::fs::write(src.join("second.rs"), "pub fn reset() {}\n").unwrap();
+
+    let mut client = McpClient::spawn(&project, &data, aden_bin.as_deref());
+    client.send(&serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-03-26",
+            "capabilities": {},
+            "clientInfo": { "name": "aden-live-ambiguity", "version": "1.0" },
+        },
+    }));
+    let initialized = client.receive(1, Duration::from_secs(30));
+    assert!(initialized.get("result").is_some(), "{initialized}");
+    client.send(&serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "notifications/initialized",
+        "params": {},
+    }));
+
+    let ambiguous = client.tool_call(2, "asm", serde_json::json!({ "from": "reset" }));
+    assert_eq!(
+        ambiguous["error"]["code"], "ambiguous_symbol",
+        "{ambiguous}"
+    );
+    assert_eq!(ambiguous["error"]["safe_to_retry"], true, "{ambiguous}");
+    let candidates = ambiguous["error"]["candidates"]
+        .as_array()
+        .expect("ambiguous candidates");
+    assert_eq!(candidates.len(), 2, "{ambiguous}");
+    let candidates: Vec<&str> = candidates
+        .iter()
+        .map(|candidate| candidate.as_str().expect("candidate anchor"))
+        .collect();
+    assert!(
+        candidates
+            .iter()
+            .all(|candidate| candidate.ends_with("#reset"))
+    );
+    assert!(
+        candidates
+            .iter()
+            .any(|candidate| candidate.contains("first.rs"))
+    );
+    assert!(
+        candidates
+            .iter()
+            .any(|candidate| candidate.contains("second.rs"))
+    );
+    assert_ne!(candidates[0], candidates[1], "{ambiguous}");
+
+    let resolved = client.tool_call(3, "asm", serde_json::json!({ "from": candidates[0] }));
+    assert!(
+        resolved["documents"]
+            .as_array()
+            .is_some_and(|documents| !documents.is_empty()),
+        "{resolved}"
+    );
+    assert_eq!(
+        resolved["context_receipt"]["freshness"], "current",
+        "{resolved}"
+    );
+    assert!(resolved.to_string().contains(candidates[0]), "{resolved}");
 }

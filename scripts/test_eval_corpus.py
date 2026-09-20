@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Regression tests for bounded product-path corpus evaluation."""
 
 from __future__ import annotations

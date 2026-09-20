@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Read-only product gauntlet against diverse external repositories.
 
 The default profile uses Python, Go, Rust, and TypeScript projects under

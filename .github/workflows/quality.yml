@@ -97,7 +97,8 @@ jobs:
 
       - name: Audit dependencies and vendored assets
         run: |
-          cargo deny check
+          cargo deny --workspace --all-features --locked check
+          python3 scripts/update_notice.py --check
           (cd crates/aden-cli/assets && sha256sum --check CHECKSUMS)
 
       - name: Verify source license headers
@@ -110,7 +111,7 @@ jobs:
           done < <(find crates -name '*.rs' -print0)
           while IFS= read -r -d '' file; do
             grep -q 'SPDX-License-Identifier' "$file" || { echo "Missing SPDX: $file"; missing=1; }
-          done < <(find scripts release -type f \( -name '*.sh' -o -name '*.ps1' \) -print0)
+          done < <(find scripts release -type f \( -name '*.sh' -o -name '*.ps1' -o -name '*.py' \) -print0)
           test "$missing" -eq 0
 
       - name: Write quality verdict

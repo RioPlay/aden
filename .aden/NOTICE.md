@@ -7,7 +7,7 @@ dependencies change so consumers can verify license compatibility.
 
 Depending on your project's language/package manager:
 
-- **Rust/Cargo:**   `aden licenses --out NOTICE.md` (reads Cargo.lock)
+- **Rust/Cargo:**   `aden --human licenses --full --out NOTICE.md` (reads Cargo.lock)
 - **Node/npm:**     `npx license-checker --out NOTICE.md`
 - **Python:**       `pip-licenses --format=markdown > NOTICE.md`
 - **Go:**           `go-licenses save ./... --save_path=NOTICE.md`

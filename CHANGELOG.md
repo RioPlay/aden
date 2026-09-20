@@ -9,7 +9,46 @@ All notable changes to aden are documented here. Format follows
 
 ## [Unreleased]
 
+No unreleased changes.
+
+## [0.4.1] - 2026-09-19
+
+This patch makes Aden safer to upgrade and cheaper for LLM day-to-day use:
+one CLI binary can be the MCP server, Windows path spelling no longer splits
+a repo across two stores, and default `tree`/`ask`/`ready` stay JSON and bounded.
+
+### Added
+- **Versioned agent-usage evaluation** — opt-in neutral handoffs, recorded
+  protocol/source/binary identities, correlated observer telemetry, and isolated
+  source-review fixtures. Legacy retrieval benchmarks remain unchanged.
+- **Repeated small-model validation** — 15 baseline and eight follow-up sessions
+  with frozen evidence and independent review. Bounded coding, ambiguity, and
+  stale-source cases passed; precise explanations and broad security conclusions
+  still require review. These samples do not establish general model reliability.
+- **`aden mcp stdio`** — the CLI binary can be the MCP server. `aden mcp
+  install` now writes `command: aden`, `args: [mcp, stdio, …]` so hosts launch
+  the same binary you just installed instead of a locked sibling `aden-mcp.exe`.
+  Standalone `aden-mcp` still works when `--binary` points at it.
+- **`aden mcp install --platform grok`** — writes `[mcp_servers.aden]` to
+  `~/.grok/config.toml` (or project `.grok/config.toml`) so Grok launches
+  `aden mcp stdio`.
+
 ### Fixed
+- **Public provenance in CI** — recognize explicitly labelled JSON commit and
+  SHA-256 fields without exempting credential fields or provider-token patterns.
+- **Dependency audit coverage** — audit every workspace crate and optional
+  feature, update `rustls` to 0.23.45 for
+  [RUSTSEC-2026-0285](https://rustsec.org/advisories/RUSTSEC-2026-0285), and check maintained
+  dependency attribution against the lockfile while preserving legal notices.
+- **Windows vendored-asset integrity** — preserve the original JavaScript bundle
+  bytes on checkout so embedded viewer assets match their recorded checksums.
+- **MCP handoff examples** — direct known-symbol navigation is explicit and
+  startup examples are replayed through the live MCP/CLI contract tests.
+- **Sanitizer documentation** — distinguishes the 4000-byte prefix limit from
+  the appended marker and preserves the actual interior-blank-line behavior.
+- **Release hygiene** — ignore generated graph/release/Python state, include
+  Python scripts in the source-license header gate, and publish portable pilot
+  report paths without changing the original frozen evidence hashes.
 - **`aden locate <symbol>` shorthand** — a bare positional symbol now behaves
   like `--symbol <symbol>` instead of clap's "unexpected argument" dump; with
   `-s`/`-c` present, a single positional is still the DIR as before.
@@ -27,23 +66,6 @@ All notable changes to aden are documented here. Format follows
 - **Plain `cargo build`/`cargo test` covers the workspace** —
   `default-members` mirrors the CI gate (all crates except `aden-lsp`); the
   root package only hosts benches (`cargo bench -p aden`).
-
-## [0.4.1] - 2026-08-13
-
-This patch makes Aden safer to upgrade and cheaper for LLM day-to-day use:
-one CLI binary can be the MCP server, Windows path spelling no longer splits
-a repo across two stores, and default `tree`/`ask`/`ready` stay JSON and bounded.
-
-### Added
-- **`aden mcp stdio`** — the CLI binary can be the MCP server. `aden mcp
-  install` now writes `command: aden`, `args: [mcp, stdio, …]` so hosts launch
-  the same binary you just installed instead of a locked sibling `aden-mcp.exe`.
-  Standalone `aden-mcp` still works when `--binary` points at it.
-- **`aden mcp install --platform grok`** — writes `[mcp_servers.aden]` to
-  `~/.grok/config.toml` (or project `.grok/config.toml`) so Grok launches
-  `aden mcp stdio`.
-
-### Fixed
 - **Windows path separators in graph keys** — `source_file` attributes, gen
   cache keys, heal GC live-sets, and span maps used by `tree`/`grep` now
   normalize to `/`, so nested files no longer lose symbols or get over-pruned

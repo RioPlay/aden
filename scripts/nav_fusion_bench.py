@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Measure a deterministic Aden + conventional-navigation recall backstop.
 
 The gate is label-blind: conventional file ranking participates only when the

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Score bounded final context against source-grounded required facts."""
 
 from __future__ import annotations

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Tests for bounded held-out benchmark execution."""
 
 from __future__ import annotations

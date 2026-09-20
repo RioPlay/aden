@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Prototype label-blind candidate-body reranking for held-out queries."""
 
 from __future__ import annotations

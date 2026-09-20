@@ -108,6 +108,29 @@ The MCP registry orders compact orientation and deterministic discovery before
 heuristic routing: `tree --symbols` → `grep` → `locate` → `understand` →
 `ask` → `query` → `asm`.
 
+This is presentation order, not a required sequence. For a known unique symbol,
+go directly to `asm` for context or `query` for relationships. Use `tree` when
+orientation is needed and `grep` when the implementation is unknown. For an
+ambiguous name, use `locate` and choose a returned canonical anchor.
+
+The startup examples below use a project containing a unique `helper` symbol;
+replace it with your target. The live MCP gauntlet extracts and executes these
+JSON calls from the generated initialize response before any discovery call:
+
+[source,text]
+----
+asm({"from":"helper"})
+query({"impact":"helper"})
+----
+
+Equivalent CLI calls (in that project):
+
+[source,bash]
+----
+aden asm --from helper
+aden query --impact helper
+----
+
 * `grep` is the default exact-content discovery tool. For architecture,
   performance, security, or completeness audits, use multiple materially
   different patterns and verify against targeted source reads.

@@ -225,10 +225,11 @@ impl AdenMcpServer {
 const SERVER_INSTRUCTIONS: &str = "\
 Use Aden for bounded, structure-aware code navigation. Read tools auto-refresh; \
 omit `gen`, budgets, and tuning arguments in normal calls.\n\n\
-Workflow: use `tree(symbols=true)` for a compact codebase map (scope `path` if truncated); then `grep` \
-for independent evidence -> `locate` ambiguous names -> `understand` a known \
-symbol. Use `query` for backlinks/impact and `asm` for bounded context. Before \
-editing, inspect callers/downstream impact.\n\n\
+Choose by task: known unique symbol -> `asm({\"from\":\"helper\"})` for bounded \
+context or `query({\"impact\":\"helper\"})` for downstream reach (replace helper). \
+Ambiguous name -> `locate`, then choose a returned anchor. Unknown implementation \
+-> `grep`; need orientation -> `tree` (scope `path` if truncated). Use `understand` \
+for definition and relationships. Before editing, inspect source and impact.\n\n\
 Correctness rules:\n\
 - `ask` handles one bounded question about a named symbol, file, subsystem, or \
 relationship. Broad audits, exhaustive lists, rankings, and remaining-work \
@@ -2729,8 +2730,10 @@ fn format_child_exit(code: i32) -> String {
 ///
 /// Raw stderr can leak host-specific detail — absolute filesystem paths,
 /// `RUST_BACKTRACE` frames, addresses — that an MCP client has no business
-/// seeing. Drop panic backtrace noise, redact absolute paths, collapse blank
-/// runs, and cap the total length so a runaway error can't flood the channel.
+/// seeing. Drop recognized backtrace noise and redact recognized absolute paths.
+/// Trim surrounding whitespace, preserving interior blank lines. Keep at most
+/// 4000 UTF-8 bytes before appending the truncation marker; the returned string
+/// may exceed that prefix budget. This is not a whole-envelope size limit.
 fn sanitize_error(raw: &str) -> String {
     let mut lines: Vec<String> = Vec::new();
     for line in raw.lines() {
@@ -2756,7 +2759,7 @@ fn sanitize_error(raw: &str) -> String {
     if msg.is_empty() {
         msg = "aden command failed (no error output)".to_string();
     }
-    // Cap length so a pathological error cannot flood the JSON-RPC stream.
+    // Limit the prefix; the truncation marker is outside this byte budget.
     const MAX: usize = 4000;
     if msg.len() > MAX {
         let mut end = MAX;

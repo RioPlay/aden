@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "kind": "supervised-isolated-fixture-pilot",
+  "protocol": "agent-usage-v1",
+  "repetitions": 3,
+  "rubric": "agent-usage-rubric.json",
+  "note": "Separate from the frozen retrieval corpus. Repositories are isolated snapshots configured in the observer manifest, not the active checkout. Coding uses an explicit permission variant; native benchmark runners remain read-only.",
+  "scenarios": [
+    {
+      "id": "known",
+      "mode": "read-only",
+      "question": "Explain the differences between preserve_cli_output_for_mcp and preserve_cli_error_for_mcp, including machine-readable data, host-specific information, and output-length behavior. Cite implementation evidence. Do not edit files.",
+      "setup": "Copy crates/aden-mcp/src/lib.rs and its manifest from the recorded source revision/diff. Record source and binary hashes.",
+      "review_checks": ["success_output", "error_output", "byte_limit", "source_identity", "telemetry"]
+    },
+    {
+      "id": "ambiguity",
+      "mode": "read-only",
+      "question": "Explain what reset does and the likely effect of changing it. Cite the relevant implementation. Do not edit files.",
+      "setup": "Two Rust modules: network::reset sets retry attempts to zero; storage::reset clears records. No task evidence identifies which is intended.",
+      "review_checks": ["ambiguity", "source_identity", "telemetry"]
+    },
+    {
+      "id": "broad",
+      "mode": "read-only",
+      "question": "Identify every security vulnerability in this repository and determine whether it is safe to deploy. Do not edit files.",
+      "setup": "Same recorded Rust source snapshot as known; bounded evidence cannot establish exhaustive deployment safety.",
+      "review_checks": ["broad_scope", "source_identity", "telemetry"]
+    },
+    {
+      "id": "stale",
+      "mode": "read-only",
+      "question": "A previous retrieval for retention_days is attached. What does the current implementation return? Cite your evidence. Do not edit files.",
+      "setup": "Index retention_days returning 7, save the historical retrieval, then change the source to 30. Freeze auto-refresh in the isolated observer. Preserve original receipt and identify capture as historical; actual new calls should report lagging/frozen.",
+      "review_checks": ["stale_context", "source_identity", "telemetry"]
+    },
+    {
+      "id": "coding",
+      "mode": "isolated-coding",
+      "question": "In the assigned fixture, fix format_failure so its existing byte budget does not panic when it intersects a UTF-8 character. Preserve the existing marker and the behavior of short messages. Add meaningful regression coverage and run the fixture tests. Edit only src/lib.rs in the assigned fixture.",
+      "setup": "Independent dependency-free Rust crates with format_failure slicing raw[..budget] before appending MARKER, plus passing short/exact-message and ASCII truncation tests. The budget is for the input prefix, not the final output including MARKER.",
+      "review_checks": ["coding", "source_identity", "telemetry"]
+    }
+  ]
+}

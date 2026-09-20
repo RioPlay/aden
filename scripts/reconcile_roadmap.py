@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Check that GitHub delivery state agrees with repository admission state."""
 
 from __future__ import annotations

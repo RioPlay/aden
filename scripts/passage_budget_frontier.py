@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Measure passage-context quality across strict token budgets with hard timeouts."""
 
 from __future__ import annotations

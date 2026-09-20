@@ -53,6 +53,8 @@ fi
 {
     echo "Aden v$VERSION"
     echo "Target: $TARGET"
+    echo "Source: https://github.com/RioPlay/aden/tree/v$VERSION"
+    echo "Source archive: https://github.com/RioPlay/aden/archive/refs/tags/v$VERSION.tar.gz"
     echo "Files:"
     for file in "$BUNDLE"/*; do
         [ -f "$file" ] && basename "$file"

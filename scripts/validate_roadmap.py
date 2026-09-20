@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Validate Aden's repository-side execution program."""
 
 from __future__ import annotations

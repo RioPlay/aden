@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """DEPRECATED: use `cargo test -p aden-cli --test regression_lock`.
 
 Fail if a tuned regression dataset changes without an explicit lock update.

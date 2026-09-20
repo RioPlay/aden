@@ -55,4 +55,4 @@ runs:
       if: contains(inputs.gates, 'licenses')
       shell: bash
       working-directory: ${{ inputs.working-directory }}
-      run: aden licenses --out NOTICE.md
+      run: aden --human licenses --full --out NOTICE.md

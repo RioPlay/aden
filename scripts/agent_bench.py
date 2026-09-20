@@ -12,10 +12,12 @@ command contract. A fixture engine keeps the harness cheap and deterministic.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -27,6 +29,11 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_TASKS = ROOT / "scripts" / "agent-bench" / "tasks.json"
 CONDITIONS = ("baseline", "aden")
+LEGACY_PROTOCOL = "legacy-retrieval-v1"
+NEUTRAL_PROTOCOL = "agent-usage-v1"
+PROTOCOLS = (LEGACY_PROTOCOL, NEUTRAL_PROTOCOL)
+REPORT_SCHEMA_VERSION = 2
+ANSWER_SCHEMA_ID = "answer-evidence-v1"
 ADEN_EXPECTED_CATEGORIES = {
     "architecture",
     "concept_discovery",
@@ -109,6 +116,88 @@ def git_revision(path: Path) -> str | None:
     return result.stdout.strip() if result.returncode == 0 else None
 
 
+def sha256_bytes(value: bytes) -> str:
+    return hashlib.sha256(value).hexdigest()
+
+
+def file_identity(path: Path) -> dict[str, Any]:
+    try:
+        content = path.read_bytes()
+        return {"path": str(path.resolve()), "sha256": sha256_bytes(content), "bytes": len(content)}
+    except OSError as error:
+        return {"path": str(path), "sha256": None, "error": str(error)}
+
+
+def binary_identity(command: str) -> dict[str, Any]:
+    resolved = shutil.which(command)
+    if resolved is None and Path(command).is_file():
+        resolved = str(Path(command).resolve())
+    return {"requested": command, **(file_identity(Path(resolved)) if resolved else {
+        "path": None, "sha256": None, "error": "executable not found",
+    })}
+
+
+def aden_binary() -> str:
+    # Keep the legacy prompt's binary resolution unchanged.
+    default_aden = ROOT / "target" / "release" / "aden"
+    return os.environ.get("ADEN_BENCH_BIN", str(default_aden) if default_aden.is_file() else "aden")
+
+
+def repository_identity(path: Path) -> dict[str, Any]:
+    """Retain the actual tracked patch and hash untracked inputs without changing Git state."""
+    identity: dict[str, Any] = {"path": str(path), "revision": git_revision(path)}
+    commands = {
+        "status": ["status", "--porcelain=v1", "--untracked-files=all"],
+        "dirty_diff": ["diff", "--no-ext-diff", "--binary", "HEAD", "--"],
+        "untracked": ["ls-files", "--others", "--exclude-standard", "-z"],
+    }
+    results = {
+        key: subprocess.run(["git", "-C", str(path), *command], capture_output=True)
+        for key, command in commands.items()
+    }
+    errors = {key: result.stderr.decode("utf-8", errors="replace") for key, result in results.items()
+              if result.returncode != 0}
+    status = results["status"].stdout.decode("utf-8", errors="replace")
+    patch = results["dirty_diff"].stdout
+    identity.update({
+        "dirty": bool(status) if not errors else None,
+        "status": status,
+        "dirty_diff": patch.decode("utf-8", errors="replace"),
+        "dirty_diff_sha256": sha256_bytes(patch) if not errors else None,
+        "untracked_files": [file_identity(path / os.fsdecode(name))
+                            for name in results["untracked"].stdout.split(b"\0") if name],
+    })
+    if errors:
+        identity["errors"] = errors
+    return identity
+
+
+def run_identity(args: argparse.Namespace) -> dict[str, Any]:
+    binaries = {"aden": binary_identity(aden_binary())}
+    if args.engine == "codex":
+        binaries["agent"] = binary_identity(args.codex_bin)
+    elif args.engine == "command":
+        argv = shlex.split(args.agent_command)
+        binaries["agent"] = binary_identity(argv[0]) if argv else None
+        binaries["adapter_files"] = [file_identity(Path(arg)) for arg in argv[1:] if Path(arg).is_file()]
+    schema_text = json.dumps(ANSWER_SCHEMA, sort_keys=True, separators=(",", ":"))
+    return {
+        "protocol": args.protocol,
+        "transport": getattr(args, "transport", "cli"),
+        "answer_schema": {"id": ANSWER_SCHEMA_ID, "sha256": sha256_bytes(schema_text.encode()),
+                          "definition": ANSWER_SCHEMA},
+        "model_settings": {"requested_model": args.model, "overrides": args.model_setting,
+                           "effective_model": None, "effective_settings": None},
+        "runner_settings": {"timeout_seconds": args.timeout, "requested_sandbox": "read-only",
+                            "sandbox_enforcement": "codex" if args.engine == "codex" else
+                                                   "external-adapter" if args.engine == "command" else "no-agent",
+                            "agent_command": args.agent_command if args.engine == "command" else None},
+        "binaries": binaries,
+        "harness": file_identity(Path(__file__)),
+        "corpus_identity": file_identity(args.tasks),
+    }
+
+
 def score_response(task: dict[str, Any], response: dict[str, Any]) -> dict[str, Any]:
     answer = response.get("answer", "")
     evidence = response.get("evidence", [])
@@ -152,7 +241,12 @@ def score_response(task: dict[str, Any], response: dict[str, Any]) -> dict[str, 
     }
 
 
-def prompt_for(task: dict[str, Any], condition: str) -> str:
+def prompt_for(task: dict[str, Any], condition: str, protocol: str = LEGACY_PROTOCOL,
+               transport: str = "cli") -> str:
+    if protocol not in PROTOCOLS:
+        raise ValueError(f"unknown protocol: {protocol}")
+    if transport not in {"cli", "mcp"} or (transport == "mcp" and protocol != NEUTRAL_PROTOCOL):
+        raise ValueError("MCP transport requires agent-usage-v1; transport must be cli or mcp")
     shared = f"""Answer this repository question using read-only investigation.
 
 Question: {task['question']}
@@ -166,13 +260,31 @@ anchors when used. Do not modify files, run tests, install dependencies, or acce
 Condition: conventional navigation. Do not invoke `aden` or any Aden MCP tool. Use normal
 repository discovery such as `rg`, file reads, and read-only Git commands.
 """
+    if protocol == NEUTRAL_PROTOCOL:
+        target = f"\nSupplied target (may require disambiguation): {task['aden_from']}\n" if task.get("aden_from") else ""
+        transport_guidance = (
+            "Use the configured isolated Aden MCP tools for the assigned repository. The adapter\n"
+            "must isolate that server from other repositories and user MCP configuration."
+            if transport == "mcp" else
+            f"The available Aden executable is {aden_binary()!r}. CLI calls must use an explicit `--project .`\n"
+            "argument. Do not call Aden MCP tools: this harness isolates each task from user MCP configuration."
+        )
+        return shared + f"""
+Protocol: {NEUTRAL_PROTOCOL}.
+Condition: Aden-assisted repository investigation. Choose tools and their order according to the
+question and the evidence you receive. Direct navigation to known symbols is permitted. Use Aden
+for structure-aware navigation; exact source reads and read-only Git inspection are permitted to
+verify claims. Inspect relevant source before making precise claims about behavior or security.
+Distinguish source-inspected facts from graph-derived inference, and cite the source that supports
+each consequential claim. Bounded graph context and routing confidence do not prove a claim.
+If a target is ambiguous, use the question and source evidence to disambiguate; when evidence is
+insufficient, preserve the unresolved alternatives in your answer. Report missing, stale, or
+incomplete evidence explicitly. Choose follow-up investigation when it is needed to answer accurately.
+{transport_guidance}
+{target}"""
     risk_terms = re.compile(r"\b(concurren|transaction|conflict|lock|security)\w*\b", re.IGNORECASE)
     budget = 1024 if risk_terms.search(task["question"]) else 512
-    default_aden = ROOT / "target" / "release" / "aden"
-    aden_bin = os.environ.get(
-        "ADEN_BENCH_BIN", str(default_aden) if default_aden.is_file() else "aden"
-    )
-    aden_command = shlex.quote(aden_bin)
+    aden_command = shlex.quote(aden_binary())
     from_arg = (
         f" --from {shlex.quote(task['aden_from'])}" if task.get("aden_from") else ""
     )
@@ -192,20 +304,152 @@ runs disable user MCP configuration so each task stays isolated to its assigned 
 """
 
 
-def summarize_event(event: dict[str, Any]) -> dict[str, Any] | None:
+def summarize_event(event: dict[str, Any], source: str = "unknown") -> dict[str, Any] | None:
     event_type = event.get("type", "unknown")
-    if event_type != "item.completed":
+    if event_type not in {"item.started", "item.completed"}:
         return None
     item = event.get("item") if isinstance(event.get("item"), dict) else {}
     item_type = item.get("type")
     if item_type in {"command_execution", "mcp_tool_call", "web_search"}:
-        record: dict[str, Any] = {"event": event_type, "tool": item_type}
+        record: dict[str, Any] = {"event": event_type, "tool": item_type, "source": source,
+                                  "id": item.get("id"), "status": item.get("status"),
+                                  "exit_code": item.get("exit_code"), "arguments": item.get("arguments"),
+                                  "error": item.get("error"), "output_bytes": None,
+                                  "is_error": None, "result_state": None}
         if item.get("command"):
             record["command"] = item["command"]
         if item.get("server") or item.get("tool"):
             record["name"] = ".".join(filter(None, (item.get("server"), item.get("tool"))))
+        if isinstance(item.get("aggregated_output"), str):
+            record["output_bytes"] = len(item["aggregated_output"].encode("utf-8"))
+            record["output_sha256"] = sha256_bytes(item["aggregated_output"].encode("utf-8"))
+        result = item.get("result")
+        if isinstance(result, dict):
+            record["result_sha256"] = sha256_bytes(json.dumps(result, sort_keys=True).encode("utf-8"))
+            record["is_error"] = result.get("isError") if isinstance(result.get("isError"), bool) else None
+            payload = result.get("structuredContent", result.get("structured_content"))
+            structured = payload
+            content = result.get("content")
+            if isinstance(content, list):
+                texts = [part.get("text", "") for part in content if isinstance(part, dict) and part.get("type") == "text"]
+                # Text byte counts are only complete for text-only content.
+                if len(texts) == len(content) and all(isinstance(value, str) for value in texts):
+                    record["output_bytes"] = sum(len(value.encode("utf-8")) for value in texts)
+                for value in texts:
+                    try:
+                        parsed = json.loads(value)
+                    except (ValueError, TypeError):
+                        continue
+                    if isinstance(parsed, dict) and payload is None:
+                        payload = parsed
+            if isinstance(payload, dict):
+                record["result_state"] = payload.get("result_state")
+            if "result_state" in result:
+                record["result_state"] = result["result_state"]
+            if isinstance(structured, dict):
+                size = len(json.dumps(structured, ensure_ascii=False).encode("utf-8"))
+                if content is None:
+                    record["output_bytes"] = size
+                elif record["output_bytes"] is not None:
+                    record["output_bytes"] += size
+        if isinstance(item.get("output_bytes"), int) and item["output_bytes"] >= 0:
+            record["output_bytes"] = item["output_bytes"]
         return record
     return None
+
+
+def telemetry_from_events(events: list[dict[str, Any]], complete: bool = False,
+                          source: str = "unknown") -> dict[str, Any]:
+    """Replay only the supplied event scope; no claims about unobserved host actions."""
+    calls: dict[str, dict[str, Any]] = {}
+    seen: set[str] = set()
+    duplicate_events = 0
+    correlated = True
+    for index, event in enumerate(events):
+        if not isinstance(event, dict):
+            correlated = False
+            continue
+        record = summarize_event(event, source)
+        if record is None:
+            item = event.get("item")
+            if event.get("type") in {"item.started", "item.completed"} and (
+                    not isinstance(item, dict) or item.get("type") not in {"agent_message", "reasoning", "todo_list"}):
+                correlated = False
+            continue
+        identity = record["id"]
+        if not isinstance(identity, str) or not identity:
+            correlated = False
+            identity = f"unidentified-event-{index}"
+        fingerprint = json.dumps(record, sort_keys=True)
+        if fingerprint in seen:
+            duplicate_events += 1
+            continue
+        seen.add(fingerprint)
+        call = calls.setdefault(identity, {"id": identity, "start_index": None, "completion_index": None})
+        for key in ("tool", "name", "command", "arguments"):
+            if call.get(key) is not None and record.get(key) is not None and call[key] != record[key]:
+                correlated = False
+        phase = "start_index" if record["event"] == "item.started" else "completion_index"
+        if call[phase] is not None:
+            # Same ID with contradictory records cannot establish an observed total.
+            correlated = False
+            continue
+        call[phase] = index
+        call.update({key: value for key, value in record.items() if value is not None})
+    failure_kinds = {"shell", "transport", "protocol", "tool"}
+    for call in calls.values():
+        error = call.get("error")
+        kind = error.get("kind") if isinstance(error, dict) else None
+        outcome = kind if kind in failure_kinds else None
+        if call["completion_index"] is None:
+            outcome = None
+        elif outcome is None and call["tool"] == "command_execution":
+            code = call.get("exit_code")
+            outcome = ("success" if code == 0 else "shell") if isinstance(code, int) else None
+        elif outcome is None and call["tool"] == "mcp_tool_call":
+            if call.get("is_error") is True:
+                outcome = "tool"
+            elif call.get("result_state") == "needs_narrowing":
+                outcome = "needs_narrowing"
+            elif call.get("is_error") is False:
+                outcome = "success"
+        if call.get("status") in {"failed", "error", "cancelled"} and outcome in {"success", "needs_narrowing"}:
+            outcome = None
+        call["outcome"] = outcome
+        for key in ("output_bytes", "is_error", "result_state", "status", "exit_code"):
+            call.setdefault(key, None)
+        signature = None
+        if call["tool"] == "command_execution" and call.get("command"):
+            signature = json.dumps([call["tool"], call["command"]])
+        elif call["tool"] == "mcp_tool_call" and call.get("name") and "arguments" in call:
+            signature = json.dumps([call["tool"], call["name"], call["arguments"]], sort_keys=True)
+        call["request_signature"] = signature
+    rows = list(calls.values())
+    coverage = complete and correlated and all(row["start_index"] is not None and row["completion_index"] is not None
+                                               and row["start_index"] < row["completion_index"] for row in rows)
+    known_outcomes = coverage and all(row["outcome"] is not None for row in rows)
+    known_outputs = coverage and all(row["output_bytes"] is not None for row in rows)
+    retries = 0
+    retry_known = coverage and all(row["request_signature"] is not None for row in rows)
+    for index, row in enumerate(rows):
+        previous = next((earlier for earlier in reversed(rows[:index])
+                         if earlier["request_signature"] == row["request_signature"]), None)
+        row["inferred_retry"] = None if not retry_known else bool(
+            previous and previous["outcome"] in failure_kinds
+            and previous["completion_index"] < row["start_index"])
+        retries += row["inferred_retry"] is True
+    counts = {"tool_calls": len(rows) if coverage else None,
+              "duplicate_events": duplicate_events if complete else None,
+              "inferred_retries": retries if retry_known and known_outcomes else None,
+              "empty_responses": sum(row["output_bytes"] == 0 for row in rows) if known_outputs else None,
+              "nonempty_responses": sum(row["output_bytes"] > 0 for row in rows) if known_outputs else None}
+    for label, outcome in (("successful_calls", "success"), ("shell_errors", "shell"),
+                           ("transport_errors", "transport"), ("protocol_errors", "protocol"),
+                           ("tool_errors", "tool"), ("needs_narrowing", "needs_narrowing")):
+        counts[label] = sum(row["outcome"] == outcome for row in rows) if known_outcomes else None
+    return {"schema_version": 1, "source": source, "observed": source in {"native_codex", "stdio_observer"},
+            "scope": "supplied observer events only; unobserved host actions excluded",
+            "complete": coverage, "counts": counts, "calls": rows}
 
 
 def method_compliance(
@@ -259,35 +503,41 @@ def run_codex(repo: Path, task: dict[str, Any], condition: str, args: argparse.N
         ]
         if args.model:
             command.extend(["--model", args.model])
-        command.append(prompt_for(task, condition))
+        for setting in getattr(args, "model_setting", []):
+            command.extend(["-c", setting])
+        command.append(prompt_for(task, condition, getattr(args, "protocol", LEGACY_PROTOCOL), getattr(args, "transport", "cli")))
         started = time.monotonic()
         result = subprocess.run(command, capture_output=True, text=True, timeout=args.timeout)
         wall_ms = round((time.monotonic() - started) * 1000)
         events = []
+        parse_complete = True
         for line in result.stdout.splitlines():
             try:
                 value = json.loads(line)
             except json.JSONDecodeError:
+                parse_complete = False
                 continue
             if isinstance(value, dict):
                 events.append(value)
+        observed = {
+            "wall_ms": wall_ms, "raw_events": events,
+            "trajectory": [record for event in events if event.get("type") == "item.completed"
+                           and (record := summarize_event(event, "native_codex"))],
+            "trajectory_source": "native_codex", "usage": usage_from_events(events),
+            "telemetry": telemetry_from_events(events, parse_complete and result.returncode == 0
+                                                and any(event.get("type") == "turn.completed" for event in events),
+                                                "native_codex"),
+        }
         if result.returncode != 0:
             return {
+                **observed,
                 "error": f"codex exited {result.returncode}: {result.stderr[-500:]}",
-                "wall_ms": wall_ms,
-                "trajectory": [record for event in events if (record := summarize_event(event))],
-                "usage": usage_from_events(events),
             }
         try:
             response = json.loads(answer_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as error:
-            return {"error": f"invalid structured answer: {error}", "wall_ms": wall_ms}
-        return {
-            "response": response,
-            "wall_ms": wall_ms,
-            "trajectory": [record for event in events if (record := summarize_event(event))],
-            "usage": usage_from_events(events),
-        }
+            return {**observed, "error": f"invalid structured answer: {error}"}
+        return {**observed, "response": response}
 
 
 def run_command(
@@ -304,7 +554,8 @@ def run_command(
         schema_path = tmp_path / "answer.schema.json"
         answer_path = tmp_path / "answer.json"
         trajectory_path = tmp_path / "trajectory.json"
-        prompt_path.write_text(prompt_for(task, condition), encoding="utf-8")
+        events_path = tmp_path / "events.json"
+        prompt_path.write_text(prompt_for(task, condition, getattr(args, "protocol", LEGACY_PROTOCOL), getattr(args, "transport", "cli")), encoding="utf-8")
         schema_path.write_text(json.dumps(ANSWER_SCHEMA), encoding="utf-8")
         env = os.environ.copy()
         env.update({
@@ -312,10 +563,14 @@ def run_command(
             "ADEN_BENCH_SCHEMA_FILE": str(schema_path),
             "ADEN_BENCH_ANSWER_FILE": str(answer_path),
             "ADEN_BENCH_TRAJECTORY_FILE": str(trajectory_path),
+            "ADEN_BENCH_EVENTS_FILE": str(events_path),
             "ADEN_BENCH_REPOSITORY": str(repo),
             "ADEN_BENCH_CONDITION": condition,
             "ADEN_BENCH_PROVIDER": args.provider,
             "ADEN_BENCH_MODEL": args.model or "",
+            "ADEN_BENCH_PROTOCOL": getattr(args, "protocol", LEGACY_PROTOCOL),
+            "ADEN_BENCH_TRANSPORT": getattr(args, "transport", "cli"),
+            "ADEN_BENCH_MODEL_SETTINGS": json.dumps(getattr(args, "model_setting", [])),
         })
         command = shlex.split(args.agent_command)
         if not command:
@@ -330,8 +585,22 @@ def run_command(
             timeout=args.timeout,
         )
         wall_ms = round((time.monotonic() - started) * 1000)
+        reported_events: dict[str, Any] = {}
+        if events_path.is_file():
+            try:
+                reported_events = json.loads(events_path.read_text(encoding="utf-8"))
+                if not isinstance(reported_events, dict) or not isinstance(reported_events.get("events"), list) or len(reported_events["events"]) > 10000:
+                    raise ValueError("expected an object with at most 10000 events")
+            except (OSError, ValueError) as error:
+                return {"error": f"invalid adapter events: {error}", "wall_ms": wall_ms,
+                        "telemetry": telemetry_from_events([], source="adapter_self_reported")}
+        events = reported_events.get("events", [])
+        adapter_capture = {"raw_events": events, "trajectory_source": "adapter_self_reported",
+                    "telemetry": telemetry_from_events(events, reported_events.get("complete") is True,
+                                                       "adapter_self_reported")}
         if result.returncode != 0:
             return {
+                **adapter_capture,
                 "error": f"provider adapter exited {result.returncode}: {result.stderr[-500:]}",
                 "wall_ms": wall_ms,
                 "trajectory": [],
@@ -341,7 +610,7 @@ def run_command(
         try:
             response = json.loads(raw)
         except json.JSONDecodeError as error:
-            return {"error": f"invalid structured answer: {error}", "wall_ms": wall_ms}
+            return {**adapter_capture, "error": f"invalid structured answer: {error}", "wall_ms": wall_ms}
 
         trajectory: list[dict[str, Any]] = []
         if trajectory_path.is_file():
@@ -366,8 +635,10 @@ def run_command(
                     if isinstance((value := item.get(key)), str)
                 }
                 if record:
+                    record["source"] = "adapter_self_reported"
                     trajectory.append(record)
         return {
+            **adapter_capture,
             "response": response,
             "wall_ms": wall_ms,
             "trajectory": trajectory,
@@ -377,20 +648,31 @@ def run_command(
 
 def run_fixture(task: dict[str, Any], condition: str, run: int, args: argparse.Namespace) -> dict[str, Any]:
     path = args.fixture_dir / f"{task['id']}.{condition}.{run}.json"
-    return {"response": json.loads(path.read_text(encoding="utf-8")), "wall_ms": 0, "trajectory": [], "usage": {}}
+    return {"response": json.loads(path.read_text(encoding="utf-8")), "wall_ms": 0, "trajectory": [], "usage": {},
+            "telemetry": telemetry_from_events([], source="fixture")}
 
 
 def aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
+    protocols = {row.get("protocol", LEGACY_PROTOCOL) for row in records}
+    if len(protocols) > 1:
+        raise ValueError("cannot aggregate different benchmark protocols")
+    if len({row.get("transport", "cli") for row in records}) > 1:
+        raise ValueError("cannot aggregate different benchmark transports")
     by_condition: dict[str, Any] = {}
     for condition in CONDITIONS:
         rows = [row for row in records if row["condition"] == condition and not row.get("error")]
+        observed_calls = [row["telemetry"]["counts"]["tool_calls"] for row in rows
+                          if row.get("telemetry", {}).get("observed") is True
+                          and row["telemetry"].get("complete") is True
+                          and row["telemetry"].get("counts", {}).get("tool_calls") is not None]
         by_condition[condition] = {
             "runs": len(rows),
             "grounded_completion": round(sum(row["score"]["grounded_complete"] for row in rows) / len(rows), 4) if rows else None,
             "mean_fact_recall": round(sum(row["score"]["fact_recall"] for row in rows) / len(rows), 4) if rows else None,
             "mean_evidence_recall": round(sum(row["score"]["evidence_recall"] for row in rows) / len(rows), 4) if rows else None,
             "median_wall_ms": sorted(row["wall_ms"] for row in rows)[len(rows) // 2] if rows else None,
-            "mean_tool_calls": round(sum(len(row["trajectory"]) for row in rows) / len(rows), 2) if rows else None,
+            "mean_tool_calls": round(sum(observed_calls) / len(observed_calls), 2) if observed_calls else None,
+            "observed_tool_call_runs": len(observed_calls),
             "method_compliance": round(sum(row["method_compliant"] for row in rows) / len(rows), 4) if rows else None,
             "errors": sum(1 for row in records if row["condition"] == condition and row.get("error")),
         }
@@ -399,12 +681,15 @@ def aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
 
 def render_markdown(report: dict[str, Any]) -> str:
     lines = [
-        "# Aden paired agent benchmark",
+        f"# Aden paired agent benchmark — {report.get('protocol', LEGACY_PROTOCOL)}",
         "",
         f"Corpus: `{report['corpus']}`  ",
         f"Runs per task/condition: {report['runs_per_condition']}  ",
         f"Engine: `{report['engine']}`  ",
         f"Provider: `{report.get('provider', report['engine'])}`",
+        f"Protocol: `{report.get('protocol', LEGACY_PROTOCOL)}`  ",
+        f"Transport: `{report.get('transport', 'cli')}`  ",
+        "Protocol results are separate experiments; do not pool legacy and agent-usage runs.",
         "",
         "| Condition | Successful runs | Grounded completion | Fact recall | Evidence recall | Method compliance | Median wall | Tool calls | Errors |",
         "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
@@ -422,6 +707,7 @@ def render_markdown(report: dict[str, Any]) -> str:
     lines += [
         "",
         "Deterministic scoring checks required fact patterns, expected evidence, and forbidden claims. It does not judge prose quality.",
+        "Tool-call means include only complete observed event scopes; missing and self-reported telemetry are excluded. Counts do not cover unobserved host actions.",
         "Repository revisions are pinned by the corpus; use `--allow-revision-mismatch` only for exploratory runs.",
     ]
     return "\n".join(lines) + "\n"
@@ -442,6 +728,10 @@ def main() -> None:
     )
     parser.add_argument("--provider", help="provider label recorded in reports (defaults to engine)")
     parser.add_argument("--model")
+    parser.add_argument("--protocol", choices=PROTOCOLS, default=LEGACY_PROTOCOL)
+    parser.add_argument("--transport", choices=("cli", "mcp"), default="cli")
+    parser.add_argument("--model-setting", action="append", default=[], metavar="KEY=VALUE",
+                        help="explicit model configuration (repeatable); Codex -c or adapter environment")
     parser.add_argument("--timeout", type=int, default=300)
     parser.add_argument("--allow-revision-mismatch", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
@@ -450,6 +740,10 @@ def main() -> None:
     args = parser.parse_args()
     if args.runs < 1:
         parser.error("--runs must be positive")
+    if args.transport == "mcp" and (args.protocol != NEUTRAL_PROTOCOL or args.engine == "codex"):
+        parser.error("--transport mcp requires agent-usage-v1 with command or fixture engine")
+    if any(not re.match(r"^[A-Za-z_][A-Za-z0-9_.]*=.+$", value) for value in args.model_setting):
+        parser.error("--model-setting requires KEY=VALUE")
     args.provider = args.provider or args.engine
     if args.engine == "fixture" and not args.fixture_dir:
         parser.error("--fixture-dir is required for fixture engine")
@@ -476,6 +770,10 @@ def main() -> None:
             "engine": args.engine,
             "provider": args.provider,
             "model": args.model,
+            "protocol": args.protocol,
+            "transport": args.transport,
+            "model_settings": args.model_setting,
+            "answer_schema_id": ANSWER_SCHEMA_ID,
         }, indent=2))
         return
 
@@ -491,6 +789,8 @@ def main() -> None:
             raise SystemExit(f"{task['id']}: revision mismatch at {repo}: expected {expected}, got {actual}")
         prepared.append((task, repo, actual))
 
+    identity = run_identity(args)
+    repository_states = {str(repo): repository_identity(repo) for repo in {repo for _, repo, _ in prepared}}
     records = []
     for task, repo, revision in prepared:
         for run in range(1, args.runs + 1):
@@ -512,8 +812,14 @@ def main() -> None:
                     "revision": revision,
                     "condition": condition,
                     "run": run,
+                    "protocol": args.protocol,
+                    "transport": args.transport,
+                    "prompt": {"text": prompt_for(task, condition, args.protocol, args.transport),
+                               "sha256": sha256_bytes(prompt_for(task, condition, args.protocol, args.transport).encode())},
+                    "repository_identity": str(repo),
                     **outcome,
                 }
+                record.setdefault("telemetry", telemetry_from_events([]))
                 if "response" in record:
                     record["score"] = score_response(task, record["response"])
                     record["method_compliant"] = method_compliance(
@@ -524,7 +830,9 @@ def main() -> None:
                 records.append(record)
 
     report = {
-        "schema_version": 1,
+        "schema_version": REPORT_SCHEMA_VERSION,
+        **identity,
+        "repositories": repository_states,
         "corpus": str(args.tasks),
         "engine": args.engine,
         "provider": args.provider,

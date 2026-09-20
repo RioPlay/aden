@@ -69,6 +69,10 @@ validate_archive() {
     fi
     grep -Fqx "Aden v$version" "$bundle/MANIFEST.txt"
     grep -Fqx "Target: $target" "$bundle/MANIFEST.txt"
+    grep -Fqx "Source: https://github.com/RioPlay/aden/tree/v$version" "$bundle/MANIFEST.txt"
+    grep -Fqx "Source archive: https://github.com/RioPlay/aden/archive/refs/tags/v$version.tar.gz" "$bundle/MANIFEST.txt"
+    cmp "$ROOT/LICENSE" "$bundle/LICENSE"
+    cmp "$ROOT/NOTICE.md" "$bundle/NOTICE.md"
     (cd "$bundle" && check_sha256_file SHA256SUMS)
     echo "Validated release archive: $(basename "$archive")"
 }

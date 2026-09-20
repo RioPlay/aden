@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """DEPRECATED: product gauntlet lives in Rust integration tests.
 
 Use:

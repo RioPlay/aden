@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Time-boxed held-out breadth regression for native Aden routing."""
 
 from __future__ import annotations

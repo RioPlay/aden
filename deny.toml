@@ -1,9 +1,9 @@
 # cargo-deny configuration — license and source policy for Aden.
-# Run: cargo deny check
-# CI: see .github/workflows/ci.yml (license-check job)
+# Run: cargo deny --workspace --all-features --locked check
+# CI: see .github/workflows/quality.yml (dependency/asset audit step)
 
 [graph]
-# Exclude dev-only targets from the analysis — they never ship in the binary.
+# Include dev-only targets as well as shipped dependencies in the policy check.
 exclude-dev = false
 
 [licenses]

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """DEPRECATED: use `cargo test -p aden-mcp --test mcp_live_gauntlet`.
 
 Drive the standalone aden-mcp stdio server as a minimal LLM client.

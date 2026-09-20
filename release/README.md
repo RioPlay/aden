@@ -40,3 +40,11 @@ Existing binaries are never overwritten unless `--force` / `-Force` is given.
 Uninstall with `./install.sh --uninstall` or `.\install.ps1 -Uninstall`, passing
 the same custom install directory if one was used. Uninstall preserves graph
 stores and model caches.
+
+## Source and licenses
+
+Aden is licensed under AGPL-3.0-or-later; see the included `LICENSE`.
+`NOTICE.md` preserves third-party attribution and the vendored viewer notices.
+`MANIFEST.txt` links to the matching source tag and source archive on GitHub.
+The release workflow requires the tag to match the workspace version and pass
+the repository's CI and quality gates before creating a draft release.

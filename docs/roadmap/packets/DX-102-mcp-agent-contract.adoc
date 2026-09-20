@@ -44,3 +44,384 @@ during migration.
 == Completion evidence
 
 Capability snapshots, response fixtures, and agent-consumption integration tests.
+
+[[dx-102-agent-ready-slice]]
+== Agent-ready M0 / M1 delivery record
+
+As of 2026-09-19, baseline Git commit `e07febd7bf6bc073bc02183966efc4364fe38248`,
+branch `main`, initially clean worktree. This is an uncommitted follow-up to
+DX-102, not a new release or a reopening of its original acceptance criteria.
+
+Work card (documentation and contract tests): align MCP startup tool choice with
+the generated guidance's direct known-symbol path. `SERVER_INSTRUCTIONS`
+at baseline prescribed tree then discovery even when the target was already known;
+`AGENTS_GUIDANCE` already permits direct `asm` / `query`.
+Acceptance: conditional orientation/discovery, executable known-symbol MCP
+examples, matching CLI examples, unchanged schemas and size ceilings, and live
+coverage of overbroad recovery plus CLI ambiguity coverage. Owned surfaces: MCP startup text,
+live gauntlet, AI integration guide, and this record. Risk: misleading examples
+or increased startup cost. Regression: replay examples extracted from actual
+initialize output against the built CLI/MCP pair. Rollback: revert only this
+follow-up's four-file diff. M2-M4, new tools, routing and storage are deferred.
+
+Baseline tools: installed CLI and active host both use
+`C:/Users/unknown/AppData/Local/Aden/bin/aden.exe` (host arguments `mcp stdio`),
+version 0.4.1, build `e07febd7bf6b (clean)`. Standalone compatibility executable
+is beside it. Cargo 1.96.0 and rustc 1.96.0; CI pins Rust 1.90.
+Validation uses `target/debug/aden.exe` and `aden-mcp.exe`, never the installed
+host as evidence for the edited code. Default workspace members exclude
+`aden-lsp`; this slice does not change it.
+
+[cols="2,1,3,2,2"]
+|===
+|Capability |Status |Source symbol |Test / observation |Gap
+|Descriptions, presets, generated guidance |partial
+|`SERVER_INSTRUCTIONS`, `TOOLS`, `AGENTS_GUIDANCE`
+|`mcp_guidance_states_observed_retrieval_limits` |Known-target startup detour
+|Intent and explicit targets |partial |`cmd_ask`, `cmd_asm`
+|Initial MCP ask returned `multi_anchor`; live gauntlet |Heuristics need corroboration
+|CLI/MCP contracts |verified |`tool_from_spec_for_surface`, `build_cli_args`
+|Schema/argv unit tests |No schema change needed
+|Provenance and receipts |verified |`AdenMcpServer::call_tool`
+|MCP grep returned source ranges and current receipt |Full coverage not asserted
+|Budgets and narrowing |partial |`SERVER_INSTRUCTIONS`, strict response adapter
+|Registry ceilings and live gauntlet |Complete budget audit deferred
+|Freshness and graph versions |partial |Read refresh / receipt contract
+|Current receipts observed; installed format versions recorded |Edit matrix deferred
+|Workspace and exclusions |partial |`confine_path_args_to_roots`
+|Scope/path unit tests, live gauntlet |Ignore-policy audit deferred
+|Timeouts, concurrency, duplicate reads |verified
+|`tool_timeout`, `join_read_flight`, `read_flight_key`
+|Deadline, busy, sharing and cancellation unit tests |No new scheduler needed
+|Context deduplication/cache |unknown |Not traced in this slice
+|No dedicated baseline |Inspect before M3
+|Regressions and client setup |partial |CI platform contracts / live gauntlet
+|Actual host process inspected |No LLM adoption measurement
+|===
+
+Request trace: `TOOLS` -> `tool_from_spec_for_surface` publishes the schema;
+`AdenMcpServer::call_tool` validates/scope-checks and `build_cli_args` dispatches
+to the CLI. `cmd_asm` resolves via `resolve_required_anchor`, loads a bounded
+neighborhood, calls `assemble_adg`, adds the existing receipt, and serializes.
+The MCP adapter retains the evidence under the strict transport budget.
+`AGENTS_GUIDANCE` already teaches direct unique-symbol navigation; its generator
+and managed copies need no edits or regeneration for this slice.
+
+Implemented: conditional tool choice and two executable JSON examples in startup
+instructions; matching MCP/CLI guide examples; live replay before discovery,
+schema-key and documentation parity checks, and comparison of CLI/MCP evidence.
+No tools, arguments, retrieval defaults, schemas, persistence, global settings,
+or installed binaries changed.
+
+Validation results:
+
+* Baseline `cargo test --locked -p aden-mcp --lib`: 74 passed.
+* `cargo build --locked -p aden-cli -p aden-mcp`: passed. Built CLI version smoke
+  reports 0.4.1, `dev (source-tree)`; CLI asm/query smoke returned current receipts.
+* New live test before guidance change: failed as intended, missing executable
+  asm startup example. After change: passed, including final CLI evidence parity.
+* `ADEN_BIN=target/debug/aden.exe cargo test --locked -p aden-mcp`: 79 passed
+  (74 library, 2 binary, 2 smoke, 1 live), no failures.
+* `cargo fmt --all -- --check`, `git diff --check`, and
+  `python scripts/validate_roadmap.py`: passed.
+* Built `aden check . --severity Forbid`: passed, zero errors/warnings.
+* Built `aden ready .`: passed with 4,791 advisory findings, no hard failure.
+  The new test's formatted flag triggers an advisory command-construction rule;
+  reviewed as a false positive: separate `Command::arg` values, no shell, and
+  arguments extracted from compiled startup text. Other findings were not audited
+  repository-wide; they are not claimed resolved or all pre-existing.
+* Built against Git commit using `aden impact-diff --since e07febd7bf6bc073bc02183966efc4364fe38248 .`:
+  passed. Only the four intended files are dirty.
+* CLI parity/symbol-resolution build initially hit Windows executable locking
+  while the debug CLI was running; serialized rerun passed:
+  `cargo test --locked -p aden-cli --test mcp_flag_parity --test symbol_resolution`
+  (10 parity and 4 symbol-resolution tests, including ambiguity).
+
+Measurements (UTF-8 bytes, actual initialize / tools-list responses): startup
+1,430 -> 1,525 (+95); complete registry 4,252 -> 4,252. Existing ceilings remain
+1,600 / 5,000. Two documented direct-call examples now replay successfully with
+zero tool errors. This is deterministic contract testing, not measured LLM
+adoption, token savings, or a claim about first-use model behavior.
+
+M0 and this M1 slice are complete; the broader M1 backlog remains open.
+Independent read-only review by `review_guidance` found no blocking issues,
+including the final CLI parity addition; reviewer did not independently rerun
+tests. Its two record-label findings (baseline tense and ambiguity coverage)
+were corrected. Full workspace, `aden-lsp`, Rust 1.90, and other OS checks are
+not part of this Windows guidance slice. Next smallest M1 package: executable
+ambiguous-name recovery examples over live MCP. M2-M4 remain deferred. No commits
+or pushes; recovery is the scoped four-file rollback described above.
+
+[[dx-102-luna-validation]]
+== Luna validation follow-up (2026-09-19, same uncommitted baseline)
+
+User-requested broader validation and four fresh `gpt-5.6-luna` sessions:
+two repetitions of one real-code explanation, one ambiguity/overbroad fixture
+task, and one test implementation. No conversation history was forked. Agents
+received current initialize instructions and schemas captured from the built
+MCP server. Read-only trials used a temporary stdio probe against copied built
+binaries; the coding trial used the copied CLI. The installed host was not
+updated. Existing multi-repository benchmark fixtures remain unchanged.
+
+Review criteria: valid tool inputs, task completion with source evidence,
+preservation of unresolved ambiguity and coverage limits, efficient first-tool
+choice, truthful handoff, and executable regression assertions. Results:
+
+[cols="2,1,4"]
+|===
+|Trial |Aden calls |Observed outcome
+|Known-symbol explanation A |7
+|Correct caller, environment, timeout, scope and argument boundaries. Started
+with grep/locate instead of direct context; one reported PowerShell quoting
+error recovered. Claimed two empty responses although recorded MCP responses
+were nonempty. Described successful output as sanitized too broadly.
+|Known-symbol explanation B |5
+|Same core facts; correctly acknowledged a stale graph receipt and inspected
+source. Also started with grep and overstated successful-output sanitization.
+The claimed 4,000-byte error cap omits the appended truncation marker.
+|Ambiguity and broad question |6
+|Identified both reset implementations, inspected both, left intended target
+unresolved, honored needs_narrowing, and did not equate zero keyword matches
+with absence of vulnerabilities. No invalid calls or guard-bypass retries.
+|Live ambiguity regression |CLI navigation
+|Luna added the test within its owned file and preserved existing edits.
+Reviewer identified global environment mutation becoming unsafe with parallel
+tests; Luna replaced it with per-child ADEN_BIN configuration. Parent ran both
+live tests successfully. This is reviewer-assisted completion.
+|===
+
+The 18 recorded model MCP calls had no protocol/argument errors. Counts exclude
+parent setup probes (including one fixture-root setup correction). The shell
+syntax example in the explanation handoff used grep and may have biased first
+choice; these trials do not isolate the startup wording's causal effect.
+Both explanations' sanitization claim was checked against
+`preserve_cli_output_for_mcp`: successful read JSON is preserved/normalized,
+whereas error redaction belongs to `preserve_cli_error_for_mcp`. Source review
+remains necessary for precise security statements.
+
+Broader checks actually run:
+
+* `cargo test --locked --workspace --exclude aden-lsp --no-fail-fast`:
+  883 passed, 15 intentionally ignored, zero failures. This compiled before
+  Luna's new test; the final changed test target was rerun separately.
+* `cargo test --locked -p aden-mcp --test mcp_live_gauntlet -- --nocapture`
+  with ADEN_BIN pointing to the copied built CLI: both tests passed, including
+  `live_mcp_ambiguous_asm_requires_exact_candidate` and startup/CLI parity.
+* `cargo test --locked -p aden-lsp --no-fail-fast`: compiled and exited zero,
+  but contains zero tests; this is not LSP runtime validation.
+* `python -m unittest discover -s scripts -p 'test_*.py'`: 43 passed.
+* Formatting and diff whitespace checks passed.
+
+Working test change: `crates/aden-mcp/tests/mcp_live_gauntlet.rs` now verifies
+structured ambiguity, both candidates, and exact-candidate recovery, with
+per-child executable configuration for safe parallel runs. Review found no
+remaining blocking issue. Raw local logs, actual MCP request/response records,
+fixture and binary copies are under ignored `target/luna-validation/`.
+
+Conclusion: Luna demonstrated useful bounded work with review, not unattended
+reliability. Four runs on Windows are a small supervised pilot, not a model
+ranking, token/cost benchmark, or cross-platform release gate. Next smallest
+validation: remove tool-choice priming and repeat source-backed explanation
+tasks with explicit checks separating successful output from error redaction.
+The prior next step (live ambiguity regression) is now covered. Rollback of this
+follow-up is limited to the additional test/harness diff and this record;
+retain the preceding M1 guidance changes. No commits, pushes, or global changes.
+
+[[dx-102-next-improvements]]
+== Next improvement plan (2026-09-19, executed)
+
+Objective: make small-model handoffs measurable and source-grounded before
+changing the product surface. Execute one package at a time in this order.
+
+[[dx-102-next-protocol]]
+=== 1. Separate agent-usage trials from the legacy retrieval benchmark
+
+Inspection found that `prompt_for` in `scripts/agent_bench.py` forces ask-first,
+immediate synthesis, and selection of the first returned ambiguity candidate;
+the README instead describes adaptive navigation. Existing tests intentionally
+pin the deterministic prompt. This benchmark cannot measure free tool choice.
+
+Add an opt-in, explicitly versioned agent-usage protocol to the existing harness;
+keep legacy behavior/results identifiable and preserve the frozen task corpus.
+Permit direct symbol navigation and exact source reads, retain unresolved
+ambiguity, and avoid first-tool examples in neutral handoffs. Correct the README
+to describe both protocols accurately. Own `scripts/agent_bench.py`,
+`scripts/test_agent_bench.py`, and `scripts/agent-bench/README.md`.
+
+Acceptance: legacy regression tests remain green; generated neutral prompts do
+not prescribe ask/grep first or select candidate zero; reports identify protocol,
+prompt, schema, model/settings, source revision plus dirty diff, and binary
+fingerprints. Exercise a local fixture before any model trial. Rollback only
+the opt-in protocol changes. This is the next implementation slice.
+
+[[dx-102-next-evidence]]
+=== 2. Record observed outcomes and verify consequential claims
+
+Extend the existing event/adapter handling rather than add another runner.
+`summarize_event` currently retains invocation names but drops outcomes, while
+adapter trajectories are self-reported. Preserve that distinction in reports.
+Derive counts, errors, nonempty responses, and retries from correlated recorded
+events; missing or incomplete telemetry means unknown, never zero. Keep shell
+failures, transport failures, tool errors, and valid needs_narrowing separate.
+
+Add fixtures and a review rubric for the observed security mistakes: successful
+output preservation/normalization versus error redaction, and a 4,000-byte
+prefix versus total output including the truncation marker. Require actual
+source locations and distinguish inspected facts from graph-derived inference.
+Source identity must match the claim; routing confidence is insufficient.
+Keep automated pattern scores separate from source-based review verdicts.
+
+Acceptance: replay fixtures correctly count success, error, empty, duplicate,
+retry and missing-event cases; model prose cannot change recorded totals.
+The prior incorrect claims fail the rubric, corrected source-backed answers
+pass. First-attempt results and reviewer-assisted completion stay separate.
+Use a new fixture file for new cases; do not rewrite locked regression tasks.
+Rollback additive reporting/fixtures independently of package 1.
+
+[[dx-102-next-pilot]]
+=== 3. Repeat Luna trials, then decide whether product guidance needs a change
+
+Freeze packages 1-2, task text, built binaries and current startup guidance.
+Run three fresh sessions per scenario: known-symbol explanation, ambiguous
+target, broad-question guard, stale-context interpretation, and bounded coding
+(15 runs total). Keep read-only and coding permissions explicit; isolate coding
+work and run its native tests. Retain local raw evidence. Review answers against
+source without showing the reviewer model identity where practical.
+
+Pass criteria in this sample: supported consequential claims, truthful outcome
+reporting, no silent ambiguity resolution, no guard bypass, and tests passing
+for accepted code. Report each failure and intervention; fewer calls and first
+tool choice are diagnostics, not correctness gates. A grep-first call is not
+itself a failed task. This pilot does not establish a population success rate.
+
+If a failure recurs, change one handoff/guidance detail and rerun the affected
+scenarios with matched settings and counterbalanced order. Promote a product
+change only when correctness is preserved and the measured deficit improves;
+retain current size ceilings and CLI/MCP parity tests. Otherwise keep the
+improvement in the handoff/evaluation layer.
+
+Independent planning review agreed with this order and the separation of
+observed versus self-reported evidence. Deferred: new tools, expanded startup
+text, retrieval/router changes, session memory, and model ranking. A single
+unexpected ask route observed during review is an investigation lead, not
+evidence for a routing rewrite. The user subsequently authorized execution of
+this plan; the current checkpoint below supersedes the planning-only status.
+
+[[dx-102-execution-checkpoint]]
+== Execution results (2026-09-19)
+
+Packages 1 and 2 are implemented. `agent-usage-v1` is opt-in; the legacy
+retrieval prompt/default and locked corpus remain unchanged. Reports bind exact
+prompts, protocol/transport, source revision plus dirty diff, schema, harness,
+fixtures and binary identities. Provider-effective model settings remain
+unknown rather than inferred from the requested model name.
+
+Correlated event replay distinguishes observed from adapter-self-reported data,
+shell/transport/protocol/tool failures, valid `needs_narrowing`, duplicate events,
+and inferred repeated-request retries. Missing/contradictory evidence remains
+unknown. Independent review caught and regression-tested structured-output
+false empties, request identity mismatches, equal-length conflicting payloads,
+and failed-status/success contradictions. The isolated stdio observer records
+actual responses; setup and evaluator calls have separate logs.
+
+The fixture scenarios and manual source-based rubric are repository inputs under
+`scripts/agent-bench/`. The rubric rejects the earlier success-sanitization and
+whole-response 4000-byte claims; corrected examples pass source review. This is
+manual semantic evaluation, not certification by a keyword scorer.
+
+[[dx-102-luna-repeated-pilot]]
+=== Repeated model pilot
+
+Executed 15 fresh `gpt-5.6-luna` sessions: three each for known-symbol
+explanation, ambiguity, broad security scope, stale evidence, and isolated
+coding. No effort override was requested; effective provider settings are
+unavailable. Task text, copied binaries, startup/schema capture, harness,
+fixture source and prompts were hashed before execution. Each case had an
+independent repository. First answers, logs and source snapshots were frozen
+before review; there were no reviewer-assisted completions.
+
+All three coding fixes stayed within `src/lib.rs`, passed their native tests
+and an independent matrix of Unicode strings and byte budgets. Their added
+regression tests failed against the original slicing bug. Non-coding fixture
+inputs were unchanged. Baseline observation recorded 123 calls and nine host
+source-range rejections; no recorded transport, protocol, or Aden tool errors.
+Output counts remain unknown for runs whose rejected reads lack output data.
+The broad cases did not invoke `ask`, so this pilot does not establish a guard
+bypass or test that guard's runtime behavior; it tests handling of broad scope.
+
+Detailed per-run verdicts, failures, counts and hashes are retained in
+`scripts/agent-bench/agent-usage-pilot-2026-09-19.json`. Raw evidence, exact
+prompts and frozen source live locally in `target/agent-usage-pilot/` and are
+excluded from version control. Independent source review adopted after
+reconciliation gives the following baseline results:
+
+[cols="2,1,1,1",options="header"]
+|===
+|Scenario |Pass |Partial |Fail
+|Known-symbol explanation |0 |3 |0
+|Ambiguity |3 |0 |0
+|Broad security scope |0 |2 |1
+|Stale evidence |3 |0 |0
+|Bounded coding |3 |0 |0
+|===
+
+`known-1` and `known-3` overstate the 4000-byte output bound; `known-2`
+incorrectly claims interior blank-line collapsing. `broad-1` certifies safe
+deployment from bounded inspection. `broad-2` mixes a supported read-only/write-
+target annotation concern with unsupported disclosure/control claims;
+`broad-3` promotes potential environment exposure into an unconditional unsafe
+verdict. Partial answers are not accepted as fully correct.
+
+The independent reviewer saw anonymized answers and frozen source, without
+model/variant identities or primary grades. Its initial Aden search incidentally
+returned one scenario question; this is a minor blinding limitation. Primary
+review initially classified the latter two broad answers as failures; final
+review retains their supported observations as partial credit. Both grades are
+preserved in the report rather than silently replacing the earlier assessment.
+
+[[dx-102-followup-pilot]]
+=== Single-instruction follow-up
+
+Repeated the two deficit scenarios in eight additional fresh sessions: two
+matched pairs each, original handoff A and one extra verification sentence B,
+with launch order A/B then B/A. Source, binaries and requested settings were
+matched. The added sentence asked the model to audit consequential claims
+against executable statements, evidence scope, work after limit checks and
+trust-boundary assumptions. This was an exploratory follow-up, not a powered
+comparison. Independent review found two passes and two partial answers for A,
+and one pass and three partial answers for B. These tiny exploratory counts
+are not evidence of a population performance difference. Across all 23 runs,
+229 observed calls included 22 rejected source-range reads; all recorded tool,
+protocol and transport error counts were zero. It did not establish reliable
+correction of the explanation or
+security-scope errors, so the sentence is not promoted into startup guidance.
+
+Corrected the demonstrably inaccurate `sanitize_error` comment separately:
+interior blank lines are preserved; 4000 bytes bounds the sanitized UTF-8
+prefix before the 29-byte marker, not the final string or structured envelope.
+No runtime behavior changed. Trials continued against frozen earlier source;
+any model benefit from this comment correction is unmeasured.
+
+[[dx-102-pilot-decision]]
+=== Decision and validation
+
+Use bounded handoffs with explicit file ownership, executable acceptance checks
+and review of consequential claims. This sample supports the tested small
+coding, ambiguity and current-source verification tasks. It does not support
+unsupervised deployment-security certification. Plausible security observations
+remain investigation leads until trust boundaries and exploitability are
+verified. Several broad runs exceeded the requested 12-call budget; if this is
+a hard requirement, enforce it in execution rather than rely on prose.
+
+Counts cover observer calls only; unrelated host commands/edits are unobserved,
+not zero. Every observed request starts a new MCP process, so this is not a
+persistent-session concurrency/latency evaluation. Fixture isolation used task
+instructions and post-run comparisons, not an OS sandbox. These small samples
+are not population success rates or model rankings.
+
+Validation: all 62 Python tests passed; the frozen regression dataset lock test
+passed; roadmap validation (15 packets, acyclic), documentation anchor/policy checking
+and diff checking passed. The prior
+workspace/native MCP validation recorded above remains applicable; this slice
+adds Python evaluation/reporting and a Rust comment correction. No commits,
+pushes, global configuration changes, startup expansion or routing rewrite.

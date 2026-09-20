@@ -46,23 +46,36 @@ fn documented_integrity_identifier(rel_path: &Path, line: &str, candidate: &str)
     }
 }
 
-/// Structured benchmark manifests also carry public integrity identifiers.
-/// Keep this narrower than the prose exemption: only a JSON revision field
-/// may hold a 40-hex Git commit, and only the dedicated regression lock may
-/// hold 64-hex file digests. Other JSON strings remain fully scannable.
+/// JSON provenance fields carry public integrity identifiers. Exempt only
+/// exact, explicitly labelled hex values from the generic token detector;
+/// provider-specific credential patterns remain active.
 fn structured_integrity_identifier(rel_path: &Path, line: &str, candidate: &str) -> bool {
-    if !candidate.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+    if rel_path.extension().and_then(|ext| ext.to_str()) != Some("json")
+        || !candidate.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
         return false;
     }
-    let compact: String = line.chars().filter(|c| !c.is_whitespace()).collect();
+    let entry = line.trim().trim_end_matches(',');
+    let Ok(serde_json::Value::Object(fields)) =
+        serde_json::from_str::<serde_json::Value>(&format!("{{{entry}}}"))
+    else {
+        return false;
+    };
+    if fields.len() != 1 {
+        return false;
+    }
+    let (key, value) = fields.iter().next().unwrap();
+    if value.as_str() != Some(candidate) {
+        return false;
+    }
     match candidate.len() {
-        40 => compact == format!(r#""revision":"{candidate}""#),
+        40 => matches!(key.as_str(), "revision" | "source_commit"),
         64 => {
-            rel_path
-                .file_name()
-                .is_some_and(|name| name == "regression-lock.json")
-                && (compact.ends_with(&format!(r#""{candidate}","#))
-                    || compact.ends_with(&format!(r#""{candidate}""#)))
+            key == "sha256"
+                || key.ends_with("_sha256")
+                || rel_path
+                    .file_name()
+                    .is_some_and(|name| name == "regression-lock.json")
         }
         _ => false,
     }
@@ -1156,6 +1169,50 @@ mod tests {
         assert!(!structured_integrity_identifier(
             Path::new("other-lock.json"),
             &format!(r#"    "file": "{digest}""#),
+            &digest
+        ));
+    }
+
+    #[test]
+    fn json_provenance_does_not_exempt_credentials() {
+        let digest = "a1".repeat(32);
+        let commit = "b2".repeat(20);
+        let path = Path::new("report.json");
+        for key in ["sha256", "prompt_sha256"] {
+            let line = format!(r#" "{key}": "{digest}", "#);
+            assert!(structured_integrity_identifier(path, &line, &digest));
+            assert!(!structured_integrity_identifier(
+                Path::new("source.rs"),
+                &line,
+                &digest
+            ));
+        }
+        assert!(structured_integrity_identifier(
+            path,
+            &format!(r#""source_commit": "{commit}","#),
+            &commit
+        ));
+        for key in ["token", "password", "api_key", "file"] {
+            assert!(!structured_integrity_identifier(
+                path,
+                &format!(r#""{key}": "{digest}""#),
+                &digest
+            ));
+        }
+        let non_hex = "z1".repeat(32);
+        assert!(!structured_integrity_identifier(
+            path,
+            &format!(r#""sha256": "{non_hex}""#),
+            &non_hex
+        ));
+        assert!(!structured_integrity_identifier(
+            path,
+            &format!(r#""sha256": "{digest}", "token": "{digest}""#),
+            &digest
+        ));
+        assert!(!structured_integrity_identifier(
+            path,
+            &format!(r#""sha256": "prefix{digest}""#),
             &digest
         ));
     }

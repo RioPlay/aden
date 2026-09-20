@@ -64,6 +64,17 @@ jobs:
       - name: Offline viewer navigation and search regressions
         run: node --test scripts/test_viewer.cjs scripts/test_simple_viewer.cjs
 
+      - name: Verify vendored bytes on each platform
+        shell: bash
+        working-directory: crates/aden-cli/assets
+        run: |
+          set -euo pipefail
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum --check CHECKSUMS
+          else
+            shasum -a 256 --check CHECKSUMS
+          fi
+
       - name: Shell entry point syntax
         shell: bash
         run: |

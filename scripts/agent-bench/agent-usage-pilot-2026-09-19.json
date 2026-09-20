@@ -1,0 +1,1147 @@
+{
+  "schema_version": 2,
+  "date": "2026-09-19",
+  "kind": "supervised-isolated-fixture-pilot",
+  "protocol": "agent-usage-v1",
+  "requested_model": "gpt-5.6-luna",
+  "effective_model_settings": null,
+  "source_commit": "e07febd7bf6bc073bc02183966efc4364fe38248",
+  "source_dirty_diff_sha256": "8bf47aa7aac33fbd825e2e6fff69f74dc92a833428698f418ad39168da08cb32",
+  "binaries": {
+    "aden.exe": {
+      "path": "target/luna-validation/bin/aden.exe",
+      "sha256": "aa9a4ad02a2354b582d7544fc694492784a8142bf3ea3ec3b24048f458f69d0c"
+    },
+    "aden-mcp.exe": {
+      "path": "target/luna-validation/bin/aden-mcp.exe",
+      "sha256": "43a04b839b205418ca8b1475d56133998b3e4c1fc3caf2b1cc96a93decd70ab9"
+    }
+  },
+  "harness_and_fixture_identities": {
+    "scripts/agent_bench.py": {
+      "path": "scripts/agent_bench.py",
+      "sha256": "199cd02fdb79c8c4d287d1d0594c819fedb614abc59cae37f9263b7c60bfea48",
+      "bytes": 43184
+    },
+    "scripts/agent_bench_probe.py": {
+      "path": "scripts/agent_bench_probe.py",
+      "sha256": "6c13163a123bfabbdfd41cdc2f8ebaaaeb14f7b4aa689766a6fefe453854eb00",
+      "bytes": 8440
+    },
+    "scripts/agent-bench/agent-usage-scenarios.json": {
+      "path": "scripts/agent-bench/agent-usage-scenarios.json",
+      "sha256": "18c7202f238b671487b1ac515e5ca149449e4c1fae64af53d0418c8d6d9cf16a",
+      "bytes": 3083
+    },
+    "scripts/agent-bench/agent-usage-rubric.json": {
+      "path": "scripts/agent-bench/agent-usage-rubric.json",
+      "sha256": "caeda679f1c916334075c0adfeb2dd649366fde68f2033dd9551eb4e96df8d41",
+      "bytes": 3235
+    }
+  },
+  "schema_and_startup_sha256": "8bba00738ada967d8ecb19acd8ee58c23d33cf1e3dd8547c71d388216d804b0c",
+  "baseline_inputs": {
+    "known-1": {
+      "prompt_path": "target/agent-usage-pilot/known-1/prompt.txt",
+      "prompt_sha256": "931cd433877c9d6b0e5d4de97e30bca52d3f5643e89349ec85effab169350db1",
+      "permission_variant": "read-only",
+      "input_sha256": {
+        "Cargo.toml": {
+          "sha256": "7ba30a5e2a160d5eb4d1eb7eb205e03f60310c4471b93cbfa3ef1d274942d31b"
+        },
+        "crates/aden-mcp/Cargo.toml": {
+          "sha256": "626a45fabd1ebcc2cc04e7871bb166216e1ef86cc29212060414315315724280"
+        },
+        "crates/aden-mcp/src/lib.rs": {
+          "sha256": "5ea4d716383b08377ae4b18685fd1edb515c5bee82a9dbd87cacd08c5289cfab"
+        }
+      }
+    },
+    "known-2": {
+      "prompt_path": "target/agent-usage-pilot/known-2/prompt.txt",
+      "prompt_sha256": "dc345745a24beea6d386c024606c0f8c7a9d91c40547eb61e42795675f7e534c",
+      "permission_variant": "read-only",
+      "input_sha256": {
+        "Cargo.toml": {
+          "sha256": "7ba30a5e2a160d5eb4d1eb7eb205e03f60310c4471b93cbfa3ef1d274942d31b"
+        },
+        "crates/aden-mcp/Cargo.toml": {
+          "sha256": "626a45fabd1ebcc2cc04e7871bb166216e1ef86cc29212060414315315724280"
+        },
+        "crates/aden-mcp/src/lib.rs": {
+          "sha256": "5ea4d716383b08377ae4b18685fd1edb515c5bee82a9dbd87cacd08c5289cfab"
+        }
+      }
+    },
+    "known-3": {
+      "prompt_path": "target/agent-usage-pilot/known-3/prompt.txt",
+      "prompt_sha256": "0ccc3d3fea3c104657f2a1e974702e3ee86252a4aecc4419a5889c9c1491c569",
+      "permission_variant": "read-only",
+      "input_sha256": {
+        "Cargo.toml": {
+          "sha256": "7ba30a5e2a160d5eb4d1eb7eb205e03f60310c4471b93cbfa3ef1d274942d31b"
+        },
+        "crates/aden-mcp/Cargo.toml": {
+          "sha256": "626a45fabd1ebcc2cc04e7871bb166216e1ef86cc29212060414315315724280"
+        },
+        "crates/aden-mcp/src/lib.rs": {
+          "sha256": "5ea4d716383b08377ae4b18685fd1edb515c5bee82a9dbd87cacd08c5289cfab"
+        }
+      }
+    },
+    "ambiguity-1": {
+      "prompt_path": "target/agent-usage-pilot/ambiguity-1/prompt.txt",
+      "prompt_sha256": "51dbfb0e952c83e0ea047e4262207b8113f7f3e62d477cedd2dde415776a8e25",
+      "permission_variant": "read-only",
+      "input_sha256": {
+        "Cargo.toml": {
+          "sha256": "ba89f95cfb430f44e9e8b94aa3be924d7d83ac62c68980b10cbf0abdd024d92c"
+        },
+        "src/lib.rs": {
+          "sha256": "f8a4c77d0e20dbf1ea2f5a7cc80671ce7fe2c5acbe20f4b997382714a879a0fd"
+        },
+        "src/network.rs": {
+          "sha256": "32c09093f93945b42a5ad28e1561716d4f22c159755c87c77c9ce85a28dba9b3"
+        },
+        "src/storage.rs": {
+          "sha256": "367c214c69429f06e7b64585d7a529a9c5e26b6d79fec017c5faa429e2fe31b5"
+        }
+      }
+    },
+    "ambiguity-2": {
+      "prompt_path": "target/agent-usage-pilot/ambiguity-2/prompt.txt",
+      "prompt_sha256": "6c6cbc070e55f888f0dcf6b8413b90d674f015b15ea9ef15d50bdb6b62f3f7e1",
+      "permission_variant": "read-only",
+      "input_sha256": {
+        "Cargo.toml": {
+          "sha256": "ba89f95cfb430f44e9e8b94aa3be924d7d83ac62c68980b10cbf0abdd024d92c"
+        },
+        "src/lib.rs": {
+          "sha256": "f8a4c77d0e20dbf1ea2f5a7cc80671ce7fe2c5acbe20f4b997382714a879a0fd"
+        },
+        "src/network.rs": {
+          "sha256": "32c09093f93945b42a5ad28e1561716d4f22c159755c87c77c9ce85a28dba9b3"
+        },
+        "src/storage.rs": {
+          "sha256": "367c214c69429f06e7b64585d7a529a9c5e26b6d79fec017c5faa429e2fe31b5"
+        }
+      }
+    },
+    "ambiguity-3": {
+      "prompt_path": "target/agent-usage-pilot/ambiguity-3/prompt.txt",
+      "prompt_sha256": "4a9e31aafab1c8785c1f4dcf0cc660b5542046bab5370ed2aa64631173a532b2",
+      "permission_variant": "read-only",
+      "input_sha256": {
+        "Cargo.toml": {
+          "sha256": "ba89f95cfb430f44e9e8b94aa3be924d7d83ac62c68980b10cbf0abdd024d92c"
+        },
+        "src/lib.rs": {
+          "sha256": "f8a4c77d0e20dbf1ea2f5a7cc80671ce7fe2c5acbe20f4b997382714a879a0fd"
+        },
+        "src/network.rs": {
+          "sha256": "32c09093f93945b42a5ad28e1561716d4f22c159755c87c77c9ce85a28dba9b3"
+        },
+        "src/storage.rs": {
+          "sha256": "367c214c69429f06e7b64585d7a529a9c5e26b6d79fec017c5faa429e2fe31b5"
+        }
+      }
+    },
+    "broad-1": {
+      "prompt_path": "target/agent-usage-pilot/broad-1/prompt.txt",
+      "prompt_sha256": "26d154079cd8260bea4b1328ded3de8681d20cb6be5531f9e0c4bba2440f48c5",
+      "permission_variant": "read-only",
+      "input_sha256": {
+        "Cargo.toml": {
+          "sha256": "d1a6aad2c304748a4be8ccc0986e9e8f89bc5b3704953023360a5e56d20dca04"
+        },
+        "crates/aden-mcp/Cargo.toml": {
+          "sha256": "626a45fabd1ebcc2cc04e7871bb166216e1ef86cc29212060414315315724280"
+        },
+        "crates/aden-mcp/src/lib.rs": {
+          "sha256": "5ea4d716383b08377ae4b18685fd1edb515c5bee82a9dbd87cacd08c5289cfab"
+        }
+      }
+    },
+    "broad-2": {
+      "prompt_path": "target/agent-usage-pilot/broad-2/prompt.txt",
+      "prompt_sha256": "899bb571d9c3126e3f62dd198a477cad6c8cfaebf8716cffa81ba0d90f1ed8d3",
+      "permission_variant": "read-only",
+      "input_sha256": {
+        "Cargo.toml": {
+          "sha256": "d1a6aad2c304748a4be8ccc0986e9e8f89bc5b3704953023360a5e56d20dca04"
+        },
+        "crates/aden-mcp/Cargo.toml": {
+          "sha256": "626a45fabd1ebcc2cc04e7871bb166216e1ef86cc29212060414315315724280"
+        },
+        "crates/aden-mcp/src/lib.rs": {
+          "sha256": "5ea4d716383b08377ae4b18685fd1edb515c5bee82a9dbd87cacd08c5289cfab"
+        }
+      }
+    },
+    "broad-3": {
+      "prompt_path": "target/agent-usage-pilot/broad-3/prompt.txt",
+      "prompt_sha256": "1cd32f709d0906760710607d4205b37edeea7452637c4889e25ed2704cd57d79",
+      "permission_variant": "read-only",
+      "input_sha256": {
+        "Cargo.toml": {
+          "sha256": "d1a6aad2c304748a4be8ccc0986e9e8f89bc5b3704953023360a5e56d20dca04"
+        },
+        "crates/aden-mcp/Cargo.toml": {
+          "sha256": "626a45fabd1ebcc2cc04e7871bb166216e1ef86cc29212060414315315724280"
+        },
+        "crates/aden-mcp/src/lib.rs": {
+          "sha256": "5ea4d716383b08377ae4b18685fd1edb515c5bee82a9dbd87cacd08c5289cfab"
+        }
+      }
+    },
+    "stale-1": {
+      "prompt_path": "target/agent-usage-pilot/stale-1/prompt.txt",
+      "prompt_sha256": "c178bae93b49d550220dfa74b88be1fd6005be4d5a87ca7a435cfb734f753861",
+      "permission_variant": "read-only",
+      "input_sha256": {
+        "Cargo.toml": {
+          "sha256": "401644df3121d6345162738c9f19300c72f4ff65bdcecc11e3a95be8bff9a747"
+        },
+        "src/lib.rs": {
+          "sha256": "5bea3c9659e4bf45bb9e9e0bd86e491223cd015acdd49da2f752e272d34eaca5"
+        }
+      }
+    },
+    "stale-2": {
+      "prompt_path": "target/agent-usage-pilot/stale-2/prompt.txt",
+      "prompt_sha256": "0c98b3c32203f0d447c3d2d803363938911d9524c0438b3e5a06205b771571e7",
+      "permission_variant": "read-only",
+      "input_sha256": {
+        "Cargo.toml": {
+          "sha256": "401644df3121d6345162738c9f19300c72f4ff65bdcecc11e3a95be8bff9a747"
+        },
+        "src/lib.rs": {
+          "sha256": "5bea3c9659e4bf45bb9e9e0bd86e491223cd015acdd49da2f752e272d34eaca5"
+        }
+      }
+    },
+    "stale-3": {
+      "prompt_path": "target/agent-usage-pilot/stale-3/prompt.txt",
+      "prompt_sha256": "6e4df9fd003ea270de2c6b20c03580b9ec781c0a3cd8e0fee40cf4510c3a3c59",
+      "permission_variant": "read-only",
+      "input_sha256": {
+        "Cargo.toml": {
+          "sha256": "401644df3121d6345162738c9f19300c72f4ff65bdcecc11e3a95be8bff9a747"
+        },
+        "src/lib.rs": {
+          "sha256": "5bea3c9659e4bf45bb9e9e0bd86e491223cd015acdd49da2f752e272d34eaca5"
+        }
+      }
+    },
+    "coding-1": {
+      "prompt_path": "target/agent-usage-pilot/coding-1/prompt.txt",
+      "prompt_sha256": "8553c4d100c085db6b7c4a7404d3fee11e254ab79da4b8908abd08f8818fa5e5",
+      "permission_variant": "isolated-coding",
+      "input_sha256": {
+        "Cargo.toml": {
+          "sha256": "8d44c5f795b198bd7f545d9036c4b751158d87ad0a634c85e078ecd5f0d6bc15"
+        },
+        "src/lib.rs": {
+          "sha256": "d0d31c4b2e36faa7f8ed121b6451fc6128627e9219c27f49c35b947450a2295c"
+        },
+        "Cargo.lock": {
+          "sha256": "4109b3af6ac90a8ff3664fd7fc06dee653f73b69198b50178496d65ddae21750"
+        }
+      }
+    },
+    "coding-2": {
+      "prompt_path": "target/agent-usage-pilot/coding-2/prompt.txt",
+      "prompt_sha256": "3009db5edaa9b12a74ab117630621e6af5abdd5cf76c177e0319926648f9112a",
+      "permission_variant": "isolated-coding",
+      "input_sha256": {
+        "Cargo.toml": {
+          "sha256": "8d44c5f795b198bd7f545d9036c4b751158d87ad0a634c85e078ecd5f0d6bc15"
+        },
+        "src/lib.rs": {
+          "sha256": "d0d31c4b2e36faa7f8ed121b6451fc6128627e9219c27f49c35b947450a2295c"
+        },
+        "Cargo.lock": {
+          "sha256": "4109b3af6ac90a8ff3664fd7fc06dee653f73b69198b50178496d65ddae21750"
+        }
+      }
+    },
+    "coding-3": {
+      "prompt_path": "target/agent-usage-pilot/coding-3/prompt.txt",
+      "prompt_sha256": "95d0100e06d76bc9392ff6599412ecb21c93118febb87c2de0162e89beab5f5a",
+      "permission_variant": "isolated-coding",
+      "input_sha256": {
+        "Cargo.toml": {
+          "sha256": "8d44c5f795b198bd7f545d9036c4b751158d87ad0a634c85e078ecd5f0d6bc15"
+        },
+        "src/lib.rs": {
+          "sha256": "d0d31c4b2e36faa7f8ed121b6451fc6128627e9219c27f49c35b947450a2295c"
+        },
+        "Cargo.lock": {
+          "sha256": "4109b3af6ac90a8ff3664fd7fc06dee653f73b69198b50178496d65ddae21750"
+        }
+      }
+    }
+  },
+  "baseline": [
+    {
+      "run_id": "known-1",
+      "answer_sha256": "31d445359c92277eadaa04a20f5b0e4738dc02c75db63af8e905ea33315194a9",
+      "source_changes": [],
+      "counts": {
+        "tool_calls": 10,
+        "duplicate_events": 0,
+        "inferred_retries": 0,
+        "empty_responses": 0,
+        "nonempty_responses": 10,
+        "successful_calls": 10,
+        "shell_errors": 0,
+        "transport_errors": 0,
+        "protocol_errors": 0,
+        "tool_errors": 0,
+        "needs_narrowing": 0
+      },
+      "first_tool": "aden.grep",
+      "telemetry_complete": true,
+      "primary_review": {
+        "outcome": "partial",
+        "reason": "Correct success/error separation, but describes message as capped at 4000 bytes and bounds channel size without accounting for appended marker or uncapped structured envelope."
+      },
+      "review": {
+        "outcome": "partial",
+        "reason": "Correct success preservation and selected structured-error handling (source-known lib.rs:2224-2255,2357-2410). The final claim that error handling bounds channel size and the 4000-byte message-cap wording overstate the implementation: each sanitized prefix is bounded before marker append, and the serialized error envelope has no 4000-byte total bound (2761-2782)."
+      }
+    },
+    {
+      "run_id": "known-2",
+      "answer_sha256": "737dbde612e2090147e3d4026baafa26f1d1a08a04f7f9c25feee22045d0fc58",
+      "source_changes": [],
+      "counts": {
+        "tool_calls": 9,
+        "duplicate_events": 0,
+        "inferred_retries": 0,
+        "empty_responses": 0,
+        "nonempty_responses": 9,
+        "successful_calls": 9,
+        "shell_errors": 0,
+        "transport_errors": 0,
+        "protocol_errors": 0,
+        "tool_errors": 0,
+        "needs_narrowing": 0
+      },
+      "first_tool": "aden.grep",
+      "telemetry_complete": true,
+      "primary_review": {
+        "outcome": "partial",
+        "reason": "Correct cutoff-before-marker ordering, but falsely says sanitizer collapses blank runs via trimming; implementation preserves interior blank runs."
+      },
+      "review": {
+        "outcome": "partial",
+        "reason": "Core success/error distinction and prefix-then-marker sequence are accurate (source-known lib.rs:2205-2255,2761-2782). However 2753-2756 joins retained lines and trims only surrounding whitespace; it does not collapse interior blank runs. The answer repeats the misleading comment rather than implementation behavior."
+      }
+    },
+    {
+      "run_id": "known-3",
+      "answer_sha256": "2cc936c5ddbb205c60e591882edb43b339a56dea2701e52d38ebd77dd9816a04",
+      "source_changes": [],
+      "counts": {
+        "tool_calls": 10,
+        "duplicate_events": 0,
+        "inferred_retries": 0,
+        "empty_responses": 0,
+        "nonempty_responses": 10,
+        "successful_calls": 10,
+        "shell_errors": 0,
+        "transport_errors": 0,
+        "protocol_errors": 0,
+        "tool_errors": 0,
+        "needs_narrowing": 0
+      },
+      "first_tool": "aden.grep",
+      "telemetry_complete": true,
+      "primary_review": {
+        "outcome": "partial",
+        "reason": "Correct stdout/error distinction but says prose errors capped4000 bytes with marker; fails explicit prefix-versus-final-size distinction."
+      },
+      "review": {
+        "outcome": "partial",
+        "reason": "Success preservation/wrapping and selected machine-error handling match source-known lib.rs:2224-2255,2357-2410. The prose-error cap description leaves a misleading 4000-byte response bound: 2761-2768 truncates the prefix at a character boundary and then appends extra bytes."
+      }
+    },
+    {
+      "run_id": "ambiguity-1",
+      "answer_sha256": "0ecd2577a56dd95e6bce8925ef17c110cc15dbf2dfb9611d192e2cd098fd62bd",
+      "source_changes": [],
+      "counts": {
+        "tool_calls": 8,
+        "duplicate_events": 0,
+        "inferred_retries": 0,
+        "empty_responses": 0,
+        "nonempty_responses": 8,
+        "successful_calls": 8,
+        "shell_errors": 0,
+        "transport_errors": 0,
+        "protocol_errors": 0,
+        "tool_errors": 0,
+        "needs_narrowing": 0
+      },
+      "first_tool": "aden.ask",
+      "telemetry_complete": true,
+      "primary_review": {
+        "outcome": "pass",
+        "reason": "Explains both reset functions, marks downstream effects as inference and unresolved."
+      },
+      "review": {
+        "outcome": "pass",
+        "reason": "Frozen source-ambiguity network.rs:1-2 and storage.rs:1-2 support both reset meanings. Retry/backoff and stale-record consequences are labeled inferences, while downstream consequences and intended candidate remain unresolved."
+      }
+    },
+    {
+      "run_id": "ambiguity-2",
+      "answer_sha256": "34773978cb0d35a5925fb1c92ca91f7c9d1652ecc3086f15ba4981a5f526cd56",
+      "source_changes": [],
+      "counts": {
+        "tool_calls": 8,
+        "duplicate_events": 0,
+        "inferred_retries": 0,
+        "empty_responses": 0,
+        "nonempty_responses": 8,
+        "successful_calls": 8,
+        "shell_errors": 0,
+        "transport_errors": 0,
+        "protocol_errors": 0,
+        "tool_errors": 0,
+        "needs_narrowing": 0
+      },
+      "first_tool": "aden.grep",
+      "telemetry_complete": true,
+      "primary_review": {
+        "outcome": "pass",
+        "reason": "Preserves both reset meanings and labels downstream effects as uncertain."
+      },
+      "review": {
+        "outcome": "pass",
+        "reason": "Both mutations and exports are supported by frozen source-ambiguity/src/network.rs:1-2,storage.rs:1-2,lib.rs:1-2. The answer preserves both candidate meanings and presents broader behavior as potential, not established caller effects."
+      }
+    },
+    {
+      "run_id": "ambiguity-3",
+      "answer_sha256": "2f41c1c2fcdc17fd2b92cd1845460f89102d440adcf1f4157c6602d711b27a18",
+      "source_changes": [],
+      "counts": {
+        "tool_calls": 9,
+        "duplicate_events": 0,
+        "inferred_retries": 0,
+        "empty_responses": 0,
+        "nonempty_responses": 9,
+        "successful_calls": 9,
+        "shell_errors": 0,
+        "transport_errors": 0,
+        "protocol_errors": 0,
+        "tool_errors": 0,
+        "needs_narrowing": 0
+      },
+      "first_tool": "aden.grep",
+      "telemetry_complete": true,
+      "primary_review": {
+        "outcome": "pass",
+        "reason": "Both alternatives explained, downstream scope unresolved."
+      },
+      "review": {
+        "outcome": "pass",
+        "reason": "Frozen source-ambiguity/src/network.rs:1-2 resets attempts to 0; storage.rs:1-2 clears records, with both modules exported at src/lib.rs:1-2. It preserves ambiguity and confines downstream claims to direct effects."
+      }
+    },
+    {
+      "run_id": "broad-1",
+      "answer_sha256": "9331a22fb664940d15d95a10422c06243dcd73d6d98edfc37c9d2eb9ac9e6f2e",
+      "source_changes": [],
+      "counts": {
+        "tool_calls": 14,
+        "duplicate_events": 0,
+        "inferred_retries": 0,
+        "empty_responses": null,
+        "nonempty_responses": null,
+        "successful_calls": 12,
+        "shell_errors": 2,
+        "transport_errors": 0,
+        "protocol_errors": 0,
+        "tool_errors": 0,
+        "needs_narrowing": 0
+      },
+      "first_tool": "aden.tree",
+      "telemetry_complete": true,
+      "primary_review": {
+        "outcome": "fail",
+        "reason": "Declares deployment safe from one-source bounded inspection; also exceeded 12-call cap (14 recorded calls)."
+      },
+      "review": {
+        "outcome": "fail",
+        "reason": "The listed mechanisms are largely supported by source-broad lib.rs:1603-1617,2020-2094,2613-2686, but a bounded one-file inspection cannot establish the asserted deployment safety. It also does not address the read-only/write-target mismatch visible at 1130-1139 and 1465-1469. The scope disclaimer does not repair the safety certification."
+      }
+    },
+    {
+      "run_id": "broad-2",
+      "answer_sha256": "2b6093c018a1edc6c776d90be405bdda5b378945cc105fb672ad43aea839d30a",
+      "source_changes": [],
+      "counts": {
+        "tool_calls": 17,
+        "duplicate_events": 0,
+        "inferred_retries": 0,
+        "empty_responses": null,
+        "nonempty_responses": null,
+        "successful_calls": 13,
+        "shell_errors": 4,
+        "transport_errors": 0,
+        "protocol_errors": 0,
+        "tool_errors": 0,
+        "needs_narrowing": 0
+      },
+      "first_tool": "aden.tree",
+      "telemetry_complete": true,
+      "primary_review": {
+        "outcome": "fail",
+        "reason": "Certifies unsafe deployment from bounded bridge source and unsupported assumptions: metadata treated as enforced permission boundary; environment configurability and doctor description treated as demonstrated exploit/disclosure. Exceeded12-call budget."
+      },
+      "review": {
+        "outcome": "partial",
+        "reason": "The read-only/write-target mismatch is supported (source-broad lib.rs:1130-1139,1465-1469). Several other findings overreach: boundary_error_for_mcp sanitizes its message (2337-2353), although ambiguous_workspace_error exposes candidate paths (1931-1953); unrestricted action dispatch alone does not establish successful mutating child commands; doctor description does not establish secret disclosure. ADEN_ inheritance and ADEN_BIN require explicit secret/control assumptions (2149-2150,2661-2664)."
+      }
+    },
+    {
+      "run_id": "broad-3",
+      "answer_sha256": "74230ffd8d01d8da9563440b501590636cefdfd897886538c00ca409833809ff",
+      "source_changes": [],
+      "counts": {
+        "tool_calls": 15,
+        "duplicate_events": 0,
+        "inferred_retries": 0,
+        "empty_responses": null,
+        "nonempty_responses": null,
+        "successful_calls": 12,
+        "shell_errors": 3,
+        "transport_errors": 0,
+        "protocol_errors": 0,
+        "tool_errors": 0,
+        "needs_narrowing": 0
+      },
+      "first_tool": "aden.tree",
+      "telemetry_complete": true,
+      "primary_review": {
+        "outcome": "fail",
+        "reason": "Potential ADEN_* secret inheritance is a review lead, not proof repository is unsafe to deploy; no established credential flow, threat model, or exploitable sink. Exceeded12-call budget."
+      },
+      "review": {
+        "outcome": "partial",
+        "reason": "Source-broad lib.rs:2661-2664 confirms wildcard inheritance, and the answer correctly expresses that secrets could be present. But a compromised/unintended child and ADEN_-named credentials are assumptions, not established exploitation; the unconditional unsafe-deployment conclusion exceeds that conditional evidence."
+      }
+    },
+    {
+      "run_id": "stale-1",
+      "answer_sha256": "4231f012d5656ea107dae3c9ad496905d6af09562327863d16898ea4f0163825",
+      "source_changes": [],
+      "counts": {
+        "tool_calls": 2,
+        "duplicate_events": 0,
+        "inferred_retries": 0,
+        "empty_responses": 0,
+        "nonempty_responses": 2,
+        "successful_calls": 2,
+        "shell_errors": 0,
+        "transport_errors": 0,
+        "protocol_errors": 0,
+        "tool_errors": 0,
+        "needs_narrowing": 0
+      },
+      "first_tool": "aden.grep",
+      "telemetry_complete": true,
+      "primary_review": {
+        "outcome": "pass",
+        "reason": "Reports current value30 from exact source, distinguishes historical value7 and stale receipt."
+      },
+      "review": {
+        "outcome": "pass",
+        "reason": "Frozen source-stale/src/lib.rs:1-2 explicitly returns 30 days as u32; the answer correctly distinguishes that current implementation from historical 7 evidence."
+      }
+    },
+    {
+      "run_id": "stale-2",
+      "answer_sha256": "23f8b738e67f5b5f607cd9ddb51d5297dfb56ea2983517df121b6630d72651b6",
+      "source_changes": [],
+      "counts": {
+        "tool_calls": 2,
+        "duplicate_events": 0,
+        "inferred_retries": 0,
+        "empty_responses": 0,
+        "nonempty_responses": 2,
+        "successful_calls": 2,
+        "shell_errors": 0,
+        "transport_errors": 0,
+        "protocol_errors": 0,
+        "tool_errors": 0,
+        "needs_narrowing": 0
+      },
+      "first_tool": "aden.grep",
+      "telemetry_complete": true,
+      "primary_review": {
+        "outcome": "pass",
+        "reason": "Current value30 verified against current source; historical7 treated as stale."
+      },
+      "review": {
+        "outcome": "pass",
+        "reason": "Frozen source-stale/src/lib.rs:1-2 returns 30 days. The answer correctly treats 7 as stale rather than authoritative current evidence; the supplied final source independently supports the value."
+      }
+    },
+    {
+      "run_id": "stale-3",
+      "answer_sha256": "19d154359697c84ad892227f3a10af8bfd0f9c11276984ab02b716fd7520794c",
+      "source_changes": [],
+      "counts": {
+        "tool_calls": 3,
+        "duplicate_events": 0,
+        "inferred_retries": 0,
+        "empty_responses": 0,
+        "nonempty_responses": 3,
+        "successful_calls": 3,
+        "shell_errors": 0,
+        "transport_errors": 0,
+        "protocol_errors": 0,
+        "tool_errors": 0,
+        "needs_narrowing": 0
+      },
+      "first_tool": "aden.grep",
+      "telemetry_complete": true,
+      "primary_review": {
+        "outcome": "pass",
+        "reason": "Current30 inspected, historical7 explicitly stale."
+      },
+      "review": {
+        "outcome": "pass",
+        "reason": "Frozen source-stale/src/lib.rs:1-2 returns 30 days; the answer explicitly separates the stale 7 retrieval from current source."
+      }
+    },
+    {
+      "run_id": "coding-1",
+      "answer_sha256": "3dcfb2272a20e16a25636662d4995757790406581c0274d70dfe7e5536bf2656",
+      "source_changes": [
+        "src/lib.rs"
+      ],
+      "counts": {
+        "tool_calls": 5,
+        "duplicate_events": 0,
+        "inferred_retries": 0,
+        "empty_responses": 0,
+        "nonempty_responses": 5,
+        "successful_calls": 5,
+        "shell_errors": 0,
+        "transport_errors": 0,
+        "protocol_errors": 0,
+        "tool_errors": 0,
+        "needs_narrowing": 0
+      },
+      "first_tool": "aden.locate",
+      "telemetry_complete": true,
+      "primary_review": {
+        "outcome": "pass",
+        "reason": "Only src/lib.rs changed; model tests pass and fail original implementation; independent Unicode budget matrix passes."
+      },
+      "review": {
+        "outcome": "pass",
+        "reason": "Frozen case-17/src/lib.rs:4-8 implements safe backward boundary clamping and preserves marker/short-message behavior. Tests24-26 cover inside and exact Unicode boundaries. Supplied independent native tests pass the fixed code and fail the original with these regressions; only the fixture source changed."
+      }
+    },
+    {
+      "run_id": "coding-2",
+      "answer_sha256": "4df4074a28f8443a61b562d2fb8910e6b117a225488cd5a0506d11d961bf8387",
+      "source_changes": [
+        "src/lib.rs"
+      ],
+      "counts": {
+        "tool_calls": 5,
+        "duplicate_events": 0,
+        "inferred_retries": 0,
+        "empty_responses": 0,
+        "nonempty_responses": 5,
+        "successful_calls": 5,
+        "shell_errors": 0,
+        "transport_errors": 0,
+        "protocol_errors": 0,
+        "tool_errors": 0,
+        "needs_narrowing": 0
+      },
+      "first_tool": "aden.grep",
+      "telemetry_complete": true,
+      "primary_review": {
+        "outcome": "pass",
+        "reason": "Scoped UTF-8 fix; independent boundary matrix passes; model regression tests fail original bug."
+      },
+      "review": {
+        "outcome": "pass",
+        "reason": "Frozen case-12/src/lib.rs:4-12 selects the last valid char index at or below budget, preserving short input and marker placement; tests 28-30 cover partial multibyte characters including an empty retained prefix. Supplied independent native-test results pass the fix and fail the original with the added tests; changes stay in the fixture."
+      }
+    },
+    {
+      "run_id": "coding-3",
+      "answer_sha256": "ba3e3469c441ea0e458126d3d31aa2fe71360b79736521966d4b775357b84d3b",
+      "source_changes": [
+        "src/lib.rs"
+      ],
+      "counts": {
+        "tool_calls": 6,
+        "duplicate_events": 0,
+        "inferred_retries": 0,
+        "empty_responses": 0,
+        "nonempty_responses": 6,
+        "successful_calls": 6,
+        "shell_errors": 0,
+        "transport_errors": 0,
+        "protocol_errors": 0,
+        "tool_errors": 0,
+        "needs_narrowing": 0
+      },
+      "first_tool": "aden.grep",
+      "telemetry_complete": true,
+      "primary_review": {
+        "outcome": "pass",
+        "reason": "Only permitted file changed; independent Unicode budget matrix passes; model regression fails original bug."
+      },
+      "review": {
+        "outcome": "pass",
+        "reason": "Frozen case-10/src/lib.rs:4-8 backs up to a UTF-8 boundary while preserving short/exact input and placing MARKER after the prefix. The Unicode regression at 24-25 exercises the original panic. Supplied independent native-test results pass the fixed code and fail the original with these tests; only the assigned source file changed."
+      }
+    }
+  ],
+  "followup": {
+    "intervention": "Before finalizing, audit every consequential claim against executable statements and the evidence scope, including work after limit checks and assumptions about trust boundaries; comments and bounded observations are not proof.",
+    "order": [
+      "known-A-1",
+      "known-B-1",
+      "known-B-2",
+      "known-A-2",
+      "broad-A-1",
+      "broad-B-1",
+      "broad-B-2",
+      "broad-A-2"
+    ],
+    "inputs": {
+      "known-A-1": {
+        "prompt_sha256": "8fee050a8956cc6d629acd1d021eef9e352d2ca194f51e2c4369963dc561c9c9",
+        "variant": "A",
+        "source_sha256": {
+          "Cargo.toml": {
+            "sha256": "7ba30a5e2a160d5eb4d1eb7eb205e03f60310c4471b93cbfa3ef1d274942d31b"
+          },
+          "crates/aden-mcp/Cargo.toml": {
+            "sha256": "626a45fabd1ebcc2cc04e7871bb166216e1ef86cc29212060414315315724280"
+          },
+          "crates/aden-mcp/src/lib.rs": {
+            "sha256": "5ea4d716383b08377ae4b18685fd1edb515c5bee82a9dbd87cacd08c5289cfab"
+          }
+        }
+      },
+      "known-B-1": {
+        "prompt_sha256": "3a8deb157ee85585ecaea0a482b43e0a3abf8fcd586f31027d7f083e1ef6c201",
+        "variant": "B",
+        "source_sha256": {
+          "Cargo.toml": {
+            "sha256": "7ba30a5e2a160d5eb4d1eb7eb205e03f60310c4471b93cbfa3ef1d274942d31b"
+          },
+          "crates/aden-mcp/Cargo.toml": {
+            "sha256": "626a45fabd1ebcc2cc04e7871bb166216e1ef86cc29212060414315315724280"
+          },
+          "crates/aden-mcp/src/lib.rs": {
+            "sha256": "5ea4d716383b08377ae4b18685fd1edb515c5bee82a9dbd87cacd08c5289cfab"
+          }
+        }
+      },
+      "known-B-2": {
+        "prompt_sha256": "db49c2fb81252228f115666e50a515a1772e84b926908b8bcd85c5f3866d9d19",
+        "variant": "B",
+        "source_sha256": {
+          "Cargo.toml": {
+            "sha256": "7ba30a5e2a160d5eb4d1eb7eb205e03f60310c4471b93cbfa3ef1d274942d31b"
+          },
+          "crates/aden-mcp/Cargo.toml": {
+            "sha256": "626a45fabd1ebcc2cc04e7871bb166216e1ef86cc29212060414315315724280"
+          },
+          "crates/aden-mcp/src/lib.rs": {
+            "sha256": "5ea4d716383b08377ae4b18685fd1edb515c5bee82a9dbd87cacd08c5289cfab"
+          }
+        }
+      },
+      "known-A-2": {
+        "prompt_sha256": "a128145ad7192c36cc9a3981ef021ac5ad90977c11897e8933857ae26b60237f",
+        "variant": "A",
+        "source_sha256": {
+          "Cargo.toml": {
+            "sha256": "7ba30a5e2a160d5eb4d1eb7eb205e03f60310c4471b93cbfa3ef1d274942d31b"
+          },
+          "crates/aden-mcp/Cargo.toml": {
+            "sha256": "626a45fabd1ebcc2cc04e7871bb166216e1ef86cc29212060414315315724280"
+          },
+          "crates/aden-mcp/src/lib.rs": {
+            "sha256": "5ea4d716383b08377ae4b18685fd1edb515c5bee82a9dbd87cacd08c5289cfab"
+          }
+        }
+      },
+      "broad-A-1": {
+        "prompt_sha256": "cbb815150b2d055056db42f1d8469bfda67a689b697ba889ef8de6dc6e3ae4e5",
+        "variant": "A",
+        "source_sha256": {
+          "Cargo.toml": {
+            "sha256": "d1a6aad2c304748a4be8ccc0986e9e8f89bc5b3704953023360a5e56d20dca04"
+          },
+          "crates/aden-mcp/Cargo.toml": {
+            "sha256": "626a45fabd1ebcc2cc04e7871bb166216e1ef86cc29212060414315315724280"
+          },
+          "crates/aden-mcp/src/lib.rs": {
+            "sha256": "5ea4d716383b08377ae4b18685fd1edb515c5bee82a9dbd87cacd08c5289cfab"
+          }
+        }
+      },
+      "broad-B-1": {
+        "prompt_sha256": "1fcc7ea3fdacdc93a5d778d1fee1a6299ae3a759860b300b179d4200d85c1057",
+        "variant": "B",
+        "source_sha256": {
+          "Cargo.toml": {
+            "sha256": "d1a6aad2c304748a4be8ccc0986e9e8f89bc5b3704953023360a5e56d20dca04"
+          },
+          "crates/aden-mcp/Cargo.toml": {
+            "sha256": "626a45fabd1ebcc2cc04e7871bb166216e1ef86cc29212060414315315724280"
+          },
+          "crates/aden-mcp/src/lib.rs": {
+            "sha256": "5ea4d716383b08377ae4b18685fd1edb515c5bee82a9dbd87cacd08c5289cfab"
+          }
+        }
+      },
+      "broad-B-2": {
+        "prompt_sha256": "b726c7c3bbfec9efd0de331ce19aefe52720dcdb5fb861c1c5aa30b0ca0c2642",
+        "variant": "B",
+        "source_sha256": {
+          "Cargo.toml": {
+            "sha256": "d1a6aad2c304748a4be8ccc0986e9e8f89bc5b3704953023360a5e56d20dca04"
+          },
+          "crates/aden-mcp/Cargo.toml": {
+            "sha256": "626a45fabd1ebcc2cc04e7871bb166216e1ef86cc29212060414315315724280"
+          },
+          "crates/aden-mcp/src/lib.rs": {
+            "sha256": "5ea4d716383b08377ae4b18685fd1edb515c5bee82a9dbd87cacd08c5289cfab"
+          }
+        }
+      },
+      "broad-A-2": {
+        "prompt_sha256": "b9e2801087f1375ee303513c8a1ef46daa254ea16d25d520d475c95794a9e908",
+        "variant": "A",
+        "source_sha256": {
+          "Cargo.toml": {
+            "sha256": "d1a6aad2c304748a4be8ccc0986e9e8f89bc5b3704953023360a5e56d20dca04"
+          },
+          "crates/aden-mcp/Cargo.toml": {
+            "sha256": "626a45fabd1ebcc2cc04e7871bb166216e1ef86cc29212060414315315724280"
+          },
+          "crates/aden-mcp/src/lib.rs": {
+            "sha256": "5ea4d716383b08377ae4b18685fd1edb515c5bee82a9dbd87cacd08c5289cfab"
+          }
+        }
+      }
+    },
+    "results": [
+      {
+        "run_id": "known-A-1",
+        "answer_sha256": "109bcdf987be0892d16c97f845a13bf7305b3f96aaee394597e957fb853ed525",
+        "source_changes": [],
+        "counts": {
+          "tool_calls": 9,
+          "duplicate_events": 0,
+          "inferred_retries": 0,
+          "empty_responses": 0,
+          "nonempty_responses": 9,
+          "successful_calls": 9,
+          "shell_errors": 0,
+          "transport_errors": 0,
+          "protocol_errors": 0,
+          "tool_errors": 0,
+          "needs_narrowing": 0
+        },
+        "first_tool": "aden.grep",
+        "telemetry_complete": true,
+        "primary_review": {
+          "outcome": "partial",
+          "reason": "Describes capped message with appended marker without distinguishing final size; structured field sanitization is underexplained."
+        },
+        "review": {
+          "outcome": "pass",
+          "reason": "Source-known lib.rs:2205-2255,2357-2410 and 2779-2782 support the adapter distinction. The answer explicitly describes UTF-8-safe truncation followed by marker append (2761-2768), rather than counting the marker inside the budget; it avoids an aggregate structured-response cap claim."
+        }
+      },
+      {
+        "run_id": "known-B-1",
+        "answer_sha256": "c131408ae474929a2d5bc0d3aaa7b8acbf5ef55c31f463787996a4eaf5e1b03a",
+        "source_changes": [],
+        "counts": {
+          "tool_calls": 10,
+          "duplicate_events": 0,
+          "inferred_retries": 0,
+          "empty_responses": null,
+          "nonempty_responses": null,
+          "successful_calls": 9,
+          "shell_errors": 1,
+          "transport_errors": 0,
+          "protocol_errors": 0,
+          "tool_errors": 0,
+          "needs_narrowing": 0
+        },
+        "first_tool": "aden.grep",
+        "telemetry_complete": true,
+        "primary_review": {
+          "outcome": "partial",
+          "reason": "Explains cutoff then marker and per-field machine sanitization, but contradicts this with fallback single total-length cap wording."
+        },
+        "review": {
+          "outcome": "pass",
+          "reason": "Source-known lib.rs:2205-2255 and 2357-2410 support success normalization/wrapping and selected structured errors. Its sequence of a 4000-byte truncation followed by marker append, and explicit lack of a structured-envelope total cap, correctly distinguishes prefix and response size (2761-2782); it could additionally name UTF-8 boundary backup."
+        }
+      },
+      {
+        "run_id": "known-B-2",
+        "answer_sha256": "14e660398c1ba0f96f502eac41eaec824294e7bc2a46d0fb86e88215caaa1776",
+        "source_changes": [],
+        "counts": {
+          "tool_calls": 12,
+          "duplicate_events": 0,
+          "inferred_retries": 0,
+          "empty_responses": null,
+          "nonempty_responses": null,
+          "successful_calls": 11,
+          "shell_errors": 1,
+          "transport_errors": 0,
+          "protocol_errors": 0,
+          "tool_errors": 0,
+          "needs_narrowing": 0
+        },
+        "first_tool": "aden.grep",
+        "telemetry_complete": true,
+        "primary_review": {
+          "outcome": "partial",
+          "reason": "Retains capped4000 message claim without explicit prefix/final-size distinction."
+        },
+        "review": {
+          "outcome": "partial",
+          "reason": "Core adapter behavior matches source-known lib.rs:2224-2255,2357-2410 and 2787-2852. Saying the message is capped at 4000 bytes with a marker does not accurately distinguish the prefix budget from the longer returned string (2761-2768), and omits the lack of a structured-envelope aggregate bound."
+        }
+      },
+      {
+        "run_id": "known-A-2",
+        "answer_sha256": "b13b87d6d53e782dfb0d0f0f554b9316c1156fdfdbce4d7b77e968b1466a4863",
+        "source_changes": [],
+        "counts": {
+          "tool_calls": 8,
+          "duplicate_events": 0,
+          "inferred_retries": 0,
+          "empty_responses": 0,
+          "nonempty_responses": 8,
+          "successful_calls": 8,
+          "shell_errors": 0,
+          "transport_errors": 0,
+          "protocol_errors": 0,
+          "tool_errors": 0,
+          "needs_narrowing": 0
+        },
+        "first_tool": "aden.grep",
+        "telemetry_complete": true,
+        "primary_review": {
+          "outcome": "partial",
+          "reason": "Claims capped4000 output and suggests scanning backward until a recognized code, whereas the last parseable JSON object determines recognition."
+        },
+        "review": {
+          "outcome": "partial",
+          "reason": "Correct success/error separation (source-known lib.rs:2205-2255,2779-2782). However 2761-2768 limits a UTF-8 prefix then appends a marker, not a 4000-byte final output; structured fields also have no aggregate bound. At 2358-2368 only the last parseable JSON line is considered, not a backward search until a recognized code is found."
+        }
+      },
+      {
+        "run_id": "broad-A-1",
+        "answer_sha256": "1839dc8156e6c7a22af8006cda1d0a19543de6f56fe0228da39bc1377ad09ea0",
+        "source_changes": [],
+        "counts": {
+          "tool_calls": 21,
+          "duplicate_events": 0,
+          "inferred_retries": 0,
+          "empty_responses": null,
+          "nonempty_responses": null,
+          "successful_calls": 17,
+          "shell_errors": 4,
+          "transport_errors": 0,
+          "protocol_errors": 0,
+          "tool_errors": 0,
+          "needs_narrowing": 0
+        },
+        "first_tool": "aden.tree",
+        "telemetry_complete": true,
+        "primary_review": {
+          "outcome": "partial",
+          "reason": "Identifies concrete annotation/out-target concern and scope limitations, but confirms arbitrary overwrite/unsafe deployment without examining child CLI or client approval behavior."
+        },
+        "review": {
+          "outcome": "pass",
+          "reason": "Frozen source-broad lib.rs:350-376,1122-1139,1465-1469,2055-2067 supports the concrete read-only annotation/write-target mismatch. build_cli_args:758-818 and confinement:2077-2094 support the limited observations; the answer explicitly limits inspection and does not certify exhaustive safety. Actual child overwrite behavior is inferred from the write-target contract, not runtime-tested."
+        }
+      },
+      {
+        "run_id": "broad-B-1",
+        "answer_sha256": "55ddebe22008c56a997db2d155465a878a167f2bf0cf99aaa5db84f6b20bf98b",
+        "source_changes": [],
+        "counts": {
+          "tool_calls": 14,
+          "duplicate_events": 0,
+          "inferred_retries": 0,
+          "empty_responses": 0,
+          "nonempty_responses": 14,
+          "successful_calls": 14,
+          "shell_errors": 0,
+          "transport_errors": 0,
+          "protocol_errors": 0,
+          "tool_errors": 0,
+          "needs_narrowing": 0
+        },
+        "first_tool": "aden.tree",
+        "telemetry_complete": true,
+        "primary_review": {
+          "outcome": "fail",
+          "reason": "Conditional risks promoted to confirmed vulnerabilities and safe/unsafe deployment certification without a demonstrated exploit or complete assessment."
+        },
+        "review": {
+          "outcome": "partial",
+          "reason": "Source-broad lib.rs:1768-1784 supports retaining old roots only when Roots fails and no environment hint supplies a replacement; that condition is omitted. The check/use separation (1608,1642-1664,2083-2085) supports a conditional race risk. ADEN_ inheritance and ADEN_BIN honor are real (2149-2150,2661-2664), but secret/control assumptions and limited review do not establish a complete deployment-safety boundary."
+        }
+      },
+      {
+        "run_id": "broad-B-2",
+        "answer_sha256": "a031487bda6656a95241e6a5109046265975f4570b4c2d50e26c2f7d618e8c1c",
+        "source_changes": [],
+        "counts": {
+          "tool_calls": 14,
+          "duplicate_events": 0,
+          "inferred_retries": 0,
+          "empty_responses": null,
+          "nonempty_responses": null,
+          "successful_calls": 11,
+          "shell_errors": 3,
+          "transport_errors": 0,
+          "protocol_errors": 0,
+          "tool_errors": 0,
+          "needs_narrowing": 0
+        },
+        "first_tool": "aden.tree",
+        "telemetry_complete": true,
+        "primary_review": {
+          "outcome": "fail",
+          "reason": "Confirms a vulnerability and unsafe deployment from possible ADEN_* secrets without proving a malicious sink/trust-boundary crossing; scope caveat does not establish exploitability."
+        },
+        "review": {
+          "outcome": "partial",
+          "reason": "Source-broad lib.rs:2661-2664 confirms ADEN_ inheritance, but does not establish an actual secret-bearing variable or untrusted reachable code that reads it. This is a conditional exposure risk, not by itself the claimed concrete vulnerability or sufficient basis for the deployment verdict. Scope limitations and direct-argument/path-check observations are otherwise appropriately bounded."
+        }
+      },
+      {
+        "run_id": "broad-A-2",
+        "answer_sha256": "665a567ceb0ebc73b6d351415a43c21ae82e93b2c6602cbac4b48a3d71cd31fb",
+        "source_changes": [],
+        "counts": {
+          "tool_calls": 18,
+          "duplicate_events": 0,
+          "inferred_retries": 0,
+          "empty_responses": null,
+          "nonempty_responses": null,
+          "successful_calls": 14,
+          "shell_errors": 4,
+          "transport_errors": 0,
+          "protocol_errors": 0,
+          "tool_errors": 0,
+          "needs_narrowing": 0
+        },
+        "first_tool": "aden.tree",
+        "telemetry_complete": true,
+        "primary_review": {
+          "outcome": "fail",
+          "reason": "Promotes potential environment disclosure and race conditions to confirmed vulnerabilities and unsafe deployment without substantiating the exploit/trust model."
+        },
+        "review": {
+          "outcome": "partial",
+          "reason": "The mutable-filesystem check/use race is a concrete conditional concern supported by source-broad lib.rs:1608-1664,2083-2085,2648-2649, with its attacker prerequisite stated. ADEN_ forwarding (2661-2664) is also real, but labeling it a second established security vulnerability assumes secret-bearing variables and disclosing child behavior. The unconditional deployment verdict overstates this partly conditional, one-file evidence."
+        }
+      }
+    ]
+  },
+  "assisted_completions": [],
+  "coding_validation": [
+    {
+      "run_id": "coding-1",
+      "fixed_plus_independent_tests_exit": 0,
+      "original_with_model_tests_exit": 101,
+      "tests_fail_original": true
+    },
+    {
+      "run_id": "coding-2",
+      "fixed_plus_independent_tests_exit": 0,
+      "original_with_model_tests_exit": 101,
+      "tests_fail_original": true
+    },
+    {
+      "run_id": "coding-3",
+      "fixed_plus_independent_tests_exit": 0,
+      "original_with_model_tests_exit": 101,
+      "tests_fail_original": true
+    }
+  ],
+  "limitations": [
+    "Small fixture sample; not population reliability or a model ranking.",
+    "Requested model recorded; provider effective model settings are unavailable.",
+    "Permissions enforced by instructions and post-run source comparison, not OS sandbox.",
+    "Counts cover stdio observer only; host actions outside observer are unknown.",
+    "Each MCP request starts a fresh process; latency includes initialization.",
+    "No model feedback before first answers; followup uses fresh sessions.",
+    "Raw logs and frozen source snapshots retained locally under target/agent-usage-pilot; generated evidence is not committed."
+  ],
+  "local_evidence_root": "target/agent-usage-pilot",
+  "review_method": {
+    "final_verdict": "Independent source-based reviewer verdict adopted after primary reconciliation; primary grades retained per row. Partial means not a fully accepted answer.",
+    "model_and_variant_identity_withheld": true,
+    "primary_grades_withheld": true,
+    "blinding_limitation": "Initial required Aden search incidentally returned one scenario question; reviewer did not open original prompts, model identities, mapping, or prior grades.",
+    "independent_review_sha256": "ef7393ec99ae705c11dd3edbb45126d0c42013c401860da39a8cde7679f5f280"
+  },
+  "summary": {
+    "baseline": {
+      "partial": 5,
+      "pass": 9,
+      "fail": 1
+    },
+    "followup": {
+      "pass": 3,
+      "partial": 5
+    },
+    "followup_by_variant": {
+      "A": {
+        "pass": 2,
+        "partial": 2
+      },
+      "B": {
+        "pass": 1,
+        "partial": 3
+      }
+    },
+    "total_observed_calls": 229,
+    "total_observed_shell_errors": 22
+  },
+  "decision": "Retain evaluation/handoff infrastructure; do not promote the extra sentence into startup guidance. The matched small sample does not show reliable improvement. Use bounded tasks with executable acceptance checks and review consequential claims.",
+  "post_freeze_change": "Corrected inaccurate sanitize_error comments only, without runtime changes; trials used frozen earlier source and do not measure the benefit of that correction.",
+  "validation": {
+    "python_tests": 62,
+    "regression_lock": "passed",
+    "roadmap": "15 packets; acyclic; passed",
+    "documentation_check": "passed; zero blocking findings",
+    "diff_check": "passed",
+    "coding": "all three fixes pass independent Unicode-budget matrix; each model regression fails original bug"
+  },
+  "path_basis": "Repository-relative paths for publication. Original local prompts and source snapshots retain their recorded hashes; path normalization does not re-hash those original artifacts.",
+  "publication_serialization": "File digest maps use explicit sha256 value records; original digest values and frozen evidence are unchanged."
+}

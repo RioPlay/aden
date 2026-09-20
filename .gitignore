@@ -1,23 +1,15 @@
 # ─────────────────────────────────────────────────────────────────────────
 # Build output & aden artifacts
 # ─────────────────────────────────────────────────────────────────────────
-/target
+target/
 # Alternate Cargo target directories are equally rebuildable (for example,
 # CARGO_TARGET_DIR=target-0.4 during release/toolchain validation).
 /target-*/
 # ADR-003: the rebuildable graph store/caches now live in the per-user data dir,
-# never in-tree. Ignore any legacy in-tree rebuildable artifacts, but TRACK the
-# durable, repo-coupled intent meant to travel with the repository (overlays,
-# constitution, hooks, the persisted project root).
-**/.aden/store/
-**/.aden/cache/
-**/.aden/gen-cache.json
-**/.aden/scan-cache.json
-# Orphan from the pre-0.3.x runtime savings ledger (sunset in 5ff24c4). Keep
-# ignored so leftover sidecars never reappear as untracked noise.
-**/.aden/savings.json
-**/.aden/staging/
-**/.aden/project.conf
+# never in-tree. Ignore new local state by default, including snapshots, locks,
+# and future cache formats. Existing tracked governance documents/hooks remain
+# tracked; this rule does not remove them or change their contents.
+**/.aden/
 # Legacy on-disk contracts (aden is now store-first and emits no .adoc; these
 # remain as a safety net in case an old/in-tree generation ever runs).
 **/contracts/
@@ -111,6 +103,12 @@ asc/
 node_modules/
 __pycache__/
 *.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
 .venv/
 venv/
 dist/
@@ -120,6 +118,12 @@ vendor/
 .gradle/
 .cache/
 coverage/
+# Local copies of release workflow outputs.
+/staged/
+/quality-verdict.json
+/aden-v*.zip
+/aden-v*.tar.gz
+/aden-v*.sha256
 
 # ─────────────────────────────────────────────────────────────────────────
 # Editor / OS debris
