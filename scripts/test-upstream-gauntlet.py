@@ -15,6 +15,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import tempfile
@@ -32,6 +33,28 @@ LARGE_CASES = (
     ("linux-aden-subset", "acpi_debugger_init", "acpi_debugger_init", "kernel", True),
 )
 MARKERS = (".aden", ".agent", ".adenignore", "AGENTS.md")
+
+
+def validate_outline(outline: dict) -> None:
+    """Check the bounded symbol-or-file-map contract, including honest counts."""
+    assert outline["format"] in ("symbol-outline-v1", "file-map-v1"), outline
+    assert outline["context_receipt"]["freshness"] == "current", outline
+    assert len(outline["outline"].encode("utf-8")) <= 12 * 1024, outline
+    assert 0 <= outline["returned_file_count"] <= outline["file_count"], outline
+    assert 0 <= outline["returned_symbol_count"] <= outline["symbol_count"], outline
+    if outline["truncated"]:
+        assert outline["result_state"] == "truncated", outline
+        assert outline["returned_symbol_count"] < outline["symbol_count"], outline
+        assert outline.get("next_action"), outline
+    else:
+        assert outline["result_state"] == "complete", outline
+        assert outline["returned_symbol_count"] == outline["symbol_count"], outline
+        assert outline["returned_file_count"] == outline["file_count"], outline
+    if outline["format"] == "file-map-v1":
+        assert outline["truncated"] and outline["returned_symbol_count"] == 0, outline
+        files = re.findall(r"^(.+)  \((\d+)\)$", outline["outline"], re.MULTILINE)
+        assert len(files) == outline["returned_file_count"] > 0, outline
+        assert sum(int(count) for _, count in files) <= outline["symbol_count"], outline
 
 
 def arguments() -> argparse.Namespace:
@@ -108,20 +131,26 @@ def main() -> None:
             before_markers = marker_state(repo)
 
             outline, elapsed = run(repo, "tree", "--symbols", str(repo))
-            assert outline["format"] == "symbol-outline-v1", outline
-            assert outline["context_receipt"]["freshness"] == "current", outline
-            assert len(outline["outline"].encode("utf-8")) <= 96 * 1024, outline
-            assert outline["returned_symbol_count"] <= outline["symbol_count"], outline
+            validate_outline(outline)
             if outline["truncated"]:
-                assert outline["result_state"] == "truncated", outline
-                assert outline["returned_symbol_count"] < outline["symbol_count"], outline
-                assert outline.get("next_action"), outline
                 scoped, _ = run(repo, "tree", "--symbols", str(repo / scope))
+                validate_outline(scoped)
                 assert scoped["symbol_count"] < outline["symbol_count"], (outline, scoped)
-                assert len(scoped["outline"].encode("utf-8")) <= 96 * 1024, scoped
-            else:
-                assert outline["result_state"] == "complete", outline
-                assert outline["returned_symbol_count"] == outline["symbol_count"], outline
+                assert scoped["scope"] == scope, scoped
+                if scoped["format"] == "file-map-v1":
+                    # A large source subtree may still need a file-level drilldown.
+                    # Select its smallest listed source and require actual names;
+                    # accepting a bounded map alone would miss broken navigation.
+                    files = re.findall(r"^(.+)  \((\d+)\)$", scoped["outline"], re.MULTILINE)
+                    source, count = min(files, key=lambda item: int(item[1]))
+                    source_path = (repo / source).resolve()
+                    assert source_path.is_relative_to((repo / scope).resolve()), source
+                    scoped, _ = run(repo, "tree", "--symbols", str(source_path))
+                    validate_outline(scoped)
+                    assert scoped["symbol_count"] == int(count), scoped
+                assert scoped["format"] == "symbol-outline-v1", scoped
+                assert scoped["returned_symbol_count"] > 0, scoped
+                assert re.search(r"^\d+-\d+ .+", scoped["outline"], re.MULTILINE), scoped
 
             matches, _ = run(repo, "grep", pattern, str(repo))
             assert matches.get("returned", 0) > 0, matches

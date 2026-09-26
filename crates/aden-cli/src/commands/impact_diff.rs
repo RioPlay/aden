@@ -207,7 +207,8 @@ pub fn cmd_impact_diff(
                 &root,
                 serde_json::json!({
                     "changed_files": 0, "touched": [], "blast_radius": 0,
-                    "impacted": [], "affected_tests": [], "risk": "none"
+                    "impacted": [], "affected_tests": [], "risk": "none",
+                    "relationship": {"direction": "incoming", "label": "Used by / potentially affected"}
                 }),
             );
             println!("{}", serde_json::to_string_pretty(&env)?);
@@ -279,6 +280,7 @@ pub fn cmd_impact_diff(
                 "impacted": union.iter().collect::<Vec<_>>(),
                 "affected_tests": tests.iter().collect::<Vec<_>>(),
                 "risk": risk,
+                "relationship": {"direction": "incoming", "label": "Used by / potentially affected"},
             }),
         );
         println!("{}", serde_json::to_string_pretty(&env)?);

@@ -151,3 +151,41 @@ test('region buttons preserve quoted names in executable HTML attributes', () =>
   vm.runInContext(handler, h.context);
   assert.deepEqual(h.calls, [name]);
 });
+
+test('graph panel context preserves edge direction and prioritizes the selected relationship', async () => {
+  const root = {id:'root',anchor:"aden://module/demo#it's_render",file:'src/render.rs',line:18,snippet:'fn render() {}'};
+  const peers = Array.from({length:40},(_,i)=>({id:`n${i}`,anchor:`aden://module/demo#peer${i}`}));
+  const byId = Object.fromEntries([root,...peers].map(n=>[n.id,n]));
+  let copied;
+  const ctx = vm.createContext({panelContextNode:root,byId,level:'overview',nbSel:39,panelNbs:peers.map(n=>n.id),
+    curLinks:peers.map((n,i)=>i%2?{source:n,target:root,type:'Calls'}:{source:root.id,target:n.id,type:'Uses'}),
+    idOf:value=>typeof value==='object'?value.id:value,DATA:{mode:'blast'},button:{},
+    navigator:{clipboard:{writeText:async text=>{copied=text;}}}});
+  vm.runInContext(fs.readFileSync(path.join(__dirname,'../crates/aden-cli/assets/viewer-context.js'),'utf8'),ctx);
+  vm.runInContext(section('async function copyAnchor(', 'function searchAndGo('),ctx);
+  await vm.runInContext('copyPanelContext(button)',ctx);
+  assert.ok(copied.includes(root.anchor));
+  assert.ok(copied.includes('Source: src/render.rs:18'));
+  assert.ok(copied.includes(root.snippet));
+  assert.match(copied,/Relationships: 24 copied of 40/);
+  assert.ok(copied.includes(`* Selected: aden://module/demo#peer39 --Calls--> ${root.anchor}`));
+  assert.ok(copied.includes(`- ${root.anchor} --Uses--> aden://module/demo#peer0`));
+  assert.match(copied,/including collapsed rows/);
+  assert.equal(ctx.button.textContent,'Copied context');
+});
+
+test('panel copy controls are native buttons and never embed an anchor in executable code', () => {
+  const h = harness();
+  const anchor = `aden://module/quoted\"#it's_<render>`;
+  Object.assign(h.context,{lastPreviewId:null,panelContextNode:null,panelStack:[],
+    n:{id:'one',anchor},row:()=>'',editorUrl:()=>'',breadcrumb:()=>'',
+    groupedNeighbours:()=>[],shortName:n=>n.anchor});
+  for (const fn of ['esc','escAttr']) vm.runInContext(html.match(new RegExp(`^function ${fn}\\(.*$`,'m'))[0],h.context);
+  vm.runInContext(section('function showPanel(', 'function showMoreGroup('),h.context);
+  vm.runInContext('showPanel(n)',h.context);
+  const markup = h.element('p-body').innerHTML;
+  assert.ok(markup.includes('title="aden://module/quoted&quot;#it\'s_&lt;render&gt;"'));
+  assert.match(markup,/<button type="button" class="copy-btn" onclick="copyPanelContext\(this\)">Copy context<\/button>/);
+  assert.match(markup,/copyAnchor\(document.getElementById\('panel-anchor'\).textContent, this\)/);
+  assert.equal(h.context.panelContextNode,h.context.n);
+});

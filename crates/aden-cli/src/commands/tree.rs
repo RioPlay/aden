@@ -36,7 +36,11 @@ pub fn cmd_tree(
     unlimited: bool,
     json_output: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let root = find_project_root(path);
+    let root = find_project_root(if path.is_file() {
+        path.parent().unwrap_or(path)
+    } else {
+        path
+    });
     let scope = std::fs::canonicalize(path)
         .map_err(|error| format!("Cannot inspect '{}': {error}", path.display()))?;
     // Windows: git root is often `C:/…` while canonicalize yields `\\?\C:\…`.
@@ -78,8 +82,27 @@ pub fn cmd_tree(
     let symbols_only = symbols_only || json_output;
     if symbols_only {
         let outline = symbol_outline(&by_file, unlimited);
+        let relative_scope = aden_paths::relative_to(&root, &scope).unwrap_or_default();
+        let next_actions: Vec<_> = if outline.truncated && scope.is_dir() {
+            // Follow the same code-file filter as the outline. Config and prose
+            // paths sort before source in many projects but cannot reveal the
+            // symbol names omitted by a compact file map.
+            by_file.iter()
+                .filter(|(file, symbols)| !is_prose_file(file) && symbols.iter().any(|symbol| symbol.is_code))
+                .filter_map(|(file, _)| file.strip_prefix(&relative_scope).ok())
+                .filter_map(|file| file.components().next())
+                .map(|component| root.join(&relative_scope).join(component.as_os_str()))
+                .collect::<BTreeSet<_>>().into_iter().take(3)
+                .filter_map(|scope| super::next_actions::tree(&scope, "Inspect this narrower scope; other scopes may also contain omitted results"))
+                .collect()
+        } else if by_file.is_empty() && !relative_scope.as_os_str().is_empty() {
+            super::next_actions::tree(&root, "Browse the repository for indexed source files")
+                .into_iter()
+                .collect()
+        } else {
+            Vec::new()
+        };
         if json_output {
-            let relative_scope = aden_paths::relative_to(&root, &scope).unwrap_or_default();
             let payload = super::augment_read_json(
                 &root,
                 serde_json::json!({
@@ -92,6 +115,7 @@ pub fn cmd_tree(
                     "returned_file_count": outline.returned_file_count,
                     "returned_symbol_count": outline.returned_symbol_count,
                     "truncated": outline.truncated,
+                    "next_actions": next_actions,
                     "next_action": outline.truncated.then_some(
                         if outline.format == "file-map-v1" {
                             "Rerun tree on a project-relative subtree for symbol names and line ranges, or use --unlimited."
@@ -105,6 +129,7 @@ pub fn cmd_tree(
             println!("{}", serde_json::to_string(&payload)?);
         } else {
             print!("{}", outline.text);
+            super::next_actions::print(&next_actions);
         }
         return Ok(());
     }

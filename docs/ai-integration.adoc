@@ -152,6 +152,42 @@ aden query --impact helper
 * Treat `freshness`, `index_stale`, `truncated`, and incomplete receipts as
   correctness signals, not optional metadata.
 
+[[navigation-evidence-and-followups]]
+=== Source evidence, directions, and follow-up actions
+
+`understand` includes a separate `source` object. Its `state` is `complete`,
+`clipped`, or `unavailable`; file and line fields identify the returned excerpt.
+Source is shown only when its hash matches the indexed source and its path is
+allowed. A clipped final line is marked by `last_line_complete: false`.
+Source text and graph context share the command's content budget; this budget
+does not include relationship lists or JSON metadata.
+
+Relationship labels make traversal direction explicit. `query --backlinks`
+and `impact-diff` follow incoming references (used by / potentially affected).
+`query --impact` and `understand.impact` follow outgoing dependencies (depends
+on). These describe graph reachability, not proof of runtime breakage.
+`query --from` may include other outgoing relationship types.
+
+Navigation results can include `next_actions`, an array of concrete suggestions
+with `tool`, `arguments`, `reason`, `cli.program`, `cli.args`, `command`, and
+`shell`. Use the tool arguments directly over MCP, or pass the CLI arguments
+as an argument array. The displayed command is quoted for the named shell.
+Ambiguity actions inspect candidates without choosing one; narrowing actions
+do not claim to enumerate omitted results. Strict, very small response budgets
+may omit optional actions.
+
+`grep` rejects nonexistent scopes. Matching-line previews are bounded to 512
+UTF-8 bytes and the serialized JSON response to 64 KiB. Preview and match byte
+offsets refer to the original line; end offsets are exclusive. `text_truncated`
+describes clipped previews, while `truncated`, `limit_truncated`, and
+`response_bytes_truncated` describe omitted hits. Narrow the scope when needed;
+`--unlimited` does not disable the response safety ceiling.
+
+Both the simple and graph viewers offer *Copy context*: a bounded plain-text
+packet containing the selected symbol, source preview, displayed relationships,
+and export metadata. Packets explicitly distinguish export-time information
+from unknown current freshness.
+
 === Transport-parity examples
 
 These CLI calls exercise the same structured read contracts used by the MCP

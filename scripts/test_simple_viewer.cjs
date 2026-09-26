@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const html = fs.readFileSync(path.join(__dirname, '../crates/aden-cli/assets/view-simple.html'), 'utf8');
+const contextHelpers = fs.readFileSync(path.join(__dirname, '../crates/aden-cli/assets/viewer-context.js'), 'utf8');
 const context = vm.createContext({});
 vm.runInContext(html.slice(html.indexOf('const nameOf'), html.indexOf('const graph =')), context);
 const index = data => { context.data = data; return vm.runInContext('indexGraph(data)', context); };
@@ -69,4 +70,81 @@ test('back restores the exact relationship position and filters after following 
   vm.runInContext('restoreNavigation(saved)',ctx);
   assert.deepEqual(JSON.parse(vm.runInContext('JSON.stringify(captureNavigation())',ctx)),saved);
   assert.equal(vm.runInContext('current',ctx),'origin');
+});
+
+test('copy context includes the current relationship page, source, selection, and export provenance', async () => {
+  const anchor = 'aden://module/demo/src#render';
+  const root = {id:'root',anchor,file:'C:\\project with spaces\\src\\demo.rs',line:37,snippet:'fn render() {\n    paint();\n}'};
+  const peers = Array.from({length:51},(_,i)=>({id:`n${i}`,anchor:`aden://module/demo/src#peer${i}`}));
+  const graph = {nodes:new Map([root,...peers].map(n=>[n.id,n]))};
+  const elements = {'direction':{value:'out'},'edge-type':{value:'Calls'},'structural':{checked:false},'copy-context':{}};
+  let copied;
+  const ctx = vm.createContext({graph,current:'root',rowPage:1,ROW_PAGE:24,rowSelection:30,
+    relations:peers.map(n=>({from:'root',to:n.id,type:'Calls'})),$:id=>elements[id],
+    DATA:{mode:'graph',generated_at:'2026-09-26T12:00:00Z',git_hash:'abc123',context_receipt:{freshness:'current',graph_revision:'rev42'}},
+    navigator:{clipboard:{writeText:async text=>{copied=text;}}}});
+  vm.runInContext(contextHelpers,ctx);
+  vm.runInContext(html.slice(html.indexOf('async function copyContext()'),html.indexOf("$('search').addEventListener('input'")),ctx);
+  await vm.runInContext('copyContext()',ctx);
+  assert.ok(copied.includes(`Anchor: ${anchor}`));
+  assert.ok(copied.includes('Source: C:\\project with spaces\\src\\demo.rs:37'));
+  assert.ok(copied.includes(root.snippet));
+  assert.match(copied,/Source preview \(exported excerpt; completeness unknown\)/);
+  assert.match(copied,/Freshness at export: current/);
+  assert.match(copied,/Freshness now: unknown \(static export/);
+  assert.match(copied,/Graph revision at export: rev42/);
+  assert.match(copied,/Git commit at export: abc123/);
+  assert.match(copied,/relationship page 2; direction=out; type=Calls; structural=excluded/);
+  assert.match(copied,/Relationships: 24 copied of 51/);
+  assert.ok(copied.includes('* Selected: '+anchor+' --Calls--> aden://module/demo/src#peer30'));
+  assert.ok(!copied.includes('--> aden://module/demo/src#peer0\n'));
+  assert.match(copied,/Additional relationships are omitted/);
+  assert.equal(elements['copy-context'].textContent,'Copied context');
+  assert.ok(html.includes("$('copy-context').addEventListener('click',copyContext)"));
+  assert.ok(html.includes("else if(e.key==='Y') copyContext()"));
+});
+
+test('context stays bounded with large source, paths, and relationships and does not invent freshness', () => {
+  const ctx = vm.createContext({});
+  vm.runInContext(contextHelpers,ctx);
+  const packet = vm.runInContext(`AdenContext.build({
+    node:{anchor:'aden://'+ 'a'.repeat(9000),file:'x'.repeat(9000),snippet:'😀'.repeat(9000)},
+    relationships:Array.from({length:200},(_,i)=>({from:{anchor:'from'+i+'a'.repeat(2000)},to:{anchor:'to'+i+'b'.repeat(2000)},type:'Calls'}))
+  })`,ctx);
+  assert.ok(packet.length <= vm.runInContext('AdenContext.MAX_CHARS',ctx));
+  assert.match(packet,/\[clipped\]/);
+  assert.match(packet,/Relationships: \d+ copied of 200/);
+  assert.match(packet,/Freshness at export: not recorded/);
+  assert.match(packet,/Freshness now: unknown/);
+  assert.match(packet,/Additional relationships are omitted/);
+  assert.ok(!/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(packet),'clipping preserves surrogate pairs');
+});
+
+test('missing and denied clipboard APIs offer an accessible selected fallback without interpreting source as HTML', async () => {
+  for (const navigator of [{},{clipboard:{writeText:async()=>{throw new Error('denied');}}}]) {
+    const dialogs = [];
+    const makeElement = tag => ({tag,style:{},attributes:{},events:{},
+      setAttribute(name,value){this.attributes[name]=value;},
+      addEventListener(name,fn){this.events[name]=fn;},
+      append(...children){this.children=children;},
+      showModal(){this.open=true;},focus(){this.focused=true;},select(){this.selected=true;},
+      close(){this.open=false;this.events.close();},remove(){this.removed=true;}});
+    const document = {createElement:makeElement,body:{append:dialog=>dialogs.push(dialog)}};
+    const button = {};
+    const text = '<script>unsafe()</script>\n<svg onload="unsafe()">';
+    const ctx = vm.createContext({navigator,document,button,text});
+    vm.runInContext(contextHelpers,ctx);
+    await vm.runInContext('AdenContext.copy(text,button)',ctx);
+    assert.equal(dialogs.length,1);
+    const dialog = dialogs[0], content = dialog.children[1];
+    assert.equal(dialog.attributes['aria-label'],'Copy context manually');
+    assert.equal(content.value,text);
+    assert.equal(content.readOnly,true);
+    assert.equal(content.focused,true);
+    assert.equal(content.selected,true);
+    assert.equal(content.innerHTML,undefined);
+    assert.equal(button.textContent,'Select and copy');
+    dialog.children[2].events.click();
+    assert.equal(dialog.removed,true);
+  }
 });

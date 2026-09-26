@@ -220,8 +220,9 @@
   #panel h2 { margin: 0 0 4px; font-size: 14px; color: #89b4fa; word-break: break-all; line-height: 1.3; }
   #panel .anchor-row { display: flex; align-items: flex-start; gap: 6px; margin-bottom: 10px; }
   #panel .anchor-txt { color: #6c7086; font-size: 11px; word-break: break-all; flex: 1; }
-  #panel .copy-btn { cursor: pointer; color: #6c7086; font-size: 11px; white-space: nowrap;
-    padding: 1px 6px; border: 1px solid #313244; border-radius: 4px; flex-shrink: 0; }
+#panel .copy-btn { cursor: pointer; color: #6c7086; font-size: 11px; white-space: nowrap;
+  padding: 1px 6px; border: 1px solid #313244; border-radius: 4px; flex-shrink: 0; background: transparent; }
+#panel .copy-actions { display: flex; gap: 6px; margin: 0 0 12px; }
   #panel .copy-btn:hover { color: #89b4fa; border-color: #89b4fa; }
   #panel .copy-btn.copied { color: #a6e3a1; border-color: #a6e3a1; }
   #panel .breadcrumb { font-size: 11px; color: #6c7086; margin-bottom: 10px; }
@@ -507,6 +508,7 @@ if (!CanvasRenderingContext2D.prototype.roundRect) {
 </script>
 <script>
 const DATA = /*ADEN_DATA*/;
+/*CONTEXT_HELPERS*/
 const EDITOR = "/*EDITOR*/";
 const SIBLING = "/*SIBLING*/";   // the 3D twin of this page ('' = none)
 const hasDrill = !!(DATA.drill && Object.keys(DATA.drill).length);
@@ -522,6 +524,7 @@ let byId = {}, curLinks = [], level = 'overview';
 const highlightNodes = new Set(), highlightLinks = new Set();
 let hoverNode = null, overUI = false;
 let panelStack = [], panelCur = null, panelNbs = [], nbSel = -1;
+let panelContextNode = null;
 let activeTypes = new Set();
 let densityFrac = 1, densityVisible = null;
 let showLabels = false;
@@ -1431,6 +1434,7 @@ function groupedNeighbours(n) {
 }
 
 function showPanel(n) {
+  panelContextNode = n;
   lastPreviewId = null;   // fresh focus → previews strobe again
   const rows = [];
   if (n.size != null) rows.push(row('symbols', n.size));
@@ -1484,7 +1488,8 @@ function showPanel(n) {
   document.getElementById('p-title').textContent = shortName(n);
   document.getElementById('p-body').innerHTML =
     (bc ? `<div class="breadcrumb">${bc}</div>` : '') +
-    (anchor ? `<div class="anchor-row"><span class="anchor-txt" title="${esc(anchor)}">${esc(anchor)}</span><span class="copy-btn" onclick="copyAnchor('${esc(anchor)}', this)">copy</span></div>` : '') +
+    (anchor ? `<div class="anchor-row"><span id="panel-anchor" class="anchor-txt" title="${escAttr(anchor)}">${esc(anchor)}</span></div>` : '') +
+    `<div class="copy-actions">${anchor ? '<button type="button" class="copy-btn" onclick="copyAnchor(document.getElementById(\'panel-anchor\').textContent, this)">Copy anchor</button>' : ''}<button type="button" class="copy-btn" onclick="copyPanelContext(this)">Copy context</button></div>` +
     rows.join('') +
     (ed ? `<div class="row"><a href="${escAttr(ed)}">open in editor →</a></div>` : '') +
     (n.file ? `<div class="row hint-txt">↔ history: aden timeline ${esc(n.file)}</div>` : '') +
@@ -1516,13 +1521,21 @@ function showMoreGroup(groupId, btn) {
   btn.remove();
 }
 
-function copyAnchor(anchor, btn) {
-  navigator.clipboard.writeText(anchor).then(() => {
-    btn.textContent = 'copied!'; btn.classList.add('copied');
-    setTimeout(() => { btn.textContent = 'copy'; btn.classList.remove('copied'); }, 1500);
-  }).catch(() => {
-    btn.textContent = anchor; // fallback: show the anchor text to select+copy
-  });
+async function copyAnchor(anchor, btn) {
+  await AdenContext.copy(anchor, btn, 'anchor');
+}
+async function copyPanelContext(btn) {
+  const n = panelContextNode; if (!n) return;
+  const relationships = curLinks.filter(l => idOf(l.source) === n.id || idOf(l.target) === n.id).map(l => ({
+    from: byId[idOf(l.source)] || {id:idOf(l.source)},
+    to: byId[idOf(l.target)] || {id:idOf(l.target)}, type:l.type,
+    selected: nbSel >= 0 && (idOf(l.source) === n.id ? idOf(l.target) : idOf(l.source)) === panelNbs[nbSel],
+  }));
+  // Keep the keyboard-selected relationship in a bounded packet even in a large panel.
+  relationships.sort((a,b) => Number(b.selected) - Number(a.selected));
+  const text = AdenContext.build({node:n,data:DATA,relationships,
+    view:`Graph viewer (${level}); symbol panel relationships, including collapsed rows.`});
+  await AdenContext.copy(text, btn);
 }
 function searchAndGo(q) {
   const qEl = document.getElementById('q'); if (!qEl) return;
@@ -1620,7 +1633,7 @@ function pickResult(i) {
 function showGhostPanel(n) {
   document.getElementById('p-title').textContent = shortName(n);
   document.getElementById('p-body').innerHTML =
-    `<div class="anchor-row"><span class="anchor-txt">${esc(n.anchor || '')}</span><span class="copy-btn" onclick="copyAnchor('${esc(n.anchor||'')}', this)">copy</span></div>` +
+    `<div class="anchor-row"><span id="panel-anchor" class="anchor-txt">${esc(n.anchor || '')}</span><button type="button" class="copy-btn" onclick="copyAnchor(document.getElementById('panel-anchor').textContent, this)">Copy anchor</button></div>` +
     (n.kind ? row('kind', n.kind) : '') +
     (n.group ? row('module', n.group) : '') +
     `<div class="ghost-node">Symbol not in current view.<br>Run <code>aden view &quot;${esc(n.anchor || shortName(n))}&quot;</code> to focus it.</div>`;

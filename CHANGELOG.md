@@ -11,6 +11,39 @@ All notable changes to aden are documented here. Format follows
 
 No unreleased changes.
 
+## [0.4.2] - 2026-09-26
+
+This patch makes code context easier to inspect, copy, and follow in the CLI,
+MCP tools, and graph viewers while keeping responses bounded and explicit about
+their source and freshness.
+
+### Added
+- **Verified source in `understand`** — include the indexed symbol's source with
+  hash verification, completeness and clipping metadata, and explicit reasons
+  when current source cannot safely be returned. Human output escapes terminal
+  controls; JSON preserves the exact source.
+- **Runnable navigation actions** — CLI and MCP responses provide structured
+  next steps with tool arguments, reasons, and quoted CLI commands for ambiguous,
+  missing, and truncated results.
+- **Copy context in graph viewers** — simple and 2D views copy bounded source,
+  directed relationships, and export provenance. Simple view supports Shift+Y;
+  a selectable, accessible dialog handles unavailable clipboard access.
+
+### Fixed
+- **Bounded search output** — matching lines use UTF-8-safe, match-centered
+  previews with original byte offsets, and JSON responses have a 64 KiB ceiling
+  with truthful truncation metadata. Invalid scopes fail explicitly instead of
+  silently searching the project root; file scopes retain project anchors.
+- **Clear relationship direction** — distinguish incoming references from
+  outgoing dependencies while preserving existing machine-readable fields.
+- **Useful tree continuations** — suggest narrower scopes containing code
+  symbols instead of empty configuration or documentation subtrees.
+- **Safe context handoffs** — rebuild MCP navigation actions from trusted scope,
+  escape literal search recovery, label static viewer freshness, and prevent
+  manual-copy dialog overflow.
+- **Upstream gauntlet coverage** — validate bounded file maps and require
+  scoped drilldown to named source spans on large repositories.
+
 ## [0.4.1] - 2026-09-19
 
 This patch makes Aden safer to upgrade and cheaper for LLM day-to-day use:

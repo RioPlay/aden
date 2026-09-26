@@ -344,9 +344,19 @@ enum Commands {
         edge_type: Option<String>,
         #[arg(short = 'd', long, value_name = "N", default_value = "3")]
         depth: usize,
-        #[arg(short = 'b', long, value_name = "ANCHOR")]
+        #[arg(
+            short = 'b',
+            long,
+            value_name = "ANCHOR",
+            help = "Incoming references: used by / potentially affected"
+        )]
         backlinks: Option<String>,
-        #[arg(short = 'i', long, value_name = "ANCHOR")]
+        #[arg(
+            short = 'i',
+            long,
+            value_name = "ANCHOR",
+            help = "Outgoing dependencies: what this symbol depends on"
+        )]
         impact: Option<String>,
         #[arg(
             long,

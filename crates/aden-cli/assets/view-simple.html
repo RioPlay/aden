@@ -35,6 +35,7 @@ label { display:block; font-size:12px; color:var(--muted); }
 main { padding:22px 28px 40px; min-width:0; }
 .title-row { display:flex; align-items:flex-start; gap:12px; margin-bottom:12px; }
 .title-row>div { flex:1; min-width:0; }
+.title-row .copy-actions { flex:0 0 auto; display:flex; flex-wrap:wrap; gap:6px; }
 #anchor { display:block; font:12px/1.6 ui-monospace,monospace; color:var(--muted); overflow-wrap:anywhere; margin:8px 0; }
 .filters { display:flex; flex-wrap:wrap; gap:12px; align-items:end; margin:18px 0 12px; }
 .filters select { display:block; margin-top:4px; }
@@ -62,6 +63,7 @@ dialog::backdrop { background:#202b3840; } dialog p { margin:10px 0; }
 kbd { font:12px ui-monospace,monospace; background:var(--bg); padding:2px 5px; border:1px solid var(--line); border-radius:3px; }
 @media(max-width:900px) { .layout { grid-template-columns:220px minmax(0,1fr); } main { padding:18px; } }
 @media(max-width:620px) { header { padding:12px; flex-wrap:wrap; gap:8px; } .layout { display:block; } aside { border-right:0; border-bottom:1px solid var(--line); } #symbols { max-height:180px; overflow:auto; } main { padding:16px 12px; } .diagram-footer { align-items:start; flex-direction:column; } }
+@media(max-width:620px) { .title-row { flex-wrap:wrap; } .title-row .copy-actions { flex-basis:100%; justify-content:flex-end; } }
 </style>
 </head>
 <body>
@@ -75,7 +77,7 @@ kbd { font:12px ui-monospace,monospace; background:var(--bg); padding:2px 5px; b
   <div class="pager"><button id="symbols-prev" aria-label="Previous symbols">←</button><span id="symbols-page"></span><button id="symbols-next" aria-label="Next symbols">→</button></div>
 </aside>
 <main>
-  <div class="title-row"><button id="back" title="Previous symbol (h)">← Back</button><div><h1 id="title">Choose a symbol</h1><div id="meta" class="small muted"></div></div><button id="copy">Copy anchor</button></div>
+<div class="title-row"><button id="back" title="Previous symbol (h)">← Back</button><div><h1 id="title">Choose a symbol</h1><div id="meta" class="small muted"></div></div><div class="copy-actions"><button id="copy">Copy anchor</button><button id="copy-context" title="Copy this symbol, source preview, and current relationship page (Y)">Copy context</button></div></div>
   <code id="anchor"></code><a id="editor" hidden>Open in editor</a>
   <p id="scope-summary" class="small muted"></p>
   <div class="filters">
@@ -91,13 +93,14 @@ kbd { font:12px ui-monospace,monospace; background:var(--bg); padding:2px 5px; b
   <details id="source" hidden><summary>Source preview</summary><pre id="snippet"></pre></details>
 </main>
 </div>
-<dialog id="shortcuts"><h2>Keyboard navigation</h2><p><kbd>/</kbd> Find a symbol. <kbd>↑</kbd> <kbd>↓</kbd> or <kbd>Ctrl N</kbd> <kbd>Ctrl P</kbd> choose a result, <kbd>Enter</kbd> opens it.</p><p><kbd>j</kbd> <kbd>k</kbd> Next / previous relationship. <kbd>g</kbd> <kbd>G</kbd> First / last relationship.</p><p><kbd>l</kbd> or <kbd>Enter</kbd> Follow the selected relationship. <kbd>h</kbd> Back. <kbd>y</kbd> Copy anchor.</p><p><kbd>Esc</kbd> Clear search or close help. <kbd>?</kbd> Open help.</p><form method="dialog"><button>Close</button></form></dialog>
+<dialog id="shortcuts"><h2>Keyboard navigation</h2><p><kbd>/</kbd> Find a symbol. <kbd>↑</kbd> <kbd>↓</kbd> or <kbd>Ctrl N</kbd> <kbd>Ctrl P</kbd> choose a result, <kbd>Enter</kbd> opens it.</p><p><kbd>j</kbd> <kbd>k</kbd> Next / previous relationship. <kbd>g</kbd> <kbd>G</kbd> First / last relationship.</p><p><kbd>l</kbd> or <kbd>Enter</kbd> Follow the selected relationship. <kbd>h</kbd> Back. <kbd>y</kbd> Copy anchor. <kbd>Y</kbd> Copy context.</p><p><kbd>Esc</kbd> Clear search or close help. <kbd>?</kbd> Open help.</p><form method="dialog"><button>Close</button></form></dialog>
 <script>
 'use strict';
 const DATA = /*ADEN_DATA*/;
 const EDITOR = "/*EDITOR*/";
 const RICH_VIEW = "/*RICH_VIEW*/";
 /*SEARCH_HELPERS*/
+/*CONTEXT_HELPERS*/
 const PAGE = 40, GRAPH_PAGE = 8, ROW_PAGE = 24;
 const $ = id => document.getElementById(id);
 const nameOf = n => (n.anchor || n.label || n.id).replace(/#$/, '').split('#').pop().split('/').pop();
@@ -195,7 +198,7 @@ function selectNode(id, push = true) {
   $('title').textContent = nameOf(n); $('anchor').textContent = n.anchor || n.label || id;
   $('meta').textContent = [n.kind, n.group, n.file ? n.file + (n.line ? ':' + n.line : '') : null].filter(Boolean).join(' · ');
   $('back').disabled = !historyStack.length; $('copy').disabled = !n.anchor;
-  $('copy').textContent = 'Copy anchor';
+  $('copy').textContent = 'Copy anchor'; $('copy-context').disabled = false; $('copy-context').textContent = 'Copy context';
   $('rich-view').hidden = !RICH_VIEW || RICH_VIEW.includes('/*');
   if (!$('rich-view').hidden) $('rich-view').href = RICH_VIEW + '#a=' + encodeURIComponent(n.anchor || id);
   const file = n.editor_file;
@@ -296,8 +299,16 @@ addEventListener('popstate', event => {
 });
 async function copyAnchor() {
   const n=graph.nodes.get(current); if(!n?.anchor) return;
-  try { await navigator.clipboard.writeText(n.anchor); $('copy').textContent='Copied'; }
-  catch { const range=document.createRange();range.selectNodeContents($('anchor'));const selection=getSelection();selection.removeAllRanges();selection.addRange(range);$('copy').textContent='Select and copy'; }
+  await AdenContext.copy(n.anchor, $('copy'), 'anchor');
+}
+async function copyContext() {
+  const n=graph.nodes.get(current); if(!n) return;
+  const edges=relations.slice(rowPage*ROW_PAGE,(rowPage+1)*ROW_PAGE).map((e,i)=>({
+    from:graph.nodes.get(e.from),to:graph.nodes.get(e.to),type:e.type,selected:rowPage*ROW_PAGE+i===rowSelection
+  }));
+  const text=AdenContext.build({node:n,data:DATA,relationships:edges,totalRelationships:relations.length,
+    view:`Simple viewer, relationship page ${rowPage+1}; direction=${$('direction').value}; type=${$('edge-type').value||'all'}; structural=${$('structural').checked?'included':'excluded'}`});
+  await AdenContext.copy(text, $('copy-context'));
 }
 $('search').addEventListener('input',searchSymbols);
 $('search').addEventListener('keydown',e=>{
@@ -316,6 +327,7 @@ for(const [prefix,size,length,render] of [['symbols',PAGE,()=>found.length,rende
   });
 }
 $('back').addEventListener('click',back); $('copy').addEventListener('click',copyAnchor);
+$('copy-context').addEventListener('click',copyContext);
 $('help').addEventListener('click',()=>$('shortcuts').showModal());
 function syncThemeButton() {
   const light = document.documentElement.dataset.theme === 'light';
@@ -337,6 +349,7 @@ document.addEventListener('keydown',e=>{
   else if(e.key==='?') $('shortcuts').showModal();
   else if(e.key==='h') back();
   else if(e.key==='y') copyAnchor();
+  else if(e.key==='Y') copyContext();
   else if(e.key==='j') {walkRows(rowSelection+1);e.preventDefault();}
   else if(e.key==='k') {walkRows(rowSelection<0?0:rowSelection-1);e.preventDefault();}
   else if(e.key==='g') walkRows(0);
@@ -348,7 +361,7 @@ addEventListener('hashchange',()=>{const id=fromHash();if(id && id!==current){se
 $('totals').textContent=`${graph.nodes.size.toLocaleString()} symbols · ${graph.edges.length.toLocaleString()} relationships`;
 const initial=fromHash() || graph.anchors.get(DATA.root) || [...allNodes].filter(n=>n.anchor?.includes('#')).sort((a,b)=>(b.degree||0)-(a.degree||0))[0]?.id || allNodes[0]?.id;
 $('scope-summary').textContent = DATA.mode === 'graph' ? 'Complete exported graph. Filters affect this view only.' : 'Exported graph slice. Relationships outside this export are not included.';
-renderSymbols(); if(initial) {selectNode(initial,false);recordNavigation(false);} else { $('back').disabled=true; $('copy').disabled=true; filterRelations(); }
+renderSymbols(); if(initial) {selectNode(initial,false);recordNavigation(false);} else { $('back').disabled=true; $('copy').disabled=true; $('copy-context').disabled=true; filterRelations(); }
 </script>
 </body>
 </html>

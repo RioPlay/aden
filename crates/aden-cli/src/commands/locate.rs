@@ -14,8 +14,31 @@ fn locate_envelope(
     match_kind: &str,
     total: usize,
     items: Vec<serde_json::Value>,
+    query: &str,
+    path: &Path,
 ) -> serde_json::Value {
     let returned = items.len();
+    let next_actions: Vec<_> = if items.is_empty() {
+        super::next_actions::search(
+            query,
+            path,
+            "Search source text for references outside the graph",
+        )
+        .into_iter()
+        .collect()
+    } else {
+        items
+            .iter()
+            .take(3)
+            .filter_map(|item| {
+                super::next_actions::inspect(
+                    item["anchor"].as_str()?,
+                    path,
+                    "Inspect this exact result",
+                )
+            })
+            .collect()
+    };
     serde_json::json!({
         "mode": mode,
         "match_kind": match_kind,
@@ -25,12 +48,15 @@ fn locate_envelope(
         // `items` remains for compatibility; new consumers use the explicit
         // result metadata plus this stable collection field.
         "items": items,
+        "next_actions": next_actions,
     })
 }
 
 fn with_anchor_resolution(
     mut envelope: serde_json::Value,
     resolution: &aden_graph::cache::AnchorResolution,
+    symbol: &str,
+    path: &Path,
 ) -> serde_json::Value {
     use aden_graph::cache::AnchorResolution;
     envelope["resolution"] = match resolution {
@@ -57,7 +83,41 @@ fn with_anchor_resolution(
             "recovery": "inspect suggestions or broaden the search; suggestions are never selected automatically",
         }),
     };
+    envelope["next_actions"] = serde_json::json!(resolution_actions(resolution, symbol, path));
     envelope
+}
+
+fn resolution_actions(
+    resolution: &aden_graph::cache::AnchorResolution,
+    symbol: &str,
+    path: &Path,
+) -> Vec<serde_json::Value> {
+    use aden_graph::cache::AnchorResolution;
+    match resolution {
+        AnchorResolution::Exact(anchor) | AnchorResolution::Unique { anchor } => {
+            super::next_actions::inspect(anchor, path, "Read the definition and its relationships")
+                .into_iter()
+                .collect()
+        }
+        AnchorResolution::Ambiguous { candidates } => candidates
+            .iter()
+            .take(3)
+            .filter_map(|anchor| {
+                super::next_actions::inspect(anchor, path, "Inspect this exact candidate")
+            })
+            .collect(),
+        AnchorResolution::NotFound { .. } => [
+            super::next_actions::search(
+                symbol,
+                path,
+                "Search source text; no indexed symbol does not prove absence",
+            ),
+            super::next_actions::tree(path, "Choose a narrower source scope"),
+        ]
+        .into_iter()
+        .flatten()
+        .collect(),
+    }
 }
 
 /// Other store anchors that share `symbol`'s trailing `#symbol` segment, excluding
@@ -149,7 +209,7 @@ fn collect_unique_backlinks(
 ///
 /// 1. resolve the symbol to its store anchor + definition location,
 /// 2. list backlinks (incoming references — who calls/references it),
-/// 3. list downstream impact (outgoing reach over the shared impact edge set),
+/// 3. list dependencies (outgoing reach over the shared impact edge set),
 /// 4. assemble a context block from that anchor within `budget` tokens.
 ///
 /// Reuses the shared `resolve_anchor_in_store` resolution and the same graph
@@ -211,6 +271,13 @@ pub fn cmd_understand(
         aden_graph::cache::AnchorResolution::Exact(anchor)
         | aden_graph::cache::AnchorResolution::Unique { anchor } => anchor,
         aden_graph::cache::AnchorResolution::NotFound { suggestions } => {
+            let actions = resolution_actions(
+                &aden_graph::cache::AnchorResolution::NotFound {
+                    suggestions: suggestions.clone(),
+                },
+                symbol,
+                path,
+            );
             let msg = format!(
                 "No symbol found matching '{}'. Try 'aden locate --symbol {} .' for ranked recovery candidates.",
                 symbol, symbol
@@ -221,6 +288,7 @@ pub fn cmd_understand(
                     json!({
                         "symbol": symbol,
                         "anchor": null,
+                        "next_actions": actions,
                         "error": msg,
                         "resolution": {
                             "state": "not_indexed",
@@ -237,10 +305,18 @@ pub fn cmd_understand(
                 println!("{}", serde_json::to_string_pretty(&env)?);
             } else {
                 println!("{}", msg);
+                super::next_actions::print(&actions);
             }
             return Ok(());
         }
         aden_graph::cache::AnchorResolution::Ambiguous { candidates } => {
+            let actions = resolution_actions(
+                &aden_graph::cache::AnchorResolution::Ambiguous {
+                    candidates: candidates.clone(),
+                },
+                symbol,
+                path,
+            );
             let recovery = format!(
                 "Ambiguous symbol '{}'; use an exact anchor or run 'aden locate --symbol {} .' to choose a candidate.",
                 symbol, symbol
@@ -251,6 +327,7 @@ pub fn cmd_understand(
                     json!({
                         "symbol": symbol,
                         "anchor": null,
+                        "next_actions": actions,
                         "resolution": {
                             "state": "ambiguous",
                             "complete": false,
@@ -265,6 +342,7 @@ pub fn cmd_understand(
                 for candidate in candidates {
                     println!("  - {candidate}");
                 }
+                super::next_actions::print(&actions);
             }
             return Ok(());
         }
@@ -306,7 +384,7 @@ pub fn cmd_understand(
     // Step 2: backlinks — incoming references (mirrors `query --backlinks`).
     let backlinks = collect_unique_backlinks(&graph, &anchor);
 
-    // Step 3: downstream impact — outgoing reach over impact edge types
+    // Step 3: dependencies — outgoing reach over impact edge types
     // (mirrors `query --impact`). Uses the one shared SET: this local copy had
     // silently drifted (it was missing Implements/Mutates, so understand's
     // impact view truncated at trait boundaries that `query --impact` crossed).
@@ -320,6 +398,16 @@ pub fn cmd_understand(
         .map(|(n, d)| node_to_json(&graph.graph[n], d))
         .collect();
 
+    // Reserve a bounded share of the content budget for the exact root source.
+    // It is verified against the indexed hash before trusting the line range.
+    let source = understand_source(path, &graph.graph[idx].doc, (budget / 2).min(2048));
+    let source_tokens = source["text"]
+        .as_str()
+        .unwrap_or_default()
+        .len()
+        .div_ceil(4);
+    let context_budget = budget.saturating_sub(source_tokens);
+
     // Step 4: assemble a context block from the anchor within budget, via the
     // same neighborhood-stream + assemble path `asm` uses.
     // Depth 2 matches ask's explain default: definition + direct callees,
@@ -329,19 +417,35 @@ pub fn cmd_understand(
     let asm_opts = AssemblyOptions {
         start_anchor: anchor.clone(),
         max_depth: 2,
-        token_budget: budget,
+        token_budget: context_budget,
         edge_types,
         block_filter: Vec::new(),
         include_tags: Vec::new(),
         exclude_tags: Vec::new(),
         attributes: Vec::new(),
         llm_mode: true,
+        // Root source is returned separately, with a verifiable range and state.
         hydrate_root: None,
         relevance: None,
         relevance_select: false,
         relevance_confidence: None,
     };
     let context = assemble(&neigh, &asm_opts)?;
+    let actions: Vec<_> = if source["state"] == "clipped" {
+        let name = anchor.split('#').next_back().unwrap_or(symbol);
+        let name = name.rsplit([':', '.']).next().unwrap_or(name);
+        let source_path =
+            crate::util::find_project_root(path).join(def["file"].as_str().unwrap_or(""));
+        super::next_actions::search(
+            name,
+            &source_path,
+            "Search within the source file for a narrower excerpt",
+        )
+        .into_iter()
+        .collect()
+    } else {
+        Vec::new()
+    };
 
     if json {
         let env = super::augment_read_json(
@@ -351,8 +455,15 @@ pub fn cmd_understand(
                 "anchor": anchor,
                 "alternates": alternates,
                 "definition": def,
+                "source": source,
+                "next_actions": actions,
+                "content_budget": { "tokens": budget, "source_tokens": source_tokens, "context_tokens_available": context_budget },
                 "backlinks": backlinks,
                 "impact": impact,
+                "relationships": {
+                    "backlinks": { "direction": "incoming", "label": "Used by / potentially affected", "max_depth": 1 },
+                    "impact": { "direction": "outgoing", "label": "Depends on", "max_depth": 2 },
+                },
                 "context": context,
             }),
         );
@@ -388,7 +499,45 @@ pub fn cmd_understand(
         println!();
     }
 
-    println!("## Backlinks ({} reference(s))", backlinks.len());
+    println!(
+        "## Source ({})",
+        source["state"].as_str().unwrap_or("unavailable")
+    );
+    if let Some(text) = source["text"].as_str().filter(|text| !text.is_empty()) {
+        let start = source["start_line"].as_u64().unwrap_or(1);
+        println!(
+            "  {}:{}-{}",
+            source["file"].as_str().unwrap_or(""),
+            start,
+            source["end_line"]
+        );
+        for (offset, line) in text.lines().enumerate() {
+            println!(
+                "{:5}: {}",
+                start + offset as u64,
+                crate::util::sanitize_terminal(line)
+            );
+        }
+        if source["state"] == "clipped" {
+            println!(
+                "  (clipped; indexed span ends at line {})",
+                source["indexed_end_line"]
+            );
+        }
+    } else if source["state"] == "clipped" {
+        println!("  (no source text fits the content budget)");
+    } else {
+        println!(
+            "  {}",
+            source["reason"].as_str().unwrap_or("source unavailable")
+        );
+    }
+    println!();
+
+    println!(
+        "## Used by / potentially affected (incoming; {} reference(s))",
+        backlinks.len()
+    );
     if backlinks.is_empty() {
         println!("  (none — unused, an entry point, or invoked via dynamic dispatch)");
     } else {
@@ -398,7 +547,7 @@ pub fn cmd_understand(
     }
     println!();
 
-    println!("## Downstream impact ({} node(s))", impact.len());
+    println!("## Depends on (outgoing; {} node(s))", impact.len());
     if impact.is_empty() {
         println!("  (none)");
     } else {
@@ -408,10 +557,128 @@ pub fn cmd_understand(
     }
     println!();
 
-    println!("## Context (budget {} tokens)", budget);
+    println!(
+        "## Context ({} tokens available after source)",
+        context_budget
+    );
     println!();
     println!("{}", context);
+    super::next_actions::print(&actions);
     Ok(())
+}
+
+/// Read only a verified, policy-allowed source span. Graph freshness and source
+/// verification are separate: a stale snapshot must never attach current file
+/// contents to obsolete line numbers.
+fn understand_source(path: &Path, doc: &aden_core::Document, budget: usize) -> serde_json::Value {
+    use serde_json::json;
+    use std::io::Read;
+    use std::path::Component;
+
+    let attrs = &doc.attributes;
+    let unavailable =
+        |reason: &str| json!({ "state": "unavailable", "reason": reason, "hash_verified": false });
+    let (Some(file), Some(start), Some(end)) = (
+        attrs.get("source_file"),
+        attrs
+            .get("start_line")
+            .and_then(|s| s.parse::<usize>().ok()),
+        attrs.get("end_line").and_then(|s| s.parse::<usize>().ok()),
+    ) else {
+        return unavailable("no indexed source span");
+    };
+    if file.is_empty() || start == 0 || end < start {
+        return unavailable("invalid indexed source span");
+    }
+    let Some(expected_hash) = attrs.get("source_hash") else {
+        return unavailable("no indexed source hash; source range cannot be verified");
+    };
+    let Ok(root) = std::fs::canonicalize(crate::util::find_project_root(path)) else {
+        return unavailable("project root is unavailable");
+    };
+    let indexed = Path::new(file);
+    if indexed
+        .components()
+        .any(|part| matches!(part, Component::ParentDir))
+    {
+        return unavailable("source path escapes the project");
+    }
+    let candidate = root.join(indexed);
+    let Ok(real_path) = std::fs::canonicalize(&candidate) else {
+        return unavailable("source file is unavailable");
+    };
+    let Ok(relative) = real_path.strip_prefix(&root) else {
+        return unavailable("source path escapes the project");
+    };
+    let filter = aden_core::filter::AdenFilter::from_directory(&root);
+    let ignored = |p: &Path| {
+        p.ancestors()
+            .any(|part| !part.as_os_str().is_empty() && filter.should_skip(part))
+    };
+    // Check the indexed path as well as the real path: symlinks must not bypass
+    // either an ignored directory or the project boundary.
+    if ignored(relative) || candidate.strip_prefix(&root).is_ok_and(ignored) {
+        return unavailable("source file is excluded by project policy");
+    }
+    let Ok(source_file) = std::fs::File::open(real_path) else {
+        return unavailable("source file is unreadable");
+    };
+    const MAX_SOURCE_BYTES: u64 = 16 * 1024 * 1024;
+    let mut content = String::new();
+    if source_file
+        .take(MAX_SOURCE_BYTES + 1)
+        .read_to_string(&mut content)
+        .is_err()
+    {
+        return unavailable("source file is not readable UTF-8");
+    }
+    if content.len() as u64 > MAX_SOURCE_BYTES {
+        return unavailable("source file exceeds the verification size limit");
+    }
+    if aden_core::hash_source(&content) != *expected_hash {
+        return unavailable("source changed since indexing; source range cannot be verified");
+    }
+    let mut lines = content.split_inclusive('\n').skip(start - 1);
+    let mut text = String::new();
+    let max_bytes = budget.saturating_mul(4);
+    let mut actual_end = None;
+    let mut clipped = false;
+    let mut last_line_complete = true;
+    for line_number in start..=end {
+        let Some(line) = lines.next() else {
+            return unavailable("indexed source span exceeds the verified file");
+        };
+        if clipped {
+            continue; // Still verify that the indexed end is inside the file.
+        }
+        let remaining = max_bytes.saturating_sub(text.len());
+        if line.len() <= remaining {
+            text.push_str(line);
+            actual_end = Some(line_number);
+        } else {
+            let mut cut = remaining;
+            while !line.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            if cut > 0 {
+                text.push_str(&line[..cut]);
+                actual_end = Some(line_number);
+                last_line_complete = false;
+            }
+            clipped = true;
+        }
+    }
+    json!({
+        "state": if clipped { "clipped" } else { "complete" },
+        "file": file,
+        "start_line": actual_end.map(|_| start),
+        "end_line": actual_end,
+        "indexed_start_line": start,
+        "indexed_end_line": end,
+        "last_line_complete": last_line_complete,
+        "hash_verified": true,
+        "text": text,
+    })
 }
 
 fn print_locate_results(hits: &[serde_json::Value], format: &str, context: Option<usize>) {
@@ -574,8 +841,17 @@ pub fn cmd_locate(
                 let env = super::augment_read_json(
                     path,
                     with_anchor_resolution(
-                        locate_envelope("symbol", "full_text_fallback", search_results.len(), arr),
+                        locate_envelope(
+                            "symbol",
+                            "full_text_fallback",
+                            search_results.len(),
+                            arr,
+                            sym,
+                            path,
+                        ),
                         &resolution,
+                        sym,
+                        path,
                     ),
                 );
                 println!("{}", serde_json::to_string_pretty(&env)?);
@@ -597,6 +873,7 @@ pub fn cmd_locate(
                     };
                     println!("| {} | {} | {} |", r.anchor, fmt_score(r.score), snippet);
                 }
+                super::next_actions::print(&resolution_actions(&resolution, sym, path));
                 return Ok(());
             }
             println!("No symbol found matching '{}'", sym);
@@ -613,6 +890,7 @@ pub fn cmd_locate(
                 "Hint: Try 'aden search \"{}\"' to find related anchors",
                 sym
             );
+            super::next_actions::print(&resolution_actions(&resolution, sym, path));
             return Ok(());
         }
 
@@ -625,8 +903,10 @@ pub fn cmd_locate(
             let env = super::augment_read_json(
                 path,
                 with_anchor_resolution(
-                    locate_envelope("symbol", match_kind, matched.len(), hits),
+                    locate_envelope("symbol", match_kind, matched.len(), hits, sym, path),
                     &resolution,
+                    sym,
+                    path,
                 ),
             );
             println!("{}", serde_json::to_string_pretty(&env)?);
@@ -645,11 +925,12 @@ pub fn cmd_locate(
             println!("Found {} match(es) for '{}':", matched.len(), sym);
         }
         print_locate_results(&hits, format, context);
+        super::next_actions::print(&resolution_actions(&resolution, sym, path));
         return Ok(());
     }
 
     // If --caller-of is given, list callers via incoming `Calls` edges in the
-    // knowledge graph. This is the reverse of `query --backlinks`, filtered to
+    // knowledge graph. This uses the same direction as `query --backlinks`, filtered to
     // call edges, with each caller enriched by its source file + line from the
     // store. The call graph is already populated by `gen` (link_store_edges),
     // so no new metadata is required — earlier this branch was a stub.
@@ -679,7 +960,7 @@ pub fn cmd_locate(
             if want_json {
                 let env = super::augment_read_json(
                     path,
-                    locate_envelope("callers", "target_not_found", 0, Vec::new()),
+                    locate_envelope("callers", "target_not_found", 0, Vec::new(), target, path),
                 );
                 println!("{}", serde_json::to_string_pretty(&env)?);
                 return Ok(());
@@ -688,6 +969,11 @@ pub fn cmd_locate(
             println!(
                 "Hint: Try 'aden locate . --symbol {}' to confirm it is indexed.",
                 target
+            );
+            super::next_actions::print(
+                &super::next_actions::search(target, path, "Search source text for this target")
+                    .into_iter()
+                    .collect::<Vec<_>>(),
             );
             return Ok(());
         }
@@ -720,7 +1006,7 @@ pub fn cmd_locate(
             if want_json {
                 let env = super::augment_read_json(
                     path,
-                    locate_envelope("callers", "call_edges", 0, Vec::new()),
+                    locate_envelope("callers", "call_edges", 0, Vec::new(), target, path),
                 );
                 println!("{}", serde_json::to_string_pretty(&env)?);
                 return Ok(());
@@ -728,6 +1014,15 @@ pub fn cmd_locate(
             println!(
                 "No callers found for '{}' (unused, an entry point, or invoked via dynamic dispatch).",
                 target
+            );
+            super::next_actions::print(
+                &super::next_actions::search(
+                    target,
+                    path,
+                    "Search source text for references outside the graph",
+                )
+                .into_iter()
+                .collect::<Vec<_>>(),
             );
             return Ok(());
         }
@@ -762,7 +1057,7 @@ pub fn cmd_locate(
         if want_json {
             let env = super::augment_read_json(
                 path,
-                locate_envelope("callers", "call_edges", callers.len(), hits),
+                locate_envelope("callers", "call_edges", callers.len(), hits, target, path),
             );
             println!("{}", serde_json::to_string_pretty(&env)?);
             return Ok(());
@@ -778,6 +1073,8 @@ pub fn cmd_locate(
             };
             println!("  {}{}", h["anchor"].as_str().unwrap_or(""), loc);
         }
+        let env = locate_envelope("callers", "call_edges", callers.len(), hits, target, path);
+        super::next_actions::print(env["next_actions"].as_array().unwrap());
         return Ok(());
     }
 
@@ -788,6 +1085,122 @@ pub fn cmd_locate(
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    fn source_fixture(
+        content: &str,
+        start: usize,
+        end: usize,
+    ) -> (tempfile::TempDir, aden_core::Document) {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("source.rs"), content).unwrap();
+        let mut doc = backlink_fixture_node("source").doc;
+        for (key, value) in [
+            ("source_file", "source.rs".to_string()),
+            ("start_line", start.to_string()),
+            ("end_line", end.to_string()),
+            ("source_hash", aden_core::hash_source(content)),
+        ] {
+            doc.attributes.insert(key.to_string(), value);
+        }
+        (root, doc)
+    }
+
+    #[test]
+    fn understand_source_is_exact_and_reports_actual_lines() {
+        let (root, doc) = source_fixture(
+            "// before\r\nfn target() {\r\n    work();\r\n}\r\n// after\r\n",
+            2,
+            4,
+        );
+        let source = understand_source(root.path(), &doc, 100);
+        assert_eq!(source["state"], "complete");
+        assert_eq!(source["text"], "fn target() {\r\n    work();\r\n}\r\n");
+        assert_eq!(source["start_line"], 2);
+        assert_eq!(source["end_line"], 4);
+        assert_eq!(source["hash_verified"], true);
+    }
+
+    #[test]
+    fn understand_source_clips_unicode_on_character_boundaries_and_reports_range() {
+        let (root, doc) = source_fixture("first\n日本語🙂\nlast\n", 1, 3);
+        let source = understand_source(root.path(), &doc, 3);
+        assert_eq!(source["state"], "clipped");
+        assert_eq!(source["text"], "first\n日本");
+        assert_eq!(source["end_line"], 2);
+        assert_eq!(source["indexed_end_line"], 3);
+        assert_eq!(source["last_line_complete"], false);
+        assert!(source["text"].as_str().unwrap().len() <= 12);
+        let zero = understand_source(root.path(), &doc, 0);
+        assert_eq!(zero["state"], "clipped");
+        assert_eq!(zero["text"], "");
+        assert!(zero["start_line"].is_null());
+        assert!(zero["end_line"].is_null());
+    }
+
+    #[test]
+    fn understand_source_refuses_stale_missing_hash_and_invalid_ranges() {
+        let (root, mut doc) = source_fixture("fn old() {}\n", 1, 1);
+        std::fs::write(root.path().join("source.rs"), "// shifted\nfn old() {}\n").unwrap();
+        let stale = understand_source(root.path(), &doc, 100);
+        assert_eq!(stale["state"], "unavailable");
+        assert!(
+            stale["reason"]
+                .as_str()
+                .unwrap()
+                .contains("changed since indexing")
+        );
+        assert!(stale["text"].is_null());
+        doc.attributes.remove("source_hash");
+        assert_eq!(
+            understand_source(root.path(), &doc, 100)["hash_verified"],
+            false
+        );
+        let (root, doc) = source_fixture("fn old() {}\n", 1, 9);
+        assert_eq!(
+            understand_source(root.path(), &doc, 100)["state"],
+            "unavailable"
+        );
+    }
+
+    #[test]
+    fn understand_source_obeys_ignore_policy_and_project_boundary() {
+        let (root, mut doc) = source_fixture("fn secret() {}\n", 1, 1);
+        std::fs::write(root.path().join(".adenignore"), "source.rs\n").unwrap();
+        let ignored = understand_source(root.path(), &doc, 100);
+        assert_eq!(ignored["state"], "unavailable");
+        assert!(ignored["reason"].as_str().unwrap().contains("policy"));
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("external.rs"), "fn secret() {}\n").unwrap();
+        doc.attributes.insert(
+            "source_file".to_string(),
+            outside
+                .path()
+                .join("external.rs")
+                .to_string_lossy()
+                .into_owned(),
+        );
+        let escaped = understand_source(root.path(), &doc, 100);
+        assert_eq!(escaped["state"], "unavailable");
+        assert!(escaped["reason"].as_str().unwrap().contains("escapes"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn understand_source_refuses_symlinks_outside_project() {
+        let (root, doc) = source_fixture("fn target() {}\n", 1, 1);
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("source.rs"), "fn target() {}\n").unwrap();
+        std::fs::remove_file(root.path().join("source.rs")).unwrap();
+        std::os::unix::fs::symlink(
+            outside.path().join("source.rs"),
+            root.path().join("source.rs"),
+        )
+        .unwrap();
+        assert_eq!(
+            understand_source(root.path(), &doc, 100)["state"],
+            "unavailable"
+        );
+    }
 
     // ---- understand: backlink listing dedups parallel-edge referencers.
 

@@ -20,6 +20,7 @@ pub mod lint;
 pub mod locate;
 #[cfg(feature = "model-fetch")]
 pub mod model;
+pub(crate) mod next_actions;
 pub mod outcome;
 pub mod overlay;
 pub mod query;

@@ -179,6 +179,10 @@ pub fn cmd_view(
                 "/*SEARCH_HELPERS*/",
                 include_str!("../../assets/viewer-search.js"),
             )
+            .replace(
+                "/*CONTEXT_HELPERS*/",
+                include_str!("../../assets/viewer-context.js"),
+            )
             // Replace only the quoted assignments. JSON string encoding handles
             // Windows backslashes, quotes, Unicode, and `</script>` safely while
             // leaving the placeholder guard in editorUrl() untouched.

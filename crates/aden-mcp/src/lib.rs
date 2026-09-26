@@ -9,6 +9,10 @@
 //!
 //! Built on the official `rmcp` Rust SDK.
 
+pub mod navigation;
+#[cfg(test)]
+mod navigation_tests;
+
 use percent_encoding::percent_decode_str;
 use rmcp::{
     ErrorData as McpError, ServerHandler, ServiceExt,
@@ -1070,7 +1074,7 @@ static TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "understand",
         title: "Understand a symbol",
-        description: "Definition, backlinks, impact, and bounded context for a known symbol. Use locate first for ambiguous names. Missing dynamic/local/test symbols are not proof of absence; retry with grep. Read the located source range before subtle edits.",
+        description: "Definition, source excerpt, incoming references, outgoing dependencies, and bounded context. Use locate first for ambiguous names. Missing dynamic/local/test symbols are not proof of absence; retry with grep. Check source completeness before edits.",
         args: &[
             ("symbol", "string"),
             ("path", "string"),
@@ -1141,7 +1145,7 @@ static TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "query",
         title: "Query the graph",
-        description: "Traverse from a canonical anchor or unique natural symbol name. backlinks finds references; impact finds downstream reach. Ambiguous names return ranked candidates without guessing. Returns bounded JSON and auto-refreshes.",
+        description: "Traverse from a canonical anchor or unique symbol name. backlinks follows incoming references; impact follows outgoing dependencies. Ambiguous names return candidates without guessing. Returns bounded JSON and auto-refreshes.",
         args: &[
             ("path", "string"),
             ("from", "string"),
@@ -1743,9 +1747,17 @@ impl ServerHandler for AdenMcpServer {
                 let bounded = enforce_mcp_response_budget(spec.name, &args, &received);
                 Ok(CallToolResult::success(vec![Content::text(bounded)]))
             }
-            Err(e) => Ok(CallToolResult::error(vec![Content::text(
-                agent_error_for_mcp(spec.name, &e),
-            )])),
+            Err(e) => {
+                let scope = args
+                    .get("path")
+                    .and_then(serde_json::Value::as_str)
+                    .map(Path::new)
+                    .filter(|path| path.is_dir())
+                    .unwrap_or(&project_dir);
+                Ok(CallToolResult::error(vec![Content::text(
+                    agent_error_for_mcp_in_scope(spec.name, &e, scope),
+                )]))
+            }
         }
     }
 
@@ -2363,7 +2375,12 @@ fn machine_resolution_error(raw: &str) -> Option<serde_json::Value> {
     let code = error.get("code")?.as_str()?;
     if !matches!(
         code,
-        "ambiguous_symbol" | "anchor_not_found" | "director_stale" | "needs_regex" | "invalid_args"
+        "ambiguous_symbol"
+            | "anchor_not_found"
+            | "director_stale"
+            | "needs_regex"
+            | "invalid_args"
+            | "invalid_scope"
     ) {
         return None;
     }
@@ -2372,7 +2389,10 @@ fn machine_resolution_error(raw: &str) -> Option<serde_json::Value> {
         .get("recovery")
         .and_then(|v| v.as_str())
         .map(sanitize_error);
-    if matches!(code, "director_stale" | "needs_regex" | "invalid_args") {
+    if matches!(
+        code,
+        "director_stale" | "needs_regex" | "invalid_args" | "invalid_scope"
+    ) {
         let mut err = serde_json::json!({
             "code": code,
             "message": message,
@@ -2413,6 +2433,10 @@ fn machine_resolution_error(raw: &str) -> Option<serde_json::Value> {
 /// recovery instruction and safety state are machine-readable for agents.
 #[doc(hidden)]
 pub fn agent_error_for_mcp(tool: &str, raw: &str) -> String {
+    agent_error_for_mcp_in_scope(tool, raw, Path::new("."))
+}
+
+fn agent_error_for_mcp_in_scope(tool: &str, raw: &str, scope: &Path) -> String {
     if let Some(machine) = machine_resolution_error(raw) {
         let error = &machine["error"];
         let code = error["code"].as_str().unwrap_or("command_failed");
@@ -2427,6 +2451,7 @@ pub fn agent_error_for_mcp(tool: &str, raw: &str) -> String {
                 }
                 "needs_regex" => "retry with regex=true (CLI: --regex)",
                 "invalid_args" => "correct the arguments and retry once",
+                "invalid_scope" => "choose an existing file or directory within the workspace",
                 _ => "inspect error.suggestions, then retry with one exact canonical anchor",
             });
         let response =
@@ -2442,6 +2467,31 @@ pub fn agent_error_for_mcp(tool: &str, raw: &str) -> String {
             };
             value["error"][field] = error[field].clone();
         }
+        // Rebuild recovery from sanitized anchors and the request's trusted scope.
+        // Never relay executable strings or paths from arbitrary child stderr.
+        let mut actions: Vec<_> = error["candidates"]
+            .as_array()
+            .or_else(|| error["suggestions"].as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(serde_json::Value::as_str)
+            .filter(|anchor| anchor.starts_with("aden://") && !anchor.contains("<path>"))
+            .take(3)
+            .filter_map(|anchor| {
+                navigation::inspect(
+                    anchor,
+                    scope,
+                    "Inspect this candidate before choosing a target",
+                )
+            })
+            .collect();
+        if actions.is_empty() && matches!(code, "anchor_not_found" | "invalid_scope") {
+            actions.extend(navigation::tree(
+                scope,
+                "Browse the repository to choose an existing target",
+            ));
+        }
+        value["next_actions"] = serde_json::json!(actions);
         return value.to_string();
     }
 
@@ -2542,6 +2592,43 @@ pub fn enforce_mcp_response_budget(
     args: &serde_json::Map<String, serde_json::Value>,
     response: &str,
 ) -> String {
+    if tool == "grep" && response.len() > 64 * 1024 {
+        let Ok(mut value) = serde_json::from_str::<serde_json::Value>(response) else {
+            return MINIMAL_INCOMPLETE_RECEIPT.to_string();
+        };
+        if value.to_string().len() <= 64 * 1024 {
+            return value.to_string();
+        }
+        loop {
+            let Some(matches) = value
+                .get_mut("matches")
+                .and_then(serde_json::Value::as_array_mut)
+            else {
+                return MINIMAL_INCOMPLETE_RECEIPT.to_string();
+            };
+            let removed = matches.pop().is_some();
+            let returned = matches.len();
+            let text_truncated = matches.iter().any(|item| item["text_truncated"] == true);
+            value["returned"] = returned.into();
+            value["truncated"] =
+                (value["total"].as_u64().unwrap_or(returned as u64) > returned as u64).into();
+            value["response_bytes_truncated"] =
+                (removed || value["response_bytes_truncated"] == true).into();
+            value["text_truncated"] = text_truncated.into();
+            if !removed {
+                value["next_actions"] = serde_json::json!([]);
+                value.as_object_mut().unwrap().remove("execution");
+                value["metadata_truncated"] = true.into();
+            }
+            let serialized = value.to_string();
+            if serialized.len() <= 64 * 1024 {
+                return serialized;
+            }
+            if !removed {
+                return MINIMAL_INCOMPLETE_RECEIPT.to_string();
+            }
+        }
+    }
     if !matches!(tool, "ask" | "asm") {
         return response.to_string();
     }

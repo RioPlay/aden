@@ -1435,18 +1435,46 @@ pub(crate) enum SymbolResolutionError {
     Ambiguous {
         input: String,
         candidates: Vec<String>,
+        path: std::path::PathBuf,
     },
     NotFound {
         input: String,
         suggestions: Vec<String>,
+        path: std::path::PathBuf,
     },
 }
 
 impl SymbolResolutionError {
+    fn next_actions(&self) -> Vec<serde_json::Value> {
+        match self {
+            Self::Ambiguous {
+                candidates, path, ..
+            } => candidates
+                .iter()
+                .take(3)
+                .filter_map(|anchor| {
+                    super::next_actions::inspect(
+                        anchor,
+                        path,
+                        "Inspect this candidate before choosing a target",
+                    )
+                })
+                .collect(),
+            Self::NotFound { input, path, .. } => {
+                super::next_actions::search(input, path, "Search source for the unresolved target")
+                    .into_iter()
+                    .collect()
+            }
+        }
+    }
+
     pub(crate) fn machine_json(&self) -> serde_json::Value {
         match self {
-            Self::Ambiguous { input, candidates } => serde_json::json!({
+            Self::Ambiguous {
+                input, candidates, ..
+            } => serde_json::json!({
                 "schema_version": 1,
+                "next_actions": self.next_actions(),
                 "error": {
                     "code": "ambiguous_symbol",
                     "input": input,
@@ -1454,8 +1482,11 @@ impl SymbolResolutionError {
                     "candidates": candidates,
                 }
             }),
-            Self::NotFound { input, suggestions } => serde_json::json!({
+            Self::NotFound {
+                input, suggestions, ..
+            } => serde_json::json!({
                 "schema_version": 1,
+                "next_actions": self.next_actions(),
                 "error": {
                     "code": "anchor_not_found",
                     "input": input,
@@ -1470,21 +1501,22 @@ impl SymbolResolutionError {
 impl std::fmt::Display for SymbolResolutionError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Ambiguous { input, candidates } => {
+            Self::Ambiguous {
+                input, candidates, ..
+            } => {
                 let listed = candidates
                     .iter()
                     .map(|candidate| format!("  - {candidate}"))
                     .collect::<Vec<_>>()
                     .join("\n");
-                let example = candidates.first().map_or(String::new(), |candidate| {
-                    format!(" (for example --from '{candidate}')")
-                });
                 write!(
                     formatter,
-                    "Ambiguous symbol '{input}'.\nCandidates:\n{listed}\nRecovery: retry with one exact candidate above{example}, or run 'aden locate --symbol {input} .' to inspect candidates."
+                    "Ambiguous symbol '{input}'.\nCandidates:\n{listed}\nRecovery: inspect the candidates before retrying with one exact anchor."
                 )
             }
-            Self::NotFound { input, suggestions } => {
+            Self::NotFound {
+                input, suggestions, ..
+            } => {
                 let hint = if suggestions.is_empty() {
                     String::new()
                 } else {
@@ -1497,24 +1529,18 @@ impl std::fmt::Display for SymbolResolutionError {
                             .join("\n")
                     )
                 };
-                let recovery = suggestions.first().map_or_else(
-                    || {
-                        format!(
-                            "run 'aden locate --symbol {input} .' or 'aden grep {input}' to find a canonical target"
-                        )
-                    },
-                    |candidate| {
-                        format!(
-                            "retry with an exact suggestion above (for example --from '{candidate}')"
-                        )
-                    },
-                );
                 write!(
                     formatter,
-                    "Symbol or anchor '{input}' not found.{hint}\nRecovery: {recovery}."
+                    "Symbol or anchor '{input}' not found.{hint}\nRecovery: search source to identify a canonical target."
                 )
             }
+        }?;
+        for action in self.next_actions() {
+            if let Some(command) = action["command"].as_str() {
+                write!(formatter, "\n  {}", crate::util::sanitize_terminal(command))?;
+            }
         }
+        Ok(())
     }
 }
 
@@ -1528,11 +1554,13 @@ fn resolve_required_anchor(path: &Path, input: &str) -> Result<String, Box<dyn s
         AnchorResolution::Ambiguous { candidates } => Err(SymbolResolutionError::Ambiguous {
             input: input.to_string(),
             candidates,
+            path: path.to_path_buf(),
         }
         .into()),
         AnchorResolution::NotFound { suggestions } => Err(SymbolResolutionError::NotFound {
             input: input.to_string(),
             suggestions,
+            path: path.to_path_buf(),
         }
         .into()),
     }
@@ -1996,12 +2024,66 @@ pub fn cmd_query(opts: QueryOptions) -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    let relationship = if backlinks.is_some() {
+        serde_json::json!({"direction": "incoming", "label": "Used by / potentially affected"})
+    } else if from.is_some() {
+        serde_json::json!({"direction": "outgoing", "label": "Outgoing relationships"})
+    } else {
+        serde_json::json!({"direction": "outgoing", "label": "Depends on"})
+    };
+    let mut next_actions: Vec<_> = if truncated {
+        results
+            .iter()
+            .filter_map(|item| item["anchor"].as_str())
+            .filter(|anchor| {
+                Some(*anchor)
+                    != from
+                        .as_deref()
+                        .or(backlinks.as_deref())
+                        .or(impact.as_deref())
+            })
+            .take(3)
+            .filter_map(|anchor| {
+                super::next_actions::inspect(
+                    anchor,
+                    path,
+                    "Inspect a returned relationship; this does not enumerate omitted results",
+                )
+            })
+            .collect()
+    } else if results.is_empty() {
+        from.as_deref().or(backlinks.as_deref()).or(impact.as_deref())
+            .and_then(|anchor| super::next_actions::inspect(anchor, path, "Inspect the target and its source; an empty graph result does not prove absence"))
+            .into_iter().collect()
+    } else {
+        Vec::new()
+    };
+    if truncated && next_actions.is_empty() {
+        next_actions.extend(
+            from.as_deref()
+                .or(backlinks.as_deref())
+                .or(impact.as_deref())
+                .and_then(|anchor| {
+                    super::next_actions::inspect(
+                        anchor,
+                        path,
+                        "Inspect the target; the query result limit omitted relationships",
+                    )
+                }),
+        );
+    }
     match format {
         "table" => {
+            println!(
+                "{} ({})",
+                relationship["label"].as_str().unwrap_or_default(),
+                relationship["direction"].as_str().unwrap_or_default()
+            );
             println!("| Anchor | Depth | Node Type |\n|=== |");
             for r in results {
                 println!("| {} | {} | {} |", r["anchor"], r["depth"], r["node_type"]);
             }
+            super::next_actions::print(&next_actions);
         }
         "json" => {
             let returned = results.len();
@@ -2012,6 +2094,8 @@ pub fn cmd_query(opts: QueryOptions) -> Result<(), Box<dyn std::error::Error>> {
                 "limit": max_results,
                 "truncated": truncated,
                 "result_state": if truncated { "truncated" } else { "complete" },
+                "relationship": relationship,
+                "next_actions": next_actions,
             });
             let env = super::augment_read_json(path, payload);
             println!("{}", serde_json::to_string_pretty(&env)?);
@@ -2796,6 +2880,12 @@ pub fn cmd_ask(
             "Use `aden grep <pattern>` for independent evidence, then `aden locate`/`aden query` for each anchor.",
             "Pin a known anchor with `aden ask --from <anchor> <question>` when one bounded neighborhood is intended.",
         ];
+        let next_actions: Vec<_> = super::next_actions::tree(
+            path,
+            "Choose a source file or symbol to narrow this question",
+        )
+        .into_iter()
+        .collect();
         if json_output {
             let payload = augment_read_json(
                 path,
@@ -2807,6 +2897,7 @@ pub fn cmd_ask(
                     "reason": reason,
                     "context": "",
                     "recovery": recovery,
+                    "next_actions": next_actions,
                     "strict": strict,
                 }),
             );
@@ -2823,6 +2914,7 @@ pub fn cmd_ask(
             for tip in recovery {
                 println!("  - {tip}");
             }
+            super::next_actions::print(&next_actions);
         }
         return Ok(());
     }
@@ -2912,6 +3004,12 @@ pub fn cmd_ask(
                     "Pin an anchor with --from <anchor>.",
                 ]
             };
+            let next_actions: Vec<_> = super::next_actions::tree(
+                path,
+                "Browse indexed source to choose a concrete target",
+            )
+            .into_iter()
+            .collect();
             if json_output {
                 let payload = serde_json::json!({
                     "schema_version": 1,
@@ -2919,7 +3017,8 @@ pub fn cmd_ask(
                     "question": question,
                     "anchor": null,
                     "context": "",
-                    "recovery": recovery,
+                "recovery": recovery,
+                "next_actions": next_actions,
                     "strict": strict,
                 });
                 let payload = augment_read_json(path, payload);
@@ -2935,6 +3034,7 @@ pub fn cmd_ask(
                 for tip in recovery {
                     println!("  - {tip}");
                 }
+                super::next_actions::print(&next_actions);
             }
             return Ok(());
         }
@@ -3068,6 +3168,12 @@ pub fn cmd_ask(
                 "Run `aden locate <symbol>` for ranked candidates and typo suggestions.",
                 "Use `aden grep <term>` to find where the concept is discussed.",
             ];
+            let next_actions: Vec<_> = super::next_actions::tree(
+                path,
+                "Browse indexed source to choose a concrete target",
+            )
+            .into_iter()
+            .collect();
             if json_output {
                 let payload = augment_read_json(
                     path,
@@ -3077,7 +3183,8 @@ pub fn cmd_ask(
                         "question": question,
                         "anchor": null,
                         "context": "",
-                        "recovery": recovery,
+                    "recovery": recovery,
+                    "next_actions": next_actions,
                         "strict": strict,
                     }),
                 );
@@ -3093,6 +3200,7 @@ pub fn cmd_ask(
                 for tip in recovery {
                     println!("  - {tip}");
                 }
+                super::next_actions::print(&next_actions);
             }
             return Ok(());
         }
@@ -3750,6 +3858,21 @@ pub fn cmd_ask(
         } else {
             "ambiguous"
         };
+        let next_actions: Vec<_> = if routing_confidence == "ambiguous" {
+            std::iter::once(&start_anchor)
+                .chain(resolved_alts.iter())
+                .take(3)
+                .filter_map(|anchor| {
+                    super::next_actions::inspect(
+                        anchor,
+                        path,
+                        "Inspect this candidate before choosing a target",
+                    )
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         let payload = augment_read_json(
             path,
             serde_json::json!({
@@ -3768,6 +3891,7 @@ pub fn cmd_ask(
                 "strict": strict,
                 "supporting_anchors": resolved_alts,
                 "completeness": "bounded",
+                "next_actions": next_actions,
                 "explain": explain.then_some(serde_json::json!({
                     "decision": xp.decision,
                     "fallback": xp.fallback,
@@ -3793,6 +3917,7 @@ pub fn cmd_ask(
                         "context": bounded_context,
                         "truncated": true,
                         "incomplete": true,
+                        "next_actions": payload["next_actions"].clone(),
                     }))?;
                     if compact.len() <= max_bytes || bounded_context.is_empty() {
                         if compact.len() <= max_bytes {
@@ -4317,6 +4442,7 @@ mod tests {
     fn symbol_resolution_errors_keep_human_and_machine_contracts() {
         let error = SymbolResolutionError::Ambiguous {
             input: "parse".into(),
+            path: ".".into(),
             candidates: vec![
                 "aden://module/a.rs#parse".into(),
                 "aden://module/b.rs#parse".into(),
