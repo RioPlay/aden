@@ -6,7 +6,7 @@ use aden_store::Storage;
 use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant};
 
 use crate::indexer::r#gen::cmd_gen_silent;
 use crate::util::{discover_source_files, find_project_root};
@@ -535,6 +535,8 @@ pub fn ensure_fresh_with_policy(path: &Path, policy: FreshPolicy) {
         return;
     }
     set_refresh_cause(1);
+    let decision_deadline = (policy == FreshPolicy::Decision || require_fresh())
+        .then(|| Instant::now() + DECISION_WAIT);
 
     // Silent incremental regen (single-flight inside gen; fail-open if locked).
     // Dirty re-arm: up to two more silent gens when we successfully refreshed but
@@ -546,12 +548,19 @@ pub fn ensure_fresh_with_policy(path: &Path, policy: FreshPolicy) {
             return;
         }
         // Still stale: either lock was contended or more edits landed mid-gen.
-        if policy == FreshPolicy::Decision || require_fresh() {
+        if let Some(deadline) = decision_deadline {
             set_refresh_cause(4);
-            wait_for_refresh_or_timeout(&root, DECISION_WAIT);
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            wait_for_refresh_or_timeout(&root, remaining);
             if !index_is_stale_for_root(&root) {
                 complete_authoritative_deadline(authoritative_deadline);
                 return;
+            }
+            if Instant::now() >= deadline {
+                break;
             }
             // Continue loop for another silent attempt after the wait.
         } else {
@@ -576,19 +585,25 @@ fn enforce_authoritative(root: &Path) {
     }
 }
 
-/// Poll until the index is fresh or the deadline passes (another process holds gen).
+/// Wait for the active writer to release its lock or for the deadline to pass.
+///
+/// Source freshness is deliberately checked by the caller before and after this
+/// wait. Polling it here would rescan and hash a large working tree every 50ms.
 fn wait_for_refresh_or_timeout(root: &Path, budget: Duration) {
-    let deadline = SystemTime::now() + budget;
+    let deadline = Instant::now() + budget;
     let lock_path = aden_paths::store_lock_file(root);
-    while SystemTime::now() < deadline {
-        if !index_is_stale_for_root(root) {
+    loop {
+        match aden_core::lock::inspect_lock(&lock_path) {
+            aden_core::lock::LockState::Missing | aden_core::lock::LockState::Stale(_) => return,
+            aden_core::lock::LockState::Active(_)
+            | aden_core::lock::LockState::Malformed
+            | aden_core::lock::LockState::Unreadable(_) => {}
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
             return;
         }
-        // If no writer is active, another attempt will be made by the caller.
-        if aden_core::lock::read_holder(&lock_path).is_none() {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(Duration::from_millis(50).min(remaining));
     }
 }
 

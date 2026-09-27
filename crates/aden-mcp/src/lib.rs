@@ -451,6 +451,7 @@ fn arg_default(tool: &str, arg: &str) -> Option<serde_json::Value> {
         ("locate", "format") => Some(serde_json::json!("plain")),
         ("locate", "limit") => Some(serde_json::json!(50)),
         ("understand", "budget") => Some(serde_json::json!(4000)),
+        ("understand", "profile") => Some(serde_json::json!("compact-v2")),
         ("new", "lang") => Some(serde_json::json!("rust")),
         ("check" | "lint", "severity") => Some(serde_json::json!("Warn")),
         ("search" | "list", "limit") => Some(serde_json::json!(50)),
@@ -496,6 +497,7 @@ fn arg_enum(tool: &str, arg: &str) -> &'static [&'static str] {
         ("audit", "format") => &["text", "json", "adoc"],
         ("diagnose", "format") => &["text", "json"],
         ("query", "format") => &["json", "table"],
+        ("understand", "profile") => &["full", "compact-v2"],
         // Other closed value sets.
         ("viz", "mode") => &["blast", "reach", "connectivity", "communities"],
         ("ask", "intent") => &[
@@ -686,7 +688,7 @@ pub fn tool_arg_default(tool: &str, arg: &str) -> Option<serde_json::Value> {
 
 /// Defaults applied by the MCP transport rather than by clap itself.
 pub fn tool_arg_default_is_transport_override(tool: &str, arg: &str) -> bool {
-    matches!((tool, arg), ("tree", "symbols"))
+    matches!((tool, arg), ("tree", "symbols") | ("understand", "profile"))
 }
 
 /// Extra CLI flags the MCP appends so a read tool emits machine-readable output
@@ -731,6 +733,7 @@ fn compact_flag(tool: &str, arg: &str) -> Option<&'static str> {
         ("locate", "show_context") => Some("-C"),
         ("locate", "limit") => Some("-n"),
         ("understand", "budget") => Some("-b"),
+        ("understand", "profile") => Some("--profile"),
         ("ask", "from") | ("asm", "from") | ("query", "from") => Some("-f"),
         ("ask", "budget") | ("asm", "budget") => Some("-b"),
         ("ask", "intent") => Some("-i"),
@@ -841,6 +844,30 @@ fn apply_mcp_budget_defaults(
     }
 }
 
+/// MCP uses compact output for high-volume comprehension while direct CLI calls
+/// retain the established full response by default. An explicit profile wins,
+/// and verbose requests keep the full envelope for diagnostics.
+fn apply_mcp_output_profile_default(
+    tool: &str,
+    args: &serde_json::Map<String, serde_json::Value>,
+    cmd_args: &mut Vec<String>,
+) {
+    let verbose = args
+        .get("verbose")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    if tool == "understand" && !args.contains_key("profile") && !verbose {
+        let insert_at = cmd_args
+            .iter()
+            .position(|arg| arg == "--")
+            .unwrap_or(cmd_args.len());
+        cmd_args.splice(
+            insert_at..insert_at,
+            ["--profile".to_string(), "compact-v2".to_string()],
+        );
+    }
+}
+
 /// Agent-facing orientation should be bounded without requiring every model to
 /// remember a transport-specific hint. Keep the interactive CLI's graphical
 /// default, but make an omitted MCP `symbols` argument select the compact symbol
@@ -882,6 +909,7 @@ pub fn prepare_cli_args_for_mcp(
         cmd_args.insert(0, "--require-fresh".to_string());
     }
     apply_mcp_budget_defaults(tool, args, &mut cmd_args);
+    apply_mcp_output_profile_default(tool, args, &mut cmd_args);
     apply_mcp_tree_default(tool, args, &mut cmd_args);
     Ok(cmd_args)
 }
@@ -1074,12 +1102,13 @@ static TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "understand",
         title: "Understand a symbol",
-        description: "Compact definition, verified source excerpt, incoming references, outgoing dependencies, and bounded context. Empty and healthy-state bookkeeping is omitted. Set verbose=true for the full provenance receipt and budget diagnostics. Use locate first for ambiguous names. Missing dynamic/local/test symbols are not proof of absence; retry with grep. Check source completeness before edits.",
+        description: "Definition, verified source excerpt, incoming references, outgoing dependencies, and bounded context. MCP defaults to the versioned compact-v2 profile; set profile=full or verbose=true for the established full envelope. Compact responses retain currentness, graph revision, and relationship directions. Use locate first for ambiguous names. Missing dynamic/local/test symbols are not proof of absence; retry with grep. Check source completeness before edits.",
         args: &[
             ("symbol", "string"),
             ("path", "string"),
             ("budget", "integer"),
             ("json", "boolean"),
+            ("profile", "string"),
             ("verbose", "boolean"),
         ],
         effect: Effect::Read,
@@ -3572,6 +3601,32 @@ mod tests {
             strict < terminator,
             "asm strict must remain a CLI flag: {asm_out:?}"
         );
+    }
+
+    #[test]
+    fn mcp_understand_defaults_to_compact_v2_but_preserves_full_requests() {
+        let omitted = prepare_cli_args_for_mcp("understand", &serde_json::Map::new()).unwrap();
+        assert!(
+            omitted
+                .windows(2)
+                .any(|pair| pair == ["--profile", "compact-v2"])
+        );
+
+        let mut full = serde_json::Map::new();
+        full.insert("profile".into(), serde_json::json!("full"));
+        let explicit = prepare_cli_args_for_mcp("understand", &full).unwrap();
+        assert!(
+            explicit
+                .windows(2)
+                .any(|pair| pair == ["--profile", "full"])
+        );
+        assert_eq!(explicit.iter().filter(|arg| *arg == "--profile").count(), 1);
+
+        let mut verbose = serde_json::Map::new();
+        verbose.insert("verbose".into(), serde_json::json!(true));
+        let verbose = prepare_cli_args_for_mcp("understand", &verbose).unwrap();
+        assert!(verbose.iter().any(|arg| arg == "--verbose"));
+        assert!(!verbose.iter().any(|arg| arg == "--profile"));
     }
 
     #[test]

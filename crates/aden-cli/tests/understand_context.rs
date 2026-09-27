@@ -38,6 +38,33 @@ fn understand_includes_verified_source_and_unambiguous_relationship_directions()
     assert_eq!(report["source"]["start_line"], 2);
     assert_eq!(report["source"]["end_line"], 4);
     assert_eq!(report["context_receipt"]["schema_version"], 1);
+    // Direct CLI output preserves the established full contract.
+    assert_eq!(report["freshness"], "current");
+    assert_eq!(report["index_stale"], false);
+    assert_eq!(report["context_receipt"]["freshness"], "current");
+    assert_eq!(
+        report["relationships"]["backlinks"]["direction"],
+        "incoming"
+    );
+    assert_eq!(report["relationships"]["impact"]["direction"], "outgoing");
+    assert!(report["content_budget"].is_object());
+    assert!(report["alternates"].is_array());
+    assert!(report["next_actions"].is_array());
+
+    let compact = aden(
+        root.path(),
+        data.path(),
+        &["understand", "target", ".", "--profile", "compact-v2"],
+    );
+    let compact: serde_json::Value = serde_json::from_slice(&compact.stdout).unwrap();
+    assert_eq!(compact["output_profile"], "compact-v2");
+    assert_eq!(compact["context_receipt"]["freshness"], "current");
+    assert!(compact["context_receipt"]["graph_revision"].is_string());
+    assert_eq!(
+        compact["relationships"]["backlinks"]["direction"],
+        "incoming"
+    );
+    assert_eq!(compact["relationships"]["impact"]["direction"], "outgoing");
     for omitted in [
         "symbol",
         "freshness",
@@ -45,44 +72,25 @@ fn understand_includes_verified_source_and_unambiguous_relationship_directions()
         "alternates",
         "next_actions",
         "content_budget",
-        "relationships",
     ] {
         assert!(
-            report.get(omitted).is_none(),
-            "unexpected {omitted}: {report}"
+            compact.get(omitted).is_none(),
+            "unexpected {omitted}: {compact}"
         );
     }
     for duplicate in ["anchor", "file", "start_line", "end_line"] {
-        assert!(report["definition"].get(duplicate).is_none());
+        assert!(compact["definition"].get(duplicate).is_none());
     }
     assert!(
-        report["backlinks"]
+        compact["backlinks"]
             .as_array()
             .unwrap()
             .iter()
             .all(|node| node.get("inferred").is_none())
     );
-    assert!(report["source"].get("indexed_start_line").is_none());
-    assert!(report["source"].get("indexed_end_line").is_none());
-    assert!(report["source"].get("last_line_complete").is_none());
-
-    let verbose = aden(
-        root.path(),
-        data.path(),
-        &["--verbose", "understand", "target", "."],
-    );
-    let verbose: serde_json::Value = serde_json::from_slice(&verbose.stdout).unwrap();
-    assert_eq!(verbose["freshness"], "current");
-    assert_eq!(verbose["index_stale"], false);
-    assert_eq!(verbose["context_receipt"]["freshness"], "current");
-    assert_eq!(
-        verbose["relationships"]["backlinks"]["direction"],
-        "incoming"
-    );
-    assert_eq!(verbose["relationships"]["impact"]["direction"], "outgoing");
-    assert!(verbose["content_budget"].is_object());
-    assert!(verbose["alternates"].is_array());
-    assert!(verbose["next_actions"].is_array());
+    assert!(compact["source"].get("indexed_start_line").is_none());
+    assert!(compact["source"].get("indexed_end_line").is_none());
+    assert!(compact["source"].get("last_line_complete").is_none());
     assert!(
         report["backlinks"]
             .as_array()

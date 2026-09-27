@@ -1401,15 +1401,17 @@ aden understand <SYMBOL> [DIR]
 aden understand Database::connect .
 aden understand connect . --budget 8000
 aden understand connect . --json
-aden --verbose understand connect . --json  # full receipt and budget diagnostics
+aden understand connect . --json --profile compact-v2
 ----
 
-Structured output is minified and compact by default: healthy freshness details, empty optional
-arrays, duplicate source locations, and budget bookkeeping are omitted. The
-versioned receipt remains as `{"schema_version":1}`. Use global `--verbose`
-when diagnosing refresh/provenance behavior or inspecting the budget split.
-Stale, missing, and ambiguous results retain their actionable diagnostics
-without requiring `--verbose`.
+Direct CLI calls preserve the established `full` structured response by default.
+The opt-in `compact-v2` profile removes empty optional arrays, duplicate source
+locations, and budget bookkeeping from healthy results. It retains explicit
+`freshness: current`, the graph revision, and incoming/outgoing relationship
+directions. MCP uses `compact-v2` by default because its responses are repeatedly
+placed in model context; pass `profile=full` or `verbose=true` when diagnosing
+refresh/provenance behavior or inspecting the budget split. Stale, missing, and
+ambiguous results retain their actionable diagnostics in either profile.
 
 Returns in a single report:
 - Anchor resolution and definition location
@@ -1443,7 +1445,8 @@ Prints a compact summary:
 - a health-score percentage with an emoji (✅ / ⚠️ / ❌)
 - an orphan-document count
 
-`--json` emits `store_writer` (holder pid + `held_secs`, or absent) and
+`--json` emits `store_writer` (holder pid + `held_secs`, or absent),
+`store_writer_state` (`none`, `active`, `stale`, `malformed`, or `unreadable`), and
 `read_snapshot` (path when the file exists) alongside health, orphan, and policy fields.
 
 === diagnose

@@ -22,6 +22,7 @@ pub mod locate;
 pub mod model;
 pub(crate) mod next_actions;
 pub mod outcome;
+pub mod output_profile;
 pub mod overlay;
 pub mod query;
 pub mod ready;
@@ -65,6 +66,7 @@ pub use lint::cmd_lint;
 pub use locate::{cmd_locate, cmd_understand};
 #[cfg(feature = "model-fetch")]
 pub use model::cmd_model_fetch;
+pub use output_profile::OutputProfile;
 #[cfg(feature = "watch")]
 pub use query::cmd_watch;
 pub use query::{QueryOptions, cmd_ask, cmd_asm, cmd_check, cmd_query, cmd_query_adq};

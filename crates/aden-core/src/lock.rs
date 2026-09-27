@@ -1,6 +1,6 @@
 // Copyright (c) 2026 RioPlay <rioplay@rioplay.dev>
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Cross-process advisory locking via atomic lockfiles (no external deps).
+//! Cross-process advisory locking via atomic lockfiles.
 //!
 //! aden coordinates concurrent writers — parallel-agent `gen` against one store,
 //! and concurrent `.agent/session.adoc` appends — with an advisory lock built on
@@ -9,12 +9,9 @@
 //!
 //! Robustness and its limit: a crash can leave a stale lockfile behind. The
 //! holder records its PID and an acquisition timestamp, and a contender reclaims
-//! the lock when the holder is no longer alive (checked via `/proc/<pid>` on
-//! Linux) or when the lockfile is older than [`STALE_TTL`] (the portable
-//! fallback). A real `flock(2)` would auto-release on process death and close
-//! the small stale-reclaim TOCTOU window noted on [`FileLock::acquire_timeout`];
-//! the dependency-free lockfile trades that for zero new dependencies, which is
-//! aden's standing preference.
+//! the lock only when the operating system confirms that PID is no longer alive.
+//! A real `flock(2)` would auto-release on process death and close the small
+//! stale-reclaim TOCTOU window noted on [`FileLock::acquire_timeout`].
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
@@ -24,11 +21,6 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// Poll interval while waiting for a contended lock.
 const POLL: Duration = Duration::from_millis(50);
-
-/// A lockfile older than this is presumed stale on platforms without a
-/// process-liveness check. On Linux, a live holder is never reclaimed solely
-/// because it is old.
-pub const STALE_TTL: Duration = Duration::from_secs(15 * 60);
 
 /// Holder identity recorded in a lockfile (`pid` on line 1, unix secs on line 2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,15 +34,53 @@ pub fn store_lock_path(store_path: &Path) -> PathBuf {
     store_path.with_extension("lock")
 }
 
-/// Read the live holder from an existing lockfile, if parseable.
+/// Observable state of an advisory lockfile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LockState {
+    Missing,
+    Active(LockHolder),
+    Stale(LockHolder),
+    Malformed,
+    Unreadable(io::ErrorKind),
+}
+
+/// Inspect a lock without collapsing missing, malformed, and unreadable states.
+pub fn inspect_lock(lock_path: &Path) -> LockState {
+    let mut body = String::new();
+    match File::open(lock_path).and_then(|mut file| file.read_to_string(&mut body)) {
+        Ok(_) => match parse_holder(&body) {
+            Some(holder) if holder_is_stale(holder) => LockState::Stale(holder),
+            Some(holder) => LockState::Active(holder),
+            None => LockState::Malformed,
+        },
+        Err(error) if error.kind() == io::ErrorKind::NotFound => LockState::Missing,
+        Err(error) => LockState::Unreadable(error.kind()),
+    }
+}
+
+/// Read the holder from an existing parseable lockfile.
 pub fn read_holder(lock_path: &Path) -> Option<LockHolder> {
-    parse_holder(&read_lock_body(lock_path)?)
+    match inspect_lock(lock_path) {
+        LockState::Active(holder) | LockState::Stale(holder) => Some(holder),
+        LockState::Missing | LockState::Malformed | LockState::Unreadable(_) => None,
+    }
 }
 
 /// Human-readable holder summary for status / wait messages.
 pub fn describe_holder(holder: LockHolder) -> String {
     let age = now_secs().saturating_sub(holder.acquired_secs);
     format!("pid {} (held {}s)", holder.pid, age)
+}
+
+/// Human-readable lock state for status and contention diagnostics.
+pub fn describe_lock_state(state: LockState) -> String {
+    match state {
+        LockState::Missing => "no holder".into(),
+        LockState::Active(holder) => describe_holder(holder),
+        LockState::Stale(holder) => format!("stale {}", describe_holder(holder)),
+        LockState::Malformed => "malformed lockfile".into(),
+        LockState::Unreadable(kind) => format!("unreadable lockfile ({kind:?})"),
+    }
 }
 
 /// A held advisory lock. Dropping it releases the lock by removing the lockfile.
@@ -62,8 +92,8 @@ pub struct FileLock {
 
 impl FileLock {
     /// Acquire the lock at `path`, waiting up to `timeout` for a current holder
-    /// to release it. Reclaims a dead holder on Linux and a lock older than
-    /// [`STALE_TTL`] only where process liveness is unavailable. Returns
+    /// to release it. Reclaims a holder only when the operating system confirms
+    /// that its process is no longer alive. Returns
     /// [`io::ErrorKind::WouldBlock`] if a live holder keeps the lock for the
     /// whole `timeout`.
     ///
@@ -102,9 +132,7 @@ impl FileLock {
                     let now = Instant::now();
                     if verbose && now.duration_since(last_note) >= NOTE_EVERY {
                         let waited = now.duration_since(started);
-                        let detail = read_holder(&path)
-                            .map(describe_holder)
-                            .unwrap_or_else(|| "unknown holder".into());
+                        let detail = describe_lock_state(inspect_lock(&path));
                         eprintln!(
                             "NOTE: waiting for store writer lock at {} ({detail}; waited {}s)…",
                             path.display(),
@@ -113,9 +141,7 @@ impl FileLock {
                         last_note = now;
                     }
                     if now.duration_since(started) >= timeout {
-                        let detail = read_holder(&path)
-                            .map(describe_holder)
-                            .unwrap_or_else(|| "unknown holder".into());
+                        let detail = describe_lock_state(inspect_lock(&path));
                         return Err(io::Error::new(
                             io::ErrorKind::WouldBlock,
                             format!(
@@ -227,10 +253,7 @@ fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
-/// If the lockfile at `path` is stale (dead holder on Linux, or past
-/// [`STALE_TTL`] where liveness is unavailable), remove it and return `Ok(true)`.
-/// A lockfile that vanished underneath us (the holder released it) also returns
-/// `Ok(true)`.
+/// Read the raw lockfile body for ownership-token checks.
 fn read_lock_body(path: &Path) -> Option<String> {
     let mut buf = String::new();
     File::open(path).ok()?.read_to_string(&mut buf).ok()?;
@@ -248,48 +271,70 @@ fn lock_token(path: &Path) -> Option<String> {
     read_lock_body(path)?.lines().nth(2).map(str::to_owned)
 }
 
+/// Remove a lock only after the operating system confirms its holder is dead.
+/// Missing means another process already released it. Unreadable and malformed
+/// locks remain contended because guessing could admit two writers.
 fn reclaim_if_stale(path: &Path) -> io::Result<bool> {
-    let buf = match read_lock_body(path) {
-        Some(b) => b,
-        None => {
-            // On Windows a transient PermissionDenied on open can occur while a
-            // prior holder is dropping the lockfile. Treat as "vanished".
-            return Ok(true);
-        }
-    };
-
-    let stale = match parse_holder(&buf) {
-        None => true,
-        Some(holder) => holder_is_stale(holder),
-    };
-
-    if stale {
-        match fs::remove_file(path) {
+    match inspect_lock(path) {
+        LockState::Missing => Ok(true),
+        LockState::Stale(_) => match fs::remove_file(path) {
             Ok(()) => Ok(true),
-            Err(e)
-                if e.kind() == io::ErrorKind::NotFound
-                    || e.kind() == io::ErrorKind::PermissionDenied =>
-            {
-                // Same Windows tolerance: a racing remove or delete-pending file
-                // can yield PermissionDenied; the lock is effectively released.
-                Ok(true)
-            }
-            Err(e) => Err(e),
-        }
-    } else {
-        Ok(false)
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(true),
+            Err(error) if error.kind() == io::ErrorKind::PermissionDenied => Ok(false),
+            Err(error) => Err(error),
+        },
+        LockState::Active(_) | LockState::Malformed | LockState::Unreadable(_) => Ok(false),
     }
 }
 
 fn holder_is_stale(holder: LockHolder) -> bool {
-    #[cfg(target_os = "linux")]
-    {
-        !Path::new(&format!("/proc/{}", holder.pid)).exists()
+    !process_is_alive(holder.pid)
+}
+
+#[cfg(target_os = "linux")]
+fn process_is_alive(pid: u32) -> bool {
+    pid != 0 && Path::new(&format!("/proc/{pid}")).exists()
+}
+
+#[cfg(windows)]
+fn process_is_alive(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, ERROR_INVALID_PARAMETER, GetLastError, STILL_ACTIVE,
+    };
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    if pid == 0 {
+        return false;
     }
-    #[cfg(not(target_os = "linux"))]
-    {
-        now_secs().saturating_sub(holder.acquired_secs) > STALE_TTL.as_secs()
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            // Access can be denied for a live protected process. Only an invalid
+            // PID is proof that no process exists.
+            return GetLastError() != ERROR_INVALID_PARAMETER;
+        }
+        let mut exit_code = 0;
+        let queried = GetExitCodeProcess(handle, &mut exit_code);
+        let _ = CloseHandle(handle);
+        queried == 0 || exit_code == STILL_ACTIVE as u32
     }
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+fn process_is_alive(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
+    let result = unsafe { libc::kill(pid as libc::pid_t, 0) };
+    result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn process_is_alive(pid: u32) -> bool {
+    // On an unsupported platform, uncertainty must preserve mutual exclusion.
+    pid != 0
 }
 
 #[cfg(test)]
@@ -311,6 +356,46 @@ mod tests {
         let h = read_holder(&path).expect("must parse");
         assert_eq!(h.pid, 4242);
         assert_eq!(h.acquired_secs, 1_700_000_000);
+    }
+
+    #[test]
+    fn inspect_lock_distinguishes_unknown_states() {
+        let missing = lock_path("inspect-missing");
+        assert_eq!(inspect_lock(&missing), LockState::Missing);
+
+        let malformed = lock_path("inspect-malformed");
+        fs::write(&malformed, "not-a-holder").unwrap();
+        assert_eq!(inspect_lock(&malformed), LockState::Malformed);
+        let err = FileLock::acquire_timeout(&malformed, Duration::from_millis(100))
+            .expect_err("malformed lock must remain safely contended");
+        assert_eq!(err.kind(), io::ErrorKind::WouldBlock);
+        assert!(malformed.exists());
+        fs::remove_file(malformed).unwrap();
+
+        let unreadable = lock_path("inspect-unreadable");
+        fs::create_dir(&unreadable).unwrap();
+        assert!(matches!(
+            inspect_lock(&unreadable),
+            LockState::Unreadable(_)
+        ));
+        fs::remove_dir(unreadable).unwrap();
+    }
+
+    #[test]
+    fn inspect_lock_reports_active_and_stale_holders() {
+        let active = lock_path("inspect-active");
+        fs::write(
+            &active,
+            format!("{}\n{}\ntoken", std::process::id(), now_secs()),
+        )
+        .unwrap();
+        assert!(matches!(inspect_lock(&active), LockState::Active(_)));
+        fs::remove_file(active).unwrap();
+
+        let stale = lock_path("inspect-stale");
+        fs::write(&stale, "0\n0\ntoken").unwrap();
+        assert!(matches!(inspect_lock(&stale), LockState::Stale(_)));
+        fs::remove_file(stale).unwrap();
     }
 
     #[test]
@@ -391,7 +476,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(target_os = "linux")]
+    #[cfg(any(unix, windows))]
     fn aged_live_holder_is_not_reclaimed() {
         let path = lock_path("live-aged");
         fs::write(&path, format!("{}\n0\nlive", std::process::id())).unwrap();
@@ -408,18 +493,15 @@ mod tests {
         // (on Linux) can reclaim it.
         fs::write(&path, format!("0\n{}", now_secs())).unwrap();
         let acquired = FileLock::acquire_timeout(&path, Duration::from_millis(200));
-        if cfg!(target_os = "linux") {
-            assert!(acquired.is_ok(), "dead holder must be reclaimed on Linux");
-            // After reclaim the lock must block a second acquire
+        if cfg!(any(unix, windows)) {
+            assert!(acquired.is_ok(), "dead holder must be reclaimed");
+            // After reclaim the lock must block a second acquire.
             let err = FileLock::acquire_timeout(&path, Duration::from_millis(100))
                 .expect_err("reclaimed lock must block");
             assert_eq!(err.kind(), io::ErrorKind::WouldBlock);
-        } else {
-            // Off Linux, liveness is unknown; the TTL governs instead.
-            // At minimum verify the acquire doesn't panic.
-            if let Ok(g) = acquired {
-                drop(g);
-            }
+        } else if let Ok(g) = acquired {
+            // Unknown platforms conservatively preserve a nonzero PID lock.
+            drop(g);
         }
         let _ = fs::remove_file(&path);
     }

@@ -66,10 +66,12 @@ name = "aden-core"
 version = "0.4.2"
 dependencies = [
  "fnv",
+ "libc",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
  "toml",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

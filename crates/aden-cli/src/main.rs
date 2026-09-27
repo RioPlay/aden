@@ -915,6 +915,10 @@ enum Commands {
         /// Emit a single JSON object instead of a human report
         #[arg(long)]
         json: bool,
+        /// Machine-output shape. `full` preserves the established contract;
+        /// `compact-v2` removes redundant healthy-state bookkeeping.
+        #[arg(long, value_enum, default_value_t = commands::OutputProfile::Full)]
+        profile: commands::OutputProfile,
     },
     /// Run all local CI gates before committing (check, heal, test, secret-scan)
     #[command(hide = true)]
@@ -1542,7 +1546,14 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
             path,
             budget,
             json,
-        } => commands::cmd_understand(&symbol, &path, budget, json || machine_json, !quiet),
+            profile,
+        } => commands::cmd_understand(
+            &symbol,
+            &path,
+            budget,
+            json || machine_json,
+            profile.is_compact() && quiet,
+        ),
         Commands::Test {
             path,
             scope,

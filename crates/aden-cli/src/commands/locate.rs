@@ -254,7 +254,7 @@ pub fn cmd_understand(
     path: &Path,
     budget: usize,
     json: bool,
-    verbose: bool,
+    compact: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use aden_asm::traverse::{AssemblyOptions, assemble};
     use serde_json::json;
@@ -468,7 +468,7 @@ pub fn cmd_understand(
                 "context": context,
             }),
         );
-        if !verbose {
+        if compact {
             compact_understand_json(&mut env);
         }
         let body = serde_json::to_string(&env)?;
@@ -571,11 +571,10 @@ pub fn cmd_understand(
     Ok(())
 }
 
-/// Remove bookkeeping that does not help a healthy default traversal.
+/// Apply the opt-in `compact-v2` profile to a healthy resolved response.
 ///
-/// The full compatibility envelope remains available with global --verbose.
-/// Unresolved and ambiguous results bypass this helper, so their diagnostic
-/// receipts and recovery actions remain complete.
+/// Unresolved, ambiguous, stale, and incomplete results retain full diagnostics.
+/// The compact receipt still proves currentness and identifies the graph revision.
 fn compact_understand_json(value: &mut serde_json::Value) {
     use serde_json::{Map, Value, json};
 
@@ -599,7 +598,7 @@ fn compact_understand_json(value: &mut serde_json::Value) {
     }
     report.remove("symbol");
     report.remove("content_budget");
-    report.remove("relationships");
+    report.insert("output_profile".into(), json!("compact-v2"));
 
     let has_source_location = report
         .get("source")
@@ -630,19 +629,27 @@ fn compact_understand_json(value: &mut serde_json::Value) {
         }
     }
 
-    let schema_version = report
+    let original_receipt = report
         .get("context_receipt")
         .and_then(Value::as_object)
-        .and_then(|receipt| receipt.get("schema_version"))
         .cloned()
-        .unwrap_or_else(|| json!(1));
+        .unwrap_or_default();
+    let mut receipt = Map::new();
+    receipt.insert(
+        "schema_version".into(),
+        original_receipt
+            .get("schema_version")
+            .cloned()
+            .unwrap_or_else(|| json!(1)),
+    );
+    receipt.insert("freshness".into(), json!("current"));
+    if let Some(revision) = original_receipt.get("graph_revision") {
+        receipt.insert("graph_revision".into(), revision.clone());
+    }
     report.remove("freshness");
     report.remove("index_stale");
     report.remove("stale_hint");
-    report.insert(
-        "context_receipt".into(),
-        Value::Object(Map::from_iter([("schema_version".into(), schema_version)])),
-    );
+    report.insert("context_receipt".into(), Value::Object(receipt));
 }
 
 /// Read only a verified, policy-allowed source span. Graph freshness and source

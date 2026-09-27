@@ -39,6 +39,28 @@ pub fn cmd_status(path: &Path, json: bool) -> Result<(), Box<dyn std::error::Err
     let store_path = aden_paths::store_dir(&root);
     let lock_path = aden_paths::store_lock_file(&root);
     let snapshot_path = aden_paths::graph_snapshot_file(&root);
+    let lock_state = aden_core::lock::inspect_lock(&lock_path);
+    let store_writer_state = match lock_state {
+        aden_core::lock::LockState::Missing => "none",
+        aden_core::lock::LockState::Active(_) => "active",
+        aden_core::lock::LockState::Stale(_) => "stale",
+        aden_core::lock::LockState::Malformed => "malformed",
+        aden_core::lock::LockState::Unreadable(_) => "unreadable",
+    };
+    let store_writer = match lock_state {
+        aden_core::lock::LockState::Active(holder) | aden_core::lock::LockState::Stale(holder) => {
+            Some(serde_json::json!({
+                "pid": holder.pid,
+                "held_secs": std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|duration| duration.as_secs().saturating_sub(holder.acquired_secs))
+                    .unwrap_or(0),
+            }))
+        }
+        aden_core::lock::LockState::Missing
+        | aden_core::lock::LockState::Malformed
+        | aden_core::lock::LockState::Unreadable(_) => None,
+    };
     let coverage = coverage_summary(&root);
 
     // Health is a heal-drift metric (stale docs vs. code), separate
@@ -87,15 +109,8 @@ pub fn cmd_status(path: &Path, json: bool) -> Result<(), Box<dyn std::error::Err
             "aden_dir_exists": aden_path.is_dir(),
             "project_footprint": if aden_path.is_dir() { "opt_in" } else { "none" },
             "store": store_path.display().to_string(),
-            "store_writer": aden_core::lock::read_holder(&lock_path).map(|h| {
-                serde_json::json!({
-                    "pid": h.pid,
-                    "held_secs": std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.as_secs().saturating_sub(h.acquired_secs))
-                        .unwrap_or(0),
-                })
-            }),
+            "store_writer": store_writer,
+            "store_writer_state": store_writer_state,
             "read_snapshot": snapshot_path
                 .is_file()
                 .then(|| snapshot_path.display().to_string()),
@@ -122,11 +137,22 @@ pub fn cmd_status(path: &Path, json: bool) -> Result<(), Box<dyn std::error::Err
     }
     println!("Per-user store: {}", store_path.display());
     println!("Coverage: {}", coverage);
-    if let Some(holder) = aden_core::lock::read_holder(&lock_path) {
-        println!(
+    match lock_state {
+        aden_core::lock::LockState::Missing => {}
+        aden_core::lock::LockState::Active(holder) => println!(
             "Store writer: active ({})",
             aden_core::lock::describe_holder(holder)
-        );
+        ),
+        aden_core::lock::LockState::Stale(holder) => println!(
+            "Store writer: stale ({})",
+            aden_core::lock::describe_holder(holder)
+        ),
+        aden_core::lock::LockState::Malformed | aden_core::lock::LockState::Unreadable(_) => {
+            println!(
+                "Store writer: unknown ({})",
+                aden_core::lock::describe_lock_state(lock_state)
+            )
+        }
     }
     if snapshot_path.is_file() {
         println!("Read snapshot: {}", snapshot_path.display());

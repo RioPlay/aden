@@ -233,11 +233,10 @@ fn status_json_includes_health_after_gen() {
     assert!(gen_out.status.success());
     let st = run(&project, &data, &["status", ".", "-j"]);
     assert!(st.status.success());
-    let out = String::from_utf8_lossy(&st.stdout);
-    assert!(
-        out.contains("health") || out.contains("ok"),
-        "status json: {out}"
-    );
+    let out: serde_json::Value = serde_json::from_slice(&st.stdout).unwrap();
+    assert!(out.get("health").is_some() || out.get("ok").is_some());
+    assert_eq!(out["store_writer_state"], "none");
+    assert!(out["store_writer"].is_null());
 }
 
 #[test]
