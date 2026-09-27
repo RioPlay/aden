@@ -183,6 +183,16 @@ describes clipped previews, while `truncated`, `limit_truncated`, and
 `response_bytes_truncated` describe omitted hits. Narrow the scope when needed;
 `--unlimited` does not disable the response safety ceiling.
 
+After MCP adds its execution receipt, every tool response has a final 64 KiB
+serialized ceiling. Oversized collections are trimmed from the tail and long
+`outline`, `context`, or verified source strings are clipped on UTF-8 character
+boundaries. The response retains its context receipt and result counts and sets
+`response_bytes_truncated`, `truncated`, and a `truncation` object with the limit
+and narrowing guidance. If collection trimming invalidates a page cursor, Aden
+omits that cursor and its continuation action so no unseen results are skipped.
+A minimal `incomplete` receipt is reserved for a payload
+that cannot be safely reduced while preserving valid JSON.
+
 Both the simple and graph viewers offer *Copy context*: a bounded plain-text
 packet containing the selected symbol, source preview, displayed relationships,
 and export metadata. Packets explicitly distinguish export-time information

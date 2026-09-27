@@ -775,6 +775,9 @@ fn build_cli_args(
     // (security: audit finding MEDIUM-1).
     let mut positionals: Vec<String> = Vec::new();
     for &(arg_name, arg_type) in spec.args {
+        if spec.name == "search" && arg_name == "offset" && args.contains_key("cursor") {
+            continue;
+        }
         let val = match args.get(arg_name) {
             Some(v) => v,
             None => continue,
@@ -1202,7 +1205,7 @@ static TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "search",
         title: "Keyword search (BM25)",
-        description: "Full-text keyword (BM25) search across the indexed graph; returns matching anchors to feed into `asm`/`query`. Use `grep` instead when you want content matches tagged by their enclosing symbol. Auto-reindexes changed files first; no setup needed.",
+        description: "Full-text keyword (BM25) search across the indexed graph; returns matching anchors to feed into `asm`/`query`. Truncated pages include a revision-bound cursor and typed continuation action; reuse the cursor only with the same query. Use `grep` instead when you want content matches tagged by their enclosing symbol. Auto-reindexes changed files first; no setup needed.",
         // query (positional) must precede path (positional [DIR]) — spec order
         // is emission order.
         args: &[
@@ -1210,6 +1213,7 @@ static TOOLS: &[ToolSpec] = &[
             ("path", "string"),
             ("limit", "integer"),
             ("offset", "integer"),
+            ("cursor", "string"),
             ("doc_type", "string"),
             ("semantics", "boolean"),
         ],
@@ -2660,14 +2664,14 @@ pub fn enforce_mcp_response_budget(
         }
     }
     if !matches!(tool, "ask" | "asm") {
-        return response.to_string();
+        return enforce_mcp_hard_cap(response);
     }
     let strict = args
         .get("strict")
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(true);
     if !strict {
-        return response.to_string();
+        return enforce_mcp_hard_cap(response);
     }
     let default_budget = if tool == "ask" { 4096 } else { 8192 };
     let budget = args
@@ -2676,10 +2680,154 @@ pub fn enforce_mcp_response_budget(
         .and_then(|value| usize::try_from(value).ok())
         .unwrap_or(default_budget);
     if response.len().div_ceil(4) <= budget {
-        response.to_string()
+        enforce_mcp_hard_cap(response)
     } else {
         MINIMAL_INCOMPLETE_RECEIPT.to_string()
     }
+}
+
+const MCP_RESPONSE_MAX_BYTES: usize = 64 * 1024;
+
+/// Apply one final serialized ceiling to every MCP response after execution
+/// metadata has been attached. Preserve trust receipts and result counts while
+/// removing tail payloads and marking the response as truncated.
+fn enforce_mcp_hard_cap(response: &str) -> String {
+    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(response) else {
+        return if response.len() <= MCP_RESPONSE_MAX_BYTES {
+            response.to_string()
+        } else {
+            MINIMAL_INCOMPLETE_RECEIPT.to_string()
+        };
+    };
+    let mut serialized = value.to_string();
+    if serialized.len() <= MCP_RESPONSE_MAX_BYTES {
+        return serialized;
+    }
+    let Some(object) = value.as_object_mut() else {
+        return MINIMAL_INCOMPLETE_RECEIPT.to_string();
+    };
+    object.insert("response_bytes_truncated".into(), true.into());
+    object.insert("truncated".into(), true.into());
+    object.insert(
+        "truncation".into(),
+        serde_json::json!({
+            "reason": "mcp_response_limit",
+            "max_bytes": MCP_RESPONSE_MAX_BYTES,
+            "recovery": "retry with a smaller limit, narrower scope, or lower depth",
+        }),
+    );
+    object.remove("stale_hint");
+
+    let mut trimmed_collections = false;
+    const PAYLOAD_ARRAYS: &[&str] = &[
+        "matches",
+        "results",
+        "items",
+        "communities",
+        "nodes",
+        "edges",
+        "impact",
+        "backlinks",
+        "semantic",
+        "documents",
+    ];
+    loop {
+        serialized = value.to_string();
+        if serialized.len() <= MCP_RESPONSE_MAX_BYTES {
+            break;
+        }
+        let largest = PAYLOAD_ARRAYS
+            .iter()
+            .filter_map(|field| {
+                value
+                    .get(*field)
+                    .and_then(serde_json::Value::as_array)
+                    .filter(|items| !items.is_empty())
+                    .map(|items| {
+                        (
+                            *field,
+                            items.last().map_or(0, |item| item.to_string().len()),
+                        )
+                    })
+            })
+            .max_by_key(|(_, bytes)| *bytes)
+            .map(|(field, _)| field);
+        let Some(field) = largest else {
+            break;
+        };
+        value[field].as_array_mut().unwrap().pop();
+        trimmed_collections = true;
+    }
+
+    if trimmed_collections {
+        // A continuation cursor was calculated for the untrimmed page. Keeping
+        // it would skip the tail entries removed above, so require a narrower
+        // retry instead of returning a cursor that loses results.
+        if let Some(object) = value.as_object_mut() {
+            object.remove("next_cursor");
+            object.remove("next_actions");
+        }
+    }
+
+    for field in ["matches", "results", "items", "communities"] {
+        if let Some(returned) = value.get(field).and_then(serde_json::Value::as_array) {
+            value["returned"] = returned.len().into();
+            break;
+        }
+    }
+
+    for pointer in ["/outline", "/context", "/source/text"] {
+        loop {
+            serialized = value.to_string();
+            if serialized.len() <= MCP_RESPONSE_MAX_BYTES {
+                break;
+            }
+            let Some(text) = value.pointer_mut(pointer) else {
+                break;
+            };
+            if !truncate_json_string_half(text) {
+                break;
+            }
+            match pointer {
+                "/outline" => value["outline_truncated"] = true.into(),
+                "/context" => value["context_truncated"] = true.into(),
+                "/source/text" => {
+                    value["source"]["state"] = "clipped".into();
+                    value["source"]["last_line_complete"] = false.into();
+                }
+                _ => {}
+            }
+        }
+    }
+
+    serialized = value.to_string();
+    if serialized.len() > MCP_RESPONSE_MAX_BYTES {
+        if let Some(object) = value.as_object_mut() {
+            object.remove("execution");
+            object.remove("next_actions");
+        }
+        serialized = value.to_string();
+    }
+    if serialized.len() <= MCP_RESPONSE_MAX_BYTES {
+        serialized
+    } else {
+        MINIMAL_INCOMPLETE_RECEIPT.to_string()
+    }
+}
+
+fn truncate_json_string_half(value: &mut serde_json::Value) -> bool {
+    let Some(text) = value.as_str() else {
+        return false;
+    };
+    if text.is_empty() {
+        return false;
+    }
+    let mut end = text.len() / 2;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    *value = text[..end].into();
+    true
 }
 
 /// Whether this tool historically forced `ADEN_SKIP_AUTO_GEN` (pre zero-friction).
@@ -3604,6 +3752,17 @@ mod tests {
     }
 
     #[test]
+    fn search_cursor_suppresses_compatibility_offset() {
+        let mut args = serde_json::Map::new();
+        args.insert("query".into(), serde_json::json!("needle"));
+        args.insert("offset".into(), serde_json::json!(0));
+        args.insert("cursor".into(), serde_json::json!("v1:revision:hash:10"));
+        let output = prepare_cli_args_for_mcp("search", &args).unwrap();
+        assert!(output.windows(2).any(|pair| pair[0] == "--cursor"));
+        assert!(!output.iter().any(|arg| arg == "--offset"));
+    }
+
+    #[test]
     fn mcp_understand_defaults_to_compact_v2_but_preserves_full_requests() {
         let omitted = prepare_cli_args_for_mcp("understand", &serde_json::Map::new()).unwrap();
         assert!(
@@ -3915,6 +4074,62 @@ mod tests {
             enforce_mcp_response_budget("ask", &args, &expanded),
             expanded
         );
+    }
+
+    #[test]
+    fn every_mcp_read_has_a_final_serialized_cap() {
+        let items: Vec<_> = (0..200)
+            .map(|index| {
+                serde_json::json!({
+                    "anchor": format!("aden://module/example#{index}"),
+                    "evidence": "x".repeat(1024),
+                })
+            })
+            .collect();
+        let response = serde_json::json!({
+            "context_receipt": {
+                "schema_version": 1,
+                "freshness": "current",
+                "graph_revision": "revision-1",
+            },
+            "execution": {"schema_version": 1, "subprocess_status": "success"},
+            "items": items,
+            "returned": 200,
+            "total": 200,
+            "truncated": false,
+            "next_cursor": "v1:revision-1:0000000000000001:200",
+            "next_actions": [{"tool": "search", "arguments": {"cursor": "v1:revision-1:0000000000000001:200"}}],
+        })
+        .to_string();
+        let bounded = enforce_mcp_response_budget("query", &serde_json::Map::new(), &response);
+        assert!(bounded.len() <= MCP_RESPONSE_MAX_BYTES);
+        let value: serde_json::Value = serde_json::from_str(&bounded).unwrap();
+        assert_eq!(value["context_receipt"]["freshness"], "current");
+        assert_eq!(value["context_receipt"]["graph_revision"], "revision-1");
+        assert_eq!(value["response_bytes_truncated"], true);
+        assert_eq!(value["truncation"]["reason"], "mcp_response_limit");
+        assert_eq!(
+            value["returned"].as_u64().unwrap(),
+            value["items"].as_array().unwrap().len() as u64
+        );
+        assert!(value["returned"].as_u64().unwrap() < 200);
+        assert!(value.get("next_cursor").is_none());
+        assert!(value.get("next_actions").is_none());
+    }
+
+    #[test]
+    fn hard_cap_truncates_unicode_strings_on_character_boundaries() {
+        let response = serde_json::json!({
+            "context_receipt": {"schema_version": 1, "freshness": "current"},
+            "outline": "日本語🙂".repeat(30_000),
+        })
+        .to_string();
+        let bounded = enforce_mcp_response_budget("tree", &serde_json::Map::new(), &response);
+        assert!(bounded.len() <= MCP_RESPONSE_MAX_BYTES);
+        let value: serde_json::Value = serde_json::from_str(&bounded).unwrap();
+        assert_eq!(value["outline_truncated"], true);
+        assert_eq!(value["context_receipt"]["freshness"], "current");
+        assert!(value["outline"].as_str().unwrap().starts_with("日本語🙂"));
     }
 
     #[test]

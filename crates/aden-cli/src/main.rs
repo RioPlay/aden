@@ -461,9 +461,17 @@ enum Commands {
             long,
             value_name = "N",
             default_value = "0",
+            conflicts_with = "cursor",
             help = "Offset for pagination"
         )]
         offset: usize,
+        #[arg(
+            long,
+            value_name = "CURSOR",
+            conflicts_with = "offset",
+            help = "Continue a prior JSON search on the same graph revision"
+        )]
+        cursor: Option<String>,
         #[arg(
             long,
             value_name = "TYPE",
@@ -917,7 +925,12 @@ enum Commands {
         json: bool,
         /// Machine-output shape. `full` preserves the established contract;
         /// `compact-v2` removes redundant healthy-state bookkeeping.
-        #[arg(long, value_enum, default_value_t = commands::OutputProfile::Full)]
+        #[arg(
+            long,
+            value_enum,
+            default_value_t = commands::OutputProfile::Full,
+            help = "Machine-output shape; MCP default: compact-v2"
+        )]
         profile: commands::OutputProfile,
     },
     /// Run all local CI gates before committing (check, heal, test, secret-scan)
@@ -1675,19 +1688,21 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
             path,
             limit,
             offset,
+            cursor,
             doc_type,
             semantics,
         } => {
             let effective_limit = if cli.unlimited { usize::MAX } else { limit };
-            commands::cmd_search(
-                &path,
-                &query,
-                effective_limit,
+            commands::cmd_search(commands::SearchOptions {
+                path: &path,
+                query: &query,
+                limit: effective_limit,
                 offset,
-                doc_type.as_deref(),
-                semantics,
-                machine_json,
-            )
+                cursor: cursor.as_deref(),
+                doc_type: doc_type.as_deref(),
+                include_semantics: semantics,
+                json: machine_json,
+            })
         }
         Commands::List {
             filter,

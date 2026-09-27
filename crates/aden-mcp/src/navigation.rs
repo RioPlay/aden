@@ -80,6 +80,38 @@ pub fn search(pattern: &str, path: &Path, reason: &str) -> Option<Value> {
     action("grep", arguments, reason, args)
 }
 
+pub fn search_results_page(
+    query: &str,
+    path: &Path,
+    limit: usize,
+    cursor: Option<&str>,
+    doc_type: Option<&str>,
+    semantics: bool,
+    reason: &str,
+) -> Option<Value> {
+    let path = path.to_string_lossy();
+    let mut arguments = json!({
+        "query": query,
+        "path": path,
+        "limit": limit,
+    });
+    let mut args = vec!["search".into(), "--limit".into(), limit.to_string()];
+    if let Some(cursor) = cursor {
+        arguments["cursor"] = cursor.into();
+        args.extend(["--cursor".into(), cursor.into()]);
+    }
+    if let Some(kind) = doc_type {
+        arguments["doc_type"] = kind.into();
+        args.extend(["--doc-type".into(), kind.into()]);
+    }
+    if semantics {
+        arguments["semantics"] = true.into();
+        args.push("--semantics".into());
+    }
+    args.extend(["--".into(), query.into(), path.into_owned()]);
+    action("search", arguments, reason, args)
+}
+
 pub fn tree(path: &Path, reason: &str) -> Option<Value> {
     let path = path.to_string_lossy();
     action(

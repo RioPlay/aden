@@ -28,20 +28,78 @@ fn anchor_matches_doc_type(anchor: &str, dtl: &str) -> bool {
     }
 }
 
-pub fn cmd_search(
-    path: &Path,
-    query: &str,
-    limit: usize,
-    offset: usize,
-    doc_type: Option<&str>,
-    include_semantics: bool,
-    json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+const SEARCH_CURSOR_VERSION: &str = "v1";
+
+fn search_scope_hash(query: &str, doc_type: Option<&str>, semantics: bool) -> u64 {
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in query
+        .bytes()
+        .chain([0])
+        .chain(doc_type.unwrap_or_default().bytes())
+        .chain([u8::from(semantics)])
+    {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
+fn encode_search_cursor(revision: &str, scope_hash: u64, offset: usize) -> String {
+    format!("{SEARCH_CURSOR_VERSION}:{revision}:{scope_hash:016x}:{offset}")
+}
+
+fn decode_search_cursor(cursor: &str) -> Result<(&str, u64, usize), &'static str> {
+    let mut parts = cursor.split(':');
+    let version = parts.next().ok_or("missing cursor version")?;
+    let revision = parts.next().ok_or("missing graph revision")?;
+    let scope_hash = parts.next().ok_or("missing query binding")?;
+    let offset = parts.next().ok_or("missing result offset")?;
+    if version != SEARCH_CURSOR_VERSION || parts.next().is_some() || revision.is_empty() {
+        return Err("unsupported or malformed search cursor");
+    }
+    let scope_hash = u64::from_str_radix(scope_hash, 16).map_err(|_| "invalid query binding")?;
+    let offset = offset.parse().map_err(|_| "invalid result offset")?;
+    Ok((revision, scope_hash, offset))
+}
+
+pub struct SearchOptions<'a> {
+    pub path: &'a Path,
+    pub query: &'a str,
+    pub limit: usize,
+    pub offset: usize,
+    pub cursor: Option<&'a str>,
+    pub doc_type: Option<&'a str>,
+    pub include_semantics: bool,
+    pub json: bool,
+}
+
+pub fn cmd_search(opts: SearchOptions<'_>) -> Result<(), Box<dyn std::error::Error>> {
+    let SearchOptions {
+        path,
+        query,
+        limit,
+        offset,
+        cursor,
+        doc_type,
+        include_semantics,
+        json,
+    } = opts;
     if !path.is_dir() {
         return Err("search requires a directory path".into());
     }
     let _stale_hint = super::StaleHintGuard::new(path, json);
     super::ensure_fresh(path);
+
+    if cursor.is_some() && !json {
+        return Err("search --cursor requires structured JSON output".into());
+    }
+    let scope_hash = search_scope_hash(query, doc_type, include_semantics);
+    let decoded_cursor = cursor.map(decode_search_cursor).transpose();
+    let effective_offset = decoded_cursor
+        .as_ref()
+        .ok()
+        .and_then(|decoded| decoded.as_ref().map(|(_, _, offset)| *offset))
+        .unwrap_or(offset);
 
     // Load config to check for private patterns (ADRs, retros, etc.)
     let config = AdenConfig::load(path);
@@ -119,14 +177,14 @@ pub fn cmd_search(
     // caller never has to parse the human table or guess whether more exists.
     if json {
         let total = results.len();
-        let page: Vec<_> = results.iter().skip(offset).take(limit).collect();
-        let env = super::augment_read_json(
+        let page: Vec<_> = results.iter().skip(effective_offset).take(limit).collect();
+        let mut env = super::augment_read_json(
             path,
             serde_json::json!({
                 "total": total,
                 "returned": page.len(),
-                "offset": offset,
-                "truncated": offset + page.len() < total,
+                "offset": effective_offset,
+                "truncated": effective_offset + page.len() < total,
                 "results": page.iter().map(|r| serde_json::json!({
                     "anchor": r.anchor,
                     "score": r.score,
@@ -138,7 +196,66 @@ pub fn cmd_search(
                 })).collect::<Vec<_>>(),
             }),
         );
-        println!("{}", serde_json::to_string_pretty(&env)?);
+        let revision = env["context_receipt"]["graph_revision"].as_str();
+        let cursor_error = match decoded_cursor {
+            Err(message) => Some(("cursor_invalid", message.to_string())),
+            Ok(Some((expected_revision, expected_scope, _)))
+                if Some(expected_revision) != revision || expected_scope != scope_hash =>
+            {
+                Some((
+                    "cursor_stale",
+                    "search cursor does not match this graph revision or query".to_string(),
+                ))
+            }
+            Ok(_) => None,
+        };
+        if let Some((code, message)) = cursor_error {
+            let restart = super::next_actions::search_results_page(
+                query,
+                path,
+                limit,
+                None,
+                doc_type,
+                include_semantics,
+                "Restart this search from the current graph revision",
+            );
+            let error = serde_json::json!({
+                "schema_version": 1,
+                "error": {
+                    "code": code,
+                    "message": message,
+                    "recovery": "restart from offset 0 using the current graph revision",
+                },
+                "next_actions": restart.into_iter().collect::<Vec<_>>(),
+                "context_receipt": env["context_receipt"].clone(),
+                "freshness": env["freshness"].clone(),
+                "index_stale": env["index_stale"].clone(),
+            });
+            println!("{}", serde_json::to_string(&error)?);
+            return Ok(());
+        }
+
+        if effective_offset + page.len() < total
+            && let Some(revision) = revision
+        {
+            let next_cursor = encode_search_cursor(
+                revision,
+                scope_hash,
+                effective_offset.saturating_add(page.len()),
+            );
+            let action = super::next_actions::search_results_page(
+                query,
+                path,
+                limit,
+                Some(&next_cursor),
+                doc_type,
+                include_semantics,
+                "Continue this search on the same graph revision",
+            );
+            env["next_cursor"] = next_cursor.into();
+            env["next_actions"] = serde_json::json!(action.into_iter().collect::<Vec<_>>());
+        }
+        println!("{}", serde_json::to_string(&env)?);
         return Ok(());
     }
 
@@ -367,4 +484,26 @@ pub fn cmd_list(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod cursor_tests {
+    use super::*;
+
+    #[test]
+    fn cursor_round_trips_and_rejects_malformed_values() {
+        let cursor = encode_search_cursor("revision", 0x1234, 42);
+        assert_eq!(decode_search_cursor(&cursor), Ok(("revision", 0x1234, 42)));
+        assert!(decode_search_cursor("v2:revision:0000000000001234:42").is_err());
+        assert!(decode_search_cursor("v1:revision:wrong:42").is_err());
+        assert!(decode_search_cursor("v1:revision:0000000000001234:nope").is_err());
+    }
+
+    #[test]
+    fn cursor_scope_binds_query_filters_and_semantics() {
+        let base = search_scope_hash("query", Some("module"), false);
+        assert_ne!(base, search_scope_hash("other", Some("module"), false));
+        assert_ne!(base, search_scope_hash("query", Some("adr"), false));
+        assert_ne!(base, search_scope_hash("query", Some("module"), true));
+    }
 }

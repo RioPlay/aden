@@ -300,6 +300,13 @@ aden asm --from mod-aden-core --set-attr mode=production
 |--set-attr |Set attribute for conditional processing |—
 |===
 
+When indexed line ranges and the current source hash agree, `asm` uses otherwise
+unused budget for the seed symbol's actual source and then nearby symbols.
+`json` and `adg` documents carry a bounded `source` object with file, line range,
+verification state, and text; text formats append an equivalent source block.
+Changed or out-of-project files are omitted instead of pairing stale ranges with
+current code.
+
 === query
 
 Query the knowledge graph from a unique natural symbol name, module alias, or canonical anchor and emit JSON. Ambiguous names return deterministic candidates rather than selecting one.
@@ -483,7 +490,8 @@ aden search "token budget" --json    # structured envelope
 |Flag |Description |Default
 
 |--limit |Max results |50
-|--offset |Pagination offset |0
+|--offset |Compatibility pagination offset |0
+|--cursor |Continue a JSON page on the same graph revision |None
 |--doc-type |Filter: module, adr, plan, use-case |All
 |--semantics |Include semantic relationship results |false
 |--json |Structured envelope instead of the human table |false
@@ -492,7 +500,11 @@ aden search "token budget" --json    # structured envelope
 With `--json` (or the global `-j`), `search` emits an envelope carrying explicit
 counts and pagination so a caller never has to parse the table or guess whether
 more results exist: `{total, returned, offset, truncated, results: [{anchor,
-score, snippet}], semantic: [...]}`.
+score, snippet}], semantic: [...]}`. A truncated page also includes `next_cursor`
+and a typed `next_actions` entry. The cursor binds the next offset to the graph
+revision, query, document filter, and semantics setting; Aden returns
+`cursor_stale` with a restart action instead of silently mixing result sets.
+`--offset` remains available for compatibility and ad hoc human paging.
 
 [NOTE]
 ====

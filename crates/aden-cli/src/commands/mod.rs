@@ -73,7 +73,7 @@ pub use query::{QueryOptions, cmd_ask, cmd_asm, cmd_check, cmd_query, cmd_query_
 pub use ready::cmd_ready;
 pub use review::{cmd_review, cmd_review_since};
 pub use scope::{cmd_scope, cmd_scope_agents};
-pub use search::{cmd_list, cmd_search};
+pub use search::{SearchOptions, cmd_list, cmd_search};
 pub use session::{cmd_kickoff, cmd_session, cmd_workflow};
 pub use status::cmd_status;
 pub use store::{cmd_store_list, cmd_store_migrate, cmd_store_path, cmd_store_prune};

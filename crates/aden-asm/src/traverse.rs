@@ -675,6 +675,108 @@ fn hydrate_with_source(
     }
 }
 
+/// Enrich one compact ADG document with a verified source span. The source
+/// allowance is separate from the document summary and remains bounded before
+/// the outer assembly budget is charged.
+fn emit_adg_with_source(
+    doc: &DocumentNode,
+    root: &std::path::Path,
+    source_token_budget: usize,
+) -> Result<String, AssemblyError> {
+    use aden_emit::emit_adg;
+
+    let base = emit_adg(&doc.doc).map_err(|error| AssemblyError::Graph(error.to_string()))?;
+    if source_token_budget < HYDRATE_MIN_REMAINING {
+        return Ok(base);
+    }
+    let attrs = &doc.doc.attributes;
+    let (Some(file), Some(start), Some(end), Some(expected_hash)) = (
+        attrs.get("source_file"),
+        attrs
+            .get("start_line")
+            .and_then(|value| value.parse::<usize>().ok()),
+        attrs
+            .get("end_line")
+            .and_then(|value| value.parse::<usize>().ok()),
+        attrs.get("source_hash"),
+    ) else {
+        return Ok(base);
+    };
+    if start == 0 || end < start {
+        return Ok(base);
+    }
+    let Ok(root) = std::fs::canonicalize(root) else {
+        return Ok(base);
+    };
+    let candidate = root.join(file);
+    let Ok(candidate) = std::fs::canonicalize(candidate) else {
+        return Ok(base);
+    };
+    if !candidate.starts_with(&root) {
+        return Ok(base);
+    }
+    let Ok(content) = std::fs::read_to_string(candidate) else {
+        return Ok(base);
+    };
+    if aden_core::hash_source(&content) != *expected_hash {
+        return Ok(base);
+    }
+    let lines: Vec<&str> = content.lines().collect();
+    if start > lines.len() {
+        return Ok(base);
+    }
+    let actual_end = end.min(lines.len());
+    let span = lines[start - 1..actual_end].join("\n");
+    if span.trim().is_empty() {
+        return Ok(base);
+    }
+
+    let mut value: serde_json::Value =
+        serde_json::from_str(&base).map_err(|error| AssemblyError::Graph(error.to_string()))?;
+    value["source"] = serde_json::json!({
+        "state": "complete",
+        "file": file,
+        "start_line": start,
+        "end_line": actual_end,
+        "hash_verified": true,
+        "text": "",
+    });
+    let empty =
+        serde_json::to_string(&value).map_err(|error| AssemblyError::Graph(error.to_string()))?;
+    let overhead = estimate_tokens(&empty).saturating_sub(estimate_tokens(&base));
+    let text_budget = source_token_budget.saturating_sub(overhead);
+    if text_budget < HYDRATE_MIN_REMAINING {
+        return Ok(base);
+    }
+    let text = truncate_to_tokens(&span, text_budget);
+    let clipped = text != span;
+    value["source"]["text"] = text.into();
+    if clipped {
+        value["source"]["state"] = "clipped".into();
+    }
+
+    // JSON escaping can cost more than the plain-text estimator (quotes,
+    // backslashes, and controls). Shrink the text until the serialized source
+    // stays inside its allowance; fall back to the summary if only metadata fits.
+    let allowed = estimate_tokens(&base).saturating_add(source_token_budget);
+    loop {
+        let output = serde_json::to_string(&value)
+            .map_err(|error| AssemblyError::Graph(error.to_string()))?;
+        if estimate_tokens(&output) <= allowed {
+            return Ok(output);
+        }
+        let Some(current) = value["source"]["text"].as_str() else {
+            return Ok(base);
+        };
+        let next_budget = estimate_tokens(current) / 2;
+        if next_budget < HYDRATE_MIN_REMAINING {
+            return Ok(base);
+        }
+        value["source"]["text"] = truncate_to_tokens(current, next_budget).into();
+        value["source"]["state"] = "clipped".into();
+    }
+}
+
 /// Assemble documents in ADG (compact JSON) format for token-efficient LLM context.
 pub fn assemble_adg(
     graph: &AdenGraph<DocumentNode, AdenEdge>,
@@ -716,7 +818,16 @@ pub fn assemble_adg(
             continue;
         }
         let doc = &graph.graph[node];
-        let adg_json = emit_adg(&doc.doc).map_err(|e| AssemblyError::Graph(e.to_string()))?;
+        let adg_json = if let Some(root) = &opts.hydrate_root {
+            let source_budget = if results.is_empty() {
+                opts.token_budget / 2
+            } else {
+                opts.token_budget / HYDRATE_PER_NODE_DIVISOR
+            };
+            emit_adg_with_source(doc, root, source_budget)?
+        } else {
+            emit_adg(&doc.doc).map_err(|error| AssemblyError::Graph(error.to_string()))?
+        };
         // Use the same div_ceil estimator as the text path (not a floor) so the
         // per-element charge is always >= the element's real token cost. By
         // subadditivity of div_ceil, the running total then stays >= the final
@@ -1923,15 +2034,50 @@ mod tests {
                 ..Default::default()
             };
             let output = assemble_adg(&graph, &opts).expect("assemble_adg must succeed");
-            // assemble_adg uses the floor estimator (len/4) per doc but counts the
-            // wrapper/separator via estimate_tokens; the full output's byte/4 must
-            // still fit the budget.
-            let est = output.len() / 4;
+            // The full serialized JSON, including wrappers and source hydration,
+            // must remain inside the same conservative estimator budget.
+            let est = estimate_tokens(&output);
             assert!(
                 est <= budget,
                 "assemble_adg output len/4 ({est}) exceeded budget {budget} (output len {} bytes)",
                 output.len()
             );
         }
+    }
+    #[test]
+    fn assemble_adg_hydrates_only_verified_source_within_budget() {
+        let root = tempfile::tempdir().unwrap();
+        let source = "fn hydrated() {\n    important_dependency();\n}\n";
+        std::fs::write(root.path().join("sample.rs"), source).unwrap();
+
+        let mut node = node_with_text("hydrated", "short summary");
+        node.doc
+            .attributes
+            .insert("source_file".into(), "sample.rs".into());
+        node.doc.attributes.insert("start_line".into(), "1".into());
+        node.doc.attributes.insert("end_line".into(), "3".into());
+        node.doc
+            .attributes
+            .insert("source_hash".into(), aden_core::hash_source(source));
+        let mut graph = AdenGraph::<DocumentNode, AdenEdge>::new();
+        graph.add_node(node).unwrap();
+        let opts = AssemblyOptions {
+            start_anchor: "hydrated".into(),
+            token_budget: 256,
+            hydrate_root: Some(root.path().to_path_buf()),
+            ..Default::default()
+        };
+
+        let output = assemble_adg(&graph, &opts).unwrap();
+        assert!(estimate_tokens(&output) <= opts.token_budget);
+        let value: serde_json::Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(value[0]["source"]["hash_verified"], true);
+        assert_eq!(value[0]["source"]["state"], "complete");
+        assert_eq!(value[0]["source"]["text"], source.trim_end());
+
+        std::fs::write(root.path().join("sample.rs"), "fn changed() {}\n").unwrap();
+        let stale = assemble_adg(&graph, &opts).unwrap();
+        let stale: serde_json::Value = serde_json::from_str(&stale).unwrap();
+        assert!(stale[0].get("source").is_none());
     }
 }

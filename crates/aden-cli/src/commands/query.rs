@@ -1711,7 +1711,7 @@ pub fn cmd_asm(opts: AsmOptions) -> Result<(), Box<dyn std::error::Error>> {
         exclude_tags: opts.exclude_tags.clone(),
         attributes: opts.attributes.clone(),
         llm_mode,
-        hydrate_root: None,
+        hydrate_root: Some(find_project_root(&opts.path)),
         relevance,
         relevance_select,
         // Off-topic safety gate, validated on the assembly_ab harness (two languages,

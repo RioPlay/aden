@@ -124,10 +124,7 @@ impl FileLock {
         loop {
             match create_exclusive(&path) {
                 Ok(token) => return Ok(FileLock { path, token }),
-                Err(e)
-                    if e.kind() == io::ErrorKind::AlreadyExists
-                        || e.kind() == io::ErrorKind::PermissionDenied =>
-                {
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
                     let reclaimed = reclaim_if_stale(&path)?;
                     let now = Instant::now();
                     if verbose && now.duration_since(last_note) >= NOTE_EVERY {

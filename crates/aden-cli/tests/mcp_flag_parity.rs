@@ -334,6 +334,9 @@ fn every_mcp_exposed_cli_default_is_declared_by_mcp() {
     let mut failures = Vec::new();
     for (tool, args) in aden_mcp::tool_arg_specs() {
         for (arg, cli_default) in cli_defaults_in_help(tool, &cli_help(bin, tool), args) {
+            if aden_mcp::tool_arg_default_is_transport_override(tool, &arg) {
+                continue;
+            }
             let mcp_default = aden_mcp::tool_arg_default(tool, &arg).map(|value| {
                 value
                     .as_str()
