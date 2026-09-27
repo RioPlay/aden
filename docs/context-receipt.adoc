@@ -30,11 +30,14 @@ read results and is preserved verbatim by the MCP CLI bridge:
 ----
 
 The existing top-level `freshness`, `index_stale`, `stale_hint`, and `items`
-fields remain available during the compatibility window. Consumers should begin
-reading `context_receipt`, ignore unknown additive fields, and call
-`validate_supported` to reject an unknown required schema version rather than
-guessing its meaning. This is an additive
-receipt-v1 migration, not a replacement for the legacy fields.
+fields remain available during the compatibility window. A healthy
+`understand` result deliberately emits only
+`"context_receipt":{"schema_version":1}` and omits the duplicate top-level
+freshness fields; `aden --verbose understand ...` restores the full
+compatibility envelope, and stale or unresolved results keep their diagnostics.
+Consumers should read `context_receipt`, ignore unknown additive fields, and
+call `validate_supported` to reject an unknown required schema version rather
+than guessing its meaning.
 
 If a legacy object already owns the top-level `context_receipt` key, Aden
 preserves that object rather than overwriting or wrapping it. That exceptional

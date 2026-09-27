@@ -1401,7 +1401,15 @@ aden understand <SYMBOL> [DIR]
 aden understand Database::connect .
 aden understand connect . --budget 8000
 aden understand connect . --json
+aden --verbose understand connect . --json  # full receipt and budget diagnostics
 ----
+
+Structured output is minified and compact by default: healthy freshness details, empty optional
+arrays, duplicate source locations, and budget bookkeeping are omitted. The
+versioned receipt remains as `{"schema_version":1}`. Use global `--verbose`
+when diagnosing refresh/provenance behavior or inspecting the budget split.
+Stale, missing, and ambiguous results retain their actionable diagnostics
+without requiring `--verbose`.
 
 Returns in a single report:
 - Anchor resolution and definition location

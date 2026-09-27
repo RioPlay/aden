@@ -9,7 +9,12 @@ All notable changes to aden are documented here. Format follows
 
 ## [Unreleased]
 
-No unreleased changes.
+### Changed
+
+- `understand` now omits healthy-state bookkeeping, empty optional arrays, and
+  duplicate source metadata by default, and emits minified JSON. Use `--verbose` in the CLI or
+  `verbose=true` over MCP to request the full provenance and budget diagnostics;
+  stale, missing, and ambiguous results remain fully diagnostic.
 
 ## [0.4.2] - 2026-09-26
 

@@ -1074,12 +1074,13 @@ static TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "understand",
         title: "Understand a symbol",
-        description: "Definition, source excerpt, incoming references, outgoing dependencies, and bounded context. Use locate first for ambiguous names. Missing dynamic/local/test symbols are not proof of absence; retry with grep. Check source completeness before edits.",
+        description: "Compact definition, verified source excerpt, incoming references, outgoing dependencies, and bounded context. Empty and healthy-state bookkeeping is omitted. Set verbose=true for the full provenance receipt and budget diagnostics. Use locate first for ambiguous names. Missing dynamic/local/test symbols are not proof of absence; retry with grep. Check source completeness before edits.",
         args: &[
             ("symbol", "string"),
             ("path", "string"),
             ("budget", "integer"),
             ("json", "boolean"),
+            ("verbose", "boolean"),
         ],
         effect: Effect::Read,
     },

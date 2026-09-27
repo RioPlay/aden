@@ -254,6 +254,7 @@ pub fn cmd_understand(
     path: &Path,
     budget: usize,
     json: bool,
+    verbose: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use aden_asm::traverse::{AssemblyOptions, assemble};
     use serde_json::json;
@@ -302,7 +303,7 @@ pub fn cmd_understand(
                         },
                     }),
                 );
-                println!("{}", serde_json::to_string_pretty(&env)?);
+                println!("{}", serde_json::to_string(&env)?);
             } else {
                 println!("{}", msg);
                 super::next_actions::print(&actions);
@@ -336,7 +337,7 @@ pub fn cmd_understand(
                         },
                     }),
                 );
-                println!("{}", serde_json::to_string_pretty(&env)?);
+                println!("{}", serde_json::to_string(&env)?);
             } else {
                 println!("{recovery}");
                 for candidate in candidates {
@@ -448,7 +449,7 @@ pub fn cmd_understand(
     };
 
     if json {
-        let env = super::augment_read_json(
+        let mut env = super::augment_read_json(
             path,
             json!({
                 "symbol": symbol,
@@ -467,7 +468,10 @@ pub fn cmd_understand(
                 "context": context,
             }),
         );
-        let body = serde_json::to_string_pretty(&env)?;
+        if !verbose {
+            compact_understand_json(&mut env);
+        }
+        let body = serde_json::to_string(&env)?;
         println!("{body}");
         return Ok(());
     }
@@ -565,6 +569,80 @@ pub fn cmd_understand(
     println!("{}", context);
     super::next_actions::print(&actions);
     Ok(())
+}
+
+/// Remove bookkeeping that does not help a healthy default traversal.
+///
+/// The full compatibility envelope remains available with global --verbose.
+/// Unresolved and ambiguous results bypass this helper, so their diagnostic
+/// receipts and recovery actions remain complete.
+fn compact_understand_json(value: &mut serde_json::Value) {
+    use serde_json::{Map, Value, json};
+
+    let Some(report) = value.as_object_mut() else {
+        return;
+    };
+    let healthy = report.get("freshness").and_then(Value::as_str) == Some("current")
+        && report.get("index_stale").and_then(Value::as_bool) == Some(false);
+    if !healthy {
+        return;
+    }
+
+    for key in ["alternates", "next_actions"] {
+        if report
+            .get(key)
+            .and_then(Value::as_array)
+            .is_some_and(Vec::is_empty)
+        {
+            report.remove(key);
+        }
+    }
+    report.remove("symbol");
+    report.remove("content_budget");
+    report.remove("relationships");
+
+    let has_source_location = report
+        .get("source")
+        .and_then(Value::as_object)
+        .is_some_and(|source| source.contains_key("file"));
+    if let Some(definition) = report.get_mut("definition").and_then(Value::as_object_mut) {
+        definition.remove("anchor");
+        if has_source_location {
+            for key in ["file", "start_line", "end_line"] {
+                definition.remove(key);
+            }
+        }
+    }
+    if let Some(source) = report.get_mut("source").and_then(Value::as_object_mut) {
+        source.remove("indexed_start_line");
+        source.remove("last_line_complete");
+        if source.get("state").and_then(Value::as_str) == Some("complete") {
+            source.remove("indexed_end_line");
+        }
+    }
+    if let Some(backlinks) = report.get_mut("backlinks").and_then(Value::as_array_mut) {
+        for backlink in backlinks {
+            if let Some(node) = backlink.as_object_mut()
+                && node.get("inferred").and_then(Value::as_bool) == Some(false)
+            {
+                node.remove("inferred");
+            }
+        }
+    }
+
+    let schema_version = report
+        .get("context_receipt")
+        .and_then(Value::as_object)
+        .and_then(|receipt| receipt.get("schema_version"))
+        .cloned()
+        .unwrap_or_else(|| json!(1));
+    report.remove("freshness");
+    report.remove("index_stale");
+    report.remove("stale_hint");
+    report.insert(
+        "context_receipt".into(),
+        Value::Object(Map::from_iter([("schema_version".into(), schema_version)])),
+    );
 }
 
 /// Read only a verified, policy-allowed source span. Graph freshness and source

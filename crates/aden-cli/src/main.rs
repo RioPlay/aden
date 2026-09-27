@@ -1542,7 +1542,7 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
             path,
             budget,
             json,
-        } => commands::cmd_understand(&symbol, &path, budget, json || machine_json),
+        } => commands::cmd_understand(&symbol, &path, budget, json || machine_json, !quiet),
         Commands::Test {
             path,
             scope,
