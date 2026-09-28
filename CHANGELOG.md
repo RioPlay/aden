@@ -9,12 +9,44 @@ All notable changes to aden are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-09-27
+
+This patch makes Aden's default agent path smaller, source-backed, and safe to
+continue across a changing repository while preserving the established CLI
+machine contract.
+
+### Added
+
+- **Versioned compact `understand` output** — MCP defaults to `compact-v2`,
+  retaining freshness and graph revision receipts while removing redundant
+  healthy-state metadata. Direct CLI JSON remains on the compatible `full`
+  profile unless callers opt in.
+- **Verified source-first assembly** — `asm` spends available context budget on
+  hash-verified source spans for the seed and nearby symbols, omitting changed
+  or out-of-project files instead of pairing stale coordinates with current code.
+- **Revision-bound search cursors** — truncated JSON search pages provide typed
+  continuation actions whose cursors bind the query, filters, semantics setting,
+  offset, and graph revision.
+
 ### Changed
 
-- `understand` now omits healthy-state bookkeeping, empty optional arrays, and
-  duplicate source metadata by default, and emits minified JSON. Use `--verbose` in the CLI or
-  `verbose=true` over MCP to request the full provenance and budget diagnostics;
-  stale, missing, and ambiguous results remain fully diagnostic.
+- **Universal MCP response ceiling** — every response is capped at 64 KiB after
+  execution receipts are attached. Collections and long text are trimmed on
+  safe boundaries while trust receipts and exact retained counts remain intact.
+- **Faster freshness waits** — readers poll the writer lock while refresh is in
+  flight instead of repeatedly hashing the entire working tree.
+
+### Fixed
+
+- **Cross-platform writer liveness** — Windows and Unix lock holders are checked
+  through the operating system, live writers are never stolen solely because of
+  age, and status distinguishes active, stale, malformed, unreadable, and
+  missing lock states.
+- **Actionable permission failures** — store permission errors return immediately
+  instead of being mislabeled as lock contention and retried for minutes.
+- **Lossless capped pagination** — when the MCP ceiling trims a result page, Aden
+  removes the invalidated cursor and continuation action so unseen results are
+  never skipped.
 
 ## [0.4.2] - 2026-09-26
 
