@@ -16,6 +16,12 @@ All notable changes to aden are documented here. Format follows
   `.agents/mcp_config.json` with `--scope project`. Includes list/uninstall,
   dry runs, named profiles, lifecycle tests, and setup/compatibility guidance.
 
+### Security
+
+- Update locked dependencies to patch rustls TLS issues and distrusted certificate
+  handling, Tokio I/O safety, and zstd memory safety and cross-stream data leaks.
+  Replace the yanked `chacha20` and `spin` versions with non-yanked releases.
+
 ## [0.4.3] - 2026-09-27
 
 This patch makes Aden's default agent path smaller, source-backed, and safe to
