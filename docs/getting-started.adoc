@@ -255,7 +255,7 @@ agent can call `ask`, `grep`, `asm`, `query`, `locate`, etc. directly:
 [source,bash]
 ----
 aden mcp install --platform claude --dry-run  # inspect; changes nothing
-aden mcp install --platform claude            # or: amp, opencode, cursor, codex, zed, windsurf, grok
+aden mcp install --platform claude            # or: amp, antigravity, opencode, cursor, codex, zed, windsurf, grok
 ----
 
 MCP setup is an explicit opt-in; Aden does not silently edit client configuration

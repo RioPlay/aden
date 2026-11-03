@@ -1185,6 +1185,7 @@ aden mcp install --all
 
 # Install for specific platform
 aden mcp install --platform amp
+aden mcp install --platform antigravity
 aden mcp install --platform opencode
 aden mcp install --platform claude
 aden mcp install --platform cursor
@@ -1234,7 +1235,7 @@ aden mcp install --platform codex --preset verify
 |===
 |Flag |Description
 
-|--platform <PLATFORM> |Target one platform: `amp`, `opencode`, `claude`, `cursor`, `codex`, `zed`, `windsurf`, `grok`
+|--platform <PLATFORM> |Target one platform: `amp`, `antigravity`, `opencode`, `claude`, `cursor`, `codex`, `zed`, `windsurf`, `grok`
 |--all |Apply to all platforms, not just detected ones
 |--scope <SCOPE> |`user` (global) or `project` (local). Default: `user` for every platform; runtime workspace selection follows MCP Roots/host environment
 |--preset <PRESET> |Workflow preset: `explore` (`aden-explore`, essential), `verify` (`aden-verify`, standard), or `admin` (`aden-admin`, full)
@@ -1249,6 +1250,7 @@ aden mcp install --platform codex --preset verify
 |Platform |Config Path |Format
 
 |amp |`.amp/settings.json` or `~/.config/amp/settings.json` |JSON, `amp.mcpServers` key; project scope may require Amp approval
+|antigravity |`.agents/mcp_config.json` or `~/.gemini/config/mcp_config.json` |JSON, `mcpServers` key; see <<antigravity-mcp-setup>> for setup and compatibility notes
 |opencode |`.opencode/opencode.json` or `~/.config/opencode/opencode.json` |JSON, `mcp` key (`type: local`)
 |claude |`.mcp.json` (project-scoped) |JSON, `mcpServers` key
 |cursor |`.cursor/mcp.json` or `~/.cursor/mcp.json` |JSON, `mcpServers` key
