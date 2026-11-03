@@ -11,6 +11,8 @@ Every agent that modifies files must append an entry here before completing.
 
 |===
 |Timestamp |Agent |Task |Files |Status |Confidence
+|2026-11-03 |codex |Patch 12 RustSec advisories and replace yanked dependencies; refresh attribution and retain BSD notices; cargo-deny, Clippy, NOTICE check, and full local CI pass; initial core-test failure did not reproduce in 75-test diagnostic or full rerun |Cargo.lock, NOTICE.md, CHANGELOG.md |completed |High
+|2026-11-02 |codex |Add Antigravity MCP installer support with researched config paths, lifecycle tests, and setup guidance; local CI and generated-config stdio smoke passed; live Antigravity session unverified |crates/aden-cli/src/mcp.rs, crates/aden-cli/src/main.rs, crates/aden-cli/tests/mcp_antigravity.rs, .github/workflows/ci.yml, docs/ai-integration.adoc, docs/commands.adoc, docs/getting-started.adoc, CHANGELOG.md |completed |High
 |2026-07-14T21:20:00Z |pi-composer |Add native index-aware `aden tree` outline with bounded folder and lexical symbol depth |crates/aden-cli/src/commands/tree.rs, crates/aden-cli/src/main.rs, docs/commands.adoc |complete |High
 |2026-07-14T21:30:00Z |pi-composer |Close CI parity and generated-artifact false-positive gaps |crates/aden-cli/src/commands/ci.rs, crates/aden-cli/tests/mcp_flag_parity.rs, crates/aden-cli/tests/result_semantics.rs |complete |High
 |2026-07-22T15:46:41Z |pi-composer |Repair 2D/3D hover-card overlay positioning and preserve large-graph 3D relations for focus/travel |crates/aden-cli/assets/view.html, crates/aden-cli/assets/view3d.html, crates/aden-cli/src/commands/view.rs |complete |High

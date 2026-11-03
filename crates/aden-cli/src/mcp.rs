@@ -4,7 +4,7 @@
 //!
 //! Hosts should launch this same `aden` binary as `aden mcp stdio`. Standalone
 //! `aden-mcp` remains valid when `--binary` points at it. Configures Amp,
-//! opencode, Claude Code, Cursor, Codex, Zed, and Windsurf.
+//! Antigravity, opencode, Claude Code, Cursor, Codex, Zed, Windsurf, and Grok.
 
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -18,6 +18,7 @@ const DEFAULT_SERVER_NAME: &str = "aden";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Platform {
     Amp,
+    Antigravity,
     OpenCode,
     ClaudeCode,
     Cursor,
@@ -31,6 +32,7 @@ impl Platform {
     pub fn all() -> &'static [Platform] {
         &[
             Platform::Amp,
+            Platform::Antigravity,
             Platform::OpenCode,
             Platform::ClaudeCode,
             Platform::Cursor,
@@ -44,6 +46,7 @@ impl Platform {
     pub fn from_name(name: &str) -> Option<Platform> {
         match name.to_lowercase().as_str() {
             "amp" | "ampcode" | "amp-code" => Some(Platform::Amp),
+            "antigravity" | "anti-gravity" => Some(Platform::Antigravity),
             "opencode" | "open-code" | "open_code" => Some(Platform::OpenCode),
             "claude" | "claude-code" | "claudecode" => Some(Platform::ClaudeCode),
             "cursor" => Some(Platform::Cursor),
@@ -58,6 +61,7 @@ impl Platform {
     pub fn display_name(&self) -> &'static str {
         match self {
             Platform::Amp => "Amp",
+            Platform::Antigravity => "Antigravity",
             Platform::OpenCode => "opencode",
             Platform::ClaudeCode => "Claude Code",
             Platform::Cursor => "Cursor",
@@ -89,6 +93,13 @@ impl Platform {
                 ));
                 paths
             }
+            // Current Antigravity App, IDE, and CLI share the user config.
+            // Workspace configuration is opt-in through --scope project.
+            // https://antigravity.google/docs/mcp
+            Platform::Antigravity => vec![
+                PathBuf::from(".agents/mcp_config.json"),
+                home.join(".gemini/config/mcp_config.json"),
+            ],
             Platform::OpenCode => {
                 let mut paths = vec![
                     PathBuf::from(".opencode/opencode.json"),
@@ -168,7 +179,10 @@ impl Platform {
         match self {
             Platform::Amp => "amp.mcpServers",
             Platform::OpenCode => "mcp",
-            Platform::ClaudeCode | Platform::Cursor | Platform::Windsurf => "mcpServers",
+            Platform::Antigravity
+            | Platform::ClaudeCode
+            | Platform::Cursor
+            | Platform::Windsurf => "mcpServers",
             Platform::Codex | Platform::Grok => "mcp_servers",
             Platform::Zed => "context_servers",
         }
@@ -200,7 +214,10 @@ impl Platform {
                     "enabled": true,
                 })
             }
-            Platform::ClaudeCode | Platform::Cursor | Platform::Windsurf => serde_json::json!({
+            Platform::Antigravity
+            | Platform::ClaudeCode
+            | Platform::Cursor
+            | Platform::Windsurf => serde_json::json!({
                 "command": binary,
                 "args": args,
             }),
@@ -1243,6 +1260,7 @@ mod tests {
         assert!(Platform::Grok.is_toml());
         for p in [
             Platform::Amp,
+            Platform::Antigravity,
             Platform::ClaudeCode,
             Platform::Cursor,
             Platform::OpenCode,
@@ -1277,6 +1295,58 @@ mod tests {
         let value = Platform::Amp.aden_config("aden-mcp", "/proj", Some("standard"));
         assert_eq!(value["command"], "aden-mcp");
         assert_eq!(value["args"], serde_json::json!(["--surface", "standard"]));
+    }
+
+    #[test]
+    fn antigravity_uses_current_shared_and_workspace_configs() {
+        for name in ["antigravity", "anti-gravity", "Antigravity"] {
+            assert_eq!(Platform::from_name(name), Some(Platform::Antigravity));
+        }
+        assert!(Platform::all().contains(&Platform::Antigravity));
+        assert_eq!(Platform::Antigravity.display_name(), "Antigravity");
+        assert_eq!(Platform::Antigravity.server_config_key(), "mcpServers");
+        assert_eq!(default_scope(&Platform::Antigravity), Scope::User);
+
+        let home = dirs::home_dir().expect("test host has a home directory");
+        let global = home.join(".gemini/config/mcp_config.json");
+        assert_eq!(
+            Platform::Antigravity.config_paths(),
+            vec![PathBuf::from(".agents/mcp_config.json"), global.clone()]
+        );
+        assert_eq!(
+            config_path_for_scope(&Platform::Antigravity, Scope::User),
+            global
+        );
+
+        let project = home.join("antigravity-project");
+        assert_eq!(
+            config_path_for_install(&Platform::Antigravity, Scope::Project, &project),
+            project.join(".agents/mcp_config.json")
+        );
+    }
+
+    #[test]
+    fn antigravity_launches_stdio_without_pinning_a_workspace_or_permissions() {
+        for binary in ["/usr/local/bin/aden", r"C:\Program Files\Aden\aden.exe"] {
+            assert_eq!(
+                Platform::Antigravity.aden_config(binary, "/install-time-project", None),
+                serde_json::json!({
+                    "command": binary,
+                    "args": ["mcp", "stdio"],
+                })
+            );
+        }
+        assert_eq!(
+            Platform::Antigravity.aden_config("aden", "/install-time-project", Some("essential")),
+            serde_json::json!({
+                "command": "aden",
+                "args": ["mcp", "stdio", "--surface", "essential"],
+            })
+        );
+        assert_eq!(
+            Platform::Antigravity.aden_config("aden-mcp", "/install-time-project", None),
+            serde_json::json!({ "command": "aden-mcp", "args": [] })
+        );
     }
 
     #[test]

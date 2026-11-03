@@ -56,6 +56,7 @@ jobs:
           cargo test --locked -p aden-cli
           --test low_friction_gauntlet
           --test cli_tests
+          --test mcp_antigravity
           --test regression_lock
           --test viewer_completeness
           --test viz_direction

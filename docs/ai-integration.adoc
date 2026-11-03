@@ -40,7 +40,7 @@ NOTE: `cargo install --path crates/aden-cli` now includes the stdio server. The 
 aden mcp install --platform <platform>
 ----
 
-Supported `<platform>` values: `amp`, `opencode`, `claude`, `cursor`, `codex`, `zed`, `windsurf`, `grok`.
+Supported `<platform>` values: `amp`, `antigravity`, `opencode`, `claude`, `cursor`, `codex`, `zed`, `windsurf`, `grok`.
 
 Useful flags:
 
@@ -78,6 +78,45 @@ model more irrelevant choices during normal planning or implementation work.
 Related: `aden mcp list [--preset <PRESET>|--name <NAME>]` (platforms + install status), `aden mcp uninstall --platform <platform>`, `aden mcp serve` (HTTP endpoint for CI/agent integration).
 
 NOTE: Installation is currently explicit and non-interactive. Aden does not silently edit client configuration on first launch. Run `aden mcp install --dry-run` to inspect the proposed changes before opting in. A future first-launch prompt should preserve that consent boundary.
+
+[[antigravity-mcp-setup]]
+=== Google Antigravity
+
+Register Aden with Antigravity's current shared MCP configuration:
+
+[source,bash]
+----
+aden mcp install --platform antigravity --dry-run
+aden mcp install --platform antigravity
+----
+
+The default user scope writes `mcpServers.aden` in
+`~/.gemini/config/mcp_config.json` (under `%USERPROFILE%` on Windows).
+For a workspace configuration, use `--scope project --project <PATH>`;
+this writes `<PATH>/.agents/mcp_config.json`.
+The entry launches the installed Aden executable with `mcp stdio` and uses
+the default essential tool surface. It adds no permission or auto-approval rules.
+See link:https://antigravity.google/docs/mcp[Antigravity's MCP documentation]
+for the current schema and its MCP manager. Refresh the server there after
+installation, then verify that Aden's tools appear.
+
+Install in one scope: Antigravity's
+link:https://antigravity.google/docs/settings[settings documentation] says
+same-name servers can retain the already-running configuration. Do not rely on
+a workspace entry overriding a global entry. Remove an entry with
+`aden mcp uninstall --platform antigravity`, using the same scope, project,
+and name flags as its installation.
+
+Compatibility notes (checked 2026-11-02):
+
+* Older `~/.gemini/antigravity/mcp_config.json` files are not migrated or edited.
+* Aden's installer accepts strict JSON. If an existing config contains comments,
+  trailing commas, or a UTF-8 BOM, it returns an error without changing that file.
+  Add the `aden` entry manually in Antigravity's MCP manager instead, using the
+  absolute Aden executable path and `args: ["mcp", "stdio"]`.
+* Antigravity's MCP Roots/workspace discovery behavior has not been verified.
+  If Aden cannot identify the repository, supply its absolute `path` in tool
+  calls. Installation does not pin `cwd` or a repository into the server entry.
 
 === Verify it works
 

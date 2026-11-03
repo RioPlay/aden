@@ -1129,7 +1129,7 @@ enum McpAction {
         #[arg(
             long,
             value_name = "PLATFORM",
-            help = "Target platform: amp, opencode, claude, cursor, codex, zed, windsurf, grok"
+            help = "Target platform: amp, antigravity, opencode, claude, cursor, codex, zed, windsurf, grok"
         )]
         platform: Option<String>,
         #[arg(long, value_name = "PATH", help = "Path to aden or aden-mcp binary")]
@@ -1139,7 +1139,7 @@ enum McpAction {
         #[arg(
             long,
             value_name = "SCOPE",
-            help = "Install scope: user (global) or project (local). Default: user for Claude Code, project otherwise"
+            help = "Install scope: user (global) or project (local). Default: user"
         )]
         scope: Option<String>,
         #[arg(
@@ -1178,7 +1178,7 @@ enum McpAction {
         #[arg(
             long,
             value_name = "SCOPE",
-            help = "Uninstall scope: user (global) or project (local). Default: user for Claude Code, project otherwise"
+            help = "Uninstall scope: user (global) or project (local). Default: user"
         )]
         scope: Option<String>,
         #[arg(
