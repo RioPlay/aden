@@ -49,8 +49,9 @@ All notable changes to aden are documented here. Format follows
 - Reject source-read byte limits that cannot fit the next UTF-8 character,
   preventing nonadvancing continuation loops.
 - Reject invalid `ready` targets before generation and root discovery.
-- Retry transient Windows session-log lock creation errors within the original
+- Retry transient Windows writer-lock creation errors within the original
   acquisition deadline; persistent permission failures still return errors.
+- Preserve bounded Cargo assertion output from both streams in CI failures.
 - Show an accessible recovery message and 2D export alternatives when WebGL
   cannot initialize, instead of leaving a blank 3D viewer.
 - Run source-read, freshness-coherence, path-isolation, and tracing regressions

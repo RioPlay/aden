@@ -116,13 +116,23 @@ impl FileLock {
         timeout: Duration,
         verbose: bool,
     ) -> io::Result<Self> {
+        Self::acquire_timeout_with(path, timeout, verbose, create_exclusive)
+    }
+
+    fn acquire_timeout_with(
+        path: impl AsRef<Path>,
+        timeout: Duration,
+        verbose: bool,
+        mut create: impl FnMut(&Path) -> io::Result<String>,
+    ) -> io::Result<Self> {
         let path = path.as_ref().to_path_buf();
         let started = Instant::now();
         let mut last_note = started;
+        let mut transient_denials = 0;
         const NOTE_EVERY: Duration = Duration::from_secs(5);
 
         loop {
-            match create_exclusive(&path) {
+            match create(&path) {
                 Ok(token) => return Ok(FileLock { path, token }),
                 Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
                     let reclaimed = reclaim_if_stale(&path)?;
@@ -152,6 +162,21 @@ impl FileLock {
                     if !reclaimed {
                         sleep(POLL.min(timeout.saturating_sub(started.elapsed())));
                     }
+                }
+                // A Windows hard-link contender can observe error 5 while the
+                // target is being deleted, then find no target to normalize as
+                // AlreadyExists. Retry briefly without treating the denial as
+                // ownership or resetting the original acquisition deadline.
+                // Permanent permission errors still fail after at most three
+                // short retries; other errors propagate immediately.
+                Err(e)
+                    if cfg!(windows)
+                        && e.raw_os_error() == Some(5)
+                        && transient_denials < 3
+                        && started.elapsed() < timeout =>
+                {
+                    transient_denials += 1;
+                    sleep(POLL.min(timeout.saturating_sub(started.elapsed())));
                 }
                 Err(e) => return Err(e),
             }
@@ -344,6 +369,46 @@ mod tests {
         p.push(format!("aden-lock-test-{}-{}", std::process::id(), name));
         let _ = fs::remove_file(&p);
         p
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn transient_windows_denial_recovers_with_real_atomic_acquisition() {
+        let path = lock_path("transient-denial");
+        let mut attempts = 0;
+        let guard = FileLock::acquire_timeout_with(&path, Duration::from_secs(2), false, |path| {
+            attempts += 1;
+            if attempts <= 2 {
+                Err(io::Error::from_raw_os_error(5))
+            } else {
+                create_exclusive(path)
+            }
+        })
+        .unwrap();
+        assert_eq!(attempts, 3);
+        assert!(matches!(inspect_lock(&path), LockState::Active(_)));
+        drop(guard);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn persistent_denials_and_unrelated_errors_remain_bounded_failures() {
+        for (code, timeout, expected_attempts) in [
+            (5, Duration::from_secs(2), if cfg!(windows) { 4 } else { 1 }),
+            (5, Duration::ZERO, 1),
+            (2, Duration::from_secs(2), 1),
+        ] {
+            let path = lock_path(&format!("denial-{code}-{}", timeout.as_millis()));
+            let mut attempts = 0;
+            let error = FileLock::acquire_timeout_with(&path, timeout, false, |_| {
+                attempts += 1;
+                Err(io::Error::from_raw_os_error(code))
+            })
+            .unwrap_err();
+            assert_eq!(error.raw_os_error(), Some(code));
+            assert_eq!(attempts, expected_attempts);
+            assert!(!path.exists());
+        }
     }
 
     #[test]

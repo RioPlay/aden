@@ -159,6 +159,30 @@ pub fn run_project_tests(path: &Path) -> Result<(), Box<dyn std::error::Error>> 
     run_project_tests_with_output(path, false)
 }
 
+/// Keep assertion diagnostics from both streams without flooding CI envelopes.
+fn test_failure_output(stdout: &[u8], stderr: &[u8]) -> String {
+    let mut result = String::new();
+    for (label, bytes) in [("stdout", stdout), ("stderr", stderr)] {
+        if bytes.is_empty() {
+            continue;
+        }
+        let text = String::from_utf8_lossy(bytes);
+        let mut start = text.len().saturating_sub(8192);
+        while !text.is_char_boundary(start) {
+            start += 1;
+        }
+        result.push_str(label);
+        result.push_str(if start > 0 {
+            " (earlier output omitted):\n"
+        } else {
+            ":\n"
+        });
+        result.push_str(&text[start..]);
+        result.push('\n');
+    }
+    result
+}
+
 /// CI's JSON envelope owns stdout, so its nested test runner must be silent.
 fn run_project_tests_with_output(
     path: &Path,
@@ -193,7 +217,7 @@ fn run_project_tests_with_output(
                 Ok(o) => {
                     results.push(FrameworkResult::Fail(
                         "cargo test".into(),
-                        String::from_utf8_lossy(&o.stderr).into_owned(),
+                        test_failure_output(&o.stdout, &o.stderr),
                     ));
                 }
                 Err(e) => {
@@ -1054,6 +1078,24 @@ fn cargo_audit_failure_message(stderr: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cargo_failure_preserves_assertion_stdout_and_bounds_both_streams() {
+        let stdout = format!(
+            "early output{}\nassertion failed: writer exclusion",
+            "α".repeat(6000)
+        );
+        let stderr = format!("{}\nerror: test failed", "β".repeat(6000));
+        let message = test_failure_output(stdout.as_bytes(), stderr.as_bytes());
+        assert!(message.contains("assertion failed: writer exclusion"));
+        assert!(message.contains("error: test failed"));
+        assert!(message.contains("stdout (earlier output omitted):"));
+        assert!(message.contains("stderr (earlier output omitted):"));
+        assert!(!message.contains("early output"));
+        assert!(!message.contains('�'));
+        assert!(message.len() < 16 * 1024 + 100);
+        assert_eq!(test_failure_output(b"", b"failure"), "stderr:\nfailure\n");
+    }
 
     #[test]
     fn audit_errors_distinguish_missing_tool_from_audit_failures() {
