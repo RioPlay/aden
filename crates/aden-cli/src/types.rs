@@ -4,8 +4,8 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-/// Logic version of the gen emission pipeline. The gen cache skips files by
-/// mtime, so a change to WHAT gen emits (parser edge macros, linker edge
+/// Logic version of the gen emission pipeline. The gen cache reuses files by
+/// source digest, so a change to WHAT gen emits (parser edge macros, linker edge
 /// types) would otherwise never reach symbols whose source did not change.
 /// Bump this whenever emission logic changes; a stale cache is discarded
 /// wholesale and every file reparses once. Same invalidation pattern as
@@ -46,7 +46,10 @@ use std::path::PathBuf;
 ///     emits the bare field name for non-self receivers.
 /// 12: Rust local closure invocations no longer link to unrelated global
 ///     functions that happen to share the closure binding's name.
-pub const GEN_LOGIC_VERSION: u32 = 14;
+/// 15: Incremental reuse binds to parsed source bytes instead of coarse mtimes.
+///     Rebuild pre-digest stores once so a previously skipped rewrite cannot
+///     retain stale symbols behind an apparently current freshness manifest.
+pub const GEN_LOGIC_VERSION: u32 = 15;
 
 /// Incremental generation cache: maps contract file path → metadata.
 #[derive(Default, Serialize, Deserialize)]
@@ -70,6 +73,10 @@ pub struct GenCache {
 pub struct GenCacheEntry {
     pub source_mtime: u64,
     pub source_path: String,
+    /// Change-detection digest of the exact bytes passed to the parser. Empty
+    /// for legacy entries, which must be reparsed rather than mtime-skipped.
+    #[serde(default)]
+    pub source_digest: String,
     /// Anchors this source file contributed to the store on its last index.
     /// Used to prune deleted symbols: on re-index, any previously-recorded
     /// anchor absent from the fresh parse is stale and gets removed. Defaults

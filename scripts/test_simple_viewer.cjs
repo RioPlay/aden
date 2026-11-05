@@ -39,6 +39,52 @@ test('indexes complete directed adjacency, isolated nodes and dangling edges', (
   assert.equal(vm.runInContext("nameOf({anchor:'aden://module/demo/src#'})",context),'src');
 });
 
+test('stable search buckets preserve legacy order, ties and full hit counts with one name lookup per node', () => {
+  const ctx = vm.createContext({});
+  vm.runInContext(fs.readFileSync(path.join(__dirname,'../crates/aden-cli/assets/viewer-search.js'),'utf8'),ctx);
+  const result = JSON.parse(vm.runInContext(`
+    const nodes = Array.from({length:10000},(_,i)=>({id:i,
+      label:['render','render_all','pre_render','other'][i%4],
+      anchor:'aden://module/render/file#'+['render','render_all','pre_render','other'][i%4],deg:i%17}));
+    let checks=0;
+    for (const q of ['render','other','missing',nodes[0].anchor,'pre_']) {
+      const compare=(a,b)=>AdenSearch.rank(a,a.label,q)-AdenSearch.rank(b,b.label,q)||b.deg-a.deg;
+      const legacy=nodes.filter(n=>AdenSearch.text(n,n.label).includes(q));
+      let names=0;
+      const actual=AdenSearch.select(nodes,n=>{names++;return n.label;},q);
+      if (names!==nodes.length) throw Error('repeated name derivation');
+      const expected=[...legacy].sort((a,b)=>AdenSearch.rank(a,a.label,q)-AdenSearch.rank(b,b.label,q));
+      if (JSON.stringify(actual.map(n=>n.id))!==JSON.stringify(expected.map(n=>n.id))) throw Error('full order changed');
+      for (const limit of [1,6,8,14]) {
+        const accept=n=>n.id%3!==0;
+        const expectedTop=legacy.filter(accept).sort(compare).slice(0,limit);
+        const actualTop=AdenSearch.select(nodes,n=>n.label,q,limit,(a,b)=>b.deg-a.deg,accept);
+        if (JSON.stringify(actualTop.map(n=>n.id))!==JSON.stringify(expectedTop.map(n=>n.id))) throw Error('top order changed');
+        checks++;
+      }
+    }
+    JSON.stringify({checks});`,ctx));
+  assert.equal(result.checks,20);
+});
+
+test('lazy adjacency preserves legacy stable order and avoids re-sorting filtered relationships', () => {
+  const graph = index({nodes:[{id:'root'},{id:'a'},{id:'b'}],edges:[
+    {from:'root',to:'b',type:'Uses'},{from:'root',to:'a',type:'Calls'},
+    {from:'a',to:'root',type:'Calls'},{from:'root',to:'root',type:'Calls'},
+    {from:'root',to:'b',type:'Calls'},{from:'root',to:'b',type:'Calls'}]});
+  let lookups=0;
+  const ctx=vm.createContext({graph,nameOf:n=>{lookups++;return n.id;}});
+  vm.runInContext(html.slice(html.indexOf('const orderedRelations'),html.indexOf('function filterRelations()')),ctx);
+  const first=vm.runInContext("adjacencyFor('root')",ctx);
+  const initialLookups=lookups;
+  const second=vm.runInContext("adjacencyFor('root')",ctx);
+  assert.equal(first,second);
+  assert.equal(lookups,initialLookups);
+  assert.deepEqual(Array.from(first.outgoing,e=>e.key),[1,4,5,3,0]);
+  assert.deepEqual(Array.from(first.incoming,e=>e.key),[2,3]);
+  assert.deepEqual(Array.from(graph.outgoing.get('root'),e=>e.key),[0,1,3,4,5]);
+});
+
 test('community members remain navigable with correctly scoped edges', () => {
   const graph = index({nodes:[{id:'c1'},{id:'c2'}],drill:{
     c1:{nodes:[{id:'a'},{id:'b'}],edges:[{from:'a',to:'b',type:'Calls'}]},

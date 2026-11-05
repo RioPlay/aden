@@ -937,6 +937,49 @@ impl Index {
         results
     }
 
+    /// Resolve an exact symbol, or—only when no exact match exists—a symbol that
+    /// preserves the requested name as an underscore-delimited prefix. The single
+    /// pass avoids repeating the index scan after an exact miss. Extension matching
+    /// is intentionally narrower than fuzzy matching: it supports additive renames
+    /// such as `run_aden_command` -> `run_aden_command_with_timeout`, but never
+    /// spelling corrections or plural substitutions.
+    pub fn exact_or_extension_symbol_matches(&self, symbol: &str) -> Vec<SearchResult> {
+        let lower = symbol.to_lowercase();
+        let qualified = lower.contains(['.', ':']);
+        let requested = symbol
+            .rsplit(['.', ':'])
+            .find(|part| !part.is_empty())
+            .unwrap_or(symbol)
+            .to_lowercase();
+        let prefix = format!("{requested}_");
+        let mut exact = Vec::new();
+        let mut extensions = Vec::new();
+        for document in &self.documents {
+            let Some((_, fragment)) = document.anchor.split_once('#') else {
+                continue;
+            };
+            let fragment = fragment.to_lowercase();
+            let final_component = fragment
+                .rsplit(['.', ':'])
+                .find(|part| !part.is_empty())
+                .unwrap_or(&fragment);
+            let result = SearchResult {
+                anchor: document.anchor.clone(),
+                source_path: document.source_path.clone(),
+                score: 1.0,
+                snippet: String::new(),
+            };
+            if fragment == lower || (!qualified && final_component == requested) {
+                exact.push(result);
+            } else if !qualified && final_component.starts_with(&prefix) {
+                extensions.push(result);
+            }
+        }
+        let mut results = if exact.is_empty() { extensions } else { exact };
+        results.sort_by(|a, b| a.anchor.cmp(&b.anchor));
+        results
+    }
+
     /// Indexed token count for an anchor's document (0 if unknown). A proxy for
     /// substantiveness: a tiny count means a thin stub (abstract method, shim),
     /// which `ask` routing should pass over in favour of the symbol that carries
@@ -2292,6 +2335,71 @@ mod tests {
             1
         );
         assert!(index.exact_symbol_matches("dispatch_request").is_empty());
+    }
+
+    #[test]
+    fn exact_or_extension_symbols_are_safe_and_exact_first() {
+        let index = Index {
+            documents: [
+                "run_aden_command_with_timeout",
+                "run_aden_commands",
+                "resovle_anchor",
+            ]
+            .into_iter()
+            .map(|name| IndexedDocument {
+                anchor: format!("aden://module/demo/src/lib.rs#{name}"),
+                source_path: PathBuf::from("src/lib.rs"),
+                text: String::new(),
+                token_count: 0,
+            })
+            .collect(),
+            ..Index::default()
+        };
+
+        let matches = index.exact_or_extension_symbol_matches("run_aden_command");
+        assert_eq!(matches.len(), 1);
+        assert!(
+            matches[0]
+                .anchor
+                .ends_with("#run_aden_command_with_timeout")
+        );
+        assert!(
+            index
+                .exact_or_extension_symbol_matches("resolve_anchor")
+                .is_empty()
+        );
+
+        let exact_first = Index {
+            documents: ["run_aden_command", "run_aden_command_with_timeout"]
+                .into_iter()
+                .map(|name| IndexedDocument {
+                    anchor: format!("aden://module/demo/src/lib.rs#{name}"),
+                    source_path: PathBuf::from("src/lib.rs"),
+                    text: String::new(),
+                    token_count: 0,
+                })
+                .collect(),
+            ..Index::default()
+        };
+        let matches = exact_first.exact_or_extension_symbol_matches("run_aden_command");
+        assert_eq!(matches.len(), 1);
+        assert!(matches[0].anchor.ends_with("#run_aden_command"));
+
+        let qualified = Index {
+            documents: ["res.json", "exports.json"]
+                .into_iter()
+                .map(|name| IndexedDocument {
+                    anchor: format!("aden://module/demo/response.js#{name}"),
+                    source_path: PathBuf::from("response.js"),
+                    text: String::new(),
+                    token_count: 0,
+                })
+                .collect(),
+            ..Index::default()
+        };
+        let matches = qualified.exact_or_extension_symbol_matches("res.json");
+        assert_eq!(matches.len(), 1);
+        assert!(matches[0].anchor.ends_with("#res.json"));
     }
 
     #[test]

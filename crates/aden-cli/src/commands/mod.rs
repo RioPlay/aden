@@ -25,6 +25,7 @@ pub mod outcome;
 pub mod output_profile;
 pub mod overlay;
 pub mod query;
+pub mod read;
 pub mod ready;
 pub mod review;
 
@@ -70,6 +71,7 @@ pub use output_profile::OutputProfile;
 #[cfg(feature = "watch")]
 pub use query::cmd_watch;
 pub use query::{QueryOptions, cmd_ask, cmd_asm, cmd_check, cmd_query, cmd_query_adq};
+pub use read::cmd_read;
 pub use ready::cmd_ready;
 pub use review::{cmd_review, cmd_review_since};
 pub use scope::{cmd_scope, cmd_scope_agents};

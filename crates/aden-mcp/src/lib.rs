@@ -226,28 +226,13 @@ impl AdenMcpServer {
 /// Guidance surfaced to the LLM at session start. Frames Aden as a
 /// language-agnostic context compiler and gives the canonical workflow so the
 /// model uses the tools correctly on *any* project (not just Rust).
-const SERVER_INSTRUCTIONS: &str = "\
-Use Aden for bounded, structure-aware code navigation. Read tools auto-refresh; \
-omit `gen`, budgets, and tuning arguments in normal calls.\n\n\
-Choose by task: known unique symbol -> `asm({\"from\":\"helper\"})` for bounded \
-context or `query({\"impact\":\"helper\"})` for downstream reach (replace helper). \
-Ambiguous name -> `locate`, then choose a returned anchor. Unknown implementation \
--> `grep`; need orientation -> `tree` (scope `path` if truncated). Use `understand` \
-for definition and relationships. Before editing, inspect source and impact.\n\n\
-Correctness rules:\n\
-- `ask` handles one bounded question about a named symbol, file, subsystem, or \
-relationship. Broad audits, exhaustive lists, rankings, and remaining-work \
-questions return `needs_narrowing`; do not paraphrase around that guard.\n\
-- Graph resolution is heuristic. No result does not prove absence; retry with \
-`grep` and inspect alternatives/source ranges.\n\
-- Context is bounded, not complete source. Treat ambiguous routing, stale \
-receipts, truncation, and incomplete results as reasons to refine discovery.\n\
-- Use native Git/filesystem/build/test tools for history, inventory, and external \
-verification. Never infer repository-wide completeness from one Aden result.\n\n\
-`path` defaults to the client workspace; set it only to disambiguate multiple \
-repositories. At most two distinct calls run concurrently; retry `server_busy` \
-after one completes. The Essential registry is intentionally minimal. Set \
-ADEN_MCP_SURFACE=standard or full only when those extra tools are wanted.";
+const SERVER_INSTRUCTIONS: &str = r#"Use Aden for bounded repository evidence. Known file/range -> read for literal source and a change-detection hash, without indexing. Graph tools auto-refresh; omit gen in normal calls.
+
+Known unique symbol -> understand for source and relationships, asm({"from":"helper"}) for bounded context, or query({"impact":"helper"}) for outgoing dependencies (replace helper). Ambiguous name -> locate and choose an anchor. Unknown implementation -> grep. Orientation -> tree. Inspect source and incoming references before edits.
+
+ask is optional heuristic discovery for one bounded conceptual question. Broad audits and exhaustive questions return needs_narrowing; do not paraphrase around that guard. Graph relationships may be inferred. Missing results do not prove absence. Check ambiguity, coverage, source verification and truncation; refine with grep/read as needed. A file read makes no graph-freshness claim. Use native Git/build/test tools for history and external verification.
+
+path defaults to the client workspace. At most two distinct calls run concurrently; retry server_busy after one completes. ADEN_MCP_SURFACE=standard or full enables additional tools."#;
 
 // ── Tool declaration ──────────────────────────────────────────
 
@@ -266,6 +251,7 @@ enum Tier {
 /// ESSENTIAL surface (the default): the find -> comprehend -> blast-radius loop.
 /// The smallest set that delivers aden's core value. Everything else is opt-in.
 const ESSENTIAL_TOOLS: &[&str] = &[
+    "read",
     "tree",
     "grep",
     "locate",
@@ -281,6 +267,16 @@ const ESSENTIAL_TOOLS: &[&str] = &[
 /// for the normal discovery -> comprehension -> traversal loop.
 fn essential_arg_visible(tool: &str, arg: &str) -> bool {
     match tool {
+        "read" => matches!(
+            arg,
+            "file"
+                | "path"
+                | "start_line"
+                | "end_line"
+                | "max_bytes"
+                | "expected_hash"
+                | "start_byte"
+        ),
         "tree" => matches!(arg, "path" | "symbols"),
         "grep" => matches!(arg, "pattern" | "path" | "regex"),
         "locate" => matches!(arg, "symbol" | "caller_of" | "path"),
@@ -288,9 +284,9 @@ fn essential_arg_visible(tool: &str, arg: &str) -> bool {
         "ask" => matches!(arg, "question" | "path" | "from"),
         "query" => matches!(
             arg,
-            "from" | "backlinks" | "impact" | "path" | "max_results"
+            "from" | "backlinks" | "impact" | "path" | "edge_type" | "depth" | "max_results"
         ),
-        "asm" => matches!(arg, "from" | "path"),
+        "asm" => matches!(arg, "from" | "path" | "depth" | "edge_types" | "budget"),
         _ => true,
     }
 }
@@ -330,11 +326,12 @@ fn tool_enabled(name: &str, surface: Tier) -> bool {
 /// independent of the declaration table and surface tiers.
 fn tool_display_rank(name: &str) -> usize {
     match name {
-        "tree" => 0,
-        "grep" => 1,
-        "locate" => 2,
-        "understand" => 3,
-        "ask" => 4,
+        "read" => 0,
+        "tree" => 1,
+        "grep" => 2,
+        "locate" => 3,
+        "understand" => 4,
+        "ask" => 7,
         "query" => 5,
         "asm" => 6,
         "impact-diff" => 10,
@@ -405,6 +402,7 @@ struct ToolSpec {
 /// defaults to the current project directory, so it is never required.
 fn required_args(tool: &str) -> &'static [&'static str] {
     match tool {
+        "read" => &["file"],
         "ask" => &["question"],
         "search" => &["query"],
         "grep" => &["pattern"],
@@ -435,6 +433,8 @@ fn arg_default(tool: &str, arg: &str) -> Option<serde_json::Value> {
         // honest: omitting it still uses the server project, but it is not a
         // CLI `default` promise clients can display.
         (tool, "path") if tool != "gen" => Some(serde_json::json!(".")),
+        ("read", "start_line") => Some(serde_json::json!(1)),
+        ("read", "max_bytes") => Some(serde_json::json!(8192)),
         ("ask", "budget") => Some(serde_json::json!(4096)),
         // Agents benefit from the bounded, token-lean outline by default;
         // terminal users retain the CLI's graphical default.
@@ -605,6 +605,7 @@ fn is_positional(tool: &str, arg: &str) -> bool {
         // path is positional for every command (diagnose was migrated from a
         // `--path` flag to a positional DIR for consistency).
         (_, "path") => true,
+        ("read", "file") => true,
         // ask:   aden ask <QUESTION> [DIR]
         ("ask", "question") => true,
         // search: aden search <QUERY> [DIR]
@@ -930,6 +931,14 @@ fn tool_from_spec_for_surface(spec: &ToolSpec, surface: Tier) -> Tool {
         }
         let mut p = serde_json::Map::new();
         p.insert("type".to_string(), serde_json::json!(ty));
+        if matches!(
+            (spec.name, arg_name),
+            ("query", "depth" | "max_results") | ("asm", "depth")
+        ) {
+            // Match the existing unsigned CLI/runtime contract; zero means
+            // seed-only traversal or an explicitly empty result cap.
+            p.insert("minimum".to_string(), serde_json::json!(0));
+        }
         // Constrain enumerable args (e.g. federation/mcp `action`) so a client
         // can validate the value and an LLM sees the valid set, instead of
         // discovering a bad verb via an opaque CLI error.
@@ -1077,9 +1086,24 @@ static TOOLS: &[ToolSpec] = &[
     //    selects the level; hidden tools require explicit surface opt-in. The slice
     //    is kept grouped Essential-first below purely for readability. ──
     ToolSpec {
+        name: "read",
+        title: "Read an explicit source range",
+        description: "Read scoped UTF-8 source without indexing. path is the exact boundary; project exclusions apply. Inclusive 1-based lines; defaults: 200 lines, 8192 bytes; file cap 16 MiB. Returns text, ranges and change hash. Pass continuation as next read arguments. No graph-freshness claim.",
+        args: &[
+            ("file", "string"),
+            ("path", "string"),
+            ("start_line", "integer"),
+            ("end_line", "integer"),
+            ("max_bytes", "integer"),
+            ("expected_hash", "string"),
+            ("start_byte", "integer"),
+        ],
+        effect: Effect::Read,
+    },
+    ToolSpec {
         name: "tree",
         title: "Outline the codebase",
-        description: "Bounded codebase map. MCP defaults to symbols=true. Large scopes return a file map (path + symbol counts); pass a subtree for names and line ranges. Set symbols=false for a human-style directory tree.",
+        description: "Bounded codebase map; symbols=true by default. Large scopes return files and symbol counts; narrow path for names and line ranges. symbols=false returns a directory tree.",
         args: &[
             ("path", "string"),
             ("symbols", "boolean"),
@@ -1091,7 +1115,7 @@ static TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "grep",
         title: "Search code (structure-aware)",
-        description: "Structure-aware content search. Each hit names its enclosing symbol, avoiding whole-file reads. Start here for independent evidence; pass a hit to locate/understand/query. Auto-refreshes; path defaults to the workspace.",
+        description: "Literal/regex search with enclosing symbol anchors. Follow hits with locate, understand or query. Auto-refreshes.",
         args: &[
             ("pattern", "string"),
             ("path", "string"),
@@ -1105,7 +1129,7 @@ static TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "understand",
         title: "Understand a symbol",
-        description: "Definition, verified source excerpt, incoming references, outgoing dependencies, and bounded context. MCP defaults to the versioned compact-v2 profile; set profile=full or verbose=true for the established full envelope. Compact responses retain currentness, graph revision, and relationship directions. Use locate first for ambiguous names. Missing dynamic/local/test symbols are not proof of absence; retry with grep. Check source completeness before edits.",
+        description: "Definition, verified source, incoming references and outgoing dependencies. Defaults to compact-v2. Resolve ambiguity with locate; missing dynamic/local/test symbols are not proof of absence. Check source completeness before edits.",
         args: &[
             ("symbol", "string"),
             ("path", "string"),
@@ -1119,7 +1143,7 @@ static TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "ask",
         title: "Ask one bounded conceptual question (heuristic)",
-        description: "Ask one bounded question about a named symbol, file, subsystem, or relationship. Repo-wide audits, exhaustive lists, rankings, and remaining-work questions return needs_narrowing instead of guessing. Inspect routing_confidence; verify ambiguous results with grep/locate. Omit budget normally.",
+        description: "Optional heuristic discovery for one bounded question about a named target. Broad questions return needs_narrowing. Check routing_confidence; verify selected anchors with grep/locate.",
         // `path` is a CLI positional ([DIR], second after QUESTION) — it was
         // missing here historically, not unsupported. Declaration order matters:
         // positionals are emitted in spec order, so question must precede path.
@@ -1141,7 +1165,7 @@ static TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "locate",
         title: "Locate a symbol",
-        description: "Resolve a symbol or its callers to canonical anchors with ranked alternatives. Use before understand/query for short or repeated names. Full-text fallbacks are weaker; retry missing nested/local/test symbols with grep.",
+        description: "Resolve a symbol or caller to canonical anchors. Ambiguity returns alternatives; full-text fallbacks are weaker. Retry missing symbols with grep.",
         args: &[
             ("symbol", "string"),
             ("caller_of", "string"),
@@ -1155,7 +1179,7 @@ static TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "asm",
         title: "Assemble context",
-        description: "Return a bounded, token-dense graph neighborhood for a canonical anchor or unique natural symbol name instead of whole files. Ambiguous names return ranked candidates without guessing. Auto-refreshes; omit budget normally.",
+        description: "Context from an explicit anchor or unique symbol. depth bounds outgoing hops; edge_types is comma-separated. budget bounds strict MCP output by default. Ambiguity returns candidates.",
         args: &[
             ("from", "string"),
             ("path", "string"),
@@ -1178,7 +1202,7 @@ static TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "query",
         title: "Query the graph",
-        description: "Traverse from a canonical anchor or unique symbol name. backlinks follows incoming references; impact follows outgoing dependencies. Ambiguous names return candidates without guessing. Returns bounded JSON and auto-refreshes.",
+        description: "Choose one: from follows outgoing edges; backlinks incoming references; impact outgoing dependencies. depth bounds hops; edge_type filters; max_results caps items including seed. Ambiguity returns candidates.",
         args: &[
             ("path", "string"),
             ("from", "string"),
@@ -2336,6 +2360,10 @@ pub fn agent_response_for_mcp(tool: &str, raw: &str) -> String {
     let parsed = serde_json::from_str::<serde_json::Value>(&cleaned).ok();
     let already_versioned = parsed.as_ref().is_some_and(|value| {
         value.get("context_receipt").is_some()
+            || (tool == "read"
+                && value["schema_version"] == 1
+                && value["observation"] == "file_bytes_read"
+                && value["source"]["source_hash"].is_string())
             || (matches!(tool, "ask" | "asm")
                 && value
                     .get("schema_version")
@@ -3494,13 +3522,14 @@ mod tests {
         assert_eq!(
             essential,
             [
+                "read",
                 "tree",
                 "grep",
                 "locate",
                 "understand",
-                "ask",
                 "query",
-                "asm"
+                "asm",
+                "ask"
             ],
             "Essential presentation order drifted; got: {essential:?}"
         );
@@ -3534,13 +3563,15 @@ mod tests {
         assert!(ask.description.contains("needs_narrowing"));
         assert!(understand.description.contains("not proof of absence"));
         for required in [
-            "return `needs_narrowing`",
-            "No result does not prove absence",
-            "native Git/filesystem/build/test tools",
-            "Context is bounded, not complete source",
-            "`path` defaults to the client workspace",
+            "return needs_narrowing",
+            "Missing results do not prove absence",
+            "native Git/build/test tools",
+            "Check ambiguity, coverage, source verification and truncation",
+            "path defaults to the client workspace",
             "At most two distinct calls run concurrently",
-            "omit `gen`, budgets, and tuning arguments",
+            "omit gen in normal calls",
+            "ask is optional heuristic discovery",
+            "without indexing",
         ] {
             assert!(
                 SERVER_INSTRUCTIONS.contains(required),
@@ -3990,6 +4021,7 @@ mod tests {
 
         let args = |tool: &str| -> serde_json::Map<String, serde_json::Value> {
             let value = match tool {
+                "read" => serde_json::json!({"file":"src/lib.rs"}),
                 "grep" => serde_json::json!({"pattern":"matrix_symbol","require_fresh":true}),
                 "understand" => serde_json::json!({"symbol":"matrix_symbol","require_fresh":true}),
                 "ask" => serde_json::json!({"question":"matrix_symbol","require_fresh":true}),
@@ -4019,11 +4051,16 @@ mod tests {
                 // argv drift (for example injecting unsupported `-j`) instead
                 // of accepting a structured command_failed envelope as parity.
                 assert_ne!(tool, "understand", "understand transport failed: {value}");
+                assert_ne!(tool, "read", "read transport failed: {value}");
                 assert_eq!(error["safe_to_retry"], true, "{tool}: {value}");
                 assert!(
                     error["recovery"].as_str().is_some_and(|v| !v.is_empty()),
                     "{tool}: {value}"
                 );
+            } else if tool == "read" {
+                assert_eq!(value["observation"], "file_bytes_read", "{value}");
+                assert!(value["source"]["source_hash"].is_string(), "{value}");
+                assert!(value.get("context_receipt").is_none(), "{value}");
             } else {
                 assert_eq!(
                     value["context_receipt"]["schema_version"], 1,
@@ -4471,6 +4508,44 @@ mod tests {
         let argv = prepare_cli_args_for_mcp("query", &args).unwrap();
         let flag = argv.iter().position(|arg| arg == "--max-results").unwrap();
         assert_eq!(argv.get(flag + 1).map(String::as_str), Some("7"));
+    }
+
+    #[test]
+    fn essential_traversal_controls_are_explicit_and_forwarded_unchanged() {
+        for (name, supplied, expected) in [
+            (
+                "query",
+                serde_json::json!({"backlinks":"helper", "edge_type":"Calls", "depth":1, "max_results":2}),
+                vec![("-e", "Calls"), ("-d", "1"), ("--max-results", "2")],
+            ),
+            (
+                "asm",
+                serde_json::json!({"from":"helper", "edge_types":"Calls,Uses", "depth":0, "budget":2048}),
+                vec![("-e", "Calls,Uses"), ("-d", "0"), ("-b", "2048")],
+            ),
+        ] {
+            let spec = TOOLS.iter().find(|tool| tool.name == name).unwrap();
+            let schema = tool_from_spec_for_surface(spec, Tier::Essential).input_schema;
+            let args = supplied.as_object().unwrap();
+            for key in args.keys() {
+                assert!(schema["properties"].get(key).is_some(), "{name}.{key}");
+            }
+            assert_eq!(schema["properties"]["depth"]["minimum"], 0);
+            assert_eq!(
+                schema["properties"]["depth"]["default"],
+                if name == "query" { 3 } else { 2 }
+            );
+            assert!(validate_args(name, args).is_ok());
+            let argv = prepare_cli_args_for_mcp(name, args).unwrap();
+            for (flag, value) in expected {
+                let position = argv.iter().position(|arg| arg == flag).unwrap();
+                assert_eq!(argv.get(position + 1).map(String::as_str), Some(value));
+            }
+            let invalid = serde_json::json!({"depth":-1});
+            assert!(validate_args(name, invalid.as_object().unwrap()).is_err());
+        }
+        let invalid = serde_json::json!({"from":"helper", "max_results":-1});
+        assert!(validate_args("query", invalid.as_object().unwrap()).is_err());
     }
 
     #[test]

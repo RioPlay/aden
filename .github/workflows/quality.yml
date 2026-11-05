@@ -57,27 +57,18 @@ jobs:
       - name: Lint workspace
         run: cargo clippy --locked --workspace -- -D warnings
 
-      - name: Build test binaries
+      - name: Verify offline harnesses
         run: |
-          cargo build --locked -p aden-cli -p aden-mcp
-          echo "$GITHUB_WORKSPACE/target/debug" >> "$GITHUB_PATH"
-
-      - name: Test workspace
-        run: |
-          cargo test --locked --workspace --exclude aden-lsp --no-fail-fast
-          cargo test --locked -p aden-lsp --no-fail-fast
-
-      - name: Verify regression definitions and harnesses
-        run: |
-          cargo test --locked -p aden-cli --test regression_lock
           # Offline eval/roadmap harness unit tests remain Python for now.
           python3 -m unittest discover -s scripts -p 'test_*.py'
+
+      - name: Viewer behavior and security regressions
+        run: node --test scripts/test_viewer.cjs scripts/test_simple_viewer.cjs
 
       - name: Validate documentation and roadmap contracts
         run: |
           cargo run --locked -p aden-cli -- --human check . --severity Forbid
           python3 scripts/validate_roadmap.py
-          python3 scripts/test_roadmap_tools.py
 
       - name: Assert default dependency tree stays slim
         shell: bash

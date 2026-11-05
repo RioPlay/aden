@@ -1,0 +1,90 @@
+[[cold-generation-performance]]
+= Cold generation performance
+
+The benchmark measures elapsed time from an empty index to the first correct
+bounded graph answer. Manual mode runs `gen` with its normal diagnostics, then a
+query. Automatic mode runs the same query against an empty store, exercising the
+silent generation path used by MCP. It measures the CLI, without MCP transport.
+
+[source,powershell]
+----
+cargo build --release -p aden-cli --no-default-features --features view --bin aden --example cold_gen_evidence
+python scripts/cold_gen_bench.py --binary before=path/to/baseline/aden.exe --binary after=target/release/aden.exe --evidence target/release/examples/cold_gen_evidence.exe --repetitions 3 --output cold-comparison.json
+----
+
+Use release binaries with matching features. Each attempt gets a new
+`ADEN_DATA_DIR`. The repository fixture is a fixed local clone with Git history
+and copies of tracked and non-ignored untracked working files. The scaling
+fixture defaults to 256 files with 24 functions each, plus the query seed and
+its callee. The harness does not remove or reset a live index or checkout.
+
+Arm order alternates from a seeded starting order within each fixture and mode.
+Reports retain failures and attempt times. Successful medians exclude canonical
+validation; validation itself is timed separately. On Windows the memory value
+is the OS-recorded peak working set of the main CLI process, or the maximum of
+the generation and query process peaks in manual mode. It excludes Git and the
+validator. A cold index does not imply a cold OS file cache.
+
+The first answer must have a current source receipt and the requested seed and
+edge type. The scaling fixture must return its exact two-node neighborhood.
+The untimed validator compares canonical documents, typed edges, and generation
+cache data. It preserves source hashes, metadata presence, and list order. Its
+only value normalization is the generated `last-verified` clock value on
+documents with the parser's source-hash and node-type attributes. Raw snapshot
+comparison remains available through `cold_gen_evidence --compare A B`.
+
+== Stage diagnostics
+
+Set `ADEN_GEN_TRACE=1` to emit a compact JSON diagnostic on stderr after a
+completed generation. It reports counts and elapsed wall time by stage, without
+source text or paths. Stage intervals are exclusive; `total_us` includes them.
+The parallel parse stage reports wall time, not summed worker CPU time. Errors,
+coalesced refreshes, no-files exits, and proposals omit the report. A read that
+retries generation may emit one report for each completed generation.
+
+Run the benchmark with `--trace` separately from latency comparisons. It also
+enables read tracing and counts Git root lookups through temporary Trace2 logs.
+Those logs are not included in the report. Tracing adds work, and the diagnostic
+totals must not be pooled with untraced timings. Publication counters indicate
+the stages reached; independent query and snapshot validation determines success.
+
+== Release comparison
+
+The installed release baseline (`dcdc5a500c15`), instrumentation-only baseline
+(`5e6c6b849b50`), and optimized candidate (`f155cfefffbe`) were compared without
+tracing on Windows. All 36 attempts passed, with matching graph, cache, and
+source evidence within each fixture. The repository snapshot contained 4,969
+documents and 17,249 typed edges; the scaling fixture contained 6,148 documents
+and 18,183 typed edges. Full hashes, ranges, and failures are retained in
+`.tmp/cold-gen-release-comparison.json`.
+
+Time to the first correct graph answer, median seconds (three runs per cell):
+
+[cols="2,1,1,1",options="header"]
+|===
+|Fixture and mode |Installed |Instrumented baseline |Optimized
+|Aden snapshot, automatic |2.552 |2.725 |2.492
+|Aden snapshot, manual |2.703 |2.748 |2.653
+|Many small files, automatic |2.204 |2.107 |1.992
+|Many small files, manual |2.212 |2.211 |2.216
+|===
+
+The candidate resolves the project root once when writing project metadata and
+reuses the generation cache path already computed before opening the store.
+The project key's normalization and hash are unchanged. Traced Git lookups fell
+from 12 to 9 in manual generation, and from 18 to 15 for the automatic query.
+The normalized automatic diagnostic passed four attempts, in
+`.tmp/cold-gen-release-diagnostic.json`. The cache-load stage went from about
+57-61 ms to about 0.06 ms in that diagnostic; store-open and initial-fingerprint
+times still varied substantially. These traced times are diagnostic only.
+
+Automatic requests improved in these samples. Manual generation gains were
+small or absent, and peak working-set medians were roughly unchanged. These
+small samples do not establish tail behavior, general scalability, or an LLM
+productivity gain. They do not justify a streaming redesign on their own.
+
+The initial raw-digest comparison failed even for repeated baseline builds.
+Retained snapshot comparisons showed identical anchors and typed edges, with
+only generated `last-verified` values differing. The evidence utility now
+accounts for that documented field; production documents retain the timestamp.
+Early failed diagnostics are retained separately from the final comparison.

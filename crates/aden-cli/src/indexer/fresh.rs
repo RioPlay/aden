@@ -167,6 +167,7 @@ fn stable_hex(parts: impl IntoIterator<Item = (String, Vec<u8>)>) -> String {
 /// same-second edits, rename/delete, and equal-sized rewrites cannot look fresh.
 /// Files are hashed in bounded chunks to avoid a second whole-source allocation.
 pub(crate) fn source_fingerprint(root: &Path) -> std::io::Result<String> {
+    let mut trace = crate::read_trace::span(crate::read_trace::Stage::Fingerprint);
     let mut sources = discover_source_files(root)
         .map_err(|e| std::io::Error::other(format!("source discovery failed: {e}")))?;
     sources.sort();
@@ -182,6 +183,7 @@ pub(crate) fn source_fingerprint(root: &Path) -> std::io::Result<String> {
         // Propagate the error so every caller fails closed rather than hashing a
         // stable synthetic error marker as if it were indexed content.
         let mut reader = BufReader::new(std::fs::File::open(&source)?);
+        trace.scanned_file();
         hash.write_len(reader.get_ref().metadata()?.len());
         loop {
             let read = reader.read(&mut buffer)?;
@@ -189,6 +191,7 @@ pub(crate) fn source_fingerprint(root: &Path) -> std::io::Result<String> {
                 break;
             }
             hash.write(&buffer[..read]);
+            trace.scanned_bytes(read);
         }
     }
     Ok(hash.finish_hex())
@@ -232,8 +235,41 @@ pub(crate) fn publish_freshness_manifest(
     std::fs::rename(tmp, path)
 }
 
-fn load_manifest(root: &Path) -> Option<FreshnessManifest> {
-    serde_json::from_slice(&std::fs::read(manifest_path(root)).ok()?).ok()
+/// Reuse path derivation within one freshness operation, never across requests.
+/// Source observations and store existence are deliberately not cached here.
+struct FreshnessPaths {
+    root: PathBuf,
+    project_dir: PathBuf,
+}
+
+impl FreshnessPaths {
+    fn new(path: &Path) -> Self {
+        let root = find_project_root(path);
+        let project_dir = aden_paths::project_dir(&root);
+        Self { root, project_dir }
+    }
+}
+
+fn load_manifest(paths: &FreshnessPaths) -> Option<FreshnessManifest> {
+    let _trace = crate::read_trace::span(crate::read_trace::Stage::ManifestLoad);
+    serde_json::from_slice(&std::fs::read(paths.project_dir.join("freshness.json")).ok()?).ok()
+}
+
+fn read_store(paths: &FreshnessPaths) -> (PathBuf, bool) {
+    let _trace = crate::read_trace::span(crate::read_trace::Stage::StoreResolve);
+    // Match aden_paths::resolve_read_store, including a missing pinned store's
+    // legacy fallback. Only identity/path derivation is reused, not existence.
+    let central = std::env::var_os("ADEN_STORE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| paths.project_dir.join("store"));
+    if central.exists() {
+        return (central, false);
+    }
+    let legacy = paths.root.join(".aden").join("store");
+    if legacy.exists() {
+        return (legacy, true);
+    }
+    (central, false)
 }
 
 fn manifest_policy_is_current(manifest: &FreshnessManifest) -> bool {
@@ -289,16 +325,28 @@ impl From<Freshness> for ReceiptFreshness {
 /// does NOT regenerate on mere mtime staleness — it fires solely on the
 /// format-mismatch signal.
 pub(crate) fn recover_if_incompatible_store(path: &Path) -> bool {
-    let root = find_project_root(path);
-    let (store, _) = aden_paths::resolve_read_store(&root);
-    if store.exists()
-        && let Some(store_str) = store.to_str()
-        && matches!(
-            Storage::open_existing(store_str),
-            Err(aden_store::StoreError::IncompatibleVersion(_))
-        )
-    {
-        return match cmd_gen_silent(&root) {
+    recover_incompatible_store(&FreshnessPaths::new(path))
+}
+
+fn recover_incompatible_store(paths: &FreshnessPaths) -> bool {
+    let _trace = crate::read_trace::span(crate::read_trace::Stage::StoreCompatibility);
+    let (store, _) = read_store(paths);
+    // A recognized current engine header answers this format-only question
+    // without opening/recovering the entire database. Unknown markers retain
+    // the engine's authoritative classification; they never trigger a rebuild
+    // based solely on our bounded probe.
+    if !store.exists() || Storage::has_current_format_marker(&store) {
+        return false;
+    }
+    let Some(store_str) = store.to_str() else {
+        return false;
+    };
+    crate::read_trace::compatibility_store_open();
+    if matches!(
+        Storage::open_existing(store_str),
+        Err(aden_store::StoreError::IncompatibleVersion(_))
+    ) {
+        return match traced_refresh(&paths.root) {
             Ok(()) => true,
             Err(e) => {
                 eprintln!("aden: could not rebuild the incompatible store: {e}");
@@ -329,11 +377,15 @@ pub(crate) fn skip_auto_gen_on_read() -> bool {
 /// - a cache entry's source is no longer live (delete / rename / ignore)
 /// - the store exists, sources exist, but the cache is empty
 pub fn index_is_stale(path: &Path) -> bool {
-    index_is_stale_for_root(&find_project_root(path))
+    index_is_stale_for_project(&FreshnessPaths::new(path))
 }
 
 pub(crate) fn index_is_stale_for_root(root: &Path) -> bool {
-    let (existing_store, _) = aden_paths::resolve_read_store(root);
+    index_is_stale_for_project(&FreshnessPaths::new(root))
+}
+
+fn index_is_stale_for_project(paths: &FreshnessPaths) -> bool {
+    let (existing_store, _) = read_store(paths);
     if !existing_store.exists() {
         return false;
     }
@@ -342,13 +394,13 @@ pub(crate) fn index_is_stale_for_root(root: &Path) -> bool {
     // The legacy mtime/cache fallback cannot distinguish same-second,
     // equal-sized rewrites, so absent, corrupt, or unwriteable manifests must
     // never yield a `current` claim.
-    let Some(manifest) = load_manifest(root) else {
+    let Some(manifest) = load_manifest(paths) else {
         return true;
     };
     if !manifest_policy_is_current(&manifest) {
         return true;
     }
-    source_fingerprint(root)
+    source_fingerprint(&paths.root)
         .map(|observed| observed != manifest.source_fingerprint)
         .unwrap_or(true)
 }
@@ -368,10 +420,12 @@ pub fn read_index_stale(path: &Path) -> bool {
 /// the entire tree for each field doubled output-time I/O on large projects and
 /// could attach a different source fingerprint to the classification.
 fn observe_freshness(path: &Path) -> (Freshness, ContextReceipt) {
-    let root = find_project_root(path);
-    let (store, _) = aden_paths::resolve_read_store(&root);
-    let manifest = load_manifest(&root);
-    let observed = source_fingerprint(&root).ok();
+    // This final observation resolves independently of ensure_fresh and always
+    // fingerprints the live tree again; never reuse the pre-query observation.
+    let paths = FreshnessPaths::new(path);
+    let (store, _) = read_store(&paths);
+    let manifest = load_manifest(&paths);
+    let observed = source_fingerprint(&paths.root).ok();
     let current = manifest.as_ref().is_some_and(|manifest| {
         manifest_policy_is_current(manifest)
             && observed.as_ref() == Some(&manifest.source_fingerprint)
@@ -379,7 +433,7 @@ fn observe_freshness(path: &Path) -> (Freshness, ContextReceipt) {
     let freshness = if !store.exists() {
         Freshness::Building
     } else if !current {
-        if aden_paths::graph_snapshot_file(&root).is_file() {
+        if paths.project_dir.join("graph.snapshot").is_file() {
             Freshness::Lagging
         } else {
             Freshness::Snapshot
@@ -470,22 +524,24 @@ pub fn maybe_print_stale_hint(path: &Path, json: bool) {
 
 /// RAII guard: prints [`maybe_print_stale_hint`] when the read command completes.
 pub struct StaleHintGuard {
-    root: PathBuf,
-    json: bool,
+    root: Option<PathBuf>,
 }
 
 impl StaleHintGuard {
     pub fn new(path: &Path, json: bool) -> Self {
         Self {
-            root: find_project_root(path),
-            json,
+            // JSON receives freshness in its envelope; its terminal guard has
+            // nothing to print, so avoid even resolving the project root.
+            root: (!json).then(|| find_project_root(path)),
         }
     }
 }
 
 impl Drop for StaleHintGuard {
     fn drop(&mut self) {
-        maybe_print_stale_hint(&self.root, self.json);
+        if let Some(root) = &self.root {
+            maybe_print_stale_hint(root, false);
+        }
     }
 }
 
@@ -500,37 +556,39 @@ pub fn ensure_fresh_decision(path: &Path) {
 }
 
 pub fn ensure_fresh_with_policy(path: &Path, policy: FreshPolicy) {
+    let _trace = crate::read_trace::span(crate::read_trace::Stage::EnsureFresh);
     set_refresh_cause(0);
     let authoritative_deadline = begin_authoritative_deadline();
-    let root = find_project_root(path);
+    let paths = FreshnessPaths::new(path);
+    let root = &paths.root;
     let skip_auto = skip_auto_gen_on_read();
-    let (existing_store, _) = aden_paths::resolve_read_store(&root);
+    let (existing_store, _) = read_store(&paths);
     if !existing_store.exists() {
         set_refresh_cause(2);
         if !skip_auto {
-            let _ = cmd_gen_silent(&root);
+            let _ = traced_refresh(root);
         }
-        enforce_authoritative(&root);
+        enforce_authoritative(&paths);
         complete_authoritative_deadline(authoritative_deadline);
         return;
     }
 
-    if !skip_auto && recover_if_incompatible_store(&root) {
+    if !skip_auto && recover_incompatible_store(&paths) {
         set_refresh_cause(3);
-        enforce_authoritative(&root);
+        enforce_authoritative(&paths);
         complete_authoritative_deadline(authoritative_deadline);
         return;
     }
 
     if skip_auto {
-        if index_is_stale_for_root(&root) {
+        if index_is_stale_for_project(&paths) {
             set_refresh_cause(5);
-            enforce_authoritative(&root);
+            enforce_authoritative(&paths);
         }
         complete_authoritative_deadline(authoritative_deadline);
         return;
     }
-    if !index_is_stale_for_root(&root) {
+    if !index_is_stale_for_project(&paths) {
         complete_authoritative_deadline(authoritative_deadline);
         return;
     }
@@ -542,8 +600,8 @@ pub fn ensure_fresh_with_policy(path: &Path, policy: FreshPolicy) {
     // Dirty re-arm: up to two more silent gens when we successfully refreshed but
     // the tree changed again under us.
     for _ in 0..3 {
-        let _ = cmd_gen_silent(&root);
-        if !index_is_stale_for_root(&root) {
+        let _ = traced_refresh(root);
+        if !index_is_stale_for_project(&paths) {
             complete_authoritative_deadline(authoritative_deadline);
             return;
         }
@@ -554,8 +612,8 @@ pub fn ensure_fresh_with_policy(path: &Path, policy: FreshPolicy) {
             if remaining.is_zero() {
                 break;
             }
-            wait_for_refresh_or_timeout(&root, remaining);
-            if !index_is_stale_for_root(&root) {
+            wait_for_refresh_or_timeout(root, remaining);
+            if !index_is_stale_for_project(&paths) {
                 complete_authoritative_deadline(authoritative_deadline);
                 return;
             }
@@ -565,18 +623,23 @@ pub fn ensure_fresh_with_policy(path: &Path, policy: FreshPolicy) {
             // Continue loop for another silent attempt after the wait.
         } else {
             // Explore: fail-open immediately (serve last snapshot).
-            enforce_authoritative(&root);
+            enforce_authoritative(&paths);
             complete_authoritative_deadline(authoritative_deadline);
             return;
         }
     }
     set_refresh_cause(6);
-    enforce_authoritative(&root);
+    enforce_authoritative(&paths);
     complete_authoritative_deadline(authoritative_deadline);
 }
 
-fn enforce_authoritative(root: &Path) {
-    if require_fresh() && index_is_stale_for_root(root) {
+fn traced_refresh(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let _trace = crate::read_trace::span(crate::read_trace::Stage::Refresh);
+    cmd_gen_silent(root)
+}
+
+fn enforce_authoritative(paths: &FreshnessPaths) {
+    if require_fresh() && index_is_stale_for_project(paths) {
         eprintln!(
             "aden: authoritative freshness required, but refresh did not complete within {}s; retry after the active writer finishes or unset ADEN_SKIP_AUTO_GEN",
             DECISION_WAIT.as_secs()

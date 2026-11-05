@@ -172,6 +172,20 @@ def repository_identity(path: Path) -> dict[str, Any]:
     return identity
 
 
+def repository_fingerprint(identity: dict[str, Any]) -> dict[str, Any]:
+    """Return the fields that must remain stable across a benchmark arm."""
+    return {
+        "revision": identity.get("revision"),
+        "status": identity.get("status"),
+        "dirty_diff_sha256": identity.get("dirty_diff_sha256"),
+        "untracked_files": [
+            {"path": item.get("path"), "sha256": item.get("sha256"), "bytes": item.get("bytes")}
+            for item in identity.get("untracked_files", [])
+        ],
+        "errors": identity.get("errors"),
+    }
+
+
 def run_identity(args: argparse.Namespace) -> dict[str, Any]:
     binaries = {"aden": binary_identity(aden_binary())}
     if args.engine == "codex":
@@ -188,7 +202,8 @@ def run_identity(args: argparse.Namespace) -> dict[str, Any]:
                           "definition": ANSWER_SCHEMA},
         "model_settings": {"requested_model": args.model, "overrides": args.model_setting,
                            "effective_model": None, "effective_settings": None},
-        "runner_settings": {"timeout_seconds": args.timeout, "requested_sandbox": "read-only",
+        "runner_settings": {"timeout_seconds": args.timeout, "requested_sandbox": args.sandbox,
+                            "requested_approval_policy": "never",
                             "sandbox_enforcement": "codex" if args.engine == "codex" else
                                                    "external-adapter" if args.engine == "command" else "no-agent",
                             "agent_command": args.agent_command if args.engine == "command" else None},
@@ -493,7 +508,9 @@ def run_codex(repo: Path, task: dict[str, Any], condition: str, args: argparse.N
             "--color",
             "never",
             "--sandbox",
-            "read-only",
+            args.sandbox,
+            "-c",
+            'approval_policy="never"',
             "--output-schema",
             str(schema_path),
             "--output-last-message",
@@ -733,6 +750,12 @@ def main() -> None:
     parser.add_argument("--model-setting", action="append", default=[], metavar="KEY=VALUE",
                         help="explicit model configuration (repeatable); Codex -c or adapter environment")
     parser.add_argument("--timeout", type=int, default=300)
+    parser.add_argument(
+        "--sandbox",
+        choices=("read-only", "workspace-write"),
+        default="read-only",
+        help="Codex child sandbox; use workspace-write only in a disposable repository snapshot",
+    )
     parser.add_argument("--allow-revision-mismatch", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--json", type=Path, help="write the full result JSON")
@@ -772,6 +795,8 @@ def main() -> None:
             "model": args.model,
             "protocol": args.protocol,
             "transport": args.transport,
+            "sandbox": args.sandbox,
+            "approval_policy": "never",
             "model_settings": args.model_setting,
             "answer_schema_id": ANSWER_SCHEMA_ID,
         }, indent=2))
@@ -792,10 +817,16 @@ def main() -> None:
     identity = run_identity(args)
     repository_states = {str(repo): repository_identity(repo) for repo in {repo for _, repo, _ in prepared}}
     records = []
+    abort_remaining = False
     for task, repo, revision in prepared:
+        if abort_remaining:
+            break
         for run in range(1, args.runs + 1):
+            if abort_remaining:
+                break
             for condition in conditions:
                 print(f"[agent-bench] {task['id']} {condition} run {run}", file=sys.stderr)
+                state_before = repository_identity(repo)
                 try:
                     if args.engine == "codex":
                         outcome = run_codex(repo, task, condition, args)
@@ -805,6 +836,21 @@ def main() -> None:
                         outcome = run_fixture(task, condition, run, args)
                 except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError) as error:
                     outcome = {"error": str(error), "wall_ms": args.timeout * 1000}
+                state_after = repository_identity(repo)
+                before_fingerprint = repository_fingerprint(state_before)
+                after_fingerprint = repository_fingerprint(state_after)
+                unchanged = before_fingerprint == after_fingerprint
+                outcome["repository_guard"] = {
+                    "unchanged": unchanged,
+                    "before": before_fingerprint,
+                    "after": after_fingerprint,
+                }
+                if not unchanged:
+                    existing = outcome.get("error")
+                    outcome["error"] = "repository changed during benchmark arm"
+                    if existing:
+                        outcome["error"] += f"; prior error: {existing}"
+                    abort_remaining = True
                 record = {
                     "task_id": task["id"],
                     "category": task["category"],
@@ -828,6 +874,8 @@ def main() -> None:
                         task["category"] in ADEN_EXPECTED_CATEGORIES,
                     )
                 records.append(record)
+                if abort_remaining:
+                    break
 
     report = {
         "schema_version": REPORT_SCHEMA_VERSION,
@@ -839,6 +887,7 @@ def main() -> None:
         "model": args.model,
         "runs_per_condition": args.runs,
         "records": records,
+        "aborted": abort_remaining,
         "summary": aggregate(records),
     }
     rendered = render_markdown(report)

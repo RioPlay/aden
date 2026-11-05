@@ -142,6 +142,13 @@
   #region-legend .rl-label { font-size: 11px; color: #a6adc8;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   body.hideui #hover-card, body.hideui #region-legend { opacity: 0 !important; pointer-events: none; }
+  body.viewer-unavailable > :not(#graph) { display: none !important; }
+  .viewer-fallback { position: absolute; inset: 0; margin: auto; max-width: 36rem;
+    height: fit-content; padding: 28px; color: #cdd6f4; background: #11151e;
+    border: 1px solid #45475a; border-radius: 10px; line-height: 1.6; }
+  .viewer-fallback h1 { font-size: 22px; margin-top: 0; }
+  .viewer-fallback a { color: #89b4fa; }
+  .viewer-fallback :focus-visible { outline: 2px solid #89b4fa; outline-offset: 4px; }
 </style>
 </head>
 <body>
@@ -199,6 +206,32 @@
 const DATA = /*ADEN_DATA*/;
 const EDITOR = "/*EDITOR*/";
 const SIBLING = "/*SIBLING*/";   // the 2D twin of this page ('' = none)
+function show3DUnavailable() {
+  document.body.classList.add('viewer-unavailable');
+  const host=document.getElementById('graph');host.replaceChildren();
+  const message=document.createElement('section');
+  message.className='viewer-fallback';message.setAttribute('role','alert');message.tabIndex=-1;
+  const title=document.createElement('h1');title.textContent='3D view unavailable';
+  const explanation=document.createElement('p');
+  explanation.textContent='This browser could not start WebGL, which the 3D view needs. You can use the 2D or Simple view to explore the graph.';
+  message.append(title,explanation);
+  if(SIBLING && !SIBLING.includes('/*')) {
+    try {
+      const url=new URL(SIBLING,location.href);
+      if(['file:','http:','https:'].includes(url.protocol)) {
+        const link=document.createElement('a');link.href=url.href;link.textContent='Open 2D view';message.append(link);
+      }
+    } catch { /* A malformed destination must not prevent recovery. */ }
+  }
+  const command=document.createElement('p');
+  command.textContent='To create another offline view, run aden view --2d or aden view for Simple view.';
+  message.append(command);host.append(message);message.focus();
+}
+function create3DGraph(el) {
+  try { return ForceGraph3D({controlType:'orbit'})(el); }
+  catch { show3DUnavailable();return null; }
+}
+function start3DViewer() {
 const REDUCED_MOTION = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 // Generative vivid palette: golden-angle hue stepping — maximally distinct,
@@ -339,9 +372,9 @@ function buildLegend3d() {
   }
   body.innerHTML = regions.map(r => {
     const col = palette[groupIdx[r] % palette.length];
-    return `<div class="rl-row" style="cursor:pointer" title="Jump to region" onclick="jumpToRegion3d(${JSON.stringify(r)})">
+    return `<div class="rl-row" style="cursor:pointer" title="Jump to region" onclick="jumpToRegion3d(${escAttr(JSON.stringify(r))})">
       <span class="rl-dot" style="background:${col};box-shadow:0 0 4px ${hexA(col,.4)}"></span>
-      <span class="rl-label" title="${esc(r)}">${esc(r)}</span>
+      <span class="rl-label" title="${escAttr(r)}">${esc(r)}</span>
     </div>`;
   }).join('');
 }
@@ -370,10 +403,10 @@ function positionLegend3d() {
   if (!legend || !hoverCardEl3d) return;
   legend.style.top = (52 + hoverCardEl3d.offsetHeight + 8) + 'px';
 }
-(function legendPosLoop3d() {
+function legendPosLoop3d() {
   requestAnimationFrame(legendPosLoop3d);
   positionLegend3d();
-})();
+}
 
 // Build {nodes, links}; the same salience rule as the 2D view — the ambient
 // field hides structural noise, attention reveals everything about a node.
@@ -404,7 +437,9 @@ const trail = new Map();   // link → strength 1→0
 const bounds = { x: 0, y: 0, z: 0, r: 600 };
 
 const el = document.getElementById('graph');
-const Graph = ForceGraph3D({ controlType: 'orbit' })(el)
+const Graph = create3DGraph(el);
+if (!Graph) return;
+Graph
   // Transparent clear color lets the CSS starfield show through; if the
   // renderer can't do alpha it falls back to the same dark tone, no harm.
   .backgroundColor('rgba(11,14,20,0)')
@@ -454,6 +489,7 @@ const Graph = ForceGraph3D({ controlType: 'orbit' })(el)
   .onNodeRightClick(n => { const u = editorUrl(n); if (u) window.location.href = u; })
   .onBackgroundClick(() => { updateHoverCard3d(null); /* keep focus; Esc/f manage the camera */ });
 Graph.graphData({ nodes, links });
+legendPosLoop3d();
 // Build the legend once the group index is ready
 buildLegend3d();
 
@@ -694,6 +730,9 @@ let bubblesOn = true;
 const wraps = new Map();   // group → { mesh, dirs } loose hull wrap
 let bubbleProto = null;
 function updateBubbles() {
+  // Hidden wraps need no vertex projection, normal rebuild or scene traversal.
+  // Enabling below refreshes their geometry before showing them again.
+  if (!bubblesOn) return;
   if (!bubbleProto) {
     Graph.scene().traverse(o => {
       if (!bubbleProto && o.isMesh && o.__data && o.geometry
@@ -777,7 +816,8 @@ setTimeout(updateBubbles, 2600);
 setInterval(updateBubbles, 1500);
 function toggleBubbles() {
   bubblesOn = !bubblesOn;
-  wraps.forEach(w => { w.mesh.visible = bubblesOn; });
+  if (bubblesOn) updateBubbles();
+  else wraps.forEach(w => { w.mesh.visible = false; });
 }
 // The focused orb breathes — a slow 6% scale swell, restored on blur.
 let breathing = null;
@@ -912,7 +952,7 @@ function showPanel(n) {
   const ed = editorUrl(n);
   panelNbs = (n.neighbors || []).map(x => x.id); nbSel = -1;
   const rows = (n.neighbors || []).slice(0, 30).map((x, i) =>
-    `<div class="nb" id="nb-${i}" onclick="focusById('${esc(x.id)}')" onmouseenter="previewNb('${esc(x.id)}')">${esc(shortName(x))} <span class="k">${esc(regionOf3d(x))}</span></div>`).join('');
+    `<div class="nb" id="nb-${i}" onclick="focusById(${escAttr(JSON.stringify(String(x.id)))})" onmouseenter="previewNb(${escAttr(JSON.stringify(String(x.id)))})">${esc(shortName(x))} <span class="k">${esc(regionOf3d(x))}</span></div>`).join('');
   document.getElementById('p-body').innerHTML =
     `<div class="row"><span class="k">kind:</span> ${esc(n.kind || '—')}</div>` +
     (n.line ? `<div class="row"><span class="k">line:</span> ${n.line}</div>` : '') +
@@ -1289,6 +1329,11 @@ setTimeout(() => {
     }, 2600);
   }
 }, 600);
+// Existing inline controls keep their public handlers; initialization failure
+// returns before registering handlers or starting renderer-dependent timers.
+Object.assign(window,{dismissHoverCard3d,toggleLegend,jumpToRegion3d,focusById,previewNb,pickResult});
+}
+start3DViewer();
 </script>
 </body>
 </html>

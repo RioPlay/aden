@@ -5,39 +5,106 @@
 // These exercise the installed binary via std::process::Command.
 
 mod temp_project {
-    use std::path::PathBuf;
-    use std::sync::OnceLock;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::path::Path;
+    use std::process::Command;
 
-    static COUNTER: AtomicUsize = AtomicUsize::new(0);
-
-    /// ADR-003: the graph store now lives in a per-user data dir keyed by the
-    /// (absolute) project path — it is no longer deleted when the temp project
-    /// dir is removed. Because these tests reuse `aden-cli-test-N` paths across
-    /// runs, an un-isolated data dir would leak a stale store from a prior run
-    /// into the next, breaking `check`. Pin `ADEN_DATA_DIR` to a per-process
-    /// temp dir (inherited by every spawned `aden` subprocess) so each test run
-    /// gets pristine stores and never touches the real user data dir.
-    fn ensure_isolated_data_dir() {
-        static DATA_DIR: OnceLock<PathBuf> = OnceLock::new();
-        DATA_DIR.get_or_init(|| {
-            let d = std::env::temp_dir().join(format!("aden-cli-test-data-{}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&d);
-            std::fs::create_dir_all(&d).unwrap();
-            // Set exactly once under the OnceLock, before any test spawns an
-            // `aden` subprocess (which inherits this env var).
-            unsafe { std::env::set_var("ADEN_DATA_DIR", &d) };
-            d
-        });
+    /// Own both paths for the entire test, including all child processes.
+    /// Data lives outside the project so indexing never sees its own store.
+    pub struct TempProject {
+        project: tempfile::TempDir,
+        data: tempfile::TempDir,
     }
 
-    pub fn temp_dir() -> PathBuf {
-        ensure_isolated_data_dir();
-        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-        let dir = std::env::temp_dir().join(format!("aden-cli-test-{}", n));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    impl TempProject {
+        pub fn new() -> Self {
+            let project = tempfile::Builder::new()
+                .prefix("aden-cli-test-")
+                .tempdir()
+                .unwrap();
+            // Keep root discovery inside the fixture even when the runner's
+            // temporary directory is nested in another repository.
+            let init = Command::new("git")
+                .args(["init", "--quiet", "--template="])
+                .arg(project.path())
+                .output()
+                .expect("git must be available for CLI tests");
+            assert!(
+                init.status.success(),
+                "fixture git init failed: {}",
+                String::from_utf8_lossy(&init.stderr)
+            );
+            Self {
+                project,
+                data: tempfile::Builder::new()
+                    .prefix("aden-cli-test-data-")
+                    .tempdir()
+                    .unwrap(),
+            }
+        }
+
+        pub fn path(&self) -> &Path {
+            self.project.path()
+        }
+
+        /// Bind every child to this fixture, including commands with no path
+        /// argument. Never mutate the parallel test runner's environment.
+        pub fn command(&self) -> Command {
+            let mut command = Command::new(env!("CARGO_BIN_EXE_aden"));
+            command
+                .current_dir(self.path())
+                .env("ADEN_DATA_DIR", self.data.path());
+            command
+        }
+    }
+
+    #[test]
+    fn projects_own_distinct_paths_and_child_environments() {
+        let first = TempProject::new();
+        let second = TempProject::new();
+        assert_ne!(first.path(), second.path());
+        assert_ne!(first.data.path(), second.data.path());
+        for project in [&first, &second] {
+            assert!(project.path().join(".git").is_dir());
+            assert!(!project.data.path().starts_with(project.path()));
+            // Repeated commands must reuse this project's store.
+            for _ in 0..2 {
+                let command = project.command();
+                assert_eq!(command.get_current_dir(), Some(project.path()));
+                assert_eq!(
+                    command.get_envs().find(|(key, _)| *key == "ADEN_DATA_DIR"),
+                    Some((
+                        std::ffi::OsStr::new("ADEN_DATA_DIR"),
+                        Some(project.data.path().as_os_str())
+                    ))
+                );
+            }
+        }
+        let first_path = first.path().to_path_buf();
+        let first_data = first.data.path().to_path_buf();
+        drop(first);
+        assert!(!first_path.exists());
+        assert!(!first_data.exists());
+        assert!(second.path().exists());
+        assert!(second.data.path().exists());
+    }
+
+    #[test]
+    fn project_and_data_are_cleaned_up_on_unwind() {
+        let mut paths = None;
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let project = TempProject::new();
+            paths = Some((
+                project.path().to_path_buf(),
+                project.data.path().to_path_buf(),
+            ));
+            std::fs::write(project.path().join("source.rs"), "fn example() {}").unwrap();
+            std::fs::write(project.data.path().join("store"), "test data").unwrap();
+            panic!("exercise fixture cleanup");
+        }));
+        assert!(result.is_err());
+        let (project, data) = paths.unwrap();
+        assert!(!project.exists());
+        assert!(!data.exists());
     }
 
     pub fn scaffold(dir: &std::path::Path) {
@@ -74,17 +141,15 @@ This is module a.
 
 #[test]
 fn long_version_reports_reproducible_build_identity_and_formats() {
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
-        .arg("--version")
-        .output()
-        .unwrap();
+    let fixture = temp_project::TempProject::new();
+    let output = fixture.command().arg("--version").output().unwrap();
     assert!(output.status.success());
     let version = String::from_utf8(output.stdout).unwrap();
     assert!(version.contains("Build:"), "{version}");
     assert!(version.contains("Features:"), "{version}");
     assert!(version.contains("snapshot-v1"), "{version}");
     assert!(version.contains("index-layout-v3"), "{version}");
-    assert!(version.contains("gen-logic-v14"), "{version}");
+    assert!(version.contains("gen-logic-v15"), "{version}");
     assert!(version.contains("symbol-lexicon-v2"), "{version}");
     assert!(
         !version.contains("Built at:"),
@@ -94,6 +159,7 @@ fn long_version_reports_reproducible_build_identity_and_formats() {
 
 #[test]
 fn core_navigation_commands_advertise_shorthand_flags() {
+    let fixture = temp_project::TempProject::new();
     let cases: &[(&str, &[&str])] = &[
         ("grep", &["-r", "-s", "-n"]),
         ("locate", &["-s", "-c", "-F", "-C", "-n"]),
@@ -104,7 +170,8 @@ fn core_navigation_commands_advertise_shorthand_flags() {
     ];
 
     for (command, flags) in cases {
-        let output = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
+        let output = fixture
+            .command()
             .args([*command, "--help"])
             .output()
             .expect("aden binary must be built");
@@ -118,11 +185,8 @@ fn core_navigation_commands_advertise_shorthand_flags() {
 
 #[test]
 fn top_level_help_is_focused_but_hidden_commands_remain_callable() {
-    let bin = env!("CARGO_BIN_EXE_aden");
-    let help = std::process::Command::new(bin)
-        .arg("--help")
-        .output()
-        .unwrap();
+    let fixture = temp_project::TempProject::new();
+    let help = fixture.command().arg("--help").output().unwrap();
     assert!(help.status.success());
     let help = String::from_utf8(help.stdout).unwrap();
     for core in ["tree", "grep", "locate", "understand", "ask", "impact-diff"] {
@@ -140,10 +204,7 @@ fn top_level_help_is_focused_but_hidden_commands_remain_callable() {
         help.lines().count()
     );
 
-    let catalog = std::process::Command::new(bin)
-        .arg("commands")
-        .output()
-        .unwrap();
+    let catalog = fixture.command().arg("commands").output().unwrap();
     assert!(catalog.status.success());
     let catalog = String::from_utf8(catalog.stdout).unwrap();
     assert!(catalog.contains("Optional Aden methodology"));
@@ -187,7 +248,8 @@ fn top_level_help_is_focused_but_hidden_commands_remain_callable() {
         "ci-check",
         "licenses",
     ] {
-        let hidden = std::process::Command::new(bin)
+        let hidden = fixture
+            .command()
             .args([command, "--help"])
             .output()
             .unwrap();
@@ -200,10 +262,12 @@ fn top_level_help_is_focused_but_hidden_commands_remain_callable() {
 
 #[test]
 fn test_check_finds_no_issues() {
-    let dir = temp_project::temp_dir();
+    let fixture = temp_project::TempProject::new();
+    let dir = fixture.path();
     temp_project::scaffold(&dir);
 
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
+    let output = fixture
+        .command()
         .arg("check")
         .arg(&dir)
         .output()
@@ -222,10 +286,12 @@ fn test_check_finds_no_issues() {
 
 #[test]
 fn test_asm_assembles_nonempty_output() {
-    let dir = temp_project::temp_dir();
+    let fixture = temp_project::TempProject::new();
+    let dir = fixture.path();
     temp_project::scaffold(&dir);
 
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
+    let output = fixture
+        .command()
         .args([
             "asm",
             "--from",
@@ -250,11 +316,12 @@ fn test_asm_assembles_nonempty_output() {
 
 #[test]
 fn asm_output_modes_are_predictable_without_an_explicit_budget() {
-    let dir = temp_project::temp_dir();
+    let fixture = temp_project::TempProject::new();
+    let dir = fixture.path();
     temp_project::scaffold(&dir);
-    let bin = env!("CARGO_BIN_EXE_aden");
 
-    let explicit_llm = std::process::Command::new(bin)
+    let explicit_llm = fixture
+        .command()
         .args([
             "asm",
             "--format",
@@ -270,7 +337,8 @@ fn asm_output_modes_are_predictable_without_an_explicit_budget() {
     assert!(llm.contains("Hello world."), "{llm}");
     assert!(serde_json::from_str::<serde_json::Value>(&llm).is_err());
 
-    let human_default = std::process::Command::new(bin)
+    let human_default = fixture
+        .command()
         .args(["--human", "asm", "--from", "readme", &dir.to_string_lossy()])
         .output()
         .expect("aden binary must be built");
@@ -279,10 +347,7 @@ fn asm_output_modes_are_predictable_without_an_explicit_budget() {
     assert!(human.contains("Hello world."), "{human}");
     assert!(serde_json::from_str::<serde_json::Value>(&human).is_err());
 
-    let help = std::process::Command::new(bin)
-        .args(["asm", "--help"])
-        .output()
-        .unwrap();
+    let help = fixture.command().args(["asm", "--help"]).output().unwrap();
     let help = String::from_utf8(help.stdout).unwrap();
     assert!(help.contains("[default: json]"), "{help}");
     assert!(!help.contains("[default: llm]"), "{help}");
@@ -290,10 +355,12 @@ fn asm_output_modes_are_predictable_without_an_explicit_budget() {
 
 #[test]
 fn test_ask_returns_context() {
-    let dir = temp_project::temp_dir();
+    let fixture = temp_project::TempProject::new();
+    let dir = fixture.path();
     temp_project::scaffold(&dir);
 
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
+    let output = fixture
+        .command()
         .args(["ask", "What is module a?", &dir.to_string_lossy()])
         .output()
         .expect("aden binary must be installed");
@@ -328,14 +395,11 @@ fn class_members_remain_reachable_without_becoming_aggregate_callers() {
             "function leaf() { return 1; }\nclass Example { method() { return leaf(); } }\n",
         ),
     ] {
-        let dir = temp_project::temp_dir();
+        let fixture = temp_project::TempProject::new();
+        let dir = fixture.path();
         std::fs::write(dir.join(filename), source).unwrap();
         let run = |args: &[&str]| {
-            let output = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
-                .args(args)
-                .arg(&dir)
-                .output()
-                .unwrap();
+            let output = fixture.command().args(args).arg(&dir).output().unwrap();
             assert!(
                 output.status.success(),
                 "{}",
@@ -378,7 +442,8 @@ fn class_members_remain_reachable_without_becoming_aggregate_callers() {
 
 #[test]
 fn selection_questions_follow_callers_without_stealing_usage_questions() {
-    let dir = temp_project::temp_dir();
+    let fixture = temp_project::TempProject::new();
+    let dir = fixture.path();
     std::fs::write(
         dir.join("search.rs"),
         r#"
@@ -407,7 +472,8 @@ fn wrapper() { fast_search(); }
                 .collect();
             std::fs::write(dir.join("modes.rs"), distractors).unwrap();
         }
-        let output = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
+        let output = fixture
+            .command()
             .args(["ask", question, &dir.to_string_lossy(), "--explain"])
             .output()
             .unwrap();
@@ -432,7 +498,8 @@ fn wrapper() { fast_search(); }
 
 #[test]
 fn ask_explain_keeps_json_parseable() {
-    let dir = temp_project::temp_dir();
+    let fixture = temp_project::TempProject::new();
+    let dir = fixture.path();
     std::fs::write(
         dir.join("app.py"),
         "def process_request():\n    return 'response'\n",
@@ -443,7 +510,8 @@ fn ask_explain_keeps_json_parseable() {
         vec!["--json", "--explain"],
         vec!["--json", "--explain", "--strict"],
     ] {
-        let output = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
+        let output = fixture
+            .command()
             .args([
                 "ask",
                 "Where is process_request defined?",
@@ -472,7 +540,8 @@ fn ask_explain_keeps_json_parseable() {
 
 #[test]
 fn ask_definition_lookup_prefers_the_exact_production_symbol() {
-    let dir = temp_project::temp_dir();
+    let fixture = temp_project::TempProject::new();
+    let dir = fixture.path();
     std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::create_dir_all(dir.join("tests")).unwrap();
     std::fs::write(
@@ -482,7 +551,8 @@ fn ask_definition_lookup_prefers_the_exact_production_symbol() {
     .unwrap();
     std::fs::write(dir.join("tests/test_app.py"), "class Flask:\n    pass\n").unwrap();
 
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
+    let output = fixture
+        .command()
         .args(["ask", "Where is Flask defined?", &dir.to_string_lossy()])
         .output()
         .expect("aden binary must be built");
@@ -507,12 +577,14 @@ fn ask_definition_lookup_prefers_the_exact_production_symbol() {
 
 #[test]
 fn ask_definition_lookup_resolves_qualified_snake_case_methods() {
-    let dir = temp_project::temp_dir();
+    let fixture = temp_project::TempProject::new();
+    let dir = fixture.path();
     std::fs::write(
         dir.join("app.py"),
         "class Application:\n    def full_dispatch_request(self):\n        return self.dispatch_request()\n    def dispatch_request(self):\n        return 'response'\n",
     ).unwrap();
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
+    let output = fixture
+        .command()
         .args([
             "ask",
             "Where is full_dispatch_request defined?",
@@ -537,9 +609,11 @@ fn ask_definition_lookup_resolves_qualified_snake_case_methods() {
 
 #[test]
 fn ask_definition_lookup_preserves_property_qualification() {
-    let dir = temp_project::temp_dir();
+    let fixture = temp_project::TempProject::new();
+    let dir = fixture.path();
     std::fs::write(dir.join("response.js"), "res.json = function (value) { return value; };\nexports.json = function (value) { return value; };\n").unwrap();
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
+    let output = fixture
+        .command()
         .args(["ask", "Where is res.json defined?", &dir.to_string_lossy()])
         .output()
         .unwrap();
@@ -556,7 +630,8 @@ fn ask_definition_lookup_preserves_property_qualification() {
 
 #[test]
 fn ask_definition_lookup_without_a_match_fails_small_instead_of_prose_routing() {
-    let dir = temp_project::temp_dir();
+    let fixture = temp_project::TempProject::new();
+    let dir = fixture.path();
     std::fs::write(dir.join("app.py"), "class Flask:\n    pass\n").unwrap();
     // A prose mention so the index has results for the term but no symbol
     // named `Controller` exists — the exact case where fuzzy routing used to
@@ -567,7 +642,8 @@ fn ask_definition_lookup_without_a_match_fails_small_instead_of_prose_routing() 
     )
     .unwrap();
 
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
+    let output = fixture
+        .command()
         .args([
             "ask",
             "Where is Controller defined?",
@@ -598,14 +674,16 @@ fn ask_definition_lookup_without_a_match_fails_small_instead_of_prose_routing() 
 
 #[test]
 fn ask_how_does_symbol_work_stays_on_the_definition() {
-    let dir = temp_project::temp_dir();
+    let fixture = temp_project::TempProject::new();
+    let dir = fixture.path();
     std::fs::write(
         dir.join("lib.rs"),
         "/// Open a resource file.\nfn open_resource() {}\nfn helper() { open_resource(); }\n",
     )
     .unwrap();
 
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
+    let output = fixture
+        .command()
         .args([
             "ask",
             "how does open_resource work?",
@@ -635,10 +713,12 @@ fn ask_how_does_symbol_work_stays_on_the_definition() {
 
 #[test]
 fn ask_fails_small_for_repository_wide_questions() {
-    let dir = temp_project::temp_dir();
+    let fixture = temp_project::TempProject::new();
+    let dir = fixture.path();
     temp_project::scaffold(&dir);
 
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
+    let output = fixture
+        .command()
         .args([
             "ask",
             "Find all security issues across the repository",
@@ -666,10 +746,12 @@ fn ask_fails_small_for_repository_wide_questions() {
 
 #[test]
 fn ask_from_pin_allows_broad_wording_because_the_scope_is_bounded() {
-    let dir = temp_project::temp_dir();
+    let fixture = temp_project::TempProject::new();
+    let dir = fixture.path();
     temp_project::scaffold(&dir);
 
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
+    let output = fixture
+        .command()
         .args([
             "ask",
             "Audit the entire repository",
@@ -697,11 +779,13 @@ fn ask_from_pin_allows_broad_wording_because_the_scope_is_bounded() {
 /// larger stdout response.
 #[test]
 fn test_ask_strict_stdout_stays_within_serialized_budget() {
-    let dir = temp_project::temp_dir();
+    let fixture = temp_project::TempProject::new();
+    let dir = fixture.path();
     temp_project::scaffold(&dir);
     let budget = 32usize;
 
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
+    let output = fixture
+        .command()
         .args([
             "ask",
             "What is module a?",
@@ -729,11 +813,13 @@ fn test_ask_strict_stdout_stays_within_serialized_budget() {
 
 #[test]
 fn test_asm_strict_stdout_stays_within_serialized_budget() {
-    let dir = temp_project::temp_dir();
+    let fixture = temp_project::TempProject::new();
+    let dir = fixture.path();
     temp_project::scaffold(&dir);
     let budget = 32usize;
 
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
+    let output = fixture
+        .command()
         .args([
             "asm",
             "--from",
@@ -761,10 +847,12 @@ fn test_asm_strict_stdout_stays_within_serialized_budget() {
 
 #[test]
 fn test_ask_strict_no_results_stays_within_serialized_budget() {
-    let dir = temp_project::temp_dir();
+    let fixture = temp_project::TempProject::new();
+    let dir = fixture.path();
     let budget = 15usize;
 
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
+    let output = fixture
+        .command()
         .args([
             "ask",
             "definitely-no-indexed-document-matches-this",
@@ -794,7 +882,8 @@ fn test_ask_strict_no_results_stays_within_serialized_budget() {
 
 #[test]
 fn test_asm_strict_all_formats_unicode_and_tiny_receipt_are_bounded() {
-    let dir = temp_project::temp_dir();
+    let fixture = temp_project::TempProject::new();
+    let dir = fixture.path();
     temp_project::scaffold(&dir);
     std::fs::write(
         dir.join("unicode.adoc"),
@@ -803,7 +892,8 @@ fn test_asm_strict_all_formats_unicode_and_tiny_receipt_are_bounded() {
     .unwrap();
 
     for format in ["llm", "adg", "aden"] {
-        let output = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
+        let output = fixture
+            .command()
             .args([
                 "asm",
                 "--from",
@@ -831,7 +921,8 @@ fn test_asm_strict_all_formats_unicode_and_tiny_receipt_are_bounded() {
 
 #[test]
 fn test_ask_strict_receipts_provenance_alternates_and_supplements_remain_bounded() {
-    let dir = temp_project::temp_dir();
+    let fixture = temp_project::TempProject::new();
+    let dir = fixture.path();
     temp_project::scaffold(&dir);
     std::fs::write(
         dir.join("module-b.adoc"),
@@ -844,7 +935,8 @@ fn test_ask_strict_receipts_provenance_alternates_and_supplements_remain_bounded
     )
     .unwrap();
     let budget = 24usize;
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
+    let output = fixture
+        .command()
         .args([
             "ask",
             "--human",
@@ -869,9 +961,11 @@ fn test_ask_strict_receipts_provenance_alternates_and_supplements_remain_bounded
 
 #[test]
 fn test_ask_default_surfaces_only_assembled_outcome() {
-    let dir = temp_project::temp_dir();
+    let fixture = temp_project::TempProject::new();
+    let dir = fixture.path();
     temp_project::scaffold(&dir);
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
+    let output = fixture
+        .command()
         .args(["ask", "What is this project?", &dir.to_string_lossy()])
         .output()
         .expect("aden binary must be built");
@@ -897,10 +991,12 @@ fn test_ask_default_surfaces_only_assembled_outcome() {
 
 #[test]
 fn test_asm_auto_plus_strict_uses_exact_serialized_budget() {
-    let dir = temp_project::temp_dir();
+    let fixture = temp_project::TempProject::new();
+    let dir = fixture.path();
     temp_project::scaffold(&dir);
     let budget = 16usize;
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
+    let output = fixture
+        .command()
         .args([
             "asm",
             "--from",
@@ -923,9 +1019,11 @@ fn test_asm_auto_plus_strict_uses_exact_serialized_budget() {
 
 #[test]
 fn test_asm_strict_stale_hint_cannot_escape_budget() {
-    let dir = temp_project::temp_dir();
+    let fixture = temp_project::TempProject::new();
+    let dir = fixture.path();
     temp_project::scaffold(&dir);
-    let generated = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
+    let generated = fixture
+        .command()
         .args(["gen", &dir.to_string_lossy()])
         .output()
         .expect("aden binary must be built");
@@ -933,7 +1031,8 @@ fn test_asm_strict_stale_hint_cannot_escape_budget() {
     std::fs::write(dir.join("new.adoc"), "[[new]]\n= New\n\nstale marker\n").unwrap();
 
     let budget = 16usize;
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
+    let output = fixture
+        .command()
         .env("ADEN_SKIP_AUTO_GEN", "1")
         .args([
             "asm",
@@ -957,7 +1056,8 @@ fn test_asm_strict_stale_hint_cannot_escape_budget() {
 
 #[test]
 fn test_mcp_wrapper_strict_budget_transport_golden() {
-    let dir = temp_project::temp_dir();
+    let fixture = temp_project::TempProject::new();
+    let dir = fixture.path();
     temp_project::scaffold(&dir);
     let budget = 16usize;
     let mut args = serde_json::Map::new();
@@ -967,7 +1067,8 @@ fn test_mcp_wrapper_strict_budget_transport_golden() {
 
     let argv = aden_mcp::prepare_cli_args_for_mcp("ask", &args).unwrap();
     assert!(argv.iter().any(|arg| arg == "-s"));
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
+    let output = fixture
+        .command()
         .args(&argv)
         .output()
         .expect("execute MCP-directed CLI command");
@@ -988,10 +1089,12 @@ fn test_mcp_wrapper_strict_budget_transport_golden() {
 
 #[test]
 fn test_asm_strict_rejects_unbounded_inspect_and_out_modes() {
-    let dir = temp_project::temp_dir();
+    let fixture = temp_project::TempProject::new();
+    let dir = fixture.path();
     temp_project::scaffold(&dir);
 
-    let inspect = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
+    let inspect = fixture
+        .command()
         .args([
             "asm",
             "--from",
@@ -1009,7 +1112,8 @@ fn test_asm_strict_rejects_unbounded_inspect_and_out_modes() {
     );
 
     let out_path = dir.join("assembly.txt");
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
+    let out = fixture
+        .command()
         .args([
             "asm",
             "--from",
@@ -1033,10 +1137,12 @@ fn test_asm_strict_rejects_unbounded_inspect_and_out_modes() {
 
 #[test]
 fn test_ask_strict_rejects_model_output() {
-    let dir = temp_project::temp_dir();
+    let fixture = temp_project::TempProject::new();
+    let dir = fixture.path();
     temp_project::scaffold(&dir);
 
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
+    let output = fixture
+        .command()
         .args([
             "ask",
             "What is module a?",
@@ -1057,10 +1163,12 @@ fn test_ask_strict_rejects_model_output() {
 
 #[test]
 fn test_graph_outputs_neighborhood() {
-    let dir = temp_project::temp_dir();
+    let fixture = temp_project::TempProject::new();
+    let dir = fixture.path();
     temp_project::scaffold(&dir);
 
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
+    let output = fixture
+        .command()
         .args([
             "query",
             "--from",
@@ -1083,9 +1191,11 @@ fn test_graph_outputs_neighborhood() {
 
 #[test]
 fn grep_regex_shaped_literal_is_needs_regex() {
-    let dir = temp_project::temp_dir();
+    let fixture = temp_project::TempProject::new();
+    let dir = fixture.path();
     std::fs::write(dir.join("app.rs"), "fn ready() {}\n").unwrap();
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
+    let output = fixture
+        .command()
         .args(["grep", "ready|Ready", &dir.to_string_lossy()])
         .output()
         .expect("aden binary must be built");
@@ -1100,9 +1210,11 @@ fn grep_regex_shaped_literal_is_needs_regex() {
 
 #[test]
 fn check_rejects_multiple_paths() {
-    let dir = temp_project::temp_dir();
+    let fixture = temp_project::TempProject::new();
+    let dir = fixture.path();
     temp_project::scaffold(&dir);
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
+    let output = fixture
+        .command()
         .args([
             "check",
             &dir.join("README.adoc").to_string_lossy(),
@@ -1120,10 +1232,12 @@ fn check_rejects_multiple_paths() {
 fn tree_default_json_is_the_symbol_outline() {
     // JSON is the global default. `aden tree` without --human must not dump
     // the graphical directory tree at an agent.
-    let dir = temp_project::temp_dir();
+    let fixture = temp_project::TempProject::new();
+    let dir = fixture.path();
     std::fs::write(dir.join("app.rs"), "fn parse_config() {}\n").unwrap();
 
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
+    let output = fixture
+        .command()
         .args(["tree", &dir.to_string_lossy()])
         .output()
         .expect("aden binary must be built");
@@ -1146,7 +1260,8 @@ fn tree_default_json_is_the_symbol_outline() {
         "{payload}"
     );
 
-    let human = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
+    let human = fixture
+        .command()
         .args(["--human", "tree", &dir.to_string_lossy()])
         .output()
         .expect("aden binary must be built");
@@ -1160,7 +1275,8 @@ fn tree_default_json_is_the_symbol_outline() {
 
 #[test]
 fn tree_symbols_is_a_compact_exact_codebase_outline() {
-    let dir = temp_project::temp_dir();
+    let fixture = temp_project::TempProject::new();
+    let dir = fixture.path();
     std::fs::write(
         dir.join("app.rs"),
         "fn parse_config() {\n    validate_input();\n}\n\nfn validate_input() {}\n",
@@ -1168,7 +1284,8 @@ fn tree_symbols_is_a_compact_exact_codebase_outline() {
     .unwrap();
     std::fs::write(dir.join("main.go"), "package main\n\nfunc GoEntry() {}\n").unwrap();
 
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
+    let output = fixture
+        .command()
         .args(["tree", "--symbols", &dir.to_string_lossy()])
         .output()
         .expect("aden binary must be built");
@@ -1197,7 +1314,8 @@ fn tree_symbols_is_a_compact_exact_codebase_outline() {
 
 #[test]
 fn tree_symbols_honors_a_subtree_scope() {
-    let dir = temp_project::temp_dir();
+    let fixture = temp_project::TempProject::new();
+    let dir = fixture.path();
     std::fs::write(
         dir.join("Cargo.toml"),
         "[package]\nname = \"tree-scope-qa\"\nversion = \"0.1.0\"\n",
@@ -1208,7 +1326,8 @@ fn tree_symbols_honors_a_subtree_scope() {
     std::fs::write(dir.join("src/lib.rs"), "pub fn included() {}\n").unwrap();
     std::fs::write(dir.join("tests/hidden.rs"), "fn excluded() {}\n").unwrap();
 
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
+    let output = fixture
+        .command()
         .args(["tree", "--symbols", &dir.join("src").to_string_lossy()])
         .output()
         .expect("aden binary must be built");
@@ -1229,10 +1348,12 @@ fn tree_symbols_honors_a_subtree_scope() {
 
 #[test]
 fn init_is_zero_footprint_by_default() {
-    let dir = temp_project::temp_dir();
+    let fixture = temp_project::TempProject::new();
+    let dir = fixture.path();
     temp_project::scaffold(&dir);
 
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
+    let output = fixture
+        .command()
         .args(["init", &dir.to_string_lossy()])
         .output()
         .expect("aden binary must be built");
@@ -1253,9 +1374,11 @@ fn init_is_zero_footprint_by_default() {
 
 #[test]
 fn init_templates_preserves_explicit_legacy_scaffolding() {
-    let dir = temp_project::temp_dir();
+    let fixture = temp_project::TempProject::new();
+    let dir = fixture.path();
 
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
+    let output = fixture
+        .command()
         .args(["init", "--templates", &dir.to_string_lossy()])
         .output()
         .expect("aden binary must be built");
@@ -1272,8 +1395,10 @@ fn init_templates_preserves_explicit_legacy_scaffolding() {
 
 #[test]
 fn new_project_has_no_aden_specific_files_by_default() {
-    let parent = temp_project::temp_dir();
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
+    let fixture = temp_project::TempProject::new();
+    let parent = fixture.path();
+    let output = fixture
+        .command()
         .args(["new", "minimal-app", &parent.to_string_lossy()])
         .output()
         .expect("aden binary must be built");
@@ -1293,10 +1418,14 @@ fn new_project_has_no_aden_specific_files_by_default() {
 
 #[test]
 fn project_override_does_not_persist_state_in_the_working_tree() {
-    let dir = temp_project::temp_dir();
+    let fixture = temp_project::TempProject::new();
+    let working_directory = temp_project::TempProject::new();
+    let dir = fixture.path();
     temp_project::scaffold(&dir);
 
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
+    let output = fixture
+        .command()
+        .current_dir(working_directory.path())
         .args(["--project", &dir.to_string_lossy(), "grep", "Hello world"])
         .output()
         .expect("aden binary must be built");
@@ -1314,10 +1443,12 @@ fn project_override_does_not_persist_state_in_the_working_tree() {
 
 #[test]
 fn test_search_finds_results() {
-    let dir = temp_project::temp_dir();
+    let fixture = temp_project::TempProject::new();
+    let dir = fixture.path();
     temp_project::scaffold(&dir);
 
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
+    let output = fixture
+        .command()
         .args(["search", "module", &dir.to_string_lossy()])
         .output()
         .expect("aden binary must be installed");
@@ -1333,10 +1464,12 @@ fn test_search_finds_results() {
 
 #[test]
 fn test_query_from_returns_json() {
-    let dir = temp_project::temp_dir();
+    let fixture = temp_project::TempProject::new();
+    let dir = fixture.path();
     temp_project::scaffold(&dir);
 
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
+    let output = fixture
+        .command()
         .args([
             "query",
             "--from",
@@ -1356,42 +1489,49 @@ fn test_query_from_returns_json() {
 // Additional CLI command tests - verify commands run without crashing
 #[test]
 fn test_additional_commands() {
-    let dir = temp_project::temp_dir();
+    let fixture = temp_project::TempProject::new();
+    let dir = fixture.path();
     temp_project::scaffold(&dir);
 
     // Test locate
-    let _ = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
+    let _ = fixture
+        .command()
         .args(["locate", "--symbol", "module-a", &dir.to_string_lossy()])
         .output();
 
     // Test gen (may have no source files)
-    let _ = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
+    let _ = fixture
+        .command()
         .args(["gen", "--auto", &dir.to_string_lossy()])
         .output();
 
     // Test lint
-    let lint = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
+    let lint = fixture
+        .command()
         .args(["lint", &dir.to_string_lossy()])
         .output()
         .expect("aden binary must be built");
     assert!(lint.status.success(), "lint should pass");
 
     // Test test --list
-    let test = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
+    let test = fixture
+        .command()
         .args(["test", "--list", &dir.to_string_lossy()])
         .output()
         .expect("aden binary must be built");
     assert!(test.status.success(), "test --list should work");
 
     // Test heal
-    let heal = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
+    let heal = fixture
+        .command()
         .args(["heal", &dir.to_string_lossy()])
         .output()
         .expect("aden binary must be built");
     assert!(heal.status.success(), "heal should run");
 
     // Test list
-    let list = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
+    let list = fixture
+        .command()
         .args(["list", &dir.to_string_lossy()])
         .output()
         .expect("aden binary must be built");
@@ -1402,7 +1542,8 @@ fn test_additional_commands() {
     );
 
     // Test mcp list
-    let mcp = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
+    let mcp = fixture
+        .command()
         .args(["mcp", "list"])
         .output()
         .expect("aden binary must be built");
@@ -1415,7 +1556,8 @@ fn test_additional_commands() {
 /// store, so the old anchor was orphaned forever.
 #[test]
 fn test_regen_prunes_renamed_symbol() {
-    let dir = temp_project::temp_dir();
+    let fixture = temp_project::TempProject::new();
+    let dir = fixture.path();
     let src = dir.join("m.go");
     std::fs::write(dir.join("go.mod"), "module m\n").unwrap();
     std::fs::write(
@@ -1425,7 +1567,8 @@ fn test_regen_prunes_renamed_symbol() {
     .unwrap();
 
     // Initial gen records Foo.Bar.
-    let gen_out = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
+    let gen_out = fixture
+        .command()
         .args(["gen", &dir.to_string_lossy()])
         .output()
         .expect("aden binary must be built");
@@ -1437,13 +1580,15 @@ fn test_regen_prunes_renamed_symbol() {
         "package m\ntype Foo struct{}\nfunc (c *Foo) Baz() {}\n",
     )
     .unwrap();
-    let regen = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
+    let regen = fixture
+        .command()
         .args(["regen", &dir.to_string_lossy()])
         .output()
         .expect("aden binary must be built");
     assert!(regen.status.success(), "regen should succeed");
 
-    let list = std::process::Command::new(env!("CARGO_BIN_EXE_aden"))
+    let list = fixture
+        .command()
         .args(["list", "--unlimited", &dir.to_string_lossy()])
         .output()
         .expect("aden binary must be built");
