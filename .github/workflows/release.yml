@@ -407,10 +407,22 @@ jobs:
           printf 'pub fn rust_release_smoke() {}\n' > "$smoke/lib.rs"
           printf 'package smoke\nfunc GoReleaseSmoke() {}\n' > "$smoke/smoke.go"
           "$PWD/installed/aden" gen "$smoke" --auto --json >/dev/null
-          "$PWD/installed/aden" locate --symbol rust_release_smoke "$smoke" --json \
-            | grep -q 'rust_release_smoke'
-          "$PWD/installed/aden" locate --symbol GoReleaseSmoke "$smoke" --json \
-            | grep -q 'GoReleaseSmoke'
+          require_definition() {
+            python3 -c '
+          import json, sys
+          name = sys.argv[1]
+          result = json.load(sys.stdin)
+          items = result.get("items", []) if isinstance(result, dict) else []
+          anchor = items[0].get("anchor") if isinstance(items, list) and len(items) == 1 and isinstance(items[0], dict) else None
+          valid = isinstance(result, dict) and result.get("match_kind") == "definition" and result.get("total") == 1 and result.get("freshness") == "current" and isinstance(anchor, str) and anchor.endswith("#" + name)
+          if not valid:
+              raise SystemExit("Expected one current indexed definition for " + name)
+          ' "$1"
+          }
+          "$PWD/installed/aden" --require-fresh locate --symbol rust_release_smoke "$smoke" --json \
+            | require_definition rust_release_smoke
+          "$PWD/installed/aden" --require-fresh locate --symbol GoReleaseSmoke "$smoke" --json \
+            | require_definition GoReleaseSmoke
 
       - name: Extract, smoke, and install (Windows)
         if: runner.os == 'Windows'
@@ -437,14 +449,25 @@ jobs:
           Set-Content -Path (Join-Path $smoke "smoke.go") -Value "package smoke`nfunc GoReleaseSmoke() {}" -NoNewline
           & "$PWD/installed/aden.exe" gen $smoke --auto --json | Out-Null
           if ($LASTEXITCODE -ne 0) { throw "Installed aden.exe failed its parser smoke test" }
-          $rustLocated = & "$PWD/installed/aden.exe" locate --symbol rust_release_smoke $smoke --json | ConvertFrom-Json
-          if ($LASTEXITCODE -ne 0 -or -not $rustLocated.items -or $rustLocated.items.Count -eq 0) {
-            throw "Installed aden.exe did not index its statically linked Rust grammar"
+          function Require-Definition([string]$Name) {
+            $json = & "$PWD/installed/aden.exe" --require-fresh locate --symbol $Name $smoke --json
+            $nativeExit = $LASTEXITCODE
+            if ($nativeExit -ne 0) { throw "Definition lookup failed for $Name (exit $nativeExit)" }
+            $json = ($json -join "`n").Trim()
+            if (-not $json.StartsWith('{')) { throw "Definition lookup returned invalid evidence for $Name" }
+            $result = ConvertFrom-Json -InputObject $json
+            if ($result -isnot [pscustomobject]) { throw "Definition lookup returned invalid evidence for $Name" }
+            $items = @($result.items)
+            $exact = @($items | Where-Object {
+              $_.anchor -is [string] -and $_.anchor.EndsWith("#$Name", [StringComparison]::Ordinal)
+            })
+            if ($result.match_kind -ne 'definition' -or $result.total -ne 1 -or
+                $result.freshness -ne 'current' -or $items.Count -ne 1 -or $exact.Count -ne 1) {
+              throw "Expected one current indexed definition for $Name"
+            }
           }
-          $goLocated = & "$PWD/installed/aden.exe" locate --symbol GoReleaseSmoke $smoke --json | ConvertFrom-Json
-          if ($LASTEXITCODE -ne 0 -or -not $goLocated.items -or $goLocated.items.Count -eq 0) {
-            throw "Installed aden.exe did not index its statically linked Go grammar"
-          }
+          Require-Definition rust_release_smoke
+          Require-Definition GoReleaseSmoke
 
           # install.ps1 promises Windows PowerShell 5.1 compatibility; `pwsh`
           # above only verifies PowerShell 7. Exercise the in-box Windows
