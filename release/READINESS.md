@@ -24,6 +24,24 @@ Native desktop fixture checks covered Simple search/filter/Back and 2D global
 search/no-results/Enter selection. They do not establish touch behavior, frame
 rate, universal scalability, or performance on other operating systems.
 
+## Validation ownership and test relevance
+
+The required shipped-binary status owns one complete default workspace test run
+(including LSP), the release build, and release-profile product/MCP smoke tests.
+The Quality Gate owns MSRV/all-target checks, opt-in features, lint, pure
+viewer/benchmark harnesses, dependency/license checks, and documentation validation.
+The native OS matrix owns filesystem, CLI/MCP, concurrency, and installer contracts.
+Repeated full debug suites and repeated discovery-selected tests were removed.
+
+Local fixes use the smallest checks that can establish their behavior and failure
+mode. A final full suite belongs to the exact PR candidate; documentation-only or
+workflow-routing edits do not automatically require another full local rebuild.
+Review assertions when goals change: retain current observable contracts and
+demonstrated failure scenarios, update intentionally changed compatibility
+requirements, and replace incidental status wording or internal helper counts.
+Historical measurement protocols remain opt-in evidence, rather than mandatory
+execution on every change. Check success does not establish browser performance.
+
 ## Historical 0.4.1 readiness — 2026-09-19
 
 Local release preparation is complete for workspace version 0.4.1. At the time

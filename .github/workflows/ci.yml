@@ -46,7 +46,17 @@ jobs:
       # Catches drive-letter, UNC, separator, install, and argv drift without a
       # full workspace test matrix on every OS.
       - name: Test MCP and filesystem contracts
-        run: cargo build --locked -p aden-cli -p aden-mcp && cargo test --locked -p aden-core -p aden-mcp -p aden-paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --locked -p aden-cli -p aden-mcp
+          # Run every MCP integration test once, against this job's binary.
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            export ADEN_BIN="${GITHUB_WORKSPACE}/target/debug/aden.exe"
+          else
+            export ADEN_BIN="${GITHUB_WORKSPACE}/target/debug/aden"
+          fi
+          cargo test --locked -p aden-core -p aden-mcp -p aden-paths
 
       - name: CLI unit and session contention regressions
         run: cargo test --locked -p aden-cli --bin aden
@@ -67,9 +77,6 @@ jobs:
           --test read_trace
           --test gen_trace
 
-      - name: Offline viewer navigation and search regressions
-        run: node --test scripts/test_viewer.cjs scripts/test_simple_viewer.cjs
-
       - name: Verify vendored bytes on each platform
         shell: bash
         working-directory: crates/aden-cli/assets
@@ -87,18 +94,6 @@ jobs:
           for script in install.sh release/install.sh scripts/*.sh; do
             bash -n "$script"
           done
-
-      - name: Live MCP product gauntlet
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [[ "${{ runner.os }}" == "Windows" ]]; then
-            export ADEN_BIN="${GITHUB_WORKSPACE}/target/debug/aden.exe"
-          else
-            export ADEN_BIN="${GITHUB_WORKSPACE}/target/debug/aden"
-          fi
-          test -f "$ADEN_BIN"
-          cargo test --locked -p aden-mcp --test mcp_live_gauntlet -- --nocapture
 
       - name: Smoke source PowerShell installer
         if: runner.os == 'Windows'
@@ -134,14 +129,13 @@ jobs:
       - name: Cache Cargo
         uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
 
-      - name: Verify frozen regression definitions
-        run: cargo test --locked -p aden-cli --test regression_lock
-
       - name: Build shipped binaries
         run: cargo build --locked --release -p aden-cli -p aden-mcp
 
+      # Keep the complete suite in the existing required status check. Quality
+      # Gate owns lint/features/policy rather than repeating this execution.
       - name: Run workspace regression tests
-        run: cargo test --locked --workspace --exclude aden-lsp --no-fail-fast
+        run: cargo test --locked --workspace --no-fail-fast
 
       - name: Smoke release binary contracts
         shell: bash

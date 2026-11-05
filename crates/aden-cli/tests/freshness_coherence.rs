@@ -50,6 +50,7 @@ impl Fixture {
             .args(args)
             .current_dir(&self.project)
             .env("ADEN_DATA_DIR", &self.data)
+            .env("ADEN_GEN_TRACE", "1")
             .env_remove("ADEN_STORE")
             .env_remove("ADEN_SKIP_AUTO_GEN")
             .output()
@@ -73,8 +74,14 @@ impl Fixture {
         })
     }
 
-    fn generate(&self) -> String {
-        String::from_utf8(self.run(&["gen", ".", "--quiet"]).stdout).unwrap()
+    fn generate(&self) -> Value {
+        let output = self.run(&["gen", ".", "--quiet"]);
+        String::from_utf8(output.stderr)
+            .unwrap()
+            .lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .find(|value| value["type"] == "aden_gen_trace")
+            .expect("successful generation must report requested telemetry")
     }
 
     fn locate(&self, symbol: &str) -> Value {
@@ -163,11 +170,9 @@ fn unchanged_bytes_reuse_cache_even_after_timestamp_change() {
         .unwrap();
     set_modified(&fixture.source(), modified + Duration::from_secs(5));
 
-    let summary = fixture.generate();
-    assert!(
-        summary.contains("Stored 0 contracts. Skipped 1 unchanged files."),
-        "{summary}"
-    );
+    let report = fixture.generate();
+    assert_eq!(report["counts"]["skipped_files"], 1);
+    assert_eq!(report["counts"]["reindexed_files"].as_u64(), Some(0));
     assert_definition(&fixture.locate("before_fn"), "before_fn");
 }
 
@@ -186,11 +191,9 @@ fn cache_entries_without_content_digest_are_reparsed() {
     }
     std::fs::write(&cache_path, serde_json::to_vec(&cache).unwrap()).unwrap();
 
-    let summary = fixture.generate();
-    assert!(
-        summary.contains("Stored 1 contracts. Skipped 0 unchanged files."),
-        "{summary}"
-    );
+    let report = fixture.generate();
+    assert_eq!(report["counts"]["reindexed_files"], 1);
+    assert_eq!(report["counts"]["skipped_files"], 0);
     let reparsed: Value = serde_json::from_slice(&std::fs::read(cache_path).unwrap()).unwrap();
     assert!(
         reparsed["entries"]
