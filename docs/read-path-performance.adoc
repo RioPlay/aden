@@ -89,7 +89,7 @@ completion speed, productivity, vulnerability coverage, or production scalabilit
 
 == Local observation: 2026-11-05 UTC
 
-The working tree based on `f8eda8efb17d8557a9a67eddb41980031dcb67fc` was tested
+The working tree based on Git commit `f8eda8efb17d8557a9a67eddb41980031dcb67fc` was tested
 with pre-existing local changes preserved. Both binaries were development builds
 with the `view` feature on Windows 11 AMD64 (16 logical CPUs), Python 3.13.16.
 The baseline already included direct reads and content-coherent generation.
