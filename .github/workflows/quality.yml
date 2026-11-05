@@ -21,7 +21,7 @@ jobs:
     timeout-minutes: 60
     steps:
       - name: Checkout requested commit
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Full history so identity hygiene can scan author/committer metadata.
           fetch-depth: 0
@@ -63,7 +63,9 @@ jobs:
           python3 -m unittest discover -s scripts -p 'test_*.py'
 
       - name: Viewer behavior and security regressions
-        run: node --test scripts/test_viewer.cjs scripts/test_simple_viewer.cjs
+        run: |
+          node --version
+          node --test scripts/test_viewer.cjs scripts/test_simple_viewer.cjs
 
       - name: Validate documentation and roadmap contracts
         run: |
@@ -119,7 +121,7 @@ jobs:
 
       - name: Upload quality verdict
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: quality-verdict-${{ github.sha }}
           path: quality-verdict.json

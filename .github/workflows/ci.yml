@@ -24,7 +24,7 @@ jobs:
         os: [ubuntu-24.04, macos-14, windows-2025]
     steps:
       - name: Checkout source
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
@@ -121,7 +121,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Checkout source
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Rust 1.90
         uses: dtolnay/rust-toolchain@0176485ebe2f605bde554dd99f804beeaf7db3e2 # 1.90.0
