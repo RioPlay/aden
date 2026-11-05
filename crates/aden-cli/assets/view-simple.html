@@ -180,7 +180,7 @@ function renderSymbols() {
 }
 function searchSymbols() {
   const q = $('search').value.trim().toLowerCase();
-  found = q ? allNodes.filter(n=>n.searchText.includes(q)).sort((a,b)=>AdenSearch.rank(a,nameOf(a),q)-AdenSearch.rank(b,nameOf(b),q)) : allNodes;
+  found = q ? AdenSearch.select(allNodes,nameOf,q) : allNodes;
   symbolPage = 0; searchSelection = 0; renderSymbols();
 }
 function captureNavigation() {
@@ -210,13 +210,31 @@ function selectNode(id, push = true) {
   renderSymbols(); filterRelations();
   if (push) { $('title').scrollIntoView({block:'start'}); recordNavigation(true); }
 }
+// Sort a node's immutable adjacency only when first visited. Filter changes do
+// not change relative ordering, and unused nodes incur no sorting/startup cost.
+const orderedRelations = new Map();
+function adjacencyFor(id) {
+  if (!orderedRelations.has(id)) {
+    const peerNames = new Map();
+    const peer = e => {
+      const peerId = e.from === id ? e.to : e.from;
+      if (!peerNames.has(peerId)) peerNames.set(peerId,nameOf(graph.nodes.get(peerId)));
+      return peerNames.get(peerId);
+    };
+    const order = (a,b) => a.type.localeCompare(b.type) || peer(a).localeCompare(peer(b));
+    orderedRelations.set(id, {
+      incoming: [...graph.incoming.get(id)].sort(order),
+      outgoing: [...graph.outgoing.get(id)].sort(order)
+    });
+  }
+  return orderedRelations.get(id);
+}
 function filterRelations() {
   const direction = $('direction').value, type = $('edge-type').value;
   const accept = e => (!type || e.type === type) && ($('structural').checked || !['Contains','PartOf'].includes(e.type));
-  inEdges = current && direction !== 'out' ? graph.incoming.get(current).filter(accept) : [];
-  outEdges = current && direction !== 'in' ? graph.outgoing.get(current).filter(accept) : [];
-  const order = (a,b) => a.type.localeCompare(b.type) || nameOf(graph.nodes.get(a.from===current?a.to:a.from)).localeCompare(nameOf(graph.nodes.get(b.from===current?b.to:b.from)));
-  inEdges.sort(order); outEdges.sort(order);
+  const adjacency = current ? adjacencyFor(current) : null;
+  inEdges = adjacency && direction !== 'out' ? adjacency.incoming.filter(accept) : [];
+  outEdges = adjacency && direction !== 'in' ? adjacency.outgoing.filter(accept) : [];
   relations = [...new Map([...inEdges,...outEdges].map(e=>[e.key,e])).values()];
   graphPage=0; rowPage=0; rowSelection=-1; renderDiagram(); renderRows();
   const total = current ? new Set([...graph.incoming.get(current),...graph.outgoing.get(current)]).size : 0;

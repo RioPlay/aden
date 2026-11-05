@@ -198,6 +198,8 @@ class AgentBenchTests(unittest.TestCase):
             self.assertEqual(report["answer_schema"]["definition"], bench.ANSWER_SCHEMA)
             self.assertIn("aden", report["binaries"])
             record = report["records"][0]
+            self.assertFalse(report["aborted"])
+            self.assertTrue(record["repository_guard"]["unchanged"])
             self.assertEqual(record["prompt"]["sha256"], bench.sha256_bytes(record["prompt"]["text"].encode()))
             state = report["repositories"][record["repository_identity"]]
             self.assertTrue(state["dirty"])
@@ -206,6 +208,22 @@ class AgentBenchTests(unittest.TestCase):
             self.assertEqual(len(state["untracked_files"]), 1)
             self.assertEqual(state["untracked_files"][0]["sha256"], bench.sha256_bytes(b"new input"))
             self.assertIn(bench.NEUTRAL_PROTOCOL, bench.render_markdown(report))
+
+    def test_repository_fingerprint_detects_changes_without_mutating_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            subprocess.run(["git", "-C", str(repo), "init"], capture_output=True, check=True)
+            source = repo / "source.txt"
+            source.write_text("before\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(repo), "add", "source.txt"], capture_output=True, check=True)
+            subprocess.run([
+                "git", "-C", str(repo), "-c", "user.name=Fixture",
+                "-c", "user.email=fixture@example.invalid", "commit", "-m", "fixture",
+            ], capture_output=True, check=True)
+            before = bench.repository_fingerprint(bench.repository_identity(repo))
+            source.write_text("after\n", encoding="utf-8")
+            after = bench.repository_fingerprint(bench.repository_identity(repo))
+            self.assertNotEqual(before, after)
 
     def test_committed_corpus_has_fourteen_valid_tasks(self) -> None:
         corpus = bench.load_tasks(bench.DEFAULT_TASKS)

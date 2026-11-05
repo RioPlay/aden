@@ -4,6 +4,7 @@
 mod commands;
 mod indexer;
 mod mcp;
+mod read_trace;
 mod time_util;
 mod types;
 mod util;
@@ -512,6 +513,38 @@ enum Commands {
         unlimited: bool,
         #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
         path: PathBuf,
+    },
+    /// Read an explicit source range without indexing or semantic routing
+    Read {
+        #[arg(
+            value_name = "FILE",
+            help = "File relative to DIR, the exact read boundary"
+        )]
+        file: PathBuf,
+        #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
+        path: PathBuf,
+        #[arg(long, default_value = "1", help = "First line, 1-based and inclusive")]
+        start_line: usize,
+        #[arg(long, help = "Last line, inclusive (default: start line + 199)")]
+        end_line: Option<usize>,
+        #[arg(
+            long,
+            default_value = "8192",
+            help = "Maximum excerpt bytes, 1 through 8192"
+        )]
+        max_bytes: usize,
+        #[arg(
+            long,
+            help = "Require the literal-byte source hash from an earlier read"
+        )]
+        expected_hash: Option<String>,
+        #[arg(
+            long,
+            requires = "expected_hash",
+            conflicts_with = "start_line",
+            help = "Continue at next_byte from an earlier read (requires expected-hash; preserve end-line)"
+        )]
+        start_byte: Option<usize>,
     },
     /// Search content and tag each hit with its enclosing symbol
     Grep {
@@ -1403,10 +1436,12 @@ fn build_long_version() -> &'static str {
 }
 
 fn real_main() -> Result<(), Box<dyn std::error::Error>> {
+    let read_trace = read_trace::Request::start();
     let matches = Cli::command()
         .long_version(build_long_version())
         .get_matches();
     let cli = Cli::from_arg_matches(&matches)?;
+    read_trace.select_command(matches.subcommand_name());
     let quiet = !cli.verbose;
     crate::util::quiet::set_quiet(quiet);
     let _unlimited = cli.unlimited;
@@ -1439,7 +1474,7 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    match cli.command {
+    let result = match cli.command {
         Commands::Init {
             path,
             templates,
@@ -1728,6 +1763,26 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
                 machine_json,
             )
         }
+        Commands::Read {
+            file,
+            path,
+            start_line,
+            end_line,
+            max_bytes,
+            expected_hash,
+            start_byte,
+        } => commands::cmd_read(
+            &file,
+            &path,
+            commands::read::ReadOptions {
+                start_line,
+                end_line,
+                max_bytes,
+                expected_hash,
+                start_byte,
+            },
+            machine_json,
+        ),
         Commands::Grep {
             pattern,
             regex,
@@ -2085,5 +2140,9 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Model { action } => match action {
             ModelAction::Fetch { force } => commands::cmd_model_fetch(force),
         },
+    };
+    if result.is_ok() {
+        read_trace.success(matches.subcommand_name());
     }
+    result
 }

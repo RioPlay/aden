@@ -21,7 +21,7 @@ Do NOT:
 DO:
 
 * Use contracts to understand code you haven't read yet
-* Use `aden ask` to reason about impact before modifying code
+* Read known source with `aden read`; follow explicit incoming references with `aden query --backlinks`
 * Use `aden heal` to find drift between code and contracts
 ****
 
@@ -29,15 +29,16 @@ DO:
 
 [TIP]
 ====
-Prefer `aden ask --budget 2048` for quick lookups.
-Only escalate to `aden asm` when you need full cross-reference context.
+Known file/range: use `aden read`. Exact text: use `aden grep`. Find a symbol:
+use `aden locate`. Follow explicit relationships: use `aden query` or `aden asm`.
+`aden ask` is optional heuristic discovery; verify its selected anchors.
 ====
 
 === Before touching any existing code
 [source,bash]
 ----
-aden ask --from <symbol> "What breaks if I change X?"
-aden query --from <symbol> --depth 2
+aden read src/example.rs --start-line 20 --end-line 60
+aden query --backlinks <symbol> --depth 2
 aden locate <symbol>
 ----
 
@@ -176,7 +177,8 @@ Use the smallest tool that answers your question:
 ====
 `aden asm` consumes tokens proportional to graph depth.
 If your project is large, assembly can exceed typical context windows.
-Start with `aden ask` and only escalate if the answer is insufficient.
+Select a known anchor and bound depth/context explicitly. Use `aden read` for
+source ranges; heuristic `ask` routing is optional.
 ====
 
 == Related Documents

@@ -241,6 +241,35 @@ pub fn cmd_workflow(
     Ok(())
 }
 
+/// Windows may report access denied when a lock target is removed between a
+/// contender's hard-link attempt and its existence check. Retry that specific
+/// error briefly; persistent permission failures still return the original
+/// error, and ordinary contention retains the single overall deadline.
+fn acquire_session_lock_with<T>(
+    timeout: std::time::Duration,
+    mut acquire: impl FnMut(std::time::Duration) -> std::io::Result<T>,
+) -> std::io::Result<T> {
+    let started = std::time::Instant::now();
+    let mut transient_retries = 0;
+    loop {
+        match acquire(timeout.saturating_sub(started.elapsed())) {
+            Err(error)
+                if cfg!(windows)
+                    && error.raw_os_error() == Some(5)
+                    && transient_retries < 3
+                    && started.elapsed() < timeout =>
+            {
+                transient_retries += 1;
+                std::thread::sleep(
+                    std::time::Duration::from_millis(10)
+                        .min(timeout.saturating_sub(started.elapsed())),
+                );
+            }
+            result => return result,
+        }
+    }
+}
+
 /// Atomic session lock: append entry to .agent/session.adoc.
 pub fn cmd_session(
     repo_path: &Path,
@@ -273,10 +302,9 @@ pub fn cmd_session(
     // not atomic — two agents would each read the file without the other's
     // entry and the last writer would clobber the first (a lost update). Hold an
     // advisory lock across the RMW so parallel-agent sessions append safely.
-    let _lock = aden_core::lock::FileLock::acquire_timeout(
-        session_path.with_extension("lock"),
-        std::time::Duration::from_secs(10),
-    )
+    let _lock = acquire_session_lock_with(std::time::Duration::from_secs(10), |remaining| {
+        aden_core::lock::FileLock::acquire_timeout(session_path.with_extension("lock"), remaining)
+    })
     .map_err(|e| format!("could not lock session log: {e}"))?;
 
     // Enforce session file size limit to prevent DoS via log growth
@@ -333,6 +361,55 @@ pub fn cmd_session(
 mod tests {
     use super::*;
     use std::sync::Arc;
+
+    #[cfg(windows)]
+    #[test]
+    fn transient_deleted_lock_access_error_is_retried_within_original_budget() {
+        let timeout = std::time::Duration::from_secs(1);
+        let mut attempts = 0;
+        let mut previous_remaining = timeout;
+        let result = acquire_session_lock_with(timeout, |remaining| {
+            assert!(remaining <= previous_remaining);
+            previous_remaining = remaining;
+            attempts += 1;
+            if attempts == 1 {
+                Err(std::io::Error::from_raw_os_error(5))
+            } else {
+                Ok("acquired")
+            }
+        });
+        assert_eq!(result.unwrap(), "acquired");
+        assert_eq!(attempts, 2);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn persistent_access_denial_is_returned_after_bounded_retries() {
+        let mut attempts = 0;
+        let result: std::io::Result<()> =
+            acquire_session_lock_with(std::time::Duration::from_secs(1), |_| {
+                attempts += 1;
+                Err(std::io::Error::from_raw_os_error(5))
+            });
+        assert_eq!(result.unwrap_err().raw_os_error(), Some(5));
+        assert_eq!(attempts, 4);
+    }
+
+    #[test]
+    fn unrelated_lock_errors_and_expired_retry_budget_are_not_retried() {
+        for (timeout, code) in [
+            (std::time::Duration::from_secs(1), 2),
+            (std::time::Duration::ZERO, 5),
+        ] {
+            let mut attempts = 0;
+            let result: std::io::Result<()> = acquire_session_lock_with(timeout, |_| {
+                attempts += 1;
+                Err(std::io::Error::from_raw_os_error(code))
+            });
+            assert_eq!(result.unwrap_err().raw_os_error(), Some(code));
+            assert_eq!(attempts, 1);
+        }
+    }
 
     /// A minimal session.adoc carrying the table and the `== Known Invariants`
     /// marker the append logic inserts before.

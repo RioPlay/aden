@@ -30,6 +30,8 @@ use crate::{
 use aden_core::{Document, EdgeType, SourceSpan};
 use fjall::{Database, Keyspace, KeyspaceCreateOptions, PersistMode};
 use std::collections::{HashMap, HashSet};
+use std::io::Read;
+use std::path::Path;
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
@@ -127,6 +129,27 @@ fn effective_source_span(doc: &Document) -> Option<SourceSpan> {
 }
 
 impl FjallStorage {
+    /// Recognize the current engine's format marker without opening the store.
+    ///
+    /// Reads only the four-byte header of `path/version`, without creating files
+    /// or acquiring the database lock. A recognized marker proves neither store
+    /// integrity nor graph freshness. Missing, unreadable, or unknown markers
+    /// return `false`; callers must use the normal engine open/recovery path to
+    /// determine their meaning, never infer that the store should be deleted.
+    pub fn has_current_format_marker(path: impl AsRef<Path>) -> bool {
+        let Ok(mut marker) = std::fs::File::open(path.as_ref().join("version")) else {
+            return false;
+        };
+        let mut header = [0; 4];
+        if marker.read_exact(&mut header).is_err() {
+            return false;
+        }
+        // Fjall 3.1.8's version.rs::parse_file_header recognizes FJL + version,
+        // ignoring trailing bytes; db.rs::check_version accepts only V3. Keep
+        // this positive-only shortcut aligned with that dependency contract.
+        header[..3] == *b"FJL" && header[3] == u8::from(fjall::FormatVersion::V3)
+    }
+
     /// Open (or create) a Fjall store at the given path.
     pub fn new(path: &str) -> Result<Self, StoreError> {
         Self::open_once(path)

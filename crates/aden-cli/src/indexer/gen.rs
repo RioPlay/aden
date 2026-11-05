@@ -73,7 +73,7 @@ struct EmittedSymbol {
 /// ZERO symbols (e.g. every function was deleted). That is deliberate: the
 /// prune step diffs each reindexed file's fresh anchor set against the set the
 /// cache recorded last time, so an emptied file correctly drops its stale
-/// symbols. `Skip` is reserved for files whose mtime is unchanged.
+/// symbols. `Skip` is reserved for files whose parsed bytes are unchanged.
 enum WorkItem {
     Skip,
     Excluded {
@@ -86,6 +86,7 @@ enum WorkItem {
         cache_key: String,
         source_mtime: u64,
         source_path: String,
+        source_digest: String,
         symbols: Vec<EmittedSymbol>,
         /// Slimmed documents to write to the store, each paired with its base
         /// snapshot (the lossless `emit_contract_document` text, emitted here in
@@ -174,6 +175,7 @@ fn cmd_gen_inner(
     propose: bool,
     force: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let mut trace = super::gen_trace::GenTrace::new(quiet, silent);
     if !path.exists() {
         return Err("Path does not exist or is not a file/directory".into());
     }
@@ -185,6 +187,7 @@ fn cmd_gen_inner(
         path
     };
     let root = find_project_root(search_start);
+    trace.stage("initial_fingerprint");
     // Generation must account for a source that becomes unreadable instead of
     // aborting before the per-file pass can record `io_failed`.  Its snapshot
     // deliberately has no freshness manifest: an unreadable source can never
@@ -221,6 +224,7 @@ fn cmd_gen_inner(
     // link_store_edges — no .adoc files or contracts/ directory are emitted.
     let mut pending_snapshot: Option<std::path::PathBuf> = None;
     {
+        trace.stage("discovery");
         // A single file re-indexes just itself; a directory indexes the project.
         let mut discovered = if path.is_file() {
             vec![crate::util::DiscoveredFile {
@@ -239,10 +243,15 @@ fn cmd_gen_inner(
             eprintln!("No files discovered in {}.", root.display());
             return Ok(());
         }
+        trace.count("discovered_files", discovered.len());
+        trace.count("source_files", sources.len());
+        trace.count("reindexed_files", 0);
+        trace.count("excluded_source_files", 0);
 
         // ADR-003: the store now lives in the per-user data dir, keyed per
         // project. Refuse to create one at $HOME / fs-root unless explicit, then
         // migrate any legacy in-tree store before opening the central one.
+        trace.stage("store_setup");
         aden_paths::guard_creatable_root(&root, crate::util::creation_explicit())?;
         crate::util::migrate_legacy_store(&root);
         let store_path = aden_paths::store_dir(&root);
@@ -253,6 +262,7 @@ fn cmd_gen_inner(
         // G4: serialize concurrent writers. Held until this function returns,
         // covering the whole open/index/flush write phase.
         // Silent path: WouldBlock → Ok (fail-open; another gen is in flight).
+        trace.stage("store_lock");
         let _store_lock = match acquire_store_lock(&store_path, silent) {
             Ok(l) => l,
             Err(e) if silent && e.kind() == std::io::ErrorKind::WouldBlock => {
@@ -271,12 +281,17 @@ fn cmd_gen_inner(
             }
         };
 
+        trace.stage("coalesce_check");
         // Single-flight join: after waiting (explicit) or acquiring (silent), if
         // another writer already refreshed the tree and we are not forcing a
         // full rebuild, skip the expensive reparse.
         if silent
             && !force
             && store_path.exists()
+            // Unchanged source bytes do not establish engine compatibility.
+            // An unknown/old marker must reach the real engine open below,
+            // including its guarded per-project format-recovery path.
+            && Storage::has_current_format_marker(&store_path)
             && !crate::indexer::fresh::index_is_stale_for_root(&root)
         {
             return Ok(());
@@ -286,6 +301,7 @@ fn cmd_gen_inner(
         // explicit gen as "do the work" so operators can force a reindex.
         // (silent join above is the agent-facing coalesce.)
 
+        trace.stage("store_open");
         let store_str = store_path
             .to_str()
             .expect("Store path should be valid UTF-8");
@@ -369,13 +385,17 @@ fn cmd_gen_inner(
                 );
             }
         };
+        // Recovery may expand a single-file request into a full-tree rebuild.
+        trace.count("discovered_files", discovered.len());
+        trace.count("source_files", sources.len());
         let _ = aden_paths::write_meta(&root);
 
-        let cache_path = aden_paths::gen_cache_file(&root);
+        trace.stage("cache_load");
         let mut cache = load_gen_cache(&cache_path);
         let mut generated = 0usize;
         let mut skipped = 0usize;
 
+        trace.stage("persist_prune");
         // Persist every path-level disposition before parsing. This keeps
         // ignored, unsupported, and secret-path files visible to coverage and
         // prunes symbols that were indexed before a rule changed.
@@ -418,6 +438,7 @@ fn cmd_gen_inner(
         let overlay_slugs = crate::commands::overlay::overlay_slugs(&root);
 
         // Phase 1: Parallel file processing — read, parse, write to store
+        trace.stage("parse_prepare");
         let mut work_items: Vec<_> = sources
             .par_iter()
             .filter_map(|src_path| {
@@ -431,7 +452,6 @@ fn cmd_gen_inner(
                     .unwrap_or_default()
                     .as_secs();
 
-                // Check mtime cache — if match, return Skip
                 let src_rel = crate::util::project_relative(&root, src_path);
                 // Security floor: never index credential material into the store
                 // (where ask/asm would assemble it into LLM context). Search
@@ -451,21 +471,9 @@ fn cmd_gen_inner(
                     });
                 }
                 let cache_key = normalize_sep(&src_rel);
-                // `--force-regen`/`--propose` and a full rebuild (new/empty/
-                // recovered store) must re-examine every file even when its mtime
-                // is unchanged: force needs to overwrite, the dry-run needs to
-                // audit current state against overlays, and a full rebuild has an
-                // empty store whose "unchanged" cache entries no longer reflect
-                // any stored contract.
-                if !full_rebuild
-                    && !propose
-                    && let Some(e) = cache.entries.get(&cache_key)
-                    && e.source_mtime == mtime_secs
-                {
-                    return Some(WorkItem::Skip);
-                }
-
-                // Read source
+                // Read before deciding reuse. Timestamps can be preserved by
+                // editors/copy tools and have coarse resolution on some filesystems.
+                // The digest must describe this same buffer passed to the parser.
                 let source = match std::fs::read_to_string(src_path) {
                     Ok(s) => s,
                     Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
@@ -488,6 +496,19 @@ fn cmd_gen_inner(
                         });
                     }
                 };
+
+                let source_digest = aden_core::stable_hash(source.as_bytes());
+                // Force/propose and a full rebuild must re-examine every file:
+                // force overwrites, propose audits overlays, and a new/recovered
+                // store has no contracts corresponding to old cache entries.
+                // Empty legacy digests never match a freshly computed digest.
+                if !full_rebuild
+                    && !propose
+                    && let Some(entry) = cache.entries.get(&cache_key)
+                    && entry.source_digest == source_digest
+                {
+                    return Some(WorkItem::Skip);
+                }
 
                 // Security floor (content): the filename-based is_secret_path
                 // check above misses a credential embedded in an ordinary source
@@ -647,6 +668,7 @@ fn cmd_gen_inner(
                     cache_key: cache_key.clone(),
                     source_mtime: mtime_secs,
                     source_path: src_path.to_string_lossy().to_string(),
+                    source_digest,
                     symbols: emitted,
                     docs: docs_local,
                     conflicts,
@@ -654,6 +676,7 @@ fn cmd_gen_inner(
             })
             .collect();
 
+        trace.stage("persist_prune");
         // Phase 2: Merge parallel results into shared state. Collect compact
         // (anchor, callees) link records so the linker never reloads documents.
         let mut link_records: Vec<(String, Vec<String>)> = Vec::new();
@@ -706,6 +729,7 @@ fn cmd_gen_inner(
                     source_path,
                     disposition,
                 } => {
+                    trace.increment("excluded_source_files");
                     // A file that was once indexed may now be redacted or fail
                     // parsing. Remove its old symbols and persist the reason so
                     // it is never a silent omission.
@@ -725,10 +749,12 @@ fn cmd_gen_inner(
                     cache_key,
                     source_mtime,
                     source_path,
+                    source_digest,
                     symbols,
                     docs,
                     conflicts,
                 } => {
+                    trace.increment("reindexed_files");
                     // Documents + their base snapshots commit in ONE atomic
                     // fjall batch per file (snapshots were already emitted in
                     // the parallel pass). Per-file — not one global — batching is
@@ -763,6 +789,7 @@ fn cmd_gen_inner(
                         GenCacheEntry {
                             source_mtime,
                             source_path,
+                            source_digest,
                             anchors: fresh,
                         },
                     );
@@ -870,7 +897,13 @@ fn cmd_gen_inner(
 
         // Connect the graph: persist module<->symbol containment and call edges
         // so the store-first graph used by asm/ask/query is actually traversable.
+        trace.count("generated_contracts", generated);
+        trace.count("skipped_files", skipped);
+        trace.count("pruned_symbols", pruned);
+        trace.stage("git_history");
         let cochange = cochange_pairs(&root, &cache);
+        trace.count("cochange_pairs", cochange.len());
+        trace.stage("linking");
         let callee_stats = match link_store_edges(
             &storage,
             EdgeRecords {
@@ -898,6 +931,7 @@ fn cmd_gen_inner(
         // Additive second pass: include:: directives -> Requires edges. Kept
         // separate from link_store_edges (which works from anchors only); this
         // resolves file-wise and put_edges_bulk appends, so prior edges persist.
+        trace.stage("include_linking");
         if let Err(e) = link_include_edges(&storage, &include_records) {
             eprintln!("WARN: Failed to link include edges: {}", e);
         }
@@ -905,6 +939,7 @@ fn cmd_gen_inner(
         // Every document write, stale-node prune, and synthesized hub write is
         // now complete. Publish the marker last, then durably flush both graph
         // and lexicon before preparing a snapshot that may reference them.
+        trace.stage("store_flush");
         storage
             .finalize_symbol_lexicon()
             .map_err(|e| format!("Failed to finalize symbol lexicon: {e}"))?;
@@ -912,6 +947,7 @@ fn cmd_gen_inner(
             .flush()
             .map_err(|e| format!("Store flush failed: {}", e))?;
 
+        trace.stage("extraction_cleanup");
         // Linking is complete. Release extraction-only strings before loading
         // docs + edges for the read snapshot; retaining both sets made cold
         // kernel-scale indexing carry the call/reference corpus twice.
@@ -934,13 +970,20 @@ fn cmd_gen_inner(
         // ADR-011: serialize the read snapshot to its temporary file while
         // storage is open; publish after the store handle drops so a final fjall
         // flush cannot age the store past the snapshot file.
+        trace.stage("snapshot_prepare");
         let snapshot_path = aden_paths::graph_snapshot_file(&root);
+        trace.count("snapshot_prepared", 0);
         match aden_graph::snapshot::prepare_from_storage(&snapshot_path, &storage) {
-            Ok(()) => pending_snapshot = Some(snapshot_path),
+            Ok(()) => {
+                trace.count("snapshot_prepared", 1);
+                pending_snapshot = Some(snapshot_path);
+            }
             Err(e) => eprintln!("WARN: Failed to prepare read snapshot: {e}"),
         }
 
+        trace.stage("cache_write");
         save_gen_cache(&cache_path, &cache)?;
+        trace.stage("summary_and_notices");
 
         // The summary is "summary only" output: shown under --quiet/regen, but
         // suppressed entirely on the silent refresh-on-read path.
@@ -1000,6 +1043,7 @@ fn cmd_gen_inner(
 
         // Report orphan symbols using store-first graph build. Suppressed in
         // quiet mode so the transparent refresh-on-read path stays silent.
+        trace.stage("orphan_diagnostics");
         if !quiet {
             match AdenGraph::build_from_storage(&storage) {
                 Ok(graph) => {
@@ -1020,11 +1064,20 @@ fn cmd_gen_inner(
                 }
             }
         }
+        // Keep the writer lock through DB close, as before, and publish only
+        // after the final engine flush performed by the storage destructor.
+        trace.stage("store_close");
+        drop(storage);
+        trace.stage("scope_cleanup");
     }
 
+    trace.stage("snapshot_publish");
+    trace.count("snapshot_published", 0);
+    trace.count("freshness_manifest_published", 0);
     if let Some(snapshot_path) = pending_snapshot {
         match aden_graph::snapshot::publish_prepared(&snapshot_path) {
             Ok(()) => {
+                trace.count("snapshot_published", 1);
                 if let Some(indexed_source_fingerprint) = indexed_source_fingerprint {
                     let graph_revision = super::fresh::snapshot_revision(&snapshot_path)?;
                     super::fresh::publish_freshness_manifest(
@@ -1032,6 +1085,7 @@ fn cmd_gen_inner(
                         graph_revision,
                         indexed_source_fingerprint,
                     )?;
+                    trace.count("freshness_manifest_published", 1);
                 }
             }
             Err(e) => eprintln!("WARN: Failed to publish read snapshot: {e}"),
@@ -1039,12 +1093,14 @@ fn cmd_gen_inner(
     }
 
     // Invalidate caches after generating so the next query rebuilds
+    trace.stage("cache_invalidation");
     let cache_dir = aden_paths::cache_dir(path);
     if cache_dir.exists() {
         let _ = std::fs::remove_dir_all(&cache_dir);
         let _ = std::fs::create_dir_all(&cache_dir);
     }
 
+    trace.finish();
     Ok(())
 }
 

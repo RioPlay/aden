@@ -55,21 +55,22 @@ const AGENTS_END: &str = "<!-- END aden:guidance -->";
 /// reference lives in `.agent/aden-guide.adoc`.
 const AGENTS_GUIDANCE: &str = r#"## Using aden
 
-**Use the aden MCP tools (or `aden <cmd>` on the shell) for ALL code navigation —
-not raw `grep`/`find`/`cat`.** They are structure-aware (every result is tagged
-with its enclosing symbol = the anchor you feed back into the graph) and far
-cheaper in tokens than reading whole files. This applies to any subagents you
-spawn too — tell them to use aden, since they do not inherit this guidance.
+Choose the smallest retrieval that supplies the evidence you need. Use `read`
+for a known file/range, `grep` for literal/regex discovery, and graph tools for
+explicit symbols and relationships. Use native Git/build/test tools for history
+and verification. Tell subagents which checkout and evidence scope to use.
 
-**The graph is fresh by construction.** Read tools (`ask`, `search`, `grep`,
+**Graph reads auto-refresh.** Tools (`ask`, `search`, `grep`,
 `locate`, `query`, `asm`) auto-reindex any file changed since the last run. You do
 **not** need `gen` before a session or after your own edits — only after large
 *external* changes (cloning, a big merge, generated code).
+`read` observes file bytes without indexing and makes no graph-freshness claim.
 
 | Goal | Tool |
 | --- | --- |
+| Known file and inclusive line range | `read <file> --start-line <n> --end-line <n>` |
 | Structure-aware search (returns enclosing symbol = anchor) | `grep "pattern"` |
-| Natural-language question over the code | `ask "how does X work?"` |
+| Optional heuristic discovery when the target is unknown | `ask "how does X work?"` |
 | Find a symbol's definition + call sites | `locate --symbol <name>` |
 | Token-budgeted context around a unique symbol or anchor | `asm --from <name-or-anchor>` |
 | Blast radius — what references this | `query --backlinks <name-or-anchor>` |
@@ -79,9 +80,11 @@ Unique natural symbol names work directly in `asm` and `query`. Exact anchors
 remain available for repeated names; ambiguity returns sorted candidates and
 Aden never guesses from fuzzy/substring suggestions.
 
-**Flow:** use `ask` for one bounded question; use `asm`/`query` directly for a
-known unique symbol; use `grep`/`locate` when discovery or disambiguation is
-needed. Validate with `check . --severity Forbid`; resync drift with `heal`.
+**Flow:** retrieve known source with `read`; resolve explicit symbols with
+`locate`, `understand`, `asm`, or `query`; use `grep` for discovery. `ask` is an
+optional conceptual route: verify its selected anchors. Missing, clipped, or
+incomplete results do not establish absence. Validate graph references with
+`check . --severity Forbid`; resync drift with `heal`.
 
 See `.agent/aden-guide.adoc` for the full reference."#;
 

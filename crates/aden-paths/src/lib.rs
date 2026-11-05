@@ -267,8 +267,12 @@ pub fn relative_to(root: &Path, path: &Path) -> Option<PathBuf> {
 /// stores — MCP children that could not see `git` rebuilt an empty graph
 /// beside the shell's populated one.
 pub fn project_key(root: &Path) -> String {
+    key_for_resolved_root(&resolve_root(root))
+}
+
+fn key_for_resolved_root(root: &Path) -> String {
     use sha2::{Digest, Sha256};
-    let identity = compare_key(&canonical(&resolve_root(root)));
+    let identity = compare_key(&canonical(root));
     let mut hasher = Sha256::new();
     hasher.update(identity.to_string_lossy().as_bytes());
     let digest = hasher.finalize();
@@ -282,7 +286,11 @@ pub fn project_key(root: &Path) -> String {
 /// `<data_root>/projects/<key>` — the per-project key directory holding all
 /// rebuildable artifacts for `root`.
 pub fn project_dir(root: &Path) -> PathBuf {
-    data_root().join("projects").join(project_key(root))
+    project_dir_for_key(&project_key(root))
+}
+
+fn project_dir_for_key(key: &str) -> PathBuf {
+    data_root().join("projects").join(key)
 }
 
 /// Rebuildable graph store directory.
@@ -433,11 +441,13 @@ pub fn meta_file(root: &Path) -> PathBuf {
 /// Write/refresh `meta.json` for `root`. Called by creation paths (init/gen/regen)
 /// after the project directory exists.
 pub fn write_meta(root: &Path) -> std::io::Result<()> {
-    let dir = project_dir(root);
+    let root = resolve_root(root);
+    let key = key_for_resolved_root(&root);
+    let dir = project_dir_for_key(&key);
     std::fs::create_dir_all(&dir)?;
     let meta = Meta {
-        root: resolve_root(root).display().to_string(),
-        key: project_key(root),
+        root: root.display().to_string(),
+        key,
     };
     let json = serde_json::to_string_pretty(&meta)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
@@ -602,6 +612,24 @@ mod tests {
         with_env("ADEN_DATA_DIR", Some("/custom/data"), || {
             assert_eq!(data_root(), PathBuf::from("/custom/data"));
             assert!(store_dir(root).starts_with("/custom/data/projects"));
+        });
+
+        // Writing from a nested scope uses the same project identity as the
+        // other path helpers and records that identity in the metadata.
+        let fixture = tempfile::tempdir().unwrap();
+        let project = fixture.path().join("project");
+        let scope = project.join("src").join("nested");
+        let data = fixture.path().join("data");
+        std::fs::create_dir_all(&scope).unwrap();
+        std::fs::write(project.join("Makefile"), "").unwrap();
+        with_env("ADEN_DATA_DIR", Some(data.to_str().unwrap()), || {
+            write_meta(&scope).unwrap();
+            let key = project_key(&project);
+            let dir = data.join("projects").join(&key);
+            assert_eq!(project_dir(&scope), dir);
+            let meta = read_meta(&dir).expect("metadata at the project key directory");
+            assert_eq!(meta.root, resolve_root(&project).display().to_string());
+            assert_eq!(meta.key, key);
         });
 
         with_env("ADEN_STORE", Some("/pinned/store"), || {

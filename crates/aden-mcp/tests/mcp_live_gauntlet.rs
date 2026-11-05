@@ -183,7 +183,8 @@ fn live_mcp_bounded_ask_asm_and_path_confinement() {
         project.join("main.rs"),
         "/// Entry point exercised over the real MCP transport.\n\
          fn main() { helper(); }\n\
-         fn helper() {}\n",
+         fn helper() { leaf(); }\n\
+         fn leaf() {}\n",
     )
     .unwrap();
 
@@ -228,6 +229,7 @@ fn live_mcp_bounded_ask_asm_and_path_confinement() {
     let names: std::collections::HashSet<_> =
         tools.iter().filter_map(|t| t["name"].as_str()).collect();
     for required in [
+        "read",
         "tree",
         "ask",
         "asm",
@@ -253,13 +255,37 @@ fn live_mcp_bounded_ask_asm_and_path_confinement() {
         "ask must not require budget"
     );
     assert!(schemas["ask"]["properties"].get("strict").is_none());
-    assert!(schemas["asm"]["properties"].get("budget").is_none());
+    for key in ["depth", "edge_types", "budget"] {
+        assert!(schemas["asm"]["properties"].get(key).is_some(), "asm.{key}");
+    }
+    for key in ["depth", "edge_type", "max_results"] {
+        assert!(
+            schemas["query"]["properties"].get(key).is_some(),
+            "query.{key}"
+        );
+    }
     assert!(schemas["asm"]["properties"].get("format").is_none());
     let registry_bytes = serde_json::to_string(&tools).unwrap().len();
     assert!(
         registry_bytes < 5_000,
         "registry too large: {registry_bytes}"
     );
+
+    // Direct source evidence must work before graph discovery or store creation.
+    let read = client.tool_call(
+        19,
+        "read",
+        serde_json::json!({
+            "file": "main.rs", "start_line": 2, "end_line": 2,
+        }),
+    );
+    assert!(read.get("error").is_none(), "{read}");
+    let source = read;
+    assert_eq!(source["source"]["text"], "fn main() { helper(); }\n");
+    assert_eq!(source["observation"], "file_bytes_read");
+    assert!(source["source"]["source_hash"].is_string());
+    assert!(source.get("context_receipt").is_none());
+    assert_eq!(std::fs::read_dir(&data).unwrap().count(), 0);
 
     // Replay the actual startup examples before any discovery call: a known
     // unique symbol must not require tree/grep/locate boilerplate.
@@ -307,6 +333,155 @@ fn live_mcp_bounded_ask_asm_and_path_confinement() {
         let cli_result: Value = serde_json::from_slice(&output.stdout).expect("CLI JSON");
         assert_eq!(cli_result[result_key], result[result_key]);
     }
+
+    // Exercise each explicit traversal control through the real transport.
+    let symbols = |result: &Value| -> std::collections::BTreeSet<String> {
+        assert!(result.get("error").is_none(), "{result}");
+        result["items"]
+            .as_array()
+            .expect("query items")
+            .iter()
+            .map(|item| {
+                item["anchor"]
+                    .as_str()
+                    .unwrap()
+                    .rsplit('#')
+                    .next()
+                    .unwrap()
+                    .to_owned()
+            })
+            .collect()
+    };
+    let shallow = client.tool_call(
+        30,
+        "query",
+        serde_json::json!({
+            "from":"main", "edge_type":"Calls", "depth":1, "max_results":10,
+        }),
+    );
+    assert_eq!(
+        symbols(&shallow),
+        ["main", "helper"].into_iter().map(str::to_owned).collect()
+    );
+    let deep = client.tool_call(
+        31,
+        "query",
+        serde_json::json!({
+            "from":"main", "edge_type":"Calls", "depth":2, "max_results":10,
+        }),
+    );
+    assert_eq!(
+        symbols(&deep),
+        ["main", "helper", "leaf"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect()
+    );
+    let incoming = client.tool_call(
+        32,
+        "query",
+        serde_json::json!({
+            "backlinks":"helper", "edge_type":"Calls", "depth":1, "max_results":10,
+        }),
+    );
+    assert_eq!(
+        symbols(&incoming),
+        ["helper", "main"].into_iter().map(str::to_owned).collect()
+    );
+    assert_eq!(incoming["relationship"]["direction"], "incoming");
+    let filtered = client.tool_call(
+        33,
+        "query",
+        serde_json::json!({
+            "from":"main", "edge_type":"Mutates", "depth":2, "max_results":10,
+        }),
+    );
+    assert_eq!(
+        symbols(&filtered),
+        ["main"].into_iter().map(str::to_owned).collect()
+    );
+    let limited = client.tool_call(
+        34,
+        "query",
+        serde_json::json!({
+            "from":"main", "edge_type":"Calls", "depth":2, "max_results":1,
+        }),
+    );
+    assert_eq!(
+        symbols(&limited),
+        ["main"].into_iter().map(str::to_owned).collect()
+    );
+    assert_eq!(limited["truncated"], true);
+    let zero_hops = client.tool_call(
+        35,
+        "query",
+        serde_json::json!({
+            "from":"main", "edge_type":"Calls", "depth":0, "max_results":10,
+        }),
+    );
+    assert_eq!(
+        symbols(&zero_hops),
+        ["main"].into_iter().map(str::to_owned).collect()
+    );
+    let assembly = client.tool_call(
+        36,
+        "asm",
+        serde_json::json!({
+            "from":"main", "edge_types":"Calls", "depth":0, "budget":2048,
+        }),
+    );
+    assert!(assembly.get("error").is_none(), "{assembly}");
+    assert!(
+        assembly["documents"]
+            .as_array()
+            .is_some_and(|items| items.len() == 1),
+        "{assembly}"
+    );
+    assert!(
+        serde_json::to_vec(&assembly).unwrap().len() <= 2048 * 4,
+        "{assembly}"
+    );
+    let assembly_filtered = client.tool_call(
+        37,
+        "asm",
+        serde_json::json!({
+            "from":"main", "edge_types":"Mutates", "depth":2, "budget":2048,
+        }),
+    );
+    assert!(
+        assembly_filtered["documents"]
+            .as_array()
+            .is_some_and(|items| items.len() == 1),
+        "{assembly_filtered}"
+    );
+    let outgoing = client.tool_call(
+        38,
+        "query",
+        serde_json::json!({
+            "impact":"main", "edge_type":"Calls", "depth":1, "max_results":10,
+        }),
+    );
+    assert_eq!(
+        symbols(&outgoing),
+        ["main", "helper"].into_iter().map(str::to_owned).collect()
+    );
+    assert_eq!(outgoing["relationship"]["direction"], "outgoing");
+    let impact_filtered = client.tool_call(
+        39,
+        "query",
+        serde_json::json!({
+            "impact":"main", "edge_type":"Mutates", "depth":2, "max_results":10,
+        }),
+    );
+    assert_eq!(
+        symbols(&impact_filtered),
+        ["main"].into_iter().map(str::to_owned).collect()
+    );
+    let invalid = client.tool_call(40, "query", serde_json::json!({"from":"main", "depth":-1}));
+    assert!(
+        invalid.get("error").is_some(),
+        "negative depth accepted: {invalid}"
+    );
 
     let ask = client.tool_call(
         3,

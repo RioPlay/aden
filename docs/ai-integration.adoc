@@ -4,13 +4,62 @@
 [[ai-integration]]
 = AI Integration Guide: Keeping Agents in the Know
 
-Aden was built for hybrid teams of humans and AI agents. This guide explains how AI agents should use `aden ask`, `aden asm`, `aden grep`, and `aden query` to stay synchronized with a codebase without reading every file.
+Aden supplies bounded repository evidence for humans and AI agents. Use explicit source, symbol, and relationship retrieval first; `aden ask` is optional heuristic discovery when the target is unknown.
 
 == The Core Idea
 
 An AI agent has a finite context window. A large codebase does not fit. Aden solves this by answering the question: "What is the smallest set of documents this agent needs to complete its task?"
 
-The answer is assembled dynamically from the knowledge graph, not hard-coded in a prompt.
+Known source can be read directly. Relationships and selected context come from the knowledge graph.
+
+=== Direct source evidence
+
+`aden read <file> [DIR]` reads a known UTF-8 file relative to `DIR`, which is the
+exact read boundary. Enclosing project policy still applies, but reads cannot
+escape `DIR`. It does not refresh the graph or create a store. The default
+excerpt is 200 lines, capped at 8192 UTF-8
+bytes. Lines are 1-based and inclusive; files are limited to 16 MiB. Project
+exclusions apply, and absolute paths, parent traversal, and escaping symlinks
+are rejected. `--human` prints literal source.
+
+[source,bash]
+----
+aden read src/config.rs --start-line 20 --end-line 60
+----
+
+The JSON response reports the selected root, literal byte range, full-file
+`source_hash`, and clipping. This hash is noncryptographic change detection over
+literal bytes, including line endings; it is not an authenticity guarantee or
+an assertion of graph freshness. `--expected-hash` rejects changed source.
+When clipped, use the response's `continuation` arguments. On the CLI, pass
+`--start-byte <next_byte> --end-line <requested_end_line> --expected-hash <source_hash>`
+and omit `--start-line`; this also works within long lines and preserves the
+original selection. If a very small byte
+budget cannot fit one UTF-8 character, increase it before continuing. File
+observation and graph freshness remain separate evidence states.
+
+MCP exposes the same `read` tool with `file`, `path`, `start_line`, `end_line`,
+`max_bytes`, `expected_hash`, and `start_byte`. No semantic routing is involved.
+
+=== Explicit graph bounds
+
+The default MCP surface exposes `query` arguments `depth`, `edge_type`, and
+`max_results`, and `asm` arguments `depth`, `edge_types`, and `budget`.
+`backlinks` follows incoming references; `impact` follows outgoing dependencies.
+An explicit query edge filter applies in every direction; impact mode intersects
+it with the existing dependency edge types. Depth and result limits accept zero.
+Check truncation and coverage rather than inferring absence from a capped result.
+
+[source,bash]
+----
+aden query --backlinks helper --edge-type Calls --depth 1 --max-results 10
+aden query --impact entry --edge-type Calls --depth 2 --max-results 10
+aden asm --from entry --depth 1 --edge-types Calls --budget 2048
+----
+
+MCP accepts the equivalent arguments without semantic routing. For local stage
+diagnostics and reproducible CLI measurements, see
+link:read-path-performance.adoc[Read-path measurements].
 
 [[mcp-setup]]
 == MCP Setup
@@ -549,6 +598,7 @@ aden suggest "find all tests in the project"
 |===
 |Task |Command
 
+|Known source range |`aden read src/config.rs --start-line 20 --end-line 60`
 |Explore structure |`aden grep "X" .`, then `aden locate --symbol X .`
 |Get a bounded exploratory explanation after resolving a symbol |`aden ask --from <anchor> --strict "What does it do?"`
 |Find symbol |`aden locate --symbol X .`
@@ -664,10 +714,11 @@ For installation and client setup, see <<mcp-setup>>.
 Stale context is worse than no context. Use this order in your agent loop:
 
 1. Before starting work: `aden status .` (quick health check) or `aden check .` (validate integrity)
-2. After writing code: `aden gen <path>` (index changed source)
-3. Before committing: `aden ready .` (fast aden-only gates: gen + lint + check + heal drift + audit)
-4. Before pushing to remote: `aden ci-check .` (full gate suite including external tools)
-5. After large merges or file deletions: `aden sync .` (reconcile store — runs gen + check + heal with gc)
+2. During normal edits: use read tools directly; they auto-reindex changed files, so you do not need `aden gen` after every edit
+3. After large external changes (a clone, big merge, or generated code): run `aden gen <path>` explicitly
+4. Before committing: `aden ready .` (fast aden-only gates: gen + lint + check + heal drift + audit)
+5. Before pushing to remote: `aden ci-check .` (full gate suite including external tools)
+6. After large merges or file deletions: `aden sync .` (reconcile store — runs gen + check + heal with gc)
 
 NOTE: Do NOT chain `aden gen` before `aden ready` or `aden ci-check` — both already run gen internally as their first step. Running gen twice wastes time and may produce inconsistent results.
 

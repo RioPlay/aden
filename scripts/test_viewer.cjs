@@ -13,6 +13,146 @@ function section(start, end) {
   return html.slice(from, to);
 }
 
+function template3dSection(start,end) {
+  const source=fs.readFileSync(path.join(__dirname,'../crates/aden-cli/assets/view3d.html'),'utf8');
+  return source.slice(source.indexOf(start),source.indexOf(end,source.indexOf(start)));
+}
+function decodeAttr(value) {
+  return value.replace(/&quot;/g,'"').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&amp;/g,'&');
+}
+test('3D legend and neighbor handlers treat quoted names and IDs as literal data',()=>{
+  const elements=new Map();const get=id=>{if(!elements.has(id))elements.set(id,{classList:{add(){}},innerHTML:''});return elements.get(id);};
+  const malicious=`x');globalThis.injected=1;//" onfocus="injected=2 &quot; < >`;
+  const calls=[];
+  const ctx=vm.createContext({document:{getElementById:get},groupIdx:{[malicious]:0},palette:['#abcdef'],
+    hexA:()=>'',editorUrl:()=>null,shortName:n=>n.id,regionOf3d:()=>malicious,
+    focusById:id=>calls.push(['focus',id]),previewNb:id=>calls.push(['preview',id]),jumpToRegion3d:r=>calls.push(['region',r])});
+  vm.runInContext(template3dSection('function esc(s)','function shortName('),ctx);
+  vm.runInContext(template3dSection('function buildLegend3d()','function jumpToRegion3d('),ctx);
+  vm.runInContext('buildLegend3d()',ctx);
+  const legend=get('rl-body').innerHTML;
+  assert.equal(decodeAttr(legend.match(/onclick="([^"]*)"/)[1]),`jumpToRegion3d(${JSON.stringify(malicious)})`);
+  assert.equal(decodeAttr(legend.match(/class="rl-label" title="([^"]*)"/)[1]),malicious);
+  vm.runInContext(decodeAttr(legend.match(/onclick="([^"]*)"/)[1]),ctx);
+  vm.runInContext('let lastPreviewId,panelNbs,nbSel;',ctx);
+  vm.runInContext(template3dSection('function showPanel(n)','function focusById('),ctx);
+  ctx.node={id:'root',neighbors:[{id:malicious}]};
+  vm.runInContext('showPanel(node)',ctx);
+  const panel=get('p-body').innerHTML;
+  for(const attr of ['onclick','onmouseenter']) vm.runInContext(decodeAttr(panel.match(new RegExp(attr+'="([^"]*)"'))[1]),ctx);
+  assert.deepEqual(calls,[['region',malicious],['focus',malicious],['preview',malicious]]);
+  assert.equal(ctx.injected,undefined);
+  assert.ok(!Array.from(panel.matchAll(/<[^>]*>/g),m=>m[0]).some(tag=>tag.includes(' onfocus="')));
+  for(const id of [42,'&quot;']) {
+    ctx.node={id:'root',neighbors:[{id}]};vm.runInContext('showPanel(node)',ctx);
+    const markup=get('p-body').innerHTML;
+    for(const attr of ['onclick','onmouseenter']) vm.runInContext(decodeAttr(markup.match(new RegExp(attr+'="([^"]*)"'))[1]),ctx);
+    assert.deepEqual(calls.slice(-2),[['focus',String(id)],['preview',String(id)]]);
+  }
+});
+
+test('3D bootstrap catches renderer failure without timers and preserves successful inline handlers',()=>{
+  const source=fs.readFileSync(path.join(__dirname,'../crates/aden-cli/assets/view3d.html'),'utf8');
+  const script=source.slice(source.indexOf('const DATA ='),source.lastIndexOf('</script>')).replace('/*ADEN_DATA*/',JSON.stringify({nodes:[],edges:[]}));
+  function run(fail,sibling='') {
+    const elements=new Map();let timers=0,focused;
+    function element(id='') {return {id,style:{},children:[],classList:{add(){},remove(){},contains(){return false;},toggle(){}},
+      setAttribute(k,v){this[k]=v;},append(...items){this.children.push(...items);},replaceChildren(){this.children=[];},
+      focus(){focused=this;},addEventListener(){},querySelectorAll(){return[];},offsetHeight:0};}
+    const get=id=>{if(!elements.has(id))elements.set(id,element(id));return elements.get(id);};
+    let graph;graph=new Proxy(()=>{}, {get(_,key){if(key==='then')return undefined;if(key==='controls')return ()=>({target:{x:0,y:0,z:0},addEventListener(){}});return ()=>graph;}});
+    const window={matchMedia:()=>({matches:true}),addEventListener(){}};
+    const context=vm.createContext({window,document:{body:element('body'),getElementById:get,createElement:()=>element(),addEventListener(){},querySelectorAll:()=>[]},
+      URL,location:{href:'file:///tmp/view3d.html',hash:''},localStorage:{getItem(){return null;},setItem(){}},innerWidth:1000,innerHeight:800,addEventListener(){},
+      requestAnimationFrame(){timers++;},setTimeout(){timers++;},setInterval(){timers++;},clearTimeout(){},clearInterval(){},
+      ForceGraph3D:()=>()=>{if(fail)throw Error('private renderer details');return graph;}});
+    vm.runInContext(script.replace('/*SIBLING*/',sibling),context);
+    return {context,window,get,timers,focused};
+  }
+  for(const sibling of ['', 'view.html', 'javascript:alert(1)']) {
+    const failed=run(true,sibling);assert.equal(failed.timers,0);
+    assert.equal(failed.focused.role,'alert');
+    const children=failed.focused.children;
+    assert.ok(children.some(n=>n.textContent==='3D view unavailable'));
+    assert.ok(!JSON.stringify(children).includes('private renderer details'));
+    assert.equal(children.some(n=>n.textContent==='Open 2D view'),sibling==='view.html');
+  }
+  const success=run(false);
+  for(const name of ['dismissHoverCard3d','toggleLegend','jumpToRegion3d','focusById','previewNb','pickResult']) assert.equal(typeof success.window[name],'function',name);
+  success.window.dismissHoverCard3d();success.window.toggleLegend();success.window.jumpToRegion3d('missing');
+  success.window.focusById('missing');success.window.previewNb('missing');success.window.pickResult(0);
+});
+
+test('search caches global/drill identities and preserves rank, degree, exclusions and expansion', () => {
+  const entries=Array.from({length:200},(_,i)=>({a:'aden://module/demo#'+(i%3?'render_'+i:'render'),n:i%3?'render_'+i:'render',g:'demo',k:'fn',d:i%11}));
+  const visible={id:'visible',anchor:entries[0].a,label:entries[0].n,deg:50};
+  const ctx=vm.createContext({DATA:{all_anchors:entries,drill:{c:{nodes:[{id:'a',anchor:'aden://module/demo#render_a'}]}}},
+    hasDrill:true,byId:{visible},shortName:n=>(n.anchor||n.label||n.id).split('#').pop()});
+  vm.runInContext(fs.readFileSync(path.join(__dirname,'../crates/aden-cli/assets/viewer-search.js'),'utf8'),ctx);
+  vm.runInContext(section('const drillSearchCandidates','function resultShape('),ctx);
+  const first=vm.runInContext("allAnchorCandidates('render',new Set())",ctx);
+  const second=vm.runInContext("allAnchorCandidates('render',new Set())",ctx);
+  assert.equal(first[0],second[0]);
+  for (const query of ['render','render_1','demo','missing']) {
+    ctx.query=query;
+    const actual=vm.runInContext("allAnchorCandidates(query,new Set(['aden://module/demo#render']))",ctx);
+    const expected=entries.filter(e=>(e.n+' '+e.a+' '+e.g).toLowerCase().includes(query))
+      .map(e=>({_global:true,id:e.a,anchor:e.a,label:e.n,group:e.g,kind:e.k,deg:e.d||0}))
+      .filter(e=>e.anchor!=='aden://module/demo#render');
+    const rank=n=>{const name=n.anchor.split('#').pop().toLowerCase();return name===query||n.anchor.toLowerCase()===query?0:name.startsWith(query)?1:name.includes(query)?2:3;};
+    expected.sort((a,b)=>rank(a)-rank(b)||b.deg-a.deg);
+    assert.deepEqual(Array.from(actual,n=>n.id),expected.slice(0,6).map(n=>n.id));
+  }
+  const drill=vm.runInContext("inViewCandidates().find(n=>n.id==='c:a')",ctx);
+  assert.equal(drill,vm.runInContext("inViewCandidates().find(n=>n.id==='c:a')",ctx));
+  const expanded={...drill,deg:99};ctx.byId['c:a']=expanded;
+  assert.equal(expanded,vm.runInContext("inViewCandidates().find(n=>n.id==='c:a')",ctx));
+  delete ctx.byId['c:a'];
+  assert.equal(drill,vm.runInContext("inViewCandidates().find(n=>n.id==='c:a')",ctx));
+});
+
+test('envelope geometry is reused only while visible members, coordinates and source mass are unchanged', () => {
+  let render, hullCalls=0;
+  const nodes=[{id:'a',group:'g',x:0,y:0,loc:10},{id:'b',group:'g',x:100,y:0,loc:20},{id:'c',group:'g',x:50,y:100,loc:30}];
+  const hidden=new Set(), byId=Object.fromEntries(nodes.map(n=>[n.id,n]));
+  const ctx=vm.createContext({Graph:{onRenderFramePre(fn){render=fn;}},byId,
+    envelopes:true,minimal:false,idVisible:id=>!hidden.has(id),palette:['#abcdef'],groupIdx:{g:0},
+    groupPulse:new Map(),REDUCED_MOTION:true,hexA:(c,a)=>c+':'+a, countHull:()=>hullCalls++});
+  vm.runInContext(section('function hullOf(', 'let fitPending ='),ctx);
+  vm.runInContext('const rawHull=hullOf; hullOf=points=>{countHull();return rawHull(points);};',ctx);
+  function draw(scale=1) {
+    const ops=[];
+    const canvas={createRadialGradient(...a){ops.push(['gradient',...a]);return {addColorStop(...a){ops.push(['stop',...a]);}};},
+      beginPath(){ops.push(['begin']);},arc(...a){ops.push(['arc',...a]);},fill(){ops.push(['fill',String(this.fillStyle)]);},
+      moveTo(...a){ops.push(['move',...a]);},quadraticCurveTo(...a){ops.push(['curve',...a]);},closePath(){ops.push(['close']);},
+      stroke(){ops.push(['stroke',this.strokeStyle,this.lineWidth]);},fillText(...a){ops.push(['text',...a,this.font]);}};
+    render(canvas,scale);return ops;
+  }
+  const first=draw();
+  for(let i=0;i<20;i++) assert.deepEqual(draw(),first);
+  assert.equal(hullCalls,1,'static frames must not rebuild convex hull');
+  nodes[0].x=5;assert.notDeepEqual(draw(),first);assert.equal(hullCalls,2,'physics movement');
+  nodes[0].y=10;draw();assert.equal(hullCalls,3,'drag movement');
+  hidden.add('c');assert.equal(draw().some(o=>o[0]==='curve'),false);assert.equal(hullCalls,3,'two-node group only has nebula');
+  hidden.delete('c');draw();assert.equal(hullCalls,4,'visibility restoration');
+  nodes[0].loc=100;assert.ok(draw().some(o=>o[0]==='text'&&o[1].includes('150 loc')));assert.equal(hullCalls,5);
+  byId.a={...nodes[0]};draw();assert.equal(hullCalls,6,'same-ID graph replacement');
+  ctx.groupPulse.set('g',1);assert.notDeepEqual(draw(),first);assert.equal(hullCalls,6,'dynamic glow does not invalidate geometry');
+  const scaled=draw(2);assert.ok(scaled.some(o=>o[0]==='stroke'&&o[2]===1.5));assert.equal(hullCalls,6,'zoom styling remains dynamic');
+  hidden.add('b');hidden.add('c');assert.equal(draw().length,0,'single node has no envelope');
+  hidden.add('a');draw();assert.equal(vm.runInContext('envelopeShapes.size',ctx),0,'hidden groups release cached geometry');
+});
+
+test('3D hidden wraps skip scene/geometry work and refresh before becoming visible', () => {
+  const template=fs.readFileSync(path.join(__dirname,'../crates/aden-cli/assets/view3d.html'),'utf8');
+  let traversals=0;
+  const ctx=vm.createContext({Graph:{scene(){return {traverse(){traversals++;}};}},nodes:[],setTimeout(){},setInterval(){}});
+  vm.runInContext(template.slice(template.indexOf('let bubblesOn = true;'),template.indexOf('// The focused orb breathes')),ctx);
+  vm.runInContext('bubblesOn=false; updateBubbles();',ctx);assert.equal(traversals,0);
+  vm.runInContext('toggleBubbles()',ctx);assert.equal(traversals,1,'enable immediately refreshes rather than waiting for interval');
+  vm.runInContext('toggleBubbles();updateBubbles()',ctx);assert.equal(traversals,1);
+});
+
 test('startup preserves a deep link instead of recording an empty overview', () => {
   const hash='#a=aden%3A%2F%2Fmodule%2Fdemo%23render';
   const location={hash};

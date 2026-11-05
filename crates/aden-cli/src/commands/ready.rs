@@ -14,6 +14,9 @@ use std::path::Path;
 /// progress view. Child steps are quiet on stdout so the envelope stays one
 /// JSON document.
 pub fn cmd_ready(path: &Path, fix: bool, json: bool) -> Result<(), Box<dyn std::error::Error>> {
+    if !path.is_dir() {
+        return Err(format!("Ready target is not a directory: {}", path.display()).into());
+    }
     let (green, red, yellow, reset) = if json {
         ("", "", "", "")
     } else {
@@ -261,7 +264,7 @@ mod tests {
         let _verdict = cmd_ready(&dir, false, false);
         let _ = std::fs::remove_dir_all(&dir);
 
-        // A non-directory path is a hard failure at the "check refs" gate, so
+        // A non-directory path is rejected before generation/root discovery, so
         // ready must report NOT commit-ready (Err).
         let missing = dir.join("does-not-exist");
         assert!(

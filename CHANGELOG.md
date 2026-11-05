@@ -9,8 +9,16 @@ All notable changes to aden are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.4.4] - 2026-11-05
+
 ### Added
 
+- **Deterministic source reads** — CLI and MCP `read` return bounded literal
+  UTF-8 evidence, source hashes, and hash-pinned byte continuations without
+  loading or generating a graph. Enforce project boundaries and exclusions.
+- **Explicit traversal controls and diagnostics** — bounded MCP directions,
+  depth and edge types, plus opt-in read/generation stage tracing and repeatable
+  source, graph-query, and cold-generation benchmark harnesses.
 - **Antigravity MCP installer support** — `aden mcp install --platform antigravity`
   registers Aden in the shared `~/.gemini/config/mcp_config.json`, or in
   `.agents/mcp_config.json` with `--scope project`. Includes list/uninstall,
@@ -21,6 +29,32 @@ All notable changes to aden are documented here. Format follows
 - Update locked dependencies to patch rustls TLS issues and distrusted certificate
   handling, Tokio I/O safety, and zstd memory safety and cross-stream data leaks.
   Replace the yanked `chacha20` and `spin` versions with non-yanked releases.
+- Bound risk-evidence source reads before decoding and reject oversized or
+  nonregular files before reading their contents.
+- Escape 3D legend labels and neighbor IDs in HTML attributes and event arguments
+  so repository-controlled quotes remain literal data.
+
+### Changed
+
+- Bind generation cache reuse to the bytes actually parsed, including equal-size
+  edits with preserved modification times. Migrate old generation state once.
+- Reduce repeated root derivation and format-check database opens while
+  retaining independent pre/post source observations and checkout isolation.
+- Reduce repeated viewer search work with stable rank buckets, bounded result
+  selection, reusable 2D search candidates, and cached relationship ordering.
+  Preserve result order, full symbol coverage, and navigation state.
+
+### Fixed
+
+- Reject source-read byte limits that cannot fit the next UTF-8 character,
+  preventing nonadvancing continuation loops.
+- Reject invalid `ready` targets before generation and root discovery.
+- Retry transient Windows session-log lock creation errors within the original
+  acquisition deadline; persistent permission failures still return errors.
+- Show an accessible recovery message and 2D export alternatives when WebGL
+  cannot initialize, instead of leaving a blank 3D viewer.
+- Run source-read, freshness-coherence, path-isolation, and tracing regressions
+  in every platform CI job.
 
 ## [0.4.3] - 2026-09-27
 

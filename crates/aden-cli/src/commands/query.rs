@@ -67,6 +67,370 @@ fn evidence_facet_queries(question: &str) -> Vec<String> {
     }
 }
 
+/// Bound source I/O before allocation, including when a stale graph names a
+/// file that has since grown. Callers enforce the repository boundary.
+fn read_bounded_evidence_source(target: &Path) -> Option<String> {
+    use std::io::Read;
+    const LIMIT: u64 = 16 * 1024 * 1024;
+    let metadata = std::fs::metadata(target).ok()?;
+    if !metadata.is_file() || metadata.len() > LIMIT {
+        return None;
+    }
+    let source = std::fs::File::open(target).ok()?;
+    let metadata = source.metadata().ok()?;
+    if !metadata.is_file() || metadata.len() > LIMIT {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    source.take(LIMIT + 1).read_to_end(&mut bytes).ok()?;
+    if bytes.len() as u64 > LIMIT {
+        return None;
+    }
+    String::from_utf8(bytes).ok()
+}
+
+#[cfg(test)]
+mod bounded_evidence_source_tests {
+    use super::read_bounded_evidence_source;
+
+    #[test]
+    fn rejects_oversized_nonregular_and_invalid_utf8_sources() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("source.rs");
+        std::fs::write(&path, "fn sample() {}\n").unwrap();
+        assert_eq!(
+            read_bounded_evidence_source(&path).as_deref(),
+            Some("fn sample() {}\n")
+        );
+        let file = std::fs::File::create(&path).unwrap();
+        file.set_len(16 * 1024 * 1024 + 1).unwrap();
+        drop(file);
+        assert!(read_bounded_evidence_source(&path).is_none());
+        assert!(read_bounded_evidence_source(dir.path()).is_none());
+        std::fs::write(&path, [0xff]).unwrap();
+        assert!(read_bounded_evidence_source(&path).is_none());
+    }
+}
+
+/// High-risk boundary questions need failure-path evidence even when phrased
+/// as one intent. The exact/pinned-symbol gate lives at the call site; this
+/// lexical predicate only classifies the question and never chooses a target.
+fn asks_for_risk_boundary_evidence(question: &str) -> bool {
+    let words: Vec<String> = question
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
+        .filter(|word| !word.contains('_'))
+        .map(str::to_ascii_lowercase)
+        .collect();
+    let risk = words.iter().any(|word| {
+        matches!(
+            word.as_str(),
+            "security"
+                | "safety"
+                | "isolation"
+                | "risk"
+                | "risks"
+                | "boundary"
+                | "boundaries"
+                | "failure"
+                | "failures"
+        )
+    });
+    let relationship = words.iter().any(|word| {
+        matches!(
+            word.as_str(),
+            "boundary"
+                | "boundaries"
+                | "enforce"
+                | "enforces"
+                | "protect"
+                | "protects"
+                | "guard"
+                | "guards"
+                | "control"
+                | "controls"
+                | "handle"
+                | "handles"
+                | "failure"
+                | "failures"
+                | "risk"
+                | "risks"
+        )
+    });
+    risk && relationship
+}
+
+/// Reusable evidence roles for a safety boundary. Terms are intentionally
+/// language- and repository-neutral; graph reachability supplies the scope.
+const RISK_BOUNDARY_ROLES: &[(&str, &[&str])] = &[
+    (
+        "validation",
+        &[
+            "confine",
+            "validat",
+            "permission",
+            "authoriz",
+            "workspace",
+            "reject",
+        ],
+    ),
+    (
+        "environment",
+        &[
+            "env_clear",
+            "allowlist",
+            "allowed_env",
+            "environment",
+            "inherit",
+        ],
+    ),
+    (
+        "cleanup",
+        &[
+            "kill_on_drop",
+            "timeout",
+            "deadline",
+            "terminate",
+            "cancel",
+            "cleanup",
+        ],
+    ),
+    (
+        "error handling",
+        &[
+            "redact",
+            "backtrace",
+            "sanitiz",
+            "sensitive",
+            "disclosure",
+            "leak",
+        ],
+    ),
+];
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct RiskBoundaryCandidate {
+    role: usize,
+    specificity: usize,
+    distance: usize,
+    anchor: String,
+    file: String,
+    line: usize,
+    text: String,
+}
+
+/// Pick exactly one distinct source line for every required role. Sorting is
+/// explicit all the way through, so graph iteration order cannot affect output.
+fn select_risk_boundary_candidates(
+    mut candidates: Vec<RiskBoundaryCandidate>,
+) -> Option<Vec<RiskBoundaryCandidate>> {
+    candidates.sort_by(|a, b| {
+        a.role
+            .cmp(&b.role)
+            .then_with(|| b.specificity.cmp(&a.specificity))
+            .then_with(|| a.distance.cmp(&b.distance))
+            .then_with(|| a.anchor.cmp(&b.anchor))
+            .then_with(|| a.file.cmp(&b.file))
+            .then_with(|| a.line.cmp(&b.line))
+            .then_with(|| a.text.cmp(&b.text))
+    });
+    let mut selected = Vec::with_capacity(RISK_BOUNDARY_ROLES.len());
+    let mut source_lines = HashSet::new();
+    for role in 0..RISK_BOUNDARY_ROLES.len() {
+        let candidate = candidates
+            .iter()
+            .find(|candidate| {
+                candidate.role == role
+                    && !source_lines.contains(&(candidate.file.clone(), candidate.line))
+            })?
+            .clone();
+        source_lines.insert((candidate.file.clone(), candidate.line));
+        selected.push(candidate);
+    }
+    Some(selected)
+}
+
+/// Do not attribute an entire surrounding subsystem's safety posture to a
+/// leaf helper. The exact target must itself contain evidence for at least two
+/// independent roles before callers/callees may complete the packet.
+fn has_risk_boundary_core(candidates: &[RiskBoundaryCandidate]) -> bool {
+    candidates
+        .iter()
+        .filter(|candidate| candidate.distance == 0)
+        .map(|candidate| candidate.role)
+        .collect::<HashSet<_>>()
+        .len()
+        >= 2
+}
+
+fn render_risk_boundary_evidence(
+    selected: &[RiskBoundaryCandidate],
+    budget: usize,
+) -> Option<(String, Vec<String>)> {
+    if selected.len() != RISK_BOUNDARY_ROLES.len() {
+        return None;
+    }
+    let mut context = format!(
+        "// deterministic evidence-role routing selected {} distinct source facets from {} distinct source lines.\n",
+        selected.len(),
+        selected.len()
+    );
+    let mut supporting = BTreeSet::new();
+    for candidate in selected {
+        context.push_str(&format!(
+            "\n// {}: {}:{} [[{}]]\n{}\n",
+            RISK_BOUNDARY_ROLES[candidate.role].0,
+            candidate.file,
+            candidate.line,
+            candidate.anchor,
+            candidate.text
+        ));
+        supporting.insert(candidate.anchor.clone());
+    }
+    (context.len().div_ceil(4) <= budget).then(|| (context, supporting.into_iter().collect()))
+}
+
+/// Build a compact exact-source packet from a bounded call neighborhood. Both
+/// incoming and outgoing Calls edges are needed: admission checks commonly live
+/// in callers, while sanitizers and cleanup helpers commonly live in callees.
+fn risk_boundary_evidence_context(
+    path: &Path,
+    anchor: &str,
+    budget: usize,
+) -> Option<(String, Vec<String>)> {
+    use aden_core::{EdgeType, NodeType};
+    use aden_graph::EdgeRef;
+
+    let graph = aden_graph::cache::build_from_directory_cached(path).ok()?;
+    let seed = graph.get_index(anchor)?;
+    let mut queue = VecDeque::from([(seed, 0usize)]);
+    let mut seen = HashSet::new();
+    let mut nodes = Vec::new();
+    while let Some((node, distance)) = queue.pop_front() {
+        if !seen.insert(node) || seen.len() > 64 {
+            continue;
+        }
+        let doc = &graph.graph[node].doc;
+        if doc.node_type != NodeType::Function
+            || is_test_anchor(&doc.anchor)
+            || doc
+                .attributes
+                .get("source_file")
+                .is_some_and(|source| is_test_source_path(source))
+        {
+            continue;
+        }
+        nodes.push((node, distance));
+        if distance >= 2 {
+            continue;
+        }
+        let mut neighbors = Vec::new();
+        for direction in [Direction::Outgoing, Direction::Incoming] {
+            neighbors.extend(
+                graph
+                    .graph
+                    .edges_directed(node, direction)
+                    .filter(|edge| edge.weight().edge_type == EdgeType::Calls)
+                    .map(|edge| {
+                        if direction == Direction::Outgoing {
+                            edge.target()
+                        } else {
+                            edge.source()
+                        }
+                    }),
+            );
+        }
+        neighbors.sort_by(|a, b| graph.graph[*a].doc.anchor.cmp(&graph.graph[*b].doc.anchor));
+        neighbors.dedup();
+        queue.extend(
+            neighbors
+                .into_iter()
+                .map(|neighbor| (neighbor, distance + 1)),
+        );
+    }
+    nodes.sort_by(|a, b| {
+        a.1.cmp(&b.1).then_with(|| {
+            graph.graph[a.0]
+                .doc
+                .anchor
+                .cmp(&graph.graph[b.0].doc.anchor)
+        })
+    });
+
+    let root = find_project_root(path).canonicalize().ok()?;
+    let mut sources: std::collections::BTreeMap<String, Option<String>> = Default::default();
+    let mut candidates = Vec::new();
+    for (node, distance) in nodes {
+        let doc = &graph.graph[node].doc;
+        let attributes = &doc.attributes;
+        let (Some(file), Some(hash), Some(start), Some(end)) = (
+            attributes.get("source_file"),
+            attributes.get("source_hash"),
+            attributes
+                .get("start_line")
+                .and_then(|value| value.parse::<usize>().ok()),
+            attributes
+                .get("end_line")
+                .and_then(|value| value.parse::<usize>().ok()),
+        ) else {
+            continue;
+        };
+        let source = sources.entry(file.clone()).or_insert_with(|| {
+            let target = root.join(file).canonicalize().ok()?;
+            if !target.starts_with(&root) {
+                return None;
+            }
+            read_bounded_evidence_source(&target)
+        });
+        let Some(source) = source.as_ref() else {
+            continue;
+        };
+        if aden_core::hash_source(source) != *hash {
+            continue;
+        }
+        let lines: Vec<_> = source.lines().collect();
+        if start == 0 || end < start || end > lines.len() {
+            continue;
+        }
+        for (offset, text) in lines[start - 1..end].iter().enumerate() {
+            let text = text.trim();
+            let lower = text.to_ascii_lowercase();
+            if text.is_empty()
+                || text.len() > 180
+                || text.starts_with("//")
+                || text.starts_with('#')
+                || lower.starts_with("fn ")
+                || lower.contains(" fn ")
+            {
+                continue;
+            }
+            for (role, (_, terms)) in RISK_BOUNDARY_ROLES.iter().enumerate() {
+                let matches: Vec<_> = terms
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, term)| lower.contains(**term))
+                    .collect();
+                let Some((best_rank, _)) = matches.first() else {
+                    continue;
+                };
+                candidates.push(RiskBoundaryCandidate {
+                    role,
+                    specificity: (terms.len() - *best_rank) * 16 + matches.len(),
+                    distance,
+                    anchor: doc.anchor.clone(),
+                    file: file.clone(),
+                    line: start + offset,
+                    text: text.to_string(),
+                });
+            }
+        }
+    }
+    if !has_risk_boundary_core(&candidates) {
+        return None;
+    }
+    let selected = select_risk_boundary_candidates(candidates)?;
+    render_risk_boundary_evidence(&selected, budget)
+}
+
 fn explicit_symbol_token(question: &str) -> Option<String> {
     question
         .split(|c: char| !c.is_alphanumeric() && !matches!(c, '_' | '.' | ':'))
@@ -75,6 +439,23 @@ fn explicit_symbol_token(question: &str) -> Option<String> {
             (word.contains('_') || word.contains('.') || word.contains("::")) && word.len() >= 3
         })
         .map(str::to_string)
+}
+
+/// Normative workflow questions are usually answered by usage contracts, not
+/// the implementation of the named command. Keep lexical document ranking in
+/// charge instead of forcing a `cmd_*`/`run_*` handler merely because a command
+/// name appears in the sentence.
+fn prefers_usage_contract_prose(question: &str) -> bool {
+    let lower = question.to_ascii_lowercase();
+    [
+        "when should",
+        "when do i",
+        "when does",
+        "should i",
+        "do i need",
+    ]
+    .iter()
+    .any(|phrase| lower.contains(phrase))
 }
 
 fn is_definition_lookup(question: &str) -> bool {
@@ -219,8 +600,9 @@ fn selection_caller_seeds(path: &Path, results: &[SearchResult]) -> Vec<String> 
 
 fn exact_symbol_anchors(idx: &aden_index::Index, question: &str) -> Vec<String> {
     let definition_lookup = is_definition_lookup(question);
-    let candidates: Vec<String> = if let Some(symbol) = explicit_symbol_token(question) {
-        vec![symbol]
+    let explicit_symbol = explicit_symbol_token(question);
+    let candidates: Vec<String> = if let Some(symbol) = explicit_symbol.as_ref() {
+        vec![symbol.clone()]
     } else if definition_lookup {
         question
             .split(|c: char| !c.is_alphanumeric() && c != '_')
@@ -240,8 +622,12 @@ fn exact_symbol_anchors(idx: &aden_index::Index, question: &str) -> Vec<String> 
     };
 
     for symbol in candidates {
-        let mut anchors: Vec<String> = idx
-            .exact_symbol_matches(&symbol)
+        let results = if explicit_symbol.as_deref() == Some(symbol.as_str()) {
+            idx.exact_or_extension_symbol_matches(&symbol)
+        } else {
+            idx.exact_symbol_matches(&symbol)
+        };
+        let mut anchors: Vec<String> = results
             .into_iter()
             .filter(|result| !is_test_result(result))
             .map(|result| result.anchor)
@@ -1566,6 +1952,115 @@ fn resolve_required_anchor(path: &Path, input: &str) -> Result<String, Box<dyn s
     }
 }
 
+fn symbolish_tokens(question: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    for token in question.split_whitespace().map(|word| {
+        // Strip sentence punctuation at the edges while preserving symbol
+        // separators inside the token (`Type::method`, `path/file`, `a.b`).
+        word.trim_matches(|c: char| !c.is_alphanumeric() && c != '_')
+    }) {
+        if token.len() >= 3
+            && (token.contains('_')
+                || token.contains("::")
+                || token.contains('/')
+                || (token.contains('.') && !token.ends_with('.')))
+            && !tokens.iter().any(|known| known == token)
+        {
+            tokens.push(token.to_string());
+        }
+    }
+    tokens
+}
+
+fn render_not_found_advisory(input: &str, suggestions: &[String]) -> String {
+    let suggestions = suggestions.iter().take(8).cloned().collect::<Vec<_>>();
+    format!(
+        "// Symbol resolution advisory (not a traversal target)\n\
+         // Input [[{input}]] was not found exactly. Suggestions are bounded to up to 8 and ranked deterministically by edit distance, then canonical anchor.\n\
+         // Suggestions are never selected automatically as structural traversal targets; inspect one before retrying.\n\
+         // Resolver implementation: crates/aden-graph/src/cache.rs (analyze_anchor_list / typo_anchor_suggestions).\n\
+         // Suggested canonical anchors: {}",
+        suggestions.join(", ")
+    )
+}
+
+fn asks_about_symbol_recovery(question: &str) -> bool {
+    let lower = question.to_ascii_lowercase();
+    [
+        "misspell",
+        "typo",
+        "not found",
+        "unknown symbol",
+        "suggestion",
+        "did you mean",
+    ]
+    .iter()
+    .any(|signal| lower.contains(signal))
+}
+
+/// A pinned exact symbol normally expands through its implementation. Questions
+/// about downstream behavior also need the bounded incoming side of the graph:
+/// callers and users that depend on the symbol's contract. This is deliberately
+/// phrasing-based and only affects an already exact/unique `--from` target; it
+/// never turns an ambiguous or fuzzy candidate into a traversal seed.
+fn asks_for_consumer_context(question: &str) -> bool {
+    let lower = question.to_ascii_lowercase();
+    [
+        "caller",
+        "calls ",
+        "called by",
+        "consumer",
+        "used by",
+        "depend on",
+        "depends on",
+        "impact",
+        "affected by",
+        "affect ",
+        "protect ",
+        "guard ",
+    ]
+    .iter()
+    .any(|signal| lower.contains(signal))
+}
+
+fn resolution_advisory(path: &Path, question: &str) -> Option<String> {
+    use aden_graph::cache::AnchorResolution;
+
+    if !asks_about_symbol_recovery(question) {
+        return None;
+    }
+    symbolish_tokens(question).into_iter().find_map(|input| {
+        match aden_graph::cache::resolve_anchor_detailed(path, &input) {
+            AnchorResolution::NotFound { suggestions } if !suggestions.is_empty() => {
+                Some(render_not_found_advisory(&input, &suggestions))
+            }
+            _ => None,
+        }
+    })
+}
+
+fn prepend_bounded_advisory(body: &str, advisory: &str, budget: usize) -> String {
+    let separator = "\n\n---\n\n";
+    let max_bytes = budget.saturating_mul(4);
+    if advisory.len() >= max_bytes {
+        let mut end = max_bytes;
+        while end > 0 && !advisory.is_char_boundary(end) {
+            end -= 1;
+        }
+        return advisory[..end].to_string();
+    }
+    let available = max_bytes.saturating_sub(advisory.len() + separator.len());
+    let mut end = body.len().min(available);
+    while end > 0 && !body.is_char_boundary(end) {
+        end -= 1;
+    }
+    if end == 0 {
+        advisory.to_string()
+    } else {
+        format!("{advisory}{separator}{}", &body[..end])
+    }
+}
+
 pub fn cmd_asm(opts: AsmOptions) -> Result<(), Box<dyn std::error::Error>> {
     use aden_asm::traverse::{AssemblyOptions, assemble, assemble_adg};
 
@@ -2007,7 +2502,13 @@ pub fn cmd_query(opts: QueryOptions) -> Result<(), Box<dyn std::error::Error>> {
                 // is an impact edge, instead of testing only `find_edge`'s
                 // arbitrary pick.
                 let via = edges_between(node, neighbor);
-                if !via.iter().any(|et| impact_types.contains(et)) {
+                // An explicit filter narrows impact dependencies; it must not
+                // be ignored or expand this mode to non-impact edge types.
+                let passes = match filter_type {
+                    Some(ft) => impact_types.contains(&ft) && via.contains(&ft),
+                    None => via.iter().any(|et| impact_types.contains(et)),
+                };
+                if !passes {
                     continue;
                 }
                 if visited.insert(neighbor) {
@@ -2949,13 +3450,14 @@ pub fn cmd_ask(
         routing_note,
         evidence_routed,
         precise_definition_routed,
+        exact_symbol_routed,
     ) = if let Some(anchor) = from_override {
         // An explicit pin is a structural target, not fuzzy question routing.
         // Apply the same exact/unique/ambiguous/suggestion contract as asm and
         // query; never hide a bad pin behind the project-root fallback below.
         let anchor = resolve_required_anchor(path, anchor)?;
         xp.decision = "pinned by --from (no search routing)".to_string();
-        (anchor, None, Vec::new(), None, None, false, false)
+        (anchor, None, Vec::new(), None, None, false, false, false)
     } else {
         let idx = load_or_build_index(path)?;
         let lower_question = question.to_lowercase();
@@ -2972,7 +3474,7 @@ pub fn cmd_ask(
             // route to its handler, which BM25 prose mentions drown out), then
             // fall back to the general exact-symbol path.
             let exact = exact_symbol_anchors(&idx, question);
-            if exact.is_empty() {
+            if exact.is_empty() && !prefers_usage_contract_prose(question) {
                 command_handler_anchors(&idx, question)
             } else {
                 exact
@@ -3362,6 +3864,7 @@ pub fn cmd_ask(
             routing_note,
             evidence_routed,
             exact_routed && is_definition_lookup(question),
+            exact_routed,
         )
     };
 
@@ -3520,8 +4023,16 @@ pub fn cmd_ask(
     // the combined output past the threshold.
     let primary_text;
     let assembled = if resolved_alts.is_empty() {
-        let (seed_text, _) =
-            asm.assemble_seed_with(&start_anchor, depth, effective_budget, &block_filter, false)?;
+        let with_callers = (from_override.is_some() || precise_definition_routed)
+            && asks_for_consumer_context(question);
+        let assembly_depth = if with_callers { depth.max(1) } else { depth };
+        let (seed_text, _) = asm.assemble_seed_with(
+            &start_anchor,
+            assembly_depth,
+            effective_budget,
+            &block_filter,
+            with_callers,
+        )?;
         primary_text = seed_text.clone();
         seed_text
     } else {
@@ -3827,6 +4338,28 @@ pub fn cmd_ask(
         assembled
     };
 
+    // A misspelled explicit identifier is useful evidence even when the user
+    // pinned a separate prose anchor. Surface the resolver's bounded suggestion
+    // contract without changing the chosen anchor or traversing a suggestion.
+    // Put the advisory first so a tight strict budget cannot trim away the
+    // safety boundary while retaining lower-priority context.
+    let assembled = resolution_advisory(path, question)
+        .map(|advisory| prepend_bounded_advisory(&assembled, &advisory, effective_budget))
+        .unwrap_or(assembled);
+
+    // A single high-risk intent can require several independent failure-path
+    // facts even without an explicit conjunction. Only an already exact/pinned
+    // code target may open this bounded call-neighborhood route. If any role is
+    // missing or the complete packet does not fit, preserve normal assembly.
+    let boundary_evidence = ((from_override.is_some() || exact_symbol_routed)
+        && !AnchorPattern::is_prose_doc(&start_anchor)
+        && asks_for_risk_boundary_evidence(question))
+    .then(|| risk_boundary_evidence_context(path, &start_anchor, effective_budget))
+    .flatten();
+    let boundary_routed = boundary_evidence.is_some();
+    let (assembled, boundary_supporting) =
+        boundary_evidence.unwrap_or_else(|| (assembled, Vec::new()));
+
     // Step 4: Send to LLM or print raw context. Strict stdout is bounded body
     // plus an opportunistic source header only when existing headroom pays for it.
     if let Some(model_spec) = model {
@@ -3846,7 +4379,7 @@ pub fn cmd_ask(
         };
         let routing_confidence = if from_override.is_some() {
             "pinned"
-        } else if evidence_routed {
+        } else if evidence_routed || boundary_routed {
             "multi_anchor"
         } else if resolved_alts.is_empty() {
             "clear"
@@ -3889,7 +4422,7 @@ pub fn cmd_ask(
                 "budget": effective_budget,
                 "expanded": effective_budget > budget,
                 "strict": strict,
-                "supporting_anchors": resolved_alts,
+                "supporting_anchors": if boundary_routed { boundary_supporting } else { resolved_alts },
                 "completeness": "bounded",
                 "next_actions": next_actions,
                 "explain": explain.then_some(serde_json::json!({
@@ -4402,6 +4935,68 @@ mod tests {
     use super::*;
 
     #[test]
+    fn typo_advisory_is_bounded_deterministic_and_non_traversing() {
+        let suggestions = (0..12)
+            .map(|index| format!("aden://module/project/src/lib.rs#candidate_{index}"))
+            .collect::<Vec<_>>();
+        let advisory = render_not_found_advisory("canddiate_0", &suggestions);
+        assert!(advisory.contains("up to 8"));
+        assert!(advisory.contains("ranked deterministically by edit distance"));
+        assert!(advisory.contains("never selected automatically as structural traversal targets"));
+        assert!(advisory.contains("crates/aden-graph/src/cache.rs"));
+        assert!(!advisory.contains("candidate_8"));
+    }
+
+    #[test]
+    fn symbolish_tokens_strip_sentence_punctuation() {
+        assert_eq!(
+            symbolish_tokens("Explain resovle_anchor_detailed. Then inspect Type::method()."),
+            vec!["resovle_anchor_detailed", "Type::method"]
+        );
+    }
+
+    #[test]
+    fn typo_advisory_requires_explicit_recovery_intent() {
+        assert!(asks_about_symbol_recovery(
+            "What does the misspelled symbol do?"
+        ));
+        assert!(asks_about_symbol_recovery(
+            "Did you mean another identifier?"
+        ));
+        assert!(!asks_about_symbol_recovery(
+            "How does resolve_anchor_detailed protect callers?"
+        ));
+    }
+
+    #[test]
+    fn consumer_context_requires_relationship_language() {
+        for question in [
+            "Who calls this function?",
+            "Which commands depend on this contract?",
+            "How does this guard downstream queries?",
+            "How does this protect consumers from ambiguous input?",
+        ] {
+            assert!(asks_for_consumer_context(question), "{question}");
+        }
+        assert!(!asks_for_consumer_context(
+            "How does resolve_anchor_detailed resolve an exact symbol?"
+        ));
+    }
+
+    #[test]
+    fn typo_advisory_precedes_context_and_respects_budget() {
+        let advisory = render_not_found_advisory(
+            "resovle_anchor_detailed",
+            &["aden://module/aden-graph/src/cache.rs#resolve_anchor_detailed".to_string()],
+        );
+        let body = "body ".repeat(2_000);
+        let combined = prepend_bounded_advisory(&body, &advisory, 512);
+        assert!(combined.starts_with("// Symbol resolution advisory"));
+        assert!(combined.len() <= 512 * 4);
+        assert!(combined.contains("resolve_anchor_detailed"));
+    }
+
+    #[test]
     fn selection_routing_requires_implementation_and_alternatives() {
         for question in [
             "Where does Engine choose between fast and safe search?",
@@ -4495,6 +5090,100 @@ mod tests {
     #[test]
     fn evidence_facets_leave_single_intent_questions_alone() {
         assert!(evidence_facet_queries("What does parse_file do?").is_empty());
+    }
+
+    #[test]
+    fn risk_boundary_route_requires_relationship_language() {
+        assert!(asks_for_risk_boundary_evidence(
+            "What security and execution boundaries does dispatch_request enforce?"
+        ));
+        assert!(asks_for_risk_boundary_evidence(
+            "Which failures does launch_worker handle?"
+        ));
+        assert!(!asks_for_risk_boundary_evidence(
+            "How does dispatch_request work?"
+        ));
+        assert!(!asks_for_risk_boundary_evidence(
+            "Where is security_policy defined?"
+        ));
+    }
+
+    fn risk_candidate(role: usize, anchor: &str, line: usize, text: &str) -> RiskBoundaryCandidate {
+        RiskBoundaryCandidate {
+            role,
+            specificity: 32,
+            distance: 1,
+            anchor: anchor.into(),
+            file: "src/boundary.rs".into(),
+            line,
+            text: text.into(),
+        }
+    }
+
+    #[test]
+    fn risk_boundary_selection_requires_four_distinct_source_lines() {
+        let shared = risk_candidate(0, "a#validate", 10, "validate(environment);");
+        let candidates = vec![
+            shared.clone(),
+            RiskBoundaryCandidate { role: 1, ..shared },
+            risk_candidate(1, "a#spawn", 20, "child.env_clear();"),
+            risk_candidate(2, "a#spawn", 30, "child.kill_on_drop(true);"),
+            risk_candidate(3, "b#sanitize", 40, "sanitize(message);"),
+        ];
+        let selected = select_risk_boundary_candidates(candidates).unwrap();
+        assert_eq!(selected.len(), 4);
+        assert_eq!(selected[1].line, 20);
+        let unique: HashSet<_> = selected
+            .iter()
+            .map(|candidate| (&candidate.file, candidate.line))
+            .collect();
+        assert_eq!(unique.len(), 4);
+        assert!(select_risk_boundary_candidates(selected[..3].to_vec()).is_none());
+    }
+
+    #[test]
+    fn risk_boundary_core_prevents_attributing_subsystem_roles_to_a_leaf() {
+        let leaf_only = vec![
+            RiskBoundaryCandidate {
+                distance: 0,
+                ..risk_candidate(3, "b#sanitize", 40, "redact(message);")
+            },
+            risk_candidate(0, "a#validate", 10, "confine(input);"),
+            risk_candidate(1, "a#spawn", 20, "child.env_clear();"),
+            risk_candidate(2, "a#spawn", 30, "child.kill_on_drop(true);"),
+        ];
+        assert!(!has_risk_boundary_core(&leaf_only));
+
+        let mut boundary = leaf_only;
+        boundary.push(RiskBoundaryCandidate {
+            distance: 0,
+            ..risk_candidate(2, "b#sanitize", 41, "timeout(child);")
+        });
+        assert!(has_risk_boundary_core(&boundary));
+    }
+
+    #[test]
+    fn risk_boundary_selection_and_receipt_are_deterministic_and_bounded() {
+        let candidates = vec![
+            risk_candidate(0, "a#validate", 10, "confine(input);"),
+            risk_candidate(1, "a#spawn", 20, "child.env_clear();"),
+            risk_candidate(2, "a#spawn", 30, "child.kill_on_drop(true);"),
+            risk_candidate(3, "b#sanitize", 40, "redact(message);"),
+        ];
+        let expected = select_risk_boundary_candidates(candidates.clone()).unwrap();
+        let mut reversed = candidates;
+        reversed.reverse();
+        assert_eq!(expected, select_risk_boundary_candidates(reversed).unwrap());
+        let (context, anchors) = render_risk_boundary_evidence(&expected, 512).unwrap();
+        assert!(context.contains(
+            "evidence-role routing selected 4 distinct source facets from 4 distinct source lines"
+        ));
+        assert!(context.contains("validation:"));
+        assert!(context.contains("environment:"));
+        assert!(context.contains("cleanup:"));
+        assert!(context.contains("error handling:"));
+        assert_eq!(anchors, vec!["a#spawn", "a#validate", "b#sanitize"]);
+        assert!(render_risk_boundary_evidence(&expected, 16).is_none());
     }
 
     #[test]
@@ -4643,6 +5332,19 @@ mod tests {
             explicit_symbol_token("Where is FileLock::acquire_timeout defined?"),
             Some("FileLock::acquire_timeout".into())
         );
+    }
+
+    #[test]
+    fn normative_workflow_questions_prefer_usage_contracts() {
+        assert!(prefers_usage_contract_prose(
+            "When should an agent run aden gen during the normal edit loop?"
+        ));
+        assert!(prefers_usage_contract_prose(
+            "Do I need to run the formatter?"
+        ));
+        assert!(!prefers_usage_contract_prose(
+            "How does FileLock::acquire_timeout work?"
+        ));
     }
 
     // ---- classify_intent: previously-misrouting phrasings now route correctly.

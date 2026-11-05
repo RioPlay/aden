@@ -58,6 +58,7 @@ pub fn safe_relative(path_str: &str) -> Result<(), Box<dyn std::error::Error>> {
 /// long-standing call sites working while every crate shares one resolver, so a
 /// subdir and the repo root map to the same store key.
 pub fn find_project_root(start: &Path) -> PathBuf {
+    let _trace = crate::read_trace::span(crate::read_trace::Stage::RootResolve);
     aden_paths::resolve_root(start)
 }
 
@@ -1212,7 +1213,12 @@ fn index_text(doc: &aden_core::Document) -> String {
 /// the fjall store, so language-agnostic `gen --auto` output (which is
 /// store-first) is fully searchable.
 pub fn load_or_build_index(path: &Path) -> Result<aden_index::Index, Box<dyn std::error::Error>> {
-    if let Some(mut cached) = aden_index::try_load(path) {
+    let cached = {
+        let _trace = crate::read_trace::span(crate::read_trace::Stage::IndexLoad);
+        aden_index::try_load(path)
+    };
+    crate::read_trace::index_cache_result(cached.is_some());
+    if let Some(mut cached) = cached {
         // A cache built before a model was available carries no embeddings; fill
         // them in now (and re-save) so hybrid retrieval activates without a full
         // rebuild. No-op when the `dense` feature is off or no model is present.
@@ -1221,6 +1227,7 @@ pub fn load_or_build_index(path: &Path) -> Result<aden_index::Index, Box<dyn std
         }
         return Ok(cached);
     }
+    let _trace = crate::read_trace::span(crate::read_trace::Stage::IndexBuild);
     let mut index = aden_index::Index::from_directory(path)?;
     // Merge store-backed contracts (disk entries already ingested take priority).
     let store_entries = collect_store_entries(path);
@@ -1705,8 +1712,11 @@ fn fuse_conventional_file_rank(
         let mut seen = HashSet::new();
         index
             .lexical_file_rank(query)
-            .iter()
-            .map(|path| source_key(path, root))
+            .into_iter()
+            // Only this window contributes below. Normalize it before collecting
+            // instead of canonicalizing every matched file in the repository.
+            .take(20)
+            .map(|path| source_key(&path, root))
             .filter(|path| seen.insert(path.clone()))
             .collect()
     } else {
@@ -1716,12 +1726,15 @@ fn fuse_conventional_file_rank(
         return base;
     }
     let mut score: HashMap<String, f64> = HashMap::new();
+    let base_keys: Vec<String> = base
+        .iter()
+        .take(20)
+        .map(|result| source_key(&result.source_path, root))
+        .collect();
     // Match the measured candidate window. Aggregating every anchor lets a
     // large file win merely because it was split into many indexed sections.
-    for (rank, result) in base.iter().take(20).enumerate() {
-        *score
-            .entry(source_key(&result.source_path, root))
-            .or_default() += 1.0 / (K + (rank + 1) as f64);
+    for (rank, key) in base_keys.iter().enumerate() {
+        *score.entry(key.clone()).or_default() += 1.0 / (K + (rank + 1) as f64);
     }
     for (rank, path) in conventional.iter().take(20).enumerate() {
         *score.entry(path.clone()).or_default() += CONVENTIONAL_WEIGHT / (K + (rank + 1) as f64);
@@ -1730,16 +1743,12 @@ fn fuse_conventional_file_rank(
     original_scores.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
     let winner = base
         .iter()
+        .take(base_keys.len())
+        .zip(base_keys.iter())
         .enumerate()
-        .max_by(|(_, a), (_, b)| {
-            let a_score = score
-                .get(&source_key(&a.source_path, root))
-                .copied()
-                .unwrap_or(0.0);
-            let b_score = score
-                .get(&source_key(&b.source_path, root))
-                .copied()
-                .unwrap_or(0.0);
+        .max_by(|(_, (a, a_key)), (_, (b, b_key))| {
+            let a_score = score.get(*a_key).copied().unwrap_or(0.0);
+            let b_score = score.get(*b_key).copied().unwrap_or(0.0);
             a_score
                 .partial_cmp(&b_score)
                 .unwrap_or(std::cmp::Ordering::Equal)

@@ -61,6 +61,11 @@ jobs:
           --test viewer_completeness
           --test viz_direction
           --test zero_friction_freshness
+          --test freshness_coherence
+          --test freshness_paths
+          --test source_read
+          --test read_trace
+          --test gen_trace
 
       - name: Offline viewer navigation and search regressions
         run: node --test scripts/test_viewer.cjs scripts/test_simple_viewer.cjs

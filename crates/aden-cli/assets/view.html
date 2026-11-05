@@ -942,6 +942,40 @@ function hullOf(pts) {   // Andrew monotone chain convex hull
   lo.pop(); hi.pop();
   return lo.concat(hi);
 }
+const envelopeShapes = new Map();
+function envelopeShape(gname, members) {
+  const old = envelopeShapes.get(gname);
+  // Observe coordinates and visible membership directly. This also catches
+  // physics, drag, filter/pivot changes and graph replacements without relying
+  // on an incomplete list of event handlers to invalidate geometry.
+  if (old && old.members.length === members.length && members.every((n,i) => {
+    const p = old.members[i];
+    return p.node === n && p.x === n.x && p.y === n.y && p.loc === n.loc;
+  })) return old;
+  const shape = {members:members.map(n=>({node:n,x:n.x,y:n.y,loc:n.loc})),ex:[]};
+  let ncx=0,ncy=0;
+  members.forEach(n=>{ncx+=n.x;ncy+=n.y;});
+  shape.ncx=ncx/members.length; shape.ncy=ncy/members.length;
+  shape.nr=70;
+  members.forEach(n=>{shape.nr=Math.max(shape.nr,Math.hypot(n.x-shape.ncx,n.y-shape.ncy));});
+  shape.nr+=70;
+  if(members.length>=3) {
+    const hull=hullOf(members.map(n=>[n.x,n.y]));
+    if(hull.length>=3) {
+      shape.cx=hull.reduce((s,p)=>s+p[0],0)/hull.length;
+      shape.cy=hull.reduce((s,p)=>s+p[1],0)/hull.length;
+      shape.ex=hull.map(([x,y])=>{
+        const dx=x-shape.cx,dy=y-shape.cy,d=Math.hypot(dx,dy)||1;
+        return [x+dx/d*18,y+dy/d*18];
+      });
+      shape.top=Math.min(...shape.ex.map(p=>p[1]));
+      const loc=members.reduce((s,n)=>s+(n.loc||0),0);
+      shape.mass=loc>=1000?`${(loc/1000).toFixed(1)}k loc`:loc?`${loc} loc`:`${members.length} items`;
+    }
+  }
+  envelopeShapes.set(gname,shape);
+  return shape;
+}
 Graph.onRenderFramePre((ctx, scale) => {
   if (!envelopes || minimal) return;
   const groups = new Map();
@@ -951,17 +985,14 @@ Graph.onRenderFramePre((ctx, scale) => {
     if (!g) groups.set(n.group, g = []);
     g.push(n);
   });
+  for(const key of envelopeShapes.keys()) if(!groups.has(key)) envelopeShapes.delete(key);
   groups.forEach((members, gname) => {
+    const shape=envelopeShape(gname,members);
     const col0 = palette[(groupIdx[gname] || 0) % palette.length];
     // Nebula field: a huge, ultra-soft, slowly-breathing color cloud behind
     // each cluster — the module's atmosphere. Drawn even for small groups.
     if (members.length >= 2) {
-      let ncx = 0, ncy = 0;
-      members.forEach(n => { ncx += n.x; ncy += n.y; });
-      ncx /= members.length; ncy /= members.length;
-      let nr = 70;
-      members.forEach(n => { nr = Math.max(nr, Math.hypot(n.x - ncx, n.y - ncy)); });
-      nr += 70;
+      const {ncx,ncy,nr}=shape;
       const breathe = REDUCED_MOTION ? 1
         : 1 + Math.sin(Date.now() / 2400 + (groupIdx[gname] || 0)) * 0.06;
       const glow0 = groupPulse.get(gname) || 0;
@@ -971,19 +1002,8 @@ Graph.onRenderFramePre((ctx, scale) => {
       ctx.beginPath(); ctx.arc(ncx, ncy, nr * breathe, 0, 2 * Math.PI);
       ctx.fillStyle = grad; ctx.fill();
     }
-    if (members.length < 3) return;
-    const hull = hullOf(members.map(n => [n.x, n.y]));
-    if (hull.length < 3) return;
-    let cx = 0, cy = 0;
-    hull.forEach(([x, y]) => { cx += x; cy += y; });
-    cx /= hull.length; cy /= hull.length;
-    // pad outward from the centroid, then smooth through edge midpoints for a
-    // soft organic membrane instead of a hard polygon
-    const pad = 18;
-    const ex = hull.map(([x, y]) => {
-      const dx = x - cx, dy = y - cy, d = Math.hypot(dx, dy) || 1;
-      return [x + dx / d * pad, y + dy / d * pad];
-    });
+    if (shape.ex.length < 3) return;
+    const {cx,ex,top,mass}=shape;
     ctx.beginPath();
     for (let i = 0; i < ex.length; i++) {
       const [x1, y1] = ex[i], [x2, y2] = ex[(i + 1) % ex.length];
@@ -997,12 +1017,9 @@ Graph.onRenderFramePre((ctx, scale) => {
     ctx.fillStyle = hexA(col, 0.045 + glow * 0.10); ctx.fill();
     ctx.strokeStyle = hexA(col, 0.16 + glow * 0.35); ctx.lineWidth = (1.5 + glow * 1.5) / scale; ctx.stroke();
     if (scale > 0.45) {
-      const loc = members.reduce((s, n) => s + (n.loc || 0), 0);
-      const mass = loc >= 1000 ? `${(loc / 1000).toFixed(1)}k loc` : loc ? `${loc} loc` : `${members.length} items`;
       ctx.font = `${Math.max(12 / scale, 3)}px ui-sans-serif, system-ui, sans-serif`;
       ctx.fillStyle = hexA(col, 0.55);
       ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
-      const top = Math.min(...ex.map(p => p[1]));
       ctx.fillText(`${gname} · ${mass}`, cx, top - 4 / scale);
     }
   });
@@ -1547,26 +1564,26 @@ const qEl = document.getElementById('q'), resEl = document.getElementById('resul
 let matches = [], selIdx = 0;
 
 // Visible graph nodes
+const drillSearchCandidates = hasDrill && DATA.drill
+  ? Object.entries(DATA.drill).flatMap(([cid,drill]) => drill.nodes.map(m => ({...m,id:cid+':'+m.id,_cid:cid})))
+  : [];
 function inViewCandidates() {
   const list = [], seen = new Set();
   Object.values(byId).forEach(n => { list.push(n); seen.add(n.id); });
-  if (hasDrill && DATA.drill) {
-    Object.keys(DATA.drill).forEach(cid => DATA.drill[cid].nodes.forEach(m => {
-      const id = cid + ':' + m.id;
-      if (!seen.has(id)) { list.push({ ...m, id, _cid: cid }); seen.add(id); }
-    }));
-  }
+  drillSearchCandidates.forEach(n => {
+    if (!seen.has(n.id)) { list.push(n); seen.add(n.id); }
+  });
   return list;
 }
 
 // Global anchor index from DATA (symbols not in the current slice)
 /*SEARCH_HELPERS*/
 function searchRank(n,q) { return AdenSearch.rank(n,shortName(n),q); }
-function allAnchorCandidates(q) {
-  if (!Array.isArray(DATA.all_anchors)) return [];
-  return DATA.all_anchors
-    .filter(e => AdenSearch.text(e, e.n + ' ' + e.a + ' ' + e.g).includes(q))
-    .map(e => ({ _global: true, id: e.a, anchor: e.a, label: e.n, group: e.g, kind: e.k, deg: e.d || 0 }));
+const globalAnchorCandidates = (Array.isArray(DATA.all_anchors) ? DATA.all_anchors : [])
+  .map(e => ({ _global: true, id: e.a, anchor: e.a, label: e.n, group: e.g, kind: e.k, deg: e.d || 0 }));
+function allAnchorCandidates(q,excluded) {
+  return AdenSearch.select(globalAnchorCandidates,shortName,q,6,
+    (a,b) => b.deg-a.deg, e => !excluded.has(e.anchor));
 }
 
 function resultShape(k) {
@@ -1589,17 +1606,12 @@ function runSearch() {
   if (!q) { matches = []; resEl.classList.remove('open'); resEl.innerHTML = ''; refreshViz(); return; }
 
   // in-view candidates (ranked by degree)
-  const inView = inViewCandidates()
-    .filter(n => AdenSearch.text(n,shortName(n)).includes(q))
-    .sort((a, b) => searchRank(a,q) - searchRank(b,q) || (b.deg || 0) - (a.deg || 0))
-    .slice(0, 8);
+  const inView = AdenSearch.select(inViewCandidates(),shortName,q,8,
+    (a,b) => (b.deg || 0)-(a.deg || 0));
   const inViewAnchors = new Set(inView.map(n => n.anchor).filter(Boolean));
 
   // global candidates not already in-view
-  const globalHits = allAnchorCandidates(q)
-    .filter(e => !inViewAnchors.has(e.anchor))
-    .sort((a, b) => searchRank(a,q) - searchRank(b,q) || b.deg - a.deg)
-    .slice(0, 6)
+  const globalHits = allAnchorCandidates(q,inViewAnchors)
     .map(e => anchorToId[e.anchor] ? byId[anchorToId[e.anchor]] : { ...e, _ghost: true });
 
   matches = [...inView, ...globalHits].sort((a,b)=>searchRank(a,q)-searchRank(b,q)).slice(0, 14);

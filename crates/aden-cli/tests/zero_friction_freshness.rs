@@ -139,7 +139,7 @@ fn old_layout_manifest_and_gen_cache_trigger_one_automatic_rebuild() {
     let cache: serde_json::Value =
         serde_json::from_slice(&std::fs::read(cache_path).unwrap()).unwrap();
     // Pinned to the current GEN_LOGIC_VERSION (types.rs): bump together.
-    assert_eq!(cache["version"], 14);
+    assert_eq!(cache["version"], 15);
 
     let _ = std::fs::remove_dir_all(project);
     let _ = std::fs::remove_dir_all(data);
@@ -426,6 +426,7 @@ fn authoritative_writer_contention_has_one_wall_clock_deadline() {
 }
 
 #[test]
+#[cfg(debug_assertions)] // The injected mutation hook is absent from release builds.
 fn mid_query_mutation_never_returns_false_current() {
     let (project, data) = scaffold();
     assert!(run(&project, &data, &["gen", "."]).status.success());

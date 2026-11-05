@@ -1,0 +1,70 @@
+[[viewer-performance]]
+= Viewer performance checks
+
+The Simple and 2D viewers share cached search text and four stable rank buckets.
+Simple search preserves all matching symbols in the established alphabetical
+tie order. The 2D viewer retains only its bounded local/global result sets using
+the existing degree tie breaker. Global and drill candidates keep their identity
+across searches so normalized search text can be reused. Relationship adjacency
+is sorted lazily once for each visited Simple-view node; filtering preserves that
+order without another sort. These caches belong to one static export.
+
+== Reproducible algorithm comparison
+
+[source,powershell]
+----
+node --test scripts/test_simple_viewer.cjs scripts/test_viewer.cjs
+node scripts/bench_viewer_search.cjs .tmp/viewer-search-comparison.json
+----
+
+The synthetic benchmark compares exact ordered IDs with the previous sorting
+algorithm on 50,000 matching nodes, for all results and limits of eight and six.
+Seven alternating warm repetitions are recorded. All three result sets matched.
+The candidate derives each node name once per search; the previous comparator
+alone derived names 543,030 times for all results and 1,428,822 times for bounded
+results in this fixture. These are operation counts, not browser latency claims.
+
+The initial timing run overlapped Rust verification work; a subsequent run with
+builds and tests idle also preserved all three exact result sets. Its local
+timings remain diagnostic only. The benchmark excludes DOM updates, canvas rendering, layout,
+first-load cost, browser frame rate, and end-to-end user latency. Node tests cover
+stable ties, exclusions, complete hit counts, self-loops, adjacency order, and
+drill expansion/collapse precedence. Browser checks establish different facts.
+
+== Desktop browser verification
+
+Updated templates were exercised in LibreWolf using manually assembled fixtures.
+Simple search on 5,000 symbols returned the expected 2,500 matches, with the exact
+name first. Relationship counts, the Calls filter, following an edge, and Back
+preserved the selected symbol, search and filter. The 2D fixture had 300 visible
+nodes and 5,000 global symbols; global-only results, no-results recovery, and
+Enter selection worked. Test tabs and the temporary loopback server were closed.
+Console errors, touch, 2D reload/history and frame rate remain unverified. These
+checks used the updated templates, not newly installed binaries.
+
+== Rendering work
+
+The 2D render loop now compares exact visible member identity, coordinates and
+source mass before reusing world-coordinate group geometry. Physics, dragging,
+visibility, replacement objects and metadata changes invalidate the affected
+group. Zoom-dependent styling, breathing and pulse glow remain dynamic. This
+linear comparison is deliberately more conservative than event-only invalidation.
+
+`node scripts/bench_viewer_render.cjs` compares the actual baseline and candidate
+canvas callbacks on 10,000 nodes in 50 groups. All 29 tested states produced the
+same draw commands. After initial geometry construction, 20 static frames avoid
+the baseline's 1,000 repeated hull builds. This operation-count result does not
+establish browser frame rate or GPU performance.
+
+The 3D viewer skips bubble traversal and geometry updates while wraps are hidden,
+then refreshes immediately when enabling them. Visible wraps retain their periodic
+updates. Actual-template tests cover hidden work and the enable refresh. First-load
+costs, large visible 3D scenes and device-specific rendering remain profiling
+targets rather than performance claims.
+
+An actual LibreWolf test could not initialize WebGL. The viewer now stops its
+setup, hides inactive controls and presents a focused accessible alert with a
+2D link when available and CLI export alternatives. The failure/recovery path
+was verified in that browser. Successful WebGL rendering and direct node-drag
+geometry remain unverified there; a canvas privacy prompt prevented drag checks.
+Desktop 2D zoom, density reduction/restoration and envelope toggling were checked.

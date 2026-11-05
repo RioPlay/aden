@@ -1,0 +1,262 @@
+:proj: aden
+
+[[read-path-performance]]
+= Read-path measurements
+
+== Opt-in local diagnostics
+
+Set `ADEN_READ_TRACE=1` for a successful retrieval command to emit one versioned
+JSON diagnostic line on stderr. Standard output is unchanged. Disabled tracing
+performs no diagnostic clock readings or statistics locks, and diagnostics do
+not add filesystem scans. Errors retain their existing stderr protocol.
+
+[source,powershell]
+----
+$env:ADEN_READ_TRACE = '1'
+aden query --backlinks helper --depth 1 --max-results 10
+Remove-Item Env:ADEN_READ_TRACE
+----
+
+The diagnostic has `type: aden_read_trace`, `schema_version: 1`, a validated
+command name, `total_elapsed_us`, stage call counts/elapsed microseconds, and
+fingerprint file/byte counts plus index cache hits/misses. It contains no source
+text, raw question, or absolute paths. Stage times are inclusive and may overlap:
+do not sum them or subtract their sum from the total. The total starts before
+argument parsing but excludes external process startup and transport overhead.
+
+Measured stages are `fingerprint`, `refresh`, `ensure_fresh`, `index_load`,
+`index_build`, `root_resolve`, `store_resolve`, `store_compatibility`, and
+`manifest_load`. `root_resolve` measures the CLI root wrapper; it does not count
+internal resolutions performed by `aden_paths`. Store and manifest stages
+include any internal path resolution. A zero count means that stage did not
+run, not that it was free.
+These stages do not yet partition all routing, graph decoding, assembly, and
+serialization costs. Unattributed time requires further profiling.
+
+The CLI trace is directly observable in benchmark stderr. MCP execution receipts
+already include subprocess timing; successful child stderr diagnostics are not
+currently forwarded through the MCP response.
+
+The `compatibility_store_opens` counter counts only database opens made to
+classify an unknown engine-format marker. It does not count database opens by
+symbol resolution, graph traversal, or other commands. Current recognized markers
+allow that format-only check to avoid a database open; they establish neither
+store integrity nor graph freshness.
+
+== Fixed request microbenchmark
+
+For empty-store generation and time to the first graph answer, see
+<<cold-generation-performance>>.
+
+`scripts/read_path_bench.py` exercises source reads, verified symbol context,
+typed incoming references, typed outgoing dependencies, and scoped search. Each
+sample creates an isolated Cargo fixture and an isolated `ADEN_DATA_DIR`; it
+does not modify the target repository or use its graph store.
+
+States are `unindexed` (fresh Aden storage), `primed` (generation and an initial
+request completed), and `post_edit` (same-size symbol/call rename with the exact
+mtime preserved). These describe Aden index state, not OS-cache state. OS caches
+and disk eviction are not controlled.
+
+Compare explicit binaries, preserving a baseline before rebuilding a candidate:
+
+[source,powershell]
+----
+python scripts/read_path_bench.py --binary baseline=path/to/baseline/aden.exe --binary candidate=target/debug/aden.exe --repetitions 3 --output comparison.json
+python scripts/read_path_bench.py --binary candidate=target/debug/aden.exe --repetitions 1 --trace --output diagnostic.json
+----
+
+Arms are shuffled within each request/state/repetition cell with a recorded
+seed. Binary version/features and executable SHA-256 are recorded. Run serially
+with no builds or other repository scans in progress. Diagnostics add overhead;
+keep traced runs separate from ordinary timing comparisons.
+
+The benchmark validates measured evidence before follow-up verification. Query
+responses must contain exactly the requested seed and the expected typed chain.
+Post-edit graph requests additionally verify that the deleted definition is
+absent and the new definition exists. A later verification query cannot rescue
+an invalid measured response. Direct reads verify actual file bytes and make
+no graph-freshness assertion.
+
+All attempts, setup failures, request failures, and timeouts remain in the report.
+`successful_request_median_ms` excludes separately recorded setup and verification.
+`all_started_elapsed_median_ms` includes full attempts, including failed setup.
+Read both completion counts and timing distributions. Median/minimum/maximum
+from a few repeats are diagnostic observations, not population tail estimates.
+
+This is a synthetic CLI performance benchmark. It does not establish LLM task
+completion speed, productivity, vulnerability coverage, or production scalability.
+
+== Local observation: 2026-11-05 UTC
+
+The working tree based on `f8eda8efb17d8557a9a67eddb41980031dcb67fc` was tested
+with pre-existing local changes preserved. Both binaries were development builds
+with the `view` feature on Windows 11 AMD64 (16 logical CPUs), Python 3.13.16.
+The baseline already included direct reads and content-coherent generation.
+The candidate adds tracing, explicit MCP traversal controls, impact-filter
+correctness, and removal of the JSON-only stale-hint root probe.
+
+Executable SHA-256 prefixes were `35e7bc0f445d` (baseline) and `240889fc5d65`
+(candidate); full hashes and all samples are retained in the local report
+`.tmp/read-path-comparison.json`. Ninety attempts passed evidence validation:
+five workloads, three index states, three repetitions, two shuffled arms.
+The source-only baseline smoke report was validation-only and ran during a build;
+its timings were excluded from the comparison.
+
+Primed request medians, milliseconds (three observations per cell):
+
+[cols="2,1,1",options="header"]
+|===
+|Workload |Baseline |Candidate
+|Direct source |49.8 |58.7
+|Verified symbol |571.5 |534.1
+|Incoming references |465.8 |441.5
+|Outgoing dependencies |488.1 |435.2
+|Scoped grep |435.6 |426.1
+|===
+
+Graph medians were lower in this fixture; direct-source median was higher and
+some ranges overlapped. These small samples establish neither a general speedup
+nor a reliable tail estimate. The report retains all states, ranges, and attempts.
+
+A separate 15-attempt traced run passed, recorded in
+`.tmp/read-path-diagnostic.json`. In its primed graph cases, inclusive
+`ensure_fresh` took approximately 217-238 ms while both fingerprint scans together
+took approximately 2-3 ms. No regeneration occurred. Direct reads reported zero
+fingerprint scans and no index operations. The selected graph commands did not
+enter the instrumented search-index loader; that does not establish that graph
+snapshot loading was free or absent.
+
+The next measurement should separate root resolution and store compatibility
+probing within freshness setup, followed by snapshot/context loading. This
+observation does not justify removing the final freshness observation or a
+general resident-engine rewrite.
+
+== Follow-up: reuse freshness path derivation
+
+Finer diagnostic stages found repeated path derivation within freshness setup.
+`aden_paths::project_key` resolves the root through Git, including when its caller
+already has the root. The normal warm central-store freshness path performed six
+root resolutions by call graph. A private `FreshnessPaths` now derives the root
+and project directory once per freshness operation, reducing that path to two
+resolutions. This is not a global root cache or a new store identity scheme.
+
+Store existence and `ADEN_STORE` are still checked live. Central-first and legacy
+fallback behavior are retained. The final receipt constructs a separate path
+descriptor and fingerprints the live sources again. Pre-query fingerprints are
+never substituted for the final observation.
+
+The comparison used the previous candidate (`240889fc5d65`) as its baseline and
+the optimized development binary (`c0d0af201ae5`) as its candidate, with the same
+Windows configuration and benchmark requests. All 90 attempts passed. Full
+binary identities, failures, ranges, and all index states are in
+`.tmp/freshness-path-comparison.json`.
+
+Primed request medians, milliseconds (three observations per cell):
+
+[cols="2,1,1",options="header"]
+|===
+|Workload |Before |After
+|Direct source |52.8 |53.9
+|Verified symbol |548.0 |366.3
+|Incoming references |436.4 |289.5
+|Outgoing dependencies |463.9 |278.4
+|Scoped grep |428.0 |251.6
+|===
+
+Warm graph medians were approximately 33-41% lower on this fixture. Direct reads
+were roughly unchanged. These remain small synthetic measurements, not evidence
+of general productivity gains, large-repository performance, or resolution of
+the earlier reported 6-24-second calls.
+
+Separate before/after traced runs each passed 15 attempts, retained in
+`.tmp/freshness-profile-before.json` and `.tmp/freshness-profile-after.json`.
+Warm `ensure_fresh` fell from approximately 208-237 ms to 87-107 ms. Aggregate
+store-path resolution fell from 121-139 ms to about 0.2 ms, and manifest loading
+from 59-72 ms to about 0.2-0.3 ms. Both source fingerprints still ran and totaled
+about 2-3 ms. These inclusive stages overlap; they must not be added together.
+
+Focused verification passed 300 tests: 271 CLI unit tests, 26 existing freshness,
+trace, and receipt tests, and three new path-selection tests. The new cases cover
+separate checkouts, root/subdirectory resolution, missing pinned-store fallback,
+and central/pinned precedence over legacy stores. Independent bounded review
+found no material issue. The initial isolation-test assertion expected zero fuzzy
+suggestions; it was corrected to distinguish suggestions from exact definitions.
+
+== Existing-repository query comparison
+
+`scripts/repo_query_bench.py` compares equivalent `Calls` requests through
+`query --from` and `query --impact`, each at depth one with a 100-result cap.
+Supply an exact canonical anchor with fewer than 100 reachable results. The
+benchmark rejects truncated output, stale receipts, missing source fingerprints,
+wrong seeds/depths/types, duplicate anchors, and differing result sets or source
+observations across arms. Each started measured request remains in the report,
+including errors and timeouts; any failure prevents overall benchmark success.
+
+[source,powershell]
+----
+python scripts/repo_query_bench.py --project . --anchor 'aden://module/aden-cli/src/indexer/fresh.rs#ensure_fresh_with_policy' --binary before=path/to/baseline/aden.exe --binary after=target/debug/aden.exe --repetitions 3 --output repo-comparison.json
+----
+
+This uses the repository's normal per-user Aden storage after clearing inherited
+`ADEN_*` overrides. Priming can refresh derived index data but does not edit
+source files. Priming outcomes/times are retained separately from measured
+medians. Run with builds, other index operations, and source edits idle. Pass
+`--trace` only for a separate diagnostic run, not pooled with untraced timing.
+The two traversal modes are checked for evidence parity, not assumed universally
+equivalent for arbitrary edge filters or result caps.
+
+The repository diagnosis found that a warm compatibility probe opened and
+recovered the entire Fjall database merely to test engine format. On this checkout
+that stage took approximately 1.27-1.40 seconds per request. A bounded, read-only
+four-byte marker probe now skips that open only for the recognized current
+format. Every other marker still reaches the engine's authoritative error
+classification and existing pinned/shared-store safeguards.
+
+A recovery regression test also exposed a silent-generation coalescing defect:
+unchanged sources could cause generation to return before repairing an
+incompatible store. Coalescing now also requires a recognized current marker.
+The test reads back the repaired engine marker; refresh telemetry alone does
+not establish that recovery succeeded.
+
+The uncontended comparison on the working Aden repository used development
+`view` builds `c0d0af201ae5` (before) and `520906d4204d` (after), with full hashes
+and all samples retained in `.tmp/repo-query-comparison.json`. Twelve measured
+requests and four separate priming requests passed. Both modes and both binaries
+returned identical complete anchor/depth sets and source observations.
+
+Request medians, seconds (three observations per cell):
+
+[cols="2,1,1",options="header"]
+|===
+|Workload |Before |After
+|Bounded outgoing query (`--from`) |4.684 |3.294
+|Impact query (`--impact`) |3.336 |2.083
+|===
+
+Median latency was approximately 30% and 38% lower for these requests. This is
+one repository, one seed, one hop, and development builds; it does not establish
+release-build latency, large-repository scalability, whole-task acceleration,
+or a reproduction of every previously reported 6-24-second request.
+
+A separate traced comparison in `.tmp/repo-query-diagnostic.json` passed four
+measured requests plus four priming requests with matching evidence. The
+compatibility stage fell from approximately 1.54-1.55 seconds to 0.4-0.5 ms, with
+zero compatibility-only database opens on the candidate. Inclusive freshness
+setup fell from approximately 1.75-1.76 seconds to 0.19-0.23 seconds. Both source
+fingerprints still ran, totaling approximately 0.26-0.27 seconds across 349 source
+files (each counted twice). Other symbol-resolution and graph database opens are
+not counted by the compatibility counter and remain candidates for profiling.
+No stage durations should be summed.
+
+Final focused verification passed 302 CLI tests, all 30 store tests, and nine
+Python benchmark-validation tests. Independent bounded source and benchmark
+review found no material issue. The initial format-repair test exposed the
+silent-coalescing defect and passed after the production fix. A Windows test
+initially tried to read the engine's OS-locked lockfile; the corrected test still
+checks its path/size/mtime while comparing every other file's contents. The
+pinned-store test asserts diagnostic refusal and marker/sentinel preservation;
+a still-valid search cache is allowed to answer the read.
+
+All changes remain local build artifacts and source edits. The installed CLI and
+currently connected MCP session were not replaced.
