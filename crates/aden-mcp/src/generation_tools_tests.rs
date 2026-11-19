@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 use super::*;
 
 fn json_args(value: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {

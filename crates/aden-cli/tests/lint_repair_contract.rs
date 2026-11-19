@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //! Repair mode must preserve machine output and reject remaining lint errors.
 
 use std::process::{Command, Output};
