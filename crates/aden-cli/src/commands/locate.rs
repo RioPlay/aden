@@ -5,7 +5,6 @@ use std::collections::{HashSet, VecDeque};
 use std::path::Path;
 
 use aden_graph::Direction;
-use aden_store::GraphStorage;
 
 use crate::util::{fmt_score, load_or_build_index, node_to_json, query_index};
 
@@ -159,6 +158,7 @@ fn ranked_symbol_candidates(symbol: &str, anchors: &[String]) -> Vec<String> {
 
 /// Definitive natural-name matches only. Rank-5 substring hits remain useful
 /// locate suggestions but must never become structural query targets.
+#[cfg(test)]
 fn definitive_symbol_candidates(symbol: &str, anchors: &[String]) -> Vec<String> {
     let candidates = ranked_symbol_candidates(symbol, anchors);
     if candidates
@@ -249,6 +249,16 @@ fn impact_reachable(
     out
 }
 
+fn check_publication_revision(
+    expected: Option<&str>,
+    observed: Option<&str>,
+) -> Result<(), &'static str> {
+    if expected.is_some() && expected != observed {
+        return Err("graph publication changed during understand; retry the read");
+    }
+    Ok(())
+}
+
 pub fn cmd_understand(
     symbol: &str,
     path: &Path,
@@ -265,13 +275,54 @@ pub fn cmd_understand(
     let _stale_hint = super::StaleHintGuard::new(path, json);
     // Decision-grade: short-wait so blast radius is not silently stale.
     super::ensure_fresh_decision(path);
+    super::generate::require_graph_ready(path)?;
 
-    // Step 1: use the same definitive resolver as asm/query. Substring matches
-    // remain suggestions and are never silently promoted to a resolved symbol.
-    let anchor = match aden_graph::cache::resolve_anchor_detailed(path, symbol) {
+    // Share one storage observation across resolution, relationships and context.
+    // Exhaustive anchor keys also preserve alternate definitions and recovery
+    // candidates without loading unrelated document bodies.
+    let revision = if aden_graph::snapshot::session_cache_enabled()
+        || std::env::var_os("ADEN_STORE").is_some()
+        || aden_paths::resolve_read_store(path).1
+    {
+        None
+    } else {
+        crate::indexer::fresh::published_revision(path)
+    };
+    let augment = |value| -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+        let env = super::analysis::augment(path, value);
+        check_publication_revision(
+            revision.as_deref(),
+            env["context_receipt"]["graph_revision"].as_str(),
+        )?;
+        Ok(env)
+    };
+    let check_human_revision = || {
+        if let Some(expected) = revision.as_deref() {
+            check_publication_revision(
+                Some(expected),
+                crate::indexer::fresh::published_revision(path).as_deref(),
+            )?;
+        }
+        Ok::<(), &'static str>(())
+    };
+    let (reader, resolution) = {
+        let _trace = crate::read_trace::span(crate::read_trace::Stage::AnchorResolve);
+        let reader = match revision.as_deref() {
+            Some(expected) => {
+                aden_graph::cache::GraphReadSession::open_for_revision(path, |bytes| {
+                    crate::indexer::fresh::snapshot_matches_revision(bytes, expected)
+                })
+            }
+            None => aden_graph::cache::GraphReadSession::open(path),
+        };
+        let resolution = reader.resolve_anchor_exhaustive(symbol)?;
+        (reader, resolution)
+    };
+    let anchor = match resolution {
         aden_graph::cache::AnchorResolution::Exact(anchor)
         | aden_graph::cache::AnchorResolution::Unique { anchor } => anchor,
         aden_graph::cache::AnchorResolution::NotFound { suggestions } => {
+            drop(reader);
             let actions = resolution_actions(
                 &aden_graph::cache::AnchorResolution::NotFound {
                     suggestions: suggestions.clone(),
@@ -284,33 +335,32 @@ pub fn cmd_understand(
                 symbol, symbol
             );
             if json {
-                let env = super::augment_read_json(
-                    path,
-                    json!({
-                        "symbol": symbol,
-                        "anchor": null,
-                        "next_actions": actions,
-                        "error": msg,
-                        "resolution": {
-                            "state": "not_indexed",
-                            "complete": false,
-                            "suggestions": suggestions,
-                            "limitations": "nested/local/test symbols, generated code, macros, and dynamic definitions may not have graph anchors",
-                            "recovery": [
-                                format!("run locate(symbol={symbol:?}) to inspect full-text fallback candidates"),
-                                format!("run grep(pattern={symbol:?}) because no graph result does not prove absence"),
-                            ],
-                        },
-                    }),
-                );
-                println!("{}", serde_json::to_string(&env)?);
+                let env = augment(json!({
+                    "symbol": symbol,
+                    "anchor": null,
+                    "next_actions": actions,
+                    "error": msg,
+                    "resolution": {
+                        "state": "not_indexed",
+                        "complete": false,
+                        "suggestions": suggestions,
+                        "limitations": "nested/local/test symbols, generated code, macros, and dynamic definitions may not have graph anchors",
+                        "recovery": [
+                            format!("run locate(symbol={symbol:?}) to inspect full-text fallback candidates"),
+                            format!("run grep(pattern={symbol:?}) because no graph result does not prove absence"),
+                        ],
+                    },
+                }))?;
+                crate::read_worker::emit_machine_body(serde_json::to_string(&env)?);
             } else {
+                check_human_revision()?;
                 println!("{}", msg);
                 super::next_actions::print(&actions);
             }
             return Ok(());
         }
         aden_graph::cache::AnchorResolution::Ambiguous { candidates } => {
+            drop(reader);
             let actions = resolution_actions(
                 &aden_graph::cache::AnchorResolution::Ambiguous {
                     candidates: candidates.clone(),
@@ -323,22 +373,20 @@ pub fn cmd_understand(
                 symbol, symbol
             );
             if json {
-                let env = super::augment_read_json(
-                    path,
-                    json!({
-                        "symbol": symbol,
-                        "anchor": null,
-                        "next_actions": actions,
-                        "resolution": {
-                            "state": "ambiguous",
-                            "complete": false,
-                            "candidates": candidates,
-                            "recovery": recovery,
-                        },
-                    }),
-                );
-                println!("{}", serde_json::to_string(&env)?);
+                let env = augment(json!({
+                    "symbol": symbol,
+                    "anchor": null,
+                    "next_actions": actions,
+                    "resolution": {
+                        "state": "ambiguous",
+                        "complete": false,
+                        "candidates": candidates,
+                        "recovery": recovery,
+                    },
+                }))?;
+                crate::read_worker::emit_machine_body(serde_json::to_string(&env)?);
             } else {
+                check_human_revision()?;
                 println!("{recovery}");
                 for candidate in candidates {
                     println!("  - {candidate}");
@@ -349,33 +397,40 @@ pub fn cmd_understand(
         }
     };
 
-    // Load the full graph once; all three structural views read from it.
-    let graph = aden_graph::cache::build_from_directory_cached(path)?;
-    let idx = graph.get_index(&anchor).ok_or_else(|| {
-        format!(
-            "Anchor '{}' not found in graph. Try 'aden locate --symbol {} .' for ranked recovery candidates.",
-            anchor
-            , anchor
-        )
-    })?;
-
-    // M16: surface the OTHER definitions that share this symbol name. `understand`
-    // resolves to exactly one anchor, so when a name is defined in several places
-    // the siblings — and their distinct backlinks/impact — were silently hidden.
-    let alternates = alternate_anchors(
-        symbol,
-        &anchor,
-        graph.anchor_to_index.keys().map(|s| s.as_str()),
-    );
+    let (document, alternates, backlink_graph, impact_graph, neigh) = {
+        let _trace = crate::read_trace::span(crate::read_trace::Stage::GraphLoad);
+        let document = reader.document(&anchor)?.ok_or_else(|| {
+            format!("Anchor '{anchor}' has no stored definition; refresh the index before retrying")
+        })?;
+        let alternates = alternate_anchors(
+            symbol,
+            &anchor,
+            reader.anchors()?.iter().map(String::as_str),
+        );
+        let backlink_graph =
+            reader.query_neighborhood(&anchor, 1, Direction::Incoming, &[], false, usize::MAX)?;
+        let impact_graph = reader.query_neighborhood(
+            &anchor,
+            2,
+            Direction::Outgoing,
+            &crate::util::impact_edge_types(),
+            false,
+            usize::MAX,
+        )?;
+        let neigh = reader.assembly_neighborhood(&anchor, 2, &[])?;
+        // Storage must close before source reads, assembly and the independent
+        // final freshness observation. Its close cost stays in graph_load.
+        drop(reader);
+        (document, alternates, backlink_graph, impact_graph, neigh)
+    };
 
     // Definition location from the node's attributes.
     let def = {
-        let node = &graph.graph[idx];
-        let attrs = &node.doc.attributes;
+        let attrs = &document.attributes;
         json!({
             "anchor": anchor,
             "node_type": attrs.get("node-type").cloned()
-                .unwrap_or_else(|| format!("{:?}", node.doc.node_type)),
+                .unwrap_or_else(|| format!("{:?}", document.node_type)),
             "file": attrs.get("source_file").cloned().unwrap_or_default(),
             "start_line": attrs.get("start_line").cloned().unwrap_or_default(),
             "end_line": attrs.get("end_line").cloned().unwrap_or_default(),
@@ -383,7 +438,7 @@ pub fn cmd_understand(
     };
 
     // Step 2: backlinks — incoming references (mirrors `query --backlinks`).
-    let backlinks = collect_unique_backlinks(&graph, &anchor);
+    let backlinks = collect_unique_backlinks(&backlink_graph, &anchor);
 
     // Step 3: dependencies — outgoing reach over impact edge types
     // (mirrors `query --impact`). Uses the one shared SET: this local copy had
@@ -394,14 +449,18 @@ pub fn cmd_understand(
     // same fixed three-hop comprehension neighborhood. An unbounded impact
     // list could otherwise overwhelm the MCP response before its bounded
     // context section reached the caller.
-    let impact: Vec<serde_json::Value> = impact_reachable(&graph, idx, &impact_types, 2)
-        .into_iter()
-        .map(|(n, d)| node_to_json(&graph.graph[n], d))
-        .collect();
+    let impact_idx = impact_graph
+        .get_index(&anchor)
+        .ok_or("resolved impact seed is unavailable")?;
+    let impact: Vec<serde_json::Value> =
+        impact_reachable(&impact_graph, impact_idx, &impact_types, 2)
+            .into_iter()
+            .map(|(n, d)| node_to_json(&impact_graph.graph[n], d))
+            .collect();
 
     // Reserve a bounded share of the content budget for the exact root source.
     // It is verified against the indexed hash before trusting the line range.
-    let source = understand_source(path, &graph.graph[idx].doc, (budget / 2).min(2048));
+    let source = understand_source(path, &document, (budget / 2).min(2048));
     let source_tokens = source["text"]
         .as_str()
         .unwrap_or_default()
@@ -414,7 +473,6 @@ pub fn cmd_understand(
     // Depth 2 matches ask's explain default: definition + direct callees,
     // not a three-hop walk that climbs the crate hub.
     let edge_types: Vec<aden_core::EdgeType> = Vec::new();
-    let neigh = aden_graph::cache::build_neighborhood_cached(path, &anchor, 2, &edge_types)?;
     let asm_opts = AssemblyOptions {
         start_anchor: anchor.clone(),
         max_depth: 2,
@@ -449,34 +507,34 @@ pub fn cmd_understand(
     };
 
     if json {
-        let mut env = super::augment_read_json(
-            path,
-            json!({
-                "symbol": symbol,
-                "anchor": anchor,
-                "alternates": alternates,
-                "definition": def,
-                "source": source,
-                "next_actions": actions,
-                "content_budget": { "tokens": budget, "source_tokens": source_tokens, "context_tokens_available": context_budget },
-                "backlinks": backlinks,
-                "impact": impact,
-                "relationships": {
-                    "backlinks": { "direction": "incoming", "label": "Used by / potentially affected", "max_depth": 1 },
-                    "impact": { "direction": "outgoing", "label": "Depends on", "max_depth": 2 },
-                },
-                "context": context,
-            }),
-        );
+        let mut env = augment(json!({
+            "symbol": symbol,
+            "anchor": anchor,
+            "alternates": alternates,
+            "definition": def,
+            "source": source,
+            "next_actions": actions,
+            "content_budget": { "tokens": budget, "source_tokens": source_tokens, "context_tokens_available": context_budget },
+            "backlinks": backlinks,
+            "impact": impact,
+            "relationships": {
+                "backlinks": { "direction": "incoming", "label": "Used by / potentially affected", "max_depth": 1 },
+                "impact": { "direction": "outgoing", "label": "Depends on", "max_depth": 2 },
+            },
+            "context": context,
+            "analysis": super::analysis::scope(Some(&document)),
+        }))?;
         if compact {
             compact_understand_json(&mut env);
         }
         let body = serde_json::to_string(&env)?;
-        println!("{body}");
+        crate::read_worker::emit_machine_body(body);
         return Ok(());
     }
 
     // Human report.
+    check_human_revision()?;
+    println!("{}\n", super::analysis::SUMMARY);
     println!("# Understanding '{}'", symbol);
     println!();
     println!("## Definition");
@@ -726,6 +784,11 @@ fn understand_source(path: &Path, doc: &aden_core::Document, budget: usize) -> s
     let mut lines = content.split_inclusive('\n').skip(start - 1);
     let mut text = String::new();
     let max_bytes = budget.saturating_mul(4);
+    let span_start_byte = content
+        .split_inclusive('\n')
+        .take(start - 1)
+        .map(str::len)
+        .sum::<usize>();
     let mut actual_end = None;
     let mut clipped = false;
     let mut last_line_complete = true;
@@ -753,6 +816,18 @@ fn understand_source(path: &Path, doc: &aden_core::Document, budget: usize) -> s
             clipped = true;
         }
     }
+    let continuation = if clipped {
+        Some(json!({
+            "file": file,
+            "path": aden_paths::strip_verbatim(&root).to_string_lossy(),
+            "start_byte": span_start_byte + text.len(),
+            "end_line": end,
+            "expected_hash": aden_core::stable_hash(content.as_bytes()),
+            "max_bytes": max_bytes.clamp(4, 8192),
+        }))
+    } else {
+        None
+    };
     json!({
         "state": if clipped { "clipped" } else { "complete" },
         "file": file,
@@ -763,14 +838,14 @@ fn understand_source(path: &Path, doc: &aden_core::Document, budget: usize) -> s
         "last_line_complete": last_line_complete,
         "hash_verified": true,
         "text": text,
+        "continuation": continuation,
     })
 }
 
 fn print_locate_results(hits: &[serde_json::Value], format: &str, context: Option<usize>) {
     if format == "json" {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&hits).unwrap_or_default()
+        crate::read_worker::emit_machine_body(
+            serde_json::to_string_pretty(&hits).unwrap_or_default(),
         );
         return;
     }
@@ -862,9 +937,13 @@ pub fn cmd_locate(
         }
         return Err(format!("locate: '{}' is not a directory", path.display()).into());
     }
+    let target = symbol
+        .or(caller_of)
+        .ok_or("locate requires one of --symbol or --caller-of")?;
     let want_json = json || format == "json";
     let _stale_hint = super::StaleHintGuard::new(path, want_json);
     super::ensure_fresh(path);
+    super::generate::require_graph_ready(path)?;
 
     // JSON is requested via either the global `-j/--json` flag or `--format json`.
     // In JSON mode every human header ("Found N match(es)…") is suppressed so the
@@ -872,46 +951,42 @@ pub fn cmd_locate(
 
     // If --symbol is given, find the definition.
     if let Some(sym) = symbol {
-        // Match against anchor *keys* in the store and deserialize only the
-        // documents that match. Building the full petgraph here is what made
-        // `locate` take ~47s on the kernel (1.2M nodes); this is bounded by the
-        // number of matches.
-        // Prefer snapshot for lock-free reads (ADR-011).
-        let docs: std::collections::HashMap<String, aden_core::Document> =
-            if let Some((docs, _)) = aden_graph::snapshot::try_read_fresh(path) {
-                docs
-            } else {
-                let (store_path, _) = aden_paths::resolve_read_store(path);
-                let storage = aden_store::Storage::open_existing(
-                    store_path.to_str().ok_or("invalid store path")?,
-                )
-                .map_err(|e| format!("failed to open store: {}", e))?;
-                storage.get_all_documents().unwrap_or_default()
-            };
-        let all_anchors: Vec<String> = docs.keys().cloned().collect();
+        // Preserve every ranked match and the complete count. Prefer the faster
+        // snapshot path; a store fallback fetches only the requested documents.
+        let (reader, analysis) = {
+            let _trace = crate::read_trace::span(crate::read_trace::Stage::AnchorResolve);
+            let reader = aden_graph::cache::GraphReadSession::open_snapshot_first(path);
+            let analysis = reader.analyze_anchor(sym)?;
+            (reader, analysis)
+        };
         let aden_graph::cache::AnchorResolutionAnalysis {
             resolution,
             ranked_matches: matched,
-        } = aden_graph::cache::analyze_anchor_list(sym, &all_anchors);
+        } = analysis;
 
-        let hits: Vec<serde_json::Value> = matched
-            .iter()
-            .take(limit)
-            .filter_map(|a| {
-                let doc = docs.get(a.as_str())?;
+        let hits = {
+            let _trace = crate::read_trace::span(crate::read_trace::Stage::GraphLoad);
+            let mut hits = Vec::new();
+            for a in matched.iter().take(limit) {
+                let doc = reader.document(a)?.ok_or_else(|| {
+                    format!("Indexed anchor '{a}' has no stored document; refresh the index before retrying")
+                })?;
                 let attrs = &doc.attributes;
-                Some(json!({
+                hits.push(json!({
                     "anchor": a,
                     "node_type": attrs.get("node-type").cloned()
                         .unwrap_or_else(|| format!("{:?}", doc.node_type)),
                     "file": attrs.get("source_file").cloned().unwrap_or_default(),
                     "start_line": attrs.get("start_line").cloned().unwrap_or_default(),
                     "end_line": attrs.get("end_line").cloned().unwrap_or_default(),
-                }))
-            })
-            .collect();
+                }));
+                super::analysis::add_origin(hits.last_mut().unwrap(), &doc);
+            }
+            drop(reader);
+            hits
+        };
 
-        if hits.is_empty() {
+        if matched.is_empty() {
             // Fall back to the full-text search index.
             let index = load_or_build_index(path)?;
             let search_results = query_index(&index, sym);
@@ -923,7 +998,7 @@ pub fn cmd_locate(
                     .take(limit)
                     .map(|r| json!({ "anchor": r.anchor, "score": r.score, "snippet": r.snippet }))
                     .collect();
-                let env = super::augment_read_json(
+                let env = super::analysis::augment(
                     path,
                     with_anchor_resolution(
                         locate_envelope(
@@ -939,7 +1014,7 @@ pub fn cmd_locate(
                         path,
                     ),
                 );
-                println!("{}", serde_json::to_string_pretty(&env)?);
+                crate::read_worker::emit_machine_body(serde_json::to_string_pretty(&env)?);
                 return Ok(());
             }
             if !search_results.is_empty() {
@@ -985,7 +1060,7 @@ pub fn cmd_locate(
                 aden_graph::cache::AnchorResolution::NotFound { .. } => "symbol_suggestions",
                 _ => "definition",
             };
-            let env = super::augment_read_json(
+            let env = super::analysis::augment(
                 path,
                 with_anchor_resolution(
                     locate_envelope("symbol", match_kind, matched.len(), hits, sym, path),
@@ -994,7 +1069,7 @@ pub fn cmd_locate(
                     path,
                 ),
             );
-            println!("{}", serde_json::to_string_pretty(&env)?);
+            crate::read_worker::emit_machine_body(serde_json::to_string_pretty(&env)?);
             return Ok(());
         }
         if matches!(
@@ -1011,43 +1086,32 @@ pub fn cmd_locate(
         }
         print_locate_results(&hits, format, context);
         super::next_actions::print(&resolution_actions(&resolution, sym, path));
-        return Ok(());
-    }
-
-    // If --caller-of is given, list callers via incoming `Calls` edges in the
-    // knowledge graph. This uses the same direction as `query --backlinks`, filtered to
-    // call edges, with each caller enriched by its source file + line from the
-    // store. The call graph is already populated by `gen` (link_store_edges),
-    // so no new metadata is required — earlier this branch was a stub.
-    if let Some(target) = caller_of {
-        use serde_json::json;
-
-        let graph = aden_graph::cache::build_from_directory_cached(path)?;
-
+    } else {
+        // Caller mode follows incoming Calls edges and includes each caller's
+        // stored source location, as in query --backlinks.
         // A bare symbol may have the same exact natural name in several modules;
         // union those definitions, but never include substring supersets such as
         // `reparse` for `parse`.
-        let anchors: Vec<String> = graph
-            .graph
-            .node_indices()
-            .map(|i| graph.graph[i].doc.anchor.clone())
-            .collect();
-        let target_anchors: HashSet<String> = definitive_symbol_candidates(target, &anchors)
-            .into_iter()
-            .collect();
-        let targets: Vec<_> = graph
-            .graph
-            .node_indices()
-            .filter(|&i| target_anchors.contains(&graph.graph[i].doc.anchor))
-            .collect();
+        let (reader, target_anchors) = {
+            let _trace = crate::read_trace::span(crate::read_trace::Stage::AnchorResolve);
+            let reader = aden_graph::cache::GraphReadSession::open(path);
+            let targets = match reader.analyze_anchor(target)?.resolution {
+                aden_graph::cache::AnchorResolution::Exact(anchor)
+                | aden_graph::cache::AnchorResolution::Unique { anchor } => vec![anchor],
+                aden_graph::cache::AnchorResolution::Ambiguous { candidates } => candidates,
+                aden_graph::cache::AnchorResolution::NotFound { .. } => Vec::new(),
+            };
+            (reader, targets.into_iter().collect::<HashSet<_>>())
+        };
 
-        if targets.is_empty() {
+        if target_anchors.is_empty() {
+            drop(reader);
             if want_json {
-                let env = super::augment_read_json(
+                let env = super::analysis::augment(
                     path,
                     locate_envelope("callers", "target_not_found", 0, Vec::new(), target, path),
                 );
-                println!("{}", serde_json::to_string_pretty(&env)?);
+                crate::read_worker::emit_machine_body(serde_json::to_string_pretty(&env)?);
                 return Ok(());
             }
             println!("No symbol found matching '{}'", target);
@@ -1066,34 +1130,46 @@ pub fn cmd_locate(
         // The matched definitions themselves are never their own callers.
         // Exclude them when duplicate exact definitions call one another.
 
-        // Collect unique callers via incoming `Calls` edges.
-        let mut seen = HashSet::new();
-        let mut callers: Vec<String> = Vec::new();
-        for &t in &targets {
-            for neighbor in graph.graph.neighbors_directed(t, Direction::Incoming) {
-                let is_call = graph
-                    .graph
-                    .find_edge(neighbor, t)
-                    .and_then(|e| graph.graph.edge_weight(e))
-                    .map(|e| e.edge_type == aden_core::EdgeType::Calls)
-                    .unwrap_or(false);
-                if is_call {
-                    let a = graph.graph[neighbor].doc.anchor.clone();
-                    if !target_anchors.contains(&a) && seen.insert(a.clone()) {
-                        callers.push(a);
+        // Read each target's keyed incoming edges. Checking each typed edge
+        // preserves a caller when Calls coexists with a non-call relationship.
+        let (callers, hits) = {
+            let _trace = crate::read_trace::span(crate::read_trace::Stage::GraphLoad);
+            let known_anchors: HashSet<_> = reader.anchors()?.iter().map(String::as_str).collect();
+            let mut callers = std::collections::BTreeSet::new();
+            for target_anchor in &target_anchors {
+                for (anchor, edge_type) in reader.incoming_edges(target_anchor)? {
+                    if edge_type != aden_core::EdgeType::Calls
+                        || target_anchors.contains(&anchor)
+                        || !known_anchors.contains(anchor.as_str())
+                    {
+                        continue;
                     }
+                    callers.insert(anchor);
                 }
             }
-        }
-        callers.sort();
+            let mut hits = Vec::new();
+            for anchor in callers.iter().take(limit) {
+                let doc = reader.document(anchor)?.ok_or_else(|| {
+                    format!("Indexed caller '{anchor}' has no stored document; refresh the index before retrying")
+                })?;
+                hits.push(json!({
+                    "anchor": anchor,
+                    "file": doc.attributes.get("source_file").cloned().unwrap_or_default(),
+                    "start_line": doc.attributes.get("start_line").cloned().unwrap_or_default(),
+                }));
+            }
+            drop(known_anchors);
+            drop(reader);
+            (callers, hits)
+        };
 
         if callers.is_empty() {
             if want_json {
-                let env = super::augment_read_json(
+                let env = super::analysis::augment(
                     path,
                     locate_envelope("callers", "call_edges", 0, Vec::new(), target, path),
                 );
-                println!("{}", serde_json::to_string_pretty(&env)?);
+                crate::read_worker::emit_machine_body(serde_json::to_string_pretty(&env)?);
                 return Ok(());
             }
             println!(
@@ -1112,42 +1188,15 @@ pub fn cmd_locate(
             return Ok(());
         }
 
-        // Enrich each caller with file:line (best-effort). Prefer snapshot.
-        let docs = aden_graph::snapshot::try_read_fresh(path).map(|(d, _)| d);
-        let (store_path, _) = aden_paths::resolve_read_store(path);
-        let storage =
-            aden_store::Storage::open_existing(store_path.to_str().ok_or("invalid store path")?)
-                .ok();
-        let hits: Vec<serde_json::Value> = callers
-            .iter()
-            .take(limit)
-            .map(|a| {
-                let doc = docs.as_ref().and_then(|d| d.get(a).cloned()).or_else(|| {
-                    storage
-                        .as_ref()
-                        .and_then(|s| s.get_document(a).ok().flatten())
-                });
-                let (file, line) = doc
-                    .map(|d| {
-                        (
-                            d.attributes.get("source_file").cloned().unwrap_or_default(),
-                            d.attributes.get("start_line").cloned().unwrap_or_default(),
-                        )
-                    })
-                    .unwrap_or_default();
-                json!({ "anchor": a, "file": file, "start_line": line })
-            })
-            .collect();
-
         if want_json {
-            let env = super::augment_read_json(
+            let env = super::analysis::augment(
                 path,
                 locate_envelope("callers", "call_edges", callers.len(), hits, target, path),
             );
-            println!("{}", serde_json::to_string_pretty(&env)?);
+            crate::read_worker::emit_machine_body(serde_json::to_string_pretty(&env)?);
             return Ok(());
         }
-        println!("Found {} caller(s) of '{}':", hits.len(), target);
+        println!("Found {} caller(s) of '{}':", callers.len(), target);
         for h in &hits {
             let file = h["file"].as_str().unwrap_or("");
             let line = h["start_line"].as_str().unwrap_or("");
@@ -1160,16 +1209,21 @@ pub fn cmd_locate(
         }
         let env = locate_envelope("callers", "call_edges", callers.len(), hits, target, path);
         super::next_actions::print(env["next_actions"].as_array().unwrap());
-        return Ok(());
     }
-
-    Err("locate requires one of --symbol or --caller-of".into())
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn changed_or_withdrawn_publication_cannot_label_a_bound_read() {
+        assert!(check_publication_revision(Some("v1"), Some("v1")).is_ok());
+        assert!(check_publication_revision(Some("v1"), Some("v2")).is_err());
+        assert!(check_publication_revision(Some("v1"), None).is_err());
+    }
 
     fn source_fixture(
         content: &str,
@@ -1564,6 +1618,17 @@ mod tests {
                 anchors.iter().copied()
             ),
             Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn understand_alternates_preserve_canonical_input_suffix_matches() {
+        let chosen = "aden://module/demo/lib.rs#leaf";
+        let other = "aden://doc/guide.adoc#aden://module/demo/lib.rs#LEAF";
+        let anchors = [chosen, other, "aden://module/other.rs#leaf"];
+        assert_eq!(
+            super::alternate_anchors(chosen, chosen, anchors.into_iter()),
+            [other]
         );
     }
 }

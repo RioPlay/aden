@@ -1856,3 +1856,325 @@ fn markdown_docroot_and_codeblock_are_locatable() {
         code.attributes
     );
 }
+
+#[test]
+fn representative_extractors_share_the_complete_input_hash() {
+    let dir = tempfile::tempdir().unwrap();
+    let cases: Vec<(&str, &str, Box<dyn LanguageExtractor>)> = vec![
+        (
+            "sample.c",
+            "int one(void) { return 1; }\nint two(void) { return one(); }\n",
+            Box::new(crate::c_resolver::CResolver::new()),
+        ),
+        (
+            "sample.rs",
+            "fn one() {}\nmod nested { pub fn two() { assert!(true); } }\nstruct Thing;\nimpl Thing { fn method(&self) {} }\n",
+            Box::new(crate::rust::RustExtractor::new()),
+        ),
+        (
+            "sample.md",
+            "# First\ntext\n## Second\n```rust\nfn snippet() {}\n```\n",
+            Box::new(crate::markdown::MarkdownExtractor::new()),
+        ),
+    ];
+    for (filename, source, extractor) in cases {
+        let path = dir.path().join(filename);
+        for disk in [Some(source), Some("different persisted bytes\n"), None] {
+            if let Some(disk) = disk {
+                std::fs::write(&path, disk).unwrap();
+            } else {
+                std::fs::remove_file(&path).unwrap();
+            }
+            let scope = crate::extractor::metadata_counts::Scope::start();
+            let docs = extractor.extract_documents(source, &path).unwrap();
+            assert!(docs.len() >= 2, "{filename}");
+            assert_eq!(scope.counts(), (0, 1), "{filename}");
+            drop(scope);
+            if disk == Some(source) {
+                assert_legacy_metadata_parity(&docs, source, &path);
+            }
+            let expected = aden_core::hash_source(source);
+            for doc in docs {
+                assert_eq!(
+                    doc.attributes.get("source_hash"),
+                    Some(&expected),
+                    "{}",
+                    doc.anchor
+                );
+                if let Some(span) = doc.source_span {
+                    assert!(
+                        span.start_byte <= span.end_byte && span.end_byte <= source.len(),
+                        "{}",
+                        doc.anchor
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Bounded diagnostic: same persisted fixture and mandatory attributes, with
+/// timestamps normalized. Run explicitly in release mode with --ignored --nocapture.
+#[test]
+#[ignore = "release metadata performance diagnostic"]
+fn per_file_metadata_release_diagnostic() {
+    use crate::extractor::{CodeSource, build_code_attributes, metadata_counts};
+    use std::time::Instant;
+    const REPETITIONS: usize = 3;
+    const SYMBOLS: usize = 128;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("metadata.c");
+    let mut source = String::new();
+    for i in 0..SYMBOLS {
+        source.push_str(&format!(
+            "/* {} */\nint symbol_{i}(void) {{ return {i}; }}\n",
+            "x".repeat(1024)
+        ));
+    }
+    std::fs::write(&path, &source).unwrap();
+    let docs = crate::c_resolver::CResolver::new()
+        .extract_documents(&source, &path)
+        .unwrap();
+    assert_eq!(docs.len(), SYMBOLS);
+    let legacy_scope = metadata_counts::Scope::start();
+    let started = Instant::now();
+    let mut legacy = Vec::new();
+    for _ in 0..REPETITIONS {
+        legacy = docs
+            .iter()
+            .map(|doc| {
+                build_code_attributes(
+                    &source,
+                    &doc.attributes["node-type"],
+                    Some(&path),
+                    doc.source_span.as_ref(),
+                )
+            })
+            .collect::<Vec<_>>();
+    }
+    let legacy_elapsed = started.elapsed();
+    let legacy_counts = legacy_scope.totals();
+    assert_eq!(
+        legacy_counts,
+        (
+            SYMBOLS * REPETITIONS,
+            source.len() * SYMBOLS * REPETITIONS,
+            SYMBOLS * REPETITIONS,
+            source.len() * SYMBOLS * REPETITIONS
+        )
+    );
+    drop(legacy_scope);
+    let shared_scope = metadata_counts::Scope::start();
+    let started = Instant::now();
+    let mut shared = Vec::new();
+    for _ in 0..REPETITIONS {
+        let metadata = CodeSource::new(&source, &path);
+        shared = docs
+            .iter()
+            .map(|doc| {
+                metadata.attributes(
+                    &doc.attributes["node-type"],
+                    doc.source_span.as_ref().unwrap(),
+                )
+            })
+            .collect::<Vec<_>>();
+    }
+    let shared_elapsed = started.elapsed();
+    let shared_counts = shared_scope.totals();
+    assert_eq!(
+        shared_counts,
+        (0, 0, REPETITIONS, source.len() * REPETITIONS)
+    );
+    drop(shared_scope);
+    let normalize = |mut attrs: std::collections::HashMap<String, String>| {
+        attrs.remove("last-verified");
+        attrs
+    };
+    let legacy: Vec<_> = legacy.into_iter().map(normalize).collect();
+    let shared: Vec<_> = shared.into_iter().map(normalize).collect();
+    assert_eq!(legacy, shared);
+    for (doc, attributes) in docs.iter().zip(shared) {
+        assert_eq!(normalize(doc.attributes.clone()), attributes);
+    }
+    eprintln!(
+        "normalized_parity=true fixture_bytes={} symbols={} repetitions={} legacy_reads={} legacy_read_bytes={} legacy_hashes={} legacy_hash_bytes={} shared_reads={} shared_read_bytes={} shared_hashes={} shared_hash_bytes={} legacy_us={} shared_us={}",
+        source.len(),
+        docs.len(),
+        REPETITIONS,
+        legacy_counts.0,
+        legacy_counts.1,
+        legacy_counts.2,
+        legacy_counts.3,
+        shared_counts.0,
+        shared_counts.1,
+        shared_counts.2,
+        shared_counts.3,
+        legacy_elapsed.as_micros(),
+        shared_elapsed.as_micros()
+    );
+}
+
+#[test]
+fn remaining_extractors_share_the_complete_input_hash() {
+    let dir = tempfile::tempdir().unwrap();
+    let cases: Vec<(&str, &str, Box<dyn LanguageExtractor>)> = vec![
+        (
+            "sample.go",
+            "package example\nfunc One() int { return 1 }\nfunc Two() int { return One() }\n",
+            Box::new(crate::go_resolver::GoResolver::new()),
+        ),
+        (
+            "Example.java",
+            "class Example { int one() { return 1; } int two() { return one(); } }\n",
+            Box::new(crate::java_resolver::JavaResolver::new()),
+        ),
+        (
+            "Example.cs",
+            "class Example { public int One() { return 1; } public int Two() { return One(); } }\n",
+            Box::new(crate::csharp_resolver::CSharpResolver::new()),
+        ),
+        (
+            "sample.kt",
+            "fun one(): Int { return 1 }\nfun two(): Int { return one() }\n",
+            Box::new(crate::kotlin_resolver::KotlinResolver::new()),
+        ),
+        (
+            "sample.rb",
+            "def one\n  1\nend\ndef two\n  one\nend\n",
+            Box::new(crate::ruby_resolver::RubyResolver::new()),
+        ),
+        (
+            "sample.php",
+            "<?php\nfunction one() { return 1; }\nfunction two() { return one(); }\n",
+            Box::new(crate::php_resolver::PhpResolver::new()),
+        ),
+        (
+            "generic.c",
+            "int one(void) { return 1; }\nint two(void) { return one(); }\n",
+            Box::new(crate::generic::GenericExtractor::new("c")),
+        ),
+        (
+            "sample.txt",
+            "First paragraph.\r\n\r\nSecond paragraph.\r\n",
+            Box::new(crate::plaintext::PlainTextExtractor::new()),
+        ),
+        (
+            "sample.csv",
+            "name,value\none,1\ntwo,2\n",
+            Box::new(crate::csv::CsvExtractor::new()),
+        ),
+        (
+            "sample.md",
+            "# Glossary\n- **Widget**: A useful item.\n\n```rust\nfn snippet() {}\n```\n",
+            Box::new(crate::markdown::MarkdownExtractor::new()),
+        ),
+        (
+            "sample.adoc",
+            "= Glossary\n\nWidget:: A useful item.\n\n[source,rust]\n----\nfn snippet() {}\n----\n",
+            Box::new(crate::asciidoc::AsciiDocExtractor::new()),
+        ),
+    ];
+    for (filename, source, extractor) in cases {
+        let path = dir.path().join(filename);
+        for disk in [Some(source), Some("different persisted bytes\n"), None] {
+            if let Some(disk) = disk {
+                std::fs::write(&path, disk).unwrap();
+            } else {
+                std::fs::remove_file(&path).unwrap();
+            }
+            let scope = crate::extractor::metadata_counts::Scope::start();
+            let docs = extractor.extract_documents(source, &path).unwrap();
+            assert!(!docs.is_empty(), "{filename}");
+            assert_eq!(scope.totals(), (0, 0, 1, source.len()), "{filename}");
+            drop(scope);
+            if disk == Some(source) {
+                assert_legacy_metadata_parity(&docs, source, &path);
+            }
+            let expected = aden_core::hash_source(source);
+            for doc in &docs {
+                if let Some(hash) = doc.attributes.get("source_hash") {
+                    assert_eq!(hash, &expected, "{}", doc.anchor);
+                }
+            }
+            if matches!(filename, "sample.md" | "sample.adoc") {
+                assert!(
+                    docs.iter()
+                        .any(|doc| doc.node_type == aden_core::NodeType::Term),
+                    "{filename} must cover a glossary term"
+                );
+                assert!(
+                    docs.iter()
+                        .any(|doc| doc.attributes.get("node-type").map(String::as_str)
+                            == Some("code")),
+                    "{filename} must cover a listing"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn asciidoc_include_metadata_hashes_the_raw_owning_input() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("owner.adoc");
+    let source = "= Owner\n\ninclude::child.adoc[]\n";
+    std::fs::write(
+        dir.path().join("child.adoc"),
+        "== Included\n\n[source,rust]\n----\nfn child() {}\n----\n",
+    )
+    .unwrap();
+    for disk in [source, "different persisted bytes\n"] {
+        std::fs::write(&path, disk).unwrap();
+        let scope = crate::extractor::metadata_counts::Scope::start();
+        let docs = crate::asciidoc::AsciiDocExtractor::new()
+            .extract_documents(source, &path)
+            .unwrap();
+        assert_eq!(scope.totals(), (0, 0, 1, source.len()));
+        assert!(docs.iter().any(|doc| doc.blocks.iter().any(|block| matches!(block, aden_core::Block::Listing { code, .. } if code.contains("fn child()")))));
+        let expected = aden_core::hash_source(source);
+        for doc in docs {
+            assert_eq!(
+                doc.attributes.get("source_hash"),
+                Some(&expected),
+                "{}",
+                doc.anchor
+            );
+            assert_eq!(
+                doc.attributes.get("source_file"),
+                Some(&path.to_string_lossy().to_string())
+            );
+        }
+    }
+}
+
+fn assert_legacy_metadata_parity(docs: &[aden_core::Document], source: &str, path: &Path) {
+    for doc in docs {
+        let Some(node_type) = doc.attributes.get("node-type") else {
+            continue;
+        };
+        // Some existing emitters carry span attributes without a source_span.
+        // Reconstruct that exact metadata contract rather than changing it.
+        let span = doc
+            .attributes
+            .get("start_line")
+            .map(|start_line| aden_core::SourceSpan {
+                file: path.to_string_lossy().into_owned(),
+                start_line: start_line.parse().unwrap(),
+                end_line: doc.attributes["end_line"].parse().unwrap(),
+                start_byte: doc.attributes["start_byte"].parse().unwrap(),
+                end_byte: doc.attributes["end_byte"].parse().unwrap(),
+            });
+        let legacy =
+            crate::extractor::build_code_attributes(source, node_type, Some(path), span.as_ref());
+        for (key, value) in legacy {
+            if key != "last-verified" {
+                assert_eq!(
+                    doc.attributes.get(&key),
+                    Some(&value),
+                    "{} attribute {key}",
+                    doc.anchor
+                );
+            }
+        }
+    }
+}

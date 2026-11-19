@@ -8,7 +8,7 @@
 //! structure beneath a script without dumping its contents.
 
 use crate::commands::grep::{Span, load_symbol_spans};
-use crate::util::{discover_source_files, find_project_root};
+use crate::util::{discover_indexed_relative_files_scoped, find_project_root};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -28,16 +28,47 @@ struct Symbol {
     is_code: bool,
 }
 
+/// Return project-relative indexed paths for a canonical file or directory.
+fn discover_tree_scope_files(
+    root: &Path,
+    scope: &Path,
+) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
+    if scope.is_dir() {
+        return discover_indexed_relative_files_scoped(scope, root);
+    }
+    if !scope.is_file() {
+        return Ok(Vec::new());
+    }
+    let Some(relative) = aden_paths::relative_to(root, scope) else {
+        return Ok(Vec::new());
+    };
+    let filter = aden_core::filter::AdenFilter::from_directory(root);
+    if relative
+        .ancestors()
+        .any(|path| !path.as_os_str().is_empty() && filter.should_skip(path))
+    {
+        return Ok(Vec::new());
+    }
+    let supported = aden_parse::supported_extensions();
+    let parseable = crate::util::is_supported_source_file(scope, |ext| supported.contains(&ext));
+    let indexed =
+        aden_core::filter::FileDisposition::for_path(&relative, false, parseable).is_indexed();
+    Ok(indexed.then_some(relative).into_iter().collect())
+}
+
 pub fn cmd_tree(
     path: &Path,
     depth: usize,
     symbol_depth: usize,
     symbols_only: bool,
+    files_only: bool,
     unlimited: bool,
     json_output: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let root = find_project_root(if path.is_file() {
-        path.parent().unwrap_or(path)
+        path.parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or(Path::new("."))
     } else {
         path
     });
@@ -49,23 +80,72 @@ pub fn cmd_tree(
         return Err(format!("Tree scope '{}' is outside project root", path.display()).into());
     }
     super::ensure_fresh(&root);
-    let scope_norm = aden_paths::strip_verbatim(&scope);
-    let files = discover_source_files(&root)?.into_iter().filter(|file| {
-        let file_norm = aden_paths::strip_verbatim(file);
-        file_norm == scope_norm || file_norm.starts_with(&scope_norm)
-    });
-    let spans = load_symbol_spans(&root);
-    let mut by_file: BTreeMap<PathBuf, Vec<Symbol>> = BTreeMap::new();
-    let mut dirs = BTreeSet::new();
+    let mut files = discover_tree_scope_files(&root, &scope)?;
+    let relative_scope = aden_paths::relative_to(&root, &scope).unwrap_or_default();
+    if files_only {
+        files.sort_unstable();
+        files.dedup();
+        let outline = files_outline(&files, unlimited);
+        let next_actions = if outline.truncated && scope.is_dir() {
+            let top_dirs: BTreeSet<_> = files
+                .iter()
+                .filter_map(|file| file.strip_prefix(&relative_scope).ok())
+                .filter_map(|file| {
+                    let mut components = file.components();
+                    let first = components.next()?;
+                    components.next().map(|_| first.as_os_str())
+                })
+                .collect();
+            top_dirs
+                .into_iter()
+                .take(3)
+                .filter_map(|dir| super::next_actions::tree_files(&root.join(&relative_scope).join(dir), "Inspect this narrower file scope; other scopes may also contain omitted results"))
+                .collect::<Vec<_>>()
+        } else if files.is_empty() && !relative_scope.as_os_str().is_empty() {
+            super::next_actions::tree_files(&root, "Browse the repository for discovered files")
+                .into_iter()
+                .collect()
+        } else {
+            Vec::new()
+        };
+        if json_output {
+            let payload = super::augment_read_json(
+                &root,
+                serde_json::json!({
+                    "schema_version": 1,
+                    "result_state": if outline.truncated { "truncated" } else { "complete" },
+                    "format": outline.format,
+                    "scope": if relative_scope.as_os_str().is_empty() { ".".into() } else { relative_scope.to_string_lossy().replace('\\', "/") },
+                    "file_count": outline.file_count,
+                    "symbol_count": 0,
+                    "returned_file_count": outline.returned_file_count,
+                    "returned_symbol_count": 0,
+                    "truncated": outline.truncated,
+                    "next_actions": next_actions,
+                    "next_action": outline.truncated.then_some("Rerun tree --files on a project-relative subtree, or use --unlimited explicitly."),
+                    "outline": outline.text,
+                }),
+            );
+            println!("{}", serde_json::to_string(&payload)?);
+        } else {
+            print!("{}", outline.text);
+            super::next_actions::print(&next_actions);
+        }
+        return Ok(());
+    }
 
-    for file in files {
-        let relative = aden_paths::relative_to(&root, &file)
-            .unwrap_or_else(|| file.strip_prefix(&root).unwrap_or(&file).to_path_buf());
-        let parent = relative.parent().unwrap_or(Path::new(""));
-        let mut current = PathBuf::new();
-        for component in parent.components() {
-            current.push(component);
-            dirs.insert(current.clone());
+    let symbols_only = symbols_only || json_output;
+    let spans = load_symbol_spans(&root);
+    let mut by_file = BTreeMap::new();
+    let mut dirs = BTreeSet::new();
+    for relative in files {
+        if !symbols_only {
+            let parent = relative.parent().unwrap_or(Path::new(""));
+            let mut current = PathBuf::new();
+            for component in parent.components() {
+                current.push(component);
+                dirs.insert(current.clone());
+            }
         }
         let key = relative.to_string_lossy().replace('\\', "/");
         let symbols = spans
@@ -79,10 +159,8 @@ pub fn cmd_tree(
     // directory tree is `--human` (and `--human --symbols` for a text outline).
     // Without this, `aden tree` dumps box-drawing art at an LLM even though
     // `-j` / "JSON is the default" is advertised globally.
-    let symbols_only = symbols_only || json_output;
     if symbols_only {
         let outline = symbol_outline(&by_file, unlimited);
-        let relative_scope = aden_paths::relative_to(&root, &scope).unwrap_or_default();
         let next_actions: Vec<_> = if outline.truncated && scope.is_dir() {
             // Follow the same code-file filter as the outline. Config and prose
             // paths sort before source in many projects but cannot reveal the
@@ -151,6 +229,48 @@ struct SymbolOutline {
     returned_file_count: usize,
     returned_symbol_count: usize,
     truncated: bool,
+}
+
+fn files_outline(files: &[PathBuf], unlimited: bool) -> SymbolOutline {
+    use std::fmt::Write as _;
+
+    let byte_limit = if unlimited {
+        usize::MAX
+    } else {
+        DEFAULT_OUTLINE_BYTES.saturating_sub(160)
+    };
+    let mut body = String::new();
+    let mut returned_file_count = 0;
+    for file in files {
+        let line = file.to_string_lossy().replace('\\', "/");
+        if body.len().saturating_add(line.len()).saturating_add(1) > byte_limit {
+            break;
+        }
+        body.push_str(&line);
+        body.push('\n');
+        returned_file_count += 1;
+    }
+    let truncated = returned_file_count < files.len();
+    let mut text = String::new();
+    if truncated {
+        let _ = writeln!(
+            text,
+            "# showing {returned_file_count} of {} discovered files (clipped; use --unlimited or a narrower subtree)",
+            files.len()
+        );
+    } else {
+        let _ = writeln!(text, "# {} discovered files", files.len());
+    }
+    text.push_str(&body);
+    SymbolOutline {
+        text,
+        format: "files-v1",
+        file_count: files.len(),
+        symbol_count: 0,
+        returned_file_count,
+        returned_symbol_count: 0,
+        truncated,
+    }
 }
 
 /// Token-lean project map. Grouping by file avoids repeating long paths; exact
@@ -437,7 +557,9 @@ fn render_symbols(symbols: &[Symbol], max_depth: usize, prefix: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Symbol, is_prose_file, short_anchor, symbol_outline, symbols_for};
+    use super::{
+        Symbol, discover_tree_scope_files, is_prose_file, short_anchor, symbol_outline, symbols_for,
+    };
     use crate::commands::grep::Span;
     use std::collections::BTreeMap;
     use std::path::{Path, PathBuf};
@@ -454,6 +576,35 @@ mod tests {
         std::fs::create_dir_all(&nested).unwrap();
         assert!(aden_paths::is_under(dir.path(), dir.path()));
         assert!(aden_paths::is_under(dir.path(), &nested));
+    }
+
+    #[test]
+    fn scoped_tree_discovery_matches_files_and_prunes_ignored_ancestors() {
+        let dir = tempfile::tempdir().unwrap();
+        let source_dir = dir.path().join("src");
+        let ignored_dir = dir.path().join("ignored");
+        std::fs::create_dir_all(&source_dir).unwrap();
+        std::fs::create_dir_all(&ignored_dir).unwrap();
+        let source_file = source_dir.join("main.rs");
+        let ignored_file = ignored_dir.join("secret.rs");
+        let unsupported_file = source_dir.join("payload.bin");
+        std::fs::write(&source_file, "fn main() {}\n").unwrap();
+        std::fs::write(&ignored_file, "fn hidden() {}\n").unwrap();
+        std::fs::write(&unsupported_file, [0, 1, 2]).unwrap();
+        std::fs::write(dir.path().join(".adenignore"), "ignored/\n").unwrap();
+
+        let folder_files = discover_tree_scope_files(dir.path(), &source_dir).unwrap();
+        let single_file = discover_tree_scope_files(dir.path(), &source_file).unwrap();
+        let ignored_scope = discover_tree_scope_files(dir.path(), &ignored_dir).unwrap();
+        let ignored_file_scope = discover_tree_scope_files(dir.path(), &ignored_file).unwrap();
+        let unsupported_file_scope =
+            discover_tree_scope_files(dir.path(), &unsupported_file).unwrap();
+
+        assert_eq!(folder_files, vec![Path::new("src").join("main.rs")]);
+        assert_eq!(single_file, folder_files);
+        assert!(ignored_scope.is_empty());
+        assert!(ignored_file_scope.is_empty());
+        assert!(unsupported_file_scope.is_empty());
     }
 
     #[test]

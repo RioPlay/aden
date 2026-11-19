@@ -1,9 +1,7 @@
 // Copyright (c) 2026 RioPlay <rioplay@rioplay.dev>
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use crate::extractor::{
-    LanguageExtractor, build_code_attributes, make_anchor, project_relative_file,
-};
+use crate::extractor::{CodeSource, LanguageExtractor, make_anchor, project_relative_file};
 use aden_core::{Block, Document, FieldDef, NodeType, Parameter, Result, Visibility};
 use std::path::Path;
 
@@ -48,6 +46,7 @@ pub fn extract_documents_inner(path: &Path, source: &str) -> Result<Vec<Document
     let tree = parser
         .parse(source, None)
         .ok_or_else(|| aden_core::Error::Parse("tree-sitter returned None".to_string()))?;
+    let file_source = &CodeSource::new(source, path);
     let root = tree.root_node();
     let (crate_name, project_root) = infer_crate_name_and_root(path);
     // Compute the project-root-relative file component (Gap 11: eliminates
@@ -57,166 +56,403 @@ pub fn extract_documents_inner(path: &Path, source: &str) -> Result<Vec<Document
     let file_name_owned = apply_module_entry_mapping_rust(&raw_rel);
     let file_name = file_name_owned.as_str();
     let mut docs = Vec::new();
+    let mut doc_scopes = std::collections::HashMap::new();
+    let mut scope_imports = std::collections::HashMap::new();
+    let mut has_inline_modules = false;
 
-    let mut cursor = root.walk();
-    let children: Vec<_> = root.children(&mut cursor).collect();
-    let mut buffered_comments: Vec<String> = Vec::new();
-    // Collect module-level use paths for edge::imports emission.
-    let mut import_paths: Vec<String> = Vec::new();
+    // Only descend into module item lists, never arbitrary function bodies.
+    // An explicit work stack avoids adding recursion proportional to nesting.
+    let mut pending = vec![(root, String::new())];
+    while let Some((container, module_path)) = pending.pop() {
+        let mut cursor = container.walk();
+        let children: Vec<_> = container.children(&mut cursor).collect();
+        let mut buffered_comments: Vec<String> = Vec::new();
+        let mut import_paths: Vec<String> = Vec::new();
+        let mut lexical_imports: Vec<String> = Vec::new();
 
-    for child in children {
-        if !child.is_named() {
-            continue;
+        for child in children {
+            if !child.is_named() {
+                continue;
+            }
+            let first_doc = docs.len();
+            match child.kind() {
+                "line_comment" => {
+                    if let Some(comment) = process_line_comment(child, source) {
+                        buffered_comments.push(comment);
+                    }
+                }
+                "block_comment" => {
+                    if let Some(comment) = process_block_comment(child, source) {
+                        buffered_comments.push(comment);
+                    }
+                }
+                "use_declaration" => {
+                    // Collect the imported path(s) for edge::imports.
+                    // `argument` field holds a _use_clause; we flatten grouped paths:
+                    //   `use foo::bar`       → ["foo::bar"]
+                    //   `use foo::{a, b}`    → ["foo::a", "foo::b"]
+                    //   `use foo as local`   → ["foo"]  (emit the module path, not alias)
+                    // Self and crate paths are kept as-is.
+                    if let Some(arg) = child.child_by_field_name("argument") {
+                        collect_use_paths(arg, source, "", &mut import_paths);
+                        // The graph's import format drops aliases. Do not treat
+                        // an aliased import as a binding of its original name.
+                        if !node_text(arg, source).contains(" as ") {
+                            collect_use_paths(arg, source, "", &mut lexical_imports);
+                        }
+                    }
+                    buffered_comments.clear();
+                }
+                "function_item" | "function_signature_item" => {
+                    if let Some(doc) = extract_function(
+                        file_source,
+                        child,
+                        source,
+                        &crate_name,
+                        file_name,
+                        &buffered_comments,
+                        None,
+                    ) {
+                        docs.push(doc);
+                    }
+                    buffered_comments.clear();
+                }
+                "impl_item" => {
+                    extract_impl_methods(
+                        file_source,
+                        child,
+                        source,
+                        &crate_name,
+                        file_name,
+                        &mut docs,
+                    );
+                    buffered_comments.clear();
+                }
+                "const_item" | "static_item" => {
+                    if let Some(doc) = extract_const_or_static(
+                        file_source,
+                        child,
+                        source,
+                        &crate_name,
+                        file_name,
+                        &buffered_comments,
+                    ) {
+                        docs.push(doc);
+                    }
+                    buffered_comments.clear();
+                }
+                "type_item" => {
+                    if let Some(doc) = extract_type_alias(
+                        file_source,
+                        child,
+                        source,
+                        &crate_name,
+                        file_name,
+                        &buffered_comments,
+                    ) {
+                        docs.push(doc);
+                    }
+                    buffered_comments.clear();
+                }
+                "struct_item" => {
+                    if let Some(doc) = extract_struct(
+                        file_source,
+                        child,
+                        source,
+                        &crate_name,
+                        file_name,
+                        &buffered_comments,
+                    ) {
+                        docs.push(doc);
+                    }
+                    buffered_comments.clear();
+                }
+                "enum_item" => {
+                    if let Some(doc) = extract_enum(
+                        file_source,
+                        child,
+                        source,
+                        &crate_name,
+                        file_name,
+                        &buffered_comments,
+                    ) {
+                        docs.push(doc);
+                    }
+                    buffered_comments.clear();
+                }
+                "mod_item" => {
+                    if let (Some(name), Some(body)) = (
+                        child.child_by_field_name("name"),
+                        child.child_by_field_name("body"),
+                    ) {
+                        let name = node_text(name, source);
+                        let nested_path = if module_path.is_empty() {
+                            name.to_string()
+                        } else {
+                            format!("{module_path}::{name}")
+                        };
+                        has_inline_modules = true;
+                        pending.push((body, nested_path));
+                    }
+                    if let Some(doc) = extract_module(
+                        file_source,
+                        child,
+                        source,
+                        &crate_name,
+                        file_name,
+                        &buffered_comments,
+                    ) {
+                        docs.push(doc);
+                    }
+                    buffered_comments.clear();
+                }
+                "trait_item" => {
+                    if let Some(doc) = extract_trait(
+                        file_source,
+                        child,
+                        source,
+                        &crate_name,
+                        file_name,
+                        &buffered_comments,
+                    ) {
+                        docs.push(doc);
+                    }
+                    buffered_comments.clear();
+                }
+                _ => {}
+            }
+            for doc in &mut docs[first_doc..] {
+                if !module_path.is_empty() {
+                    if let Some((base, symbol)) = doc.anchor.rsplit_once('#') {
+                        doc.anchor = format!("{base}#{module_path}::{symbol}");
+                    }
+                    doc.blocks.push(Block::Listing {
+                        language: None,
+                        code: format!(
+                            "edge::member_of[{}]",
+                            make_anchor(&crate_name, file_name, &module_path)
+                        ),
+                    });
+                }
+                doc_scopes.insert(doc.anchor.clone(), module_path.clone());
+                // Several item extractors used to discard the span after building
+                // attributes. Inline items must retain their own exact source range.
+                if doc.source_span.is_none()
+                    && (!module_path.is_empty()
+                        || (child.kind() == "mod_item"
+                            && child.child_by_field_name("body").is_some()))
+                {
+                    doc.source_span = Some(node_to_span(child, path));
+                }
+            }
         }
-        match child.kind() {
-            "line_comment" => {
-                if let Some(comment) = process_line_comment(child, source) {
-                    buffered_comments.push(comment);
+
+        scope_imports.insert(module_path.clone(), lexical_imports);
+        // Emit a file-level Module document carrying edge::imports for each
+        // module-level `use` declaration found.  Prepend so graph traversal sees
+        // the file node before its contained symbols.
+        if !import_paths.is_empty() {
+            let edge_code = import_paths
+                .iter()
+                .map(|p| format!("edge::imports[{p}]"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            if !module_path.is_empty() {
+                let module_anchor = make_anchor(&crate_name, file_name, &module_path);
+                if let Some(doc) = docs.iter_mut().find(|doc| doc.anchor == module_anchor) {
+                    doc.blocks.push(Block::Listing {
+                        language: None,
+                        code: edge_code,
+                    });
                 }
+                continue;
             }
-            "block_comment" => {
-                if let Some(comment) = process_block_comment(child, source) {
-                    buffered_comments.push(comment);
-                }
-            }
-            "use_declaration" => {
-                // Collect the imported path(s) for edge::imports.
-                // `argument` field holds a _use_clause; we flatten grouped paths:
-                //   `use foo::bar`       → ["foo::bar"]
-                //   `use foo::{a, b}`    → ["foo::a", "foo::b"]
-                //   `use foo as local`   → ["foo"]  (emit the module path, not alias)
-                // Self and crate paths are kept as-is.
-                if let Some(arg) = child.child_by_field_name("argument") {
-                    collect_use_paths(arg, source, "", &mut import_paths);
-                }
-                buffered_comments.clear();
-            }
-            "function_item" | "function_signature_item" => {
-                if let Some(doc) = extract_function(
-                    child,
-                    source,
-                    path,
-                    &crate_name,
-                    file_name,
-                    &buffered_comments,
-                    None,
-                ) {
-                    docs.push(doc);
-                }
-                buffered_comments.clear();
-            }
-            "impl_item" => {
-                extract_impl_methods(child, source, path, &crate_name, file_name, &mut docs);
-                buffered_comments.clear();
-            }
-            "const_item" | "static_item" => {
-                if let Some(doc) = extract_const_or_static(
-                    child,
-                    source,
-                    path,
-                    &crate_name,
-                    file_name,
-                    &buffered_comments,
-                ) {
-                    docs.push(doc);
-                }
-                buffered_comments.clear();
-            }
-            "type_item" => {
-                if let Some(doc) = extract_type_alias(
-                    child,
-                    source,
-                    path,
-                    &crate_name,
-                    file_name,
-                    &buffered_comments,
-                ) {
-                    docs.push(doc);
-                }
-                buffered_comments.clear();
-            }
-            "struct_item" => {
-                if let Some(doc) = extract_struct(
-                    child,
-                    source,
-                    path,
-                    &crate_name,
-                    file_name,
-                    &buffered_comments,
-                ) {
-                    docs.push(doc);
-                }
-                buffered_comments.clear();
-            }
-            "enum_item" => {
-                if let Some(doc) = extract_enum(
-                    child,
-                    source,
-                    path,
-                    &crate_name,
-                    file_name,
-                    &buffered_comments,
-                ) {
-                    docs.push(doc);
-                }
-                buffered_comments.clear();
-            }
-            "mod_item" => {
-                if let Some(doc) = extract_module(
-                    child,
-                    source,
-                    path,
-                    &crate_name,
-                    file_name,
-                    &buffered_comments,
-                ) {
-                    docs.push(doc);
-                }
-                buffered_comments.clear();
-            }
-            "trait_item" => {
-                if let Some(doc) = extract_trait(
-                    child,
-                    source,
-                    path,
-                    &crate_name,
-                    file_name,
-                    &buffered_comments,
-                ) {
-                    docs.push(doc);
-                }
-                buffered_comments.clear();
-            }
-            _ => {}
+            let file_anchor = make_anchor(&crate_name, file_name, "");
+            let file_doc = Document {
+                anchor: file_anchor,
+                node_type: NodeType::Module,
+                attributes: Default::default(),
+                blocks: vec![Block::Listing {
+                    language: None,
+                    code: edge_code,
+                }],
+                source_span: None,
+                metadata: None,
+                confidence: 0.85,
+            };
+            docs.insert(0, file_doc);
         }
     }
 
-    // Emit a file-level Module document carrying edge::imports for each
-    // module-level `use` declaration found.  Prepend so graph traversal sees
-    // the file node before its contained symbols.
-    if !import_paths.is_empty() {
-        let edge_code = import_paths
-            .iter()
-            .map(|p| format!("edge::imports[{p}]"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        let file_anchor = make_anchor(&crate_name, file_name, "");
-        let file_doc = Document {
-            anchor: file_anchor,
-            node_type: NodeType::Module,
-            attributes: Default::default(),
-            blocks: vec![Block::Listing {
-                language: None,
-                code: edge_code,
-            }],
-            source_span: None,
-            metadata: None,
-            confidence: 0.85,
-        };
-        docs.insert(0, file_doc);
+    if has_inline_modules {
+        qualify_local_edge_targets(
+            &mut docs,
+            &doc_scopes,
+            &scope_imports,
+            &crate_name,
+            file_name,
+            matches!(
+                raw_rel.as_str(),
+                "src/lib.rs" | "src/main.rs" | "lib.rs" | "main.rs"
+            ),
+        );
     }
-
     Ok(docs)
+}
+
+/// Resolve only bindings proven within this source file. Keeping unresolved
+/// targets verbatim lets the graph linker handle cross-file/external evidence.
+fn qualify_local_edge_targets(
+    docs: &mut [Document],
+    doc_scopes: &std::collections::HashMap<String, String>,
+    scope_imports: &std::collections::HashMap<String, Vec<String>>,
+    crate_name: &str,
+    file_name: &str,
+    is_crate_root: bool,
+) {
+    let anchors: std::collections::HashSet<_> = docs.iter().map(|doc| doc.anchor.clone()).collect();
+    let basenames: std::collections::HashSet<_> = anchors
+        .iter()
+        .filter_map(|anchor| anchor.rsplit(['#', ':']).next())
+        .collect();
+    let relative = |scope: &str, target: &str| -> Option<String> {
+        let mut scope: Vec<_> = if scope.is_empty() {
+            Vec::new()
+        } else {
+            scope.split("::").collect()
+        };
+        let mut target = target;
+        if let Some(rest) = target.strip_prefix("crate::") {
+            if !is_crate_root {
+                return None;
+            }
+            scope.clear();
+            target = rest;
+        } else if let Some(rest) = target.strip_prefix("self::") {
+            target = rest;
+        }
+        while let Some(rest) = target.strip_prefix("super::") {
+            scope.pop()?;
+            target = rest;
+        }
+        if target.starts_with("::") {
+            return None;
+        }
+        let symbol = if scope.is_empty() {
+            target.to_string()
+        } else {
+            format!("{}::{target}", scope.join("::"))
+        };
+        let anchor = make_anchor(crate_name, file_name, &symbol);
+        anchors.contains(&anchor).then_some(anchor)
+    };
+    let resolve_binding = |scope: &str, target: &str| -> Option<String> {
+        if let Some(anchor) = relative(scope, target) {
+            return Some(anchor);
+        }
+        if target.starts_with("super::")
+            || target.starts_with("self::")
+            || target.starts_with("crate::")
+            || target.starts_with("::")
+        {
+            return None;
+        }
+        let mut imported = std::collections::HashSet::new();
+        for import in scope_imports.get(scope).into_iter().flatten() {
+            let candidate = if let Some(base) = import.strip_suffix("::*") {
+                format!("{base}::{target}")
+            } else {
+                let binding = import.rsplit("::").next().unwrap_or(import);
+                if target == binding {
+                    import.clone()
+                } else if let Some(rest) = target.strip_prefix(&format!("{binding}::")) {
+                    format!("{import}::{rest}")
+                } else {
+                    continue;
+                }
+            };
+            if let Some(anchor) = relative(scope, &candidate) {
+                imported.insert(anchor);
+            }
+        }
+        if imported.len() == 1 {
+            imported.into_iter().next()
+        } else {
+            None
+        }
+    };
+    for doc in docs {
+        let Some(scope) = doc_scopes.get(&doc.anchor) else {
+            continue;
+        };
+        for block in &mut doc.blocks {
+            let Block::Listing { code, .. } = block else {
+                continue;
+            };
+            *code = code
+                .lines()
+                .map(|line| {
+                    let Some((edge, target)) = line.split_once('[') else {
+                        return line.to_string();
+                    };
+                    if !matches!(
+                        edge,
+                        "edge::calls"
+                            | "edge::uses"
+                            | "edge::mutates"
+                            | "edge::member_of"
+                            | "edge::implements"
+                    ) {
+                        return line.to_string();
+                    }
+                    let Some(target) = target.strip_suffix(']') else {
+                        return line.to_string();
+                    };
+                    // Preserve the linker's existing impl receiver resolution.
+                    if target.starts_with("aden://")
+                        || target.starts_with("self.")
+                        || target.starts_with("Self::")
+                    {
+                        return line.to_string();
+                    }
+                    // Same-module definitions shadow imports; unqualified names
+                    // never gain an implicit ancestor or sibling binding.
+                    let mut resolved = resolve_binding(scope, target);
+                    let trait_target = if edge == "edge::implements" {
+                        target.rsplit_once("::").map(|(parent, _)| parent)
+                    } else {
+                        None
+                    };
+                    if resolved.is_none() {
+                        // Trait methods are not currently separate documents.
+                        // Preserve the linker's established trait-node fallback.
+                        if let Some(trait_target) = trait_target {
+                            resolved = resolve_binding(scope, trait_target);
+                        }
+                    }
+                    if resolved.is_none()
+                        && !target.starts_with("crate::")
+                        && !target.starts_with("::")
+                    {
+                        let unresolved = trait_target.unwrap_or(target);
+                        let basename = unresolved.rsplit("::").next().unwrap_or(unresolved);
+                        if basenames.contains(basename) {
+                            // Exact missing anchors cannot be rebound by global
+                            // basename fallback to an inaccessible same-file item.
+                            let symbol = if scope.is_empty() {
+                                unresolved.to_string()
+                            } else {
+                                format!("{scope}::{unresolved}")
+                            };
+                            resolved = Some(make_anchor(crate_name, file_name, &symbol));
+                        }
+                    }
+                    resolved.map_or_else(|| line.to_string(), |anchor| format!("{edge}[{anchor}]"))
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+        }
+    }
 }
 
 /// Read the `name` field from the `[package]` section of a `Cargo.toml`.
@@ -372,9 +608,9 @@ fn process_block_comment(node: tree_sitter::Node, source: &str) -> Option<String
 }
 
 fn extract_function(
+    file_source: &CodeSource<'_>,
     node: tree_sitter::Node,
     source: &str,
-    path: &Path,
     crate_name: &str,
     file_name: &str,
     buffered_comments: &[String],
@@ -383,6 +619,7 @@ fn extract_function(
     // different impls don't collide on one anchor (silent overwrite / data loss).
     type_prefix: Option<&str>,
 ) -> Option<Document> {
+    let path = file_source.path;
     let name_node = node.child_by_field_name("name")?;
     let bare_name = node_text(name_node, source);
     let qualified;
@@ -436,7 +673,31 @@ fn extract_function(
     };
     let anchor = make_anchor(crate_name, file_name, name);
     let span = node_to_span(node, path);
-    let attrs = build_code_attributes(source, "function", Some(path), Some(&span));
+    let mut attrs = file_source.attributes("function", &span);
+    // Attributes are sibling nodes in tree-sitter Rust. Only the function's
+    // own #[test] attribute establishes test status, never its module name.
+    let mut previous = node.prev_named_sibling();
+    while let Some(sibling) = previous {
+        match sibling.kind() {
+            "attribute_item" => {
+                let attribute: String = node_text(sibling, source)
+                    .chars()
+                    .filter(|c| !c.is_whitespace())
+                    .collect();
+                let name = attribute
+                    .strip_prefix("#[")
+                    .and_then(|attribute| attribute.strip_suffix(']'))
+                    .map(|attribute| attribute.split('(').next().unwrap_or(attribute));
+                if name.is_some_and(|name| name == "test" || name.ends_with("::test")) {
+                    attrs.insert("rust_test".to_string(), "true".to_string());
+                    break;
+                }
+            }
+            "line_comment" | "block_comment" => {}
+            _ => break,
+        }
+        previous = sibling.prev_named_sibling();
+    }
     let mut blocks = Vec::new();
     if let Some(doc) = doc_comment {
         blocks.push(Block::Paragraph(doc));
@@ -532,7 +793,7 @@ fn extract_function(
         node_type: NodeType::Function,
         attributes: attrs,
         blocks,
-        source_span: None,
+        source_span: Some(span),
         metadata: None,
         confidence: 0.9,
     })
@@ -578,9 +839,9 @@ fn has_mut_self_receiver(node: tree_sitter::Node, source: &str) -> bool {
 ///   the trait method is not a stored symbol), and
 /// * `edge::mutates[T]` when the receiver is `&mut self`.
 fn extract_impl_methods(
+    file_source: &CodeSource<'_>,
     node: tree_sitter::Node,
     source: &str,
-    path: &Path,
     crate_name: &str,
     file_name: &str,
     docs: &mut Vec<Document>,
@@ -602,12 +863,11 @@ fn extract_impl_methods(
         .child_by_field_name("trait")
         .map(|n| strip_generic_args(node_text(n, source)).to_string())
         .filter(|t| !t.is_empty());
-    // Mutates targets the parent type's stored anchor, which uses the bare
-    // name (`Foo`, not `Foo<T>` or `path::Foo`).
+    // Keep the target's explicit module path; stripping it could bind a
+    // same-named type in the impl's module instead of its actual parent.
     let mutates_target: Option<String> = type_name
         .as_deref()
         .map(strip_generic_args)
-        .and_then(|t| t.rsplit("::").next())
         .map(str::to_string)
         .filter(|t| !t.is_empty());
 
@@ -630,9 +890,9 @@ fn extract_impl_methods(
             }
             "function_item" | "function_signature_item" => {
                 if let Some(mut doc) = extract_function(
+                    file_source,
                     child,
                     source,
-                    path,
                     crate_name,
                     file_name,
                     &buffered,
@@ -681,13 +941,14 @@ fn extract_impl_methods(
 /// `name` (identifier), a `type`, and a `value`; without this arm they were
 /// invisible.
 fn extract_const_or_static(
+    file_source: &CodeSource<'_>,
     node: tree_sitter::Node,
     source: &str,
-    path: &Path,
     crate_name: &str,
     file_name: &str,
     buffered_comments: &[String],
 ) -> Option<Document> {
+    let path = file_source.path;
     let name_node = node.child_by_field_name("name")?;
     let name = node_text(name_node, source);
     let vis = get_visibility_with_source(node, source);
@@ -701,7 +962,7 @@ fn extract_const_or_static(
         .map(|n| node_text(n, source).to_string());
     let anchor = make_anchor(crate_name, file_name, name);
     let span = node_to_span(node, path);
-    let attrs = build_code_attributes(source, "constant", Some(path), Some(&span));
+    let attrs = file_source.attributes("constant", &span);
     // NodeType has no dedicated `Constant`; a top-level const/static is a named
     // value item, closest modelled as `Type` (the `Kind` row carries the detail).
     let mut blocks = Vec::new();
@@ -748,13 +1009,14 @@ fn extract_const_or_static(
 /// Emit a Document for a top-level `type Alias = ...;`. The RHS types become
 /// `Uses` edges so the alias links to what it references.
 fn extract_type_alias(
+    file_source: &CodeSource<'_>,
     node: tree_sitter::Node,
     source: &str,
-    path: &Path,
     crate_name: &str,
     file_name: &str,
     buffered_comments: &[String],
 ) -> Option<Document> {
+    let path = file_source.path;
     let name_node = node.child_by_field_name("name")?;
     let name = node_text(name_node, source);
     let vis = get_visibility_with_source(node, source);
@@ -763,7 +1025,7 @@ fn extract_type_alias(
         .map(|n| node_text(n, source).to_string());
     let anchor = make_anchor(crate_name, file_name, name);
     let span = node_to_span(node, path);
-    let attrs = build_code_attributes(source, "type", Some(path), Some(&span));
+    let attrs = file_source.attributes("type", &span);
     let mut blocks = Vec::new();
     if !buffered_comments.is_empty() {
         blocks.push(Block::Paragraph(buffered_comments.join("\n")));
@@ -814,7 +1076,7 @@ fn extract_type_idents(ty: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut cur = String::new();
     for ch in ty.chars() {
-        if ch.is_alphanumeric() || ch == '_' {
+        if ch.is_alphanumeric() || ch == '_' || ch == ':' {
             cur.push(ch);
         } else {
             push_type_ident(&mut out, &cur);
@@ -826,7 +1088,8 @@ fn extract_type_idents(ty: &str) -> Vec<String> {
 }
 
 fn push_type_ident(out: &mut Vec<String>, ident: &str) {
-    let Some(first) = ident.chars().next() else {
+    let basename = ident.rsplit("::").next().unwrap_or(ident);
+    let Some(first) = basename.chars().next() else {
         return;
     };
     // Types are PascalCase by convention; a lowercase ident is a primitive,
@@ -839,7 +1102,7 @@ fn push_type_ident(out: &mut Vec<String>, ident: &str) {
         "BTreeSet", "Cow", "Path", "PathBuf", "Self", "Ok", "Err", "Some", "None", "VecDeque",
         "Cell", "RefCell", "Mutex", "RwLock", "Duration", "Instant",
     ];
-    if SKIP.contains(&ident) {
+    if SKIP.contains(&basename) {
         return;
     }
     if !out.iter().any(|x| x == ident) {
@@ -998,14 +1261,15 @@ fn collect_use_paths(node: tree_sitter::Node, source: &str, prefix: &str, out: &
                 }
             }
         }
-        // `use_wildcard`: `path::*` — emit prefix::*.
+        // A wildcard node includes its path (`super::*`); grouped imports
+        // additionally carry the enclosing path in `prefix`.
         "use_wildcard" => {
-            let star = if prefix.is_empty() {
-                "*".to_string()
+            let text = node_text(node, source);
+            out.push(if prefix.is_empty() {
+                text.to_string()
             } else {
-                format!("{prefix}::*")
-            };
-            out.push(star);
+                format!("{prefix}::{text}")
+            });
         }
         // Leaf path nodes: `identifier`, `scoped_identifier`, `crate`, `self`,
         // `super` — emit the full path.
@@ -1026,27 +1290,142 @@ fn collect_use_paths(node: tree_sitter::Node, source: &str, prefix: &str, out: &
     }
 }
 
-/// Recursively walk an AST subtree and collect all `call_expression` nodes.
-/// Returns a list of (callee_name, 1-based_line_number) for each *meaningful* call found.
-/// Filters out std-lib noise and very short names.
+/// Collect real call expressions, including expressions inside common assertion
+/// macros. Unknown macros remain opaque; this is not arbitrary macro expansion.
 fn extract_call_sites(node: tree_sitter::Node, source: &str) -> Vec<(String, usize)> {
-    let mut calls = Vec::new();
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        calls.extend(extract_call_sites(child, source));
+    let direct = collect_call_expressions(node, source, 0);
+    let ranges = assertion_macro_ranges(node, source);
+    if ranges.is_empty() || node.end_byte() - node.start_byte() > 1024 * 1024 {
+        return direct;
     }
-    if node.kind() == "call_expression"
-        && let Some(func) = node.child_by_field_name("function")
-    {
-        // A local closure is not a global function with the same spelling.
-        // Keep calls inside its body, but do not invent an edge for invoking it.
-        if func.kind() == "identifier" && is_local_closure(func, source) {
-            return calls;
+    let Ok(language) = crate::get_ts_language("rust") else {
+        return direct;
+    };
+    let mut parser = tree_sitter::Parser::new();
+    if parser.set_language(&language).is_err() {
+        return direct;
+    }
+
+    // Reparse the entire owning body, rather than separate arguments, so let
+    // bindings and closure shadowing retain their original lexical scope.
+    // Equal-length whitespace and delimiter edits preserve all byte/line offsets.
+    let prefix = if node.kind() == "block" {
+        "fn __aden_assertions()"
+    } else {
+        ""
+    };
+    let mut rewritten = format!("{prefix}{}", node_text(node, source));
+    let mut ranges: Vec<_> = ranges
+        .into_iter()
+        .map(|(start, open, close)| {
+            (
+                start - node.start_byte() + prefix.len(),
+                open - node.start_byte() + prefix.len(),
+                close - node.start_byte() + prefix.len(),
+            )
+        })
+        .collect();
+    // Each pass exposes one level of nested assertion expressions. Bound the
+    // total work to eight function-sized reparses (at most 1 MiB each),
+    // never one parse per token. Larger bodies keep ordinary call extraction.
+    for pass in 0..8 {
+        let mut bytes = rewritten.into_bytes();
+        for (start, open, close) in ranges {
+            for byte in &mut bytes[start..open] {
+                if *byte != b'\n' && *byte != b'\r' {
+                    *byte = b' ';
+                }
+            }
+            bytes[open] = b'(';
+            bytes[close] = b')';
         }
-        let callee = resolve_callee_name(func, source);
-        if !callee.is_empty() && callee.len() >= 3 && !SKIP_CALLEES.contains(&callee.as_str()) {
-            let line = func.start_position().row + 1;
-            calls.push((callee, line));
+        let Ok(text) = String::from_utf8(bytes) else {
+            return direct;
+        };
+        rewritten = text;
+        let Some(tree) = parser.parse(&rewritten, None) else {
+            return direct;
+        };
+        // Do not infer calls from error recovery on unsupported macro syntax.
+        if tree.root_node().has_error() {
+            return direct;
+        }
+        ranges = assertion_macro_ranges(tree.root_node(), &rewritten);
+        if ranges.is_empty() || pass == 7 {
+            return collect_call_expressions(
+                tree.root_node(),
+                &rewritten,
+                node.start_position().row,
+            );
+        }
+    }
+    direct
+}
+
+/// Ranges are (macro path start, opening delimiter, closing delimiter).
+fn assertion_macro_ranges(node: tree_sitter::Node, source: &str) -> Vec<(usize, usize, usize)> {
+    let mut ranges = Vec::new();
+    let mut pending = vec![node];
+    while let Some(node) = pending.pop() {
+        if node.kind() == "macro_invocation"
+            && let Some(name) = node.child_by_field_name("macro")
+        {
+            let name_text = node_text(name, source);
+            let bare_name = name_text
+                .strip_prefix("std::")
+                .or_else(|| name_text.strip_prefix("core::"))
+                .unwrap_or(name_text);
+            if matches!(
+                bare_name,
+                "assert"
+                    | "assert_eq"
+                    | "assert_ne"
+                    | "debug_assert"
+                    | "debug_assert_eq"
+                    | "debug_assert_ne"
+            ) {
+                let mut cursor = node.walk();
+                if let Some(tokens) = node
+                    .named_children(&mut cursor)
+                    .find(|child| child.kind() == "token_tree")
+                {
+                    ranges.push((
+                        name.start_byte(),
+                        tokens.start_byte(),
+                        tokens.end_byte() - 1,
+                    ));
+                }
+            }
+        }
+        let mut cursor = node.walk();
+        pending.extend(node.named_children(&mut cursor));
+    }
+    ranges
+}
+
+fn collect_call_expressions(
+    node: tree_sitter::Node,
+    source: &str,
+    line_offset: usize,
+) -> Vec<(String, usize)> {
+    let mut calls = Vec::new();
+    let mut pending = vec![(node, false)];
+    while let Some((node, visited)) = pending.pop() {
+        if !visited {
+            pending.push((node, true));
+            let mut cursor = node.walk();
+            let children: Vec<_> = node.named_children(&mut cursor).collect();
+            pending.extend(children.into_iter().rev().map(|child| (child, false)));
+            continue;
+        }
+        if node.kind() == "call_expression"
+            && let Some(func) = node.child_by_field_name("function")
+            && !(func.kind() == "identifier" && is_local_closure(func, source))
+        {
+            let callee = resolve_callee_name(func, source);
+            if !callee.is_empty() && callee.len() >= 3 && !SKIP_CALLEES.contains(&callee.as_str()) {
+                calls.push((callee, func.start_position().row + 1 + line_offset));
+            }
         }
     }
     calls
@@ -1086,6 +1465,33 @@ fn is_local_closure(call: tree_sitter::Node, source: &str) -> bool {
 #[cfg(test)]
 mod closure_call_tests {
     use super::*;
+
+    #[test]
+    fn function_and_method_spans_match_attributes_and_utf8_byte_ranges() {
+        let source = "// 日本語🙂\r\n#[inline]\r\npub fn top() {\r\n    let _ = \"é\";\r\n}\r\nstruct Sample;\r\nimpl Sample {\r\n    #[inline]\r\n    fn method(&self) {}\r\n}";
+        let path = Path::new("sample.rs");
+        let docs = extract_documents_inner(path, source).unwrap();
+        for (name, text, first, last) in [
+            ("top", "pub fn top() {\r\n    let _ = \"é\";\r\n}", 3, 5),
+            ("Sample::method", "fn method(&self) {}", 9, 9),
+        ] {
+            let doc = docs
+                .iter()
+                .find(|doc| doc.anchor.ends_with(&format!("#{name}")))
+                .unwrap();
+            let span = doc
+                .source_span
+                .as_ref()
+                .expect("Rust functions must retain their source span");
+            assert_eq!(span.file, "sample.rs");
+            assert_eq!((span.start_line, span.end_line), (first, last));
+            assert_eq!(span.start_byte, source.find(text).unwrap());
+            assert_eq!(span.end_byte, span.start_byte + text.len());
+            assert_eq!(&source[span.start_byte..span.end_byte], text);
+            assert_eq!(doc.attributes.get("start_line"), Some(&first.to_string()));
+            assert_eq!(doc.attributes.get("end_line"), Some(&last.to_string()));
+        }
+    }
 
     #[test]
     fn closure_calls_do_not_escape_their_lexical_scope() {
@@ -1145,38 +1551,20 @@ fn resolve_callee_name(node: tree_sitter::Node, source: &str) -> String {
                 node_text(node, source).to_string()
             }
         }
-        "scoped_identifier" => {
-            let mut name_parts = Vec::new();
-            let mut cursor = node.walk();
-            for child in node.children(&mut cursor) {
-                if child.kind() == "identifier" {
-                    name_parts.push(node_text(child, source));
-                }
-            }
-            if name_parts.len() >= 2 {
-                format!(
-                    "{}::{}",
-                    name_parts[name_parts.len() - 2],
-                    name_parts[name_parts.len() - 1]
-                )
-            } else if !name_parts.is_empty() {
-                name_parts.last().unwrap().to_string()
-            } else {
-                node_text(node, source).to_string()
-            }
-        }
+        "scoped_identifier" => node_text(node, source).to_string(),
         _ => node_text(node, source).to_string(),
     }
 }
 
 fn extract_struct(
+    file_source: &CodeSource<'_>,
     node: tree_sitter::Node,
     source: &str,
-    path: &Path,
     crate_name: &str,
     file_name: &str,
     buffered_comments: &[String],
 ) -> Option<Document> {
+    let path = file_source.path;
     let name_node = node.child_by_field_name("name")?;
     let name = node_text(name_node, source);
     let _vis = get_visibility_with_source(node, source);
@@ -1204,7 +1592,7 @@ fn extract_struct(
     };
     let anchor = make_anchor(crate_name, file_name, name);
     let span = node_to_span(node, path);
-    let attrs = build_code_attributes(source, "type", Some(path), Some(&span));
+    let attrs = file_source.attributes("type", &span);
     let mut blocks = Vec::new();
     if let Some(doc) = doc_comment {
         blocks.push(Block::Paragraph(doc));
@@ -1239,13 +1627,14 @@ fn extract_struct(
 }
 
 fn extract_enum(
+    file_source: &CodeSource<'_>,
     node: tree_sitter::Node,
     source: &str,
-    path: &Path,
     crate_name: &str,
     file_name: &str,
     buffered_comments: &[String],
 ) -> Option<Document> {
+    let path = file_source.path;
     let name_node = node.child_by_field_name("name")?;
     let name = node_text(name_node, source);
     let vis = get_visibility_with_source(node, source);
@@ -1271,7 +1660,7 @@ fn extract_enum(
     };
     let anchor = make_anchor(crate_name, file_name, name);
     let span = node_to_span(node, path);
-    let attrs = build_code_attributes(source, "type", Some(path), Some(&span));
+    let attrs = file_source.attributes("type", &span);
     let mut blocks = Vec::new();
     if let Some(doc) = doc_comment {
         blocks.push(Block::Paragraph(doc));
@@ -1303,18 +1692,19 @@ fn extract_enum(
 }
 
 fn extract_module(
+    file_source: &CodeSource<'_>,
     node: tree_sitter::Node,
     source: &str,
-    path: &Path,
     crate_name: &str,
     file_name: &str,
     buffered_comments: &[String],
 ) -> Option<Document> {
+    let path = file_source.path;
     let name_node = node.child_by_field_name("name")?;
     let name = node_text(name_node, source);
     let anchor = make_anchor(crate_name, file_name, name);
     let span = node_to_span(node, path);
-    let attrs = build_code_attributes(source, "module", Some(path), Some(&span));
+    let attrs = file_source.attributes("module", &span);
     let mut blocks = Vec::new();
     if !buffered_comments.is_empty() {
         blocks.push(Block::Paragraph(buffered_comments.join("\n")));
@@ -1332,18 +1722,19 @@ fn extract_module(
 }
 
 fn extract_trait(
+    file_source: &CodeSource<'_>,
     node: tree_sitter::Node,
     source: &str,
-    path: &Path,
     crate_name: &str,
     file_name: &str,
     buffered_comments: &[String],
 ) -> Option<Document> {
+    let path = file_source.path;
     let name_node = node.child_by_field_name("name")?;
     let name = node_text(name_node, source);
     let anchor = make_anchor(crate_name, file_name, name);
     let span = node_to_span(node, path);
-    let attrs = build_code_attributes(source, "type", Some(path), Some(&span));
+    let attrs = file_source.attributes("type", &span);
     let mut blocks = Vec::new();
     if !buffered_comments.is_empty() {
         blocks.push(Block::Paragraph(buffered_comments.join("\n")));
@@ -1470,5 +1861,431 @@ mod tests {
             anchor, "aden://module/mycrate/src#entry",
             "lib.rs in src/ must produce file component 'src', got {anchor:?}"
         );
+    }
+
+    fn inline_fixture(source: &str) -> (TempDir, Vec<Document>) {
+        let tmp = TempDir::new().unwrap();
+        write(
+            &tmp,
+            "Cargo.toml",
+            "[package]\nname = \"inline_fixture\"\nversion = \"0.1.0\"\n",
+        );
+        let path = write(&tmp, "src/lib.rs", source);
+        let docs = extract_documents_inner(&path, source).unwrap();
+        (tmp, docs)
+    }
+
+    fn listing_text(doc: &Document) -> String {
+        doc.blocks
+            .iter()
+            .filter_map(|block| match block {
+                Block::Listing { code, .. } => Some(code.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn inline_modules_qualify_symbols_and_keep_source_ranges() {
+        let source = "fn same() {}\nmod left {\n    pub struct Item;\n    impl Item { pub fn same(&mut self) {} }\n    pub fn same() {}\n    mod nested { pub enum Kind { One } pub type Alias = Kind; pub const VALUE: u8 = 1; pub trait Marker {} pub fn same() {} }\n}\nmod right { pub struct Item; impl Item { pub fn same(&self) {} } pub fn same() {} }\nmod external;\n";
+        let (_tmp, docs) = inline_fixture(source);
+        let expected = [
+            "same",
+            "left",
+            "left::Item",
+            "left::Item::same",
+            "left::same",
+            "left::nested",
+            "left::nested::Kind",
+            "left::nested::Alias",
+            "left::nested::VALUE",
+            "left::nested::Marker",
+            "left::nested::same",
+            "right",
+            "right::Item",
+            "right::Item::same",
+            "right::same",
+            "external",
+        ];
+        let anchors: std::collections::BTreeSet<_> =
+            docs.iter().map(|doc| doc.anchor.as_str()).collect();
+        assert_eq!(
+            anchors.len(),
+            expected.len(),
+            "no module or impl collisions"
+        );
+        for symbol in expected {
+            let anchor = format!("aden://module/inline_fixture/src#{symbol}");
+            let doc = docs
+                .iter()
+                .find(|doc| doc.anchor == anchor)
+                .unwrap_or_else(|| panic!("missing {anchor}"));
+            if symbol == "external" {
+                continue;
+            }
+            let span = doc
+                .source_span
+                .as_ref()
+                .expect("each inline item retains a span");
+            assert!(span.start_line > 0);
+            assert!(span.end_line >= span.start_line);
+        }
+        let method = docs
+            .iter()
+            .find(|doc| doc.anchor.ends_with("#left::Item::same"))
+            .unwrap();
+        assert_eq!(method.source_span.as_ref().unwrap().start_line, 4);
+        assert!(
+            listing_text(method)
+                .contains("edge::member_of[aden://module/inline_fixture/src#left::Item]")
+        );
+        let root = docs
+            .iter()
+            .find(|doc| doc.anchor.ends_with("#same"))
+            .unwrap();
+        assert_eq!(root.source_span.as_ref().unwrap().start_line, 1);
+        assert!(!docs.iter().any(|doc| doc.anchor.contains("external::")));
+    }
+
+    #[test]
+    fn inline_modules_preserve_local_calls_and_scoped_super_imports() {
+        let source = "fn validate_args() {}\nmod tests {\n    use super::*;\n    fn helper() {}\n    #[test]\n    fn validates() { validate_args(); helper(); super::validate_args(); }\n    mod nested { use super::{helper, *}; fn check() { helper(); } }\n}\n";
+        let (_tmp, docs) = inline_fixture(source);
+        let tests = docs
+            .iter()
+            .find(|doc| doc.anchor.ends_with("#tests"))
+            .unwrap();
+        assert!(listing_text(tests).contains("edge::imports[super::*]"));
+        let nested = docs
+            .iter()
+            .find(|doc| doc.anchor.ends_with("#tests::nested"))
+            .unwrap();
+        assert!(listing_text(nested).contains("edge::imports[super::helper]"));
+        assert!(listing_text(nested).contains("edge::imports[super::*]"));
+        let test = docs
+            .iter()
+            .find(|doc| doc.anchor.ends_with("#tests::validates"))
+            .unwrap();
+        assert_eq!(
+            test.attributes.get("rust_test").map(String::as_str),
+            Some("true")
+        );
+        let helper = docs
+            .iter()
+            .find(|doc| doc.anchor.ends_with("#tests::helper"))
+            .unwrap();
+        assert!(!helper.attributes.contains_key("rust_test"));
+        let listing = listing_text(test);
+        assert!(listing.contains("edge::calls[aden://module/inline_fixture/src#validate_args]"));
+        assert!(listing.contains("edge::calls[aden://module/inline_fixture/src#tests::helper]"));
+        assert!(!listing.contains("edge::calls[super::validate_args]"));
+        assert!(listing.contains("edge::member_of[aden://module/inline_fixture/src#tests]"));
+        assert_eq!(test.source_span.as_ref().unwrap().start_line, 6);
+        assert!(
+            !docs
+                .iter()
+                .any(|doc| doc.anchor == "aden://module/inline_fixture/src"),
+            "nested imports do not become file-wide imports"
+        );
+    }
+
+    #[test]
+    fn inline_module_traversal_does_not_index_function_local_items() {
+        let source = "fn entry() { fn hidden() {} mod local { fn hidden() {} } }\nmod visible { fn entry() {} }";
+        let (_tmp, docs) = inline_fixture(source);
+        assert_eq!(docs.len(), 3);
+        assert!(
+            docs.iter()
+                .any(|doc| doc.anchor.ends_with("#visible::entry"))
+        );
+        assert!(!docs.iter().any(|doc| doc.anchor.contains("hidden")));
+    }
+
+    #[test]
+    fn inline_module_calls_obey_lexical_bindings_and_reject_sibling_guessing() {
+        let source = r#"
+fn helper() {}
+mod left {
+    fn helper() {}
+    fn caller() { helper(); super::helper(); self::helper(); unknown_external(); }
+    mod nested { use super::*; fn caller() { helper(); } }
+}
+mod right { fn helper() {} fn caller() { helper(); left::helper(); } }
+mod inaccessible { fn caller() { helper(); } }
+"#;
+        let (_tmp, docs) = inline_fixture(source);
+        let listing = |name: &str| {
+            listing_text(
+                docs.iter()
+                    .find(|doc| doc.anchor.ends_with(&format!("#{name}")))
+                    .unwrap(),
+            )
+        };
+        let left = listing("left::caller");
+        assert_eq!(
+            left.matches("edge::calls[aden://module/inline_fixture/src#left::helper]")
+                .count(),
+            2
+        );
+        assert!(left.contains("edge::calls[aden://module/inline_fixture/src#helper]"));
+        assert!(left.contains("edge::calls[unknown_external]"));
+        assert!(
+            listing("left::nested::caller")
+                .contains("edge::calls[aden://module/inline_fixture/src#left::helper]")
+        );
+        assert!(
+            listing("right::caller")
+                .contains("edge::calls[aden://module/inline_fixture/src#right::helper]")
+        );
+        assert!(
+            listing("right::caller")
+                .contains("edge::calls[aden://module/inline_fixture/src#right::left::helper]"),
+            "an unimported sibling path remains an exact missing target"
+        );
+        let inaccessible = listing("inaccessible::caller");
+        assert!(
+            inaccessible
+                .contains("edge::calls[aden://module/inline_fixture/src#inaccessible::helper]")
+        );
+        assert!(
+            !docs
+                .iter()
+                .any(|doc| doc.anchor.ends_with("#inaccessible::helper"))
+        );
+    }
+
+    #[test]
+    fn inline_module_self_calls_preserve_impl_receiver_resolution() {
+        let source = "mod nested { struct Item; impl Item { fn helper() {} fn caller(&self) { Self::helper(); self.helper(); } } }";
+        let (_tmp, docs) = inline_fixture(source);
+        let caller = docs
+            .iter()
+            .find(|doc| doc.anchor.ends_with("#nested::Item::caller"))
+            .unwrap();
+        let listing = listing_text(caller);
+        assert!(listing.contains("edge::calls[Self::helper]"));
+        assert!(listing.contains("edge::calls[self.helper]"));
+        assert!(!listing.contains("#nested::Self::helper"));
+    }
+
+    #[test]
+    fn inline_module_qualified_types_and_traits_keep_their_explicit_scope() {
+        let source = r#"
+mod left { pub struct Item; pub trait Marker { fn action(&mut self); } }
+mod right {
+    struct Item;
+    trait Marker {}
+    fn takes(_: super::left::Item) {}
+    impl super::left::Marker for super::left::Item { fn action(&mut self) {} }
+}
+"#;
+        let (_tmp, docs) = inline_fixture(source);
+        let takes = docs
+            .iter()
+            .find(|doc| doc.anchor.ends_with("#right::takes"))
+            .unwrap();
+        let uses = listing_text(takes);
+        assert!(uses.contains("edge::uses[aden://module/inline_fixture/src#left::Item]"));
+        assert!(!uses.contains("edge::uses[aden://module/inline_fixture/src#right::Item]"));
+        let action = docs
+            .iter()
+            .find(|doc| doc.anchor.ends_with("::action"))
+            .unwrap();
+        let listing = listing_text(action);
+        for edge in ["member_of", "mutates"] {
+            assert!(listing.contains(&format!(
+                "edge::{edge}[aden://module/inline_fixture/src#left::Item]"
+            )));
+            assert!(!listing.contains(&format!(
+                "edge::{edge}[aden://module/inline_fixture/src#right::Item]"
+            )));
+        }
+        assert!(
+            listing.contains("edge::implements[aden://module/inline_fixture/src#left::Marker]")
+        );
+        assert!(
+            !listing.contains("edge::implements[aden://module/inline_fixture/src#right::Marker]")
+        );
+    }
+
+    #[test]
+    fn inline_module_crate_paths_resolve_only_in_the_crate_root_file() {
+        let source = "fn helper() {} fn caller() { crate::helper(); } mod nested { fn caller() { crate::helper(); } }";
+        let (tmp, docs) = inline_fixture(source);
+        for caller in docs.iter().filter(|doc| doc.anchor.ends_with("caller")) {
+            assert!(
+                listing_text(caller)
+                    .contains("edge::calls[aden://module/inline_fixture/src#helper]")
+            );
+        }
+        let path = write(&tmp, "src/other.rs", source);
+        let docs = extract_documents_inner(&path, source).unwrap();
+        for caller in docs.iter().filter(|doc| doc.anchor.ends_with("caller")) {
+            let listing = listing_text(caller);
+            assert!(listing.contains("edge::calls[crate::helper]"));
+            assert!(!listing.contains("#crate::helper"));
+            assert!(!listing.contains("#nested::crate::helper"));
+        }
+    }
+
+    #[test]
+    fn inline_modules_mark_only_actual_sync_and_async_test_attributes() {
+        let source = r#"
+#[test]
+fn root_test() {}
+mod tests {
+    #[test]
+    #[ignore]
+    fn sync_test() {}
+    #[tokio::test(flavor = "current_thread")]
+    async fn async_test() {}
+    fn helper() {}
+    #[cfg(test)]
+    fn conditional_helper() {}
+    #[test_case(1)]
+    fn unrelated_attribute() {}
+}
+"#;
+        let (_tmp, docs) = inline_fixture(source);
+        for doc in docs
+            .iter()
+            .filter(|doc| doc.node_type == NodeType::Function)
+        {
+            let actual_test = ["#root_test", "#tests::sync_test", "#tests::async_test"]
+                .iter()
+                .any(|suffix| doc.anchor.ends_with(suffix));
+            assert_eq!(
+                doc.attributes
+                    .get("rust_test")
+                    .is_some_and(|value| value == "true"),
+                actual_test,
+                "{}",
+                doc.anchor
+            );
+        }
+    }
+
+    #[test]
+    fn inline_module_assertion_macros_expose_real_calls_with_original_lines() {
+        let source = r#"
+fn validate_args(_: &str) -> Result<(), ()> { Err(()) }
+mod tests {
+    use super::*;
+    #[test]
+    fn caller() {
+        assert!(validate_args("invalid").is_err());
+        assert_eq!({
+            assert_ne!(validate_args("nested").is_err(), false);
+            validate_args("again").is_err()
+        }, true, "validate_args(fake())");
+        debug_assert_eq!(validate_args("debug").is_err(), true);
+        let _ = "validate_args(string())";
+        // validate_args(comment());
+        custom!(validate_args("opaque"));
+        matches!(true, _ if validate_args("pattern").is_err());
+    }
+}
+"#;
+        let (_tmp, docs) = inline_fixture(source);
+        let caller = docs
+            .iter()
+            .find(|doc| doc.anchor.ends_with("#tests::caller"))
+            .unwrap();
+        let listing = listing_text(caller);
+        assert_eq!(
+            listing
+                .matches("edge::calls[aden://module/inline_fixture/src#validate_args]")
+                .count(),
+            4,
+            "{listing}"
+        );
+        let call_rows: Vec<_> = caller
+            .blocks
+            .iter()
+            .filter_map(|block| match block {
+                Block::Table(table) if table.headers == ["Callee", "Line"] => Some(&table.rows),
+                _ => None,
+            })
+            .flatten()
+            .filter(|row| row[0] == "validate_args")
+            .collect();
+        assert_eq!(
+            call_rows.len(),
+            4,
+            "all actual assertion calls must survive extraction"
+        );
+        let expected_lines: Vec<_> = ["invalid", "nested", "again", "debug"]
+            .iter()
+            .map(|argument| {
+                let marker = format!("validate_args(\"{argument}\")");
+                let offset = source.find(&marker).unwrap();
+                (source[..offset]
+                    .bytes()
+                    .filter(|byte| *byte == b'\n')
+                    .count()
+                    + 1)
+                .to_string()
+            })
+            .collect();
+        assert_eq!(
+            call_rows.iter().map(|row| &row[1]).collect::<Vec<_>>(),
+            expected_lines.iter().collect::<Vec<_>>()
+        );
+        assert!(!listing.contains("fake"));
+        assert!(!listing.contains("string"));
+        assert!(!listing.contains("comment"));
+        assert_eq!(caller.source_span.as_ref().unwrap().start_line, 6);
+    }
+
+    #[test]
+    fn assertion_macros_preserve_outer_and_inner_closure_shadowing() {
+        let source = r#"
+fn caller() {
+    let render = || helper();
+    assert!(render());
+    assert!(unshadowed());
+    assert_eq!({ let local = || helper(); local() }, true);
+    assert!({ assert_eq!(render(), true); true });
+    fn nested() { assert!(render()); }
+}
+"#;
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&crate::get_ts_language("rust").unwrap())
+            .unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        let calls = extract_call_sites(tree.root_node(), source);
+        assert_eq!(
+            calls.iter().filter(|(name, _)| name == "render").count(),
+            1,
+            "only the nested function's uncaptured name remains"
+        );
+        assert_eq!(calls.iter().filter(|(name, _)| name == "helper").count(), 2);
+        assert!(!calls.iter().any(|(name, _)| name == "local"));
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|(name, _)| name == "unshadowed")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn assertion_macro_reparsing_is_bounded_and_preserves_ordinary_calls() {
+        let source = format!(
+            "fn caller() {{ outside(); {}inside(){}; }}",
+            "assert!(".repeat(12),
+            ")".repeat(12)
+        );
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&crate::get_ts_language("rust").unwrap())
+            .unwrap();
+        let tree = parser.parse(&source, None).unwrap();
+        let calls = extract_call_sites(tree.root_node(), &source);
+        assert!(calls.iter().any(|(name, _)| name == "outside"));
+        assert!(!calls.iter().any(|(name, _)| name == "inside"));
     }
 }

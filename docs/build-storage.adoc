@@ -1,0 +1,105 @@
+[[bounded-cargo-builds]]
+= Bounded Cargo builds
+
+`scripts/cargo_budget.py` runs one explicit Cargo command from the workspace root
+with a single shared `target` directory and sampled storage checks. It uses only
+the Python 3.11+ standard library and does not remove build outputs or caches.
+
+== Run a build
+
+Pass Cargo and each argument after `--`. The wrapper uses an argument vector and
+does not invoke a shell:
+
+[source,shell]
+----
+python scripts/cargo_budget.py -- cargo check -p aden-asm
+----
+
+An optional JSON report can be written inside the workspace:
+
+[source,shell]
+----
+python scripts/cargo_budget.py --report .tmp/cargo-check.json -- cargo check -p aden-asm
+----
+
+The report path is not part of the measured Cargo output. Review and retain it
+only when it is useful evidence. The wrapper requires a new path and will not
+overwrite an existing file.
+
+== Default limits
+
+The wrapper defaults to a 5 GiB budget, a 10 GiB minimum free-space reserve, a
+512 MiB preflight headroom margin, two Cargo jobs, disabled incremental
+compilation, and stripped or disabled debug information. It always sets
+`CARGO_TARGET_DIR` to the workspace `target` directory. A different configured
+target path and a symlinked workspace target are rejected.
+
+Before a build-like command (`build`, `check`, `test`, `clippy`, or `bench`),
+the wrapper records a small versioned identity in
+`target/.cargo-budget-identity.json`. It covers command class, package selection,
+features, profile, target, toolchain and compiler configuration hashes, plus
+hashes of the workspace manifests, lockfile and Cargo configuration. Rust
+source edits and test name filters do not change this identity. Release aliases,
+selected lib/bin/example/test/bench targets, and `--all-targets` are covered.
+Compile-affecting Cargo profile, target, Rust compiler and wrapper environment
+settings and `rust-toolchain` override files are represented by hashes. Plural
+target selectors are recorded, repeated `--target` options are rejected, and
+rustc arguments forwarded by build/check/clippy are fingerprinted. Unsupported
+build options fail closed until the identity parser covers them. An explicit
+alternate `--manifest-path` is rejected. Changing the build identity is refused before Cargo starts; run the
+wrapper with `cargo clean` before switching configurations. A nonempty target
+without a marker and a corrupt marker also fail closed. The wrapper never
+adopts an existing target or removes files during this check. `metadata`, `fmt`,
+and `clean` do not require or write an identity. Cargo clean removes the target
+marker along with Cargo's selected build artifacts.
+
+Supported subcommands are `build`, `check`, `test`, `clippy`, `bench`,
+`metadata`, `fmt`, and `clean`. A Cargo toolchain selector such as `+stable` may
+precede the subcommand. Target-directory flags, build-directory flags, Cargo
+`--artifact-dir`, `--out-dir`, `--config` options, and `-Z` flags are rejected.
+Redirecting `CARGO_BUILD_TARGET_DIR` and `CARGO_BUILD_BUILD_DIR` environment
+values are rejected. `CARGO_BUILD_ARTIFACT_DIR` and `CARGO_UNSTABLE*` settings
+are also rejected. The wrapper forces Cargo's target and intermediate build
+directories to the guarded `target` directory, overriding those settings in
+discovered Cargo configuration files. An `artifact-dir` setting in Cargo
+config is rejected. Arguments after a `--` separator are passed to the selected
+subcommand, including test harness arguments.
+
+Existing bytes in `target` count toward the 5 GiB ceiling. The wrapper refuses
+to start when the current target is already at the ceiling. During the command,
+it samples the target's current size plus new bytes in Cargo's registry cache,
+registry index and sources, Git checkouts, and Git database. It checks free
+space on both the target volume and Cargo cache volume before and during
+execution.
+
+Directory scans count regular-file bytes and do not follow symlinks.
+
+== Limits of the guard
+
+This is a sampled storage guard, not process containment or an operating system
+quota. It samples once per second, so short spikes between samples can be
+missed. It measures the one workspace target and the listed Cargo cache
+locations, not every process on the machine or files a build script writes
+elsewhere. It makes no claim about other
+workspaces or concurrent builds. Use one build owner and do not start another
+build against this target while the command is active.
+The identity marker prevents the observed incompatible-cache category switch;
+the sampled size guard remains necessary for total storage growth.
+
+When a sampled limit is crossed, Windows uses `taskkill /T` to stop the Cargo
+process tree. POSIX systems start Cargo in a new session and stop that process
+group. A stopped command returns a nonzero status and reports the stop reason.
+If sampling fails or the wrapper is interrupted, it attempts to stop and reap
+Cargo before returning the monitor error or propagating the interrupt.
+The wrapper does not clean automatically or install toolchains. An explicit
+`cargo clean` command removes the target artifacts Cargo selects for cleaning.
+
+== Check the wrapper
+
+The unit tests use temporary directories and fake processes. They do not run
+Cargo or create a build target:
+
+[source,shell]
+----
+python -m unittest discover -s scripts -p test_cargo_budget.py
+----

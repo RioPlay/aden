@@ -1,0 +1,318 @@
+[[graph-read-performance]]
+= Request-scoped graph read performance
+
+This increment targets repeated storage setup and whole-graph loading for bounded
+queries. It does not introduce a daemon, a cross-request cache, or weaker freshness
+checks. Baseline Git commit: `2172e0e35668f69af50cc43d37acb88ee9add297`.
+
+== Changes and correctness boundaries
+
+`query` now shares one request-scoped store handle between exact/natural symbol
+resolution and graph traversal. When the keyed store is unavailable, resolution
+and traversal use one immutable read snapshot. The handle is consumed and closed
+before the final freshness observation and output.
+
+Outgoing `--from`, incoming `--backlinks`, and outgoing `--impact` queries fetch reachable documents and typed
+adjacency instead of constructing the entire repository graph. They load one
+extra reachable result when a result limit applies, so omitted results can still
+be reported as truncated. Parallel relationship types remain attached to their
+source/target pair. Default structural-edge exclusions and impact-edge filters
+remain in force.
+
+Forward queries previously reused assembly-context pruning, which can intentionally
+skip expansion through high-fanout intermediate hubs. In a reproduced two-hop
+`entry -> dispatch -> 40 leaves` fixture, the baseline returned only two of 42
+reachable symbols and reported `truncated: false`. Explicit graph queries now use
+the exact directional traversal too; assembly-context pruning is unchanged.
+
+Both independent source fingerprint observations remain. This change does not
+turn filesystem notifications or modification timestamps into proof of freshness.
+It also does not eliminate all repository-sized work: opening/recovering storage,
+fingerprinting sources, and the snapshot fallback can still scale with the project.
+
+Opt-in `ADEN_READ_TRACE=1` adds `anchor_resolve` and `graph_load` stages. The latter
+includes the shared store's close/drop. The location of storage costs moves between
+these stages when the handle is shared; end-to-end process latency is the primary
+comparison. Inclusive stages must not be summed.
+
+== Reproduction and measurement contract
+
+Build matching release binaries with the same features, preserving the baseline
+before rebuilding the candidate:
+
+[source,powershell]
+----
+cargo build --release --offline -p aden-cli --no-default-features --features view --bin aden
+python scripts/graph_read_bench.py --binary before=path/to/baseline.exe --binary after=target/release/aden.exe --files 512 --functions 24 --repetitions 4 --output graph-read-comparison.json
+----
+
+The synthetic fixture contains a three-function call chain plus disconnected
+filler functions. Each repetition gives each binary an empty, isolated Aden data
+directory. Arms share the same source paths and bytes. Cold reads include automatic
+generation; every warm request uses a new CLI process. Priming and verification
+requests are retained separately. Cold arms rotate a seeded starting order across
+repetitions; post-edit arms reverse that order. Other warm cells use seeded
+shuffles. With two arms, an even repetition count balances first-arm exposure.
+
+The first post-edit graph request follows an equal-length symbol/call replacement
+with the original modification timestamp restored. Subsequent impact/backlink
+requests are labelled `warm_after_edit`; the post-edit search measures rebuilding
+its previously primed search index. These are distinct states, not interchangeable
+first-read-after-edit measurements.
+
+Validators require exact canonical graph anchors, hop depths, edge types,
+nontruncated query results, current source observations, and verified expected
+source. Follow-up definition checks require the old definition to disappear and
+the replacement to exist. Invalid JSON shapes, nonzero exits, and timeouts count
+as failures; successful latency summaries do not erase failed attempts. Unit
+tests exercise both accepted evidence and representative incorrect evidence.
+
+Reports include binary SHA-256 identities, source-fixture hashes, all attempts,
+and Windows main-process CPU time and peak working set. Child-process resources
+are excluded. Other platforms report unavailable resource measurements as null.
+Tracing must run separately from untraced comparisons. OS file caches are not
+controlled; clearing Aden caches is not a cold-disk claim.
+
+For an unchanged real repository, `scripts/repo_query_bench.py` compares complete
+bounded `--from` and `--impact` result sets and their source observations. See
+<<read-path-performance>> for that harness's contract.
+
+== Windows release comparison
+
+The baseline and candidate used matching release/view features. Binary SHA-256:
+
+* Baseline binary SHA-256: `cc6efbac072837bcd9e0c2615648f454acf5e2bdb91c834d7979182ee4d9a6a6`.
+* Candidate binary SHA-256: `0a41c0f5506ee1884c6d872c16f74b2c0498e9847e4aba3591c651e65d6f734a`.
+
+The 512-file fixture contains 12,288 filler functions plus the three-function
+chain. The balanced comparison passed all 96 measured requests and 72 separate
+priming/verification requests, with matching source observations across arms.
+Raw attempts, ranges, CPU and memory measurements are retained locally in
+`.tmp/perf-next/graph-read-balanced-comparison.json`.
+
+Median elapsed milliseconds, four observations per cell:
+
+[cols="3,1,1",options="header"]
+|===
+|Request |Baseline |Candidate
+|Cold index and first query |4111.8 |3846.3
+|Warm natural-symbol query |1119.7 |762.3
+|Warm exact-anchor query |1103.8 |790.5
+|Warm impact query |1025.6 |786.3
+|Warm backlinks query |1055.6 |753.1
+|First graph query after edit |3003.9 |2577.5
+|Warm impact after edit |1245.9 |941.3
+|Warm backlinks after edit |1212.0 |928.3
+|Warm understand (unchanged path) |1483.5 |1477.5
+|Warm search (unchanged path) |452.8 |444.1
+|Post-edit search rebuild (unchanged path) |880.9 |887.5
+|Warm grep (unchanged path) |819.2 |873.2
+|===
+
+Warm graph-query medians fell approximately 23-32% in this fixture; the first
+graph query after editing fell about 14%. These small samples do not establish
+tail latency. The unchanged grep path measured slower; no causal attribution
+or general improvement to unchanged workloads is claimed.
+
+A separate comparison on an unchanged clone of the baseline Aden repository
+passed 20 measured and four priming requests. Complete anchor/depth result sets
+and source observations matched between both binaries and traversal modes.
+Five-observation medians were 783.1 to 524.7 ms for `--from`, and 691.6 to
+560.7 ms for `--impact`. Results are retained in
+`.tmp/perf-next/repo-comparison.json`.
+
+A larger 2,048-file fixture (49,152 filler functions plus the chain) passed all
+48 measured and 36 priming/verification requests with matching source observations.
+Two-observation medians, milliseconds:
+
+[cols="3,1,1",options="header"]
+|===
+|Request |Baseline |Candidate
+|Warm exact-anchor query |3962.2 |2518.6
+|Warm impact query |4915.2 |2502.0
+|Warm backlinks query |4965.7 |2517.2
+|First graph query after edit |11297.5 |8439.0
+|Warm understand (unchanged path) |6407.4 |6538.7
+|Warm search (unchanged path) |1361.1 |1336.7
+|Post-edit search rebuild (unchanged path) |2905.5 |2802.7
+|===
+
+Warm impact/backlink peak main-process working-set medians fell from about
+195.6 MiB to 156.2-156.3 MiB. Cold and post-edit graph peak memory remained roughly
+unchanged. This is a two-observation scale check, not a real-monorepo or tail-latency
+claim. Full results, including unchanged grep, cold reads, and post-edit warm
+reads, remain in `.tmp/perf-next/graph-read-scale-comparison.json`.
+
+An initial three-repetition synthetic run happened to put the baseline first in
+every cold-index pair. Its cold timings were excluded from improvement claims;
+the harness was changed to balance order and the comparison rerun. That earlier
+report remains in `.tmp/perf-next/graph-read-comparison.json`. Another preliminary
+repository run overlapped compilation and was excluded from timing conclusions.
+
+At the start of this work, both existing cache directories identifying the Aden
+checkout were verified and moved out of the active data directory into
+`.tmp/perf-next/cache-backup`. Automatic approval review blocked recursive
+deletion, so the reset used reversible quarantine. Durable repository intent and
+unrelated project data were preserved. Benchmark arms additionally use fresh
+isolated data directories; no OS page-cache flush is claimed.
+
+== First-increment verification and delivery limits
+
+Final Windows checks passed:
+
+* All 49 graph library tests and 39 focused CLI integration tests.
+* All 12 benchmark-validator tests, including malformed evidence, retained
+  process failures, wrong graph results, and balanced cold-arm ordering.
+* Both standalone MCP stdio gauntlet tests with `ADEN_BIN` pinned to the release
+  candidate, rather than an implicitly discovered installed CLI.
+* Release-binary read-back of the hub fixture: 42 results with no truncation at
+  limit 100, and ten results with truncation at limit ten, for forward and impact
+  queries. Raw evidence: `.tmp/perf-next/forward-hub-candidate.json`.
+* Scoped strict Clippy for graph/CLI libraries, CLI binary, and changed integration
+  test targets; workspace formatting and whitespace checks.
+* AsciiDoc reference validation with `check . --severity Forbid`.
+
+Independent bounded review of the final Rust changes found no remaining material
+issue. Its benchmark finding (malformed nested JSON could abort the report) was
+fixed and rechecked. An initial telemetry test assumed an unfiltered seed had no
+outgoing relationships; the fixture request was corrected to explicitly filter
+`Calls`, and the affected suite passed afterward.
+
+At that stage, an all-target Clippy run reported 26 style warnings in unchanged tests:
+`cli_tests.rs` and `low_friction_gauntlet.rs`. No lint policy was weakened and those
+files were not changed. The diagnostic summary is retained in
+`.tmp/perf-next/clippy-all-targets-failure.txt`; this is not a clean full-CI claim.
+Other operating systems and all-feature builds were not exercised in this increment.
+
+The first candidate is preserved as `.tmp/perf-next/candidate.exe`.
+The installed CLI and connected MCP session were
+not replaced. No commit, publication, or release was performed.
+
+== Remaining work after the first increment
+
+This increment does not change `understand`, search-index serialization or broad
+cache invalidation after generation. It does not establish general monorepo
+scalability, tail latency, or LLM task productivity. The synthetic workflow is a
+correctness-checked retrieval experiment, not an autonomous coding-task evaluation.
+Persistent readers, incremental search postings, and notification-assisted
+freshness require their own measured comparisons and recovery tests.
+
+== Follow-up: lookup and understand reads
+
+The next increment uses the preceding candidate as its baseline. `understand`
+shares one request-scoped reader for resolution, alternate definitions, incoming
+references, outgoing impact, and assembly context. Bounded graph views retain
+their existing direction, edge filters, and assembly pruning. The reader closes
+before source verification, assembly, and the final freshness observation.
+
+Lookup coverage remains exhaustive: ranked matching considers all anchor keys,
+including lower-ranked matches, rather than substituting the bounded symbol
+lexicon. Symbol lookup retains its snapshot-first strategy; when a snapshot is
+unavailable, its store fallback scans keys and fetches only selected documents.
+The snapshot path still decodes the complete snapshot. An initial store-first
+implementation made symbol lookup slower in both measured fixture sizes and was
+rejected. `understand` and caller lookup use the shared store-first session.
+Caller lookup considers every incoming `Calls` edge, including parallel
+relationships, and deduplicates callers across matching definitions. A zero
+result limit retains the definition count and match kind instead of entering
+full-text fallback solely because the output list is empty.
+
+The benchmark now also checks exact and natural `locate`, caller lookup, and
+`understand` on a middle node with both callers and dependencies. It repeats these
+checks after an equal-length edit with the modification timestamp preserved.
+Definition metadata, verified source ranges, relationship direction, and required
+context evidence are validated in addition to freshness. This fixture's single
+call chain does not establish arbitrary-symbol or ambiguous-method coverage;
+those behaviors need focused regression tests.
+
+=== Follow-up verification
+
+The final source passed 51 graph library tests, 275 CLI unit tests, 46 focused
+read/freshness integration tests, and 47 tests across the three lint-cleaned
+integration targets. All 15 benchmark-validator tests passed. Strict all-target
+Clippy for `aden-graph` and `aden-cli` passed on Windows after mechanical borrow
+and ceiling-division fixes and matching Unix platform guards on two test helpers;
+no lint exemptions or weaker assertions were added.
+
+The preserved baseline fails both new negative controls at the intended
+assertions: zero-limit definition total was one instead of 13, and a caller with
+parallel relationship types was omitted (zero instead of one). Raw failures and
+their classification are retained in `.tmp/lookup-next/baseline-controls.json`.
+An initial ambiguous-name fixture contained no recorded call edges on either
+binary. Its corrected union test explicitly seeds the graph relationships and
+does not claim that the parser resolves ambiguous duplicate names.
+
+Focused tests cover exhaustive ranked matches, aliases, ambiguity, zero limits,
+caller unions, parallel call edges, timestamp-preserving method edits, backend
+errors, assembly pruning, and store/snapshot parity. Independent review found a
+missing symbol-lookup fallback test; it was corrected by removing the fixture
+snapshot, reading the accessible store, checking that the snapshot stayed absent,
+then restoring and comparing results. Final independent review found no material
+issue in the production changes or test design.
+
+Both standalone MCP stdio tests passed with `ADEN_BIN` explicitly pinned to the
+final release. Eight real-repository requests matched the baseline's lookup
+results, caller sets, verified source, and assembled context on the unchanged
+baseline Aden checkout. Evidence: `.tmp/lookup-next/repo-lookup-parity.json`.
+These checks do not replace native checks on other operating systems or full CI.
+
+=== Follow-up release measurements
+
+Matching Windows release/view builds were compared without concurrent builds or
+tests. Baseline SHA-256:
+`0a41c0f5506ee1884c6d872c16f74b2c0498e9847e4aba3591c651e65d6f734a`.
+Final candidate SHA-256:
+`62242765091be1b1a253db2a9b1f66f91e81aca5e25545e2fec540a161e6028c`.
+
+The 512-file, 12,288-filler-function comparison passed all 168 measured and 104
+setup/probe requests across four repetitions, with matching source observations.
+Median milliseconds:
+
+[cols="3,1,1",options="header"]
+|===
+|Request |Previous candidate |Follow-up candidate
+|Warm understand, leaf |1498.0 |753.4
+|Warm understand, middle |1303.3 |721.9
+|Warm caller lookup |1034.4 |682.3
+|Warm exact symbol lookup |422.0 |404.6
+|Warm natural symbol lookup |407.5 |440.4
+|Understand after edit, leaf |1651.0 |902.6
+|Understand after edit, middle |1573.8 |902.6
+|Caller lookup after edit |1205.4 |838.6
+|===
+
+Warm understand medians fell approximately 45-50%, and caller lookup about 34%.
+Warm understand peak main-process working-set medians fell from 81.4-81.5 MiB to
+46.6 MiB; caller lookup fell from 110.8 MiB to 46.3 MiB. These small samples do not
+establish tail latency or general repository scalability.
+
+The two-file fixture passed 84 measured and 52 setup/probe requests across two
+repetitions. Understand medians were 266.5 to 176.8 ms for the leaf and 289.1 to
+198.7 ms for the middle; caller lookup was 247.0 to 158.6 ms. Exact lookup was
+155.9 to 142.1 ms and natural lookup 144.1 to 143.2 ms.
+
+The broad scale run's natural lookup median was about 8% slower. Some unchanged
+controls were slower too: grep 724.9 to 830.4 ms and impact 650.8 to 726.2 ms.
+These observations are retained, not attributed to the optimization. One focused
+follow-up used eight alternating-order pairs per symbol-lookup workload on the
+same 512-file source fixture and isolated data per arm. All 32 measured and four
+priming requests passed. Natural lookup was 396.3 to 394.2 ms, exact lookup 404.0
+to 392.2 ms; the slowdown did not reproduce. No general symbol-lookup speedup is
+claimed, and this repeated-fixture check is not independent cold-run evidence.
+
+Raw reports are retained locally:
+
+* `.tmp/lookup-next/scale-final-comparison.json`
+* `.tmp/lookup-next/tiny-final-comparison.json`
+* `.tmp/lookup-next/locate-followup-comparison.json`
+
+The rejected store-first symbol-lookup candidate and its measured regressions
+remain in `candidate-initial.exe`, `tiny-initial-comparison.json`, and
+`scale-initial-comparison.json` under the same directory. The final executable is
+`target/release/aden.exe`, also preserved as `.tmp/lookup-next/candidate.exe`.
+The installed CLI and connected MCP session were not replaced. No commit, PR,
+push, or publication was performed.
+
+Whole-tree freshness scans, storage startup, search-cache rebuilding, snapshot
+decoding for symbol lookup, and ambiguous-name call resolution remain separate
+work. No cross-request cache or weaker freshness contract was introduced.

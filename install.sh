@@ -14,7 +14,7 @@
 #   ./install.sh --minimal     binaries + PATH only (skip MCP/AGENTS.md steps)
 #   ./install.sh --dense       build with local hybrid (dense) search support
 #   ./install.sh --surface=LVL bake the MCP tool surface into the registration:
-#                              essential (default, 6 tools) | standard (15) | full (36)
+#                              essential (default) | standard | full
 #   ./install.sh --uninstall   guided removal
 #
 # Environment overrides: INSTALL_DIR or ADEN_INSTALL_DIR (default ~/.local/bin),
@@ -106,9 +106,9 @@ choose_surface() {
         return 0
     fi
     note "Tool surface — how many aden tools your AI tools see by default:"
-    note "  essential   6 tools  find -> comprehend -> blast-radius   [default]"
-    note "  standard   15 tools  + impact-diff, list, test, lint, audit, diagnose, …"
-    note "  full       36 tools  + build / setup / admin tooling"
+    note "  essential  source reads and graph navigation [default]"
+    note "  standard   adds ask, impact-diff, test, lint and other checks"
+    note "  full       adds build, setup and administration tools"
     note "(hidden tools also require explicit surface opt-in; busy servers fail fast instead of queueing.)"
     printf "   Surface [essential/standard/full]: "
     read -r reply || reply=""
@@ -290,17 +290,34 @@ mkdir -p "$INSTALL_DIR"
 STAGE="$(mktemp -d "$INSTALL_DIR/.aden-install.XXXXXX")"
 COMMIT_STARTED=0
 SUCCESS=0
-HAD_ADEN=0
-HAD_MCP=0
-rollback_install() {
-    status=$?
-    if [ "$SUCCESS" != "1" ] && [ "$COMMIT_STARTED" = "1" ]; then
-        rm -f "$INSTALL_DIR/aden" "$INSTALL_DIR/aden-mcp"
-        [ "$HAD_ADEN" = "1" ] && mv -f "$STAGE/backup-aden" "$INSTALL_DIR/aden"
-        [ "$HAD_MCP" = "1" ] && mv -f "$STAGE/backup-aden-mcp" "$INSTALL_DIR/aden-mcp"
-        note "Install failed; restored the previous Aden binary pair."
+BACKED_UP_ADEN=0
+BACKED_UP_MCP=0
+INSTALLED_ADEN=0
+INSTALLED_MCP=0
+restore_binary() {
+    local name="$1" backed_up="$2" installed="$3"
+    local backup="$STAGE/backup-$name" destination="$INSTALL_DIR/$name"
+    if [ "$installed" = "1" ] && ! rm -f "$destination"; then
+        note "Could not remove partial install $destination"
     fi
-    rm -rf "$STAGE"
+    if [ "$backed_up" = "1" ]; then
+        if [ -e "$destination" ] || [ -L "$destination" ] || ! mv "$backup" "$destination"; then
+            keep_stage=1
+            note "Could not restore $destination; original backup retained at $backup"
+        fi
+    fi
+}
+rollback_install() {
+    local status=$? keep_stage=0
+    if [ "$SUCCESS" != "1" ] && [ "$COMMIT_STARTED" = "1" ]; then
+        restore_binary aden "$BACKED_UP_ADEN" "$INSTALLED_ADEN"
+        restore_binary aden-mcp "$BACKED_UP_MCP" "$INSTALLED_MCP"
+    fi
+    if [ "$keep_stage" = "1" ]; then
+        note "Recovery files retained in $STAGE"
+    else
+        rm -rf "$STAGE"
+    fi
     return "$status"
 }
 trap rollback_install EXIT
@@ -313,10 +330,24 @@ install -m 755 "$RELEASE_DIR/aden-mcp" "$STAGE/aden-mcp"
 "$STAGE/aden" --version >/dev/null
 "$STAGE/aden-mcp" --version >/dev/null
 COMMIT_STARTED=1
-if [ -e "$INSTALL_DIR/aden" ]; then mv "$INSTALL_DIR/aden" "$STAGE/backup-aden"; HAD_ADEN=1; fi
-if [ -e "$INSTALL_DIR/aden-mcp" ]; then mv "$INSTALL_DIR/aden-mcp" "$STAGE/backup-aden-mcp"; HAD_MCP=1; fi
+for name in aden aden-mcp; do
+    if [ -d "$INSTALL_DIR/$name" ]; then
+        note "$INSTALL_DIR/$name is a directory; refusing to replace it."
+        exit 1
+    fi
+done
+if [ -e "$INSTALL_DIR/aden" ] || [ -L "$INSTALL_DIR/aden" ]; then
+    mv "$INSTALL_DIR/aden" "$STAGE/backup-aden"
+    BACKED_UP_ADEN=1
+fi
+if [ -e "$INSTALL_DIR/aden-mcp" ] || [ -L "$INSTALL_DIR/aden-mcp" ]; then
+    mv "$INSTALL_DIR/aden-mcp" "$STAGE/backup-aden-mcp"
+    BACKED_UP_MCP=1
+fi
 mv "$STAGE/aden" "$INSTALL_DIR/aden"
+INSTALLED_ADEN=1
 mv "$STAGE/aden-mcp" "$INSTALL_DIR/aden-mcp"
+INSTALLED_MCP=1
 "$INSTALL_DIR/aden" --version >/dev/null
 "$INSTALL_DIR/aden-mcp" --version >/dev/null
 SUCCESS=1

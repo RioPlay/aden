@@ -10,7 +10,7 @@
 //!   • `tree-sitter-go` grammar is simple and stable
 
 use crate::extractor::{
-    LanguageExtractor, build_code_attributes, infer_project_name, infer_project_root, make_anchor,
+    CodeSource, LanguageExtractor, infer_project_name, infer_project_root, make_anchor,
     project_relative_file,
 };
 use aden_core::{Block, Document, NodeType, Result};
@@ -52,6 +52,7 @@ impl LanguageExtractor for GoResolver {
             .ok_or_else(|| aden_core::Error::Parse("tree-sitter returned None".to_string()))?;
 
         let module_path = find_go_module(path);
+        let file_source = &CodeSource::new(source, path);
         let project_root = infer_project_root(path);
         let file_name_owned = project_relative_file(path, &project_root);
         let file_name = file_name_owned.as_str();
@@ -72,9 +73,9 @@ impl LanguageExtractor for GoResolver {
         let mut docs = Vec::new();
         for sym in &symbols {
             if let Some(doc) = emit_go_symbol(
+                file_source,
                 sym,
                 source,
-                path,
                 &symbols,
                 &imports,
                 &module_path,
@@ -438,22 +439,18 @@ fn extract_go_doc_comment(node: tree_sitter::Node, source: &str) -> Option<Strin
 }
 
 fn emit_go_symbol<'a>(
+    file_source: &CodeSource<'_>,
     sym: &GoSymbol<'a>,
     source: &str,
-    path: &Path,
     all_symbols: &[GoSymbol<'a>],
     imports: &[GoImport],
     module: &str,
     file_name: &str,
 ) -> Option<Document> {
+    let path = file_source.path;
     let anchor = make_anchor(module, file_name, &sym.name);
     let span = node_to_span(sym.node, path);
-    let attrs = build_code_attributes(
-        source,
-        &format!("{:?}", sym.kind).to_lowercase(),
-        Some(path),
-        Some(&span),
-    );
+    let attrs = file_source.attributes(&format!("{:?}", sym.kind).to_lowercase(), &span);
     let mut blocks = Vec::new();
 
     if let Some(ref doc) = sym.doc_comment {

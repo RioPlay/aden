@@ -1,0 +1,99 @@
+[[bounded-repairs]]
+= Bounded repair and readiness contracts
+
+This increment follows the November 11 bounded core audit. It narrows repair
+eligibility and reports what local readiness checks actually establish.
+
+For the later structured-result, continuation and atomic persistence changes,
+see `docs/structured-evidence.adoc`. The separate-write limitation below describes
+this report's original implementation, before the atomic batch replacement.
+
+== Supported repairs, not confidence scores
+
+Repair eligibility uses explicit drift-kind and store-target preconditions.
+The old numerical confidence constants were hand-set policy choices, not
+measured probabilities. They no longer authorize edits.
+
+The current scanner emits stale-hash and signature-mismatch targets as
+`.aden/store:<anchor>`, including its fallback for parsed disk contracts.
+The old direct-file repair branches were therefore not reproduced through the
+normal current CLI. Those branches used whole-file line reconstruction that
+could alter line endings or the final newline. They are retired instead of
+being extended into a new disk-repair interface. Non-store repair targets are
+refused without changing their bytes.
+
+Supported repairs retain store-backed merge behavior and conflict proposals.
+Reported outcomes distinguish fixes, skipped cases, failures and conflicts.
+Repair output is bounded; a reported skip is not evidence of a completed repair.
+Conflicts require review, and attempted repair failures must not become success.
+Refused non-store targets do not change their bytes. Store I/O errors can leave
+a partial update under the existing storage API; a failed repair is reported as
+failed and is not automatically replayed. This is not an atomic rollback guarantee.
+
+`heal --fix --json` uses the same quiet repair path as human output and reports
+the repair summary. Previously, CLI dispatch forced human output for repair
+mode even with an explicit JSON request; the internal JSON branch also returned
+before repairs. The corrected dispatch honors explicit JSON while preserving
+plain `heal --fix` human output. `ready --fix` uses that
+quiet path too, preserving a single JSON response rather than mixing human
+repair output into it.
+The nested lint repair path also respects quiet output and checks the requested
+severity again after repair, so remaining unrepairable errors still block `ready`.
+
+== What ready establishes
+
+`ready` refreshes the index, runs local lint, validates references, scans drift
+and performs the in-process audit. These stages have different evidence kinds;
+heuristic findings do not become runtime verification because they share a
+command with concrete invariant checks.
+
+Each step reports whether it passed, failed or was skipped, with its reason
+and scope. Earlier hard failures leave later steps explicitly skipped.
+The reference stage must inspect returned findings: the old command discarded
+the check's diagnostic vector and could report a clean result despite an
+unresolved link. A representative unresolved-link fixture is a required failure
+control for the corrected verdict.
+Existing `ok`, `outcome`, step `name` and step `passed` fields remain available;
+callers should use the added status to distinguish a failed check from a
+check that never ran.
+
+The normal command does not request source repairs, but index generation can
+write derived artifacts. `--fix` explicitly enables lint and supported drift
+repairs. Neither mode runs project tests, builds, runtime acceptance or external
+CI tools. A clean outcome means the selected local checks passed, not that
+the project is ready to commit, publish or deploy.
+
+== Verification and installation
+
+Acceptance covers supported merge success, refused legacy targets without byte
+changes, conflict/failure outcomes, actual CLI pass/failure/skipped steps,
+preservation without `--fix`, and valid JSON with `--fix`. The previous installed
+binary is retained as a negative control for the changed reporting contract.
+Exact source and binary identities, observed checks, installation and remaining
+limits are recorded in `.agent/session.md` and `.tmp/bounded-repairs/`.
+
+Verified November 12, 2026: the CLI unit suite and affected readiness, lint,
+merge and result-semantics integrations passed. The JSON merge test verifies
+actual stored-document and hash changes, plus exact source and CRLF overlay
+preservation, with an issue cap enabled. Release and installed CLI/MCP probes
+passed clean, failed and skipped-step cases. The old installed binary is
+retained as a negative control for false-clean and malformed JSON behavior.
+
+The Full MCP surface retains its existing typed command-error envelope on
+failure, with the CLI JSON result embedded in the error message. The MCP probe
+checks that envelope, its non-retry policy and the embedded step outcomes;
+it does not assume that a failing CLI envelope becomes the top-level MCP body.
+
+Local CLI/MCP pair:
+`C:/Users/example/AppData/Local/Aden/versions/0.4.4-bounded-repairs-d064c303be7b`.
+Codex's Aden command and the single prior Aden user PATH entry now point to
+this version. Configuration, hashes, PATH type and raw-entry preservation were
+checked by read-back. A fresh PowerShell process with registry-reloaded PATH
+resolved this executable and displayed the new help. Existing terminals and
+MCP hosts were not restarted; reopen or reconnect them to load the change.
+
+The version directory contains `activation.json`, `deploy_local.py` and
+`path_activation.py`. Guarded rollback uses `deploy_local.py --rollback` with
+the full manifest path. It restores the previous MCP command and prior Aden
+PATH entry, preserves unrelated entries, and refuses an unexpected MCP command
+instead of overwriting later changes. Old binaries remain available.

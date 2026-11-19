@@ -45,6 +45,33 @@ struct IndexedDocument {
     token_count: u32,
 }
 
+// Rankings borrow indexed documents until the final result order is known.
+// Keep tokens with each ranking: lexical normalization differs from dense
+// snippet tokenization, and dense metadata wins for overlapping hybrid hits.
+#[derive(Default)]
+struct RankedResults<'a> {
+    hits: Vec<(&'a IndexedDocument, f64)>,
+    tokens: Vec<String>,
+}
+
+impl RankedResults<'_> {
+    fn into_results(self) -> Vec<SearchResult> {
+        self.hits
+            .into_iter()
+            .map(|(document, score)| materialize_result(document, score, &self.tokens))
+            .collect()
+    }
+}
+
+fn materialize_result(document: &IndexedDocument, score: f64, tokens: &[String]) -> SearchResult {
+    SearchResult {
+        anchor: document.anchor.clone(),
+        source_path: document.source_path.clone(),
+        score,
+        snippet: build_snippet(&document.text, tokens),
+    }
+}
+
 /// In-memory inverted index built from a directory of `.adoc`/`.aden` files.
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Index {
@@ -126,7 +153,8 @@ const INDEX_CACHE_BASENAME: &str = "index-cache.json";
 /// v13: prefer complete source-file evidence over emitted store sections.
 /// v14: prose-only evidence and repository-relative canonical file keys.
 /// v15: numeric document IDs and covering BM25 postings.
-const CURRENT_INDEX_VERSION: u32 = 15;
+/// v16: rebuild dense vectors for the Rust 1.90-compatible inference stack.
+const CURRENT_INDEX_VERSION: u32 = 16;
 
 /// Reciprocal Rank Fusion constant — Cormack, Clarke & Buettcher, SIGIR 2009 use
 /// 60. Damps the contribution of low-ranked items so a top hit in either
@@ -345,65 +373,88 @@ fn split_subtokens(haystack: &str) -> Vec<String> {
     subtokens
 }
 
-/// True if stemmed query token `token` matches `haystack` on a word/token
-/// boundary rather than as a raw substring. `haystack` is split on common
-/// identifier/slug separators (`_`, `-`, `/`, `.`, `:`, whitespace) and on
-/// camelCase humps; `token` matches a sub-token when it equals that sub-token
-/// or is a prefix of it (so a stem matches its inflected surface form, e.g.
-/// `deliv` → `delivery`, but `run` no longer matches `runtime`).
-fn token_boundary_match(haystack: &str, token: &str) -> bool {
-    if token.is_empty() {
+/// True if a stemmed query token matches a whole field token or a camelCase
+/// sub-token. Preserve the original case until splitting so humps remain
+/// visible, and check the query terms together as each component is visited.
+fn token_boundary_match(haystack: &str, query_tokens: &[String]) -> bool {
+    if query_tokens.is_empty() {
         return false;
     }
-    // Split into sub-tokens on separators and camelCase boundaries.
-    let subtokens = split_subtokens(haystack);
-    // A stem (already lowercased) matches when it equals a sub-token or is a
-    // prefix of one. Prefix tolerance keeps inflected forms matching their stem
-    // without re-introducing the mid-word substring problem.
-    subtokens.iter().any(|sub| sub.starts_with(token))
-}
 
-fn levenshtein_distance(s1: &str, s2: &str) -> usize {
-    let len1 = s1.len();
-    let len2 = s2.len();
-
-    if len1 == 0 {
-        return len2;
-    }
-    if len2 == 0 {
-        return len1;
-    }
-
-    let mut matrix = vec![vec![0usize; len2 + 1]; len1 + 1];
-
-    // Initializing first column - classic DP pattern
-    #[allow(clippy::needless_range_loop)]
-    for i in 0..=len1 {
-        matrix[i][0] = i;
-    }
-    // Initializing first row - clippy suggestion doesn't apply here
-    #[allow(clippy::needless_range_loop)]
-    for j in 0..=len2 {
-        matrix[0][j] = j;
-    }
-
-    let s1_bytes = s1.as_bytes();
-    let s2_bytes = s2.as_bytes();
-
-    for i in 1..=len1 {
-        for j in 1..=len2 {
-            let cost = if s1_bytes[i - 1] == s2_bytes[j - 1] {
-                0
-            } else {
-                1
-            };
-            matrix[i][j] = (matrix[i - 1][j] + 1)
-                .min(matrix[i][j - 1] + 1)
-                .min(matrix[i - 1][j - 1] + cost);
+    let matches = |word: &str| query_tokens.contains(&stem(&word.to_lowercase()));
+    for raw in haystack.split_whitespace() {
+        let word = raw.trim_matches(|c: char| c.is_ascii_punctuation());
+        if word.is_empty() {
+            continue;
+        }
+        // Preserve literal compound names, including snake_case and qualified names.
+        if matches(word) {
+            return true;
+        }
+        for name in word
+            .split(|c: char| !(c.is_alphanumeric() || matches!(c, '_' | '-')))
+            .filter(|name| !name.is_empty())
+        {
+            if name != word && matches(name) {
+                return true;
+            }
+            for part in name.split(['_', '-']).filter(|part| !part.is_empty()) {
+                if part != name && matches(part) {
+                    return true;
+                }
+                // Only allocate sub-tokens for names with an actual camelCase boundary.
+                let has_hump = part.as_bytes().windows(2).any(|pair| {
+                    (pair[0].is_ascii_lowercase() || pair[0].is_ascii_digit())
+                        && pair[1].is_ascii_uppercase()
+                });
+                if has_hump && split_subtokens(part).iter().any(|sub| matches(sub)) {
+                    return true;
+                }
+            }
         }
     }
+    false
+}
 
-    matrix[len1][len2]
+/// Byte edit distance capped at three; fuzzy ranking only accepts zero to two.
+fn levenshtein_distance(s1: &str, s2: &str) -> usize {
+    const LIMIT: usize = 2;
+    const OUTSIDE: usize = LIMIT + 1;
+    let left = s1.as_bytes();
+    let right = s2.as_bytes();
+    if left.len().abs_diff(right.len()) > LIMIT {
+        return OUTSIDE;
+    }
+
+    // A path costing at most two cannot leave the five-cell diagonal band.
+    // Slot k in row i represents column j = i + k - LIMIT.
+    let mut previous = [OUTSIDE; 2 * LIMIT + 1];
+    for j in 0..=right.len().min(LIMIT) {
+        previous[j + LIMIT] = j;
+    }
+    for i in 1..=left.len() {
+        let mut current = [OUTSIDE; 2 * LIMIT + 1];
+        for j in i.saturating_sub(LIMIT)..=right.len().min(i + LIMIT) {
+            let slot = j + LIMIT - i;
+            current[slot] = if j == 0 {
+                i
+            } else {
+                let deletion = previous.get(slot + 1).copied().unwrap_or(OUTSIDE) + 1;
+                let insertion = if slot > 0 {
+                    current[slot - 1] + 1
+                } else {
+                    OUTSIDE
+                };
+                let substitution = previous[slot] + usize::from(left[i - 1] != right[j - 1]);
+                deletion.min(insertion).min(substitution).min(OUTSIDE)
+            };
+        }
+        if current.iter().all(|&distance| distance > LIMIT) {
+            return OUTSIDE;
+        }
+        previous = current;
+    }
+    previous[right.len() + LIMIT - left.len()]
 }
 
 /// Parse an `.adoc` / `.aden` / `.txt` file and return the anchor, the source path,
@@ -654,7 +705,9 @@ fn doc_attr<'a>(text: &'a str, attr: &str) -> Option<&'a str> {
 ///       A/B (2026-06-23) showed whole-doc mean-pooling was net-negative for
 ///       retrieval at both caps, so only the cap raise ships. Bumped past any
 ///       locally-built pooled cache to force a clean re-embed.
-const EMBED_PARAM_VERSION: u64 = 4;
+///   v5: Tract 0.22 inference and Kitoken 0.11.0. Do not mix vectors from
+///       another inference-stack version in an existing embedding cache.
+const EMBED_PARAM_VERSION: u64 = 5;
 
 fn embed_key(anchor: &str, text: &str) -> u64 {
     let base = match doc_attr(text, ":source_hash:") {
@@ -1233,6 +1286,10 @@ impl Index {
 
     /// Query the index with semantic normalization and BM25 scoring.
     pub fn query(&self, query_str: &str) -> Vec<SearchResult> {
+        self.lexical_ranking(query_str).into_results()
+    }
+
+    fn lexical_ranking(&self, query_str: &str) -> RankedResults<'_> {
         // First, extract all tokens including stop words for semantic normalization
         let raw_tokens: Vec<String> = query_str
             .split_whitespace()
@@ -1244,7 +1301,7 @@ impl Index {
             .collect();
 
         if raw_tokens.is_empty() {
-            return Vec::new();
+            return RankedResults::default();
         }
 
         // Apply semantic normalization to get all forms (May -> 5, May -> may, etc.)
@@ -1278,12 +1335,12 @@ impl Index {
         }
 
         if tokens.is_empty() {
-            return Vec::new();
+            return RankedResults::default();
         }
 
         let n = self.inverted.values().map(|v| v.len()).sum::<usize>() as f64;
         if n == 0.0 {
-            return Vec::new();
+            return RankedResults::default();
         }
 
         let mut scores: HashMap<DocumentId, f64> = HashMap::new();
@@ -1341,7 +1398,8 @@ impl Index {
         // even though BM25 already matches the stemmed "overlay". Computed once.
         let significant_query_tokens: Vec<String> = query_lower
             .split_whitespace()
-            .filter(|t| !is_stop_word(t))
+            .map(|term| term.trim_matches(|ch: char| ch.is_ascii_punctuation()))
+            .filter(|term| !term.is_empty() && !is_stop_word(term))
             .map(stem)
             .collect();
         for (doc_id, score) in scores.iter_mut() {
@@ -1349,7 +1407,6 @@ impl Index {
                 continue;
             };
             let anchor = &document.anchor;
-            let anchor_lower = anchor.to_lowercase();
             let source_path = Some(&document.source_path);
 
             // Penalize .agent/ templates - they're for AI agents, not human-facing docs
@@ -1373,83 +1430,28 @@ impl Index {
                 }
             }
 
-            // Symbol anchors (any anchor containing '#') are concrete function/struct/enum
-            // definitions. They are the highest-value result for specific questions.
-            // Previously these were penalised by 90% which made them nearly invisible.
-            // Now: no penalty. They compete on raw BM25 score, and the query router's
-            // explicit symbol-name detection in resolve_anchor_fuzzy() handles routing.
-            let is_symbol = anchor.contains('#');
-
-            // Boost: query term appears literally in the anchor string itself.
-            // For symbol anchors only boost on the fragment (#name) part so
-            // "aden://module/foo/bar.rs#assemble" boosts when query contains "assemble".
-            // For non-symbol anchors boost on the full anchor slug.
-            // Only non-stop-word query tokens may trigger the anchor-match boost.
-            // Without this guard, a query like "How does output get written?" boosts
-            // `get_current_git_ref` 30x because the fragment contains "get".
-            // Tokens are stemmed (see `significant_query_tokens`), so an inflected
-            // query still matches the anchor slug (substring match is unaffected —
-            // a stem is a prefix of its surface form).
-            // Anchor boost requires a *token-boundary* match, not a raw substring.
-            // A stemmed query token must equal one of the anchor's own tokens (or
-            // be a prefix of it ending on a sub-token boundary) so `run` no longer
-            // boosts `runtime` and `deliv` no longer boosts unrelated slugs.
-            let anchor_match = if is_symbol {
-                // Match on the symbol name fragment only, with significant tokens only.
-                if let Some(fragment) = anchor.rsplit('#').next() {
-                    let frag_lower = fragment.to_lowercase();
-                    significant_query_tokens
-                        .iter()
-                        .any(|t| token_boundary_match(&frag_lower, t))
-                } else {
-                    false
-                }
-            } else {
-                significant_query_tokens
-                    .iter()
-                    .any(|t| token_boundary_match(&anchor_lower, t))
-            };
-
-            // Title match (first line of document text). Uses the same stemmed,
-            // stop-word-filtered tokens and the same token-boundary rule so the
-            // title boost is consistent with the anchor boost and BM25.
-            let title_match = document
+            // Symbol names match only after the final '#'. Other anchors match the whole slug.
+            let (name, anchor_boost) = anchor
+                .rsplit_once('#')
+                .map_or((anchor.as_str(), 20.0), |(_, fragment)| (fragment, 30.0));
+            // Only the largest boost applies. A matching anchor always outranks the title.
+            *score *= if token_boundary_match(name, &significant_query_tokens) {
+                anchor_boost
+            } else if document
                 .text
                 .lines()
                 .next()
-                .map(|first_line| {
-                    let first_line_lower = first_line.to_lowercase();
-                    significant_query_tokens
-                        .iter()
-                        .any(|t| token_boundary_match(&first_line_lower, t))
-                })
-                .unwrap_or(false);
-
-            // Cap the combined boost. The anchor boost (30x symbol / 20x slug) and
-            // title boost (10x) were previously multiplied unconditionally → up to
-            // 300x, letting a weak BM25 hit matching both swamp a strong hit. Apply
-            // only the single largest applicable boost instead of stacking.
-            let anchor_boost: f64 = if anchor_match {
-                if is_symbol { 30.0 } else { 20.0 }
+                .is_some_and(|title| token_boundary_match(title, &significant_query_tokens))
+            {
+                10.0
             } else {
                 1.0
             };
-            let title_boost: f64 = if title_match { 10.0 } else { 1.0 };
-            *score *= anchor_boost.max(title_boost);
         }
 
-        let mut results: Vec<SearchResult> = scores
+        let mut results: Vec<(&IndexedDocument, f64)> = scores
             .into_iter()
-            .filter_map(|(doc_id, score)| {
-                let document = self.document(doc_id)?;
-                let snippet = build_snippet(&document.text, &tokens);
-                Some(SearchResult {
-                    anchor: document.anchor.clone(),
-                    source_path: document.source_path.clone(),
-                    score,
-                    snippet,
-                })
-            })
+            .filter_map(|(doc_id, score)| Some((self.document(doc_id)?, score)))
             .collect();
 
         // Sort by descending score, then by anchor name as a deterministic
@@ -1459,33 +1461,38 @@ impl Index {
         // run-to-run on ties. Lexicographic tiebreak makes the whole pipeline
         // stable for free.
         results.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
+            b.1.partial_cmp(&a.1)
                 .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| a.anchor.cmp(&b.anchor))
+                .then_with(|| a.0.anchor.cmp(&b.0.anchor))
         });
 
         // If no results or weak results (score < 1.0), try fuzzy search
-        if results.is_empty() || results.first().map(|r| r.score < 1.0).unwrap_or(true) {
-            let fuzzy = self.fuzzy_query(&tokens);
+        if results.is_empty() || results.first().map(|r| r.1 < 1.0).unwrap_or(true) {
+            let fuzzy = self.fuzzy_ranking(&tokens);
             if !fuzzy.is_empty() {
                 if results.is_empty() {
-                    return fuzzy;
+                    return RankedResults {
+                        hits: fuzzy,
+                        tokens,
+                    };
                 }
                 // Append fuzzy results to main results
                 results.extend(fuzzy);
             }
         }
 
-        results
+        RankedResults {
+            hits: results,
+            tokens,
+        }
     }
 
-    fn fuzzy_query(&self, tokens: &[String]) -> Vec<SearchResult> {
+    fn fuzzy_ranking(&self, tokens: &[String]) -> Vec<(&IndexedDocument, f64)> {
         if tokens.is_empty() {
             return Vec::new();
         }
 
-        let mut fuzzy_matches: Vec<(String, f64)> = Vec::new();
+        let mut fuzzy_matches: Vec<(&IndexedDocument, f64)> = Vec::new();
         let query_term = &tokens[0].to_lowercase();
 
         for document in &self.documents {
@@ -1510,7 +1517,7 @@ impl Index {
                 // under 1.0 so a real match always wins. dist 0 → 0.9, 1 → 0.45,
                 // 2 → 0.3.
                 let score = 0.9 / (dist as f64 + 1.0);
-                fuzzy_matches.push((anchor.clone(), score));
+                fuzzy_matches.push((document, score));
             }
         }
 
@@ -1520,20 +1527,13 @@ impl Index {
         fuzzy_matches.sort_by(|a, b| {
             b.1.partial_cmp(&a.1)
                 .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| a.0.cmp(&b.0))
+                .then_with(|| a.0.anchor.cmp(&b.0.anchor))
         });
 
         fuzzy_matches
             .into_iter()
-            .filter_map(|(anchor, score)| {
-                let document = self.document_by_anchor(&anchor)?;
-                let snippet = build_snippet(&document.text, tokens);
-                Some(SearchResult {
-                    anchor,
-                    source_path: document.source_path.clone(),
-                    score,
-                    snippet,
-                })
+            .filter_map(|(document, score)| {
+                Some((self.document_by_anchor(&document.anchor)?, score))
             })
             .collect()
     }
@@ -1657,34 +1657,33 @@ impl Index {
     /// anchors; revisit with HNSW only if a corpus demands it). Empty when no
     /// embeddings are stored.
     pub fn dense_query(&self, query: &str, provider: &dyn EmbeddingProvider) -> Vec<SearchResult> {
+        self.dense_ranking(query, provider).into_results()
+    }
+
+    fn dense_ranking(&self, query: &str, provider: &dyn EmbeddingProvider) -> RankedResults<'_> {
         if self.embeddings.is_empty() {
-            return Vec::new();
+            return RankedResults::default();
         }
         let q = provider.embed(query);
-        let query_tokens = tokenize(query);
-        let mut scored: Vec<(String, f32)> = self
+        let mut scored: Vec<(&String, f32)> = self
             .embeddings
             .iter()
-            .map(|(anchor, vec)| (anchor.clone(), cosine_similarity(&q, vec)))
+            .map(|(anchor, vec)| (anchor, cosine_similarity(&q, vec)))
             .collect();
         scored.sort_by(|a, b| {
             b.1.partial_cmp(&a.1)
                 .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| a.0.cmp(&b.0))
+                .then_with(|| a.0.cmp(b.0))
         });
-        scored
-            .into_iter()
-            .filter_map(|(anchor, score)| {
-                let document = self.document_by_anchor(&anchor)?;
-                let snippet = build_snippet(&document.text, &query_tokens);
-                Some(SearchResult {
-                    anchor,
-                    source_path: document.source_path.clone(),
-                    score: score as f64,
-                    snippet,
+        RankedResults {
+            hits: scored
+                .into_iter()
+                .filter_map(|(anchor, score)| {
+                    Some((self.document_by_anchor(anchor)?, score as f64))
                 })
-            })
-            .collect()
+                .collect(),
+            tokens: tokenize(query),
+        }
     }
 
     /// Derive top-`top_k` nearest-neighbor anchor pairs by embedding cosine
@@ -1755,32 +1754,44 @@ impl Index {
     /// paraphrase — and RRF combines them with no score normalization. Degrades
     /// to pure BM25 when no embeddings are stored, so it is always safe to call.
     pub fn hybrid_query(&self, query: &str, provider: &dyn EmbeddingProvider) -> Vec<SearchResult> {
-        let bm25 = self.query(query);
+        let bm25 = self.lexical_ranking(query);
         if self.embeddings.is_empty() {
-            return bm25;
+            return bm25.into_results();
         }
-        let dense = self.dense_query(query, provider);
+        let dense = self.dense_ranking(query, provider);
 
-        let bm25_ranks: Vec<String> = bm25.iter().map(|r| r.anchor.clone()).collect();
-        let dense_ranks: Vec<String> = dense.iter().map(|r| r.anchor.clone()).collect();
+        // Fuse complete rankings. Truncating either input can change even the
+        // winning result, regardless of the number of outputs a caller needs.
+        let bm25_ranks = bm25
+            .hits
+            .iter()
+            .map(|(doc, _)| doc.anchor.clone())
+            .collect();
+        let dense_ranks = dense
+            .hits
+            .iter()
+            .map(|(doc, _)| doc.anchor.clone())
+            .collect();
         let fused = rrf_fuse(&[bm25_ranks, dense_ranks], RRF_K);
 
-        // Re-attach source path + snippet by anchor; carry the fused RRF score.
-        let by_anchor: HashMap<&str, &SearchResult> = bm25
+        // Match the old eager pipeline's last-write metadata precedence: dense
+        // snippets override lexical snippets, including normalized/fuzzy hits.
+        let by_anchor: HashMap<&str, (&IndexedDocument, &[String])> = bm25
+            .hits
             .iter()
-            .chain(dense.iter())
-            .map(|r| (r.anchor.as_str(), r))
+            .map(|(doc, _)| (doc.anchor.as_str(), (*doc, bm25.tokens.as_slice())))
+            .chain(
+                dense
+                    .hits
+                    .iter()
+                    .map(|(doc, _)| (doc.anchor.as_str(), (*doc, dense.tokens.as_slice()))),
+            )
             .collect();
         fused
             .into_iter()
             .filter_map(|(anchor, score)| {
-                let base = by_anchor.get(anchor.as_str())?;
-                Some(SearchResult {
-                    anchor: anchor.clone(),
-                    source_path: base.source_path.clone(),
-                    score,
-                    snippet: base.snippet.clone(),
-                })
+                let (document, tokens) = by_anchor.get(anchor.as_str())?;
+                Some(materialize_result(document, score, tokens))
             })
             .collect()
     }
@@ -2538,6 +2549,78 @@ foo:: bar baz.
     }
 
     #[test]
+    fn bounded_byte_distance_matches_full_matrix() {
+        fn reference(left: &str, right: &str) -> usize {
+            let mut matrix = vec![vec![0usize; right.len() + 1]; left.len() + 1];
+            for (i, row) in matrix.iter_mut().enumerate() {
+                row[0] = i;
+            }
+            for (j, cell) in matrix[0].iter_mut().enumerate() {
+                *cell = j;
+            }
+            for (i, &a) in left.as_bytes().iter().enumerate() {
+                for (j, &b) in right.as_bytes().iter().enumerate() {
+                    matrix[i + 1][j + 1] = (matrix[i][j + 1] + 1)
+                        .min(matrix[i + 1][j] + 1)
+                        .min(matrix[i][j] + usize::from(a != b));
+                }
+            }
+            matrix[left.len()][right.len()]
+        }
+
+        let mut strings = vec![String::new()];
+        let mut frontier = strings.clone();
+        for _ in 0..3 {
+            frontier = frontier
+                .iter()
+                .flat_map(|prefix| ["a", "b", "é", "🌱"].map(|suffix| format!("{prefix}{suffix}")))
+                .collect();
+            strings.extend(frontier.iter().cloned());
+        }
+        for left in &strings {
+            for right in &strings {
+                assert_eq!(
+                    levenshtein_distance(left, right),
+                    reference(left, right).min(3),
+                    "left={left:?}, right={right:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn bounded_byte_distance_handles_cutoff_and_long_queries() {
+        for (left, right, expected) in [
+            ("", "", 0),
+            ("", "ab", 2),
+            ("abc", "", 3),
+            ("test", "tset", 2),
+            ("abc", "xyz", 3),
+            ("é", "e", 2),
+            ("é", "e\u{301}", 3),
+            ("🌱", "🌲", 1),
+            ("🌱", "", 3),
+        ] {
+            assert_eq!(levenshtein_distance(left, right), expected);
+            assert_eq!(levenshtein_distance(right, left), expected);
+        }
+
+        // A full matrix for these inputs would require tens of GiB.
+        let query = "ab".repeat(50_000);
+        for (candidate, expected) in [
+            (query.clone(), 0),
+            (format!("{query}x"), 1),
+            (format!("{query}xy"), 2),
+            (format!("{query}xyz"), 3),
+            (format!("x{}y", &query[1..query.len() - 1]), 2),
+            ("z".repeat(query.len()), 3),
+        ] {
+            assert_eq!(levenshtein_distance(&query, &candidate), expected);
+            assert_eq!(levenshtein_distance(&candidate, &query), expected);
+        }
+    }
+
+    #[test]
     fn test_fuzzy_matching() {
         let dir = temp_dir_with_files(&[(
             "test.adoc",
@@ -2638,6 +2721,54 @@ This mentions exactmatch in the content.
     }
 
     #[test]
+    fn token_boundary_match_preserves_full_compound_words_and_camel_humps() {
+        let run = vec![stem("run")];
+
+        assert!(token_boundary_match("xx-fetchRunState", &run));
+        assert!(!token_boundary_match("xx-runtime-monitor", &run));
+        assert!(token_boundary_match("read(write)", &[stem("read")]));
+        assert!(token_boundary_match("cache,queue", &[stem("queue")]));
+        assert!(token_boundary_match(
+            "Type.dispatch_request",
+            &[stem("dispatch_request")]
+        ));
+        assert!(token_boundary_match("delivering", &[stem("delivered")]));
+    }
+
+    #[test]
+    fn lexical_anchor_boost_prefers_camel_hump_over_runtime_prefix() {
+        let dir = temp_dir_with_files(&[
+            (
+                "fetch.adoc",
+                "[[aden://module/demo/src/lib.rs#xx-fetchRunState]]\n= Shared helper notes\n\nThe run process emits a stable result for each request.\n",
+            ),
+            (
+                "runtime.adoc",
+                "[[aden://module/demo/src/lib.rs#xx-runtime-monitor]]\n= Shared helper notes\n\nThe run process emits a stable result for each request.\n",
+            ),
+        ]);
+        let index = Index::from_directory(dir.path()).unwrap();
+        let results = index.query("run");
+
+        let target = results
+            .iter()
+            .find(|result| result.anchor.ends_with("#xx-fetchRunState"))
+            .expect("camelCase symbol is a BM25 result");
+        let prefix_control = results
+            .iter()
+            .find(|result| result.anchor.ends_with("#xx-runtime-monitor"))
+            .expect("runtime prefix control is a BM25 result");
+        assert_eq!(results.first().unwrap().anchor, target.anchor);
+        assert_eq!(index.query("run?").first().unwrap().anchor, target.anchor);
+        assert!(
+            target.score > prefix_control.score,
+            "target score {} must beat unrelated runtime prefix {}",
+            target.score,
+            prefix_control.score
+        );
+    }
+
+    #[test]
     fn test_index_persistence() {
         // Isolate the on-disk cache from the real data dir and from parallel
         // tests that mutate ADEN_DATA_DIR (the _data dir and _guard live until
@@ -2708,7 +2839,7 @@ New content after rebuild.
     }
 
     #[test]
-    fn v15_cache_uses_numeric_covering_postings_and_rebuilds_anchor_ids() {
+    fn current_cache_loads_covering_postings_and_rejects_previous_inference_version() {
         let dir = tempfile::tempdir().unwrap();
         let (_data, _guard) = isolated_data_dir();
         let mut index = Index::default();
@@ -2740,9 +2871,27 @@ New content after rebuild.
         assert!(posting[1].is_u64(), "posting stores term frequency");
         assert!(posting[2].is_u64(), "posting covers document length");
 
-        let loaded = try_load(dir.path()).expect("v15 cache loads");
+        let loaded = try_load(dir.path()).expect("current cache loads");
         assert_eq!(loaded.anchor_to_id.len(), 2);
         assert_eq!(loaded.query("shared")[0].anchor, "alpha");
+
+        let mut previous = json;
+        previous["version"] = serde_json::json!(15);
+        std::fs::write(
+            aden_paths::cache_dir(dir.path()).join(INDEX_CACHE_BASENAME),
+            serde_json::to_vec(&previous).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            try_load(dir.path()).is_none(),
+            "old inference cache rebuilds"
+        );
+        let old_embed_key = text_hash("v4\u{1f}source-hash\u{1f}alpha");
+        assert_ne!(
+            embed_key("alpha", ":source_hash: source-hash"),
+            old_embed_key,
+            "old content-addressed vectors cannot be reused"
+        );
     }
 
     #[test]
@@ -3700,3 +3849,6 @@ edges in the knowledge graph via `edge::is_equivalent_to`.
         doc
     }
 }
+
+#[cfg(test)]
+mod retrieval_materialization_tests;

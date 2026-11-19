@@ -201,6 +201,7 @@ pub(crate) fn whole_file_span(source: &str, path: &std::path::Path) -> aden_core
 }
 
 /// Build mandatory attributes for a code-emitted Document, optionally including source span.
+#[cfg(test)]
 pub(crate) fn build_code_attributes(
     source: &str,
     node_type: &str,
@@ -208,18 +209,19 @@ pub(crate) fn build_code_attributes(
     span: Option<&aden_core::SourceSpan>,
 ) -> std::collections::HashMap<String, String> {
     let hash_source = if let Some(path) = source_file {
-        // Try to read file, skip on binary/invalid UTF-8
-
-        std::fs::read_to_string(path).unwrap_or_else(|e| {
+        let read = std::fs::read_to_string(path);
+        metadata_counts::record_read(read.as_ref().map_or(0, String::len));
+        read.unwrap_or_else(|e| {
             if e.kind() == std::io::ErrorKind::InvalidData {
-                String::new() // Binary file - use empty for hash
+                String::new()
             } else {
-                source.to_string() // Other errors - fall back to provided source
+                source.to_string()
             }
         })
     } else {
         source.to_string()
     };
+    metadata_counts::record_hash(hash_source.len());
     build_code_attributes_hashed(
         &aden_core::hash_source(&hash_source),
         node_type,
@@ -238,10 +240,19 @@ pub(crate) struct CodeSource<'a> {
 
 impl<'a> CodeSource<'a> {
     pub fn new(source: &str, path: &'a Path) -> Self {
+        #[cfg(test)]
+        metadata_counts::record_hash(source.len());
         Self {
             path,
             hash: aden_core::hash_source(source),
         }
+    }
+
+    pub fn attributes_without_span(
+        &self,
+        node_type: &str,
+    ) -> std::collections::HashMap<String, String> {
+        build_code_attributes_hashed(&self.hash, node_type, Some(self.path), None)
     }
 
     pub fn attributes(
@@ -775,8 +786,12 @@ pub(crate) struct GlossaryEntry {
 /// identifier-shaped) plus any backticked names in the definition, so terms
 /// link to the code they define through the ordinary Mentions channel with
 /// its unambiguous-only guard — no new resolution machinery.
-pub(crate) fn build_term_document(project: &str, path: &Path, entry: &GlossaryEntry) -> Document {
-    let mut attrs = build_code_attributes(&entry.definition, "term", Some(path), None);
+pub(crate) fn build_term_document(
+    project: &str,
+    file_source: &CodeSource<'_>,
+    entry: &GlossaryEntry,
+) -> Document {
+    let mut attrs = file_source.attributes_without_span("term");
     attrs.insert("term_name".to_string(), entry.name.clone());
     let mut mentions: Vec<(usize, String)> = Vec::new();
     if let Some(n) = mention_candidate(&entry.name) {
@@ -1390,5 +1405,51 @@ mod tests {
         assert_eq!(rel, "src/commands/heal.rs");
 
         let _ = fs::remove_dir_all(&base);
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod metadata_counts {
+    use std::cell::Cell;
+    // Counts only metadata work within an explicitly activated test scope.
+    // No production state or cache is involved.
+    thread_local! {
+        static COUNTS: Cell<Option<(usize, usize, usize, usize)>> = const { Cell::new(None) };
+    }
+    pub struct Scope;
+    impl Drop for Scope {
+        fn drop(&mut self) {
+            COUNTS.with(|c| c.set(None));
+        }
+    }
+    impl Scope {
+        pub fn start() -> Self {
+            COUNTS.with(|c| {
+                assert!(c.get().is_none(), "metadata counting scope already active");
+                c.set(Some((0, 0, 0, 0)));
+            });
+            Self
+        }
+        pub fn counts(&self) -> (usize, usize) {
+            let (reads, _, hashes, _) = self.totals();
+            (reads, hashes)
+        }
+        pub fn totals(&self) -> (usize, usize, usize, usize) {
+            COUNTS.with(|c| c.get().unwrap())
+        }
+    }
+    pub fn record_read(bytes: usize) {
+        COUNTS.with(|c| {
+            if let Some((reads, read_bytes, hashes, hash_bytes)) = c.get() {
+                c.set(Some((reads + 1, read_bytes + bytes, hashes, hash_bytes)));
+            }
+        });
+    }
+    pub fn record_hash(bytes: usize) {
+        COUNTS.with(|c| {
+            if let Some((reads, read_bytes, hashes, hash_bytes)) = c.get() {
+                c.set(Some((reads, read_bytes, hashes + 1, hash_bytes + bytes)));
+            }
+        });
     }
 }

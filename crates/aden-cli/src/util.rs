@@ -127,6 +127,19 @@ const EXTENSIONLESS_SOURCE_FILES: &[&str] = &[
     "WORKSPACE",
 ];
 
+pub(crate) fn is_supported_source_file(
+    path: &Path,
+    supports_extension: impl FnOnce(&str) -> bool,
+) -> bool {
+    match path.extension().and_then(|extension| extension.to_str()) {
+        Some(extension) => supports_extension(extension),
+        None => path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| EXTENSIONLESS_SOURCE_FILES.contains(&name)),
+    }
+}
+
 /// Discover source files anywhere under `root`, regardless of language.
 ///
 /// Aden is a *language-agnostic* context compiler, so discovery must not be
@@ -139,11 +152,11 @@ const EXTENSIONLESS_SOURCE_FILES: &[&str] = &[
 /// cross-ecosystem built-in ignore list so build artifacts and vendored deps
 /// are skipped for every language.
 pub fn discover_source_files(root: &Path) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
-    Ok(discover_file_dispositions(root)?
-        .into_iter()
-        .filter(|file| file.disposition.is_indexed())
-        .map(|file| file.path)
-        .collect())
+    let mut files = Vec::new();
+    walk_indexed_source_files_scoped(root, root, &mut |path, _relative| {
+        files.push(path);
+    })?;
+    Ok(files)
 }
 
 /// A discovered file plus the reason it will or will not be emitted. Unlike
@@ -158,13 +171,74 @@ pub struct DiscoveredFile {
 pub fn discover_file_dispositions(
     root: &Path,
 ) -> Result<Vec<DiscoveredFile>, Box<dyn std::error::Error>> {
-    use std::collections::HashSet;
-
-    let supported: HashSet<&'static str> = aden_parse::supported_extensions().into_iter().collect();
+    let supported: std::collections::HashSet<&'static str> =
+        aden_parse::supported_extensions().into_iter().collect();
     let filter = aden_core::filter::AdenFilter::from_directory(root);
     let mut files = Vec::new();
-    walk_files_with_dispositions(root, root, &supported, &filter, &mut files)?;
+    walk_files_with_dispositions(
+        root,
+        root,
+        &supported,
+        &filter,
+        &mut |path, _, disposition| {
+            files.push(DiscoveredFile { path, disposition });
+        },
+    )?;
     Ok(files)
+}
+
+/// Discover only indexed source files under a directory scope. Unlike grep's
+/// broader scoped discovery, this applies the indexed secret-path policy and
+/// checks ignored ancestors before starting the subtree walk.
+pub fn discover_indexed_relative_files_scoped(
+    scope: &Path,
+    root: &Path,
+) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
+    let mut files = Vec::new();
+    walk_indexed_source_files_scoped(scope, root, &mut |_path, relative| {
+        if let Some(relative) = relative {
+            files.push(relative);
+        }
+    })?;
+    Ok(files)
+}
+
+fn walk_indexed_source_files_scoped(
+    scope: &Path,
+    root: &Path,
+    collect: &mut impl FnMut(PathBuf, Option<PathBuf>),
+) -> Result<(), Box<dyn std::error::Error>> {
+    let supported: std::collections::HashSet<&'static str> =
+        aden_parse::supported_extensions().into_iter().collect();
+    let filter = aden_core::filter::AdenFilter::from_directory(root);
+    if scope != root {
+        let Some(relative_scope) = aden_paths::relative_to(root, scope)
+            .or_else(|| scope.strip_prefix(root).ok().map(Path::to_path_buf))
+        else {
+            return Ok(());
+        };
+
+        let mut ancestor = PathBuf::new();
+        for component in relative_scope.components() {
+            ancestor.push(component);
+            if filter.should_skip(&ancestor) {
+                return Ok(());
+            }
+        }
+    }
+
+    walk_files_with_dispositions(
+        scope,
+        root,
+        &supported,
+        &filter,
+        &mut |path, relative, disposition| {
+            if disposition.is_indexed() {
+                collect(path, relative);
+            }
+        },
+    )?;
+    Ok(())
 }
 
 fn walk_files_with_dispositions(
@@ -172,13 +246,13 @@ fn walk_files_with_dispositions(
     root: &Path,
     supported: &std::collections::HashSet<&'static str>,
     filter: &aden_core::filter::AdenFilter,
-    out: &mut Vec<DiscoveredFile>,
+    collect: &mut impl FnMut(PathBuf, Option<PathBuf>, aden_core::filter::FileDisposition),
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Same Windows root spelling trap as walk_supported_files: normalize once.
     let root_norm = aden_paths::strip_verbatim(
         &std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf()),
     );
-    walk_files_with_dispositions_inner(dir, root, &root_norm, supported, filter, out)
+    walk_files_with_dispositions_inner(dir, root, &root_norm, supported, filter, collect)
 }
 
 fn walk_files_with_dispositions_inner(
@@ -187,7 +261,7 @@ fn walk_files_with_dispositions_inner(
     root_norm: &Path,
     supported: &std::collections::HashSet<&'static str>,
     filter: &aden_core::filter::AdenFilter,
-    out: &mut Vec<DiscoveredFile>,
+    collect: &mut impl FnMut(PathBuf, Option<PathBuf>, aden_core::filter::FileDisposition),
 ) -> Result<(), Box<dyn std::error::Error>> {
     for entry in std::fs::read_dir(dir).map_err(|e| format!("read_dir {}: {e}", dir.display()))? {
         let entry = entry?;
@@ -201,47 +275,35 @@ fn walk_files_with_dispositions_inner(
             path_norm
                 .strip_prefix(root_norm)
                 .ok()
-                .map(|r| r.to_path_buf())
-                .or_else(|| path.strip_prefix(root).ok().map(|r| r.to_path_buf()))
+                .map(Path::to_path_buf)
+                .or_else(|| path.strip_prefix(root).ok().map(Path::to_path_buf))
                 .or_else(|| aden_paths::relative_to(root, &path))
         };
         if file_type.is_dir() {
-            // A directory-level ignore is recorded by policy, but walking its
-            // entire contents (notably .git/, target/, and node_modules/) would
-            // turn a coverage receipt into an unbounded scan. Ordinary ignored
-            // files are still retained below with their exact disposition.
             if rel
                 .as_ref()
                 .is_some_and(|relative| filter.should_skip(relative))
             {
                 continue;
             }
-            walk_files_with_dispositions_inner(&path, root, root_norm, supported, filter, out)?;
+            walk_files_with_dispositions_inner(&path, root, root_norm, supported, filter, collect)?;
             continue;
         }
         if !file_type.is_file() {
             continue;
         }
-        let rel = rel.unwrap_or_else(|| path.clone());
-        let supported_file = match path.extension().and_then(|ext| ext.to_str()) {
-            Some(ext) => supported.contains(ext),
-            None => path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| EXTENSIONLESS_SOURCE_FILES.contains(&name)),
-        };
-        out.push(DiscoveredFile {
-            path,
-            disposition: aden_core::filter::FileDisposition::for_path(
-                &rel,
-                filter.should_skip(&rel),
-                supported_file,
-            ),
-        });
+        let supported_file =
+            is_supported_source_file(&path, |extension| supported.contains(extension));
+        let policy_path = rel.as_deref().unwrap_or(&path);
+        let disposition = aden_core::filter::FileDisposition::for_path(
+            policy_path,
+            filter.should_skip(policy_path),
+            supported_file,
+        );
+        collect(path, rel, disposition);
     }
     Ok(())
 }
-
 /// Like [`discover_source_files`] but walks only `scope` (a directory at or
 /// under `root`), while still resolving `.adenignore`/`.adenallow` and the
 /// built-in ignore list relative to `root`. This lets `grep PATH` actually
@@ -260,23 +322,6 @@ pub fn discover_source_files_scoped(
 
     let mut files = Vec::new();
     walk_supported_files(scope, root, &supported, &filter, &mut files)?;
-
-    // Prioritize files under a source-style directory so that, when a token
-    // budget truncates generation, the most load-bearing code is processed
-    // first. Covers: Cargo (`src/`), Go (`cmd/`, `pkg/`), Ruby/Rails (`app/`),
-    // generic libraries (`lib/`, `source/`). Neutral across ecosystems.
-    files.sort_by(|a, b| {
-        let is_src_dir = |p: &PathBuf| {
-            let s = normalize_sep(p);
-            s.contains("/src/")
-                || s.contains("/cmd/")
-                || s.contains("/pkg/")
-                || s.contains("/lib/")
-                || s.contains("/app/")
-                || s.contains("/source/")
-        };
-        is_src_dir(b).cmp(&is_src_dir(a))
-    });
 
     Ok(files)
 }
@@ -337,15 +382,7 @@ fn walk_supported_files_inner(
         if file_type.is_dir() {
             walk_supported_files_inner(&p, root, root_norm, supported, filter, out)?;
         } else if file_type.is_file() {
-            let keep = match p.extension().and_then(|e| e.to_str()) {
-                Some(ext) => supported.contains(ext),
-                None => p
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .map(|n| EXTENSIONLESS_SOURCE_FILES.contains(&n))
-                    .unwrap_or(false),
-            };
-            if keep {
+            if is_supported_source_file(&p, |extension| supported.contains(extension)) {
                 out.push(p);
             }
         }
@@ -561,45 +598,38 @@ pub fn parse_edge_types_validated(
     Ok(out)
 }
 
-/// Load the generation cache from disk, returning a default on any error.
+/// Load the generation cache and decide whether its store needs rebuilding.
 /// A cache written by a different emission-logic version is discarded
 /// wholesale (see [`crate::types::GEN_LOGIC_VERSION`]) so every file
 /// reparses once and the store picks up newly-emitted edge kinds. The
 /// returned cache is always stamped with the current version, so a
-/// subsequent `save_gen_cache` persists it.
-pub fn load_gen_cache(path: &Path) -> GenCache {
+/// subsequent `save_gen_cache` persists it. Missing files need no rebuild;
+/// malformed or incompatible contents do. Transient I/O errors are returned
+/// so callers cannot mistake an unreadable ownership map for an empty cache.
+pub fn load_gen_cache(path: &Path) -> std::io::Result<(GenCache, bool)> {
     let filter_fingerprint = aden_core::filter::built_in_ignore_fingerprint();
-    let mut cache = std::fs::read_to_string(path)
-        .ok()
-        .and_then(|s| serde_json::from_str::<GenCache>(&s).ok())
-        .filter(|c| {
-            c.version == crate::types::GEN_LOGIC_VERSION
-                && c.filter_fingerprint == filter_fingerprint
-        })
-        .unwrap_or_default();
-    cache.version = crate::types::GEN_LOGIC_VERSION;
-    cache.filter_fingerprint = filter_fingerprint;
-    cache
-}
-
-/// A cache logic/schema mismatch cannot be incrementally healed safely: the
-/// old cache is the only ownership record for anchors emitted by files that no
-/// longer exist. Callers must rebuild the store instead of silently discarding
-/// that ownership map and leaving stale graph nodes behind.
-pub fn gen_cache_requires_rebuild(path: &Path) -> bool {
-    if !path.exists() {
-        return false;
-    }
-    match std::fs::read_to_string(path)
-        .ok()
-        .and_then(|text| serde_json::from_str::<GenCache>(&text).ok())
-    {
-        Some(cache) => {
-            cache.version != crate::types::GEN_LOGIC_VERSION
-                || cache.filter_fingerprint != aden_core::filter::built_in_ignore_fingerprint()
+    let stamped_default = || GenCache {
+        version: crate::types::GEN_LOGIC_VERSION,
+        filter_fingerprint,
+        ..GenCache::default()
+    };
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok((stamped_default(), false));
         }
-        None => true,
-    }
+        Err(error) => return Err(error),
+    };
+    let parsed = std::str::from_utf8(&bytes)
+        .ok()
+        .and_then(|text| serde_json::from_str::<GenCache>(text).ok());
+    let Some(cache) = parsed.filter(|cache| {
+        cache.version == crate::types::GEN_LOGIC_VERSION
+            && cache.filter_fingerprint == filter_fingerprint
+    }) else {
+        return Ok((stamped_default(), true));
+    };
+    Ok((cache, false))
 }
 
 /// Persist the generation cache to disk.
@@ -607,7 +637,7 @@ pub fn save_gen_cache(path: &Path, cache: &GenCache) -> Result<(), Box<dyn std::
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let json = serde_json::to_string_pretty(cache)?;
+    let json = serde_json::to_vec(cache)?;
     std::fs::write(path, json)?;
     Ok(())
 }
@@ -629,7 +659,9 @@ pub fn node_to_json(node: &aden_graph::DocumentNode, depth: usize) -> serde_json
     if let Some(c) = serde_json::Number::from_f64(node.doc.confidence) {
         map.insert("confidence".to_string(), serde_json::Value::Number(c));
     }
-    serde_json::Value::Object(map)
+    let mut value = serde_json::Value::Object(map);
+    crate::commands::analysis::add_origin(&mut value, &node.doc);
+    value
 }
 
 /// Resolve the human-readable type label for a graph node.
@@ -1892,12 +1924,16 @@ pub fn health_score_from_graph(
     // this, a duplicate-anchor collision (itself reported separately) would
     // inflate the node count and skew the score.
     let total = graph.anchor_to_index.len();
+    let (_expected, actionable) = classify_orphans(graph);
+    health_score_from_counts(total, actionable.len())
+}
+
+/// Score distinct graph anchors using the number of actionable orphan anchors.
+pub fn health_score_from_counts(total: usize, actionable_orphans: usize) -> f64 {
     if total == 0 {
         return 1.0;
     }
-    let (_expected, actionable) = classify_orphans(graph);
-    let connected = total.saturating_sub(actionable.len());
-    connected as f64 / total as f64
+    total.saturating_sub(actionable_orphans) as f64 / total as f64
 }
 
 pub fn quick_health_score(path: &Path) -> Result<f64, Box<dyn std::error::Error>> {
@@ -2314,6 +2350,35 @@ mod tests {
     }
 
     #[test]
+    fn indexed_relative_scoped_discovery_filters_secrets_and_ignored_ancestors() {
+        let dir =
+            std::env::temp_dir().join(format!("aden-indexed-scope-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let source = dir.join("src");
+        let secret = dir.join("secrets");
+        let ignored = dir.join("target/deep");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::create_dir_all(&secret).unwrap();
+        std::fs::create_dir_all(&ignored).unwrap();
+        std::fs::write(source.join("lib.rs"), "fn visible() {}\n").unwrap();
+        std::fs::write(secret.join("private.rs"), "fn hidden() {}\n").unwrap();
+        std::fs::write(ignored.join("lib.rs"), "fn generated() {}\n").unwrap();
+
+        let all_indexed = discover_source_files(&dir).unwrap();
+        assert_eq!(all_indexed.len(), 1);
+        assert!(all_indexed[0].ends_with("src/lib.rs"));
+        let indexed = discover_indexed_relative_files_scoped(&dir, &dir).unwrap();
+        assert_eq!(indexed.len(), 1);
+        assert_eq!(indexed[0], PathBuf::from("src/lib.rs"));
+        assert!(
+            discover_indexed_relative_files_scoped(&dir.join("target"), &dir)
+                .unwrap()
+                .is_empty()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn resolve_doc_link_classifies_targets() {
         let root = Path::new("/repo");
         let docdir = Path::new("/repo/docs");
@@ -2460,6 +2525,14 @@ mod tests {
     }
 
     #[test]
+    fn health_score_from_counts_handles_empty_and_actionable_orphans() {
+        assert_eq!(health_score_from_counts(0, 0), 1.0);
+        assert_eq!(health_score_from_counts(4, 0), 1.0);
+        assert_eq!(health_score_from_counts(4, 1), 0.75);
+        assert_eq!(health_score_from_counts(4, 5), 0.0);
+    }
+
+    #[test]
     fn sanitize_terminal_neutralizes_escapes_keeps_text() {
         // ESC, BEL, and an OSC-52 clipboard sequence must be rendered visible.
         let evil = "\x1b[2Jclear\x07bell\x1b]52;c;cG93d2540\x07";
@@ -2564,16 +2637,27 @@ mod tests {
     }
 
     #[test]
-    fn old_generation_cache_requires_a_store_rebuild() {
+    fn generation_cache_load_reports_rebuild_and_propagates_io_errors() {
         let dir = tempfile::tempdir().unwrap();
         let cache_path = dir.path().join("gen-cache.json");
+        let (missing, rebuild) = load_gen_cache(&cache_path).unwrap();
+        assert!(!rebuild);
+        assert!(missing.entries.is_empty());
+        assert_eq!(missing.version, crate::types::GEN_LOGIC_VERSION);
+        assert_eq!(
+            missing.filter_fingerprint,
+            aden_core::filter::built_in_ignore_fingerprint()
+        );
+
         std::fs::write(
             &cache_path,
             r#"{"version":5,"entries":{"old.rs":{"source_mtime":0,"source_path":"old.rs","anchors":["old"]}}}"#,
         )
         .unwrap();
-        assert!(gen_cache_requires_rebuild(&cache_path));
-        assert!(load_gen_cache(&cache_path).entries.is_empty());
+        let (cache, rebuild) = load_gen_cache(&cache_path).unwrap();
+        assert!(rebuild);
+        assert!(cache.entries.is_empty());
+        assert_eq!(cache.version, crate::types::GEN_LOGIC_VERSION);
 
         let wrong_policy = serde_json::json!({
             "version": crate::types::GEN_LOGIC_VERSION,
@@ -2583,13 +2667,16 @@ mod tests {
             }
         });
         std::fs::write(&cache_path, serde_json::to_vec(&wrong_policy).unwrap()).unwrap();
-        assert!(gen_cache_requires_rebuild(&cache_path));
-        assert!(load_gen_cache(&cache_path).entries.is_empty());
+        let (cache, rebuild) = load_gen_cache(&cache_path).unwrap();
+        assert!(rebuild);
+        assert!(cache.entries.is_empty());
 
         std::fs::write(&cache_path, "{not-json").unwrap();
-        assert!(gen_cache_requires_rebuild(&cache_path));
+        assert!(load_gen_cache(&cache_path).unwrap().1);
         std::fs::write(&cache_path, [0xff, 0xfe]).unwrap();
-        assert!(gen_cache_requires_rebuild(&cache_path));
+        assert!(load_gen_cache(&cache_path).unwrap().1);
+
+        assert!(load_gen_cache(dir.path()).is_err());
     }
 
     #[test]
@@ -2610,7 +2697,8 @@ mod tests {
             },
         );
         save_gen_cache(&cache_path, &cache).unwrap();
-        let reloaded = load_gen_cache(&cache_path);
+        let (reloaded, rebuild) = load_gen_cache(&cache_path).unwrap();
+        assert!(!rebuild);
         assert_eq!(
             reloaded.dispositions["secret.rs"].disposition,
             aden_core::filter::FileDisposition::SecretContent

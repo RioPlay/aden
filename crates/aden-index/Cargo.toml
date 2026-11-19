@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
+rust-version.workspace = true
 
 [dependencies]
 aden-core = { path = "../aden-core" }
@@ -20,8 +21,10 @@ rust-stemmers = "1.0"
 # Replaced HuggingFace `tokenizers` to drop its `paste` dep (RUSTSEC-2024-0436) and
 # its C/C++ build deps; byte-identical token ids are pinned by
 # tests/tokenizer_parity.rs. See crates/aden-index/src/dense.rs.
-tract-onnx = { version = "0.23", optional = true }
-kitoken = { version = "0.11", optional = true, default-features = false, features = ["std", "normalization", "convert-tokenizers"] }
+# Keep the optional stack compatible with the workspace Rust 1.90 minimum.
+# Kitoken 0.11.1 requires Rust 1.92; Tract 0.23 requires Rust 1.91.
+tract-onnx = { version = "0.22.5", optional = true }
+kitoken = { version = "=0.11.0", optional = true, default-features = false, features = ["std", "normalization", "convert-tokenizers"] }
 
 [features]
 # Local ONNX embedding provider (TractEmbedder) for hybrid retrieval.
@@ -31,7 +34,7 @@ dense = ["dep:tract-onnx", "dep:kitoken"]
 criterion = "0.8"
 tempfile = "3.27.0"
 # Cross-platform home-dir resolution for eval-harness tests (no $HOME on Windows).
-dirs = "6"
+dirs = "7"
 
 [[bench]]
 name = "covering_postings"

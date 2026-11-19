@@ -1,0 +1,338 @@
+:status: proposed
+:authority: engineering-review
+:as-of: 2026-11-04@f8eda8efb17d8557a9a67eddb41980031dcb67fc
+:superseded-by: none
+
+[[performance-security-engineering-review]]
+= Aden performance and security engineering review
+
+This review records the proposal and evidence at its stated revision. Subsequent
+local implementation fixed parsed-byte cache coherence, added deterministic
+source reads and tracing, and reduced repeated path/store setup. See
+<<read-path-performance>> and <<cold-generation-performance>> for the bounded
+implementation measurements. Remaining proposals below are not completion claims.
+
+This is a proposed execution strategy, not an adopted ADR, roadmap admission,
+release claim, or implementation completion record. It addresses the user outcome:
+reduce the total time an LLM needs to find evidence, make a correct change, and
+verify it, including dependency advisory remediation.
+
+As of 2026-11-04, the inspected checkout is commit
+`f8eda8efb17d8557a9a67eddb41980031dcb67fc` with pre-existing uncommitted changes
+in retrieval, index, CLI tests, integration documentation, and benchmark scripts.
+Those changes were preserved. Installed CLI reports release 0.4.3 at that commit,
+with `view` enabled. Source observations about uncommitted additions are not
+proof that the installed binary includes them.
+
+== Recommendation
+
+Choose adaptive native and graph retrieval, backed by explicit evidence identity
+and incremental caches. Start with one Rust dependency-remediation workflow.
+Do not start with a general daemon rewrite, a new vulnerability database, or
+additional ranking heuristics without failure examples and held-out checks.
+
+The desired behavior is one useful evidence response replacing several agent
+steps. A fast response that selects the wrong evidence is still expensive.
+Keep exact file access, package resolution, advisory assessment, and graph
+relationships as distinct capabilities with shared provenance.
+
+== Evidence and limits
+
+[cols="1,3,2",options="header"]
+|===
+|Area |Current evidence |Implication
+|Read cost
+|`source_fingerprint` in `crates/aden-cli/src/indexer/fresh.rs:169` reads discovered
+source bytes. `ensure_fresh_with_policy:502` checks freshness before reads;
+`observe_freshness:370` fingerprints for receipts. MCP
+`run_aden_command_with_timeout` in `crates/aden-mcp/src/lib.rs:2907` starts a CLI
+process per call.
+|Repeated work is present; stage timings are needed to establish its share.
+|Search and graph caches
+|`aden-index::try_load` at `crates/aden-index/src/lib.rs:138` reads/deserializes
+the search index and rebuilds anchor IDs. `gen.rs:1041` removes the cache
+directory after generation. `snapshot.rs:241` decodes graph snapshot data.
+|A small edit can invalidate more than the edited file's retrieval state.
+|Incremental coherence
+|`gen.rs:429` rounds source mtime to seconds; the skip branch at `:460` compares
+that timestamp before reading source bytes. A whole-tree content fingerprint
+is separately used in the freshness manifest.
+|Confirmed on the installed release: an equal-length rewrite with preserved
+mtime retained the deleted symbol, missed the new symbol, and reported current.
+|Routing
+|An earlier bounded freshness-path question took 17.4 seconds and selected the
+`Freshness` enum with clear routing confidence. Further calls were needed.
+|Measure useful evidence and recovery calls, not just context size.
+|Security
+|`audit.rs:59` has five hard-coded dependency rules using major/minor comparisons.
+`ci.rs:911` already invokes cargo audit, but through the nonblocking `warn!`
+path at `:421`. Repository CI separately runs cargo deny.
+|Integrate existing scanners and fix evidence/policy semantics; do not describe
+Aden as having no external scanning.
+|Checkout selection
+|MCP refreshes host Roots at `lib.rs:1814`; `resolve_repository_scope:2024`
+honors explicit paths and resolves/declines multiple candidates. Stores normally
+use normalized root keys (`aden-paths/src/lib.rs:269`); `ADEN_STORE` overrides.
+|Freshness for the selected checkout cannot prove it was the intended checkout.
+|Evaluation
+|`agent_bench.py:259` prohibits edits, tests, and network. `:216` uses regex
+answer scoring; `:827` runs baseline first; `:680` excludes errors from successful
+run latency/completion denominators while separately reporting them.
+|Keep this retrieval harness, but add failure-inclusive outcome evaluation.
+|===
+
+Observed latencies during investigation are diagnostic observations, not a
+clean benchmark: other agents were reading the same repository. The previous
+reviewer's wrong-checkout incident cannot be assigned a specific cause without
+its Roots list, arguments, selected-root receipt, and store override settings.
+
+Direct CLI and MCP calls returned verified source. Some PowerShell pipelines
+through `ConvertFrom-Json` returned source unavailable with a current receipt;
+the trigger is not isolated. Preserve this as an interface/environment regression
+case, not a confirmed checkout-selection defect.
+
+The content-coherence experiment succeeded in an isolated nested Git repository
+with `ADEN_DATA_DIR` confined to that fixture and `ADEN_STORE` unset. See
+link:performance-security-evidence.json[recorded experiment results]. Reproduction:
+
+. Generate a file containing `pub fn before_fn() -> u32 { 1 }` and locate it.
+. Replace it with equal-length `pub fn afterr_fn() -> u32 { 2 }`, restoring the
+  exact original modification timestamp.
+. Locate the new and deleted symbols. The new symbol is absent; the deleted
+  symbol remains a definition. Both receipts say current. The first lookup
+  reports source changed with a new content fingerprint and graph revision.
+. Advancing only the timestamp after this erroneous publication does not heal
+  the index, because the byte fingerprint already matches the manifest.
+. Advance the timestamp and explicitly run generation. The new symbol becomes
+  a definition and the deleted symbol disappears, establishing a recovery control.
+
+The initial touch-only control failed; its raw result was retained in the local
+fixture before running the successful explicit-generation control. This proves
+a release-binary correctness defect, not a general performance improvement or
+a result for uncommitted source changes. The reproduction script and isolated
+data remain under `.tmp/aden-mtime-probe-1a8c949d7c2449f99f191c02215c8ad9/`.
+
+== Design constraints
+
+. Resolve the requested checkout once per request. Bind all graph, index,
+  manifest, scanner, and source results to that identity and revision.
+. Keep graph freshness, source verification, execution status, evidence coverage,
+  and policy outcome separate. Missing evidence is not a clean result.
+. Content changes must invalidate parsed symbols even when size and timestamp
+  are preserved. File deletion/rename and ignore/parser-policy changes count.
+. An immutable graph revision is not proof the filesystem stayed unchanged
+  during a read. State the observation point. Authoritative reads need a stable
+  generation or a pre/post validation barrier; races return an honest state.
+. Cache source graph, resolved package graph, and advisory matching separately.
+  Their inputs and invalidation events differ.
+. Preserve offline operation, cancellation, bounded memory/output, and recovery.
+  Avoid installing tools, fetching databases, or executing upgrade actions as a
+  hidden side effect of a context read.
+
+== Execution sequence
+
+=== 1. Establish trustworthy identity, invalidation, and measurements
+
+Owned surfaces: `aden-paths`, `aden-cli/src/indexer/{fresh,gen}.rs`,
+`aden-mcp/src/lib.rs`, and focused integration fixtures.
+
+* Fix the confirmed defect with per-file content-addressed reuse. Bind each cache
+  entry to the digest of the exact bytes parsed, not a separate reread. Reuse bytes
+  read for hashing where possible. Missing/legacy digests force reparsing; reject
+  incompatible cache schemas. Publish a current manifest only when it represents
+  actual graph entries and their parser/filter versions.
+* Validate cache/store origin, normalized root, parser/filter/schema versions,
+  and generation revision. Reject mismatched shared-store/snapshot evidence.
+  Preserve explicit workspace changes and legitimate multi-repository use;
+  invalidate a session binding when its root changes.
+* Include selected root and identity in success and failure receipts. Offer an
+  expected-root/identity assertion where the caller knows its intended checkout.
+  A host supplying only the wrong root cannot be corrected by hashing it again.
+* Add opt-in local stage timing and counters: root resolution, discovery/hashing,
+  generation, lock wait, index/snapshot load, routing, traversal/assembly, source
+  validation, serialization, and total request time. Include bytes/files scanned,
+  cache hits/misses, binary identity, revision, and fallback reason. Do not log
+  source text or secrets by default; do not add a repository walk for telemetry.
+
+Acceptance: same-size preserved-timestamp rewrite, rename/delete, ignore change,
+two same-named checkouts/worktrees, shared-store override, old/corrupt snapshot,
+edits during generation/read, concurrent writer, timeout/cancellation, and restart.
+No stale symbols may be certified as current. No identity mismatch is accepted.
+
+This phase does not change existing advisory warning defaults silently. It makes
+scan outcome and incompleteness explicit before introducing stricter profiles.
+
+=== 2. Make common reads cheap and choose the appropriate evidence path
+
+Owned surfaces: shared read context, CLI/MCP handlers, search and snapshot cache
+loaders, generated agent guidance, and routing regression fixtures.
+
+[cols="1,2,2",options="header"]
+|===
+|Request |Preferred path |Required evidence
+|Known file/key/value
+|Direct bounded source read or format-aware field lookup
+|Path, value/range, source digest; no mandatory graph regeneration
+|Exact symbol and relationships
+|Exact resolution and bounded graph/source assembly
+|Canonical anchor, individual verified source, typed incoming/outgoing edges
+|Unfamiliar implementation
+|Lexical/file discovery, then graph expansion if useful
+|Coverage/ambiguity, ranked alternatives, recovery only where necessary
+|Dependency/advisory question
+|Package-manager graph plus structured advisory evidence
+|Resolved package identity and chain, scoped scanner evidence, code usage hints
+|Exhaustive value/security inventory
+|Explicit scoped scan with coverage accounting
+|Scanned/unsupported/skipped scope; one anchor result cannot imply completeness
+|===
+
+* Use one request-scoped root, store handle, revision, and freshness observation
+  where semantics permit. Do not remove end-of-read validation while retaining
+  an unsupported claim of response-time freshness.
+* Preserve reusable search structures across source generations; update affected
+  entries instead of deleting every derived cache if generation semantics allow.
+* Add bounded, revision-keyed immutable index/snapshot reuse across MCP requests
+  only after measuring load costs. This may require extracting a shared read
+  library or a narrowly scoped reusable worker. Keep CLI compatibility.
+* Exact paths/symbols should bypass semantic ranking. Freeze missed-question
+  examples and evaluate held-out questions before adding intent heuristics.
+* Replace blanket graph-first guidance with task-based routing in its managed
+  templates and docs together. Keep provenance and verification requirements.
+
+Compare each change with the previous build on the same pinned request sequence.
+Revert changes that add complexity without material measured benefit.
+
+=== 3. Complete one Rust advisory-remediation evidence slice
+
+Owned surfaces: a focused dependency evidence module, Cargo adapter, scanner
+adapter, CLI/MCP response types, and controlled advisory fixtures. Reuse existing
+audit/review/ci-check execution where compatible.
+
+Return an answer to: which resolved version is affected, why is it present,
+which parent constrains it, which change is a candidate, which source usage may
+need attention, and which checks would establish the upgrade works?
+
+* Use versioned Cargo metadata with the resolved graph and an explicit locked,
+  target/feature scope. Do not use `--no-deps` for transitive dependency evidence.
+* Consume structured cargo-audit/RustSec or cargo-deny results. Distinguish
+  applicable vulnerability, unmaintained, yanked, license, duplicate version,
+  scanner execution failure, and incomplete assessment.
+* Record package ID/name/version/source; parent chains and normal/dev/build kind;
+  lock/manifest hashes; target/features; tool/config version; advisory ID, source,
+  DB revision and scan time; status/coverage; and individually verified code anchors.
+* Cache resolution by its manifest/lock/config inputs; cache advisory matching
+  additionally by DB revision. A source comment edit must not trigger a new
+  dependency scan; an advisory DB update must not rebuild the source graph.
+* Default to local processing, argument arrays, explicit executable selection,
+  deadlines/output bounds, and child-process cleanup. Treat advisory prose and
+  remediation strings as untrusted data. Network/database policy is explicit.
+* Keep upgrade candidates unverified until resolution, build, relevant tests, and
+  rescanning succeed. Absence of a static code path does not prove nonreachability.
+* Add an explicit strict security profile that rejects applicable policy findings
+  or incomplete required scans, with a documented compatibility transition.
+
+Acceptance includes transitive and duplicate packages, patch-level advisory,
+renamed/path/git/workspace dependencies, optional and target-specific features,
+missing scanner, stale DB, malformed output, offline cache miss, timeout, and
+nonzero-with-findings versus execution failure. Failed scans never become clean.
+
+Alternative: use the RustSec library in process. Prefer it if subprocess/format
+maintenance dominates measured cost and the dependency/database lifecycle cost
+is acceptable. Do not maintain a second homemade advisory database.
+
+=== 4. Decide whether a resident engine is justified
+
+Bring this forward only if phase timings show that repeated process startup or
+index/snapshot loading dominates warm reads after simpler improvements. Share
+one read engine between CLI and MCP rather than implementing different retrieval
+semantics in two places.
+
+A resident engine needs revision-keyed immutable state, bounded memory/eviction,
+single-flight refresh, per-repository isolation, cancellation, crash recovery, and
+observable dirty generations. Watchers are an optimization signal, not a complete
+freshness proof: handle overflow, missed events, restart, symlinks, ignore changes,
+and a fallback reconciliation path. Do not add a separate always-running daemon
+unless deployment or sharing requirements justify it.
+
+[cols="1,2,2",options="header"]
+|===
+|Option |Benefit |Cost and decision condition
+|Existing CLI plus request context and coherent caches
+|Smallest rollout; removes duplicate work without replacing transport
+|Cross-process residency remains limited; measure before expanding
+|Shared query library inside MCP
+|Keeps decoded data in the existing server process
+|A timed-out blocking thread cannot simply be killed; requires cooperative
+cancellation, bounded work, and server isolation measures
+|Persistent per-repository worker controlled by MCP
+|Retains data while preserving kill/restart isolation
+|Framing, lifecycle/version negotiation, and memory limits; preferred next
+experiment if startup/decode dominates after simpler fixes
+|Separate shared daemon and watcher
+|Potential reuse across clients
+|Largest deployment, authorization, consistency, and recovery burden; justify
+only with measured cross-client need
+|===
+
+== Outcome evaluation
+
+First measure a serial fixed request sequence: known-file value, exact symbol,
+unfamiliar relationship, and post-edit lookup. Separate cold startup, warm steady
+state, dirty refresh, and a separate two-reader contention experiment. Pin hardware,
+binary/features, repository state, and cache state. Time the complete local call,
+including MCP/CLI transport, and report phase distributions.
+
+Then run an exploratory task pilot: three task types, three fresh-context runs
+per arm, competent native tools versus adaptive Aden. Tasks are a known manifest
+edit, an unfamiliar cross-module behavioral change, and frozen transitive advisory
+remediation with a compatibility check. Rotate arm order; hold model/version/effort,
+permissions, initial checkout, scanner/database snapshot, and acceptance rubric
+constant. Hold out tasks distinct from routing development examples. Separate
+cold-project and warm-project costs. Preserve retries, failures,
+timeouts, interventions, and unavailable telemetry. This pilot is diagnostic, not
+a general productivity estimate.
+
+Judge actual diff and behavior independently, with blinded arm labels where
+practical. Include all started runs in completion rate. Report successful-task
+latency separately from failure-inclusive elapsed time and wasted work; regex
+answer matching is not behavioral acceptance. Do not pool away task regressions.
+
+Provisional engineering targets, not measured capabilities:
+
+* Zero accepted wrong-checkout results and zero stale-symbol/current-receipt cases
+  in the defined adversarial suite.
+* Zero missed seeded critical advisories; unknown/incomplete scans never report clean.
+* On a pinned representative repository/hardware: warm exact/value lookup p95
+  below 250 ms; bounded graph context p95 below 1 second, including local transport.
+* Predeclare a practical task-time target, initially 15% median improvement for
+  navigation-heavy work with unchanged acceptance quality. Define a small overhead
+  allowance for already-located edits before running the pilot. Expand runs before
+  making a population-level claim; do not weaken freshness to meet latency goals.
+
+If builds/scans dominate, measure that ceiling and optimize evidence/verification
+planning. Faster navigation alone cannot eliminate their runtime. If routing and
+recovery dominate, fix evidence selection before further low-level tuning.
+
+== Delivery boundaries and next action
+
+This review does not change production runtime behavior, admit roadmap packets,
+publish issues, install scanners, run live upgrades, or make a performance
+improvement claim. Three specialists reviewed performance, security, and
+experiment validity. The proposed report received independent strategy review;
+the content-coherence fixture ran successfully with the explicit-generation
+recovery control. Existing production source changes remain owned by their
+original author.
+
+The first implementation slice should promote the confirmed content-coherence
+fixture into a regression test, fix the invalidation contract, and add cheap
+opt-in phase timing. Keep subsequent identity, routing, security adapter, and resident-engine
+changes independently reviewable and reversible. Map work onto the existing
+roadmap authority and overlapping packet surfaces before assigning implementation.
+
+== Primary interface references
+
+* https://doc.rust-lang.org/cargo/commands/cargo-metadata.html[Cargo metadata]:
+  resolved package identities/edges, kinds, features/targets, and lock/offline behavior.
+* https://docs.rs/cargo-audit/latest/cargo_audit/[cargo-audit]: advisory scanner
+  interface and guidance toward the RustSec library for library consumption.

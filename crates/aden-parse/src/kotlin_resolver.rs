@@ -16,8 +16,7 @@
 //!   • Reified type parameter tracking
 
 use crate::extractor::{
-    LanguageExtractor, build_code_attributes, infer_project_root, make_anchor,
-    project_relative_file,
+    CodeSource, LanguageExtractor, infer_project_root, make_anchor, project_relative_file,
 };
 use aden_core::{Block, Document, NodeType, Parameter, Result};
 use std::path::Path;
@@ -58,6 +57,7 @@ impl LanguageExtractor for KotlinResolver {
             .ok_or_else(|| aden_core::Error::Parse("tree-sitter returned None".to_string()))?;
 
         let module_path = infer_kotlin_package(path, source);
+        let file_source = &CodeSource::new(source, path);
         let project_root = infer_project_root(path);
         let file_name_owned = project_relative_file(path, &project_root);
         let file_name = file_name_owned.as_str();
@@ -74,7 +74,7 @@ impl LanguageExtractor for KotlinResolver {
         let mut docs = Vec::new();
         for sym in &symbols {
             if let Some(doc) =
-                emit_kotlin_symbol(sym, source, path, &symbols, &module_path, file_name)
+                emit_kotlin_symbol(file_source, sym, source, &symbols, &module_path, file_name)
             {
                 docs.push(doc);
             }
@@ -427,21 +427,17 @@ fn find_parent_type_name(node: tree_sitter::Node, source: &str) -> Option<String
 }
 
 fn emit_kotlin_symbol(
+    file_source: &CodeSource<'_>,
     sym: &KotlinSymbol,
     source: &str,
-    path: &Path,
     _all_symbols: &[KotlinSymbol],
     package: &str,
     file_name: &str,
 ) -> Option<Document> {
+    let path = file_source.path;
     let anchor = make_anchor(package, file_name, &sym.name);
     let span = node_to_span(sym.node, path);
-    let attrs = build_code_attributes(
-        source,
-        &format!("{:?}", sym.kind).to_lowercase(),
-        Some(path),
-        Some(&span),
-    );
+    let attrs = file_source.attributes(&format!("{:?}", sym.kind).to_lowercase(), &span);
     let mut blocks = Vec::new();
 
     if let Some(ref doc) = sym.doc_comment {

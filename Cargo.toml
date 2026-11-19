@@ -5,6 +5,10 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 rust-version.workspace = true
+description.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
 
 [dependencies]
 aden-core = { path = "crates/aden-core" }
@@ -56,6 +60,16 @@ default-members = [
 ]
 
 resolver = "3"
+exclude = ["vendor/liquid-core", "vendor/rmcp-3.11.0", "vendor/tree-sitter-language-pack"]
+
+[patch.crates-io]
+# Keep dense inference on Rust 1.90 without Liquid's unmaintained anymap2.
+# Provenance and removal conditions: vendor/README.adoc.
+liquid-core = { path = "vendor/liquid-core" }
+# Backport optional chrono support until a compatible RMCP release includes it.
+rmcp = { path = "vendor/rmcp-3.11.0" }
+# Keep verified build inputs bounded to the configured grammar selection.
+tree-sitter-language-pack = { path = "vendor/tree-sitter-language-pack" }
 
 [workspace.package]
 version = "0.4.4"
@@ -80,8 +94,9 @@ overflow-checks = true
 [workspace.dependencies]
 percent-encoding = "2.3"
 rayon = "1.10"
-dirs = "6"
+dirs = "7"
 sha2 = "0.11"
+rmcp = { version = "=3.11.0", default-features = false, features = ["base64", "macros"] }
 
 [dev-dependencies]
 criterion = "0.8"

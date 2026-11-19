@@ -6,8 +6,7 @@
 //! Extracts column headers and table structure from CSV files.
 
 use crate::extractor::{
-    build_code_attributes, infer_project_name, infer_project_root, make_anchor,
-    project_relative_file,
+    CodeSource, infer_project_name, infer_project_root, make_anchor, project_relative_file,
 };
 use aden_core::{Block, Document, NodeType, Result, Table};
 use std::path::Path;
@@ -36,6 +35,7 @@ impl crate::extractor::LanguageExtractor for CsvExtractor {
     }
 
     fn extract_documents(&self, source: &str, path: &Path) -> Result<Vec<Document>> {
+        let file_source = CodeSource::new(source, path);
         let raw_file_name = path
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
@@ -72,7 +72,7 @@ impl crate::extractor::LanguageExtractor for CsvExtractor {
 
         let anchor = make_anchor(&crate_name, &file_name, "data");
         let span = crate::extractor::whole_file_span(source, path);
-        let attrs = build_code_attributes(source, "table", Some(path), Some(&span));
+        let attrs = file_source.attributes("table", &span);
 
         let table = Table {
             headers: headers.clone(),

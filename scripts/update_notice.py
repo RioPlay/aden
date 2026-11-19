@@ -12,7 +12,12 @@ MARKER = "# Third-Party Dependencies\n"
 def render_notice(original, metadata):
     if original.count(MARKER) != 1:
         raise ValueError("NOTICE must contain exactly one third-party section marker")
-    packages = [p for p in metadata["packages"] if p.get("source")]
+    workspace_members = set(metadata["workspace_members"])
+    packages = [
+        package
+        for package in metadata["packages"]
+        if package.get("source") or package["id"] not in workspace_members
+    ]
     if not packages:
         raise ValueError("Refusing to replace attribution with an empty dependency list")
     rows = []

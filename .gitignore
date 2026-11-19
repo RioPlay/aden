@@ -115,6 +115,16 @@ dist/
 build/
 out/
 vendor/
+# Reviewed source patches used by workspace Cargo builds.
+!/vendor/
+/vendor/*
+!/vendor/README.adoc
+!/vendor/liquid-core/
+!/vendor/liquid-core/**
+!/vendor/tree-sitter-language-pack/
+!/vendor/tree-sitter-language-pack/**
+!/vendor/rmcp-3.11.0/
+!/vendor/rmcp-3.11.0/**
 .gradle/
 .cache/
 coverage/

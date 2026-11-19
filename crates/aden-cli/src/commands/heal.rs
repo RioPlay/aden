@@ -32,8 +32,17 @@ fn emit_heal_json(
     report: &aden_heal::HealthReport,
     path: &Path,
     max_issues: Option<usize>,
+    repair: Option<&HealFixSummary>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let (errors, warnings, info) = drift_buckets(&report.events);
+    let (mut errors, warnings, info) = drift_buckets(&report.events);
+    if let Some(repair) = repair
+        && (repair.failed > 0 || repair.conflicts > 0)
+    {
+        errors.push(format!(
+            "Repair incomplete: {} failed, {} conflict proposal(s)",
+            repair.failed, repair.conflicts
+        ));
+    }
     let ok = errors.is_empty();
     let cap = max_issues.unwrap_or(20);
     let summary = crate::util::build_gate_summary(&errors, &warnings, &info, ok, cap);
@@ -59,6 +68,7 @@ fn emit_heal_json(
         "top_issues": summary.top_issues,
         "truncated": summary.truncated,
         "health_score": report.overall_score,
+        "repair": repair,
         "policy_mode": policy.mode,
         "result": outcome,
     });
@@ -224,6 +234,134 @@ pub fn cmd_heal_scan_since(
     Ok(())
 }
 
+/// Outcomes from supported store repairs, separate from observed drift.
+#[derive(Debug, Default, serde::Serialize)]
+pub(super) struct HealFixSummary {
+    /// Distinct store contracts updated by a clean merge.
+    pub fixed: usize,
+    pub skipped: usize,
+    pub failed: usize,
+    /// Conflicting merges create review proposals without changing the store.
+    pub conflicts: usize,
+    pub reasons: Vec<String>,
+    pub reasons_truncated: bool,
+}
+
+impl HealFixSummary {
+    fn note(&mut self, reason: String) {
+        if self.reasons.len() == 5 {
+            self.reasons_truncated = true;
+            return;
+        }
+        let mut end = reason.len().min(512);
+        while !reason.is_char_boundary(end) {
+            end -= 1;
+        }
+        if end < reason.len() {
+            self.reasons_truncated = true;
+        }
+        self.reasons.push(reason[..end].to_string());
+    }
+
+    fn ensure_complete(self) -> Result<(), Box<dyn std::error::Error>> {
+        if self.failed > 0 || self.conflicts > 0 {
+            Err("Repair incomplete; review the reported failures or conflict proposals".into())
+        } else {
+            Ok(())
+        }
+    }
+}
+
+/// Only scanner-produced store targets have an automatic repair contract.
+/// Legacy disk targets are intentionally unsupported, including files that exist.
+fn store_repair_anchor(event: &aden_heal::DriftEvent) -> Option<&str> {
+    let anchor = match event {
+        aden_heal::DriftEvent::StaleHash { target_path, .. } => {
+            target_path.strip_prefix(".aden/store:")?
+        }
+        aden_heal::DriftEvent::SignatureMismatch {
+            anchor,
+            contract_path,
+            ..
+        } => {
+            let target = contract_path.strip_prefix(".aden/store:")?;
+            if target != anchor {
+                return None;
+            }
+            target
+        }
+        _ => return None,
+    };
+    (!anchor.is_empty()).then_some(anchor)
+}
+
+/// Apply supported merge repairs quietly. Callers own human or JSON rendering.
+pub(super) fn repair_supported_drift(
+    path: &Path,
+    events: &[aden_heal::DriftEvent],
+) -> Result<HealFixSummary, Box<dyn std::error::Error>> {
+    let root = std::fs::canonicalize(find_project_root(path))?;
+    if events.is_empty() {
+        return Ok(HealFixSummary::default());
+    }
+    let storage = open_heal_storage(&root);
+    Ok(repair_events_in_store(&root, events, storage.as_ref()))
+}
+
+fn repair_events_in_store(
+    path: &Path,
+    events: &[aden_heal::DriftEvent],
+    storage: Option<&aden_store::Storage>,
+) -> HealFixSummary {
+    let mut summary = HealFixSummary::default();
+    let mut attempted = std::collections::BTreeSet::new();
+    for event in events {
+        let Some(anchor) = store_repair_anchor(event) else {
+            summary.skipped += 1;
+            summary.note(format!(
+                "{}: automatic repair requires a matching store target; use --propose for review",
+                drift_kind_name(event)
+            ));
+            continue;
+        };
+        if !attempted.insert(anchor) {
+            summary.skipped += 1;
+            summary.note(format!(
+                "{anchor}: store repair already attempted in this run"
+            ));
+            continue;
+        }
+        let Some(storage) = storage else {
+            summary.failed += 1;
+            summary.note(format!(
+                "{anchor}: store unavailable; run aden gen before repair"
+            ));
+            continue;
+        };
+        match apply_merge_to_store(anchor, path, storage) {
+            Ok(MergeApplyOutcome::Applied) => summary.fixed += 1,
+            Ok(MergeApplyOutcome::Conflict(proposal)) => {
+                summary.conflicts += 1;
+                summary.note(format!(
+                    "Conflict: {anchor}; review proposal {}",
+                    proposal.display()
+                ));
+            }
+            Ok(MergeApplyOutcome::NoContractChanges) => {
+                summary.skipped += 1;
+                summary.note(format!(
+                    "{anchor}: no contract changes applied; refresh metadata with aden gen or inspect the source"
+                ));
+            }
+            Err(error) => {
+                summary.failed += 1;
+                summary.note(format!("{anchor}: merge repair failed: {error}"));
+            }
+        }
+    }
+    summary
+}
+
 pub fn cmd_heal_scan(
     path: &Path,
     propose: bool,
@@ -257,7 +395,13 @@ pub fn cmd_heal_scan(
             let report = generate(events.clone(), path);
 
             if json {
-                emit_heal_json(&report, path, max_issues)?;
+                if fix {
+                    let repair = repair_supported_drift(path, &events)?;
+                    let remaining = scanner.scan()?;
+                    emit_heal_json(&generate(remaining, path), path, max_issues, Some(&repair))?;
+                    return repair.ensure_complete();
+                }
+                emit_heal_json(&report, path, max_issues, None)?;
                 return Ok(());
             }
 
@@ -270,7 +414,10 @@ pub fn cmd_heal_scan(
                 return Ok(());
             }
 
-            if let Some(cap) = max_issues {
+            if let Some(cap) = max_issues
+                && !fix
+                && !propose
+            {
                 let (errors, warnings, info) = drift_buckets(&report.events);
                 let ok = errors.is_empty();
                 let summary = crate::util::build_gate_summary(&errors, &warnings, &info, ok, cap);
@@ -374,242 +521,24 @@ pub fn cmd_heal_scan(
             print_group("LOW", &low, path);
 
             if fix {
-                use std::collections::BTreeMap;
-                println!("\n--fix flag set. Attempting auto-fix...");
-                let mut fixed_count = 0;
-                let mut failed_count = 0;
-                // Aggregate skipped events by drift kind instead of printing one
-                // noisy line per event (a large repo has hundreds of orphans).
-                let mut skipped_by_kind: BTreeMap<&'static str, usize> = BTreeMap::new();
-
-                // Open the store once for the whole --fix run (hoisted from per-event).
-                let fix_storage = open_heal_storage(path);
-
-                for event in &report.events {
-                    let confidence = match event {
-                        aden_heal::DriftEvent::StaleHash { .. } => 0.99,
-                        aden_heal::DriftEvent::MissingContract { .. } => 0.85,
-                        aden_heal::DriftEvent::SignatureMismatch { .. } => 0.90,
-                        aden_heal::DriftEvent::StaleMarkdown { .. } => 0.80,
-                        aden_heal::DriftEvent::MarkdownDrift { .. } => 0.75,
-                        _ => 0.0,
-                    };
-
-                    if confidence < 0.8 {
-                        *skipped_by_kind.entry(drift_kind_name(event)).or_default() += 1;
-                        failed_count += 1;
-                        continue;
-                    }
-
-                    match event {
-                        aden_heal::DriftEvent::StaleHash {
-                            target_path,
-                            actual_hash,
-                            ..
-                        } => {
-                            let target = PathBuf::from(target_path);
-                            if target.exists() {
-                                let content = std::fs::read_to_string(&target)?;
-                                let updated = content
-                                    .lines()
-                                    .map(|line| {
-                                        if line.trim_start().starts_with(":source_hash:") {
-                                            format!(":source_hash: {}", actual_hash)
-                                        } else {
-                                            line.to_string()
-                                        }
-                                    })
-                                    .collect::<Vec<_>>()
-                                    .join("\n");
-                                std::fs::write(&target, updated)?;
-                                println!("  Fixed: {} (updated hash)", target.display());
-                                fixed_count += 1;
-                            } else {
-                                // Store-resident StaleHash: apply via merge engine.
-                                // A pseudo-path ".aden/store:<anchor>" has no hash
-                                // line to rewrite; we reconcile through the merge
-                                // engine instead and write the fresh document.
-                                let store_anchor = target_path
-                                    .strip_prefix(".aden/store:")
-                                    .unwrap_or(target_path);
-                                if let Some(ref storage) = fix_storage {
-                                    match apply_merge_to_store(store_anchor, path, storage) {
-                                        Ok(MergeApplyOutcome::Applied) => {
-                                            println!("  Fixed: {} (merge-applied)", store_anchor);
-                                            fixed_count += 1;
-                                        }
-                                        Ok(MergeApplyOutcome::Conflict(ref p)) => {
-                                            println!(
-                                                "  Conflict: {} → review proposal at {}",
-                                                store_anchor,
-                                                p.display()
-                                            );
-                                            *skipped_by_kind
-                                                .entry("MergeConflict (review proposal)")
-                                                .or_default() += 1;
-                                            failed_count += 1;
-                                        }
-                                        Ok(MergeApplyOutcome::NoContractChanges) => {
-                                            *skipped_by_kind
-                                                .entry("StaleHash in store (run `aden gen` to refresh)")
-                                                .or_default() += 1;
-                                            failed_count += 1;
-                                        }
-                                        Err(e) => {
-                                            eprintln!(
-                                                "  WARN: merge apply failed for {}: {}; skipping",
-                                                store_anchor, e
-                                            );
-                                            *skipped_by_kind
-                                                .entry("StaleHash in store (merge failed)")
-                                                .or_default() += 1;
-                                            failed_count += 1;
-                                        }
-                                    }
-                                } else {
-                                    *skipped_by_kind
-                                        .entry("StaleHash in store (run `aden gen` to refresh)")
-                                        .or_default() += 1;
-                                    failed_count += 1;
-                                }
-                            }
-                        }
-                        aden_heal::DriftEvent::MissingContract { .. } => {
-                            // Aden is store-first: contracts live in .aden/store,
-                            // not as disk .adoc stubs. Stub files have no face value,
-                            // immediately show as StaleHash drift, and clutter the
-                            // repo. Missing contracts are regenerated by `aden gen`,
-                            // not by heal --fix. Always skip.
-                            *skipped_by_kind.entry("MissingContract").or_default() += 1;
-                        }
-                        aden_heal::DriftEvent::SignatureMismatch {
-                            anchor,
-                            contract_path,
-                            expected_sig: _,
-                            actual_sig,
-                        } => {
-                            // Store-resident: apply via merge engine instead of
-                            // Table-row surgery (which would make the base snapshot stale).
-                            if let Some(store_anchor) = contract_path.strip_prefix(".aden/store:") {
-                                if let Some(ref storage) = fix_storage {
-                                    match apply_merge_to_store(store_anchor, path, storage) {
-                                        Ok(MergeApplyOutcome::Applied) => {
-                                            println!(
-                                                "  Fixed: {} (signature updated via merge)",
-                                                anchor
-                                            );
-                                            fixed_count += 1;
-                                        }
-                                        Ok(MergeApplyOutcome::Conflict(ref p)) => {
-                                            println!(
-                                                "  Conflict: {} → review proposal at {}",
-                                                anchor,
-                                                p.display()
-                                            );
-                                            *skipped_by_kind
-                                                .entry("MergeConflict (review proposal)")
-                                                .or_default() += 1;
-                                            failed_count += 1;
-                                        }
-                                        Ok(MergeApplyOutcome::NoContractChanges) => {
-                                            eprintln!(
-                                                "  WARN: signature anchor {} not found; skipping",
-                                                anchor
-                                            );
-                                            *skipped_by_kind
-                                                .entry("SignatureMismatch (anchor not in store)")
-                                                .or_default() += 1;
-                                            failed_count += 1;
-                                        }
-                                        Err(e) => {
-                                            eprintln!(
-                                                "  WARN: merge apply failed for {}: {}; skipping",
-                                                anchor, e
-                                            );
-                                            *skipped_by_kind
-                                                .entry("SignatureMismatch (merge failed)")
-                                                .or_default() += 1;
-                                            failed_count += 1;
-                                        }
-                                    }
-                                } else {
-                                    eprintln!(
-                                        "  WARN: store unavailable; skipping signature fix for {}",
-                                        anchor
-                                    );
-                                    *skipped_by_kind
-                                        .entry("SignatureMismatch (store unavailable)")
-                                        .or_default() += 1;
-                                    failed_count += 1;
-                                }
-                            } else {
-                                // Legacy on-disk contract path: rewrite the
-                                // :source_sig: line in place, but tolerate a missing
-                                // file rather than aborting the whole --fix run.
-                                let sig_str = actual_sig.join(",");
-                                match std::fs::read_to_string(contract_path) {
-                                    Ok(content) => {
-                                        let updated = content
-                                            .lines()
-                                            .map(|line| {
-                                                if line.trim_start().starts_with(":source_sig:") {
-                                                    format!(":source_sig: {}", sig_str)
-                                                } else {
-                                                    line.to_string()
-                                                }
-                                            })
-                                            .collect::<Vec<_>>()
-                                            .join("\n");
-                                        if let Err(e) = std::fs::write(contract_path, updated) {
-                                            eprintln!(
-                                                "  WARN: failed to write {}: {}; skipping",
-                                                contract_path, e
-                                            );
-                                            *skipped_by_kind
-                                                .entry("SignatureMismatch (write failed)")
-                                                .or_default() += 1;
-                                            failed_count += 1;
-                                        } else {
-                                            println!(
-                                                "  Fixed: {} (updated signature)",
-                                                contract_path
-                                            );
-                                            fixed_count += 1;
-                                        }
-                                    }
-                                    Err(e) => {
-                                        eprintln!(
-                                            "  WARN: cannot read {}: {}; skipping",
-                                            contract_path, e
-                                        );
-                                        *skipped_by_kind
-                                            .entry("SignatureMismatch (file missing)")
-                                            .or_default() += 1;
-                                        failed_count += 1;
-                                    }
-                                }
-                            }
-                        }
-                        _ => {
-                            *skipped_by_kind.entry(drift_kind_name(event)).or_default() += 1;
-                            failed_count += 1;
-                        }
-                    }
+                let repair = repair_supported_drift(path, &events)?;
+                println!("\nFixed: {} store contract(s)", repair.fixed);
+                if repair.fixed > 0 {
+                    println!("  merge-applied: clean store merges only");
                 }
-
-                println!("\nFixed: {} event(s)", fixed_count);
-                if failed_count > 0 {
+                println!(
+                    "Skipped: {} event(s); failed: {}; conflict proposal(s): {}",
+                    repair.skipped, repair.failed, repair.conflicts
+                );
+                for reason in &repair.reasons {
+                    println!("  {reason}");
+                }
+                if repair.reasons_truncated {
                     println!(
-                        "Skipped: {} event(s) requiring manual review:",
-                        failed_count
+                        "  Additional repair details omitted; narrow the scan or inspect drift with --json."
                     );
-                    for (kind, count) in &skipped_by_kind {
-                        println!("  {} × {}", count, kind);
-                    }
-                    println!("  (run 'aden heal . --propose' to generate patches for review)");
                 }
-
-                return Ok(());
+                return repair.ensure_complete();
             }
 
             if propose {
@@ -871,7 +800,7 @@ enum MergeApplyOutcome {
     /// Merge had conflicts; a MergeReconcile proposal was persisted.
     Conflict(PathBuf),
     /// No contract-level changes, or anchor/source not found.
-    /// Caller may fall back to legacy handling.
+    /// Caller reports a skip and can suggest a metadata refresh.
     NoContractChanges,
 }
 
@@ -925,6 +854,11 @@ fn apply_merge_to_store(
     if !source_abs.exists() {
         return Ok(MergeApplyOutcome::NoContractChanges);
     }
+    let canonical_root = std::fs::canonicalize(&root)?;
+    let source_abs = std::fs::canonicalize(source_abs)?;
+    if !source_abs.starts_with(&canonical_root) || !source_abs.is_file() {
+        return Err("Store repair source must be a regular file inside the project".into());
+    }
     let source_text = std::fs::read_to_string(&source_abs)?;
     let mut docs = aden_parse::parse_file(&source_abs, &source_text)
         .map_err(|e| format!("parse error in {}: {e}", source_abs.display()))?;
@@ -954,13 +888,13 @@ fn apply_merge_to_store(
     }
 
     if rec.proposal.conflict_count == 0 {
-        // Clean merge: write fresh doc + updated base snapshot to the store.
-        storage.put_document(&fresh_doc)?;
+        // Storage is the concrete Fjall backend: its bulk override commits the
+        // document, base, source projection and symbol index in one batch.
         let snapshot = emit_contract_document(&ContractDocument::from_document(&fresh_doc));
-        if let Err(e) = storage.put_base_snapshot(anchor, &snapshot) {
-            eprintln!("WARN: failed to update base snapshot for {anchor}: {e}");
-        }
-        storage.flush()?;
+        storage.put_documents_bulk(&[(fresh_doc, snapshot)])?;
+        storage.flush().map_err(|error| {
+            format!("Repair committed for {anchor}, but durability is unconfirmed: {error}")
+        })?;
         Ok(MergeApplyOutcome::Applied)
     } else {
         // Conflicts: persist a MergeReconcile proposal with [proposed] markers.
@@ -1616,4 +1550,181 @@ pub fn cmd_heal_gc(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         removed, kept, contracts_removed, contracts_kept
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod bounded_repair_tests {
+    use super::*;
+    use aden_store::GraphStorage;
+
+    fn stale(target: String) -> aden_heal::DriftEvent {
+        aden_heal::DriftEvent::StaleHash {
+            target_path: target,
+            expected_hash: "before".to_string(),
+            actual_hash: "after".to_string(),
+        }
+    }
+
+    fn fixture() -> (tempfile::TempDir, aden_store::Storage, String) {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname=\"bounded-repair\"\nversion=\"0.1.0\"\n",
+        )
+        .unwrap();
+        let source = root.join("lib.rs");
+        let text = "pub fn alpha(value: i32) -> i32 { value }\n";
+        std::fs::write(&source, text).unwrap();
+        let mut docs = aden_parse::parse_file(&source, text).unwrap();
+        let mut doc = docs
+            .drain(..)
+            .find(|doc| doc.anchor.ends_with("#alpha"))
+            .unwrap();
+        crate::util::sanitize_source_file(&mut doc, root);
+        crate::indexer::merge::slim_doc_for_store(&mut doc);
+        let anchor = doc.anchor.clone();
+        let storage = aden_store::Storage::new(root.join("store").to_str().unwrap()).unwrap();
+        storage.put_document(&doc).unwrap();
+        let base = aden_emit::emit_contract_document(
+            &aden_core::contract::ContractDocument::from_document(&doc),
+        );
+        storage.put_base_snapshot(&anchor, &base).unwrap();
+        storage.flush().unwrap();
+        (temp, storage, anchor)
+    }
+
+    #[test]
+    fn legacy_disk_targets_preserve_all_bytes_and_line_endings() {
+        let temp = tempfile::tempdir().unwrap();
+        for (name, bytes) in [
+            ("crlf.adoc", b":source_hash: before\r\nbody\r\n".as_slice()),
+            ("lf.adoc", b":source_hash: before\nbody\n".as_slice()),
+            (
+                "no-final-newline.adoc",
+                b":source_hash: before\nbody".as_slice(),
+            ),
+        ] {
+            let path = temp.path().join(name);
+            std::fs::write(&path, bytes).unwrap();
+            let events = [stale(path.to_string_lossy().into_owned())];
+            let summary = repair_events_in_store(temp.path(), &events, None);
+            assert_eq!((summary.fixed, summary.skipped, summary.failed), (0, 1, 0));
+            assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        }
+        let signature = temp.path().join("signature.adoc");
+        let bytes = b":source_sig: old\r\n:source_sig: duplicate\r\nbody\r\n";
+        std::fs::write(&signature, bytes).unwrap();
+        let event = aden_heal::DriftEvent::SignatureMismatch {
+            anchor: "alpha".into(),
+            contract_path: signature.to_string_lossy().into_owned(),
+            expected_sig: vec!["old".into()],
+            actual_sig: vec!["new".into()],
+        };
+        let summary = repair_events_in_store(temp.path(), &[event], None);
+        assert_eq!((summary.fixed, summary.skipped, summary.failed), (0, 1, 0));
+        assert_eq!(std::fs::read(signature).unwrap(), bytes);
+    }
+
+    #[test]
+    fn malformed_and_mismatched_targets_are_not_repaired() {
+        let events = [
+            stale(".aden/store:".into()),
+            aden_heal::DriftEvent::SignatureMismatch {
+                anchor: "alpha".into(),
+                contract_path: ".aden/store:beta".into(),
+                expected_sig: vec![],
+                actual_sig: vec!["i32".into()],
+            },
+        ];
+        let summary = repair_events_in_store(Path::new("."), &events, None);
+        assert_eq!((summary.fixed, summary.skipped, summary.failed), (0, 2, 0));
+    }
+
+    #[test]
+    fn supported_missing_store_is_a_failure_and_attempts_are_not_replayed() {
+        let events = [
+            stale(".aden/store:alpha".into()),
+            stale(".aden/store:alpha".into()),
+        ];
+        let summary = repair_events_in_store(Path::new("."), &events, None);
+        assert_eq!((summary.fixed, summary.skipped, summary.failed), (0, 1, 1));
+        assert!(summary.ensure_complete().is_err());
+    }
+
+    #[test]
+    fn clean_store_merge_updates_once_and_repeated_fix_is_no_change() {
+        let (temp, storage, anchor) = fixture();
+        std::fs::write(
+            temp.path().join("lib.rs"),
+            "pub fn alpha(value: i64) -> i64 { value }\n",
+        )
+        .unwrap();
+        let event = stale(format!(".aden/store:{anchor}"));
+        let summary =
+            repair_events_in_store(temp.path(), std::slice::from_ref(&event), Some(&storage));
+        assert_eq!(
+            (summary.fixed, summary.failed, summary.conflicts),
+            (1, 0, 0),
+            "{summary:?}"
+        );
+        let first = storage.get_document(&anchor).unwrap().unwrap();
+        assert!(format!("{:?}", first.blocks).contains("i64"));
+        let expected_base = aden_emit::emit_contract_document(
+            &aden_core::contract::ContractDocument::from_document(&first),
+        );
+        assert_eq!(
+            storage.get_base_snapshot(&anchor).unwrap(),
+            Some(expected_base.clone())
+        );
+        let summary = repair_events_in_store(temp.path(), &[event], Some(&storage));
+        assert_eq!(
+            (summary.fixed, summary.skipped, summary.failed),
+            (0, 1, 0),
+            "{summary:?}"
+        );
+        assert_eq!(storage.get_document(&anchor).unwrap().unwrap(), first);
+        drop(storage);
+        let reopened =
+            aden_store::Storage::open_existing(temp.path().join("store").to_str().unwrap())
+                .unwrap();
+        assert_eq!(reopened.get_document(&anchor).unwrap(), Some(first));
+        assert_eq!(
+            reopened.get_base_snapshot(&anchor).unwrap(),
+            Some(expected_base)
+        );
+    }
+
+    #[test]
+    fn repair_reasons_are_bounded() {
+        let events: Vec<_> = (0..10).map(|_| stale("x".repeat(2048))).collect();
+        let summary = repair_events_in_store(Path::new("."), &events, None);
+        assert_eq!(summary.skipped, 10);
+        assert_eq!(summary.reasons.len(), 5);
+        assert!(summary.reasons.iter().all(|reason| reason.len() <= 512));
+        assert!(summary.reasons_truncated);
+    }
+
+    #[test]
+    fn source_outside_project_is_refused_without_mutation() {
+        let (temp, storage, anchor) = fixture();
+        let outside = tempfile::tempdir().unwrap();
+        let source = outside.path().join("secret.rs");
+        let bytes = b"pub fn alpha(value: i64) -> i64 { value }\r\n";
+        std::fs::write(&source, bytes).unwrap();
+        let mut doc = storage.get_document(&anchor).unwrap().unwrap();
+        doc.attributes
+            .insert("source_file".into(), source.to_string_lossy().into_owned());
+        storage.put_document(&doc).unwrap();
+        let prior_base = storage.get_base_snapshot(&anchor).unwrap();
+        let summary = repair_events_in_store(
+            temp.path(),
+            &[stale(format!(".aden/store:{anchor}"))],
+            Some(&storage),
+        );
+        assert_eq!((summary.fixed, summary.failed), (0, 1), "{summary:?}");
+        assert_eq!(storage.get_document(&anchor).unwrap().unwrap(), doc);
+        assert_eq!(storage.get_base_snapshot(&anchor).unwrap(), prior_base);
+        assert_eq!(std::fs::read(source).unwrap(), bytes);
+    }
 }

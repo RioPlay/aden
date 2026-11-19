@@ -4,17 +4,21 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
+rust-version.workspace = true
 
 [dependencies]
 aden-core = { path = "../aden-core" }
 regex = "1.12.3"
+toml = "1"
 thiserror = "2.0.18"
-tree-sitter = { version = "0.26", optional = true }
+tree-sitter = { version = "0.27", optional = true }
 # Release/default builds contain only statically linked grammars. Keeping both
 # `dynamic-loading` and `download` disabled removes build-directory .so/.dylib/.dll
 # paths from the shipped CLI. The opt-in downloader feature below enables the
 # language pack's versioned, platform-native dynamic cache for long-tail parsers.
-tree-sitter-language-pack = { version = "1.8", optional = true, default-features = false }
+# The workspace patches this release's grammar build. Recheck vendor/README.adoc
+# when updating so a registry upgrade cannot silently restore full extraction.
+tree-sitter-language-pack = { version = "=1.25.0", optional = true, default-features = false }
 
 [dev-dependencies]
 tempfile = "3"

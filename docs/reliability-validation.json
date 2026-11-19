@@ -1,0 +1,1292 @@
+{
+  "schema_version": 1,
+  "date": "2026-11-15",
+  "source": {
+    "base_commit": "2172e0e35668f69af50cc43d37acb88ee9add297",
+    "state": "uncommitted working tree; earlier changes preserved",
+    "sha256": {
+      "Cargo.toml": "d6d4ee5c7a8a6c9f74ca83632edb7a523e070d098c6dc5bf8cede129f5438d8b",
+      "Cargo.lock": "41fbdebb81fad8c8338fee7b6a082afae0a43c5b174aca9e39172b336ec2481e",
+      ".cargo/config.toml": "6b6075c8a8a8bb30501d3282dc179572a5315509c5de4b5ab5a8ad555ca4e91b",
+      "deny.toml": "e2afbd0058f7adb2bb44c86876537c4ace6305ae5ca492d6350c33337aee6804",
+      "crates/aden-cli/src/main.rs": "57b1608a25e92cbd8a0b16e72e30f2864c21bd2621684c6032669f104c2e29d3",
+      "crates/aden-cli/src/commands/store.rs": "14b4c4fea6710459ecf87ccfc614b8361f38a5428aaa2f40f2e7e0a8c1e6370e",
+      "crates/aden-cli/src/commands/store_clean.rs": "f63714c863cf4912b5393790bc1deae84332abf01874689f4d3ac9aa485770e0",
+      "crates/aden-cli/src/commands/heal.rs": "ee02bb6cd4d0a5c4d56fc3d435392dca98ff7a3d5b37f4c577d5465e82008adb",
+      "crates/aden-cli/tests/store_cleanup.rs": "33219baa5255b14493dddb68a017139bda80028176135a59d59ec51dfc0d0b6f",
+      "crates/aden-parse/src/generic.rs": "6c9b2b7916e8d09c53903e5fcabe9270ad9bc443e0835c90bce7231221c7bb5f",
+      "crates/aden-index/src/lib.rs": "25a3b166d6894c0f4ad7d6e2a5c5710e1dda3dc0f29117b6585dcfb9adcdaa87",
+      "crates/aden-index/src/retrieval_materialization_tests.rs": "2d8970f0fa316108ebf5bda6593020186d7c6f0b21d9dabd2fcfdb3674a56f4a",
+      "crates/aden-lsp/src/main.rs": "335f2d9511850e8f2a85ffb0a9b20a10525c6fd20e7371f57b970f48744f44fa",
+      "crates/aden-mcp/src/main.rs": "1a20ce014aa6cbcf88669aff4673a07511eb568ef8530b8a50464f27ed91bb5b",
+      "crates/aden-mcp/src/lib.rs": "b04173714d85a77ceefcac2299bdf6f3bf326ed809a32d97060db3ef3a1f9591",
+      "crates/aden-mcp/tests/mcp_live_gauntlet.rs": "7c19415ba83db797464e8b1ac542277b51fe22e804e6642c10b48716120e3a3f",
+      "editors/vscode/package.json": "e5244d42ea3aeca2cbdde5b774fb0eb9190d6b699466840493209b09c27d16ec",
+      "editors/vscode/package-lock.json": "1a2d74c0f4b9dbc48300db071300909bed98c927c58196799e08dcd08479878e",
+      "editors/vscode/src/extension.ts": "508e5664604a8ebe559bd1c8ddba8ee8a554e60a6e320f968d1af603125a9b10",
+      "editors/vscode/src/serverCommand.ts": "f3368425f63d98db48b9bc694baddb1673d5330eb5bc3672d03aa7daa30187db",
+      "editors/vscode/tests/extension.test.mjs": "e6ec98bae58c2eb1687e9a4540f50939a13d329df97c01d7004139d364ccfde8",
+      "editors/vscode/tests/serverCommand.test.mjs": "6b9952e422ba7cc36224ea5be3eb97a87decd727d2ed39bb566ffc8a20e5df07",
+      ".github/workflows/quality.yml": "65676e10c527123bd8b3437b9e19f8cfe4281e592eef91066f4db8c14ddaccfe",
+      "crates/aden-parse/src/rust.rs": "7f357767a4058f629d1ca9a04d108dbf0916f5db57693604e55eabfc08af7fa9",
+      "crates/aden-cli/src/indexer/link.rs": "09b7a7cfca88fc021e7cf2fa539479e11bf96cdf26d02fe44d22a0bf5378a844",
+      "crates/aden-cli/src/indexer/gen.rs": "c314f14affc0c5203b30dbfe58f8e20e07c4ae6748c3dce0f947357cfd19e08d",
+      "crates/aden-cli/src/types.rs": "c41369aa1378d013bc54743eb4df572925108e579b4d16c91cd27128b28d7c80",
+      "crates/aden-cli/tests/rust_source_span.rs": "b003de56093439a6b0b0ea45783d9e2372f8c1b34855700e123020ff892094a6",
+      "crates/aden-parse/src/c_resolver.rs": "6c0534155c6df1f7b13b091466c2d079bf8feb3b128f001a9fbac1e07ed8a7fd",
+      "crates/aden-cli/tests/c_declarators.rs": "0482bedb87ef54dc65ff0e98d6e63adedbec9c07d1428d39deec133e1710482a"
+    }
+  },
+  "checks": [
+    {
+      "command": "cargo test --locked --workspace --lib --bins -- --test-threads=1",
+      "compiler": "rustc 1.100.0, x86_64-pc-windows-gnullvm",
+      "passed": 849,
+      "failed": 0,
+      "ignored": 2,
+      "scope": "Default workspace library/binary tests, including LSP. Later changes only relocate an existing test module, remove a redundant test-only borrow, and inherit root package metadata."
+    },
+    {
+      "command": "cargo test --locked -p aden-mcp --test mcp_live_gauntlet",
+      "compiler": "rustc 1.100.0, x86_64-pc-windows-gnullvm",
+      "passed": 5,
+      "failed": 0,
+      "scope": "Actual standalone MCP startup, argv surface precedence, compact registry, path confinement, cold-generation recovery and ambiguous-symbol recovery. CLI consumer compiled from this source with Rust 1.90 bundled linker."
+    },
+    {
+      "command": "store_cleanup integration executable",
+      "compiler": "rustc 1.90.0, x86_64-pc-windows-gnu",
+      "passed": 4,
+      "failed": 0,
+      "scope": "Preview nonmutation, apply/read-back, active writer refusal, preservation of intent/locks, rebuild, portable relocation, shared override refusal, malformed metadata and actual Windows junction refusal."
+    },
+    {
+      "command": "cargo +1.90.0-x86_64-pc-windows-gnu clippy --locked --workspace --all-targets --all-features --keep-going -- -D warnings",
+      "status": "passed",
+      "conditions": "Verified Cargo, rustc and Clippy 1.90.0 by executable PATH. RUSTFLAGS=-C link-self-contained=yes; existing LLVM-MinGW C tools. Two existing vendored Liquid Core compiler warnings remain; workspace lint errors are denied."
+    },
+    {
+      "command": "npm ci --ignore-scripts; npm run compile; npm test",
+      "status": "passed",
+      "node": "22.23.5",
+      "tests_passed": 5,
+      "scope": "Current locked editor dependencies and mocked extension behavior; real VS Code host acceptance not performed."
+    },
+    {
+      "command": "python -m unittest discover -s scripts -p test_*.py",
+      "passed": 99,
+      "failed": 0
+    },
+    {
+      "command": "node --test scripts/test_viewer.cjs scripts/test_simple_viewer.cjs",
+      "passed": 23,
+      "failed": 0
+    },
+    {
+      "command": "cargo fmt --all -- --check; git diff --check",
+      "status": "passed"
+    },
+    {
+      "command": "aden --human check . --severity Forbid; python scripts/validate_roadmap.py",
+      "status": "passed",
+      "roadmap_packets": 15
+    },
+    {
+      "command": "python scripts/update_notice.py --check; SHA256 CHECKSUMS validation",
+      "status": "passed"
+    },
+    {
+      "command": "cargo metadata --locked --no-deps --format-version 1",
+      "status": "passed",
+      "workspace_rust_minimum": "1.90",
+      "root_metadata_inheritance_verified": true
+    },
+    {
+      "command": "cargo-deny policy, NOTICE, vendored checksums, roadmap and documentation checks",
+      "status": "passed"
+    }
+  ],
+  "security": {
+    "rustsec": {
+      "locked_packages": 417,
+      "vulnerabilities": 0,
+      "informational_warnings": 0,
+      "ignored_advisories": 0,
+      "database_commit": "02e2517f457a359fc6d3440ea4560c8ea188fee8",
+      "updated": "2026-11-15"
+    },
+    "npm_lock_audit": {
+      "vulnerabilities": 0
+    },
+    "cargo_deny": {
+      "version": "0.19.8",
+      "command": "cargo-deny --workspace --all-features --locked check",
+      "advisories": "passed",
+      "bans": "passed",
+      "licenses": "passed",
+      "sources": "passed",
+      "duplicate_version_warnings": "existing advisory warnings",
+      "archive_url": "https://github.com/EmbarkStudios/cargo-deny/releases/download/0.19.8/cargo-deny-0.19.8-x86_64-pc-windows-msvc.tar.gz",
+      "archive_sha256": "7db40a864ea299304e3a6c1d9f647fa8f554bb0353e181f63955b21c0dc57cd0",
+      "verification": "Matched official GitHub release asset digest before executing. Local binary/archive removal was rejected by automatic approval review; these temporary files remain."
+    },
+    "source_review": {
+      "independent": true,
+      "resolved_findings": [
+        "Portable store cleanup wrongly rejected relocated checkout metadata",
+        "Standalone MCP environment mutation happened after Tokio worker creation"
+      ],
+      "heuristic_baseline": {
+        "scanned_files": 256,
+        "medium": 14,
+        "high": 0,
+        "critical": 0
+      },
+      "scope": "Production unsafe/FFI matches and changed implementation reviewed. Baseline heuristic matches are not equivalent to confirmed vulnerabilities. No claim of exhaustive vulnerability absence."
+    }
+  },
+  "performance": {
+    "method": "Frozen pre-change eager oracle versus deferred materialization in the same test executable. Complete equal outputs checked; alternating execution order; one 20-query batch per compiler, no concurrent build/test during reported batches.",
+    "corpus_documents": 2000,
+    "query": "May parse query",
+    "provider": "deterministic four-dimensional test provider",
+    "outputs": "all 2000, full input rankings retained",
+    "profile": "unoptimized test profile, debug symbols off, incremental disabled",
+    "measurements": [
+      {
+        "compiler": "1.90.0 Windows GNU",
+        "eager_total_us": 18608304,
+        "deferred_total_us": 17683086,
+        "queries_per_implementation": 20
+      },
+      {
+        "compiler": "1.100.0 Windows GNU LLVM",
+        "eager_total_us": 17738513,
+        "deferred_total_us": 17558995,
+        "queries_per_implementation": 20
+      }
+    ],
+    "limits": "Only small observed timing differences. No reliable production speedup, application-wide gain, real-model inference improvement, allocation count or peak-memory reduction was measured."
+  },
+  "installation": {
+    "rust_default": "stable-x86_64-pc-windows-gnullvm",
+    "rust_version": "1.100.0",
+    "components": [
+      "cargo",
+      "rustc",
+      "rustfmt",
+      "clippy"
+    ],
+    "verification": "Freshly compiled Cargo probe linked and executed; native Aden workspace tests passed",
+    "rust_190_retained": true,
+    "installed_aden": "0.4.4 optimized local candidate, gen-logic-v19; installed and Linux migration verified; no release published",
+    "binaries": {
+      "aden.exe": {
+        "sha256": "cda85b0c10f2e7765ecccf081c05762aabb48e548a5e621762bb066c6209ba1d",
+        "bytes": 63275008
+      },
+      "aden-mcp.exe": {
+        "sha256": "498c031019d8014b16b6e5ec694e41218b14b79d5de256e63e0a847a31d757ac",
+        "bytes": 3276800
+      }
+    },
+    "fallback": {
+      "version": "0.4.1",
+      "directory": "%USERPROFILE%/.local/bin/aden-stable-0.4.1",
+      "binaries": {
+        "aden.exe": {
+          "sha256": "e00532147be048882f86f66fb5561986e4bf2b4c94b63a0db80c42856067a46c",
+          "bytes": 65244672
+        },
+        "aden-mcp.exe": {
+          "sha256": "7d45f5944571e7f900c886518068f494b55ea72a3c8f0d7da6b9076d3f149aed",
+          "bytes": 3609600
+        }
+      },
+      "retention": "One previous known-working pair for rollback; replace rather than accumulate fallbacks"
+    },
+    "release_smoke_after_target_cleanup": {
+      "versions": {
+        "cli": [
+          "aden 0.4.4",
+          "Build:   2172e0e35668 (local-dirty)",
+          "Features: view"
+        ],
+        "mcp": "aden-mcp 0.4.4"
+      },
+      "rust_and_static_python_grammar": true,
+      "gateway_compatible_input_schema_roots": true,
+      "installed_mcp_essential_surface": true,
+      "source_read_confinement_and_recovery": true,
+      "cleanup_preview_apply_and_preservation": true,
+      "invalid_cleanup_target_refused": true,
+      "regeneration_after_cleanup": true
+    },
+    "active_client_note": "CLI C extraction updated; verified unchanged standalone MCP bridge reused and stdio smoke passed."
+  },
+  "release": {
+    "published": false,
+    "tagged": false,
+    "pushed": false,
+    "gates": [
+      "Exact committed candidate platform, shipped-binary and quality workflows",
+      "Real VS Code 1.85 and current host acceptance",
+      "Crates.io packaging must address nonpropagating Liquid Core workspace patch"
+    ],
+    "deferred_options": "No storage engine migration, new logging framework, walker library replacement or ANN dependency was adopted without evidence."
+  },
+  "storage": {
+    "budget_bytes": 5368709120,
+    "free_reserve_bytes": 10737418240,
+    "enforcement": "Instruction and coordinator measurements, not an OS filesystem quota",
+    "observed_target_peak_bytes": 5787822468,
+    "initial_budget_overrun": true,
+    "recovery": "Stopped owned build and used Cargo cleanup, then ran incompatible build phases sequentially",
+    "cleanup_status": "partial: Cargo target removed; npm removed all 13 task-installed packages; TypeScript clean removed generated editor output. Automatic approval review rejected recursive and exact-file removal of the temporary audit tool/archive.",
+    "final_target_bytes": 0,
+    "final_editor_modules_bytes": 70,
+    "final_editor_output_bytes": 0,
+    "retained_validation_directory_bytes": 14251599,
+    "retained_rust_toolchain_bytes": 764943043,
+    "free_volume_bytes": 96404692992,
+    "residual_paths": [
+      ".tmp/implementation-validation/cargo-deny-tool",
+      ".tmp/implementation-validation/cargo-deny.tar.gz"
+    ],
+    "other_retention": "Compact validation/adverse logs and tiny toolchain probe sources retained as evidence. Rust 1.100 toolchain retained for the user's requested working installation.",
+    "latest_install_build": {
+      "source_sha256": {
+        "crates/aden-parse/src/c_resolver.rs": "6c0534155c6df1f7b13b091466c2d079bf8feb3b128f001a9fbac1e07ed8a7fd",
+        "crates/aden-cli/src/types.rs": "c41369aa1378d013bc54743eb4df572925108e579b4d16c91cd27128b28d7c80",
+        "crates/aden-cli/tests/c_declarators.rs": "0482bedb87ef54dc65ff0e98d6e63adedbec9c07d1428d39deec133e1710482a"
+      },
+      "sources_unchanged": true,
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--release",
+        "-p",
+        "aden-cli",
+        "--test",
+        "c_declarators",
+        "--",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "guard_stopped": false,
+      "peak_counted_bytes": 5225505750,
+      "fixed_retained_bytes": 2159597791,
+      "elapsed_seconds": 142.58,
+      "free_bytes": 93632270336,
+      "guard_threshold_bytes": 5315022028,
+      "note": "Sampled process guard, not an OS filesystem quota."
+    },
+    "latest_install_target_removed": true,
+    "obsolete_backup_pruning": "Automatic approval review rejected exact, hash-checked deletion; no bypass attempted"
+  },
+  "mcp_gateway_repair": {
+    "before_source_sha256": "8a742574347a8cab108f13fa7a4fef8c1d28b537ac97cefde76e1ef978c5f1de",
+    "failure": "Actual T3 OpenCode request rejected aden_locate input schema before model execution: top-level anyOf is unsupported",
+    "activation": "User-restarted T3 spawned OpenCode PID 1332 and canonical .local/bin/aden.exe MCP child PID 19208",
+    "change": "Plain object tool schemas; selector requirement documented and unchanged runtime validation retained",
+    "checks": [
+      {
+        "command": "cargo test --locked -p aden-mcp --lib",
+        "compiler": "Rust 1.100.0 GNU LLVM",
+        "passed": 120,
+        "failed": 0,
+        "log": ".tmp/local-install/mcp-schema-tests-final.log"
+      },
+      {
+        "command": "cargo clippy --locked -p aden-mcp --all-targets -- -D warnings",
+        "compiler": "Rust 1.90.0 GNU",
+        "passed": true,
+        "log": ".tmp/local-install/schema-msrv-clippy.log"
+      },
+      {
+        "check": "Enhanced installed MCP schema smoke rejects previous binary",
+        "result": "Expected failure on locate root anyOf",
+        "log": ".tmp/local-install/schema-negative-baseline.log"
+      }
+    ],
+    "review": "Independent source review found no material findings; subsequently corrected assertion debug formatting and passed compilation/tests",
+    "prior_evidence_limit": "Earlier 849 workspace tests predate this schema-only change; affected MCP suite rerun above",
+    "installed_and_model_acceptance": "PASS: release and installed smoke before/after cargo clean; actual OpenCode aden_read and aden_locate calls succeeded, no retry",
+    "model_request": {
+      "provider": "opencode",
+      "selected_model": "opencode/beam-free",
+      "executed_model_metadata": null,
+      "actual_tool_calls": [
+        "aden_read",
+        "aden_locate"
+      ],
+      "selected_root": "C:/Users/example/Projects/aden",
+      "definition": "crates/aden-cli/src/commands/store_clean.rs:89",
+      "freshness": "current",
+      "graph_revision": "032855481a78962b",
+      "read_elapsed_ms": 228,
+      "locate_including_refresh_elapsed_ms": 5757
+    },
+    "installed_profile": "release; debug=0; strip=symbols; incremental=false"
+  },
+  "inline_rust_repair": {
+    "gen_logic_version": 18,
+    "state": "installed and CLI/MCP acceptance passed",
+    "source_sha256": {
+      "crates/aden-parse/src/rust.rs": "7f357767a4058f629d1ca9a04d108dbf0916f5db57693604e55eabfc08af7fa9",
+      "crates/aden-cli/src/indexer/link.rs": "09b7a7cfca88fc021e7cf2fa539479e11bf96cdf26d02fe44d22a0bf5378a844",
+      "crates/aden-cli/src/indexer/gen.rs": "c314f14affc0c5203b30dbfe58f8e20e07c4ae6748c3dce0f947357cfd19e08d",
+      "crates/aden-cli/src/types.rs": "d5a967a4f16f50cf44ef3c396988d763b49744f7486c5eefb9ddda374e9fadff",
+      "crates/aden-cli/tests/rust_source_span.rs": "b003de56093439a6b0b0ea45783d9e2372f8c1b34855700e123020ff892094a6"
+    },
+    "checks": {
+      "rust_190_parser_tests": {
+        "passed": 27,
+        "failed": 0,
+        "resource": "parser-msrv-passed-resource.json"
+      },
+      "rust_190_strict_all_target_clippy": {
+        "passed": true,
+        "resource": "msrv-passed-resource.json"
+      },
+      "linker_tests": {
+        "passed": 25,
+        "failed": 0,
+        "scope": "linker code unchanged after passing run",
+        "resource": "linker-rust-only-final-resource.json"
+      },
+      "parser_full_bundle_before_macro_addition": {
+        "passed": 130,
+        "failed": 0,
+        "resource": "parser-all-final-resource.json"
+      },
+      "native_cli_before_macro_addition": {
+        "passed": 2,
+        "failed": 0,
+        "resource": "cli-integration-resource.json"
+      },
+      "native_cli_final_assertion_fixture": {
+        "passed": 2,
+        "failed": 0,
+        "resource": "cli-assertion-final-resource.json"
+      },
+      "final_release": {
+        "passed": true,
+        "resource": "release-final-resource.json"
+      }
+    },
+    "self_graph": {
+      "locate": {
+        "state": "unique",
+        "anchor": "aden://module/aden-mcp/src#tests::locate_schema_is_portable_across_surfaces_and_runtime_enforces_selector",
+        "file": "crates/aden-mcp/src/lib.rs",
+        "line": "5461"
+      },
+      "freshness": "current",
+      "graph_revision": "c0f10cc7a4b5c4c5",
+      "test_relationships": [
+        "Tests",
+        "Calls"
+      ],
+      "source_hash_verified": true,
+      "outgoing_validation_dependency": true,
+      "caller_symbols_returned": 11,
+      "refresh_observations": [
+        {
+          "exit": 2,
+          "seconds": 5.122,
+          "stderr": "aden: authoritative freshness required, but refresh did not complete within 5s; retry after the active writer finishes or unset ADEN_SKIP_AUTO_GEN\n"
+        },
+        {
+          "exit": 0,
+          "seconds": 0.597,
+          "stderr": ""
+        }
+      ]
+    },
+    "limitations": [
+      "No arbitrary macro expansion; unknown macros and matches! remain opaque",
+      "Assertion reparsing limited to eight passes and 1MiB per body; parse failure preserves ordinary calls",
+      "Cross-file and aliased imports remain conservative heuristics; custom crate root layouts not inferred"
+    ],
+    "evidence": ".tmp/inline-repair/report.json",
+    "baseline_note": "Earlier 849 workspace tests and full130 parser tests predate final assertion extraction; final affected checks are separately recorded.",
+    "storage_note": {
+      "guard_is_os_quota": false,
+      "guard_stops": [
+        "linker-tests-resource.json",
+        "linker-rust-only-resource.json"
+      ],
+      "cleanup": "All task build trees removed by Cargo; installed binaries and existing single stable fallback retained; compact evidence only",
+      "note": "Guard samples filesystem sizes; conservative counted peak in first stopped run overshot the 5GiB ceiling before termination. Removed target before continuing.",
+      "final_target_exists": false,
+      "free_bytes": 96112009216
+    },
+    "mcp_acceptance": {
+      "status": "completed",
+      "selectedModel": "opencode/beam-free",
+      "executedModel": null,
+      "summary": "Symbol: `aden://module/aden-mcp/src#tests::locate_schema_is_portable_across_surfaces_and_runtime_enforces_selector`, defined in `crates/aden-mcp/src/lib.rs:5461-5505`. Backlinks of `validate_args` at depth 1 list this test with `via_edge_types: [\"Tests\",\"Calls\"]`. Source confirms assertion-wrapped `validate_args` calls (`assert!(validate_args(...).is_err())` / `.is_ok()`). Freshness: `current`, graph revision `c0f10cc7a4b5c4c5`, no stale index.",
+      "calls": [
+        {
+          "tool": "aden_locate",
+          "status": "completed",
+          "root": "C:/Users/example/Projects/aden",
+          "freshness": "current",
+          "graph_revision": "c0f10cc7a4b5c4c5",
+          "has_validation_test_edge": false
+        },
+        {
+          "tool": "aden_query",
+          "status": "completed",
+          "root": "C:/Users/example/Projects/aden",
+          "freshness": "current",
+          "graph_revision": "c0f10cc7a4b5c4c5",
+          "has_validation_test_edge": true
+        },
+        {
+          "tool": "aden_read",
+          "status": "completed",
+          "root": "C:/Users/example/Projects/aden",
+          "has_validation_test_edge": false
+        }
+      ]
+    }
+  },
+  "c_graph_repair": {
+    "objective": "Reduce false C graph facts exposed by Linux validation",
+    "base_commit": "2172e0e35668f69af50cc43d37acb88ee9add297",
+    "state": "installed optimized local candidate; prior working-tree edits preserved",
+    "version": "0.4.4",
+    "gen_logic_version": 19,
+    "source_sha256": {
+      "crates/aden-parse/src/c_resolver.rs": "6c0534155c6df1f7b13b091466c2d079bf8feb3b128f001a9fbac1e07ed8a7fd",
+      "crates/aden-cli/src/types.rs": "c41369aa1378d013bc54743eb4df572925108e579b4d16c91cd27128b28d7c80",
+      "crates/aden-cli/tests/c_declarators.rs": "0482bedb87ef54dc65ff0e98d6e63adedbec9c07d1428d39deec133e1710482a"
+    },
+    "changes": [
+      "Classify C declarators by operator nearest the name; preserve functions returning pointers, annotations and mixed declarations",
+      "Exclude object and function-pointer declarations from Function documents",
+      "Retain known-global-object invocations as Indirect callee evidence outside the direct-call compatibility channel",
+      "Invalidate old default project stores so obsolete false symbols disappear"
+    ],
+    "checks": {
+      "rust190_parser_tests": {
+        "passed": 7,
+        "failed": 0,
+        "resource": "parser-verified-resource.json"
+      },
+      "rust190_strict_cli_parser_all_targets": {
+        "passed": true,
+        "resource": "clippy-verified-resource.json"
+      },
+      "native_release_cli_graph_regression": {
+        "passed": 1,
+        "failed": 0,
+        "resource": "release-cli-final-resource.json",
+        "covers": "Two C files with pointer variable and unrelated same-named static function; genuine direct calls, prototype lookup and warm generation"
+      },
+      "installed_smoke": {
+        "versions": {
+          "cli": [
+            "aden 0.4.4",
+            "Build:   2172e0e35668 (local-dirty)",
+            "Features: view"
+          ],
+          "mcp": "aden-mcp 0.4.4"
+        },
+        "rust_and_static_python_grammar": true,
+        "gateway_compatible_input_schema_roots": true,
+        "installed_mcp_essential_surface": true,
+        "source_read_confinement_and_recovery": true,
+        "cleanup_preview_apply_and_preservation": true,
+        "invalid_cleanup_target_refused": true,
+        "regeneration_after_cleanup": true
+      },
+      "linux_unchanged_source_migration": {
+        "linux_commit": "adc218676eef25575469234709c2d87185ca223a",
+        "files": 7,
+        "pointer_variable_is_not_a_function": true,
+        "false_boot_call_edge_absent": true,
+        "real_boot_call_preserved": true,
+        "real_read_chain_preserved": true,
+        "original_source_hash_verified": true,
+        "pointer_source_remains_searchable": true,
+        "freshness": "current",
+        "graph_revision": "1ae7ea38986bc1a8",
+        "unchanged_source_migration": {
+          "old_version": 18,
+          "new_version": 19,
+          "obsolete_anchor_removed": true
+        }
+      }
+    },
+    "reviews": "Independent review findings on attributed wrappers and K&R global-binding scope were fixed. Actual graph test exposed Callee-table fallback recreating suppressed edges; separate Indirect callee channel fixed it. Final bounded review found no material findings.",
+    "negative_evidence": [
+      "../linux-validation/report.json: original Linux misclassification with independent Clang VarDecl oracle",
+      "release-cli.log: initial candidate failed actual foreign-name collision test"
+    ],
+    "installation": {
+      "binaries": {
+        "aden.exe": {
+          "sha256": "cda85b0c10f2e7765ecccf081c05762aabb48e548a5e621762bb066c6209ba1d",
+          "bytes": 63275008
+        },
+        "aden-mcp.exe": {
+          "sha256": "498c031019d8014b16b6e5ec694e41218b14b79d5de256e63e0a847a31d757ac",
+          "bytes": 3276800
+        }
+      },
+      "mcp_reused": true,
+      "mcp_reason": "MCP bridge source and lockfile identities unchanged; existing verified binary reused; installed stdio smoke passed",
+      "profile": "Native Rust 1.100 release, debug=0, strip=symbols, incremental=false"
+    },
+    "limits": [
+      "Known global bare object bindings handled; parameter/local callback binding resolution remains outside this slice",
+      "General macros including Linux syscall declarations require separate support",
+      "Validation uses the pinned seven-file Linux slice; full kernel scale remains untested"
+    ],
+    "storage": {
+      "target_exists": false,
+      "free_bytes": 96404701184,
+      "budget_bytes": 5368709120,
+      "reserve_bytes": 10737418240,
+      "sampled_guard_is_os_quota": false,
+      "peak_counted_native_bytes": 5225505750,
+      "graph_cleanup": {
+        "applied": true,
+        "bytes_removed": 5114328,
+        "generated_entries_verified_absent": true,
+        "entry_names": [
+          "cache",
+          "store",
+          "graph.snapshot",
+          "gen-cache.json"
+        ]
+      },
+      "retention": "Current installed CLI and unchanged MCP bridge; existing single stable fallback. No new retained build tree or binary evidence copy. Previously blocked 425KiB Linux source deletion remains unchanged."
+    },
+    "published": false
+  },
+  "functionality_improvements": {
+    "schema_version": 1,
+    "base_commit": "2172e0e35668f69af50cc43d37acb88ee9add297",
+    "state": "implemented, locally installed and tested; uncommitted, unpublished",
+    "source_sha256": {
+      "crates/aden-asm/src/traverse.rs": "8f19ef4294e770d9baa80e6848cbcd2984809b91d92e0ed16fcfc4f847e675d1",
+      "crates/aden-cli/src/commands/analysis.rs": "8cd854efcc3ffe344d011baecdb0c6a3e33e65dbe7b3b8100860315d26f11bf2",
+      "crates/aden-cli/src/commands/locate.rs": "6980480085919b151f479721c5f9740a6d812cf124a564b9960a72c2e0614758",
+      "crates/aden-cli/src/commands/mod.rs": "05d00ce163ec720c17df86ea2a5bc5638bc0a55137e09d91989b3f7b76f8c274",
+      "crates/aden-cli/src/commands/query.rs": "61ceac3145a1e10559fe9948f4e2377821dc1f2c3fde9f2c5e62f5808bf37c79",
+      "crates/aden-cli/src/indexer/fresh.rs": "9f178e798cc0991bcf699af8f79bbd4350ba1c870136a757a76480e6fbfdb14a",
+      "crates/aden-cli/src/indexer/gen.rs": "c9af7d9f52603246ad03ae13561acea7eef6085a67ac20d4df81454a06154fef",
+      "crates/aden-cli/src/indexer/link.rs": "1b832959013cda0e0f006df54d5dead69be302647e5c4bb9bc623d4119ca3e8e",
+      "crates/aden-cli/src/types.rs": "38e9ed2fb2e116ce21f2ca51f020bc83a03d407df04ac1ad061a4b2fcab1bdc8",
+      "crates/aden-cli/src/util.rs": "baae8a9c2e76c98007bc071e078dc7cecfa178ecb16fe65bbf9878b162360acc",
+      "crates/aden-cli/tests/analysis_limits.rs": "dbf43e77a9c4cddbaed150b5d7c49db23cc5babdb5bdcb518c937b7b7147354d",
+      "crates/aden-parse/Cargo.toml": "79867a9899678e2ed99eb5b96dd1a10aa4df0ba099b1cfc5d4ca6bf57a04dd1a",
+      "crates/aden-parse/src/lib.rs": "67c5d829e56fbf5658ef0886a68c7ff7590d66a24d537b5a7da32efe7e82a6e2",
+      "crates/aden-parse/src/router.rs": "b8a6c761098b04a2d89a0af6ccb2232f7c17b0360d6d1f728bbbab49e755ba54",
+      "crates/aden-parse/src/c_resolver.rs": "9dbdde465f78918157a77877e787d065d0194ab88d8761f645206ec667667ac6",
+      "crates/aden-parse/src/macro_declarations.rs": "176226901d2d6bd0b87f5c14a1769b73d1292a671abd84a4ec6932bc8f279040",
+      "scripts/cargo_budget.py": "5d1a801d6f1625c005ea3bc26456116f4e228ddafa3f487c02f753c8d0744fc0",
+      "scripts/test_cargo_budget.py": "ca11b800c5aa48244e47d2e8f89b7b0b8de2bc9f32f741d46326147d47399b12",
+      "docs/analysis-limits.adoc": "cfa5d5022618c265ba72f702142dc05c001403765751a9dfc172e6938b951f6e",
+      "docs/build-storage.adoc": "ccf3f0deb92040c28cface9d7daaf2c1e07beefaf8ab1a22837bb3bd66f57479",
+      "docs/ai-integration.adoc": "3eee0e73a5115e9c40b02288f134a7a3c0d121c14df0f9804ba2d1bdf9abb08f",
+      "AGENTS.md": "ae15195511f7eda3e3a49f91b5fcb6e453e570aa6030fd14990ad38099bef5bd",
+      "Cargo.lock": "d3494351ae6651aae0b88195b324fa6df9fd533f9d30dcf6529fc97d293a66d3"
+    },
+    "gen_logic_version": 20,
+    "changes": [
+      "Explicit partial semantic analysis, persisted extractor route and macro provenance in CLI/MCP graph answers",
+      "Structured include-table deduplication with source-file attribution and preserved listings/hydration",
+      "Lexically scoped C parameter/local callback binding precision without inferred callback targets",
+      "Opt-in bounded logical C macro API discovery, original source spans and config-sensitive freshness/reuse",
+      "Reusable sampled Cargo output guard with redirect refusal, process cleanup, one target and low-disk settings; project guidance installed"
+    ],
+    "checks": {
+      "native_toolchain": "Rust 1.100 GNU LLVM, release default static grammar bundle",
+      "native_unit_tests": {
+        "passed": 491,
+        "failed": 0,
+        "scope": "aden-asm 39; aden-cli 294; aden-parse 158"
+      },
+      "native_cli_regressions": {
+        "passed": 3,
+        "failed": 0,
+        "scope": "analysis_limits 2; c_declarators 1"
+      },
+      "python_guard_tests": {
+        "passed": 17,
+        "failed": 0
+      },
+      "rust190_strict_clippy": {
+        "passed": true,
+        "scope": "aden-cli, aden-parse, aden-asm; all targets; locked offline"
+      },
+      "formatting": true,
+      "asciidoc_forbid_gate": true,
+      "installed_mcp_smoke": {
+        "versions": {
+          "cli": [
+            "aden 0.4.4",
+            "Build:   2172e0e35668 (local-dirty)",
+            "Features: view"
+          ],
+          "mcp": "aden-mcp 0.4.4"
+        },
+        "rust_and_static_python_grammar": true,
+        "gateway_compatible_input_schema_roots": true,
+        "installed_mcp_essential_surface": true,
+        "source_read_confinement_and_recovery": true,
+        "mcp_analysis_limits_and_verified_source": true,
+        "cleanup_preview_apply_and_preservation": true,
+        "invalid_cleanup_target_refused": true,
+        "regeneration_after_cleanup": true
+      },
+      "linux_checks": {
+        "macro_read_discovered_with_verified_source_and_limits": true,
+        "shared_includes_deduplicated": true,
+        "real_read_chain_preserved_no_false_macro_call": true,
+        "prior_pointer_fix_preserved": true,
+        "source_bytes_unchanged": true
+      },
+      "aden_self_graph": {
+        "anchor": "aden://module/aden-parse/src/macro_declarations.rs#parse_rules",
+        "freshness": "current",
+        "graph_revision": "9996b190081c2a46",
+        "scope": "static_relationships",
+        "source_hash_verified": true,
+        "loader_backlink_preserved": true,
+        "observations": [
+          {
+            "exit_code": 2,
+            "seconds": 5.128,
+            "stderr": "aden: authoritative freshness required, but refresh did not complete within 5s; retry after the active writer finishes or unset ADEN_SKIP_AUTO_GEN\n"
+          },
+          {
+            "exit_code": 0,
+            "seconds": 0.818,
+            "stderr": ""
+          }
+        ]
+      }
+    },
+    "review": {
+      "state": "No remaining material findings in bounded independent source rechecks",
+      "fixed": [
+        "Raw source graph-macro injection",
+        "C line-splice comment false declarations",
+        "Nonregular config open before type check",
+        "Logical macro names becoming automatic callable targets",
+        "Post-render text removal affecting source/LLM contexts",
+        "Guard output redirection and post-launch monitoring recovery"
+      ],
+      "runtime_discovery": "Valid TOML documents initially parsed with Value::from_str; switched to toml::from_str and all positive/negative tests passed. CLI test assertions corrected to account for documented depth-zero query seed, while rejecting actual unexpected relationships."
+    },
+    "installation": {
+      "aden.exe": {
+        "before_sha256": "cda85b0c10f2e7765ecccf081c05762aabb48e548a5e621762bb066c6209ba1d",
+        "candidate_sha256": "8d8bc2f10327cdf6ab644599536d9c8d37f4b32b69612538261f5e7a0d0c96ca",
+        "candidate_bytes": 63393792,
+        "installed_sha256": "8d8bc2f10327cdf6ab644599536d9c8d37f4b32b69612538261f5e7a0d0c96ca"
+      },
+      "aden-mcp.exe": {
+        "before_sha256": "498c031019d8014b16b6e5ec694e41218b14b79d5de256e63e0a847a31d757ac",
+        "candidate_sha256": "498c031019d8014b16b6e5ec694e41218b14b79d5de256e63e0a847a31d757ac",
+        "candidate_bytes": 3276800,
+        "installed_sha256": "498c031019d8014b16b6e5ec694e41218b14b79d5de256e63e0a847a31d757ac"
+      }
+    },
+    "resources": {
+      "native-unit-verified-budget.json": {
+        "exit_code": 0,
+        "guard_stopped": false,
+        "limit_exceeded": false,
+        "cargo_cache_growth_bytes_final": 0,
+        "peak_sampled_budget_counted_bytes": 3059273464,
+        "elapsed_seconds": 172.71
+      },
+      "native-cli-verified-budget.json": {
+        "exit_code": 0,
+        "guard_stopped": false,
+        "limit_exceeded": false,
+        "cargo_cache_growth_bytes_final": 0,
+        "peak_sampled_budget_counted_bytes": 3068565920,
+        "elapsed_seconds": 167.25
+      },
+      "msrv-final-budget.json": {
+        "exit_code": 0,
+        "guard_stopped": false,
+        "limit_exceeded": false,
+        "cargo_cache_growth_bytes_final": 0,
+        "peak_sampled_budget_counted_bytes": 2731220327,
+        "elapsed_seconds": 179.9
+      }
+    },
+    "storage": {
+      "target_absent": true,
+      "free_bytes": 95864389632,
+      "generated_cargo_cache_growth_bytes": 0,
+      "retained_current_project_graph_bytes": 33298535,
+      "retained_graph_reason": "Current Aden repository graph for CLI/MCP navigation; source/intent preserved",
+      "new_temporary_binary_copies": 0,
+      "failed_test_crash_dump_removed_bytes": 511585,
+      "existing_user_owned_legacy_outputs": "Preserved, including previously blocked cleanup targets; no deletion retry"
+    },
+    "limits": [
+      "Macro mappings expose logical source APIs only; no preprocessing, ABI identity, parameter types or macro-body call resolution. Unknown and unsupported constructs remain partial.",
+      "Rust 1.90 GNU full test binary exited 0xc0000005 before tests on this machine; final source passed Rust 1.90 strict Clippy and native Rust 1.100 runtime tests. Cross-platform and MSRV runtime release CI remains required.",
+      "Storage guard is sampled and covers target plus Cargo-cache growth; coordinator counted other retained task outputs separately. It is not an OS quota or code-execution sandbox.",
+      "No commit, push, tag, public release or application restart was performed. Existing live-host reconnection was not claimed."
+    ],
+    "observational_fixture": {
+      "before": {
+        "binary": "aden",
+        "checks": {
+          "semantic_limits_present": false,
+          "static_route_present": false,
+          "real_direct_call_preserved": true,
+          "callback_false_edge_rejected": false,
+          "query_limits_present": false,
+          "generic_symbols_only": false
+        },
+        "context_include_tables": 4,
+        "context_utf8_bytes": 328
+      },
+      "after": {
+        "binary": "C:/Users/example/Projects/aden/target/release/aden.exe",
+        "checks": {
+          "semantic_limits_present": true,
+          "static_route_present": true,
+          "real_direct_call_preserved": true,
+          "callback_false_edge_rejected": true,
+          "query_limits_present": true,
+          "generic_symbols_only": true
+        },
+        "context_include_tables": 1,
+        "context_utf8_bytes": 220
+      },
+      "limits": "Same synthetic source fixture and understand command; UTF-8 context bytes only. Parser precision and assembly both changed. Not token, latency, whole-response, full-kernel or productivity measurements."
+    }
+  },
+  "bounded_generation_2026_11_17": {
+    "schema_version": 1,
+    "date": "2026-11-17",
+    "source": {
+      "base_commit": "2172e0e35668f69af50cc43d37acb88ee9add297",
+      "state": "uncommitted working tree; earlier changes preserved",
+      "sha256": {
+        "crates/aden-parse/src/asciidoc.rs": "0b779da49fccfdfa5751ec85ff7990844246986030f0e5131d07de20f6c0b997",
+        "crates/aden-parse/src/c_resolver.rs": "f523583856606fa79f29ac087fbfa9570a813f4e7bbe2cd536d50b3a5796bb20",
+        "crates/aden-parse/src/csharp_resolver.rs": "a5cb5a35127eaaddbb8b81b529a535763707f076a1c42653e5b6b4063fae4520",
+        "crates/aden-parse/src/csv.rs": "ceecb265d437026cbdd6acb523773fe4c045c2e5a2e55ed36339ef91ebe81268",
+        "crates/aden-parse/src/extractor.rs": "8fe8d85b4fd00ba36d259d9d29a1b940cf7460a168fefa02fde0b3cbf5111031",
+        "crates/aden-parse/src/generic.rs": "2437ef65083b28cc76b14a6944c54776107d8e9330b23f7ded30efd73c78575a",
+        "crates/aden-parse/src/go_resolver.rs": "7308214b4a2152f06bafd29076b573bfe4617ac0385edcd3255de725d2085c1c",
+        "crates/aden-parse/src/java_resolver.rs": "11f5baae3396edd3c26b7bdbce550cf38bc6c673bc7ed3f34c29e052867ae5fa",
+        "crates/aden-parse/src/kotlin_resolver.rs": "08008c16c1f4e9c77f3d00cfeb2871285857b1a646abd9cf7cae1e4bb44efa65",
+        "crates/aden-parse/src/markdown.rs": "22bf276deccdcc0561597d976e6ccebaf942fa62208b9b4c06553d99a8628b36",
+        "crates/aden-parse/src/php_resolver.rs": "9d471541c3e5362548fe7e481af0716e682b467d1ec2ca0bfcafff5c5393332a",
+        "crates/aden-parse/src/plaintext.rs": "c436004fc51d7ac3b9f431e63fbc90c18df72060e352f8d8d9853a7992b892fb",
+        "crates/aden-parse/src/ruby_resolver.rs": "a14e1973d39936835432afbfe29714c73b1bf13485eb3599a410d6b00b6c72e5",
+        "crates/aden-parse/src/rust.rs": "2229e0b794c72d6b419caf468114d21899cb3ba2e39696f29fa885d86941b736",
+        "crates/aden-parse/src/tests.rs": "3cd04bc879285c06caf007e99d4c76c126a168683e128db996eba9b78f87cc7d",
+        "Cargo.toml": "d6d4ee5c7a8a6c9f74ca83632edb7a523e070d098c6dc5bf8cede129f5438d8b",
+        "Cargo.lock": "d3494351ae6651aae0b88195b324fa6df9fd533f9d30dcf6529fc97d293a66d3",
+        ".cargo/config.toml": "6b6075c8a8a8bb30501d3282dc179572a5315509c5de4b5ab5a8ad555ca4e91b",
+        "crates/aden-cli/src/types.rs": "4ec2ac6da3ece221a275c3293a14eb53e583800bf62d037a1cbcb749d410916e",
+        "crates/aden-cli/src/indexer/gen.rs": "5d9228c6f17c3b33fce23ee4c8546a352e9220e28f230d089f60ed5d6491de51",
+        "crates/aden-cli/src/indexer/bounded.rs": "d74687890b50ea163f7b2c7b7a859bce299430e44e9f6e64eeac0ac219868885",
+        "crates/aden-cli/src/indexer/bounded_diagnostic.rs": "9d04ca9f7dd71269862c3b7bc58c7b7c239e991955dbe975cab34a06060ec256",
+        "crates/aden-cli/src/indexer/generation_job.rs": "9fccb31df8efbd83efacd447771eaa7d0919b0f37f37485ee2d8e9dcd9e4b724",
+        "crates/aden-cli/tests/bounded_generation.rs": "00dc1f6d552482d0b72d356aeac12c61b02025f82e4aa3944909a25405c7cb30",
+        "crates/aden-graph/src/snapshot.rs": "f33a333b1f7ffa813eb513285230561dc395ed69709f1f2f7fb06c63a2d7f742",
+        "crates/aden-graph/src/snapshot/storage.rs": "d6c289d597f563b989ca8183227b231fe08add688a8013a57fbdd0eb52effa67",
+        "crates/aden-graph/src/snapshot/storage/tests.rs": "6ae11abe95104a0ad540fb486c36ef67b46c7a839e293c0b70ff361cdf97385e",
+        "scripts/cargo_budget.py": "20e07ade95ca311040cf8ae3ab61a40685de54612fcedfdb6530cdc2088516de",
+        "scripts/test_cargo_budget.py": "bbe44835e54a567717fc2846d743303eb629e82471cee00b8779dc5fd65ebaa9"
+      }
+    },
+    "implementation": {
+      "metadata": "one CodeSource per supplied parser input; configured C macros remain a separate per-file pass",
+      "batch_files": 32,
+      "batch_source_bytes": 8388608,
+      "oversized_file": "processed completely in a single-file batch",
+      "global_state_retained": [
+        "link facts",
+        "edges",
+        "anchors",
+        "encountered overlaid-anchor baselines"
+      ],
+      "snapshot_format": "unchanged v1 fields; documents fetched individually",
+      "generation_logic_version": 21,
+      "relative_file_recovery": "bare filename resolves from current project directory"
+    },
+    "checks": {
+      "native_release": {
+        "unit_passed": 525,
+        "integration_passed": 6,
+        "ignored_diagnostics": 3,
+        "log": "release-final.log"
+      },
+      "earlier_native_workspace_unit_suites": {
+        "passed": 909,
+        "ignored": 4,
+        "method": "Cargo until integration fixture failure, then remaining already-compiled unit executables",
+        "production_delta_afterward": "bare-relative-file root fix, covered by final native debug/release checks"
+      },
+      "native_debug": {
+        "bounded_generation_passed": 6,
+        "generation_lifecycle_passed": 6,
+        "merge_engine_passed": 7,
+        "log": "native-debug-accepted.log"
+      },
+      "storage_guard_python_passed": 27,
+      "rust_1_90": {
+        "strict_workspace_all_targets_all_features_clippy": "passed on final production source",
+        "toolchain": "1.90.0-x86_64-pc-windows-gnu",
+        "runtime": "not rerun: prior backend crashes before tests; native 1.100 runtime validation used",
+        "later_test_only_delta": "source-file count assertion corrected from 65 to 66 to include Cargo.toml"
+      },
+      "formatting": "passed",
+      "installed_cli_mcp_smoke": {
+        "versions": {
+          "cli": [
+            "aden 0.4.4",
+            "Build:   2172e0e35668 (local-dirty)",
+            "Features: view"
+          ],
+          "mcp": "aden-mcp 0.4.4"
+        },
+        "rust_and_static_python_grammar": true,
+        "gateway_compatible_input_schema_roots": true,
+        "installed_mcp_essential_surface": true,
+        "source_read_confinement_and_recovery": true,
+        "mcp_analysis_limits_and_verified_source": true,
+        "cleanup_preview_apply_and_preservation": true,
+        "invalid_cleanup_target_refused": true,
+        "regeneration_after_cleanup": true
+      },
+      "linux_seven_file_slice": {
+        "macro_read_discovered_with_verified_source_and_limits": true,
+        "shared_includes_deduplicated": true,
+        "real_read_chain_preserved_no_false_macro_call": true,
+        "prior_pointer_fix_preserved": true,
+        "source_bytes_unchanged": true
+      },
+      "independent_review": "metadata, recovery, snapshot and relative-file root fixes reviewed; build-identity findings fixed with focused regressions",
+      "asciidoc_forbid": {
+        "counts": {
+          "errors": 0,
+          "info": 7,
+          "warnings": 0
+        },
+        "ok": true,
+        "policy_mode": "advisory",
+        "policy_unwired": false,
+        "policy_violations": [
+          {
+            "message": "Never expose secrets, keys, or tokens in committed files",
+            "severity": "Forbid",
+            "source": "bootstrap"
+          },
+          {
+            "message": "Never commit generated build artifacts (contracts/, .aden/, node_modules/, target/)",
+            "severity": "Forbid",
+            "source": "bootstrap"
+          },
+          {
+            "message": "All code must build before commit",
+            "severity": "Warn",
+            "source": "bootstrap"
+          },
+          {
+            "message": "All tests must pass before commit",
+            "severity": "Warn",
+            "source": "bootstrap"
+          },
+          {
+            "message": "No TODO/unimplemented stubs in production paths",
+            "severity": "Warn",
+            "source": "bootstrap"
+          }
+        ],
+        "result": {
+          "advisory_findings": 0,
+          "blocking_findings": 0,
+          "complete": true,
+          "freshness_outcome": "not_evaluated",
+          "graph_health": "healthy",
+          "outcome": "clean",
+          "policy_outcome": "advisory_findings",
+          "result_state": "empty",
+          "schema_version": 1
+        },
+        "top_issues": [
+          "INFO: All <<refs>> resolve.",
+          "INFO: No include cycles detected.",
+          "INFO: No actionable orphans (45 expected metadata doc(s) have no edges, which is normal).",
+          "INFO: All source_hash values valid.",
+          "INFO: All typed edges valid.",
+          "INFO: All contracts complete.",
+          "INFO: All documentation path references resolve."
+        ],
+        "truncated": false
+      },
+      "self_graph": {
+        "binary": "C:/Users/example/.local/bin/aden.exe",
+        "attempts": [
+          {
+            "exit_code": 2,
+            "stderr_tail": "aden: authoritative freshness required, but refresh did not complete within 5s; retry after the active writer finishes or unset ADEN_SKIP_AUTO_GEN\n"
+          },
+          {
+            "exit_code": 0,
+            "stderr_tail": ""
+          }
+        ],
+        "anchor": "aden://module/aden-parse/src/extractor.rs#CodeSource",
+        "source_hash_verified": true,
+        "freshness": "current",
+        "graph_revision": "d56e6a8748bdc076",
+        "context_utf8_bytes": 1221,
+        "analysis": {
+          "absence_is_proof": false,
+          "completeness": "partial",
+          "language": "rust",
+          "limitations": [
+            "unexpanded_macros",
+            "indirect_calls",
+            "runtime_dispatch"
+          ],
+          "observed_indirect_calls": 0,
+          "schema_version": 1,
+          "scope": "static_relationships"
+        }
+      },
+      "installed_after_target_cleanup": {
+        "versions": {
+          "cli": [
+            "aden 0.4.4",
+            "Build:   2172e0e35668 (local-dirty)",
+            "Features: view"
+          ],
+          "mcp": "aden-mcp 0.4.4"
+        },
+        "rust_and_static_python_grammar": true,
+        "gateway_compatible_input_schema_roots": true,
+        "installed_mcp_essential_surface": true,
+        "source_read_confinement_and_recovery": true,
+        "mcp_analysis_limits_and_verified_source": true,
+        "cleanup_preview_apply_and_preservation": true,
+        "invalid_cleanup_target_refused": true,
+        "regeneration_after_cleanup": true
+      },
+      "chart": "Data/medians independently checked; actual desktop/mobile previews passed with no console errors. Offline skill checker unavailable through Windows python3 alias."
+    },
+    "fixture": {
+      "source_bytes": 8774891,
+      "eligible_inputs": 66,
+      "generated_contracts": 8256,
+      "source_archive_bytes": 96261,
+      "source_archive_sha256": "4d8631418b772c731c732e709eb96ef63dd69b187dba91cbacc5ca23191d2123",
+      "archive": "fixture-source.zip",
+      "preparation": "source generated before timing; unchanged SHA-256 manifest checked before every run; fresh ADEN_DATA_DIR per run; alternating policies/builds",
+      "scope": "synthetic documented Rust workload, not a whole Linux benchmark"
+    },
+    "cli_comparison": {
+      "baseline_sha256": "8d8bc2f10327cdf6ab644599536d9c8d37f4b32b69612538261f5e7a0d0c96ca",
+      "candidate_sha256": "5bb3a4b1e598b03cbf43862c50b0208ff26b72ac243db4c8dfff62bcb6bf5a43",
+      "summary": {
+        "installed_baseline": {
+          "peak_working_set_bytes": {
+            "median": 135446528,
+            "min": 135127040,
+            "max": 135942144,
+            "samples": 3
+          },
+          "process_cpu_seconds": {
+            "median": 5.5,
+            "min": 5.453125,
+            "max": 5.734375,
+            "samples": 3
+          },
+          "wall_seconds": {
+            "median": 2.276283,
+            "min": 2.269398,
+            "max": 3.437087,
+            "samples": 3
+          }
+        },
+        "candidate": {
+          "peak_working_set_bytes": {
+            "median": 94752768,
+            "min": 91078656,
+            "max": 109395968,
+            "samples": 3
+          },
+          "process_cpu_seconds": {
+            "median": 2.90625,
+            "min": 2.765625,
+            "max": 3.125,
+            "samples": 3
+          },
+          "wall_seconds": {
+            "median": 2.283165,
+            "min": 2.122139,
+            "max": 5.850001,
+            "samples": 3
+          }
+        }
+      },
+      "memory_reduction_percent": 30.04415144550623,
+      "cpu_reduction_percent": 47.15909090909091,
+      "latency_conclusion": "median wall time essentially unchanged; candidate outlier means no reliable latency gain established",
+      "counts_scope": "CLI traces report input/contract counts; normalized graph parity comes from separate policy diagnostic"
+    },
+    "policy_comparison": {
+      "same_executable_sha256": "b38059f84221d6f20b43b5e7e3189d650b44bbd47b31d58ddbf866314e85d022",
+      "summary": {
+        "legacy": {
+          "metrics": {
+            "peak_working_set_bytes": {
+              "median": 117760000,
+              "min": 117477376,
+              "max": 118071296,
+              "samples": 3
+            },
+            "process_cpu_seconds": {
+              "median": 3.6875,
+              "min": 3.609375,
+              "max": 3.703125,
+              "samples": 3
+            },
+            "wall_seconds": {
+              "median": 3.00103,
+              "min": 2.647205,
+              "max": 3.359803,
+              "samples": 3
+            }
+          },
+          "generation_ms": {
+            "median": 2177.3734,
+            "min": 1814.9114,
+            "max": 2412.0731,
+            "samples": 3
+          }
+        },
+        "bounded": {
+          "metrics": {
+            "peak_working_set_bytes": {
+              "median": 93708288,
+              "min": 91459584,
+              "max": 95014912,
+              "samples": 3
+            },
+            "process_cpu_seconds": {
+              "median": 3.78125,
+              "min": 3.625,
+              "max": 3.875,
+              "samples": 3
+            },
+            "wall_seconds": {
+              "median": 2.898006,
+              "min": 2.893116,
+              "max": 2.922054,
+              "samples": 3
+            }
+          },
+          "generation_ms": {
+            "median": 2059.0321,
+            "min": 2036.6309999999999,
+            "max": 2067.1333,
+            "samples": 3
+          }
+        }
+      },
+      "normalized_facts": {
+        "documents": 8258,
+        "edges": 24706,
+        "document_digest": "b988031f76299e0b",
+        "edge_digest": "2834ca2b1638f98a"
+      },
+      "canonicalization": "sort document/edge hashes; normalize fixture prefix; omit only last-verified/last_verified timestamps",
+      "legacy_meaning": "all-at-once parsing with new metadata and streamed snapshot publication; not the installed old executable"
+    },
+    "metadata_helper": {
+      "fixture_bytes": 136484,
+      "symbols": 128,
+      "repetitions": 3,
+      "normalized_parity": true,
+      "legacy_reads": 384,
+      "shared_reads": 0,
+      "legacy_hash_bytes": 52409856,
+      "shared_hash_bytes": 409452,
+      "scope": "helper microdiagnostic; parser still reads inputs; no application-wide speed multiplier claim"
+    },
+    "storage": {
+      "task_ceiling_bytes": 5368709120,
+      "reserve_bytes": 10737418240,
+      "adverse": "earlier package-selection switch duplicated grammar output and exceeded task cap before sampled stop; reserve not breached; target cleaned",
+      "adverse_report": "workspace-release-budget.json",
+      "mitigation": "build identity v2 rejects incompatible/unmarked/corrupt targets and unsupported compiler-affecting switches; configurations cleaned sequentially",
+      "guard_type": "sampled monitoring, not OS-enforced quota",
+      "accepted_checks": {
+        "workspace-release-fresh-budget.json": {
+          "exit_code": 101,
+          "guard_stopped": false,
+          "limit_exceeded": false,
+          "stop_reason": null,
+          "target_bytes_at_start": 0,
+          "target_bytes_final": 3469696891,
+          "cargo_cache_bytes_at_start": 1637291220,
+          "cargo_cache_bytes_final": 1637291220,
+          "cargo_cache_growth_bytes_final": 0,
+          "peak_sampled_budget_counted_bytes": 3472021048,
+          "budget_bytes": 3650722201,
+          "target_volume_free_bytes_at_start": 71441170432,
+          "cargo_cache_volume_free_bytes_at_start": 71441170432,
+          "target_volume_free_bytes_final": 67779342336,
+          "cargo_cache_volume_free_bytes_final": 67779342336,
+          "reserve_bytes": 11274289152,
+          "elapsed_seconds": 606.61,
+          "target_dir": "C:\\Users\\example\\Projects\\aden\\target",
+          "cargo_output_config_keys_overridden": [],
+          "note": "Sampled process guard, not an OS filesystem quota; brief spikes between samples may be missed."
+        },
+        "native-debug-accepted-budget.json": {
+          "exit_code": 0,
+          "guard_stopped": false,
+          "limit_exceeded": false,
+          "stop_reason": null,
+          "target_bytes_at_start": 3286617938,
+          "target_bytes_final": 3286617938,
+          "cargo_cache_bytes_at_start": 1637291220,
+          "cargo_cache_bytes_final": 1637291220,
+          "cargo_cache_growth_bytes_final": 0,
+          "peak_sampled_budget_counted_bytes": 3286617938,
+          "budget_bytes": 3650722201,
+          "target_volume_free_bytes_at_start": 67412508672,
+          "cargo_cache_volume_free_bytes_at_start": 67412508672,
+          "target_volume_free_bytes_final": 67076841472,
+          "cargo_cache_volume_free_bytes_final": 67076841472,
+          "reserve_bytes": 11274289152,
+          "elapsed_seconds": 196.53,
+          "target_dir": "C:\\Users\\example\\Projects\\aden\\target",
+          "cargo_output_config_keys_overridden": [],
+          "note": "Sampled process guard, not an OS filesystem quota; brief spikes between samples may be missed."
+        },
+        "msrv-clippy-budget.json": {
+          "exit_code": 0,
+          "guard_stopped": false,
+          "limit_exceeded": false,
+          "stop_reason": null,
+          "target_bytes_at_start": 0,
+          "target_bytes_final": 3121681393,
+          "cargo_cache_bytes_at_start": 1637291220,
+          "cargo_cache_bytes_final": 1637291220,
+          "cargo_cache_growth_bytes_final": 0,
+          "peak_sampled_budget_counted_bytes": 3121681393,
+          "budget_bytes": 3650722201,
+          "target_volume_free_bytes_at_start": 70849224704,
+          "cargo_cache_volume_free_bytes_at_start": 70849224704,
+          "target_volume_free_bytes_final": 67581104128,
+          "cargo_cache_volume_free_bytes_final": 67581104128,
+          "reserve_bytes": 11274289152,
+          "elapsed_seconds": 279.7,
+          "target_dir": "C:\\Users\\example\\Projects\\aden\\target",
+          "cargo_output_config_keys_overridden": [],
+          "note": "Sampled process guard, not an OS filesystem quota; brief spikes between samples may be missed."
+        },
+        "release-final-budget.json": {
+          "exit_code": 0,
+          "guard_stopped": false,
+          "limit_exceeded": false,
+          "stop_reason": null,
+          "target_bytes_at_start": 0,
+          "target_bytes_final": 3242667229,
+          "cargo_cache_bytes_at_start": 1637291220,
+          "cargo_cache_bytes_final": 1637291220,
+          "cargo_cache_growth_bytes_final": 0,
+          "peak_sampled_budget_counted_bytes": 3242667229,
+          "budget_bytes": 3650722201,
+          "target_volume_free_bytes_at_start": 70273196032,
+          "cargo_cache_volume_free_bytes_at_start": 70273196032,
+          "target_volume_free_bytes_final": 66841423872,
+          "cargo_cache_volume_free_bytes_final": 66841423872,
+          "reserve_bytes": 11274289152,
+          "elapsed_seconds": 480.16,
+          "target_dir": "C:\\Users\\example\\Projects\\aden\\target",
+          "cargo_output_config_keys_overridden": [],
+          "note": "Sampled process guard, not an OS filesystem quota; brief spikes between samples may be missed."
+        }
+      },
+      "cleanup": {
+        "state": "complete",
+        "current_cli_bytes": 63416832,
+        "unchanged_bridge_bytes": 3276800,
+        "in_use_old_cli_bytes": 63393792,
+        "in_use_old_cli_consumers": 10,
+        "task_evidence_bytes": 921790,
+        "target_exists": false,
+        "benchmark_temp_exists": false,
+        "free_bytes": 70063890432,
+        "retention_reason": "Current CLI/MCP consumers, one mapped old executable until its existing MCP processes exit, compact benchmark sources/results, and the active project graph."
+      },
+      "active_project_graph": {
+        "snapshot": "C:\\Users\\example\\AppData\\Roaming\\aden\\projects\\710dd2af888c325b\\graph.snapshot",
+        "store": "C:\\Users\\example\\AppData\\Roaming\\aden\\projects\\710dd2af888c325b\\store",
+        "reason": "retained for normal CLI/MCP navigation"
+      }
+    },
+    "installation": {
+      "cli_sha256": "5bb3a4b1e598b03cbf43862c50b0208ff26b72ac243db4c8dfff62bcb6bf5a43",
+      "bridge_sha256": "498c031019d8014b16b6e5ec694e41218b14b79d5de256e63e0a847a31d757ac",
+      "generation_logic_version": 21,
+      "retained_in_use_binary_count": 1,
+      "removal_condition": "Remove the old executable after the preexisting MCP processes exit."
+    },
+    "publication": {
+      "published": false,
+      "remaining": "exact committed candidate platform, shipped-binary and quality release gates remain with user"
+    },
+    "artifacts": {
+      "cli-comparison.json": {
+        "sha256": "37d1db9b0c0f9bc8768970b70a9e1a8d9ab2a37913c4d55ecbc2e1642b2930dc"
+      },
+      "comparison-final.json": {
+        "sha256": "c699a0cc9d2c324229012a551f90650b42a068193c53cd37c97306e5196468ed"
+      },
+      "comparison-v2.json": {
+        "sha256": "20aae8841b86ebbbacaedabb38b9d4dd6655432ef5e5e48983e77484a7e312cb"
+      },
+      "metadata-diagnostic.err": {
+        "sha256": "3aa1aba7543db3d0c2a9242a961c6a4ed00ae64ef0b3b2e6d4dc425c25705138"
+      },
+      "installed-smoke.json": {
+        "sha256": "89fe804da11bf53b183651fc7d08d2d6893df29767208f30f95c7b32f4548c73"
+      },
+      "linux.json": {
+        "sha256": "2b1c022e28456f545d65e5c21560f48e97fc1fb98774482ac80851c1f64b8dfb"
+      },
+      "cleanup.json": {
+        "sha256": "6ffc84cd537de9df697191c1b37eac55629526567fb30820186e2f1afe067c9c"
+      },
+      "self-acceptance.json": {
+        "sha256": "85c12bde32f67ed845f45b9b4f1360fd8ce8356499fbdf94d67ab49cc27312c2"
+      },
+      "installed-after-cleanup-smoke.json": {
+        "sha256": "89fe804da11bf53b183651fc7d08d2d6893df29767208f30f95c7b32f4548c73"
+      },
+      "adoc-final.log": {
+        "sha256": "928afa5ca9682ad3a4b132586f139ea7606913e03ecc3b2ab8b71f4de8c5ebf4"
+      },
+      "aden-generation-resources.html": {
+        "sha256": "eb8498bbc2c87c882cbaf8c8c99a25c60f63aa68efbc87d618a53a9d8ba18cb7"
+      }
+    }
+  }
+}

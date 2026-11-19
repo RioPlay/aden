@@ -25,6 +25,9 @@ separately buildable features and are not implied by a standard binary bundle.
 The bundled installers copy the adjacent prebuilt executables; they never invoke
 Cargo and never edit PATH, shell profiles, MCP configuration, or project files.
 Existing binaries require `--force` / `-Force` before replacement.
+If an upgrade fails, the installer restores any backups it can and prints
+the recovery path for backups it retains. Restart existing MCP clients after
+a successful upgrade so they launch the updated binaries.
 
 == Maintainer workflow
 
@@ -32,11 +35,13 @@ The authoritative workflow is `.github/workflows/release.yml`.
 
 . Update the workspace version and `Cargo.lock`.
 . Move the relevant changelog entries under an exact `## [X.Y.Z]` heading.
-. Merge the release commit to `main` and ensure ordinary CI is green.
+. Merge the release commit to `main` and verify ordinary CI and the Quality Gate
+  for that commit.
 . Run the Release workflow manually with version `X.Y.Z`. This dry run builds,
   packages, attests, downloads, installs, and smokes all target bundles without
-  publishing a GitHub Release. The consumption smoke indexes source after
-  artifact transfer, proving bundled grammars do not depend on the build tree.
+  publishing a GitHub Release. The consumption smoke checks Rust and Go
+  definitions after artifact transfer and verifies a literal source read
+  through both installed MCP entry points.
 . Create and push annotated tag `vX.Y.Z` at the reviewed commit.
 . The tag workflow repeats the release gate and creates a *draft* GitHub Release.
 . Review generated notes, bundle list, `SHA256SUMS`, and attestations, then publish
@@ -66,12 +71,15 @@ ADEN_BIN="$(pwd)/target/debug/aden" cargo test -p aden-mcp --test mcp_live_gaunt
 ----
 
 `scripts/test-release-bundle.sh` uses fixture executables to prove deterministic
-archives, checksum validation, overwrite refusal, forced update, and uninstall.
+archives, checksum validation, overwrite refusal, failed-upgrade recovery, and
+uninstall.
 Passing an archive, target, and version validates a real bundle without executing
 foreign-target binaries. `scripts/test-release-portability.sh` is the slower
 host-native grammar smoke and requires Python 3 in addition to the Rust
 toolchain. The release workflow additionally executes each bundle on a native,
 post-transfer runner and requires installed Rust and Go parses to succeed.
+Run `python3 scripts/test-release-mcp-pair.py <install-dir> <version>` to verify
+the installed pair's versions and MCP source reads locally (`python` on Windows).
 
 For an optional read-only cross-project check, `scripts/test-upstream-gauntlet.py`
 uses Python, Go, Rust, and TypeScript repositories under `~/Projects/upstream`.

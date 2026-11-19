@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
+rust-version.workspace = true
 
 [[bin]]
 name = "aden"
@@ -26,7 +27,7 @@ aden-heal = { version = "0.4.3", path = "../aden-heal" }
 aden-propose = { version = "0.4.3", path = "../aden-propose" }
 aden-policy = { version = "0.4.3", path = "../aden-policy" }
 regex = "1.11"
-dirs = "6"
+dirs = "7"
 toml_edit = "0.25"
 walkdir = "2"
 toml = "1"

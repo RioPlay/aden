@@ -36,7 +36,7 @@ pub fn serialize<T: Serialize>(value: &T) -> Result<Vec<u8>, StoreError> {
 }
 
 /// Deserialize bytes to any serde-compatible type using Postcard.
-pub fn deserialize<T: for<'a> Deserialize<'a>>(bytes: &[u8]) -> Result<T, StoreError> {
+pub fn deserialize<'a, T: Deserialize<'a>>(bytes: &'a [u8]) -> Result<T, StoreError> {
     postcard::from_bytes(bytes).map_err(|e| StoreError::Serialization(e.to_string()))
 }
 
@@ -153,8 +153,8 @@ pub struct SymbolCandidateLookup {
     /// Compact lexicon records inspected after exact-key probes. Zero means an
     /// exact natural-name index hit avoided a full anchor/record scan.
     pub records_scanned: usize,
-    /// Number of records that passed cheap length/substring gates and required
-    /// Levenshtein evaluation.
+    /// Number of normalized forms sent to Levenshtein evaluation after cheap
+    /// length/substring gates, counting identical forms within a record once.
     pub distance_evaluations: usize,
     pub exact_index_hit: bool,
 }
@@ -206,15 +206,14 @@ pub trait GraphStorage: Send + Sync {
     /// `delete_node` cascade this automatically.
     fn delete_base_snapshot(&self, anchor: &str) -> Result<(), StoreError>;
 
-    /// Persist a batch of documents together with their base snapshots in one
-    /// atomic write.
+    /// Persist a batch of documents together with their base snapshots.
     ///
     /// Each entry is a `(document, base_snapshot)` pair, where `base_snapshot`
     /// is the `emit_contract_document` text for that exact document (see
     /// [`put_base_snapshot`](Self::put_base_snapshot)). `gen` writes a contract
-    /// and its merge base together, so batching them turns 2*N individual
-    /// journal appends into one, and the commit is atomic — a crash never
-    /// leaves a document without its base (or vice-versa).
+    /// and its merge base together. The Fjall override uses one atomic batch
+    /// across documents, bases and their derived indexes. Durability still
+    /// requires a successful `flush` after committing.
     ///
     /// Callers MUST keep all anchors within a single call distinct: an atomic
     /// batch assigns one sequence number to every item, so two entries sharing
@@ -223,7 +222,9 @@ pub trait GraphStorage: Send + Sync {
     /// files in sorted order, so cross-file basename collisions still resolve
     /// last-sorted-source-wins.
     ///
-    /// Default impl falls back to per-item `put_document` + `put_base_snapshot`.
+    /// The default falls back to per-item `put_document` + `put_base_snapshot`
+    /// and is NOT atomic. Callers requiring atomicity must use a backend whose
+    /// override provides it, rather than relying on this trait's default.
     fn put_documents_bulk(&self, docs: &[(Document, String)]) -> Result<(), StoreError> {
         for (doc, snapshot) in docs {
             self.put_document(doc)?;

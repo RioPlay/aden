@@ -55,6 +55,12 @@ fn navigation_actions_match_mcp_schemas_and_cli_argument_mapping() {
     let scope = Path::new("a project with 'quotes' and $(shell syntax)");
     for action in [
         navigation::inspect("aden://module/src/lib.rs#target", scope, "Inspect a hit"),
+        navigation::backlinks(
+            "aden://module/src/lib.rs#target",
+            scope,
+            "Find callers and references to this symbol",
+        ),
+        navigation::locate_symbol("target", scope, "Choose an exact symbol"),
         navigation::search(
             "--help 'quoted' $(echo unsafe) `unsafe`",
             scope,
@@ -69,6 +75,99 @@ fn navigation_actions_match_mcp_schemas_and_cli_argument_mapping() {
     ] {
         assert_action_matches_schema_and_cli(&action.expect("bounded action"));
     }
+}
+
+#[test]
+fn grep_backlinks_action_is_executable_on_the_default_surface() {
+    let anchor = "aden://module/src/lib.rs#target";
+    let action = navigation::backlinks(anchor, Path::new("trusted workspace"), "Find callers")
+        .expect("bounded action");
+    assert_eq!(action["tool"], "query");
+    assert_eq!(action["arguments"]["backlinks"], anchor);
+    assert_action_matches_schema_and_cli(&action);
+    assert!(tool_enabled("query", Tier::Essential));
+    for name in action["arguments"].as_object().unwrap().keys() {
+        assert!(essential_arg_visible("query", name));
+    }
+    assert!(navigation::backlinks(&"x".repeat(4096), Path::new("."), "Find callers").is_none());
+}
+
+#[test]
+fn grep_locate_action_is_executable_on_the_default_surface() {
+    let action =
+        navigation::locate_symbol("target", Path::new("trusted workspace"), "Choose a symbol")
+            .expect("bounded action");
+    assert_eq!(action["tool"], "locate");
+    assert_eq!(action["arguments"]["symbol"], "target");
+    assert_action_matches_schema_and_cli(&action);
+    assert!(tool_enabled("locate", Tier::Essential));
+    for name in action["arguments"].as_object().unwrap().keys() {
+        assert!(essential_arg_visible("locate", name));
+    }
+    assert!(
+        navigation::locate_symbol(&"x".repeat(4096), Path::new("."), "Choose a symbol").is_none()
+    );
+}
+
+#[test]
+fn grep_cap_preserves_a_bounded_next_call_before_optional_telemetry() {
+    let action =
+        navigation::locate_symbol("target", Path::new("trusted workspace"), "Choose a symbol")
+            .unwrap();
+    let value = budgeted_grep_with_receipt(
+        json!({
+            "total": 0,
+            "returned": 0,
+            "matches": [],
+            "next_actions": [action.clone()],
+        }),
+        &"oversized receipt/".repeat(8192),
+    );
+    assert_eq!(value["next_actions"], json!([action]));
+    assert!(value.get("execution").is_none());
+}
+
+#[test]
+fn grep_cap_still_drops_oversized_navigation() {
+    let value = budgeted_grep_with_receipt(
+        json!({
+            "total": 0,
+            "returned": 0,
+            "matches": [],
+            "next_actions": [{"reason": "x".repeat(70 * 1024)}],
+        }),
+        "trusted workspace",
+    );
+    assert_eq!(value["next_actions"], json!([]));
+    assert_eq!(value["total"], 0);
+    assert_eq!(value["metadata_truncated"], true);
+}
+
+#[test]
+fn grep_backlinks_action_survives_the_normal_mcp_receipt_and_budget() {
+    let action = navigation::backlinks(
+        "aden://module/src/lib.rs#target",
+        Path::new("trusted workspace"),
+        "Find callers",
+    )
+    .unwrap();
+    let child = json!({
+        "total": 1,
+        "returned": 1,
+        "matches": [{"anchor": "aden://module/src/lib.rs#target", "text": "fn target() {}"}],
+        "next_actions": [action.clone()],
+    });
+    let received = attach_execution_receipt(
+        &child.to_string(),
+        "trusted workspace",
+        "repository_resolver",
+        std::time::Duration::from_millis(1),
+        std::time::Duration::from_secs(30),
+    );
+    let bounded = enforce_mcp_response_budget("grep", &serde_json::Map::new(), &received);
+    let response: Value = serde_json::from_str(&bounded).unwrap();
+    assert_eq!(response["next_actions"], json!([action]));
+    assert_eq!(response["execution"]["selected_root"], "trusted workspace");
 }
 
 #[test]

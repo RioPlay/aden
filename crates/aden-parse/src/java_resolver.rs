@@ -15,8 +15,7 @@
 //!   • Annotation processor awareness
 
 use crate::extractor::{
-    LanguageExtractor, build_code_attributes, infer_project_root, make_anchor,
-    project_relative_file,
+    CodeSource, LanguageExtractor, infer_project_root, make_anchor, project_relative_file,
 };
 use aden_core::{Block, Document, NodeType, Parameter, Result};
 use std::path::Path;
@@ -57,6 +56,7 @@ impl LanguageExtractor for JavaResolver {
             .ok_or_else(|| aden_core::Error::Parse("tree-sitter returned None".to_string()))?;
 
         let module_path = infer_java_package(path, source);
+        let file_source = &CodeSource::new(source, path);
         let project_root = infer_project_root(path);
         let file_name_owned = project_relative_file(path, &project_root);
         let file_name = file_name_owned.as_str();
@@ -75,7 +75,7 @@ impl LanguageExtractor for JavaResolver {
         let mut docs = Vec::new();
         for sym in &symbols {
             if let Some(doc) =
-                emit_java_symbol(sym, source, path, &symbols, &module_path, file_name)
+                emit_java_symbol(file_source, sym, source, &symbols, &module_path, file_name)
             {
                 docs.push(doc);
             }
@@ -464,13 +464,14 @@ fn find_parent_type_name(node: tree_sitter::Node, source: &str) -> Option<String
 }
 
 fn emit_java_symbol(
+    file_source: &CodeSource<'_>,
     sym: &JavaSymbol,
     source: &str,
-    path: &Path,
     _all_symbols: &[JavaSymbol],
     package: &str,
     file_name: &str,
 ) -> Option<Document> {
+    let path = file_source.path;
     // Qualify with the enclosing class so same-named methods across classes don't
     // collapse to one anchor (data loss). `qualified_name` is
     // `<package>.<Class>/<method>` (methods) or `<package>.<Class>` (types);
@@ -484,12 +485,7 @@ fn emit_java_symbol(
         .replace('/', ".");
     let anchor = make_anchor(package, file_name, &fragment);
     let span = node_to_span(sym.node, path);
-    let attrs = build_code_attributes(
-        source,
-        &format!("{:?}", sym.kind).to_lowercase(),
-        Some(path),
-        Some(&span),
-    );
+    let attrs = file_source.attributes(&format!("{:?}", sym.kind).to_lowercase(), &span);
     let mut blocks = Vec::new();
 
     if let Some(ref doc) = sym.doc_comment {

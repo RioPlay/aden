@@ -5,6 +5,7 @@ mod commands;
 mod indexer;
 mod mcp;
 mod read_trace;
+mod read_worker;
 mod time_util;
 mod types;
 mod util;
@@ -39,7 +40,7 @@ struct Cli {
         short = 'u',
         long,
         global = true,
-        help = "Remove all limits (show full results)"
+        help = "Request all results where supported; source reads keep byte and file caps"
     )]
     unlimited: bool,
     #[arg(
@@ -188,6 +189,21 @@ enum Commands {
             help = "Bypass the merge gate and overwrite the store (may clobber [human]/[agent] overlay collisions)"
         )]
         force_regen: bool,
+        /// Run an independently owned generation job and return its status.
+        #[arg(long, conflicts_with_all = ["propose", "force_regen"])]
+        background: bool,
+    },
+    /// Inspect or cancel independently running graph generation.
+    Jobs {
+        #[command(subcommand)]
+        action: JobAction,
+    },
+    #[command(name = "__gen-worker", hide = true)]
+    GenerationWorker {
+        #[arg(long)]
+        path: PathBuf,
+        #[arg(long)]
+        job_id: String,
     },
     /// Verify all <<refs>> resolve to existing [[anchors]]
     #[command(hide = true)]
@@ -515,6 +531,9 @@ enum Commands {
         path: PathBuf,
     },
     /// Read an explicit source range without indexing or semantic routing
+    #[command(
+        long_about = "Read literal source without indexing or semantic routing. --unlimited requests all remaining lines, while the 8192-byte excerpt and 16 MiB file caps still apply. An explicit --end-line remains the requested boundary. Use JSON output for hash-pinned byte continuations when an excerpt is clipped."
+    )]
     Read {
         #[arg(
             value_name = "FILE",
@@ -525,7 +544,10 @@ enum Commands {
         path: PathBuf,
         #[arg(long, default_value = "1", help = "First line, 1-based and inclusive")]
         start_line: usize,
-        #[arg(long, help = "Last line, inclusive (default: start line + 199)")]
+        #[arg(
+            long,
+            help = "Last line, inclusive (default: next 200 lines; --unlimited reads to EOF)"
+        )]
         end_line: Option<usize>,
         #[arg(
             long,
@@ -857,6 +879,12 @@ enum Commands {
         symbols: bool,
         #[arg(
             long,
+            conflicts_with = "symbols",
+            help = "List all discovered project files, including prose and configuration"
+        )]
+        files: bool,
+        #[arg(
+            long,
             value_name = "N",
             default_value_t = 0,
             help = "Show nested symbols in the graphical tree to this lexical depth (0 hides symbols)"
@@ -933,14 +961,14 @@ enum Commands {
         )]
         max_issues: Option<usize>,
     },
-    /// Fast pre-commit combo: gen + lint + check + heal drift scan + audit
+    /// Local static checks with per-step outcomes and explicit coverage limits
     #[command(hide = true)]
     Ready {
         #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
         path: PathBuf,
         #[arg(
             long,
-            help = "Apply auto-fixes where possible (lint + high-confidence heal)"
+            help = "Explicitly enable lint repairs and supported store-backed drift repairs"
         )]
         fix: bool,
     },
@@ -1267,7 +1295,44 @@ enum McpAction {
 }
 
 #[derive(Subcommand)]
+enum JobAction {
+    /// Show the latest generation job, including completed or interrupted work.
+    Status {
+        #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
+        path: PathBuf,
+    },
+    /// Request cooperative cancellation of this exact job.
+    Cancel {
+        #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
+        path: PathBuf,
+        #[arg(long)]
+        job_id: String,
+    },
+}
+
+#[derive(Subcommand)]
 enum StoreAction {
+    /// Preview removal of this project's generated graph and caches. Intent is preserved.
+    Clean {
+        #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
+        path: PathBuf,
+        #[arg(long, default_value = "all", value_parser = ["cache", "graph", "all"])]
+        scope: String,
+        /// Delete the previewed generated data. Without this flag nothing is removed.
+        #[arg(long)]
+        apply: bool,
+    },
+    /// Select project-local portable storage or an external cache base.
+    Configure {
+        #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
+        path: PathBuf,
+        #[arg(long, group = "storage_choice")]
+        portable: bool,
+        #[arg(long, group = "storage_choice", value_hint = ValueHint::DirPath)]
+        data_dir: Option<PathBuf>,
+        #[arg(long, group = "storage_choice")]
+        reset: bool,
+    },
     /// Print the resolved store path for the current project
     Path {
         #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
@@ -1359,17 +1424,83 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn print_command_error(error: &(dyn std::error::Error + 'static)) {
+    eprintln!("{}", command_error_text(error));
+}
+
+fn command_error_text(error: &(dyn std::error::Error + 'static)) -> String {
     if std::env::var("ADEN_MCP_MACHINE_ERRORS").as_deref() == Ok("1") {
         if let Some(resolution) = error.downcast_ref::<commands::query::SymbolResolutionError>() {
-            eprintln!("{}", resolution.machine_json());
-            return;
+            return resolution.machine_json().to_string();
         }
         if let Some(agent) = error.downcast_ref::<commands::AgentCliError>() {
-            eprintln!("{}", agent.machine_json());
-            return;
+            return agent.machine_json().to_string();
         }
     }
-    eprintln!("Error: {error}");
+    format!("Error: {error}")
+}
+
+fn print_generation_job(
+    job: Option<indexer::generation_job::JobStatus>,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if json {
+        println!("{}", serde_json::to_string_pretty(&job)?);
+    } else if let Some(job) = job {
+        println!("Generation {}: {} ({})", job.job_id, job.state, job.phase);
+        println!("Files: {} / {}", job.completed_files, job.total_files);
+        println!("Project: {}", job.root.display());
+        if let Some(error) = job.error {
+            println!("Detail: {error}");
+        }
+    } else {
+        println!("No generation job recorded for this project.");
+    }
+    Ok(())
+}
+
+fn validate_storage_arguments(matches: &clap::ArgMatches) -> std::io::Result<()> {
+    for name in ["path", "paths"] {
+        if let Ok(Some(paths)) = matches.try_get_many::<PathBuf>(name) {
+            for path in paths {
+                let start = if path.is_file() {
+                    path.parent().unwrap_or(path)
+                } else {
+                    path.as_path()
+                };
+                aden_paths::try_project_dir(&aden_paths::resolve_root(start))?;
+            }
+        }
+    }
+    if let Some((_, child)) = matches.subcommand() {
+        validate_storage_arguments(child)?;
+    }
+    Ok(())
+}
+
+fn remove_rebuildable(
+    path: &std::path::Path,
+    project_data: &std::path::Path,
+) -> std::io::Result<()> {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    if path == project_data
+        || metadata.file_type().is_symlink()
+        || !aden_paths::is_under(project_data, path)
+    {
+        return Err(std::io::Error::other(
+            "Refusing an aliased or out-of-scope rebuild reset",
+        ));
+    }
+    if metadata.is_dir() {
+        std::fs::remove_dir_all(path)
+    } else if metadata.is_file() {
+        std::fs::remove_file(path)
+    } else {
+        Err(std::io::Error::other("Unsupported rebuild artifact type"))
+    }
 }
 
 /// Old `aden-mcp` shells out to this CLI without declaring its version.
@@ -1436,12 +1567,48 @@ fn build_long_version() -> &'static str {
 }
 
 fn real_main() -> Result<(), Box<dyn std::error::Error>> {
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("__read-worker")) {
+        return read_worker::serve();
+    }
+    real_main_from(std::env::args_os(), false)
+}
+
+fn real_main_from(
+    args: impl IntoIterator<Item = std::ffi::OsString>,
+    resident: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     let read_trace = read_trace::Request::start();
-    let matches = Cli::command()
-        .long_version(build_long_version())
-        .get_matches();
+    let command = Cli::command();
+    let matches = if resident {
+        command.try_get_matches_from(args)?
+    } else {
+        command
+            .long_version(build_long_version())
+            .get_matches_from(args)
+    };
     let cli = Cli::from_arg_matches(&matches)?;
+    if resident {
+        read_worker::validate_command(&cli)?;
+    }
     read_trace.select_command(matches.subcommand_name());
+    if matches!(
+        cli.command,
+        Commands::Read { .. }
+            | Commands::Understand { .. }
+            | Commands::Locate { .. }
+            | Commands::Query { .. }
+    ) {
+        aden_paths::with_read_root_scope(|| execute_cli(cli, matches, read_trace))
+    } else {
+        execute_cli(cli, matches, read_trace)
+    }
+}
+
+fn execute_cli(
+    cli: Cli,
+    matches: clap::ArgMatches,
+    read_trace: read_trace::Request,
+) -> Result<(), Box<dyn std::error::Error>> {
     let quiet = !cli.verbose;
     crate::util::quiet::set_quiet(quiet);
     let _unlimited = cli.unlimited;
@@ -1474,6 +1641,19 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    // A configuration repair/reset must remain reachable when the old file is
+    // invalid. Other CLI paths report storage errors before infallible library
+    // path helpers are reached.
+    if !matches!(
+        &cli.command,
+        Commands::Store {
+            action: StoreAction::Configure { .. }
+        }
+    ) {
+        aden_paths::try_project_dir(&aden_paths::resolve_root(&std::env::current_dir()?))?;
+        validate_storage_arguments(&matches)?;
+    }
+
     let result = match cli.command {
         Commands::Init {
             path,
@@ -1484,48 +1664,29 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::AgentsMd { path } => commands::cmd_agents_md(&path),
         Commands::Regen { path } => {
             let root = find_project_root(&path);
-            // True from-scratch rebuild. Clearing only the caches (the old
-            // behavior) was self-defeating: gen's prune step diffs each file's
-            // fresh anchors against the gen-cache to find symbols to remove, so
-            // deleting that cache left renamed/removed anchors (e.g. a method
-            // requalified by a parser change) orphaned in the store forever.
-            // Wipe the whole per-user project dir — store AND caches, all
-            // rebuildable per ADR-003 — so the subsequent gen repopulates a
-            // pristine store with no stale anchors.
-            if std::env::var_os("ADEN_STORE").is_none() {
-                let project = aden_paths::project_dir(&root);
-                if project.exists()
-                    && let Err(e) = std::fs::remove_dir_all(&project)
-                {
+            {
+                let _guard = indexer::generation_job::configuration_guard(&root)?;
+                let project = aden_paths::try_project_dir(&root)?;
+                // Invalidate certification before resetting payloads. Coordination
+                // inodes and job history must survive the reset.
+                remove_rebuildable(&project.join("freshness.json"), &project)?;
+                if std::env::var_os("ADEN_STORE").is_none() {
+                    remove_rebuildable(&aden_paths::store_dir(&root), &project)?;
+                } else {
                     eprintln!(
-                        "WARN: regen could not clear {}: {} (falling back to cache clear)",
-                        project.display(),
-                        e
+                        "NOTE: ADEN_STORE is shared; its database is preserved during regen."
                     );
                 }
-            } else {
-                // A pinned/shared $ADEN_STORE holds several projects' anchors;
-                // wiping it would destroy the others. Clear only this project's
-                // caches and warn that stale anchors may persist there.
-                eprintln!(
-                    "NOTE: $ADEN_STORE is pinned/shared — regen rebuilds without clearing it; \
-                     renamed or removed symbols may persist. Unset $ADEN_STORE for a full rebuild."
-                );
-                let gen_cache = aden_paths::gen_cache_file(&root);
-                if gen_cache.exists() {
-                    let _ = std::fs::remove_file(&gen_cache);
+                for target in [
+                    aden_paths::cache_dir(&root),
+                    aden_paths::gen_cache_file(&root),
+                    aden_paths::scan_cache_file(&root),
+                    aden_paths::graph_snapshot_file(&root),
+                    aden_paths::embeddings_cache_file(&root),
+                ] {
+                    remove_rebuildable(&target, &project)?;
                 }
-                let graph_cache = aden_paths::cache_dir(&root);
-                if graph_cache.exists() {
-                    let _ = std::fs::remove_dir_all(&graph_cache);
-                }
-                // The embedding cache lives outside cache/ (it must survive a
-                // normal gen); regen is the one path that should drop it so dense
-                // vectors are recomputed from scratch.
-                let emb_cache = aden_paths::embeddings_cache_file(&root);
-                if emb_cache.exists() {
-                    let _ = std::fs::remove_file(&emb_cache);
-                }
+                indexer::generation_job::clear_recovery(&root)?;
             }
             commands::cmd_gen(&path, true)
         }
@@ -1535,6 +1696,7 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
             quiet,
             propose,
             force_regen,
+            background,
         } => {
             // `--auto` deliberately selects the project directory when no PATH
             // is supplied; every explicit PATH is processed rather than silently
@@ -1545,10 +1707,31 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
                 paths
             };
             let _auto_discover = auto;
+            if background {
+                if effective_paths.len() != 1 || effective_paths[0].is_file() {
+                    return Err(
+                        "Background generation requires exactly one project directory".into(),
+                    );
+                }
+                let job = indexer::generation_job::start(&effective_paths[0])?;
+                return print_generation_job(Some(job), machine_json);
+            }
             for path in effective_paths {
                 commands::cmd_gen_opts(&path, quiet, propose, force_regen)?;
             }
             Ok(())
+        }
+        Commands::Jobs { action } => {
+            let job = match action {
+                JobAction::Status { path } => indexer::generation_job::status(&path)?,
+                JobAction::Cancel { path, job_id } => {
+                    Some(indexer::generation_job::cancel(&path, &job_id)?)
+                }
+            };
+            print_generation_job(job, machine_json)
+        }
+        Commands::GenerationWorker { path, job_id } => {
+            indexer::generation_job::run_worker(&path, &job_id)
         }
         Commands::Check {
             paths,
@@ -1777,6 +1960,7 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
             commands::read::ReadOptions {
                 start_line,
                 end_line,
+                all_lines: cli.unlimited,
                 max_bytes,
                 expected_hash,
                 start_byte,
@@ -1934,12 +2118,14 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
             path,
             depth,
             symbols,
+            files,
             symbol_depth,
         } => commands::cmd_tree(
             &path,
             depth,
             symbol_depth,
             symbols,
+            files,
             cli.unlimited,
             machine_json,
         ),
@@ -1993,7 +2179,7 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
                     fix,
                     gc,
                     cli.unlimited,
-                    machine_json && !propose && !fix && !gc,
+                    machine_json && !propose && !gc && (!fix || cli.json),
                     max_issues,
                 )
             }
@@ -2103,6 +2289,64 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
             McpAction::Stdio { surface, project } => mcp::run_stdio(surface.as_deref(), project),
         },
         Commands::Store { action } => match action {
+            StoreAction::Clean { path, scope, apply } => {
+                commands::store::cmd_store_clean(&path, &scope, apply, machine_json)
+            }
+            StoreAction::Configure {
+                path,
+                portable,
+                data_dir,
+                reset,
+            } => {
+                if usize::from(portable) + usize::from(data_dir.is_some()) + usize::from(reset) != 1
+                {
+                    return Err(
+                        "Choose exactly one of --portable, --data-dir PATH, or --reset".into(),
+                    );
+                }
+                if !path.is_dir() {
+                    return Err(
+                        "Storage configuration requires an existing project directory".into(),
+                    );
+                }
+                let root = aden_paths::resolve_root(&path);
+                // Hold both the launch gate and existing writer exclusion while
+                // selecting a different layout. A malformed old policy has no
+                // trusted resolved store; configuration repair remains possible.
+                let _configuration_guard = if aden_paths::try_project_dir(&root).is_ok() {
+                    Some(indexer::generation_job::configuration_guard(&root)?)
+                } else {
+                    None
+                };
+                let config = (!reset).then_some(aden_paths::StorageConfig { portable, data_dir });
+                aden_paths::write_storage_config(&root, config.as_ref())?;
+                let directory = aden_paths::try_project_dir(&root)?;
+                if machine_json {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "schema_version": 1,
+                            "project": root,
+                            "configuration": aden_paths::storage_config_file(&root),
+                            "project_data": directory,
+                            "store": aden_paths::store_dir(&root),
+                            "data_moved": false,
+                            "reset": reset,
+                            "environment_override": std::env::var_os("ADEN_DATA_DIR").is_some()
+                                || std::env::var_os("ADEN_STORE").is_some()
+                        })
+                    );
+                } else {
+                    println!("Project storage: {}", directory.display());
+                    println!("Existing data was not moved or deleted.");
+                    if std::env::var_os("ADEN_DATA_DIR").is_some()
+                        || std::env::var_os("ADEN_STORE").is_some()
+                    {
+                        println!("An environment override takes precedence over project settings.");
+                    }
+                }
+                Ok(())
+            }
             StoreAction::Path { path } => commands::cmd_store_path(&path),
             StoreAction::List => commands::cmd_store_list(),
             StoreAction::Prune { dry_run } => commands::cmd_store_prune(dry_run),

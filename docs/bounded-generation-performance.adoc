@@ -1,0 +1,130 @@
+[[bounded-generation-performance]]
+= Bounded generation performance
+
+== Design
+
+Generation has three distinct memory and I/O controls. They reduce transient
+work while preserving the existing document, edge, linking, and snapshot
+contracts.
+
+=== Reuse parser source metadata
+
+Each parser reuses a `CodeSource` built from its complete supplied input,
+rather than reopening and hashing the file for every extracted symbol.
+Configured C macro discovery remains a separate bounded per-file pass.
+Source hashes describe the supplied input even if the disk file differs.
+This is separate from the
+8 MiB source admission estimate: source files may change after discovery, and
+the estimate is not a memory quota.
+
+Generation logic version 21 invalidates older caches so source metadata is
+recomputed with the exact-input contract. Cache freshness still depends on the
+normal source digest checks.
+
+=== Bounded parse batches
+
+Discovered sources are processed in sorted order in batches of at most 32 files
+and an estimated 8 MiB of source bytes. If the next file alone exceeds the
+byte target, it is admitted as a single-file batch so processing makes
+progress. Metadata is only a scheduling estimate: a concurrent source change
+or parser expansion can make actual memory use larger. The limits bound
+simultaneously staged parse results; they do not impose a hard process memory
+limit.
+
+After each batch, generation persists and drains its results before admitting
+the next batch. This limits retained parse documents while preserving source
+ordering, including deterministic collision winners across batches. The
+complete edge vector, anchor set, and global link facts are still retained
+where linking requires them. Batching therefore does not bound all generation
+memory.
+
+Overlay merge baselines retain original documents only for encountered
+overlaid anchors. This preserves the pre-generation baseline when an anchor
+occurs again in a later batch. Conflicts preserve durable human or agent overlay intent
+and follow the existing proposal and force behavior.
+
+=== Snapshot publication
+
+The snapshot remains format v1 with its existing document map and edge
+vector fields. Publication sorts the anchor keys, then fetches and serializes one
+document at a time from graph storage. This avoids building a second
+whole-store document map in memory. The anchor list and complete edge vector
+remain live during serialization. If document retrieval fails, publication
+returns the original store error; the v1 payload shape is unchanged.
+
+== Limits and operational invariants
+
+* The source-byte target is an estimate, not a process-wide memory ceiling.
+* Parse-result batching does not eliminate memory required by edges, anchors,
+  link facts, the current batch, or an oversized source file.
+* Snapshot streaming reduces simultaneous document retention, but still
+  materializes sorted anchors and all edges.
+* Cache invalidation, interrupted-generation recovery, freshness markers, and
+  readers serving the last published snapshot must retain their existing
+  behavior. Local native debug lifecycle tests and release unit/integration
+  checks are recorded below. Platform-specific and release CI remain separate
+  verification.
+
+== Evidence and measurement method
+
+Compare policies against the same fixture, executable, cache state, and
+measurement conditions. Record source identity, exact command, repetitions,
+child-process peak working set, wall and generation times, parse batch counts,
+staged snapshot payload, document and edge counts, and normalized document
+and edge digests. The digest and count comparisons establish output parity for
+the measured fixture; they do not prove correctness for every repository or
+failure mode. Peak working set is scoped to the child process and excludes
+descendants and the operating system file cache.
+
+The CLI figures below are derived from `.tmp/optimization-pass/cli-comparison.json`
+(SHA-256 `37d1db9b0c0f9bc8768970b70a9e1a8d9ab2a37913c4d55ecbc2e1642b2930dc`).
+The separate policy diagnostic is `.tmp/optimization-pass/comparison-final.json`
+(SHA-256 `c699a0cc9d2c324229012a551f90650b42a068193c53cd37c97306e5196468ed`).
+
+The CLI cold-fixture comparison uses the same 8,774,891 source bytes and three
+samples per binary. The baseline and candidate executable SHA-256 values are
+`8d8bc2f10327cdf6ab644599536d9c8d37f4b32b69612538261f5e7a0d0c96ca` and
+`5bb3a4b1e598b03cbf43862c50b0208ff26b72ac243db4c8dfff62bcb6bf5a43`.
+Median peak working set is 135,446,528 bytes (range 135,127,040 to 135,942,144)
+for baseline and 94,752,768 bytes (range 91,078,656 to 109,395,968) for
+candidate. Median child-process CPU is 5.5 seconds (5.453125 to 5.734375) and
+2.90625 seconds (2.765625 to 3.125), respectively. These samples show lower
+memory and CPU for this fixture. Median wall time is 2.276283 seconds
+(2.269398 to 3.437087) and 2.283165 seconds (2.122139 to 5.850001). The
+candidate's 5.850001-second outlier means these results do not establish a
+reliable wall-latency gain. Median traced generation time is 2,114,202 us
+(2,112,496 to 3,270,896) and 2,081,400 us (1,951,965 to 5,669,785).
+
+The CLI traces report 66 source inputs and 8,256 generated contracts for each
+binary. They do not report the full normalized graph counts or digests. Those
+come from the separate policy diagnostic in `comparison-final.json`: each
+policy reports 8,258 documents and 24,706 edges, with matching document digest
+`b988031f76299e0b` and edge digest `2834ca2b1638f98a`. Across its three
+samples per policy, median peak working set is 117,760,000 bytes for legacy
+(range 117,477,376 to 118,071,296) and 93,708,288 bytes for bounded (range
+91,459,584 to 95,014,912). Median child CPU is 3.6875 seconds (3.609375 to
+3.703125) and 3.78125 seconds (3.625 to 3.875); median wall time is 3.00103
+seconds (2.647205 to 3.359803) and 2.898006 seconds (2.893116 to 2.922054).
+Median generation times are 2,177,373.4 us (1,814,911.4 to 2,412,073.1) and
+2,059,032.1 us (2,036,631 to 2,067,133.3), respectively. This synthetic
+fixture shows lower peak working set and generation time in the bounded
+policy, but these three-run diagnostics are not a general performance claim.
+Its peak staged parse payload changes from 16,289,395 to 8,131,232 bytes, and
+the bounded run uses three parse batches instead of one. Staged payload is not
+process RSS. Both measurement files scope peak working set to the child
+process, excluding descendants and the operating system file cache.
+
+The separate metadata microdiagnostic reports normalized parity over a
+136,484-byte fixture with 128 symbols and three repetitions. It records 384
+legacy source reads and hashes (52,409,856 bytes read and hashed), versus zero
+shared-path reads and three hashes over 409,452 bytes. This isolates the
+metadata reuse helper; it is not an end-to-end generation benchmark and does
+not establish a user-visible speed gain.
+
+Local verification recorded for the integrated change includes 525 native
+release unit tests and 6 integration tests passing, with 3 tests ignored; 6
+bounded-generation, 6 lifecycle, and 7 merge tests passing in native debug;
+and strict workspace, all-target, all-feature MSRV Clippy passing on the final
+production code. The later expected-source-count correction from 65 to 66 was
+test-only. Platform-specific and release CI were not part of these local
+results.

@@ -4,5 +4,6 @@
 pub mod fresh;
 pub mod r#gen;
 mod gen_trace;
+pub mod generation_job;
 pub mod link;
 pub mod merge;

@@ -24,7 +24,9 @@ use crate::nodes::{AdenEdge, DocumentNode, GraphEdge, GraphNode};
 use crate::parser::{ParsedDocument, parse_file};
 use aden_core::{Document, EdgeType, NodeType};
 use aden_store::GraphStorage;
+use petgraph::Direction;
 use petgraph::graph::{DiGraph, NodeIndex};
+use petgraph::visit::EdgeRef;
 use rayon::prelude::*;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -58,6 +60,24 @@ pub enum GraphError {
 
     #[error("orphan node: {0}")]
     OrphanNode(String),
+}
+
+/// Every matching edge appears in both adjacency lists. Pairwise scanning
+/// checks both lists and stops when the shorter one ends, which proves that
+/// no later edge can match if none has been found yet.
+fn has_edge_with_weight<N, E: PartialEq>(
+    graph: &DiGraph<N, E>,
+    source: NodeIndex,
+    target: NodeIndex,
+    edge: &E,
+) -> bool {
+    graph
+        .edges_directed(source, Direction::Outgoing)
+        .zip(graph.edges_directed(target, Direction::Incoming))
+        .any(|(outgoing, incoming)| {
+            (outgoing.target() == target && outgoing.weight() == edge)
+                || (incoming.source() == source && incoming.weight() == edge)
+        })
 }
 
 impl<N: GraphNode, E: GraphEdge> Default for AdenGraph<N, E> {
@@ -114,29 +134,15 @@ impl<N: GraphNode, E: GraphEdge> AdenGraph<N, E> {
                 GraphError::UnresolvedReference(tgt_anchor.to_string(), "not found".to_string())
             })?;
 
-        // Dedupe on (pair, edge value), not the pair alone: the store keys
-        // edges by (src, dst, edge_type), so two DIFFERENT edge types between
-        // the same nodes are real data (e.g. a test's call is both `Calls`
-        // and `Tests` since Wave 1 — pair-level dedup silently dropped
-        // whichever type loaded second).
-        let duplicate = self
-            .graph
-            .edges_connecting(src_idx, tgt_idx)
-            .any(|e| *e.weight() == edge);
-        if !duplicate {
-            self.graph.add_edge(src_idx, tgt_idx, edge);
-            self.backlinks_cache = None;
-        }
+        self.add_edge(src_idx, tgt_idx, edge);
         Ok(())
     }
 
     /// Add an edge between two nodes by index.
-    /// Dedupes on (pair, edge value) for consistency with add_edge_by_anchor.
+    /// Dedupe on (pair, edge value), not just the pair: distinct edge types
+    /// between the same nodes are real data (for example, Calls and Tests).
     pub fn add_edge(&mut self, src: NodeIndex, tgt: NodeIndex, edge: E) {
-        let duplicate = self
-            .graph
-            .edges_connecting(src, tgt)
-            .any(|e| *e.weight() == edge);
+        let duplicate = has_edge_with_weight(&self.graph, src, tgt, &edge);
         if !duplicate {
             self.graph.add_edge(src, tgt, edge);
             self.backlinks_cache = None;
@@ -215,15 +221,7 @@ impl<N: GraphNode, E: GraphEdge> AdenGraph<N, E> {
     pub fn orphans(&self) -> Vec<String> {
         let mut orphans = Vec::new();
         for node in self.graph.node_indices() {
-            let in_count = self
-                .graph
-                .neighbors_directed(node, petgraph::Direction::Incoming)
-                .count();
-            let out_count = self
-                .graph
-                .neighbors_directed(node, petgraph::Direction::Outgoing)
-                .count();
-            if in_count == 0 && out_count == 0 {
+            if self.graph.neighbors_undirected(node).next().is_none() {
                 orphans.push(self.graph[node].anchor().to_string());
             }
         }
@@ -741,6 +739,34 @@ fn detect_node_type(anchor: &str, file_path: &Path) -> NodeType {
         return NodeType::Context;
     }
     NodeType::Module
+}
+
+#[cfg(test)]
+mod edge_dedup_tests {
+    use super::*;
+
+    #[test]
+    fn duplicate_lookup_handles_unequal_degrees_and_preserves_edge_values() {
+        for (outgoing_padding, incoming_padding) in [(32, 1), (1, 32)] {
+            let mut graph = DiGraph::<(), u8>::new();
+            let source = graph.add_node(());
+            let target = graph.add_node(());
+            graph.add_edge(source, target, 7);
+            for _ in 0..outgoing_padding {
+                let other = graph.add_node(());
+                graph.add_edge(source, other, 0);
+            }
+            for _ in 0..incoming_padding {
+                let other = graph.add_node(());
+                graph.add_edge(other, target, 0);
+            }
+
+            assert!(has_edge_with_weight(&graph, source, target, &7));
+            assert!(!has_edge_with_weight(&graph, source, target, &8));
+            graph.add_edge(source, source, 9);
+            assert!(has_edge_with_weight(&graph, source, source, &9));
+        }
+    }
 }
 
 #[cfg(test)]

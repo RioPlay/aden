@@ -57,7 +57,7 @@ fi
 mkdir -p "$INSTALL_DIR"
 for name in aden aden-mcp; do
     destination="$INSTALL_DIR/$name"
-    if [ -e "$destination" ] && [ "$FORCE" != "1" ]; then
+    if { [ -e "$destination" ] || [ -L "$destination" ]; } && [ "$FORCE" != "1" ]; then
         echo "$destination already exists; rerun with --force to replace both binaries." >&2
         exit 1
     fi
@@ -66,17 +66,34 @@ done
 STAGE="$(mktemp -d "$INSTALL_DIR/.aden-install.XXXXXX")"
 COMMIT_STARTED=0
 SUCCESS=0
-HAD_ADEN=0
-HAD_MCP=0
-rollback() {
-    status=$?
-    if [ "$SUCCESS" != "1" ] && [ "$COMMIT_STARTED" = "1" ]; then
-        rm -f "$INSTALL_DIR/aden" "$INSTALL_DIR/aden-mcp"
-        [ "$HAD_ADEN" = "1" ] && mv -f "$STAGE/backup-aden" "$INSTALL_DIR/aden"
-        [ "$HAD_MCP" = "1" ] && mv -f "$STAGE/backup-aden-mcp" "$INSTALL_DIR/aden-mcp"
-        echo "Install failed; restored the previous Aden binary pair." >&2
+BACKED_UP_ADEN=0
+BACKED_UP_MCP=0
+INSTALLED_ADEN=0
+INSTALLED_MCP=0
+restore_binary() {
+    local name="$1" backed_up="$2" installed="$3"
+    local backup="$STAGE/backup-$name" destination="$INSTALL_DIR/$name"
+    if [ "$installed" = "1" ] && ! rm -f "$destination"; then
+        echo "Could not remove partial install $destination" >&2
     fi
-    rm -rf "$STAGE"
+    if [ "$backed_up" = "1" ]; then
+        if [ -e "$destination" ] || [ -L "$destination" ] || ! mv "$backup" "$destination"; then
+            keep_stage=1
+            echo "Could not restore $destination; original backup retained at $backup" >&2
+        fi
+    fi
+}
+rollback() {
+    local status=$? keep_stage=0
+    if [ "$SUCCESS" != "1" ] && [ "$COMMIT_STARTED" = "1" ]; then
+        restore_binary aden "$BACKED_UP_ADEN" "$INSTALLED_ADEN"
+        restore_binary aden-mcp "$BACKED_UP_MCP" "$INSTALLED_MCP"
+    fi
+    if [ "$keep_stage" = "1" ]; then
+        echo "Recovery files retained in $STAGE" >&2
+    else
+        rm -rf "$STAGE"
+    fi
     return "$status"
 }
 trap rollback EXIT
@@ -89,10 +106,24 @@ chmod 755 "$STAGE/aden" "$STAGE/aden-mcp"
 "$STAGE/aden-mcp" --version
 
 COMMIT_STARTED=1
-if [ -e "$INSTALL_DIR/aden" ]; then mv "$INSTALL_DIR/aden" "$STAGE/backup-aden"; HAD_ADEN=1; fi
-if [ -e "$INSTALL_DIR/aden-mcp" ]; then mv "$INSTALL_DIR/aden-mcp" "$STAGE/backup-aden-mcp"; HAD_MCP=1; fi
+for name in aden aden-mcp; do
+    if [ -d "$INSTALL_DIR/$name" ]; then
+        echo "$INSTALL_DIR/$name is a directory; refusing to replace it." >&2
+        exit 1
+    fi
+done
+if [ -e "$INSTALL_DIR/aden" ] || [ -L "$INSTALL_DIR/aden" ]; then
+    mv "$INSTALL_DIR/aden" "$STAGE/backup-aden"
+    BACKED_UP_ADEN=1
+fi
+if [ -e "$INSTALL_DIR/aden-mcp" ] || [ -L "$INSTALL_DIR/aden-mcp" ]; then
+    mv "$INSTALL_DIR/aden-mcp" "$STAGE/backup-aden-mcp"
+    BACKED_UP_MCP=1
+fi
 mv "$STAGE/aden" "$INSTALL_DIR/aden"
+INSTALLED_ADEN=1
 mv "$STAGE/aden-mcp" "$INSTALL_DIR/aden-mcp"
+INSTALLED_MCP=1
 "$INSTALL_DIR/aden" --version
 "$INSTALL_DIR/aden-mcp" --version
 SUCCESS=1

@@ -9,6 +9,10 @@
 use crate::util::find_project_root;
 use std::path::Path;
 
+#[path = "store_clean.rs"]
+mod clean;
+pub use clean::cmd_store_clean;
+
 /// `aden store path` — print the resolved store directory for `path`'s project.
 pub fn cmd_store_path(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let root = find_project_root(path);

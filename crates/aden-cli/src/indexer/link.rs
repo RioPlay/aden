@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use aden_store::GraphStorage;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// The per-kind edge record slices `link_store_edges` writes, bundled into one
 /// argument. Every record is the same shape (anchor -> target list); the field
@@ -23,30 +23,11 @@ pub(crate) struct EdgeRecords<'a> {
     pub(crate) cochange: &'a [crate::types::CochangePair],
     pub(crate) test_anchors: &'a std::collections::HashSet<String>,
 }
-/// Module name for a symbol anchor of the form
-/// `aden://module/<path>/<file>#<symbol>`.
-///
-/// The module is the directory that immediately contains the file — i.e. the
-/// package. Using the *first* path segment was wrong for path-based ecosystems:
-/// Go anchors like `aden://module/github.com/spf13/cobra/command.go#Execute`
-/// collapsed the entire repo into `mod-github.com`. The last path segment is
-/// always the file (`make_anchor` appends `/<file>#<sym>`), so the directory
-/// before it is the real package/crate. For aden's own `crate/file.rs` layout
-/// this still yields the crate name, so nothing regresses.
-fn module_from_anchor(anchor: &str) -> Option<String> {
+/// The first nonempty path segment identifies the project or crate.
+fn module_from_anchor(anchor: &str) -> Option<&str> {
     let rest = anchor.strip_prefix("aden://module/")?;
     let path = rest.split('#').next()?;
-    let segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
-    // The first segment is always the project/crate name.
-    // Previously this used segs[n-2] (penultimate segment), which worked when
-    // file_name was a bare basename but broke with project-relative paths like
-    // `aden-cli/src/commands/heal.rs` where n-2 would give "commands".
-    let name = segs.first().copied()?;
-    if name.is_empty() {
-        None
-    } else {
-        Some(name.to_string())
-    }
+    path.split('/').find(|segment| !segment.is_empty())
 }
 
 /// Resolve `include::` directives (the `doc_includes` channel) into directional
@@ -146,9 +127,14 @@ fn resolve_callee<'a>(
     caller: &str,
     name_index: &HashMap<&str, Vec<&'a str>>,
 ) -> Option<&'a str> {
+    // A language extractor may prove a lexical same-file target. An explicit
+    // anchor is authoritative and must never fall back to a different symbol.
+    if callee.starts_with("aden://module/") {
+        return resolve_anchor_target(callee, name_index);
+    }
     let caller_file = anchor_file(caller);
     let caller_crate = module_from_anchor(caller);
-    let pick = |cands: &[&'a str]| pick_local(cands, caller_file, caller_crate.as_deref());
+    let pick = |cands: &[&'a str]| pick_local(cands, caller_file, caller_crate);
     // Self-receiver fast path (exact, zero false-edge risk): a call through the
     // caller's own instance — `self.foo()`, `this.foo()`, `$this->foo()`,
     // `Self::foo()` — provably targets a method of the caller's OWN enclosing
@@ -174,7 +160,7 @@ fn resolve_callee<'a>(
     if base != callee
         && !base.is_empty()
         && let Some(t) = name_index.get(base)
-        && let Some(r) = pick_local_same_module(t, caller_file, caller_crate.as_deref())
+        && let Some(r) = pick_local_same_module(t, caller_file, caller_crate)
     {
         return Some(r);
     }
@@ -195,7 +181,7 @@ fn pick_local<'a>(
         [] => None,
         [one] => {
             if (caller_file.is_some() && anchor_file(one) == caller_file)
-                || (caller_crate.is_some() && module_from_anchor(one).as_deref() == caller_crate)
+                || (caller_crate.is_some() && module_from_anchor(one) == caller_crate)
             {
                 return Some(*one);
             }
@@ -211,26 +197,7 @@ fn pick_local<'a>(
                 Some(*one)
             }
         }
-        many => {
-            // Ambiguous: prefer the caller's own file, then its crate.
-            if let Some(cf) = caller_file {
-                let same: Vec<&'a str> = many
-                    .iter()
-                    .copied()
-                    .filter(|a| anchor_file(a) == Some(cf))
-                    .collect();
-                if same.len() == 1 {
-                    return Some(same[0]);
-                }
-            }
-            let cc = caller_crate?;
-            let same: Vec<&'a str> = many
-                .iter()
-                .copied()
-                .filter(|a| module_from_anchor(a).as_deref() == Some(cc))
-                .collect();
-            if same.len() == 1 { Some(same[0]) } else { None }
-        }
+        many => pick_local_same_module(many, caller_file, caller_crate),
     }
 }
 
@@ -249,15 +216,28 @@ fn pick_local_same_module<'a>(
     caller_file: Option<&str>,
     caller_crate: Option<&str>,
 ) -> Option<&'a str> {
-    let local: Vec<&'a str> = cands
-        .iter()
-        .copied()
-        .filter(|anchor| {
-            (caller_file.is_some() && anchor_file(anchor) == caller_file)
-                || (caller_crate.is_some() && module_from_anchor(anchor).as_deref() == caller_crate)
-        })
-        .collect();
-    pick_local(&local, caller_file, caller_crate)
+    fn unique<T>(mut matches: impl Iterator<Item = T>) -> Option<T> {
+        let first = matches.next()?;
+        matches.next().is_none().then_some(first)
+    }
+
+    if let Some(file) = caller_file
+        && let Some(target) = unique(
+            cands
+                .iter()
+                .copied()
+                .filter(|a| anchor_file(a) == Some(file)),
+        )
+    {
+        return Some(target);
+    }
+    let module = caller_crate?;
+    unique(
+        cands
+            .iter()
+            .copied()
+            .filter(|a| module_from_anchor(a) == Some(module)),
+    )
 }
 
 /// Minimum name length for the Wave-2 prose-mention / listing-reference
@@ -324,12 +304,23 @@ fn resolve_exact<'a>(
     caller: &str,
     name_index: &HashMap<&str, Vec<&'a str>>,
 ) -> Option<&'a str> {
+    if name.starts_with("aden://module/") {
+        return resolve_anchor_target(name, name_index);
+    }
     let cands = name_index.get(name)?;
-    pick_local(
-        cands,
-        anchor_file(caller),
-        module_from_anchor(caller).as_deref(),
-    )
+    pick_local(cands, anchor_file(caller), module_from_anchor(caller))
+}
+
+fn resolve_anchor_target<'a>(
+    target: &str,
+    name_index: &HashMap<&str, Vec<&'a str>>,
+) -> Option<&'a str> {
+    let (_, fragment) = target.rsplit_once('#')?;
+    name_index
+        .get(fragment)?
+        .iter()
+        .copied()
+        .find(|candidate| *candidate == target)
 }
 
 /// Resolve an `edge::implements[...]` target, emitted by the parser as
@@ -348,6 +339,9 @@ fn resolve_implements<'a>(
     caller: &str,
     name_index: &HashMap<&str, Vec<&'a str>>,
 ) -> Option<&'a str> {
+    if target.starts_with("aden://module/") {
+        return resolve_anchor_target(target, name_index);
+    }
     if let Some(hit) = resolve_exact(target, caller, name_index) {
         return Some(hit);
     }
@@ -487,7 +481,7 @@ fn resolve_doc_ref<'a>(
 fn resolve_doc_file_ref<'a>(
     target: &str,
     referrer: &str,
-    files: &HashMap<String, Vec<&'a str>>,
+    files: &HashMap<&str, Vec<&'a str>>,
 ) -> Option<&'a str> {
     let stem = std::path::Path::new(target)
         .file_stem()
@@ -601,6 +595,34 @@ fn classify_drop(callee: &str, name_index: &HashMap<&str, Vec<&str>>) -> DropRea
         DropReason::Ambiguous
     }
 }
+fn build_symbol_name_index(anchors: &HashSet<String>) -> HashMap<&str, Vec<&str>> {
+    let mut name_index: HashMap<&str, Vec<&str>> = HashMap::new();
+    for anchor in anchors {
+        if let Some(hash) = anchor.rfind('#') {
+            let name = &anchor[hash + 1..];
+            if name.starts_with("macro-api::") || name.is_empty() {
+                continue;
+            }
+            name_index.entry(name).or_default().push(anchor.as_str());
+            if let Some(method) = name.rsplit(['.', ':']).next()
+                && method != name
+                && !method.is_empty()
+            {
+                name_index.entry(method).or_default().push(anchor.as_str());
+            }
+        } else if anchor.starts_with("aden://doc/")
+            && let Some(fragment) = anchor.rsplit('/').next()
+            && !fragment.is_empty()
+        {
+            name_index
+                .entry(fragment)
+                .or_default()
+                .push(anchor.as_str());
+        }
+    }
+    name_index
+}
+
 /// Connect the stored symbols into a traversable graph by persisting edges,
 /// with bounded memory so it scales to large repositories.
 ///
@@ -633,8 +655,6 @@ fn classify_drop(callee: &str, name_index: &HashMap<&str, Vec<&str>>) -> DropRea
 /// - Mentions (Wave 2): backtick prose mentions (`doc_mentions` records)
 ///   become doc --Mentions--> symbol edges, only when the name resolves to
 ///   exactly ONE code symbol.
-/// - Demonstrates (Wave 2): `symbol_references` records on doc code listings
-///   become listing --Demonstrates--> symbol edges, same unambiguous-only rule.
 pub(crate) fn link_store_edges<S: GraphStorage>(
     storage: &S,
     records: EdgeRecords<'_>,
@@ -656,56 +676,23 @@ pub(crate) fn link_store_edges<S: GraphStorage>(
         test_anchors,
     } = records;
     use aden_core::{Block, Document, EdgeType, NodeType};
-    use std::collections::HashSet;
-
     // Anchor keys only — cheap relative to full documents.
     let anchors = storage.get_all_anchors()?;
 
-    // Short symbol name -> anchors that define it (borrows from `anchors`).
-    // Member anchors are qualified as `Type::method` (so same-named methods on
-    // different types don't collide in the store). A call site like
-    // `filter.should_skip()` yields the BARE callee `should_skip`, which would
-    // never match the qualified key — leaving most method calls unresolved. So we
-    // also index each member by its trailing `::` segment. Collisions (several
-    // types with the same method name) are disambiguated downstream by
-    // `resolve_callee`'s locality heuristic (caller's file, then crate); genuinely
-    // ambiguous ones stay unlinked rather than producing a wrong edge.
-    let mut name_index: HashMap<&str, Vec<&str>> = HashMap::new();
-    for anchor in &anchors {
-        if let Some(hash) = anchor.rfind('#') {
-            let name = &anchor[hash + 1..];
-            if !name.is_empty() {
-                name_index.entry(name).or_default().push(anchor.as_str());
-                // Also index the trailing member segment after the last `::` OR
-                // `.` so a bare/receiver call resolves to a qualified method:
-                // Rust `Storage::open` and Go/Python `Command.Execute` both also
-                // index `open` / `Execute`. Collisions are disambiguated
-                // downstream by `resolve_callee`'s locality + self/receiver paths.
-                if let Some(method) = name.rsplit(['.', ':']).next()
-                    && method != name
-                    && !method.is_empty()
-                {
-                    name_index.entry(method).or_default().push(anchor.as_str());
-                }
-            }
-        } else if anchor.starts_with("aden://doc/") {
-            // Doc section anchors carry no `#` — they end in `/<fragment>`
-            // (e.g. `…/guide.adoc/_configuration` or `…/guide.adoc/h2configuration`).
-            // Index by that trailing fragment so an `xref:file.adoc#_configuration`
-            // resolves to the section node. Asciidoctor `:sectanchors:` aliases
-            // (`_slug`) and aden's own `h<level>slug` form both become resolvable
-            // targets this way.
-            if let Some(slash) = anchor.rfind('/') {
-                let fragment = &anchor[slash + 1..];
-                if !fragment.is_empty() {
-                    name_index
-                        .entry(fragment)
-                        .or_default()
-                        .push(anchor.as_str());
-                }
-            }
-        }
-    }
+    // Skip the full anchor scan on warm generations with no name-resolving
+    // records. Empty HashMap construction does not allocate.
+    let needs_name_index = !link_records.is_empty()
+        || !use_records.is_empty()
+        || !impl_records.is_empty()
+        || !mutates_records.is_empty()
+        || !member_of_records.is_empty()
+        || !mention_records.is_empty()
+        || !demo_records.is_empty();
+    let name_index = if needs_name_index {
+        build_symbol_name_index(&anchors)
+    } else {
+        HashMap::new()
+    };
 
     // Prose cross-reference indexes: doc anchor FRAGMENT -> declaring doc
     // anchors. Strictly doc-side (never code symbols) so `ref:` records cannot
@@ -722,7 +709,8 @@ pub(crate) fn link_store_edges<S: GraphStorage>(
     // Candidate lists are sorted for deterministic collision picks.
     let mut doc_frag_index: HashMap<&str, Vec<&str>> = HashMap::new();
     let mut doc_slug_index: HashMap<&str, Vec<&str>> = HashMap::new();
-    let mut doc_file_index: HashMap<String, Vec<&str>> = HashMap::new();
+    let mut doc_file_index: HashMap<&str, Vec<&str>> = HashMap::new();
+    let needs_doc_refs = !ref_records.is_empty() || !supersede_records.is_empty();
     for anchor in &anchors {
         let Some(rest) = anchor.strip_prefix("aden://doc/") else {
             continue;
@@ -733,9 +721,12 @@ pub(crate) fn link_store_edges<S: GraphStorage>(
                 .and_then(|s| s.to_str())
         {
             doc_file_index
-                .entry(stem.to_string())
+                .entry(stem)
                 .or_default()
                 .push(anchor.as_str());
+        }
+        if !needs_doc_refs {
+            continue;
         }
         let fragment = match rest.find('#') {
             Some(h) => &rest[h + 1..],
@@ -765,12 +756,14 @@ pub(crate) fn link_store_edges<S: GraphStorage>(
             }
         }
     }
-    for cands in doc_frag_index
-        .values_mut()
-        .chain(doc_slug_index.values_mut())
-    {
-        cands.sort_unstable();
-        cands.dedup();
+    if needs_doc_refs {
+        for cands in doc_frag_index
+            .values_mut()
+            .chain(doc_slug_index.values_mut())
+        {
+            cands.sort_unstable();
+            cands.dedup();
+        }
     }
     for cands in doc_file_index.values_mut() {
         cands.sort_unstable();
@@ -778,7 +771,7 @@ pub(crate) fn link_store_edges<S: GraphStorage>(
     }
 
     let mut edges: Vec<(String, String, EdgeType)> = Vec::new();
-    let mut modules: HashSet<String> = HashSet::new();
+    let mut modules = HashSet::new();
 
     // Containment for every anchor.
     for anchor in &anchors {
@@ -967,7 +960,6 @@ pub(crate) fn link_store_edges<S: GraphStorage>(
     // in the form `aden://doc/<path>#<code-anchor>` (produced by asciidoc
     // `[[code-anchor]]` declarations) are linked to the symbol they document.
     // This makes doc nodes reachable from code traversals and vice-versa.
-    let anchor_set: std::collections::HashSet<&str> = anchors.iter().map(|s| s.as_str()).collect();
     for anchor in &anchors {
         let Some(rest) = anchor.strip_prefix("aden://doc/") else {
             continue;
@@ -981,7 +973,7 @@ pub(crate) fn link_store_edges<S: GraphStorage>(
             continue;
         };
         let code_anchor = &rest[hash_pos + 1..];
-        if code_anchor.is_empty() || !anchor_set.contains(code_anchor) {
+        if code_anchor.is_empty() || !anchors.contains(code_anchor) {
             continue;
         }
         edges.push((anchor.clone(), code_anchor.to_string(), EdgeType::Documents));
@@ -1023,7 +1015,7 @@ pub(crate) fn link_store_edges<S: GraphStorage>(
     // store (e.g. held back by the merge gate) simply emits no edge.
     for (anchor, targets) in term_records {
         for t in targets {
-            if anchor_set.contains(t.as_str()) && t != anchor {
+            if anchors.contains(t.as_str()) && t != anchor {
                 edges.push((anchor.clone(), t.clone(), EdgeType::DefinesTerm));
             }
         }
@@ -1042,7 +1034,7 @@ pub(crate) fn link_store_edges<S: GraphStorage>(
     let mut synthesized_files: HashSet<String> = HashSet::new();
     for ((a, fa), (b, fb)) in cochange_pairs {
         for (anchor, file) in [(a, fa), (b, fb)] {
-            if !anchor_set.contains(anchor.as_str()) && !synthesized_files.contains(anchor) {
+            if !anchors.contains(anchor.as_str()) && !synthesized_files.contains(anchor) {
                 let mut attrs = HashMap::new();
                 if !file.is_empty() {
                     attrs.insert("source_file".to_string(), file.clone());
@@ -1120,6 +1112,31 @@ mod link_tests {
     use std::collections::HashMap;
 
     use crate::util::{extract_doc_includes, extract_doc_refs, extract_uses};
+
+    #[test]
+    fn explicit_scoped_targets_do_not_fall_back_to_same_named_symbols() {
+        let root = "aden://module/c/src#helper";
+        let nested = "aden://module/c/src#nested::helper";
+        let foreign = "aden://module/other/src#nested::helper";
+        let caller = "aden://module/c/src#nested::run";
+        let mut index = HashMap::new();
+        index.insert("helper", vec![root, nested, foreign]);
+        index.insert("nested::helper", vec![nested, foreign]);
+        for target in [root, nested, foreign] {
+            assert_eq!(resolve_callee(target, caller, &index), Some(target));
+            assert_eq!(resolve_exact(target, caller, &index), Some(target));
+            assert_eq!(resolve_implements(target, caller, &index), Some(target));
+        }
+        for missing in [
+            "aden://module/c/src#missing::helper",
+            "aden://module/missing/src#nested::helper",
+            "aden://module/c/src",
+        ] {
+            assert_eq!(resolve_callee(missing, caller, &index), None);
+            assert_eq!(resolve_exact(missing, caller, &index), None);
+            assert_eq!(resolve_implements(missing, caller, &index), None);
+        }
+    }
 
     #[test]
     fn anchor_file_extracts_path() {

@@ -375,6 +375,14 @@ jobs:
             archive_ext: zip
     runs-on: ${{ matrix.runner }}
     steps:
+      - name: Checkout MCP smoke script
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          path: release-smoke-source
+          sparse-checkout: scripts/test-release-mcp-pair.py
+          sparse-checkout-cone-mode: false
+
       - name: Download packaged archive
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -441,6 +449,51 @@ jobs:
           & "$PWD/installed/aden.exe" --version
           & "$PWD/installed/aden-mcp.exe" --version
 
+          # Make the second backup fail while its original can still be deleted.
+          # The fixture creates a conflicting file when staged --version runs.
+          $probe = Join-Path $PWD 'rollback probe'
+          $rollback = Join-Path $probe 'installed'
+          New-Item -ItemType Directory -Path $probe,$rollback | Out-Null
+          $fixture = Join-Path $probe 'collision.cs'
+          @'
+          using System;
+          using System.IO;
+          public class Collision {
+              public static int Main() {
+                  File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "backup-aden-mcp.exe"), "collision");
+                  return 0;
+              }
+          }
+          '@ | Set-Content -LiteralPath $fixture -Encoding ascii
+          $probeMcp = Join-Path $probe 'aden-mcp.exe'
+          $csc = Join-Path $env:WINDIR 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'
+          & $csc /nologo "/out:$probeMcp" $fixture
+          if ($LASTEXITCODE -ne 0) { throw 'Could not compile the rollback fixture.' }
+          Copy-Item -LiteralPath "$($bundle.FullName)/install.ps1","$($bundle.FullName)/aden.exe" -Destination $probe
+          @('aden.exe', 'aden-mcp.exe' | ForEach-Object {
+            (Get-FileHash -LiteralPath (Join-Path $probe $_)).Hash + '  ' + $_
+          }) | Set-Content -LiteralPath (Join-Path $probe 'SHA256SUMS') -Encoding ascii
+          $previousCli = Join-Path $rollback 'aden.exe'
+          $previousMcp = Join-Path $rollback 'aden-mcp.exe'
+          [IO.File]::WriteAllText($previousCli, 'previous CLI')
+          [IO.File]::WriteAllText($previousMcp, 'previous MCP')
+          $failure = $null
+          try {
+            & (Join-Path $probe 'install.ps1') -InstallDir $rollback -Force
+          } catch {
+            $failure = $_
+          }
+          if ($failure.Exception -isnot [Management.Automation.MethodInvocationException] -or
+              $failure.Exception.InnerException -isnot [IO.IOException] -or
+              $failure.InvocationInfo.Line -notlike '*File*Move*$Destination*$Backup*' -or
+              -not (Test-Path -LiteralPath $previousCli -PathType Leaf) -or
+              -not (Test-Path -LiteralPath $previousMcp -PathType Leaf) -or
+              [IO.File]::ReadAllText($previousCli) -cne 'previous CLI' -or
+              [IO.File]::ReadAllText($previousMcp) -cne 'previous MCP' -or
+              (Get-ChildItem -LiteralPath $rollback -Force -Directory)) {
+            throw 'Failed upgrade did not preserve the previous binary pair and clean staging.'
+          }
+
           # Parse after artifact transfer and installation so no grammar can be
           # resolved accidentally from the build runner's target directory.
           $smoke = Join-Path $PWD "release-parse-smoke"
@@ -477,6 +530,16 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Windows PowerShell 5.1 installer smoke test failed: exit $LASTEXITCODE" }
           & "$PWD/installed-windows-powershell/aden.exe" --version
           & "$PWD/installed-windows-powershell/aden-mcp.exe" --version
+
+      - name: Verify installed CLI and MCP together
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          python=python3
+          if [[ "$RUNNER_OS" == "Windows" ]]; then python=python; fi
+          "$python" -B release-smoke-source/scripts/test-release-mcp-pair.py installed "$RELEASE_VERSION"
 
   publish:
     name: Publish draft GitHub Release

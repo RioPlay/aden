@@ -220,7 +220,7 @@ fn low_friction_cli_gauntlet() {
             ".",
         ],
     );
-    let approx_tokens = (tiny_raw.len() + 3) / 4;
+    let approx_tokens = tiny_raw.len().div_ceil(4);
     assert!(
         approx_tokens <= 15,
         "tiny ask over budget: {approx_tokens}\n{tiny_raw}"

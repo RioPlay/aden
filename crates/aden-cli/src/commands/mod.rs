@@ -1,6 +1,7 @@
 // Copyright (c) 2026 RioPlay <rioplay@rioplay.dev>
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+pub(crate) mod analysis;
 pub mod audit;
 pub mod ci;
 pub mod communities;

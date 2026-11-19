@@ -6,7 +6,6 @@
 //! load from the snapshot when it is fresher than the live fjall store, avoiding
 //! fjall's process-level `Locked` errors under multi-agent workloads.
 
-use crate::bridge::GraphBridge;
 use aden_core::{Document, EdgeType};
 use aden_store::{GraphStorage, StoreError};
 use std::collections::HashMap;
@@ -22,6 +21,11 @@ const MAGIC: &[u8; 8] = b"ADENSNAP";
 /// Docs + edges tuple returned by snapshot readers. Named type to keep
 /// signatures short for clippy.
 pub type SnapshotData = (HashMap<String, Document>, Vec<(String, String, EdgeType)>);
+
+mod session;
+mod storage;
+pub(crate) use session::{SharedSnapshot, try_read_session};
+pub use session::{session_cache_enabled, set_session_cache_enabled};
 
 #[derive(Debug, thiserror::Error)]
 pub enum SnapshotError {
@@ -183,23 +187,39 @@ fn temporary_path(dest: &Path) -> PathBuf {
     dest.with_extension("snapshot.tmp")
 }
 
+#[cfg(test)]
 fn write_snapshot_to_temp(
     dest: &Path,
     docs: &HashMap<String, Document>,
     edges: &[(String, String, EdgeType)],
 ) -> Result<(), SnapshotError> {
+    write_payload_to_temp(dest, &SnapshotPayloadRef { docs, edges })
+}
+
+fn write_payload_to_temp(
+    dest: &Path,
+    payload: &impl serde::Serialize,
+) -> Result<(), SnapshotError> {
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let file = std::fs::File::create(temporary_path(dest))?;
-    let mut writer = BufWriter::new(file);
-    writer.write_all(MAGIC)?;
-    writer.write_all(&SNAPSHOT_VERSION.to_le_bytes())?;
-    let payload = SnapshotPayloadRef { docs, edges };
-    let mut writer =
-        postcard::to_io(&payload, writer).map_err(|e| SnapshotError::Encode(e.to_string()))?;
-    writer.flush()?;
-    Ok(())
+    let tmp = temporary_path(dest);
+    let file = std::fs::File::create(&tmp)?;
+    let result = (|| {
+        let mut writer = BufWriter::new(file);
+        writer.write_all(MAGIC)?;
+        writer.write_all(&SNAPSHOT_VERSION.to_le_bytes())?;
+        let mut writer =
+            postcard::to_io(payload, writer).map_err(|e| SnapshotError::Encode(e.to_string()))?;
+        writer.flush()?;
+        Ok(())
+    })();
+    if result.is_err() {
+        // The writer has dropped, including on Windows, before removing only
+        // the temporary output opened by this attempt.
+        let _ = std::fs::remove_file(tmp);
+    }
+    result
 }
 
 /// Serialize a snapshot into `dest.tmp` without retaining its encoded bytes.
@@ -210,8 +230,22 @@ pub fn prepare_from_storage<S: GraphStorage>(
     dest: &Path,
     storage: &S,
 ) -> Result<(), SnapshotError> {
-    let (docs, edges) = GraphBridge::load_from_storage(storage)?;
-    write_snapshot_to_temp(dest, &docs, &edges)
+    storage::prepare(dest, storage, false).map(|_| ())
+}
+
+/// Orphans in the stored graph, with up to five examples in anchor order.
+#[derive(Debug, Default)]
+pub struct OrphanSummary {
+    pub total: usize,
+    pub examples: Vec<String>,
+}
+
+/// Prepare the same v1 snapshot and summarize isolated nodes from its inputs.
+pub fn prepare_from_storage_with_orphans<S: GraphStorage>(
+    dest: &Path,
+    storage: &S,
+) -> Result<OrphanSummary, SnapshotError> {
+    storage::prepare(dest, storage, true)
 }
 
 /// Atomically rename a successfully prepared snapshot into place.
@@ -242,6 +276,47 @@ pub fn read_snapshot_file(path: &Path) -> Result<SnapshotData, SnapshotError> {
     let file = std::fs::File::open(path)?;
     let file_len = file.metadata()?.len();
     decode_snapshot_reader(BufReader::new(file), file_len, INITIAL_DECODE_SCRATCH)
+}
+
+/// Verify and decode the same bounded buffer, even across concurrent replacement.
+/// Large snapshots keep the selective reader's existing storage policy.
+pub(crate) fn read_small_verified(
+    path: &Path,
+    matches_revision: impl FnOnce(&[u8]) -> bool,
+) -> io::Result<Option<SnapshotData>> {
+    // A named pipe can block on open, before descriptor metadata is available.
+    if !std::fs::symlink_metadata(path)?.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "expected a regular graph snapshot",
+        ));
+    }
+    let file = std::fs::File::open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "expected a regular graph snapshot",
+        ));
+    }
+    let length = metadata.len();
+    if length > session::MAX_ENCODED_BYTES {
+        return Ok(None);
+    }
+    let mut bytes = Vec::with_capacity(length as usize);
+    file.take(session::MAX_ENCODED_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 != length || !matches_revision(&bytes) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "snapshot revision mismatch",
+        ));
+    }
+    let data = decode_snapshot(&bytes).map_err(io::Error::other)?;
+    if data.0.is_empty() {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "empty snapshot"));
+    }
+    Ok(Some(data))
 }
 
 /// Load docs + edges from the last published read snapshot when present.

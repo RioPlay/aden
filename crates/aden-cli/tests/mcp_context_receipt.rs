@@ -2,9 +2,92 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! CLI-to-MCP Context Receipt contract fixture.
 
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{Duration, Instant};
 
 const AI_INTEGRATION_GUIDE: &str = include_str!("../../../docs/ai-integration.adoc");
+
+struct ReceiptFixture {
+    temp: tempfile::TempDir,
+    project: PathBuf,
+    data: PathBuf,
+}
+
+impl ReceiptFixture {
+    fn new() -> Self {
+        let temp = tempfile::Builder::new()
+            .prefix("aden-mcp-context-receipt-")
+            .tempdir()
+            .unwrap();
+        let project = temp.path().join("project");
+        let data = temp.path().join("data");
+        std::fs::create_dir(&project).unwrap();
+        std::fs::create_dir(&data).unwrap();
+        Self {
+            temp,
+            project,
+            data,
+        }
+    }
+
+    fn path(&self) -> &Path {
+        &self.project
+    }
+
+    fn command(&self) -> Command {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_aden"));
+        command
+            .current_dir(&self.project)
+            .env("ADEN_DATA_DIR", &self.data)
+            .env_remove("ADEN_STORE")
+            .env_remove("ADEN_PROJECT")
+            .env_remove("ADEN_SKIP_AUTO_GEN");
+        command
+    }
+
+    fn wait_for_generation(&self) -> Result<(), Box<dyn std::error::Error>> {
+        if self.data.read_dir()?.next().transpose()?.is_none() {
+            return Ok(());
+        }
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            // Status takes the gate held through terminal publication and
+            // worker lease release, so terminal status is safe for cleanup.
+            let output = self
+                .command()
+                .args(["jobs", "status", ".", "--json"])
+                .output()?;
+            if !output.status.success() {
+                return Err(String::from_utf8_lossy(&output.stderr).into_owned().into());
+            }
+            let status: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+            match status["state"].as_str() {
+                Some("completed" | "failed" | "cancelled" | "interrupted") => return Ok(()),
+                None if status.is_null() => return Ok(()),
+                Some("queued" | "running" | "cancelling") if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                _ => return Err(format!("generation did not settle: {status}").into()),
+            }
+        }
+    }
+}
+
+impl Drop for ReceiptFixture {
+    fn drop(&mut self) {
+        if let Err(error) = self.wait_for_generation() {
+            self.temp.disable_cleanup(true);
+            let path = self.temp.path().display();
+            let message = format!("retained receipt fixture at {path}: {error}");
+            if std::thread::panicking() {
+                eprintln!("{message}");
+            } else {
+                panic!("{message}");
+            }
+        }
+    }
+}
 
 fn assert_authoritative_receipt(value: &serde_json::Value, tool: &str) {
     let receipt = &value["context_receipt"];
@@ -32,12 +115,12 @@ fn assert_authoritative_receipt(value: &serde_json::Value, tool: &str) {
 
 #[test]
 fn cli_json_receipt_survives_the_mcp_bridge() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = ReceiptFixture::new();
     std::fs::write(dir.path().join("example.rs"), "fn receipt_fixture() {}\n").unwrap();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_aden"))
+    let output = dir
+        .command()
         .args(["grep", "--json", "receipt_fixture"])
-        .current_dir(dir.path())
         .output()
         .unwrap();
     assert!(
@@ -64,13 +147,10 @@ fn cli_json_receipt_survives_the_mcp_bridge() {
 
 #[test]
 fn cli_error_survives_the_mcp_bridge_with_only_documented_sanitization() {
-    let dir = tempfile::tempdir().unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_aden"))
-        .args(["locate"])
-        .current_dir(dir.path())
-        .output()
-        .unwrap();
+    let dir = ReceiptFixture::new();
+    let output = dir.command().args(["locate"]).output().unwrap();
     assert!(!output.status.success(), "missing locate input must fail");
+    assert_eq!(std::fs::read_dir(&dir.data).unwrap().count(), 0);
 
     let cli_error = String::from_utf8(output.stderr).unwrap();
     let mcp_error = aden_mcp::preserve_cli_error_for_mcp(&cli_error);
@@ -82,16 +162,21 @@ fn cli_error_survives_the_mcp_bridge_with_only_documented_sanitization() {
     assert!(mcp_error.contains("--caller-of"), "{mcp_error}");
     assert!(!mcp_error.contains(dir.path().to_string_lossy().as_ref()));
     assert!(!mcp_error.contains("RUST_BACKTRACE"));
-    assert!(mcp_error.contains("<path>"), "{mcp_error}");
     assert!(
         mcp_error.ends_with("Error: locate requires one of --symbol or --caller-of"),
         "{mcp_error}"
     );
+    // A quiet CLI error may have no path to redact. Exercise the same
+    // transport boundary with a diagnostic that actually contains one.
+    let diagnostic = format!("opening /synthetic/private-marker/file.rs\n{cli_error}");
+    let sanitized = aden_mcp::preserve_cli_error_for_mcp(&diagnostic);
+    assert!(sanitized.contains("opening <path>"), "{sanitized}");
+    assert!(!sanitized.contains("private-marker"));
 }
 
 #[test]
 fn documented_structured_read_examples_execute_with_versioned_receipts() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = ReceiptFixture::new();
     std::fs::write(dir.path().join("example.rs"), "fn known_symbol() {}\n").unwrap();
 
     for example in [
@@ -108,11 +193,7 @@ fn documented_structured_read_examples_execute_with_versioned_receipts() {
         vec!["grep", "--json", "known_symbol", "."],
         vec!["locate", "--json", "--symbol", "known_symbol", "."],
     ] {
-        let output = Command::new(env!("CARGO_BIN_EXE_aden"))
-            .args(&args)
-            .current_dir(dir.path())
-            .output()
-            .unwrap();
+        let output = dir.command().args(&args).output().unwrap();
         assert!(
             output.status.success(),
             "aden {} failed: {}",
@@ -126,16 +207,16 @@ fn documented_structured_read_examples_execute_with_versioned_receipts() {
 
 #[test]
 fn primary_mcp_read_workflows_are_versioned_json() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = ReceiptFixture::new();
     std::fs::write(
         dir.path().join("example.rs"),
         "fn known_symbol() {}\nfn caller() { known_symbol(); }\n",
     )
     .unwrap();
 
-    let locate = Command::new(env!("CARGO_BIN_EXE_aden"))
+    let locate = dir
+        .command()
         .args(["locate", "--json", "--symbol", "known_symbol", "."])
-        .current_dir(dir.path())
         .output()
         .unwrap();
     assert!(locate.status.success());
@@ -191,11 +272,7 @@ fn primary_mcp_read_workflows_are_versioned_json() {
     ];
 
     for (tool, args) in cases {
-        let output = Command::new(env!("CARGO_BIN_EXE_aden"))
-            .args(&args)
-            .current_dir(dir.path())
-            .output()
-            .unwrap();
+        let output = dir.command().args(&args).output().unwrap();
         assert!(
             output.status.success(),
             "aden {} failed: {}",
@@ -217,7 +294,7 @@ fn primary_mcp_read_workflows_are_versioned_json() {
 
 #[test]
 fn llm_default_journey_needs_no_explicit_budget_and_proves_its_graph_revision() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = ReceiptFixture::new();
     std::fs::write(
         dir.path().join("example.rs"),
         "/// Entry point for the receipt fixture.\nfn main() { helper(); }\nfn helper() {}\n",
@@ -226,9 +303,9 @@ fn llm_default_journey_needs_no_explicit_budget_and_proves_its_graph_revision() 
 
     // Exercise the defaults exactly as an LLM-facing caller does: structured
     // output, automatic freshness, and no explicit token budget.
-    let ask = Command::new(env!("CARGO_BIN_EXE_aden"))
+    let ask = dir
+        .command()
         .args(["ask", "Where is the main entry point?", "."])
-        .current_dir(dir.path())
         .output()
         .unwrap();
     assert!(
@@ -243,9 +320,9 @@ fn llm_default_journey_needs_no_explicit_budget_and_proves_its_graph_revision() 
         .expect("ask must select an anchor for the fixture");
     assert!(ask_value["context"].as_str().unwrap().contains("main"));
 
-    let asm = Command::new(env!("CARGO_BIN_EXE_aden"))
+    let asm = dir
+        .command()
         .args(["asm", "--from", anchor, "."])
-        .current_dir(dir.path())
         .output()
         .unwrap();
     assert!(
@@ -264,18 +341,18 @@ fn llm_default_journey_needs_no_explicit_budget_and_proves_its_graph_revision() 
 
 #[test]
 fn strict_agent_defaults_keep_full_receipts_when_they_fit() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = ReceiptFixture::new();
     std::fs::write(
         dir.path().join("example.rs"),
         "/// Entry point for strict receipt QA.\nfn main() {}\n",
     )
     .unwrap();
 
-    let ask = Command::new(env!("CARGO_BIN_EXE_aden"))
+    let ask = dir
+        .command()
         // Strict definition questions now require a named symbol. This fixture
         // checks receipt preservation, rather than ambiguous question routing.
         .args(["ask", "--strict", "Where is main defined?", "."])
-        .current_dir(dir.path())
         .output()
         .unwrap();
     assert!(
@@ -287,9 +364,9 @@ fn strict_agent_defaults_keep_full_receipts_when_they_fit() {
     assert_authoritative_receipt(&ask_value, "strict ask");
     let anchor = ask_value["anchor"].as_str().unwrap();
 
-    let asm = Command::new(env!("CARGO_BIN_EXE_aden"))
+    let asm = dir
+        .command()
         .args(["asm", "--strict", "--from", anchor, "."])
-        .current_dir(dir.path())
         .output()
         .unwrap();
     assert!(
@@ -308,10 +385,10 @@ fn strict_agent_defaults_keep_full_receipts_when_they_fit() {
 
 #[test]
 fn empty_default_ask_reports_truthful_building_freshness() {
-    let dir = tempfile::tempdir().unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_aden"))
+    let dir = ReceiptFixture::new();
+    let output = dir
+        .command()
         .args(["ask", "definitely absent symbol", "."])
-        .current_dir(dir.path())
         .output()
         .unwrap();
     assert!(
@@ -335,8 +412,22 @@ fn empty_default_ask_reports_truthful_building_freshness() {
 }
 
 #[test]
-fn every_advertised_mcp_read_has_a_json_receipt_and_structured_recovery() {
+fn advertised_mcp_reads_preserve_job_status_or_return_graph_receipts_and_recovery() {
     for tool in aden_mcp::agent_read_tools() {
+        if tool == "generation_status" {
+            let dir = ReceiptFixture::new();
+            let output = dir
+                .command()
+                .args(["jobs", "status", ".", "--json"])
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+            let raw = std::str::from_utf8(&output.stdout).unwrap();
+            assert_eq!(aden_mcp::agent_response_for_mcp(tool, raw), "null");
+            let running = r#"{"job_id":"abcd","state":"running"}"#;
+            assert_eq!(aden_mcp::agent_response_for_mcp(tool, running), running);
+            continue;
+        }
         let response = aden_mcp::agent_response_for_mcp(tool, "terminal-oriented fixture output");
         let value: serde_json::Value = serde_json::from_str(&response)
             .unwrap_or_else(|e| panic!("{tool} is not agent JSON: {e}: {response}"));

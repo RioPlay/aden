@@ -1,12 +1,15 @@
 // Copyright (c) 2026 RioPlay <rioplay@rioplay.dev>
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+use aden_core::source::{STORED_SOURCE_MAX_BYTES, StoredSourceReader};
 use aden_core::{Block, EdgeType};
 use aden_graph::{AdenEdge, AdenGraph, DocumentNode};
 use petgraph::Direction;
 use petgraph::graph::NodeIndex;
 use petgraph::visit::EdgeRef;
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::path::Path;
 
 /// Traversal priority of an edge type (lower = more structurally load-bearing,
 /// hence visited first within the budget). On a high-fan-out "god object" the
@@ -350,18 +353,23 @@ fn gather_then_select(
     let mut result = Vec::new();
     let mut included = Vec::new();
     let mut total = 0usize;
+    let mut seen_imports = HashMap::new();
     for (pos, &idx) in std::iter::once(&0usize).chain(order.iter()).enumerate() {
-        let (node, text, tokens, _) = &cands[idx];
+        let node = cands[idx].0;
+        let doc = &graph.graph[node];
+        let (text, import_tables) = render_assembly_document(doc, opts, &seen_imports);
+        let tokens = estimate_tokens(&text);
         let sep = if result.is_empty() { 0 } else { sep_cost };
         let remaining = opts.token_budget.saturating_sub(total);
         if tokens + sep <= remaining {
             total += tokens + sep;
-            included.push(*node);
-            result.push(text.clone());
+            included.push(node);
+            result.push(text);
+            record_import_tables(&mut seen_imports, doc, import_tables);
         } else if pos == 0 && opts.llm_mode && remaining.saturating_sub(sep) > 32 {
-            let truncated = truncate_to_tokens(text, remaining.saturating_sub(sep));
+            let truncated = truncate_to_tokens(&text, remaining.saturating_sub(sep));
             total += estimate_tokens(&truncated) + sep;
-            included.push(*node);
+            included.push(node);
             result.push(truncated);
         }
         // otherwise skip this node and try the next (smaller) candidate
@@ -413,6 +421,7 @@ pub fn assemble_with_anchors_mmr(
     // Token sets of included nodes, for MMR redundancy checks (only when enabled).
     let mut included_tokens: Vec<HashSet<String>> = Vec::new();
     let mut total_tokens = 0usize;
+    let mut seen_imports = HashMap::new();
 
     // Single-source the separator so its byte cost is counted in the budget by
     // the same value that the final join concatenates. The separators are
@@ -471,20 +480,7 @@ pub fn assemble_with_anchors_mmr(
             continue;
         }
         let doc = &graph.graph[node];
-        let raw_text = document_to_text(
-            doc,
-            &opts.block_filter,
-            &opts.include_tags,
-            &opts.exclude_tags,
-            &opts.attributes,
-        );
-
-        // In LLM mode, strip AsciiDoc markup so every token is signal.
-        let text = if opts.llm_mode {
-            strip_asciidoc_markup(&raw_text)
-        } else {
-            raw_text
-        };
+        let (text, import_tables) = render_assembly_document(doc, opts, &seen_imports);
 
         let tokens = estimate_tokens(&text);
 
@@ -520,6 +516,7 @@ pub fn assemble_with_anchors_mmr(
                 included_tokens.push(ts);
             }
             result.push(text);
+            record_import_tables(&mut seen_imports, doc, import_tables);
         } else if opts.llm_mode && remaining.saturating_sub(sep) > 32 {
             // LLM mode: partial inclusion — truncate so the doc PLUS its
             // preceding separator fit within the remaining budget.
@@ -584,6 +581,132 @@ const HYDRATE_PER_NODE_DIVISOR: usize = 4;
 /// mirrors the main loop's minimum partial-inclusion threshold.
 const HYDRATE_MIN_REMAINING: usize = 32;
 
+// A small invocation-local LRU reuses files across the BFS frontier. The
+// sparse line index keeps offset storage proportional to every 128th line.
+const SOURCE_CACHE_FILES: usize = 4;
+const SOURCE_LINE_STRIDE: usize = 128;
+
+struct SourceFile {
+    text: String,
+    hash: Option<String>,
+    checkpoints: Vec<usize>,
+    line_count: usize,
+}
+
+impl SourceFile {
+    fn new(text: String) -> Self {
+        let mut checkpoints = Vec::new();
+        let mut line_count = 0usize;
+        let mut offset = 0;
+        for line in text.split_inclusive('\n') {
+            if line_count.is_multiple_of(SOURCE_LINE_STRIDE) {
+                checkpoints.push(offset);
+            }
+            line_count += 1;
+            offset += line.len();
+        }
+        Self {
+            text,
+            hash: None,
+            checkpoints,
+            line_count,
+        }
+    }
+
+    fn matches_hash(&mut self, expected: &str) -> bool {
+        self.hash
+            .get_or_insert_with(|| aden_core::hash_source(&self.text))
+            .as_str()
+            == expected
+    }
+
+    fn line_start(&self, index: usize) -> usize {
+        if index == self.line_count {
+            return self.text.len();
+        }
+        let start = self.checkpoints[index / SOURCE_LINE_STRIDE];
+        start
+            + self.text[start..]
+                .split_inclusive('\n')
+                .take(index % SOURCE_LINE_STRIDE)
+                .map(str::len)
+                .sum::<usize>()
+    }
+
+    fn span(&self, start: usize, end: usize) -> Option<(Cow<'_, str>, usize)> {
+        let end = end.min(self.line_count);
+        if start == 0 || start > end {
+            return None;
+        }
+        let text = &self.text[self.line_start(start - 1)..self.line_start(end)];
+        // Match str::lines().join("\n"), including empty lines and bare CR.
+        let text = if let Some(line) = text.strip_suffix('\n') {
+            line.strip_suffix('\r').unwrap_or(line)
+        } else {
+            text
+        };
+        let text = if text.contains("\r\n") {
+            Cow::Owned(text.replace("\r\n", "\n"))
+        } else {
+            Cow::Borrowed(text)
+        };
+        Some((text, end))
+    }
+}
+
+struct SourceCache<'root, 'file> {
+    root: &'root Path,
+    reader: Option<std::io::Result<StoredSourceReader>>,
+    files: VecDeque<(&'file str, Option<SourceFile>)>,
+    retained_bytes: usize,
+}
+
+impl<'root, 'file> SourceCache<'root, 'file> {
+    fn new(root: &'root Path) -> Self {
+        Self {
+            root,
+            reader: None,
+            files: VecDeque::new(),
+            retained_bytes: 0,
+        }
+    }
+
+    fn get(&mut self, file: &'file str) -> Option<&mut SourceFile> {
+        let entry = if let Some(index) = self.files.iter().position(|(path, _)| *path == file) {
+            self.files.remove(index)?
+        } else {
+            let reader = self
+                .reader
+                .get_or_insert_with(|| StoredSourceReader::new(self.root))
+                .as_ref()
+                .ok()?;
+            let text = reader.read(Path::new(file)).ok();
+            let size = text.as_ref().map_or(0, String::len);
+            while self.files.len() == SOURCE_CACHE_FILES
+                || self.retained_bytes + size > STORED_SOURCE_MAX_BYTES
+            {
+                let (_, removed) = self.files.pop_back()?;
+                self.retained_bytes -= removed.as_ref().map_or(0, |file| file.text.len());
+            }
+            self.retained_bytes += size;
+            (file, text.map(SourceFile::new))
+        };
+        self.files.push_front(entry);
+        self.files.front_mut()?.1.as_mut()
+    }
+}
+
+fn hydration_threshold(token_budget: usize) -> usize {
+    token_budget / 100 * HYDRATE_TRIGGER_PCT + token_budget % 100 * HYDRATE_TRIGGER_PCT / 100
+}
+
+fn source_span(attrs: &HashMap<String, String>) -> Option<(&str, usize, usize)> {
+    let file = attrs.get("source_file")?;
+    let start = attrs.get("start_line")?.parse::<usize>().ok()?;
+    let end = attrs.get("end_line")?.parse::<usize>().ok()?;
+    (start != 0 && start <= end).then_some((file.as_str(), start, end))
+}
+
 /// Pack the unspent token budget with the actual source spans of the included
 /// nodes, nearest-first (BFS visit order — the seed is index 0 and is always
 /// hydrated first). Language-agnostic by construction: it reads line spans
@@ -605,12 +728,11 @@ fn hydrate_with_source(
     total_tokens: &mut usize,
     result: &mut [String],
 ) {
-    if *total_tokens >= token_budget * HYDRATE_TRIGGER_PCT / 100 {
+    if *total_tokens >= hydration_threshold(token_budget) {
         return; // summaries already filled the budget — nothing to pack
     }
     let per_node_cap = (token_budget / HYDRATE_PER_NODE_DIVISOR).max(HYDRATE_MIN_REMAINING);
-    // One read per distinct file, shared across the nodes it contains.
-    let mut file_cache: HashMap<String, Option<String>> = HashMap::new();
+    let mut cache = SourceCache::new(root);
 
     for (i, &node) in included.iter().enumerate() {
         let remaining = token_budget.saturating_sub(*total_tokens);
@@ -618,30 +740,17 @@ fn hydrate_with_source(
             break;
         }
         let attrs = &graph.graph[node].doc.attributes;
-        let (Some(file), Some(start), Some(end)) = (
-            attrs.get("source_file"),
-            attrs
-                .get("start_line")
-                .and_then(|s| s.parse::<usize>().ok()),
-            attrs.get("end_line").and_then(|s| s.parse::<usize>().ok()),
-        ) else {
+        let Some((file, start, end)) = source_span(attrs) else {
             continue; // synthesized hubs / docs without spans have no source
         };
-        let content = file_cache.entry(file.clone()).or_insert_with(|| {
-            let p = std::path::Path::new(file);
-            let abs = if p.is_absolute() {
-                p.to_path_buf()
-            } else {
-                root.join(p)
-            };
-            std::fs::read_to_string(abs).ok()
-        });
-        let Some(content) = content else { continue };
+        let Some(source) = cache.get(file) else {
+            continue;
+        };
 
         // Stale-store guard: the span's line numbers are only meaningful for
         // the file content that was hashed at gen time.
         if let Some(expected) = attrs.get("source_hash")
-            && aden_core::hash_source(content) != *expected
+            && !source.matches_hash(expected)
         {
             let note = format!(
                 "\n\n// source span omitted: {} changed since gen (hash mismatch)",
@@ -655,11 +764,9 @@ fn hydrate_with_source(
             continue;
         }
 
-        let lines: Vec<&str> = content.lines().collect();
-        if start == 0 || start > lines.len() {
+        let Some((span, _)) = source.span(start, end) else {
             continue;
-        }
-        let span = lines[start - 1..end.min(lines.len())].join("\n");
+        };
         if span.trim().is_empty() {
             continue;
         }
@@ -678,9 +785,9 @@ fn hydrate_with_source(
 /// Enrich one compact ADG document with a verified source span. The source
 /// allowance is separate from the document summary and remains bounded before
 /// the outer assembly budget is charged.
-fn emit_adg_with_source(
-    doc: &DocumentNode,
-    root: &std::path::Path,
+fn emit_adg_with_source<'a>(
+    doc: &'a DocumentNode,
+    cache: &mut SourceCache<'_, 'a>,
     source_token_budget: usize,
 ) -> Result<String, AssemblyError> {
     use aden_emit::emit_adg;
@@ -690,43 +797,20 @@ fn emit_adg_with_source(
         return Ok(base);
     }
     let attrs = &doc.doc.attributes;
-    let (Some(file), Some(start), Some(end), Some(expected_hash)) = (
-        attrs.get("source_file"),
-        attrs
-            .get("start_line")
-            .and_then(|value| value.parse::<usize>().ok()),
-        attrs
-            .get("end_line")
-            .and_then(|value| value.parse::<usize>().ok()),
-        attrs.get("source_hash"),
-    ) else {
+    let (Some((file, start, end)), Some(expected_hash)) =
+        (source_span(attrs), attrs.get("source_hash"))
+    else {
         return Ok(base);
     };
-    if start == 0 || end < start {
-        return Ok(base);
-    }
-    let Ok(root) = std::fs::canonicalize(root) else {
+    let Some(source) = cache.get(file) else {
         return Ok(base);
     };
-    let candidate = root.join(file);
-    let Ok(candidate) = std::fs::canonicalize(candidate) else {
+    if !source.matches_hash(expected_hash) {
+        return Ok(base);
+    }
+    let Some((span, actual_end)) = source.span(start, end) else {
         return Ok(base);
     };
-    if !candidate.starts_with(&root) {
-        return Ok(base);
-    }
-    let Ok(content) = std::fs::read_to_string(candidate) else {
-        return Ok(base);
-    };
-    if aden_core::hash_source(&content) != *expected_hash {
-        return Ok(base);
-    }
-    let lines: Vec<&str> = content.lines().collect();
-    if start > lines.len() {
-        return Ok(base);
-    }
-    let actual_end = end.min(lines.len());
-    let span = lines[start - 1..actual_end].join("\n");
     if span.trim().is_empty() {
         return Ok(base);
     }
@@ -749,7 +833,7 @@ fn emit_adg_with_source(
         return Ok(base);
     }
     let text = truncate_to_tokens(&span, text_budget);
-    let clipped = text != span;
+    let clipped = text != span.as_ref();
     value["source"]["text"] = text.into();
     if clipped {
         value["source"]["state"] = "clipped".into();
@@ -792,6 +876,11 @@ pub fn assemble_adg(
     let mut queue = VecDeque::new();
     let mut results = Vec::new();
     let mut total_tokens = 0usize;
+    let mut source_cache = opts
+        .hydrate_root
+        .as_deref()
+        .filter(|_| opts.token_budget / 2 >= HYDRATE_MIN_REMAINING)
+        .map(SourceCache::new);
 
     // The elements are joined with ",\n" and the whole thing wrapped in
     // "[\n" ... "\n]" — bytes concatenated *after* budgeting that, left
@@ -818,13 +907,13 @@ pub fn assemble_adg(
             continue;
         }
         let doc = &graph.graph[node];
-        let adg_json = if let Some(root) = &opts.hydrate_root {
+        let adg_json = if let Some(cache) = source_cache.as_mut() {
             let source_budget = if results.is_empty() {
                 opts.token_budget / 2
             } else {
                 opts.token_budget / HYDRATE_PER_NODE_DIVISOR
             };
-            emit_adg_with_source(doc, root, source_budget)?
+            emit_adg_with_source(doc, cache, source_budget)?
         } else {
             emit_adg(&doc.doc).map_err(|error| AssemblyError::Graph(error.to_string()))?
         };
@@ -867,6 +956,26 @@ fn document_to_text(
     exclude_tags: &[String],
     attributes: &[String],
 ) -> String {
+    document_to_text_with_imports(
+        doc,
+        block_filter,
+        include_tags,
+        exclude_tags,
+        attributes,
+        None,
+    )
+    .0
+}
+
+fn document_to_text_with_imports(
+    doc: &DocumentNode,
+    block_filter: &[BlockKind],
+    include_tags: &[String],
+    exclude_tags: &[String],
+    attributes: &[String],
+    previous_imports: Option<&[aden_core::Table]>,
+) -> (String, Vec<aden_core::Table>) {
+    let mut rendered_imports = Vec::new();
     let has_filter = !block_filter.is_empty();
     // Docstring and signature are HEADER content, exempt from block filters:
     // the leading Paragraph (the docstring — often the only substantive prose
@@ -946,6 +1055,14 @@ fn document_to_text(
                     out.push('\n');
                 }
                 Block::Table(table) => {
+                    if let Some(previous) = previous_imports
+                        && is_file_import_table(table)
+                    {
+                        if previous.contains(table) || rendered_imports.contains(table) {
+                            continue;
+                        }
+                        rendered_imports.push(table.clone());
+                    }
                     out.push_str("|===\n");
                     let header = table
                         .headers
@@ -1049,7 +1166,7 @@ fn document_to_text(
                     filtered_out.push_str(&region.content);
                     filtered_out.push_str("\n\n");
                 }
-                return filtered_out;
+                return (filtered_out, Vec::new());
             }
         }
 
@@ -1095,16 +1212,69 @@ fn document_to_text(
                     filtered_out.push_str(&region.content);
                     filtered_out.push_str("\n\n");
                 }
-                return filtered_out;
+                return (filtered_out, Vec::new());
             }
         }
 
-        out
+        (out, rendered_imports)
     } else {
-        doc.parsed
-            .as_ref()
-            .map(|p| p.raw_content.trim().to_string())
+        (
+            doc.parsed
+                .as_ref()
+                .map(|p| p.raw_content.trim().to_string())
+                .unwrap_or_default(),
+            Vec::new(),
+        )
+    }
+}
+
+fn is_file_import_table(table: &aden_core::Table) -> bool {
+    table.headers.len() == 2
+        && table.headers[0].trim().eq_ignore_ascii_case("include")
+        && table.headers[1].trim().eq_ignore_ascii_case("kind")
+}
+
+type FileImportTables = HashMap<std::path::PathBuf, Vec<aden_core::Table>>;
+
+/// Deduplicate structured blocks before either output format is rendered.
+/// Unknown file identities and non-block rendering remain untouched.
+fn render_assembly_document(
+    doc: &DocumentNode,
+    opts: &AssemblyOptions,
+    seen: &FileImportTables,
+) -> (String, Vec<aden_core::Table>) {
+    let previous = (!doc.source_path.as_os_str().is_empty()).then(|| {
+        seen.get(&doc.source_path)
+            .map(Vec::as_slice)
             .unwrap_or_default()
+    });
+    let (raw, imports) = document_to_text_with_imports(
+        doc,
+        &opts.block_filter,
+        &opts.include_tags,
+        &opts.exclude_tags,
+        &opts.attributes,
+        previous,
+    );
+    let text = if opts.llm_mode {
+        strip_asciidoc_markup(&raw)
+    } else {
+        raw
+    };
+    (text, imports)
+}
+
+/// Only complete accepted documents can claim table visibility. A clipped
+/// document may have lost any table, so conservatively retain later copies.
+fn record_import_tables(
+    seen: &mut FileImportTables,
+    doc: &DocumentNode,
+    imports: Vec<aden_core::Table>,
+) {
+    if !imports.is_empty() {
+        seen.entry(doc.source_path.clone())
+            .or_default()
+            .extend(imports);
     }
 }
 
@@ -1805,6 +1975,295 @@ mod tests {
         }
     }
 
+    fn node_with_imports(anchor: &str, path: &str, imports: &[(&str, &str)]) -> DocumentNode {
+        let mut node = node_with_text(anchor, "symbol summary");
+        node.source_path = std::path::PathBuf::from(path);
+        node.doc.blocks.push(Block::Table(aden_core::Table {
+            headers: vec!["Include".to_string(), "Kind".to_string()],
+            rows: imports
+                .iter()
+                .map(|(include, kind)| vec![include.to_string(), kind.to_string()])
+                .collect(),
+        }));
+        node
+    }
+
+    #[test]
+    fn repeated_file_import_tables_are_removed_but_distinct_metadata_survives() {
+        let mut graph = AdenGraph::<DocumentNode, AdenEdge>::new();
+        let first = graph
+            .add_node(node_with_imports(
+                "first",
+                "src/a.rs",
+                &[("std::fmt", "use")],
+            ))
+            .unwrap();
+        let duplicate = graph
+            .add_node(node_with_imports(
+                "duplicate",
+                "src/a.rs",
+                &[("std::fmt", "use")],
+            ))
+            .unwrap();
+        let distinct_row = graph
+            .add_node(node_with_imports(
+                "distinct-row",
+                "src/a.rs",
+                &[("std::io", "use")],
+            ))
+            .unwrap();
+        let other_file = graph
+            .add_node(node_with_imports(
+                "other-file",
+                "src/b.rs",
+                &[("std::fmt", "use")],
+            ))
+            .unwrap();
+        for pair in [first, duplicate, distinct_row, other_file].windows(2) {
+            graph.graph.add_edge(
+                pair[0],
+                pair[1],
+                AdenEdge {
+                    edge_type: EdgeType::Calls,
+                },
+            );
+        }
+        for llm_mode in [false, true] {
+            for relevance_select in [false, true] {
+                let opts = AssemblyOptions {
+                    start_anchor: "first".to_string(),
+                    max_depth: 4,
+                    token_budget: 4096,
+                    llm_mode,
+                    relevance_select,
+                    relevance: Some(HashMap::new()),
+                    ..Default::default()
+                };
+                let (output, anchors) = assemble_with_anchors(&graph, &opts).unwrap();
+                assert_eq!(
+                    anchors,
+                    ["first", "duplicate", "distinct-row", "other-file"]
+                );
+                let separator = if llm_mode { "\n\n---\n\n" } else { "\n<<<\n" };
+                let rendered: Vec<_> = output.split(separator).collect();
+                assert_eq!(rendered.len(), 4);
+                assert_eq!(rendered[0].matches("std::fmt").count(), 1);
+                assert_eq!(rendered[1].matches("std::fmt").count(), 0);
+                assert_eq!(rendered[2].matches("std::io").count(), 1);
+                assert_eq!(rendered[3].matches("std::fmt").count(), 1);
+                assert!(estimate_tokens(&output) <= opts.token_budget);
+            }
+        }
+    }
+
+    #[test]
+    fn import_dedup_preserves_table_text_in_source_listings() {
+        let mut graph = AdenGraph::<DocumentNode, AdenEdge>::new();
+        let first = graph
+            .add_node(node_with_imports(
+                "first",
+                "src/a.rs",
+                &[("std::fmt", "use")],
+            ))
+            .unwrap();
+        let mut duplicate = node_with_imports("duplicate", "src/a.rs", &[("std::fmt", "use")]);
+        let code = "source-before\n|===\n|Include|Kind\n|std::fmt|use\n|===\nsource-after";
+        duplicate.doc.blocks.insert(
+            1,
+            Block::Listing {
+                language: None,
+                code: code.to_string(),
+            },
+        );
+        let mut without_metadata = duplicate.clone();
+        without_metadata.doc.blocks.pop();
+        let second = graph.add_node(duplicate).unwrap();
+        graph.graph.add_edge(
+            first,
+            second,
+            AdenEdge {
+                edge_type: EdgeType::Calls,
+            },
+        );
+        for llm_mode in [false, true] {
+            let opts = AssemblyOptions {
+                start_anchor: "first".to_string(),
+                llm_mode,
+                ..Default::default()
+            };
+            let output = assemble(&graph, &opts).unwrap();
+            let expected_raw = document_to_text(&without_metadata, &[], &[], &[], &[]);
+            let expected = if llm_mode {
+                strip_asciidoc_markup(&expected_raw)
+            } else {
+                expected_raw
+            };
+            let separator = if llm_mode { "\n\n---\n\n" } else { "\n<<<\n" };
+            assert_eq!(output.split_once(separator).unwrap().1, expected);
+            assert!(output.contains("source-before"));
+            assert!(output.contains("source-after"));
+            assert_eq!(output.matches("std::fmt").count(), 2);
+        }
+    }
+
+    #[test]
+    fn import_dedup_keeps_unknown_source_paths_distinct() {
+        let mut graph = AdenGraph::<DocumentNode, AdenEdge>::new();
+        let first = graph
+            .add_node(node_with_imports("first", "", &[("std::fmt", "use")]))
+            .unwrap();
+        let second = graph
+            .add_node(node_with_imports("second", "", &[("std::fmt", "use")]))
+            .unwrap();
+        graph.graph.add_edge(
+            first,
+            second,
+            AdenEdge {
+                edge_type: EdgeType::Calls,
+            },
+        );
+        for llm_mode in [false, true] {
+            let opts = AssemblyOptions {
+                start_anchor: "first".to_string(),
+                llm_mode,
+                ..Default::default()
+            };
+            let output = assemble(&graph, &opts).unwrap();
+            assert_eq!(output.matches("std::fmt").count(), 2);
+        }
+    }
+
+    #[test]
+    fn import_dedup_filtered_tables_do_not_claim_visibility() {
+        let doc = node_with_imports("first", "src/a.rs", &[("std::fmt", "use")]);
+        let mut seen = HashMap::new();
+        let filtered_opts = AssemblyOptions {
+            block_filter: vec![BlockKind::Paragraph],
+            ..Default::default()
+        };
+        let (filtered, imports) = render_assembly_document(&doc, &filtered_opts, &seen);
+        assert!(!filtered.contains("std::fmt"));
+        record_import_tables(&mut seen, &doc, imports);
+        let (unfiltered, _) = render_assembly_document(&doc, &AssemblyOptions::default(), &seen);
+        assert_eq!(unfiltered.matches("std::fmt").count(), 1);
+    }
+
+    #[test]
+    fn import_dedup_clipped_seed_does_not_hide_later_complete_table() {
+        let mut graph = AdenGraph::<DocumentNode, AdenEdge>::new();
+        let mut seed = node_with_imports("first", "src/a.rs", &[("std::fmt", "use")]);
+        seed.doc.blocks[0] = Block::Paragraph(format!("seed {}", "x".repeat(2000)));
+        let first = graph.add_node(seed).unwrap();
+        let second = graph
+            .add_node(node_with_imports(
+                "second",
+                "src/a.rs",
+                &[("std::fmt", "use")],
+            ))
+            .unwrap();
+        graph.graph.add_edge(
+            first,
+            second,
+            AdenEdge {
+                edge_type: EdgeType::Calls,
+            },
+        );
+        let opts = AssemblyOptions {
+            start_anchor: "first".to_string(),
+            token_budget: 128,
+            llm_mode: true,
+            relevance_select: true,
+            relevance: Some(HashMap::new()),
+            ..Default::default()
+        };
+        let (output, anchors) = assemble_with_anchors(&graph, &opts).unwrap();
+        assert_eq!(anchors, ["first", "second"]);
+        let (clipped, complete) = output.split_once("\n\n---\n\n").unwrap();
+        assert!(clipped.ends_with('…'));
+        assert!(!clipped.contains("std::fmt"));
+        assert_eq!(complete.matches("std::fmt").count(), 1);
+        assert!(estimate_tokens(&output) <= opts.token_budget);
+    }
+
+    #[test]
+    fn import_dedup_skipped_candidate_does_not_claim_visibility() {
+        let mut graph = AdenGraph::<DocumentNode, AdenEdge>::new();
+        let first = graph
+            .add_node(node_with_text("first", "seed summary"))
+            .unwrap();
+        let mut oversized = node_with_imports("oversized", "src/a.rs", &[("std::fmt", "use")]);
+        oversized.doc.blocks[0] = Block::Paragraph("too large ".repeat(1000));
+        let skipped = graph.add_node(oversized).unwrap();
+        let last = graph
+            .add_node(node_with_imports(
+                "last",
+                "src/a.rs",
+                &[("std::fmt", "use")],
+            ))
+            .unwrap();
+        for (from, to) in [(first, skipped), (skipped, last)] {
+            graph.graph.add_edge(
+                from,
+                to,
+                AdenEdge {
+                    edge_type: EdgeType::Calls,
+                },
+            );
+        }
+        for llm_mode in [false, true] {
+            let opts = AssemblyOptions {
+                start_anchor: "first".to_string(),
+                token_budget: 128,
+                llm_mode,
+                relevance_select: true,
+                relevance: Some(HashMap::new()),
+                ..Default::default()
+            };
+            let (output, anchors) = assemble_with_anchors(&graph, &opts).unwrap();
+            assert_eq!(anchors, ["first", "last"]);
+            assert_eq!(output.matches("std::fmt").count(), 1);
+            assert!(estimate_tokens(&output) <= opts.token_budget);
+        }
+    }
+
+    #[test]
+    fn import_dedup_preserves_verified_hydration_with_filtered_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = "|===\n|Include|Kind\n|std::fmt|use\n|===\n";
+        std::fs::write(dir.path().join("imports.txt"), source).unwrap();
+        let mut graph = AdenGraph::<DocumentNode, AdenEdge>::new();
+        let mut nodes = Vec::new();
+        for anchor in ["first", "second"] {
+            let mut node = node_with_imports(anchor, "imports.txt", &[("std::fmt", "use")]);
+            node.doc.attributes.extend([
+                ("source_file".to_string(), "imports.txt".to_string()),
+                ("start_line".to_string(), "1".to_string()),
+                ("end_line".to_string(), "4".to_string()),
+                ("source_hash".to_string(), aden_core::hash_source(source)),
+            ]);
+            nodes.push(graph.add_node(node).unwrap());
+        }
+        graph.graph.add_edge(
+            nodes[0],
+            nodes[1],
+            AdenEdge {
+                edge_type: EdgeType::Calls,
+            },
+        );
+        for llm_mode in [false, true] {
+            let opts = AssemblyOptions {
+                start_anchor: "first".to_string(),
+                llm_mode,
+                block_filter: vec![BlockKind::Paragraph],
+                hydrate_root: Some(dir.path().to_path_buf()),
+                ..Default::default()
+            };
+            let output = assemble(&graph, &opts).unwrap();
+            assert_eq!(output.matches(source.trim_end()).count(), 2);
+            assert!(estimate_tokens(&output) <= opts.token_budget);
+        }
+    }
+
     #[test]
     fn jaccard_and_token_set_behave() {
         let a = token_set("handle the incoming request body");
@@ -2079,5 +2538,148 @@ mod tests {
         let stale = assemble_adg(&graph, &opts).unwrap();
         let stale: serde_json::Value = serde_json::from_str(&stale).unwrap();
         assert!(stale[0].get("source").is_none());
+    }
+
+    #[test]
+    fn source_spans_match_legacy_line_join_across_sparse_checkpoints() {
+        let long = "one\r\n\nαβ\rγ\n".repeat(SOURCE_LINE_STRIDE);
+        for text in ["", "\n", "last\r", "α\r\n\r\nβ\n", &long] {
+            let lines: Vec<_> = text.lines().collect();
+            let file = SourceFile::new(text.to_owned());
+            assert_eq!(file.line_count, lines.len());
+            for (start, end) in [
+                (0, 1),
+                (1, 1),
+                (1, 3),
+                (2, 1),
+                (2, 3),
+                (SOURCE_LINE_STRIDE - 1, SOURCE_LINE_STRIDE + 2),
+                (SOURCE_LINE_STRIDE + 2, usize::MAX),
+                (1, usize::MAX),
+                (usize::MAX, usize::MAX),
+            ] {
+                let actual_end = end.min(lines.len());
+                let expected = (start != 0 && start <= actual_end)
+                    .then(|| (lines[start - 1..actual_end].join("\n"), actual_end));
+                assert_eq!(
+                    file.span(start, end)
+                        .map(|(text, end)| (text.into_owned(), end)),
+                    expected,
+                    "{start}..={end}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn hydration_threshold_matches_exact_ratio_without_overflow() {
+        for budget in [0, 1, 99, 100, 101, usize::MAX - 1, usize::MAX] {
+            assert_eq!(
+                hydration_threshold(budget) as u128,
+                budget as u128 * HYDRATE_TRIGGER_PCT as u128 / 100
+            );
+        }
+    }
+
+    #[test]
+    fn source_cache_reuses_bytes_and_hash_across_interleaved_files() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("source.rs");
+        let original = "fn original() {}\r\n";
+        let changed = "fn different() {}\n";
+        let expected = aden_core::hash_source(original);
+        std::fs::write(&path, original).unwrap();
+        std::fs::write(root.path().join("other.rs"), "// other source\n").unwrap();
+
+        let mut cache = SourceCache::new(root.path());
+        assert!(cache.reader.is_none());
+        let file = cache.get("source.rs").unwrap();
+        assert!(file.hash.is_none());
+        assert!(file.matches_hash(&expected));
+        assert_eq!(file.hash.as_deref(), Some(expected.as_str()));
+        assert!(cache.get("other.rs").is_some());
+        std::fs::write(&path, changed).unwrap();
+        let cached = cache.get("source.rs").unwrap();
+        assert!(cached.matches_hash(&expected));
+        assert_eq!(cached.span(1, 1).unwrap().0, "fn original() {}");
+
+        let mut next = SourceCache::new(root.path());
+        let new_file = next.get("source.rs").unwrap();
+        assert!(!new_file.matches_hash(&expected));
+        assert!(new_file.matches_hash(&aden_core::hash_source(changed)));
+    }
+
+    #[test]
+    fn assembly_hydrates_confined_source_and_skips_malformed_spans() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("project");
+        std::fs::create_dir(&root).unwrap();
+        let outside = dir.path().join("outside.rs");
+        let outside_text = "fn outside_must_stay_hidden() {}\n";
+        std::fs::write(&outside, outside_text).unwrap();
+        let source = "fn verified_hydration() {}\r\nfn legacy_hydration() {}\r\n";
+        std::fs::write(root.join("inside.rs"), source).unwrap();
+        let expected = aden_core::hash_source(source);
+        let outside_hash = aden_core::hash_source(outside_text);
+        let mut graph = AdenGraph::<DocumentNode, AdenEdge>::new();
+        let mut nodes = Vec::new();
+        for (anchor, path, start, end, hash) in [
+            ("seed", "inside.rs", 1, 1, Some(expected.as_str())),
+            ("legacy", "inside.rs", 2, 2, None),
+            ("malformed", "inside.rs", 2, 1, Some(expected.as_str())),
+            (
+                "absolute",
+                outside.to_str().unwrap(),
+                1,
+                1,
+                Some(outside_hash.as_str()),
+            ),
+            ("escape", "../outside.rs", 1, 1, Some(outside_hash.as_str())),
+        ] {
+            let mut node = node_with_text(anchor, "summary");
+            node.doc.attributes.extend([
+                ("source_file".to_owned(), path.to_owned()),
+                ("start_line".to_owned(), start.to_string()),
+                ("end_line".to_owned(), end.to_string()),
+            ]);
+            if let Some(hash) = hash {
+                node.doc
+                    .attributes
+                    .insert("source_hash".into(), hash.into());
+            }
+            nodes.push(graph.add_node(node).unwrap());
+        }
+        for &node in &nodes[1..] {
+            graph.graph.add_edge(
+                nodes[0],
+                node,
+                AdenEdge {
+                    edge_type: EdgeType::Calls,
+                },
+            );
+        }
+        let opts = AssemblyOptions {
+            start_anchor: "seed".into(),
+            token_budget: 4096,
+            hydrate_root: Some(root),
+            ..Default::default()
+        };
+        let (text, anchors) = assemble_with_anchors(&graph, &opts).unwrap();
+        assert_eq!(
+            anchors,
+            ["seed", "absolute", "escape", "legacy", "malformed"]
+        );
+        assert_eq!(text.matches("fn verified_hydration() {}").count(), 1);
+        assert_eq!(text.matches("fn legacy_hydration() {}").count(), 1);
+        assert!(!text.contains("outside_must_stay_hidden"));
+        assert!(estimate_tokens(&text) <= opts.token_budget);
+
+        let adg = assemble_adg(&graph, &opts).unwrap();
+        assert!(estimate_tokens(&adg) <= opts.token_budget);
+        let documents: Vec<serde_json::Value> = serde_json::from_str(&adg).unwrap();
+        assert_eq!(documents.len(), anchors.len());
+        assert_eq!(documents[0]["source"]["text"], "fn verified_hydration() {}");
+        assert_eq!(documents[0]["source"]["hash_verified"], true);
+        assert!(documents[1..].iter().all(|doc| doc.get("source").is_none()));
     }
 }

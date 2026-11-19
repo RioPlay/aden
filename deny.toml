@@ -31,13 +31,11 @@ allow = [
 # only single, genuinely-required licenses belong here.
 #
 # self_cell (`Apache-2.0 OR GPL-2.0-only`) needs no exception: Apache-2.0 is
-# allowed, so the OR passes. The two MPL-2.0 crates are the only ones the allow
-# list does not cover, so they get explicit per-crate exceptions.
+# allowed, so the OR passes. option-ext is the only locked crate requiring an
+# explicit MPL-2.0 exception.
 exceptions = [
     # option-ext: MPL-2.0 — file-level copyleft, used unmodified.
     { allow = ["MPL-2.0"], name = "option-ext" },
-    # dyn-eq: MPL-2.0 — dense-feature-only transitive via tract ONNX stack.
-    { allow = ["MPL-2.0"], name = "dyn-eq" },
 ]
 
 # Confidence threshold for license detection from file text.

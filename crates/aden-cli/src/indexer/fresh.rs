@@ -3,12 +3,12 @@
 
 use aden_core::receipt::{ContextReceipt, ReceiptFreshness};
 use aden_store::Storage;
-use std::io::{BufReader, Read};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use crate::indexer::r#gen::cmd_gen_silent;
+use crate::indexer::generation_job;
 use crate::util::{discover_source_files, find_project_root};
 
 /// How aggressively a read path waits for an in-flight refresh.
@@ -43,8 +43,8 @@ fn require_fresh() -> bool {
 /// Start the one wall-clock budget for an authoritative read.  It deliberately
 /// spans source fingerprinting, silent generation, writer waits, and retries:
 /// checking a deadline only between those operations would still let a blocked
-/// generation exceed the contract.  This runs in the command process, so
-/// terminating it cannot leave a child writer behind.
+/// generation exceed the contract. The generation worker has an independent
+/// lifetime and continues when this read process reaches its deadline.
 fn begin_authoritative_deadline() -> Option<u64> {
     if !require_fresh() {
         return None;
@@ -173,18 +173,28 @@ pub(crate) fn source_fingerprint(root: &Path) -> std::io::Result<String> {
     sources.sort();
     let mut hash = StableFnv::new();
     let mut buffer = [0_u8; 64 * 1024];
+    let relative_root = aden_paths::RelativeRoot::new(root);
     for source in sources {
+        if matches!(source.extension().and_then(|e| e.to_str()), Some("c" | "h")) {
+            let config = aden_parse::macro_declarations::config_fingerprint(&source)
+                .map_err(|_| std::io::Error::other("cannot fingerprint C macro configuration"))?;
+            hash.write_len(config.len() as u64);
+            hash.write(config.as_bytes());
+        }
         // Windows-safe relative key (git root vs \\?\ canonicalize).
-        let relative = crate::util::project_relative_key(root, &source);
+        let relative = relative_root
+            .relative_to(&source)
+            .unwrap_or_else(|| source.strip_prefix(root).unwrap_or(&source).to_path_buf());
+        let relative = crate::util::normalize_sep(&relative);
         hash.write_len(relative.len() as u64);
         hash.write(relative.as_bytes());
 
         // A source we cannot read cannot authoritatively match an old manifest.
         // Propagate the error so every caller fails closed rather than hashing a
         // stable synthetic error marker as if it were indexed content.
-        let mut reader = BufReader::new(std::fs::File::open(&source)?);
+        let mut reader = std::fs::File::open(&source)?;
         trace.scanned_file();
-        hash.write_len(reader.get_ref().metadata()?.len());
+        hash.write_len(reader.metadata()?.len());
         loop {
             let read = reader.read(&mut buffer)?;
             if read == 0 {
@@ -199,7 +209,7 @@ pub(crate) fn source_fingerprint(root: &Path) -> std::io::Result<String> {
 
 /// Hash a snapshot file in bounded chunks for the freshness manifest.
 pub(crate) fn snapshot_revision(path: &Path) -> std::io::Result<String> {
-    let mut reader = BufReader::new(std::fs::File::open(path)?);
+    let mut reader = std::fs::File::open(path)?;
     let mut hash = StableFnv::new();
     let mut buffer = [0_u8; 64 * 1024];
     loop {
@@ -253,6 +263,18 @@ impl FreshnessPaths {
 fn load_manifest(paths: &FreshnessPaths) -> Option<FreshnessManifest> {
     let _trace = crate::read_trace::span(crate::read_trace::Stage::ManifestLoad);
     serde_json::from_slice(&std::fs::read(paths.project_dir.join("freshness.json")).ok()?).ok()
+}
+
+pub(crate) fn published_revision(path: &Path) -> Option<String> {
+    load_manifest(&FreshnessPaths::new(path))
+        .filter(manifest_policy_is_current)
+        .map(|manifest| manifest.graph_revision)
+}
+
+pub(crate) fn snapshot_matches_revision(bytes: &[u8], revision: &str) -> bool {
+    let mut hash = StableFnv::new();
+    hash.write(bytes);
+    hash.finish_hex() == revision
 }
 
 fn read_store(paths: &FreshnessPaths) -> (PathBuf, bool) {
@@ -635,11 +657,22 @@ pub fn ensure_fresh_with_policy(path: &Path, policy: FreshPolicy) {
 
 fn traced_refresh(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let _trace = crate::read_trace::span(crate::read_trace::Stage::Refresh);
-    cmd_gen_silent(root)
+    let job = generation_job::start(root)?;
+    // Preserve immediate freshness for ordinary small refreshes, with the same
+    // bounded wait for large builds. Only this caller waits, never the worker.
+    let status = generation_job::wait(root, &job.job_id, DECISION_WAIT)?;
+    if status.active() || status.state == "completed" {
+        Ok(())
+    } else {
+        Err(status
+            .error
+            .unwrap_or_else(|| format!("generation {}", status.state))
+            .into())
+    }
 }
 
 fn enforce_authoritative(paths: &FreshnessPaths) {
-    if require_fresh() && index_is_stale_for_project(paths) {
+    if require_fresh() && (!read_store(paths).0.exists() || index_is_stale_for_project(paths)) {
         eprintln!(
             "aden: authoritative freshness required, but refresh did not complete within {}s; retry after the active writer finishes or unset ADEN_SKIP_AUTO_GEN",
             DECISION_WAIT.as_secs()

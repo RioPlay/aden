@@ -1,0 +1,85 @@
+{
+  "schema_version": 1,
+  "recorded_at": "2026-11-05T02:37:32.5051600Z",
+  "experiment": "equal-length source rewrite with preserved timestamp; recovery by advancing timestamp and explicitly generating",
+  "binary": [
+    "aden 0.4.3",
+    "Build:   f8eda8efb17d (release)",
+    "Features: view",
+    "Formats: snapshot-v1, index-layout-v3, gen-logic-v14, symbol-lexicon-v2",
+    "License: AGPL-3.0-or-later",
+    "Source:  https://github.com/RioPlay/aden",
+    "This is free software with ABSOLUTELY NO WARRANTY. The Corresponding",
+    "Source for any network-accessible instance is the repository above,",
+    "as required by AGPL-3.0 section 13."
+  ],
+  "fixture_root": "C:/Users/example/Projects/aden/.tmp/aden-mtime-probe-1a8c949d7c2449f99f191c02215c8ad9/repo",
+  "isolated_data_dir": "C:\\Users\\example\\Projects\\aden\\.tmp\\aden-mtime-probe-1a8c949d7c2449f99f191c02215c8ad9\\data",
+  "original_source": "pub fn before_fn() -> u32 { 1 }",
+  "replacement_source": "pub fn afterr_fn() -> u32 { 2 }",
+  "same_length": true,
+  "mtime_preserved": true,
+  "preserved_mtime_utc": "2026-11-05T02:35:28.4728746Z",
+  "confirmed_stale_symbols_with_current_receipt": true,
+  "prior_touch_only_control": "Changing only timestamp after the erroneous current publication did not trigger automatic generation; raw failed-touch-control.json retained in the fixture.",
+  "before": {
+    "total": 1,
+    "match_kind": "definition",
+    "receipt": {
+      "freshness": "current",
+      "graph_revision": "8734c480b729a74f",
+      "observed_source_fingerprint": "0ddff1543ad85993",
+      "refresh_cause": "none",
+      "schema_version": 1
+    }
+  },
+  "after_preserved_mtime": {
+    "deleted_symbol": {
+      "total": 1,
+      "match_kind": "definition",
+      "receipt": {
+        "freshness": "current",
+        "graph_revision": "fbaa10e4167063d9",
+        "observed_source_fingerprint": "cc95dc2dac18d399",
+        "refresh_cause": "none",
+        "schema_version": 1
+      }
+    },
+    "new_symbol": {
+      "total": 0,
+      "match_kind": "full_text_fallback",
+      "receipt": {
+        "freshness": "current",
+        "graph_revision": "fbaa10e4167063d9",
+        "observed_source_fingerprint": "cc95dc2dac18d399",
+        "refresh_cause": "source_changed",
+        "schema_version": 1
+      }
+    }
+  },
+  "after_advanced_mtime_and_explicit_gen_control": {
+    "deleted_symbol": {
+      "total": 0,
+      "match_kind": "full_text_fallback",
+      "receipt": {
+        "freshness": "current",
+        "graph_revision": "a0ead000ab91813c",
+        "observed_source_fingerprint": "cc95dc2dac18d399",
+        "refresh_cause": "none",
+        "schema_version": 1
+      }
+    },
+    "new_symbol": {
+      "total": 1,
+      "match_kind": "definition",
+      "receipt": {
+        "freshness": "current",
+        "graph_revision": "a0ead000ab91813c",
+        "observed_source_fingerprint": "cc95dc2dac18d399",
+        "refresh_cause": "none",
+        "schema_version": 1
+      }
+    }
+  },
+  "limitations": "Installed release binary only; not a test of uncommitted source changes, throughput, general task speed, or other filesystem platforms."
+}

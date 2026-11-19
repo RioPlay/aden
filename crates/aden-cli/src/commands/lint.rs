@@ -306,13 +306,15 @@ pub fn cmd_lint(
             .iter()
             .filter(|r| r.rule != "redundant_to_string")
             .count();
-        if !json {
+        if !json && !quiet {
             println!(
                 "\n--fix: auto-fixed redundant Rust conversions in {} file(s); {} issue(s) require manual review.",
                 fixed_files, manual
             );
         }
-        return Ok(());
+        // Verify the requested severity after repairs. Unfixed errors and
+        // failed writes must not become a successful parent gate.
+        return cmd_lint(path, severity, false, json, dead_code, include_public, true);
     }
 
     if error_count > 0 {

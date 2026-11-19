@@ -20,17 +20,19 @@ impl Fixture {
         Self { dir }
     }
 
-    fn run(&self, args: &[&str]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_aden"))
-            .arg("read")
-            .args(args)
+    fn command(&self) -> Command {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_aden"));
+        command
             .current_dir(self.dir.path())
             .env("ADEN_DATA_DIR", self.dir.path().join("data"))
             .env("ADEN_MCP_MACHINE_ERRORS", "1")
             .env_remove("ADEN_STORE")
-            .env("ADEN_MCP_VERSION", env!("CARGO_PKG_VERSION"))
-            .output()
-            .unwrap()
+            .env("ADEN_MCP_VERSION", env!("CARGO_PKG_VERSION"));
+        command
+    }
+
+    fn run(&self, args: &[&str]) -> Output {
+        self.command().arg("read").args(args).output().unwrap()
     }
 
     fn json(&self, args: &[&str]) -> Value {
@@ -56,6 +58,65 @@ impl Fixture {
 }
 
 #[test]
+fn frozen_assembly_keeps_machine_output_parseable_when_graph_lags() {
+    let f = Fixture::new(b"source fixture\n");
+    let input = f.dir.path().join("lib.rs");
+    std::fs::write(&input, "fn frozen_assembly_fixture() -> u32 { 1 }\n").unwrap();
+    let generated = f.command().args(["gen", "--quiet", "."]).output().unwrap();
+    assert!(
+        generated.status.success(),
+        "{}",
+        String::from_utf8_lossy(&generated.stderr)
+    );
+    std::fs::write(&input, "fn frozen_assembly_fixture() -> u32 { 2 }\n").unwrap();
+
+    let assemble = |format| {
+        let output = f
+            .command()
+            .args([
+                "asm",
+                "--from",
+                "frozen_assembly_fixture",
+                "--format",
+                format,
+                ".",
+            ])
+            .env("ADEN_SKIP_AUTO_GEN", "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{format}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        output
+    };
+    let adg = assemble("adg");
+    let documents: Value = serde_json::from_slice(&adg.stdout).unwrap();
+    assert!(documents.as_array().is_some_and(|items| !items.is_empty()));
+    assert!(String::from_utf8_lossy(&adg.stderr).contains("NOTE: index may lag"));
+
+    let json = assemble("json");
+    let receipt: Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert!(
+        receipt["documents"]
+            .as_array()
+            .is_some_and(|items| !items.is_empty())
+    );
+    assert_eq!(receipt["context_receipt"]["freshness"], "lagging");
+    assert_eq!(receipt["index_stale"], true);
+    assert!(
+        receipt["stale_hint"]
+            .as_str()
+            .unwrap()
+            .contains("NOTE: index may lag")
+    );
+
+    let human = assemble("llm");
+    assert!(String::from_utf8_lossy(&human.stdout).contains("NOTE: index may lag"));
+}
+
+#[test]
 fn reads_requested_literal_lines_deterministically_without_creating_an_index() {
     let f = Fixture::new(b"one\r\ntwo\r\nthree\r\n");
     let args = ["source.txt", "--start-line", "2", "--end-line", "2"];
@@ -76,6 +137,92 @@ fn reads_requested_literal_lines_deterministically_without_creating_an_index() {
     assert!(value.get("context_receipt").is_none());
     assert!(!f.dir.path().join("data").exists());
     assert!(!f.dir.path().join(".aden").exists());
+}
+
+#[test]
+fn unlimited_reads_remaining_lines_but_keeps_explicit_ranges_and_default_window() {
+    let content = (1..=250)
+        .map(|line| format!("line-{line:03}\n"))
+        .collect::<String>();
+    let f = Fixture::new(content.as_bytes());
+
+    let default = f.json(&["source.txt"]);
+    assert_eq!(
+        default["source"]["text"].as_str().unwrap().lines().count(),
+        200
+    );
+    assert_eq!(default["source"]["requested_end_line"], 200);
+
+    let all = f.json(&["source.txt", "--unlimited"]);
+    assert_eq!(all["source"]["text"].as_str().unwrap(), content);
+    assert_eq!(all["source"]["requested_end_line"], 250);
+    assert_eq!(all["truncated"], false);
+
+    let from_line = f.json(&["source.txt", "--start-line", "201", "--unlimited"]);
+    assert_eq!(
+        from_line["source"]["text"]
+            .as_str()
+            .unwrap()
+            .lines()
+            .count(),
+        50
+    );
+    assert_eq!(
+        from_line["source"]["text"],
+        content.lines().skip(200).collect::<Vec<_>>().join("\n") + "\n"
+    );
+    assert_eq!(from_line["source"]["requested_start_line"], 201);
+    assert_eq!(from_line["source"]["requested_end_line"], 250);
+
+    let bounded = f.json(&[
+        "source.txt",
+        "--start-line",
+        "201",
+        "--end-line",
+        "205",
+        "--unlimited",
+    ]);
+    assert_eq!(
+        bounded["source"]["text"].as_str().unwrap().lines().count(),
+        5
+    );
+    assert_eq!(bounded["source"]["requested_end_line"], 205);
+    assert!(
+        bounded["source"]["text"]
+            .as_str()
+            .unwrap()
+            .ends_with("line-205\n")
+    );
+}
+
+#[test]
+fn unlimited_keeps_byte_clipping_and_hash_pinned_continuation_to_eof() {
+    let content = format!("{}\nlast-line\n", "x".repeat(9000));
+    let f = Fixture::new(content.as_bytes());
+    let first = f.json(&["source.txt", "--unlimited"]);
+    assert_eq!(first["source"]["returned_bytes"], 8192);
+    assert_eq!(first["truncated"], true);
+    assert_eq!(first["continuation"]["end_line"], 2);
+
+    let offset = first["next_byte"].as_u64().unwrap().to_string();
+    let hash = first["source"]["source_hash"].as_str().unwrap();
+    let second = f.json(&[
+        "source.txt",
+        "--start-byte",
+        &offset,
+        "--end-line",
+        "2",
+        "--expected-hash",
+        hash,
+    ]);
+    assert_eq!(second["truncated"], false);
+    assert_eq!(second["source"]["end_line"], 2);
+    assert!(
+        second["source"]["text"]
+            .as_str()
+            .unwrap()
+            .ends_with("last-line\n")
+    );
 }
 
 #[test]
@@ -269,7 +416,7 @@ fn empty_file_is_complete_and_large_files_fail_boundedly() {
         .open(f.dir.path().join("source.txt"))
         .unwrap();
     file.set_len(16 * 1024 * 1024 + 1).unwrap();
-    f.error(&["source.txt"], "source_size_limit");
+    f.error(&["source.txt", "--unlimited"], "source_size_limit");
 }
 
 #[test]

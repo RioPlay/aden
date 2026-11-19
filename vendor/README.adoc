@@ -1,0 +1,79 @@
+= Vendored Rust crates
+
+== liquid-core 0.26.11
+
+This directory is derived from the official crates.io archive for
+`liquid-core` 0.26.11. The archive SHA-256 is
+`fc623edee8a618b4543e8e8505584f4847a4e51b805db1af6d9af0a3395d0d57`, verified
+against the crates.io registry checksum before extraction. The path override in
+the project lockfile has no registry checksum of its own.
+The crate is licensed `MIT OR Apache-2.0`; the upstream license files and
+copyright headers are retained.
+
+The only source/dependency change replaces `anymap2` 0.13 with `anymap3` 1.1
+in both Cargo manifests and in `src/runtime/runtime.rs`. The `Registers` type
+continues to expose the same `get_mut<T: Any + Default>() -> RefMut<T>` API.
+A focused test checks that register values persist and distinct types remain
+separate. `anymap3` 1.1 is licensed `BlueOak-1.0.0 OR MIT OR Apache-2.0`, with
+Rust 1.56 MSRV; this project uses its MIT or Apache-2.0 option.
+
+The registry `Cargo.lock` was omitted because the root workspace lockfile is
+authoritative. `.cargo_vcs_info.json` was omitted because it is registry
+packaging metadata; the source archive hash above preserves provenance.
+No archive links were present. Extraction rejected absolute paths, parent
+traversal, and non-regular entries.
+
+=== Maintenance and removal
+
+This is a narrow downstream patch, not an upstream Liquid release. Keep the
+base version at 0.26.11 and use a workspace `[patch.crates-io]` override for
+this path. Revisit when Liquid publishes a release that replaces `anymap2`.
+Then remove this directory and the override only after the all-features
+dependency tree no longer includes the advisory and behavior checks pass.
+
+== tree-sitter-language-pack 1.25.0
+
+The base is the crates.io archive with SHA-256
+`aeab6dd57fa75ca32f55a3160cce30a8d3217882260ae21c7527df2d41b50f2e`.
+The MIT license file comes from the corresponding upstream commit
+`ea44208da50de9a4d602bbc243d7a6949c4a2007`. The bundled utf8proc license
+is included. The workspace lockfile replaces the packaged crate lockfile.
+
+The Cargo override and exact dependency version keep Aden on this patch.
+These settings apply to builds in this checkout. Cargo consumers that
+resolve a published Aden crate apply patches from their own workspace root.
+For a downloaded bundle, the build verifies the entire archive against the
+upstream SHA-256 sidecar, extracts the selected grammar sources and keeps
+query inputs for every language. After compiling and embedding, it deletes
+the temporary inputs from Cargo's output directory. Local grammar sources
+remain available for development, and Cargo watches external inputs for
+changes. An unchanged build reuses Cargo's compiled output.
+
+Remove this override when a compatible upstream release passes a cold and
+repeated build with the default languages, embeds the same static grammars
+and queries, and preserves offline inputs and grammar patch handling.
+
+== rmcp 3.11.0
+
+The base is the official crates.io archive, SHA-256
+`391f153431ab68664d946513ea0cb3edbca78eaf99c5a983036cacab6220d85b`,
+verified against the pre-patch workspace lockfile. The archive records
+upstream revision `165f8fd514afb8f6d1be3e86260ee9abfce58541`.
+The Apache-2.0 license is retained. The workspace lockfile is authoritative;
+the nested lockfile and registry packaging provenance file were omitted.
+
+The backport applies the date and duration changes from
+https://github.com/modelcontextprotocol/rust-sdk/pull/1474[RMCP PR 1474],
+head `9043cdfa8694d83bf506c2f3eb0313ec173edd7e`.
+It uses Jiff for internal clocks and wire formatting, with the published
+Chrono annotation API available behind an optional feature. Aden disables
+RMCP defaults and explicitly retains its stdio, server, base64, macro and
+test-client features. It does not enable authentication features that could
+independently bring in Chrono. `build = false` disables the archived RMCP
+checkout hook installer in both manifests.
+
+The RustSec workspace scan covers the resolved registry dependencies. Check
+the underlying SDK's RustSec advisories separately while it is a local path
+patch. On 2026-11-18 all four RMCP advisories in the database had fixes in or
+before the 3.11.0 base. Remove this override when a compatible registry release
+can omit Chrono and both Aden MCP entry points and the locked audit pass again.

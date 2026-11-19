@@ -2,8 +2,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Path filter: `.adenignore` and `.adenallow` support.
 
+use memchr::memmem;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::path::Path;
+use std::sync::LazyLock;
 
 /// Why a discovered file was not emitted into the graph.
 ///
@@ -233,106 +236,76 @@ pub fn is_secret_path(relative: &Path) -> bool {
     false
 }
 
-/// Content-based credential detection — a *high-confidence* complement to
-/// [`is_secret_path`] for the indexing boundary (CWE-798 / CWE-200).
+/// Detect high-confidence credential patterns before indexing a file or
+/// emitting graph-backed source (CWE-798 / CWE-200).
 ///
-/// `is_secret_path` is filename/extension/directory based, so a credential
-/// embedded in an ordinary-looking source or config file (e.g. `config.json`,
-/// `settings.py`) would still be indexed into the store and could be re-served
-/// into LLM context. This scans the file's *content* for unambiguous,
-/// structurally-distinctive secret tokens.
-///
-/// Deliberately NOT an entropy heuristic: only well-known, structured provider
-/// token shapes are matched, so false positives (which would silently drop a
-/// legitimate file from the graph) are near-impossible. Like `is_secret_path`,
-/// this is applied only at indexing — never to ephemeral `grep`/`audit`, which
-/// must still be able to find a secret in order to fix it.
+/// This complements [`is_secret_path`] by checking structured token and
+/// private-key header patterns inside ordinary source or configuration files.
+/// Ephemeral `grep` and `audit` retain access for remediation.
 pub fn content_has_high_confidence_secret(content: &str) -> bool {
-    // PEM private-key blocks (RSA/EC/OPENSSH/generic): `-----BEGIN ... PRIVATE KEY-----`.
-    // The markers must occur in the SAME armored header. Checking them as two
-    // independent substrings classified this module itself as a secret because
-    // its explanatory prose contains both fragments in different sentences.
-    let pem_start = "-----BEGIN ";
-    let pem_end = ["PRIVATE", " KEY-----"].concat();
-    if has_armored_header(content, pem_start, &pem_end) {
+    let content = content.as_bytes();
+    if has_armored_header(content) {
         return true;
     }
-    // PGP armored PRIVATE key blocks end `PRIVATE KEY BLOCK-----`, not `PRIVATE KEY-----`,
-    // so the PEM check above misses them. This is the secret a dual-use `.asc` might hold
-    // (now that `.asc` is content-gated rather than extension-skipped). Public-key blocks
-    // and detached signatures are NOT secret, so they are intentionally not matched here —
-    // an AsciiDoc page that merely shows a public key or signature still indexes. Built by
-    // concat (like `pem_end`) so this source file never contains the contiguous marker and
-    // thus never flags itself as a secret.
-    let pgp_priv_end = ["PGP PRIVATE", " KEY BLOCK-----"].concat();
-    if has_armored_header(content, pem_start, &pgp_priv_end) {
-        return true;
-    }
-    // Provider tokens: a fixed prefix followed by N token chars. Scanning by
-    // byte windows keeps this dependency-free (no regex).
-    const TOKEN_PREFIXES: &[(&str, usize)] = &[
-        ("AKIA", 16),  // AWS access key id
-        ("ASIA", 16),  // AWS temporary access key id
-        ("ghp_", 36),  // GitHub personal access token
-        ("gho_", 36),  // GitHub OAuth token
-        ("ghs_", 36),  // GitHub server-to-server token
-        ("ghr_", 36),  // GitHub refresh token
-        ("xoxb-", 10), // Slack bot token
-        ("xoxp-", 10), // Slack user token
+    // Provider tokens have a fixed prefix followed by a minimum body length.
+    const TOKEN_PREFIXES: [(&[u8], usize); 9] = [
+        (b"AKIA", 16),  // AWS access key id
+        (b"ASIA", 16),  // AWS temporary access key id
+        (b"ghp_", 36),  // GitHub personal access token
+        (b"gho_", 36),  // GitHub OAuth token
+        (b"ghs_", 36),  // GitHub server-to-server token
+        (b"ghr_", 36),  // GitHub refresh token
+        (b"xoxb-", 10), // Slack bot token
+        (b"xoxp-", 10), // Slack user token
+        (b"sk-", 20),   // OpenAI keys, including project keys
     ];
-    for (prefix, min_alnum) in TOKEN_PREFIXES {
-        if has_prefixed_token(content, prefix, *min_alnum) {
-            return true;
-        }
-    }
-    // OpenAI keys: `sk-` followed by >=20 token chars (covers sk- / sk-proj-).
-    if has_prefixed_token(content, "sk-", 20) {
-        return true;
-    }
-    false
+    static FINDERS: LazyLock<[(memmem::Finder<'static>, usize); TOKEN_PREFIXES.len()]> =
+        LazyLock::new(|| {
+            TOKEN_PREFIXES.map(|(prefix, min_len)| (memmem::Finder::new(prefix), min_len))
+        });
+    FINDERS
+        .iter()
+        .any(|(prefix, min_len)| has_prefixed_token(content, prefix, *min_len))
 }
 
-/// True when an armored header beginning with `start` contains `end` before
-/// its newline. This keeps secret detection structural and avoids matching
-/// documentation that discusses the two fragments separately.
-fn has_armored_header(content: &str, start: &str, end: &str) -> bool {
-    content.match_indices(start).any(|(offset, _)| {
-        let header = content[offset..].lines().next().unwrap_or_default();
-        let Some(end_offset) = header.find(end) else {
+/// Match a PEM or PGP private-key label and delimiter on a single header line.
+fn has_armored_header(content: &[u8]) -> bool {
+    const BEGIN: &[u8] = b"-----BEGIN ";
+    // Split the private-key labels so the implementation stays indexable.
+    const PEM_LABEL: &[u8] = concat!("PRIVATE", " KEY").as_bytes();
+    const PGP_LABEL: &[u8] = concat!("PGP PRIVATE", " KEY BLOCK").as_bytes();
+    static FINDER: LazyLock<memmem::Finder<'static>> = LazyLock::new(|| memmem::Finder::new(BEGIN));
+    FINDER.find_iter(content).any(|offset| {
+        let tail = &content[offset + BEGIN.len()..];
+        let Some(label_end) = tail
+            .iter()
+            .position(|byte| !byte.is_ascii_uppercase() && !byte.is_ascii_digit() && *byte != b' ')
+        else {
             return false;
         };
-        // Armored labels are uppercase words (e.g. RSA, OPENSSH, PGP).
-        // Requiring that restricted form avoids prose such as
-        // `-----BEGIN ... PRIVATE KEY-----`.
-        header[start.len()..end_offset]
-            .bytes()
-            .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b' ')
+        // The first byte outside the allowed label must start the delimiter.
+        // This also bounds each label to its own line and avoids scanning the
+        // same suffix again when malformed BEGIN markers repeat.
+        tail[label_end..].starts_with(b"-----")
+            && (tail[..label_end].ends_with(PEM_LABEL) || tail[..label_end].ends_with(PGP_LABEL))
     })
 }
 
-/// True if `content` contains `prefix` immediately followed by at least
-/// `min_alnum` token characters (`[A-Za-z0-9_-]`).
-fn has_prefixed_token(content: &str, prefix: &str, min_alnum: usize) -> bool {
-    let bytes = content.as_bytes();
-    let plen = prefix.len();
-    let mut i = 0;
-    while let Some(off) = content[i..].find(prefix) {
-        let start = i + off + plen;
-        let run = bytes[start..]
+/// Match a provider prefix followed by at least `min_len` token characters.
+/// Provider prefixes are token characters and all minimums cover `EXAMPLE`.
+fn has_prefixed_token(mut rest: &[u8], prefix: &memmem::Finder<'_>, min_len: usize) -> bool {
+    while let Some(offset) = prefix.find(rest) {
+        let body = &rest[offset + prefix.needle().len()..];
+        let run_len = body
             .iter()
-            .take_while(|b| b.is_ascii_alphanumeric() || **b == b'_' || **b == b'-')
+            .take_while(|byte| byte.is_ascii_alphanumeric() || **byte == b'_' || **byte == b'-')
             .count();
-        // Skip documentation placeholders: by convention (AWS, RFC examples)
-        // sample keys end in the literal `EXAMPLE`, e.g. the canonical
-        // `AKIAIOSFODNN7EXAMPLE`. A real credential never does.
-        let token_ends_in_example = content[start..start + run].ends_with("EXAMPLE");
-        if run >= min_alnum && !token_ends_in_example {
+        if run_len >= min_len && !body[..run_len].ends_with(b"EXAMPLE") {
             return true;
         }
-        i = i + off + plen;
-        if i >= content.len() {
-            break;
-        }
+        // Nested occurrences of this prefix have shorter bodies and share
+        // the same EXAMPLE suffix if they meet the minimum length.
+        rest = &body[run_len..];
     }
     false
 }
@@ -341,12 +314,14 @@ fn has_prefixed_token(content: &str, prefix: &str, min_alnum: usize) -> bool {
 #[derive(Debug, Clone)]
 pub struct AdenFilter {
     ignore_patterns: Vec<GlobRule>,
+    ignore_dirs: HashSet<String>,
+    ignore_pattern_count: usize,
     allow_patterns: Vec<GlobRule>,
 }
 
 impl AdenFilter {
     pub fn pattern_count(&self) -> usize {
-        self.ignore_patterns.len()
+        self.ignore_pattern_count
     }
 
     /// Load filter from project root.
@@ -373,9 +348,28 @@ impl AdenFilter {
             Vec::new()
         };
 
+        Self::from_rules(compile_rules(&ignore_lines), compile_rules(&allow_lines))
+    }
+
+    fn from_rules(ignore_patterns: Vec<GlobRule>, allow_patterns: Vec<GlobRule>) -> Self {
+        let ignore_pattern_count = ignore_patterns.len();
+        let mut ignore_dirs = HashSet::new();
+        let ignore_patterns = ignore_patterns
+            .into_iter()
+            .filter_map(|rule| {
+                if rule.is_dir_rule && !rule.pattern.contains(['/', '*']) {
+                    ignore_dirs.insert(rule.pattern);
+                    None
+                } else {
+                    Some(rule)
+                }
+            })
+            .collect();
         Self {
-            ignore_patterns: compile_rules(&ignore_lines),
-            allow_patterns: compile_rules(&allow_lines),
+            ignore_patterns,
+            ignore_dirs,
+            ignore_pattern_count,
+            allow_patterns,
         }
     }
 
@@ -383,7 +377,10 @@ impl AdenFilter {
     pub fn should_skip(&self, relative: &Path) -> bool {
         // Normalize separators so Windows backslash paths match slash patterns.
         let rel_str = relative.to_string_lossy().replace('\\', "/");
-        let matched_ignore = self.ignore_patterns.iter().any(|r| r.matches(&rel_str));
+        let matched_ignore = rel_str
+            .split('/')
+            .any(|part| self.ignore_dirs.contains(part))
+            || self.ignore_patterns.iter().any(|r| r.matches(&rel_str));
         if !matched_ignore {
             return false;
         }
@@ -421,21 +418,22 @@ impl GlobRule {
 /// prunes a nested `crates/foo/.aden/` (where per-crate caches live), not only a
 /// top-level `.aden/`. Without this, generated artifacts leak into grep/index.
 fn dir_rule_matches(path: &str, dir: &str) -> bool {
-    if path == dir || path.starts_with(&format!("{dir}/")) {
+    if path == dir
+        || path
+            .strip_prefix(dir)
+            .is_some_and(|rest| rest.starts_with('/'))
+    {
         return true;
     }
     if !dir.contains('/') {
-        let segments: Vec<_> = path.split('/').collect();
-        return segments.iter().enumerate().any(|(index, seg)| {
-            if dir.contains('*') {
-                // This is a directory rule, so a wildcard match must be an
-                // ancestor segment. Matching the final segment would silently
-                // drop source files such as `target-helper.rs`.
-                index + 1 < segments.len() && match_glob(seg, dir)
-            } else {
-                *seg == dir
-            }
-        });
+        if dir.contains('*') {
+            // Wildcards only match ancestor segments, preserving source files
+            // such as `target-helper.rs` in the final segment.
+            return path.rsplit_once('/').is_some_and(|(parents, _)| {
+                parents.split('/').any(|segment| match_glob(segment, dir))
+            });
+        }
+        return path.split('/').any(|segment| segment == dir);
     }
     false
 }
@@ -463,13 +461,10 @@ fn compile_rules(lines: &[String]) -> Vec<GlobRule> {
 
 fn match_glob(path: &str, pattern: &str) -> bool {
     // Very simple glob: only handles * wildcards
-    if !pattern.contains('*') {
+    let Some((prefix, suffix)) = pattern.split_once('*') else {
         return path == pattern;
-    }
-    let parts: Vec<&str> = pattern.split('*').collect();
-    if parts.len() == 2 {
-        let prefix = parts[0];
-        let suffix = parts[1];
+    };
+    if !suffix.contains('*') {
         return path.starts_with(prefix)
             && path.ends_with(suffix)
             && path.len() >= prefix.len() + suffix.len();
@@ -573,10 +568,7 @@ mod tests {
 
     #[test]
     fn test_dotfile_pattern_from_ignore() {
-        let filter = AdenFilter {
-            ignore_patterns: compile_rules(&[".agent/".to_string()]),
-            allow_patterns: Vec::new(),
-        };
+        let filter = AdenFilter::from_rules(compile_rules(&[".agent/".to_string()]), Vec::new());
         assert!(
             !filter.should_skip(Path::new("agent/file.adoc")),
             "Dots in directory rules are literal"
@@ -593,10 +585,10 @@ mod tests {
         // Regression: a bare `.aden/` rule must prune the per-crate caches at
         // `crates/<x>/.aden/...`, not only a top-level `.aden/`. Otherwise the
         // generated index-cache.json leaks into grep/index results.
-        let filter = AdenFilter {
-            ignore_patterns: compile_rules(&[".aden/".to_string(), "target/".to_string()]),
-            allow_patterns: Vec::new(),
-        };
+        let filter = AdenFilter::from_rules(
+            compile_rules(&[".aden/".to_string(), "target/".to_string()]),
+            Vec::new(),
+        );
         assert!(filter.should_skip(Path::new(".aden/store")));
         assert!(filter.should_skip(Path::new("crates/aden-cli/.aden")));
         assert!(filter.should_skip(Path::new("crates/aden-cli/.aden/cache/index-cache.json")));
@@ -607,12 +599,125 @@ mod tests {
 
     #[test]
     fn test_allow_overrides_ignore() {
-        let filter = AdenFilter {
-            ignore_patterns: compile_rules(&["target/".to_string()]),
-            allow_patterns: compile_rules(&["target/custom-tool/".to_string()]),
-        };
+        let filter = AdenFilter::from_rules(
+            compile_rules(&["target/".to_string()]),
+            compile_rules(&["target/custom-tool/".to_string()]),
+        );
         assert!(filter.should_skip(Path::new("target/debug")));
         assert!(!filter.should_skip(Path::new("target/custom-tool/main.rs")));
+    }
+
+    #[test]
+    fn indexed_ignore_rules_preserve_configured_counts_and_allow_precedence() {
+        let ignore = ["target/", "target/", "*.tmp", "# comment", " "].map(str::to_string);
+        let allow = ["target/custom-tool/", "target/keep.tmp"].map(str::to_string);
+        let filter = AdenFilter::from_rules(compile_rules(&ignore), compile_rules(&allow));
+        assert_eq!(filter.pattern_count(), 3);
+        assert_eq!(filter.ignore_dirs.len(), 1);
+        assert_eq!(filter.ignore_patterns.len(), 1);
+        assert!(filter.should_skip(Path::new("nested/target/debug")));
+        assert!(!filter.should_skip(Path::new("target/custom-tool/main.rs")));
+        assert!(!filter.should_skip(Path::new("target/keep.tmp")));
+        assert!(filter.should_skip(Path::new("other.tmp")));
+    }
+
+    #[test]
+    fn optimized_rules_match_legacy_special_pattern_behavior() {
+        // Keep the prior matcher as an oracle. Its deliberately limited glob
+        // semantics, including multi-star fallback, must survive optimization.
+        fn legacy_glob(path: &str, pattern: &str) -> bool {
+            if !pattern.contains('*') {
+                return path == pattern;
+            }
+            let parts: Vec<_> = pattern.split('*').collect();
+            if parts.len() == 2 {
+                return path.starts_with(parts[0])
+                    && path.ends_with(parts[1])
+                    && path.len() >= parts[0].len() + parts[1].len();
+            }
+            Path::new(path)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name == pattern.trim_start_matches("*/"))
+        }
+        fn legacy_rule(rule: &GlobRule, path: &str) -> bool {
+            if !rule.is_dir_rule {
+                return legacy_glob(path, &rule.pattern);
+            }
+            let dir = rule.pattern.trim_end_matches('/');
+            if path == dir || path.starts_with(&format!("{dir}/")) {
+                return true;
+            }
+            if dir.contains('/') {
+                return false;
+            }
+            let segments: Vec<_> = path.split('/').collect();
+            segments.iter().enumerate().any(|(index, segment)| {
+                if dir.contains('*') {
+                    index + 1 < segments.len() && legacy_glob(segment, dir)
+                } else {
+                    *segment == dir
+                }
+            })
+        }
+        let patterns = [
+            "target/",
+            "/target/",
+            ".vs/",
+            "target-*/",
+            "*.egg-info/",
+            "target/custom/",
+            "*/",
+            "**/",
+            "**/file.rs",
+            "a*b*c",
+            "*.tmp",
+            "*file.rs",
+            "file*",
+            "/",
+            "///",
+            "a//",
+            "a?b/",
+            "[ab]/",
+        ];
+        let components = [
+            "",
+            "target",
+            "target-fast",
+            "target-*",
+            "file.rs",
+            ".vs",
+            "vs",
+            "a",
+            "a?b",
+            "[ab]",
+            "x.tmp",
+        ];
+        for pattern in patterns {
+            let rules = compile_rules(&[pattern.to_string()]);
+            let filter = AdenFilter::from_rules(rules.clone(), Vec::new());
+            for first in components {
+                for second in components {
+                    for third in components {
+                        let path = format!("{first}/{second}/{third}");
+                        let expected = legacy_rule(&rules[0], &path);
+                        assert_eq!(rules[0].matches(&path), expected, "{pattern:?}: {path:?}");
+                        assert_eq!(
+                            filter.should_skip(Path::new(&path)),
+                            expected,
+                            "indexed {pattern:?}: {path:?}"
+                        );
+                    }
+                }
+            }
+            for path in components {
+                assert_eq!(
+                    filter.should_skip(Path::new(path)),
+                    legacy_rule(&rules[0], path),
+                    "{pattern:?}: {path:?}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -696,6 +801,56 @@ mod tests {
             !content_has_high_confidence_secret(&example_key),
             "AWS EXAMPLE placeholder key must not be treated as a real secret"
         );
+    }
+
+    #[test]
+    fn content_secret_preserves_overlapping_and_nested_token_prefixes() {
+        let repeated_examples = format!("{}EXAMPLE", "AKIA".repeat(128));
+        assert!(!content_has_high_confidence_secret(&repeated_examples));
+        assert!(content_has_high_confidence_secret(&format!(
+            "{repeated_examples}éAKIA{}",
+            "0".repeat(16)
+        )));
+        assert!(content_has_high_confidence_secret(&format!(
+            "πAKIAKIA{}éEXAMPLE",
+            "7".repeat(13)
+        )));
+
+        // The outer GitHub prefix is too short, but the nested Slack token
+        // reaches its own length threshold.
+        assert!(content_has_high_confidence_secret(&format!(
+            "ghp_xoxb-{}",
+            "z".repeat(10)
+        )));
+        assert!(!content_has_high_confidence_secret(&format!(
+            "ghp_xoxb-{}EXAMPLE",
+            "z".repeat(10)
+        )));
+    }
+
+    #[test]
+    fn content_secret_preserves_armored_header_boundaries() {
+        let begin = "-----BEGIN ";
+        let pem = concat!("PRIVATE", " KEY-----");
+        let pgp = concat!("PGP PRIVATE", " KEY BLOCK-----");
+        for (header, expected) in [
+            (format!("{begin}{pem}"), true),
+            (format!("{begin}RSA2{pem}-- trailing text"), true),
+            (format!("{begin}  {pgp}\r\n"), true),
+            (format!("{begin}RSA\r\n{pem}"), false),
+            (format!("{begin}RSA\r{pem}"), false),
+            (format!("{begin}RSA\t{pem}"), false),
+            (format!("{begin}RSAÉ {pem}"), false),
+            (format!("{begin}RSA-{pem}"), false),
+            (format!("{begin}bad {pem} RSA {pgp}"), false),
+            (format!("{}{pem}", begin.repeat(128)), true),
+        ] {
+            assert_eq!(
+                content_has_high_confidence_secret(&header),
+                expected,
+                "{header:?}"
+            );
+        }
     }
 
     #[test]

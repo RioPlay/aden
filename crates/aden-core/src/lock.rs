@@ -1,40 +1,29 @@
 // Copyright (c) 2026 RioPlay <rioplay@rioplay.dev>
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Cross-process advisory locking via atomic lockfiles.
-//!
-//! aden coordinates concurrent writers — parallel-agent `gen` against one store,
-//! and concurrent `.agent/session.adoc` appends — with an advisory lock built on
-//! an atomically created lockfile. The lock is *advisory*: it only constrains
-//! processes that go through [`FileLock`].
-//!
-//! Robustness and its limit: a crash can leave a stale lockfile behind. The
-//! holder records its PID and an acquisition timestamp, and a contender reclaims
-//! the lock only when the operating system confirms that PID is no longer alive.
-//! A real `flock(2)` would auto-release on process death and close the small
-//! stale-reclaim TOCTOU window noted on [`FileLock::acquire_timeout`].
+//! Persistent OS advisory locks. Version 2 deliberately fails closed in older Aden.
+//! Never remove a version 2 lockfile: replacing its inode can admit two writers.
 
-use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Write};
+use std::fs::{self, File, OpenOptions, TryLockError};
+use std::io::{self, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::thread::sleep;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-/// Poll interval while waiting for a contended lock.
 const POLL: Duration = Duration::from_millis(50);
+const MARKER: &str = "aden-os-lock-v2\n";
+const RECORD_LIMIT: u64 = 4096;
+static OWNER_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// Holder identity recorded in a lockfile (`pid` on line 1, unix secs on line 2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LockHolder {
     pub pid: u32,
     pub acquired_secs: u64,
 }
 
-/// Sibling lockfile path for a store directory (`store` → `store.lock`).
 pub fn store_lock_path(store_path: &Path) -> PathBuf {
     store_path.with_extension("lock")
 }
 
-/// Observable state of an advisory lockfile.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LockState {
     Missing,
@@ -44,269 +33,260 @@ pub enum LockState {
     Unreadable(io::ErrorKind),
 }
 
-/// Inspect a lock without collapsing missing, malformed, and unreadable states.
-pub fn inspect_lock(lock_path: &Path) -> LockState {
+fn owner_path(path: &Path) -> PathBuf {
+    let mut name = path.as_os_str().to_os_string();
+    name.push(".owner");
+    PathBuf::from(name)
+}
+
+fn read_record(path: &Path) -> io::Result<String> {
     let mut body = String::new();
-    match File::open(lock_path).and_then(|mut file| file.read_to_string(&mut body)) {
-        Ok(_) => match parse_holder(&body) {
-            Some(holder) if holder_is_stale(holder) => LockState::Stale(holder),
-            Some(holder) => LockState::Active(holder),
-            None => LockState::Malformed,
-        },
-        Err(error) if error.kind() == io::ErrorKind::NotFound => LockState::Missing,
-        Err(error) => LockState::Unreadable(error.kind()),
+    File::open(path)?
+        .take(RECORD_LIMIT + 1)
+        .read_to_string(&mut body)?;
+    if body.len() as u64 > RECORD_LIMIT {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "lock metadata exceeds limit",
+        ));
+    }
+    Ok(body)
+}
+
+fn publish_owner(path: &Path) -> io::Result<()> {
+    let owner = owner_path(path);
+    let sequence = OWNER_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let temporary = owner.with_extension(format!(
+        "owner.{}.{timestamp}.{sequence}.pending",
+        std::process::id()
+    ));
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)?;
+    let result = (|| {
+        write!(file, "{}\n{}\n", std::process::id(), now_secs())?;
+        file.sync_all()?;
+        drop(file);
+        // Replace the directory entry, never truncate through an existing link.
+        fs::rename(&temporary, &owner)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
+
+/// Legacy PID records remain supported, including metadata-only owner records.
+pub fn inspect_lock(path: &Path) -> LockState {
+    let body = match read_record(path) {
+        Ok(body) => body,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return LockState::Missing,
+        // Windows byte-range locking can prevent reading the held marker file.
+        // Confirm the actual OS lease before using diagnostic owner metadata.
+        Err(error) => {
+            return match (
+                lease_is_held(path),
+                read_record(&owner_path(path))
+                    .ok()
+                    .and_then(|body| parse_holder(&body)),
+            ) {
+                (Ok(true), Some(holder)) => LockState::Active(holder),
+                _ => LockState::Unreadable(error.kind()),
+            };
+        }
+    };
+    if MARKER.starts_with(&body) {
+        let holder = read_record(&owner_path(path))
+            .ok()
+            .and_then(|s| parse_holder(&s));
+        return match (lease_is_held(path), holder) {
+            (Ok(true), Some(h)) => LockState::Active(h),
+            (Ok(false), _) => LockState::Missing,
+            (Ok(true), None) => LockState::Malformed,
+            (Err(e), _) => LockState::Unreadable(e.kind()),
+        };
+    }
+    match parse_holder(&body) {
+        Some(h) if holder_is_stale(h) => LockState::Stale(h),
+        Some(h) => LockState::Active(h),
+        None => LockState::Malformed,
     }
 }
 
-/// Read the holder from an existing parseable lockfile.
-pub fn read_holder(lock_path: &Path) -> Option<LockHolder> {
-    match inspect_lock(lock_path) {
-        LockState::Active(holder) | LockState::Stale(holder) => Some(holder),
-        LockState::Missing | LockState::Malformed | LockState::Unreadable(_) => None,
+pub fn read_holder(path: &Path) -> Option<LockHolder> {
+    match inspect_lock(path) {
+        LockState::Active(h) | LockState::Stale(h) => Some(h),
+        _ => None,
     }
 }
-
-/// Human-readable holder summary for status / wait messages.
-pub fn describe_holder(holder: LockHolder) -> String {
-    let age = now_secs().saturating_sub(holder.acquired_secs);
-    format!("pid {} (held {}s)", holder.pid, age)
+pub fn describe_holder(h: LockHolder) -> String {
+    format!(
+        "pid {} (held {}s)",
+        h.pid,
+        now_secs().saturating_sub(h.acquired_secs)
+    )
 }
-
-/// Human-readable lock state for status and contention diagnostics.
 pub fn describe_lock_state(state: LockState) -> String {
     match state {
         LockState::Missing => "no holder".into(),
-        LockState::Active(holder) => describe_holder(holder),
-        LockState::Stale(holder) => format!("stale {}", describe_holder(holder)),
+        LockState::Active(h) => describe_holder(h),
+        LockState::Stale(h) => format!("stale {}", describe_holder(h)),
         LockState::Malformed => "malformed lockfile".into(),
-        LockState::Unreadable(kind) => format!("unreadable lockfile ({kind:?})"),
+        LockState::Unreadable(k) => format!("unreadable lockfile ({k:?})"),
     }
 }
 
-/// A held advisory lock. Dropping it releases the lock by removing the lockfile.
+/// A held OS lease. Closing the handle releases it, including after process death.
+/// The marker inode and diagnostic owner record persist after release.
 #[derive(Debug)]
 pub struct FileLock {
-    path: PathBuf,
-    token: String,
+    _file: File,
 }
 
 impl FileLock {
-    /// Acquire the lock at `path`, waiting up to `timeout` for a current holder
-    /// to release it. Reclaims a holder only when the operating system confirms
-    /// that its process is no longer alive. Returns
-    /// [`io::ErrorKind::WouldBlock`] if a live holder keeps the lock for the
-    /// whole `timeout`.
-    ///
-    /// The parent directory must already exist. Each guard retains an ownership
-    /// token and removes the lockfile only when that token still matches, so a
-    /// delayed drop cannot release a replacement holder's lock.
     pub fn acquire_timeout(path: impl AsRef<Path>, timeout: Duration) -> io::Result<Self> {
-        Self::acquire_timeout_inner(path, timeout, false)
+        Self::acquire(path.as_ref(), timeout, false)
     }
-
-    /// Like [`acquire_timeout`](Self::acquire_timeout), but emits a `NOTE:` line
-    /// to stderr every 5s while waiting so long-running `gen`/`ready` queues do
-    /// not look hung (ADR-011 Phase 2).
     pub fn acquire_timeout_verbose(path: impl AsRef<Path>, timeout: Duration) -> io::Result<Self> {
-        Self::acquire_timeout_inner(path, timeout, true)
+        Self::acquire(path.as_ref(), timeout, true)
     }
-
-    fn acquire_timeout_inner(
-        path: impl AsRef<Path>,
-        timeout: Duration,
-        verbose: bool,
-    ) -> io::Result<Self> {
-        Self::acquire_timeout_with(path, timeout, verbose, create_exclusive)
-    }
-
-    fn acquire_timeout_with(
-        path: impl AsRef<Path>,
-        timeout: Duration,
-        verbose: bool,
-        mut create: impl FnMut(&Path) -> io::Result<String>,
-    ) -> io::Result<Self> {
-        let path = path.as_ref().to_path_buf();
-        let started = Instant::now();
-        let mut last_note = started;
-        let mut transient_denials = 0;
-        const NOTE_EVERY: Duration = Duration::from_secs(5);
-
+    fn acquire(path: &Path, timeout: Duration, verbose: bool) -> io::Result<Self> {
+        let start = Instant::now();
+        let mut note = start;
         loop {
-            match create(&path) {
-                Ok(token) => return Ok(FileLock { path, token }),
-                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
-                    let reclaimed = reclaim_if_stale(&path)?;
-                    let now = Instant::now();
-                    if verbose && now.duration_since(last_note) >= NOTE_EVERY {
-                        let waited = now.duration_since(started);
-                        let detail = describe_lock_state(inspect_lock(&path));
-                        eprintln!(
-                            "NOTE: waiting for store writer lock at {} ({detail}; waited {}s)…",
-                            path.display(),
-                            waited.as_secs()
-                        );
-                        last_note = now;
-                    }
-                    if now.duration_since(started) >= timeout {
-                        let detail = describe_lock_state(inspect_lock(&path));
-                        return Err(io::Error::new(
-                            io::ErrorKind::WouldBlock,
-                            format!(
-                                "store locked — another aden process holds the lock at {} \
-                                 ({detail}; waited {:?})",
-                                path.display(),
-                                timeout
-                            ),
-                        ));
-                    }
-                    if !reclaimed {
-                        sleep(POLL.min(timeout.saturating_sub(started.elapsed())));
-                    }
-                }
-                // A Windows hard-link contender can observe error 5 while the
-                // target is being deleted, then find no target to normalize as
-                // AlreadyExists. Retry briefly without treating the denial as
-                // ownership or resetting the original acquisition deadline.
-                // Permanent permission errors still fail after at most three
-                // short retries; other errors propagate immediately.
-                Err(e)
-                    if cfg!(windows)
-                        && e.raw_os_error() == Some(5)
-                        && transient_denials < 3
-                        && started.elapsed() < timeout =>
-                {
-                    transient_denials += 1;
-                    sleep(POLL.min(timeout.saturating_sub(started.elapsed())));
-                }
+            match try_acquire(path) {
+                Ok(file) => return Ok(Self { _file: file }),
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
                 Err(e) => return Err(e),
             }
+            if start.elapsed() >= timeout {
+                return Err(io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    format!(
+                        "store locked at {} ({}; waited {timeout:?})",
+                        path.display(),
+                        describe_lock_state(inspect_lock(path))
+                    ),
+                ));
+            }
+            if verbose && note.elapsed() >= Duration::from_secs(5) {
+                eprintln!(
+                    "NOTE: waiting for store writer lock at {} ({})",
+                    path.display(),
+                    describe_lock_state(inspect_lock(path))
+                );
+                note = Instant::now();
+            }
+            sleep(POLL.min(timeout.saturating_sub(start.elapsed())));
         }
     }
 }
 
-/// Atomically create the lockfile at `path` already populated with this
-/// process's identity. Errors with [`io::ErrorKind::AlreadyExists`] if a lock is
-/// held.
-///
-/// The identity is written to a unique temp file and then `hard_link`ed into
-/// place: `link(2)` fails if the target exists, so creation is atomic AND the
-/// lockfile is never visible without its holder identity and ownership token.
-/// A plain `create_new` would expose an empty file between create and write,
-/// which a contender would misread as stale and reclaim — letting two writers
-/// in at once.
-fn create_exclusive(path: &Path) -> io::Result<String> {
-    // Avoid a temp-file write and fsync on every poll while a holder is visible.
-    // This is only a contention fast path: hard_link below still arbitrates
-    // acquisition atomically if another contender arrives after this check.
-    if path.try_exists()? {
+fn lease_is_held(path: &Path) -> io::Result<bool> {
+    let file = open_existing(path)?;
+    match file.try_lock() {
+        Ok(()) => Ok(false),
+        Err(TryLockError::WouldBlock) => Ok(true),
+        Err(TryLockError::Error(error)) => Err(error),
+    }
+}
+
+fn open_existing(path: &Path) -> io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.read(true).write(true);
+    // Prevent deletion or replacement of an inode while any new holder has it open.
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.share_mode(3); // FILE_SHARE_READ | FILE_SHARE_WRITE, no DELETE
+    }
+    options.open(path)
+}
+
+fn try_acquire(path: &Path) -> io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).create_new(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.share_mode(3);
+    }
+    let mut file = match options.open(path) {
+        Ok(file) => file,
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+            if fs::symlink_metadata(path)?.file_type().is_symlink() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "lockfile must not be a symbolic link",
+                ));
+            }
+            if path.is_dir() {
+                return Err(io::Error::from(io::ErrorKind::WouldBlock));
+            }
+            open_existing(path)?
+        }
+        Err(e) => return Err(e),
+    };
+    match file.try_lock() {
+        Ok(()) => {}
+        Err(TryLockError::WouldBlock) => return Err(io::Error::from(io::ErrorKind::WouldBlock)),
+        Err(TryLockError::Error(e)) => return Err(e),
+    }
+    file.rewind()?;
+    let mut body = String::new();
+    Read::by_ref(&mut file)
+        .take(RECORD_LIMIT + 1)
+        .read_to_string(&mut body)?;
+    if body.len() as u64 > RECORD_LIMIT {
         return Err(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            "lock target exists",
+            io::ErrorKind::InvalidData,
+            "lock metadata exceeds limit",
         ));
     }
-    let tmp = unique_temp(path);
-    let token = unique_token();
-    {
-        let mut f = OpenOptions::new().write(true).create_new(true).open(&tmp)?;
-        writeln!(f, "{}", std::process::id())?;
-        writeln!(f, "{}", now_secs())?;
-        write!(f, "{token}")?;
-        f.sync_all()?;
+    if body != MARKER && MARKER.starts_with(&body) {
+        // A creator can exit before its initial marker is fully written. Old
+        // PID-based writers never publish these bytes and fail closed on them.
+        // Initialize or repair only this recognizable state under the OS lease.
+        file.rewind()?;
+        file.set_len(0)?;
+        file.write_all(MARKER.as_bytes())?;
+        file.sync_all()?;
+        body = MARKER.to_owned();
     }
-    let link_res = fs::hard_link(&tmp, path);
-    // The temp's only purpose was to carry content into the atomic link; drop it
-    // either way (on success the link keeps the inode; on failure it is garbage).
-    let _ = fs::remove_file(&tmp);
-    match link_res {
-        Ok(()) => Ok(token),
-        Err(e) if path.exists() => {
-            // Normalize to AlreadyExists on any link failure *if* the target now
-            // exists. This is required for Windows, where hard_link to an existing
-            // dest can report PermissionDenied (ERROR_ACCESS_DENIED, code 5) rather
-            // than AlreadyExists. acquire_timeout relies on AlreadyExists to treat
-            // as contention + poll/reclaim.
-            Err(io::Error::new(
-                io::ErrorKind::AlreadyExists,
-                format!("lock target exists (hard_link reported {:?})", e.kind()),
-            ))
+    if body != MARKER {
+        // Old binaries do not honor OS leases and can race stale-file deletion.
+        // Never convert such an inode while an old reclaimer could replace it.
+        if parse_holder(&body).is_some_and(holder_is_stale) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "legacy stale lock at {}; stop all older Aden processes, remove this legacy lockfile, then retry",
+                    path.display()
+                ),
+            ));
         }
-        Err(e) => Err(e),
+        return Err(io::Error::from(io::ErrorKind::WouldBlock));
     }
+    publish_owner(path)?;
+    Ok(file)
 }
-
-/// A collision-resistant sibling temp path for the link dance: PID plus a
-/// monotonic counter keeps it unique across threads and calls without needing a
-/// randomness dependency.
-fn unique_temp(path: &Path) -> PathBuf {
-    let n = next_unique_counter();
-    let suffix = format!(".tmp.{}.{}", std::process::id(), n);
-    let mut name = path.file_name().unwrap_or_default().to_os_string();
-    name.push(suffix);
-    path.with_file_name(name)
-}
-
-fn unique_token() -> String {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or(0);
-    format!("{}-{nanos}-{}", std::process::id(), next_unique_counter())
-}
-
-fn next_unique_counter() -> u64 {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    COUNTER.fetch_add(1, Ordering::Relaxed)
-}
-
-impl Drop for FileLock {
-    fn drop(&mut self) {
-        if lock_token(&self.path).as_deref() == Some(self.token.as_str()) {
-            let _ = fs::remove_file(&self.path);
-        }
-    }
-}
-
-/// Seconds since the Unix epoch, saturating at 0 before it.
 fn now_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
 }
-
-/// Read the raw lockfile body for ownership-token checks.
-fn read_lock_body(path: &Path) -> Option<String> {
-    let mut buf = String::new();
-    File::open(path).ok()?.read_to_string(&mut buf).ok()?;
-    Some(buf)
-}
-
-fn parse_holder(buf: &str) -> Option<LockHolder> {
-    let mut lines = buf.lines();
-    let pid = lines.next()?.trim().parse().ok()?;
-    let acquired_secs = lines.next()?.trim().parse().ok()?;
-    Some(LockHolder { pid, acquired_secs })
-}
-
-fn lock_token(path: &Path) -> Option<String> {
-    read_lock_body(path)?.lines().nth(2).map(str::to_owned)
-}
-
-/// Remove a lock only after the operating system confirms its holder is dead.
-/// Missing means another process already released it. Unreadable and malformed
-/// locks remain contended because guessing could admit two writers.
-fn reclaim_if_stale(path: &Path) -> io::Result<bool> {
-    match inspect_lock(path) {
-        LockState::Missing => Ok(true),
-        LockState::Stale(_) => match fs::remove_file(path) {
-            Ok(()) => Ok(true),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(true),
-            Err(error) if error.kind() == io::ErrorKind::PermissionDenied => Ok(false),
-            Err(error) => Err(error),
-        },
-        LockState::Active(_) | LockState::Malformed | LockState::Unreadable(_) => Ok(false),
-    }
+fn parse_holder(body: &str) -> Option<LockHolder> {
+    let mut lines = body.lines();
+    Some(LockHolder {
+        pid: lines.next()?.trim().parse().ok()?,
+        acquired_secs: lines.next()?.trim().parse().ok()?,
+    })
 }
 
 fn holder_is_stale(holder: LockHolder) -> bool {
@@ -362,245 +342,110 @@ fn process_is_alive(pid: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn lock_path(name: &str) -> PathBuf {
-        let mut p = std::env::temp_dir();
-        // Unique per test process to avoid cross-run collisions.
-        p.push(format!("aden-lock-test-{}-{}", std::process::id(), name));
-        let _ = fs::remove_file(&p);
-        p
-    }
-
-    #[cfg(windows)]
     #[test]
-    fn transient_windows_denial_recovers_with_real_atomic_acquisition() {
-        let path = lock_path("transient-denial");
-        let mut attempts = 0;
-        let guard = FileLock::acquire_timeout_with(&path, Duration::from_secs(2), false, |path| {
-            attempts += 1;
-            if attempts <= 2 {
-                Err(io::Error::from_raw_os_error(5))
-            } else {
-                create_exclusive(path)
-            }
-        })
-        .unwrap();
-        assert_eq!(attempts, 3);
-        assert!(matches!(inspect_lock(&path), LockState::Active(_)));
-        drop(guard);
-        assert!(!path.exists());
-    }
-
-    #[test]
-    fn persistent_denials_and_unrelated_errors_remain_bounded_failures() {
-        for (code, timeout, expected_attempts) in [
-            (5, Duration::from_secs(2), if cfg!(windows) { 4 } else { 1 }),
-            (5, Duration::ZERO, 1),
-            (2, Duration::from_secs(2), 1),
-        ] {
-            let path = lock_path(&format!("denial-{code}-{}", timeout.as_millis()));
-            let mut attempts = 0;
-            let error = FileLock::acquire_timeout_with(&path, timeout, false, |_| {
-                attempts += 1;
-                Err(io::Error::from_raw_os_error(code))
-            })
-            .unwrap_err();
-            assert_eq!(error.raw_os_error(), Some(code));
-            assert_eq!(attempts, expected_attempts);
-            assert!(!path.exists());
+    fn incomplete_v2_initialization_recovers_under_exclusive_lease() {
+        let temp = tempfile::tempdir().unwrap();
+        for (index, prefix) in ["", "aden-", "aden-os-lock-v2"].iter().enumerate() {
+            let path = temp.path().join(format!("partial-{index}.lock"));
+            fs::write(&path, prefix).unwrap();
+            assert_eq!(inspect_lock(&path), LockState::Missing);
+            let held = FileLock::acquire_timeout(&path, Duration::ZERO).unwrap();
+            assert!(FileLock::acquire_timeout(&path, Duration::ZERO).is_err());
+            drop(held);
+            assert_eq!(fs::read_to_string(&path).unwrap(), MARKER);
         }
     }
-
     #[test]
-    fn read_holder_parses_lockfile() {
-        let path = lock_path("parse");
-        fs::write(&path, "4242\n1700000000\n").unwrap();
-        let h = read_holder(&path).expect("must parse");
-        assert_eq!(h.pid, 4242);
-        assert_eq!(h.acquired_secs, 1_700_000_000);
-    }
-
-    #[test]
-    fn inspect_lock_distinguishes_unknown_states() {
-        let missing = lock_path("inspect-missing");
-        assert_eq!(inspect_lock(&missing), LockState::Missing);
-
-        let malformed = lock_path("inspect-malformed");
-        fs::write(&malformed, "not-a-holder").unwrap();
-        assert_eq!(inspect_lock(&malformed), LockState::Malformed);
-        let err = FileLock::acquire_timeout(&malformed, Duration::from_millis(100))
-            .expect_err("malformed lock must remain safely contended");
-        assert_eq!(err.kind(), io::ErrorKind::WouldBlock);
-        assert!(malformed.exists());
-        fs::remove_file(malformed).unwrap();
-
-        let unreadable = lock_path("inspect-unreadable");
-        fs::create_dir(&unreadable).unwrap();
-        assert!(matches!(
-            inspect_lock(&unreadable),
-            LockState::Unreadable(_)
-        ));
-        fs::remove_dir(unreadable).unwrap();
-    }
-
-    #[test]
-    fn inspect_lock_reports_active_and_stale_holders() {
-        let active = lock_path("inspect-active");
-        fs::write(
-            &active,
-            format!("{}\n{}\ntoken", std::process::id(), now_secs()),
-        )
-        .unwrap();
-        assert!(matches!(inspect_lock(&active), LockState::Active(_)));
-        fs::remove_file(active).unwrap();
-
-        let stale = lock_path("inspect-stale");
-        fs::write(&stale, "0\n0\ntoken").unwrap();
-        assert!(matches!(inspect_lock(&stale), LockState::Stale(_)));
-        fs::remove_file(stale).unwrap();
-    }
-
-    #[test]
-    fn second_acquire_blocks_while_held() {
-        let path = lock_path("held");
-        let held = FileLock::acquire_timeout(&path, Duration::from_secs(5)).unwrap();
-        let err =
-            FileLock::acquire_timeout(&path, Duration::from_millis(100)).expect_err("must block");
-        assert_eq!(err.kind(), io::ErrorKind::WouldBlock);
+    fn publishing_owner_does_not_overwrite_an_existing_link_target() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("store.lock");
+        let valuable = temp.path().join("valuable.txt");
+        fs::write(&valuable, "original content").unwrap();
+        fs::hard_link(&valuable, owner_path(&path)).unwrap();
+        let held = FileLock::acquire_timeout(&path, Duration::ZERO).unwrap();
+        assert_eq!(fs::read_to_string(&valuable).unwrap(), "original content");
+        assert!(matches!(inspect_lock(&path), LockState::Active(_)));
         drop(held);
     }
-
     #[test]
-    fn unreadable_lock_does_not_bypass_timeout() {
-        let path = lock_path("unreadable");
-        // An unexpected directory cannot be read as a holder. Retrying a
-        // seemingly vanished lock must still respect the caller's deadline.
-        fs::create_dir(&path).unwrap();
-        let started = Instant::now();
-        let err = FileLock::acquire_timeout(&path, Duration::from_millis(100))
-            .expect_err("unreadable holder must not retry forever");
-        fs::remove_dir(&path).unwrap();
-        assert_eq!(err.kind(), io::ErrorKind::WouldBlock);
-        assert!(started.elapsed() < Duration::from_secs(5));
-    }
-
-    #[test]
-    fn drop_releases_the_lock() {
-        let path = lock_path("release");
-        {
-            let g = FileLock::acquire_timeout(&path, Duration::from_secs(5)).unwrap();
-            // Verify the lock file exists while held
-            assert!(path.exists(), "lock file must exist while held");
-            drop(g);
-        }
-        // After the guard drops, the lock file may remain (stale) but the
-        // exclusive hold is released: a fresh acquire succeeds immediately.
-        let g2 = FileLock::acquire_timeout(&path, Duration::from_millis(100))
-            .expect("lock must be acquirable after guard drops");
-        // Clean up
-        drop(g2);
-        let _ = fs::remove_file(&path);
-    }
-
-    #[test]
-    fn drop_does_not_release_a_replacement_lock() {
-        let path = lock_path("replacement");
-        let original = FileLock::acquire_timeout(&path, Duration::from_secs(5)).unwrap();
-        fs::remove_file(&path).unwrap();
-        fs::write(
-            &path,
-            format!("{}\n{}\nreplacement", std::process::id(), now_secs()),
-        )
-        .unwrap();
-        drop(original);
-        assert!(
-            path.exists(),
-            "original guard must not remove replacement lock"
-        );
-        fs::remove_file(path).unwrap();
-    }
-
-    #[test]
-    fn stale_lock_is_reclaimed() {
-        let path = lock_path("stale");
-        // PID 0 is dead on Linux; off Linux the ancient timestamp exceeds TTL.
-        fs::write(&path, "0\n0\nexpired").unwrap();
-        assert!(path.exists(), "stale lock file must exist before reclaim");
-        let g = FileLock::acquire_timeout(&path, Duration::from_millis(200))
-            .expect("stale lock must be reclaimed");
-        // After reclaim, the lock file is re-written with our PID and
-        // the acquired guard must be functional (can't be re-acquired).
-        let err = FileLock::acquire_timeout(&path, Duration::from_millis(100))
-            .expect_err("reclaimed lock must block second acquire");
-        assert_eq!(err.kind(), io::ErrorKind::WouldBlock);
-        drop(g);
-        let _ = fs::remove_file(&path);
-    }
-
-    #[test]
-    #[cfg(any(unix, windows))]
-    fn aged_live_holder_is_not_reclaimed() {
-        let path = lock_path("live-aged");
-        fs::write(&path, format!("{}\n0\nlive", std::process::id())).unwrap();
-        let err = FileLock::acquire_timeout(&path, Duration::from_millis(100))
-            .expect_err("a live holder must not be reclaimed solely by age");
-        assert_eq!(err.kind(), io::ErrorKind::WouldBlock);
-        fs::remove_file(path).unwrap();
-    }
-
-    #[test]
-    fn dead_holder_lock_is_reclaimed() {
-        let path = lock_path("dead");
-        // PID 0 never names a live process; recent timestamp so only liveness
-        // (on Linux) can reclaim it.
-        fs::write(&path, format!("0\n{}", now_secs())).unwrap();
-        let acquired = FileLock::acquire_timeout(&path, Duration::from_millis(200));
-        if cfg!(any(unix, windows)) {
-            assert!(acquired.is_ok(), "dead holder must be reclaimed");
-            // After reclaim the lock must block a second acquire.
-            let err = FileLock::acquire_timeout(&path, Duration::from_millis(100))
-                .expect_err("reclaimed lock must block");
-            assert_eq!(err.kind(), io::ErrorKind::WouldBlock);
-        } else if let Ok(g) = acquired {
-            // Unknown platforms conservatively preserve a nonzero PID lock.
-            drop(g);
-        }
-        let _ = fs::remove_file(&path);
-    }
-
-    #[test]
-    fn mutual_exclusion_under_threads() {
-        use std::sync::Arc;
-        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-
-        let path = Arc::new(lock_path("mutex"));
-        let inside = Arc::new(AtomicBool::new(false));
-        let overlaps = Arc::new(AtomicUsize::new(0));
-        let mut handles = Vec::new();
-        for _ in 0..8 {
-            let path = Arc::clone(&path);
-            let inside = Arc::clone(&inside);
-            let overlaps = Arc::clone(&overlaps);
-            handles.push(std::thread::spawn(move || {
-                for _ in 0..20 {
-                    let g = FileLock::acquire_timeout(&*path, Duration::from_secs(10)).unwrap();
-                    if inside.swap(true, Ordering::SeqCst) {
-                        overlaps.fetch_add(1, Ordering::SeqCst);
-                    }
-                    // Hold the critical section briefly.
-                    std::thread::yield_now();
-                    inside.store(false, Ordering::SeqCst);
-                    drop(g);
-                }
-            }));
-        }
-        for h in handles {
-            h.join().unwrap();
-        }
+    fn lease_blocks_then_recovers_without_removing_inode() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("store.lock");
+        let guard = FileLock::acquire_timeout(&path, Duration::ZERO).unwrap();
         assert_eq!(
-            overlaps.load(Ordering::SeqCst),
-            0,
-            "two holders were inside the lock at once"
+            FileLock::acquire_timeout(&path, Duration::ZERO)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::WouldBlock
         );
+        assert!(matches!(inspect_lock(&path), LockState::Active(_)));
+        drop(guard);
+        assert_eq!(fs::read_to_string(&path).unwrap(), MARKER);
+        assert!(
+            parse_holder(MARKER).is_none(),
+            "old PID lock readers must fail closed"
+        );
+        assert_eq!(inspect_lock(&path), LockState::Missing);
+        let _next = FileLock::acquire_timeout(&path, Duration::ZERO).unwrap();
+    }
+    #[test]
+    fn legacy_live_and_malformed_fail_closed_stale_requires_explicit_recovery() {
+        let temp = tempfile::tempdir().unwrap();
+        for (name, body, kind) in [
+            (
+                "live",
+                format!("{}\n0\nold-token", std::process::id()),
+                io::ErrorKind::WouldBlock,
+            ),
+            ("malformed", "unknown".into(), io::ErrorKind::WouldBlock),
+            (
+                "stale",
+                "0\n0\nold-token".into(),
+                io::ErrorKind::InvalidData,
+            ),
+        ] {
+            let path = temp.path().join(name);
+            fs::write(&path, &body).unwrap();
+            assert_eq!(
+                FileLock::acquire_timeout(&path, Duration::ZERO)
+                    .unwrap_err()
+                    .kind(),
+                kind
+            );
+            assert_eq!(fs::read_to_string(path).unwrap(), body);
+        }
+    }
+    #[test]
+    fn metadata_only_records_remain_inspectable() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("launch.pid");
+        fs::write(&path, format!("{}\n0\njob", std::process::id())).unwrap();
+        assert!(matches!(inspect_lock(&path), LockState::Active(_)));
+        fs::write(&path, "0\n0\njob").unwrap();
+        assert!(matches!(inspect_lock(&path), LockState::Stale(_)));
+    }
+    #[test]
+    fn threads_are_mutually_exclusive() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("store.lock");
+        let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let threads: Vec<_> = (0..6)
+            .map(|_| {
+                let path = path.clone();
+                let count = count.clone();
+                std::thread::spawn(move || {
+                    for _ in 0..10 {
+                        let _guard =
+                            FileLock::acquire_timeout(&path, Duration::from_secs(10)).unwrap();
+                        assert_eq!(count.fetch_add(1, std::sync::atomic::Ordering::SeqCst), 0);
+                        std::thread::yield_now();
+                        assert_eq!(count.fetch_sub(1, std::sync::atomic::Ordering::SeqCst), 1);
+                    }
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
     }
 }

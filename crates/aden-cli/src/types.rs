@@ -49,7 +49,21 @@ use std::path::PathBuf;
 /// 15: Incremental reuse binds to parsed source bytes instead of coarse mtimes.
 ///     Rebuild pre-digest stores once so a previously skipped rewrite cannot
 ///     retain stale symbols behind an apparently current freshness manifest.
-pub const GEN_LOGIC_VERSION: u32 = 15;
+/// 16: Tree-sitter 0.27 and language-pack 1.25 can change parsed symbols and
+///     source spans. Reparse unchanged files once after this dependency upgrade.
+/// 17: Index inline Rust module contents with scoped symbol identities and
+///     lexical relationships. Reparse existing files so missing nested symbols
+///     cannot survive behind a current freshness manifest.
+/// 18: Calls inside supported Rust assertion macros retain their lexical
+///     context. Reparse v17 graphs so test relationships include these calls.
+/// 19: Preserve C declarator shape when classifying functions. Reparse older
+///     graphs to remove function-pointer variables and other false functions.
+/// 20: Persist extractor analysis scope, scoped C callback evidence and macro
+///     mapping provenance. Old graph receipts cannot infer these capabilities.
+/// 21: Metadata hashes describe the supplied complete parser input. Reparse
+///     legacy documents that could have captured different physical file bytes.
+/// 22: Rebuild graphs that can retain removed Calls and Tests edges.
+pub const GEN_LOGIC_VERSION: u32 = 22;
 
 /// Incremental generation cache: maps contract file path → metadata.
 #[derive(Default, Serialize, Deserialize)]

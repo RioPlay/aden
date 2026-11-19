@@ -264,12 +264,12 @@ fn top_level_help_is_focused_but_hidden_commands_remain_callable() {
 fn test_check_finds_no_issues() {
     let fixture = temp_project::TempProject::new();
     let dir = fixture.path();
-    temp_project::scaffold(&dir);
+    temp_project::scaffold(dir);
 
     let output = fixture
         .command()
         .arg("check")
-        .arg(&dir)
+        .arg(dir)
         .output()
         .expect("aden binary must be installed for tests");
 
@@ -288,7 +288,7 @@ fn test_check_finds_no_issues() {
 fn test_asm_assembles_nonempty_output() {
     let fixture = temp_project::TempProject::new();
     let dir = fixture.path();
-    temp_project::scaffold(&dir);
+    temp_project::scaffold(dir);
 
     let output = fixture
         .command()
@@ -318,7 +318,7 @@ fn test_asm_assembles_nonempty_output() {
 fn asm_output_modes_are_predictable_without_an_explicit_budget() {
     let fixture = temp_project::TempProject::new();
     let dir = fixture.path();
-    temp_project::scaffold(&dir);
+    temp_project::scaffold(dir);
 
     let explicit_llm = fixture
         .command()
@@ -357,7 +357,7 @@ fn asm_output_modes_are_predictable_without_an_explicit_budget() {
 fn test_ask_returns_context() {
     let fixture = temp_project::TempProject::new();
     let dir = fixture.path();
-    temp_project::scaffold(&dir);
+    temp_project::scaffold(dir);
 
     let output = fixture
         .command()
@@ -399,7 +399,7 @@ fn class_members_remain_reachable_without_becoming_aggregate_callers() {
         let dir = fixture.path();
         std::fs::write(dir.join(filename), source).unwrap();
         let run = |args: &[&str]| {
-            let output = fixture.command().args(args).arg(&dir).output().unwrap();
+            let output = fixture.command().args(args).arg(dir).output().unwrap();
             assert!(
                 output.status.success(),
                 "{}",
@@ -715,7 +715,7 @@ fn ask_how_does_symbol_work_stays_on_the_definition() {
 fn ask_fails_small_for_repository_wide_questions() {
     let fixture = temp_project::TempProject::new();
     let dir = fixture.path();
-    temp_project::scaffold(&dir);
+    temp_project::scaffold(dir);
 
     let output = fixture
         .command()
@@ -748,7 +748,7 @@ fn ask_fails_small_for_repository_wide_questions() {
 fn ask_from_pin_allows_broad_wording_because_the_scope_is_bounded() {
     let fixture = temp_project::TempProject::new();
     let dir = fixture.path();
-    temp_project::scaffold(&dir);
+    temp_project::scaffold(dir);
 
     let output = fixture
         .command()
@@ -781,7 +781,7 @@ fn ask_from_pin_allows_broad_wording_because_the_scope_is_bounded() {
 fn test_ask_strict_stdout_stays_within_serialized_budget() {
     let fixture = temp_project::TempProject::new();
     let dir = fixture.path();
-    temp_project::scaffold(&dir);
+    temp_project::scaffold(dir);
     let budget = 32usize;
 
     let output = fixture
@@ -815,7 +815,7 @@ fn test_ask_strict_stdout_stays_within_serialized_budget() {
 fn test_asm_strict_stdout_stays_within_serialized_budget() {
     let fixture = temp_project::TempProject::new();
     let dir = fixture.path();
-    temp_project::scaffold(&dir);
+    temp_project::scaffold(dir);
     let budget = 32usize;
 
     let output = fixture
@@ -884,7 +884,7 @@ fn test_ask_strict_no_results_stays_within_serialized_budget() {
 fn test_asm_strict_all_formats_unicode_and_tiny_receipt_are_bounded() {
     let fixture = temp_project::TempProject::new();
     let dir = fixture.path();
-    temp_project::scaffold(&dir);
+    temp_project::scaffold(dir);
     std::fs::write(
         dir.join("unicode.adoc"),
         "[[unicode]]\n= Unicode\n\ncafé 你好 🚀 context ".repeat(80),
@@ -923,7 +923,7 @@ fn test_asm_strict_all_formats_unicode_and_tiny_receipt_are_bounded() {
 fn test_ask_strict_receipts_provenance_alternates_and_supplements_remain_bounded() {
     let fixture = temp_project::TempProject::new();
     let dir = fixture.path();
-    temp_project::scaffold(&dir);
+    temp_project::scaffold(dir);
     std::fs::write(
         dir.join("module-b.adoc"),
         "[[module-b]]\n= Module B\n\nShared ambiguous module context.\n<<readme>>\n",
@@ -963,7 +963,7 @@ fn test_ask_strict_receipts_provenance_alternates_and_supplements_remain_bounded
 fn test_ask_default_surfaces_only_assembled_outcome() {
     let fixture = temp_project::TempProject::new();
     let dir = fixture.path();
-    temp_project::scaffold(&dir);
+    temp_project::scaffold(dir);
     let output = fixture
         .command()
         .args(["ask", "What is this project?", &dir.to_string_lossy()])
@@ -993,7 +993,7 @@ fn test_ask_default_surfaces_only_assembled_outcome() {
 fn test_asm_auto_plus_strict_uses_exact_serialized_budget() {
     let fixture = temp_project::TempProject::new();
     let dir = fixture.path();
-    temp_project::scaffold(&dir);
+    temp_project::scaffold(dir);
     let budget = 16usize;
     let output = fixture
         .command()
@@ -1021,7 +1021,7 @@ fn test_asm_auto_plus_strict_uses_exact_serialized_budget() {
 fn test_asm_strict_stale_hint_cannot_escape_budget() {
     let fixture = temp_project::TempProject::new();
     let dir = fixture.path();
-    temp_project::scaffold(&dir);
+    temp_project::scaffold(dir);
     let generated = fixture
         .command()
         .args(["gen", &dir.to_string_lossy()])
@@ -1058,7 +1058,7 @@ fn test_asm_strict_stale_hint_cannot_escape_budget() {
 fn test_mcp_wrapper_strict_budget_transport_golden() {
     let fixture = temp_project::TempProject::new();
     let dir = fixture.path();
-    temp_project::scaffold(&dir);
+    temp_project::scaffold(dir);
     let budget = 16usize;
     let mut args = serde_json::Map::new();
     args.insert("question".into(), serde_json::json!("What is module a?"));
@@ -1091,7 +1091,7 @@ fn test_mcp_wrapper_strict_budget_transport_golden() {
 fn test_asm_strict_rejects_unbounded_inspect_and_out_modes() {
     let fixture = temp_project::TempProject::new();
     let dir = fixture.path();
-    temp_project::scaffold(&dir);
+    temp_project::scaffold(dir);
 
     let inspect = fixture
         .command()
@@ -1139,7 +1139,7 @@ fn test_asm_strict_rejects_unbounded_inspect_and_out_modes() {
 fn test_ask_strict_rejects_model_output() {
     let fixture = temp_project::TempProject::new();
     let dir = fixture.path();
-    temp_project::scaffold(&dir);
+    temp_project::scaffold(dir);
 
     let output = fixture
         .command()
@@ -1165,7 +1165,7 @@ fn test_ask_strict_rejects_model_output() {
 fn test_graph_outputs_neighborhood() {
     let fixture = temp_project::TempProject::new();
     let dir = fixture.path();
-    temp_project::scaffold(&dir);
+    temp_project::scaffold(dir);
 
     let output = fixture
         .command()
@@ -1212,7 +1212,7 @@ fn grep_regex_shaped_literal_is_needs_regex() {
 fn check_rejects_multiple_paths() {
     let fixture = temp_project::TempProject::new();
     let dir = fixture.path();
-    temp_project::scaffold(&dir);
+    temp_project::scaffold(dir);
     let output = fixture
         .command()
         .args([
@@ -1350,7 +1350,7 @@ fn tree_symbols_honors_a_subtree_scope() {
 fn init_is_zero_footprint_by_default() {
     let fixture = temp_project::TempProject::new();
     let dir = fixture.path();
-    temp_project::scaffold(&dir);
+    temp_project::scaffold(dir);
 
     let output = fixture
         .command()
@@ -1421,7 +1421,7 @@ fn project_override_does_not_persist_state_in_the_working_tree() {
     let fixture = temp_project::TempProject::new();
     let working_directory = temp_project::TempProject::new();
     let dir = fixture.path();
-    temp_project::scaffold(&dir);
+    temp_project::scaffold(dir);
 
     let output = fixture
         .command()
@@ -1445,7 +1445,7 @@ fn project_override_does_not_persist_state_in_the_working_tree() {
 fn test_search_finds_results() {
     let fixture = temp_project::TempProject::new();
     let dir = fixture.path();
-    temp_project::scaffold(&dir);
+    temp_project::scaffold(dir);
 
     let output = fixture
         .command()
@@ -1466,7 +1466,7 @@ fn test_search_finds_results() {
 fn test_query_from_returns_json() {
     let fixture = temp_project::TempProject::new();
     let dir = fixture.path();
-    temp_project::scaffold(&dir);
+    temp_project::scaffold(dir);
 
     let output = fixture
         .command()
@@ -1491,7 +1491,7 @@ fn test_query_from_returns_json() {
 fn test_additional_commands() {
     let fixture = temp_project::TempProject::new();
     let dir = fixture.path();
-    temp_project::scaffold(&dir);
+    temp_project::scaffold(dir);
 
     // Test locate
     let _ = fixture

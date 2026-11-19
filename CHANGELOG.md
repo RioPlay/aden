@@ -9,10 +9,23 @@ All notable changes to aden are documented here. Format follows
 
 ## [Unreleased]
 
-## [0.4.4] - 2026-11-05
+## [0.4.4]
 
 ### Added
 
+- Graph analysis limits separate semantic coverage from freshness and result
+  completeness, with persisted extractor scope and macro provenance.
+- Opt-in project mappings discover logical C APIs declared by source macros,
+  preserving original spans without running project code or inferring ABI names.
+- A sampled Cargo storage guard enforces one target, monitors output growth and
+  free-space reserve, rejects redirects and incompatible build configurations,
+  and stops builds on monitoring failure.
+- Preview-first `aden store clean` with cache/graph scopes, explicit `--apply`,
+  writer and generation exclusion, redirect refusal, and portable-store support.
+- Background graph generation with status, wait, and cancellation tools, and
+  typed recovery when a required current graph is still being built.
+- File-only project browsing, typed continuations for bounded evidence, and
+  resident read sessions for the MCP tool paths that can reuse a snapshot.
 - **Deterministic source reads** — CLI and MCP `read` return bounded literal
   UTF-8 evidence, source hashes, and hash-pinned byte continuations without
   loading or generating a graph. Enforce project boundaries and exclusions.
@@ -24,18 +37,26 @@ All notable changes to aden are documented here. Format follows
   `.agents/mcp_config.json` with `--scope project`. Includes list/uninstall,
   dry runs, named profiles, lifecycle tests, and setup/compatibility guidance.
 
-### Security
-
-- Update locked dependencies to patch rustls TLS issues and distrusted certificate
-  handling, Tokio I/O safety, and zstd memory safety and cross-stream data leaks.
-  Replace the yanked `chacha20` and `spin` versions with non-yanked releases.
-- Bound risk-evidence source reads before decoding and reject oversized or
-  nonregular files before reading their contents.
-- Escape 3D legend labels and neighbor IDs in HTML attributes and event arguments
-  so repository-controlled quotes remain literal data.
-
 ### Changed
 
+- Reuse source metadata per parsed input instead of reopening and hashing each
+  file for every symbol. Rebuild older caches with exact-input source hashes.
+- Persist sorted parse batches before admitting more files, preserving global
+  linking, overlay baselines and recovery journals without truncating inputs.
+- Stream stored documents into the existing v1 snapshot format instead of
+  loading a second complete document map during publication.
+- Fuse complete hybrid retrieval rankings before constructing snippets and owned
+  results, preserving result order, fuzzy contributions and snippet precedence.
+- Build the LSP graph once per request and release document locks before IO.
+- Reuse current snapshots and prepared symbol lookups, and avoid redundant
+  database writes on an unchanged generation run.
+- Build the configured static parser grammars from verified source inputs and
+  remove extraction scratch files after compiling them. Repeat-build CI checks
+  verify that Cargo can reuse the parser output.
+- Build the core CLI and standalone MCP with the same locked RMCP 3.11.0 SDK.
+  Release checks exercise both MCP entry points from the installed archive.
+- Move heuristic `ask` to the Standard MCP surface. Enable Standard or Full
+  for an MCP client that uses `ask`. The direct CLI command stays available.
 - Bind generation cache reuse to the bytes actually parsed, including equal-size
   edits with preserved modification times. Migrate old generation state once.
 - Reduce repeated root derivation and format-check database opens while
@@ -46,6 +67,31 @@ All notable changes to aden are documented here. Format follows
 
 ### Fixed
 
+- Resolve bare relative filenames through the current project directory during
+  generation, and reconcile interrupted owners before certifying a whole root.
+- Treat C parameter and local callback bindings as indirect calls across lexical
+  scopes, preserving genuine direct calls and declaration-order visibility.
+- Deduplicate identical include metadata from one source file during structured
+  assembly without altering source listings, hydration, or other files.
+- Distinguish C function declarations from object and function-pointer
+  declarations, preserve pointer-returning functions and annotated prototypes,
+  and avoid direct call edges through known global object bindings.
+- Index functions, types and methods inside inline Rust modules with distinct
+  scoped identities, source ranges and lexical relationships. Include inline
+  test functions in test-to-code relationships and rebuild older graph caches.
+- Extract calls inside common Rust assertion macros while preserving lexical
+  closure bindings and source positions, with bounded parsing and conservative
+  fallback for unsupported macros or syntax.
+- Traverse generic syntax trees and declarator chains without recursive calls.
+- Preserve editor PATH lookup, wait for workspace trust, and report server
+  startup failures with recovery actions.
+- Support current Cargo test artifact layouts alongside older layouts.
+- Export MCP tool schemas without root-level composition keywords so OpenCode
+  model gateways accept them; retain runtime validation of required selectors.
+- Preserve both original binaries on failed Windows and Unix upgrades, and
+  retain recovery files if the installer cannot restore a backup.
+- Confine source hydration during assembly and indexed passage retrieval to
+  verified, permitted source under the selected project.
 - Reject source-read byte limits that cannot fit the next UTF-8 character,
   preventing nonadvancing continuation loops.
 - Reject invalid `ready` targets before generation and root discovery.
@@ -56,6 +102,22 @@ All notable changes to aden are documented here. Format follows
   cannot initialize, instead of leaving a blank 3D viewer.
 - Run source-read, freshness-coherence, path-isolation, and tracing regressions
   in every platform CI job.
+
+### Security
+
+- Backport RMCP's optional Chrono support. The CLI and standalone MCP use
+  Jiff through the same SDK build and remove unmaintained Chrono from the
+  locked dependency graph.
+- Configure standalone MCP startup settings before creating Tokio worker threads.
+- Refresh compatible dependencies while preserving Rust 1.90 support; see the
+  dependency security record and release readiness gates for scope and limits.
+- Update locked dependencies to patch rustls TLS issues and distrusted certificate
+  handling, Tokio I/O safety, and zstd memory safety and cross-stream data leaks.
+  Replace the yanked `chacha20` and `spin` versions with non-yanked releases.
+- Bound risk-evidence source reads before decoding and reject oversized or
+  nonregular files before reading their contents.
+- Escape 3D legend labels and neighbor IDs in HTML attributes and event arguments
+  so repository-controlled quotes remain literal data.
 
 ## [0.4.3] - 2026-09-27
 

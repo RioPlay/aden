@@ -1,0 +1,98 @@
+[[structured-evidence]]
+= Structured evidence and atomic repair updates
+
+This increment makes failed results and clipped source directly consumable, and
+commits repaired documents with their merge bases atomically.
+
+== Structured failed results
+
+A failed MCP `ready` call keeps its error code, error status, recovery guidance
+and `safe_to_retry: false`. A validated `command_result` object is available when
+`command_result_state` is `present`. Inspect its step statuses and verification
+limits directly, without parsing JSON embedded in a prose error message.
+
+Only the known versioned `ready` failure schema is supported here. Invalid,
+unsupported or oversized command output is marked explicitly without presenting
+it as a valid result. Ordinary errors retain their existing contract. Structural
+validation does not independently prove that a subprocess's claims are true.
+
+Result and envelope sizes are bounded. Paths in decoded keys and values are
+redacted recursively. Ambiguous prose containing recognized absolute paths is
+redacted as a whole string, including paths with spaces. The result is not
+duplicated as serialized JSON inside the error message.
+
+== Verified source continuation
+
+For verified clipped source, `understand` supplies `source.continuation` with
+arguments for `read`: file, root, expected hash, exact byte offset, inclusive end
+line and byte limit. Pass it as the next read request and follow each subsequent
+continuation until absent. CRLF and multibyte UTF-8 are preserved exactly.
+
+A changed file produces a hash rejection rather than mixed source versions.
+Complete or unavailable source has no cursor. These hashes detect changes;
+they do not establish cryptographic authenticity.
+
+If MCP shortens source after CLI assembly, the earlier cursor would skip bytes.
+That cap path removes stale cursors, actions and end ranges, updates byte counts,
+and marks the result incomplete. No cursor on an incomplete result does not mean
+that source is complete. Request a narrower literal range rather than guessing.
+
+== Atomic repair persistence
+
+Healing reuses the concrete Fjall bulk operation for one document/base pair.
+The document, base, source projection and symbol index publish in one batch.
+This replaces separate document/base writes without a new journal framework.
+The generic storage trait's default bulk operation remains non-atomic; review
+this guarantee if the concrete backend changes.
+
+Atomic publication and durability are separate. A rejected precommit batch
+leaves the old pair intact. A flush failure after commit means the pair is
+coherent but durability is unconfirmed. The repair reports failure without
+automatic replay. Hardware and process-crash fault injection are not covered.
+
+== Verification
+
+Checks cover accepted/rejected failure schemas, redaction and byte bounds,
+transport cursor invalidation, exact multichunk source recovery, changed-file
+rejection, precommit failure, reopening, and index/projection consistency.
+Actual CLI/MCP reports and installed identities are in `.tmp/structured-evidence/`
+and `.agent/session.md`. No speed or token-saving benchmark is claimed.
+
+Verified November 12, 2026: store tests, CLI unit tests, merge and continuation
+integrations, and the full MCP library suite passed. Independent source review
+resolved the continuation-fixture and embedded-path findings. Actual debug,
+release and installed MCP probes passed; the prior immutable binary failed the
+new result-field and continuation contracts as expected.
+
+Installed pair:
+`C:/Users/example/AppData/Local/Aden/versions/0.4.4-structured-evidence-6ed0dad3ace6`.
+The Codex MCP command and one user PATH entry point to this pair. Binary hashes,
+configuration preservation, registry type and fresh PowerShell resolution were
+verified. Existing terminals and MCP hosts need reopening or reconnection.
+
+The version's `activation.json`, `deploy_local.py` and `path_activation.py`
+support guarded rollback. Run `deploy_local.py --rollback` with the full manifest
+path. The helper restores the prior command and Aden PATH entry, preserves
+unrelated entries, and refuses unexpected later configuration changes.
+
+== Rust symbol span consistency
+
+Rust function and implementation-method documents now retain the source span
+already computed during parsing. The field survives the existing store and
+graph snapshot formats. Source locations use the parsed node's byte and line
+bounds; a preceding attribute is outside that node's span. No extra parse or
+query-time filesystem read is introduced.
+
+`understand` already returned verified source using its existing attributes.
+This change makes the document's explicit span available to downstream
+consumers as well. A span is a location, not proof that the file is unchanged:
+continue checking source verification, freshness and hashes before using it.
+Old stored documents may still lack the optional span until regenerated.
+Other Rust symbol kinds and per-edge call-site provenance are outside this
+increment.
+
+Regression coverage includes Unicode, CRLF, parser output, store and snapshot
+round trips, verified CLI source, changed and missing source, and recovery after
+restoring the original file. The new parser test failed before the assignment
+was fixed. Current delivery identities and activation state are recorded in
+`.agent/session.md` and `.tmp/source-spans/`.

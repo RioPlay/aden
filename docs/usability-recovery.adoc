@@ -1,0 +1,131 @@
+[[usability-recovery]]
+= Source-read and worker recovery usability
+
+== User-visible behavior
+
+This increment fixes two demonstrated workflow failures:
+
+* `aden read <file> --unlimited` now selects through EOF instead of silently
+  keeping the default 200-line window. `--start-line` still chooses where to
+  begin and an explicit `--end-line` remains authoritative. The 8192-byte
+  excerpt and 16 MiB source-file caps remain; JSON provides a hash-pinned
+  continuation when clipped. Human output gives clipping guidance on stderr.
+* If a cached resident worker has already exited, the MCP director replaces it
+  before sending the next request. That request can complete without making
+  the caller repeat it. A transient startup failure uses serial execution for
+  that call and retries worker startup on the next read, instead of permanently
+  disabling the worker for that executable.
+
+Confirmed protocol incompatibility still uses cached compatibility fallback.
+Startup diagnostics are bounded and sanitized on server stderr. Malformed or
+missing handshakes and ordinary startup crashes are not proof of incompatibility.
+A valid PID is checked before accepting a different protocol as incompatible.
+
+There is no automatic replay after a request may have been written. Timeouts,
+cancellation and in-flight protocol errors retain the existing discard/error
+behavior. Project and executable identity, environment restrictions, source
+freshness and source-read path policy are unchanged. MCP `read` defaults and
+its public schema are unchanged.
+
+See <<ai-integration>> for direct source-read usage and <<mcp-read-sessions>>
+for the resident worker boundary. The prepared symbol cache remains as described
+in <<prepared-symbol-lookups>>.
+
+== Baseline and acceptance
+
+Starting HEAD is `2172e0e35668f69af50cc43d37acb88ee9add297` plus all preserved
+earlier resident and symbol-cache changes. No prior changes were reverted.
+The saved baseline CLI is `.tmp/usability-next/baseline.exe`, SHA-256
+`e1e429b9db3ede55457b63fdc7144f5fd546e32feb169da65db221fa8b347df3`.
+
+The baseline real CLI/MCP probe reproduced both failures on an isolated fixture:
+the flag returned 200 of 250 short lines, and terminating its verified idle
+worker made the next request fail before an explicit caller retry succeeded.
+The probe verifies parent PID, executable path and private worker command before
+terminating only the child it owns. No existing user server was stopped.
+Evidence: `.tmp/usability-next/baseline-probe.json`.
+
+Candidate acceptance requires all remaining lines under the byte cap, truthful
+clipping/continuation and human guidance, a successful first request after that
+same controlled idle-worker failure, a new worker PID and an unchanged default
+MCP source window. Startup factory tests additionally require transient fallback
+followed by recovery with the same executable identity, cached confirmed
+compatibility fallback, and the existing no-replay failure controls.
+
+== Verification (2026-11-11, Windows)
+
+The debug candidate passed the end-to-end acceptance probe, including human
+clipping output. Evidence: `.tmp/usability-next/debug-probe.json`.
+The initial probe had a Windows temporary-directory cleanup ordering error;
+it now closes its owned client before cleanup and marks any exception as failure.
+The failed harness artifact is retained as `baseline-probe-initial.json`.
+
+The MCP library passed 100 tests. CLI unit tests passed 277 tests and selected
+integration suites passed 47 tests (source reads, resident execution, flag parity,
+receipts and freshness). Four standalone MCP smoke/stdio tests also passed with
+the CLI pinned to the release, for 428 Rust tests in this increment. Strict CLI/MCP
+all-target Clippy, formatting and whitespace checks passed. Independent source
+review reported no material issue in the product changes and inspected the
+baseline evidence.
+
+The release candidate and installed executable both passed the same real
+CLI/MCP acceptance probe. The first request after a verified idle-worker exit
+succeeded, with a new worker PID and current verified source. Byte-clipped human
+output supplied the expected JSON continuation guidance. Evidence:
+
+* `.tmp/usability-next/release-probe.json`
+* `.tmp/usability-next/installed-probe.json`
+
+CLI SHA-256:
+`2d925f0dfc1db067e2e320dc88711b035c3fec2d708ef0a913d2ececb7fb0f96`.
+Standalone MCP SHA-256:
+`3d3d075c318ddf6f8c5df6bc97623089493cb1bbee9b83bd2486c52e984316f1`.
+Both were built offline with the CLI `view` feature, not from a clean released
+commit. Graph-cache performance was not re-benchmarked for this usability change.
+
+== Installation and recovery
+
+The verified pair is installed side by side in
+`C:/Users/example/AppData/Local/Aden/versions/0.4.4-usability-2d925f0dfc1d/`.
+Only the Codex Aden server's launch command was changed to the new `aden.exe`.
+Parsed read-back preserved all other configuration values.
+
+The default shell command previously resolved to the older `Aden/bin` directory.
+Only that existing entry in the current user's PATH was replaced with the new
+version directory. Other raw entries, order and the `REG_EXPAND_SZ` registry type
+were preserved; machine PATH and old executable files were untouched. A process
+with PATH reloaded from the machine/user registry resolved bare `aden` to the
+verified CLI and read all 250 fixture lines with `--unlimited`. Evidence:
+`.tmp/usability-next/shell-resolution.json`.
+
+The installer sent a best-effort environment-change notification using the
+link:https://learn.microsoft.com/en-us/windows/win32/winmsg/wm-settingchange[documented Windows message].
+Its short timeout applies per window, as specified for
+link:https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-sendmessagetimeoutw[SendMessageTimeoutW].
+Notification is not proof that an already-running host or terminal updated its
+environment. Reopen the terminal and reconnect the MCP host to load the update.
+No existing user server was forcibly restarted.
+
+`activation.json` in the version directory records binary/configuration hashes,
+the previous command, and PATH token/type/hash recovery metadata. It does not
+retain the entire user PATH. The installed rollback helper restores the previous
+PATH entry and MCP command while preserving unrelated settings:
+
+[source,powershell]
+----
+python C:/Users/example/AppData/Local/Aden/versions/0.4.4-usability-2d925f0dfc1d/deploy_local.py --rollback C:/Users/example/AppData/Local/Aden/versions/0.4.4-usability-2d925f0dfc1d/activation.json
+----
+
+Installation review caught a rollback-ordering issue: an unexpected MCP command
+could have caused a PATH rollback before the configuration guard failed. A
+read-only configuration preflight now rejects that state before any mutation;
+the final configuration guard remains. Fake-registry fixtures proved successful
+activation/rollback, preservation of type/order and unrelated later additions,
+already-restored behavior, and rejection of missing/duplicate/corrupt targets
+and unexpected configuration. No real registry writes occurred in those fixtures.
+Live activation then passed exact registry/configuration/binary read-back.
+
+Other operating systems were not exercised. Malformed/incompatible handshake
+classification has source review and related frame/process controls, but not a
+separate process fixture for every handshake shape. No commit, PR, push or public
+release was performed.

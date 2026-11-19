@@ -1,0 +1,129 @@
+= Long-running generation and portable storage
+
+[[generation-jobs]]
+== Independent generation jobs
+
+Graph refreshes started by read commands run in a separate worker process.
+A strict read can exhaust its freshness deadline while that worker continues.
+The read still reports that current evidence is unavailable; it does not present
+an unfinished graph as current. Explicit background jobs have no overall build
+duration limit. A busy writer is reported as a waiting phase.
+
+If the first graph snapshot is not published before an ordinary graph read's
+bounded wait expires, `locate`, `understand`, `query`, `asm` and `ask` report
+`index_generation_pending` while the recorded job remains active. The error
+names that job and explains how to check status before retrying. MCP includes a
+`generation_status` recovery action scoped to the requested project. The read
+does not cancel generation or automatically replay itself. Literal source reads
+and `tree --files` remain available during indexing.
+
+An older published snapshot remains readable during a refresh, with the existing
+stale receipt. Authoritative `--require-fresh` reads retain their stricter
+freshness deadline. This pending state covers active generation with no published
+snapshot; it does not relabel failed jobs, broken snapshots or unrelated writers.
+
+[source,powershell]
+----
+$job = aden gen . --background --json | ConvertFrom-Json
+aden jobs status . --json
+aden jobs cancel . --job-id $job.job_id --json
+----
+
+Background generation accepts one project directory. It does not accept force
+or proposal modes. Concurrent starts for the same project and store join the
+existing job. Projects sharing `ADEN_STORE` cannot take over another project's
+active job or unfinished recovery. Finish that recovery from its owning project
+before handing the shared store to another project.
+Cancellation is cooperative and tied to the exact job ID, so a delayed request
+cannot accidentally cancel its replacement. Use `--human` for readable status.
+CLI JSON includes state, phase, file counts, times and the recorded error.
+Polling status does not mean that generation is complete; inspect `state`.
+
+The MCP `generation_status` tool is available on every surface.
+`generation_start` and `generation_cancel` are Full-surface mutations. They use
+the same bounded start/status/cancel commands and never expose worker internals.
+The Full-surface `gen` tool is a path-only alias for starting a durable job.
+Foreground generation is the default for `aden gen .` without `--background`.
+Internal `init`,
+`sync`, `ready` and rebuild flows wait for a durable job for up to 30 seconds.
+If that wait expires, they report generation as pending or failed and skip checks
+that require completed generation. The worker can continue after they return.
+
+Status and bounded event logs live beside the selected store in its generation
+directory. The worker does not inherit the initiating process's console or
+capture handles on Windows. Ordinary caller exit and request timeout do not own
+the worker lifetime. A supervisor that deliberately kills an entire process
+tree or a restrictive Windows Job Object can still terminate it.
+
+[[generation-recovery]]
+== Interruption and recovery
+
+Generation retains the last completed source cache and records pending write
+intent before database mutation. A subsequent generation reconciles affected
+files and anchors, including an interrupted change followed by a source revert.
+Unchanged work from the previous completed cache can be reused. This is not an
+exact checkpoint of every parser instruction or a promise of zero repeated work.
+
+Only successful generation, snapshot publication and freshness verification can
+produce a completed job. Interrupted workers are reported as interrupted after
+their lease is gone. Start generation again to reconcile that work. Cancellation
+and errors do not silently certify partial output. This is not whole-build
+rollback or a guarantee against hardware failure and sudden power loss.
+
+Prefer incremental `gen` for normal updates and recovery. The advanced `regen`
+command intentionally clears rebuildable payloads. It refuses active generation
+or a busy writer and preserves permanent coordination files while resetting data.
+It does not recursively remove the entire project-data directory.
+
+[[project-storage]]
+== Selecting project storage
+
+The default remains the per-user, per-project data directory. Project settings
+are optional and are written to `.aden/storage.toml`:
+
+[source,powershell]
+----
+aden store configure . --portable
+aden store path .
+aden store configure . --data-dir E:/AdenCache
+aden store configure . --reset
+----
+
+Portable mode keeps the entire rebuildable layout under `.aden/data`, including
+the database, snapshots, generation cache and job state. This directory is
+excluded from source discovery. It can travel with the project when no worker
+is using it. The policy file is small; generated data should stay out of version
+control. Treat an absolute external path in a policy file as a local setting.
+
+An external data directory must be absolute and outside the source project.
+Aden creates a distinct `projects/<project-key>` below that base. Settings do not
+move or delete an existing store; configuring another location selects another
+layout. Reset removes only the policy file. Storage changes refuse active jobs
+and writers. Malformed policy can be reset without requiring successful reads
+of that policy. Invalid or conflicting settings are rejected.
+
+`ADEN_DATA_DIR` continues to override project settings. Legacy `ADEN_STORE`
+continues to override only the database path and can therefore split it from
+the other caches. Prefer project configuration for a coherent portable layout.
+`store configure` reports whether an environment override is present.
+
+[[portable-locks]]
+== Filesystem locking and compatibility
+
+Aden's outer writer coordination uses persistent version-two lock files with
+kernel-held exclusive leases. It no longer requires hard links. Closing the
+holder or terminating its process releases the lease. The lock file remains.
+Do not delete a version-two lock file: replacing its identity can split writer
+coordination. An interrupted empty or partial version-two initialization is
+recovered only under the exclusive lease.
+
+Older Aden binaries deliberately fail closed on the new marker. Reconnect old
+clients after upgrading; do not run mixed-version writers against one store.
+A live legacy lock remains protected. A stale legacy lock requires explicit
+recovery with old writers stopped, rather than unsafe automatic conversion.
+
+Filesystem support must be validated on the actual target, including database
+open, write, contention, release and reopen. A filesystem accepting locks does
+not establish power-loss durability or healthy media. Keep backups of durable
+project intent. Platform-specific acceptance and remaining limits belong in the
+release evidence, not in an assumption that every removable drive behaves alike.

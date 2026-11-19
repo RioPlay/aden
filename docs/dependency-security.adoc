@@ -1,0 +1,151 @@
+[[dependency-security]]
+= Dependency security refresh
+
+Checked 2026-11-15 against the working tree.
+Source Git commit: `2172e0e35668f69af50cc43d37acb88ee9add297`.
+Earlier uncommitted work was preserved.
+This is a dependency audit and compatibility record, not a claim that Aden has
+no possible vulnerabilities or a certification of every deployment.
+
+The 2026-11-18 follow-up upgraded the matching CLI and standalone MCP build to
+RMCP 3.11.0. The original 3.11.0 lock failed the advisory gate on
+https://rustsec.org/advisories/RUSTSEC-2026-0543.html[RUSTSEC-2026-0543],
+which marks `chrono` unmaintained. Aden now uses a reviewed upstream backport
+that makes Chrono optional and uses Jiff for internal clocks. The resolved
+workspace graph no longer contains Chrono. The locked all-feature check passes
+advisories, bans, licenses, and sources with no advisory exemption.
+The SDK archive, patch provenance, and removal conditions are in
+link:../vendor/README.adoc[the vendor maintenance record].
+
+== Findings and remediation
+
+The baseline RustSec scan reported:
+
+* https://rustsec.org/advisories/RUSTSEC-2026-0462.html[RUSTSEC-2026-0462]:
+  `rmcp` 1.7.0 could buffer unbounded HTTP client response bodies. Aden did not
+  enable either affected Streamable HTTP client transport; its resolved features
+  were checked separately. The SDK is nevertheless updated to 3.10.0, beyond
+  the advisory's patched minimum of 3.9.0.
+* https://rustsec.org/advisories/RUSTSEC-2026-0486.html[RUSTSEC-2026-0486]:
+  `rustix` 1.1.4 had unsound extended-attribute buffer handling. The refreshed
+  lock selects 1.1.6, the patched version.
+
+The initial Rust 1.90-compatible candidate introduced a maintenance warning:
+Tract's Liquid dependency brought in unmaintained `anymap2`
+(https://rustsec.org/advisories/RUSTSEC-2026-0319.html[RUSTSEC-2026-0319]).
+A narrow local Liquid Core patch replaces that private map with maintained
+`anymap3`, preserving the public register API. Its official archive checksum,
+retained licenses and removal conditions are recorded in `vendor/README.adoc`.
+This workspace override covers checkout builds and binaries built from them.
+It is not inherited by downstream crates.io consumers; crate publication needs
+an upstream fixed dependency or an explicit packaging solution first.
+The repeated 2026-11-15 scan reports zero vulnerabilities and zero informational
+warnings across 417 locked packages, without advisory ignores. The RustSec
+database commit is `02e2517f457a359fc6d3440ea4560c8ea188fee8`, updated 2026-11-15.
+Earlier temporary raw reports were removed during storage cleanup; the historical
+verification results below are a summary, not retained executable evidence.
+Advisory scanning describes known published findings,
+not exploitability of every dependency in every feature configuration.
+
+`cargo-deny` 0.19.8 checks the locked workspace with all features, including
+development and platform-specific dependencies. Advisories, license policy,
+registry sources and bans pass. Existing duplicate-version warnings remain
+advisory. No license exception, advisory ignore or source-policy relaxation was
+added. The verification tool was acquired from its official release and its
+archive digest checked before execution.
+
+== Upgrade and compatibility boundaries
+
+The refresh selects current compatible releases across the Rust graph. Major
+updates include `rmcp` 3.10.0 and `dirs` 7.0.0. Tree-sitter 0.27.2 and language
+pack 1.25.0 are upgraded together because their runtime types and native `links`
+contract must agree. Parser cache logic version 16 makes unchanged source files
+reparse once, so the new parser behavior reaches existing stores.
+
+The language pack still disables default features. Default releases retain the
+statically linked grammar set and do not gain a runtime downloader or dynamic
+loader. The default CLI dependency tree contains none of the optional networking
+and archive dependencies checked by the existing quality gate.
+
+All member manifests now inherit the existing Rust 1.90 minimum instead of
+leaving it unset. The newer `notify-types` 2.3 release requires Rust 1.91, so the
+workspace retains 2.2. The optional dense stack also preserves Rust 1.90:
+Tract 0.22.5 and Kitoken 0.11.0 are the newest compatible releases. Tract 0.23
+requires Rust 1.91 and Kitoken 0.11.1 requires Rust 1.92. The tokenizer is pinned
+to prevent its incompatible patch release from being selected automatically.
+See <<getting-started>> for the build instructions.
+
+The persisted search index and embedding-cache versions are advanced together
+so vectors from another inference-stack version are rebuilt. The cache check
+accepts the current format and rejects both the previous index version and
+the previous embedding key.
+
+The MCP adapter preserves legacy initialization, Roots behavior and 2025-03-26
+response shape while supporting explicit 2026-07-28 discovery. Tests cover
+recoverable invalid arguments followed by a successful source read in both
+SDK lifecycle modes. The SDK's default service extension still initializes with
+the older lifecycle; latest discovery is tested explicitly rather than inferred.
+
+== Editor and bundled viewer
+
+The extension uses TypeScript 7.0.2 and now declares the language-client runtime
+and Node typings required by its existing imports. It retains the advertised
+VS Code 1.85 host minimum: language-client 9.0.1 is the latest compatible release,
+while releases 10 and 11 require VS Code 1.91. Node 18 typings match that older
+host. Compilation passes against both latest VS Code typings and the minimum
+1.85 API typings.
+
+The new extension lockfile makes its resolved dependency audit reproducible.
+Its URLs are public npm registry URLs and package integrity fields are present.
+A fresh `npm ci --ignore-scripts`, compile and audit pass against that exact
+lock. The separate viewer-package dependency audit also reports no findings.
+A lock-only fixture containing a known vulnerable Lodash release is rejected by
+the same audit command; the vulnerable package is never installed or executed.
+The quality workflow now runs the extension's clean install, compilation and
+audit without package lifecycle hooks.
+
+Bundled `force-graph` 1.52.0 and `3d-force-graph` 1.80.2 match their official npm
+tarballs and registry integrity values. `CHECKSUMS` and NOTICE attribution are
+updated; MIT notices are retained. Native Node viewer regression tests pass.
+These package audits and integrity checks do not reverse-engineer every embedded
+bundle dependency or establish visual browser or VS Code host acceptance.
+
+== Evidence and delivery scope
+
+The earlier verification summary is recorded in `.agent/session.md`.
+Its temporary raw reports, build outputs and binaries are no longer retained.
+Rust 1.90 checks use the supported Windows GNU toolchain and its bundled
+self-contained runtime, with the compiler and Cargo paths pinned explicitly.
+An earlier check used Rust 1.96 through PATH and is not MSRV evidence.
+The host's default GNU linker combination produced an unbound `TlsGetValue`
+import and crashed before test execution. Relinking the final test targets with
+Rust 1.90's bundled `rust-lld` and `-C linker-flavor=ld.lld` resolved that failure;
+the same source, dependencies and compiler then passed the model checks.
+No host linker configuration was changed.
+
+The BGE model used for dense regression checks is acquired only in ignored
+scratch storage, with the repository's existing pinned hashes checked before
+publication. User model caches and installed Aden settings are unchanged.
+No commit, push, public release or installed-product activation is included.
+
+== Verification results
+
+* Exact Rust 1.90 GNU: all workspace targets and features compile; strict
+  workspace Clippy passes. Compiler paths and metadata were checked explicitly.
+* Workspace library/binary regression batch: 720 passed, one ignored. MCP SDK
+  migration: 119 library tests and five live wire tests passed.
+* Final parser edge checks: eight tests pass on each of three runs of the same
+  recorded binary; seven neighboring edge tests and three readiness tests pass.
+  An earlier three-test AsciiDoc failure did not reproduce. Its cause remains
+  unknown; the adverse logs are retained rather than attributed to a guessed fix.
+* Real pinned BGE model: embedding sanity, tokenizer parity and five retrieval
+  tests pass on Rust 1.90 with its bundled linker. These runs do not skip. The
+  native Rust 1.96 run also passes all 38 index unit tests, including acceptance
+  of the current cache and rejection of the previous cache and embedding key.
+* A standalone public-API test passes against both compiled variants of the
+  reviewed Liquid Core patch, checking register persistence and type isolation.
+  Cargo cannot directly run this excluded dependency's own unit suite from the
+  root workspace; that full upstream suite was not run.
+* Python harnesses: 99 passed. Viewer Node checks: 23 passed. NOTICE and format
+  checks pass. Independent source/security review found no material defect in
+  the reviewed changes; runtime evidence has its separate recorded scope.

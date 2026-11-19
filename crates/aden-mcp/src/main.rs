@@ -56,8 +56,7 @@ fn parse_startup_args(args: impl IntoIterator<Item = String>) -> StartupAction {
     }
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
     let StartupAction::Serve {
         project_pin,
         surface,
@@ -78,7 +77,9 @@ async fn main() -> anyhow::Result<()> {
         .or_else(|| env::var_os("ADEN_PROJECT").map(PathBuf::from))
         .unwrap_or_else(|| env::current_dir().expect("cannot get current directory"));
 
-    aden_mcp::serve_with_options(project_dir, pinned).await
+    // Construct the runtime only after process-wide startup configuration. In
+    // particular, set_surface must not race runtime worker environment reads.
+    aden_mcp::serve_blocking(project_dir, pinned)
 }
 
 /// Export the requested surface so `requested_surface()` picks it up. Done once at
