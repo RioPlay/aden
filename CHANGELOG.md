@@ -39,6 +39,8 @@ All notable changes to aden are documented here. Format follows
 
 ### Changed
 
+- Reduce allocations when assembling LLM context by borrowing unchanged lines
+  and formatting only the callee names included in the output.
 - Reuse source metadata per parsed input instead of reopening and hashing each
   file for every symbol. Rebuild older caches with exact-input source hashes.
 - Persist sorted parse batches before admitting more files, preserving global
