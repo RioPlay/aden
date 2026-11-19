@@ -15,9 +15,9 @@ fn run(root: &Path, data: &Path, args: &[&str]) -> Output {
 
 #[test]
 fn preview_apply_preserve_intent_rebuild_and_refuse_active_writer() {
-    let temp = tempfile::tempdir().unwrap();
-    let root = temp.path().join("project");
-    let data = temp.path().join("data");
+    let (_temp, base) = cleanup_fixture();
+    let root = base.join("project");
+    let data = base.join("data");
     std::fs::create_dir_all(root.join(".aden/overlays")).unwrap();
     std::fs::write(root.join("lib.rs"), "pub fn cleanup_symbol() {}\n").unwrap();
     std::fs::write(root.join(".aden/overlays/keep.adoc"), "intent").unwrap();
@@ -90,9 +90,9 @@ fn preview_apply_preserve_intent_rebuild_and_refuse_active_writer() {
 
 #[test]
 fn preview_is_nonmutating_and_shared_override_is_rejected() {
-    let temp = tempfile::tempdir().unwrap();
-    let root = temp.path().join("project");
-    let data = temp.path().join("data");
+    let (_temp, base) = cleanup_fixture();
+    let root = base.join("project");
+    let data = base.join("data");
     std::fs::create_dir_all(root.join(".aden")).unwrap();
     let preview = run(&root, &data, &["store", "clean"]);
     assert!(preview.status.success());
@@ -110,8 +110,8 @@ fn preview_is_nonmutating_and_shared_override_is_rejected() {
 
 #[test]
 fn moved_portable_storage_can_be_cleaned_without_losing_intent() {
-    let temp = tempfile::tempdir().unwrap();
-    let root = temp.path().join("moved-project");
+    let (_temp, base) = cleanup_fixture();
+    let root = base.join("moved-project");
     let data = root.join(".aden/data");
     std::fs::create_dir_all(data.join("cache")).unwrap();
     std::fs::write(root.join(".aden/storage.toml"), "portable = true\n").unwrap();
@@ -119,7 +119,7 @@ fn moved_portable_storage_can_be_cleaned_without_losing_intent() {
     std::fs::write(
         data.join("meta.json"),
         serde_json::to_vec(&serde_json::json!({
-            "root": temp.path().join("old-project"), "key": "old-key"
+            "root": base.join("old-project"), "key": "old-key"
         }))
         .unwrap(),
     )
@@ -143,9 +143,9 @@ fn moved_portable_storage_can_be_cleaned_without_losing_intent() {
 
 #[test]
 fn malformed_metadata_and_redirected_cache_are_rejected() {
-    let temp = tempfile::tempdir().unwrap();
-    let root = temp.path().join("project");
-    let data = temp.path().join("data");
+    let (_temp, base) = cleanup_fixture();
+    let root = base.join("project");
+    let data = base.join("data");
     std::fs::create_dir_all(root.join(".aden")).unwrap();
     let project = data.join("projects").join(aden_paths::project_key(&root));
     std::fs::create_dir_all(project.join("cache")).unwrap();
@@ -158,7 +158,7 @@ fn malformed_metadata_and_redirected_cache_are_rejected() {
     );
     assert!(project.join("cache/keep").exists());
     std::fs::remove_file(project.join("meta.json")).unwrap();
-    let outside = temp.path().join("outside");
+    let outside = base.join("outside");
     std::fs::create_dir(&outside).unwrap();
     std::fs::write(outside.join("keep"), b"outside").unwrap();
     let link = project.join("cache/redirect");
@@ -175,4 +175,11 @@ fn malformed_metadata_and_redirected_cache_are_rejected() {
     assert!(String::from_utf8_lossy(&refused.stderr).contains("reparse points"));
     assert_eq!(std::fs::read(outside.join("keep")).unwrap(), b"outside");
     assert!(project.join("cache/keep").exists());
+}
+
+fn cleanup_fixture() -> (tempfile::TempDir, std::path::PathBuf) {
+    let temp = tempfile::tempdir().unwrap();
+    // Resolve system aliases before deliberately adding redirects to the fixture.
+    let base = aden_paths::strip_verbatim(&temp.path().canonicalize().unwrap());
+    (temp, base)
 }

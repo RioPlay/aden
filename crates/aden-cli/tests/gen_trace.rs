@@ -22,20 +22,20 @@ fn run(root: &Path, data: &Path, args: &[&str], enabled: bool, machine: bool) ->
         .current_dir(root)
         .env("ADEN_DATA_DIR", data)
         .env("ADEN_GEN_TRACE", if enabled { "1" } else { "0" })
+        .env("ADEN_READ_TRACE", if enabled { "1" } else { "0" })
         .env("ADEN_MCP_MACHINE_ERRORS", if machine { "1" } else { "0" })
         .env("ADEN_MCP_VERSION", env!("CARGO_PKG_VERSION"))
         .env_remove("ADEN_STORE")
         .env_remove("ADEN_SKIP_AUTO_GEN")
-        .env_remove("ADEN_READ_TRACE")
         .output()
         .unwrap()
 }
 
-fn traces(output: &Output) -> Vec<Value> {
+fn traces(output: &Output, trace_type: &str) -> Vec<Value> {
     String::from_utf8_lossy(&output.stderr)
         .lines()
         .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-        .filter(|value| value["type"] == "aden_gen_trace")
+        .filter(|value| value["type"] == trace_type)
         .collect()
 }
 
@@ -65,8 +65,8 @@ fn explicit_generation_trace_preserves_stdout_and_reports_publication() {
         String::from_utf8_lossy(&traced.stderr)
     );
     assert_eq!(plain.stdout, traced.stdout);
-    assert!(traces(&plain).is_empty());
-    let reports = traces(&traced);
+    assert!(traces(&plain, "aden_gen_trace").is_empty());
+    let reports = traces(&traced, "aden_gen_trace");
     assert_eq!(reports.len(), 1);
     let report = &reports[0];
     assert_eq!(report["outcome"], "completed");
@@ -94,7 +94,7 @@ fn explicit_generation_trace_preserves_stdout_and_reports_publication() {
 }
 
 #[test]
-fn cold_read_reports_silent_generation_and_warm_read_does_not_regenerate() {
+fn cold_read_reports_refresh_and_warm_read_does_not_regenerate() {
     let root = project();
     let data = tempfile::tempdir().unwrap();
     let args = [
@@ -106,21 +106,28 @@ fn cold_read_reports_silent_generation_and_warm_read_does_not_regenerate() {
         "--max-results",
         "1",
     ];
-    let cold = run(root.path(), data.path(), &args, true, false);
-    assert!(
-        cold.status.success(),
-        "{}",
-        String::from_utf8_lossy(&cold.stderr)
-    );
-    let reports = traces(&cold);
-    assert_eq!(reports.len(), 1);
-    assert_eq!(reports[0]["silent"], true);
-    assert_eq!(reports[0]["quiet"], true);
-    let evidence: Value = serde_json::from_slice(&cold.stdout).unwrap();
-    assert_eq!(evidence["context_receipt"]["freshness"], "current");
-    let warm = run(root.path(), data.path(), &args, true, false);
-    assert!(warm.status.success());
-    assert!(traces(&warm).is_empty());
+    for expected_refreshes in [1, 0] {
+        let output = run(root.path(), data.path(), &args, true, false);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        // The detached worker does not write to the reader's stderr.
+        assert!(traces(&output, "aden_gen_trace").is_empty());
+        let reports = traces(&output, "aden_read_trace");
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0]["stages"]["refresh"]["calls"], expected_refreshes);
+        let evidence: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(evidence["context_receipt"]["freshness"], "current");
+        assert_eq!(evidence["returned"], 1);
+        assert!(
+            evidence["items"][0]["anchor"]
+                .as_str()
+                .is_some_and(|anchor| anchor.ends_with("#generation_probe")),
+            "{evidence}"
+        );
+    }
 }
 
 #[test]
@@ -132,6 +139,6 @@ fn generation_error_stderr_is_unchanged() {
     let failed = run(root.path(), data.path(), &args, true, true);
     assert!(!failed.status.success());
     assert!(!plain.status.success());
-    assert!(traces(&failed).is_empty());
+    assert!(traces(&failed, "aden_gen_trace").is_empty());
     assert_eq!(failed.stderr, plain.stderr);
 }

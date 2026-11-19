@@ -195,7 +195,8 @@ mod tests {
     #[test]
     fn cleanup_allowlist_preserves_intent_locks_and_unknown_files() {
         let temp = tempfile::tempdir().unwrap();
-        let dir = temp.path();
+        // macOS can spell the system temporary root through the /var alias.
+        let dir = temp.path().canonicalize().unwrap();
         for name in ["store", "cache", "overlays", "store.generation"] {
             std::fs::create_dir(dir.join(name)).unwrap();
             std::fs::write(dir.join(name).join("data"), b"keep or remove").unwrap();
@@ -203,12 +204,12 @@ mod tests {
         for name in ["meta.json", "store.lock", "constitution.adoc", "unknown"] {
             std::fs::write(dir.join(name), b"preserve").unwrap();
         }
-        let paths = candidates(dir, "all").unwrap();
+        let paths = candidates(&dir, "all").unwrap();
         assert_eq!(paths.len(), 2);
         assert!(paths.contains(&dir.join("store")));
         assert!(paths.contains(&dir.join("cache")));
-        assert_eq!(candidates(dir, "cache").unwrap(), vec![dir.join("cache")]);
-        assert!(candidates(dir, "../").is_err());
+        assert_eq!(candidates(&dir, "cache").unwrap(), vec![dir.join("cache")]);
+        assert!(candidates(&dir, "../").is_err());
         assert!(
             dir.join("store/data").exists(),
             "preview must not remove files"
@@ -220,8 +221,11 @@ mod tests {
     fn cleanup_rejects_redirects_before_any_removal() {
         let temp = tempfile::tempdir().unwrap();
         let outside = tempfile::tempdir().unwrap();
-        std::os::unix::fs::symlink(outside.path(), temp.path().join("cache")).unwrap();
-        assert!(candidates(temp.path(), "all").is_err());
+        let dir = temp.path().canonicalize().unwrap();
+        std::os::unix::fs::symlink(outside.path(), dir.join("cache")).unwrap();
+        let error = candidates(&dir, "all").unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(error.to_string().contains("symbolic links"));
         assert!(outside.path().exists());
     }
 }

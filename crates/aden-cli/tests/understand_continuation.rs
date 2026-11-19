@@ -9,6 +9,9 @@ fn run(root: &std::path::Path, data: &std::path::Path, args: &[&str]) -> Output 
         .args(args)
         .current_dir(root)
         .env("ADEN_DATA_DIR", data)
+        .env_remove("ADEN_STORE")
+        // Keep the published symbol available after its source is removed.
+        .env("ADEN_SKIP_AUTO_GEN", "1")
         .output()
         .unwrap()
 }

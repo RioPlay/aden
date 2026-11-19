@@ -381,10 +381,10 @@ fn walk_supported_files_inner(
 
         if file_type.is_dir() {
             walk_supported_files_inner(&p, root, root_norm, supported, filter, out)?;
-        } else if file_type.is_file() {
-            if is_supported_source_file(&p, |extension| supported.contains(extension)) {
-                out.push(p);
-            }
+        } else if file_type.is_file()
+            && is_supported_source_file(&p, |extension| supported.contains(extension))
+        {
+            out.push(p);
         }
     }
     Ok(())

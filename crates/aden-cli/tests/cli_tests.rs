@@ -149,7 +149,33 @@ fn long_version_reports_reproducible_build_identity_and_formats() {
     assert!(version.contains("Features:"), "{version}");
     assert!(version.contains("snapshot-v1"), "{version}");
     assert!(version.contains("index-layout-v3"), "{version}");
-    assert!(version.contains("gen-logic-v15"), "{version}");
+    let generation_version = version
+        .lines()
+        .find_map(|line| line.strip_prefix("Formats: "))
+        .and_then(|formats| {
+            formats
+                .split(", ")
+                .find_map(|format| format.strip_prefix("gen-logic-v"))
+        })
+        .and_then(|number| number.parse::<u64>().ok())
+        .unwrap_or_else(|| panic!("Missing generation logic version: {version}"));
+    std::fs::write(fixture.path().join("lib.rs"), "pub fn format_probe() {}\n").unwrap();
+    let generated = fixture.command().args(["gen", "."]).output().unwrap();
+    assert!(
+        generated.status.success(),
+        "{}",
+        String::from_utf8_lossy(&generated.stderr)
+    );
+    let store = fixture.command().args(["store", "path"]).output().unwrap();
+    assert!(store.status.success());
+    let store_path = String::from_utf8(store.stdout).unwrap();
+    let cache_path = std::path::Path::new(store_path.trim())
+        .parent()
+        .unwrap()
+        .join("gen-cache.json");
+    let cache: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(cache_path).unwrap()).unwrap();
+    assert_eq!(cache["version"].as_u64(), Some(generation_version));
     assert!(version.contains("symbol-lexicon-v2"), "{version}");
     assert!(
         !version.contains("Built at:"),
