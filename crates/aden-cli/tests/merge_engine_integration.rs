@@ -147,6 +147,75 @@ fn git_init_commit(project: &Path, message: &str) {
 /// Regression target: before Phase 5, `--fix` for store-resident StaleHash
 /// reported "StaleHash in store (run aden gen to refresh)" and did nothing.
 #[test]
+fn json_fix_applies_store_merge_with_issue_cap() {
+    let project = unique_dir("json-fix");
+    let data = unique_dir("json-fix-data");
+    let source_dir = project.join("src");
+    std::fs::create_dir_all(&source_dir).unwrap();
+    let source = source_dir.join("lib.rs");
+    std::fs::write(
+        &source,
+        "/// Original alpha.\npub fn alpha() -> i32 { 1 }\n",
+    )
+    .unwrap();
+    git_init_commit(&project, "fixture: before JSON repair");
+    run_gen(&project, &data);
+    let before = open_store(&data)
+        .get_document(ALPHA_ANCHOR)
+        .unwrap()
+        .unwrap();
+    assert!(before.attributes.contains_key("source_hash"));
+    assert!(
+        !serde_json::to_string(&before)
+            .unwrap()
+            .contains("Updated alpha.")
+    );
+
+    let overlay_dir = project.join(".aden/overlays");
+    std::fs::create_dir_all(&overlay_dir).unwrap();
+    let overlay = overlay_dir.join(overlay_filename(ALPHA_ANCHOR));
+    let overlay_bytes = format!(
+        ":anchor: {ALPHA_ANCHOR}\r\n\r\n[human#user-note]\r\n----\r\nKeep this decision.\r\n----\r\n"
+    );
+    std::fs::write(&overlay, &overlay_bytes).unwrap();
+    let changed_source = b"/// Updated alpha.\npub fn alpha(value: i32) -> i32 { value + 2 }\n";
+    std::fs::write(&source, changed_source).unwrap();
+
+    let output = aden(
+        &project,
+        &data,
+        &["heal", ".", "--fix", "--json", "--max-issues", "1"],
+    );
+    assert!(output.status.success(), "{output:?}");
+    let report: serde_json::Value =
+        serde_json::from_slice(&output.stdout).unwrap_or_else(|error| {
+            panic!(
+                "Expected one JSON repair report: {error}; stdout={}; stderr={}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            )
+        });
+    assert!(report["repair"]["fixed"].as_u64().unwrap() >= 1);
+    assert_eq!(report["repair"]["failed"], 0);
+    assert_eq!(report["repair"]["conflicts"], 0);
+    let after = open_store(&data)
+        .get_document(ALPHA_ANCHOR)
+        .unwrap()
+        .unwrap();
+    assert_ne!(
+        before.attributes["source_hash"],
+        after.attributes["source_hash"]
+    );
+    assert!(
+        serde_json::to_string(&after)
+            .unwrap()
+            .contains("Updated alpha.")
+    );
+    assert_eq!(std::fs::read(&source).unwrap(), changed_source);
+    assert_eq!(std::fs::read(&overlay).unwrap(), overlay_bytes.as_bytes());
+}
+
+#[test]
 fn human_preservation_clean_merge() {
     let project = unique_dir("human-clean");
     let data = unique_dir("human-clean-data");
@@ -266,8 +335,8 @@ fn conflict_generates_proposed_marker() {
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
     let stderr = String::from_utf8_lossy(&out.stderr).to_string();
     assert!(
-        out.status.success(),
-        "aden heal . --fix must exit 0 even on conflicts:\n  stdout: {stdout}\n  stderr: {stderr}"
+        !out.status.success(),
+        "aden heal . --fix must reject unresolved conflicts:\n  stdout: {stdout}\n  stderr: {stderr}"
     );
 
     // A conflict must be reported.

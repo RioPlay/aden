@@ -44,7 +44,7 @@ a default dependency. No model bytes enter aden's source tree.
 
 The **`view`** feature (browser graph viewer, **on by default**) embeds one
 vendored frontend asset: **`force-graph`** (vasturiano), **MIT**, pinned at
-v1.51.4 and recorded with a sha256 in
+v1.52.0 and recorded with a sha256 in
 [`crates/aden-cli/assets/CHECKSUMS`](crates/aden-cli/assets/CHECKSUMS). It is the
 pre-built minified UMD bundle, inlined into the generated HTML so the page is fully
 offline (no CDN, no runtime network). aden's build never runs npm. Because the
@@ -70,7 +70,7 @@ bundle is redistributed in the binary, its MIT notice is reproduced in full:
 > OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 The same feature also embeds **`3d-force-graph`** (vasturiano), **MIT**, pinned
-at v1.80.0 (sha256 in the same `CHECKSUMS` file) for the `aden view --3d`
+at v1.80.2 (sha256 in the same `CHECKSUMS` file) for the `aden view --3d`
 orbital view. Its pre-built UMD bundle includes **three.js** (© 2010–2026
 three.js authors, **MIT**). The three.js copyright notice is reproduced below:
 
@@ -204,7 +204,7 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/tkaitchuck/ahash
 
-### aho-corasick v1.1.4
+### aho-corasick v1.1.5
 
 - **License**: Unlicense OR MIT
 - **Repository**: https://github.com/BurntSushi/aho-corasick
@@ -219,11 +219,6 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/zakarumych/allocator-api2
 
-### android_system_properties v0.1.5
-
-- **License**: MIT/Apache-2.0
-- **Repository**: https://github.com/nical/android_system_properties
-
 ### anes v0.1.6
 
 - **License**: MIT OR Apache-2.0
@@ -234,7 +229,7 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/rust-cli/anstyle.git
 
-### anyhow v1.0.103
+### anyhow v1.0.104
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/dtolnay/anyhow
@@ -244,12 +239,17 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: BlueOak-1.0.0 OR MIT OR Apache-2.0
 - **Repository**: https://github.com/reivilibre/anymap3
 
-### async-trait v0.1.89
+### ar_archive_writer v0.5.5
+
+- **License**: Apache-2.0 WITH LLVM-exception
+- **Repository**: https://github.com/rust-lang/ar_archive_writer
+
+### async-trait v0.1.92
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/dtolnay/async-trait
 
-### auto_impl v1.3.0
+### auto_impl v1.4.0
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/auto-impl-rs/auto_impl/
@@ -264,9 +264,14 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/marshallpierce/rust-base64
 
-### bit-set v0.10.0
+### base64 v0.23.1
 
-- **License**: Apache-2.0 OR MIT
+- **License**: MIT OR Apache-2.0
+- **Repository**: https://github.com/marshallpierce/rust-base64
+
+### bit-set v0.5.3
+
+- **License**: MIT/Apache-2.0
 - **Repository**: https://github.com/contain-rs/bit-set
 
 ### bit-set v0.8.0
@@ -274,12 +279,12 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: Apache-2.0 OR MIT
 - **Repository**: https://github.com/contain-rs/bit-set
 
-### bit-vec v0.8.0
+### bit-vec v0.6.3
 
-- **License**: Apache-2.0 OR MIT
+- **License**: MIT/Apache-2.0
 - **Repository**: https://github.com/contain-rs/bit-vec
 
-### bit-vec v0.9.1
+### bit-vec v0.8.0
 
 - **License**: Apache-2.0 OR MIT
 - **Repository**: https://github.com/contain-rs/bit-vec
@@ -289,7 +294,7 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: MIT/Apache-2.0
 - **Repository**: https://github.com/bitflags/bitflags
 
-### bitflags v2.13.0
+### bitflags v2.13.2
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/bitflags/bitflags
@@ -304,12 +309,12 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: MIT
 - **Repository**: https://github.com/madsmtm/objc2
 
-### bstr v1.12.1
+### bstr v1.13.1
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/BurntSushi/bstr
 
-### bumpalo v3.20.3
+### bumpalo v3.20.4
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/fitzgen/bumpalo
@@ -324,12 +329,12 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: Unlicense OR MIT
 - **Repository**: https://github.com/image-rs/byteorder-lite
 
-### bytes v1.12.0
+### bytes v1.12.1
 
 - **License**: MIT
 - **Repository**: https://github.com/tokio-rs/bytes
 
-### byteview v0.10.1
+### byteview v0.10.2
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/fjall-rs/byteview
@@ -339,35 +344,20 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/japaric/cast.rs
 
-### cc v1.2.65
+### cc v1.11.2
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/rust-lang/cc-rs
 
-### cesu8 v1.1.0
-
-- **License**: Apache-2.0/MIT
-- **Repository**: https://github.com/emk/cesu8-rs
-
-### cfg-if v1.0.4
+### cfg-if v1.0.5
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/rust-lang/cfg-if
 
-### cfg_aliases v0.2.1
+### cfg_aliases v0.2.2
 
 - **License**: MIT
 - **Repository**: https://github.com/katharostech/cfg_aliases
-
-### chacha20 v0.10.2
-
-- **License**: MIT OR Apache-2.0
-- **Repository**: https://github.com/RustCrypto/stream-ciphers
-
-### chrono v0.4.45
-
-- **License**: MIT OR Apache-2.0
-- **Repository**: https://github.com/chronotope/chrono
 
 ### ciborium v0.2.2
 
@@ -384,22 +374,22 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: Apache-2.0
 - **Repository**: https://github.com/enarx/ciborium
 
-### clap v4.6.1
+### clap v4.6.7
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/clap-rs/clap
 
-### clap_builder v4.6.0
+### clap_builder v4.6.7
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/clap-rs/clap
 
-### clap_derive v4.6.1
+### clap_derive v4.6.7
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/clap-rs/clap
 
-### clap_lex v1.1.0
+### clap_lex v1.1.1
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/clap-rs/clap
@@ -409,7 +399,7 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/jamesmunns/cobs.rs
 
-### combine v4.6.7
+### combine v4.6.9
 
 - **License**: MIT
 - **Repository**: https://github.com/Marwes/combine
@@ -419,7 +409,7 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: MIT/Apache-2.0
 - **Repository**: https://github.com/contain-rs/compare
 
-### const-oid v0.10.2
+### const-oid v0.10.3
 
 - **License**: Apache-2.0 OR MIT
 - **Repository**: https://github.com/RustCrypto/formats
@@ -444,12 +434,12 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/servo/core-foundation-rs
 
-### cpufeatures v0.3.0
+### cpufeatures v0.3.1
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/RustCrypto/utils
 
-### crc32fast v1.5.0
+### crc32fast v1.5.5
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/srijs/rust-crc32fast
@@ -464,12 +454,12 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: Apache-2.0 OR MIT
 - **Repository**: https://github.com/criterion-rs/criterion.rs
 
-### crossbeam-deque v0.8.6
+### crossbeam-deque v0.8.8
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/crossbeam-rs/crossbeam
 
-### crossbeam-epoch v0.9.20
+### crossbeam-epoch v0.9.21
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/crossbeam-rs/crossbeam
@@ -479,7 +469,7 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/crossbeam-rs/crossbeam
 
-### crossbeam-utils v0.8.21
+### crossbeam-utils v0.8.23
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/crossbeam-rs/crossbeam
@@ -499,17 +489,17 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: MIT/Apache-2.0
 - **Repository**: https://github.com/Detegr/rust-ctrlc.git
 
-### darling v0.23.0
+### darling v0.24.1
 
 - **License**: MIT
 - **Repository**: https://github.com/TedDriggs/darling
 
-### darling_core v0.23.0
+### darling_core v0.24.1
 
 - **License**: MIT
 - **Repository**: https://github.com/TedDriggs/darling
 
-### darling_macro v0.23.0
+### darling_macro v0.24.1
 
 - **License**: MIT
 - **Repository**: https://github.com/TedDriggs/darling
@@ -524,7 +514,12 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: MIT
 - **Repository**: https://github.com/xacrimon/dashmap
 
-### derive-new v0.7.0
+### deranged v0.5.9
+
+- **License**: MIT OR Apache-2.0
+- **Repository**: https://github.com/jhpratt/deranged
+
+### derive-new v0.5.9
 
 - **License**: MIT
 - **Repository**: https://github.com/nrc/derive-new
@@ -544,10 +539,10 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/RustCrypto/traits
 
-### dirs v6.0.0
+### dirs v7.0.0
 
 - **License**: MIT OR Apache-2.0
-- **Repository**: https://github.com/soc/dirs-rs
+- **Repository**: https://codeberg.org/dirs/dirs-rs
 
 ### dirs-sys v0.5.0
 
@@ -559,14 +554,14 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: Zlib OR Apache-2.0 OR MIT
 - **Repository**: https://github.com/madsmtm/objc2
 
-### displaydoc v0.2.6
+### displaydoc v0.2.7
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/yaahc/displaydoc
 
-### downcast-rs v2.0.2
+### downcast-rs v1.2.1
 
-- **License**: MIT OR Apache-2.0
+- **License**: MIT/Apache-2.0
 - **Repository**: https://github.com/marcianx/downcast-rs
 
 ### dyn-clone v1.0.20
@@ -574,17 +569,12 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/dtolnay/dyn-clone
 
-### dyn-eq v0.1.3
-
-- **License**: MPL-2.0
-- **Repository**: https://github.com/Rayzeq/dyn-eq
-
-### dyn-hash v1.0.0
+### dyn-hash v0.2.2
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/dtolnay/dyn-hash
 
-### either v1.16.0
+### either v1.19.0
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/rayon-rs/either
@@ -604,17 +594,12 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://gitlab.com/antonok/enum_dispatch
 
-### equivalent v1.0.2
+### equivalent v1.0.3
 
 - **License**: Apache-2.0 OR MIT
 - **Repository**: https://github.com/indexmap-rs/equivalent
 
-### erased-serde v0.4.10
-
-- **License**: MIT OR Apache-2.0
-- **Repository**: https://github.com/dtolnay/erased-serde
-
-### errno v0.3.14
+### errno v0.3.15
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/lambda-fairy/rust-errno
@@ -624,7 +609,7 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: MIT
 - **Repository**: https://github.com/fancy-regex/fancy-regex
 
-### fastrand v2.4.1
+### fastrand v2.5.0
 
 - **License**: Apache-2.0 OR MIT
 - **Repository**: https://github.com/smol-rs/fastrand
@@ -639,30 +624,25 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: MIT/Apache-2.0
 - **Repository**: https://github.com/alexcrichton/filetime
 
-### find-msvc-tools v0.1.9
+### find-msvc-tools v0.1.15
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/rust-lang/cc-rs
 
-### fixedbitset v0.5.7
+### fixedbitset v0.5.9
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/petgraph/fixedbitset
 
-### fjall v3.1.8
+### fjall v3.1.13
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/fjall-rs/fjall
 
-### flate2 v1.1.9
+### flate2 v1.1.11
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/rust-lang/flate2-rs
-
-### float-ord v0.3.2
-
-- **License**: MIT / Apache-2.0
-- **Repository**: https://github.com/notriddle/rust-float-ord
 
 ### flume v0.12.0
 
@@ -689,62 +669,52 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/servo/rust-url
 
-### fsevent-sys v4.1.0
-
-- **License**: MIT
-- **Repository**: https://github.com/octplane/fsevent-rust/tree/master/fsevent-sys
-
-### futures v0.3.32
+### futures v0.3.34
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/rust-lang/futures-rs
 
-### futures-channel v0.3.32
+### futures-channel v0.3.34
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/rust-lang/futures-rs
 
-### futures-core v0.3.32
+### futures-core v0.3.34
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/rust-lang/futures-rs
 
-### futures-executor v0.3.32
+### futures-executor v0.3.34
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/rust-lang/futures-rs
 
-### futures-io v0.3.32
+### futures-io v0.3.34
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/rust-lang/futures-rs
 
-### futures-macro v0.3.32
+### futures-macro v0.3.34
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/rust-lang/futures-rs
 
-### futures-sink v0.3.32
+### futures-sink v0.3.34
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/rust-lang/futures-rs
 
-### futures-task v0.3.32
+### futures-task v0.3.34
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/rust-lang/futures-rs
 
-### futures-util v0.3.32
+### futures-util v0.3.34
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/rust-lang/futures-rs
 
 ### getrandom v0.2.17
-
-- **License**: MIT OR Apache-2.0
-- **Repository**: https://github.com/rust-random/getrandom
-
-### getrandom v0.3.4
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/rust-random/getrandom
@@ -784,7 +754,7 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/withoutboats/heck
 
-### http v1.4.2
+### http v1.5.0
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/hyperium/http
@@ -794,52 +764,42 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/seanmonstar/httparse
 
-### hybrid-array v0.4.12
+### hybrid-array v0.4.15
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/RustCrypto/hybrid-array
 
-### iana-time-zone v0.1.65
-
-- **License**: MIT OR Apache-2.0
-- **Repository**: https://github.com/strawlab/iana-time-zone
-
-### iana-time-zone-haiku v0.1.2
-
-- **License**: MIT OR Apache-2.0
-- **Repository**: https://github.com/strawlab/iana-time-zone
-
-### icu_collections v2.1.1
+### icu_collections v2.4.0
 
 - **License**: Unicode-3.0
 - **Repository**: https://github.com/unicode-org/icu4x
 
-### icu_locale_core v2.1.1
+### icu_locale_core v2.4.0
 
 - **License**: Unicode-3.0
 - **Repository**: https://github.com/unicode-org/icu4x
 
-### icu_normalizer v2.1.1
+### icu_normalizer v2.4.0
 
 - **License**: Unicode-3.0
 - **Repository**: https://github.com/unicode-org/icu4x
 
-### icu_normalizer_data v2.1.1
+### icu_normalizer_data v2.4.0
 
 - **License**: Unicode-3.0
 - **Repository**: https://github.com/unicode-org/icu4x
 
-### icu_properties v2.1.2
+### icu_properties v2.4.0
 
 - **License**: Unicode-3.0
 - **Repository**: https://github.com/unicode-org/icu4x
 
-### icu_properties_data v2.1.2
+### icu_properties_data v2.4.0
 
 - **License**: Unicode-3.0
 - **Repository**: https://github.com/unicode-org/icu4x
 
-### icu_provider v2.1.1
+### icu_provider v2.4.0
 
 - **License**: Unicode-3.0
 - **Repository**: https://github.com/unicode-org/icu4x
@@ -854,22 +814,22 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/servo/rust-url/
 
-### idna_adapter v1.2.1
+### idna_adapter v1.2.2
 
 - **License**: Apache-2.0 OR MIT
 - **Repository**: https://github.com/hsivonen/idna_adapter
 
-### indexmap v2.14.0
+### indexmap v2.14.2
 
 - **License**: Apache-2.0 OR MIT
 - **Repository**: https://github.com/indexmap-rs/indexmap
 
-### inotify v0.11.2
+### inotify v0.11.5
 
 - **License**: ISC
 - **Repository**: https://github.com/hannobraun/inotify-rs
 
-### inotify-sys v0.1.5
+### inotify-sys v0.1.8
 
 - **License**: ISC
 - **Repository**: https://github.com/hannobraun/inotify-sys
@@ -879,10 +839,15 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: MIT/Apache-2.0
 - **Repository**: https://github.com/contain-rs/interval-heap
 
-### inventory v0.3.24
+### itertools v0.10.5
+
+- **License**: MIT/Apache-2.0
+- **Repository**: https://github.com/rust-itertools/itertools
+
+### itertools v0.12.1
 
 - **License**: MIT OR Apache-2.0
-- **Repository**: https://github.com/dtolnay/inventory
+- **Repository**: https://github.com/rust-itertools/itertools
 
 ### itertools v0.13.0
 
@@ -894,20 +859,35 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/rust-itertools/itertools
 
-### itoa v1.0.18
+### itoa v1.0.19
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/dtolnay/itoa
 
-### jni v0.21.1
+### jiff v1.0.1
 
-- **License**: MIT/Apache-2.0
-- **Repository**: https://github.com/jni-rs/jni-rs
+- **License**: Unlicense OR MIT
+- **Repository**: https://github.com/BurntSushi/jiff
 
-### jni-sys v0.3.1
+### jiff-core v1.0.1
+
+- **License**: Unlicense OR MIT
+- **Repository**: https://github.com/BurntSushi/jiff
+
+### jiff-static v1.0.1
+
+- **License**: Unlicense OR MIT
+- **Repository**: https://github.com/BurntSushi/jiff
+
+### jni v0.22.4
 
 - **License**: MIT OR Apache-2.0
-- **Repository**: https://github.com/jni-rs/jni-sys
+- **Repository**: https://github.com/jni-rs/jni-rs
+
+### jni-macros v0.22.4
+
+- **License**: MIT OR Apache-2.0
+- **Repository**: https://github.com/jni-rs/jni-rs
 
 ### jni-sys v0.4.1
 
@@ -919,12 +899,12 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/jni-rs/jni-sys
 
-### jobserver v0.1.34
+### jobserver v0.1.35
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/rust-lang/jobserver-rs
 
-### js-sys v0.3.102
+### js-sys v0.3.107
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/js-sys
@@ -934,7 +914,7 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: BSD-2-Clause
 - **Repository**: https://github.com/Systemcluster/kitoken
 
-### kqueue v1.2.0
+### kqueue v1.2.1
 
 - **License**: MIT
 - **Repository**: https://gitlab.com/rust-kqueue/rust-kqueue
@@ -944,17 +924,22 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: MIT
 - **Repository**: https://gitlab.com/rust-kqueue/rust-kqueue-sys
 
-### lazy_static v1.5.0
+### kstring v2.0.2
+
+- **License**: MIT OR Apache-2.0
+- **Repository**: https://github.com/cobalt-org/kstring
+
+### lazy_static v1.5.1
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/rust-lang-nursery/lazy-static.rs
 
-### libc v0.2.186
+### libc v0.2.191
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/rust-lang/libc
 
-### libloading v0.9.0
+### libloading v0.9.1
 
 - **License**: ISC
 - **Repository**: https://github.com/nagisa/rust_libloading/
@@ -964,7 +949,7 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: MIT
 - **Repository**: https://github.com/rust-lang/compiler-builtins
 
-### libredox v0.1.17
+### libredox v0.1.25
 
 - **License**: MIT
 - **Repository**: https://gitlab.redox-os.org/redox-os/libredox.git
@@ -974,7 +959,27 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
 - **Repository**: https://github.com/sunfishcode/linux-raw-sys
 
-### litemap v0.8.2
+### liquid v0.26.11
+
+- **License**: MIT OR Apache-2.0
+- **Repository**: https://github.com/cobalt-org/liquid-rust
+
+### liquid-core v0.26.11
+
+- **License**: MIT OR Apache-2.0
+- **Repository**: https://github.com/cobalt-org/liquid-rust
+
+### liquid-derive v0.26.10
+
+- **License**: MIT OR Apache-2.0
+- **Repository**: https://github.com/cobalt-org/liquid-rust
+
+### liquid-lib v0.26.11
+
+- **License**: MIT OR Apache-2.0
+- **Repository**: https://github.com/cobalt-org/liquid-rust
+
+### litemap v0.8.3
 
 - **License**: Unicode-3.0
 - **Repository**: https://github.com/unicode-org/icu4x
@@ -984,12 +989,12 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/Amanieu/parking_lot
 
-### log v0.4.33
+### log v0.4.35
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/rust-lang/log
 
-### lsm-tree v3.1.8
+### lsm-tree v3.1.10
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/fjall-rs/lsm-tree
@@ -999,7 +1004,7 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: MIT
 - **Repository**: https://github.com/gluon-lang/lsp-types
 
-### lz4_flex v0.13.1
+### lz4_flex v0.13.2
 
 - **License**: MIT
 - **Repository**: https://github.com/pseitz/lz4_flex
@@ -1009,52 +1014,42 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: MIT/Apache-2.0
 - **Repository**: https://github.com/bluss/maplit
 
-### matrixmultiply v0.3.10
+### matrixmultiply v0.3.11
 
 - **License**: MIT/Apache-2.0
 - **Repository**: https://github.com/bluss/matrixmultiply/
 
-### memchr v2.8.2
+### memchr v2.8.3
 
 - **License**: Unlicense OR MIT
 - **Repository**: https://github.com/BurntSushi/memchr
 
-### memmap2 v0.9.11
+### memmap2 v0.9.12
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/RazrFalcon/memmap2-rs
 
-### memo-map v0.3.3
-
-- **License**: Apache-2.0
-- **Repository**: https://github.com/mitsuhiko/memo-map
-
-### minijinja v2.21.0
-
-- **License**: Apache-2.0
-- **Repository**: https://github.com/mitsuhiko/minijinja
-
-### miniz_oxide v0.8.9
+### miniz_oxide v0.9.1
 
 - **License**: MIT OR Zlib OR Apache-2.0
 - **Repository**: https://github.com/Frommi/miniz_oxide/tree/master/miniz_oxide
 
-### mio v1.2.1
+### mio v1.2.5
 
 - **License**: MIT
 - **Repository**: https://github.com/tokio-rs/mio
 
-### multiversion v0.8.0
+### multiversion v0.8.1
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/calebzulawski/multiversion
 
-### multiversion-macros v0.8.0
+### multiversion-macros v0.8.1
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/calebzulawski/multiversion
 
-### ndarray v0.17.2
+### ndarray v0.16.1
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/rust-ndarray/ndarray
@@ -1074,12 +1069,12 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: MIT
 - **Repository**: https://github.com/rust-bakery/nom
 
-### notify v8.2.0
+### notify v8.2.2
 
 - **License**: CC0-1.0
 - **Repository**: https://github.com/notify-rs/notify.git
 
-### notify-types v2.1.0
+### notify-types v2.2.0
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/notify-rs/notify.git
@@ -1089,7 +1084,12 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/rust-num/num-complex
 
-### num-integer v0.1.46
+### num-conv v0.2.2
+
+- **License**: MIT OR Apache-2.0
+- **Repository**: https://github.com/jhpratt/num-conv
+
+### num-integer v0.1.47
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/rust-num/num-integer
@@ -1099,15 +1099,30 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/rust-num/num-traits
 
-### objc2 v0.6.4
+### objc2 v0.6.5
 
 - **License**: MIT
+- **Repository**: https://github.com/madsmtm/objc2
+
+### objc2-core-foundation v0.3.2
+
+- **License**: Zlib OR Apache-2.0 OR MIT
+- **Repository**: https://github.com/madsmtm/objc2
+
+### objc2-core-services v0.3.2
+
+- **License**: Zlib OR Apache-2.0 OR MIT
 - **Repository**: https://github.com/madsmtm/objc2
 
 ### objc2-encode v4.1.0
 
 - **License**: MIT
 - **Repository**: https://github.com/madsmtm/objc2
+
+### object v0.39.1
+
+- **License**: Apache-2.0 OR MIT
+- **Repository**: https://github.com/gimli-rs/object
 
 ### once_cell v1.21.4
 
@@ -1119,7 +1134,7 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: MIT
 - **Repository**: https://hg.sr.ht/~icefox/oorandom
 
-### openssl-probe v0.2.1
+### openssl-probe v0.2.2
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/rustls/openssl-probe
@@ -1129,7 +1144,7 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: MPL-2.0
 - **Repository**: https://github.com/soc/option-ext.git
 
-### orx-priority-queue v1.8.0
+### orx-priority-queue v1.9.0
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/orxfun/orx-priority-queue/
@@ -1149,6 +1164,11 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/Amanieu/parking_lot
 
+### pastey v0.1.1
+
+- **License**: MIT OR Apache-2.0
+- **Repository**: https://github.com/as1100k/pastey
+
 ### pastey v0.2.3
 
 - **License**: MIT OR Apache-2.0
@@ -1158,6 +1178,31 @@ platform-specific dependencies; not every entry ships in every binary.
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/servo/rust-url/
+
+### pest v2.9.6
+
+- **License**: MIT OR Apache-2.0
+- **Repository**: https://github.com/pest-parser/pest
+
+### pest_derive v2.9.6
+
+- **License**: MIT OR Apache-2.0
+- **Repository**: https://github.com/pest-parser/pest
+
+### pest_generator v2.9.6
+
+- **License**: MIT OR Apache-2.0
+- **Repository**: https://github.com/pest-parser/pest
+
+### pest_meta v2.9.6
+
+- **License**: MIT OR Apache-2.0
+- **Repository**: https://github.com/pest-parser/pest
+
+### pest_stack_guard v1.0.1
+
+- **License**: MIT OR Apache-2.0
+- **Repository**: https://github.com/pest-parser/pest_stack_guard
 
 ### petgraph v0.8.3
 
@@ -1179,7 +1224,7 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: Apache-2.0 OR MIT
 - **Repository**: https://github.com/taiki-e/pin-project-lite
 
-### pkg-config v0.3.33
+### pkg-config v0.3.34
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/rust-lang/pkg-config-rs
@@ -1199,12 +1244,12 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: MIT
 - **Repository**: https://github.com/plotters-rs/plotters.git
 
-### portable-atomic v1.13.1
+### portable-atomic v1.15.0
 
 - **License**: Apache-2.0 OR MIT
 - **Repository**: https://github.com/taiki-e/portable-atomic
 
-### portable-atomic-util v0.2.7
+### portable-atomic-util v0.2.8
 
 - **License**: Apache-2.0 OR MIT
 - **Repository**: https://github.com/taiki-e/portable-atomic-util
@@ -1214,65 +1259,80 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/jamesmunns/postcard
 
-### potential_utf v0.1.5
+### potential_utf v0.1.6
 
 - **License**: Unicode-3.0
 - **Repository**: https://github.com/unicode-org/icu4x
+
+### powerfmt v0.2.1
+
+- **License**: MIT OR Apache-2.0
+- **Repository**: https://github.com/jhpratt/powerfmt
+
+### ppv-lite86 v0.2.21
+
+- **License**: MIT OR Apache-2.0
+- **Repository**: https://github.com/cryptocorrosion/cryptocorrosion
 
 ### primal-check v0.3.4
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/huonw/primal
 
-### proc-macro2 v1.0.106
+### proc-macro2 v1.0.107
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/dtolnay/proc-macro2
 
-### prost v0.14.4
+### prost v0.11.9
 
 - **License**: Apache-2.0
 - **Repository**: https://github.com/tokio-rs/prost
 
-### prost-derive v0.14.4
+### prost-derive v0.11.9
 
 - **License**: Apache-2.0
 - **Repository**: https://github.com/tokio-rs/prost
 
-### quick_cache v0.6.23
+### psm v0.1.32
+
+- **License**: MIT OR Apache-2.0
+- **Repository**: https://github.com/rust-lang/stacker/
+
+### quick_cache v0.6.24
 
 - **License**: MIT
 - **Repository**: https://github.com/arthurprs/quick-cache
 
-### quote v1.0.45
+### quote v1.0.47
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/dtolnay/quote
-
-### r-efi v5.3.0
-
-- **License**: MIT OR Apache-2.0 OR LGPL-2.1-or-later
-- **Repository**: https://github.com/r-efi/r-efi
 
 ### r-efi v6.0.0
 
 - **License**: MIT OR Apache-2.0 OR LGPL-2.1-or-later
 - **Repository**: https://github.com/r-efi/r-efi
 
-### rand v0.10.1
+### rand v0.8.8
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/rust-random/rand
 
-### rand_core v0.10.1
+### rand_chacha v0.3.1
 
 - **License**: MIT OR Apache-2.0
-- **Repository**: https://github.com/rust-random/rand_core
+- **Repository**: https://github.com/rust-random/rand
 
-### rand_distr v0.6.0
+### rand_core v0.6.4
 
 - **License**: MIT OR Apache-2.0
-- **Repository**: https://github.com/rust-random/rand_distr
+- **Repository**: https://github.com/rust-random/rand
+
+### rand_distr v0.4.3
+
+- **License**: MIT OR Apache-2.0
+- **Repository**: https://github.com/rust-random/rand
 
 ### rawpointer v0.2.1
 
@@ -1294,27 +1354,27 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: MIT
 - **Repository**: https://gitlab.redox-os.org/redox-os/syscall
 
-### redox_users v0.5.2
+### redox_users v0.5.3
 
 - **License**: MIT
 - **Repository**: https://gitlab.redox-os.org/redox-os/users
 
-### ref-cast v1.0.25
+### ref-cast v1.0.27
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/dtolnay/ref-cast
 
-### ref-cast-impl v1.0.25
+### ref-cast-impl v1.0.27
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/dtolnay/ref-cast
 
-### regex v1.12.4
+### regex v1.13.1
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/rust-lang/regex
 
-### regex-automata v0.4.14
+### regex-automata v0.4.18
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/rust-lang/regex
@@ -1329,12 +1389,12 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: Apache-2.0 AND ISC
 - **Repository**: https://github.com/briansmith/ring
 
-### rmcp v1.7.0
+### rmcp v3.11.0
 
 - **License**: Apache-2.0
 - **Repository**: https://github.com/modelcontextprotocol/rust-sdk/
 
-### rmcp-macros v1.7.0
+### rmcp-macros v3.11.0
 
 - **License**: Apache-2.0
 - **Repository**: https://github.com/modelcontextprotocol/rust-sdk/
@@ -1344,7 +1404,7 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: MIT/BSD-3-Clause
 - **Repository**: https://github.com/CurrySoftware/rust-stemmers
 
-### rustc-hash v2.1.2
+### rustc-hash v2.1.3
 
 - **License**: Apache-2.0 OR MIT
 - **Repository**: https://github.com/rust-lang/rustc-hash
@@ -1359,7 +1419,7 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/ejmahler/RustFFT
 
-### rustix v1.1.4
+### rustix v1.1.6
 
 - **License**: Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
 - **Repository**: https://github.com/bytecodealliance/rustix
@@ -1369,37 +1429,37 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: Apache-2.0 OR ISC OR MIT
 - **Repository**: https://github.com/rustls/rustls
 
-### rustls-native-certs v0.8.4
+### rustls-native-certs v0.8.5
 
 - **License**: Apache-2.0 OR ISC OR MIT
 - **Repository**: https://github.com/rustls/rustls-native-certs
 
-### rustls-pki-types v1.14.1
+### rustls-pki-types v1.16.0
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/rustls/pki-types
 
-### rustls-platform-verifier v0.6.2
+### rustls-platform-verifier v0.7.1
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/rustls/rustls-platform-verifier
 
-### rustls-platform-verifier-android v0.1.1
+### rustls-platform-verifier-android v0.2.0
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/rustls/rustls-platform-verifier
 
-### rustls-webpki v0.103.16
+### rustls-webpki v0.103.17
 
 - **License**: ISC
 - **Repository**: https://github.com/rustls/webpki
 
-### rustversion v1.0.22
+### rustversion v1.0.23
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/dtolnay/rustversion
 
-### safetensors v0.7.0
+### safetensors v0.6.2
 
 - **License**: Apache-2.0
 - **Repository**: https://github.com/huggingface/safetensors
@@ -1414,17 +1474,17 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: MIT
 - **Repository**: https://github.com/wlentz/scan_fmt
 
-### schannel v0.1.29
+### schannel v0.1.30
 
 - **License**: MIT
 - **Repository**: https://github.com/steffengy/schannel-rs
 
-### schemars v1.2.1
+### schemars v1.2.3
 
 - **License**: MIT
 - **Repository**: https://github.com/GREsau/schemars
 
-### schemars_derive v1.2.1
+### schemars_derive v1.2.3
 
 - **License**: MIT
 - **Repository**: https://github.com/GREsau/schemars
@@ -1444,7 +1504,7 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/kornelski/rust-security-framework
 
-### self_cell v1.2.2
+### self_cell v1.3.0
 
 - **License**: Apache-2.0 OR GPL-2.0-only
 - **Repository**: https://github.com/Voultapher/self_cell
@@ -1454,37 +1514,37 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/dtolnay/semver
 
-### serde v1.0.228
+### serde v1.0.229
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/serde-rs/serde
 
-### serde_core v1.0.228
+### serde_core v1.0.229
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/serde-rs/serde
 
-### serde_derive v1.0.228
+### serde_derive v1.0.229
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/serde-rs/serde
 
-### serde_derive_internals v0.29.1
+### serde_derive_internals v0.30.0
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/serde-rs/serde
 
-### serde_json v1.0.150
+### serde_json v1.0.154
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/serde-rs/json
 
-### serde_repr v0.1.20
+### serde_repr v0.1.21
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/dtolnay/serde-repr
 
-### serde_spanned v1.1.1
+### serde_spanned v1.1.3
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/toml-rs/toml
@@ -1494,7 +1554,7 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/fjall-rs/sfa
 
-### sha2 v0.11.0
+### sha2 v0.11.1
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/RustCrypto/hashes
@@ -1509,25 +1569,35 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/vorner/signal-hook
 
-### simd-adler32 v0.3.9
+### simd-adler32 v0.3.10
 
 - **License**: MIT
 - **Repository**: https://github.com/mcountryman/simd-adler32
+
+### simd_cesu8 v1.2.0
+
+- **License**: Apache-2.0 OR MIT
+- **Repository**: https://github.com/seancroach/simd_cesu8
+
+### simdutf8 v0.1.5
+
+- **License**: MIT OR Apache-2.0
+- **Repository**: https://github.com/rusticstuff/simdutf8
 
 ### slab v0.4.12
 
 - **License**: MIT
 - **Repository**: https://github.com/tokio-rs/slab
 
-### smallvec v1.15.2
+### smallvec v1.16.5
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/servo/rust-smallvec
 
-### socks v0.3.4
+### socket2 v0.6.5
 
-- **License**: MIT/Apache-2.0
-- **Repository**: https://github.com/sfackler/rust-socks
+- **License**: MIT OR Apache-2.0
+- **Repository**: https://github.com/rust-lang/socket2
 
 ### spin v0.9.9
 
@@ -1539,6 +1609,16 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/storyyeller/stable_deref_trait
 
+### stacker v0.1.25
+
+- **License**: MIT OR Apache-2.0
+- **Repository**: https://github.com/rust-lang/stacker
+
+### static_assertions v1.1.0
+
+- **License**: MIT OR Apache-2.0
+- **Repository**: https://github.com/nvzqz/static-assertions-rs
+
 ### streaming-iterator v0.1.9
 
 - **License**: MIT OR Apache-2.0
@@ -1549,7 +1629,7 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: MIT OR Apache-2.0
 - **Repository**: http://github.com/ejmahler/strength_reduce
 
-### string-interner v0.20.0
+### string-interner v0.15.0
 
 - **License**: MIT/Apache-2.0
 - **Repository**: https://github.com/robbepop/string-interner
@@ -1564,12 +1644,22 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: BSD-3-Clause
 - **Repository**: https://github.com/dalek-cryptography/subtle
 
-### syn v2.0.118
+### syn v1.0.109
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/dtolnay/syn
 
-### synstructure v0.13.2
+### syn v2.0.119
+
+- **License**: MIT OR Apache-2.0
+- **Repository**: https://github.com/dtolnay/syn
+
+### syn v3.0.10
+
+- **License**: MIT OR Apache-2.0
+- **Repository**: https://github.com/dtolnay/syn
+
+### synstructure v0.14.0
 
 - **License**: MIT
 - **Repository**: https://github.com/mystor/synstructure
@@ -1589,32 +1679,37 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/Stebalien/tempfile
 
-### thiserror v1.0.69
+### thiserror v2.0.21
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/dtolnay/thiserror
 
-### thiserror v2.0.18
+### thiserror-impl v2.0.21
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/dtolnay/thiserror
 
-### thiserror-impl v1.0.69
+### time v0.3.55
 
 - **License**: MIT OR Apache-2.0
-- **Repository**: https://github.com/dtolnay/thiserror
+- **Repository**: https://github.com/time-rs/time
 
-### thiserror-impl v2.0.18
+### time-core v0.1.9
 
 - **License**: MIT OR Apache-2.0
-- **Repository**: https://github.com/dtolnay/thiserror
+- **Repository**: https://github.com/time-rs/time
+
+### time-macros v0.2.32
+
+- **License**: MIT OR Apache-2.0
+- **Repository**: https://github.com/time-rs/time
 
 ### tiny-keccak v2.0.2
 
 - **License**: CC0-1.0
 - **Repository**: Not specified upstream
 
-### tinystr v0.8.3
+### tinystr v0.8.5
 
 - **License**: Unicode-3.0
 - **Repository**: https://github.com/unicode-org/icu4x
@@ -1624,57 +1719,52 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: Apache-2.0 OR MIT
 - **Repository**: https://github.com/bheisler/TinyTemplate
 
-### tinyvec v1.11.0
+### tinyvec v1.13.3
 
 - **License**: Zlib OR Apache-2.0 OR MIT
 - **Repository**: https://github.com/Lokathor/tinyvec
-
-### tinyvec_macros v0.1.1
-
-- **License**: MIT OR Apache-2.0 OR Zlib
-- **Repository**: https://github.com/Soveu/tinyvec_macros
 
 ### tokio v1.54.1
 
 - **License**: MIT
 - **Repository**: https://github.com/tokio-rs/tokio
 
-### tokio-macros v2.7.0
+### tokio-macros v2.7.2
 
 - **License**: MIT
 - **Repository**: https://github.com/tokio-rs/tokio
 
-### tokio-stream v0.1.18
+### tokio-stream v0.1.19
 
 - **License**: MIT
 - **Repository**: https://github.com/tokio-rs/tokio
 
-### tokio-util v0.7.18
+### tokio-util v0.7.20
 
 - **License**: MIT
 - **Repository**: https://github.com/tokio-rs/tokio
 
-### toml v1.1.2+spec-1.1.0
+### toml v1.2.1+spec-1.1.0
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/toml-rs/toml
 
-### toml_datetime v1.1.1+spec-1.1.0
+### toml_datetime v1.1.3+spec-1.1.0
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/toml-rs/toml
 
-### toml_edit v0.25.12+spec-1.1.0
+### toml_edit v0.25.19+spec-1.1.0
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/toml-rs/toml
 
-### toml_parser v1.1.2+spec-1.1.0
+### toml_parser v1.1.5+spec-1.1.0
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/toml-rs/toml
 
-### toml_writer v1.1.1+spec-1.1.0
+### toml_writer v1.2.0+spec-1.1.0
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/toml-rs/toml
@@ -1719,57 +1809,37 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: MIT
 - **Repository**: https://github.com/tokio-rs/tracing
 
-### tract-core v0.23.3
+### tract-core v0.22.5
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/snipsco/tract
 
-### tract-data v0.23.3
+### tract-data v0.22.5
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/snipsco/tract
 
-### tract-extra v0.23.3
+### tract-hir v0.22.5
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/snipsco/tract
 
-### tract-hir v0.23.3
+### tract-linalg v0.22.5
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/snipsco/tract
 
-### tract-linalg v0.23.3
+### tract-nnef v0.22.5
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/snipsco/tract
 
-### tract-nnef v0.23.3
+### tract-onnx v0.22.5
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/snipsco/tract
 
-### tract-onnx v0.23.3
-
-- **License**: MIT OR Apache-2.0
-- **Repository**: https://github.com/snipsco/tract
-
-### tract-onnx-opl v0.23.3
-
-- **License**: MIT OR Apache-2.0
-- **Repository**: https://github.com/snipsco/tract
-
-### tract-pulse v0.23.3
-
-- **License**: MIT OR Apache-2.0
-- **Repository**: https://github.com/snipsco/tract
-
-### tract-pulse-opl v0.23.3
-
-- **License**: MIT OR Apache-2.0
-- **Repository**: https://github.com/snipsco/tract
-
-### tract-transformers v0.23.3
+### tract-onnx-opl v0.22.5
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/snipsco/tract
@@ -1779,57 +1849,67 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/ejmahler/transpose
 
-### tree-sitter v0.26.9
+### tree-sitter v0.27.2
 
 - **License**: MIT
 - **Repository**: https://github.com/tree-sitter/tree-sitter
 
-### tree-sitter-language v0.1.7
+### tree-sitter-language v0.1.9
 
 - **License**: MIT
 - **Repository**: https://github.com/tree-sitter/tree-sitter
 
-### tree-sitter-language-pack v1.9.1
+### tree-sitter-language-pack v1.25.0
 
 - **License**: MIT
-- **Repository**: https://github.com/kreuzberg-dev/tree-sitter-language-pack
+- **Repository**: https://github.com/xberg-io/tree-sitter-language-pack
 
-### twox-hash v2.1.2
+### twox-hash v2.1.5
 
 - **License**: MIT
 - **Repository**: https://github.com/shepmaster/twox-hash
-
-### typeid v1.0.3
-
-- **License**: MIT OR Apache-2.0
-- **Repository**: https://github.com/dtolnay/typeid
 
 ### typenum v1.20.1
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/paholg/typenum
 
-### unicode-ident v1.0.24
+### ucd-trie v0.1.7
+
+- **License**: MIT OR Apache-2.0
+- **Repository**: https://github.com/BurntSushi/ucd-generate
+
+### unicode-general-category v1.1.0
+
+- **License**: Apache-2.0
+- **Repository**: https://github.com/yeslogic/unicode-general-category
+
+### unicode-ident v1.0.27
 
 - **License**: (MIT OR Apache-2.0) AND Unicode-3.0
 - **Repository**: https://github.com/dtolnay/unicode-ident
 
-### unicode-normalization v0.1.25
+### unicode-normalization v0.1.26
+
+- **License**: (MIT OR Apache-2.0) AND Unicode-3.0
+- **Repository**: https://github.com/unicode-rs/unicode-normalization
+
+### unicode-segmentation v1.13.3
 
 - **License**: MIT OR Apache-2.0
-- **Repository**: https://github.com/unicode-rs/unicode-normalization
+- **Repository**: https://github.com/unicode-rs/unicode-segmentation
 
 ### untrusted v0.9.0
 
 - **License**: ISC
 - **Repository**: https://github.com/briansmith/untrusted
 
-### ureq v3.3.0
+### ureq v3.5.2
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/algesten/ureq
 
-### ureq-proto v0.6.0
+### ureq-proto v0.7.1
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/algesten/ureq-proto
@@ -1844,12 +1924,17 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/algesten/utf8-zero
 
-### utf8_iter v1.0.4
+### utf8_iter v1.1.0
 
 - **License**: Apache-2.0 OR MIT
 - **Repository**: https://github.com/hsivonen/utf8_iter
 
-### uuid v1.23.3
+### utf_types v1.0.0
+
+- **License**: Apache-2.0 OR MIT
+- **Repository**: https://github.com/hsivonen/utf_types
+
+### uuid v1.29.2
 
 - **License**: Apache-2.0 OR MIT
 - **Repository**: https://github.com/uuid-rs/uuid
@@ -1874,42 +1959,37 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
 - **Repository**: https://github.com/bytecodealliance/wasi
 
-### wasip2 v1.0.1+wasi-0.2.4
-
-- **License**: Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
-- **Repository**: https://github.com/bytecodealliance/wasi-rs
-
-### wasm-bindgen v0.2.125
+### wasm-bindgen v0.2.130
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/wasm-bindgen/wasm-bindgen
 
-### wasm-bindgen-macro v0.2.125
+### wasm-bindgen-macro v0.2.130
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/macro
 
-### wasm-bindgen-macro-support v0.2.125
+### wasm-bindgen-macro-support v0.2.130
 
 - **License**: MIT OR Apache-2.0
-- **Repository**: https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/macro-support
+- **Repository**: https://github.com/wasm-bindgen/wasm-bindgen/tree/main/crates/macro-support
 
-### wasm-bindgen-shared v0.2.125
+### wasm-bindgen-shared v0.2.130
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/shared
 
-### web-sys v0.3.102
+### web-sys v0.3.107
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/web-sys
 
-### webpki-root-certs v1.0.11
+### webpki-root-certs v1.0.12
 
 - **License**: CDLA-Permissive-2.0
 - **Repository**: https://github.com/rustls/webpki-roots
 
-### webpki-roots v1.0.11
+### webpki-roots v1.0.12
 
 - **License**: CDLA-Permissive-2.0
 - **Repository**: https://github.com/rustls/webpki-roots
@@ -1934,37 +2014,7 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: MIT/Apache-2.0
 - **Repository**: https://github.com/retep998/winapi-rs
 
-### windows-core v0.62.2
-
-- **License**: MIT OR Apache-2.0
-- **Repository**: https://github.com/microsoft/windows-rs
-
-### windows-implement v0.60.2
-
-- **License**: MIT OR Apache-2.0
-- **Repository**: https://github.com/microsoft/windows-rs
-
-### windows-interface v0.59.3
-
-- **License**: MIT OR Apache-2.0
-- **Repository**: https://github.com/microsoft/windows-rs
-
 ### windows-link v0.2.1
-
-- **License**: MIT OR Apache-2.0
-- **Repository**: https://github.com/microsoft/windows-rs
-
-### windows-result v0.4.1
-
-- **License**: MIT OR Apache-2.0
-- **Repository**: https://github.com/microsoft/windows-rs
-
-### windows-strings v0.5.1
-
-- **License**: MIT OR Apache-2.0
-- **Repository**: https://github.com/microsoft/windows-rs
-
-### windows-sys v0.45.0
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/microsoft/windows-rs
@@ -1979,17 +2029,7 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/microsoft/windows-rs
 
-### windows-sys v0.60.2
-
-- **License**: MIT OR Apache-2.0
-- **Repository**: https://github.com/microsoft/windows-rs
-
 ### windows-sys v0.61.2
-
-- **License**: MIT OR Apache-2.0
-- **Repository**: https://github.com/microsoft/windows-rs
-
-### windows-targets v0.42.2
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/microsoft/windows-rs
@@ -1999,27 +2039,7 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/microsoft/windows-rs
 
-### windows-targets v0.53.5
-
-- **License**: MIT OR Apache-2.0
-- **Repository**: https://github.com/microsoft/windows-rs
-
-### windows_aarch64_gnullvm v0.42.2
-
-- **License**: MIT OR Apache-2.0
-- **Repository**: https://github.com/microsoft/windows-rs
-
 ### windows_aarch64_gnullvm v0.52.6
-
-- **License**: MIT OR Apache-2.0
-- **Repository**: https://github.com/microsoft/windows-rs
-
-### windows_aarch64_gnullvm v0.53.1
-
-- **License**: MIT OR Apache-2.0
-- **Repository**: https://github.com/microsoft/windows-rs
-
-### windows_aarch64_msvc v0.42.2
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/microsoft/windows-rs
@@ -2029,22 +2049,7 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/microsoft/windows-rs
 
-### windows_aarch64_msvc v0.53.1
-
-- **License**: MIT OR Apache-2.0
-- **Repository**: https://github.com/microsoft/windows-rs
-
-### windows_i686_gnu v0.42.2
-
-- **License**: MIT OR Apache-2.0
-- **Repository**: https://github.com/microsoft/windows-rs
-
 ### windows_i686_gnu v0.52.6
-
-- **License**: MIT OR Apache-2.0
-- **Repository**: https://github.com/microsoft/windows-rs
-
-### windows_i686_gnu v0.53.1
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/microsoft/windows-rs
@@ -2054,27 +2059,7 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/microsoft/windows-rs
 
-### windows_i686_gnullvm v0.53.1
-
-- **License**: MIT OR Apache-2.0
-- **Repository**: https://github.com/microsoft/windows-rs
-
-### windows_i686_msvc v0.42.2
-
-- **License**: MIT OR Apache-2.0
-- **Repository**: https://github.com/microsoft/windows-rs
-
 ### windows_i686_msvc v0.52.6
-
-- **License**: MIT OR Apache-2.0
-- **Repository**: https://github.com/microsoft/windows-rs
-
-### windows_i686_msvc v0.53.1
-
-- **License**: MIT OR Apache-2.0
-- **Repository**: https://github.com/microsoft/windows-rs
-
-### windows_x86_64_gnu v0.42.2
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/microsoft/windows-rs
@@ -2084,27 +2069,7 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/microsoft/windows-rs
 
-### windows_x86_64_gnu v0.53.1
-
-- **License**: MIT OR Apache-2.0
-- **Repository**: https://github.com/microsoft/windows-rs
-
-### windows_x86_64_gnullvm v0.42.2
-
-- **License**: MIT OR Apache-2.0
-- **Repository**: https://github.com/microsoft/windows-rs
-
 ### windows_x86_64_gnullvm v0.52.6
-
-- **License**: MIT OR Apache-2.0
-- **Repository**: https://github.com/microsoft/windows-rs
-
-### windows_x86_64_gnullvm v0.53.1
-
-- **License**: MIT OR Apache-2.0
-- **Repository**: https://github.com/microsoft/windows-rs
-
-### windows_x86_64_msvc v0.42.2
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/microsoft/windows-rs
@@ -2114,52 +2079,42 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/microsoft/windows-rs
 
-### windows_x86_64_msvc v0.53.1
-
-- **License**: MIT OR Apache-2.0
-- **Repository**: https://github.com/microsoft/windows-rs
-
-### winnow v1.0.3
+### winnow v1.0.5
 
 - **License**: MIT
 - **Repository**: https://github.com/winnow-rs/winnow
 
-### wit-bindgen v0.46.0
-
-- **License**: Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
-- **Repository**: https://github.com/bytecodealliance/wit-bindgen
-
-### writeable v0.6.3
+### writeable v0.6.4
 
 - **License**: Unicode-3.0
 - **Repository**: https://github.com/unicode-org/icu4x
 
-### xattr v1.6.1
+### xattr v1.7.0
 
 - **License**: MIT OR Apache-2.0
 - **Repository**: https://github.com/Stebalien/xattr
 
-### xxhash-rust v0.8.15
+### xxhash-rust v0.8.19
 
 - **License**: BSL-1.0
 - **Repository**: https://github.com/DoumanAsh/xxhash-rust
 
-### yoke v0.8.3
+### yoke v0.8.4
 
 - **License**: Unicode-3.0
 - **Repository**: https://github.com/unicode-org/icu4x
 
-### yoke-derive v0.8.2
+### yoke-derive v0.8.4
 
 - **License**: Unicode-3.0
 - **Repository**: https://github.com/unicode-org/icu4x
 
-### zerocopy v0.8.52
+### zerocopy v0.8.63
 
 - **License**: BSD-2-Clause OR Apache-2.0 OR MIT
 - **Repository**: https://github.com/google/zerocopy
 
-### zerocopy-derive v0.8.52
+### zerocopy-derive v0.8.63
 
 - **License**: BSD-2-Clause OR Apache-2.0 OR MIT
 - **Repository**: https://github.com/google/zerocopy
@@ -2169,47 +2124,52 @@ platform-specific dependencies; not every entry ships in every binary.
 - **License**: Unicode-3.0
 - **Repository**: https://github.com/unicode-org/icu4x
 
-### zerofrom-derive v0.1.7
+### zerofrom-derive v0.1.8
 
 - **License**: Unicode-3.0
 - **Repository**: https://github.com/unicode-org/icu4x
 
-### zeroize v1.9.0
+### zeroize v1.9.1
 
 - **License**: Apache-2.0 OR MIT
 - **Repository**: https://github.com/RustCrypto/utils
 
-### zerotrie v0.2.4
+### zerotrie v0.2.5
 
 - **License**: Unicode-3.0
 - **Repository**: https://github.com/unicode-org/icu4x
 
-### zerovec v0.11.6
+### zerovec v0.11.9
 
 - **License**: Unicode-3.0
 - **Repository**: https://github.com/unicode-org/icu4x
 
-### zerovec-derive v0.11.3
+### zerovec-derive v0.11.7
 
 - **License**: Unicode-3.0
 - **Repository**: https://github.com/unicode-org/icu4x
 
-### zmij v1.0.21
+### zlib-rs v0.6.8
+
+- **License**: Zlib
+- **Repository**: https://github.com/trifectatechfoundation/zlib-rs
+
+### zmij v1.0.23
 
 - **License**: MIT
 - **Repository**: https://github.com/dtolnay/zmij
 
-### zstd v0.13.4
+### zstd v0.14.4
 
 - **License**: BSD-3-Clause
 - **Repository**: https://github.com/gyscos/zstd-rs
 
-### zstd-safe v7.4.0
+### zstd-safe v8.3.0
 
 - **License**: BSD-3-Clause
 - **Repository**: https://github.com/gyscos/zstd-rs
 
-### zstd-sys v2.1.2+zstd.1.5.7
+### zstd-sys v2.1.3+zstd.1.5.7
 
-- **License**: BSD-3-Clause
+- **License**: BSD-3-Clause AND BSD-2-Clause
 - **Repository**: https://github.com/gyscos/zstd-rs

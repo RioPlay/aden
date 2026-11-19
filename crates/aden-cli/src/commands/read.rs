@@ -4,11 +4,10 @@
 //! Direct source evidence. This path deliberately does not open or refresh a graph.
 
 use super::AgentCliError;
+use aden_core::source::{SourceError, StoredSourceReader, read_direct_source};
 use serde_json::json;
-use std::io::Read;
-use std::path::{Component, Path};
+use std::path::Path;
 
-const MAX_SOURCE_BYTES: u64 = 16 * 1024 * 1024;
 // Even JSON's worst-case escaping fits comfortably inside MCP's 64 KiB ceiling.
 const MAX_TEXT_BYTES: usize = 8192;
 
@@ -23,6 +22,7 @@ fn read_error(code: &'static str, message: &str) -> AgentCliError {
 pub struct ReadOptions {
     pub start_line: usize,
     pub end_line: Option<usize>,
+    pub all_lines: bool,
     pub max_bytes: usize,
     pub expected_hash: Option<String>,
     pub start_byte: Option<usize>,
@@ -37,6 +37,7 @@ pub fn cmd_read(
     let ReadOptions {
         mut start_line,
         end_line,
+        all_lines,
         max_bytes,
         expected_hash,
         start_byte: cursor,
@@ -47,98 +48,10 @@ pub fn cmd_read(
     {
         return Err(read_error("invalid_read_range", "Invalid source range or byte limit").into());
     }
-    if file.as_os_str().is_empty()
-        || file
-            .components()
-            .any(|part| !matches!(part, Component::Normal(_) | Component::CurDir))
-    {
-        return Err(read_error(
-            "source_boundary",
-            "File must be project-relative without parent traversal",
-        )
-        .into());
-    }
-    #[cfg(windows)]
-    if file.to_string_lossy().contains(':') {
-        return Err(read_error(
-            "source_boundary",
-            "Alternate data streams are not source files",
-        )
-        .into());
-    }
-    if !path.is_dir() {
-        return Err(read_error("invalid_read_root", "Project directory is unavailable").into());
-    }
-    // The supplied directory is the exact read boundary. Expanding a nested
-    // workspace to its enclosing Git root would grant access outside that root.
-    let root = std::fs::canonicalize(path)?;
-    let candidate = root.join(file);
-    let real_path = std::fs::canonicalize(&candidate)
-        .map_err(|_| read_error("source_unavailable", "Source file is unavailable"))?;
-    if !real_path.starts_with(&root) {
-        return Err(read_error("source_boundary", "Source path escapes the project").into());
-    }
-    // Access scope and policy scope are separate: selecting a subdirectory
-    // must not bypass the enclosing project's exclusions.
-    let policy_root = std::fs::canonicalize(crate::util::find_project_root(&root))?;
-    let mut policy_roots = vec![root.clone()];
-    if policy_root != root {
-        policy_roots.push(policy_root);
-    }
-    let excluded = policy_roots.iter().any(|base| {
-        let filter = aden_core::filter::AdenFilter::from_directory(base);
-        [&candidate, &real_path].iter().any(|target| {
-            target.strip_prefix(base).is_ok_and(|relative| {
-                relative
-                    .ancestors()
-                    .any(|part| !part.as_os_str().is_empty() && filter.should_skip(part))
-            })
-        })
-    });
-    if excluded {
-        return Err(read_error(
-            "source_excluded",
-            "Source file is excluded by project policy",
-        )
-        .into());
-    }
-    // Reject devices/FIFOs before opening; opening a FIFO can block indefinitely.
-    let metadata = std::fs::metadata(&real_path)?;
-    if !metadata.is_file() || metadata.len() > MAX_SOURCE_BYTES {
-        return Err(read_error(
-            "source_size_limit",
-            "Source must be a regular file of at most 16 MiB",
-        )
-        .into());
-    }
-    let source = std::fs::File::open(&real_path)?;
-    let before = source.metadata()?;
-    if !before.is_file() || before.len() > MAX_SOURCE_BYTES {
-        return Err(read_error(
-            "source_size_limit",
-            "Source must be a regular file of at most 16 MiB",
-        )
-        .into());
-    }
-    let mut bytes = Vec::new();
-    (&source)
-        .take(MAX_SOURCE_BYTES + 1)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > MAX_SOURCE_BYTES {
-        return Err(read_error("source_size_limit", "Source exceeds the 16 MiB read limit").into());
-    }
-    let after = source.metadata()?;
-    if before.len() != after.len() || before.modified().ok() != after.modified().ok() {
-        return Err(read_error("source_changed", "Source changed during the read; retry").into());
-    }
-    let content = std::str::from_utf8(&bytes)
-        .map_err(|_| read_error("source_encoding", "Source is not valid UTF-8"))?;
-    if content.contains('\0') {
-        return Err(read_error("source_encoding", "Source contains binary NUL bytes").into());
-    }
+    let (root, real_path, content) = read_direct_source(path, file).map_err(source_error)?;
     // Change detection, not an authenticity or cryptographic security assertion.
     // Hash literal bytes so CRLF/LF differences remain observable.
-    let source_hash = aden_core::stable_hash(&bytes);
+    let source_hash = aden_core::stable_hash(content.as_bytes());
     if expected_hash
         .as_deref()
         .is_some_and(|expected| expected != source_hash)
@@ -159,8 +72,7 @@ pub fn cmd_read(
             .count()
             + 1;
     }
-    let end_line = end_line.unwrap_or_else(|| start_line.saturating_add(199));
-    if end_line < start_line {
+    if end_line.is_some_and(|end| end < start_line) {
         return Err(read_error(
             "invalid_read_range",
             "End line precedes the byte continuation",
@@ -178,6 +90,13 @@ pub fn cmd_read(
         )
         .into());
     }
+    let end_line = end_line.unwrap_or_else(|| {
+        if all_lines {
+            total_lines.max(start_line)
+        } else {
+            start_line.saturating_add(199)
+        }
+    });
     let selected_end = end_line.min(total_lines);
     let mut text = String::new();
     let mut actual_end = None;
@@ -246,7 +165,7 @@ pub fn cmd_read(
             "source_hash": source_hash,
             "hash_algorithm": "aden-core-stable-v1",
             "expected_hash_matched": expected_hash.as_ref().map(|_| true),
-            "file_bytes": bytes.len(),
+            "file_bytes": content.len(),
             "total_lines": total_lines,
             "requested_start_line": start_line,
             "requested_end_line": end_line,
@@ -265,10 +184,91 @@ pub fn cmd_read(
         print!("{text}");
         if truncated {
             eprintln!(
-                "Source excerpt clipped; continue with --start-byte {} --end-line {end_line} --expected-hash {source_hash}.",
+                "Source excerpt clipped; use --json for hash-pinned continuation details (next byte {}, end line {end_line}, expected hash {source_hash}).",
                 start_byte + text.len()
             );
         }
     }
     Ok(())
+}
+
+fn source_error(error: SourceError) -> Box<dyn std::error::Error> {
+    match error {
+        SourceError::Io(error) => error.into(),
+        SourceError::Rejected { code, message } => read_error(code, message).into(),
+    }
+}
+
+pub(super) fn read_stored_source(
+    path: &Path,
+    file: &Path,
+) -> Result<String, Box<dyn std::error::Error>> {
+    StoredSourceReader::new(path)?
+        .read(file)
+        .map_err(source_error)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stored_passage_sources_obey_project_scope_and_read_policy() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("project");
+        std::fs::create_dir(&root).unwrap();
+        let doc = root.join("guide.adoc");
+        std::fs::write(&doc, "Crème\r\n").unwrap();
+        for path in [Path::new("guide.adoc"), doc.as_path()] {
+            assert_eq!(read_stored_source(&root, path).unwrap(), "Crème\r\n");
+        }
+        #[cfg(windows)]
+        {
+            let alternate = fixture.path().join("PROJECT").join("guide.adoc");
+            if alternate.is_file() {
+                assert_eq!(read_stored_source(&root, &alternate).unwrap(), "Crème\r\n");
+            }
+        }
+        let outside = fixture.path().join("other.adoc");
+        std::fs::write(&outside, "synthetic-private-marker").unwrap();
+        std::fs::write(root.join(".env"), "synthetic-private-marker").unwrap();
+        std::fs::write(
+            root.join("changed.adoc"),
+            concat!(
+                "-----BEGIN ",
+                "PRIVATE ",
+                "KEY-----\nsynthetic-private-marker"
+            ),
+        )
+        .unwrap();
+        std::fs::write(root.join("binary.adoc"), [0xff]).unwrap();
+        for path in [
+            Path::new("../other.adoc"),
+            outside.as_path(),
+            Path::new(".env"),
+            Path::new("changed.adoc"),
+            Path::new("binary.adoc"),
+            Path::new("missing.adoc"),
+        ] {
+            let err = read_stored_source(&root, path).unwrap_err();
+            assert!(!err.to_string().contains("synthetic-private-marker"));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+            let alias = fixture.path().join("root-alias");
+            symlink(&root, &alias).unwrap();
+            assert_eq!(
+                read_stored_source(&alias, &alias.join("guide.adoc")).unwrap(),
+                "Crème\r\n"
+            );
+            symlink(&doc, root.join("allowed.adoc")).unwrap();
+            symlink(&outside, root.join("outside.adoc")).unwrap();
+            assert_eq!(
+                read_stored_source(&root, Path::new("allowed.adoc")).unwrap(),
+                "Crème\r\n"
+            );
+            assert!(read_stored_source(&root, Path::new("outside.adoc")).is_err());
+        }
+    }
 }

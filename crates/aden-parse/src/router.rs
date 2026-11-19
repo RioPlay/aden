@@ -180,7 +180,21 @@ impl LanguageRouter {
 
         // 1. Try a deep extractor first.
         if let Some(extractor) = self.by_extension.get(ext) {
-            return extractor.extract_documents(source, path);
+            let scope = match ext {
+                "rs" | "py" | "go" | "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" | "c" | "h"
+                | "java" | "kt" | "kts" | "cs" | "rb" | "php" => "static_relationships",
+                _ => "document_structure",
+            };
+            let mut docs = annotate_analysis(
+                extractor.extract_documents(source, path)?,
+                extractor.language_id(),
+                scope,
+            )?;
+            if matches!(ext, "c" | "h") {
+                // Mapped APIs preserve their narrower source-only provenance.
+                docs.extend(crate::macro_declarations::discover(source, path));
+            }
+            return Ok(docs);
         }
 
         // 2. Fall back to generic tree-sitter extraction if the language pack
@@ -189,13 +203,32 @@ impl LanguageRouter {
         {
             if let Some(lang_id) = ext_to_language_pack_id(ext) {
                 let generic = GenericExtractor::new(lang_id);
-                return generic.extract_documents(source, path);
+                return annotate_analysis(
+                    generic.extract_documents(source, path)?,
+                    lang_id,
+                    "symbols_only",
+                );
             }
         }
 
         // 3. Nothing handles this extension.
         Err(Error::UnsupportedLanguage(ext.to_string()))
     }
+}
+
+/// Persist the extractor route, rather than guessing capabilities from a query's
+/// extension or treating a fresh index as a complete semantic model.
+fn annotate_analysis(
+    mut docs: Vec<Document>,
+    language: &str,
+    scope: &str,
+) -> Result<Vec<Document>> {
+    for doc in &mut docs {
+        doc.attributes
+            .insert("analysis_language".into(), language.into());
+        doc.attributes.insert("analysis_scope".into(), scope.into());
+    }
+    Ok(docs)
 }
 
 /// Map a file extension to the canonical name used by
@@ -590,5 +623,39 @@ mod ext_table_tests {
                 needle
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod analysis_scope_tests {
+    use super::*;
+
+    #[test]
+    fn records_static_route_without_claiming_semantic_completeness() {
+        let docs = LanguageRouter::new()
+            .parse_file(Path::new("sample.rs"), "fn entry() {} ")
+            .unwrap();
+        assert!(!docs.is_empty());
+        assert!(
+            docs.iter()
+                .all(|d| d.attributes["analysis_scope"] == "static_relationships")
+        );
+        assert!(
+            docs.iter()
+                .all(|d| d.attributes["analysis_language"] == "rust")
+        );
+    }
+
+    #[cfg(feature = "generic")]
+    #[test]
+    fn generic_route_does_not_claim_call_analysis() {
+        let docs = LanguageRouter::new()
+            .parse_file(Path::new("sample.cpp"), "int entry() { return 1; }")
+            .unwrap();
+        assert!(!docs.is_empty());
+        assert!(
+            docs.iter()
+                .all(|d| d.attributes["analysis_scope"] == "symbols_only")
+        );
     }
 }

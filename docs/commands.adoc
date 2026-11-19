@@ -1349,6 +1349,15 @@ aden store path
 # List all per-user project stores and their real roots
 aden store list
 
+# Preview generated storage cleanup for this project (no deletion)
+aden store clean . --json
+
+# Remove index/embedding caches, keeping the graph
+aden store clean . --scope cache --apply
+
+# Remove generated graph and caches, then rebuild on the next graph read
+aden store clean . --scope all --apply
+
 # Remove stores whose project root no longer exists on disk
 aden store prune
 
@@ -1361,9 +1370,19 @@ aden store migrate
 
 |path |Print the resolved store path for the current project
 |list |List all per-user project stores and their real roots
+|clean |Preview generated cleanup; `--scope cache`, `graph`, or `all`; requires `--apply` to delete
 |prune |Remove stores whose project root no longer exists on disk
 |migrate |Move a legacy in-tree store (`.aden/store`) to the central location
 |===
+
+Cleanup preserves source, models, project configuration, overlays and other
+durable intent. It leaves lock files and generation recovery metadata in place.
+It refuses active generation or writers, symbolic links/reparse points and a
+shared `ADEN_STORE` override. Failed removals return an error; successful removals
+are checked on disk. Readers may need to finish before cleanup succeeds on Windows.
+Graph cleanup removes the generated store, snapshot and incremental generation
+cache; cache cleanup removes retrieval, embedding and drift caches. Only the
+listed generated paths are selected, never the whole `.aden` directory.
 
 == Watch Mode
 
@@ -1523,16 +1542,23 @@ rules as `gen`, so build output, vendored dependencies, and optional ignore
 paths are omitted. Use `--symbols` for a token-lean code map: exact
 copy/pasteable symbol names and affected line ranges grouped by source file,
 without source bodies or prose-document headings. Normal symbol output is
-bounded to 4,096 symbols and 96 KiB. A truncated JSON result reports total and
+bounded to 768 symbols and a 12 KiB outline budget. A truncated JSON result reports total and
 returned counts plus a recovery action; rerun on a project-relative subtree or
 use global `--unlimited` explicitly. The default JSON wraps the outline in one
 string so it does not repeat field names per symbol. Use `--depth` for the
 graphical folder view and `--symbol-depth` for nested definitions there.
 
+Use `--files` to list all discoverable source paths, including documentation,
+configuration and files without recognized symbols. This bounded `files-v1`
+view retains project-relative paths and total/returned counts; its recovery
+actions preserve file mode. Over MCP, select it with `symbols=false`.
+`--files` conflicts with `--symbols`. See <<project-file-browsing>>.
+
 [source,bash]
 ----
 aden tree --symbols .             # bounded LLM/codebase summary
 aden tree --symbols crates/api    # scope a large repository
+aden tree --files docs            # discover documents and other source paths
 aden --unlimited tree --symbols . # explicitly request the complete outline
 aden tree --human --symbols .     # same outline without JSON receipt
 aden tree --human . --depth 2     # graphical folder view

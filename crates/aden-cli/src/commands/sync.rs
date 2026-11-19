@@ -4,8 +4,8 @@
 use std::path::Path;
 
 /// `aden sync`: generate contracts, check references, and scan for drift.
-/// All phases run so one failure does not hide later diagnostics, but the final
-/// status is an error when any phase failed. Garbage collection is explicit:
+/// Dependent phases require completed generation. Check and drift failures are
+/// collected after that gate. Garbage collection is explicit:
 /// `--gc` is opt-in because it removes store data.
 pub fn cmd_sync(path: &Path, gc: bool, unlimited: bool) -> Result<(), Box<dyn std::error::Error>> {
     println!("Running aden sync on {}...", path.display());
@@ -14,7 +14,9 @@ pub fn cmd_sync(path: &Path, gc: bool, unlimited: bool) -> Result<(), Box<dyn st
     println!("\n[1/3] Generating contracts...");
     if let Err(error) = crate::commands::cmd_gen(path, true) {
         eprintln!("Gen error: {error}");
-        failures.push(format!("gen: {error}"));
+        return Err(std::io::Error::other(format!(
+            "sync stopped before dependent checks or garbage collection: generation did not complete: {error}"
+        )).into());
     }
 
     println!("\n[2/3] Checking references...");

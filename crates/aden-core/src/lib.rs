@@ -3,13 +3,14 @@
 //! Universal schema for the Aden referential context compiler.
 //!
 //! This crate defines the knowledge graph types used across all other crates.
-//! It has no dependencies on parsing, I/O, or emission logic.
+//! It has no dependencies on parsing or emission logic.
 
 pub mod contract;
 pub mod filter;
 pub mod lock;
 pub mod overlay;
 pub mod receipt;
+pub mod source;
 
 pub mod staging;
 pub mod symbol;
@@ -34,13 +35,17 @@ pub fn stable_hash(bytes: &[u8]) -> String {
 /// (`build_code_attributes`) and the reader (heal `Scanner`) MUST route source
 /// text through this function so the hashes agree across platforms.
 pub fn hash_source(text: &str) -> String {
-    // Normalize CRLF and lone CR to LF, then hash.
-    let normalized = if text.contains('\r') {
-        text.replace("\r\n", "\n").replace('\r', "\n")
-    } else {
-        text.to_string()
+    let Some(first_cr) = text.find('\r') else {
+        return stable_hash(text.as_bytes());
     };
-    stable_hash(normalized.as_bytes())
+    let mut normalized = text.replace("\r\n", "\n").into_bytes();
+    // Collapsing CRLF preserves every byte before the first CR.
+    for byte in &mut normalized[first_cr..] {
+        if *byte == b'\r' {
+            *byte = b'\n';
+        }
+    }
+    stable_hash(&normalized)
 }
 
 /// Current UTC time formatted as RFC 3339 (`YYYY-MM-DDTHH:MM:SSZ`).

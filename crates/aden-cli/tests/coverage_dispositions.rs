@@ -37,6 +37,7 @@ fn run_with_parse_failure(project: &Path, data: &Path, path: &str, args: &[&str]
         .expect("aden binary")
 }
 
+#[cfg(unix)]
 fn run_with_env(project: &Path, data: &Path, args: &[&str], key: &str, value: &str) -> Output {
     Command::new(env!("CARGO_BIN_EXE_aden"))
         .args(args)
@@ -47,6 +48,7 @@ fn run_with_env(project: &Path, data: &Path, args: &[&str], key: &str, value: &s
         .expect("aden binary")
 }
 
+#[cfg(unix)]
 fn freshness_manifest(project: &Path, data: &Path) -> PathBuf {
     data.join("projects")
         .join(aden_paths::project_key(project))

@@ -38,7 +38,7 @@ fn search_cursor_is_revision_and_query_bound_with_typed_continuation() {
     assert_eq!(first["returned"], 1);
     assert_eq!(first["truncated"], true);
     let cursor = first["next_cursor"].as_str().unwrap();
-    assert!(cursor.starts_with("v1:"));
+    assert!(cursor.starts_with("v2:"));
     assert_eq!(first["next_actions"][0]["tool"], "search");
     assert_eq!(first["next_actions"][0]["arguments"]["cursor"], cursor);
 

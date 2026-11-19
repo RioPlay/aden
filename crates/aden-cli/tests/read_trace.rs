@@ -71,6 +71,50 @@ fn trace(output: &Output) -> Value {
 }
 
 #[test]
+fn spans_are_loaded_only_for_results_that_use_symbols() {
+    let fixture = Fixture::new();
+    for (args, calls) in [
+        (vec!["tree", "--files"], 0),
+        (vec!["tree", "--symbols"], 1),
+        (vec!["grep", "no_such_symbol_here"], 0),
+        (vec!["grep", "--symbol-only", "no_such_symbol_here"], 0),
+        (vec!["grep", "--limit", "0", "trace_fixture"], 0),
+        (
+            vec!["grep", "--symbol-only", "--limit", "0", "trace_fixture"],
+            1,
+        ),
+        (vec!["grep", "trace_fixture"], 1),
+    ] {
+        let output = fixture.run(&args, true, false);
+        assert_eq!(
+            trace(&output)["stages"]["source_spans"]["calls"],
+            calls,
+            "{args:?}"
+        );
+        let data: Value = serde_json::from_slice(&output.stdout).unwrap();
+        if args == ["grep", "trace_fixture"] {
+            assert!(
+                data["matches"][0]["anchor"]
+                    .as_str()
+                    .unwrap()
+                    .ends_with("#trace_fixture")
+            );
+        } else if args == ["tree", "--files"] {
+            assert!(data["outline"].as_str().unwrap().contains("lib.rs"));
+            assert_eq!(data["returned_symbol_count"], 0);
+        }
+    }
+
+    let mut invalid = "trace_fixture\n".repeat(9_000).into_bytes();
+    invalid.push(0xff);
+    std::fs::write(fixture.root.path().join("invalid.bin"), invalid).unwrap();
+    let output = fixture.run(&["grep", "trace_fixture", "invalid.bin"], true, false);
+    assert_eq!(trace(&output)["stages"]["source_spans"]["calls"], 0);
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["total"], 0);
+}
+
+#[test]
 fn disabled_trace_leaves_source_output_and_stderr_unchanged() {
     let fixture = Fixture::new();
     let plain = fixture.run(&["read", "lib.rs"], false, false);
@@ -183,4 +227,40 @@ fn tracing_cannot_append_diagnostics_to_machine_errors() {
     let error: Value = serde_json::from_slice(&output.stderr).unwrap();
     assert_eq!(error["error"]["code"], "source_unavailable");
     assert!(!String::from_utf8_lossy(&output.stderr).contains("aden_read_trace"));
+}
+
+#[test]
+fn query_trace_attributes_resolution_and_graph_loading_without_evidence_text() {
+    let fixture = Fixture::new();
+    let args = [
+        "query",
+        "--from",
+        "trace_fixture",
+        "--depth",
+        "1",
+        "--edge-type",
+        "Calls",
+        "--format",
+        "json",
+    ];
+    let plain = fixture.run(&args, false, false);
+    assert!(
+        plain.status.success(),
+        "{}",
+        String::from_utf8_lossy(&plain.stderr)
+    );
+    assert!(!String::from_utf8_lossy(&plain.stderr).contains("aden_read_trace"));
+    let output = fixture.run(&args, true, false);
+    let telemetry = trace(&output);
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["context_receipt"]["freshness"], "current");
+    assert_eq!(result["items"].as_array().unwrap().len(), 1);
+    for stage in ["anchor_resolve", "graph_load"] {
+        assert_eq!(telemetry["stages"][stage]["calls"], 1);
+        assert!(telemetry["stages"][stage]["elapsed_us"].as_u64().unwrap() > 0);
+    }
+    let diagnostic = telemetry.to_string();
+    assert!(!diagnostic.contains("trace_fixture"));
+    assert!(!diagnostic.contains("lib.rs"));
+    assert!(!diagnostic.contains(fixture.root.path().to_string_lossy().as_ref()));
 }

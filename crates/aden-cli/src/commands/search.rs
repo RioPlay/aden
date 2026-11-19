@@ -28,7 +28,8 @@ fn anchor_matches_doc_type(anchor: &str, dtl: &str) -> bool {
     }
 }
 
-const SEARCH_CURSOR_VERSION: &str = "v1";
+// Offsets from the older identifier ranking can skip or repeat results.
+const SEARCH_CURSOR_VERSION: &str = "v2";
 
 fn search_scope_hash(query: &str, doc_type: Option<&str>, semantics: bool) -> u64 {
     let mut hash = 0xcbf29ce484222325_u64;
@@ -494,9 +495,9 @@ mod cursor_tests {
     fn cursor_round_trips_and_rejects_malformed_values() {
         let cursor = encode_search_cursor("revision", 0x1234, 42);
         assert_eq!(decode_search_cursor(&cursor), Ok(("revision", 0x1234, 42)));
-        assert!(decode_search_cursor("v2:revision:0000000000001234:42").is_err());
-        assert!(decode_search_cursor("v1:revision:wrong:42").is_err());
-        assert!(decode_search_cursor("v1:revision:0000000000001234:nope").is_err());
+        assert!(decode_search_cursor("v1:revision:0000000000001234:42").is_err());
+        assert!(decode_search_cursor("v2:revision:wrong:42").is_err());
+        assert!(decode_search_cursor("v2:revision:0000000000001234:nope").is_err());
     }
 
     #[test]

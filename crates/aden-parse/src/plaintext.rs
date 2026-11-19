@@ -5,9 +5,7 @@
 //!
 //! Treats plain text files as single documents.
 
-use crate::extractor::{
-    build_code_attributes, infer_project_name, infer_project_root, project_relative_file,
-};
+use crate::extractor::{CodeSource, infer_project_name, infer_project_root, project_relative_file};
 use aden_core::{Block, Document, NodeType, Result};
 use std::path::Path;
 
@@ -35,6 +33,7 @@ impl crate::extractor::LanguageExtractor for PlainTextExtractor {
     }
 
     fn extract_documents(&self, source: &str, path: &Path) -> Result<Vec<Document>> {
+        let file_source = CodeSource::new(source, path);
         let crate_name = infer_project_name(path);
         let project_root = infer_project_root(path);
         let file_name = project_relative_file(path, &project_root);
@@ -61,7 +60,7 @@ impl crate::extractor::LanguageExtractor for PlainTextExtractor {
                     start_byte: para.start_byte,
                     end_byte: para.end_byte,
                 };
-                let attrs = build_code_attributes(source, "note", Some(path), Some(&span));
+                let attrs = file_source.attributes("note", &span);
                 Document {
                     // Notes are prose, not code modules. The doc scheme is a
                     // routing contract: `ask` uses it to suppress code-only
@@ -84,7 +83,7 @@ impl crate::extractor::LanguageExtractor for PlainTextExtractor {
         // Empty / whitespace-only file: keep one placeholder node so the file
         // still appears in the graph and stays locatable.
         let span = crate::extractor::whole_file_span(source, path);
-        let attrs = build_code_attributes(source, "note", Some(path), Some(&span));
+        let attrs = file_source.attributes("note", &span);
         Ok(vec![Document {
             anchor: format!("aden://doc/{crate_name}/{file_name}#p0"),
             node_type: NodeType::Note,

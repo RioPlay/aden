@@ -19,6 +19,7 @@ pub mod generic;
 pub mod go_resolver;
 pub mod java_resolver;
 pub mod kotlin_resolver;
+pub mod macro_declarations;
 pub mod markdown;
 pub mod php_resolver;
 pub mod plaintext;

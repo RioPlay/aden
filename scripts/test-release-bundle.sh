@@ -107,6 +107,63 @@ if "$BUNDLE/install.sh" --install-dir "$DEST" 2>/dev/null; then
     echo "Installer unexpectedly overwrote existing binaries" >&2; exit 1
 fi
 "$BUNDLE/install.sh" --install-dir "$DEST" --force
+# A failure while backing up the second original must not delete that untouched
+# original or leave a mixed pair. The wrapper fails only that specific move.
+for name in aden aden-mcp; do
+    printf '#!/usr/bin/env sh\necho "old-%s"\n' "$name" > "$DEST/$name"
+    chmod +x "$DEST/$name"
+done
+MV_PATH="$TMP/mv-wrapper"
+mkdir "$MV_PATH"
+cat > "$MV_PATH/mv" <<'EOF'
+#!/usr/bin/env sh
+if [ "${2##*/}" = "backup-aden-mcp" ] && [ "${1%/*}" = "$ADEN_FAIL_BACKUP_DEST" ]; then
+    exit 71
+fi
+if [ "${ADEN_FAIL_RESTORE:-0}" = 1 ] && [ "${1##*/}" = "backup-aden" ] && [ "${2%/*}" = "$ADEN_FAIL_BACKUP_DEST" ]; then
+    exit 72
+fi
+command -p mv "$@"
+EOF
+chmod +x "$MV_PATH/mv"
+if ADEN_FAIL_BACKUP_DEST="$DEST" PATH="$MV_PATH:$PATH" "$BUNDLE/install.sh" --install-dir "$DEST" --force 2>/dev/null; then
+    echo "Installer unexpectedly succeeded when the second backup move failed" >&2; exit 1
+else
+    test "$?" -eq 71
+fi
+test "$("$DEST/aden")" = "old-aden"
+test "$("$DEST/aden-mcp")" = "old-aden-mcp"
+test -z "$(find "$DEST" -name '.aden-install.*' -print)"
+if ADEN_FAIL_RESTORE=1 ADEN_FAIL_BACKUP_DEST="$DEST" PATH="$MV_PATH:$PATH" "$BUNDLE/install.sh" --install-dir "$DEST" --force > "$TMP/recovery.log" 2>&1; then
+    echo "Installer unexpectedly succeeded when rollback failed" >&2; exit 1
+else
+    test "$?" -eq 71
+fi
+test "$("$DEST/aden-mcp")" = "old-aden-mcp"
+backup="$(find "$DEST" -name 'backup-aden' -type f -print)"
+test -n "$backup"
+test "$("$backup")" = "old-aden"
+grep -Fq "$backup" "$TMP/recovery.log"
+mv "$backup" "$DEST/aden"
+"$BUNDLE/install.sh" --install-dir "$DEST" --force
+# A dangling symlink is an occupied destination and must survive a refused
+# non-force install.
+LINK_DEST="$TMP/link destination"
+mkdir "$LINK_DEST"
+ln -s "$TMP/missing-target" "$LINK_DEST/aden"
+if "$BUNDLE/install.sh" --install-dir "$LINK_DEST" 2>/dev/null; then
+    echo "Installer ignored a dangling destination symlink" >&2; exit 1
+fi
+test -L "$LINK_DEST/aden"
+test ! -e "$LINK_DEST/aden-mcp"
+DIR_DEST="$TMP/directory destination"
+mkdir -p "$DIR_DEST/aden-mcp"
+printf 'keep\n' > "$DIR_DEST/aden-mcp/user-file"
+if "$BUNDLE/install.sh" --install-dir "$DIR_DEST" --force 2>/dev/null; then
+    echo "Installer accepted an existing directory as a binary" >&2; exit 1
+fi
+test "$(cat "$DIR_DEST/aden-mcp/user-file")" = keep
+test ! -e "$DIR_DEST/aden"
 # Malformed checksum manifests must fail closed without changing the live pair.
 cp "$BUNDLE/SHA256SUMS" "$TMP/good-sums"
 printf '%s\n' 'unexpected checksum content' >> "$BUNDLE/SHA256SUMS"
@@ -145,7 +202,7 @@ cp "$TMP/good-sums" "$BUNDLE/SHA256SUMS"
 # parser and rollback invariants here, while Windows CI executes the installer.
 grep -Fq '$Expected.Count -ne 2' "$ROOT/release/install.ps1"
 grep -Fq 'Duplicate SHA256SUMS entry' "$ROOT/release/install.ps1"
-grep -Fq 'restored the previous Aden binary pair' "$ROOT/release/install.ps1"
+grep -Fq 'Recovery files were kept in $Stage' "$ROOT/release/install.ps1"
 grep -Fq 'Staged aden-mcp.exe smoke check failed' "$ROOT/release/install.ps1"
 "$BUNDLE/install.sh" --install-dir "$DEST" --uninstall
 test ! -e "$DEST/aden" && test ! -e "$DEST/aden-mcp"

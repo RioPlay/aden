@@ -9,9 +9,12 @@
 //!
 //! Built on the official `rmcp` Rust SDK.
 
+#[cfg(test)]
+mod generation_tools_tests;
 pub mod navigation;
 #[cfg(test)]
 mod navigation_tests;
+mod resident;
 
 use percent_encoding::percent_decode_str;
 use rmcp::{
@@ -114,6 +117,8 @@ pub struct AdenMcpServer {
     /// key includes the resolved project and normalized argv, never crosses a
     /// workspace boundary, and exists only until that child completes.
     in_flight_reads: Arc<Mutex<HashMap<String, watch::Receiver<Option<SharedReadResult>>>>>,
+    /// One replaceable, serial read worker. No mutable store handle crosses calls.
+    resident_reads: Arc<resident::ResidentReads>,
 }
 
 impl AdenMcpServer {
@@ -130,6 +135,7 @@ impl AdenMcpServer {
             pinned,
             command_slots: Arc::new(Semaphore::new(MAX_CONCURRENT_CLI_CHILDREN)),
             in_flight_reads: Arc::new(Mutex::new(HashMap::new())),
+            resident_reads: Arc::new(resident::ResidentReads::default()),
         }
     }
 
@@ -230,7 +236,7 @@ const SERVER_INSTRUCTIONS: &str = r#"Use Aden for bounded repository evidence. K
 
 Known unique symbol -> understand for source and relationships, asm({"from":"helper"}) for bounded context, or query({"impact":"helper"}) for outgoing dependencies (replace helper). Ambiguous name -> locate and choose an anchor. Unknown implementation -> grep. Orientation -> tree. Inspect source and incoming references before edits.
 
-ask is optional heuristic discovery for one bounded conceptual question. Broad audits and exhaustive questions return needs_narrowing; do not paraphrase around that guard. Graph relationships may be inferred. Missing results do not prove absence. Check ambiguity, coverage, source verification and truncation; refine with grep/read as needed. A file read makes no graph-freshness claim. Use native Git/build/test tools for history and external verification.
+Graph relationships may be inferred. Missing results do not prove absence. Check ambiguity, coverage, source verification and truncation; refine with grep/read as needed. A file read makes no graph-freshness claim. Use native Git/build/test tools for history and external verification.
 
 path defaults to the client workspace. At most two distinct calls run concurrently; retry server_busy after one completes. ADEN_MCP_SURFACE=standard or full enables additional tools."#;
 
@@ -256,9 +262,9 @@ const ESSENTIAL_TOOLS: &[&str] = &[
     "grep",
     "locate",
     "understand",
-    "ask",
     "asm",
     "query",
+    "generation_status",
 ];
 
 /// Keep the default MCP registry cheap enough to include in every model turn.
@@ -281,7 +287,6 @@ fn essential_arg_visible(tool: &str, arg: &str) -> bool {
         "grep" => matches!(arg, "pattern" | "path" | "regex"),
         "locate" => matches!(arg, "symbol" | "caller_of" | "path"),
         "understand" => matches!(arg, "symbol" | "path"),
-        "ask" => matches!(arg, "question" | "path" | "from"),
         "query" => matches!(
             arg,
             "from" | "backlinks" | "impact" | "path" | "edge_type" | "depth" | "max_results"
@@ -291,9 +296,10 @@ fn essential_arg_visible(tool: &str, arg: &str) -> bool {
     }
 }
 
-/// STANDARD surface (`ADEN_MCP_SURFACE=standard`): adds change-safety, verify, and
-/// orientation tools on top of Essential.
+/// STANDARD surface (`ADEN_MCP_SURFACE=standard`): adds optional heuristic
+/// discovery, change-safety, verify, and orientation tools on top of Essential.
 const STANDARD_TOOLS: &[&str] = &[
+    "ask",
     "check",
     "impact-diff",
     "list",
@@ -416,6 +422,7 @@ fn required_args(tool: &str) -> &'static [&'static str] {
         // CLI makes `status` optional (Option<String>); only id + task are required.
         "session" => &["agent_id", "task"],
         "emergency" => &["reason"],
+        "generation_cancel" => &["job_id"],
         _ => &[],
     }
 }
@@ -511,17 +518,6 @@ fn arg_enum(tool: &str, arg: &str) -> &'static [&'static str] {
     }
 }
 
-/// "At least one of" argument groups that a flat `required` list cannot express
-/// (that is an AND). Rendered as JSON-schema `anyOf: [{required: [...]}, …]`.
-/// `locate` needs one of `symbol`/`caller_of`; `validate_args` enforces the same
-/// rule at call time, so this is the schema-level hint for the same constraint.
-fn any_of_required(tool: &str) -> &'static [&'static [&'static str]] {
-    match tool {
-        "locate" => &[&["symbol"], &["caller_of"]],
-        _ => &[],
-    }
-}
-
 /// Cross-argument validation that a flat JSON-schema `required` list cannot
 /// express (e.g. "at least one of A or B"). Returns `Err(message)` when the
 /// constraint is violated. Runs after schema validation, before shelling out.
@@ -532,6 +528,15 @@ fn validate_args(
     let present = |k: &str| args.get(k).map(|v| !v.is_null()).unwrap_or(false);
     if tool == "locate" && !present("symbol") && !present("caller_of") {
         return Err("locate requires at least one of `symbol` or `caller_of`".to_string());
+    }
+    if tool == "gen" {
+        for unsupported in ["auto", "quiet", "propose", "force_regen", "force", "reset"] {
+            if present(unsupported) {
+                return Err(format!(
+                    "MCP gen always starts a durable background job; `{unsupported}` is unsupported. Use generation_start for the same safe operation, or use the CLI for foreground or mutating generation options"
+                ));
+            }
+        }
     }
     if let Some(action) = args.get("action").and_then(serde_json::Value::as_str) {
         let allowed = arg_enum(tool, "action");
@@ -873,21 +878,24 @@ fn apply_mcp_output_profile_default(
 }
 
 /// Agent-facing orientation should be bounded without requiring every model to
-/// remember a transport-specific hint. Keep the interactive CLI's graphical
-/// default, but make an omitted MCP `symbols` argument select the compact symbol
-/// outline. An explicit `false` remains an opt-out for callers that want the
-/// human-style tree.
+/// remember a transport-specific hint. An omitted `symbols` argument selects
+/// the compact symbol outline. Explicit `false` selects the structured file
+/// listing so documents and files without recognized symbols remain visible.
 fn apply_mcp_tree_default(
     tool: &str,
     args: &serde_json::Map<String, serde_json::Value>,
     cmd_args: &mut Vec<String>,
 ) {
-    if tool == "tree" && !args.contains_key("symbols") {
+    if tool == "tree" {
         let insert_at = cmd_args
             .iter()
             .position(|arg| arg == "--")
             .unwrap_or(cmd_args.len());
-        cmd_args.insert(insert_at, cli_flag(tool, "symbols"));
+        match args.get("symbols").and_then(serde_json::Value::as_bool) {
+            Some(false) => cmd_args.insert(insert_at, "--files".to_string()),
+            None => cmd_args.insert(insert_at, cli_flag(tool, "symbols")),
+            Some(true) => {}
+        }
     }
 }
 
@@ -899,6 +907,12 @@ pub fn prepare_cli_args_for_mcp(
     tool: &str,
     args: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<Vec<String>, String> {
+    if matches!(
+        tool,
+        "gen" | "generation_status" | "generation_start" | "generation_cancel"
+    ) {
+        return prepare_generation_cli_args(tool, args);
+    }
     let spec = TOOLS
         .iter()
         .find(|candidate| candidate.name == tool)
@@ -916,6 +930,74 @@ pub fn prepare_cli_args_for_mcp(
     apply_mcp_output_profile_default(tool, args, &mut cmd_args);
     apply_mcp_tree_default(tool, args, &mut cmd_args);
     Ok(cmd_args)
+}
+
+fn prepare_generation_cli_args(
+    tool: &str,
+    args: &serde_json::Map<String, serde_json::Value>,
+) -> Result<Vec<String>, String> {
+    let allowed: &[&str] = if tool == "generation_cancel" {
+        &["path", "job_id"]
+    } else {
+        &["path"]
+    };
+    for (name, value) in args {
+        if !allowed.contains(&name.as_str()) {
+            return Err(format!("unknown argument `{name}` for {tool}"));
+        }
+        if !value.is_null() && !value.is_string() {
+            return Err(format!("argument `{name}` must be a string"));
+        }
+    }
+    let path = args.get("path").and_then(serde_json::Value::as_str);
+    let job_id = args.get("job_id").and_then(serde_json::Value::as_str);
+    if tool == "generation_cancel" {
+        let Some(job_id) = job_id else {
+            return Err("generation_cancel requires `job_id`".to_string());
+        };
+        if job_id.is_empty()
+            || job_id.len() > 80
+            || !job_id
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() || byte == b'-')
+        {
+            return Err("job_id must contain 1 to 80 hexadecimal or hyphen characters".to_string());
+        }
+    }
+    if path.is_some_and(|path| path.starts_with('-')) {
+        return Err("path must not begin with `-`".to_string());
+    }
+
+    let mut argv = Vec::new();
+    match tool {
+        "generation_status" => {
+            argv.extend(["jobs".to_string(), "status".to_string()]);
+            if let Some(path) = path {
+                argv.push(path.to_string());
+            }
+            argv.push("--json".to_string());
+        }
+        "gen" | "generation_start" => {
+            argv.push("gen".to_string());
+            if let Some(path) = path {
+                argv.push(path.to_string());
+            }
+            argv.extend(["--background".to_string(), "--json".to_string()]);
+        }
+        "generation_cancel" => {
+            argv.extend(["jobs".to_string(), "cancel".to_string()]);
+            if let Some(path) = path {
+                argv.push(path.to_string());
+            }
+            argv.extend([
+                "--job-id".to_string(),
+                job_id.expect("validated above").to_string(),
+                "--json".to_string(),
+            ]);
+        }
+        _ => return Err(format!("unknown generation tool: {tool}")),
+    }
+    Ok(argv)
 }
 
 /// Build the JSON Schema + `Tool` for a spec. The default Essential registry
@@ -988,17 +1070,6 @@ fn tool_from_spec_for_surface(spec: &ToolSpec, surface: Tier) -> Tool {
     let required = required_args(spec.name);
     if !required.is_empty() {
         schema.insert("required".to_string(), serde_json::json!(required));
-    }
-    // "At least one of" constraints (e.g. locate's symbol/caller_of) cannot be a
-    // flat `required` list; express them as `anyOf` so the schema itself hints
-    // the rule that `validate_args` also enforces at call time.
-    let any_of = any_of_required(spec.name);
-    if !any_of.is_empty() {
-        let clauses: Vec<serde_json::Value> = any_of
-            .iter()
-            .map(|group| serde_json::json!({ "required": group }))
-            .collect();
-        schema.insert("anyOf".to_string(), serde_json::json!(clauses));
     }
     // A friendly display title + Read/Rebuild/Mutate annotations let clients
     // present read tools as auto-approvable (no per-call permission wall) while
@@ -1103,7 +1174,7 @@ static TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "tree",
         title: "Outline the codebase",
-        description: "Bounded codebase map; symbols=true by default. Large scopes return files and symbol counts; narrow path for names and line ranges. symbols=false returns a directory tree.",
+        description: "Bounded project map; symbols=true by default. Large scopes return code files and symbol counts; narrow path for names and line ranges. symbols=false lists all discoverable source files, including documents and files without symbols.",
         args: &[
             ("path", "string"),
             ("symbols", "boolean"),
@@ -1115,7 +1186,7 @@ static TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "grep",
         title: "Search code (structure-aware)",
-        description: "Literal/regex search with enclosing symbol anchors. Follow hits with locate, understand or query. Auto-refreshes.",
+        description: "Literal/regex search with enclosing anchors. Follow next_actions[0].tool and arguments when relevant: query for direct references, locate to resolve a name, understand for source.",
         args: &[
             ("pattern", "string"),
             ("path", "string"),
@@ -1165,7 +1236,7 @@ static TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "locate",
         title: "Locate a symbol",
-        description: "Resolve a symbol or caller to canonical anchors. Ambiguity returns alternatives; full-text fallbacks are weaker. Retry missing symbols with grep.",
+        description: "Resolve a symbol or caller to canonical anchors. Provide at least one of `symbol` or `caller_of`. Ambiguity returns alternatives; full-text fallbacks are weaker. Retry missing symbols with grep.",
         args: &[
             ("symbol", "string"),
             ("caller_of", "string"),
@@ -1317,8 +1388,8 @@ static TOOLS: &[ToolSpec] = &[
     },
     ToolSpec {
         name: "ready",
-        title: "Pre-commit gate",
-        description: "Fast pre-commit gate — gen + lint + check + heal drift scan + audit. Aden-only, no external tool dependencies. Use before every commit. Prefer over ci-check for local dev loops.",
+        title: "Local static checks",
+        description: "Refresh the index, then run local lint, reference checks, drift scan and audit. Reports passed, failed and skipped steps with scope limits. Source repairs require fix=true. Does not run project tests, builds, runtime validation or external CI gates.",
         args: &[("path", "string"), ("fix", "boolean")],
         effect: Effect::Mutate,
     },
@@ -1352,7 +1423,7 @@ static TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "heal",
         title: "Heal doc drift",
-        description: "Self-healing documentation engine: scan for drift, propose patches, apply reviewed changes.",
+        description: "Scan documentation drift, propose patches or apply reviewed changes. fix=true attempts explicitly supported store-backed repairs, reports skipped and failed cases, and preserves merge conflicts for review. Does not rewrite arbitrary disk targets.",
         args: &[
             ("path", "string"),
             ("fix", "boolean"),
@@ -1378,16 +1449,31 @@ static TOOLS: &[ToolSpec] = &[
     },
     ToolSpec {
         name: "gen",
-        title: "Index the project",
-        description: "Incrementally compile source into the per-user store (store-first: never writes the working tree). A directory indexes the whole project; a single file re-indexes just that file. For a clean cache-clearing rebuild use `regen`; to also prune deleted symbols use `sync`.",
-        args: &[
-            ("path", "string"),
-            ("auto", "boolean"),
-            ("quiet", "boolean"),
-            ("propose", "boolean"),
-            ("force_regen", "boolean"),
-        ],
-        effect: Effect::Rebuild,
+        title: "Start background generation",
+        description: "Start or join a durable background generation job and return its machine-readable JobStatus. Queued and running statuses are not completion. MCP gen is background-only and never proposes, forces or resets; use generation_status to check progress.",
+        args: &[("path", "string")],
+        effect: Effect::Mutate,
+    },
+    ToolSpec {
+        name: "generation_status",
+        title: "Check generation job status",
+        description: "Read the current generation job status as machine-readable JSON. Queued and running states are pending, not completion.",
+        args: &[("path", "string")],
+        effect: Effect::Read,
+    },
+    ToolSpec {
+        name: "generation_start",
+        title: "Start background generation",
+        description: "Start or join the current background generation job and return its machine-readable status. This never forces or proposes changes.",
+        args: &[("path", "string")],
+        effect: Effect::Mutate,
+    },
+    ToolSpec {
+        name: "generation_cancel",
+        title: "Cancel background generation",
+        description: "Request cooperative cancellation of the named background generation job and return its machine-readable status.",
+        args: &[("path", "string"), ("job_id", "string")],
+        effect: Effect::Mutate,
     },
     ToolSpec {
         name: "sync",
@@ -1556,7 +1642,7 @@ static TOOLS: &[ToolSpec] = &[
 // ── ServerHandler impl ────────────────────────────────────────
 
 impl ServerHandler for AdenMcpServer {
-    fn get_info(&self) -> ServerInfo {
+    fn get_info(&self) -> ServerConfig {
         InitializeResult::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("aden-mcp", env!("CARGO_PKG_VERSION")))
             .with_instructions(SERVER_INSTRUCTIONS)
@@ -1592,6 +1678,34 @@ impl ServerHandler for AdenMcpServer {
         &self,
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResponse, McpError> {
+        self.call_tool_result(request, context)
+            .await
+            .map(Into::into)
+    }
+
+    // Preserve Roots support for clients negotiating the initialize lifecycle.
+    #[allow(deprecated)]
+    async fn on_roots_list_changed(&self, context: NotificationContext<RoleServer>) {
+        if self.pinned {
+            return;
+        }
+        if let Ok(list) = context.peer.list_roots().await {
+            let roots = file_roots(&list.roots);
+            if roots.is_empty() {
+                self.mark_workspace_unavailable_if_roots_seen();
+            } else {
+                self.set_workspace_roots(roots);
+            }
+        }
+    }
+}
+
+impl AdenMcpServer {
+    async fn call_tool_result(
+        &self,
+        request: CallToolRequestParams,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         let tool_name = request.name.as_ref();
         let mut args = request.arguments.unwrap_or_default();
@@ -1601,7 +1715,7 @@ impl ServerHandler for AdenMcpServer {
             refresh_project_from_client(self, &context).await;
         }
         if !self.workspace_available() {
-            return Ok(CallToolResult::error(vec![Content::text(
+            return Ok(CallToolResult::error(vec![ContentBlock::text(
                 boundary_error_for_mcp(
                     tool_name,
                     "workspace_unavailable",
@@ -1619,7 +1733,7 @@ impl ServerHandler for AdenMcpServer {
         // or fail before spawning the CLI; an explicit path always wins.
         let had_explicit_path = args.get("path").is_some();
         if let Err(e) = resolve_repository_scope(tool_name, &mut args, &workspace_roots) {
-            return Ok(CallToolResult::error(vec![Content::text(e)]));
+            return Ok(CallToolResult::error(vec![ContentBlock::text(e)]));
         }
         // Scope inference writes an absolute repository path into `args`. Use
         // that same selected repository as the child CWD instead of always
@@ -1628,7 +1742,7 @@ impl ServerHandler for AdenMcpServer {
 
         // Validate tool exists
         let Some(spec) = TOOLS.iter().find(|t| t.name == tool_name) else {
-            return Ok(CallToolResult::error(vec![Content::text(
+            return Ok(CallToolResult::error(vec![ContentBlock::text(
                 boundary_error_for_mcp(
                     tool_name,
                     "unknown_tool",
@@ -1649,7 +1763,7 @@ impl ServerHandler for AdenMcpServer {
                 Tier::Standard => "standard",
                 Tier::Full => "full",
             };
-            return Ok(CallToolResult::error(vec![Content::text(
+            return Ok(CallToolResult::error(vec![ContentBlock::text(
                 boundary_error_for_mcp(
                     tool_name,
                     "tool_surface_disabled",
@@ -1668,7 +1782,7 @@ impl ServerHandler for AdenMcpServer {
         // MCP client could otherwise read or write arbitrary host files via the
         // `path` argument. Reject out-of-tree paths at the boundary.
         if let Err(e) = confine_path_args_to_roots(tool_name, &args, &workspace_roots) {
-            return Ok(CallToolResult::error(vec![Content::text(
+            return Ok(CallToolResult::error(vec![ContentBlock::text(
                 boundary_error_for_mcp(
                     tool_name,
                     "path_outside_workspace",
@@ -1684,7 +1798,7 @@ impl ServerHandler for AdenMcpServer {
         // "at least one of" constraint here so an empty call fails fast with a
         // clear message instead of shelling out to a CLI usage error.
         if let Err(e) = validate_args(tool_name, &args) {
-            return Ok(CallToolResult::error(vec![Content::text(
+            return Ok(CallToolResult::error(vec![ContentBlock::text(
                 boundary_error_for_mcp(
                     tool_name,
                     "invalid_arguments",
@@ -1701,8 +1815,20 @@ impl ServerHandler for AdenMcpServer {
         // structured envelope instead. These extra flags must be emitted with
         // the other flags — BEFORE the `--` terminator — or clap would treat
         // them as positional data.
-        let cmd_args = prepare_cli_args_for_mcp(spec.name, &args)
-            .expect("validated MCP tool must have a CLI argument specification");
+        let cmd_args = match prepare_cli_args_for_mcp(spec.name, &args) {
+            Ok(args) => args,
+            Err(error) => {
+                return Ok(CallToolResult::error(vec![ContentBlock::text(
+                    boundary_error_for_mcp(
+                        tool_name,
+                        "invalid_arguments",
+                        &error,
+                        true,
+                        "correct the named argument and retry",
+                    ),
+                )]));
+            }
+        };
 
         let started = std::time::Instant::now();
         let deadline = tool_timeout(spec.name);
@@ -1711,19 +1837,16 @@ impl ServerHandler for AdenMcpServer {
         // LLMs commonly retry or fan out an identical discovery call. Coalesce
         // only pure reads before acquiring a CLI slot: followers share the
         // leader's bounded result, while distinct work still gets backpressure.
-        let output = if spec.effect == Effect::Read {
+        let output = if spec.effect == Effect::Read && spec.name != "generation_status" {
             let key = read_flight_key(&project_dir, spec.name, &cmd_args);
             match self.join_read_flight(key.clone()) {
                 ReadFlight::Leader(sender) => {
                     let flight = self.guard_read_flight(key.clone(), sender);
                     let shared = match self.command_slots.clone().try_acquire_owned() {
-                        Ok(_slot) => match run_aden_command_with_timeout(
-                            &project_dir,
-                            spec.name,
-                            &command_args,
-                            deadline,
-                        )
-                        .await
+                        Ok(_slot) => match self
+                            .resident_reads
+                            .execute(&project_dir, spec.name, &command_args, deadline)
+                            .await
                         {
                             Ok(output) => SharedReadResult::Output(output),
                             Err(error) => SharedReadResult::CommandError(error),
@@ -1763,7 +1886,7 @@ impl ServerHandler for AdenMcpServer {
             SharedReadResult::Output(output) => Ok(output),
             SharedReadResult::CommandError(error) => Err(error),
             SharedReadResult::Busy => {
-                return Ok(CallToolResult::error(vec![Content::text(
+                return Ok(CallToolResult::error(vec![ContentBlock::text(
                     server_busy_error(spec.name),
                 )]));
             }
@@ -1772,6 +1895,14 @@ impl ServerHandler for AdenMcpServer {
         match output {
             Ok(clean) => {
                 let agent_response = agent_response_for_mcp(spec.name, &clean);
+                let agent_response = if matches!(
+                    spec.name,
+                    "gen" | "generation_status" | "generation_start" | "generation_cancel"
+                ) {
+                    redact_generation_output(&agent_response)
+                } else {
+                    agent_response
+                };
                 let selected_root = args
                     .get("path")
                     .and_then(serde_json::Value::as_str)
@@ -1786,12 +1917,16 @@ impl ServerHandler for AdenMcpServer {
                 // A strict ask/asm budget is a hard serialized transport cap.
                 // Do not let optional observability metadata displace evidence
                 // or replace the CLI's minimal strict receipt.
+                let generation_tool = matches!(
+                    spec.name,
+                    "gen" | "generation_status" | "generation_start" | "generation_cancel"
+                );
                 let strict_context = matches!(spec.name, "ask" | "asm")
                     && args
                         .get("strict")
                         .and_then(serde_json::Value::as_bool)
                         .unwrap_or(true);
-                let received = if strict_context {
+                let received = if generation_tool || strict_context {
                     agent_response
                 } else {
                     attach_execution_receipt(
@@ -1803,7 +1938,7 @@ impl ServerHandler for AdenMcpServer {
                     )
                 };
                 let bounded = enforce_mcp_response_budget(spec.name, &args, &received);
-                Ok(CallToolResult::success(vec![Content::text(bounded)]))
+                Ok(CallToolResult::success(vec![ContentBlock::text(bounded)]))
             }
             Err(e) => {
                 let scope = args
@@ -1812,29 +1947,17 @@ impl ServerHandler for AdenMcpServer {
                     .map(Path::new)
                     .filter(|path| path.is_dir())
                     .unwrap_or(&project_dir);
-                Ok(CallToolResult::error(vec![Content::text(
+                Ok(CallToolResult::error(vec![ContentBlock::text(
                     agent_error_for_mcp_in_scope(spec.name, &e, scope),
                 )]))
-            }
-        }
-    }
-
-    async fn on_roots_list_changed(&self, context: NotificationContext<RoleServer>) {
-        if self.pinned {
-            return;
-        }
-        if let Ok(list) = context.peer.list_roots().await {
-            let roots = file_roots(&list.roots);
-            if roots.is_empty() {
-                self.mark_workspace_unavailable_if_roots_seen();
-            } else {
-                self.set_workspace_roots(roots);
             }
         }
     }
 }
 
 /// Update `project_dir` from MCP Roots, then common host workspace env vars.
+// Preserve Roots support for clients negotiating the initialize lifecycle.
+#[allow(deprecated)]
 async fn refresh_project_from_client(server: &AdenMcpServer, context: &RequestContext<RoleServer>) {
     if let Ok(list) = context.peer.list_roots().await {
         let roots = file_roots(&list.roots);
@@ -1855,6 +1978,7 @@ async fn refresh_project_from_client(server: &AdenMcpServer, context: &RequestCo
 }
 
 /// Every valid `file://` root reported by the host, in host order.
+#[allow(deprecated)] // Roots remains supported for legacy protocol clients.
 fn file_roots(roots: &[Root]) -> Vec<PathBuf> {
     roots
         .iter()
@@ -2247,7 +2371,9 @@ const COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120)
 /// hard ceiling needed for large repositories.
 fn tool_timeout(tool: &str) -> std::time::Duration {
     match tool {
-        "grep" | "locate" | "search" | "list" | "status" => std::time::Duration::from_secs(30),
+        "grep" | "locate" | "search" | "list" | "status" | "gen" => {
+            std::time::Duration::from_secs(30)
+        }
         "ask" | "asm" | "query" | "understand" | "impact-diff" | "communities" => {
             std::time::Duration::from_secs(60)
         }
@@ -2350,6 +2476,12 @@ pub fn agent_response_for_mcp(tool: &str, raw: &str) -> String {
             .join("\n")
     };
     let cleaned = preserve_cli_output_for_mcp(tool, &raw);
+    // Generation status is job lifecycle data, not graph-read evidence. Keep
+    // the CLI's native `JobStatus | null` shape instead of wrapping `null` in
+    // the generic graph freshness receipt envelope.
+    if tool == "generation_status" {
+        return cleaned;
+    }
     let is_read = TOOLS
         .iter()
         .find(|spec| spec.name == tool)
@@ -2387,6 +2519,15 @@ pub fn agent_response_for_mcp(tool: &str, raw: &str) -> String {
         "incomplete": true
     })
     .to_string()
+}
+
+fn redact_generation_output(raw: &str) -> String {
+    if let Ok(mut value) = serde_json::from_str::<serde_json::Value>(raw) {
+        redact_command_result(&mut value);
+        serde_json::to_string(&value).unwrap_or_else(|_| "null".to_string())
+    } else {
+        redact_command_text(raw)
+    }
 }
 
 fn server_busy_error(tool: &str) -> String {
@@ -2443,6 +2584,7 @@ fn machine_resolution_error(raw: &str) -> Option<serde_json::Value> {
             | "needs_regex"
             | "invalid_args"
             | "invalid_scope"
+            | "index_generation_pending"
     ) {
         return None;
     }
@@ -2453,7 +2595,11 @@ fn machine_resolution_error(raw: &str) -> Option<serde_json::Value> {
         .map(sanitize_error);
     if matches!(
         code,
-        "director_stale" | "needs_regex" | "invalid_args" | "invalid_scope"
+        "director_stale"
+            | "needs_regex"
+            | "invalid_args"
+            | "invalid_scope"
+            | "index_generation_pending"
     ) {
         let mut err = serde_json::json!({
             "code": code,
@@ -2498,7 +2644,163 @@ pub fn agent_error_for_mcp(tool: &str, raw: &str) -> String {
     agent_error_for_mcp_in_scope(tool, raw, Path::new("."))
 }
 
+// Bound parsing before accepting machine stdout. Only ready's versioned failure
+// schema is supported here; a nonzero child exit can never become MCP success.
+const FAILED_COMMAND_RESULT_MAX_BYTES: usize = 48 * 1024;
+
+#[cfg(test)]
+mod ready_failure_tests;
+
+fn valid_ready_failure(value: &serde_json::Value) -> bool {
+    if value["schema_version"] != 1
+        || value["command"] != "ready"
+        || value["ok"] != false
+        || value["result_state"] != "failed"
+        || value["outcome"] != "blocked"
+        || value["assessment_scope"] != "local_static_checks"
+        || !value["hard_failure"].is_string()
+        || !value["advisory_findings"].is_u64()
+        || [
+            "graph_refresh_requested",
+            "source_repairs_requested",
+            "heal_repair_attempted",
+        ]
+        .iter()
+        .any(|field| !value[*field].is_boolean())
+        || value["unverified"]
+            != serde_json::json!(["runtime_behavior", "project_tests", "external_tool_gates"])
+    {
+        return false;
+    }
+    let Some(steps) = value["steps"].as_array() else {
+        return false;
+    };
+    let names = [
+        "gen",
+        "lint",
+        "check refs",
+        "heal drift scan",
+        "owasp audit",
+    ];
+    steps.len() == names.len()
+        && steps.iter().zip(names).all(|(step, name)| {
+            step["name"] == name
+                && matches!(
+                    step["status"].as_str(),
+                    Some("passed" | "failed" | "skipped")
+                )
+                && step["passed"].as_bool() == Some(step["status"] == "passed")
+                && ["reason", "scope", "evidence_kind"]
+                    .iter()
+                    .all(|field| step[*field].is_string())
+        })
+        && steps.iter().any(|step| step["status"] == "failed")
+}
+
+fn redact_command_result(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::String(text) => *text = redact_command_text(text),
+        serde_json::Value::Array(items) => items.iter_mut().for_each(redact_command_result),
+        serde_json::Value::Object(object) => {
+            let fields = std::mem::take(object);
+            for (key, mut item) in fields {
+                redact_command_result(&mut item);
+                object.insert(redact_command_text(&key), item);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn redact_command_text(text: &str) -> String {
+    // Paths in prose and quoted paths may contain spaces. Once an absolute
+    // path is recognized, redact the whole string instead of guessing where
+    // that path ends and potentially exposing its trailing segments.
+    let bytes = text.as_bytes();
+    if text.starts_with('/')
+        || text.starts_with("\\\\")
+        || (bytes.first().is_some_and(u8::is_ascii_alphabetic)
+            && bytes.get(1) == Some(&b':')
+            && matches!(bytes.get(2), Some(b'\\' | b'/')))
+        || redact_abs_paths(text) != text
+    {
+        "<path>".into()
+    } else {
+        text.to_string()
+    }
+}
+
+fn preserve_ready_failure(stderr: &str, stdout: &str) -> String {
+    let (mut result, mut state) = if stdout.len() > FAILED_COMMAND_RESULT_MAX_BYTES {
+        (None, "oversized")
+    } else {
+        match serde_json::from_str::<serde_json::Value>(stdout) {
+            Ok(value) if valid_ready_failure(&value) => (Some(value), "present"),
+            Ok(_) => (None, "unsupported"),
+            Err(_) => (None, "invalid"),
+        }
+    };
+    if let Some(value) = &mut result {
+        redact_command_result(value);
+        if value.to_string().len() > FAILED_COMMAND_RESULT_MAX_BYTES {
+            result = None;
+            state = "oversized";
+        }
+    }
+    // Internal transport only. Keep stdout separate from stderr until the agent
+    // envelope is rebuilt, so no JSON or large payload enters error.message.
+    serde_json::json!({
+        "aden_mcp_ready_failure": 1,
+        "message": sanitize_error(stderr),
+        "command_result": result,
+        "command_result_state": state,
+    })
+    .to_string()
+}
+
+fn ready_failure_for_mcp(tool: &str, raw: &str) -> Option<String> {
+    if tool != "ready" || raw.len() > MCP_RESPONSE_MAX_BYTES * 2 {
+        return None;
+    }
+    let internal: serde_json::Value = serde_json::from_str(raw).ok()?;
+    if internal["aden_mcp_ready_failure"] != 1 {
+        return None;
+    }
+    let message = internal["message"].as_str()?;
+    let state = internal["command_result_state"].as_str()?;
+    if !matches!(state, "present" | "oversized" | "unsupported" | "invalid") {
+        return None;
+    }
+    let mut response: serde_json::Value = serde_json::from_str(&boundary_error_for_mcp(
+        tool,
+        "command_failed",
+        message,
+        false,
+        "inspect the reported state before retrying; the operation may have changed project state",
+    ))
+    .ok()?;
+    response["command_result_state"] = state.into();
+    if state == "present" {
+        if !valid_ready_failure(&internal["command_result"]) {
+            return None;
+        }
+        let mut result = internal["command_result"].clone();
+        redact_command_result(&mut result);
+        response["command_result"] = result;
+    }
+    if state == "oversized" || response.to_string().len() > MCP_RESPONSE_MAX_BYTES {
+        response.as_object_mut()?.remove("command_result");
+        response["command_result_state"] = "oversized".into();
+        response["response_bytes_truncated"] = true.into();
+        response["truncated"] = true.into();
+    }
+    Some(response.to_string())
+}
+
 fn agent_error_for_mcp_in_scope(tool: &str, raw: &str, scope: &Path) -> String {
+    if let Some(response) = ready_failure_for_mcp(tool, raw) {
+        return response;
+    }
     if let Some(machine) = machine_resolution_error(raw) {
         let error = &machine["error"];
         let code = error["code"].as_str().unwrap_or("command_failed");
@@ -2516,8 +2818,12 @@ fn agent_error_for_mcp_in_scope(tool: &str, raw: &str, scope: &Path) -> String {
                 "invalid_scope" => "choose an existing file or directory within the workspace",
                 _ => "inspect error.suggestions, then retry with one exact canonical anchor",
             });
-        let response =
-            boundary_error_for_mcp(tool, code, message, code != "director_stale", recovery);
+        let retryable = code != "director_stale"
+            && (code != "index_generation_pending"
+                || TOOLS
+                    .iter()
+                    .any(|spec| spec.name == tool && spec.effect == Effect::Read));
+        let response = boundary_error_for_mcp(tool, code, message, retryable, recovery);
         let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&response) else {
             return response;
         };
@@ -2551,6 +2857,12 @@ fn agent_error_for_mcp_in_scope(tool: &str, raw: &str, scope: &Path) -> String {
             actions.extend(navigation::tree(
                 scope,
                 "Browse the repository to choose an existing target",
+            ));
+        }
+        if code == "index_generation_pending" && retryable {
+            actions.extend(navigation::generation_status(
+                scope,
+                "Check indexing progress before retrying this read",
             ));
         }
         value["next_actions"] = serde_json::json!(actions);
@@ -2678,7 +2990,6 @@ pub fn enforce_mcp_response_budget(
                 (removed || value["response_bytes_truncated"] == true).into();
             value["text_truncated"] = text_truncated.into();
             if !removed {
-                value["next_actions"] = serde_json::json!([]);
                 value.as_object_mut().unwrap().remove("execution");
                 value["metadata_truncated"] = true.into();
             }
@@ -2687,7 +2998,15 @@ pub fn enforce_mcp_response_budget(
                 return serialized;
             }
             if !removed {
-                return MINIMAL_INCOMPLETE_RECEIPT.to_string();
+                // Drop oversized optional navigation only after the execution
+                // receipt. A bounded next call is more useful than telemetry.
+                value["next_actions"] = serde_json::json!([]);
+                let serialized = value.to_string();
+                return if serialized.len() <= 64 * 1024 {
+                    serialized
+                } else {
+                    MINIMAL_INCOMPLETE_RECEIPT.to_string()
+                };
             }
         }
     }
@@ -2822,6 +3141,24 @@ fn enforce_mcp_hard_cap(response: &str) -> String {
                 "/source/text" => {
                     value["source"]["state"] = "clipped".into();
                     value["source"]["last_line_complete"] = false.into();
+                    let returned_bytes = value["source"]["text"].as_str().unwrap_or("").len();
+                    if let Some(source) = value["source"].as_object_mut() {
+                        // CLI continuations and end ranges describe the original
+                        // excerpt. Keeping them after transport clipping would
+                        // skip unseen bytes or overstate the returned evidence.
+                        source.remove("continuation");
+                        source.remove("end_line");
+                        source.remove("end_byte");
+                        if source.contains_key("returned_bytes") {
+                            source.insert("returned_bytes".into(), returned_bytes.into());
+                        }
+                    }
+                    if let Some(object) = value.as_object_mut() {
+                        object.remove("continuation");
+                        object.remove("next_byte");
+                        object.remove("next_actions");
+                    }
+                    value["incomplete"] = true.into();
                 }
                 _ => {}
             }
@@ -2938,8 +3275,57 @@ async fn run_aden_command_with_timeout(
     args: &[&str],
     deadline: std::time::Duration,
 ) -> Result<String, String> {
-    let mut cmd = tokio::process::Command::new(resolve_aden_binary());
-    cmd.args(args).current_dir(project_dir).kill_on_drop(true);
+    let mut cmd = configured_aden_command(project_dir);
+    cmd.args(args);
+
+    // Dropping the bounded future kills the child rather than leaving work
+    // running after MCP has reported timeout or cancellation.
+    let child = cmd.output();
+
+    let output = match tokio::time::timeout(deadline, child).await {
+        Ok(result) => result.map_err(|e| format!("failed to run aden: {}", e))?,
+        Err(_) => {
+            return Err(format!(
+                "aden command timed out after {}s. Long-running tools like `watch` \
+                 are not usable over MCP (each tool call is request/response); run \
+                 them from a terminal instead.",
+                deadline.as_secs_f64()
+            ));
+        }
+    };
+
+    if output.status.success() {
+        let raw = String::from_utf8_lossy(&output.stdout).into_owned();
+        Ok(preserve_cli_output_for_mcp(tool, &raw))
+    } else {
+        let mut err = String::from_utf8_lossy(&output.stderr).into_owned();
+        let out = String::from_utf8_lossy(&output.stdout);
+        if tool == "ready" && !out.trim().is_empty() {
+            return Err(preserve_ready_failure(
+                &err,
+                std::str::from_utf8(&output.stdout).unwrap_or(""),
+            ));
+        }
+        if !out.trim().is_empty() {
+            err.push_str(&format!("\n(stdout): {}", out));
+        }
+        if err.trim().is_empty() {
+            err = empty_child_stderr_message(output.status.code());
+        }
+        Err(preserve_cli_error_for_mcp(&err))
+    }
+}
+
+fn configured_aden_command(project_dir: &Path) -> tokio::process::Command {
+    configured_aden_command_for_binary(project_dir, resolve_aden_binary())
+}
+
+fn configured_aden_command_for_binary(
+    project_dir: &Path,
+    binary: impl AsRef<std::ffi::OsStr>,
+) -> tokio::process::Command {
+    let mut cmd = tokio::process::Command::new(binary);
+    cmd.current_dir(project_dir).kill_on_drop(true);
 
     // SECURITY: do not leak host env (model keys, tokens, etc.) to the child `aden`.
     // Allowlist only what is required for basic operation (ADEN_* for config,
@@ -2963,40 +3349,7 @@ async fn run_aden_command_with_timeout(
     // Zero-friction: do NOT force ADEN_SKIP_AUTO_GEN on reads. Silent gen
     // fail-opens under contention; shell and MCP share auto-fresh.
 
-    // `kill_on_drop` is load-bearing: when the timeout drops the output future,
-    // terminate the subprocess instead of letting it keep locks or mutate the
-    // store after MCP has already reported failure.
-    let child = cmd.output();
-
-    let output = match tokio::time::timeout(deadline, child).await {
-        Ok(result) => result.map_err(|e| format!("failed to run aden: {}", e))?,
-        Err(_) => {
-            return Err(format!(
-                "aden command timed out after {}s. Long-running tools like `watch` \
-                 are not usable over MCP (each tool call is request/response); run \
-                 them from a terminal instead.",
-                deadline.as_secs_f64()
-            ));
-        }
-    };
-
-    if output.status.success() {
-        let raw = String::from_utf8_lossy(&output.stdout).into_owned();
-        Ok(preserve_cli_output_for_mcp(tool, &raw))
-    } else {
-        let mut err = String::from_utf8_lossy(&output.stderr).into_owned();
-        let out = String::from_utf8_lossy(&output.stdout);
-        if !out.trim().is_empty() {
-            err.push_str(&format!("\n(stdout): {}", out));
-        }
-        if err.trim().is_empty() {
-            // Windows STATUS_DLL_NOT_FOUND (0xC0000135) is the usual result
-            // when env_clear dropped SystemRoot/Path: the child dies before
-            // Rust can print anything. The exit code is the only signal.
-            err = empty_child_stderr_message(output.status.code());
-        }
-        Err(preserve_cli_error_for_mcp(&err))
-    }
+    cmd
 }
 
 /// Agent-facing fallback when the aden child fails with empty stderr.
@@ -3162,7 +3515,18 @@ pub async fn serve(project_dir: PathBuf) -> anyhow::Result<()> {
 /// server. Hosts then launch the same `aden.exe` they just installed —
 /// no second binary to go stale or stay locked.
 pub fn serve_blocking(project_dir: PathBuf, pinned: bool) -> anyhow::Result<()> {
-    tokio::runtime::Runtime::new()?.block_on(serve_with_options(project_dir, pinned))
+    let mut runtime = tokio::runtime::Builder::new_multi_thread();
+    // Each stdio connection owns a runtime. Size its default scheduler for
+    // the command slots, particularly when several clients share a host.
+    if std::env::var_os("TOKIO_WORKER_THREADS").is_none() {
+        let workers = std::thread::available_parallelism()
+            .map_or(1, |count| count.get().min(MAX_CONCURRENT_CLI_CHILDREN));
+        runtime.worker_threads(workers);
+    }
+    runtime
+        .enable_all()
+        .build()?
+        .block_on(serve_with_options(project_dir, pinned))
 }
 
 pub async fn serve_with_options(project_dir: PathBuf, pinned: bool) -> anyhow::Result<()> {
@@ -3175,6 +3539,7 @@ pub async fn serve_with_options(project_dir: PathBuf, pinned: bool) -> anyhow::R
 // ── Tests ───────────────────────────────────────────────────
 
 #[cfg(test)]
+#[allow(deprecated)] // Exercise legacy Roots negotiation with real SDK transports.
 mod tests {
     use super::*;
     use rmcp::ClientHandler;
@@ -3186,8 +3551,10 @@ mod tests {
     }
 
     impl ClientHandler for RootsClient {
-        fn get_info(&self) -> ClientInfo {
-            ClientInfo::default()
+        fn get_info(&self) -> ClientConfig {
+            // Roots uses server-to-client requests, which require a session
+            // negotiated through initialize rather than the newer lifecycle.
+            ClientConfig::default().with_protocol_version(ProtocolVersion::LATEST_WITH_INITIALIZE)
         }
 
         fn list_roots(
@@ -3204,13 +3571,13 @@ mod tests {
         }
     }
 
-    static MCP_ROOT_TEST_ENV: AsyncMutex<()> = AsyncMutex::const_new(());
+    pub(super) static MCP_ROOT_TEST_ENV: AsyncMutex<()> = AsyncMutex::const_new(());
 
     /// Locate the sibling CLI built by this `cargo test` invocation.
     ///
     /// Deriving from the running test executable honors `CARGO_TARGET_DIR` and
     /// custom target profiles. `CARGO_MANIFEST_DIR/../../target` does neither.
-    fn aden_cli_test_binary() -> PathBuf {
+    pub(super) fn aden_cli_test_binary() -> PathBuf {
         if let Some(path) = option_env!("CARGO_BIN_EXE_aden") {
             let path = PathBuf::from(path);
             if path.is_file() {
@@ -3218,18 +3585,53 @@ mod tests {
             }
         }
 
-        let mut path = std::env::current_exe().expect("current aden-mcp test executable");
-        path.pop();
-        if path.file_name().is_some_and(|name| name == "deps") {
-            path.pop();
-        }
-        path.push(if cfg!(windows) { "aden.exe" } else { "aden" });
+        let path =
+            sibling_cli_path(&std::env::current_exe().expect("current aden-mcp test executable"));
         assert!(
             path.is_file(),
             "aden CLI test binary missing beside Cargo test artifacts: {}",
             path.display()
         );
         path
+    }
+
+    fn sibling_cli_path(executable: &Path) -> PathBuf {
+        let directory = executable.parent().expect("test executable directory");
+        let profile = if directory.file_name().is_some_and(|name| name == "deps") {
+            directory.parent().expect("profile directory")
+        } else if directory.file_name().is_some_and(|name| name == "out")
+            && directory
+                .ancestors()
+                .nth(3)
+                .is_some_and(|path| path.file_name().is_some_and(|name| name == "build"))
+        {
+            // Cargo 1.100 places test executables under
+            // <profile>/build/<package>/<hash>/out instead of <profile>/deps.
+            directory.ancestors().nth(4).expect("profile directory")
+        } else {
+            directory
+        };
+        profile.join(if cfg!(windows) { "aden.exe" } else { "aden" })
+    }
+
+    #[test]
+    fn sibling_cli_resolution_supports_legacy_and_current_cargo_layouts() {
+        let expected = Path::new("custom-target/custom-profile").join(if cfg!(windows) {
+            "aden.exe"
+        } else {
+            "aden"
+        });
+        for path in [
+            "custom-target/custom-profile/deps/test-binary",
+            "custom-target/custom-profile/build/aden-mcp/hash/out/test-binary",
+        ] {
+            assert_eq!(sibling_cli_path(Path::new(path)), expected);
+        }
+        assert_ne!(
+            sibling_cli_path(Path::new("unrelated/out/test-binary")),
+            expected,
+            "an unrelated out directory must not be treated as Cargo's build layout"
+        );
     }
 
     #[cfg(unix)]
@@ -3341,7 +3743,14 @@ mod tests {
 
     #[test]
     fn tool_schema_exposes_effect_when_clients_hide_annotations() {
-        for (tool, expected) in [("grep", "read"), ("gen", "rebuild"), ("test", "mutate")] {
+        for (tool, expected) in [
+            ("grep", "read"),
+            ("gen", "mutate"),
+            ("generation_status", "read"),
+            ("generation_start", "mutate"),
+            ("generation_cancel", "mutate"),
+            ("test", "mutate"),
+        ] {
             assert_eq!(
                 tool_from_spec(spec(tool)).input_schema["x-aden-effect"],
                 serde_json::json!(expected),
@@ -3511,8 +3920,8 @@ mod tests {
     #[test]
     fn essential_surface_is_the_navigation_loop() {
         // The default surface starts with one token-lean whole-project map,
-        // then the find -> comprehend -> blast-radius loop. Deterministic
-        // discovery stays before heuristic `ask` routing.
+        // then the find -> comprehend -> blast-radius loop. Heuristic routing
+        // requires an explicit wider surface.
         let mut essential: Vec<&str> = TOOLS
             .iter()
             .map(|t| t.name)
@@ -3529,12 +3938,13 @@ mod tests {
                 "understand",
                 "query",
                 "asm",
-                "ask"
+                "generation_status"
             ],
             "Essential presentation order drifted; got: {essential:?}"
         );
         // Change-safety / verify / orient tools are Standard, NOT in the default.
         for t in [
+            "ask",
             "check",
             "impact-diff",
             "test",
@@ -3550,9 +3960,16 @@ mod tests {
     #[test]
     fn hidden_tools_require_explicit_surface_opt_in() {
         assert!(tool_enabled("grep", Tier::Essential));
+        assert!(!tool_enabled("ask", Tier::Essential));
+        assert!(tool_enabled("ask", Tier::Standard));
+        assert!(tool_enabled("ask", Tier::Full));
         assert!(!tool_enabled("check", Tier::Essential));
         assert!(!tool_enabled("gen", Tier::Standard));
         assert!(tool_enabled("gen", Tier::Full));
+        assert!(!tool_enabled("generation_start", Tier::Standard));
+        assert!(!tool_enabled("generation_cancel", Tier::Standard));
+        assert!(tool_enabled("generation_start", Tier::Full));
+        assert!(tool_enabled("generation_cancel", Tier::Full));
     }
 
     #[test]
@@ -3563,14 +3980,12 @@ mod tests {
         assert!(ask.description.contains("needs_narrowing"));
         assert!(understand.description.contains("not proof of absence"));
         for required in [
-            "return needs_narrowing",
             "Missing results do not prove absence",
             "native Git/build/test tools",
             "Check ambiguity, coverage, source verification and truncation",
             "path defaults to the client workspace",
             "At most two distinct calls run concurrently",
             "omit gen in normal calls",
-            "ask is optional heuristic discovery",
             "without indexing",
         ] {
             assert!(
@@ -3578,6 +3993,10 @@ mod tests {
                 "missing MCP limitation guidance: {required}"
             );
         }
+        assert!(
+            !SERVER_INSTRUCTIONS.contains("ask"),
+            "default guidance must not recommend opt-in heuristic routing"
+        );
     }
 
     #[test]
@@ -3585,7 +4004,7 @@ mod tests {
         assert_eq!(tool_timeout("grep").as_secs(), 30);
         assert_eq!(tool_timeout("query").as_secs(), 60);
         assert_eq!(tool_timeout("test").as_secs(), 120);
-        assert_eq!(tool_timeout("gen").as_secs(), 120);
+        assert_eq!(tool_timeout("gen").as_secs(), 30);
     }
 
     #[test]
@@ -3625,21 +4044,21 @@ mod tests {
             "essential registry grew to {total_bytes} bytes"
         );
 
-        let ask_spec = TOOLS.iter().find(|tool| tool.name == "ask").unwrap();
-        let compact = tool_from_spec_for_surface(ask_spec, Tier::Essential);
+        let asm_spec = TOOLS.iter().find(|tool| tool.name == "asm").unwrap();
+        let compact = tool_from_spec_for_surface(asm_spec, Tier::Essential);
         let compact_props = compact.input_schema["properties"].as_object().unwrap();
         assert_eq!(
             compact_props.keys().cloned().collect::<Vec<_>>(),
-            ["from", "path", "question"]
+            ["budget", "depth", "edge_types", "from", "path"]
         );
         assert_eq!(
             compact.input_schema["required"],
-            serde_json::json!(["question"])
+            serde_json::json!(["from"])
         );
-        assert!(!compact_props.contains_key("budget"));
         assert!(!compact_props.contains_key("strict"));
         assert!(!compact_props.contains_key("require_fresh"));
 
+        let ask_spec = TOOLS.iter().find(|tool| tool.name == "ask").unwrap();
         let full = tool_from_spec_for_surface(ask_spec, Tier::Standard);
         let full_props = full.input_schema["properties"].as_object().unwrap();
         assert!(full_props.contains_key("budget"));
@@ -3740,12 +4159,9 @@ mod tests {
         assert!(!out.contains(&"--question".to_string()));
         assert_eq!(out[0], "ask");
 
-        let mut g = serde_json::Map::new();
-        g.insert("auto".into(), serde_json::json!(true));
-        g.insert("path".into(), serde_json::json!("."));
-        let out = build_cli_args(spec("gen"), &g, &[]);
-        assert!(out.contains(&"--auto".to_string())); // boolean flag, no value
-        assert!(out.contains(&".".to_string())); // path positional
+        let g = serde_json::json!({"path":"."}).as_object().unwrap().clone();
+        let out = prepare_cli_args_for_mcp("gen", &g).unwrap();
+        assert_eq!(out, ["gen", ".", "--background", "--json"]);
     }
 
     #[test]
@@ -3830,13 +4246,53 @@ mod tests {
 
         let mut explicit_false = serde_json::Map::new();
         explicit_false.insert("symbols".into(), serde_json::json!(false));
-        let graphical = prepare_cli_args_for_mcp("tree", &explicit_false).unwrap();
-        assert!(!graphical.iter().any(|arg| arg == "--symbols"));
+        explicit_false.insert("path".into(), serde_json::json!("docs with spaces"));
+        let files = prepare_cli_args_for_mcp("tree", &explicit_false).unwrap();
+        assert!(!files.iter().any(|arg| arg == "--symbols"));
+        assert!(files.iter().any(|arg| arg == "--files"));
+        assert_eq!(files.last().unwrap(), "docs with spaces");
+        assert!(
+            files.iter().position(|arg| arg == "--files").unwrap()
+                < files.iter().position(|arg| arg == "--").unwrap()
+        );
 
         let mut explicit_true = serde_json::Map::new();
         explicit_true.insert("symbols".into(), serde_json::json!(true));
         let compact = prepare_cli_args_for_mcp("tree", &explicit_true).unwrap();
         assert!(compact.iter().any(|arg| arg == "--symbols"));
+        assert!(!compact.iter().any(|arg| arg == "--files"));
+    }
+
+    #[test]
+    fn pending_index_errors_offer_trusted_status_recovery_only_for_reads() {
+        let raw = serde_json::json!({
+            "schema_version": 1,
+            "error": {
+                "code": "index_generation_pending",
+                "message": "Initial indexing is still active",
+                "recovery": "Check indexing progress before retrying"
+            }
+        })
+        .to_string();
+        let scoped = agent_error_for_mcp_in_scope("locate", &raw, Path::new("trusted project"));
+        let pending: serde_json::Value = serde_json::from_str(&scoped).unwrap();
+        assert_eq!(pending["error"]["code"], "index_generation_pending");
+        assert_eq!(pending["error"]["safe_to_retry"], true);
+        assert_eq!(pending["next_actions"][0]["tool"], "generation_status");
+        assert_eq!(
+            pending["next_actions"][0]["arguments"]["path"],
+            "trusted project"
+        );
+        assert_eq!(pending["next_actions"][0]["cli"]["args"][0], "jobs");
+
+        let write: serde_json::Value =
+            serde_json::from_str(&agent_error_for_mcp("heal", &raw)).unwrap();
+        assert_eq!(write["error"]["safe_to_retry"], false);
+        assert!(write["next_actions"].as_array().unwrap().is_empty());
+        let invalid: serde_json::Value =
+            serde_json::from_str(&agent_error_for_mcp("locate", "not machine JSON")).unwrap();
+        assert_eq!(invalid["error"]["code"], "command_failed");
+        assert!(invalid.get("next_actions").is_none());
     }
 
     #[test]
@@ -3861,6 +4317,91 @@ mod tests {
                 .is_none(),
             "mutating tools must not advertise a read-authority option"
         );
+    }
+
+    #[tokio::test]
+    async fn sdk_default_and_latest_lifecycles_read_and_recover_from_invalid_arguments() {
+        use rmcp::{ClientLifecycleMode, ClientServiceExt};
+
+        let _env = MCP_ROOT_TEST_ENV.lock().await;
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(
+            root.path().join("Cargo.toml"),
+            "[package]\nname='latest-client'\nversion='0.1.0'\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.path().join("main.rs"),
+            "fn latest_client_source() {}\n",
+        )
+        .unwrap();
+        *TEST_ADEN_BINARY.lock().unwrap() = Some(aden_cli_test_binary().into_os_string());
+
+        for latest in [false, true] {
+            let (server_transport, client_transport) = tokio::io::duplex(16 * 1024);
+            let server = AdenMcpServer::with_options(root.path().to_path_buf(), true);
+            let server_task = tokio::spawn(async move { server.serve(server_transport).await });
+            // The default SDK entry point retains initialize. Discovery opts
+            // into the latest protocol and its per-request metadata lifecycle.
+            let client = if latest {
+                ().serve_with_lifecycle(
+                    client_transport,
+                    ClientLifecycleMode::Discover {
+                        preferred_versions: vec![ProtocolVersion::LATEST],
+                    },
+                )
+                .await
+                .unwrap()
+            } else {
+                ().serve(client_transport).await.unwrap()
+            };
+            assert_eq!(
+                client.peer_info().unwrap().protocol_version,
+                if latest {
+                    ProtocolVersion::LATEST
+                } else {
+                    ProtocolVersion::LATEST_WITH_INITIALIZE
+                }
+            );
+
+            let invalid = client
+                .call_tool_once(CallToolRequestParams::new("locate"))
+                .await
+                .unwrap();
+            let CallToolResponse::Complete(invalid) = invalid else {
+                panic!("invalid arguments must complete with a recoverable tool error");
+            };
+            assert_eq!(invalid.is_error, Some(true));
+            let error: serde_json::Value =
+                serde_json::from_str(&invalid.content[0].as_text().unwrap().text).unwrap();
+            assert_eq!(error["error"]["code"], "invalid_arguments");
+            assert_eq!(error["error"]["safe_to_retry"], true);
+
+            let read = client
+                .call_tool_once(
+                    CallToolRequestParams::new("read").with_arguments(
+                        serde_json::json!({"file": "main.rs", "start_line": 1, "end_line": 1})
+                            .as_object()
+                            .unwrap()
+                            .clone(),
+                    ),
+                )
+                .await
+                .unwrap();
+            let CallToolResponse::Complete(read) = read else {
+                panic!("source read must complete in the latest protocol lifecycle");
+            };
+            assert_ne!(read.is_error, Some(true));
+            let source: serde_json::Value =
+                serde_json::from_str(&read.content[0].as_text().unwrap().text).unwrap();
+            assert_eq!(source["observation"], "file_bytes_read");
+            assert_eq!(source["source"]["text"], "fn latest_client_source() {}\n");
+            assert!(source["source"]["source_hash"].is_string());
+
+            client.cancel().await.unwrap();
+            let _ = server_task.await;
+        }
+        *TEST_ADEN_BINARY.lock().unwrap() = None;
     }
 
     #[tokio::test]
@@ -3892,13 +4433,13 @@ mod tests {
             )
         };
         let a = client.call_tool(call("only_a")).await.unwrap();
-        let a_text = a.content[0].raw.as_text().unwrap().text.clone();
+        let a_text = a.content[0].as_text().unwrap().text.clone();
         assert!(a_text.contains("only_a"), "A response: {a_text}");
         let a_json: serde_json::Value = serde_json::from_str(&a_text).unwrap();
 
         *roots.write().unwrap() = vec![Root::new(file_uri(&root_b))];
         let b = client.call_tool(call("only_b")).await.unwrap();
-        let b_text = b.content[0].raw.as_text().unwrap().text.clone();
+        let b_text = b.content[0].as_text().unwrap().text.clone();
         assert!(b_text.contains("only_b"), "B response: {b_text}");
         assert!(
             !b_text.contains("only_a"),
@@ -3919,7 +4460,7 @@ mod tests {
         // not silently keep querying repository B.
         *roots.write().unwrap() = Vec::new();
         let unavailable = client.call_tool(call("only_b")).await.unwrap();
-        let unavailable_text = unavailable.content[0].raw.as_text().unwrap().text.clone();
+        let unavailable_text = unavailable.content[0].as_text().unwrap().text.clone();
         let unavailable_json: serde_json::Value = serde_json::from_str(&unavailable_text).unwrap();
         assert_eq!(unavailable_json["error"]["code"], "workspace_unavailable");
         assert_eq!(unavailable_json["error"]["safe_to_retry"], true);
@@ -3947,43 +4488,82 @@ mod tests {
         let server_task = tokio::spawn(async move { server.serve(server_transport).await });
         let client = client_handler.serve(client_transport).await.unwrap();
 
+        let ask_enabled = tool_enabled("ask", requested_surface());
+        let listed = client.list_all_tools().await.unwrap();
+        assert_eq!(
+            listed.iter().any(|tool| tool.name == "ask"),
+            ask_enabled,
+            "ask discovery must match the selected execution surface"
+        );
+        if !ask_enabled {
+            let disabled = client
+                .call_tool(
+                    CallToolRequestParams::new("ask").with_arguments(
+                        serde_json::json!({"question":"budget_symbol"})
+                            .as_object()
+                            .unwrap()
+                            .clone(),
+                    ),
+                )
+                .await
+                .unwrap();
+            assert_eq!(disabled.is_error, Some(true));
+            let disabled: serde_json::Value =
+                serde_json::from_str(&disabled.content[0].as_text().unwrap().text).unwrap();
+            assert_eq!(disabled["error"]["code"], "tool_surface_disabled");
+        }
+        // The default route still exercises strict context assembly; opting
+        // into Standard additionally exercises ask's compatible budget path.
+        let (tool, arguments) = if ask_enabled {
+            (
+                "ask",
+                serde_json::json!({"question":"budget_symbol", "budget":15}),
+            )
+        } else {
+            (
+                "asm",
+                serde_json::json!({"from":"budget_symbol", "budget":15}),
+            )
+        };
         let reply = client
             .call_tool(
-                CallToolRequestParams::new("ask").with_arguments(
-                    serde_json::json!({"question":"budget_symbol", "budget":15})
-                        .as_object()
-                        .unwrap()
-                        .clone(),
-                ),
+                CallToolRequestParams::new(tool)
+                    .with_arguments(arguments.as_object().unwrap().clone()),
             )
             .await
             .unwrap();
-        let text = reply.content[0].raw.as_text().unwrap().text.clone();
+        let text = reply.content[0].as_text().unwrap().text.clone();
         assert!(
             text.len().div_ceil(4) <= 15,
             "MCP serialized {} bytes over a 15-token strict budget: {text}",
             text.len()
         );
         let response: serde_json::Value = serde_json::from_str(&text).expect("MCP JSON");
-        assert_eq!(response["schema_version"], 1);
-        assert_eq!(response["truncated"], true, "tiny MCP response: {response}");
+        if tool == "ask" {
+            assert_eq!(response["schema_version"], 1);
+            assert_eq!(response["truncated"], true, "tiny MCP response: {response}");
+        } else {
+            assert_eq!(response["context_receipt"]["schema_version"], 1);
+            assert_eq!(
+                response["incomplete"], true,
+                "tiny MCP response: {response}"
+            );
+        }
 
         // The MCP director is a transport adapter, not a second query engine.
-        // Exercise the exact public CLI request it emits (same cwd, question,
+        // Exercise the exact public CLI request it emits (same cwd, target,
         // strict mode, JSON mode, and 15-token budget) and compare semantic
         // payloads. There is no intentional delta for this bounded envelope.
+        let mut direct_args = vec![tool];
+        if tool == "asm" {
+            direct_args.push("--from");
+        }
+        direct_args.extend(["budget_symbol", "--strict", "--budget", "15", "--json"]);
         let direct = std::process::Command::new(direct_cli)
-            .args([
-                "ask",
-                "budget_symbol",
-                "--strict",
-                "--budget",
-                "15",
-                "--json",
-            ])
+            .args(direct_args)
             .current_dir(&root)
             .output()
-            .expect("equivalent public CLI ask");
+            .expect("equivalent public CLI context request");
         assert!(
             direct.status.success(),
             "CLI stderr: {}",
@@ -4041,10 +4621,39 @@ mod tests {
         for tool in agent_read_tools() {
             let request = CallToolRequestParams::new(tool).with_arguments(args(tool));
             let reply = client.call_tool(request).await.unwrap();
-            let text = reply.content[0].raw.as_text().unwrap().text.clone();
+            let text = reply.content[0].as_text().unwrap().text.clone();
             let value: serde_json::Value = serde_json::from_str(&text).unwrap_or_else(|e| {
                 panic!("{tool} returned terminal chrome, not JSON: {e}: {text}")
             });
+            if tool == "generation_status" {
+                assert!(
+                    value.is_null() || value["job_id"].is_string(),
+                    "generation_status must return native JobStatus or null: {value}"
+                );
+                if !value.is_null() {
+                    assert!(
+                        matches!(
+                            value["state"].as_str(),
+                            Some(
+                                "queued"
+                                    | "running"
+                                    | "cancelling"
+                                    | "completed"
+                                    | "failed"
+                                    | "cancelled"
+                                    | "interrupted"
+                            )
+                        ),
+                        "generation_status must preserve a lifecycle state: {value}"
+                    );
+                }
+                assert!(value.get("context_receipt").is_none(), "{value}");
+                assert_ne!(
+                    value.get("incomplete").and_then(serde_json::Value::as_bool),
+                    Some(true)
+                );
+                continue;
+            }
             if let Some(error) = value.get("error") {
                 // This fixture contains a real, uniquely indexed symbol, so
                 // understand must execute successfully. This catches transport
@@ -4564,13 +5173,13 @@ mod tests {
     #[test]
     fn boolean_args_reject_non_bool_values() {
         let mut a = serde_json::Map::new();
-        a.insert("auto".into(), serde_json::json!("true")); // string, not bool
-        let err = validate_args("gen", &a).unwrap_err();
-        assert!(err.contains("auto") && err.contains("boolean"), "{err}");
+        a.insert("symbols".into(), serde_json::json!("true")); // string, not bool
+        let err = validate_args("tree", &a).unwrap_err();
+        assert!(err.contains("symbols") && err.contains("boolean"), "{err}");
         // A real bool passes.
         let mut ok = serde_json::Map::new();
-        ok.insert("auto".into(), serde_json::json!(true));
-        assert!(validate_args("gen", &ok).is_ok());
+        ok.insert("symbols".into(), serde_json::json!(true));
+        assert!(validate_args("tree", &ok).is_ok());
     }
 
     #[test]
@@ -4800,7 +5409,7 @@ mod tests {
         assert!(schema.contains_key("properties"));
         let props = schema.get("properties").unwrap().as_object().unwrap();
         assert!(props.contains_key("path"));
-        assert!(props.contains_key("auto"));
+        assert_eq!(props.len(), 1, "MCP gen only accepts its project path");
     }
 
     #[test]
@@ -4867,24 +5476,50 @@ mod tests {
     }
 
     #[test]
-    fn locate_schema_declares_any_of_symbol_or_caller_of() {
-        let server = AdenMcpServer::new(PathBuf::from("."));
-        let tool = server.get_tool("locate").unwrap();
-        let any_of = tool
-            .input_schema
-            .get("anyOf")
-            .and_then(|v| v.as_array())
-            .expect("locate schema should declare anyOf");
-        let names: Vec<&str> = any_of
-            .iter()
-            .filter_map(|c| c.get("required"))
-            .filter_map(|r| r.as_array())
-            .flat_map(|a| a.iter().filter_map(|v| v.as_str()))
-            .collect();
+    fn locate_schema_is_portable_across_surfaces_and_runtime_enforces_selector() {
+        let locate = spec("locate");
+        for surface in [Tier::Essential, Tier::Standard, Tier::Full] {
+            for advertised in TOOLS
+                .iter()
+                .filter(|candidate| tool_enabled(candidate.name, surface))
+            {
+                let schema = tool_from_spec_for_surface(advertised, surface).input_schema;
+                assert_eq!(
+                    schema.get("type").and_then(|v| v.as_str()),
+                    Some("object"),
+                    "{} must have an object root on {surface:?}",
+                    advertised.name
+                );
+                for composition in ["oneOf", "anyOf", "allOf", "enum", "const", "not"] {
+                    assert!(
+                        schema.get(composition).is_none(),
+                        "{} root schema must omit {composition} on {surface:?}: {schema:?}",
+                        advertised.name
+                    );
+                }
+            }
+
+            let schema = tool_from_spec_for_surface(locate, surface).input_schema;
+            let properties = schema.get("properties").unwrap();
+            assert!(properties.get("symbol").is_some());
+            assert!(properties.get("caller_of").is_some());
+        }
+
+        // Plain object schema stays compatible with clients that reject root
+        // composition keywords. The alternative selector requirement is prose
+        // guidance and remains enforced before CLI execution.
         assert!(
-            names.contains(&"symbol") && names.contains(&"caller_of"),
-            "anyOf should require symbol or caller_of, got {names:?}"
+            locate
+                .description
+                .contains("at least one of `symbol` or `caller_of`")
         );
+        assert!(validate_args("locate", &serde_json::Map::new()).is_err());
+        for selector in ["symbol", "caller_of"] {
+            let args = serde_json::json!({(selector): "foo"});
+            assert!(validate_args("locate", args.as_object().unwrap()).is_ok());
+        }
+        let mistyped = serde_json::json!({"symbol": 7});
+        assert!(validate_args("locate", mistyped.as_object().unwrap()).is_err());
     }
 
     #[test]

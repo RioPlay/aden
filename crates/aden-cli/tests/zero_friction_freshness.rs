@@ -118,14 +118,18 @@ fn old_layout_manifest_and_gen_cache_trigger_one_automatic_rebuild() {
 
     let mut manifest: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
-    manifest
+    let logic_version = manifest["gen_logic_version"].as_u64().unwrap();
+    let layout_version = manifest
         .as_object_mut()
         .unwrap()
-        .remove("index_layout_version");
+        .remove("index_layout_version")
+        .expect("fresh generation records the current layout version");
     std::fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
 
     let mut cache: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&cache_path).unwrap()).unwrap();
+    assert_eq!(cache["version"], logic_version);
+    assert_ne!(logic_version, 6);
     cache["version"] = 6.into();
     std::fs::write(&cache_path, serde_json::to_vec(&cache).unwrap()).unwrap();
 
@@ -135,11 +139,13 @@ fn old_layout_manifest_and_gen_cache_trigger_one_automatic_rebuild() {
 
     let manifest: serde_json::Value =
         serde_json::from_slice(&std::fs::read(manifest_path).unwrap()).unwrap();
-    assert_eq!(manifest["index_layout_version"], 3);
+    assert_eq!(manifest["index_layout_version"], layout_version);
+    assert_eq!(manifest["gen_logic_version"], logic_version);
     let cache: serde_json::Value =
         serde_json::from_slice(&std::fs::read(cache_path).unwrap()).unwrap();
-    // Pinned to the current GEN_LOGIC_VERSION (types.rs): bump together.
-    assert_eq!(cache["version"], 15);
+    assert_eq!(cache["version"], logic_version);
+    let next = json(&project, &data, &["tree", "--symbols", "."]);
+    assert_eq!(next["context_receipt"]["refresh_cause"], "none");
 
     let _ = std::fs::remove_dir_all(project);
     let _ = std::fs::remove_dir_all(data);

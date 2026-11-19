@@ -30,14 +30,52 @@ const GLOBAL_FLAGS: &[&str] = &["--json", "--human", "--unlimited", "--verbose",
 /// still verifies every MCP read tool that exposes it.
 const READ_SURFACE_ONLY_GLOBAL_FLAG: &str = "--require-fresh";
 
-/// CLI flags deliberately NOT exposed over MCP: `(tool, flag, reason)`.
+/// CLI flags deliberately NOT exposed over MCP: `(CLI command, flag, reason)`.
 /// Every entry must carry a reason — an empty list is the healthy state.
 /// (Positional CLI args are out of scope here: the reverse check enumerates
 /// `--long` flags only; positionals are covered by the forward direction.)
-const REVERSE_EXEMPT: &[(&str, &str, &str)] = &[(
-    "heal",
-    "--watch",
-    "long-running file-watch daemon; always trips the MCP request/response timeout",
+const REVERSE_EXEMPT: &[(&str, &str, &str)] = &[
+    (
+        "tree",
+        "--files",
+        "MCP selects this mode through the existing symbols=false argument",
+    ),
+    (
+        "heal",
+        "--watch",
+        "long-running file-watch daemon; always trips the MCP request/response timeout",
+    ),
+    (
+        "gen",
+        "--auto",
+        "MCP gen is background-only; auto discovery has no background JobStatus contract",
+    ),
+    (
+        "gen",
+        "--quiet",
+        "MCP gen returns JobStatus rather than per-file or summary generation output",
+    ),
+    (
+        "gen",
+        "--propose",
+        "proposal mode is unsupported on the MCP background generation surface",
+    ),
+    (
+        "gen",
+        "--force-regen",
+        "force regeneration is unsupported on the MCP background generation surface",
+    ),
+    (
+        "gen",
+        "--background",
+        "MCP gen always injects this flag to ensure generation outlives the request",
+    ),
+];
+
+/// Hidden command handlers that are implementation details, never MCP routes.
+const INTERNAL_CLI_COMMANDS: &[(&str, &str)] = &[(
+    "__gen-worker",
+    "owned background worker launched by generation_job; not a caller-facing command",
 )];
 
 /// Top-level CLI commands with NO MCP tool, each with the reason it is kept
@@ -119,16 +157,30 @@ fn positional_labels_in_help(help: &str) -> Vec<String> {
 }
 
 fn cli_help(bin: &str, tool: &str) -> String {
+    let mut args = cli_command_path_for_mcp(tool);
+    args.push("--help");
     let out = Command::new(bin)
-        .args([tool, "--help"])
+        .args(&args)
         .output()
-        .unwrap_or_else(|e| panic!("failed to run `aden {tool} --help`: {e}"));
+        .unwrap_or_else(|e| panic!("failed to run `aden {}`: {e}", args.join(" ")));
     assert!(
         out.status.success(),
-        "`aden {tool} --help` failed: {}",
+        "`aden {}` failed: {}",
+        args.join(" "),
         String::from_utf8_lossy(&out.stderr)
     );
     String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+/// Resolve only the three MCP generation names whose CLI command differs from
+/// their ToolSpec name. Every other tool remains a direct top-level mapping.
+fn cli_command_path_for_mcp(tool: &str) -> Vec<&str> {
+    match tool {
+        "generation_status" => vec!["jobs", "status"],
+        "generation_start" => vec!["gen"],
+        "generation_cancel" => vec!["jobs", "cancel"],
+        _ => vec![tool],
+    }
 }
 
 /// Extract every clap-rendered default which belongs to an MCP-exposed
@@ -176,22 +228,39 @@ fn cli_defaults_in_help(tool: &str, help: &str, exposed: &[(&str, &str)]) -> Vec
     defaults
 }
 
+/// MCP generation_start maps to the CLI's variadic `gen [PATH]...`. The CLI
+/// deliberately omits a clap-rendered default for that Vec, then resolves an
+/// empty path list to the current project directory before starting work.
+fn mapped_cli_default_matches(tool: &str, arg: &str, default: &str, help: &str) -> bool {
+    tool == "generation_start"
+        && arg == "path"
+        && default == "."
+        && cli_command_path_for_mcp(tool) == ["gen"]
+        && positional_labels_in_help(help)
+            .iter()
+            .any(|label| label == "path")
+        && !help.contains("[default: .]")
+}
+
 #[test]
 fn mcp_declared_flags_are_accepted_by_cli() {
     let bin = env!("CARGO_BIN_EXE_aden");
     let mut failures: Vec<String> = Vec::new();
 
     for (tool, args) in aden_mcp::tool_arg_specs() {
+        let mut help_args = cli_command_path_for_mcp(tool);
+        help_args.push("--help");
         let out = Command::new(bin)
-            .args([tool, "--help"])
+            .args(&help_args)
             .output()
-            .unwrap_or_else(|e| panic!("failed to run `aden {tool} --help`: {e}"));
+            .unwrap_or_else(|e| panic!("failed to run `aden {}`: {e}", help_args.join(" ")));
 
         // `--help` exits 0 and prints to stdout for every real subcommand.
         let help = String::from_utf8_lossy(&out.stdout);
         if help.trim().is_empty() {
             failures.push(format!(
-                "{tool}: `aden {tool} --help` produced no help (unknown subcommand?). stderr: {}",
+                "{tool}: `aden {}` produced no help (unknown subcommand?). stderr: {}",
+                help_args.join(" "),
                 String::from_utf8_lossy(&out.stderr).trim()
             ));
             continue;
@@ -311,6 +380,8 @@ fn mcp_schema_defaults_are_documented_by_cli_help() {
                 .unwrap_or_else(|| default.to_string());
             let documented = if aden_mcp::tool_arg_default_is_transport_override(tool, arg) {
                 help.contains(&format!("MCP default: {rendered}"))
+            } else if mapped_cli_default_matches(tool, arg, &rendered, &help) {
+                true
             } else {
                 help.contains(&format!("[default: {rendered}]"))
             };
@@ -403,11 +474,11 @@ fn cli_flags_are_declared_on_mcp_tools() {
     let mut failures: Vec<String> = Vec::new();
 
     for (tool, args) in aden_mcp::tool_arg_specs() {
-        let out = Command::new(bin)
-            .args([tool, "--help"])
-            .output()
-            .unwrap_or_else(|e| panic!("failed to run `aden {tool} --help`: {e}"));
-        let help = String::from_utf8_lossy(&out.stdout);
+        let help = cli_help(bin, tool);
+        let cli_command = cli_command_path_for_mcp(tool)
+            .last()
+            .copied()
+            .unwrap_or(tool);
 
         for flag in long_flags_in_help(&help) {
             if flag == "--help" || GLOBAL_FLAGS.contains(&flag.as_str()) {
@@ -422,7 +493,7 @@ fn cli_flags_are_declared_on_mcp_tools() {
             }
             if REVERSE_EXEMPT
                 .iter()
-                .any(|(t, f, _why)| *t == tool && *f == flag)
+                .any(|(command, f, _why)| *command == cli_command && *f == flag)
             {
                 continue;
             }
@@ -454,7 +525,25 @@ fn require_fresh_is_exposed_only_on_authoritative_read_tools() {
     }
     assert!(aden_mcp::supports_authoritative_freshness("grep"));
     assert!(!aden_mcp::supports_authoritative_freshness("gen"));
+    assert!(!aden_mcp::supports_authoritative_freshness(
+        "generation_status"
+    ));
+    assert!(!aden_mcp::tool_advertises_authoritative_freshness(
+        "generation_status"
+    ));
     assert!(!aden_mcp::supports_authoritative_freshness("audit"));
+}
+
+#[test]
+fn generation_status_does_not_advertise_or_accept_require_fresh() {
+    let args = serde_json::json!({"require_fresh": true})
+        .as_object()
+        .unwrap()
+        .clone();
+    assert!(!aden_mcp::tool_advertises_authoritative_freshness(
+        "generation_status"
+    ));
+    assert!(aden_mcp::prepare_cli_args_for_mcp("generation_status", &args).is_err());
 }
 
 /// Enum drift: every value the MCP schema pins in an `enum` (check/lint
@@ -470,11 +559,7 @@ fn mcp_enum_values_exist_in_cli_help() {
     let mut failures: Vec<String> = Vec::new();
 
     for (tool, arg, values) in aden_mcp::tool_arg_enums() {
-        let out = Command::new(bin)
-            .args([tool, "--help"])
-            .output()
-            .unwrap_or_else(|e| panic!("failed to run `aden {tool} --help`: {e}"));
-        let help = String::from_utf8_lossy(&out.stdout);
+        let help = cli_help(bin, tool);
         for v in values {
             if !help.contains(v) {
                 failures.push(format!(
@@ -567,7 +652,11 @@ fn cli_commands_without_mcp_tools_are_expressly_exempt() {
 
     let mut failures: Vec<String> = Vec::new();
     for cmd in &commands {
-        let has_tool = tools.contains(&cmd.as_str());
+        let has_tool = tools.iter().any(|tool| {
+            cli_command_path_for_mcp(tool)
+                .first()
+                .is_some_and(|command| *command == cmd.as_str())
+        });
         let exempt = COMMANDS_WITHOUT_MCP_TOOL.iter().any(|(c, _)| c == cmd);
         match (has_tool, exempt) {
             (false, false) => failures.push(format!(
@@ -581,16 +670,43 @@ fn cli_commands_without_mcp_tools_are_expressly_exempt() {
             _ => {}
         }
     }
-    // Hidden compatibility commands do not appear in focused top-level help,
-    // so validate MCP names by asking clap to parse each command directly.
+    // Hidden compatibility commands and explicit nested generation routes do
+    // not appear as MCP tool names, so validate their mapped CLI help paths.
     for tool in &tools {
+        let mut args = cli_command_path_for_mcp(tool);
+        args.push("--help");
         let exists = Command::new(bin)
-            .args([*tool, "--help"])
+            .args(&args)
             .output()
             .is_ok_and(|output| output.status.success());
         if !exists {
             failures.push(format!(
-                "MCP tool `{tool}` has no matching callable `aden {tool}` command"
+                "MCP tool `{tool}` has no matching callable `aden {}` route",
+                cli_command_path_for_mcp(tool).join(" ")
+            ));
+        }
+    }
+
+    for (internal, reason) in INTERNAL_CLI_COMMANDS {
+        assert!(
+            !reason.trim().is_empty(),
+            "{internal} needs an internal-command reason"
+        );
+        if tools
+            .iter()
+            .any(|tool| cli_command_path_for_mcp(tool).contains(internal))
+        {
+            failures.push(format!(
+                "internal CLI helper `{internal}` must not be an MCP route"
+            ));
+        }
+        let exists = Command::new(bin)
+            .args([*internal, "--help"])
+            .output()
+            .is_ok_and(|output| output.status.success());
+        if !exists {
+            failures.push(format!(
+                "expected hidden internal CLI helper `{internal}` is unavailable"
             ));
         }
     }
@@ -601,4 +717,28 @@ fn cli_commands_without_mcp_tools_are_expressly_exempt() {
         failures.len(),
         failures.join("\n  ")
     );
+}
+
+#[test]
+fn generation_tools_map_to_expected_cli_help_paths() {
+    let bin = env!("CARGO_BIN_EXE_aden");
+    assert_eq!(
+        cli_command_path_for_mcp("generation_status"),
+        ["jobs", "status"]
+    );
+    assert_eq!(cli_command_path_for_mcp("generation_start"), ["gen"]);
+    assert_eq!(
+        cli_command_path_for_mcp("generation_cancel"),
+        ["jobs", "cancel"]
+    );
+    assert!(cli_help(bin, "generation_start").contains("--background"));
+    assert!(cli_help(bin, "generation_status").contains("status"));
+    assert!(cli_help(bin, "generation_cancel").contains("--job-id"));
+    let gen_help = cli_help(bin, "generation_start");
+    assert!(mapped_cli_default_matches(
+        "generation_start",
+        "path",
+        ".",
+        &gen_help,
+    ));
 }

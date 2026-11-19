@@ -12,7 +12,7 @@
 //! `query --impact`), *connectivity* walks both. All BFS-limited by `--depth`.
 
 use crate::util::{find_project_root, impact_edge_types};
-use aden_graph::Direction;
+use aden_graph::{Direction, EdgeRef};
 use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::path::Path;
 
@@ -115,19 +115,32 @@ fn add_source_fields(obj: &mut serde_json::Value, source: &SourceLocation, line:
 /// Build source locations from the store's symbol spans. Filesystem operations
 /// always receive `path`; only browser/editor links receive `editor`.
 fn build_src_map(root: &Path) -> SrcMap {
+    build_src_map_from_grouped(root, super::grep::load_symbol_spans(root))
+}
+
+/// Build locations for a selected set of anchors with keyed store reads. Module
+/// hubs need the broad map because their entry link is ranked across all members.
+fn build_src_map_for_anchors(root: &Path, anchors: &BTreeSet<String>) -> SrcMap {
+    let selected = (!anchors.iter().any(|a| a.starts_with("mod-"))).then_some(anchors);
+    build_src_map_from_grouped(root, super::grep::load_symbol_spans_for(root, selected))
+}
+
+fn build_src_map_from_grouped(
+    root: &Path,
+    spans_by_file: std::collections::HashMap<String, Vec<super::grep::Span>>,
+) -> SrcMap {
     let mut map = SrcMap::new();
-    for (file, spans) in super::grep::load_symbol_spans(root) {
+    for (file, spans) in spans_by_file {
         let path = absolute_source_path(root, &file);
         let display = native_display_path(&path, cfg!(windows));
         let editor = editor_path_from_native(&display, cfg!(windows));
         for span in spans {
-            let loc = span.end.saturating_sub(span.start) + 1;
             map.entry(span.anchor).or_insert_with(|| SourceLocation {
                 path: path.clone(),
                 display: display.clone(),
                 editor: editor.clone(),
                 line: span.start,
-                loc,
+                loc: span.end.saturating_sub(span.start) + 1,
             });
         }
     }
@@ -358,17 +371,7 @@ pub fn cmd_viz(
                 "reach" => reach_slice(&graph, &root_anchor, depth, NODE_CAP),
                 _ => blast_slice(&graph, &root_anchor, depth, NODE_CAP),
             };
-            let src = build_src_map(&root);
-            render_flat(
-                &root_anchor,
-                &nodes,
-                &edges,
-                format,
-                &src,
-                &graph,
-                &root,
-                mode,
-            )?
+            render_flat(&root_anchor, &nodes, &edges, format, &graph, &root, mode)?
         }
         other => {
             return Err(format!(
@@ -430,7 +433,7 @@ pub(crate) fn viz_json_for(
                 "reach" => reach_slice(&graph, &root_anchor, depth, NODE_CAP),
                 _ => blast_slice(&graph, &root_anchor, depth, NODE_CAP),
             };
-            let src = build_src_map(&root);
+            let src = build_src_map_for_anchors(&root, &nodes);
             Ok(render_json(
                 &root_anchor,
                 &nodes,
@@ -495,19 +498,18 @@ pub(crate) fn anchors_json(
         let Some(idx) = graph.get_index(a) else {
             continue;
         };
-        for nb in graph.graph.neighbors_directed(idx, Direction::Outgoing) {
-            let to = graph.graph[nb].doc.anchor.clone();
-            if !nodes.contains(&to) {
-                continue;
-            }
-            // ALL typed edges between the pair — parallel types are real data
-            // (a test's call is both `Calls` and `Tests` since Wave 1).
-            for e in graph.graph.edges_connecting(idx, nb) {
-                edges.insert((a.clone(), to.clone(), format!("{:?}", e.weight().edge_type)));
+        for edge in graph.graph.edges(idx) {
+            let to = &graph.graph[edge.target()].doc.anchor;
+            if nodes.contains(to) {
+                edges.insert((
+                    a.clone(),
+                    to.clone(),
+                    format!("{:?}", edge.weight().edge_type),
+                ));
             }
         }
     }
-    let src = build_src_map(&root);
+    let src = build_src_map_for_anchors(&root, &nodes);
     Ok(render_json(
         "", &nodes, &edges, &src, &graph, &root, "graph",
     ))
@@ -615,7 +617,11 @@ fn render_graph_json(
         .map(|(i, a)| (a.as_str(), format!("n{i}")))
         .collect();
 
-    let src = build_src_map(root);
+    let src = if cap == 0 {
+        build_src_map(root)
+    } else {
+        build_src_map_for_anchors(root, &kept)
+    };
     let snippets = collect_snippets(&src, &snippet_anchors);
     let nodes_json: Vec<serde_json::Value> = kept
         .iter()
@@ -670,19 +676,13 @@ fn render_graph_json(
         let Some(idx) = graph.get_index(a) else {
             continue;
         };
-        for nb in graph.graph.neighbors_directed(idx, Direction::Outgoing) {
-            let to = graph.graph[nb].doc.anchor.clone();
-            if !kept.contains(&to) {
-                continue;
-            }
-            // ALL typed edges between the pair — collapsing to the first one
-            // hid co-emitted types (e.g. `Tests` alongside `Calls`) from the
-            // census this JSON feeds.
-            for e in graph.graph.edges_connecting(idx, nb) {
+        for edge in graph.graph.edges(idx) {
+            let to = &graph.graph[edge.target()].doc.anchor;
+            if kept.contains(to) {
                 edge_set.insert((
                     ids[a.as_str()].clone(),
                     ids[to.as_str()].clone(),
-                    format!("{:?}", e.weight().edge_type),
+                    format!("{:?}", edge.weight().edge_type),
                 ));
             }
         }
@@ -800,33 +800,22 @@ fn connectivity_slice(graph: &Graph, root_anchor: &str, depth: usize, cap: usize
             continue;
         }
         for dir in [Direction::Outgoing, Direction::Incoming] {
-            for neighbor in graph.graph.neighbors_directed(node, dir) {
-                let nb_anchor = graph.graph[neighbor].doc.anchor.clone();
-                if !nodes.contains(&nb_anchor) && nodes.len() >= cap {
-                    continue;
-                }
-                // Orient the edge source→target regardless of traversal direction.
-                let (from_idx, to_idx) = match dir {
-                    Direction::Outgoing => (node, neighbor),
-                    Direction::Incoming => (neighbor, node),
+            for edge in graph.graph.edges_directed(node, dir) {
+                let neighbor = match dir {
+                    Direction::Outgoing => edge.target(),
+                    Direction::Incoming => edge.source(),
                 };
-                // ALL typed edges between the pair (parallel types are real
-                // data — e.g. `Tests` co-emitted with `Calls`).
-                let ets: Vec<String> = graph
-                    .graph
-                    .edges_connecting(from_idx, to_idx)
-                    .map(|e| format!("{:?}", e.weight().edge_type))
-                    .collect();
-                if ets.is_empty() {
+                let nb_anchor = &graph.graph[neighbor].doc.anchor;
+                if nodes.len() >= cap && !nodes.contains(nb_anchor) {
                     continue;
                 }
-                let from = graph.graph[from_idx].doc.anchor.clone();
-                let to = graph.graph[to_idx].doc.anchor.clone();
-                nodes.insert(nb_anchor);
-                for et in ets {
-                    edges.insert((from.clone(), to.clone(), et));
-                }
+                edges.insert((
+                    graph.graph[edge.source()].doc.anchor.clone(),
+                    graph.graph[edge.target()].doc.anchor.clone(),
+                    format!("{:?}", edge.weight().edge_type),
+                ));
                 if visited.insert(neighbor) {
+                    nodes.insert(nb_anchor.clone());
                     queue.push_back((neighbor, d + 1));
                 }
             }
@@ -881,14 +870,14 @@ fn communities_slice(
         let Some(idx) = graph.get_index(a) else {
             continue;
         };
-        for nb in graph.graph.neighbors_directed(idx, Direction::Outgoing) {
-            let to = graph.graph[nb].doc.anchor.clone();
-            if !shown.contains(&to) {
-                continue;
-            }
-            // ALL typed edges between the pair, not just the first.
-            for e in graph.graph.edges_connecting(idx, nb) {
-                edges.insert((a.clone(), to.clone(), format!("{:?}", e.weight().edge_type)));
+        for edge in graph.graph.edges(idx) {
+            let to = &graph.graph[edge.target()].doc.anchor;
+            if shown.contains(to) {
+                edges.insert((
+                    a.clone(),
+                    to.clone(),
+                    format!("{:?}", edge.weight().edge_type),
+                ));
             }
         }
     }
@@ -1014,17 +1003,13 @@ fn render_communities_view_json(
             let Some(idx) = graph.get_index(m) else {
                 continue;
             };
-            for nb in graph.graph.neighbors_directed(idx, Direction::Outgoing) {
-                let to = graph.graph[nb].doc.anchor.clone();
-                if !shown_set.contains(to.as_str()) {
-                    continue;
-                }
-                // ALL typed edges between the pair, not just the first.
-                for e in graph.graph.edges_connecting(idx, nb) {
+            for edge in graph.graph.edges(idx) {
+                let to = &graph.graph[edge.target()].doc.anchor;
+                if shown_set.contains(to.as_str()) {
                     edge_set.insert((
                         local[m.as_str()].clone(),
                         local[to.as_str()].clone(),
-                        format!("{:?}", e.weight().edge_type),
+                        format!("{:?}", edge.weight().edge_type),
                     ));
                 }
             }
@@ -1120,13 +1105,11 @@ fn community_label(members: &[String]) -> String {
 }
 
 /// Dispatch a flat (blast/connectivity) slice to the requested format.
-#[allow(clippy::too_many_arguments)] // mirror of render_json's full context, all one shape
 fn render_flat(
     root: &str,
     nodes: &BTreeSet<String>,
     edges: &BTreeSet<(String, String, String)>,
     format: &str,
-    src: &SrcMap,
     graph: &Graph,
     proj_root: &Path,
     mode: &str,
@@ -1135,7 +1118,15 @@ fn render_flat(
         "dot" => render_dot(root, nodes, edges),
         "mermaid" => render_mermaid(root, nodes, edges),
         "asciidoc" | "adoc" => render_asciidoc(root, nodes, edges),
-        "json" => render_json(root, nodes, edges, src, graph, proj_root, mode),
+        "json" => render_json(
+            root,
+            nodes,
+            edges,
+            &build_src_map_for_anchors(proj_root, nodes),
+            graph,
+            proj_root,
+            mode,
+        ),
         other => {
             return Err(format!(
                 "unknown --format '{other}' (expected 'mermaid', 'dot', 'asciidoc', or 'json')"
@@ -1520,6 +1511,44 @@ fn render_asciidoc(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn selected_spans_group_relative_and_absolute_file_aliases() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let absolute_file = root.join("src/lib.rs");
+        let records = [
+            (
+                "first".to_string(),
+                aden_core::SourceSpan {
+                    file: absolute_file.to_string_lossy().into_owned(),
+                    start_line: 2,
+                    end_line: 3,
+                    start_byte: 0,
+                    end_byte: 4,
+                },
+            ),
+            (
+                "second".to_string(),
+                aden_core::SourceSpan {
+                    file: "src/lib.rs".to_string(),
+                    start_line: 7,
+                    end_line: 7,
+                    start_byte: 8,
+                    end_byte: 12,
+                },
+            ),
+        ];
+
+        let grouped = crate::commands::grep::group_source_spans(root, records);
+        let map = build_src_map_from_grouped(root, grouped);
+
+        assert_eq!(map.len(), 2);
+        assert_eq!(map["first"].path, absolute_file);
+        assert_eq!(map["second"].path, map["first"].path);
+        assert_eq!((map["first"].line, map["first"].loc), (2, 2));
+        assert_eq!((map["second"].line, map["second"].loc), (7, 1));
+    }
 
     fn sample() -> (String, BTreeSet<String>, BTreeSet<(String, String, String)>) {
         let root = "aden://module/x/a.rs#root".to_string();

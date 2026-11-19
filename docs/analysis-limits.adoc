@@ -1,0 +1,59 @@
+[[analysis-limits]]
+= Graph analysis limits and macro API discovery
+
+A current graph means its source snapshot is current. It does not mean every
+program relationship was analyzed. Graph JSON responses include an `analysis`
+object separately from `context_receipt` and result pagination. A query with
+`result_state: complete` traversed all requested stored results within its scope;
+it does not prove that all possible callers or dependencies exist in the graph.
+
+`analysis.completeness` is `partial`, and `absence_is_proof` is `false`.
+`understand` also reports the persisted extractor route for the definition:
+`static_relationships`, `symbols_only`, `document_structure`, or `unknown` for
+legacy documents. `observed_indirect_calls` counts recorded indirect-call rows
+for that definition only. Zero does not prove that no dynamic calls exist.
+Generic grammar extraction supplies symbols, without call analysis. Static
+resolvers can omit macro expansion, indirect targets and runtime dispatch.
+Use source search and verified source reads when checking absence.
+
+[[macro-api-mappings]]
+== Opt-in C macro API mappings
+
+Project-specific function-declaring macros can expose logical API names to
+`locate` and `understand`, without running a preprocessor or any project command.
+Add an inert mapping to the project's `.aden/config.toml`:
+
+[source,toml]
+----
+[macro_declarations]
+enabled = true
+
+[[macro_declarations.rules]]
+name = "DECLARE_API"
+name_argument = 1
+----
+
+For `DECLARE_API(tag, read_item) { ... }`, this records
+`macro-api::read_item`. Arguments use zero-based positions. To discover Linux's
+`SYSCALL_DEFINE3(read, ...)`, configure `name = "SYSCALL_DEFINE3"` and
+`name_argument = 0`. No Linux rule is enabled automatically.
+
+Mapped definitions use a separate anchor namespace, preserve original source
+spans and hashes, and report `analysis_origin: macro_mapping` with
+`scope: symbols_only`. They represent logical source APIs. Compiler-expanded
+identities, ABI names, parameter types and body-call edges are not inferred.
+Mapped logical names do not participate in automatic bare-name call linking.
+Source text is read separately and is never interpreted as graph edge evidence.
+
+Configuration changes invalidate freshness and incremental C-file reuse, even
+when source bytes do not change. Disabling a rule removes its mapped anchors on
+refresh. Configuration is selected from the nearest `.aden` or Git boundary;
+it never uses user-level mappings or crosses a nearer Git boundary. Invalid,
+unsupported or oversized mappings are inert. Config symlinks are rejected.
+
+Limits keep discovery bounded: 64 KiB configuration and invocation size, 64
+rules, arguments and nesting levels, 128-byte names, 2 MiB source, and 1024
+mapped declarations per file. Conditional compilation is not evaluated; mappings
+observe source declarations rather than a configured compiler build. Spliced
+macro or API identifiers remain unsupported; ordinary continued directives and
+comments preserve their original source offsets.

@@ -260,3 +260,6 @@ a still-valid search cache is allowed to answer the read.
 
 All changes remain local build artifacts and source edits. The installed CLI and
 currently connected MCP session were not replaced.
+
+For the subsequent release-build investigation of repeated storage setup, exact
+bounded traversal, and forward-query completeness, see <<graph-read-performance>>.

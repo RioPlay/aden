@@ -1,0 +1,201 @@
+[[mcp-read-sessions]]
+= Reusable MCP graph read sessions
+
+== Outcome and implementation boundary
+
+Repeated `locate`, `understand`, and `query` calls on one MCP server may reuse
+one resident CLI worker and one immutable decoded graph snapshot. Other tools
+retain the existing subprocess path. Ordinary terminal commands are unchanged.
+The local starting revision is `2172e0e35668f69af50cc43d37acb88ee9add297` plus
+the earlier uncommitted graph-query and lookup improvements.
+
+The first slice deliberately keeps CLI command execution outside the MCP
+process. The CLI owns command output, process-global settings, and authoritative
+freshness watchdogs that can terminate its process. Moving those handlers into
+the MCP server would require a larger cancellation and library-boundary change.
+
+== Acceptance and recovery contract
+
+* Real MCP `locate -> understand -> query` sequences must return the same
+  definitions, verified source, and complete typed call chain with reuse on/off.
+* Independent pre/post source freshness observations remain in command handlers.
+  Equal-length source edits with restored modification timestamps must replace
+  the definition and remove the old one on the next call.
+* Each server retains at most one worker. Repository or binary identity changes
+  replace it. Requests are serialized; they do not change worker environment/CWD.
+* A command error may leave a healthy worker reusable. Cancellation, timeout,
+  malformed protocol, and unexpected worker exit discard it. Requests already
+  sent are never automatically replayed. The next request can start a worker.
+* Unsupported worker startup may use the existing subprocess path only before
+  sending a command. The normal environment allowlist and MCP version check apply.
+
+== Snapshot reuse
+
+The resident worker explicitly enables a thread-local single-entry cache.
+The key includes canonical project and snapshot paths plus SHA-256 of bytes
+read from the opened snapshot file. File timestamps and source manifests alone
+are not cache identity. A miss decodes from the same open handle and checks the
+bytes again before retaining the result. Atomic replacement cannot mutate a
+snapshot already pinned by an active request.
+
+Anchor and incoming/outgoing adjacency indexes are shared with the decoded
+documents. No live database storage handle is retained between requests.
+Missing, corrupt, empty, or ineligible snapshots evict retained state and use
+the existing uncached read path. Each retained snapshot is eligible only below
+16 MiB of encoded bytes and 100,000 combined documents/edges. These are
+eligibility limits, not a 16 MiB heap guarantee; decoded documents and lazy
+indexes consume additional memory. Replacement drops the cache's old reference
+before decoding the new publication.
+
+Hashing the snapshot and observing source freshness still involve work
+proportional to project size. This increment makes no constant-time, general
+scalability, tail-latency, or LLM-productivity claim.
+
+== Configuration and rollout
+
+Reuse is controlled by `ADEN_READ_SESSION`. Set it to `0` before starting an
+MCP server to retain per-call subprocess execution. CLI commands remain usable
+for recovery independently of a worker. Changing this environment variable in
+a shell does not reconfigure a server already launched by another host.
+
+Build and test matching binaries before installation. Preserve the previous
+installed executables for rollback. Install the new pair side by side and point
+the host's Aden command at that pair. The installed 0.4.3 directors reject a
+0.4.4 CLI; leaving their existing executable path intact preserves current
+connections. A running MCP director continues using its loaded executable until
+its host reconnects. Changing configuration alone does not establish that an
+existing connection is running the new implementation.
+
+For Codex, the selected server command is configured in `[mcp_servers.aden]`
+in `~/.codex/config.toml`. Change only `command`, preserving its arguments and
+other settings. See the
+link:https://developers.openai.com/codex/mcp/[official MCP configuration documentation].
+
+== Reproducing the sequence comparison
+
+[source,powershell]
+----
+python -m unittest discover -s scripts -p test_mcp_read_session_bench.py
+python scripts/mcp_read_session_bench.py --binary target/release/aden.exe --files 128 --functions 12 --repetitions 4 --output .tmp/session-reuse/comparison.json
+----
+
+The harness starts actual MCP stdio connections, isolates data directories,
+alternates disabled/enabled arm order, retains every attempted tool response,
+and compares exact semantic/source projections. Cold means an empty Aden data
+directory, not an evicted OS file cache. Warm and post-edit states are labelled
+separately. Invalid evidence, tool errors and timeouts fail the comparison and
+remain in its report. Its small synthetic samples do not establish tail latency.
+
+== Windows release verification (2026-11-09)
+
+Both arms used the same release/view binary. CLI SHA-256:
+`c610a274f8ce784c82813a46996718198ca6f9f058c9cdeec9d175b19f728bcb`.
+Standalone MCP SHA-256:
+`991c0bf4fe6ed12ef3aa27d158d2124252d451b3845fc04f77225938403649d0`.
+Source is the starting revision above plus the preserved earlier work and this
+increment, not a clean released commit.
+
+The primary fixture has 128 filler files with 12 functions each, plus the
+three-function call chain. Four balanced repetitions passed all 128 tool calls
+(120 timed calls and eight deleted-definition checks), with identical result,
+verified-source and available source-fingerprint projections. Every enabled arm
+retained one worker PID across warm requests and preserved-timestamp source
+edits; disabled arms retained none.
+
+Median complete three-call sequence elapsed milliseconds, four observations
+per cell:
+
+[cols="3,1,1",options="header"]
+|===
+|State |Reuse disabled |Reuse enabled
+|Cold index and first sequence |1874.7 |1666.0
+|First warm sequence |968.5 |765.5
+|Second warm sequence |976.9 |762.9
+|First sequence after edit |1939.7 |1569.5
+|Warm sequence after edit |1163.6 |827.5
+|===
+
+The second warm sequence took approximately 22% less elapsed time, and the
+first sequence after editing approximately 19% less. These small samples do not
+establish population tail latency. A two-source-file control, with two balanced
+repetitions, passed all 64 calls and the same evidence/worker checks. Its second
+warm sequence was 739.0 to 655.9 ms; the first sequence after editing was 1588.8
+to 1173.3 ms. Other hosts, operating systems, large monorepos and LLM task
+completion outcomes were not measured.
+
+Reports, including every timed response, deletion check and live-process memory
+observation, are retained locally:
+
+* `.tmp/session-reuse/release-comparison.json`
+* `.tmp/session-reuse/release-tiny-comparison.json`
+
+The compact `understand` receipt omits the observed source fingerprint. Its
+comparison therefore requires a current graph revision, exact hash-verified
+source, correct direct caller and parity of returned relationships. Locate and
+query require and compare their observed source fingerprints. Independent
+generation may serialize a different graph revision; revision strings are
+required but not compared between independently populated stores.
+
+Other verification passed:
+
+* 55 graph, 95 MCP library, 277 CLI unit and 51 focused CLI integration tests.
+* Four standalone MCP smoke/stdio tests with the CLI pinned to this release.
+* Three benchmark validator tests, including valid evidence and representative
+  malformed, stale, wrong-anchor, wrong-source, wrong-edge and deletion failures.
+* Strict Clippy on graph/CLI/MCP all targets, formatting, whitespace and
+  `check . --severity Forbid` (zero errors).
+
+Independent source review found and corrected fatal worker stderr loss, which
+otherwise degraded freshness error classification. It also strengthened the
+benchmark's expected evidence and the controlled-child cancellation fixtures.
+The final bounded recheck reported no material finding. The first broad CLI
+unit run hit a Windows parser-test stack overflow; the test now runs its
+unchanged assertions on the same 64 MiB stack as production, and all 277 unit
+tests passed afterward. Unix test branches were source-checked but not executed.
+
+== Local activation on 2026-11-09
+
+The verified pair was installed under
+`C:/Users/example/AppData/Local/Aden/versions/0.4.4-read-sessions-c610a274f8ce/`.
+Only the Codex Aden server's `command` was changed to that directory's
+`aden.exe`; parsed read-back verified all other configuration values unchanged.
+The old `bin/` executables and existing directors were preserved. A subsequent
+call through the old connection still returned a current definition.
+
+An actual MCP connection launched from the installed executable against this
+repository passed locate, hash-verified understand, typed query and repeated
+locate. The same worker served all four requests. Its sampled end-state working
+set was approximately 52.4 MiB, with 78.0 MiB process peak including initial
+indexing. This is an absolute observation, not a memory-savings comparison.
+Evidence: `.tmp/session-reuse/installed-repo-probe.json`.
+
+At that delivery, existing host connections still used the old executable.
+Reconnect the MCP host to load its configured command. New process verification
+does not establish that an already-open host connection reloaded its configuration.
+No commit, PR, push or public release was performed.
+
+Activation hashes, the previous command, and configuration hashes are in the
+versioned directory's `activation.json`. Roll back the launch command without
+touching other settings:
+
+[source,powershell]
+----
+python C:/Users/example/AppData/Local/Aden/versions/0.4.4-read-sessions-c610a274f8ce/deploy_local.py --rollback C:/Users/example/AppData/Local/Aden/versions/0.4.4-read-sessions-c610a274f8ce/activation.json
+----
+
+The rollback refuses to overwrite a command changed since activation. Its edit,
+rollback and wrong-precondition rejection were checked in an isolated fixture.
+
+== Follow-on symbol preparation
+
+The subsequent <<prepared-symbol-lookups>> increment adds snapshot-scoped
+normalized names and indexed resolution. Its report owns the newer local launch
+path, additional memory tradeoff and measured outcome; the evidence above remains
+the original resident-worker delivery record.
+
+== Follow-on recovery usability
+
+The subsequent <<usability-recovery>> increment replaces a known-dead cached
+worker before sending the next request, retries worker startup after transient
+startup failure, and documents its guarded local CLI/MCP rollout. It preserves
+the no-replay boundary after an uncertain request and owns the newer launch path.

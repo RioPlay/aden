@@ -27,6 +27,7 @@ use crate::{
     deserialize_document, doc_key, edge_key, incoming_key, meta_key, outgoing_key, serialize,
     serialize_document,
 };
+use aden_core::symbol::SymbolSuggestions;
 use aden_core::{Document, EdgeType, SourceSpan};
 use fjall::{Database, Keyspace, KeyspaceCreateOptions, PersistMode};
 use std::collections::{HashMap, HashSet};
@@ -79,10 +80,16 @@ const SYMBOL_LEXICON_META_KEY: &str = "symbol_lexicon_version";
 const SYMBOL_EXACT_PREFIX: &str = "se";
 const SYMBOL_RECORD_PREFIX: &str = "sr";
 
+#[cfg(test)]
+thread_local! {
+    // Fail after staging every keyspace, before entering Fjall's commit.
+    static FAIL_BULK_BEFORE_COMMIT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 #[derive(serde::Serialize, serde::Deserialize)]
-struct SymbolLexiconRecord {
-    segment_lower: String,
-    leaf_lower: String,
+struct SymbolLexiconRecord<'a> {
+    segment_lower: &'a str,
+    leaf_lower: &'a str,
     segment_len: usize,
     leaf_len: usize,
 }
@@ -114,8 +121,8 @@ fn symbol_index_entries(anchor: &str) -> Result<(Vec<String>, Vec<u8>), StoreErr
     let record = SymbolLexiconRecord {
         segment_len: forms.segment_lower.chars().count(),
         leaf_len: forms.leaf_lower.chars().count(),
-        segment_lower: forms.segment_lower,
-        leaf_lower: forms.leaf_lower,
+        segment_lower: &forms.segment_lower,
+        leaf_lower: &forms.leaf_lower,
     };
     Ok((keys, serialize(&record)?))
 }
@@ -128,7 +135,98 @@ fn effective_source_span(doc: &Document) -> Option<SourceSpan> {
         .or_else(|| SourceSpan::from_attributes(&doc.attributes))
 }
 
+/// Merge borrowed neighbors in first-seen order. Replaying a healthy row is
+/// read-only; duplicate entries in older rows are repaired when touched.
+fn merge_adjacency<'a>(
+    stored: Option<&'a [u8]>,
+    additions: Vec<(&'a str, EdgeType)>,
+) -> Result<Option<Vec<u8>>, StoreError> {
+    let mut current: Vec<(&str, EdgeType)> = match stored {
+        Some(bytes) => deserialize(bytes)?,
+        None => Vec::new(),
+    };
+    // Leaf symbols commonly have just one neighbor in this direction.
+    if let [edge] = additions.as_slice()
+        && current.len() <= 1
+    {
+        if current.first() == Some(edge) {
+            return Ok(None);
+        }
+        current.push(*edge);
+        return serialize(&current).map(Some);
+    }
+
+    let old_len = current.len();
+    let mut seen = HashSet::new();
+    current.retain(|edge| seen.insert(*edge));
+    let repaired_duplicates = current.len() != old_len;
+    current.extend(additions.into_iter().filter(|edge| seen.insert(*edge)));
+    if repaired_duplicates || current.len() != old_len {
+        return serialize(&current).map(Some);
+    }
+    Ok(None)
+}
+
 impl FjallStorage {
+    /// Remove generated call and test edges for the supplied callers atomically.
+    /// Only their outgoing lists and the affected targets' incoming lists are read.
+    /// `Tests`, like `Calls`, points from the caller to the tested symbol.
+    pub fn clear_generated_calls(&self, callers: &[&str]) -> Result<(), StoreError> {
+        if callers.is_empty() {
+            return Ok(());
+        }
+        let mut batch = self.db.batch();
+        let mut seen = HashSet::new();
+        let mut incoming_removals: HashMap<String, HashSet<(String, EdgeType)>> = HashMap::new();
+        for &caller in callers {
+            if !seen.insert(caller) {
+                continue;
+            }
+            let key = outgoing_key(caller);
+            let Some(bytes) = self.outgoing.get(&key)? else {
+                continue;
+            };
+            let mut outgoing: Vec<(String, EdgeType)> = deserialize(&bytes)?;
+            let previous_len = outgoing.len();
+            outgoing.retain(|(target, edge_type)| {
+                if matches!(edge_type, EdgeType::Calls | EdgeType::Tests) {
+                    batch.remove(&self.edges, edge_key(caller, target, edge_type));
+                    incoming_removals
+                        .entry(target.clone())
+                        .or_default()
+                        .insert((caller.to_owned(), *edge_type));
+                    false
+                } else {
+                    true
+                }
+            });
+            if outgoing.len() != previous_len {
+                if outgoing.is_empty() {
+                    batch.remove(&self.outgoing, key);
+                } else {
+                    batch.insert(&self.outgoing, key, serialize(&outgoing)?);
+                }
+            }
+        }
+        if incoming_removals.is_empty() {
+            return Ok(());
+        }
+        for (target, removals) in incoming_removals {
+            let key = incoming_key(&target);
+            if let Some(bytes) = self.incoming.get(&key)? {
+                let mut incoming: Vec<(String, EdgeType)> = deserialize(&bytes)?;
+                incoming.retain(|edge| !removals.contains(edge));
+                if incoming.is_empty() {
+                    batch.remove(&self.incoming, key);
+                } else {
+                    batch.insert(&self.incoming, key, serialize(&incoming)?);
+                }
+            }
+        }
+        batch.commit()?;
+        Ok(())
+    }
+
     /// Recognize the current engine's format marker without opening the store.
     ///
     /// Reads only the four-byte header of `path/version`, without creating files
@@ -225,6 +323,29 @@ impl FjallStorage {
             )));
         }
         Self::new(path)
+    }
+
+    /// Read source spans for selected anchors while preserving the bulk reader's
+    /// projection precedence. A populated projection is authoritative, even when
+    /// it is partial; document fallback is used only for an empty projection.
+    pub fn get_source_spans_for<'a>(
+        &self,
+        anchors: impl IntoIterator<Item = &'a str>,
+    ) -> Result<Vec<(String, SourceSpan)>, StoreError> {
+        let projection_populated = !self.source_spans.is_empty()?;
+        let mut spans = Vec::new();
+        for anchor in anchors {
+            if projection_populated {
+                if let Some(value) = self.source_spans.get(anchor.as_bytes())? {
+                    spans.push((anchor.to_string(), deserialize(&value)?));
+                }
+            } else if let Some(doc) = self.get_document(anchor)?
+                && let Some(span) = doc.source_span
+            {
+                spans.push((anchor.to_string(), span));
+            }
+        }
+        Ok(spans)
     }
 }
 
@@ -344,6 +465,10 @@ impl GraphStorage for FjallStorage {
                 batch.insert(&self.index, key, b"");
             }
         }
+        #[cfg(test)]
+        if FAIL_BULK_BEFORE_COMMIT.with(|fail| fail.replace(false)) {
+            return Err(StoreError::Io("injected failure before bulk commit".into()));
+        }
         batch.commit()?;
         Ok(())
     }
@@ -403,63 +528,37 @@ impl GraphStorage for FjallStorage {
             return Ok(());
         }
 
-        // Read and merge each affected adjacency list once, then commit the
-        // canonical edge records and both adjacency mirrors in one journal
-        // batch. The former implementation grouped adjacency rewrites but
-        // still issued one Fjall write per edge, leaving a large batch only
-        // partially visible after a crash and amplifying journal traffic.
-        let mut out_add: HashMap<&str, Vec<(String, EdgeType)>> = HashMap::new();
-        let mut in_add: HashMap<&str, Vec<(String, EdgeType)>> = HashMap::new();
-        for (src, dst, edge_type) in edges {
-            out_add
-                .entry(src.as_str())
-                .or_default()
-                .push((dst.clone(), *edge_type));
-            in_add
-                .entry(dst.as_str())
-                .or_default()
-                .push((src.clone(), *edge_type));
-        }
-
-        let mut outgoing_updates = Vec::with_capacity(out_add.len());
-        for (src, mut adds) in out_add {
-            let key = outgoing_key(src);
-            let mut cur: Vec<(String, EdgeType)> = match self.outgoing.get(&key)? {
-                Some(b) => deserialize(&b)?,
-                None => vec![],
-            };
-            cur.append(&mut adds);
-            // Dedup so re-indexing an unchanged edge does not inflate the list.
-            // EdgeType has no Ord, so dedup via a seen-set, preserving order.
-            let mut seen = HashSet::new();
-            cur.retain(|e| seen.insert(e.clone()));
-            outgoing_updates.push((key, serialize(&cur)?));
-        }
-
-        let mut incoming_updates = Vec::with_capacity(in_add.len());
-        for (dst, mut adds) in in_add {
-            let key = incoming_key(dst);
-            let mut cur: Vec<(String, EdgeType)> = match self.incoming.get(&key)? {
-                Some(b) => deserialize(&b)?,
-                None => vec![],
-            };
-            cur.append(&mut adds);
-            let mut seen = HashSet::new();
-            cur.retain(|e| seen.insert(e.clone()));
-            incoming_updates.push((key, serialize(&cur)?));
-        }
-
+        let mut outgoing: HashMap<&str, Vec<(&str, EdgeType)>> = HashMap::new();
+        let mut incoming: HashMap<&str, Vec<(&str, EdgeType)>> = HashMap::new();
         let mut batch = self.db.batch();
+        // On a cold store every canonical edge is new. On replay each index
+        // is checked independently so a missing mirror or key is still repaired.
+        let empty = self.edges.is_empty()?;
         for (src, dst, edge_type) in edges {
-            batch.insert(&self.edges, edge_key(src, dst, edge_type), &[] as &[u8]);
+            let key = edge_key(src, dst, edge_type);
+            if empty || !self.edges.get(&key)?.is_some_and(|value| value.is_empty()) {
+                batch.insert(&self.edges, key, b"");
+            }
+            outgoing.entry(src).or_default().push((dst, *edge_type));
+            incoming.entry(dst).or_default().push((src, *edge_type));
         }
-        for (key, value) in outgoing_updates {
-            batch.insert(&self.outgoing, key, value);
+
+        let mut stage_row = |space: &Keyspace, key: String, additions| -> Result<(), StoreError> {
+            let stored = space.get(&key)?;
+            if let Some(bytes) = merge_adjacency(stored.as_deref(), additions)? {
+                batch.insert(space, key, bytes);
+            }
+            Ok(())
+        };
+        for (src, additions) in outgoing {
+            stage_row(&self.outgoing, outgoing_key(src), additions)?;
         }
-        for (key, value) in incoming_updates {
-            batch.insert(&self.incoming, key, value);
+        for (dst, additions) in incoming {
+            stage_row(&self.incoming, incoming_key(dst), additions)?;
         }
-        batch.commit()?;
+        if !batch.is_empty() {
+            batch.commit()?;
+        }
         Ok(())
     }
 
@@ -568,7 +667,7 @@ impl GraphStorage for FjallStorage {
         let prefix = format!("edge{KEY_SEP}");
         let mut edges = Vec::new();
         for guard in self.edges.iter() {
-            let (key, _) = guard.into_inner()?;
+            let key = guard.key()?;
             let key_str = String::from_utf8_lossy(&key);
             if let Some(suffix) = key_str.strip_prefix(&prefix) {
                 let parts: Vec<&str> = suffix.split(KEY_SEP).collect();
@@ -591,7 +690,7 @@ impl GraphStorage for FjallStorage {
         let prefix = format!("edge{KEY_SEP}");
         let mut edges = Vec::new();
         for guard in self.edges.iter() {
-            let (key, _) = guard.into_inner()?;
+            let key = guard.key()?;
             let key_str = String::from_utf8_lossy(&key);
             if let Some(suffix) = key_str.strip_prefix(&prefix) {
                 let parts: Vec<&str> = suffix.split(KEY_SEP).collect();
@@ -616,7 +715,7 @@ impl GraphStorage for FjallStorage {
         let prefix = format!("edge{KEY_SEP}");
         let mut counts = HashMap::new();
         for guard in self.edges.iter() {
-            let (key, _) = guard.into_inner()?;
+            let key = guard.key()?;
             let key = String::from_utf8_lossy(&key);
             let Some(suffix) = key.strip_prefix(&prefix) else {
                 continue;
@@ -641,7 +740,7 @@ impl GraphStorage for FjallStorage {
     fn get_all_anchors(&self) -> Result<HashSet<String>, StoreError> {
         let mut anchors = HashSet::new();
         for guard in self.docs.iter() {
-            let (key, _) = guard.into_inner()?;
+            let key = guard.key()?;
             let key_str = String::from_utf8_lossy(&key);
             if let Some(anchor) = key_str.strip_prefix("doc:") {
                 anchors.insert(anchor.to_string());
@@ -661,12 +760,13 @@ impl GraphStorage for FjallStorage {
 
         let natural = aden_core::symbol::natural_symbol_form(symbol);
         let lower = natural.to_lowercase();
-        let probes = [natural.as_str(), lower.as_str()];
+        let probes =
+            std::iter::once(natural.as_str()).chain((lower != natural).then_some(lower.as_str()));
         let mut exact = HashSet::new();
         for form in probes {
             let prefix = format!("{SYMBOL_EXACT_PREFIX}{KEY_SEP}{form}{KEY_SEP}");
             for guard in self.index.prefix(prefix.as_bytes()) {
-                let (key, _) = guard.into_inner()?;
+                let key = guard.key()?;
                 let key = String::from_utf8_lossy(&key);
                 if let Some(anchor) = key.strip_prefix(&prefix) {
                     exact.insert(anchor.to_string());
@@ -685,10 +785,10 @@ impl GraphStorage for FjallStorage {
         }
 
         let symbol_len = lower.chars().count();
-        let max_distance = aden_core::symbol::typo_max_distance(symbol_len);
+        let mut max_distance = aden_core::symbol::typo_max_distance(symbol_len);
         let record_prefix = format!("{SYMBOL_RECORD_PREFIX}{KEY_SEP}");
-        let mut substring = Vec::new();
-        let mut typo = Vec::new();
+        let mut substring = SymbolSuggestions::default();
+        let mut typo = SymbolSuggestions::default();
         let mut records_scanned = 0usize;
         let mut distance_evaluations = 0usize;
         for guard in self.index.prefix(record_prefix.as_bytes()) {
@@ -698,47 +798,38 @@ impl GraphStorage for FjallStorage {
             let Some(anchor) = key.strip_prefix(&record_prefix) else {
                 continue;
             };
-            let record: SymbolLexiconRecord = deserialize(&value)?;
+            let record: SymbolLexiconRecord<'_> = deserialize(&value)?;
             if !lower.is_empty() && record.segment_lower.contains(&lower) {
-                substring.push(anchor.to_string());
+                // A substring wins over every typo, including those in later records.
+                max_distance = None;
+                substring.insert(0, anchor);
                 continue;
             }
             let Some(max_distance) = max_distance else {
                 continue;
             };
-            let distance = [
-                (record.segment_lower.as_str(), record.segment_len),
-                (record.leaf_lower.as_str(), record.leaf_len),
-            ]
-            .into_iter()
-            .filter(|(_, len)| len.abs_diff(symbol_len) <= max_distance)
-            .map(|(candidate, _)| {
-                distance_evaluations += 1;
-                aden_core::symbol::edit_distance(&lower, candidate)
-            })
-            .min();
-            if let Some(distance) = distance.filter(|distance| *distance <= max_distance) {
-                typo.push((distance, anchor.to_string()));
+            let segment = (record.segment_len, record.segment_lower);
+            let leaf = (record.leaf_len, record.leaf_lower);
+            let distance = std::iter::once(segment)
+                .chain((leaf != segment).then_some(leaf))
+                .filter(|(len, _)| len.abs_diff(symbol_len) <= max_distance)
+                .filter_map(|(_, candidate)| {
+                    distance_evaluations += 1;
+                    aden_core::symbol::edit_distance_within(&lower, candidate, max_distance)
+                })
+                .min();
+            if let Some(distance) = distance {
+                typo.insert(distance, anchor);
             }
         }
 
-        let anchors = if !substring.is_empty() {
-            substring.sort();
-            substring.dedup();
-            substring.into_iter().take(8).collect()
+        let candidates = if substring.is_empty() {
+            typo
         } else {
-            typo.sort_by(
-                |(left_distance, left_anchor), (right_distance, right_anchor)| {
-                    left_distance
-                        .cmp(right_distance)
-                        .then_with(|| left_anchor.cmp(right_anchor))
-                },
-            );
-            typo.dedup_by(|left, right| left.1 == right.1);
-            typo.into_iter().take(8).map(|(_, anchor)| anchor).collect()
+            substring
         };
         Ok(Some(SymbolCandidateLookup {
-            anchors,
+            anchors: candidates.into_anchors(),
             records_scanned,
             distance_evaluations,
             exact_index_hit: false,
@@ -850,10 +941,7 @@ impl GraphStorage for FjallStorage {
             &self.meta,
             &self.bases,
         ] {
-            let keys: Vec<_> = part
-                .iter()
-                .filter_map(|g| g.into_inner().ok().map(|(k, _)| k))
-                .collect();
+            let keys: Vec<_> = part.iter().filter_map(|g| g.key().ok()).collect();
             for k in keys {
                 part.remove(k)?;
             }
@@ -892,6 +980,291 @@ mod tests {
             metadata: None,
             confidence: 1.0,
         }
+    }
+
+    #[test]
+    fn clear_generated_calls_is_scoped_idempotent_and_persistent() {
+        let path = test_store_path("clear-generated-calls");
+        let storage = FjallStorage::new(path.to_str().unwrap()).unwrap();
+        let edges = vec![
+            ("test".into(), "target".into(), EdgeType::Calls),
+            ("test".into(), "target".into(), EdgeType::Tests),
+            ("test".into(), "target".into(), EdgeType::Uses),
+            ("caller".into(), "target".into(), EdgeType::Calls),
+            ("caller".into(), "caller".into(), EdgeType::Calls),
+            ("other".into(), "target".into(), EdgeType::Calls),
+            ("target".into(), "test".into(), EdgeType::Calls),
+        ];
+        storage.put_edges_bulk(&edges).unwrap();
+        let callers = ["test", "caller", "test", "missing"];
+        storage.clear_generated_calls(&[]).unwrap();
+        storage.clear_generated_calls(&callers).unwrap();
+        storage.clear_generated_calls(&callers).unwrap();
+        storage.flush().unwrap();
+        drop(storage);
+
+        let storage = FjallStorage::open_existing(path.to_str().unwrap()).unwrap();
+        for (src, dst, edge_type) in &edges {
+            let removed = matches!(src.as_str(), "test" | "caller")
+                && matches!(edge_type, EdgeType::Calls | EdgeType::Tests);
+            assert_eq!(storage.edge_exists(src, dst, edge_type).unwrap(), !removed);
+            assert_eq!(
+                storage
+                    .get_outgoing_edges(src)
+                    .unwrap()
+                    .contains(&(dst.clone(), *edge_type)),
+                !removed
+            );
+            assert_eq!(
+                storage
+                    .get_incoming_edges(dst)
+                    .unwrap()
+                    .contains(&(src.clone(), *edge_type)),
+                !removed
+            );
+        }
+        // A fresh generated edge can be inserted after clearing stale ones.
+        storage
+            .put_edge("test", "new-target", EdgeType::Calls)
+            .unwrap();
+        assert!(
+            storage
+                .edge_exists("test", "new-target", &EdgeType::Calls)
+                .unwrap()
+        );
+        drop(storage);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn clear_generated_calls_read_failure_leaves_all_indexes_unchanged() {
+        let path = test_store_path("clear-generated-calls-failure");
+        let storage = FjallStorage::new(path.to_str().unwrap()).unwrap();
+        storage
+            .put_edge("caller", "target", EdgeType::Calls)
+            .unwrap();
+        storage
+            .incoming
+            .insert(incoming_key("target"), b"invalid adjacency")
+            .unwrap();
+        let outgoing_before = storage.outgoing.get(outgoing_key("caller")).unwrap();
+        assert!(storage.clear_generated_calls(&["caller"]).is_err());
+        assert!(
+            storage
+                .edge_exists("caller", "target", &EdgeType::Calls)
+                .unwrap()
+        );
+        assert_eq!(
+            storage.outgoing.get(outgoing_key("caller")).unwrap(),
+            outgoing_before
+        );
+        assert_eq!(
+            storage
+                .incoming
+                .get(incoming_key("target"))
+                .unwrap()
+                .unwrap()
+                .as_ref(),
+            b"invalid adjacency"
+        );
+        // Repair the bad mirror and retry the same bounded operation.
+        storage
+            .incoming
+            .insert(
+                incoming_key("target"),
+                serialize(&vec![("caller".to_string(), EdgeType::Calls)]).unwrap(),
+            )
+            .unwrap();
+        storage.clear_generated_calls(&["caller"]).unwrap();
+        assert!(
+            !storage
+                .edge_exists("caller", "target", &EdgeType::Calls)
+                .unwrap()
+        );
+        assert!(storage.get_incoming_edges("target").unwrap().is_empty());
+        assert!(storage.get_outgoing_edges("caller").unwrap().is_empty());
+        drop(storage);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn repaired_document_batch_aborts_before_commit_and_recovers_coherently() {
+        let path = test_store_path("atomic-repair");
+        let storage = FjallStorage::new(path.to_str().unwrap()).unwrap();
+        let anchor = "aden://module/example.rs#entry";
+        let mut old = symbol_doc(anchor);
+        old.source_span = Some(SourceSpan {
+            file: "example.rs".into(),
+            start_line: 1,
+            end_line: 2,
+            start_byte: 0,
+            end_byte: 20,
+        });
+        storage
+            .put_documents_bulk(&[(old.clone(), "old base".into())])
+            .unwrap();
+        storage.finalize_symbol_lexicon().unwrap();
+        storage.flush().unwrap();
+        let mut fresh = symbol_doc(anchor);
+        fresh.attributes.insert("signature".into(), "new".into());
+        let old_index: Vec<_> = storage
+            .index
+            .iter()
+            .map(|v| v.into_inner().unwrap())
+            .collect();
+
+        FAIL_BULK_BEFORE_COMMIT.with(|fail| fail.set(true));
+        let error = storage
+            .put_documents_bulk(&[(fresh.clone(), "new base".into())])
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("injected failure before bulk commit")
+        );
+        assert_eq!(storage.get_document(anchor).unwrap(), Some(old.clone()));
+        assert_eq!(
+            storage.get_base_snapshot(anchor).unwrap().as_deref(),
+            Some("old base")
+        );
+        assert_eq!(
+            storage.get_source_spans().unwrap(),
+            vec![(anchor.into(), old.source_span.unwrap())]
+        );
+        assert_eq!(
+            storage
+                .index
+                .iter()
+                .map(|v| v.into_inner().unwrap())
+                .collect::<Vec<_>>(),
+            old_index
+        );
+        storage.flush().unwrap();
+        drop(storage);
+
+        let storage = FjallStorage::open_existing(path.to_str().unwrap()).unwrap();
+        assert_eq!(
+            storage.get_base_snapshot(anchor).unwrap().as_deref(),
+            Some("old base")
+        );
+        assert_ne!(storage.get_document(anchor).unwrap(), Some(fresh.clone()));
+        // A successful repair must rebuild missing derived index records too.
+        let (keys, record) = symbol_index_entries(anchor).unwrap();
+        storage.index.remove(symbol_record_key(anchor)).unwrap();
+        for key in &keys {
+            storage.index.remove(key).unwrap();
+        }
+        storage
+            .put_documents_bulk(&[(fresh.clone(), "new base".into())])
+            .unwrap();
+        assert_eq!(storage.get_document(anchor).unwrap(), Some(fresh.clone()));
+        assert_eq!(
+            storage.get_base_snapshot(anchor).unwrap().as_deref(),
+            Some("new base")
+        );
+        assert!(
+            storage.get_source_spans().unwrap().is_empty(),
+            "stale source projection survived repair"
+        );
+        assert_eq!(
+            storage
+                .index
+                .get(symbol_record_key(anchor))
+                .unwrap()
+                .unwrap()
+                .as_ref(),
+            record
+        );
+        for key in keys {
+            assert!(storage.index.get(key).unwrap().is_some());
+        }
+        assert_eq!(
+            storage
+                .lookup_symbol_candidates("entry")
+                .unwrap()
+                .unwrap()
+                .anchors,
+            vec![anchor.to_string()]
+        );
+        storage.flush().unwrap();
+        drop(storage);
+
+        let storage = FjallStorage::open_existing(path.to_str().unwrap()).unwrap();
+        assert_eq!(storage.get_document(anchor).unwrap(), Some(fresh));
+        assert_eq!(
+            storage.get_base_snapshot(anchor).unwrap().as_deref(),
+            Some("new base")
+        );
+        assert!(storage.get_source_spans().unwrap().is_empty());
+        assert_eq!(
+            storage
+                .lookup_symbol_candidates("entry")
+                .unwrap()
+                .unwrap()
+                .anchors,
+            vec![anchor.to_string()]
+        );
+        drop(storage);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn bulk_edge_replay_skips_healthy_rows_and_repairs_each_index() {
+        let path = test_store_path("edge-replay");
+        let storage = FjallStorage::new(path.to_str().unwrap()).unwrap();
+        let calls = EdgeType::Calls;
+        let uses = EdgeType::Uses;
+        let replay = vec![
+            ("src".into(), "left".into(), calls),
+            ("src".into(), "right".into(), uses),
+            ("src".into(), "left".into(), calls),
+        ];
+        storage.put_edges_bulk(&replay).unwrap();
+        let healthy = storage.db.seqno();
+        storage.put_edges_bulk(&replay).unwrap();
+        assert_eq!(storage.db.seqno(), healthy);
+
+        // Leave unrelated entries intact while repairing all three indexes.
+        storage
+            .edges
+            .remove(edge_key("src", "left", &calls))
+            .unwrap();
+        storage.incoming.remove(incoming_key("right")).unwrap();
+        let duplicate = vec![("left", calls), ("left", calls)];
+        storage
+            .outgoing
+            .insert(outgoing_key("src"), serialize(&duplicate).unwrap())
+            .unwrap();
+        storage.put_edges_bulk(&replay).unwrap();
+        assert!(storage.edge_exists("src", "left", &calls).unwrap());
+        assert_eq!(
+            storage.get_incoming_edges("right").unwrap(),
+            [("src".into(), uses)]
+        );
+        assert_eq!(
+            storage.get_outgoing_edges("src").unwrap(),
+            [("left".into(), calls), ("right".into(), uses)]
+        );
+        let repaired = storage.db.seqno();
+        storage.put_edges_bulk(&replay).unwrap();
+        assert_eq!(storage.db.seqno(), repaired);
+
+        // An unreadable mirror must fail the whole batch, including new keys.
+        storage
+            .incoming
+            .insert(incoming_key("bad"), &[0xff][..])
+            .unwrap();
+        let damaged = storage.db.seqno();
+        assert!(
+            storage
+                .put_edges_bulk(&[("src".into(), "bad".into(), uses)])
+                .is_err()
+        );
+        assert_eq!(storage.db.seqno(), damaged);
+        assert!(!storage.edge_exists("src", "bad", &uses).unwrap());
+        assert_eq!(storage.get_outgoing_edges("src").unwrap().len(), 2);
+        drop(storage);
+        std::fs::remove_dir_all(path).unwrap();
     }
 
     #[test]
@@ -955,6 +1328,81 @@ mod tests {
     }
 
     #[test]
+    fn symbol_lexicon_orders_and_caps_unicode_recovery() {
+        let path = test_store_path("unicode-symbol-lexicon");
+        let storage = FjallStorage::new(path.to_str().unwrap()).unwrap();
+        let close = [
+            "aden://module/p0.rs#cafes",
+            "aden://module/p1.rs#cafes",
+            "aden://module/p2.rs#cafes",
+            "aden://module/p3.rs#cafes",
+            "aden://module/p4.rs#cafes",
+            "aden://module/p5.rs#cafes",
+        ];
+        let qualified = "aden://module/z.rs#N:CAFÊS";
+        let far = [
+            "aden://module/a.rs#caves",
+            "aden://module/b.rs#caves",
+            "aden://module/c.rs#caves",
+        ];
+        let misses = [
+            "aden://module/d.rs#bound",
+            "aden://module/e.rs#very_long_symbol",
+        ];
+        for anchor in [qualified]
+            .into_iter()
+            .chain(close)
+            .chain(far)
+            .chain(misses)
+        {
+            storage.put_document(&symbol_doc(anchor)).unwrap();
+        }
+        let old_record = ("cafes".to_owned(), "cafes".to_owned(), 5usize, 5usize);
+        let old_bytes = serialize(&old_record).unwrap();
+        let (_, new_bytes) = symbol_index_entries(close[0]).unwrap();
+        assert_eq!(new_bytes, old_bytes);
+        storage
+            .index
+            .insert(symbol_record_key(close[0]), old_bytes)
+            .unwrap();
+        storage.finalize_symbol_lexicon().unwrap();
+
+        let typo = storage.lookup_symbol_candidates("cafés").unwrap().unwrap();
+        let expected: Vec<_> = close.into_iter().chain([qualified, far[0]]).collect();
+        assert_eq!(typo.anchors, expected);
+        assert!(!typo.exact_index_hit);
+        assert_eq!(typo.records_scanned, 12);
+        // Both forms of the qualified anchor are scored. The long miss is
+        // length-filtered and each plain record has a single distinct form.
+        assert_eq!(typo.distance_evaluations, 12);
+
+        let contains: Vec<_> = (0..10)
+            .map(|index| format!("aden://module/0{index}.rs#cafés_menu"))
+            .collect();
+        for anchor in contains.iter().rev() {
+            storage.put_document(&symbol_doc(anchor)).unwrap();
+        }
+        let substring = storage.lookup_symbol_candidates("cafés").unwrap().unwrap();
+        assert_eq!(substring.anchors, contains[..8]);
+        assert!(!substring.exact_index_hit);
+        assert_eq!(substring.records_scanned, 22);
+        assert_eq!(substring.distance_evaluations, 0);
+
+        // Even a full set of substring matches must not hide a corrupt later record.
+        storage
+            .index
+            .insert(symbol_record_key(qualified), &[0xff][..])
+            .unwrap();
+        assert!(matches!(
+            storage.lookup_symbol_candidates("cafés"),
+            Err(StoreError::Serialization(_))
+        ));
+
+        drop(storage);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
     fn symbol_lexicon_indexes_php_backslash_shorthand() {
         let path = test_store_path("php-symbol-lexicon");
         let storage = FjallStorage::new(path.to_str().unwrap()).unwrap();
@@ -1003,7 +1451,56 @@ mod tests {
 
         let spans = storage.get_source_spans().unwrap();
         assert_eq!(spans, vec![(anchor.to_string(), doc.source_span.unwrap())]);
+        assert_eq!(
+            storage.get_source_spans_for([anchor, "absent"]).unwrap(),
+            spans
+        );
         assert_eq!(storage.lookup_symbol_candidates("entry").unwrap(), None);
+        drop(storage);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn keyed_spans_keep_partial_projection_authoritative() {
+        let path = test_store_path("partial-keyed-source-spans");
+        let storage = FjallStorage::new(path.to_str().unwrap()).unwrap();
+        let present = Document {
+            anchor: "present".to_string(),
+            source_span: Some(SourceSpan {
+                file: "/repo/present.rs".to_string(),
+                start_line: 1,
+                end_line: 1,
+                start_byte: 0,
+                end_byte: 1,
+            }),
+            ..Document::default()
+        };
+        let missing_projection = Document {
+            anchor: "missing-projection".to_string(),
+            source_span: Some(SourceSpan {
+                file: "/repo/missing.rs".to_string(),
+                start_line: 2,
+                end_line: 2,
+                start_byte: 2,
+                end_byte: 3,
+            }),
+            ..Document::default()
+        };
+        storage.put_document(&present).unwrap();
+        storage.put_document(&missing_projection).unwrap();
+        storage
+            .source_spans
+            .remove(missing_projection.anchor.as_bytes())
+            .unwrap();
+
+        assert_eq!(
+            storage
+                .get_source_spans_for(
+                    [present.anchor.as_str(), missing_projection.anchor.as_str(),]
+                )
+                .unwrap(),
+            vec![(present.anchor, present.source_span.unwrap())]
+        );
         drop(storage);
         std::fs::remove_dir_all(path).unwrap();
     }

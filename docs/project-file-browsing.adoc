@@ -1,0 +1,77 @@
+[[project-file-browsing]]
+= Complete project file browsing
+
+== Usage
+
+`aden tree --files [path]` lists discoverable source files, including documents,
+configuration files and files without recognized symbols. Paths are relative to
+the project root, even when the scope is a subtree. This is Aden's source view;
+normal exclusions still apply.
+
+Over MCP, call `tree` with `{"symbols":false}`. Omitted or true `symbols` retains
+the existing compact code-symbol outline. These modes answer different questions:
+use file browsing to find a document or configuration file, and the default mode
+to inspect code structure.
+
+File browsing returns `format: "files-v1"`, an `outline`, total and returned file
+counts, and explicit truncation state. Symbol counts are zero because this mode
+does not enumerate symbols. Output is bounded by default. For a clipped listing,
+follow a narrower `next_actions` scope; those actions preserve file mode. Direct
+CLI callers can use `--unlimited` to return all discoverable paths. `--files` and
+`--symbols` conflict rather than silently selecting one.
+
+== Priority decision
+
+This increment addresses an observed omission in the first navigation step.
+Before the change, MCP advertised a directory view for `symbols=false`, but JSON
+dispatch forced the code-symbol view regardless. A scope containing only docs or
+files without recognized code symbols could therefore appear empty.
+
+The strongest alternatives were clearer recovery from rejected source reads and
+better end-to-end acceptance for broad questions. Historical DX-102 evidence
+identifies both as candidates, but does not establish their current causes or a
+reliable fix. They should start with a small current reproduction. File browsing
+had a directly reproduced defect and a bounded compatible repair with no new
+dependencies or index policy.
+
+== Delivery evidence
+
+Work started from Git commit `2172e0e35668f69af50cc43d37acb88ee9add297` with existing
+uncommitted changes preserved. The live baseline probe rejected this increment's
+file-mode acceptance while accepting unchanged default/true symbol behavior.
+Evidence is retained under `.tmp/tree-files/`, including exact binary identities
+in `baseline-probe.json`. This directory is local validation evidence, not a
+published artifact.
+
+Final Windows checks passed: four file-browsing integrations, six tree units,
+117 MCP units, 12 CLI/MCP parity tests, and the new live stdio file-browsing
+journey on Essential. That journey replays clipped recovery actions and verifies
+mode switching. The same before/after probe also passes on Full. Real browsing
+of this repository's `docs` scope returned all 64 discoverable files, including
+this guide. Formatting, reference checks, roadmap validation and impact diff
+passed. Local `ready` passed with advisory findings.
+
+The initial validation recorded two broader failures:
+
+* The first MCP unit run passed 116 tests and failed the pre-existing idle-worker
+  recovery test with a Fjall store-lock error. Its isolated rerun and a complete
+  117-test rerun passed. This increment does not diagnose or fix that intermittent
+  failure; the original log is retained as `mcp-unit.log`.
+* The broader live gauntlet fails an older assertion that `ask` has no budget
+  property. Full-surface registry probes against both baseline and candidate show
+  the same optional budget property, so this failure predates file browsing.
+  The remainder of that journey was not verified by this run. Evidence:
+  `mcp-live.log`, `baseline-full-probe.json`, and `candidate-full-probe.json`.
+
+The subsequent repair separates Essential registry compactness from the Standard
+tool journey and adds rejected-schema/size controls. Its final five-test live
+gauntlet passes. Deterministic held-writer probes also reproduced one cold-index
+lock mechanism; graph reads now report pending before the first snapshot rather
+than exposing that store-lock error. See <<generation-jobs>> for recovery.
+This does not establish elimination of all intermittent store-lock failures.
+
+Independent source review found no remaining material issue in this increment.
+Source hashes are in `.tmp/tree-files/source-manifest.json`; binary identities
+are in the probe artifacts. This is a locally implemented and tested increment,
+not an installed or published release. Other operating systems, full workspace
+CI, and existing host sessions were not exercised or changed.

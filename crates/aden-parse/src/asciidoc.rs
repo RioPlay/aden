@@ -6,8 +6,8 @@
 //! Extracts headings, code blocks, and links from AsciiDoc files.
 
 use crate::extractor::{
-    build_code_attributes, extract_code_references, infer_project_name, infer_project_root,
-    make_anchor, project_relative_file,
+    CodeSource, extract_code_references, infer_project_name, infer_project_root, make_anchor,
+    project_relative_file,
 };
 use aden_core::{Block, Document, NodeType, Result, SourceSpan};
 use std::collections::HashMap;
@@ -37,6 +37,7 @@ impl crate::extractor::LanguageExtractor for AsciiDocExtractor {
     }
 
     fn extract_documents(&self, source: &str, path: &Path) -> Result<Vec<Document>> {
+        let file_source = CodeSource::new(source, path);
         let mut docs = Vec::new();
         let crate_name = infer_project_name(path);
         let project_root = infer_project_root(path);
@@ -237,7 +238,7 @@ impl crate::extractor::LanguageExtractor for AsciiDocExtractor {
                     start_byte: 0,
                     end_byte: 0,
                 };
-                let mut attrs = build_code_attributes(source, "heading", Some(path), Some(&span));
+                let mut attrs = file_source.attributes("heading", &span);
                 // Merge document-level custom attributes (tags, status, updated, etc.)
                 for (k, v) in &custom_attrs {
                     attrs.insert(k.clone(), v.clone());
@@ -358,7 +359,7 @@ impl crate::extractor::LanguageExtractor for AsciiDocExtractor {
         } else {
             let anchor = make_anchor(&crate_name, &file_name, "document");
             let doc_span = crate::extractor::whole_file_span(source, path);
-            let mut attrs = build_code_attributes(source, "document", Some(path), Some(&doc_span));
+            let mut attrs = file_source.attributes("document", &doc_span);
             for (k, v) in &custom_attrs {
                 attrs.insert(k.clone(), v.clone());
             }
@@ -444,7 +445,7 @@ impl crate::extractor::LanguageExtractor for AsciiDocExtractor {
                     slug,
                     definition,
                 };
-                let term = crate::extractor::build_term_document(&crate_name, path, &entry);
+                let term = crate::extractor::build_term_document(&crate_name, &file_source, &entry);
                 term_anchors.push(term.anchor.clone());
                 term_docs.push(term);
             }
@@ -483,7 +484,8 @@ impl crate::extractor::LanguageExtractor for AsciiDocExtractor {
                         slug,
                         definition,
                     };
-                    let term = crate::extractor::build_term_document(&crate_name, path, &entry);
+                    let term =
+                        crate::extractor::build_term_document(&crate_name, &file_source, &entry);
                     term_anchors.push(term.anchor.clone());
                     term_docs.push(term);
                 }
@@ -513,7 +515,8 @@ impl crate::extractor::LanguageExtractor for AsciiDocExtractor {
                         slug: slug.clone(),
                         definition,
                     };
-                    let term = crate::extractor::build_term_document(&crate_name, path, &entry);
+                    let term =
+                        crate::extractor::build_term_document(&crate_name, &file_source, &entry);
                     let frag_anchor = format!(
                         "aden://doc/{}/{}#{}",
                         crate_name,
@@ -555,7 +558,7 @@ impl crate::extractor::LanguageExtractor for AsciiDocExtractor {
                 start_byte: 0,
                 end_byte: 0,
             };
-            let mut attrs = build_code_attributes(&code, "code", Some(path), Some(&code_span));
+            let mut attrs = file_source.attributes("code", &code_span);
             if !references.is_empty() {
                 attrs.insert("symbol_references".to_string(), references.join(","));
             }

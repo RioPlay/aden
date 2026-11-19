@@ -50,7 +50,7 @@ const SEP_TOKEN: u32 = 102;
 /// `EMBED_PARAM_VERSION` to force a re-embed.
 const MAX_SEQ: usize = 512;
 
-type Runnable = RunnableModel<TypedFact, Box<dyn TypedOp>>;
+type Runnable = TypedRunnableModel<TypedModel>;
 
 /// A `tract`-backed ONNX embedding provider.
 pub struct TractEmbedder {
@@ -94,8 +94,7 @@ impl TractEmbedder {
                 ),
             )?;
         }
-        // `into_runnable()` already yields an `Arc<SimplePlan>` in tract 0.23.
-        let model = model.into_optimized()?.into_runnable()?;
+        let model = Arc::new(model.into_optimized()?.into_runnable()?);
 
         Ok(Self {
             model,
@@ -163,7 +162,7 @@ impl TractEmbedder {
         let result = self.model.run(inputs)?;
         // Output 0 is last_hidden_state: [1, MAX_SEQ, EMBED_DIM]. CLS pooling
         // takes position 0 along the sequence axis.
-        let view = result[0].to_plain_array_view::<f32>()?;
+        let view = result[0].to_array_view::<f32>()?;
         let mut v: Vec<f32> = (0..EMBED_DIM).map(|k| view[[0, 0, k]]).collect();
 
         // L2 normalize so cosine similarity reduces to a dot product and

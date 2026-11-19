@@ -1,0 +1,173 @@
+[[prepared-symbol-lookups]]
+= Prepared symbol lookups
+
+== Outcome and boundaries
+
+This increment prepares symbol names once per immutable resident snapshot.
+It builds on <<mcp-read-sessions>> and targets repeated `locate`, `understand`
+and graph `query` requests. Search-index reuse is separate work.
+
+Each prepared entry retains the normalized segment, lowercase segment, leaf
+offset, lowercase leaf and typo-length metadata. Four sorted arrays of integer
+positions support rank 0-3 resolution without copying complete canonical
+anchors into additional maps. Exact canonical and scheme-stripped lookups use
+the snapshot's existing document map and do not initialize the prepared tables.
+
+Discovery still considers every anchor and sorts the complete ranked matches.
+Prefix, substring and typo recovery preserve the reference analyzer's results,
+ordering and refusal to promote substring/typo suggestions into definitions.
+The reference analyzer remains available for parity testing and recovery.
+
+The tables are lazy, owned by the snapshot and discarded with its publication.
+Independent source observations and snapshot byte checks remain unchanged.
+Ordinary nonresident CLI reads retain their existing path. No disk format or
+public tool schema changes.
+
+Set `ADEN_SYMBOL_LOOKUP_CACHE=0` before starting a server to use the reference
+symbol path while keeping the worker and snapshot resident. The diagnostic
+switch avoids constructing the prepared tables entirely.
+
+== Acceptance and comparison
+
+Correctness requires exact parity with the reference analyzer for canonical
+and scheme-stripped anchors, rank precedence, complete discovery matches,
+ambiguity and duplicate ordering, generics, Unicode casing, empty queries,
+prefixes, substrings and typo recovery. Preserved-timestamp snapshot replacement
+must invalidate prepared state. Disabled reads must not prepare tables.
+
+The component diagnostic validates parity before timing mixed query forms:
+
+[source,powershell]
+----
+cargo test --release --offline -p aden-graph prepared_symbol_lookup_release_diagnostic -- --ignored --nocapture
+----
+
+It reports construction separately from resolution and exhaustive discovery.
+String and integer-vector capacities are component allocation estimates, not
+total heap or whole-process memory. Its single local timing order is diagnostic,
+not a population benchmark.
+
+The real MCP comparison keeps both arms resident and changes only symbol
+preparation. It includes cold initialization, repeated warm sequences, a
+same-length source edit with restored timestamp and removal of the old symbol:
+
+[source,powershell]
+----
+python -m unittest discover -s scripts -p test_mcp_read_session_bench.py
+python scripts/mcp_read_session_bench.py --binary target/release/aden.exe --optimization symbols --files 512 --functions 24 --repetitions 4 --output .tmp/symbol-reuse/comparison.json
+----
+
+The harness requires exact fixture anchors, call depths and relationship types,
+literal verified source, current observations and source parity. It verifies
+retained worker identity, records all attempts and samples live-process memory
+outside the timed requests. Small synthetic samples cannot establish tail
+latency, large-monorepo performance or LLM productivity.
+
+== Windows verification (2026-11-10)
+
+Starting revision: `2172e0e35668f69af50cc43d37acb88ee9add297` plus preserved prior
+work. The previous resident baseline is
+`.tmp/symbol-reuse/baseline.exe`, SHA-256
+`c610a274f8ce784c82813a46996718198ca6f9f058c9cdeec9d175b19f728bcb`.
+
+The graph suite passed 59 tests. The release-only component diagnostic passed
+separately. CLI unit tests passed 277 tests and focused integration tests passed
+27 tests (lookup, graph query, resident worker and freshness). Strict graph
+all-target Clippy, formatting, whitespace and four harness validator tests
+passed. Independent source review reported no material finding and separately
+ran the four Python validators. Initial test compilation needed the diagnostic's
+JSON dev dependency wired; a constant release-guard assertion was adjusted for
+strict Clippy. Affected checks passed afterward.
+
+One Windows release diagnostic on 4,098 anchors and 132 mixed queries observed:
+
+[cols="3,1,1",options="header"]
+|===
+|Component total |Reference |Prepared
+|Resolution |289.934 ms |26.123 ms
+|Exhaustive discovery analysis |311.843 ms |31.995 ms
+|===
+
+Preparation was measured separately at 1.851 ms for that input. The diagnostic
+records 210,078 bytes of normalized-string capacity and 131,136 bytes of integer
+index capacity. Those fields exclude form structs, other vectors and allocator
+overhead. The input and fixed timing order make these component observations;
+they are not predictions of full command time or general preparation cost.
+Raw output: `.tmp/symbol-reuse/lookup-diagnostic.txt`.
+
+== Real MCP outcome
+
+The candidate release/view CLI SHA-256 is
+`e1e429b9db3ede55457b63fdc7144f5fd546e32feb169da65db221fa8b347df3`.
+Both arms used this same binary, with the resident worker and snapshot enabled.
+Only `ADEN_SYMBOL_LOOKUP_CACHE` differed. The standalone MCP binary is unchanged,
+SHA-256 `991c0bf4fe6ed12ef3aa27d158d2124252d451b3845fc04f77225938403649d0`.
+
+The fixture has 512 filler files with 24 functions each, plus a three-function
+call chain. Four alternating-order repetitions passed all 120 timed calls and
+eight explicit deleted-definition checks. All eight arms retained one worker
+across requests and preserved-timestamp edits. Source, graph relationships and
+available source-fingerprint projections matched between arms.
+
+Median elapsed milliseconds for complete `locate -> understand -> query`
+sequences, four observations per cell:
+
+[cols="3,1,1",options="header"]
+|===
+|State |Reference lookup |Prepared lookup
+|Cold index and first sequence |3311.2 |3276.7
+|First warm sequence |1238.3 |1222.6
+|Second warm sequence |1254.6 |1210.9
+|First sequence after edit |2866.4 |2828.0
+|Warm sequence after edit |1220.9 |1165.5
+|===
+
+The second warm median is approximately 3.5% lower. Its paired changes were
+-41.3, -46.1, -27.0 and +22.0 ms: one pair was slower. First-warm pairs split
+two faster and two slower. This supports a small directional local improvement,
+not a universal speedup or absence of timing regressions. It is materially
+smaller than the component diagnostic because the full sequence still includes
+freshness, snapshot byte checks and source verification.
+
+After the edit/removal checks, sampled worker working-set medians were 67.5 MiB
+for reference lookup and 70.8 MiB for prepared lookup, approximately 3.3 MiB
+additional memory. These are live-process observations on this fixture, not
+allocator-exact cache sizes or memory savings. Build and repository-scan jobs
+were paused during the timing comparison. Raw attempts, worker identities,
+memory observations and the harness hash are in
+`.tmp/symbol-reuse/comparison.json`.
+
+Independent outcome review found the tradeoff reasonable for repeated natural
+symbol reads, with the reference opt-out retained. A separate actual-repository
+MCP sequence also passed locate, verified understand, typed query and repeated
+locate using one worker. No broader productivity or tail-latency result is claimed.
+
+== Local rollout on 2026-11-10 and recovery
+
+The verified pair is installed side by side at
+`C:/Users/example/AppData/Local/Aden/versions/0.4.4-symbol-lookups-e1e429b9db3e/`.
+Only the Codex Aden server's launch command was changed to that directory's
+`aden.exe`; parsed read-back checks preserve other configuration. The preceding
+resident installation remains available. Reconnect the host to load the new
+configured command; existing connections keep their loaded executable.
+
+The installed executable passed the same four-call real-repository probe with
+a stable worker PID. Binary SHA-256 matched the measured candidate. Evidence:
+`.tmp/symbol-reuse/installed-repo-probe.json`.
+
+The versioned directory contains `activation.json` and a guarded rollback tool:
+
+[source,powershell]
+----
+python C:/Users/example/AppData/Local/Aden/versions/0.4.4-symbol-lookups-e1e429b9db3e/deploy_local.py --rollback C:/Users/example/AppData/Local/Aden/versions/0.4.4-symbol-lookups-e1e429b9db3e/activation.json
+----
+
+Rollback changes only the launch command and refuses to overwrite an unexpected
+current command. `ADEN_SYMBOL_LOOKUP_CACHE=0` is also available for a newly started
+server that should keep resident reads without prepared lookup state.
+No commit, PR, push or public release was performed. Other operating systems
+and memory-constrained deployment targets were not exercised.
+
+The subsequent <<usability-recovery>> delivery owns the newer installed launch
+path and default-shell activation. The measurements above remain the prepared
+symbol lookup comparison at its stated source/binary identity.

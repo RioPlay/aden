@@ -12,6 +12,11 @@ An AI agent has a finite context window. A large codebase does not fit. Aden sol
 
 Known source can be read directly. Relationships and selected context come from the knowledge graph.
 
+Graph freshness and complete pagination do not establish complete program
+analysis. Read the `analysis` object separately from `context_receipt`; see
+<<analysis-limits>> for extractor scopes, indirect calls and opt-in
+<<macro-api-mappings,C macro API mappings>>.
+
 === Direct source evidence
 
 `aden read <file> [DIR]` reads a known UTF-8 file relative to `DIR`, which is the
@@ -22,9 +27,15 @@ bytes. Lines are 1-based and inclusive; files are limited to 16 MiB. Project
 exclusions apply, and absolute paths, parent traversal, and escaping symlinks
 are rejected. `--human` prints literal source.
 
+`--unlimited` removes the default 200-line window and selects all remaining
+lines when `--end-line` is omitted. An explicit end line still bounds the
+selection. Byte and file caps remain in effect; use the JSON continuation when
+the excerpt is byte-clipped. Human output warns on stderr when this happens.
+
 [source,bash]
 ----
 aden read src/config.rs --start-line 20 --end-line 60
+aden read src/config.rs --unlimited
 ----
 
 The JSON response reports the selected root, literal byte range, full-file
@@ -40,6 +51,7 @@ observation and graph freshness remain separate evidence states.
 
 MCP exposes the same `read` tool with `file`, `path`, `start_line`, `end_line`,
 `max_bytes`, `expected_hash`, and `start_byte`. No semantic routing is involved.
+Its default remains a 200-line window; use `end_line` for a larger selection.
 
 === Explicit graph bounds
 
@@ -66,7 +78,10 @@ link:read-path-performance.adoc[Read-path measurements].
 
 Run Aden as a link:https://modelcontextprotocol.io[Model Context Protocol] server so an AI client (Amp, Claude, Cursor, Codex, Zed, Windsurf, opencode, …) queries your codebase graph directly — no copy-pasting CLI output.
 
-The MCP server is a *thin director*: it exposes Aden's CLI as MCP tools, each mapping 1:1 to an `aden` subcommand. There is no separate logic path — calling the `grep` tool runs the same code as `aden grep`, so everything documented for the CLI applies verbatim to the tools. The server operates on the target project you point it at; nothing it returns is specific to Aden's own source.
+MCP tools use Aden's CLI operations. Supported graph tools can reuse a resident
+read session for the selected project. MCP adds tool-specific input schemas,
+surface permissions, response limits, and recovery guidance. Check the tool's
+schema and receipt when relying on CLI-equivalent behavior.
 
 === Prerequisites
 
@@ -80,7 +95,10 @@ aden --version
 
 `aden mcp install` writes `command: aden` with `args: [mcp, stdio, …]`. A standalone `aden-mcp` binary still works when `--binary` points at it.
 
-NOTE: `cargo install --path crates/aden-cli` now includes the stdio server. The standalone `aden-mcp` binary remains available from `./install.sh` for hosts that still launch it directly.
+Prebuilt release bundles and the repository source installers provide both
+executables. Keep `aden-mcp` next to the matching `aden` binary if a host
+launches the standalone bridge. A source install of `crates/aden-cli` alone
+provides the embedded server through `aden mcp stdio`.
 
 === Install into a client
 
@@ -172,7 +190,7 @@ Compatibility notes (checked 2026-11-02):
 1. Confirm the CLI is reachable: `aden --version`. Confirm the stdio entry exists: `aden mcp stdio --help`.
 2. Check the client config was written: `aden mcp list`.
 3. *Fully restart your AI client* so it loads the new server.
-4. In the client, confirm the `aden` tools appear (e.g. `grep`, `ask`, `asm`, `query`, `locate`). Ask it to `grep` a known string and confirm matches come back tagged with their enclosing symbol.
+4. In the client, confirm the `aden` tools appear (e.g. `read`, `grep`, `understand`, `asm`, `query`, `locate`). Ask it to `grep` a known string and confirm matches come back tagged with their enclosing symbol.
 
 If the tools do not appear, see <<troubleshooting>>.
 
@@ -192,14 +210,12 @@ For installations that still ship the standalone compatibility server,
 
 === Tool choice and correctness limits
 
-The MCP registry orders compact orientation and deterministic discovery before
-heuristic routing: `tree --symbols` → `grep` → `locate` → `understand` →
-`ask` → `query` → `asm`.
-
-This is presentation order, not a required sequence. For a known unique symbol,
-go directly to `asm` for context or `query` for relationships. Use `tree` when
-orientation is needed and `grep` when the implementation is unknown. For an
-ambiguous name, use `locate` and choose a returned canonical anchor.
+The MCP registry presents `read`, `tree`, `grep`, `locate`, `understand`,
+`query`, and `asm` before heuristic `ask` on surfaces that expose it.
+For a known file, use `read`. For a known unique symbol, go directly to `asm`
+for context or `query` for relationships. Use `tree` to orient yourself and
+`grep` to discover an implementation. For an ambiguous name, use `locate`
+and choose a returned canonical anchor.
 
 The startup examples below use a project containing a unique `helper` symbol;
 replace it with your target. The live MCP gauntlet extracts and executes these
@@ -263,6 +279,14 @@ as an argument array. The displayed command is quoted for the named shell.
 Ambiguity actions inspect candidates without choosing one; narrowing actions
 do not claim to enumerate omitted results. Strict, very small response budgets
 may omit optional actions.
+
+After a `grep` hit, check the first action's `reason`. For an exact symbol
+with one matching anchor, the suggested `query` follows incoming references
+one hop and returns up to 16 items including the seed. If the name needs
+resolution or a file-scoped hit looks like a call, the suggested `locate` resolves the
+name first. When a complete set of text hits belongs to one enclosing symbol,
+`understand` gives its source and relationships. These hints use the returned
+hits and start work only when the client submits the next call.
 
 `grep` rejects nonexistent scopes. Matching-line previews are bounded to 512
 UTF-8 bytes and the serialized JSON response to 64 KiB. Preview and match byte
@@ -599,8 +623,9 @@ aden suggest "find all tests in the project"
 |Task |Command
 
 |Known source range |`aden read src/config.rs --start-line 20 --end-line 60`
-|Explore structure |`aden grep "X" .`, then `aden locate --symbol X .`
-|Get a bounded exploratory explanation after resolving a symbol |`aden ask --from <anchor> --strict "What does it do?"`
+|Known unique symbol needing source and relationships |`aden understand X .`; inspect source verification and clipping
+|Discover an unknown implementation |`aden grep "X" .`; use `aden locate --symbol X .` when resolution is needed
+|Get bounded context after resolving a symbol |`aden asm --from <anchor> .`
 |Find symbol |`aden locate --symbol X .`
 |Grep with structure (each hit tagged with its enclosing symbol) |`aden grep "pattern" .`
 |Who references this symbol (blast radius) |`aden query --backlinks X .`
@@ -638,18 +663,29 @@ server environment (or bake it in at install time with `aden mcp install
 .Read / comprehend
 |===
 |Tool|Purpose|Key Arguments
+|read|Literal bounded UTF-8 source with a change-detection hash and continuation|file, path, start_line, end_line, max_bytes
 |tree|Bounded symbol map grouped by file, with line ranges; scope `path` when truncated|symbols, path
 |grep|Structure-aware content search (hit + enclosing symbol)|pattern, path, regex
 |understand|One-shot symbol comprehension (definition + backlinks + impact + bounded context)|symbol, path
-|ask|One bounded natural-language question; unsafe broad shapes return `needs_narrowing`|question, path, from
 |locate|Canonical definitions/callers plus alternatives|symbol, caller_of, path
 |asm|Bounded context for a resolved anchor|from, path
 |query|Structured graph traversal|from, backlinks, impact, path
+|generation_status|Check a background refresh before retrying a graph read|path
 |===
 
 === Standard (set `ADEN_MCP_SURFACE=standard`)
 
 Includes all Essential tools plus:
+
+`ask` is excluded from Essential because its question routing is heuristic.
+CLI `aden ask` remains available. MCP callers must opt into Standard or Full;
+already-connected servers must reconnect after installing this change.
+
+.Optional discovery
+|===
+|Tool|Purpose|Key Arguments
+|ask|Heuristic context retrieval for one bounded question; verify routing and source separately|question, path, from
+|===
 
 .Graph analysis
 |===
@@ -677,7 +713,7 @@ Includes all Essential and Standard tools plus setup/admin commands:
 |===
 |Tool|Purpose
 |search|Full-text search (BM25; hybrid BM25+dense via RRF when `dense` feature is built)
-|ready|Fast local pre-commit gate (gen + lint + check + heal + audit)
+|ready|Local static checks with passed/failed/skipped steps; refreshes the index, with repairs only under explicit `fix`
 |gen|Incremental store-first index
 |sync|Reconcile store: gen + check + heal + gc
 |regen|Full from-scratch rebuild
@@ -747,15 +783,17 @@ NOTE: deleting a symbol or file no longer needs a manual step — `gen` prunes
 removed symbols on re-index, and `aden heal . --gc` sweeps the store for
 contracts whose source no longer exists.
 
-Use `aden heal . --fix` for auto-fixing high-confidence issues.
+Use `aden heal . --fix` for explicitly supported store-backed repairs. Unsupported
+targets remain unchanged and merge conflicts require proposal review; repair
+eligibility is not a probability or a guarantee of overall correctness.
 
 == Token Economy Rules
 
 Aden is designed with token scarcity in mind. Follow these rules:
 
 - **Prefer bounded retrieval over dumping the whole repo.** Start with `grep` or
-  `locate`; use `ask` only for a bounded exploratory bundle, or use `asm` when
-  you need reproducible traversal.
+  `locate`; use `understand` for source and relationships, or `asm` for a
+  controlled context bundle. Heuristic `ask` routing requires explicit opt-in.
 - **Use `--from` to avoid search ambiguity.** One good anchor is worth ten vague keywords.
 - **Lower `--budget` for focused tasks.** 2048 tokens is enough for most refactor questions.
 - **Inspect machine signals before context.** Stop on `needs_narrowing`; treat
@@ -783,10 +821,10 @@ Use Aden for bounded code navigation.
    independent evidence; locate ambiguous symbol names.
 2. Use understand for a known symbol, query for backlinks/impact, and asm for a
    bounded context bundle around a resolved anchor.
-3. Use ask only for one bounded question about a named symbol, file, subsystem,
-   or relationship. Stop and decompose the task when result_state is
-   needs_narrowing. Treat ambiguous routing, stale receipts, and truncation as
-   incomplete evidence.
+3. Treat ambiguity, stale receipts and truncation as incomplete evidence.
+   Resolve targets and recover omitted source before consequential changes.
+   Optional ask routing requires the Standard or Full MCP surface; verify its
+   selected target and source rather than treating context as an answer.
 4. Never infer repository-wide completeness or absence from one graph result.
    Verify consequential claims with distinct searches, targeted source reads,
    tests, builds, and Git/filesystem tools as appropriate.
@@ -811,7 +849,7 @@ aden asm --from mod-aden-core --format aden .
 1. grep(pattern="entry point|main")
 2. locate(symbol="main")
 3. understand(symbol="main")
-4. ask(question="How does startup reach request handling?", from=<main-anchor>)
+4. query(from=<main-anchor>, depth=2, edge_type="Calls")
 ----
 
 === Pattern 2: Finding How Something Works

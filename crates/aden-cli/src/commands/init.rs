@@ -86,6 +86,9 @@ optional conceptual route: verify its selected anchors. Missing, clipped, or
 incomplete results do not establish absence. Validate graph references with
 `check . --severity Forbid`; resync drift with `heal`.
 
+Over MCP, `ask` requires the Standard or Full surface. Essential excludes it;
+use `grep`/`locate` for discovery and explicit source or graph tools for evidence.
+
 See `.agent/aden-guide.adoc` for the full reference."#;
 
 /// `aden agents-md [DIR]` — seed/refresh ONLY the append-only aden usage block in

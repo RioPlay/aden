@@ -6,7 +6,8 @@ use std::path::Path;
 use crate::util::find_project_root;
 
 fn coverage_summary(root: &Path) -> serde_json::Value {
-    let cache = crate::util::load_gen_cache(&aden_paths::gen_cache_file(root));
+    let (cache, _) =
+        crate::util::load_gen_cache(&aden_paths::gen_cache_file(root)).unwrap_or_default();
     let mut dispositions = serde_json::Map::new();
     dispositions.insert("indexed".into(), serde_json::json!(cache.entries.len()));
     for entry in cache.dispositions.values() {
@@ -29,9 +30,9 @@ fn coverage_summary(root: &Path) -> serde_json::Value {
     serde_json::Value::Object(dispositions)
 }
 
-/// `aden status`: a quick health + orphan snapshot. Health is the
-/// heal-drift metric (stale docs vs. code); orphans use the SAME classifier
-/// `check` uses, so expected metadata docs are never reported as scary orphans.
+/// `aden status`: a quick health + orphan snapshot. Health is the share of
+/// distinct anchors not classified as actionable orphans; expected metadata
+/// orphans are excluded by the same classifier used by `check`.
 /// Honors the global `-j/--json` flag.
 pub fn cmd_status(path: &Path, json: bool) -> Result<(), Box<dyn std::error::Error>> {
     let root = find_project_root(path);
@@ -63,21 +64,21 @@ pub fn cmd_status(path: &Path, json: bool) -> Result<(), Box<dyn std::error::Err
     };
     let coverage = coverage_summary(&root);
 
-    // Health is a heal-drift metric (stale docs vs. code), separate
-    // from orphans. Keep it as the honest drift signal.
-    let health = crate::util::quick_health_score(path).unwrap_or(0.0);
-    let health_pct = (health * 100.0).round() as i32;
-
-    // Orphan breakdown via the SAME classifier `check` uses, so status
-    // never reports expected metadata docs as scary orphans. Computed once.
-    let (expected_n, actionable): (usize, Vec<String>) =
+    // Load once for both the shared health formula and orphan breakdown. On a
+    // failed graph load, preserve the existing health and orphan fallbacks.
+    let (health, expected_n, actionable) =
         match aden_graph::cache::build_from_directory_cached(path) {
-            Ok(g) => {
-                let (expected, actionable) = crate::util::classify_orphans(&g);
-                (expected.len(), actionable)
+            Ok(graph) => {
+                let (expected, actionable) = crate::util::classify_orphans(&graph);
+                let health = crate::util::health_score_from_counts(
+                    graph.anchor_to_index.len(),
+                    actionable.len(),
+                );
+                (health, expected.len(), actionable)
             }
-            Err(_) => (0, Vec::new()),
+            Err(_) => (0.0, 0, Vec::new()),
         };
+    let health_pct = (health * 100.0).round() as i32;
 
     // Machine-readable for the global `-j/--json` flag (MCP Phase 2B envelope).
     if json {

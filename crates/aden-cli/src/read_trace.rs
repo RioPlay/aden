@@ -21,6 +21,9 @@ pub enum Stage {
     StoreResolve,
     StoreCompatibility,
     ManifestLoad,
+    AnchorResolve,
+    GraphLoad,
+    SourceSpans,
 }
 
 #[derive(Clone, Copy, Default, serde::Serialize)]
@@ -30,7 +33,7 @@ struct StageTotal {
 }
 
 struct Stats {
-    stages: [StageTotal; 9],
+    stages: [StageTotal; 12],
     fingerprint_files: u64,
     fingerprint_bytes: u64,
     index_cache_hits: u64,
@@ -44,7 +47,7 @@ impl Stats {
             stages: [StageTotal {
                 calls: 0,
                 elapsed_us: 0,
-            }; 9],
+            }; 12],
             fingerprint_files: 0,
             fingerprint_bytes: 0,
             index_cache_hits: 0,
@@ -98,6 +101,9 @@ impl Request {
                 "store_resolve": stats.stages[Stage::StoreResolve as usize],
                 "store_compatibility": stats.stages[Stage::StoreCompatibility as usize],
                 "manifest_load": stats.stages[Stage::ManifestLoad as usize],
+                "anchor_resolve": stats.stages[Stage::AnchorResolve as usize],
+                "graph_load": stats.stages[Stage::GraphLoad as usize],
+                "source_spans": stats.stages[Stage::SourceSpans as usize],
             },
             "counters": {
                 "fingerprint_scans": stats.stages[Stage::Fingerprint as usize].calls,

@@ -1,20 +1,25 @@
 // Copyright (c) 2026 RioPlay <rioplay@rioplay.dev>
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use aden_graph::graph::AdenGraph;
 use aden_store::{GraphStorage, Storage};
 use rayon::prelude::*;
 use std::path::Path;
 
-use crate::indexer::link::{CalleeStats, EdgeRecords, link_include_edges, link_store_edges};
+#[path = "bounded.rs"]
+mod bounded;
+
+#[cfg(test)]
+#[path = "bounded_diagnostic.rs"]
+mod bounded_diagnostic;
+
+use crate::indexer::link::{EdgeRecords, link_include_edges, link_store_edges};
 use crate::indexer::merge::{slim_doc_for_store, write_merge_proposals};
 use crate::types::{FileDispositionEntry, GenCacheEntry};
 use crate::util::{
     cochange_pairs, discover_file_dispositions, extract_callees, extract_demonstrates,
     extract_doc_includes, extract_doc_mentions, extract_doc_refs, extract_doc_supersedes,
-    extract_doc_terms, extract_edge_macro, extract_uses, find_project_root,
-    gen_cache_requires_rebuild, load_gen_cache, normalize_sep, sanitize_source_file,
-    save_gen_cache,
+    extract_doc_terms, extract_edge_macro, extract_uses, find_project_root, load_gen_cache,
+    normalize_sep, sanitize_source_file, save_gen_cache,
 };
 
 /// One stored symbol plus the compact data the linker needs. Carrying callee
@@ -22,6 +27,7 @@ use crate::util::{
 /// document store to rebuild the call graph.
 struct EmittedSymbol {
     anchor: String,
+    is_rust_test: bool,
     callees: Vec<String>,
     /// `edge::uses[Type]` references — types named in a signature/fields, linked
     /// as `Uses` edges so a type that is used but never *called* is not a false
@@ -109,19 +115,15 @@ macro_rules! progress {
         if !$quiet { println!($($arg)*); }
     };
 }
-/// Auto-document a codebase: discover source files, skip unchanged,
-/// emit structured contracts to store, and optionally to disk.
-/// Compile source into the store.
-///
-/// Two independent verbosity axes:
-/// - `quiet`  — suppress the per-file "Stored <anchor>" progress lines but
-///   still print the one-line summary. This is what `--quiet`/`regen` want
-///   ("summary only").
-/// - `silent` — suppress EVERYTHING, including the summary and parse warnings.
-///   This is the transparent refresh-on-read path (`ensure_fresh`), which must
-///   never write to stdout/stderr during `ask`/`query`/`grep`/etc.
+/// Internal generation callers share a durable worker and wait at most 30s.
+/// A pending result leaves the worker running. Explicit CLI generation uses
+/// `cmd_gen_opts` below and has no overall time cap.
 pub fn cmd_gen(path: &Path, quiet: bool) -> Result<(), Box<dyn std::error::Error>> {
-    cmd_gen_inner(path, quiet, false, false, false)
+    super::generation_job::wait_for_completion(path, std::time::Duration::from_secs(30))?;
+    if !quiet {
+        println!("Generation completed.");
+    }
+    Ok(())
 }
 
 /// `gen` with the three-way-merge flags exposed on the CLI.
@@ -160,6 +162,19 @@ fn acquire_store_lock(
     silent: bool,
 ) -> std::io::Result<aden_core::lock::FileLock> {
     let lock_path = aden_core::lock::store_lock_path(store_path);
+    if silent && super::generation_job::is_worker() {
+        loop {
+            match aden_core::lock::FileLock::acquire_timeout(&lock_path, SILENT_LOCK_TIMEOUT) {
+                Ok(lease) => return Ok(lease),
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    super::generation_job::checkpoint("waiting_for_writer", None, None)
+                        .map_err(|e| std::io::Error::other(e.to_string()))?;
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
     if silent {
         // Fail-open immediately when another writer owns the lock.
         aden_core::lock::FileLock::acquire_timeout(lock_path, SILENT_LOCK_TIMEOUT)
@@ -182,18 +197,23 @@ fn cmd_gen_inner(
 
     // Project root: for a single file, search upward from its directory.
     let search_start = if path.is_file() {
-        path.parent().unwrap_or(path)
+        // A bare relative filename has an empty parent, which cannot be
+        // canonicalized and would select a different store from `gen .`.
+        path.parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."))
     } else {
         path
     };
     let root = find_project_root(search_start);
+    super::generation_job::checkpoint("initial_fingerprint", None, None)?;
     trace.stage("initial_fingerprint");
     // Generation must account for a source that becomes unreadable instead of
     // aborting before the per-file pass can record `io_failed`.  Its snapshot
     // deliberately has no freshness manifest: an unreadable source can never
     // authoritatively bind the graph to the working tree, so reads fail closed
     // until a later successful generation fingerprints every source.
-    let indexed_source_fingerprint = match super::fresh::source_fingerprint(&root) {
+    let mut indexed_source_fingerprint = match super::fresh::source_fingerprint(&root) {
         Ok(fingerprint) => Some(fingerprint),
         Err(e) => {
             if !silent {
@@ -222,10 +242,14 @@ fn cmd_gen_inner(
     // Store-first: `gen` writes ONLY to .aden/store. Module hub nodes
     // (mod-project, mod-<crate>) are synthesized into the store by
     // link_store_edges — no .adoc files or contracts/ directory are emitted.
-    let mut pending_snapshot: Option<std::path::PathBuf> = None;
+    let pending_snapshot: Option<std::path::PathBuf>;
+    let writer_lease;
+    let journal;
     {
+        super::generation_job::checkpoint("discovery", None, None)?;
         trace.stage("discovery");
         // A single file re-indexes just itself; a directory indexes the project.
+        let mut full_tree_scope = !path.is_file();
         let mut discovered = if path.is_file() {
             vec![crate::util::DiscoveredFile {
                 path: path.to_path_buf(),
@@ -239,18 +263,40 @@ fn cmd_gen_inner(
             .filter(|file| file.disposition.is_indexed())
             .map(|file| file.path.clone())
             .collect();
+        // An empty checkout may have just lost its final source. Reconcile
+        // its cached owners or interrupted writes before certifying the graph.
         if discovered.is_empty() {
-            eprintln!("No files discovered in {}.", root.display());
-            return Ok(());
+            if propose {
+                eprintln!("No files discovered in {}.", root.display());
+                return Ok(());
+            }
+            if std::env::var_os("ADEN_STORE").is_some() {
+                eprintln!(
+                    "No files discovered in {}. Shared store preserved.",
+                    root.display()
+                );
+                return Ok(());
+            }
+            if !aden_paths::gen_cache_file(&root).try_exists()?
+                && !aden_paths::store_dir(&root)
+                    .with_extension("generation")
+                    .join("recovery.json")
+                    .try_exists()?
+            {
+                eprintln!("No files discovered in {}.", root.display());
+                return Ok(());
+            }
         }
         trace.count("discovered_files", discovered.len());
         trace.count("source_files", sources.len());
+        super::generation_job::checkpoint("discovery", Some(0), Some(discovered.len()))?;
         trace.count("reindexed_files", 0);
         trace.count("excluded_source_files", 0);
 
         // ADR-003: the store now lives in the per-user data dir, keyed per
         // project. Refuse to create one at $HOME / fs-root unless explicit, then
         // migrate any legacy in-tree store before opening the central one.
+        super::generation_job::checkpoint("store_setup", None, None)?;
         trace.stage("store_setup");
         aden_paths::guard_creatable_root(&root, crate::util::creation_explicit())?;
         crate::util::migrate_legacy_store(&root);
@@ -262,8 +308,9 @@ fn cmd_gen_inner(
         // G4: serialize concurrent writers. Held until this function returns,
         // covering the whole open/index/flush write phase.
         // Silent path: WouldBlock → Ok (fail-open; another gen is in flight).
+        super::generation_job::checkpoint("store_lock", None, None)?;
         trace.stage("store_lock");
-        let _store_lock = match acquire_store_lock(&store_path, silent) {
+        writer_lease = match acquire_store_lock(&store_path, silent) {
             Ok(l) => l,
             Err(e) if silent && e.kind() == std::io::ErrorKind::WouldBlock => {
                 return Ok(());
@@ -280,6 +327,15 @@ fn cmd_gen_inner(
                 });
             }
         };
+
+        if aden_paths::store_dir(&root) != store_path {
+            return Err(
+                "Storage configuration changed while waiting for the writer; retry the command"
+                    .into(),
+            );
+        }
+        journal = super::generation_job::Paths::for_store(root.clone(), &store_path);
+        super::generation_job::checkpoint("coalesce_check", None, None)?;
 
         trace.stage("coalesce_check");
         // Single-flight join: after waiting (explicit) or acquiring (silent), if
@@ -301,6 +357,18 @@ fn cmd_gen_inner(
         // explicit gen as "do the work" so operators can force a reindex.
         // (silent join above is the agent-facing coalesce.)
 
+        super::generation_job::checkpoint("cache_load", None, None)?;
+        trace.stage("cache_load");
+        let cache_path = aden_paths::gen_cache_file(&root);
+        let (mut cache, cache_requires_rebuild) = load_gen_cache(&cache_path).map_err(|error| {
+            format!(
+                "Failed to read generation cache {}: {error}",
+                cache_path.display()
+            )
+        })?;
+
+        super::generation_job::checkpoint("store_open", None, None)?;
+
         trace.stage("store_open");
         let store_str = store_path
             .to_str()
@@ -310,10 +378,8 @@ fn cmd_gen_inner(
         // stale and must be ignored, or every file would be skipped as
         // "unchanged" against an empty store and the rebuild would silently
         // produce nothing (the recovery-from-deletion trap).
-        let cache_path = aden_paths::gen_cache_file(&root);
-        let cache_requires_rebuild = gen_cache_requires_rebuild(&cache_path);
         let mut full_rebuild = force || !store_path.exists() || cache_requires_rebuild;
-        if cache_requires_rebuild && store_path.exists() {
+        if cache_requires_rebuild && !propose && store_path.exists() {
             if std::env::var_os("ADEN_STORE").is_some() {
                 return Err("generation-cache schema changed while $ADEN_STORE is pinned/shared; run `aden regen` with a per-project store to rebuild safely".into());
             }
@@ -328,6 +394,7 @@ fn cmd_gen_inner(
                 )
             })?;
             if path.is_file() {
+                full_tree_scope = true;
                 discovered = discover_file_dispositions(&root)?;
                 sources = discovered
                     .iter()
@@ -336,8 +403,12 @@ fn cmd_gen_inner(
                     .collect();
             }
         }
+        let existing_store = store_path.exists();
         let storage = match Storage::new_with_retry(store_str, WRITE_QUEUE_TIMEOUT) {
             Ok(s) => s,
+            Err(aden_store::StoreError::IncompatibleVersion(_)) if propose => {
+                return Err("The existing store must be upgraded before proposals can be compared; run aden gen first".into());
+            }
             Err(aden_store::StoreError::IncompatibleVersion(_)) => {
                 // The on-disk store was written in an engine format this build
                 // cannot read (e.g. a fjall major upgrade). The store is a
@@ -368,6 +439,7 @@ fn cmd_gen_inner(
                 // now repopulate the whole project — otherwise the rebuild would
                 // re-index just that one file and leave a near-empty graph.
                 if path.is_file() {
+                    full_tree_scope = true;
                     discovered = discover_file_dispositions(&root)?;
                     sources = discovered
                         .iter()
@@ -388,29 +460,63 @@ fn cmd_gen_inner(
         // Recovery may expand a single-file request into a full-tree rebuild.
         trace.count("discovered_files", discovered.len());
         trace.count("source_files", sources.len());
+        super::generation_job::checkpoint("discovery", Some(0), Some(discovered.len()))?;
         let _ = aden_paths::write_meta(&root);
 
-        trace.stage("cache_load");
-        let mut cache = load_gen_cache(&cache_path);
+        super::generation_job::checkpoint("cache_recovery", None, None)?;
+        trace.stage("cache_recovery");
+        if !propose {
+            super::fresh::clear_freshness_manifest(&root);
+        }
+        let pending_recovery =
+            super::generation_job::recover_cache(&journal, &mut cache, &storage)?;
+        if pending_recovery && !full_tree_scope {
+            // A partial request cannot settle a whole-generation journal. In
+            // particular an interrupted owner may have reverted to cached
+            // bytes while its transient documents remain in the store.
+            discovered = discover_file_dispositions(&root)?;
+            sources = discovered
+                .iter()
+                .filter(|file| file.disposition.is_indexed())
+                .map(|file| file.path.clone())
+                .collect();
+            full_tree_scope = true;
+            trace.count("discovered_files", discovered.len());
+            trace.count("source_files", sources.len());
+            super::generation_job::checkpoint("discovery", Some(0), Some(discovered.len()))?;
+        }
+        if !full_tree_scope {
+            // The initial fingerprint covers every source, but a normal file
+            // request has only reconciled one. Publish its useful snapshot
+            // without certifying unrelated source changes as current.
+            indexed_source_fingerprint = None;
+        }
+        let live_keys: Option<std::collections::HashSet<String>> = full_tree_scope.then(|| {
+            discovered
+                .iter()
+                .map(|file| crate::util::project_relative_key(&root, &file.path))
+                .collect()
+        });
         let mut generated = 0usize;
         let mut skipped = 0usize;
+        let mut pre_prune_anchors = Vec::new();
+        let mut pre_recovery = std::collections::BTreeMap::new();
+
+        super::generation_job::checkpoint("persist_prune", None, None)?;
 
         trace.stage("persist_prune");
         // Persist every path-level disposition before parsing. This keeps
         // ignored, unsupported, and secret-path files visible to coverage and
         // prunes symbols that were indexed before a rule changed.
-        if !path.is_file() {
+        if full_tree_scope {
             for file in &discovered {
                 if file.disposition.is_indexed() {
                     continue;
                 }
                 let key = crate::util::project_relative_key(&root, &file.path);
                 if let Some(previous) = cache.entries.remove(&key) {
-                    // Pruning is completed by the ordinary stale-anchor pass
-                    // below after all parser outcomes are known.
-                    for anchor in previous.anchors {
-                        let _ = storage.delete_node(&anchor);
-                    }
+                    pre_prune_anchors.extend(previous.anchors.iter().cloned());
+                    pre_recovery.insert(key.clone(), previous.anchors);
                 }
                 let mtime = file
                     .path
@@ -436,248 +542,28 @@ fn cmd_gen_inner(
         // store read + overlay parse for every other symbol. Empty when there is
         // no `.aden/overlays/` directory (the common case → zero overhead).
         let overlay_slugs = crate::commands::overlay::overlay_slugs(&root);
+        // Only overlaid anchors need their original generated layer retained.
+        // Later batches may collide with an earlier anchor, so merge notices
+        // must use its pre-generation baseline rather than a batch's new write.
+        // Arc avoids cloning this exception to the bounded document lifetime.
+        let overlay_baselines = std::sync::Mutex::new(std::collections::HashMap::<
+            String,
+            Option<std::sync::Arc<aden_core::Document>>,
+        >::new());
 
-        // Phase 1: Parallel file processing — read, parse, write to store
-        trace.stage("parse_prepare");
-        let mut work_items: Vec<_> = sources
-            .par_iter()
-            .filter_map(|src_path| {
-                let src_mtime = src_path
-                    .metadata()
-                    .ok()
-                    .and_then(|m| m.modified().ok())
-                    .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-                let mtime_secs = src_mtime
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs();
-
-                let src_rel = crate::util::project_relative(&root, src_path);
-                // Security floor: never index credential material into the store
-                // (where ask/asm would assemble it into LLM context). Search
-                // (grep/locate/audit) can still see these files to fix them.
-                let path_disposition = aden_core::filter::FileDisposition::for_path(
-                    &src_rel,
-                    false,
-                    true,
-                );
-                if !path_disposition.is_indexed() {
-                    return Some(WorkItem::Excluded {
-                        // `/`-normalized so Windows cache keys match store source_file.
-                        cache_key: normalize_sep(&src_rel),
-                        source_mtime: mtime_secs,
-                        source_path: src_path.to_string_lossy().to_string(),
-                        disposition: path_disposition,
-                    });
-                }
-                let cache_key = normalize_sep(&src_rel);
-                // Read before deciding reuse. Timestamps can be preserved by
-                // editors/copy tools and have coarse resolution on some filesystems.
-                // The digest must describe this same buffer passed to the parser.
-                let source = match std::fs::read_to_string(src_path) {
-                    Ok(s) => s,
-                    Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
-                        return Some(WorkItem::Excluded {
-                            cache_key,
-                            source_mtime: mtime_secs,
-                            source_path: src_path.to_string_lossy().to_string(),
-                            disposition: aden_core::filter::FileDisposition::InvalidEncoding,
-                        });
-                    }
-                    Err(e) => {
-                        if !quiet {
-                            eprintln!("WARN: Failed to read {}: {}", src_path.display(), e);
-                        }
-                        return Some(WorkItem::Excluded {
-                            cache_key,
-                            source_mtime: mtime_secs,
-                            source_path: src_path.to_string_lossy().to_string(),
-                            disposition: aden_core::filter::FileDisposition::IoFailed,
-                        });
-                    }
-                };
-
-                let source_digest = aden_core::stable_hash(source.as_bytes());
-                // Force/propose and a full rebuild must re-examine every file:
-                // force overwrites, propose audits overlays, and a new/recovered
-                // store has no contracts corresponding to old cache entries.
-                // Empty legacy digests never match a freshly computed digest.
-                if !full_rebuild
-                    && !propose
-                    && let Some(entry) = cache.entries.get(&cache_key)
-                    && entry.source_digest == source_digest
-                {
-                    return Some(WorkItem::Skip);
-                }
-
-                // Security floor (content): the filename-based is_secret_path
-                // check above misses a credential embedded in an ordinary source
-                // or config file. Scan content for high-confidence secret tokens
-                // (AWS/GitHub/OpenAI/Slack keys, PEM private keys) and refuse to
-                // index such a file into the store, where ask/asm would otherwise
-                // assemble it into LLM context (CWE-798/CWE-200).
-                let content_disposition = aden_core::filter::FileDisposition::for_content(&source);
-                if !content_disposition.is_indexed() {
-                    if !silent {
-                        eprintln!(
-                            "WARN: Skipping {} — file content matches a credential pattern (not indexed). Add to .adenignore if intentional.",
-                            src_rel.display()
-                        );
-                    }
-                    return Some(WorkItem::Excluded {
-                        cache_key,
-                        source_mtime: mtime_secs,
-                        source_path: src_path.to_string_lossy().to_string(),
-                        disposition: content_disposition,
-                    });
-                }
-
-                // Parse
-                // Deterministic integration-test seam for the otherwise rare
-                // parser-error branch. It is compiled out of release builds
-                // and requires an exact root-relative path, so production
-                // classification remains entirely parser-driven.
-                #[cfg(debug_assertions)]
-                if std::env::var_os("ADEN_TEST_FORCE_PARSE_FAILED")
-                    .is_some_and(|value| value == src_rel.as_os_str())
-                {
-                    return Some(WorkItem::Excluded {
-                        cache_key,
-                        source_mtime: mtime_secs,
-                        source_path: src_path.to_string_lossy().to_string(),
-                        disposition: aden_core::filter::FileDisposition::ParseFailed,
-                    });
-                }
-                let docs = match aden_parse::parse_file(src_path, &source) {
-                    Ok(d) => d,
-                    Err(aden_core::Error::UnsupportedLanguage(_)) => return Some(WorkItem::Excluded {
-                        cache_key,
-                        source_mtime: mtime_secs,
-                        source_path: src_path.to_string_lossy().to_string(),
-                        disposition: aden_core::filter::FileDisposition::Unsupported,
-                    }),
-                    Err(e) => {
-                        if !silent {
-                            eprintln!("WARN: Parse failed for {}: {}", src_path.display(), e);
-                        }
-                        return Some(WorkItem::Excluded {
-                            cache_key,
-                            source_mtime: mtime_secs,
-                            source_path: src_path.to_string_lossy().to_string(),
-                            disposition: aden_core::filter::FileDisposition::ParseFailed,
-                        });
-                    }
-                };
-
-                // Parse documents; the actual store write is deferred to Phase 2
-                // (sequential, sorted) so basename-anchor collisions resolve
-                // deterministically instead of racing across worker threads.
-                let mut emitted = Vec::new();
-                let mut conflicts: Vec<(String, aden_core::contract::MergeProposal)> = Vec::new();
-                let mut docs_local: Vec<(aden_core::Document, String)> = Vec::new();
-                for doc in docs {
-                    let mut doc_clone = doc.clone();
-                    sanitize_source_file(&mut doc_clone, &root);
-
-                    // Capture call sites for graph linking before slimming, then
-                    // drop the redundant edge:: listing so the store stays compact.
-                    // Real containment/Calls edges are built in link_store_edges,
-                    // so the old parent-module relationship boilerplate is gone.
-                    let callees = extract_callees(&doc_clone);
-                    let uses = extract_uses(&doc_clone);
-                    let refs = extract_doc_refs(&doc_clone);
-                    let includes = extract_doc_includes(&doc_clone);
-                    let implements = extract_edge_macro(&doc_clone, "implements");
-                    let mutates = extract_edge_macro(&doc_clone, "mutates");
-                    let member_of = extract_edge_macro(&doc_clone, "member_of");
-                    let mentions = extract_doc_mentions(&doc_clone);
-                    let supersedes = extract_doc_supersedes(&doc_clone);
-                    let demonstrates = extract_demonstrates(&doc_clone);
-                    let defines_terms = extract_doc_terms(&doc_clone);
-                    slim_doc_for_store(&mut doc_clone);
-
-                    // Three-way merge gate. A conflict can only arise when the
-                    // symbol has an overlay, so for everything else we skip the
-                    // store read + overlay parse entirely (zero overhead in the
-                    // common case). `propose` is a dry-run that never writes;
-                    // `force` skips the gate (no notices).
-                    //
-                    // Semantics are *notify*, not block: the generated layer
-                    // always updates so the store never drifts from source, and
-                    // the overlay's durable intent is preserved (separate file)
-                    // and delivered to readers (folded into the read graph). When
-                    // a guarded generated unit changes we record a *notice* so the
-                    // author re-reviews their overlay. The notice self-clears on
-                    // the next run once the generated content settles.
-                    let write = !propose;
-                    if !force
-                        && overlay_slugs.contains(
-                            &crate::commands::overlay::sanitize_anchor_filename(&doc_clone.anchor),
-                        )
-                    {
-                        let stored = storage.get_document(&doc_clone.anchor).ok().flatten();
-                        let overlay = crate::commands::overlay::load_overlay(
-                            &root,
-                            &doc_clone.anchor,
-                        )
-                        .ok()
-                        .flatten();
-                        if let Ok(p) = aden_core::contract::reconcile_anchor(
-                            &doc_clone,
-                            stored.as_ref(),
-                            overlay.as_ref(),
-                        ) && !p.is_clean()
-                        {
-                            conflicts.push((doc_clone.anchor.clone(), p));
-                        }
-                    }
-
-                    emitted.push(EmittedSymbol {
-                        anchor: doc_clone.anchor.clone(),
-                        callees,
-                        uses,
-                        refs,
-                        includes,
-                        implements,
-                        mutates,
-                        member_of,
-                        mentions,
-                        supersedes,
-                        demonstrates,
-                        defines_terms,
-                        wrote: write,
-                    });
-                    // Defer the write — Phase 2 stores these in sorted source
-                    // order. Emit the base snapshot HERE (in the parallel pass),
-                    // not in the serial writer: it is the lossless
-                    // `emit_contract_document` text for this exact slimmed doc
-                    // (`parse_contract` is its inverse), so computing it
-                    // per-worker keeps Phase 2's single-threaded write loop to
-                    // pure I/O.
-                    if write {
-                        let snapshot = aden_emit::emit_contract_document(
-                            &aden_core::contract::ContractDocument::from_document(&doc_clone),
-                        );
-                        docs_local.push((doc_clone, snapshot));
-                    }
-                }
-
-                // Always report a reindexed file — even with zero symbols — so
-                // the prune step can drop anchors a now-empty file used to own.
-                Some(WorkItem::Reindexed {
-                    cache_key: cache_key.clone(),
-                    source_mtime: mtime_secs,
-                    source_path: src_path.to_string_lossy().to_string(),
-                    source_digest,
-                    symbols: emitted,
-                    docs: docs_local,
-                    conflicts,
-                })
+        // Bind incremental reuse to inert extraction configuration as well as
+        // source bytes. Read before parallel parsing and propagate I/O failures.
+        let macro_config_fingerprints: std::collections::HashMap<_, _> = sources
+            .iter()
+            .filter(|p| matches!(p.extension().and_then(|e| e.to_str()), Some("c" | "h")))
+            .map(|p| {
+                aden_parse::macro_declarations::config_fingerprint(p).map(|hash| (p.clone(), hash))
             })
-            .collect();
+            .collect::<aden_core::Result<_>>()?;
 
-        trace.stage("persist_prune");
-        // Phase 2: Merge parallel results into shared state. Collect compact
+        sources.sort();
+        // Retain compact link records across batches, but drain full documents
+        // before parsing the next bounded source batch. Collect compact
         // (anchor, callees) link records so the linker never reloads documents.
         let mut link_records: Vec<(String, Vec<String>)> = Vec::new();
         let mut use_records: Vec<(String, Vec<String>)> = Vec::new();
@@ -696,7 +582,7 @@ fn cmd_gen_inner(
         // iterated — so it cannot perturb emission order (determinism).
         let mut test_anchors: std::collections::HashSet<String> = std::collections::HashSet::new();
         // Anchors to prune: symbols a reindexed file no longer defines.
-        let mut stale_anchors: Vec<String> = Vec::new();
+        let mut stale_anchors: Vec<String> = pre_prune_anchors;
         // Merge conflicts surfaced by the reconcile gate, written as proposals.
         let mut merge_conflicts: Vec<(String, aden_core::contract::MergeProposal)> = Vec::new();
         // Deterministic store writes: order work by source path so that when two
@@ -710,7 +596,6 @@ fn cmd_gen_inner(
                 WorkItem::Skip => "",
             }
         }
-        work_items.sort_by(|a, b| work_key(a).cmp(work_key(b)));
         if !propose {
             // Resolution must never trust a lexicon from a partially completed
             // multi-batch generation. Readers use the last snapshot while this
@@ -720,125 +605,509 @@ fn cmd_gen_inner(
                 .invalidate_symbol_lexicon()
                 .map_err(|e| format!("Failed to invalidate symbol lexicon: {e}"))?;
         }
-        for item in work_items {
-            match item {
-                WorkItem::Skip => skipped += 1,
-                WorkItem::Excluded {
-                    cache_key,
-                    source_mtime,
-                    source_path,
-                    disposition,
-                } => {
-                    trace.increment("excluded_source_files");
-                    // A file that was once indexed may now be redacted or fail
-                    // parsing. Remove its old symbols and persist the reason so
-                    // it is never a silent omission.
-                    if let Some(previous) = cache.entries.remove(&cache_key) {
-                        stale_anchors.extend(previous.anchors);
-                    }
-                    cache.dispositions.insert(
-                        cache_key,
-                        FileDispositionEntry {
-                            disposition,
-                            source_mtime,
-                            source_path,
-                        },
-                    );
+        let mut recovery = pre_recovery;
+        let mut recovery_journal_dirty = !recovery.is_empty();
+        trace.count("recovery_journal_writes", 0);
+        // Carry deleted and interrupted owners forward before the next batch
+        // can replace the journal. Both are independent of the batch boundary.
+        if !propose {
+            for (key, entry) in &cache.entries {
+                let deleted = live_keys.as_ref().is_some_and(|live| !live.contains(key));
+                if deleted || entry.source_digest.is_empty() {
+                    recovery.insert(key.clone(), entry.anchors.clone());
+                    recovery_journal_dirty |= deleted;
                 }
-                WorkItem::Reindexed {
-                    cache_key,
-                    source_mtime,
-                    source_path,
-                    source_digest,
-                    symbols,
-                    docs,
-                    conflicts,
-                } => {
-                    trace.increment("reindexed_files");
-                    // Documents + their base snapshots commit in ONE atomic
-                    // fjall batch per file (snapshots were already emitted in
-                    // the parallel pass). Per-file — not one global — batching is
-                    // deliberate: an atomic batch gives every item the same
-                    // sequence number, so keys within a batch must be unique.
-                    // Anchors are unique within a single source file, and files
-                    // commit in sorted order (see the `work_items.sort_by`
-                    // above), so the cross-file basename-collision rule
-                    // (last-sorted-source wins) is preserved.
-                    if let Err(e) = storage.put_documents_bulk(&docs) {
-                        eprintln!("WARN: Failed to store documents for {}: {}", source_path, e);
+            }
+        }
+        let mut batch_start = 0;
+        let mut batch_count = 0;
+        let mut peak_batch_files = 0;
+        let mut peak_batch_bytes = 0;
+        let mut peak_batch_snapshot_bytes = 0;
+        let mut peak_batch_documents = 0;
+        let batch_limits = bounded::limits();
+        while batch_start < sources.len() {
+            let (batch_len, batch_bytes) = bounded::batch_len_with_limits(
+                sources[batch_start..].iter().map(|source| {
+                    // Metadata is a scheduling estimate. Sources can change
+                    // concurrently, and parsed output can exceed input size.
+                    source
+                        .metadata()
+                        .map(|m| m.len())
+                        .unwrap_or(bounded::SOURCE_BYTES)
+                }),
+                batch_limits.0,
+                batch_limits.1,
+            );
+            let batch = &sources[batch_start..batch_start + batch_len];
+            batch_count += 1;
+            peak_batch_files = peak_batch_files.max(batch_len);
+            peak_batch_bytes = peak_batch_bytes.max(batch_bytes);
+            // Phase 1: Parallel file processing — read, parse, write to store
+            super::generation_job::checkpoint("parse_prepare", None, None)?;
+            trace.stage("parse_prepare");
+            let mut work_items: Vec<_> = batch
+                .par_iter()
+                .filter_map(|src_path| {
+                    let src_mtime = src_path
+                        .metadata()
+                        .ok()
+                        .and_then(|m| m.modified().ok())
+                        .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                    let mtime_secs = src_mtime
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs();
+
+                    let src_rel = crate::util::project_relative(&root, src_path);
+                    // Security floor: never index credential material into the store
+                    // (where ask/asm would assemble it into LLM context). Search
+                    // (grep/locate/audit) can still see these files to fix them.
+                    let path_disposition = aden_core::filter::FileDisposition::for_path(
+                        &src_rel,
+                        false,
+                        true,
+                    );
+                    if !path_disposition.is_indexed() {
+                        return Some(WorkItem::Excluded {
+                            // `/`-normalized so Windows cache keys match store source_file.
+                            cache_key: normalize_sep(&src_rel),
+                            source_mtime: mtime_secs,
+                            source_path: src_path.to_string_lossy().to_string(),
+                            disposition: path_disposition,
+                        });
                     }
-                    merge_conflicts.extend(conflicts);
-                    // The module-form anchor flattens the directory, so
-                    // test-ness comes from the real (root-relative) source
-                    // path — the same rule ask-routing applies at query time.
-                    let from_test_file = crate::commands::query::is_test_source_path(&cache_key);
-                    let fresh: Vec<String> = symbols.iter().map(|s| s.anchor.clone()).collect();
-                    // Diff against what this file contributed last time: any
-                    // previously-recorded anchor not in the fresh set is a
-                    // symbol that was deleted/renamed and must be pruned.
-                    if let Some(prev) = cache.entries.get(&cache_key) {
-                        for old in &prev.anchors {
-                            if !fresh.contains(old) {
-                                stale_anchors.push(old.clone());
+                    let cache_key = normalize_sep(&src_rel);
+                    // Read before deciding reuse. Timestamps can be preserved by
+                    // editors/copy tools and have coarse resolution on some filesystems.
+                    // The digest must describe this same buffer passed to the parser.
+                    let source = match std::fs::read_to_string(src_path) {
+                        Ok(s) => s,
+                        Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
+                            return Some(WorkItem::Excluded {
+                                cache_key,
+                                source_mtime: mtime_secs,
+                                source_path: src_path.to_string_lossy().to_string(),
+                                disposition: aden_core::filter::FileDisposition::InvalidEncoding,
+                            });
+                        }
+                        Err(e) => {
+                            if !quiet {
+                                eprintln!("WARN: Failed to read {}: {}", src_path.display(), e);
+                            }
+                            return Some(WorkItem::Excluded {
+                                cache_key,
+                                source_mtime: mtime_secs,
+                                source_path: src_path.to_string_lossy().to_string(),
+                                disposition: aden_core::filter::FileDisposition::IoFailed,
+                            });
+                        }
+                    };
+
+                    let source_digest = if let Some(config) = macro_config_fingerprints.get(src_path) {
+                        aden_core::hash_source(&format!("{}:{config}", aden_core::hash_source(&source)))
+                    } else {
+                        aden_core::stable_hash(source.as_bytes())
+                    };
+                    // Force/propose and a full rebuild must re-examine every file:
+                    // force overwrites, propose audits overlays, and a new/recovered
+                    // store has no contracts corresponding to old cache entries.
+                    // Empty legacy digests never match a freshly computed digest.
+                    if !full_rebuild
+                        && !propose
+                        && let Some(entry) = cache.entries.get(&cache_key)
+                        && entry.source_digest == source_digest
+                    {
+                        return Some(WorkItem::Skip);
+                    }
+
+                    // Security floor (content): the filename-based is_secret_path
+                    // check above misses a credential embedded in an ordinary source
+                    // or config file. Scan content for high-confidence secret tokens
+                    // (AWS/GitHub/OpenAI/Slack keys, PEM private keys) and refuse to
+                    // index such a file into the store, where ask/asm would otherwise
+                    // assemble it into LLM context (CWE-798/CWE-200).
+                    let content_disposition = aden_core::filter::FileDisposition::for_content(&source);
+                    if !content_disposition.is_indexed() {
+                        if !silent {
+                            eprintln!(
+                                "WARN: Skipping {} — file content matches a credential pattern (not indexed). Add to .adenignore if intentional.",
+                                src_rel.display()
+                            );
+                        }
+                        return Some(WorkItem::Excluded {
+                            cache_key,
+                            source_mtime: mtime_secs,
+                            source_path: src_path.to_string_lossy().to_string(),
+                            disposition: content_disposition,
+                        });
+                    }
+
+                    // Parse
+                    // Deterministic integration-test seam for the otherwise rare
+                    // parser-error branch. It is compiled out of release builds
+                    // and requires an exact root-relative path, so production
+                    // classification remains entirely parser-driven.
+                    #[cfg(debug_assertions)]
+                    if std::env::var_os("ADEN_TEST_FORCE_PARSE_FAILED")
+                        .is_some_and(|value| value == src_rel.as_os_str())
+                    {
+                        return Some(WorkItem::Excluded {
+                            cache_key,
+                            source_mtime: mtime_secs,
+                            source_path: src_path.to_string_lossy().to_string(),
+                            disposition: aden_core::filter::FileDisposition::ParseFailed,
+                        });
+                    }
+                    let docs = match aden_parse::parse_file(src_path, &source) {
+                        Ok(d) => d,
+                        Err(aden_core::Error::UnsupportedLanguage(_)) => return Some(WorkItem::Excluded {
+                            cache_key,
+                            source_mtime: mtime_secs,
+                            source_path: src_path.to_string_lossy().to_string(),
+                            disposition: aden_core::filter::FileDisposition::Unsupported,
+                        }),
+                        Err(e) => {
+                            if !silent {
+                                eprintln!("WARN: Parse failed for {}: {}", src_path.display(), e);
+                            }
+                            return Some(WorkItem::Excluded {
+                                cache_key,
+                                source_mtime: mtime_secs,
+                                source_path: src_path.to_string_lossy().to_string(),
+                                disposition: aden_core::filter::FileDisposition::ParseFailed,
+                            });
+                        }
+                    };
+
+                    // Parse documents; the actual store write is deferred to Phase 2
+                    // (sequential, sorted) so basename-anchor collisions resolve
+                    // deterministically instead of racing across worker threads.
+                    let mut emitted = Vec::new();
+                    let mut conflicts: Vec<(String, aden_core::contract::MergeProposal)> = Vec::new();
+                    let mut docs_local: Vec<(aden_core::Document, String)> = Vec::new();
+                    for mut doc in docs {
+                        sanitize_source_file(&mut doc, &root);
+
+                        // Capture call sites for graph linking before slimming, then
+                        // drop the redundant edge:: listing so the store stays compact.
+                        // Real containment/Calls edges are built in link_store_edges,
+                        // so the old parent-module relationship boilerplate is gone.
+                        let callees = extract_callees(&doc);
+                        let uses = extract_uses(&doc);
+                        let refs = extract_doc_refs(&doc);
+                        let includes = extract_doc_includes(&doc);
+                        let implements = extract_edge_macro(&doc, "implements");
+                        let mutates = extract_edge_macro(&doc, "mutates");
+                        let member_of = extract_edge_macro(&doc, "member_of");
+                        let mentions = extract_doc_mentions(&doc);
+                        let supersedes = extract_doc_supersedes(&doc);
+                        let demonstrates = extract_demonstrates(&doc);
+                        let defines_terms = extract_doc_terms(&doc);
+                        slim_doc_for_store(&mut doc);
+
+                        // Three-way merge gate. A conflict can only arise when the
+                        // symbol has an overlay, so for everything else we skip the
+                        // store read + overlay parse entirely (zero overhead in the
+                        // common case). `propose` is a dry-run that never writes;
+                        // `force` skips the gate (no notices).
+                        //
+                        // Semantics are *notify*, not block: the generated layer
+                        // always updates so the store never drifts from source, and
+                        // the overlay's durable intent is preserved (separate file)
+                        // and delivered to readers (folded into the read graph). When
+                        // a guarded generated unit changes we record a *notice* so the
+                        // author re-reviews their overlay. The notice self-clears on
+                        // the next run once the generated content settles.
+                        let write = !propose;
+                        if !force
+                            && overlay_slugs.contains(
+                                &crate::commands::overlay::sanitize_anchor_filename(&doc.anchor),
+                            )
+                        {
+                            let stored = overlay_baselines
+                                .lock()
+                                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                                .entry(doc.anchor.clone())
+                                .or_insert_with(|| {
+                                    storage
+                                        .get_document(&doc.anchor)
+                                        .ok()
+                                        .flatten()
+                                        .map(std::sync::Arc::new)
+                                })
+                                .clone();
+                            let overlay = crate::commands::overlay::load_overlay(
+                                &root,
+                                &doc.anchor,
+                            )
+                            .ok()
+                            .flatten();
+                            if let Ok(p) = aden_core::contract::reconcile_anchor(
+                                &doc,
+                                stored.as_deref(),
+                                overlay.as_ref(),
+                            ) && !p.is_clean()
+                            {
+                                conflicts.push((doc.anchor.clone(), p));
                             }
                         }
+
+                        emitted.push(EmittedSymbol {
+                            anchor: doc.anchor.clone(),
+                            is_rust_test: doc
+                                .attributes
+                                .get("rust_test")
+                                .is_some_and(|value| value == "true"),
+                            callees,
+                            uses,
+                            refs,
+                            includes,
+                            implements,
+                            mutates,
+                            member_of,
+                            mentions,
+                            supersedes,
+                            demonstrates,
+                            defines_terms,
+                            wrote: write,
+                        });
+                        // Defer the write — Phase 2 stores these in sorted source
+                        // order. Emit the base snapshot HERE (in the parallel pass),
+                        // not in the serial writer: it is the lossless
+                        // `emit_contract_document` text for this exact slimmed doc
+                        // (`parse_contract` is its inverse), so computing it
+                        // per-worker keeps Phase 2's single-threaded write loop to
+                        // pure I/O.
+                        if write {
+                            let snapshot = aden_emit::emit_contract_document(
+                                &aden_core::contract::ContractDocument::from_document(&doc),
+                            );
+                            docs_local.push((doc, snapshot));
+                        }
                     }
-                    cache.dispositions.remove(&cache_key);
-                    cache.entries.insert(
+
+                    // Always report a reindexed file — even with zero symbols — so
+                    // the prune step can drop anchors a now-empty file used to own.
+                    Some(WorkItem::Reindexed {
+                        cache_key: cache_key.clone(),
+                        source_mtime: mtime_secs,
+                        source_path: src_path.to_string_lossy().to_string(),
+                        source_digest,
+                        symbols: emitted,
+                        docs: docs_local,
+                        conflicts,
+                    })
+                })
+                .collect();
+
+            let mut batch_snapshot_bytes = 0;
+            let mut batch_documents = 0;
+            for item in &work_items {
+                if let WorkItem::Reindexed { docs, .. } = item {
+                    batch_documents += docs.len();
+                    batch_snapshot_bytes += docs.iter().map(|(_, text)| text.len()).sum::<usize>();
+                }
+            }
+            peak_batch_documents = peak_batch_documents.max(batch_documents);
+            peak_batch_snapshot_bytes = peak_batch_snapshot_bytes.max(batch_snapshot_bytes);
+            super::generation_job::checkpoint("persist_prune", None, None)?;
+            trace.stage("persist_prune");
+            work_items.sort_by(|a, b| work_key(a).cmp(work_key(b)));
+            if !propose {
+                for item in &work_items {
+                    match item {
+                        WorkItem::Reindexed {
+                            cache_key, symbols, ..
+                        } => {
+                            recovery_journal_dirty = true;
+                            let anchors =
+                                recovery.entry(cache_key.clone()).or_insert_with(Vec::new);
+                            if let Some(old) = cache.entries.get(cache_key) {
+                                anchors.extend(old.anchors.clone());
+                            }
+                            anchors.extend(symbols.iter().map(|s| s.anchor.clone()));
+                        }
+                        WorkItem::Excluded { cache_key, .. } => {
+                            if let Some(old) = cache.entries.get(cache_key) {
+                                recovery.insert(cache_key.clone(), old.anchors.clone());
+                                recovery_journal_dirty = true;
+                            }
+                        }
+                        WorkItem::Skip => {}
+                    }
+                }
+                if recovery_journal_dirty {
+                    super::generation_job::prepare_recovery(&journal, &recovery)?;
+                    trace.increment("recovery_journal_writes");
+                    recovery_journal_dirty = false;
+                }
+            }
+            for (completed, item) in work_items.into_iter().enumerate() {
+                super::generation_job::checkpoint(
+                    "persist_prune",
+                    Some(batch_start + completed),
+                    Some(sources.len()),
+                )?;
+                match item {
+                    WorkItem::Skip => skipped += 1,
+                    WorkItem::Excluded {
                         cache_key,
-                        GenCacheEntry {
-                            source_mtime,
-                            source_path,
-                            source_digest,
-                            anchors: fresh,
-                        },
-                    );
-                    for sym in symbols {
-                        // Count only symbols actually written to the store, so the
-                        // summary never claims to have stored a conflict-held doc.
-                        if sym.wrote {
-                            generated += 1;
+                        source_mtime,
+                        source_path,
+                        disposition,
+                    } => {
+                        trace.increment("excluded_source_files");
+                        // A file that was once indexed may now be redacted or fail
+                        // parsing. Remove its old symbols and persist the reason so
+                        // it is never a silent omission.
+                        if let Some(previous) = cache.entries.remove(&cache_key) {
+                            stale_anchors.extend(previous.anchors);
                         }
-                        if !sym.refs.is_empty() {
-                            ref_records.push((sym.anchor.clone(), sym.refs));
+                        cache.dispositions.insert(
+                            cache_key,
+                            FileDispositionEntry {
+                                disposition,
+                                source_mtime,
+                                source_path,
+                            },
+                        );
+                    }
+                    WorkItem::Reindexed {
+                        cache_key,
+                        source_mtime,
+                        source_path,
+                        source_digest,
+                        symbols,
+                        docs,
+                        conflicts,
+                    } => {
+                        trace.increment("reindexed_files");
+                        // Documents + their base snapshots commit in ONE atomic
+                        // fjall batch per file (snapshots were already emitted in
+                        // the parallel pass). Per-file — not one global — batching is
+                        // deliberate: an atomic batch gives every item the same
+                        // sequence number, so keys within a batch must be unique.
+                        // Anchors are unique within a single source file, and files
+                        // commit in sorted order (see the `work_items.sort_by`
+                        // above), so the cross-file basename-collision rule
+                        // (last-sorted-source wins) is preserved.
+                        storage.put_documents_bulk(&docs).map_err(|e| {
+                            format!("Failed to store documents for {source_path}: {e}")
+                        })?;
+                        #[cfg(debug_assertions)]
+                        if std::env::var("ADEN_TEST_FAIL_AFTER_FILE_WRITE")
+                            .ok()
+                            .as_deref()
+                            == Some(cache_key.as_str())
+                        {
+                            return Err("injected failure after atomic file write".into());
                         }
-                        if !sym.includes.is_empty() {
-                            include_records.push((sym.anchor.clone(), sym.includes));
+                        #[cfg(debug_assertions)]
+                        if !propose
+                            && std::env::var_os("ADEN_TEST_HOLD_AFTER_FILE_WRITE").as_deref()
+                                == Some(std::ffi::OsStr::new("1"))
+                        {
+                            // Deterministic abrupt-death proof: the intent is already
+                            // staged, and the atomic document batch is durable before
+                            // the test harness terminates its owned fixture worker.
+                            storage
+                                .flush()
+                                .map_err(|e| format!("Failed to flush test batch: {e}"))?;
+                            while root.join(".aden-test-generation-hold").exists() {
+                                super::generation_job::checkpoint(
+                                    "test_hold_after_write",
+                                    None,
+                                    None,
+                                )?;
+                                std::thread::sleep(std::time::Duration::from_millis(50));
+                            }
                         }
-                        if !sym.uses.is_empty() {
-                            use_records.push((sym.anchor.clone(), sym.uses));
+                        merge_conflicts.extend(conflicts);
+                        // The module-form anchor flattens the directory, so
+                        // test-ness comes from the real (root-relative) source
+                        // path — the same rule ask-routing applies at query time.
+                        let from_test_file =
+                            crate::commands::query::is_test_source_path(&cache_key);
+                        let fresh: Vec<String> = symbols.iter().map(|s| s.anchor.clone()).collect();
+                        // Diff against what this file contributed last time: any
+                        // previously-recorded anchor not in the fresh set is a
+                        // symbol that was deleted/renamed and must be pruned.
+                        if let Some(prev) = cache.entries.get(&cache_key)
+                            && prev.anchors != fresh
+                        {
+                            let kept: std::collections::HashSet<_> = fresh.iter().collect();
+                            stale_anchors.extend(
+                                prev.anchors
+                                    .iter()
+                                    .filter(|old| !kept.contains(*old))
+                                    .cloned(),
+                            );
                         }
-                        if !sym.implements.is_empty() {
-                            impl_records.push((sym.anchor.clone(), sym.implements));
-                        }
-                        if !sym.mutates.is_empty() {
-                            mutates_records.push((sym.anchor.clone(), sym.mutates));
-                        }
-                        if !sym.member_of.is_empty() {
-                            member_of_records.push((sym.anchor.clone(), sym.member_of));
-                        }
-                        if !sym.mentions.is_empty() {
-                            mention_records.push((sym.anchor.clone(), sym.mentions));
-                        }
-                        if !sym.supersedes.is_empty() {
-                            supersede_records.push((sym.anchor.clone(), sym.supersedes));
-                        }
-                        if !sym.demonstrates.is_empty() {
-                            demo_records.push((sym.anchor.clone(), sym.demonstrates));
-                        }
-                        if !sym.defines_terms.is_empty() {
-                            term_records.push((sym.anchor.clone(), sym.defines_terms));
-                        }
-                        if from_test_file {
-                            test_anchors.insert(sym.anchor.clone());
-                        }
-                        if !sym.callees.is_empty() {
-                            link_records.push((sym.anchor, sym.callees));
+                        cache.dispositions.remove(&cache_key);
+                        cache.entries.insert(
+                            cache_key,
+                            GenCacheEntry {
+                                source_mtime,
+                                source_path,
+                                source_digest,
+                                anchors: fresh,
+                            },
+                        );
+                        for sym in symbols {
+                            // Count only symbols actually written to the store, so the
+                            // summary never claims to have stored a conflict-held doc.
+                            if sym.wrote {
+                                generated += 1;
+                            }
+                            if !sym.refs.is_empty() {
+                                ref_records.push((sym.anchor.clone(), sym.refs));
+                            }
+                            if !sym.includes.is_empty() {
+                                include_records.push((sym.anchor.clone(), sym.includes));
+                            }
+                            if !sym.uses.is_empty() {
+                                use_records.push((sym.anchor.clone(), sym.uses));
+                            }
+                            if !sym.implements.is_empty() {
+                                impl_records.push((sym.anchor.clone(), sym.implements));
+                            }
+                            if !sym.mutates.is_empty() {
+                                mutates_records.push((sym.anchor.clone(), sym.mutates));
+                            }
+                            if !sym.member_of.is_empty() {
+                                member_of_records.push((sym.anchor.clone(), sym.member_of));
+                            }
+                            if !sym.mentions.is_empty() {
+                                mention_records.push((sym.anchor.clone(), sym.mentions));
+                            }
+                            if !sym.supersedes.is_empty() {
+                                supersede_records.push((sym.anchor.clone(), sym.supersedes));
+                            }
+                            if !sym.demonstrates.is_empty() {
+                                demo_records.push((sym.anchor.clone(), sym.demonstrates));
+                            }
+                            if !sym.defines_terms.is_empty() {
+                                term_records.push((sym.anchor.clone(), sym.defines_terms));
+                            }
+                            if from_test_file || sym.is_rust_test {
+                                test_anchors.insert(sym.anchor.clone());
+                            }
+                            if !sym.callees.is_empty() {
+                                link_records.push((sym.anchor, sym.callees));
+                            }
                         }
                     }
                 }
             }
+
+            batch_start += batch_len;
         }
+        trace.count("parse_batches", batch_count);
+        trace.count("peak_parse_batch_files", peak_batch_files);
+        trace.count("peak_parse_batch_source_bytes", peak_batch_bytes as usize);
+        trace.count("peak_parse_batch_documents", peak_batch_documents);
+        trace.count("peak_parse_batch_snapshot_bytes", peak_batch_snapshot_bytes);
 
         // Dry-run: never mutate the store (no prune, link, flush, or cache
         // save). Write conflict proposals and report, then stop.
@@ -853,15 +1122,19 @@ fn cmd_gen_inner(
             return Ok(());
         }
 
+        // With no parse batches (or no dirty batch), deletions may still be
+        // pending. Durably journal their owners immediately before any edge
+        // clearing or stale-node pruning mutates the store.
+        if recovery_journal_dirty {
+            super::generation_job::prepare_recovery(&journal, &recovery)?;
+            trace.increment("recovery_journal_writes");
+        }
+
         // Case (b): whole-file deletion. On a full-tree gen (NOT a single-file
         // re-index, which only knows about one file), any cache entry whose
         // source file is no longer in the discovered set is gone — prune all
         // anchors it owned and drop the entry.
-        if !path.is_file() {
-            let live: std::collections::HashSet<String> = discovered
-                .iter()
-                .map(|file| crate::util::project_relative_key(&root, &file.path))
-                .collect();
+        if let Some(live) = live_keys {
             let dead_keys: Vec<String> = cache
                 .entries
                 .keys()
@@ -876,21 +1149,63 @@ fn cmd_gen_inner(
             cache.dispositions.retain(|key, _| live.contains(key));
         }
 
+        // The journal identifies the reindexed files. A shared anchor can carry
+        // calls from several files; clearing it is safe only if every owner
+        // participated and the linker can replay all their contributions.
+        // A pinned store may also contain owners outside this project's cache.
+        if existing_store && !recovery.is_empty() && std::env::var_os("ADEN_STORE").is_none() {
+            let mut refreshed: std::collections::HashSet<&str> = recovery
+                .keys()
+                .filter_map(|key| cache.entries.get(key))
+                .flat_map(|entry| entry.anchors.iter().map(String::as_str))
+                .collect();
+            if !refreshed.is_empty() {
+                for (key, entry) in &cache.entries {
+                    if !recovery.contains_key(key) {
+                        for anchor in &entry.anchors {
+                            refreshed.remove(anchor.as_str());
+                        }
+                    }
+                }
+                // Keep each storage transaction bounded even on a forced reparse.
+                let mut batch = Vec::with_capacity(256);
+                for anchor in refreshed {
+                    batch.push(anchor);
+                    if batch.len() == 256 {
+                        storage.clear_generated_calls(&batch)?;
+                        batch.clear();
+                    }
+                }
+                storage.clear_generated_calls(&batch)?;
+            }
+        }
+
+        // Its durable journal remains on disk until publication succeeds.
+        drop(recovery);
+
         // Prune stale nodes (deleted symbols / deleted files). delete_node
         // cascades edges in both directions so no dangling reference survives.
         // Guard: never touch synthesized hub nodes (mod-*) — they carry no
         // source_file and are rebuilt by link_store_edges below.
         let mut pruned = 0usize;
-        for anchor in &stale_anchors {
+        // A removed or renamed source can share a canonical symbol with a
+        // surviving owner. Prune only anchors absent from every live entry.
+        let mut stale: std::collections::BTreeSet<_> = stale_anchors.into_iter().collect();
+        if !stale.is_empty() {
+            for entry in cache.entries.values() {
+                for anchor in &entry.anchors {
+                    stale.remove(anchor);
+                }
+            }
+        }
+        for anchor in &stale {
             if anchor.starts_with("mod-") {
                 continue;
             }
             match storage.delete_node(anchor) {
                 Ok(()) => pruned += 1,
                 Err(e) => {
-                    if !silent {
-                        eprintln!("WARN: Failed to prune {}: {}", anchor, e);
-                    }
+                    return Err(format!("Failed to prune {anchor}: {e}").into());
                 }
             }
         }
@@ -900,9 +1215,11 @@ fn cmd_gen_inner(
         trace.count("generated_contracts", generated);
         trace.count("skipped_files", skipped);
         trace.count("pruned_symbols", pruned);
+        super::generation_job::checkpoint("git_history", None, None)?;
         trace.stage("git_history");
         let cochange = cochange_pairs(&root, &cache);
         trace.count("cochange_pairs", cochange.len());
+        super::generation_job::checkpoint("linking", None, None)?;
         trace.stage("linking");
         let callee_stats = match link_store_edges(
             &storage,
@@ -923,22 +1240,23 @@ fn cmd_gen_inner(
         ) {
             Ok(stats) => stats,
             Err(e) => {
-                eprintln!("WARN: Failed to link graph edges: {}", e);
-                CalleeStats::default()
+                return Err(format!("Failed to link graph edges: {e}").into());
             }
         };
 
         // Additive second pass: include:: directives -> Requires edges. Kept
         // separate from link_store_edges (which works from anchors only); this
         // resolves file-wise and put_edges_bulk appends, so prior edges persist.
+        super::generation_job::checkpoint("include_linking", None, None)?;
         trace.stage("include_linking");
         if let Err(e) = link_include_edges(&storage, &include_records) {
-            eprintln!("WARN: Failed to link include edges: {}", e);
+            return Err(format!("Failed to link include edges: {e}").into());
         }
 
         // Every document write, stale-node prune, and synthesized hub write is
         // now complete. Publish the marker last, then durably flush both graph
         // and lexicon before preparing a snapshot that may reference them.
+        super::generation_job::checkpoint("store_flush", None, None)?;
         trace.stage("store_flush");
         storage
             .finalize_symbol_lexicon()
@@ -946,6 +1264,8 @@ fn cmd_gen_inner(
         storage
             .flush()
             .map_err(|e| format!("Store flush failed: {}", e))?;
+
+        super::generation_job::checkpoint("extraction_cleanup", None, None)?;
 
         trace.stage("extraction_cleanup");
         // Linking is complete. Release extraction-only strings before loading
@@ -970,19 +1290,25 @@ fn cmd_gen_inner(
         // ADR-011: serialize the read snapshot to its temporary file while
         // storage is open; publish after the store handle drops so a final fjall
         // flush cannot age the store past the snapshot file.
+        super::generation_job::checkpoint("snapshot_prepare", None, None)?;
         trace.stage("snapshot_prepare");
         let snapshot_path = aden_paths::graph_snapshot_file(&root);
         trace.count("snapshot_prepared", 0);
-        match aden_graph::snapshot::prepare_from_storage(&snapshot_path, &storage) {
-            Ok(()) => {
-                trace.count("snapshot_prepared", 1);
-                pending_snapshot = Some(snapshot_path);
-            }
-            Err(e) => eprintln!("WARN: Failed to prepare read snapshot: {e}"),
+        let orphans = if quiet {
+            aden_graph::snapshot::prepare_from_storage(&snapshot_path, &storage)
+                .map(|()| aden_graph::snapshot::OrphanSummary::default())
+        } else {
+            aden_graph::snapshot::prepare_from_storage_with_orphans(&snapshot_path, &storage)
         }
+        .map_err(|e| format!("Failed to prepare read snapshot: {e}"))?;
+        trace.count("snapshot_prepared", 1);
+        pending_snapshot = Some(snapshot_path);
+
+        super::generation_job::checkpoint("cache_write", None, None)?;
 
         trace.stage("cache_write");
         save_gen_cache(&cache_path, &cache)?;
+        super::generation_job::checkpoint("summary_and_notices", None, None)?;
         trace.stage("summary_and_notices");
 
         // The summary is "summary only" output: shown under --quiet/regen, but
@@ -1041,35 +1367,28 @@ fn cmd_gen_inner(
             );
         }
 
-        // Report orphan symbols using store-first graph build. Suppressed in
-        // quiet mode so the transparent refresh-on-read path stays silent.
+        super::generation_job::checkpoint("orphan_diagnostics", None, None)?;
         trace.stage("orphan_diagnostics");
-        if !quiet {
-            match AdenGraph::build_from_storage(&storage) {
-                Ok(graph) => {
-                    let orphans = graph.orphans();
-                    if !orphans.is_empty() {
-                        eprintln!("\nWARNING: {} orphan symbol(s) detected:", orphans.len());
-                        for orphan in orphans.iter().take(5) {
-                            eprintln!("  - {}", orphan);
-                        }
-                        if orphans.len() > 5 {
-                            eprintln!("  ... and {} more", orphans.len() - 5);
-                        }
-                        eprintln!("  Run 'aden heal . --gc' to auto-link or remove orphans");
-                    }
-                }
-                Err(e) => {
-                    eprintln!("Note: Could not check for orphans: {}", e);
-                }
+        if orphans.total > 0 {
+            eprintln!("\nWARNING: {} orphan symbol(s) detected:", orphans.total);
+            for orphan in &orphans.examples {
+                eprintln!("  - {}", orphan);
             }
+            if orphans.total > orphans.examples.len() {
+                eprintln!("  ... and {} more", orphans.total - orphans.examples.len());
+            }
+            eprintln!("  Run 'aden heal . --gc' to auto-link or remove orphans");
         }
         // Keep the writer lock through DB close, as before, and publish only
         // after the final engine flush performed by the storage destructor.
+        super::generation_job::checkpoint("store_close", None, None)?;
         trace.stage("store_close");
         drop(storage);
+        super::generation_job::checkpoint("scope_cleanup", None, None)?;
         trace.stage("scope_cleanup");
     }
+
+    super::generation_job::checkpoint("snapshot_publish", None, None)?;
 
     trace.stage("snapshot_publish");
     trace.count("snapshot_published", 0);
@@ -1088,18 +1407,21 @@ fn cmd_gen_inner(
                     trace.count("freshness_manifest_published", 1);
                 }
             }
-            Err(e) => eprintln!("WARN: Failed to publish read snapshot: {e}"),
+            Err(e) => return Err(format!("Failed to publish read snapshot: {e}").into()),
         }
     }
 
     // Invalidate caches after generating so the next query rebuilds
+    super::generation_job::checkpoint("cache_invalidation", None, None)?;
     trace.stage("cache_invalidation");
-    let cache_dir = aden_paths::cache_dir(path);
+    let cache_dir = aden_paths::cache_dir(&root);
     if cache_dir.exists() {
         let _ = std::fs::remove_dir_all(&cache_dir);
         let _ = std::fs::create_dir_all(&cache_dir);
     }
 
+    journal.clear_recovery()?;
+    drop(writer_lease);
     trace.finish();
     Ok(())
 }

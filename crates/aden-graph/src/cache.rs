@@ -13,8 +13,11 @@ use crate::nodes::{AdenEdge, DocumentNode};
 use crate::snapshot;
 use aden_core::{Document, EdgeType};
 use aden_store::{GraphStorage, Storage};
+use std::cell::OnceCell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
+
+pub(crate) mod symbols;
 
 /// Try loading the graph for read commands (ADR-011 snapshot-first, fjall fallback).
 pub fn try_load(path: &Path) -> Option<AdenGraph<DocumentNode, AdenEdge>> {
@@ -65,8 +68,8 @@ fn build_graph_from_docs_and_edges(
             .unwrap_or_else(|| PathBuf::from(format!("{}.adoc", anchor)));
 
         let node = DocumentNode {
-            doc: doc.clone(),
-            source_path: source_path.clone(),
+            doc,
+            source_path,
             parsed: None,
         };
         let _ = graph.add_node(node); // duplicates shouldn't occur; ignored for build
@@ -107,42 +110,21 @@ pub fn natural_symbol_form(value: &str) -> String {
 /// Rank an anchor against a natural symbol spelling. Lower is better; rank 5
 /// is a substring suggestion and must never be selected automatically.
 pub fn anchor_match_rank(anchor: &str, symbol: &str) -> u8 {
-    let sym = natural_symbol_form(symbol);
-    let sym_lower = sym.to_lowercase();
-    let seg = natural_symbol_form(anchor.rsplit(['#', '/']).next().unwrap_or(""));
-    let seg_lower = seg.to_lowercase();
-    let leaf = seg.rsplit(['.', ':']).next().unwrap_or(&seg);
-    let leaf_lower = leaf.to_lowercase();
-    if seg == sym {
-        0
-    } else if seg_lower == sym_lower {
-        1
-    } else if leaf == sym {
-        2
-    } else if leaf_lower == sym_lower {
-        3
-    } else if seg_lower.starts_with(&format!("{sym_lower}."))
-        || seg_lower.starts_with(&format!("{sym_lower}::"))
-    {
-        4
-    } else if !sym_lower.is_empty() && seg_lower.contains(&sym_lower) {
-        5
-    } else {
-        u8::MAX
-    }
+    symbols::Query::new(symbol).rank_anchor(anchor)
 }
 
 fn ranked_anchor_matches<'a>(
     symbol: &str,
     anchors: &'a [String],
 ) -> (Option<&'a String>, Vec<(u8, &'a String)>) {
+    let query = symbols::Query::new(symbol);
     let mut exact = None;
     let mut matched = Vec::new();
     for anchor in anchors {
         if anchor == symbol {
             exact = Some(anchor);
         }
-        let rank = anchor_match_rank(anchor, symbol);
+        let rank = query.rank_anchor(anchor);
         if rank != u8::MAX {
             matched.push((rank, anchor));
         }
@@ -177,33 +159,22 @@ fn typo_anchor_suggestions(symbol: &str, anchors: &[String]) -> Vec<String> {
     let Some(max_distance) = aden_core::symbol::typo_max_distance(symbol_len) else {
         return Vec::new();
     };
-    let mut suggestions = Vec::new();
+    let mut suggestions = aden_core::symbol::SymbolSuggestions::default();
     for anchor in anchors {
         let segment = natural_symbol_form(anchor.rsplit(['#', '/']).next().unwrap_or(""));
         let segment = segment.to_lowercase();
-        let leaf = segment.rsplit(['.', ':']).next().unwrap_or(&segment);
-        let distance = [segment.as_str(), leaf]
-            .into_iter()
-            .filter(|candidate| candidate.chars().count().abs_diff(symbol_len) <= max_distance)
-            .map(|candidate| aden_core::symbol::edit_distance(&symbol, candidate))
+        let leaf = segment.rsplit_once(['.', ':']).map(|(_, leaf)| leaf);
+        let distance = std::iter::once(segment.as_str())
+            .chain(leaf)
+            .filter_map(|candidate| {
+                aden_core::symbol::edit_distance_within(&symbol, candidate, max_distance)
+            })
             .min();
-        if let Some(distance) = distance.filter(|distance| *distance <= max_distance) {
-            suggestions.push((distance, anchor.clone()));
+        if let Some(distance) = distance {
+            suggestions.insert(distance, anchor);
         }
     }
-    suggestions.sort_by(
-        |(left_distance, left_anchor), (right_distance, right_anchor)| {
-            left_distance
-                .cmp(right_distance)
-                .then_with(|| left_anchor.cmp(right_anchor))
-        },
-    );
-    suggestions.dedup_by(|left, right| left.1 == right.1);
-    suggestions
-        .into_iter()
-        .take(8)
-        .map(|(_, anchor)| anchor)
-        .collect()
+    suggestions.into_anchors()
 }
 
 /// Resolution plus every ranked discovery match from the same anchor scan.
@@ -294,30 +265,9 @@ pub fn resolve_anchor_detailed(dir: &Path, anchor: &str) -> AnchorResolution {
     let (store_path, _) = aden_paths::resolve_read_store(dir);
     if let Some(store_path) = store_path.to_str()
         && let Ok(storage) = Storage::open_existing(store_path)
+        && let Some(resolution) = resolve_anchor_with_storage(&storage, anchor)
     {
-        if matches!(storage.get_document(anchor), Ok(Some(_))) {
-            return AnchorResolution::Exact(anchor.to_string());
-        }
-        // Scheme-stripped anchor spelling (`proj/path#sym`, as pasted minus
-        // the `aden://` scheme): probe the two canonical scheme forms
-        // exactly. This must happen before the symbol-lexicon shortcut —
-        // the lexicon returns an empty candidate set for path-shaped input
-        // and would otherwise end resolution with a bare not-found.
-        if !anchor.contains("://") && anchor.contains('#') {
-            for prefix in ["aden://module/", "aden://doc/"] {
-                let candidate = format!("{prefix}{anchor}");
-                if matches!(storage.get_document(&candidate), Ok(Some(_))) {
-                    return AnchorResolution::Exact(candidate);
-                }
-            }
-        }
-        if let Ok(Some(lookup)) = storage.lookup_symbol_candidates(anchor) {
-            return resolve_anchor_from_list(anchor, &lookup.anchors);
-        }
-        if let Ok(anchors) = storage.get_all_anchors() {
-            let anchors = anchors.into_iter().collect::<Vec<_>>();
-            return resolve_anchor_from_list(anchor, &anchors);
-        }
+        return resolution;
     }
 
     if let Some((docs, _)) = snapshot::try_read_fresh(dir) {
@@ -327,6 +277,395 @@ pub fn resolve_anchor_detailed(dir: &Path, anchor: &str) -> AnchorResolution {
     AnchorResolution::NotFound {
         suggestions: Vec::new(),
     }
+}
+
+fn resolve_anchor_with_storage(storage: &Storage, anchor: &str) -> Option<AnchorResolution> {
+    if matches!(storage.get_document(anchor), Ok(Some(_))) {
+        return Some(AnchorResolution::Exact(anchor.to_string()));
+    }
+    // Scheme-stripped anchor spelling (`proj/path#sym`, as pasted minus
+    // the `aden://` scheme): probe the two canonical scheme forms
+    // exactly. This must happen before the symbol-lexicon shortcut —
+    // the lexicon returns an empty candidate set for path-shaped input
+    // and would otherwise end resolution with a bare not-found.
+    if !anchor.contains("://") && anchor.contains('#') {
+        for prefix in ["aden://module/", "aden://doc/"] {
+            let candidate = format!("{prefix}{anchor}");
+            if matches!(storage.get_document(&candidate), Ok(Some(_))) {
+                return Some(AnchorResolution::Exact(candidate));
+            }
+        }
+    }
+    if let Ok(Some(lookup)) = storage.lookup_symbol_candidates(anchor) {
+        return Some(resolve_anchor_from_list(anchor, &lookup.anchors));
+    }
+    if let Ok(anchors) = storage.get_all_anchors() {
+        let anchors = anchors.into_iter().collect::<Vec<_>>();
+        return Some(resolve_anchor_from_list(anchor, &anchors));
+    }
+    None
+}
+
+enum ReadSource {
+    Store(Storage),
+    Snapshot(snapshot::SnapshotData),
+    SharedSnapshot(std::sync::Arc<snapshot::SharedSnapshot>),
+    Unavailable(String),
+}
+
+/// One graph read request. Resolution and traversal share the same store handle
+/// or immutable snapshot. A resident worker may reuse a byte-verified immutable
+/// snapshot; every command still re-establishes freshness independently.
+pub struct GraphReadSession<'a> {
+    dir: &'a Path,
+    source: ReadSource,
+    anchors: OnceCell<Vec<String>>,
+    outgoing: OnceCell<HashMap<String, Vec<(String, EdgeType)>>>,
+    incoming: OnceCell<HashMap<String, Vec<(String, EdgeType)>>>,
+}
+
+impl<'a> GraphReadSession<'a> {
+    pub fn open(dir: &'a Path) -> Self {
+        if let Some(snapshot) = snapshot::try_read_session(dir) {
+            return Self::with_source(dir, ReadSource::SharedSnapshot(snapshot));
+        }
+        let source = match Self::open_store(dir) {
+            Ok(storage) => ReadSource::Store(storage),
+            Err(error) => match snapshot::try_read_fresh(dir) {
+                Some(data) => ReadSource::Snapshot(data),
+                None => ReadSource::Unavailable(error),
+            },
+        };
+        Self::with_source(dir, source)
+    }
+
+    fn open_store(dir: &Path) -> Result<Storage, String> {
+        let (store_path, _) = aden_paths::resolve_read_store(dir);
+        let path = store_path.to_str().ok_or("invalid store path")?;
+        Storage::open_existing(path).map_err(|error| error.to_string())
+    }
+
+    /// For a project with a published revision, prefer its verified small
+    /// snapshot. Never retry a rejected snapshot through an unchecked path.
+    pub fn open_for_revision(dir: &'a Path, matches_revision: impl FnOnce(&[u8]) -> bool) -> Self {
+        let path = aden_paths::graph_snapshot_file(dir);
+        let source = match snapshot::read_small_verified(&path, matches_revision) {
+            Ok(Some(data)) => ReadSource::Snapshot(data),
+            Ok(None) => return Self::open(dir),
+            Err(_) => match Self::open_store(dir) {
+                Ok(storage) => ReadSource::Store(storage),
+                Err(error) => ReadSource::Unavailable(error),
+            },
+        };
+        Self::with_source(dir, source)
+    }
+
+    /// Exhaustive symbol listing is faster from an available snapshot on the
+    /// measured tiny and scale fixtures. Keep selective store access as fallback
+    /// without changing ranking coverage or introducing a size heuristic.
+    pub fn open_snapshot_first(dir: &'a Path) -> Self {
+        if let Some(snapshot) = snapshot::try_read_session(dir) {
+            return Self::with_source(dir, ReadSource::SharedSnapshot(snapshot));
+        }
+        match snapshot::try_read_fresh(dir) {
+            Some(data) => Self::with_source(dir, ReadSource::Snapshot(data)),
+            None => Self::open(dir),
+        }
+    }
+
+    fn with_source(dir: &'a Path, source: ReadSource) -> Self {
+        Self {
+            dir,
+            source,
+            anchors: OnceCell::new(),
+            outgoing: OnceCell::new(),
+            incoming: OnceCell::new(),
+        }
+    }
+
+    /// Exhaustive anchor keys without deserializing every document. Locate's
+    /// ranked suggestions and totals require this stronger coverage than the
+    /// bounded symbol lexicon used for definitive resolution.
+    pub fn anchors(&self) -> Result<&[String], crate::graph::GraphError> {
+        if let ReadSource::SharedSnapshot(snapshot) = &self.source {
+            return Ok(snapshot.anchors());
+        }
+        if self.anchors.get().is_none() {
+            let anchors = match &self.source {
+                ReadSource::Store(storage) => storage
+                    .get_all_anchors()
+                    .map_err(|error| crate::graph::GraphError::Io(error.to_string()))?
+                    .into_iter()
+                    .collect(),
+                ReadSource::Snapshot((docs, _)) => docs.keys().cloned().collect(),
+                ReadSource::SharedSnapshot(_) => unreachable!(),
+                ReadSource::Unavailable(error) => {
+                    return Err(crate::graph::GraphError::Io(error.clone()));
+                }
+            };
+            let _ = self.anchors.set(anchors);
+        }
+        Ok(self.anchors.get().unwrap())
+    }
+
+    pub fn analyze_anchor(
+        &self,
+        anchor: &str,
+    ) -> Result<AnchorResolutionAnalysis, crate::graph::GraphError> {
+        if let ReadSource::SharedSnapshot(snapshot) = &self.source {
+            return Ok(snapshot.analyze_anchor(anchor));
+        }
+        Ok(analyze_anchor_list(anchor, self.anchors()?))
+    }
+
+    /// Resolve with complete anchor coverage. A resident snapshot can use its
+    /// prepared resolution indexes.
+    pub fn resolve_anchor_exhaustive(
+        &self,
+        anchor: &str,
+    ) -> Result<AnchorResolution, crate::graph::GraphError> {
+        if let ReadSource::SharedSnapshot(snapshot) = &self.source {
+            return Ok(snapshot.resolve_anchor(anchor));
+        }
+        Ok(resolve_anchor_from_list(anchor, self.anchors()?))
+    }
+
+    pub fn document(&self, anchor: &str) -> Result<Option<Document>, crate::graph::GraphError> {
+        match &self.source {
+            ReadSource::Store(storage) => storage
+                .get_document(anchor)
+                .map_err(|error| crate::graph::GraphError::Io(error.to_string())),
+            ReadSource::Snapshot((docs, _)) => Ok(docs.get(anchor).cloned()),
+            ReadSource::SharedSnapshot(snapshot) => Ok(snapshot.data.0.get(anchor).cloned()),
+            ReadSource::Unavailable(error) => Err(crate::graph::GraphError::Io(error.clone())),
+        }
+    }
+
+    fn snapshot_adjacency(
+        &self,
+        direction: crate::Direction,
+    ) -> &HashMap<String, Vec<(String, EdgeType)>> {
+        if let ReadSource::SharedSnapshot(snapshot) = &self.source {
+            return snapshot.adjacency(direction);
+        }
+        let cell = match direction {
+            crate::Direction::Incoming => &self.incoming,
+            crate::Direction::Outgoing => &self.outgoing,
+        };
+        cell.get_or_init(|| {
+            let mut adjacency: HashMap<String, Vec<(String, EdgeType)>> = HashMap::new();
+            if let ReadSource::Snapshot((_, edges)) = &self.source {
+                for (src, dst, edge_type) in edges {
+                    let (key, neighbor) = match direction {
+                        crate::Direction::Incoming => (dst, src),
+                        crate::Direction::Outgoing => (src, dst),
+                    };
+                    adjacency
+                        .entry(key.clone())
+                        .or_default()
+                        .push((neighbor.clone(), *edge_type));
+                }
+            }
+            adjacency
+        })
+    }
+
+    fn adjacent(
+        &self,
+        anchor: &str,
+        direction: crate::Direction,
+    ) -> Result<Vec<(String, EdgeType)>, crate::graph::GraphError> {
+        match &self.source {
+            ReadSource::Store(storage) => match direction {
+                crate::Direction::Incoming => storage.get_incoming_edges(anchor),
+                crate::Direction::Outgoing => storage.get_outgoing_edges(anchor),
+            }
+            .map_err(|error| crate::graph::GraphError::Io(error.to_string())),
+            ReadSource::Snapshot(_) | ReadSource::SharedSnapshot(_) => Ok(self
+                .snapshot_adjacency(direction)
+                .get(anchor)
+                .cloned()
+                .unwrap_or_default()),
+            ReadSource::Unavailable(error) => Err(crate::graph::GraphError::Io(error.clone())),
+        }
+    }
+
+    pub fn incoming_edges(
+        &self,
+        anchor: &str,
+    ) -> Result<Vec<(String, EdgeType)>, crate::graph::GraphError> {
+        self.adjacent(anchor, crate::Direction::Incoming)
+    }
+
+    pub fn resolve_anchor(&self, anchor: &str) -> AnchorResolution {
+        match &self.source {
+            ReadSource::Store(storage) => resolve_anchor_with_storage(storage, anchor),
+            ReadSource::Snapshot((docs, _)) => Some(resolve_anchor_from_list(
+                anchor,
+                &docs.keys().cloned().collect::<Vec<_>>(),
+            )),
+            ReadSource::SharedSnapshot(snapshot) => Some(snapshot.resolve_anchor(anchor)),
+            ReadSource::Unavailable(_) => None,
+        }
+        .unwrap_or_else(|| AnchorResolution::NotFound {
+            suggestions: Vec::new(),
+        })
+    }
+
+    /// Load only a query's reachable documents. The extra result beyond the
+    /// requested limit lets the caller report truncation honestly. Unlike
+    /// assembly context, explicit queries do not prune intermediate hub nodes.
+    pub fn into_query_neighborhood(
+        self,
+        start: &str,
+        depth: usize,
+        direction: crate::Direction,
+        edge_types: &[EdgeType],
+        exclude_structural: bool,
+        max_results: usize,
+    ) -> Result<AdenGraph<DocumentNode, AdenEdge>, crate::graph::GraphError> {
+        self.query_neighborhood(
+            start,
+            depth,
+            direction,
+            edge_types,
+            exclude_structural,
+            max_results,
+        )
+    }
+
+    pub fn query_neighborhood(
+        &self,
+        start: &str,
+        depth: usize,
+        direction: crate::Direction,
+        edge_types: &[EdgeType],
+        exclude_structural: bool,
+        max_results: usize,
+    ) -> Result<AdenGraph<DocumentNode, AdenEdge>, crate::graph::GraphError> {
+        build_query_neighborhood(
+            self.dir,
+            start,
+            depth,
+            direction,
+            edge_types,
+            exclude_structural,
+            max_results,
+            |anchor| self.document(anchor).map_err(|error| error.to_string()),
+            |anchor| {
+                self.adjacent(anchor, direction)
+                    .map_err(|error| error.to_string())
+            },
+        )
+    }
+
+    /// The same hub pruning, depth and node limits as the standalone assembler,
+    /// while reusing this request's store or materialized snapshot.
+    pub fn assembly_neighborhood(
+        &self,
+        start: &str,
+        depth: usize,
+        edge_types: &[EdgeType],
+    ) -> Result<AdenGraph<DocumentNode, AdenEdge>, crate::graph::GraphError> {
+        match &self.source {
+            ReadSource::Store(storage) => build_neighborhood_from_storage(
+                storage,
+                self.dir,
+                start,
+                depth,
+                edge_types,
+                &[],
+                &|_, _| true,
+            ),
+            ReadSource::Snapshot((docs, _)) => build_neighborhood_from_adjacency(
+                docs,
+                self.snapshot_adjacency(crate::Direction::Outgoing),
+                Vec::new(),
+                self.dir,
+                start,
+                depth,
+                edge_types,
+                &[],
+                &|_, _| true,
+            ),
+            ReadSource::SharedSnapshot(snapshot) => build_neighborhood_from_adjacency(
+                &snapshot.data.0,
+                snapshot.adjacency(crate::Direction::Outgoing),
+                Vec::new(),
+                self.dir,
+                start,
+                depth,
+                edge_types,
+                &[],
+                &|_, _| true,
+            ),
+            ReadSource::Unavailable(error) => Err(crate::graph::GraphError::Io(error.clone())),
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_query_neighborhood(
+    dir: &Path,
+    start: &str,
+    depth: usize,
+    direction: crate::Direction,
+    edge_types: &[EdgeType],
+    exclude_structural: bool,
+    max_results: usize,
+    mut document: impl FnMut(&str) -> Result<Option<Document>, String>,
+    mut adjacent: impl FnMut(&str) -> Result<Vec<(String, EdgeType)>, String>,
+) -> Result<AdenGraph<DocumentNode, AdenEdge>, crate::graph::GraphError> {
+    let mut docs = HashMap::new();
+    if let Some(doc) = document(start).map_err(crate::graph::GraphError::Io)? {
+        docs.insert(start.to_string(), doc);
+    }
+    let mut queue = VecDeque::from([(start.to_string(), 0usize)]);
+    let mut edges = Vec::new();
+    let node_limit = max_results.saturating_add(1).max(1);
+    'traversal: while let Some((current, current_depth)) = queue.pop_front() {
+        if current_depth >= depth {
+            continue;
+        }
+        // Group parallel edges before filtering, so provenance includes every
+        // recorded relationship between the pair, including nonmatching types.
+        let mut grouped: std::collections::BTreeMap<String, Vec<EdgeType>> =
+            std::collections::BTreeMap::new();
+        for (neighbor, edge_type) in adjacent(&current).map_err(crate::graph::GraphError::Io)? {
+            let types = grouped.entry(neighbor).or_default();
+            if !types.contains(&edge_type) {
+                types.push(edge_type);
+            }
+        }
+        for (neighbor, types) in grouped {
+            if (!edge_types.is_empty() && !types.iter().any(|t| edge_types.contains(t)))
+                || (exclude_structural
+                    && types
+                        .iter()
+                        .all(|t| matches!(t, EdgeType::Contains | EdgeType::PartOf)))
+            {
+                continue;
+            }
+            if !docs.contains_key(&neighbor) {
+                let Some(doc) = document(&neighbor).map_err(crate::graph::GraphError::Io)? else {
+                    continue;
+                };
+                docs.insert(neighbor.clone(), doc);
+                queue.push_back((neighbor.clone(), current_depth + 1));
+            }
+            for edge_type in types {
+                let (src, dst) = match direction {
+                    crate::Direction::Incoming => (neighbor.clone(), current.clone()),
+                    crate::Direction::Outgoing => (current.clone(), neighbor.clone()),
+                };
+                edges.push((src, dst, edge_type));
+            }
+            if docs.len() >= node_limit {
+                break 'traversal;
+            }
+        }
+    }
+    Ok(build_graph_from_docs_and_edges(docs, edges, dir))
 }
 
 /// Compatibility wrapper for callers that only need a definitive anchor.
@@ -435,6 +774,31 @@ fn build_neighborhood_from_materialized(
         outgoing.entry(src).or_default().push((dst, et));
     }
 
+    build_neighborhood_from_adjacency(
+        &docs,
+        &outgoing,
+        incoming_start,
+        dir,
+        start,
+        depth,
+        edge_types,
+        caller_types,
+        caller_filter,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_neighborhood_from_adjacency(
+    docs: &HashMap<String, Document>,
+    outgoing: &HashMap<String, Vec<(String, EdgeType)>>,
+    incoming_start: Vec<(String, EdgeType)>,
+    dir: &Path,
+    start: &str,
+    depth: usize,
+    edge_types: &[EdgeType],
+    caller_types: &[EdgeType],
+    caller_filter: &dyn Fn(&str, Option<&str>) -> bool,
+) -> Result<AdenGraph<DocumentNode, AdenEdge>, crate::graph::GraphError> {
     const MAX_NODES: usize = 10_000;
     let mut visited: HashSet<String> = HashSet::new();
     visited.insert(start.to_string());
@@ -509,7 +873,6 @@ fn build_neighborhood_impl(
     caller_types: &[EdgeType],
     caller_filter: &dyn Fn(&str, Option<&str>) -> bool,
 ) -> Result<AdenGraph<DocumentNode, AdenEdge>, crate::graph::GraphError> {
-    const MAX_NODES: usize = 10_000;
     let (store_path, _) = aden_paths::resolve_read_store(dir);
     let store_path = store_path
         .to_str()
@@ -536,6 +899,28 @@ fn build_neighborhood_impl(
             return Err(crate::graph::GraphError::Io(store_error.to_string()));
         }
     };
+
+    build_neighborhood_from_storage(
+        &storage,
+        dir,
+        start,
+        depth,
+        edge_types,
+        caller_types,
+        caller_filter,
+    )
+}
+
+fn build_neighborhood_from_storage(
+    storage: &Storage,
+    dir: &Path,
+    start: &str,
+    depth: usize,
+    edge_types: &[EdgeType],
+    caller_types: &[EdgeType],
+    caller_filter: &dyn Fn(&str, Option<&str>) -> bool,
+) -> Result<AdenGraph<DocumentNode, AdenEdge>, crate::graph::GraphError> {
+    const MAX_NODES: usize = 10_000;
 
     let mut visited: HashSet<String> = HashSet::new();
     visited.insert(start.to_string());
@@ -630,6 +1015,322 @@ pub fn build_from_directory_cached(
         return Ok(cached);
     }
     crate::graph::AdenGraph::build_from_directory(dir)
+}
+
+#[cfg(test)]
+mod query_neighborhood_tests {
+    use super::*;
+
+    fn snapshot_session(dir: &Path) -> GraphReadSession<'_> {
+        let docs = ["alpha", "beta", "container"]
+            .into_iter()
+            .map(|anchor| {
+                (
+                    anchor.to_string(),
+                    Document {
+                        anchor: anchor.to_string(),
+                        ..Document::default()
+                    },
+                )
+            })
+            .collect();
+        GraphReadSession {
+            dir,
+            anchors: OnceCell::new(),
+            outgoing: OnceCell::new(),
+            incoming: OnceCell::new(),
+            source: ReadSource::Snapshot((
+                docs,
+                vec![
+                    ("alpha".into(), "beta".into(), EdgeType::Calls),
+                    ("alpha".into(), "beta".into(), EdgeType::Contains),
+                    ("container".into(), "beta".into(), EdgeType::Contains),
+                    ("alpha".into(), "missing-document".into(), EdgeType::Calls),
+                ],
+            )),
+        }
+    }
+
+    #[test]
+    fn resident_snapshot_matches_uncached_resolution_queries_and_assembly() {
+        let dir = tempfile::tempdir().unwrap();
+        let uncached = snapshot_session(dir.path());
+        let ReadSource::Snapshot(data) = &uncached.source else {
+            unreachable!()
+        };
+        let shared = GraphReadSession::with_source(
+            dir.path(),
+            ReadSource::SharedSnapshot(std::sync::Arc::new(snapshot::SharedSnapshot::new(
+                data.clone(),
+            ))),
+        );
+        for symbol in ["alpha", "beta", "missing"] {
+            assert_eq!(
+                shared.resolve_anchor(symbol),
+                uncached.resolve_anchor(symbol)
+            );
+            assert_eq!(
+                shared.document(symbol).unwrap(),
+                uncached.document(symbol).unwrap()
+            );
+            assert_eq!(
+                shared.incoming_edges(symbol).unwrap(),
+                uncached.incoming_edges(symbol).unwrap()
+            );
+        }
+        fn evidence(
+            graph: AdenGraph<DocumentNode, AdenEdge>,
+        ) -> (HashSet<String>, HashSet<(String, String, EdgeType)>) {
+            (
+                graph
+                    .all_nodes()
+                    .into_iter()
+                    .map(|(anchor, _)| anchor)
+                    .collect(),
+                graph
+                    .all_edges()
+                    .into_iter()
+                    .map(|(a, b, edge)| (a, b, edge.edge_type))
+                    .collect(),
+            )
+        }
+        for direction in [crate::Direction::Outgoing, crate::Direction::Incoming] {
+            assert_eq!(
+                evidence(
+                    shared
+                        .query_neighborhood("beta", 2, direction, &[], false, 10)
+                        .unwrap()
+                ),
+                evidence(
+                    uncached
+                        .query_neighborhood("beta", 2, direction, &[], false, 10)
+                        .unwrap()
+                )
+            );
+        }
+        assert_eq!(
+            evidence(
+                shared
+                    .assembly_neighborhood("alpha", 2, &[EdgeType::Calls])
+                    .unwrap()
+            ),
+            evidence(
+                uncached
+                    .assembly_neighborhood("alpha", 2, &[EdgeType::Calls])
+                    .unwrap()
+            )
+        );
+    }
+
+    #[test]
+    fn exhaustive_resolution_preserves_shared_and_uncached_snapshot_outcomes() {
+        let dir = tempfile::tempdir().unwrap();
+        let canonical = "aden://module/demo/lib.rs#parse";
+        let docs = [
+            canonical,
+            "aden://doc/demo/lib.rs#parse",
+            "aden://module/demo/parse.rs#Namespace::parse",
+        ]
+        .into_iter()
+        .map(|anchor| {
+            (
+                anchor.to_owned(),
+                Document {
+                    anchor: anchor.to_owned(),
+                    ..Document::default()
+                },
+            )
+        })
+        .collect();
+        let data = (docs, Vec::new());
+        let shared = GraphReadSession::with_source(
+            dir.path(),
+            ReadSource::SharedSnapshot(std::sync::Arc::new(snapshot::SharedSnapshot::new(
+                data.clone(),
+            ))),
+        );
+        let uncached = GraphReadSession::with_source(dir.path(), ReadSource::Snapshot(data));
+        for symbol in [
+            canonical,
+            "demo/lib.rs#parse",
+            "parse",
+            "Namespace",
+            "ars",
+            "prase",
+            "missing",
+        ] {
+            let expected = uncached.analyze_anchor(symbol).unwrap().resolution;
+            assert_eq!(
+                shared.resolve_anchor_exhaustive(symbol).unwrap(),
+                expected,
+                "{symbol}"
+            );
+            assert_eq!(
+                uncached.resolve_anchor_exhaustive(symbol).unwrap(),
+                expected,
+                "{symbol}"
+            );
+        }
+    }
+
+    #[test]
+    fn selective_query_preserves_parallel_types_and_filters_structural_only_pairs() {
+        let dir = tempfile::tempdir().unwrap();
+        let forward = snapshot_session(dir.path())
+            .into_query_neighborhood(
+                "alpha",
+                1,
+                crate::Direction::Outgoing,
+                &[EdgeType::Calls],
+                false,
+                100,
+            )
+            .unwrap();
+        assert_eq!(
+            forward.all_nodes().len(),
+            2,
+            "dangling edges must not create query results"
+        );
+        let types: HashSet<_> = forward
+            .all_edges()
+            .into_iter()
+            .map(|(_, _, edge)| edge.edge_type)
+            .collect();
+        assert_eq!(types, HashSet::from([EdgeType::Calls, EdgeType::Contains]));
+
+        let reverse = snapshot_session(dir.path())
+            .into_query_neighborhood("beta", 1, crate::Direction::Incoming, &[], true, 100)
+            .unwrap();
+        assert_eq!(
+            reverse
+                .all_nodes()
+                .into_iter()
+                .map(|(anchor, _)| anchor)
+                .collect::<HashSet<_>>(),
+            HashSet::from(["alpha".into(), "beta".into()])
+        );
+        assert_eq!(
+            reverse.all_edges().len(),
+            2,
+            "a Calls+Contains pair is a valid reference with both provenance types"
+        );
+
+        let explicit_membership = snapshot_session(dir.path())
+            .into_query_neighborhood(
+                "beta",
+                1,
+                crate::Direction::Incoming,
+                &[EdgeType::Contains],
+                false,
+                100,
+            )
+            .unwrap();
+        assert_eq!(explicit_membership.all_nodes().len(), 3);
+    }
+
+    #[test]
+    fn failed_adjacency_read_is_an_error_instead_of_an_empty_neighborhood() {
+        let dir = tempfile::tempdir().unwrap();
+        let graph = build_query_neighborhood(
+            dir.path(),
+            "seed",
+            1,
+            crate::Direction::Outgoing,
+            &[],
+            false,
+            100,
+            |anchor| {
+                Ok(Some(Document {
+                    anchor: anchor.into(),
+                    ..Document::default()
+                }))
+            },
+            |_| Err("representative storage read failure".into()),
+        );
+        assert!(
+            matches!(graph, Err(crate::graph::GraphError::Io(error)) if error.contains("storage read failure"))
+        );
+    }
+
+    #[test]
+    fn unavailable_backend_is_distinct_from_a_valid_empty_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let unavailable = GraphReadSession::open(dir.path());
+        assert!(unavailable.analyze_anchor("missing").is_err());
+        assert!(unavailable.resolve_anchor_exhaustive("missing").is_err());
+        assert!(unavailable.document("missing").is_err());
+        assert!(unavailable.incoming_edges("missing").is_err());
+
+        let mut empty = snapshot_session(dir.path());
+        empty.source = ReadSource::Snapshot((HashMap::new(), Vec::new()));
+        let analysis = empty.analyze_anchor("missing").unwrap();
+        assert!(matches!(
+            analysis.resolution,
+            AnchorResolution::NotFound { .. }
+        ));
+        assert!(analysis.ranked_matches.is_empty());
+        assert!(empty.document("missing").unwrap().is_none());
+        assert!(empty.incoming_edges("missing").unwrap().is_empty());
+    }
+
+    #[test]
+    fn shared_snapshot_preserves_assembly_hub_pruning_and_complete_query_views() {
+        let dir = tempfile::tempdir().unwrap();
+        let entry = "aden://module/project/lib.rs#entry";
+        let hub = "aden://module/project/lib.rs#dispatch";
+        let mut anchors = vec![entry.to_string(), hub.to_string()];
+        let mut edges = vec![(entry.into(), hub.into(), EdgeType::Calls)];
+        for index in 0..40 {
+            let leaf = format!("aden://module/project/lib.rs#leaf_{index}");
+            edges.push((hub.into(), leaf.clone(), EdgeType::Calls));
+            anchors.push(leaf);
+        }
+        let docs = anchors
+            .into_iter()
+            .map(|anchor| {
+                (
+                    anchor.clone(),
+                    Document {
+                        anchor,
+                        ..Document::default()
+                    },
+                )
+            })
+            .collect();
+        let mut session = snapshot_session(dir.path());
+        session.source = ReadSource::Snapshot((docs, edges));
+        let query = session
+            .query_neighborhood(
+                entry,
+                2,
+                crate::Direction::Outgoing,
+                &[EdgeType::Calls],
+                false,
+                usize::MAX,
+            )
+            .unwrap();
+        assert_eq!(query.all_nodes().len(), 42);
+        let assembly = session
+            .assembly_neighborhood(entry, 2, &[EdgeType::Calls])
+            .unwrap();
+        assert_eq!(assembly.all_nodes().len(), 2);
+        assert_eq!(assembly.all_edges().len(), 1);
+        assert_eq!(
+            session
+                .query_neighborhood(
+                    entry,
+                    2,
+                    crate::Direction::Outgoing,
+                    &[EdgeType::Calls],
+                    false,
+                    usize::MAX
+                )
+                .unwrap()
+                .all_nodes()
+                .len(),
+            42
+        );
+    }
 }
 
 #[cfg(test)]

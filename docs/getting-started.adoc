@@ -5,7 +5,7 @@
 [[getting-started]]
 = Getting Started with Aden
 
-A hands-on, verified walkthrough — every command below works as shown.
+A walkthrough for installing Aden, reading source, and querying a project graph.
 
 == What Aden Is
 
@@ -30,9 +30,8 @@ of this symbol as LLM context." Aden tags every hit with its enclosing symbol an
 walks typed edges (`Calls`, `Contains`, `Documents`, `RelatesTo`).
 
 Reach for plain `grep`/`rg` when you just need a quick literal string match and do
-not care about relationships. The two compose well — Aden's call resolution is
-heuristic, so pair `query` (graph) with `grep` (textual, complete) when you need
-certainty.
+not care about relationships. Pair `query` with `grep` for independent text
+evidence and check response limits before treating either result as exhaustive.
 
 == Install
 
@@ -56,6 +55,9 @@ pre-push gate later, run `git config core.hooksPath git-hooks` from Aden's
 checkout.
 
 === Optional: hybrid (dense) search
+
+This opt-in feature retains the workspace Rust 1.90 minimum. Its inference and
+tokenizer dependencies are held at compatible releases.
 
 By default `search`/`ask` use BM25 (lexical) ranking. The optional `dense` feature
 adds *local semantic embeddings* fused with BM25 via Reciprocal Rank Fusion — it
@@ -94,7 +96,9 @@ aden ask --human "Where is the main entry point?" .
 
 `tree --symbols` gives exact names and line ranges without source bodies. Its
 normal output is bounded; when a large repository reports truncation, rerun it
-on a relevant subtree. `grep` provides independent textual evidence. `ask`
+on a relevant subtree. Use `aden tree --files` (MCP `symbols=false`) to find
+documents, configuration and other source files without code symbols.
+`grep` provides independent textual evidence. `ask`
 returns one bounded neighborhood; `understand` gives the definition, callers,
 and downstream context for a concrete symbol. If a name is ambiguous,
 Aden returns candidates and recovery guidance instead of guessing. Broad audit,
@@ -249,8 +253,9 @@ aden understand <symbol> .     # definition + callers + impact + context in one 
 
 == For AI agents (MCP)
 
-Aden exposes its commands as MCP tools (CLI subcommand maps 1:1 to a tool), so an
-agent can call `ask`, `grep`, `asm`, `query`, `locate`, etc. directly:
+Aden's default Essential MCP surface exposes tools such as `read`, `grep`,
+`locate`, `understand`, `query`, and `asm`. Enable Standard (`--surface standard`
+or `--preset verify`) or Full to use heuristic `ask` over MCP:
 
 [source,bash]
 ----
@@ -262,8 +267,8 @@ MCP setup is an explicit opt-in; Aden does not silently edit client configuratio
 on first launch. The install command writes `command: aden` with
 `args: [mcp, stdio]`. After running it: confirm `aden --version` and
 `aden mcp stdio --help`, then **fully restart your AI client** so it picks up
-the new server. Your agent should then list the `aden` tools (`grep`, `ask`,
-`asm`, `query`, `locate`, …).
+the new server. Your agent should then list the tools exposed by the selected
+surface. Try `read` on a known file before using a graph tool.
 
 See <<mcp-setup>> for the full MCP setup guide, <<ai-integration>> for the
 agent workflow and recommended system prompt, and <<troubleshooting>> if the
@@ -279,14 +284,15 @@ its blast radius (`aden impact-diff`); surfacing functional clusters
 
 **Honest limits:**
 
-- **Call resolution is heuristic** (unambiguous name + receiver/qualifier
-  matching), not a typechecker. It can miss dynamic/ambiguous calls — pair the
-  graph (`query`) with `grep` (textual, complete) when you need certainty.
+- **Call resolution is heuristic** and can miss dynamic or ambiguous calls.
+  Use `grep` for independent textual evidence and check coverage and truncation
+  before drawing conclusions.
 - **`aden lint`** is fast language-agnostic *heuristic* checks, not a type-aware
   analyzer. For Rust, prefer `clippy`; for deep correctness use the language's
   own toolchain.
-- **Very large monorepos** (e.g. the Linux kernel, ~1.2M symbols) index fine,
-  but per-query latency grows with repo size; small/medium repos are instant.
+- **Large repositories** can take longer to index and query. If a graph read
+  reports pending generation, check `aden jobs status` on the CLI or
+  `generation_status` over MCP before retrying.
 
 == Related
 

@@ -9,8 +9,11 @@
 //! straight back into `aden asm --from <symbol>` to expand context — turning a
 //! search hit into a graph entry point with no second tool.
 
-use std::collections::HashMap;
+use std::cell::LazyCell;
+use std::collections::{BTreeSet, HashMap};
+use std::io::{self, BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 
 use rayon::prelude::*;
 
@@ -21,6 +24,7 @@ const MAX_PREVIEW_BYTES: usize = 512;
 const MAX_RESPONSE_BYTES: usize = 64 * 1024;
 // Each serialized match has more than 128 bytes of field names alone.
 const MAX_RETAINED_MATCHES: usize = MAX_RESPONSE_BYTES / 128;
+const GREP_SCAN_BUFFER_BYTES: usize = 64 * 1024;
 
 /// A single content match, enriched with its enclosing symbol.
 #[derive(serde::Serialize)]
@@ -123,9 +127,6 @@ pub fn cmd_grep(
         }
     };
 
-    // Per-file symbol spans, from the store, for enclosing-symbol resolution.
-    let spans_by_file = load_symbol_spans(&root);
-
     // Scope the search to PATH. A file searches just that file; a subdirectory
     // searches under it; the project root searches everything. Previously the
     // PATH argument only selected the project root for discovery, so
@@ -138,64 +139,116 @@ pub fn cmd_grep(
         let directory = normalized_search_scope(&scope, &root)?;
         discover_source_files_scoped(&directory, &root)?
     };
-    // Count every match, but retain at most `limit` hits per file. Keeping each
-    // file's earliest hits is sufficient for the final deterministic
-    // file/line top-K and prevents `--limit` from allocating for every match in
-    // a huge or generated corpus.
+    // Load the span projection only if an eligible match needs attribution.
+    // Workers share the first lookup. Symbol-only counts still need spans.
+    let spans_by_file = LazyLock::new(|| load_symbol_spans(&root));
+    let relative_root = aden_paths::RelativeRoot::new(&root);
+    // Retain candidates for at most one parallel file batch at a time. Each
+    // batch keeps up to one page per worker, then folds that bounded set into
+    // the globally ordered top-K. This avoids allocating previews for every
+    // file in a large corpus while keeping file reads parallel.
     let retained_limit = limit.min(MAX_RETAINED_MATCHES);
-    let per_file: Vec<(usize, Vec<Match>)> = files
-        .par_iter()
-        .map(|file| {
-            let rel_str = aden_paths::relative_to(&root, file)
-                .map(|rel| normalize_sep(&rel))
-                .unwrap_or_else(|| {
-                    let rel = file.strip_prefix(&root).unwrap_or(file);
-                    normalize_sep(rel)
-                });
-            let content = match std::fs::read_to_string(file) {
-                Ok(c) => c,
-                Err(_) => return (0, Vec::new()), // binary / unreadable — skip
-            };
-            let spans = spans_by_file.get(&rel_str);
-            let mut hits = Vec::new();
-            let mut count = 0usize;
-            for (i, line) in content.lines().enumerate() {
-                let Some(found) = find_match(line) else {
-                    continue;
-                };
-                let line_no = i + 1;
-                let enclosing = spans.and_then(|s| enclosing_symbol(s, line_no));
-                if symbol_only && enclosing.is_none() {
-                    continue;
-                }
-                count += 1;
-                if hits.len() < retained_limit {
-                    let preview = match_preview(line, &found);
-                    hits.push(Match {
-                        file: rel_str.clone(),
-                        line: line_no,
-                        text: line[preview.clone()].to_string(),
-                        text_truncated: preview.start > 0 || preview.end < line.len(),
-                        text_start_byte: preview.start,
-                        text_end_byte: preview.end,
-                        match_start_byte: found.start,
-                        match_end_byte: found.end,
-                        line_bytes: line.len(),
-                        symbol: enclosing.map(|sp| short_name(&sp.anchor)),
-                        anchor: enclosing.map(|sp| sp.anchor.clone()),
+    let batch_size = rayon::current_num_threads().max(1);
+    let mut total = 0usize;
+    let mut matches: Vec<Match> = Vec::new();
+    for file_batch in files.chunks(batch_size) {
+        // Once the page is full, its last key is an immutable cutoff for this batch.
+        // Later paths, and same-path lines at/after the cutoff, cannot enter
+        // the stable global top-K.
+        let cutoff = if retained_limit > 0 && matches.len() == retained_limit {
+            matches.last().map(|hit| (hit.file.as_str(), hit.line))
+        } else {
+            None
+        };
+        let per_file: Vec<(usize, Vec<Match>)> = file_batch
+            .par_iter()
+            .map(|file| {
+                let rel_str = relative_root
+                    .relative_to(file)
+                    .map(|rel| normalize_sep(&rel))
+                    .unwrap_or_else(|| {
+                        let rel = file.strip_prefix(&root).unwrap_or(file);
+                        normalize_sep(rel)
                     });
+                let last_eligible_line = match cutoff {
+                    Some((file, _)) if rel_str.as_str() > file => 0,
+                    Some((file, line)) if rel_str == file => line - 1,
+                    _ => usize::MAX,
+                };
+                let mut hits = Vec::new();
+                let mut count = 0usize;
+                let spans_for_file = LazyCell::new(|| spans_by_file.get(&rel_str));
+                let file_handle = match std::fs::File::open(file) {
+                    Ok(file) => file,
+                    Err(_) => return (0, Vec::new()),
+                };
+                let mut reader = BufReader::with_capacity(GREP_SCAN_BUFFER_BYTES, file_handle);
+                let literal_skip =
+                    (!regex && !ignore_case && !pattern.is_empty()).then_some(pattern);
+                let result = scan_utf8_lines(&mut reader, literal_skip, |line, line_no| {
+                    let Some(found) = find_match(line) else {
+                        return;
+                    };
+                    let keep = line_no <= last_eligible_line && hits.len() < retained_limit;
+                    let enclosing = if symbol_only {
+                        let Some(span) =
+                            spans_for_file.and_then(|spans| enclosing_symbol(spans, line_no))
+                        else {
+                            return;
+                        };
+                        Some(span)
+                    } else {
+                        None
+                    };
+                    count += 1;
+                    if keep {
+                        let preview = match_preview(line, &found);
+                        hits.push(Match {
+                            file: rel_str.clone(),
+                            line: line_no,
+                            text: line[preview.clone()].to_string(),
+                            text_truncated: preview.start > 0 || preview.end < line.len(),
+                            text_start_byte: preview.start,
+                            text_end_byte: preview.end,
+                            match_start_byte: found.start,
+                            match_end_byte: found.end,
+                            line_bytes: line.len(),
+                            symbol: enclosing.map(|sp| short_name(&sp.anchor)),
+                            anchor: enclosing.map(|sp| sp.anchor.clone()),
+                        });
+                    }
+                });
+                if result.is_err() {
+                    // Match read_to_string: invalid UTF-8 or a read error drops
+                    // all earlier hits and counts for this file.
+                    return (0, Vec::new());
                 }
-            }
-            (count, hits)
-        })
-        .collect();
-    let total = per_file.iter().map(|(count, _)| count).sum();
-    let mut matches: Vec<Match> = per_file.into_iter().flat_map(|(_, hits)| hits).collect();
+                (count, hits)
+            })
+            .collect();
+        let previous_len = matches.len();
+        for (count, hits) in per_file {
+            total += count;
+            matches.extend(hits);
+        }
+        if matches.len() != previous_len {
+            matches.sort_by(|a, b| a.file.cmp(&b.file).then(a.line.cmp(&b.line)));
+            matches.truncate(retained_limit);
+        }
+    }
 
-    // Deterministic ordering: by file, then line; discard per-file candidates
-    // that fall beyond the global top-K.
-    matches.sort_by(|a, b| a.file.cmp(&b.file).then(a.line.cmp(&b.line)));
-    matches.truncate(retained_limit);
+    // Ordinary hits need attribution only after file validation and global top-K.
+    if !symbol_only {
+        for hit in &mut matches {
+            if let Some(span) = spans_by_file
+                .get(&hit.file)
+                .and_then(|spans| enclosing_symbol(spans, hit.line))
+            {
+                hit.symbol = Some(short_name(&span.anchor));
+                hit.anchor = Some(span.anchor.clone());
+            }
+        }
+    }
 
     // A literal search that finds nothing but whose pattern carries regex
     // metacharacters is almost always a misfired regex — e.g. `Ready|ready`
@@ -212,7 +265,63 @@ pub fn cmd_grep(
     let mut envelope = bounded_json(&root, &matches, total, limit, regex_hint);
     let returned = envelope["returned"].as_u64().unwrap_or(0) as usize;
     let mut actions = Vec::new();
-    if total == 0 || total > returned || matches.iter().take(returned).any(|m| m.text_truncated) {
+    // Choose from source evidence already on this page. Never execute a predicted call.
+    let visible = &matches[..returned];
+    if !regex && !ignore_case && is_identifier(pattern) {
+        let exact = visible
+            .iter()
+            .filter(|hit| hit.symbol.as_deref() == Some(pattern));
+        let mut anchors = exact.clone().filter_map(|hit| hit.anchor.as_deref());
+        if let Some(anchor) = anchors.next() {
+            let needs_resolution = returned != total
+                || exact.clone().any(|hit| hit.text_truncated)
+                || anchors.any(|other| other != anchor);
+            let action = if needs_resolution {
+                super::next_actions::locate_symbol(
+                    pattern,
+                    &root,
+                    "Resolve the matching definitions before choosing callers",
+                )
+            } else {
+                super::next_actions::backlinks(
+                    anchor,
+                    &root,
+                    "Find direct callers and references to this symbol",
+                )
+            };
+            actions.extend(action);
+        } else if scope.is_file()
+            && visible
+                .iter()
+                .any(|hit| !hit.text_truncated && looks_like_call(hit, pattern))
+        {
+            // A file-scoped search may show only an invocation. Its enclosing
+            // anchor belongs to the caller, so resolve the searched name first.
+            actions.extend(super::next_actions::locate_symbol(
+                pattern,
+                &root,
+                "Resolve this name at project scope before following its references",
+            ));
+        }
+    }
+    if actions.is_empty()
+        && returned == total
+        && let Some(anchor) = visible.first().and_then(|hit| hit.anchor.as_deref())
+        && visible
+            .iter()
+            .all(|hit| !hit.text_truncated && hit.anchor.as_deref() == Some(anchor))
+    {
+        actions.extend(super::next_actions::inspect(
+            anchor,
+            &root,
+            "Inspect the source and relationships of the enclosing symbol",
+        ));
+    }
+    if actions.is_empty()
+        && (total == 0
+            || total > returned
+            || matches.iter().take(returned).any(|m| m.text_truncated))
+    {
         for m in matches.iter().take(returned) {
             // A clipped understand result can lead here via a file-scoped
             // search. Sending the same symbol back to understand would repeat
@@ -307,10 +416,13 @@ pub fn cmd_grep(
     // Self-document the discovery→assembly loop: the enclosing symbol shown per
     // hit is exactly the anchor `asm`/`understand` take, so the agent can pivot
     // from a search hit straight to full context without a second lookup.
-    if let Some(sym) = matches
-        .iter()
-        .take(returned)
-        .find_map(|m| m.symbol.as_deref())
+    if envelope["next_actions"]
+        .as_array()
+        .is_some_and(Vec::is_empty)
+        && let Some(sym) = matches
+            .iter()
+            .take(returned)
+            .find_map(|m| m.symbol.as_deref())
     {
         println!("  ↳ expand a hit into full context: `asm --from {sym}` (or `understand {sym}`)");
     }
@@ -356,17 +468,31 @@ fn normalized_search_scope(path: &Path, root: &Path) -> std::io::Result<PathBuf>
 /// fjall; if a concurrent writer owns the store, ADR-011's immutable snapshot
 /// remains the lock-free fallback.
 pub(crate) fn load_symbol_spans(root: &Path) -> HashMap<String, Vec<Span>> {
+    load_symbol_spans_for(root, None)
+}
+
+pub(super) fn load_symbol_spans_for(
+    root: &Path,
+    anchors: Option<&BTreeSet<String>>,
+) -> HashMap<String, Vec<Span>> {
     use aden_store::{GraphStorage, Storage};
+    let _trace = crate::read_trace::span(crate::read_trace::Stage::SourceSpans);
 
     let (store_path, _) = aden_paths::resolve_read_store(root);
     let projected = store_path
         .to_str()
         .and_then(|path| Storage::open_existing(path).ok())
-        .and_then(|storage| storage.get_source_spans().ok());
+        .and_then(|storage| match anchors {
+            Some(keys) => storage
+                .get_source_spans_for(keys.iter().map(String::as_str))
+                .ok(),
+            None => storage.get_source_spans().ok(),
+        });
     let records = projected.unwrap_or_else(|| {
         aden_graph::snapshot::try_read_fresh(root)
             .map(|(docs, _)| {
                 docs.into_iter()
+                    .filter(|(anchor, _)| anchors.is_none_or(|keys| keys.contains(anchor)))
                     .filter_map(|(anchor, document)| {
                         document.source_span.map(|span| (anchor, span))
                     })
@@ -375,26 +501,53 @@ pub(crate) fn load_symbol_spans(root: &Path) -> HashMap<String, Vec<Span>> {
             .unwrap_or_default()
     });
 
+    group_source_spans(root, records)
+}
+
+pub(crate) fn group_source_spans(
+    root: &Path,
+    records: impl IntoIterator<Item = (String, aden_core::SourceSpan)>,
+) -> HashMap<String, Vec<Span>> {
     let mut by_file: HashMap<String, Vec<Span>> = HashMap::new();
+    let mut relative_root = None;
+    let mut relative_by_raw_file = HashMap::new();
     for (anchor, span) in records {
-        let file = Path::new(&span.file);
-        // Forward-slash relative keys. Prefer aden_paths::relative_to so Windows
-        // absolute/`\\?\` stored paths still join tree/grep lookups that use
-        // project-relative `/`-normalized keys.
-        let rel = if file.is_absolute() {
-            aden_paths::relative_to(root, file)
-                .map(|r| normalize_sep(&r))
-                .unwrap_or_else(|| normalize_sep(file.strip_prefix(root).unwrap_or(file)))
-        } else {
-            normalize_sep(file)
-        };
-        by_file.entry(rel).or_default().push(Span {
+        let rel = relative_by_raw_file
+            .entry(span.file)
+            .or_insert_with_key(|file| {
+                normalize_span_file(root, Path::new(file), &mut relative_root)
+            });
+        let record = Span {
             anchor,
             start: span.start_line,
             end: span.end_line,
-        });
+        };
+        if let Some(spans) = by_file.get_mut(rel.as_str()) {
+            spans.push(record);
+        } else {
+            by_file.insert(rel.clone(), vec![record]);
+        }
     }
     by_file
+}
+
+/// Normalize a stored span path to the same forward-slash key used by source
+/// lookups. The root is prepared lazily so relative-only span sets do no root
+/// canonicalization, and callers processing batches can reuse it.
+fn normalize_span_file(
+    root: &Path,
+    file: &Path,
+    relative_root: &mut Option<aden_paths::RelativeRoot>,
+) -> String {
+    if !file.is_absolute() {
+        return normalize_sep(file);
+    }
+
+    let normalized_root = relative_root.get_or_insert_with(|| aden_paths::RelativeRoot::new(root));
+    normalized_root
+        .relative_to(file)
+        .map(|relative| normalize_sep(&relative))
+        .unwrap_or_else(|| normalize_sep(file.strip_prefix(root).unwrap_or(file)))
 }
 
 /// The most specific symbol whose span contains `line` (smallest enclosing
@@ -412,6 +565,48 @@ fn short_name(anchor: &str) -> String {
         anchor[pos + 1..].to_string()
     } else {
         anchor.rsplit('/').next().unwrap_or(anchor).to_string()
+    }
+}
+
+/// Visit UTF-8 lines without retaining a complete file. Complete lines in the
+/// reader buffer are validated and scanned in one borrowed chunk; a line that
+/// crosses a buffer boundary is accumulated in one reusable allocation.
+fn scan_utf8_lines<R: BufRead>(
+    reader: &mut R,
+    skip_literal: Option<&str>,
+    mut visit: impl FnMut(&str, usize),
+) -> io::Result<()> {
+    let mut line_number = 1usize;
+    let mut remainder = Vec::new();
+
+    loop {
+        let buffered = match reader.fill_buf() {
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            result => result?,
+        };
+        if buffered.is_empty() {
+            return Ok(());
+        }
+
+        let (bytes, consumed) = if let Some(end) = buffered.iter().rposition(|&b| b == b'\n') {
+            (&buffered[..=end], end + 1)
+        } else {
+            // read_until consumes the buffered prefix and retries interrupted reads.
+            remainder.clear();
+            reader.read_until(b'\n', &mut remainder)?;
+            (remainder.as_slice(), 0)
+        };
+        let text = std::str::from_utf8(bytes)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        if skip_literal.is_some_and(|literal| !text.contains(literal)) {
+            line_number += text.lines().count();
+        } else {
+            for line in text.lines() {
+                visit(line, line_number);
+                line_number += 1;
+            }
+        }
+        reader.consume(consumed);
     }
 }
 
@@ -503,19 +698,45 @@ fn cap_serialized_response(
     total: usize,
     limit: usize,
 ) -> serde_json::Value {
-    loop {
-        let page = env["matches"].as_array().unwrap();
-        let returned = page.len();
-        let text_truncated = page.iter().any(|m| m["text_truncated"] == true);
+    let page = env["matches"].as_array().unwrap();
+    let mut returned = page.len();
+    let mut truncated_rows = page.iter().filter(|m| m["text_truncated"] == true).count();
+    let set_metadata = |env: &mut serde_json::Value, returned: usize, text_truncated: bool| {
         env["returned"] = returned.into();
         env["truncated"] = (returned < total).into();
         env["text_truncated"] = text_truncated.into();
         env["limit_truncated"] = (total > limit).into();
         env["response_bytes_truncated"] = (returned < total.min(limit)).into();
-        if serde_json::to_vec(&env).unwrap().len() < MAX_RESPONSE_BYTES {
+
+        // Only these four values change while trimming: decimal digits for
+        // returned, and three JSON booleans (false is five bytes, true four).
+        let digits = returned.checked_ilog10().unwrap_or(0) as usize + 1;
+        digits + 15
+            - usize::from(returned < total)
+            - usize::from(text_truncated)
+            - usize::from(returned < total.min(limit))
+    };
+    let mut metadata_bytes = set_metadata(&mut env, returned, truncated_rows > 0);
+    let mut scratch = serde_json::to_vec(&env).unwrap();
+    let mut response_bytes = scratch.len();
+    loop {
+        // Reserve the byte printed as the trailing newline.
+        if response_bytes < MAX_RESPONSE_BYTES {
             return env;
         }
-        if env["matches"].as_array_mut().unwrap().pop().is_none() {
+        if let Some(row) = env["matches"].as_array_mut().unwrap().pop() {
+            returned -= 1;
+            truncated_rows -= usize::from(row["text_truncated"] == true);
+            let next_metadata_bytes = set_metadata(&mut env, returned, truncated_rows > 0);
+            // Removing a tail row removes its exact escaped JSON bytes and
+            // one comma if another row remains. The array brackets stay.
+            scratch.clear();
+            serde_json::to_writer(&mut scratch, &row).unwrap();
+            response_bytes =
+                response_bytes - scratch.len() - usize::from(returned > 0) - metadata_bytes
+                    + next_metadata_bytes;
+            metadata_bytes = next_metadata_bytes;
+        } else {
             // Normally only match rows can exhaust the budget. Keep even a
             // malformed, oversized freshness receipt from escaping the bound.
             if env["next_actions"]
@@ -523,6 +744,9 @@ fn cap_serialized_response(
                 .is_some_and(|a| !a.is_empty())
             {
                 env["next_actions"] = serde_json::json!([]);
+                scratch.clear();
+                serde_json::to_writer(&mut scratch, &env).unwrap();
+                response_bytes = scratch.len();
             } else {
                 return serde_json::json!({
                     "matches": [],
@@ -551,6 +775,28 @@ fn requires_regex_flag(pattern: &str) -> bool {
         || pattern.contains(".+")
 }
 
+fn is_identifier(pattern: &str) -> bool {
+    let mut chars = pattern.chars();
+    matches!(chars.next(), Some(c) if c == '_' || c.is_alphabetic())
+        && chars.all(|c| c == '_' || c.is_alphanumeric())
+}
+
+/// Cheap lexical clue only. A locate request resolves the name in the graph.
+fn looks_like_call(hit: &Match, pattern: &str) -> bool {
+    let start = hit.match_start_byte - hit.text_start_byte;
+    let Some((prefix, suffix)) = hit.text.split_at_checked(start) else {
+        return false;
+    };
+    (start != 0 || hit.text_start_byte == 0)
+        && !prefix
+            .chars()
+            .next_back()
+            .is_some_and(|c| c == '_' || c.is_alphanumeric())
+        && suffix
+            .strip_prefix(pattern)
+            .is_some_and(|rest| rest.trim_start().starts_with('('))
+}
+
 /// Heuristic: does a *literal* (non-regex) pattern look like it was actually
 /// meant as a regex? Used only to nudge `regex=true` on a zero-result literal
 /// search — a soft hint, never a behavior change. Flags the high-signal regex
@@ -565,8 +811,10 @@ fn looks_like_regex(pattern: &str) -> bool {
 mod tests {
     use super::{
         MAX_PREVIEW_BYTES, MAX_RESPONSE_BYTES, cap_serialized_response, find_case_insensitive,
-        looks_like_regex, match_preview, normalized_search_scope, requires_regex_flag,
+        is_identifier, looks_like_regex, match_preview, normalize_span_file,
+        normalized_search_scope, requires_regex_flag, scan_utf8_lines,
     };
+    use std::io::BufReader;
     use std::path::Path;
 
     #[test]
@@ -576,6 +824,16 @@ mod tests {
         assert!(looks_like_regex("fn (foo|bar)")); // group + alternation
         assert!(looks_like_regex(r"\bword\b")); // escape
         assert!(looks_like_regex("foo.*bar")); // wildcard
+    }
+
+    #[test]
+    fn exact_symbol_pivots_require_plain_identifiers() {
+        assert!(is_identifier("recallableComposerPrompt"));
+        assert!(is_identifier("_private2"));
+        assert!(is_identifier("éclair"));
+        for value in ["", "foo()", "foo::bar", "a-b"] {
+            assert!(!is_identifier(value), "{value:?}");
+        }
     }
 
     #[test]
@@ -605,6 +863,85 @@ mod tests {
         assert_eq!(
             normalized_search_scope(Path::new("."), &root).unwrap(),
             root
+        );
+    }
+
+    #[test]
+    fn chunk_scanner_matches_str_lines_across_boundaries() {
+        let text = "first\r\n\n🌱 value\r\nlast\r";
+        let expected: Vec<_> = text
+            .lines()
+            .enumerate()
+            .map(|(index, line)| (line.to_string(), index + 1))
+            .collect();
+        for capacity in [1, 2, 3, 8] {
+            let mut reader = BufReader::with_capacity(capacity, std::io::Cursor::new(text));
+            let mut actual = Vec::new();
+            scan_utf8_lines(&mut reader, None, |line, line_number| {
+                actual.push((line.to_string(), line_number));
+            })
+            .unwrap();
+            assert_eq!(actual, expected, "buffer capacity {capacity}");
+        }
+    }
+
+    #[test]
+    fn chunk_scanner_skips_nonmatching_chunks_and_rejects_late_invalid_utf8() {
+        let text = "zero\nneedle\n中\nneedle2";
+        let mut reader = BufReader::with_capacity(2, std::io::Cursor::new(text));
+        let mut matches = Vec::new();
+        scan_utf8_lines(&mut reader, Some("needle"), |line, line_number| {
+            matches.push((line.to_string(), line_number));
+        })
+        .unwrap();
+        assert_eq!(
+            matches,
+            [("needle".to_string(), 2), ("needle2".to_string(), 4)]
+        );
+
+        let bytes = b"valid\ninvalid\xff\n";
+        let mut reader = BufReader::with_capacity(3, std::io::Cursor::new(bytes));
+        let mut visited = Vec::new();
+        assert!(
+            scan_utf8_lines(&mut reader, None, |line, line_number| {
+                visited.push((line.to_string(), line_number));
+            })
+            .is_err()
+        );
+        assert_eq!(visited, [("valid".to_string(), 1)]);
+    }
+
+    #[test]
+    fn span_path_normalization_reuses_root_and_preserves_fallbacks() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("src/file.rs");
+        std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+        std::fs::write(&source, "fn f() {}\n").unwrap();
+        let alias = root.path().join("src/../src/file.rs");
+        let mut normalized_root = None;
+
+        assert_eq!(
+            normalize_span_file(root.path(), Path::new("src/file.rs"), &mut normalized_root),
+            "src/file.rs"
+        );
+        assert!(
+            normalized_root.is_none(),
+            "relative paths need no root resolution"
+        );
+        assert_eq!(
+            normalize_span_file(root.path(), &source, &mut normalized_root),
+            normalize_span_file(root.path(), &alias, &mut normalized_root)
+        );
+
+        let missing_inside = root.path().join("src/missing.rs");
+        assert_eq!(
+            normalize_span_file(root.path(), &missing_inside, &mut normalized_root),
+            "src/missing.rs"
+        );
+        let outside = root.path().parent().unwrap().join("outside-missing.rs");
+        assert_eq!(
+            normalize_span_file(root.path(), &outside, &mut normalized_root),
+            crate::util::normalize_sep(&outside)
         );
     }
 
@@ -645,5 +982,106 @@ mod tests {
         assert_eq!(envelope["truncated"], true);
         assert_eq!(envelope["response_bytes_truncated"], true);
         assert_eq!(envelope["limit_truncated"], false);
+    }
+
+    #[test]
+    fn serialized_budget_matches_tail_trimming_at_exact_boundaries() {
+        // Reference the original policy without its incremental accounting.
+        // These fixtures always fit after removing at most two tail rows.
+        fn reference(mut env: serde_json::Value, total: usize, limit: usize) -> serde_json::Value {
+            loop {
+                let page = env["matches"].as_array().unwrap();
+                let returned = page.len();
+                let text_truncated = page.iter().any(|row| row["text_truncated"] == true);
+                env["returned"] = returned.into();
+                env["truncated"] = (returned < total).into();
+                env["text_truncated"] = text_truncated.into();
+                env["limit_truncated"] = (total > limit).into();
+                env["response_bytes_truncated"] = (returned < total.min(limit)).into();
+                if serde_json::to_vec(&env).unwrap().len() < MAX_RESPONSE_BYTES {
+                    return env;
+                }
+                assert!(env["matches"].as_array_mut().unwrap().pop().is_some());
+            }
+        }
+
+        for retained in [1, 9, 10, 99, 100] {
+            for empty_rows in [false, true] {
+                for with_metadata in [false, true] {
+                    let count = retained + 1;
+                    let total = count + if with_metadata { 7 } else { 0 };
+                    let rows: Vec<_> = (0..count)
+                        .map(|index| {
+                            if empty_rows {
+                                serde_json::json!({})
+                            } else {
+                                serde_json::json!({
+                                    "file": format!("文\\\"{index}\n.rs"),
+                                    "text": "🌱\t\"\\needle",
+                                    "text_truncated": index == count - 1,
+                                })
+                            }
+                        })
+                        .collect();
+                    let mut env = serde_json::json!({
+                        "matches": rows,
+                        "total": total,
+                        "padding": "",
+                    });
+                    if with_metadata {
+                        env["receipt"] = serde_json::json!({"identity": "文🌱\n\\\""});
+                        env["next_actions"] = serde_json::json!([{"query": "文🌱\t\\\""}]);
+                    }
+                    let mut prefix = env.clone();
+                    prefix["matches"].as_array_mut().unwrap().truncate(retained);
+                    let prefix = reference(prefix, total, count);
+                    let prefix_bytes = serde_json::to_vec(&prefix).unwrap().len();
+                    for extra in 0..3 {
+                        env["padding"] = "p"
+                            .repeat(MAX_RESPONSE_BYTES - 2 - prefix_bytes + extra)
+                            .into();
+                        let expected = reference(env.clone(), total, count);
+                        let actual = cap_serialized_response(env.clone(), total, count);
+                        assert_eq!(actual, expected);
+                        let actual_bytes = serde_json::to_vec(&actual).unwrap().len();
+                        assert!(actual_bytes < MAX_RESPONSE_BYTES);
+                        if extra == 1 {
+                            assert_eq!(actual["returned"], retained);
+                            assert_eq!(actual_bytes + 1, MAX_RESPONSE_BYTES);
+                        } else if extra == 2 {
+                            assert_eq!(actual["returned"], retained - 1);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn serialized_budget_recovers_from_oversized_actions_and_receipts() {
+        for oversized_receipt in [false, true] {
+            let mut env = serde_json::json!({
+                "matches": [{"text": "needle", "text_truncated": true}],
+                "total": 1,
+                "receipt": "kept",
+                "next_actions": ["x".repeat(MAX_RESPONSE_BYTES)],
+            });
+            if oversized_receipt {
+                env["receipt"] = "x".repeat(MAX_RESPONSE_BYTES).into();
+            }
+            let actual = cap_serialized_response(env, 1, 1);
+            assert!(serde_json::to_vec(&actual).unwrap().len() < MAX_RESPONSE_BYTES);
+            assert_eq!(actual["matches"], serde_json::json!([]));
+            assert_eq!(actual["next_actions"], serde_json::json!([]));
+            assert_eq!(actual["returned"], 0);
+            assert_eq!(actual["text_truncated"], false);
+            assert_eq!(actual["response_bytes_truncated"], true);
+            if oversized_receipt {
+                assert_eq!(actual["metadata_truncated"], true);
+            } else {
+                assert_eq!(actual["receipt"], "kept");
+                assert!(actual.get("metadata_truncated").is_none());
+            }
+        }
     }
 }

@@ -10,9 +10,16 @@ param(
 $ErrorActionPreference = "Stop"
 $BundleDir = $PSScriptRoot
 $Names = @("aden.exe", "aden-mcp.exe")
+$InstallDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($InstallDir)
 
 if ($Uninstall) {
-    foreach ($Name in $Names) { Remove-Item -LiteralPath (Join-Path $InstallDir $Name) -Force -ErrorAction SilentlyContinue }
+    foreach ($Name in $Names) {
+        $Destination = Join-Path $InstallDir $Name
+        $Existing = Get-Item -LiteralPath $Destination -Force -ErrorAction SilentlyContinue
+        if ($null -eq $Existing) { continue }
+        if ($Existing.PSIsContainer) { throw "$Destination is a directory; refusing to remove it." }
+        Remove-Item -LiteralPath $Destination -Force
+    }
     Write-Host "Removed Aden binaries from $InstallDir"
     Write-Host "User data was preserved."
     exit 0
@@ -45,13 +52,18 @@ Write-Host "Bundle checksums verified."
 New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
 foreach ($Name in $Names) {
     $Destination = Join-Path $InstallDir $Name
-    if ((Test-Path -LiteralPath $Destination) -and -not $Force) {
+    $Existing = Get-Item -LiteralPath $Destination -Force -ErrorAction SilentlyContinue
+    if ($null -ne $Existing -and $Existing.PSIsContainer) {
+        throw "$Destination is a directory; refusing to replace it."
+    }
+    if ($null -ne $Existing -and -not $Force) {
         throw "$Destination already exists; rerun with -Force to replace both binaries."
     }
 }
 $Stage = Join-Path $InstallDir (".aden-install-" + [Guid]::NewGuid().ToString("N"))
-$CommitStarted = $false
 $Previous = @{}
+$Installed = @{}
+$KeepStage = $false
 New-Item -ItemType Directory -Path $Stage | Out-Null
 try {
     foreach ($Name in $Names) {
@@ -64,35 +76,46 @@ try {
     & (Join-Path $Stage "aden-mcp.exe") --version
     if ($LASTEXITCODE -ne 0) { throw "Staged aden-mcp.exe smoke check failed." }
 
-    $CommitStarted = $true
     foreach ($Name in $Names) {
         $Destination = Join-Path $InstallDir $Name
-        if (Test-Path -LiteralPath $Destination) {
+        if ($Force -and $null -ne (Get-Item -LiteralPath $Destination -Force -ErrorAction SilentlyContinue)) {
             $Backup = Join-Path $Stage ("backup-" + $Name)
-            Move-Item -LiteralPath $Destination -Destination $Backup
+            [IO.File]::Move($Destination, $Backup)
             $Previous[$Name] = $Backup
         }
     }
     foreach ($Name in $Names) {
-        Move-Item -LiteralPath (Join-Path $Stage $Name) -Destination (Join-Path $InstallDir $Name)
+        [IO.File]::Move((Join-Path $Stage $Name), (Join-Path $InstallDir $Name))
+        $Installed[$Name] = $true
     }
     & (Join-Path $InstallDir "aden.exe") --version
     if ($LASTEXITCODE -ne 0) { throw "Installed aden.exe smoke check failed." }
     & (Join-Path $InstallDir "aden-mcp.exe") --version
     if ($LASTEXITCODE -ne 0) { throw "Installed aden-mcp.exe smoke check failed." }
 } catch {
-    if ($CommitStarted) {
-        foreach ($Name in $Names) {
-            Remove-Item -LiteralPath (Join-Path $InstallDir $Name) -Force -ErrorAction SilentlyContinue
-            if ($Previous.ContainsKey($Name)) {
-                Move-Item -LiteralPath $Previous[$Name] -Destination (Join-Path $InstallDir $Name) -Force
+    foreach ($Name in $Names) {
+        $Destination = Join-Path $InstallDir $Name
+        try {
+            if ($Installed.ContainsKey($Name)) {
+                $Existing = Get-Item -LiteralPath $Destination -Force -ErrorAction SilentlyContinue
+                if ($null -ne $Existing) {
+                    if ($Existing.PSIsContainer) { throw "$Destination is a directory; refusing to remove it." }
+                    Remove-Item -LiteralPath $Destination -Force
+                }
             }
+            if ($Previous.ContainsKey($Name)) {
+                [IO.File]::Move($Previous[$Name], $Destination)
+            }
+        } catch {
+            $KeepStage = $true
+            Write-Warning "Could not restore $Destination. Recovery files were kept in $Stage. $($_.Exception.Message)" -WarningAction Continue
         }
-        Write-Error "Install failed; restored the previous Aden binary pair. $($_.Exception.Message)"
     }
     throw
 } finally {
-    Remove-Item -LiteralPath $Stage -Recurse -Force -ErrorAction SilentlyContinue
+    if (-not $KeepStage) {
+        Remove-Item -LiteralPath $Stage -Recurse -Force -ErrorAction SilentlyContinue
+    }
 }
 Write-Host "Installed aden and aden-mcp in $InstallDir"
 Write-Host "Add that directory to your user PATH if needed."

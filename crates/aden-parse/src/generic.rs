@@ -10,7 +10,7 @@
 //! call sites.  That is the job of deep language resolvers (Phase 2).
 
 use crate::extractor::{
-    LanguageExtractor, build_code_attributes, infer_project_name, infer_project_root, make_anchor,
+    CodeSource, LanguageExtractor, infer_project_name, infer_project_root, make_anchor,
     project_relative_file,
 };
 use aden_core::{Block, Document, NodeType, Result};
@@ -120,6 +120,7 @@ impl LanguageExtractor for GenericExtractor {
             .ok_or_else(|| aden_core::Error::Parse("tree-sitter returned None".to_string()))?;
 
         let crate_name = infer_project_name(path);
+        let file_source = &CodeSource::new(source, path);
         let project_root = infer_project_root(path);
         let file_name_owned = project_relative_file(path, &project_root);
         let file_name = file_name_owned.as_str();
@@ -127,9 +128,9 @@ impl LanguageExtractor for GenericExtractor {
 
         // Walk the AST and collect symbols.
         walk_tree(
+            file_source,
             &tree.root_node(),
             source,
-            path,
             &crate_name,
             file_name,
             &mut docs,
@@ -139,62 +140,68 @@ impl LanguageExtractor for GenericExtractor {
     }
 }
 
-/// Recursively walk an AST and emit Documents for recognised node kinds.
+/// Walk an AST in preorder and emit Documents for recognised node kinds.
 fn walk_tree(
+    file_source: &CodeSource<'_>,
     node: &tree_sitter::Node,
     source: &str,
-    path: &Path,
     crate_name: &str,
     file_name: &str,
     docs: &mut Vec<Document>,
 ) {
-    if !node.is_named() {
-        return;
-    }
-
-    let kind = node.kind();
-
-    // Check if this node is a symbol we care about.
-    let node_type = if FUNCTION_KINDS.contains(&kind) {
-        Some(NodeType::Function)
-    } else if TYPE_KINDS.contains(&kind) {
-        Some(NodeType::Type)
-    } else if MODULE_KINDS.contains(&kind) {
-        Some(NodeType::Module)
-    } else {
-        None
-    };
-
-    if let Some(nt) = node_type
-        && let Some(name) = extract_node_name(*node, source)
-    {
-        let anchor = make_anchor(crate_name, file_name, &name);
-        let span = node_to_span(*node, path);
-        let attrs = build_code_attributes(
-            source,
-            &format!("{:?}", nt).to_lowercase(),
-            Some(path),
-            Some(&span),
-        );
-        let blocks = vec![Block::Paragraph(format!(
-            "Extracted from {} source via generic AST walker.",
-            crate_name
-        ))];
-        docs.push(Document {
-            anchor,
-            node_type: nt,
-            attributes: attrs,
-            blocks,
-            source_span: Some(span),
-            metadata: None,
-            confidence: 0.9,
-        });
-    }
-
-    // Recurse into children.
+    let path = file_source.path;
     let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        walk_tree(&child, source, path, crate_name, file_name, docs);
+    loop {
+        let node = cursor.node();
+        if node.is_named() {
+            let kind = node.kind();
+
+            // Check if this node is a symbol we care about.
+            let node_type = if FUNCTION_KINDS.contains(&kind) {
+                Some(NodeType::Function)
+            } else if TYPE_KINDS.contains(&kind) {
+                Some(NodeType::Type)
+            } else if MODULE_KINDS.contains(&kind) {
+                Some(NodeType::Module)
+            } else {
+                None
+            };
+
+            if let Some(nt) = node_type
+                && let Some(name) = extract_node_name(node, source)
+            {
+                let anchor = make_anchor(crate_name, file_name, &name);
+                let span = node_to_span(node, path);
+                let attrs = file_source.attributes(&format!("{:?}", nt).to_lowercase(), &span);
+                let blocks = vec![Block::Paragraph(format!(
+                    "Extracted from {} source via generic AST walker.",
+                    crate_name
+                ))];
+                docs.push(Document {
+                    anchor,
+                    node_type: nt,
+                    attributes: attrs,
+                    blocks,
+                    source_span: Some(span),
+                    metadata: None,
+                    confidence: 0.9,
+                });
+            }
+
+            // TreeCursor retains traversal state without allocating a Vec for
+            // each node. Only named nodes were descended into by the old walker.
+            if cursor.goto_first_child() {
+                continue;
+            }
+        }
+        loop {
+            if cursor.goto_next_sibling() {
+                break;
+            }
+            if !cursor.goto_parent() {
+                return;
+            }
+        }
     }
 }
 
@@ -202,38 +209,41 @@ fn walk_tree(
 /// Tries `child_by_field_name("name")`, then `identifier` children,
 /// then `declarator` sub-trees.
 fn extract_node_name(node: tree_sitter::Node, source: &str) -> Option<String> {
-    // Most grammars use a "name" field.
-    if let Some(name_node) = node.child_by_field_name("name") {
-        let text = node_text(name_node, source).trim();
-        if !text.is_empty() {
-            return Some(text.to_string());
-        }
-    }
-
-    // Fallback: look for any direct child whose kind contains "identifier"
-    // (type_identifier, field_identifier, property_identifier, etc.), or a
-    // grammar-specific name node (PowerShell: function_name / simple_name).
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        let ck = child.kind();
-        if ck == "identifier"
-            || ck.ends_with("_identifier")
-            || ck == "function_name"
-            || ck == "simple_name"
-        {
-            let text = node_text(child, source).trim();
+    let mut node = node;
+    loop {
+        // Most grammars use a "name" field.
+        if let Some(name_node) = node.child_by_field_name("name") {
+            let text = node_text(name_node, source).trim();
             if !text.is_empty() {
                 return Some(text.to_string());
             }
         }
-    }
 
-    // C-style: declarator → identifier
-    if let Some(decl) = node.child_by_field_name("declarator") {
-        return extract_node_name(decl, source);
-    }
+        // Fallback: look for any direct child whose kind contains "identifier"
+        // (type_identifier, field_identifier, property_identifier, etc.), or a
+        // grammar-specific name node (PowerShell: function_name / simple_name).
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            let ck = child.kind();
+            if ck == "identifier"
+                || ck.ends_with("_identifier")
+                || ck == "function_name"
+                || ck == "simple_name"
+            {
+                let text = node_text(child, source).trim();
+                if !text.is_empty() {
+                    return Some(text.to_string());
+                }
+            }
+        }
 
-    None
+        // C-style: declarator → identifier
+        if let Some(decl) = node.child_by_field_name("declarator") {
+            node = decl;
+        } else {
+            return None;
+        }
+    }
 }
 
 fn node_text<'a>(node: tree_sitter::Node<'a>, source: &'a str) -> &'a str {
@@ -249,5 +259,48 @@ fn node_to_span(node: tree_sitter::Node, path: &Path) -> aden_core::SourceSpan {
         end_line: end.row + 1,
         start_byte: node.start_byte(),
         end_byte: node.end_byte(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn generic_walk_preserves_preorder_and_spans() {
+        let source = "mod outer { fn first() {} mod inner { fn second() {} } }";
+        let docs = GenericExtractor::new("rust")
+            .extract_documents(source, Path::new("src/lib.rs"))
+            .expect("Rust source should parse");
+        let anchors: Vec<_> = docs.iter().map(|doc| doc.anchor.as_str()).collect();
+        assert_eq!(anchors.len(), 4);
+        assert!(anchors[0].ends_with("#outer"));
+        assert!(anchors[1].ends_with("#first"));
+        assert!(anchors[2].ends_with("#inner"));
+        assert!(anchors[3].ends_with("#second"));
+        let first = docs
+            .iter()
+            .find(|doc| doc.anchor.ends_with("#first"))
+            .unwrap();
+        let span = first.source_span.as_ref().expect("function span");
+        assert_eq!(&source[span.start_byte..span.end_byte], "fn first() {}");
+    }
+
+    #[test]
+    fn generic_walk_handles_deeply_nested_ast() {
+        // A left-associated expression creates a deep AST while keeping the
+        // source within tree-sitter's normal parser-depth budget.
+        let depth = 10_000;
+        let mut source = String::from("fn leaf() { let _ = value");
+        for _ in 0..depth {
+            source.push_str(" + value");
+        }
+        source.push_str("; }");
+
+        let docs = GenericExtractor::new("rust")
+            .extract_documents(&source, Path::new("src/deep.rs"))
+            .expect("deeply nested Rust source should parse");
+        assert_eq!(docs.len(), 1);
+        assert!(docs[0].anchor.ends_with("#leaf"));
     }
 }

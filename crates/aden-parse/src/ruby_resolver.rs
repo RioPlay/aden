@@ -16,7 +16,7 @@
 //!   • Dynamic method dispatch (`send`, `method_missing`)
 
 use crate::extractor::{
-    LanguageExtractor, build_code_attributes, infer_project_name, infer_project_root, make_anchor,
+    CodeSource, LanguageExtractor, infer_project_name, infer_project_root, make_anchor,
     project_relative_file,
 };
 use aden_core::{Block, Document, NodeType, Parameter, Result};
@@ -63,6 +63,7 @@ impl LanguageExtractor for RubyResolver {
         // walk_program. Keeps the lib/-relative module path as symbol context
         // while the anchor's project component stays canonical.
         let module_prefix = infer_ruby_module(path);
+        let file_source = &CodeSource::new(source, path);
         let project_root = infer_project_root(path);
         let file_name_owned = project_relative_file(path, &project_root);
         let file_name = file_name_owned.as_str();
@@ -79,9 +80,9 @@ impl LanguageExtractor for RubyResolver {
         let mut docs = Vec::new();
         for sym in &symbols {
             if let Some(doc) = emit_ruby_symbol(
+                file_source,
                 sym,
                 source,
-                path,
                 &symbols,
                 &proj_name,
                 &module_prefix,
@@ -398,14 +399,15 @@ fn find_parent_type_name(node: tree_sitter::Node, source: &str) -> Option<String
 }
 
 fn emit_ruby_symbol(
+    file_source: &CodeSource<'_>,
     sym: &RubySymbol,
     source: &str,
-    path: &Path,
     _all_symbols: &[RubySymbol],
     proj_name: &str,
     module_prefix: &str,
     file_name: &str,
 ) -> Option<Document> {
+    let path = file_source.path;
     // Qualify the anchor with the enclosing class/module so same-named methods in
     // different classes of one file don't collapse to one anchor (data loss).
     // `qualified_name` is `<module_prefix>.<Class>.<method>`; strip the leading
@@ -417,12 +419,7 @@ fn emit_ruby_symbol(
         .unwrap_or(&sym.qualified_name);
     let anchor = make_anchor(proj_name, file_name, fragment);
     let span = node_to_span(sym.node, path);
-    let attrs = build_code_attributes(
-        source,
-        &format!("{:?}", sym.kind).to_lowercase(),
-        Some(path),
-        Some(&span),
-    );
+    let attrs = file_source.attributes(&format!("{:?}", sym.kind).to_lowercase(), &span);
     let mut blocks = Vec::new();
 
     if let Some(ref doc) = sym.doc_comment {

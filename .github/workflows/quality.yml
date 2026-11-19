@@ -45,8 +45,8 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
-      - name: Check shipped surface at MSRV
-        run: cargo check --locked --workspace --all-targets
+      - name: Check every target and feature at MSRV
+        run: cargo check --locked --workspace --all-targets --all-features
 
       - name: Setup current stable for opt-in features
         run: rustup toolchain install stable --profile minimal
@@ -66,6 +66,14 @@ jobs:
         run: |
           node --version
           node --test scripts/test_viewer.cjs scripts/test_simple_viewer.cjs
+
+      - name: Check editor dependencies and compilation
+        working-directory: editors/vscode
+        run: |
+          npm ci --ignore-scripts
+          npm run compile
+          npm test
+          npm audit --audit-level=low
 
       - name: Validate documentation and roadmap contracts
         run: |

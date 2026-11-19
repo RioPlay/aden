@@ -3,16 +3,59 @@
 
 use std::path::Path;
 
-/// Fast, dev-facing pre-commit combo: gen → lint → check refs → heal drift
-/// scan → owasp audit. Unlike `ci-check`, `ready` is the quick local loop —
-/// it skips the external-tool gates (cargo audit, clippy, license/NOTICE) and
-/// focuses on aden's own correctness plus documentation drift. Each step prints
-/// a clear PASS/FAIL line; the run fails fast on the first hard error but always
-/// emits a final commit-readiness summary. Returns Err if any hard gate failed.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StepStatus {
+    Passed,
+    Failed,
+    Skipped,
+}
+
+impl StepStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Passed => "passed",
+            Self::Failed => "failed",
+            Self::Skipped => "skipped",
+        }
+    }
+}
+
+struct ReadyStep {
+    name: &'static str,
+    status: StepStatus,
+    evidence_kind: &'static str,
+    scope: &'static str,
+    reason: String,
+}
+
+fn check_blocking_messages(messages: &[String]) -> Result<usize, Box<dyn std::error::Error>> {
+    // Match the same Error/Warning classification as `aden check`.
+    let (errors, warnings, _) = crate::util::classify_check_messages(messages);
+    if errors.is_empty() {
+        Ok(warnings.len())
+    } else {
+        Err(format!(
+            "{} blocking check finding(s): {}",
+            errors.len(),
+            errors
+                .iter()
+                .take(3)
+                .map(|error| format!("ERROR: {error}"))
+                .collect::<Vec<_>>()
+                .join("; ")
+        )
+        .into())
+    }
+}
+
+/// Run Aden's local static checks and report each check's outcome and scope.
+/// Generation refreshes the graph. Source repairs require explicit `--fix`.
+/// A passing result does not establish runtime behavior, project test results,
+/// or the external-tool gates provided by `ci-check`.
 ///
-/// `json` is the CLI/MCP default (`machine_json`). `--human` is the ANSI
-/// progress view. Child steps are quiet on stdout so the envelope stays one
-/// JSON document.
+/// JSON is the CLI/MCP default. Child steps keep stdout quiet so this command
+/// emits one JSON document. Hard failures skip remaining checks; drift failures
+/// are recorded but allow the final audit to run.
 pub fn cmd_ready(path: &Path, fix: bool, json: bool) -> Result<(), Box<dyn std::error::Error>> {
     if !path.is_dir() {
         return Err(format!("Ready target is not a directory: {}", path.display()).into());
@@ -22,171 +65,181 @@ pub fn cmd_ready(path: &Path, fix: bool, json: bool) -> Result<(), Box<dyn std::
     } else {
         ("\x1b[0;32m", "\x1b[0;31m", "\x1b[1;33m", "\x1b[0m")
     };
-
-    // (step label, passed?) — recorded for the final summary.
-    let mut results: Vec<(&str, bool)> = Vec::new();
-    // Hard failure: blocks all subsequent steps (fail-fast).
+    let mut results: Vec<ReadyStep> = Vec::new();
     let mut hard_failure: Option<String> = None;
-    // Soft failure: recorded for the final verdict but does NOT block later steps.
     let mut soft_failure: Option<String> = None;
     let mut advisory_findings = 0usize;
+    let mut heal_repair_attempted = false;
+    let mut repair_failure: Option<String> = None;
+    let mut heal_repairs = None;
 
-    // Helper: run a hard gate unless we have already failed fast.
     macro_rules! step {
-        ($name:expr, $body:expr) => {{
-            if hard_failure.is_some() {
+        ($name:expr, $kind:expr, $scope:expr, $soft:expr, $body:block) => {{
+            if let Some(blocker) = hard_failure.as_deref() {
+                let reason = format!("Not run because an earlier check failed: {blocker}");
                 if !json {
-                    println!(
-                        "{}[ready] SKIP: {} (earlier step failed){}",
-                        yellow, $name, reset
-                    );
+                    println!("{}[ready] SKIP: {} - {}{}", yellow, $name, reason, reset);
                 }
-                results.push(($name, false));
+                results.push(ReadyStep {
+                    name: $name,
+                    status: StepStatus::Skipped,
+                    evidence_kind: $kind,
+                    scope: $scope,
+                    reason,
+                });
             } else {
                 if !json {
                     println!("[ready] Running: {} ...", $name);
                 }
-                match $body {
+                // Keep `?` inside the step so every failure reaches the summary.
+                // The shared macro needs this boundary even for simple steps.
+                #[allow(clippy::redundant_closure_call)]
+                let result = (|| -> Result<(), Box<dyn std::error::Error>> { $body })();
+                let (status, reason) = match result {
                     Ok(()) => {
                         if !json {
                             println!("{}[ready] PASS: {}{}", green, $name, reset);
                         }
-                        results.push(($name, true));
+                        (
+                            StepStatus::Passed,
+                            "No blocking finding reported by this check".to_string(),
+                        )
                     }
-                    Err(e) => {
-                        let e: Box<dyn std::error::Error> = e;
+                    Err(error) => {
+                        let reason = error.to_string();
                         if !json {
-                            println!("{}[ready] FAIL: {} — {}{}", red, $name, e, reset);
+                            let mark = "FAIL";
+                            println!("{}[ready] {}: {} - {}{}", red, mark, $name, reason, reset);
                         }
-                        results.push(($name, false));
-                        hard_failure = Some(format!("{}: {}", $name, e));
+                        let failure = format!("{}: {}", $name, reason);
+                        if $soft {
+                            soft_failure.get_or_insert(failure);
+                        } else {
+                            hard_failure = Some(failure);
+                        }
+                        (StepStatus::Failed, reason)
                     }
-                }
-            }
-        }};
-    }
-    // Soft step: reports failure and continues — does NOT block subsequent steps.
-    // Used for heal drift, which is a doc-quality signal, not a code-safety gate.
-    macro_rules! soft_step {
-        ($name:expr, $body:expr) => {{
-            if !json {
-                println!("[ready] Running: {} ...", $name);
-            }
-            match $body {
-                Ok(()) => {
-                    if !json {
-                        println!("{}[ready] PASS: {}{}", green, $name, reset);
-                    }
-                    results.push(($name, true));
-                }
-                Err(e) => {
-                    let e: Box<dyn std::error::Error> = e;
-                    if !json {
-                        println!("{}[ready] WARN: {} — {}{}", yellow, $name, e, reset);
-                    }
-                    results.push(($name, false));
-                    // Record as a soft failure so the final verdict still fails,
-                    // but don't set hard_failure — let remaining steps (e.g. audit) run.
-                    if soft_failure.is_none() {
-                        soft_failure = Some(format!("{}: {}", $name, e));
-                    }
-                }
+                };
+                results.push(ReadyStep {
+                    name: $name,
+                    status,
+                    evidence_kind: $kind,
+                    scope: $scope,
+                    reason,
+                });
             }
         }};
     }
 
     if !json {
-        println!("aden ready — pre-commit checks for {}\n", path.display());
+        println!("aden ready - local static checks for {}\n", path.display());
+        println!("[ready] Refreshes the graph; source repairs requested: {fix}");
     }
 
-    // (1) gen — recompile the project into the knowledge graph.
-    // Silent in JSON mode: even `--quiet` gen still prints the "Stored N
-    // contracts" summary on stdout, which would break the ready envelope.
-    step!("gen", {
-        if json {
-            crate::commands::generate::cmd_gen_silent(path)
-        } else {
-            crate::commands::cmd_gen(path, true)
-        }
-    });
-
-    // (2) lint — fast line-based heuristics. --fix forwards to the linter.
-    step!("lint", {
-        crate::commands::cmd_lint(path, "Error", fix, false, false, false, json)
-    });
-
-    // (3) check refs — validate every <<ref>> resolves to an [[anchor]].
-    step!("check refs", {
-        if !path.is_dir() {
-            Err("not a directory".into())
-        } else {
-            crate::util::perform_check(path).map(|_| ())
-        }
-    });
-
-    // (4) heal drift scan — doc-mismatch gate. Drift (broken refs, orphan
-    // anchors, signature mismatch, or a degraded health score) is a reportable
-    // hard signal here, per the pre-commit intent: never commit stale docs.
-    // With --fix we apply high-confidence auto-fixes first, then re-scan.
-    soft_step!("heal drift scan", {
-        use aden_heal::{Scanner, generate};
-        if fix {
-            // Auto-apply StaleHash/MissingContract fixes before judging drift.
-            let _ = crate::commands::cmd_heal_scan(path, false, true, false, false, false, None);
-        }
-        let scanner = Scanner::new(path);
-        let events = scanner.scan()?;
-        // Only hard correctness failures matter to this gate:
-        // - BrokenReference (Critical): a <<ref>> points at a missing anchor
-        // - SignatureMismatch (High): a symbol's signature changed
-        // OrphanAnchor (Medium) and MissingContract (Medium) are maintenance
-        // signals — stale store entries and undocumented/metadata doc nodes —
-        // not pre-commit blockers. Run `aden sync` to clean them up. The same
-        // classification that `diagnose`/`status` use to report 100/100 while
-        // hundreds of metadata doc nodes lack contracts; the score gate below
-        // MUST agree, so it judges the score over these hard events only rather
-        // than letting doc-node MissingContracts crater it to 0.00.
-        let is_hard = |e: &aden_heal::DriftEvent| {
-            matches!(
-                e,
-                aden_heal::DriftEvent::BrokenReference { .. }
-                    | aden_heal::DriftEvent::SignatureMismatch { .. }
-                    | aden_heal::DriftEvent::DocSignatureDivergence { .. }
+    step!(
+        "gen",
+        "index_generation",
+        "Refresh the local knowledge graph",
+        false,
+        {
+            // The request waits for readiness, but does not own the build. A
+            // pending result skips dependent checks while the worker continues.
+            crate::indexer::generation_job::wait_for_completion(
+                path,
+                std::time::Duration::from_secs(30),
             )
-        };
-        let hard_events: Vec<_> = events.iter().filter(|e| is_hard(e)).cloned().collect();
-        advisory_findings += events.len().saturating_sub(hard_events.len());
-        let report = generate(hard_events, path);
-        let critical = events.iter().filter(|e| is_hard(e)).count();
-        if critical > 0 {
-            Err(Box::<dyn std::error::Error>::from(format!(
-                "{} critical drift event(s) (broken refs, signature mismatch, doc/code divergence) — run 'aden heal' to inspect",
-                critical
-            )))
-        } else if report.overall_score < 0.90 {
-            Err(Box::<dyn std::error::Error>::from(format!(
-                "doc drift: health score {:.2} (< 0.90) — run 'aden gen' / 'aden heal . --fix'",
-                report.overall_score
-            )))
-        } else {
+            .map(|_| ())
+        }
+    );
+
+    step!(
+        "lint",
+        "heuristic_signal",
+        "Aden source lint rules at Error severity",
+        false,
+        { crate::commands::cmd_lint(path, "Error", fix, false, false, false, json) }
+    );
+
+    step!(
+        "check refs",
+        "structural_invariant",
+        "Aden reference, graph and contract checks",
+        false,
+        {
+            let messages = crate::util::perform_check(path)?;
+            advisory_findings += check_blocking_messages(&messages)?;
             Ok(())
         }
-    });
+    );
 
-    // (5) audit — OWASP-aligned source scan (in-process, no external tools).
-    step!("owasp audit", {
-        crate::commands::audit::cmd_audit_with_output(path, None, "text", true, false, json)
-    });
+    step!(
+        "heal drift scan",
+        "inferred_graph_check",
+        "Broken references, signature mismatch and doc/code divergence",
+        true,
+        {
+            use aden_heal::Scanner;
+            let scanner = Scanner::new(path);
+            let mut events = scanner.scan()?;
+            if fix {
+                heal_repair_attempted = true;
+                let summary =
+                    super::heal::repair_supported_drift(path, &events).inspect_err(|error| {
+                        repair_failure = Some(error.to_string());
+                    })?;
+                let failed = summary.failed > 0 || summary.conflicts > 0;
+                let reason = format!(
+                    "repair failed: {} failure(s), {} conflict(s): {}",
+                    summary.failed,
+                    summary.conflicts,
+                    summary.reasons.join("; ")
+                );
+                heal_repairs = Some(summary);
+                if failed {
+                    repair_failure = Some(reason.clone());
+                    return Err(reason.into());
+                }
+                events = scanner.scan()?;
+            }
+            let blocking_events = events
+                .iter()
+                .filter(|event| {
+                    matches!(
+                        event,
+                        aden_heal::DriftEvent::BrokenReference { .. }
+                            | aden_heal::DriftEvent::SignatureMismatch { .. }
+                            | aden_heal::DriftEvent::DocSignatureDivergence { .. }
+                    )
+                })
+                .count();
+            advisory_findings += events.len().saturating_sub(blocking_events);
+            if blocking_events > 0 {
+                Err(format!(
+                "{blocking_events} blocking drift event(s) (broken refs, signature mismatch, doc/code divergence); run 'aden heal' to inspect"
+            ).into())
+            } else {
+                Ok(())
+            }
+        }
+    );
+
+    step!(
+        "owasp audit",
+        "heuristic_signal",
+        "Aden's in-process OWASP-aligned source rules",
+        false,
+        { crate::commands::audit::cmd_audit_with_output(path, None, "text", true, false, json) }
+    );
 
     let any_failure = hard_failure.or(soft_failure);
+    let (ok, outcome) = if any_failure.is_some() {
+        (false, "blocked")
+    } else if advisory_findings > 0 {
+        (true, "passed_with_findings")
+    } else {
+        (true, "clean")
+    };
     if json {
-        let (ok, outcome) = if any_failure.is_some() {
-            (false, "blocked")
-        } else if advisory_findings > 0 {
-            (true, "passed_with_findings")
-        } else {
-            (true, "clean")
-        };
         let env = serde_json::json!({
             "schema_version": 1,
             "command": "ready",
@@ -195,49 +248,60 @@ pub fn cmd_ready(path: &Path, fix: bool, json: bool) -> Result<(), Box<dyn std::
             "outcome": outcome,
             "advisory_findings": advisory_findings,
             "hard_failure": any_failure.as_deref(),
-            "steps": results.iter().map(|(name, passed)| {
-                serde_json::json!({"name": name, "passed": passed})
+            "assessment_scope": "local_static_checks",
+            "graph_refresh_requested": true,
+            "source_repairs_requested": fix,
+            "heal_repair_attempted": heal_repair_attempted,
+            "heal_repairs": heal_repairs,
+            "repair_failure": repair_failure,
+            "unverified": ["runtime_behavior", "project_tests", "external_tool_gates"],
+            "steps": results.iter().map(|step| {
+                serde_json::json!({
+                    "name": step.name,
+                    "passed": step.status == StepStatus::Passed,
+                    "status": step.status.as_str(),
+                    "evidence_kind": step.evidence_kind,
+                    "scope": step.scope,
+                    "reason": step.reason,
+                })
             }).collect::<Vec<_>>(),
         });
         println!("{}", serde_json::to_string(&env)?);
-        if let Some(reason) = any_failure {
-            return Err(reason.into());
-        }
-        return Ok(());
-    }
-
-    // ── Human verdict ─────────────────────────────────────
-    println!("\n[ready] Summary:");
-    for (name, passed) in &results {
-        let (mark, color) = if *passed {
-            ("PASS", green)
-        } else {
-            ("FAIL", red)
-        };
-        println!("  {}{:>4}{} {}", color, mark, reset, name);
-    }
-
-    if let Some(reason) = any_failure {
-        println!("[ready] Outcome: blocked (graph/policy/freshness reported independently above)");
-        println!(
-            "\n{}[ready] NOT commit-ready — fix the failing step: {}{}",
-            red, reason, reset
-        );
-        return Err(reason.into());
-    }
-
-    if advisory_findings > 0 {
-        println!(
-            "\n{}[ready] Blocking checks passed with {} advisory finding(s).{}",
-            yellow, advisory_findings, reset
-        );
-        println!("[ready] Outcome: passed_with_findings");
     } else {
-        println!(
-            "\n{}[ready] All checks passed — tree looks commit-ready.{}",
-            green, reset
-        );
-        println!("[ready] Outcome: clean");
+        if let Some(summary) = heal_repairs.as_ref() {
+            println!(
+                "[ready] Repairs: {} fixed, {} skipped, {} failed, {} conflicts",
+                summary.fixed, summary.skipped, summary.failed, summary.conflicts
+            );
+        }
+        println!("\n[ready] Summary:");
+        for step in &results {
+            let (mark, color) = match step.status {
+                StepStatus::Passed => ("PASS", green),
+                StepStatus::Failed => ("FAIL", red),
+                StepStatus::Skipped => ("SKIP", yellow),
+            };
+            println!(
+                "  {}{:>4}{} {} ({}): {}",
+                color, mark, reset, step.name, step.evidence_kind, step.scope
+            );
+        }
+        println!("[ready] Not evaluated: runtime behavior, project tests, external-tool gates.");
+        println!("[ready] Outcome: {outcome}");
+        if let Some(reason) = any_failure.as_deref() {
+            println!("\n{red}[ready] Local static checks blocked: {reason}{reset}");
+        } else if advisory_findings > 0 {
+            println!(
+                "\n{yellow}[ready] Local blocking checks passed with {advisory_findings} advisory finding(s).{reset}"
+            );
+        } else {
+            println!(
+                "\n{green}[ready] Local static checks passed within the scopes listed above.{reset}"
+            );
+        }
+    }
+    if let Some(reason) = any_failure {
+        return Err(reason.into());
     }
     Ok(())
 }
@@ -247,29 +311,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn cmd_ready_runs_on_temp_project() {
-        let dir = std::env::temp_dir().join(format!("aden-ready-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        // A trivial Rust project: the pipeline has real source to run against.
-        std::fs::write(
-            dir.join("Cargo.toml"),
-            "[package]\nname=\"x\"\nversion=\"0.0.0\"\n",
-        )
-        .unwrap();
-        std::fs::create_dir_all(dir.join("src")).unwrap();
-        std::fs::write(dir.join("src/lib.rs"), "pub fn noop() {}\n").unwrap();
+    fn cmd_ready_rejects_missing_target() {
+        let directory = tempfile::tempdir().unwrap();
+        assert!(cmd_ready(&directory.path().join("does-not-exist"), false, true).is_err());
+    }
 
-        // Must complete without panicking and yield a verdict (Ok or Err).
-        let _verdict = cmd_ready(&dir, false, false);
-        let _ = std::fs::remove_dir_all(&dir);
-
-        // A non-directory path is rejected before generation/root discovery, so
-        // ready must report NOT commit-ready (Err).
-        let missing = dir.join("does-not-exist");
-        assert!(
-            cmd_ready(&missing, false, false).is_err(),
-            "ready should fail when the target path is not a directory"
+    #[test]
+    fn ready_check_accepts_info_and_advisories_but_rejects_errors() {
+        assert_eq!(
+            check_blocking_messages(&["INFO: All refs resolve".into()]).unwrap(),
+            0
         );
+        assert_eq!(
+            check_blocking_messages(&["WARNING: optional contract missing".into()]).unwrap(),
+            1
+        );
+        assert_eq!(
+            check_blocking_messages(&["INFO: documentation mentions ERROR:".into()]).unwrap(),
+            0
+        );
+        let failure = check_blocking_messages(&["ERROR: unresolved reference".into()]).unwrap_err();
+        assert!(failure.to_string().contains("ERROR: unresolved reference"));
     }
 }

@@ -6,8 +6,8 @@
 //! Extracts headings, code blocks, and links from markdown files.
 
 use crate::extractor::{
-    build_code_attributes, extract_code_references, infer_project_name, infer_project_root,
-    make_anchor, project_relative_file,
+    CodeSource, extract_code_references, infer_project_name, infer_project_root, make_anchor,
+    project_relative_file,
 };
 use aden_core::{Block, Document, NodeType, Result, SourceSpan};
 use std::path::Path;
@@ -36,6 +36,7 @@ impl crate::extractor::LanguageExtractor for MarkdownExtractor {
     }
 
     fn extract_documents(&self, source: &str, path: &Path) -> Result<Vec<Document>> {
+        let file_source = CodeSource::new(source, path);
         let mut docs = Vec::new();
         let crate_name = infer_project_name(path);
         let project_root = infer_project_root(path);
@@ -186,7 +187,7 @@ impl crate::extractor::LanguageExtractor for MarkdownExtractor {
                     start_byte: 0,
                     end_byte: 0,
                 };
-                let attrs = build_code_attributes(source, "heading", Some(path), Some(&span));
+                let attrs = file_source.attributes("heading", &span);
                 let mut attrs = attrs;
                 attrs.insert("heading_level".to_string(), level.to_string());
                 if !links.is_empty() {
@@ -247,7 +248,11 @@ impl crate::extractor::LanguageExtractor for MarkdownExtractor {
                             slug,
                             definition: def.clone(),
                         };
-                        let term = crate::extractor::build_term_document(&crate_name, path, &entry);
+                        let term = crate::extractor::build_term_document(
+                            &crate_name,
+                            &file_source,
+                            &entry,
+                        );
                         term_anchors.push(term.anchor.clone());
                         term_docs.push(term);
                     }
@@ -276,7 +281,7 @@ impl crate::extractor::LanguageExtractor for MarkdownExtractor {
         } else {
             let anchor = make_anchor(&crate_name, &file_name, "document");
             let doc_span = crate::extractor::whole_file_span(source, path);
-            let mut attrs = build_code_attributes(source, "document", Some(path), Some(&doc_span));
+            let mut attrs = file_source.attributes("document", &doc_span);
             // No headings: the whole file is one node — it owns every ref.
             let mut all_refs: Vec<String> = line_refs.iter().map(|(_, r)| r.clone()).collect();
             all_refs.sort();
@@ -337,7 +342,7 @@ impl crate::extractor::LanguageExtractor for MarkdownExtractor {
                 start_byte: 0,
                 end_byte: 0,
             };
-            let mut attrs = build_code_attributes(&code, "code", Some(path), Some(&code_span));
+            let mut attrs = file_source.attributes("code", &code_span);
             if !references.is_empty() {
                 attrs.insert("symbol_references".to_string(), references.join(","));
             }

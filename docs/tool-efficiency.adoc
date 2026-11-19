@@ -1,0 +1,75 @@
+[[tool-efficiency-pilot]]
+= Bounded tool output: observational pilot
+
+Checked November 11, 2026 on the existing dirty working tree based on
+`2172e0e35668f69af50cc43d37acb88ee9add297`.
+This is a coverage spot-check, not a controlled speed or agent productivity benchmark.
+
+== Choose context by the question
+
+For a known file range, use `read` directly. For a unique symbol needing source,
+incoming references and outgoing dependencies, start with `understand`.
+For discovery or ambiguity, use `grep` or `locate` and inspect the resolved anchor.
+Independent follow-up requests can be batched, with at most two concurrent Aden calls.
+Check verification, freshness, graph coverage and clipping before relying on a result.
+Graph relationship parity compares the same inferred graph, not independent semantic truth.
+
+[cols="3,1,1,2,2",options="header"]
+|===
+|Question target |Composed calls |Primitive calls |Composed bytes |Primitive bytes
+|`Worker::start_with_command` |1 |4 |7,704 |7,868
+|`cmd_read`, including clipped-source recovery |2 |5 |16,959 |16,853
+|===
+
+Bytes measure returned JSON text in UTF-8, not model tokens or transport envelopes.
+Both completed comparisons matched literal source, incoming call anchors and
+outgoing dependency anchors/depths, with current graph receipts and verified source.
+The primitive flow was locate, read, incoming query and outgoing query, plus source
+continuation where required. Invocation counts are not orchestration-round counts.
+The long function's initial composed excerpt omitted the final clipping warning;
+the tail read was necessary to answer the question.
+
+The harness initially rejected a valid unique resolution because `locate.items`
+also contained a prefix suggestion. Use `resolution.anchor` to select its definition.
+A subsequent harness shape error discarded four read/query responses before the
+corrected comparison. These extra attempts are task cost and are excluded from the
+paired table. There is no total-completion speed claim or native grep/read comparison.
+
+Evidence: `.tmp/tool-efficiency/aden-composition-pilot.json` retains the initial
+attempt; `.tmp/tool-efficiency/aden-composition-corrected.json` retains corrected
+responses, source text, receipts, paired totals and harness limitations.
+
+== Terminal output
+
+For one matched successful run, `cargo test --offline -p aden-graph --lib --quiet`
+returned 175 captured UTF-8 bytes versus 4,946 without `--quiet`, counting stdout
+and stderr. Both ran 59 passing tests, zero failing tests and one ignored test,
+with no filtered tests. This supports quieter success output for that scope.
+It does not measure tokens or speed. Compilation warmth and order were not controlled.
+
+Keep the exact command, exit status and a tool-specific outcome summary. Capture
+full raw logs before presenting a bounded summary. On failure, expose actionable
+diagnostics and the retained log location; expand output when necessary. Do not
+silence stderr or treat a zero exit, nonempty output, or the word `passed` alone
+as proof that the requested outcome occurred. Quiet flags need verification for
+each tool and relevant failure mode.
+
+Evidence: `.tmp/tool-efficiency/comparison.json` includes command scope, counts,
+raw-stream hashes and parser controls. Raw `standard` and `quiet` stdout/stderr
+streams are retained alongside it. Parser controls accept the known passing
+summary and reject missing, malformed, inconsistent or nonzero false-success input.
+Synthetic parser failures alone do not establish real command failure behavior.
+
+A separate standalone `rustc --test` fixture deliberately failed an assertion.
+Normal and `--quiet` runs both exited 101 and retained the test name and unique
+assertion marker. `.tmp/tool-efficiency/failure-comparison.json` records fixture,
+binary and raw-output hashes. This verifies this Rust libtest failure case only;
+Cargo compilation errors and other tools remain untested.
+
+== Adoption boundary
+
+Apply these patterns in other projects only where their tool contracts fit.
+Prefer the smallest response that still verifies the requested outcome, with
+explicit recovery for omitted details. Do not replace native tools indiscriminately,
+weaken validation, retry uncertain mutations, or assume that saved evidence remains
+valid after source, revision, command scope or tool behavior changes.

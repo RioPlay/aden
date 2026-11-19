@@ -39,8 +39,10 @@ Set `ADEN_GEN_TRACE=1` to emit a compact JSON diagnostic on stderr after a
 completed generation. It reports counts and elapsed wall time by stage, without
 source text or paths. Stage intervals are exclusive; `total_us` includes them.
 The parallel parse stage reports wall time, not summed worker CPU time. Errors,
-coalesced refreshes, no-files exits, and proposals omit the report. A read that
-retries generation may emit one report for each completed generation.
+coalesced refreshes, no-files exits, and proposals omit the report. Refreshes
+started by a read run in a separate worker, so their generation diagnostics do
+not appear on the read's stderr. Use `ADEN_READ_TRACE=1` for the caller's refresh
+timing and `aden jobs status` to inspect the worker outcome.
 
 Run the benchmark with `--trace` separately from latency comparisons. It also
 enables read tracing and counts Git root lookups through temporary Trace2 logs.

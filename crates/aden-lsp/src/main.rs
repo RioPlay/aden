@@ -83,20 +83,27 @@ impl LanguageServer for AdenLspBackend {
     ) -> Result<Option<GotoDefinitionResponse>> {
         let uri = params.text_document_position_params.text_document.uri;
         let pos = params.text_document_position_params.position;
-        let docs = self.docs.lock().await;
-        let Some(text) = docs.get(&uri) else {
+        // Copy only the requested line, then release the document lock before IO.
+        let line_text = {
+            let docs = self.docs.lock().await;
+            let Some(text) = docs.get(&uri) else {
+                return Ok(None);
+            };
+            text.lines().nth(pos.line as usize).unwrap_or("").to_owned()
+        };
+        let anchors = extract_xrefs(&line_text);
+        let root = self.workspace_root.lock().await.clone();
+        let Some(root) = root else {
+            return Ok(None);
+        };
+        let Some(graph) = load_request_graph(&root, !anchors.is_empty()) else {
             return Ok(None);
         };
 
-        let line_text = text.lines().nth(pos.line as usize).unwrap_or("");
-
         // Find <<anchor>> under cursor
-        for anchor in extract_xrefs(line_text) {
+        for anchor in anchors {
             let anchor = anchor.to_string();
-            if let Some(root) = self.workspace_root.lock().await.clone()
-                && let Ok(graph) = AdenGraph::build_from_directory(&root)
-                && let Some(node) = graph.get_node(&anchor)
-            {
+            if let Some(node) = graph.get_node(&anchor) {
                 // SECURITY: Only allow navigation inside the workspace root.
                 if !Self::is_in_workspace(&node.source_path, &root) {
                     continue;
@@ -117,18 +124,25 @@ impl LanguageServer for AdenLspBackend {
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
         let uri = params.text_document_position_params.text_document.uri;
         let pos = params.text_document_position_params.position;
-        let docs = self.docs.lock().await;
-        let Some(text) = docs.get(&uri) else {
+        // Copy only the requested line, then release the document lock before IO.
+        let line_text = {
+            let docs = self.docs.lock().await;
+            let Some(text) = docs.get(&uri) else {
+                return Ok(None);
+            };
+            text.lines().nth(pos.line as usize).unwrap_or("").to_owned()
+        };
+        let anchors = extract_xrefs(&line_text);
+        let root = self.workspace_root.lock().await.clone();
+        let Some(root) = root else {
             return Ok(None);
         };
-
-        let line_text = text.lines().nth(pos.line as usize).unwrap_or("");
-        for anchor in extract_xrefs(line_text) {
+        let Some(graph) = load_request_graph(&root, !anchors.is_empty()) else {
+            return Ok(None);
+        };
+        for anchor in anchors {
             let anchor = anchor.to_string();
-            if let Some(root) = self.workspace_root.lock().await.clone()
-                && let Ok(graph) = AdenGraph::build_from_directory(&root)
-                && let Some(node) = graph.get_node(&anchor)
-            {
+            if let Some(node) = graph.get_node(&anchor) {
                 // SECURITY: Only return signatures for nodes inside workspace.
                 if !Self::is_in_workspace(&node.source_path, &root) {
                     continue;
@@ -214,8 +228,9 @@ impl AdenLspBackend {
             }
         };
 
+        let root = self.workspace_root.lock().await.clone();
         if let Ok(parsed) = parsed
-            && let Some(root) = self.workspace_root.lock().await.clone()
+            && let Some(root) = root
         {
             // SECURITY: Resolve include paths within workspace root only.
             // Prevent directory traversal via `../../etc/passwd` in include directives.
@@ -302,6 +317,18 @@ impl AdenLspBackend {
     }
 }
 
+/// Rebuild once per request so saves, external edits and root changes are visible.
+/// No graph is reused between requests without a proven freshness contract.
+fn load_request_graph(
+    root: &std::path::Path,
+    has_refs: bool,
+) -> Option<AdenGraph<aden_graph::DocumentNode, aden_graph::AdenEdge>> {
+    if !has_refs {
+        return None;
+    }
+    AdenGraph::build_from_directory(root).ok()
+}
+
 fn extract_xrefs(line: &str) -> Vec<&str> {
     let mut results = Vec::new();
     let mut start = 0;
@@ -336,4 +363,51 @@ async fn main() {
         workspace_root: Arc::new(Mutex::new(None)),
     });
     Server::new(stdin, stdout, socket).serve(service).await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn xrefs_preserve_order_and_ignore_labels_and_empty_refs() {
+        assert_eq!(
+            extract_xrefs("<<first, label>> << >> <<second>> <<unfinished"),
+            vec!["first", "second"]
+        );
+    }
+
+    #[test]
+    fn request_graph_observes_external_edits_and_root_changes() {
+        let base = std::env::temp_dir().join(format!(
+            "aden-lsp-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let first = base.join("first");
+        let second = base.join("second");
+        std::fs::create_dir_all(&first).unwrap();
+        std::fs::create_dir_all(&second).unwrap();
+        let file = first.join("test.adoc");
+        std::fs::write(&file, "[[before]]\n= Before\n").unwrap();
+        let original = load_request_graph(&first, true).unwrap();
+        assert!(original.get_node("before").is_some());
+        std::fs::write(&file, "[[after]]\n= After\n").unwrap();
+        let updated = load_request_graph(&first, true).unwrap();
+        assert!(updated.get_node("before").is_none());
+        assert!(updated.get_node("after").is_some());
+        assert!(
+            load_request_graph(&second, true)
+                .unwrap()
+                .get_node("after")
+                .is_none()
+        );
+        assert!(load_request_graph(&first, false).is_none());
+        assert!(AdenLspBackend::is_in_workspace(&file, &first));
+        assert!(!AdenLspBackend::is_in_workspace(&file, &second));
+        std::fs::remove_dir_all(&base).unwrap();
+    }
 }

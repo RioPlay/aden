@@ -75,11 +75,52 @@ const ROOT_MARKERS: &[&str] = &[
 /// resolving an already-resolved root returns it unchanged, so callers may pass
 /// either a raw scope argument or a pre-resolved root.
 pub fn resolve_root(start: &Path) -> PathBuf {
-    let canon = canonical(start);
-    if let Some(top) = git_toplevel(&canon) {
+    let canonicalized = start.canonicalize();
+    let can_probe_git_markers = canonicalized.is_ok();
+    let canon = canonicalized.unwrap_or_else(|_| start.to_path_buf());
+    if let Some(hit) = READ_ROOT.with_borrow(|state| {
+        state
+            .as_ref()?
+            .as_ref()
+            .filter(|(key, _)| key == &canon)
+            .map(|(_, root)| root.clone())
+    }) {
+        return hit;
+    }
+    let root = resolve_canonical_root(&canon, can_probe_git_markers);
+    READ_ROOT.with_borrow_mut(|state| {
+        if let Some(entry) = state {
+            *entry = Some((canon, root.clone()));
+        }
+    });
+    root
+}
+
+thread_local! {
+    // Outer option enables reuse only inside a synchronous read request.
+    static READ_ROOT: std::cell::RefCell<Option<Option<(PathBuf, PathBuf)>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Reuse one root discovery within this read and discard it on return or unwind.
+pub fn with_read_root_scope<T>(read: impl FnOnce() -> T) -> T {
+    struct Reset(Option<Option<(PathBuf, PathBuf)>>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            READ_ROOT.replace(self.0.take());
+        }
+    }
+    let _reset = Reset(READ_ROOT.replace(Some(None)));
+    read()
+}
+
+fn resolve_canonical_root(canon: &Path, can_probe_git_markers: bool) -> PathBuf {
+    if (!can_probe_git_markers || git_discovery_may_apply(canon))
+        && let Some(top) = git_toplevel(canon)
+    {
         return top;
     }
-    let mut current = canon.clone();
+    let mut current = canon.to_path_buf();
     loop {
         if ROOT_MARKERS.iter().any(|m| current.join(m).exists()) {
             return current;
@@ -90,7 +131,7 @@ pub fn resolve_root(start: &Path) -> PathBuf {
         }
     }
     // Persisted project.conf fallback (written by `--project`).
-    let mut probe = canon.clone();
+    let mut probe = canon.to_path_buf();
     loop {
         let conf = probe.join(".aden").join("project.conf");
         if conf.is_file()
@@ -109,7 +150,36 @@ pub fn resolve_root(start: &Path) -> PathBuf {
             None => break,
         }
     }
-    canon
+    canon.to_path_buf()
+}
+
+fn git_discovery_may_apply(canon: &Path) -> bool {
+    // GIT_DIR can select a repository with no on-disk marker in this ancestry.
+    // Leave repository placement and discovery overrides to Git itself.
+    let git_environment = [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_COMMON_DIR",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_IMPLICIT_WORK_TREE",
+        "GIT_CEILING_DIRECTORIES",
+        "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+    ]
+    .into_iter()
+    .any(|name| std::env::var_os(name).is_some());
+    git_environment || canon.ancestors().any(could_have_git_marker)
+}
+
+fn could_have_git_marker(dir: &Path) -> bool {
+    // Git probes .git files and directories, then looks for a bare repository
+    // in the ancestor itself, which requires HEAD. A candidate of any type or
+    // uncertain metadata leaves the answer to Git.
+    [".git", "HEAD"].into_iter().any(|name| {
+        !matches!(
+            dir.join(name).symlink_metadata(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound
+        )
+    })
 }
 
 /// Resolve the git work-tree root via `git rev-parse --show-toplevel`. `None`
@@ -218,10 +288,26 @@ pub fn is_under(root: &Path, path: &Path) -> bool {
 /// `Path::strip_prefix` anywhere ignore rules or display keys need a relative
 /// path on Windows.
 pub fn relative_to(root: &Path, path: &Path) -> Option<PathBuf> {
-    let root_raw = strip_verbatim(&canonical(root));
+    RelativeRoot::new(root).relative_to(path)
+}
+
+/// Reuse a normalized root when deriving keys for one traversal.
+pub struct RelativeRoot(PathBuf);
+
+impl RelativeRoot {
+    pub fn new(root: &Path) -> Self {
+        Self(strip_verbatim(&canonical(root)))
+    }
+
+    pub fn relative_to(&self, path: &Path) -> Option<PathBuf> {
+        relative_to_normalized(&self.0, path)
+    }
+}
+
+fn relative_to_normalized(root_raw: &Path, path: &Path) -> Option<PathBuf> {
     let path_raw = strip_verbatim(&path.canonicalize().unwrap_or_else(|_| path.to_path_buf()));
 
-    if let Ok(rel) = path_raw.strip_prefix(&root_raw) {
+    if let Ok(rel) = path_raw.strip_prefix(root_raw) {
         return Some(rel.to_path_buf());
     }
 
@@ -286,7 +372,231 @@ fn key_for_resolved_root(root: &Path) -> String {
 /// `<data_root>/projects/<key>` — the per-project key directory holding all
 /// rebuildable artifacts for `root`.
 pub fn project_dir(root: &Path) -> PathBuf {
-    project_dir_for_key(&project_key(root))
+    try_project_dir(root)
+        .unwrap_or_else(|error| panic!("invalid Aden storage configuration: {error}"))
+}
+
+/// Project-local storage policy. Environment overrides retain higher priority.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct StorageConfig {
+    #[serde(default)]
+    pub portable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_dir: Option<PathBuf>,
+}
+
+pub fn storage_config_file(root: &Path) -> PathBuf {
+    resolve_root(root).join(".aden/storage.toml")
+}
+
+fn storage_error(message: impl Into<String>) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::InvalidData, message.into())
+}
+
+/// Read and strictly validate policy, including when an environment override wins.
+pub fn read_storage_config(root: &Path) -> std::io::Result<Option<StorageConfig>> {
+    Ok(read_storage_config_resolved(&resolve_root(root))?.map(|(config, _)| config))
+}
+
+fn read_storage_config_resolved(root: &Path) -> std::io::Result<Option<(StorageConfig, PathBuf)>> {
+    use std::io::Read;
+    const LIMIT: u64 = 65536;
+    let path = root.join(".aden/storage.toml");
+    let file = match std::fs::File::open(&path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let mut body = Vec::new();
+    file.take(LIMIT + 1).read_to_end(&mut body)?;
+    if body.len() as u64 > LIMIT {
+        return Err(storage_error("storage configuration exceeds 64 KiB"));
+    }
+    let body = std::str::from_utf8(&body).map_err(|error| storage_error(error.to_string()))?;
+    let config: StorageConfig = toml::from_str(body)
+        .map_err(|error| storage_error(format!("invalid {}: {error}", path.display())))?;
+    let dir = validate_storage_config_resolved(root, &config)?;
+    Ok(Some((config, dir)))
+}
+
+/// Resolve the full rebuildable project directory without creating anything.
+/// Custom bases must be absolute and outside the source tree.
+pub fn validate_storage_config(root: &Path, config: &StorageConfig) -> std::io::Result<PathBuf> {
+    let root = resolve_root(root);
+    validate_storage_config_resolved(&root, config)
+}
+
+fn validate_storage_config_resolved(
+    root: &Path,
+    config: &StorageConfig,
+) -> std::io::Result<PathBuf> {
+    let dir = match (config.portable, &config.data_dir) {
+        (true, None) => {
+            if root.parent().is_none()
+                || dirs::home_dir()
+                    .is_some_and(|home| compare_key(&canonical(&home)) == compare_key(root))
+            {
+                return Err(storage_error(
+                    "portable storage requires a project below the filesystem root and home directory",
+                ));
+            }
+            for path in [root.join(".aden"), root.join(".aden/data")] {
+                if std::fs::symlink_metadata(&path).is_ok_and(|meta| meta.file_type().is_symlink())
+                {
+                    return Err(storage_error(
+                        "portable storage must not use symbolic links",
+                    ));
+                }
+            }
+            root.join(".aden/data")
+        }
+        (false, Some(base)) => {
+            if !base.is_absolute()
+                || base
+                    .components()
+                    .any(|c| matches!(c, std::path::Component::ParentDir))
+            {
+                return Err(storage_error(
+                    "storage data_dir must be an absolute path without parent traversal",
+                ));
+            }
+            let base = canonical_existing_ancestor(base)?;
+            if base.parent().is_none()
+                || dirs::home_dir()
+                    .is_some_and(|home| compare_key(&canonical(&home)) == compare_key(&base))
+            {
+                return Err(storage_error(
+                    "storage data_dir must not be a filesystem root or home directory",
+                ));
+            }
+            if is_under(root, &base) {
+                return Err(storage_error(
+                    "custom storage data_dir must be outside the project; use portable = true for project-local storage",
+                ));
+            }
+            base.join("projects").join(key_for_resolved_root(root))
+        }
+        _ => {
+            return Err(storage_error(
+                "storage configuration requires exactly one of portable = true or data_dir",
+            ));
+        }
+    };
+    if dir.exists() && !dir.is_dir() {
+        return Err(storage_error(
+            "configured project data path is not a directory",
+        ));
+    }
+    // A portable checkout may move between hosts and paths. Its in-tree directory
+    // is the identity; external keyed directories must retain their root owner.
+    if !config.portable {
+        check_meta_owner(root, &dir)?;
+    }
+    Ok(dir)
+}
+
+fn canonical_existing_ancestor(path: &Path) -> std::io::Result<PathBuf> {
+    let mut ancestor = path;
+    let mut suffix = Vec::new();
+    while !ancestor.exists() {
+        suffix.push(
+            ancestor
+                .file_name()
+                .ok_or_else(|| storage_error("invalid storage path"))?
+                .to_os_string(),
+        );
+        ancestor = ancestor
+            .parent()
+            .ok_or_else(|| storage_error("invalid storage ancestor"))?;
+    }
+    if !ancestor.is_dir() {
+        return Err(storage_error("storage path ancestor is not a directory"));
+    }
+    let mut result = ancestor.canonicalize()?;
+    for part in suffix.into_iter().rev() {
+        result.push(part);
+    }
+    Ok(result)
+}
+
+fn check_meta_owner(root: &Path, dir: &Path) -> std::io::Result<()> {
+    let file = dir.join("meta.json");
+    let body = match std::fs::read(&file) {
+        Ok(body) => body,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    let meta: Meta = serde_json::from_slice(&body)
+        .map_err(|error| storage_error(format!("invalid {}: {error}", file.display())))?;
+    if compare_key(&canonical(Path::new(&meta.root))) != compare_key(&canonical(root)) {
+        return Err(storage_error(format!(
+            "project data directory {} belongs to another project",
+            dir.display()
+        )));
+    }
+    Ok(())
+}
+
+/// Checked entry point for command preflight. Never falls back on malformed policy.
+pub fn try_project_dir(root: &Path) -> std::io::Result<PathBuf> {
+    Ok(project_storage_resolved(&resolve_root(root))?.0)
+}
+
+/// Resolve the data directory and whether it belongs to a portable checkout.
+fn project_storage_resolved(root: &Path) -> std::io::Result<(PathBuf, bool)> {
+    if let Some((config, dir)) = read_storage_config_resolved(root)?
+        && std::env::var_os("ADEN_DATA_DIR").is_none()
+    {
+        return Ok((dir, config.portable));
+    }
+    Ok((project_dir_for_key(&key_for_resolved_root(root)), false))
+}
+
+/// Persist policy only. Existing data and durable intent are never migrated or removed.
+/// Reset removes only storage.toml and can recover from malformed policy.
+pub fn write_storage_config(root: &Path, config: Option<&StorageConfig>) -> std::io::Result<()> {
+    let root = resolve_root(root);
+    let file = root.join(".aden/storage.toml");
+    let Some(config) = config else {
+        return match std::fs::remove_file(file) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            result => result,
+        };
+    };
+    validate_storage_config_resolved(&root, config)?;
+    let body = toml::to_string_pretty(config).map_err(|error| storage_error(error.to_string()))?;
+    let parent = file.parent().expect("storage config has a parent");
+    std::fs::create_dir_all(parent)?;
+    atomic_publish(&file, body.as_bytes())
+}
+
+fn atomic_publish(file: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let sequence = SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let temp = file.with_extension(format!(
+        "pending.{}.{timestamp}.{sequence}",
+        std::process::id()
+    ));
+    let mut output = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temp)?;
+    let result = (|| {
+        output.write_all(bytes)?;
+        output.sync_all()?;
+        drop(output);
+        std::fs::rename(&temp, file)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    result
 }
 
 fn project_dir_for_key(key: &str) -> PathBuf {
@@ -401,7 +711,10 @@ pub fn legacy_store_dir(root: &Path) -> PathBuf {
 /// returns the central path (the subsequent open will fail with a clear error).
 pub fn resolve_read_store(root: &Path) -> (PathBuf, bool) {
     let central = store_dir(root);
-    if central.exists() {
+    if central.exists()
+        || storage_config_file(root).exists()
+        || std::env::var_os("ADEN_STORE").is_some()
+    {
         return (central, false);
     }
     let legacy = legacy_store_dir(root);
@@ -443,7 +756,10 @@ pub fn meta_file(root: &Path) -> PathBuf {
 pub fn write_meta(root: &Path) -> std::io::Result<()> {
     let root = resolve_root(root);
     let key = key_for_resolved_root(&root);
-    let dir = project_dir_for_key(&key);
+    let (dir, portable) = project_storage_resolved(&root)?;
+    if !portable {
+        check_meta_owner(&root, &dir)?;
+    }
     std::fs::create_dir_all(&dir)?;
     let meta = Meta {
         root: root.display().to_string(),
@@ -451,7 +767,7 @@ pub fn write_meta(root: &Path) -> std::io::Result<()> {
     };
     let json = serde_json::to_string_pretty(&meta)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    std::fs::write(dir.join("meta.json"), json)
+    atomic_publish(&dir.join("meta.json"), json.as_bytes())
 }
 
 /// Read a `meta.json` from a project key directory (used by `store list/prune`).
@@ -469,13 +785,14 @@ pub fn read_meta(key_dir: &Path) -> Option<Meta> {
 /// `init`, or `$ADEN_DATA_DIR`/`$ADEN_STORE` is set. Resolution (reads) never
 /// calls this — only creation does.
 pub fn guard_creatable_root(root: &Path, explicit: bool) -> Result<(), String> {
+    let canon = resolve_root(root);
+    project_storage_resolved(&canon).map_err(|error| error.to_string())?;
     if explicit
         || std::env::var_os("ADEN_DATA_DIR").is_some()
         || std::env::var_os("ADEN_STORE").is_some()
     {
         return Ok(());
     }
-    let canon = resolve_root(root);
     // Filesystem root (no parent).
     if canon.parent().is_none() {
         return Err(format!(
@@ -497,6 +814,98 @@ pub fn guard_creatable_root(root: &Path, explicit: bool) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn storage_config_size_limit_accepts_exactly_64_kib() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path();
+        std::fs::create_dir(root.join(".aden")).unwrap();
+        let path = root.join(".aden/storage.toml");
+        let mut body = b"portable = true\n#".to_vec();
+        body.resize(65536, b' ');
+        std::fs::write(&path, &body).unwrap();
+        let (config, dir) = read_storage_config_resolved(root).unwrap().unwrap();
+        assert!(config.portable);
+        assert_eq!(dir, root.join(".aden/data"));
+        body.push(b' ');
+        std::fs::write(path, body).unwrap();
+        let err = read_storage_config_resolved(root).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("64 KiB"));
+    }
+
+    #[test]
+    fn read_scope_rechecks_root_after_request() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let inner = root.join("inner");
+        std::fs::create_dir(&inner).unwrap();
+        std::fs::write(root.join("Cargo.toml"), "").unwrap();
+        with_read_root_scope(|| {
+            assert_eq!(resolve_root(&inner), root);
+            std::fs::write(inner.join("Cargo.toml"), "").unwrap();
+            assert_eq!(resolve_root(&inner), root);
+        });
+        assert_eq!(with_read_root_scope(|| resolve_root(&inner)), inner);
+    }
+
+    #[test]
+    fn git_marker_probe_defers_candidates_and_uncertain_paths_to_git() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        assert!(!could_have_git_marker(root));
+
+        let git = root.join(".git");
+        std::fs::create_dir(&git).unwrap();
+        assert!(could_have_git_marker(root));
+        std::fs::remove_dir(&git).unwrap();
+        std::fs::write(&git, "gitdir: elsewhere\n").unwrap();
+        assert!(could_have_git_marker(root));
+        std::fs::remove_file(&git).unwrap();
+
+        let head = root.join("HEAD");
+        std::fs::write(&head, "ref: refs/heads/main\n").unwrap();
+        assert!(could_have_git_marker(root));
+        assert!(could_have_git_marker(&root.join("invalid\0path")));
+    }
+
+    #[test]
+    fn atomic_metadata_publication_preserves_link_target() {
+        let fixture = tempfile::tempdir().unwrap();
+        let target = fixture.path().join("retained.json");
+        let metadata = fixture.path().join("meta.json");
+        std::fs::write(&target, br#"{"retained":true}"#).unwrap();
+        std::fs::hard_link(&target, &metadata).unwrap();
+        atomic_publish(&metadata, br#"{"root":"new","key":"new"}"#).unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), br#"{"retained":true}"#);
+        assert_eq!(read_meta(fixture.path()).unwrap().root, "new");
+    }
+
+    #[test]
+    fn concurrent_metadata_readers_never_observe_partial_json() {
+        let fixture = tempfile::tempdir().unwrap();
+        let metadata = fixture.path().join("meta.json");
+        atomic_publish(&metadata, br#"{"root":"a","key":"a"}"#).unwrap();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let writer_barrier = barrier.clone();
+        let writer_path = metadata.clone();
+        let writer = std::thread::spawn(move || {
+            writer_barrier.wait();
+            for index in 0..64 {
+                let meta = Meta {
+                    root: format!("root-{index}"),
+                    key: format!("key-{index}"),
+                };
+                atomic_publish(&writer_path, &serde_json::to_vec(&meta).unwrap()).unwrap();
+            }
+        });
+        barrier.wait();
+        for _ in 0..512 {
+            let body = std::fs::read(&metadata).unwrap();
+            let _: Meta = serde_json::from_slice(&body).unwrap();
+        }
+        writer.join().unwrap();
+    }
 
     /// Run `f` with `var` set to `val`, restoring the prior value afterward.
     /// Tests touching process-global env must not run concurrently; the harness

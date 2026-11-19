@@ -1,0 +1,129 @@
+[package]
+include = [
+    "/Cargo.toml",
+    "/Cargo.lock",
+    "/README.md",
+    "/LICENSE*",
+    "/src/**",
+    "/build.rs",
+    "/build_support/**",
+    "/language_definitions.json",
+    "/third_party/utf8proc/**",
+    "!/src/intel/legacy.rs",
+    "!/src/intel/test_support.rs",
+    "!/src/text_splitter/oracle_tests.rs",
+]
+authors.workspace = true
+name = "tree-sitter-language-pack"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Core library for tree-sitter language pack - provides compiled parsers for 371 languages"
+
+# ~keep This direct dependency supplies tree-sitter's WASM C shims and moves in lockstep with
+# ~keep the runtime: 0.1.8 relocated the 0.26 shims under wasm/unsupported/ so they fail to
+# ~keep compile against it, and 0.27 requires ^0.1.8. Downgrading either pin alone will not build.
+[package.metadata.cargo-machete]
+ignored = ["tree-sitter-language"]
+
+[features]
+default = ["dynamic-loading", "download"]
+dynamic-loading = ["dep:libloading"]
+serde = ["dep:serde", "dep:serde_json"]
+config = ["dep:serde", "dep:serde_json", "dep:toml", "dep:dirs"]
+download = [
+    "dep:ureq",
+    "dep:sha2",
+    "dep:tar",
+    "dep:zstd",
+    "dep:dirs",
+    "dep:fd-lock",
+    "dep:serde",
+    "dep:serde_json",
+    "dynamic-loading",
+]
+# ~keep Exposes internal helpers (e.g. `_testing_extract_languages`) for integration
+# ~keep tests or downstream crates that need to exercise the raw extraction path.
+# ~keep Never enable in production builds.
+test-internals = ["download"]
+
+[dependencies]
+ahash = { workspace = true }
+dirs = { workspace = true, optional = true }
+fd-lock = { workspace = true, optional = true }
+memchr = { workspace = true }
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+sha2 = { workspace = true, optional = true }
+tar = { workspace = true, optional = true }
+thiserror = { workspace = true }
+toml = { workspace = true, optional = true }
+tracing = { workspace = true }
+tree-sitter = { workspace = true }
+ureq = { workspace = true, optional = true }
+zstd = { workspace = true, optional = true }
+
+# ~keep libloading does not support wasm32. The `dynamic-loading` feature falls back
+# ~keep to stub implementations in registry.rs on wasm32 (always returns errors).
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+libloading = { workspace = true, optional = true }
+
+# ~keep Browser targets need getrandom's wasm_js backend for transitive dependencies.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.4", features = ["wasm_js"] }
+tree-sitter-language = { workspace = true }
+
+[build-dependencies]
+cc = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+tar = { workspace = true }
+ureq = { workspace = true }
+zstd = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+insta = { version = "1.49", features = ["json"] }
+# ~keep typst_serialize_overflow drives the typst external-scanner C ABI directly,
+# ~keep which means resolving its symbols out of the built grammar library.
+libloading = { workspace = true }
+tempfile = { workspace = true }
+
+[[test]]
+name = "concurrent_download"
+path = "tests/concurrent_download.rs"
+required-features = ["test-internals"]
+
+[[test]]
+name = "wire_format"
+path = "tests/wire_format.rs"
+required-features = ["serde", "config"]
+
+[[bench]]
+name = "benchmarks"
+harness = false
+
+[[bench]]
+name = "splitting"
+harness = false
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+duplicated_attributes = "allow"
+# Diagnostics belong in `tracing`, not raw stdout/stderr writes. CLI data output and
+# build-script `cargo:` directives opt back in locally with `#[expect(clippy::print_stdout)]`. ~keep
+print_stdout = "deny"
+print_stderr = "deny"
+dbg_macro = "deny"
+# A panic in this crate aborts the host process across every binding (Python, Node,
+# Ruby, PHP, ...), so `unwrap`/`expect` in library code is a hard error rather than a
+# style nit. Test modules opt back in locally with `#![allow(clippy::unwrap_used,
+# clippy::expect_used)]`, mirroring the print family's exemption above. ~keep
+unwrap_used = "deny"
+expect_used = "deny"
+
+[lints.rust]
+unsafe_code = "allow"
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(alef)', 'cfg(feature, values("test-internals"))'] }

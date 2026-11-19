@@ -15,3 +15,30 @@ pub use crate::indexer::r#gen::{cmd_gen, cmd_gen_opts, cmd_gen_silent};
 pub(crate) use crate::indexer::fresh::{recover_if_incompatible_store, skip_auto_gen_on_read};
 pub(crate) use crate::indexer::link::doc_anchor_file;
 pub(crate) use crate::indexer::merge::slim_doc_for_store;
+
+/// A bounded refresh can leave the first graph build running. Without an older
+/// snapshot, graph commands must report that state before opening the live store.
+/// Source-only commands do not need this gate and remain usable during indexing.
+pub(crate) fn require_graph_ready(
+    path: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let root = crate::util::find_project_root(path);
+    let snapshot = aden_paths::graph_snapshot_file(&root);
+    if snapshot.is_file() {
+        return Ok(());
+    }
+    if let Some(job) = crate::indexer::generation_job::status(&root)?
+        && job.active()
+        && !snapshot.is_file()
+    {
+        return Err(super::AgentCliError::new(
+            "index_generation_pending",
+            format!(
+                "Index generation job {} is still active; the first graph snapshot is not available yet.",
+                job.job_id
+            ),
+            "Check `aden jobs status` (MCP: generation_status), then retry this read after indexing completes. Source reads remain available.",
+        ).into());
+    }
+    Ok(())
+}

@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use aden_graph::Direction;
 use aden_store::GraphStorage;
 
-use crate::indexer::fresh::augment_read_json;
+use super::analysis::augment as augment_read_json;
 use crate::types::{AnchorPattern, QueryIntent};
 use crate::util::{
     find_project_root, fmt_score, load_or_build_index, node_to_json, parse_single_edge_type,
@@ -1933,9 +1933,22 @@ impl std::fmt::Display for SymbolResolutionError {
 impl std::error::Error for SymbolResolutionError {}
 
 fn resolve_required_anchor(path: &Path, input: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let _trace = crate::read_trace::span(crate::read_trace::Stage::AnchorResolve);
+    required_anchor_result(
+        path,
+        input,
+        aden_graph::cache::resolve_anchor_detailed(path, input),
+    )
+}
+
+fn required_anchor_result(
+    path: &Path,
+    input: &str,
+    resolution: aden_graph::cache::AnchorResolution,
+) -> Result<String, Box<dyn std::error::Error>> {
     use aden_graph::cache::AnchorResolution;
 
-    match aden_graph::cache::resolve_anchor_detailed(path, input) {
+    match resolution {
         AnchorResolution::Exact(anchor) | AnchorResolution::Unique { anchor } => Ok(anchor),
         AnchorResolution::Ambiguous { candidates } => Err(SymbolResolutionError::Ambiguous {
             input: input.to_string(),
@@ -2074,11 +2087,10 @@ pub fn cmd_asm(opts: AsmOptions) -> Result<(), Box<dyn std::error::Error>> {
         return Err("--strict cannot be combined with --out: strict mode bounds the serialized stdout response; omit --out and capture stdout instead".into());
     }
     validate_strict_budget(opts.strict, opts.budget)?;
-    // A stale hint is ordinary terminal chrome. In strict mode it cannot be
-    // appended after the response boundary; AP-103/AP-101B will carry this in
-    // the versioned receipt instead.
-    let _stale_hint = super::StaleHintGuard::new(&opts.path, opts.strict);
     super::ensure_fresh(&opts.path);
+    super::generate::require_graph_ready(&opts.path)?;
+    let machine_format = !opts.inspect && matches!(opts.format.as_str(), "adg" | "json");
+    let _stale_hint = super::StaleHintGuard::new(&opts.path, opts.strict || machine_format);
 
     let (from_anchor, effective_budget) = if opts.auto && !opts.strict {
         let index = load_or_build_index(&opts.path)?;
@@ -2246,6 +2258,10 @@ pub fn cmd_asm(opts: AsmOptions) -> Result<(), Box<dyn std::error::Error>> {
     } else {
         println!("{output}");
     }
+    // ADG keeps its bare array. The JSON envelope already carries freshness.
+    if opts.format == "adg" && super::generate::read_index_stale(&opts.path) {
+        eprintln!("{}", super::generate::STALE_HINT);
+    }
     Ok(())
 }
 
@@ -2298,6 +2314,7 @@ pub fn cmd_query(opts: QueryOptions) -> Result<(), Box<dyn std::error::Error>> {
     }
     let _stale_hint = super::StaleHintGuard::new(path, format == "json");
     super::ensure_fresh(path);
+    super::generate::require_graph_ready(path)?;
 
     let mode_count = from.is_some() as u8 + backlinks.is_some() as u8 + impact.is_some() as u8;
     if mode_count != 1 {
@@ -2306,15 +2323,15 @@ pub fn cmd_query(opts: QueryOptions) -> Result<(), Box<dyn std::error::Error>> {
 
     // Resolve exact anchors and unique natural symbol names before loading a
     // graph. Ambiguity is a hard error with deterministic recovery candidates.
-    let from = from
-        .map(|input| resolve_required_anchor(path, input))
-        .transpose()?;
-    let backlinks = backlinks
-        .map(|input| resolve_required_anchor(path, input))
-        .transpose()?;
-    let impact = impact
-        .map(|input| resolve_required_anchor(path, input))
-        .transpose()?;
+    let (reader, from, backlinks, impact) = {
+        let _trace = crate::read_trace::span(crate::read_trace::Stage::AnchorResolve);
+        let reader = aden_graph::cache::GraphReadSession::open(path);
+        let resolve = |input| required_anchor_result(path, input, reader.resolve_anchor(input));
+        let from = from.map(resolve).transpose()?;
+        let backlinks = backlinks.map(resolve).transpose()?;
+        let impact = impact.map(resolve).transpose()?;
+        (reader, from, backlinks, impact)
+    };
 
     let mut results = Vec::new();
     let result_limit = max_results.unwrap_or(usize::MAX);
@@ -2332,16 +2349,39 @@ pub fn cmd_query(opts: QueryOptions) -> Result<(), Box<dyn std::error::Error>> {
         None
     };
 
-    // A forward query needs only its bounded outgoing neighborhood. Avoid
-    // materializing the entire store graph (the old unconditional path) for
-    // the common `query --from <anchor> --depth N` MCP request. Reverse and
-    // impact views retain the full graph because they need incoming edges or
-    // typed reachability constrained by their impact-edge filter.
-    let graph = if let Some(anchor) = &from {
-        let edge_types: Vec<aden_core::EdgeType> = filter_type.iter().copied().collect();
-        aden_graph::cache::build_neighborhood_cached(path, anchor, depth, &edge_types)?
-    } else {
-        aden_graph::cache::build_from_directory_cached(path)?
+    // Resolution and traversal share one request-scoped store handle. Reverse
+    // and impact queries use keyed adjacency reads too; loading a whole graph
+    // merely to answer a bounded neighborhood scales with unrelated code.
+    let graph = {
+        let _trace = crate::read_trace::span(crate::read_trace::Stage::GraphLoad);
+        let impact_types = crate::util::impact_edge_types();
+        let edge_types: Vec<_> = match (&impact, filter_type) {
+            (_, Some(edge_type)) => vec![edge_type],
+            (Some(_), None) => impact_types.to_vec(),
+            (None, None) => Vec::new(),
+        };
+        let traversal_depth = if impact.is_some()
+            && filter_type.is_some_and(|edge_type| !impact_types.contains(&edge_type))
+        {
+            0
+        } else {
+            depth
+        };
+        reader.into_query_neighborhood(
+            from.as_deref()
+                .or(backlinks.as_deref())
+                .or(impact.as_deref())
+                .unwrap(),
+            traversal_depth,
+            if backlinks.is_some() {
+                Direction::Incoming
+            } else {
+                Direction::Outgoing
+            },
+            &edge_types,
+            backlinks.is_some() && filter_type.is_none(),
+            result_limit,
+        )?
     };
 
     // Collect the edge types of ALL parallel edges from `a` to `b`. petgraph is a
@@ -2575,6 +2615,7 @@ pub fn cmd_query(opts: QueryOptions) -> Result<(), Box<dyn std::error::Error>> {
     }
     match format {
         "table" => {
+            println!("{}", super::analysis::SUMMARY);
             println!(
                 "{} ({})",
                 relationship["label"].as_str().unwrap_or_default(),
@@ -2598,8 +2639,8 @@ pub fn cmd_query(opts: QueryOptions) -> Result<(), Box<dyn std::error::Error>> {
                 "relationship": relationship,
                 "next_actions": next_actions,
             });
-            let env = super::augment_read_json(path, payload);
-            println!("{}", serde_json::to_string_pretty(&env)?);
+            let env = augment_read_json(path, payload);
+            crate::read_worker::emit_machine_body(serde_json::to_string_pretty(&env)?);
         }
         _ => {
             println!("{}", serde_json::to_string_pretty(&results)?);
@@ -3097,8 +3138,7 @@ fn anchor_source_file(path: &Path, anchor: &str) -> Option<String> {
         return document.attributes.get("source_file").cloned();
     }
     aden_graph::snapshot::try_read_fresh(path)
-        .and_then(|(docs, _)| docs.get(anchor).cloned())
-        .and_then(|document| document.attributes.get("source_file").cloned())
+        .and_then(|(docs, _)| docs.get(anchor)?.attributes.get("source_file").cloned())
 }
 
 /// Routing transparency payload for `ask --explain`: top candidates with the
@@ -3420,8 +3460,9 @@ pub fn cmd_ask(
         return Ok(());
     }
 
-    let _stale_hint = super::StaleHintGuard::new(path, strict);
     super::ensure_fresh(path);
+    super::generate::require_graph_ready(path)?;
+    let _stale_hint = super::StaleHintGuard::new(path, strict);
 
     // Intent is classified up front so the overview signal can feed ANCHOR
     // SELECTION (the historical gap: intent only shaped traversal AFTER the
@@ -4306,6 +4347,13 @@ pub fn cmd_ask(
         };
     }
 
+    let source_file = std::cell::OnceCell::new();
+    let final_source_file = || {
+        source_file
+            .get_or_init(|| anchor_source_file(path, &start_anchor))
+            .as_deref()
+    };
+
     // Passage-granular path for thick, explicitly multi-facet prose. File
     // selection remains authoritative; only the bytes chosen from that one
     // source file change. The external passage and routing matrices establish
@@ -4315,9 +4363,9 @@ pub fn cmd_ask(
         && AnchorPattern::is_prose_doc(&start_anchor)
         && prose_conjunction_facets(question).len() >= 2
     {
-        anchor_source_file(path, &start_anchor)
+        final_source_file()
             .and_then(|source_path| {
-                std::fs::read_to_string(hydrate_root.join(&source_path))
+                super::read::read_stored_source(&hydrate_root, Path::new(source_path))
                     .ok()
                     .map(|source| (source_path, source))
             })
@@ -4370,8 +4418,8 @@ pub fn cmd_ask(
         query_llm(model_spec, question, &assembled, &start_anchor)?;
     } else if json_output {
         let context = if strict {
-            anchor_source_file(path, &start_anchor)
-                .map(|source| prepend_provenance_if_fits(&assembled, &source, effective_budget))
+            final_source_file()
+                .map(|source| prepend_provenance_if_fits(&assembled, source, effective_budget))
                 .map(|body| strict_serialized_response(&body, effective_budget))
                 .unwrap_or_else(|| strict_serialized_response(&assembled, effective_budget))
         } else {
@@ -4415,7 +4463,7 @@ pub fn cmd_ask(
                 "question_fit": "bounded",
                 "routing_confidence": routing_confidence,
                 "anchor": start_anchor,
-                "source_file": anchor_source_file(path, &start_anchor),
+                "source_file": final_source_file(),
                 "context": context,
                 "intent": format!("{:?}", intent).to_lowercase(),
                 "depth": depth,
@@ -4482,8 +4530,8 @@ pub fn cmd_ask(
     } else if strict {
         // Assembly normally maintains this invariant. The final serializer
         // protects the public boundary from future receipts/supplements.
-        let strict_body = anchor_source_file(path, &start_anchor)
-            .map(|source| prepend_provenance_if_fits(&assembled, &source, effective_budget))
+        let strict_body = final_source_file()
+            .map(|source| prepend_provenance_if_fits(&assembled, source, effective_budget))
             .unwrap_or_else(|| assembled.clone());
         print!(
             "{}",

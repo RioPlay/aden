@@ -1,0 +1,92 @@
+[[bounded-core-audit]]
+= Aden bounded core audit
+
+Checked November 11, 2026 against the existing dirty working tree based on
+`2172e0e35668f69af50cc43d37acb88ee9add297`.
+
+== Decision
+
+Make bounded evidence retrieval the default. Keep literal source, explicit symbol
+resolution, bounded graph traversal and controlled context assembly. Move optional
+heuristic routing out of the default MCP registry before considering deletion.
+Repeatability alone does not establish correctness: inferred graph relationships
+and ranked retrieval remain incomplete evidence even when their outputs repeat.
+
+A core tool should have a distinct user outcome, explicit scope and output bounds,
+observable truncation or coverage limits, and actionable recovery or failure.
+Remove an implementation only after its replacement preserves required outcomes
+and recovery and no distinct compatibility need remains. Lack of usage telemetry
+does not establish that a feature is useless.
+
+== First cut: optional question routing
+
+`ask` moves from Essential to Standard. CLI use remains available; Standard and
+Full MCP callers can opt in. Essential callers get an explicit disabled-surface
+error rather than silent routing or tool substitution.
+
+The default route is `grep` for unknown implementation, `locate` for resolution,
+`understand` for source plus relationships, `query` for explicit graph traversal,
+`asm` for a controlled context bundle, and `read` for a known literal range.
+Use `tree` for a bounded map. Check freshness, verification, ambiguity and clipping.
+
+Evidence: the pre-change `ESSENTIAL_TOOLS` registry in
+`crates/aden-mcp/src/lib.rs` included `ask`, whose public description explicitly
+called it heuristic. `cmd_ask` in `crates/aden-cli/src/commands/query.rs` classifies
+intent and may rank candidate anchors before assembly. Even pinned targets retain
+intent-driven assembly. A pinned `cmd_read` probe returned clipped source and
+`GenTrace::count` context, with `completeness: bounded`, no per-span source hash,
+and no next action. This is a concrete weaker source-inspection contract than
+`read`/`understand`, not proof that every question route is bad.
+
+The response is retained at `.tmp/surface-audit/pinned-ask.json`.
+The source/relationship replacement evidence and clipping counterexample are in
+`docs/tool-efficiency.adoc`. The strongest alternative is requiring resolved
+targets and recognized intent for `ask`; retain that only if it demonstrates
+distinct value beyond the existing explicit tools.
+
+== Next candidates, not removed in this increment
+
+The following findings describe the original audit. The subsequent repair and
+readiness increment is tracked in `docs/bounded-repairs.adoc`; use that contract
+for the updated implementation and verification scope.
+
+* Direct `heal --fix` repair needs tighter mutation rules. In `cmd_heal_scan`,
+  `crates/aden-cli/src/commands/heal.rs`, the drift-kind confidence values are
+  constants, not calibrated probabilities. The direct disk stale-hash path uses
+  `lines()` followed by `join("\n")`, which can normalize CRLF and remove the
+  final newline beyond the intended hash edit. Narrow this to an exact,
+  byte-preserving repair with pass/failure and preservation controls. Keep
+  proposal review and deterministic drift checks. No live repair was run here.
+* `ready` needs a narrower verdict. `cmd_ready` combines graph generation,
+  heuristic lint, concrete checks, heal scoring and audit signals; `--fix` can
+  forward source edits. Preserve useful orchestration, but expose which checks
+  ran, failed or were skipped, and avoid presenting this as runtime correctness.
+  A read-only default and explicit repair path deserve a separate compatibility
+  change with representative failure tests.
+* Do not delete `search` merely because a registry comment calls it superseded:
+  BM25 ranked retrieval and literal content matches serve different questions.
+  Likewise, `diagnose` adds graph observations beyond `check`. Their incremental
+  value needs matched task evidence before removal.
+
+`check` remains useful for concrete reference, cycle, hash and contract invariants.
+Graph queries remain useful for targeted relationships, with inferred-edge and
+coverage limitations. No repository-wide correctness or absence claim follows
+from one successful tool call.
+
+== Scope and verification
+
+This increment changes default MCP availability and associated guidance, not the
+`ask` implementation, repair behavior or validation algorithms. It does not
+remove compatibility commands or modify other projects. Local source checks,
+real MCP surface probes, installation identity and remaining host-reconnection
+limits are recorded in `.agent/session.md` and `.tmp/surface-audit/`.
+
+The local versioned CLI/MCP pair is installed at
+`C:/Users/example/AppData/Local/Aden/versions/0.4.4-bounded-core-a9234db949c8`.
+Codex's Aden command points to this pair for new connections. Current MCP
+connections need a reconnect; user PATH was not changed in this MCP-only
+activation, so existing terminal resolution remains on the prior version.
+The installed `activation.json` records binary hashes and the prior command.
+Guarded rollback: run that directory's `deploy_local.py --rollback` with the
+full path to its `activation.json`. Rollback rejects a subsequently changed
+MCP command rather than overwriting it. No unrelated process was restarted.
