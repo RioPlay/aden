@@ -191,7 +191,7 @@ jobs:
             cargo_build_jobs: "0"
             release_opt_level: "3"
             rust_min_stack: "16777216"
-          - runner: macos-14
+          - runner: macos-15
             target: aarch64-apple-darwin
             archive_ext: tar.gz
             cargo_build_jobs: "0"
@@ -367,7 +367,7 @@ jobs:
           - runner: macos-15-intel
             target: x86_64-apple-darwin
             archive_ext: tar.gz
-          - runner: macos-14
+          - runner: macos-15
             target: aarch64-apple-darwin
             archive_ext: tar.gz
           - runner: windows-2025
