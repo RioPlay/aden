@@ -1295,7 +1295,7 @@ fn record_import_tables(
 ///
 /// The result is semantically identical but 40–60 % fewer tokens.
 pub fn strip_asciidoc_markup(text: &str) -> String {
-    let mut out: Vec<String> = Vec::new();
+    let mut out: Vec<Cow<'_, str>> = Vec::new();
     let mut prev_blank = false;
 
     // State machine for table compression.
@@ -1307,30 +1307,31 @@ pub fn strip_asciidoc_markup(text: &str) -> String {
     }
     let mut table_mode = TableMode::None;
     let mut callee_calls: Vec<String> = Vec::new();
+    let mut callee_count = 0;
     // Accumulated rows of the current Signature property table, collapsed into a
     // single dense line on close.
     let mut sig_acc: Vec<(String, String)> = Vec::new();
     // The document's title (`= Title` heading) — the synthesis fallback for
     // the signature name (see `flush_signature`).
-    let mut doc_title: Option<String> = None;
+    let mut doc_title = None;
 
     // Cap on inlined callee names: a hub's Callee/Line table would otherwise
     // spend hundreds of tokens on call-graph scaffolding before any neighbor's
     // prose is reached. The first MAX_CALLEES (source order) are kept and the
     // rest summarized as `(+K more)`.
     const MAX_CALLEES: usize = 12;
-    let flush_callees = |calls: &mut Vec<String>, out: &mut Vec<String>| {
-        if calls.is_empty() {
+    fn flush_callees(calls: &mut Vec<String>, total: &mut usize, out: &mut Vec<Cow<'_, str>>) {
+        if *total == 0 {
             return;
         }
-        let total = calls.len();
-        let mut line = format!("calls: {}", calls[..total.min(MAX_CALLEES)].join(", "));
-        if total > MAX_CALLEES {
-            line.push_str(&format!(" (+{} more)", total - MAX_CALLEES));
+        let mut line = format!("calls: {}", calls.join(", "));
+        if *total > MAX_CALLEES {
+            line.push_str(&format!(" (+{} more)", *total - MAX_CALLEES));
         }
-        out.push(line);
+        out.push(Cow::Owned(line));
         calls.clear();
-    };
+        *total = 0;
+    }
 
     // Collapse a function's signature table into one line:
     // `[async] [unsafe] name(p1: T1, p2: T2) -> Ret`. No language resolver
@@ -1343,7 +1344,7 @@ pub fn strip_asciidoc_markup(text: &str) -> String {
     // is language-agnostic.
     fn flush_signature(
         acc: &mut Vec<(String, String)>,
-        out: &mut Vec<String>,
+        out: &mut Vec<Cow<'_, str>>,
         fallback_name: Option<&str>,
     ) {
         if acc.is_empty() {
@@ -1384,11 +1385,19 @@ pub fn strip_asciidoc_markup(text: &str) -> String {
                 line.push_str(" -> ");
                 line.push_str(r.trim_start_matches("->").trim());
             }
-            out.push(line);
+            out.push(Cow::Owned(line));
         }
         for (k, v) in extras {
-            out.push(format!("{}: {}", k.to_lowercase().replace(' ', "_"), v));
+            out.push(Cow::Owned(format!(
+                "{}: {}",
+                k.to_lowercase().replace(' ', "_"),
+                v
+            )));
         }
+    }
+
+    fn header_cell_matches(cell: &str, header: &str) -> bool {
+        cell.eq_ignore_ascii_case(header) || (!cell.is_ascii() && cell.to_lowercase() == header)
     }
 
     for line in text.lines() {
@@ -1434,8 +1443,8 @@ pub fn strip_asciidoc_markup(text: &str) -> String {
         // --- Table delimiter |=== ---
         if trimmed == "|===" {
             // Flush accumulated callee list / signature when the table closes
-            flush_callees(&mut callee_calls, &mut out);
-            flush_signature(&mut sig_acc, &mut out, doc_title.as_deref());
+            flush_callees(&mut callee_calls, &mut callee_count, &mut out);
+            flush_signature(&mut sig_acc, &mut out, doc_title);
             table_mode = TableMode::None;
             continue;
         }
@@ -1450,14 +1459,15 @@ pub fn strip_asciidoc_markup(text: &str) -> String {
 
             // Detect table headers
             if cells.len() >= 2 {
-                let h0 = cells[0].to_lowercase();
-                let h1 = cells[1].to_lowercase();
-
-                if h1 == "value" && (h0 == "property" || h0 == "name") {
+                if header_cell_matches(cells[1], "value")
+                    && (header_cell_matches(cells[0], "property")
+                        || header_cell_matches(cells[0], "name"))
+                {
                     table_mode = TableMode::Property;
                     continue;
                 }
-                if h0 == "callee" && h1 == "line" {
+                if header_cell_matches(cells[1], "line") && header_cell_matches(cells[0], "callee")
+                {
                     table_mode = TableMode::Callee;
                     continue;
                 }
@@ -1475,12 +1485,16 @@ pub fn strip_asciidoc_markup(text: &str) -> String {
                     TableMode::Callee => {
                         // Accumulate: |foo|12| → "foo(12)"
                         let callee = cells[0].trim();
-                        let lineno = cells.get(1).map(|s| s.trim()).unwrap_or("");
                         if !callee.is_empty() {
-                            if lineno.is_empty() || lineno == "0" {
-                                callee_calls.push(callee.to_string());
-                            } else {
-                                callee_calls.push(format!("{}({})", callee, lineno));
+                            callee_count += 1;
+                            if callee_count <= MAX_CALLEES {
+                                let lineno = cells[1];
+                                let call = if lineno.is_empty() || lineno == "0" {
+                                    callee.to_string()
+                                } else {
+                                    format!("{}({})", callee, lineno)
+                                };
+                                callee_calls.push(call);
                             }
                         }
                         continue;
@@ -1489,7 +1503,7 @@ pub fn strip_asciidoc_markup(text: &str) -> String {
                         // Generic table row — keep as compact space-separated values
                         let row = cells.join("  ").trim().to_string();
                         if !row.is_empty() {
-                            out.push(row);
+                            out.push(Cow::Owned(row));
                             prev_blank = false;
                         }
                         continue;
@@ -1498,23 +1512,21 @@ pub fn strip_asciidoc_markup(text: &str) -> String {
             }
         } else if table_mode != TableMode::None {
             // Non-table line encountered — flush accumulated table state
-            flush_callees(&mut callee_calls, &mut out);
-            flush_signature(&mut sig_acc, &mut out, doc_title.as_deref());
+            flush_callees(&mut callee_calls, &mut callee_count, &mut out);
+            flush_signature(&mut sig_acc, &mut out, doc_title);
             table_mode = TableMode::None;
         }
 
         // --- Headings: convert = Title → Title, == Section → Section: ---
         let processed = if let Some(rest) = trimmed.strip_prefix("= ") {
-            if doc_title.is_none() {
-                doc_title = Some(rest.trim().to_string());
-            }
-            rest.to_string()
+            doc_title.get_or_insert(rest.trim());
+            Cow::Borrowed(rest)
         } else if trimmed.starts_with("== ")
             || trimmed.starts_with("=== ")
             || trimmed.starts_with("==== ")
         {
             let stripped = trimmed.trim_start_matches('=').trim();
-            format!("{}:", stripped)
+            Cow::Owned(format!("{}:", stripped))
         } else {
             // Inline xref cleanup: <<anchor,text>> → text, <<anchor>> → anchor
             replace_xrefs(line)
@@ -1543,7 +1555,7 @@ pub fn strip_asciidoc_markup(text: &str) -> String {
         let is_blank = processed.trim().is_empty();
         if is_blank {
             if !prev_blank {
-                out.push(String::new());
+                out.push(Cow::Borrowed(""));
             }
             prev_blank = true;
             continue;
@@ -1553,8 +1565,8 @@ pub fn strip_asciidoc_markup(text: &str) -> String {
     }
 
     // Final flush of any pending callee list / signature
-    flush_callees(&mut callee_calls, &mut out);
-    flush_signature(&mut sig_acc, &mut out, doc_title.as_deref());
+    flush_callees(&mut callee_calls, &mut callee_count, &mut out);
+    flush_signature(&mut sig_acc, &mut out, doc_title);
 
     // Drop a trailing empty section header. A header line (ends with ':' and
     // has no value after the colon, e.g. "Relationships:") with no real content
@@ -1565,37 +1577,59 @@ pub fn strip_asciidoc_markup(text: &str) -> String {
         let t = s.trim_end();
         t.ends_with(':') && !t[..t.len() - 1].contains(' ') && !t[..t.len() - 1].contains(':')
     };
-    let mut compact: Vec<String> = Vec::with_capacity(out.len());
-    for i in 0..out.len() {
-        if is_empty_header(&out[i])
-            && out[i + 1..].iter().all(|l| l.trim().is_empty())
-            // Only when real content precedes it — never collapse a genuine
-            // heading hierarchy (a header whose previous line is also a header).
-            && compact
-                .iter()
-                .rev()
-                .find(|l| !l.trim().is_empty())
-                .is_some_and(|prev| !is_empty_header(prev))
-        {
-            continue; // dangling section header after real content
-        }
-        compact.push(out[i].clone());
+    let mut nonblank = out
+        .iter()
+        .enumerate()
+        .rev()
+        .filter(|(_, line)| !line.trim().is_empty());
+    let Some((mut end, last)) = nonblank.next() else {
+        return String::new();
+    };
+    if is_empty_header(last)
+        && let Some((previous, line)) = nonblank.next()
+        && !is_empty_header(line)
+    {
+        end = previous;
     }
 
-    compact.join("\n").trim().to_string()
+    let start = out[..=end]
+        .iter()
+        .position(|line| !line.trim().is_empty())
+        .unwrap_or(end);
+    let lines = &out[start..=end];
+    let [first, middle @ .., last] = lines else {
+        return lines[0].trim().to_owned();
+    };
+
+    let first = first.trim_start();
+    let last = last.trim_end();
+    let middle_len: usize = middle.iter().map(|line| line.len() + 1).sum();
+    let mut rendered = String::with_capacity(first.len() + middle_len + last.len() + 1);
+    rendered.push_str(first);
+    for line in middle {
+        rendered.push('\n');
+        rendered.push_str(line);
+    }
+    rendered.push('\n');
+    rendered.push_str(last);
+    rendered
 }
 
 /// Replace AsciiDoc cross-reference macros with their display text or target.
 /// `<<anchor,display text>>` → `display text`
 /// `<<anchor>>` → `anchor`
-fn replace_xrefs(line: &str) -> String {
+fn replace_xrefs(line: &str) -> Cow<'_, str> {
+    let Some(first) = line.find("<<") else {
+        return Cow::Borrowed(line);
+    };
     let mut result = String::with_capacity(line.len());
     let mut remaining = line;
+    let mut next_start = Some(first);
 
-    while let Some(start) = remaining.find("<<") {
-        result.push_str(&remaining[..start]);
+    while let Some(start) = next_start {
         let after = &remaining[start + 2..];
         if let Some(end) = after.find(">>") {
+            result.push_str(&remaining[..start]);
             let inner = &after[..end];
             if let Some(comma) = inner.find(',') {
                 // <<anchor,display text>> → display text
@@ -1612,12 +1646,12 @@ fn replace_xrefs(line: &str) -> String {
             }
             remaining = &after[end + 2..];
         } else {
-            result.push_str("<<");
-            remaining = after;
+            break;
         }
+        next_start = remaining.find("<<");
     }
     result.push_str(remaining);
-    result
+    Cow::Owned(result)
 }
 
 /// Truncate text to fit within `max_tokens`, consistent with `estimate_tokens`.
