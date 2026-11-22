@@ -1515,6 +1515,12 @@ fn cmd_gen_inner(
     journal.clear_recovery()?;
     drop(writer_lease);
     trace.finish();
+    if !propose {
+        crate::commands::store::housekeeping::maybe_run_automatic_housekeeping(
+            aden_paths::try_project_dir(&root).ok().as_deref(),
+            silent,
+        );
+    }
     Ok(())
 }
 

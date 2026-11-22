@@ -3778,6 +3778,8 @@ mod tests {
             std::env::temp_dir().join(format!("aden-mcp-roots-{label}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&path);
         std::fs::create_dir_all(path.join("src")).unwrap();
+        std::fs::create_dir_all(path.join(".aden")).unwrap();
+        std::fs::write(path.join(".aden/storage.toml"), "portable = true\n").unwrap();
         std::fs::write(path.join("src/lib.rs"), format!("pub fn {symbol}() {{}}\n")).unwrap();
         path
     }
@@ -4530,6 +4532,8 @@ mod tests {
         client.cancel().await.unwrap();
         let _ = server_task.await;
         *TEST_ADEN_BINARY.lock().unwrap() = None;
+        let _ = std::fs::remove_dir_all(&root_a);
+        let _ = std::fs::remove_dir_all(&root_b);
     }
 
     #[tokio::test]
@@ -4640,6 +4644,7 @@ mod tests {
         client.cancel().await.unwrap();
         let _ = server_task.await;
         *TEST_ADEN_BINARY.lock().unwrap() = None;
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[tokio::test]
@@ -4657,7 +4662,7 @@ mod tests {
         let roots = Arc::new(RwLock::new(vec![Root::new(file_uri(&root))]));
         let client_handler = RootsClient { roots };
         let (server_transport, client_transport) = tokio::io::duplex(16 * 1024);
-        let server = AdenMcpServer::new(root);
+        let server = AdenMcpServer::new(root.clone());
         let server_task = tokio::spawn(async move { server.serve(server_transport).await });
         let client = client_handler.serve(client_transport).await.unwrap();
 
@@ -4744,6 +4749,7 @@ mod tests {
         client.cancel().await.unwrap();
         let _ = server_task.await;
         *TEST_ADEN_BINARY.lock().unwrap() = None;
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
