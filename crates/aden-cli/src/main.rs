@@ -625,6 +625,7 @@ enum Commands {
         min_size: usize,
         #[arg(
             long,
+            visible_alias = "top",
             value_name = "N",
             default_value = "30",
             help = "Limit number of communities shown"
@@ -637,6 +638,18 @@ enum Commands {
             help = "Resolution (>1.0 = more, smaller clusters; 1.0 = standard modularity)"
         )]
         resolution: f64,
+        #[arg(
+            long,
+            help = "Omit full member lists in JSON and return a short sample_members preview instead"
+        )]
+        summary: bool,
+        #[arg(
+            long,
+            value_name = "N",
+            default_value = "50",
+            help = "Maximum members returned per community in JSON (0 = unlimited)"
+        )]
+        max_members: usize,
         #[arg(value_name = "DIR", default_value = ".", value_hint = ValueHint::DirPath)]
         path: PathBuf,
     },
@@ -2025,10 +2038,21 @@ fn execute_cli(
             min_size,
             limit,
             resolution,
+            summary,
+            max_members,
             path,
         } => {
             let effective_limit = if cli.unlimited { usize::MAX } else { limit };
-            commands::cmd_communities(&path, min_size, effective_limit, resolution, machine_json)
+            let effective_max_members = if cli.unlimited { 0 } else { max_members };
+            commands::cmd_communities(
+                &path,
+                min_size,
+                effective_limit,
+                resolution,
+                summary,
+                effective_max_members,
+                machine_json,
+            )
         }
         Commands::ImpactDiff {
             since,

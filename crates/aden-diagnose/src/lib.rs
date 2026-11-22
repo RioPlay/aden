@@ -30,13 +30,18 @@
 //! - `OrphanDocument` — documents with no edges
 //! - `IncludeCycle` — circular includes between documents
 //! - `MissingSource` — documents referencing non-existent source files
+//! - `CouplingHotspot` — many directed edges between two coarse areas
+//! - `GodHub` — a code symbol whose combined in/out degree is very high
+//! - `DuplicateModule` — same-named modules in different areas with high line overlap
 //! - `Custom` — user-defined rules
 
+use aden_core::EdgeType;
+use aden_graph::NodeIndex;
 use aden_graph::cycles::find_cycles;
 use aden_graph::graph::AdenGraph;
 use aden_graph::nodes::{AdenEdge, DocumentNode, GraphNode};
 use aden_graph::parser::parse_file;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -109,6 +114,12 @@ pub enum IssueCategory {
     MissingSource,
     /// A document has low confidence (self-reference or low-quality).
     LowConfidence,
+    /// Many directed edges run between two coarse source areas.
+    CouplingHotspot,
+    /// A code symbol's combined in-degree and out-degree is very high.
+    GodHub,
+    /// Two same-named modules in different areas share most of their lines.
+    DuplicateModule,
     /// A user-defined rule fired.
     Custom(String),
 }
@@ -123,6 +134,9 @@ impl std::fmt::Display for IssueCategory {
             IssueCategory::IncludeCycle => write!(f, "include-cycle"),
             IssueCategory::MissingSource => write!(f, "missing-source"),
             IssueCategory::LowConfidence => write!(f, "low-confidence"),
+            IssueCategory::CouplingHotspot => write!(f, "coupling-hotspot"),
+            IssueCategory::GodHub => write!(f, "god-hub"),
+            IssueCategory::DuplicateModule => write!(f, "duplicate-module"),
             IssueCategory::Custom(name) => write!(f, "custom-{}", name),
         }
     }
@@ -143,6 +157,11 @@ pub struct Diagnosis {
     pub info_count: usize,
     /// Health score from 0 (critical) to 100 (perfect).
     pub health_score: f64,
+    /// Plain markdown/text orphans hidden because they have no explicit
+    /// AsciiDoc `[[anchor]]` cross-references. Stays `0` when suppression is off
+    /// and when older JSON omits the field.
+    #[serde(default)]
+    pub suppressed_plain_doc_orphans: usize,
 }
 
 impl Diagnosis {
@@ -242,6 +261,26 @@ pub struct DiagnosticRules {
     /// Custom rule functions to run during diagnosis.
     /// Each function receives the graph and file list, returns issues.
     pub custom_checks: Vec<CustomCheck>,
+
+    /// Hide `OrphanDocument` hits for plain `.md` / `.markdown` / `.txt` files
+    /// that never declare an AsciiDoc `[[anchor]]`. `.adoc` orphans stay.
+    /// Default `false` so existing callers keep every orphan.
+    pub suppress_plain_doc_orphans: bool,
+
+    /// When set, load the indexed code graph with `aden_graph::cache::try_load`
+    /// and emit coupling, hub, and duplicate-module findings. A missing graph
+    /// skips those scanners. Default `true`.
+    pub enable_structural_diagnostics: bool,
+
+    /// Minimum directed cross-area edges before a pair is a coupling hotspot.
+    pub coupling_hotspot_threshold: usize,
+
+    /// Minimum `in_degree + out_degree` before a code symbol is a god hub.
+    pub god_hub_degree_threshold: usize,
+
+    /// Minimum line-overlap ratio (`shared / min(len_a, len_b)`) for a
+    /// duplicate-module pair. Default `0.30`.
+    pub duplicate_module_min_overlap: f64,
 }
 
 impl Default for DiagnosticRules {
@@ -252,6 +291,11 @@ impl Default for DiagnosticRules {
             contract_ref_patterns: vec![],
             stale_ref_suggest_similar: true,
             custom_checks: vec![],
+            suppress_plain_doc_orphans: false,
+            enable_structural_diagnostics: true,
+            coupling_hotspot_threshold: 25,
+            god_hub_degree_threshold: 25,
+            duplicate_module_min_overlap: 0.30,
         }
     }
 }
@@ -316,7 +360,8 @@ pub fn diagnose_with_rules(
     issues.extend(scan_contract_refs(&files, rules));
 
     // 6. Orphan documents.
-    issues.extend(scan_orphans(&graph, rules));
+    let (orphan_issues, suppressed_plain_doc_orphans) = scan_orphans(&graph, rules);
+    issues.extend(orphan_issues);
 
     // 7. Include cycles.
     issues.extend(scan_include_cycles(&graph));
@@ -332,6 +377,17 @@ pub fn diagnose_with_rules(
         issues.extend(check(&graph, &files));
     }
 
+    // 11. Structural signal from the indexed code graph. `build_from_directory`
+    // above only parses prose. `try_load` reads the code + edge graph; `None`
+    // (no store / empty snapshot) skips these scanners without failing.
+    if rules.enable_structural_diagnostics
+        && let Some(code_graph) = aden_graph::cache::try_load(path)
+    {
+        issues.extend(scan_coupling_hotspots(&code_graph, rules));
+        issues.extend(scan_god_hubs(&code_graph, rules));
+        issues.extend(scan_duplicate_modules(&code_graph, path, rules));
+    }
+
     let (error_count, warning_count, info_count) = Diagnosis::counts(&issues);
     let health_score = Diagnosis::calc_health_score(&issues);
 
@@ -341,6 +397,7 @@ pub fn diagnose_with_rules(
         warning_count,
         info_count,
         health_score,
+        suppressed_plain_doc_orphans,
     })
 }
 
@@ -612,8 +669,15 @@ fn is_doc_source(path: &std::path::Path) -> bool {
 ///
 /// Documents matching `metadata_prefixes`, or sourced from a prose/doc file, are
 /// flagged as Info (expected orphans) rather than Warning (unexpected orphans).
-fn scan_orphans(graph: &AdenGraph<DocumentNode, AdenEdge>, rules: &DiagnosticRules) -> Vec<Issue> {
+///
+/// Returns the issues and how many plain markdown/text orphans were hidden.
+/// `.adoc` / `.asciidoc` orphans are never hidden.
+fn scan_orphans(
+    graph: &AdenGraph<DocumentNode, AdenEdge>,
+    rules: &DiagnosticRules,
+) -> (Vec<Issue>, usize) {
     let mut issues = Vec::new();
+    let mut suppressed = 0usize;
     let orphans = graph.orphans();
 
     // Dedup by anchor: when several files collapse to the same anchor (e.g. every
@@ -643,6 +707,11 @@ fn scan_orphans(graph: &AdenGraph<DocumentNode, AdenEdge>, rules: &DiagnosticRul
             })
             .unwrap_or(false);
 
+        if rules.suppress_plain_doc_orphans && node.is_some_and(is_suppressible_plain_orphan) {
+            suppressed += 1;
+            continue;
+        }
+
         issues.push(Issue {
             category: IssueCategory::OrphanDocument,
             severity: if is_metadata {
@@ -664,7 +733,74 @@ fn scan_orphans(graph: &AdenGraph<DocumentNode, AdenEdge>, rules: &DiagnosticRul
         });
     }
 
-    issues
+    (issues, suppressed)
+}
+
+/// Plain `.md` / `.markdown` / `.txt` orphan with no explicit `[[anchor]]`.
+///
+/// The prose parser synthesizes a filename-stem anchor when a file has no
+/// `[[anchor]]` line, so an empty `parsed.anchors` list is not enough. Require
+/// empty `<<refs>>`, no `explicit_anchor` attribute, no non-stem anchors, and
+/// no `[[` in the parsed text (falling back to a single file read).
+fn is_suppressible_plain_orphan(node: &DocumentNode) -> bool {
+    if !is_plain_markdown_or_text(&node.source_path) {
+        return false;
+    }
+    if !node
+        .parsed
+        .as_ref()
+        .is_none_or(|parsed| parsed.refs.is_empty())
+    {
+        return false;
+    }
+    if explicit_anchor_marked(node) {
+        return false;
+    }
+    let anchors_not_explicit = match node.parsed.as_ref() {
+        Some(parsed) => {
+            let stem = node
+                .source_path
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .unwrap_or("");
+            parsed.anchors.iter().all(|anchor| anchor == stem)
+        }
+        None => true,
+    };
+    anchors_not_explicit && !source_contains_explicit_anchor(node)
+}
+
+fn is_plain_markdown_or_text(path: &Path) -> bool {
+    matches!(
+        path.extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext.to_ascii_lowercase())
+            .as_deref(),
+        Some("md" | "markdown" | "txt")
+    )
+}
+
+fn explicit_anchor_marked(node: &DocumentNode) -> bool {
+    node.doc
+        .attributes
+        .get("explicit_anchor")
+        .is_some_and(|value| {
+            let value = value.trim();
+            !value.is_empty()
+                && !matches!(value.to_ascii_lowercase().as_str(), "false" | "0" | "no")
+        })
+}
+
+/// `true` when the node text contains an explicit `[[anchor]]` marker.
+fn source_contains_explicit_anchor(node: &DocumentNode) -> bool {
+    if let Some(parsed) = node.parsed.as_ref()
+        && !parsed.raw_content.is_empty()
+    {
+        return parsed.raw_content.contains("[[");
+    }
+    std::fs::read_to_string(&node.source_path)
+        .map(|text| text.contains("[["))
+        .unwrap_or(false)
 }
 
 /// Scan for include cycles — circular `include::` directives.
@@ -770,6 +906,398 @@ fn scan_low_confidence(graph: &AdenGraph<DocumentNode, AdenEdge>) -> Vec<Issue> 
     }
 
     issues
+}
+
+// ── Structural scanners (indexed code graph) ──────────────────────
+
+const COUPLING_HOTSPOT_CAP: usize = 10;
+const GOD_HUB_CAP: usize = 10;
+const DUPLICATE_MODULE_CAP: usize = 15;
+const DUPLICATE_PAIR_COMPARISON_CAP: usize = 500;
+
+/// Cross-area directed edges at or above `rules.coupling_hotspot_threshold`.
+///
+/// Areas are the first two `/`-separated segments of a code node's
+/// `source_file` (or the file embedded in an `aden://module/` anchor).
+/// `PartOf` / `Contains` edges that touch synthetic `mod-*` hubs are ignored.
+/// Results are the top 10 pairs by edge count, then area name.
+fn scan_coupling_hotspots(
+    code_graph: &AdenGraph<DocumentNode, AdenEdge>,
+    rules: &DiagnosticRules,
+) -> Vec<Issue> {
+    let mut area_of: HashMap<NodeIndex, String> = HashMap::new();
+    for idx in code_graph.graph.node_indices() {
+        let node = &code_graph.graph[idx];
+        if let Some(area) = code_node_area(node) {
+            area_of.insert(idx, area);
+        }
+    }
+
+    let mut counts: HashMap<(String, String), usize> = HashMap::new();
+    for edge_idx in code_graph.graph.edge_indices() {
+        let Some((src, tgt)) = code_graph.graph.edge_endpoints(edge_idx) else {
+            continue;
+        };
+        if synthetic_mod_edge(
+            code_graph.graph[edge_idx].edge_type,
+            code_graph.graph[src].anchor(),
+            code_graph.graph[tgt].anchor(),
+        ) {
+            continue;
+        }
+        let (Some(area_a), Some(area_b)) = (area_of.get(&src), area_of.get(&tgt)) else {
+            continue;
+        };
+        if area_a == area_b {
+            continue;
+        }
+        *counts.entry((area_a.clone(), area_b.clone())).or_default() += 1;
+    }
+
+    let mut pairs: Vec<((String, String), usize)> = counts
+        .into_iter()
+        .filter(|(_, count)| *count >= rules.coupling_hotspot_threshold)
+        .collect();
+    pairs.sort_by(|left, right| {
+        right
+            .1
+            .cmp(&left.1)
+            .then_with(|| left.0.0.cmp(&right.0.0))
+            .then_with(|| left.0.1.cmp(&right.0.1))
+    });
+    pairs.truncate(COUPLING_HOTSPOT_CAP);
+
+    pairs
+        .into_iter()
+        .map(|((area_a, area_b), edge_count)| Issue {
+            category: IssueCategory::CouplingHotspot,
+            severity: Severity::Info,
+            file: None,
+            line: None,
+            message: format!(
+                "Coupling hotspot: {area_a} -> {area_b} ({edge_count} cross-area edges)"
+            ),
+            suggestion: Some(
+                "Inspect this boundary and narrow the dependency surface.".to_string(),
+            ),
+            raw: serde_json::to_string(&serde_json::json!({
+                "area_a": area_a,
+                "area_b": area_b,
+                "edge_count": edge_count,
+            }))
+            .unwrap_or_default(),
+        })
+        .collect()
+}
+
+/// Code symbols whose directed degree meets `rules.god_hub_degree_threshold`.
+///
+/// Prose paths (`.md` / `.adoc` / `.txt`) and synthetic `mod-*` containment
+/// edges are ignored. Results are the top 10 by total degree, then anchor.
+fn scan_god_hubs(
+    code_graph: &AdenGraph<DocumentNode, AdenEdge>,
+    rules: &DiagnosticRules,
+) -> Vec<Issue> {
+    let mut degree: HashMap<NodeIndex, (usize, usize)> = HashMap::new();
+    for idx in code_graph.graph.node_indices() {
+        if is_god_hub_candidate(&code_graph.graph[idx]) {
+            degree.insert(idx, (0, 0));
+        }
+    }
+
+    for edge_idx in code_graph.graph.edge_indices() {
+        let Some((src, tgt)) = code_graph.graph.edge_endpoints(edge_idx) else {
+            continue;
+        };
+        if synthetic_mod_edge(
+            code_graph.graph[edge_idx].edge_type,
+            code_graph.graph[src].anchor(),
+            code_graph.graph[tgt].anchor(),
+        ) {
+            continue;
+        }
+        if let Some(ends) = degree.get_mut(&src) {
+            ends.1 += 1;
+        }
+        if let Some(ends) = degree.get_mut(&tgt) {
+            ends.0 += 1;
+        }
+    }
+
+    let mut hubs: Vec<(String, String, usize, usize)> = degree
+        .into_iter()
+        .filter_map(|(idx, (in_degree, out_degree))| {
+            let total = in_degree + out_degree;
+            if total < rules.god_hub_degree_threshold {
+                return None;
+            }
+            let node = &code_graph.graph[idx];
+            let file = indexed_source_file(node).unwrap_or_else(|| node.anchor().to_string());
+            Some((node.anchor().to_string(), file, in_degree, out_degree))
+        })
+        .collect();
+    hubs.sort_by(|left, right| {
+        let left_total = left.2 + left.3;
+        let right_total = right.2 + right.3;
+        right_total
+            .cmp(&left_total)
+            .then_with(|| left.0.cmp(&right.0))
+    });
+    hubs.truncate(GOD_HUB_CAP);
+
+    hubs.into_iter()
+        .map(|(anchor, file, in_degree, out_degree)| {
+            let total_degree = in_degree + out_degree;
+            Issue {
+                category: IssueCategory::GodHub,
+                severity: Severity::Info,
+                file: Some(file),
+                line: None,
+                message: format!(
+                    "God hub: {anchor} degree {total_degree} (in {in_degree}, out {out_degree})"
+                ),
+                suggestion: Some(
+                    "Split this hub or push dependencies behind a narrower interface.".to_string(),
+                ),
+                raw: serde_json::to_string(&serde_json::json!({
+                    "anchor": anchor,
+                    "in_degree": in_degree,
+                    "out_degree": out_degree,
+                    "total_degree": total_degree,
+                }))
+                .unwrap_or_default(),
+            }
+        })
+        .collect()
+}
+
+/// Same-named modules in different coarse areas with high verbatim line overlap.
+///
+/// Generic names (`index.*`, `mod.rs`, …) and test paths are skipped. At most
+/// 500 cross-area pairs are read, and at most 15 hits are returned.
+fn scan_duplicate_modules(
+    code_graph: &AdenGraph<DocumentNode, AdenEdge>,
+    path: &Path,
+    rules: &DiagnosticRules,
+) -> Vec<Issue> {
+    let mut files: BTreeSet<String> = BTreeSet::new();
+    for idx in code_graph.graph.node_indices() {
+        let node = &code_graph.graph[idx];
+        if !node.anchor().starts_with("aden://module/") {
+            continue;
+        }
+        let Some(source) = node.doc.attributes.get("source_file") else {
+            continue;
+        };
+        let normalized = source.replace('\\', "/");
+        if normalized.is_empty() || is_skipped_duplicate_path(&normalized) {
+            continue;
+        }
+        files.insert(normalized);
+    }
+
+    let mut groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for file in files {
+        let base = Path::new(&file)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(&file);
+        groups
+            .entry(base.to_ascii_lowercase())
+            .or_default()
+            .push(file);
+    }
+
+    struct Hit {
+        file_a: String,
+        file_b: String,
+        overlap: f64,
+        shared: usize,
+    }
+
+    let mut hits: Vec<Hit> = Vec::new();
+    let mut comparisons = 0usize;
+    'groups: for group in groups.values() {
+        if group.len() < 2 {
+            continue;
+        }
+        for left in 0..group.len() {
+            for right in (left + 1)..group.len() {
+                if comparisons >= DUPLICATE_PAIR_COMPARISON_CAP {
+                    break 'groups;
+                }
+                let file_a = &group[left];
+                let file_b = &group[right];
+                if coarse_area(file_a) == coarse_area(file_b) {
+                    continue;
+                }
+                comparisons += 1;
+                let Some((overlap, shared)) =
+                    line_overlap(path, file_a, file_b, rules.duplicate_module_min_overlap)
+                else {
+                    continue;
+                };
+                hits.push(Hit {
+                    file_a: file_a.clone(),
+                    file_b: file_b.clone(),
+                    overlap,
+                    shared,
+                });
+            }
+        }
+    }
+
+    hits.sort_by(|left, right| {
+        right
+            .overlap
+            .total_cmp(&left.overlap)
+            .then_with(|| right.shared.cmp(&left.shared))
+            .then_with(|| left.file_a.cmp(&right.file_a))
+            .then_with(|| left.file_b.cmp(&right.file_b))
+    });
+    hits.truncate(DUPLICATE_MODULE_CAP);
+
+    hits.into_iter()
+        .map(|hit| {
+            let percent = hit.overlap * 100.0;
+            Issue {
+                category: IssueCategory::DuplicateModule,
+                severity: Severity::Info,
+                file: Some(hit.file_a.clone()),
+                line: None,
+                message: format!(
+                    "Duplicate module: {} and {} overlap {percent:.0}% ({} shared lines)",
+                    hit.file_a, hit.file_b, hit.shared
+                ),
+                suggestion: Some("Share one module or drop the twin copy.".to_string()),
+                raw: serde_json::to_string(&serde_json::json!({
+                    "file_a": hit.file_a,
+                    "file_b": hit.file_b,
+                    "overlap_ratio": hit.overlap,
+                    "shared_lines": hit.shared,
+                }))
+                .unwrap_or_default(),
+            }
+        })
+        .collect()
+}
+
+fn code_node_area(node: &DocumentNode) -> Option<String> {
+    if !node.anchor().starts_with("aden://module/") {
+        return None;
+    }
+    indexed_source_file(node).map(|path| coarse_area(&path))
+}
+
+fn indexed_source_file(node: &DocumentNode) -> Option<String> {
+    if let Some(source) = node.doc.attributes.get("source_file")
+        && !source.is_empty()
+    {
+        return Some(source.replace('\\', "/"));
+    }
+    anchor_file(node.anchor()).map(str::to_string)
+}
+
+/// File portion of `aden://module/<file>#<symbol>`.
+fn anchor_file(anchor: &str) -> Option<&str> {
+    let rest = anchor.strip_prefix("aden://module/")?;
+    let file = rest.split('#').next().unwrap_or(rest);
+    if file.is_empty() { None } else { Some(file) }
+}
+
+/// First two path segments (`apps/web`, `crates/aden-cli`), else the first.
+fn coarse_area(path: &str) -> String {
+    let normalized = path.replace('\\', "/");
+    let trimmed = normalized.trim_start_matches("./");
+    let mut segments = trimmed.split('/').filter(|segment| !segment.is_empty());
+    match (segments.next(), segments.next()) {
+        (Some(first), Some(second)) => format!("{first}/{second}"),
+        (Some(first), None) => first.to_string(),
+        (None, _) => "unknown".to_string(),
+    }
+}
+
+fn is_god_hub_candidate(node: &DocumentNode) -> bool {
+    if !node.anchor().starts_with("aden://module/") {
+        return false;
+    }
+    node.doc
+        .attributes
+        .get("source_file")
+        .is_none_or(|path| !ends_with_prose_doc(path))
+}
+
+fn ends_with_prose_doc(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    lower.ends_with(".md") || lower.ends_with(".adoc") || lower.ends_with(".txt")
+}
+
+fn synthetic_mod_edge(edge_type: EdgeType, src_anchor: &str, tgt_anchor: &str) -> bool {
+    matches!(edge_type, EdgeType::Contains | EdgeType::PartOf)
+        && (src_anchor.starts_with("mod-") || tgt_anchor.starts_with("mod-"))
+}
+
+fn is_skipped_duplicate_path(path: &str) -> bool {
+    let normalized = path.replace('\\', "/").to_ascii_lowercase();
+    if normalized.contains(".test.")
+        || normalized.contains(".spec.")
+        || normalized.contains("_test.")
+        || has_path_segment(&normalized, "__tests__")
+        || has_path_segment(&normalized, "tests")
+        || has_path_segment(&normalized, "test")
+    {
+        return true;
+    }
+    let name = normalized.rsplit('/').next().unwrap_or(&normalized);
+    is_generic_filename(name)
+}
+
+fn has_path_segment(path: &str, segment: &str) -> bool {
+    path.split('/').any(|part| part == segment)
+}
+
+fn is_generic_filename(name: &str) -> bool {
+    if name == "mod.rs" || name == "lib.rs" || name == "__init__.py" {
+        return true;
+    }
+    const STEMS: &[&str] = &["index", "main", "types", "utils", "constants", "readme"];
+    STEMS.iter().any(|stem| {
+        name.strip_prefix(stem)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with('.'))
+    })
+}
+
+fn line_overlap(root: &Path, file_a: &str, file_b: &str, min_overlap: f64) -> Option<(f64, usize)> {
+    let text_a = std::fs::read_to_string(resolve_under(root, file_a)).ok()?;
+    let text_b = std::fs::read_to_string(resolve_under(root, file_b)).ok()?;
+    let lines_a = unique_trimmed_lines(&text_a);
+    let lines_b = unique_trimmed_lines(&text_b);
+    let min_len = lines_a.len().min(lines_b.len());
+    if min_len < 10 {
+        return None;
+    }
+    let shared = lines_a.intersection(&lines_b).count();
+    let overlap = shared as f64 / min_len as f64;
+    if overlap < min_overlap {
+        return None;
+    }
+    Some((overlap, shared))
+}
+
+fn unique_trimmed_lines(text: &str) -> HashSet<&str> {
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect()
+}
+
+fn resolve_under(root: &Path, relative: &str) -> PathBuf {
+    let candidate = PathBuf::from(relative);
+    if candidate.is_absolute() {
+        candidate
+    } else {
+        root.join(candidate)
+    }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────
@@ -1352,9 +1880,506 @@ mod tests {
             "missing-source"
         );
         assert_eq!(
+            format!("{}", IssueCategory::LowConfidence),
+            "low-confidence"
+        );
+        assert_eq!(
+            format!("{}", IssueCategory::CouplingHotspot),
+            "coupling-hotspot"
+        );
+        assert_eq!(format!("{}", IssueCategory::GodHub), "god-hub");
+        assert_eq!(
+            format!("{}", IssueCategory::DuplicateModule),
+            "duplicate-module"
+        );
+        assert_eq!(
             format!("{}", IssueCategory::Custom("test".to_string())),
             "custom-test"
         );
+    }
+
+    #[test]
+    fn test_structural_issue_category_serde_round_trip() {
+        for category in [
+            IssueCategory::CouplingHotspot,
+            IssueCategory::GodHub,
+            IssueCategory::DuplicateModule,
+        ] {
+            let json = serde_json::to_string(&category).expect("serialise category");
+            let back: IssueCategory = serde_json::from_str(&json).expect("deserialise category");
+            assert_eq!(back, category);
+        }
+    }
+
+    #[test]
+    fn test_suppressed_count_defaults_when_absent() {
+        let legacy = r#"{"issues":[],"error_count":0,"warning_count":0,"info_count":0,"health_score":100.0}"#;
+        let diagnosis: Diagnosis = serde_json::from_str(legacy).expect("legacy diagnosis");
+        assert_eq!(diagnosis.suppressed_plain_doc_orphans, 0);
+    }
+
+    #[test]
+    fn test_default_rules_keep_existing_switches() {
+        let rules = DiagnosticRules::default();
+        assert!(!rules.suppress_plain_doc_orphans);
+        assert!(rules.enable_structural_diagnostics);
+        assert_eq!(rules.coupling_hotspot_threshold, 25);
+        assert_eq!(rules.god_hub_degree_threshold, 25);
+        assert!((rules.duplicate_module_min_overlap - 0.30).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_suppress_plain_doc_orphans_keeps_adoc() {
+        let dir = make_temp_dir("suppress-plain-orphans");
+        write_file(&dir, "notes.md", "# Notes\n\nJust prose without anchors.\n");
+        write_file(&dir, "also.txt", "plain text file\nno anchors here\n");
+        write_file(&dir, "guide.adoc", "[[guide]]\n= Guide\n\nNo refs.\n");
+        write_file(
+            &dir,
+            "explicit.md",
+            "[[explicit-md]]\n\nThis markdown uses an AsciiDoc anchor.\n",
+        );
+
+        let rules = DiagnosticRules {
+            suppress_plain_doc_orphans: true,
+            ..Default::default()
+        };
+        let diagnosis = diagnose_with_rules(&dir, &rules).expect("diagnose");
+        let orphan_files: Vec<String> = diagnosis
+            .issues
+            .iter()
+            .filter(|issue| issue.category == IssueCategory::OrphanDocument)
+            .filter_map(|issue| issue.file.clone())
+            .collect();
+        assert!(
+            orphan_files.iter().any(|file| file.ends_with("guide.adoc")),
+            "adoc orphan must remain, got {orphan_files:?}"
+        );
+        assert!(
+            orphan_files
+                .iter()
+                .any(|file| file.ends_with("explicit.md")),
+            "markdown with [[anchor]] must remain, got {orphan_files:?}"
+        );
+        assert!(
+            orphan_files
+                .iter()
+                .all(|file| !file.ends_with("notes.md") && !file.ends_with("also.txt")),
+            "plain markdown/text orphans must be hidden, got {orphan_files:?}"
+        );
+        assert_eq!(diagnosis.suppressed_plain_doc_orphans, 2);
+        assert_eq!(diagnosis.error_count, 0);
+        assert_eq!(diagnosis.warning_count, 0);
+
+        let baseline = diagnose(&dir).expect("baseline diagnose");
+        assert_eq!(baseline.suppressed_plain_doc_orphans, 0);
+        let baseline_orphans = baseline
+            .issues
+            .iter()
+            .filter(|issue| issue.category == IssueCategory::OrphanDocument)
+            .count();
+        assert!(baseline_orphans > orphan_files.len());
+    }
+
+    fn push_node(
+        graph: &mut AdenGraph<DocumentNode, AdenEdge>,
+        anchor: &str,
+        source_file: Option<&str>,
+    ) {
+        let mut attributes = HashMap::new();
+        if let Some(source_file) = source_file {
+            attributes.insert("source_file".to_string(), source_file.to_string());
+        }
+        graph
+            .add_node(DocumentNode {
+                doc: aden_core::Document {
+                    anchor: anchor.to_string(),
+                    node_type: aden_core::NodeType::Function,
+                    attributes,
+                    blocks: Vec::new(),
+                    source_span: None,
+                    metadata: None,
+                    confidence: 1.0,
+                },
+                source_path: PathBuf::from(source_file.unwrap_or(anchor)),
+                parsed: None,
+            })
+            .expect("add node");
+    }
+
+    fn link(
+        graph: &mut AdenGraph<DocumentNode, AdenEdge>,
+        src: &str,
+        tgt: &str,
+        edge_type: EdgeType,
+    ) {
+        graph
+            .add_edge_by_anchor(src, tgt, AdenEdge { edge_type })
+            .expect("add edge");
+    }
+
+    #[test]
+    fn test_scan_coupling_hotspots_orders_cross_area_edges() {
+        let mut graph = AdenGraph::new();
+        push_node(
+            &mut graph,
+            "aden://module/apps/web/src/a.ts#w1",
+            Some("apps/web/src/a.ts"),
+        );
+        push_node(
+            &mut graph,
+            "aden://module/apps/web/src/b.ts#w2",
+            Some("apps/web/src/b.ts"),
+        );
+        push_node(&mut graph, "aden://module/apps/web/src/c.ts#w3", None);
+        push_node(
+            &mut graph,
+            "aden://module/apps/mobile/src/a.ts#m1",
+            Some("apps/mobile/src/a.ts"),
+        );
+        push_node(
+            &mut graph,
+            "aden://module/apps/mobile/src/b.ts#m2",
+            Some("apps/mobile/src/b.ts"),
+        );
+        push_node(
+            &mut graph,
+            "aden://module/packages/contracts/src/api.ts#c1",
+            Some("packages/contracts/src/api.ts"),
+        );
+        push_node(&mut graph, "mod-web", None);
+        push_node(&mut graph, "aden://doc/readme#h", Some("docs/readme.md"));
+
+        link(
+            &mut graph,
+            "aden://module/apps/web/src/a.ts#w1",
+            "aden://module/apps/mobile/src/a.ts#m1",
+            EdgeType::Calls,
+        );
+        link(
+            &mut graph,
+            "aden://module/apps/web/src/b.ts#w2",
+            "aden://module/apps/mobile/src/a.ts#m1",
+            EdgeType::Calls,
+        );
+        link(
+            &mut graph,
+            "aden://module/apps/web/src/a.ts#w1",
+            "aden://module/apps/mobile/src/b.ts#m2",
+            EdgeType::Imports,
+        );
+        // Anchor file fallback: aden://module/apps/web/src/c.ts → area apps/web.
+        link(
+            &mut graph,
+            "aden://module/apps/web/src/c.ts#w3",
+            "aden://module/apps/mobile/src/a.ts#m1",
+            EdgeType::Calls,
+        );
+
+        link(
+            &mut graph,
+            "aden://module/apps/mobile/src/a.ts#m1",
+            "aden://module/apps/web/src/a.ts#w1",
+            EdgeType::Calls,
+        );
+        link(
+            &mut graph,
+            "aden://module/apps/mobile/src/b.ts#m2",
+            "aden://module/apps/web/src/b.ts#w2",
+            EdgeType::Calls,
+        );
+        link(
+            &mut graph,
+            "aden://module/apps/mobile/src/a.ts#m1",
+            "aden://module/apps/web/src/b.ts#w2",
+            EdgeType::Imports,
+        );
+
+        link(
+            &mut graph,
+            "aden://module/packages/contracts/src/api.ts#c1",
+            "aden://module/apps/web/src/a.ts#w1",
+            EdgeType::Calls,
+        );
+        link(
+            &mut graph,
+            "aden://module/packages/contracts/src/api.ts#c1",
+            "aden://module/apps/web/src/a.ts#w1",
+            EdgeType::Imports,
+        );
+        link(
+            &mut graph,
+            "aden://module/packages/contracts/src/api.ts#c1",
+            "aden://module/apps/web/src/a.ts#w1",
+            EdgeType::Uses,
+        );
+
+        // Same-area and synthetic containment must not count.
+        link(
+            &mut graph,
+            "aden://module/apps/web/src/a.ts#w1",
+            "aden://module/apps/web/src/b.ts#w2",
+            EdgeType::Calls,
+        );
+        link(
+            &mut graph,
+            "mod-web",
+            "aden://module/apps/web/src/a.ts#w1",
+            EdgeType::Contains,
+        );
+        link(
+            &mut graph,
+            "aden://module/apps/web/src/a.ts#w1",
+            "mod-web",
+            EdgeType::PartOf,
+        );
+        // Below the threshold.
+        link(
+            &mut graph,
+            "aden://module/apps/web/src/a.ts#w1",
+            "aden://module/packages/contracts/src/api.ts#c1",
+            EdgeType::Calls,
+        );
+
+        let rules = DiagnosticRules {
+            coupling_hotspot_threshold: 3,
+            ..Default::default()
+        };
+        let issues = scan_coupling_hotspots(&graph, &rules);
+        assert!(issues.iter().all(|issue| issue.severity == Severity::Info));
+        assert!(
+            issues
+                .iter()
+                .all(|issue| issue.category == IssueCategory::CouplingHotspot)
+        );
+        let pairs: Vec<(String, String, u64)> = issues
+            .iter()
+            .map(|issue| {
+                let raw: serde_json::Value = serde_json::from_str(&issue.raw).expect("raw json");
+                (
+                    raw["area_a"].as_str().unwrap().to_string(),
+                    raw["area_b"].as_str().unwrap().to_string(),
+                    raw["edge_count"].as_u64().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            pairs,
+            vec![
+                ("apps/web".to_string(), "apps/mobile".to_string(), 4),
+                ("apps/mobile".to_string(), "apps/web".to_string(), 3),
+                ("packages/contracts".to_string(), "apps/web".to_string(), 3),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_scan_god_hubs_ignores_prose_and_mod_containment() {
+        let mut graph = AdenGraph::new();
+        let hub = "aden://module/apps/web/src/hub.ts#Hub";
+        let a_hub = "aden://module/apps/web/src/a_hub.ts#A";
+        let b_hub = "aden://module/apps/web/src/b_hub.ts#B";
+        push_node(&mut graph, hub, Some("apps/web/src/hub.ts"));
+        push_node(&mut graph, a_hub, Some("apps/web/src/a_hub.ts"));
+        push_node(&mut graph, b_hub, Some("apps/web/src/b_hub.ts"));
+        for name in [
+            "h1", "h2", "h3", "h4", "a1", "a2", "a3", "b1", "b2", "b3", "r1", "r2", "r3", "r4",
+        ] {
+            push_node(
+                &mut graph,
+                &format!("aden://module/apps/web/src/{name}.ts#{name}"),
+                Some(&format!("apps/web/src/{name}.ts")),
+            );
+        }
+        push_node(
+            &mut graph,
+            "aden://module/apps/web/README.md#doc",
+            Some("apps/web/README.md"),
+        );
+        push_node(&mut graph, "mod-project", None);
+
+        for name in ["h1", "h2", "h3", "h4"] {
+            link(
+                &mut graph,
+                hub,
+                &format!("aden://module/apps/web/src/{name}.ts#{name}"),
+                EdgeType::Calls,
+            );
+        }
+        link(
+            &mut graph,
+            "aden://module/apps/web/src/h1.ts#h1",
+            hub,
+            EdgeType::Calls,
+        );
+        link(
+            &mut graph,
+            "aden://module/apps/web/src/h2.ts#h2",
+            hub,
+            EdgeType::Calls,
+        );
+        for name in ["a1", "a2", "a3"] {
+            link(
+                &mut graph,
+                a_hub,
+                &format!("aden://module/apps/web/src/{name}.ts#{name}"),
+                EdgeType::Calls,
+            );
+        }
+        link(
+            &mut graph,
+            "aden://module/apps/web/src/a1.ts#a1",
+            a_hub,
+            EdgeType::Calls,
+        );
+        for name in ["b1", "b2", "b3"] {
+            link(
+                &mut graph,
+                b_hub,
+                &format!("aden://module/apps/web/src/{name}.ts#{name}"),
+                EdgeType::Calls,
+            );
+        }
+        link(
+            &mut graph,
+            "aden://module/apps/web/src/b1.ts#b1",
+            b_hub,
+            EdgeType::Calls,
+        );
+        for name in ["r1", "r2", "r3", "r4"] {
+            link(
+                &mut graph,
+                "aden://module/apps/web/README.md#doc",
+                &format!("aden://module/apps/web/src/{name}.ts#{name}"),
+                EdgeType::Calls,
+            );
+        }
+        link(&mut graph, "mod-project", hub, EdgeType::Contains);
+        link(&mut graph, hub, "mod-project", EdgeType::PartOf);
+
+        let rules = DiagnosticRules {
+            god_hub_degree_threshold: 4,
+            ..Default::default()
+        };
+        let issues = scan_god_hubs(&graph, &rules);
+        assert!(issues.iter().all(|issue| issue.severity == Severity::Info));
+        let hubs: Vec<(String, u64, u64, u64)> = issues
+            .iter()
+            .map(|issue| {
+                let raw: serde_json::Value = serde_json::from_str(&issue.raw).expect("raw json");
+                (
+                    raw["anchor"].as_str().unwrap().to_string(),
+                    raw["in_degree"].as_u64().unwrap(),
+                    raw["out_degree"].as_u64().unwrap(),
+                    raw["total_degree"].as_u64().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            hubs,
+            vec![
+                (hub.to_string(), 2, 4, 6),
+                (a_hub.to_string(), 1, 3, 4),
+                (b_hub.to_string(), 1, 3, 4),
+            ]
+        );
+        assert_eq!(issues[0].file.as_deref(), Some("apps/web/src/hub.ts"));
+        assert!(issues.iter().all(|issue| {
+            issue
+                .file
+                .as_deref()
+                .is_none_or(|file| !file.ends_with(".md"))
+        }));
+    }
+
+    #[test]
+    fn test_scan_duplicate_modules_overlap_across_areas() {
+        let dir = make_temp_dir("duplicate-modules");
+        let sheet: String = (0..12).map(|i| format!("sheet line {i}\n")).collect();
+        let partial_a: String = (0..10).map(|i| format!("p {i}\n")).collect();
+        let mut partial_b = String::new();
+        for i in 0..3 {
+            partial_b.push_str(&format!("p {i}\n"));
+        }
+        for i in 0..7 {
+            partial_b.push_str(&format!("q {i}\n"));
+        }
+        let same: String = (0..12).map(|i| format!("same {i}\n")).collect();
+        let loose_a: String = (0..12).map(|i| format!("left {i}\n")).collect();
+        let loose_b: String = (0..12).map(|i| format!("right {i}\n")).collect();
+        let tiny = "one\ntwo\nthree\nfour\nfive\n";
+
+        for (rel, body) in [
+            ("apps/web/src/NewTaskSheet.tsx", sheet.as_str()),
+            ("apps/mobile/src/NewTaskSheet.tsx", sheet.as_str()),
+            ("apps/web/src/Partial.tsx", partial_a.as_str()),
+            ("apps/mobile/src/Partial.tsx", partial_b.as_str()),
+            ("apps/web/src/a/Same.tsx", same.as_str()),
+            ("apps/web/src/b/Same.tsx", same.as_str()),
+            ("apps/web/src/index.tsx", same.as_str()),
+            ("apps/mobile/src/index.tsx", same.as_str()),
+            ("apps/web/src/Widget.test.tsx", same.as_str()),
+            ("apps/mobile/src/Widget.test.tsx", same.as_str()),
+            ("apps/web/src/Tiny.tsx", tiny),
+            ("apps/mobile/src/Tiny.tsx", tiny),
+            ("apps/web/src/Loose.tsx", loose_a.as_str()),
+            ("apps/mobile/src/Loose.tsx", loose_b.as_str()),
+        ] {
+            let path = dir.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, body).unwrap();
+        }
+
+        let mut graph = AdenGraph::new();
+        for rel in [
+            "apps/web/src/NewTaskSheet.tsx",
+            "apps/mobile/src/NewTaskSheet.tsx",
+            "apps/web/src/Partial.tsx",
+            "apps/mobile/src/Partial.tsx",
+            "apps/web/src/a/Same.tsx",
+            "apps/web/src/b/Same.tsx",
+            "apps/web/src/index.tsx",
+            "apps/mobile/src/index.tsx",
+            "apps/web/src/Widget.test.tsx",
+            "apps/mobile/src/Widget.test.tsx",
+            "apps/web/src/Tiny.tsx",
+            "apps/mobile/src/Tiny.tsx",
+            "apps/web/src/Loose.tsx",
+            "apps/mobile/src/Loose.tsx",
+        ] {
+            push_node(&mut graph, &format!("aden://module/{rel}#sym"), Some(rel));
+        }
+
+        let rules = DiagnosticRules {
+            duplicate_module_min_overlap: 0.30,
+            ..Default::default()
+        };
+        let issues = scan_duplicate_modules(&graph, &dir, &rules);
+        assert_eq!(issues.len(), 2);
+        assert!(issues.iter().all(|issue| {
+            issue.category == IssueCategory::DuplicateModule && issue.severity == Severity::Info
+        }));
+        let pairs: Vec<(String, String, f64, u64)> = issues
+            .iter()
+            .map(|issue| {
+                let raw: serde_json::Value = serde_json::from_str(&issue.raw).expect("raw json");
+                (
+                    raw["file_a"].as_str().unwrap().to_string(),
+                    raw["file_b"].as_str().unwrap().to_string(),
+                    raw["overlap_ratio"].as_f64().unwrap(),
+                    raw["shared_lines"].as_u64().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(pairs[0].0, "apps/mobile/src/NewTaskSheet.tsx");
+        assert_eq!(pairs[0].1, "apps/web/src/NewTaskSheet.tsx");
+        assert!((pairs[0].2 - 1.0).abs() < f64::EPSILON);
+        assert_eq!(pairs[0].3, 12);
+        assert_eq!(issues[0].file.as_deref(), Some(pairs[0].0.as_str()));
+        assert_eq!(pairs[1].0, "apps/mobile/src/Partial.tsx");
+        assert_eq!(pairs[1].1, "apps/web/src/Partial.tsx");
+        assert!((pairs[1].2 - 0.3).abs() < 1e-9);
+        assert_eq!(pairs[1].3, 3);
     }
 
     #[test]

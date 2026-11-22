@@ -9,6 +9,14 @@ All notable changes to aden are documented here. Format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **Credential scanning (`aden-core`, `aden gen`)** — Require realistic secret token formats in content filtering, ignore common TypeScript identifiers and placeholder literals, and log the triggering rule name and 1-based line number when skipping a file.
+- **TypeScript call linking (`aden-parse`, `aden gen`)** — Scope imported TypeScript and CommonJS call targets to matching resolved source files and modules, and classify unresolvable package and builtin calls as `Unresolved` instead of polymorphic drops.
+- **Structural diagnostics (`aden-diagnose`, `aden diagnose`)** — Emit `CouplingHotspot`, `GodHub`, and `DuplicateModule` info findings from the indexed code graph, and suppress plain Markdown/text `OrphanDocument` noise when `.aden/` is not configured.
+- **Bounded communities & `ask` ranking (`aden-cli`, `aden-mcp`)** — Sort `aden communities` largest-first with `--top` (alias for `--limit`), `--summary`, and `--max-members` (with MCP parity), and recognize inline `::tests::` / `#tests::` Rust test anchors during `aden ask` symbol ranking.
+- **Incremental Fjall writes (`aden-store`, `aden gen`)** — Coalesce document write batches while preserving collision order, and bulk-delete stale nodes via `delete_nodes_bulk` during incremental graph generation.
+
 ## [0.4.4]
 
 ### Added

@@ -280,6 +280,16 @@ pub trait GraphStorage: Send + Sync {
         Ok(())
     }
 
+    /// Delete multiple nodes and cascade their incident edges and index entries.
+    /// Backends should override with batched atomic commits to avoid per-node WAL
+    /// commit amplification during large incremental updates.
+    fn delete_nodes_bulk(&self, anchors: &[&str]) -> Result<(), StoreError> {
+        for anchor in anchors {
+            self.delete_node(anchor)?;
+        }
+        Ok(())
+    }
+
     /// Get all edges of a type.
     fn get_edges_by_type(&self, edge_type: &EdgeType) -> Result<Vec<(String, String)>, StoreError>;
 
@@ -974,6 +984,60 @@ mod tests {
         assert!(storage.get_document("up").unwrap().is_some());
         assert!(storage.get_document("down").unwrap().is_some());
 
+        fs::remove_dir_all(&path).ok();
+    }
+
+    #[test]
+    fn delete_nodes_bulk_cascades_mutually_connected_and_surviving_neighbors() {
+        let path = temp_path();
+        let storage = Storage::new(&path).unwrap();
+        for a in ["A", "B", "C", "D"] {
+            storage
+                .put_documents_bulk(&[(note(a), "base".into())])
+                .unwrap();
+        }
+        for (src, dst) in [
+            ("A", "B"),
+            ("B", "A"),
+            ("A", "A"),
+            ("A", "C"),
+            ("B", "C"),
+            ("D", "A"),
+            ("D", "B"),
+            ("D", "C"),
+        ] {
+            storage.put_edge(src, dst, EdgeType::Calls).unwrap();
+        }
+        storage.delete_nodes_bulk(&["A", "B", "A"]).unwrap();
+        for a in ["A", "B"] {
+            assert!(storage.get_document(a).unwrap().is_none());
+            assert!(storage.get_base_snapshot(a).unwrap().is_none());
+            assert!(storage.get_outgoing_edges(a).unwrap().is_empty());
+            assert!(storage.get_incoming_edges(a).unwrap().is_empty());
+        }
+        assert!(
+            storage
+                .get_source_spans()
+                .unwrap()
+                .iter()
+                .all(|(a, _)| a != "A" && a != "B")
+        );
+        for a in ["C", "D"] {
+            assert!(storage.get_document(a).unwrap().is_some());
+        }
+        assert_eq!(
+            storage.get_incoming_edges("C").unwrap(),
+            vec![("D".into(), EdgeType::Calls)]
+        );
+        assert_eq!(
+            storage.get_outgoing_edges("D").unwrap(),
+            vec![("C".into(), EdgeType::Calls)]
+        );
+        assert_eq!(
+            storage.get_edges_by_type(&EdgeType::Calls).unwrap(),
+            vec![("D".into(), "C".into())]
+        );
+        drop(storage);
         fs::remove_dir_all(&path).ok();
     }
 

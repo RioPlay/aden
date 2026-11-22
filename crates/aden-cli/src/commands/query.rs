@@ -1501,6 +1501,10 @@ pub(crate) fn is_test_anchor(anchor: &str) -> bool {
         ".spec.",
         "_spec.",
         "spec_",
+        "#tests::",
+        "::tests::",
+        "#test::",
+        "::test::",
     ];
     MARKERS.iter().any(|m| a.contains(m))
 }
@@ -6297,10 +6301,18 @@ mod tests {
         assert!(is_test_anchor("aden://module/p/foo.test.ts#x"));
         assert!(is_test_anchor("aden://module/p/foo.spec.js#x"));
         assert!(is_test_anchor("aden://module/p/__tests__/foo.js#x"));
+        assert!(is_test_anchor(
+            "aden://module/aden-mcp/src/resident.rs#tests::cancellation_leaves_no_worker_or_stale_response_for_next_call"
+        ));
+        assert!(is_test_anchor("aden://module/p/foo.rs#sub::tests::case"));
         // Production code must NOT be flagged.
         assert!(!is_test_anchor("aden://module/p/src/click/core.py#Command"));
         assert!(!is_test_anchor("aden://module/p/command.go#Execute"));
         assert!(!is_test_anchor("aden://module/p/latest.ts#x"));
+        assert!(!is_test_anchor(
+            "aden://module/aden-mcp/src/resident.rs#ResidentSession::open"
+        ));
+        assert!(!is_test_anchor("aden://module/p/foo.rs#attestation_verify"));
     }
 
     #[test]

@@ -287,78 +287,189 @@ pub fn is_secret_path(relative: &Path) -> bool {
     false
 }
 
+/// The first high-confidence credential found in a file: which rule fired and
+/// the 1-based line where the match starts. Callers report this so a skipped
+/// file can be explained without echoing the secret itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SecretMatch {
+    pub rule: &'static str,
+    pub line: usize,
+}
+
+/// Whether `content` holds a high-confidence credential; see
+/// [`detect_high_confidence_secret`] for the rules and the matched location.
+pub fn content_has_high_confidence_secret(content: &str) -> bool {
+    detect_high_confidence_secret(content).is_some()
+}
+
 /// Detect high-confidence credential patterns before indexing a file or
 /// emitting graph-backed source (CWE-798 / CWE-200).
 ///
 /// This complements [`is_secret_path`] by checking structured token and
 /// private-key header patterns inside ordinary source or configuration files.
-/// Ephemeral `grep` and `audit` retain access for remediation.
-pub fn content_has_high_confidence_secret(content: &str) -> bool {
-    let content = content.as_bytes();
-    if has_armored_header(content) {
-        return true;
-    }
-    // Provider tokens have a fixed prefix followed by a minimum body length.
-    const TOKEN_PREFIXES: [(&[u8], usize); 9] = [
-        (b"AKIA", 16),  // AWS access key id
-        (b"ASIA", 16),  // AWS temporary access key id
-        (b"ghp_", 36),  // GitHub personal access token
-        (b"gho_", 36),  // GitHub OAuth token
-        (b"ghs_", 36),  // GitHub server-to-server token
-        (b"ghr_", 36),  // GitHub refresh token
-        (b"xoxb-", 10), // Slack bot token
-        (b"xoxp-", 10), // Slack user token
-        (b"sk-", 20),   // OpenAI keys, including project keys
+/// Ephemeral `grep` and `audit` retain access for remediation. Private-key
+/// headers are checked first, then provider tokens in table order.
+pub fn detect_high_confidence_secret(content: &str) -> Option<SecretMatch> {
+    // Provider tokens have a fixed prefix; each kind validates its own body.
+    const TOKEN_PREFIXES: [(&[u8], TokenKind); 9] = [
+        (b"AKIA", TokenKind::Aws),    // AWS access key id
+        (b"ASIA", TokenKind::Aws),    // AWS temporary access key id
+        (b"ghp_", TokenKind::GitHub), // GitHub personal access token
+        (b"gho_", TokenKind::GitHub), // GitHub OAuth token
+        (b"ghs_", TokenKind::GitHub), // GitHub server-to-server token
+        (b"ghr_", TokenKind::GitHub), // GitHub refresh token
+        (b"xoxb-", TokenKind::Slack), // Slack bot token
+        (b"xoxp-", TokenKind::Slack), // Slack user token
+        (b"sk-", TokenKind::ApiKey),  // OpenAI and Anthropic keys
     ];
-    static FINDERS: LazyLock<[(memmem::Finder<'static>, usize); TOKEN_PREFIXES.len()]> =
-        LazyLock::new(|| {
-            TOKEN_PREFIXES.map(|(prefix, min_len)| (memmem::Finder::new(prefix), min_len))
-        });
-    FINDERS
-        .iter()
-        .any(|(prefix, min_len)| has_prefixed_token(content, prefix, *min_len))
+    static FINDERS: LazyLock<[(memmem::Finder<'static>, TokenKind); TOKEN_PREFIXES.len()]> =
+        LazyLock::new(|| TOKEN_PREFIXES.map(|(prefix, kind)| (memmem::Finder::new(prefix), kind)));
+
+    let bytes = content.as_bytes();
+    let (rule, offset) = find_armored_header(bytes).or_else(|| {
+        FINDERS.iter().find_map(|(prefix, kind)| {
+            find_prefixed_token(bytes, prefix, *kind).map(|offset| (kind.rule(), offset))
+        })
+    })?;
+    let line = memchr::memchr_iter(b'\n', &bytes[..offset]).count() + 1;
+    Some(SecretMatch { rule, line })
 }
 
-/// Match a PEM or PGP private-key label and delimiter on a single header line.
-fn has_armored_header(content: &[u8]) -> bool {
+/// Find a PEM or PGP private-key label and delimiter on a single header line,
+/// returning the rule name and the offset of its `BEGIN` marker.
+fn find_armored_header(content: &[u8]) -> Option<(&'static str, usize)> {
     const BEGIN: &[u8] = b"-----BEGIN ";
     // Split the private-key labels so the implementation stays indexable.
     const PEM_LABEL: &[u8] = concat!("PRIVATE", " KEY").as_bytes();
     const PGP_LABEL: &[u8] = concat!("PGP PRIVATE", " KEY BLOCK").as_bytes();
     static FINDER: LazyLock<memmem::Finder<'static>> = LazyLock::new(|| memmem::Finder::new(BEGIN));
-    FINDER.find_iter(content).any(|offset| {
+    FINDER.find_iter(content).find_map(|offset| {
         let tail = &content[offset + BEGIN.len()..];
-        let Some(label_end) = tail
-            .iter()
-            .position(|byte| !byte.is_ascii_uppercase() && !byte.is_ascii_digit() && *byte != b' ')
-        else {
-            return false;
-        };
+        let label_end = tail.iter().position(|byte| {
+            !byte.is_ascii_uppercase() && !byte.is_ascii_digit() && *byte != b' '
+        })?;
         // The first byte outside the allowed label must start the delimiter.
         // This also bounds each label to its own line and avoids scanning the
         // same suffix again when malformed BEGIN markers repeat.
-        tail[label_end..].starts_with(b"-----")
-            && (tail[..label_end].ends_with(PEM_LABEL) || tail[..label_end].ends_with(PGP_LABEL))
+        if !tail[label_end..].starts_with(b"-----") {
+            return None;
+        }
+        let label = &tail[..label_end];
+        if label.ends_with(PGP_LABEL) {
+            Some(("pgp_private_key", offset))
+        } else if label.ends_with(PEM_LABEL) {
+            Some(("pem_private_key", offset))
+        } else {
+            None
+        }
     })
 }
 
-/// Match a provider prefix followed by at least `min_len` token characters.
-/// Provider prefixes are token characters and all minimums cover `EXAMPLE`.
-fn has_prefixed_token(mut rest: &[u8], prefix: &memmem::Finder<'_>, min_len: usize) -> bool {
-    while let Some(offset) = prefix.find(rest) {
-        let body = &rest[offset + prefix.needle().len()..];
-        let run_len = body
-            .iter()
-            .take_while(|byte| byte.is_ascii_alphanumeric() || **byte == b'_' || **byte == b'-')
-            .count();
-        if run_len >= min_len && !body[..run_len].ends_with(b"EXAMPLE") {
-            return true;
+/// Provider token families. Each one decides which byte may precede its
+/// prefix, which bytes form the token body, and when that body is a credential.
+#[derive(Debug, Clone, Copy)]
+enum TokenKind {
+    /// `AKIA`/`ASIA` + exactly 16 `[A-Z0-9]`, standing alone as a word.
+    Aws,
+    /// `gh?_` + at least 36 `[A-Za-z0-9]`.
+    GitHub,
+    /// `xox?-` + at least 10 `[A-Za-z0-9_-]`.
+    Slack,
+    /// `sk-` + at least 20 `[A-Za-z0-9_-]` with a digit or uppercase letter.
+    ApiKey,
+}
+
+impl TokenKind {
+    fn rule(self) -> &'static str {
+        match self {
+            Self::Aws => "aws_access_key",
+            Self::GitHub => "github_token",
+            Self::Slack => "slack_token",
+            Self::ApiKey => "openai_or_anthropic_key",
         }
-        // Nested occurrences of this prefix have shorter bodies and share
-        // the same EXAMPLE suffix if they meet the minimum length.
-        rest = &body[run_len..];
     }
-    false
+
+    /// Whether `byte` directly before the prefix makes it part of a larger
+    /// identifier (`task-…`, `EURASIA…`). Slack and API-key prefixes may
+    /// follow `_` (`SLACK_TOKEN_xoxb-…`); kebab-case `-` never starts a token.
+    fn joins_left(self, byte: u8) -> bool {
+        match self {
+            Self::Aws | Self::GitHub => is_word_byte(byte),
+            Self::Slack | Self::ApiKey => byte.is_ascii_alphanumeric() || byte == b'-',
+        }
+    }
+
+    fn is_body_byte(self, byte: u8) -> bool {
+        match self {
+            Self::Aws => byte.is_ascii_uppercase() || byte.is_ascii_digit(),
+            Self::GitHub => byte.is_ascii_alphanumeric(),
+            Self::Slack | Self::ApiKey => is_word_byte(byte),
+        }
+    }
+
+    /// Validate the maximal body run after a prefix; `next` is the byte after it.
+    fn accepts(self, body: &[u8], next: Option<u8>) -> bool {
+        if body.ends_with(b"EXAMPLE") {
+            return false;
+        }
+        match self {
+            Self::Aws => body.len() == 16 && !next.is_some_and(is_word_byte),
+            Self::GitHub => body.len() >= 36,
+            Self::Slack => body.len() >= 10,
+            // Kebab-case identifiers are all lowercase; real keys are not.
+            Self::ApiKey => {
+                body.len() >= 20
+                    && body
+                        .iter()
+                        .any(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit())
+                    && !["placeholder", "dummy", "fake"].iter().any(|word| {
+                        body.windows(word.len())
+                            .any(|window| window.eq_ignore_ascii_case(word.as_bytes()))
+                    })
+            }
+        }
+    }
+}
+
+fn is_word_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-'
+}
+
+/// Offset of the first `prefix` occurrence that starts a valid `kind` token.
+///
+/// A prefix glued to a preceding identifier is skipped one byte at a time, so
+/// overlapping or nested prefixes are still tried. A prefix that starts a body
+/// run but fails validation skips the whole run: nested prefixes inside it
+/// share its end and character set, so they can only be shorter, keep the same
+/// `EXAMPLE` suffix, and hold a subset of its digits and uppercase letters. A
+/// dummy word anywhere in an API-key run marks the whole run as a placeholder.
+fn find_prefixed_token(
+    content: &[u8],
+    prefix: &memmem::Finder<'_>,
+    kind: TokenKind,
+) -> Option<usize> {
+    let mut start = 0;
+    while let Some(found) = prefix.find(&content[start..]) {
+        let offset = start + found;
+        if offset > 0 && kind.joins_left(content[offset - 1]) {
+            start = offset + 1;
+            continue;
+        }
+        let body_start = offset + prefix.needle().len();
+        let run_len = content[body_start..]
+            .iter()
+            .take_while(|byte| kind.is_body_byte(**byte))
+            .count();
+        let body_end = body_start + run_len;
+        if kind.accepts(
+            &content[body_start..body_end],
+            content.get(body_end).copied(),
+        ) {
+            return Some(offset);
+        }
+        start = body_end;
+    }
+    None
 }
 
 /// A compiled path filter combining `.adenignore` and `.adenallow` rules.
@@ -988,6 +1099,92 @@ mod tests {
             assert!(
                 !content_has_high_confidence_secret(src),
                 "false positive on: {src:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn content_secret_ignores_identifiers_that_contain_token_prefixes() {
+        // Regression: production TypeScript was skipped because `sk-` matched
+        // inside `task-…`/`ask-…` test ids and `ASIA` matched mid-identifier.
+        for src in [
+            "<button data-testid=\"task-create-new-session-button\" />".to_owned(),
+            "openModal('ask-user-question-modal');".to_owned(),
+            "<div className=\"NewTaskSelector-sk-panel\" />".to_owned(),
+            "export const ASIA_PACIFIC_REGION_CONFIG = load();".to_owned(),
+            "const region = \"EURASIA12345678901234\";".to_owned(),
+            "navigate(\"sk-some-long-kebab-case-identifier\");".to_owned(),
+            format!("key = \"sk-dummy-{}\"", "A1".repeat(10)),
+            format!("key = \"AKIA{}x\"", "Q7".repeat(8)),
+            format!("token = x_ghp_{}", "a1B2".repeat(9)),
+        ] {
+            assert_eq!(
+                detect_high_confidence_secret(&src),
+                None,
+                "false positive on: {src:?}"
+            );
+        }
+        assert_eq!(
+            detect_high_confidence_secret(include_str!("filter.rs")),
+            None
+        );
+    }
+
+    #[test]
+    fn detect_secret_reports_rule_and_line() {
+        // Fixtures are assembled at runtime so this file stays indexable. The
+        // preamble holds near-misses the scan must step past on every rule.
+        let preamble = "// task-create-new-session-button\n\
+                        navigate(\"sk-some-long-kebab-case-identifier\");\n\
+                        fn main() {}\n";
+        for (extra_lines, secret, rule) in [
+            (
+                0,
+                format!("-----BEGIN RSA {}", concat!("PRIVATE", " KEY-----")),
+                "pem_private_key",
+            ),
+            (
+                1,
+                format!("-----BEGIN {}", concat!("PGP PRIVATE", " KEY BLOCK-----")),
+                "pgp_private_key",
+            ),
+            (
+                2,
+                format!("key = \"AKIA{}\"", "Q7".repeat(8)),
+                "aws_access_key",
+            ),
+            (
+                3,
+                format!("token: ghp_{}", "a1B2".repeat(9)),
+                "github_token",
+            ),
+            (
+                4,
+                format!("SLACK_BOT=xoxb-{}", "123-abc".repeat(3)),
+                "slack_token",
+            ),
+            (
+                5,
+                format!("OPENAI_API_KEY=sk-proj-{}", "Ab3".repeat(8)),
+                "openai_or_anthropic_key",
+            ),
+            (
+                6,
+                format!("ANTHROPIC_API_KEY=\"sk-ant-api03-{}\"", "xY9_".repeat(6)),
+                "openai_or_anthropic_key",
+            ),
+        ] {
+            let content = format!(
+                "{preamble}{}{secret}\ntrailing();\n",
+                "\n".repeat(extra_lines)
+            );
+            assert_eq!(
+                detect_high_confidence_secret(&content),
+                Some(SecretMatch {
+                    rule,
+                    line: 4 + extra_lines,
+                }),
+                "{content:?}"
             );
         }
     }

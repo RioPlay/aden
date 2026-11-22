@@ -1,7 +1,7 @@
 // Copyright (c) 2026 RioPlay <rioplay@rioplay.dev>
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use aden_store::GraphStorage;
+use aden_store::{GraphStorage, StoreError};
 use std::collections::{HashMap, HashSet};
 
 /// The per-kind edge record slices `link_store_edges` writes, bundled into one
@@ -165,6 +165,282 @@ fn resolve_callee<'a>(
         return Some(r);
     }
     None
+}
+
+const TS_EXTENSIONS: [&str; 6] = [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"];
+
+fn ts_file_stem(path: &str) -> Option<&str> {
+    [".d.ts"]
+        .into_iter()
+        .chain(TS_EXTENSIONS)
+        .find_map(|extension| path.strip_suffix(extension))
+}
+
+fn has_explicit_ts_module_prefix(callee: &str) -> bool {
+    callee.starts_with("./") || callee.starts_with("../") || callee.starts_with('@')
+}
+
+fn is_known_ts_external(callee: &str) -> bool {
+    if callee.starts_with("node:") {
+        return true;
+    }
+    let Some((qualifier, _)) = callee.split_once(['.', '/']) else {
+        return false;
+    };
+    matches!(
+        qualifier,
+        "effect"
+            | "Effect"
+            | "react"
+            | "fs"
+            | "path"
+            | "os"
+            | "crypto"
+            | "Array"
+            | "Object"
+            | "Promise"
+            | "Map"
+            | "Set"
+            | "WeakMap"
+            | "WeakSet"
+            | "Math"
+            | "JSON"
+            | "Date"
+            | "Number"
+            | "String"
+            | "Boolean"
+            | "RegExp"
+            | "Error"
+            | "Symbol"
+            | "URL"
+            | "URLSearchParams"
+            | "Reflect"
+            | "Intl"
+            | "console"
+            | "process"
+            | "Buffer"
+            | "window"
+            | "document"
+            | "globalThis"
+            | "navigator"
+            | "fetch"
+    )
+}
+
+fn ts_module_callee<'a>(
+    callee: &'a str,
+    name_index: &HashMap<&str, Vec<&str>>,
+) -> Option<(&'a str, &'a str)> {
+    if callee.contains("::") {
+        return None;
+    }
+    // Ignore dots in directory components, and retain a source extension if
+    // present: `../shared/id.ts.Id.make` names the symbol `Id.make`.
+    let tail = callee.rsplit('/').next()?;
+    let mut dots = tail.match_indices('.').map(|(offset, _)| offset);
+    let first_dot = dots.next()?;
+    let boundary = dots
+        .find(|&dot| ts_file_stem(&tail[..dot]).is_some())
+        .unwrap_or(first_dot);
+    let (specifier, suffix) = callee.split_at(callee.len() - tail.len() + boundary);
+    let symbol = &suffix[1..];
+    if specifier.is_empty() || symbol.is_empty() {
+        return None;
+    }
+    if has_explicit_ts_module_prefix(callee) {
+        return Some((specifier, symbol));
+    }
+    let package = specifier.split('/').next()?;
+    let package = ts_file_stem(package).unwrap_or(package);
+    if package.starts_with(|c: char| c.is_ascii_lowercase())
+        && package
+            .bytes()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || b"._-".contains(&c))
+        && (specifier.contains('/')
+            || is_known_ts_external(callee)
+            || (!matches!(package, "this" | "super")
+                && !name_index.contains_key(package)
+                && !name_index.contains_key(callee)))
+    {
+        return Some((specifier, symbol));
+    }
+    None
+}
+
+/// Paths in module anchors already use forward slashes and include the project.
+#[derive(Default)]
+struct TsFileIndex<'a> {
+    by_path: HashMap<&'a str, Vec<&'a str>>,
+    by_package: HashMap<&'a str, HashMap<&'a str, Vec<&'a str>>>,
+}
+
+impl<'a> TsFileIndex<'a> {
+    fn new(anchors: &'a HashSet<String>) -> Self {
+        let mut index = Self::default();
+        for anchor in anchors {
+            if let Some(file) = anchor_file(anchor)
+                && ts_file_stem(file).is_some()
+            {
+                index.by_path.entry(file).or_default().push(anchor);
+            }
+        }
+        for &file in index.by_path.keys() {
+            for (offset, _) in file.match_indices('/') {
+                let (prefix, suffix) = file.split_at(offset);
+                let (parent, package) = prefix.rsplit_once('/').unwrap_or(("", prefix));
+                let subpath = &suffix[1..];
+                let source_path = subpath.strip_prefix("src/");
+                let package_path =
+                    (parent.rsplit('/').next() == Some("packages")).then_some(subpath);
+                for path in source_path.into_iter().chain(package_path) {
+                    index
+                        .by_package
+                        .entry(package)
+                        .or_default()
+                        .entry(path)
+                        .or_default()
+                        .push(file);
+                }
+            }
+        }
+        index
+    }
+
+    fn resolve(
+        &self,
+        specifier: &str,
+        symbol: &str,
+        caller_file: &str,
+        is_callable: &mut impl FnMut(&'a str) -> Result<bool, StoreError>,
+    ) -> Result<Option<&'a str>, StoreError> {
+        if specifier.starts_with("./") || specifier.starts_with("../") {
+            let Some(path) = relative_ts_path(caller_file, specifier) else {
+                return Ok(None);
+            };
+            // Choose the module before looking for its exports. A missing
+            // symbol cannot make a lower-priority file shadow the first one.
+            let Some(anchors) = self.by_path.get(path.as_str()).or_else(|| {
+                inferred_ts_paths(&path).find_map(|candidate| self.by_path.get(candidate.as_str()))
+            }) else {
+                return Ok(None);
+            };
+            return pick_imported_symbol(anchors.iter().copied(), symbol, is_callable);
+        }
+
+        let package_path = if specifier.starts_with('@') {
+            let Some((_, unscoped)) = specifier.split_once('/') else {
+                return Ok(None);
+            };
+            unscoped
+        } else {
+            specifier
+        };
+        let (package, subpath) = package_path.split_once('/').unwrap_or((package_path, ""));
+        let Some(files) = self.by_package.get(package) else {
+            return Ok(None);
+        };
+        let paths = files.get(subpath).cloned().unwrap_or_else(|| {
+            inferred_ts_paths(subpath)
+                .filter_map(|path| files.get(path.as_str()))
+                .flatten()
+                .copied()
+                .collect()
+        });
+        let anchors = paths
+            .iter()
+            .filter_map(|path| self.by_path.get(*path))
+            .flatten()
+            .copied();
+        pick_imported_symbol(anchors, symbol, is_callable)
+    }
+}
+
+fn relative_ts_path(caller_file: &str, specifier: &str) -> Option<String> {
+    let (directory, _) = caller_file.rsplit_once('/')?;
+    let mut path: Vec<_> = directory.split('/').collect();
+    for component in specifier.split('/') {
+        match component {
+            "" | "." => {}
+            ".." if path.len() > 1 => {
+                path.pop();
+            }
+            ".." => return None,
+            name => path.push(name),
+        }
+    }
+    Some(path.join("/"))
+}
+
+fn inferred_ts_paths(path: &str) -> impl Iterator<Item = String> + '_ {
+    let stem = ts_file_stem(path).unwrap_or(path);
+    let index = if stem.is_empty() {
+        "index".to_string()
+    } else {
+        format!("{stem}/index")
+    };
+    TS_EXTENSIONS
+        .into_iter()
+        .chain([".d.ts"])
+        .filter(move |_| !stem.is_empty())
+        .map(move |extension| format!("{stem}{extension}"))
+        .chain(
+            [".ts", ".tsx", ".js", ".jsx"]
+                .into_iter()
+                .map(move |extension| format!("{index}{extension}")),
+        )
+}
+
+fn pick_imported_symbol<'a>(
+    anchors: impl Iterator<Item = &'a str> + Clone,
+    symbol: &str,
+    is_callable: &mut impl FnMut(&'a str) -> Result<bool, StoreError>,
+) -> Result<Option<&'a str>, StoreError> {
+    let base = symbol.rsplit('.').next().unwrap_or(symbol);
+    // Full symbol first, including a named import's type. Try the last
+    // segment only when no exact callable was found in the module.
+    for exact in [true, false] {
+        let mut target = None;
+        for anchor in anchors.clone() {
+            let Some((_, name)) = anchor.rsplit_once('#') else {
+                continue;
+            };
+            let matches = if exact {
+                name == symbol
+            } else {
+                name.rsplit('.').next() == Some(base)
+            };
+            if matches && is_callable(anchor)? {
+                if target.is_some_and(|previous| previous != anchor) {
+                    return Ok(None);
+                }
+                target = Some(anchor);
+            }
+        }
+        if target.is_some() {
+            return Ok(target);
+        }
+    }
+    Ok(None)
+}
+
+fn resolve_callee_with_files<'a>(
+    callee: &str,
+    caller: &str,
+    name_index: &HashMap<&str, Vec<&'a str>>,
+    files: &TsFileIndex<'a>,
+    is_callable: &mut impl FnMut(&'a str) -> Result<bool, StoreError>,
+) -> Result<Option<&'a str>, StoreError> {
+    if let Some(file) = anchor_file(caller).filter(|file| ts_file_stem(file).is_some())
+        && !callee.starts_with("aden://module/")
+    {
+        if let Some((specifier, symbol)) = ts_module_callee(callee, name_index) {
+            return files.resolve(specifier, symbol, file, is_callable);
+        }
+        if has_explicit_ts_module_prefix(callee) || is_known_ts_external(callee) {
+            return Ok(resolve_exact(callee, caller, name_index));
+        }
+    }
+    Ok(resolve_callee(callee, caller, name_index))
 }
 
 /// Disambiguate candidate anchors by locality: a unique candidate wins
@@ -556,12 +832,17 @@ enum DropReason {
     Ambiguous,
 }
 
-/// Classify a callee that `resolve_callee` declined to link. Mirrors that
-/// function's lookup order (full name, then trailing segment) but only inspects
-/// candidate *counts*: zero candidates → `Unresolved`, otherwise the locality
-/// heuristic gave up on multiple → `Ambiguous`. Cheap (HashMap lookups, no
-/// allocation) and never alters resolution.
-fn classify_drop(callee: &str, name_index: &HashMap<&str, Vec<&str>>) -> DropReason {
+/// Classify a callee that did not link. Import and builtin spellings should
+/// never count an unrelated project symbol with the same trailing name.
+fn classify_drop(
+    callee: &str,
+    caller_file: Option<&str>,
+    name_index: &HashMap<&str, Vec<&str>>,
+) -> DropReason {
+    let from_ts = caller_file.is_some_and(|file| ts_file_stem(file).is_some());
+    if has_explicit_ts_module_prefix(callee) || (from_ts && is_known_ts_external(callee)) {
+        return DropReason::Unresolved;
+    }
     let count = |name: &str| name_index.get(name).map(|c| c.len()).unwrap_or(0);
     if count(callee) > 0 {
         // The full (qualified) name itself is defined somewhere — a genuine
@@ -584,6 +865,13 @@ fn classify_drop(callee: &str, name_index: &HashMap<&str, Vec<&str>>) -> DropRea
         } else {
             DropReason::Ambiguous
         };
+    }
+    if from_ts
+        && let Some((qualifier, _)) = callee.split_once('.')
+        && qualifier.starts_with(|c: char| c.is_ascii_lowercase())
+        && (qualifier.contains('/') || count(qualifier) == 0)
+    {
+        return DropReason::Unresolved;
     }
     // Receiver call `recv.base`: the qualifier is a *value* whose type we can't
     // know statically, so we cannot declare it external — fall back to the base
@@ -693,6 +981,14 @@ pub(crate) fn link_store_edges<S: GraphStorage>(
     } else {
         HashMap::new()
     };
+    let ts_files = if link_records
+        .iter()
+        .any(|(caller, _)| anchor_file(caller).and_then(ts_file_stem).is_some())
+    {
+        TsFileIndex::new(&anchors)
+    } else {
+        TsFileIndex::default()
+    };
 
     // Prose cross-reference indexes: doc anchor FRAGMENT -> declaring doc
     // anchors. Strictly doc-side (never code symbols) so `ref:` records cannot
@@ -785,10 +1081,29 @@ pub(crate) fn link_store_edges<S: GraphStorage>(
 
     // Call edges from the compact per-symbol records. Tally each callee so the
     // gen summary can flag where the call graph silently thins out.
+    // Module anchors contain names only. Cache the kind check for matching
+    // imported symbols, without retaining their document bodies.
+    let mut callable_anchors = HashMap::new();
+    let mut is_callable = |anchor| {
+        if let Some(&callable) = callable_anchors.get(anchor) {
+            return Ok(callable);
+        }
+        let callable = storage
+            .get_document(anchor)?
+            .is_some_and(|doc| doc.node_type == NodeType::Function);
+        callable_anchors.insert(anchor, callable);
+        Ok(callable)
+    };
     let mut callee_stats = CalleeStats::default();
     for (anchor, callees) in link_records {
         for callee in callees {
-            match resolve_callee(callee, anchor, &name_index) {
+            match resolve_callee_with_files(
+                callee,
+                anchor,
+                &name_index,
+                &ts_files,
+                &mut is_callable,
+            )? {
                 Some(target) if target != anchor.as_str() => {
                     callee_stats.resolved += 1;
                     edges.push((anchor.clone(), target.to_string(), EdgeType::Calls));
@@ -802,7 +1117,7 @@ pub(crate) fn link_store_edges<S: GraphStorage>(
                 // A self-call resolves but builds no edge (we skip self-loops);
                 // count it as resolved so it isn't mistaken for a dropped edge.
                 Some(_) => callee_stats.resolved += 1,
-                None => match classify_drop(callee, &name_index) {
+                None => match classify_drop(callee, anchor_file(anchor), &name_index) {
                     DropReason::Unresolved => callee_stats.unresolved += 1,
                     DropReason::Ambiguous => callee_stats.ambiguous += 1,
                 },
@@ -1341,11 +1656,225 @@ mod link_tests {
     }
 
     #[test]
+    fn relative_ts_calls_prefer_exact_files_and_symbols() {
+        let caller = "aden://module/repo/apps/web/src/run.ts#run";
+        let user = "aden://module/repo/apps/web/src/user.ts#User.make";
+        let other_method = "aden://module/repo/apps/web/src/user.ts#Admin.make";
+        let other_file = "aden://module/repo/apps/web/src/other.ts#User.make";
+        let lower_case = "aden://module/repo/apps/web/src/user.ts#load";
+        let upper_case = "aden://module/repo/apps/web/src/User.ts#load";
+        let js_file = "aden://module/repo/apps/web/src/user.js#load";
+        let jsx_index = "aden://module/repo/apps/web/shared/special.dir/tools/index.jsx#open";
+        let declarations = "aden://module/repo/apps/web/src/types.d.ts#declareValue";
+        let class_only = "aden://module/repo/apps/web/src/types.d.ts#OnlyType";
+        let bare_fallback = "aden://module/repo/apps/web/src/layout.mjs#Other.read";
+        let below_root = "aden://module/repo/never.ts#read";
+        let anchors = [
+            caller,
+            user,
+            other_method,
+            other_file,
+            lower_case,
+            upper_case,
+            js_file,
+            jsx_index,
+            declarations,
+            class_only,
+            bare_fallback,
+            below_root,
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+        let names = build_symbol_name_index(&anchors);
+        let files = TsFileIndex::new(&anchors);
+        for (callee, expected) in [
+            ("./user.User.make", Some(user)),
+            ("./user.make", None), // two methods named make in the target file
+            ("./missing.User.make", None),
+            ("./user.load", Some(lower_case)),
+            ("./User.load", Some(upper_case)),
+            ("./user.js.load", Some(js_file)),
+            ("./user.js.User.make", None), // the exact file has no make
+            ("./user.tsx.User.make", Some(user)),
+            ("../shared/./special.dir/tools.open", Some(jsx_index)),
+            ("./types.d.ts.declareValue", Some(declarations)),
+            ("./types.d.ts.OnlyType", None),
+            ("./layout.cjs.Editor.read", Some(bare_fallback)),
+            ("../../../../repo/never.read", None),
+        ] {
+            assert_eq!(
+                resolve_callee_with_files(callee, caller, &names, &files, &mut |anchor| {
+                    Ok(anchor != class_only)
+                })
+                .unwrap(),
+                expected,
+                "{callee}"
+            );
+        }
+    }
+
+    #[test]
+    fn package_ts_calls_only_link_unique_symbols_in_matching_packages() {
+        let caller = "aden://module/app/src/run.tsx#run";
+        let contracts = "aden://module/repo/packages/contracts/src/index.ts#Schema.make";
+        let option = "aden://module/repo/packages/effect/src/Option.ts#map";
+        let debounce = "aden://module/repo/packages/lodash/debounce/index.tsx#debounce";
+        let vitest = "aden://module/vitest/src/index.ts#describe";
+        let local = "aden://module/app/src/state.ts#State.make";
+        let lowercase = "aden://module/app/src/state.ts#state.make";
+        let first = "aden://module/repo/old/duplicate/src/tools.ts#run";
+        let second = "aden://module/repo/new/duplicate/src/tools.ts#run";
+        let anchors = [
+            caller, contracts, option, debounce, vitest, local, lowercase, first, second,
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+        let names = build_symbol_name_index(&anchors);
+        let files = TsFileIndex::new(&anchors);
+        for (callee, expected) in [
+            ("@t3/contracts.Schema.make", Some(contracts)),
+            ("@t3/contracts/src/index.js.Schema.make", Some(contracts)),
+            ("effect/Option.js.map", Some(option)),
+            ("lodash/debounce.debounce", Some(debounce)),
+            ("vitest.describe", Some(vitest)),
+            ("@t3/missing.make", None),
+            ("duplicate/tools.run", None),
+            ("State.make", Some(local)),
+            ("state.make", Some(lowercase)),
+        ] {
+            assert_eq!(
+                resolve_callee_with_files(callee, caller, &names, &files, &mut |_| Ok(true))
+                    .unwrap(),
+                expected,
+                "{callee}"
+            );
+        }
+    }
+
+    #[test]
+    fn external_ts_calls_do_not_resolve_or_count_as_polymorphic() {
+        let caller = "aden://module/p/src/run.mjs#run";
+        let other_file = "aden://module/p/src/other.ts#Other.map";
+        let known = "aden://module/p/src/other.ts#known";
+        let anchors = [caller, other_file, known]
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        let names = build_symbol_name_index(&anchors);
+        let files = TsFileIndex::new(&anchors);
+        for callee in [
+            "./missing.map",
+            "../missing.map",
+            "@scope/pkg.map",
+            "react.map",
+            "effect.map",
+            "Effect.map",
+            "effect/Stream.map",
+            "node:fs.map",
+            "Array.map",
+            "Promise.map",
+            "Object.map",
+            "vitest.map",
+        ] {
+            assert_eq!(
+                resolve_callee_with_files(callee, caller, &names, &files, &mut |_| Ok(true))
+                    .unwrap(),
+                None,
+                "{callee}"
+            );
+            assert!(
+                matches!(
+                    classify_drop(callee, anchor_file(caller), &names),
+                    DropReason::Unresolved
+                ),
+                "{callee}"
+            );
+        }
+        for callee in ["known.map", "State.map"] {
+            assert!(matches!(
+                classify_drop(callee, anchor_file(caller), &names),
+                DropReason::Ambiguous
+            ));
+        }
+        assert!(matches!(
+            classify_drop("effect.map", Some("p/app.py"), &names),
+            DropReason::Ambiguous
+        ));
+    }
+
+    #[test]
+    fn ts_imports_link_callable_store_targets_and_tally_external_drops() {
+        use aden_core::{Document, EdgeType, NodeType};
+        let dir = tempfile::tempdir().unwrap();
+        let storage = Storage::new(dir.path().to_str().unwrap()).unwrap();
+        let caller = "aden://module/p/src/main.ts#run";
+        let callee = "aden://module/p/src/user.ts#User.make";
+        for (anchor, node_type) in [
+            (caller, NodeType::Function),
+            (callee, NodeType::Function),
+            (
+                "aden://module/p/src/admin.ts#Admin.make",
+                NodeType::Function,
+            ),
+            ("aden://module/p/src/user.ts#User", NodeType::Type),
+        ] {
+            storage
+                .put_document(&Document {
+                    anchor: anchor.into(),
+                    node_type,
+                    attributes: Default::default(),
+                    blocks: vec![],
+                    source_span: None,
+                    metadata: None,
+                    confidence: 1.0,
+                })
+                .unwrap();
+        }
+        let callees = ["./user.js.User.make", "./user.User", "effect.make"]
+            .map(str::to_owned)
+            .to_vec();
+        let stats = link_store_edges(
+            &storage,
+            EdgeRecords {
+                calls: &[(caller.to_owned(), callees)],
+                uses: &[],
+                refs: &[],
+                implements: &[],
+                mutates: &[],
+                member_of: &[],
+                mentions: &[],
+                supersedes: &[],
+                demonstrates: &[],
+                terms: &[],
+                cochange: &[],
+                test_anchors: &HashSet::new(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            (stats.resolved, stats.unresolved, stats.ambiguous),
+            (1, 2, 0)
+        );
+        let calls: Vec<_> = storage
+            .get_outgoing_edges(caller)
+            .unwrap()
+            .into_iter()
+            .filter(|(_, kind)| *kind == EdgeType::Calls)
+            .collect();
+        assert_eq!(calls, [(callee.to_owned(), EdgeType::Calls)]);
+    }
+
+    #[test]
     fn classify_drop_zero_candidates_is_unresolved() {
         // Empty index: nothing matches the callee at all.
         let idx: HashMap<&str, Vec<&str>> = HashMap::new();
         assert!(
-            matches!(classify_drop("nonexistent", &idx), DropReason::Unresolved),
+            matches!(
+                classify_drop("nonexistent", None, &idx),
+                DropReason::Unresolved
+            ),
             "a callee with zero candidates must be Unresolved"
         );
         // A name present but unrelated to the callee is still zero candidates.
@@ -1355,7 +1884,7 @@ mod link_tests {
             vec!["aden://module/c/a.rs#something_else"],
         );
         assert!(matches!(
-            classify_drop("missing", &idx2),
+            classify_drop("missing", None, &idx2),
             DropReason::Unresolved
         ));
     }
@@ -1372,7 +1901,7 @@ mod link_tests {
             ],
         );
         assert!(
-            matches!(classify_drop("helper", &idx), DropReason::Ambiguous),
+            matches!(classify_drop("helper", None, &idx), DropReason::Ambiguous),
             ">=2 candidates for the full name must be Ambiguous"
         );
     }
@@ -1393,7 +1922,10 @@ mod link_tests {
         // is a value of unknown type, so we cannot call it external — the base
         // collides internally → Ambiguous.
         assert!(
-            matches!(classify_drop("self.node_text", &idx), DropReason::Ambiguous),
+            matches!(
+                classify_drop("self.node_text", Some("p/src/lib.rs"), &idx),
+                DropReason::Ambiguous
+            ),
             "receiver call whose base has >=2 candidates must be Ambiguous"
         );
         // Path-qualified call to a type NOT in the index: `Parser::node_text`
@@ -1401,7 +1933,7 @@ mod link_tests {
         // so this is External (Unresolved), not a true internal ambiguity.
         assert!(
             matches!(
-                classify_drop("Parser::node_text", &idx),
+                classify_drop("Parser::node_text", Some("p/src/lib.rs"), &idx),
                 DropReason::Unresolved
             ),
             "static call to an unknown type must be External/Unresolved"
@@ -1422,7 +1954,7 @@ mod link_tests {
             ],
         );
         assert!(matches!(
-            classify_drop("Parser::node_text", &idx),
+            classify_drop("Parser::node_text", Some("p/src/lib.rs"), &idx),
             DropReason::Ambiguous
         ));
         // `Vec::new`-style external constructor colliding with project `new`s →
@@ -1435,7 +1967,7 @@ mod link_tests {
             ],
         );
         assert!(matches!(
-            classify_drop("Vec::new", &idx),
+            classify_drop("Vec::new", Some("p/src/lib.rs"), &idx),
             DropReason::Unresolved
         ));
     }
