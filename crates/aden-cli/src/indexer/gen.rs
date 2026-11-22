@@ -1044,12 +1044,19 @@ fn cmd_gen_inner(
                             storage.put_documents_bulk(&docs).map_err(|e| {
                                 format!("Failed to store documents for {source_path}: {e}")
                             })?;
+                        } else if docs.len() >= COALESCED_DOC_BATCH_LIMIT {
+                            // Keep large single-file stores atomic instead of splitting one file
+                            // across multiple partial WAL commits.
+                            coalesced.flush(&storage)?;
+                            storage.put_documents_bulk(&docs).map_err(|e| {
+                                format!("Failed to store documents for {source_path}: {e}")
+                            })?;
                         } else {
                             for doc in docs {
                                 coalesced.push(doc);
-                                if coalesced.docs.len() >= COALESCED_DOC_BATCH_LIMIT {
-                                    coalesced.flush(&storage)?;
-                                }
+                            }
+                            if coalesced.docs.len() >= COALESCED_DOC_BATCH_LIMIT {
+                                coalesced.flush(&storage)?;
                             }
                         }
                         #[cfg(debug_assertions)]
