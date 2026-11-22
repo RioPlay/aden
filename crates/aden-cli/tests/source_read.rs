@@ -405,6 +405,66 @@ fn byte_continuation_preserves_the_original_end_line() {
 }
 
 #[test]
+fn late_ranges_and_cursors_preserve_crlf_and_an_unterminated_final_line() {
+    let prefix = "x\n".repeat(2049);
+    let content = format!("{prefix}prefix\r\nβeta");
+    let f = Fixture::new(content.as_bytes());
+    let first = f.json(&[
+        "source.txt",
+        "--start-line",
+        "2050",
+        "--end-line",
+        "2051",
+        "--max-bytes",
+        "7",
+    ]);
+    assert_eq!(first["source"]["text"], "prefix\r");
+    assert_eq!(first["source"]["total_lines"], 2051);
+    assert_eq!(first["source"]["start_byte"], prefix.len());
+    assert_eq!(first["next_byte"], prefix.len() + 7);
+    assert_eq!(first["source"]["last_line_complete"], false);
+
+    let offset = first["next_byte"].as_u64().unwrap().to_string();
+    let hash = first["source"]["source_hash"].as_str().unwrap();
+    let second = f.json(&[
+        "source.txt",
+        "--start-byte",
+        &offset,
+        "--expected-hash",
+        hash,
+        "--end-line",
+        "2051",
+    ]);
+    assert_eq!(second["source"]["text"], "\nβeta");
+    assert_eq!(second["source"]["start_line"], 2050);
+    assert_eq!(second["source"]["end_line"], 2051);
+    assert_eq!(second["source"]["end_byte"], content.len());
+    assert_eq!(second["source"]["last_line_complete"], true);
+    assert_eq!(second["truncated"], false);
+}
+
+#[test]
+fn a_cursor_at_eof_preserves_final_line_metadata() {
+    for (content, final_line) in [("text\n", Value::Null), ("text", Value::from(1))] {
+        let f = Fixture::new(content.as_bytes());
+        let offset = content.len().to_string();
+        let hash = aden_core::stable_hash(content.as_bytes());
+        let value = f.json(&[
+            "source.txt",
+            "--start-byte",
+            &offset,
+            "--expected-hash",
+            &hash,
+        ]);
+        assert_eq!(value["source"]["text"], "");
+        assert_eq!(value["source"]["start_byte"], content.len());
+        assert_eq!(value["source"]["end_byte"], content.len());
+        assert_eq!(value["source"]["end_line"], final_line);
+        assert_eq!(value["truncated"], false);
+    }
+}
+
+#[test]
 fn empty_file_is_complete_and_large_files_fail_boundedly() {
     let f = Fixture::new(b"");
     let value = f.json(&["source.txt"]);
@@ -431,6 +491,17 @@ fn human_output_and_mcp_bridge_preserve_the_same_literal_excerpt() {
     assert_eq!(
         serde_json::from_str::<Value>(&cli).unwrap(),
         serde_json::from_str::<Value>(&bridged).unwrap()
+    );
+
+    let clipped = f.run(&["source.txt", "--human", "--max-bytes", "3"]);
+    assert!(clipped.status.success());
+    assert_eq!(clipped.stdout, b"fir");
+    let hash = aden_core::stable_hash(b"first\nsecond\n");
+    let notice = String::from_utf8(clipped.stderr).unwrap();
+    assert!(notice.contains(&format!("next byte 3, end line 200, expected hash {hash}")));
+    f.error(
+        &["source.txt", "--human", "--expected-hash", "wrong"],
+        "source_changed",
     );
 }
 

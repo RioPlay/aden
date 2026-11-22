@@ -3,6 +3,7 @@
 
 use crate::graph::AdenGraph;
 use crate::nodes::{AdenEdge, DocumentNode, GraphNode};
+use std::collections::HashMap;
 
 /// Verify `:source_hash:` for all nodes that have one.
 /// Returns a list of (anchor, warning_message) for stale or mismatched hashes.
@@ -22,6 +23,9 @@ pub fn check_hashes(
     root: &std::path::Path,
 ) -> Vec<(String, String)> {
     let mut issues = Vec::new();
+    // Existence is a property of the file, not the symbol. A module with many
+    // symbols otherwise stats the same path once per node.
+    let mut exists_by_file: HashMap<&str, bool> = HashMap::new();
     for node in graph.graph.node_indices() {
         let doc = &graph.graph[node];
         if let Some(_expected_hash) = doc.doc.attributes.get("source_hash") {
@@ -30,13 +34,21 @@ pub fn check_hashes(
             let Some(source_file) = doc.doc.attributes.get("source_file") else {
                 continue;
             };
-            let candidate = std::path::Path::new(source_file);
-            let target_path = if candidate.is_absolute() {
-                candidate.to_path_buf()
+            let key = source_file.as_str();
+            let present = if let Some(present) = exists_by_file.get(key).copied() {
+                present
             } else {
-                root.join(candidate)
+                let candidate = std::path::Path::new(key);
+                let target_path = if candidate.is_absolute() {
+                    candidate.to_path_buf()
+                } else {
+                    root.join(candidate)
+                };
+                let present = target_path.exists();
+                exists_by_file.insert(key, present);
+                present
             };
-            if !target_path.exists() {
+            if !present {
                 issues.push((
                     doc.anchor().to_string(),
                     "WARNING: source file missing".to_string(),
@@ -119,6 +131,50 @@ mod tests {
 
         // Absolute path exists regardless of the (wrong) root passed in.
         assert!(check_hashes(&graph, std::path::Path::new("/some/other/root")).is_empty());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn shared_source_files_keep_per_symbol_order() {
+        let dir =
+            std::env::temp_dir().join(format!("aden_integrity_shared_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let existing_path = dir.join("present.py");
+        std::fs::write(&existing_path, "z = 3\n").unwrap();
+        let existing = existing_path.to_str().unwrap();
+
+        let mut graph = AdenGraph::<DocumentNode, AdenEdge>::new();
+        for (anchor, file) in [
+            ("aden://module/pkg/missing.py#one", "src/missing.py"),
+            ("aden://module/pkg/missing.py#two", "src/missing.py"),
+            ("aden://module/pkg/present.py#three", existing),
+            ("aden://module/pkg/present.py#four", existing),
+            ("aden://module/pkg/missing.py#five", "src/missing.py"),
+        ] {
+            let index = graph.graph.add_node(node_with_source(anchor, file));
+            graph.anchor_to_index.insert(anchor.to_string(), index);
+        }
+
+        let issues = check_hashes(&graph, &dir);
+        assert_eq!(
+            issues,
+            vec![
+                (
+                    "aden://module/pkg/missing.py#one".to_string(),
+                    "WARNING: source file missing".to_string()
+                ),
+                (
+                    "aden://module/pkg/missing.py#two".to_string(),
+                    "WARNING: source file missing".to_string()
+                ),
+                (
+                    "aden://module/pkg/missing.py#five".to_string(),
+                    "WARNING: source file missing".to_string()
+                ),
+            ]
+        );
 
         std::fs::remove_dir_all(&dir).ok();
     }

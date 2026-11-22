@@ -160,6 +160,57 @@ pub fn built_in_ignore_fingerprint() -> u64 {
     ignore_fingerprint(BUILT_IN_IGNORES)
 }
 
+/// Machine-wide exclusion list, applied to every project: `<data root>/ignore`
+/// (see [`aden_paths::data_root`]). Same syntax as `.adenignore`.
+///
+/// This is the escape hatch for trees that cannot be recognised structurally:
+/// vendored copies, mirrored reference checkouts, generated trees, or a
+/// vendored directory under a name no ecosystem convention predicts. It lives
+/// outside the repository, so a project never needs an Aden-specific file.
+/// `.adenallow` still wins, which keeps deliberate local intent possible.
+pub const MACHINE_IGNORE_FILE: &str = "ignore";
+
+/// Comma, semicolon, or newline separated patterns applied to every project.
+/// Overrides [`MACHINE_IGNORE_FILE`] for one-off runs and CI, where writing a
+/// user file is not desirable.
+pub const EXCLUDES_ENV: &str = "ADEN_EXCLUDES";
+
+/// Policy layers a machine owner supplied for every project.
+fn machine_ignore_lines() -> Vec<String> {
+    machine_ignore_lines_from(&aden_paths::data_root())
+}
+
+fn machine_ignore_lines_from(data_root: &Path) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    if let Some(raw) = std::env::var_os(EXCLUDES_ENV) {
+        lines.extend(
+            raw.to_string_lossy()
+                .split([',', ';', '\n'])
+                .map(str::to_string),
+        );
+    }
+    if let Ok(text) = std::fs::read_to_string(data_root.join(MACHINE_IGNORE_FILE)) {
+        lines.extend(text.lines().map(str::to_string));
+    }
+    lines
+}
+
+/// Version-control markers that mean "this directory is its own repository".
+/// A subdirectory holding one is a submodule, nested clone, or linked worktree:
+/// its files belong to another project and are never first-party source.
+const NESTED_REPO_MARKERS: &[&str] = &[".git", ".hg", ".svn", ".jj", ".pijul"];
+
+/// Whether `dir` is a separate repository nested inside the project.
+///
+/// Call this for subdirectories only: the project root itself carries a marker
+/// by definition. A `.git` *file* (gitfile) counts, which is what a submodule
+/// or worktree checkout uses.
+pub fn is_nested_repository(dir: &Path) -> bool {
+    NESTED_REPO_MARKERS
+        .iter()
+        .any(|marker| dir.join(marker).exists())
+}
+
 /// Universal credential/secret detection. This is a security floor applied at
 /// the **indexing** boundary (`gen` → the persistent store), so secret material
 /// never enters the knowledge graph where `ask`/`asm` would assemble it into LLM
@@ -326,18 +377,27 @@ impl AdenFilter {
 
     /// Load filter from project root.
     ///
-    /// The built-in defaults ([`BUILT_IN_IGNORES`]) are ALWAYS applied; a
-    /// user-authored `.adenignore`, when present, *extends* them rather than
-    /// replacing them. This is a safety floor: adding one project-specific rule
-    /// must never silently re-expose `target/`, `node_modules/`, `.git/`, or the
-    /// agent-runtime worktrees the defaults exist to exclude. To deliberately
-    /// un-ignore a built-in path, use a `.adenallow` entry.
+    /// Three layers, all additive: the built-in defaults
+    /// ([`BUILT_IN_IGNORES`]), the machine-wide [`MACHINE_IGNORE_FILE`] and
+    /// [`EXCLUDES_ENV`] policy, then the project's own `.adenignore`. None of
+    /// them replaces another, and `.adenallow` can re-include any match. This is
+    /// a safety floor: adding one project-specific rule must never silently
+    /// re-expose `target/`, `node_modules/`, `.git/`, or the agent-runtime
+    /// worktrees the defaults exist to exclude.
     pub fn from_directory(dir: &Path) -> Self {
+        Self::from_directory_with(dir, &machine_ignore_lines())
+    }
+
+    /// Compose the filter for `dir` plus already-resolved extra patterns.
+    /// Tests and callers that resolved policy themselves use this instead of
+    /// reading machine state.
+    pub fn from_directory_with(dir: &Path, extra: &[String]) -> Self {
         let ignore_file = dir.join(".adenignore");
         let allow_file = dir.join(".adenallow");
 
         let mut ignore_lines: Vec<String> =
             BUILT_IN_IGNORES.iter().map(|s| s.to_string()).collect();
+        ignore_lines.extend(extra.iter().cloned());
         if ignore_file.exists() {
             ignore_lines.extend(read_lines(&ignore_file).unwrap_or_default());
         }
@@ -371,6 +431,13 @@ impl AdenFilter {
             ignore_pattern_count,
             allow_patterns,
         }
+    }
+
+    /// Directory-walk decision for one entry: descend unless policy excludes
+    /// the path or the directory is a separate repository nested in the
+    /// project. `dir` is `None` for file entries, which carry no marker.
+    pub fn should_descend(&self, relative: &Path, dir: Option<&Path>) -> bool {
+        !self.should_skip(relative) && !dir.is_some_and(is_nested_repository)
     }
 
     /// Determine if a path relative to the project root should be skipped.
@@ -498,6 +565,60 @@ mod tests {
         let mut changed = BUILT_IN_IGNORES.to_vec();
         changed.push("generated-checkout-*/");
         assert_ne!(built_in_ignore_fingerprint(), ignore_fingerprint(&changed));
+    }
+
+    #[test]
+    fn machine_policy_layers_extend_builtins_and_allow_still_wins() {
+        let data_root =
+            std::env::temp_dir().join(format!("aden-machine-ignore-{}", std::process::id()));
+        std::fs::create_dir_all(&data_root).unwrap();
+        std::fs::write(
+            data_root.join(MACHINE_IGNORE_FILE),
+            "# mirrored trees\n.repos/\ngenerated-*/\n",
+        )
+        .unwrap();
+        let machine = machine_ignore_lines_from(&data_root);
+        assert!(machine.iter().any(|p| p == ".repos/"));
+        assert!(machine.iter().any(|p| p == "generated-*/"));
+        std::fs::remove_dir_all(&data_root).ok();
+
+        // An explicit allow can still re-include one deliberate mirror.
+        let project =
+            std::env::temp_dir().join(format!("aden-machine-project-{}", std::process::id()));
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join(".adenallow"), ".repos/keep-me/\n").unwrap();
+        let filter = AdenFilter::from_directory_with(&project, &[".repos/".to_string()]);
+        assert!(filter.should_skip(Path::new(".repos/mirror/packages/aws/src/index.ts")));
+        assert!(!filter.should_skip(Path::new(".repos/keep-me/src/index.ts")));
+        assert!(filter.should_skip(Path::new("node_modules/lodash/index.js")));
+        assert!(!filter.should_skip(Path::new("apps/server/src/main.ts")));
+        std::fs::remove_dir_all(&project).ok();
+    }
+
+    #[test]
+    fn nested_repository_markers_prune_descendants() {
+        let root = std::env::temp_dir().join(format!("aden-nested-repo-{}", std::process::id()));
+        let nested = root.join("libs/dep");
+        std::fs::create_dir_all(&nested).unwrap();
+        assert!(
+            !is_nested_repository(&nested),
+            "a plain directory is project source"
+        );
+        // A submodule or worktree checkout carries a gitfile, not a directory.
+        std::fs::write(nested.join(".git"), "gitdir: ../../.git/modules/dep").unwrap();
+        assert!(is_nested_repository(&nested));
+        std::fs::remove_file(nested.join(".git")).unwrap();
+        std::fs::create_dir_all(nested.join(".git")).unwrap();
+        assert!(is_nested_repository(&nested));
+
+        let filter = AdenFilter::from_directory_with(&root, &[]);
+        assert!(!filter.should_descend(Path::new("libs/dep"), Some(&nested)));
+        assert!(filter.should_descend(Path::new("libs"), Some(&root.join("libs"))));
+        assert!(filter.should_descend(Path::new("libs/dep/src/main.rs"), None));
+        // Pattern policy still applies to directories that are not nested repos.
+        std::fs::create_dir_all(root.join("target/debug")).unwrap();
+        assert!(!filter.should_descend(Path::new("target"), Some(&root.join("target"))));
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]

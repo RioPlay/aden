@@ -183,6 +183,25 @@ fn acquire_store_lock(
     }
 }
 
+/// A project can legitimately be huge. Above this count, say so once, because
+/// the usual cause is a vendored or mirrored tree inside the checkout; naming
+/// the count and both exclusion routes lets an operator decide before a long
+/// build instead of discovering the scope afterwards.
+const LARGE_SCOPE_WARN_FILES: usize = 20_000;
+
+fn warn_large_scope(discovered: usize, silent: bool) {
+    if silent || discovered < LARGE_SCOPE_WARN_FILES {
+        return;
+    }
+    eprintln!(
+        "aden: {discovered} source files selected. If a vendored or mirrored tree is included, exclude it with a pattern in {} or in {} (comma separated).",
+        aden_paths::data_root()
+            .join(aden_core::filter::MACHINE_IGNORE_FILE)
+            .display(),
+        aden_core::filter::EXCLUDES_ENV,
+    );
+}
+
 fn cmd_gen_inner(
     path: &Path,
     quiet: bool,
@@ -289,6 +308,7 @@ fn cmd_gen_inner(
         }
         trace.count("discovered_files", discovered.len());
         trace.count("source_files", sources.len());
+        warn_large_scope(discovered.len(), silent);
         super::generation_job::checkpoint("discovery", Some(0), Some(discovered.len()))?;
         trace.count("reindexed_files", 0);
         trace.count("excluded_source_files", 0);

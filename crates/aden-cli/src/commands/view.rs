@@ -68,54 +68,54 @@ pub fn cmd_view(
     // symbols touched across `max` commits — and `DATA.activity` carries each commit's
     // touched anchors so the viewer plays the project *populating* over time.
     // Otherwise it's the normal `viz` slice.
-    let data = if replay {
+    let mut value = if replay {
         let root = crate::util::find_project_root(path);
-        let activity = git_activity(&root, max);
-        let touched: std::collections::BTreeSet<String> = activity
+        let frames = git_activity(&root, max);
+        let touched: std::collections::BTreeSet<String> = frames
             .iter()
-            .filter_map(|f| f["anchors"].as_array())
-            .flatten()
-            .filter_map(|v| v.as_str().map(String::from))
+            .flat_map(|f| f.anchors.iter().cloned())
             .collect();
-        let base = super::viz::anchors_json(path, &touched, 250)?;
-        match serde_json::from_str::<serde_json::Value>(&base) {
-            Ok(mut v) => {
-                v["activity"] = serde_json::Value::Array(activity);
-                serde_json::to_string_pretty(&v).unwrap_or(base)
-            }
-            Err(_) => base,
+        let mut v = super::viz::anchors_value(path, &touched, 250)?;
+        let activity = compact_activity_frames(frames, &v);
+        if !activity.is_empty() {
+            v["activity"] = serde_json::Value::Array(activity);
         }
+        v
     } else {
-        let base = super::viz::viz_json_for(path, anchor, mode, depth, scope, resolution, simple)?;
+        let mut v =
+            super::viz::viz_value_for(path, anchor, mode, depth, scope, resolution, simple)?;
         // The whole-graph view is also the canonical *replay* surface: attach the full
         // git-history activity log so the viewer can play the entire project populating,
         // piece by piece, across every commit — over the real 800-node graph rather than
-        // a synthetic walk. (Touched anchors not in the importance cap simply don't light;
-        // the lens reveals the kept graph in commit order.)
+        // a synthetic walk. (Touched anchors not in the kept graph are pruned here.)
         if mode == "graph" && !simple {
             let root = crate::util::find_project_root(path);
-            let activity = git_activity(&root, max);
+            let frames = git_activity(&root, max);
+            let activity = compact_activity_frames(frames, &v);
             if !activity.is_empty() {
-                if let Ok(mut v) = serde_json::from_str::<serde_json::Value>(&base) {
-                    v["activity"] = serde_json::Value::Array(activity);
-                    serde_json::to_string_pretty(&v).unwrap_or(base)
-                } else {
-                    base
-                }
-            } else {
-                base
+                v["activity"] = serde_json::Value::Array(activity);
             }
-        } else {
-            base
         }
+        v
     };
-    // The data is inlined into a <script> tag, so any `</script>` (or `</`) inside a
-    // symbol name / doc string from the target codebase would otherwise terminate the
-    // script element and allow HTML/script injection when viewing an untrusted repo.
-    // `<\/` is an identical JSON escape for `/` (parses to the same value) but does not
-    // match the HTML end-tag tokenizer — the standard JSON-in-<script> hardening.
-    let simple_data = viewer_payload(&data, true)?;
-    let data = viewer_payload(&data, false)?;
+    // Serialize the rich viewer payload once, then strip rich-only fields
+    // in-place for the lightweight Simple export without re-parsing JSON.
+    let data = if simple {
+        String::new()
+    } else {
+        serialize_script_json(&value)?
+    };
+    if let Some(object) = value.as_object_mut() {
+        for key in [
+            "activity",
+            "all_anchors",
+            "all_anchors_total",
+            "communities",
+        ] {
+            object.remove(key);
+        }
+    }
+    let simple_data = serialize_script_json(&value)?;
 
     let out_path: PathBuf = match out {
         Some(p) => p.to_path_buf(),
@@ -243,27 +243,59 @@ pub fn cmd_view(
     Ok(())
 }
 
-/// Keep offline exports compact without removing any graph nodes or edges.
-fn viewer_payload(data: &str, simple: bool) -> Result<String, serde_json::Error> {
-    let mut value: serde_json::Value = serde_json::from_str(data)?;
-    if simple && let Some(object) = value.as_object_mut() {
-        for key in [
-            "activity",
-            "all_anchors",
-            "all_anchors_total",
-            "communities",
-        ] {
-            object.remove(key);
-        }
-    }
-    Ok(serde_json::to_string(&value)?.replace("</", "<\\/"))
+/// Hardened JSON serialization for embedding directly inside `<script>` tags:
+/// escaping `</` to `<\\/` preserves valid JSON while preventing HTML end-tag injection.
+fn serialize_script_json(value: &serde_json::Value) -> Result<String, serde_json::Error> {
+    Ok(serde_json::to_string(value)?.replace("</", "<\\/"))
 }
 
-/// Build a per-commit activity log from git history (oldest → newest): each frame is
-/// `{label: subject, anchors: [symbols in the files that commit changed]}`. Symbols
-/// resolve via the store's per-file spans (same source as "open in editor"). The
-/// viewer plays these back, pulsing the touched nodes — the project being built.
-fn git_activity(root: &Path, max: usize) -> Vec<serde_json::Value> {
+struct RawActivityFrame {
+    label: String,
+    date: String,
+    anchors: Vec<String>,
+}
+
+/// Convert raw commit-level anchor frames into compact per-view node ID frames.
+fn compact_activity_frames(
+    frames: Vec<RawActivityFrame>,
+    value: &serde_json::Value,
+) -> Vec<serde_json::Value> {
+    use std::collections::{BTreeSet, HashMap};
+    let mut anchor_to_id: HashMap<&str, &str> = HashMap::new();
+    if let Some(nodes) = value.get("nodes").and_then(|v| v.as_array()) {
+        for node in nodes {
+            if let (Some(a), Some(id)) = (
+                node.get("anchor").and_then(|v| v.as_str()),
+                node.get("id").and_then(|v| v.as_str()),
+            ) {
+                anchor_to_id.insert(a, id);
+            }
+        }
+    }
+    let mut out = Vec::with_capacity(frames.len());
+    for frame in frames {
+        let mut ids: BTreeSet<&str> = BTreeSet::new();
+        for a in &frame.anchors {
+            if let Some(&id) = anchor_to_id.get(a.as_str()) {
+                ids.insert(id);
+            }
+        }
+        if ids.is_empty() {
+            continue;
+        }
+        out.push(serde_json::json!({
+            "label": frame.label,
+            "date": frame.date,
+            "ids": ids.into_iter().collect::<Vec<_>>(),
+        }));
+    }
+    out
+}
+
+/// Build a per-commit activity log from git history (oldest → newest) in a single
+/// `git log --name-only` invocation: each frame records touched symbols resolved
+/// through the store's per-file spans so replay pulses the project as it grew.
+fn git_activity(root: &Path, max: usize) -> Vec<RawActivityFrame> {
     use std::collections::{BTreeSet, HashMap};
     // file (repo-relative) → anchors defined in it
     let mut file_anchors: HashMap<String, Vec<String>> = HashMap::new();
@@ -273,57 +305,67 @@ fn git_activity(root: &Path, max: usize) -> Vec<serde_json::Value> {
             e.push(sp.anchor);
         }
     }
-    let run = |args: &[&str]| -> Option<String> {
-        let out = std::process::Command::new("git")
-            .args(args)
-            .current_dir(root)
-            .output()
-            .ok()?;
-        out.status
-            .success()
-            .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
-    };
+    const COMMIT_PREFIX: &str = "\u{1e}ADEN_COMMIT\u{1f}";
     let max_s = max.to_string();
     let mut args = vec![
         "log",
         "--reverse",
         "--no-merges",
-        "--format=%H%x1f%s%x1f%cs",
+        "--name-only",
+        "--format=%x1eADEN_COMMIT%x1f%H%x1f%s%x1f%cs",
     ];
     if max > 0 {
         args.push("-n");
         args.push(&max_s); // `--max 0` → entire history
     }
-    let Some(log) = run(&args) else {
+    let Ok(output) = std::process::Command::new("git")
+        .args(&args)
+        .current_dir(root)
+        .output()
+    else {
         return Vec::new();
     };
-    let mut out = Vec::new();
-    for line in log.lines() {
-        let mut it = line.splitn(3, '\u{1f}');
-        let hash = it.next().unwrap_or("");
-        let subject = it.next().unwrap_or("");
-        let date = it.next().unwrap_or("");
-        if hash.is_empty() {
-            continue;
-        }
-        let Some(files) = run(&["show", "--name-only", "--pretty=format:", hash]) else {
-            continue;
-        };
-        let mut anchors: BTreeSet<String> = BTreeSet::new();
-        for f in files.lines().map(str::trim).filter(|s| !s.is_empty()) {
-            if let Some(list) = file_anchors.get(f) {
-                anchors.extend(list.iter().cloned());
-            }
-        }
-        if anchors.is_empty() {
-            continue;
-        }
-        out.push(serde_json::json!({
-            "label": subject,
-            "date": date,
-            "anchors": anchors.into_iter().collect::<Vec<_>>(),
-        }));
+    if !output.status.success() {
+        return Vec::new();
     }
+    let log = String::from_utf8_lossy(&output.stdout);
+    let mut out = Vec::new();
+    let mut current: Option<(String, String, BTreeSet<String>)> = None;
+    let flush = |cur: &mut Option<(String, String, BTreeSet<String>)>,
+                 out: &mut Vec<RawActivityFrame>| {
+        if let Some((subject, date, anchors)) = cur.take()
+            && !anchors.is_empty()
+        {
+            out.push(RawActivityFrame {
+                label: subject,
+                date,
+                anchors: anchors.into_iter().collect(),
+            });
+        }
+    };
+    for line in log.lines() {
+        if let Some(rest) = line.strip_prefix(COMMIT_PREFIX) {
+            flush(&mut current, &mut out);
+            let mut it = rest.splitn(3, '\u{1f}');
+            let hash = it.next().unwrap_or("");
+            let subject = it.next().unwrap_or("").to_string();
+            let date = it.next().unwrap_or("").to_string();
+            if !hash.is_empty() {
+                current = Some((subject, date, BTreeSet::new()));
+            }
+            continue;
+        }
+        let file = line.trim();
+        if file.is_empty() {
+            continue;
+        }
+        if let Some((_, _, ref mut anchors)) = current
+            && let Some(list) = file_anchors.get(file)
+        {
+            anchors.extend(list.iter().cloned());
+        }
+    }
+    flush(&mut current, &mut out);
     out
 }
 

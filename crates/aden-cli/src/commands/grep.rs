@@ -238,9 +238,16 @@ pub fn cmd_grep(
     }
 
     // Ordinary hits need attribution only after file validation and global top-K.
+    // Symbol-only mode already resolved spans while scanning. A normal search
+    // normalizes spans only for files that produced a retained hit.
     if !symbol_only {
+        let mut files = BTreeSet::new();
+        for hit in &matches {
+            files.insert(hit.file.clone());
+        }
+        let spans_for_hits = load_symbol_spans_for_files(&root, &files);
         for hit in &mut matches {
-            if let Some(span) = spans_by_file
+            if let Some(span) = spans_for_hits
                 .get(&hit.file)
                 .and_then(|spans| enclosing_symbol(spans, hit.line))
             {
@@ -364,7 +371,7 @@ pub fn cmd_grep(
     let returned = envelope["returned"].as_u64().unwrap_or(0) as usize;
 
     if json {
-        println!("{}", serde_json::to_string(&envelope)?);
+        crate::read_worker::emit_machine_body(serde_json::to_string(&envelope)?);
         return Ok(());
     }
 
@@ -464,9 +471,9 @@ fn normalized_search_scope(path: &Path, root: &Path) -> std::io::Result<PathBuf>
 }
 
 /// Load `source_file -> [span]` so each match can be attributed to its
-/// enclosing symbol. The normal path streams a lightweight projection from
-/// fjall; if a concurrent writer owns the store, ADR-011's immutable snapshot
-/// remains the lock-free fallback.
+/// enclosing symbol. A revision-checked `graph.snapshot` wins when the read
+/// store is not pinned or legacy. Otherwise this streams the fjall projection
+/// and, if a writer holds that store, ADR-011's snapshot.
 pub(crate) fn load_symbol_spans(root: &Path) -> HashMap<String, Vec<Span>> {
     load_symbol_spans_for(root, None)
 }
@@ -475,8 +482,101 @@ pub(super) fn load_symbol_spans_for(
     root: &Path,
     anchors: Option<&BTreeSet<String>>,
 ) -> HashMap<String, Vec<Span>> {
-    use aden_store::{GraphStorage, Storage};
+    group_source_spans(root, load_span_records(root, anchors))
+}
+
+/// Spans for files that already produced hits. Other stored paths are not
+/// canonicalized: a repository-sized snapshot otherwise normalizes every node
+/// for a single page of matches.
+fn load_symbol_spans_for_files(
+    root: &Path,
+    files: &BTreeSet<String>,
+) -> HashMap<String, Vec<Span>> {
+    if files.is_empty() {
+        return HashMap::new();
+    }
+    let records = load_span_records(root, None)
+        .into_iter()
+        .filter(|(_, span)| span_file_matches_hits(&span.file, files));
+    group_source_spans(root, records)
+}
+
+const SNAPSHOT_SPAN_BYTES: u64 = 16 * 1024 * 1024;
+
+enum VerifiedSnapshot {
+    Records(Vec<(String, aden_core::SourceSpan)>),
+    FallbackAllowed,
+    RevisionRejected,
+}
+
+fn load_span_records(
+    root: &Path,
+    anchors: Option<&BTreeSet<String>>,
+) -> Vec<(String, aden_core::SourceSpan)> {
     let _trace = crate::read_trace::span(crate::read_trace::Stage::SourceSpans);
+    let snapshot_first =
+        std::env::var_os("ADEN_STORE").is_none() && !aden_paths::resolve_read_store(root).1;
+    let allow_unchecked_snapshot = if snapshot_first {
+        match read_verified_snapshot_spans(root, anchors) {
+            VerifiedSnapshot::Records(records) => return records,
+            VerifiedSnapshot::FallbackAllowed => true,
+            VerifiedSnapshot::RevisionRejected => false,
+        }
+    } else {
+        true
+    };
+    read_store_or_fresh_spans(root, anchors, allow_unchecked_snapshot)
+}
+
+fn read_verified_snapshot_spans(
+    root: &Path,
+    anchors: Option<&BTreeSet<String>>,
+) -> VerifiedSnapshot {
+    let Some(expected) = crate::indexer::fresh::published_revision(root) else {
+        return VerifiedSnapshot::FallbackAllowed;
+    };
+    let Some(bytes) =
+        read_bounded_regular_file(&aden_paths::graph_snapshot_file(root), SNAPSHOT_SPAN_BYTES)
+    else {
+        return VerifiedSnapshot::FallbackAllowed;
+    };
+    if !crate::indexer::fresh::snapshot_matches_revision(&bytes, &expected) {
+        return VerifiedSnapshot::RevisionRejected;
+    }
+    let Ok((docs, _)) = aden_graph::snapshot::decode_snapshot(&bytes) else {
+        return VerifiedSnapshot::RevisionRejected;
+    };
+    if docs.is_empty() {
+        return VerifiedSnapshot::RevisionRejected;
+    }
+    VerifiedSnapshot::Records(sorted_span_records(span_records_from_docs(docs, anchors)))
+}
+
+fn read_bounded_regular_file(path: &Path, limit: u64) -> Option<Vec<u8>> {
+    if !std::fs::symlink_metadata(path).ok()?.is_file() {
+        return None;
+    }
+    let file = std::fs::File::open(path).ok()?;
+    let metadata = file.metadata().ok()?;
+    if !metadata.is_file() {
+        return None;
+    }
+    let length = metadata.len();
+    if length > limit {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    let mut limited = std::io::Read::take(file, limit + 1);
+    std::io::Read::read_to_end(&mut limited, &mut bytes).ok()?;
+    (bytes.len() as u64 == length).then_some(bytes)
+}
+
+fn read_store_or_fresh_spans(
+    root: &Path,
+    anchors: Option<&BTreeSet<String>>,
+    allow_unchecked_snapshot: bool,
+) -> Vec<(String, aden_core::SourceSpan)> {
+    use aden_store::{GraphStorage, Storage};
 
     let (store_path, _) = aden_paths::resolve_read_store(root);
     let projected = store_path
@@ -488,20 +588,82 @@ pub(super) fn load_symbol_spans_for(
                 .ok(),
             None => storage.get_source_spans().ok(),
         });
-    let records = projected.unwrap_or_else(|| {
+    projected.unwrap_or_else(|| {
+        if !allow_unchecked_snapshot {
+            return Vec::new();
+        }
         aden_graph::snapshot::try_read_fresh(root)
-            .map(|(docs, _)| {
-                docs.into_iter()
-                    .filter(|(anchor, _)| anchors.is_none_or(|keys| keys.contains(anchor)))
-                    .filter_map(|(anchor, document)| {
-                        document.source_span.map(|span| (anchor, span))
-                    })
-                    .collect()
-            })
+            .map(|(docs, _)| sorted_span_records(span_records_from_docs(docs, anchors)))
             .unwrap_or_default()
-    });
+    })
+}
 
-    group_source_spans(root, records)
+fn span_records_from_docs(
+    docs: HashMap<String, aden_core::Document>,
+    anchors: Option<&BTreeSet<String>>,
+) -> Vec<(String, aden_core::SourceSpan)> {
+    docs.into_iter()
+        .filter(|(anchor, _)| anchors.is_none_or(|keys| keys.contains(anchor)))
+        .filter_map(|(anchor, document)| {
+            document
+                .source_span
+                .or_else(|| aden_core::SourceSpan::from_attributes(&document.attributes))
+                .map(|span| (anchor, span))
+        })
+        .collect()
+}
+
+fn sorted_span_records(
+    mut records: Vec<(String, aden_core::SourceSpan)>,
+) -> Vec<(String, aden_core::SourceSpan)> {
+    records.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+    records
+}
+
+/// True when `file` can normalize to one of `files` without canonicalizing
+/// every absolute path in the snapshot. Relative keys compare directly.
+/// Absolute paths must end at a path boundary with a wanted key.
+fn span_file_matches_hits(file: &str, files: &BTreeSet<String>) -> bool {
+    let mut normalized = normalize_sep(Path::new(file));
+    while let Some(stripped) = normalized.strip_prefix("./") {
+        normalized = stripped.to_string();
+    }
+    if files.contains(&normalized) {
+        return true;
+    }
+    if normalized == "."
+        || normalized.contains("/./")
+        || normalized.contains("/../")
+        || normalized.starts_with("../")
+        || normalized.ends_with("/.")
+        || normalized.ends_with("/..")
+    {
+        return true;
+    }
+    if !Path::new(file).is_absolute() {
+        return false;
+    }
+    files
+        .iter()
+        .any(|key| path_has_relative_suffix(&normalized, key))
+}
+
+fn path_has_relative_suffix(normalized: &str, key: &str) -> bool {
+    let Some(start) = normalized.len().checked_sub(key.len()) else {
+        return false;
+    };
+    if start == 0 || normalized.as_bytes()[start - 1] != b'/' {
+        return false;
+    }
+    let tail = &normalized[start..];
+    #[cfg(windows)]
+    {
+        tail.eq_ignore_ascii_case(key)
+    }
+    #[cfg(not(windows))]
+    {
+        tail == key
+    }
 }
 
 pub(crate) fn group_source_spans(
@@ -599,7 +761,7 @@ fn scan_utf8_lines<R: BufRead>(
         let text = std::str::from_utf8(bytes)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
         if skip_literal.is_some_and(|literal| !text.contains(literal)) {
-            line_number += text.lines().count();
+            line_number += count_lines_like_str(text.as_bytes());
         } else {
             for line in text.lines() {
                 visit(line, line_number);
@@ -608,6 +770,14 @@ fn scan_utf8_lines<R: BufRead>(
         }
         reader.consume(consumed);
     }
+}
+
+/// `str::lines().count()` without building line slices. `\n` terminates,
+/// including the `\n` of `\r\n`. A trailing newline does not add a line, and a
+/// non-empty chunk with no trailing newline still counts its last line.
+fn count_lines_like_str(bytes: &[u8]) -> usize {
+    let breaks = memchr::memchr_iter(b'\n', bytes).count();
+    breaks + usize::from(!bytes.is_empty() && !bytes.ends_with(b"\n"))
 }
 
 /// Preserve lowercase-substring matching while mapping Unicode expansions
@@ -810,8 +980,8 @@ fn looks_like_regex(pattern: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        MAX_PREVIEW_BYTES, MAX_RESPONSE_BYTES, cap_serialized_response, find_case_insensitive,
-        is_identifier, looks_like_regex, match_preview, normalize_span_file,
+        MAX_PREVIEW_BYTES, MAX_RESPONSE_BYTES, cap_serialized_response, count_lines_like_str,
+        find_case_insensitive, is_identifier, looks_like_regex, match_preview, normalize_span_file,
         normalized_search_scope, requires_regex_flag, scan_utf8_lines,
     };
     use std::io::BufReader;
@@ -882,6 +1052,52 @@ mod tests {
             })
             .unwrap();
             assert_eq!(actual, expected, "buffer capacity {capacity}");
+        }
+    }
+
+    #[test]
+    fn skipped_chunks_count_lf_crlf_empty_and_unterminated_lines() {
+        let samples = [
+            "alpha\nbeta\ngamma\n",
+            "alpha\r\nbeta\r\ngamma\r\n",
+            "alpha\n\n\nbeta\n",
+            "alpha\nbeta\ngamma",
+            "\n",
+            "",
+            "only",
+            "a\r\n\r\nb",
+            "line1\nline2\r\n\nline4",
+            "\r\n",
+            "a\n\nb",
+        ];
+        for text in samples {
+            assert_eq!(
+                count_lines_like_str(text.as_bytes()),
+                text.lines().count(),
+                "{text:?}"
+            );
+            let marked = if text.is_empty() || text.ends_with('\n') {
+                format!("{text}zzz-marker")
+            } else {
+                format!("{text}\nzzz-marker")
+            };
+            let expected: Vec<_> = marked
+                .lines()
+                .enumerate()
+                .filter_map(|(index, line)| line.contains("zzz-marker").then_some(index + 1))
+                .collect();
+            for capacity in [1usize, 2, 3, 4, 7, 64] {
+                let mut reader =
+                    BufReader::with_capacity(capacity, std::io::Cursor::new(marked.as_str()));
+                let mut lines = Vec::new();
+                scan_utf8_lines(&mut reader, Some("zzz-marker"), |line, number| {
+                    if line.contains("zzz-marker") {
+                        lines.push(number);
+                    }
+                })
+                .unwrap();
+                assert_eq!(lines, expected, "text {text:?} capacity {capacity}");
+            }
         }
     }
 
@@ -1083,5 +1299,64 @@ mod tests {
                 assert!(actual.get("metadata_truncated").is_none());
             }
         }
+    }
+
+    #[test]
+    fn span_file_filter_retains_dot_segments_and_skips_clean_misses() {
+        let hits = std::collections::BTreeSet::from(["src/lib.rs".to_string()]);
+        assert!(super::span_file_matches_hits("./src/lib.rs", &hits));
+        assert!(super::span_file_matches_hits("/repo/src/./lib.rs", &hits));
+        assert!(super::span_file_matches_hits(
+            "/repo/a/../src/lib.rs",
+            &hits
+        ));
+        assert!(!super::span_file_matches_hits("src/other.rs", &hits));
+        assert!(!super::span_file_matches_hits("/repo/src/other.rs", &hits));
+    }
+
+    #[test]
+    fn verified_spans_reject_mismatched_snapshot_even_in_session_cache_mode() {
+        struct ResetSession(bool);
+        impl Drop for ResetSession {
+            fn drop(&mut self) {
+                aden_graph::snapshot::set_session_cache_enabled(self.0);
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname='grep-rev-test'\nversion='0.1.0'\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("lib.rs"), "pub fn item() {}\n").unwrap();
+
+        let _restore = ResetSession(aden_graph::snapshot::session_cache_enabled());
+        aden_graph::snapshot::set_session_cache_enabled(true);
+
+        let mut docs = std::collections::HashMap::new();
+        let doc = aden_core::Document {
+            anchor: "aden://module/lib#item".to_string(),
+            source_span: Some(aden_core::SourceSpan {
+                file: "lib.rs".to_string(),
+                start_line: 1,
+                end_line: 1,
+                start_byte: 0,
+                end_byte: 0,
+            }),
+            ..Default::default()
+        };
+        docs.insert(doc.anchor.clone(), doc);
+        let encoded = aden_graph::snapshot::encode_snapshot(&docs, &[]).unwrap();
+        let snap_path = aden_paths::graph_snapshot_file(dir.path());
+        std::fs::create_dir_all(snap_path.parent().unwrap()).unwrap();
+        std::fs::write(&snap_path, &encoded).unwrap();
+        crate::indexer::fresh::publish_freshness_manifest(
+            dir.path(),
+            "deadbeefdeadbeef".into(),
+            "0000000000000000".into(),
+        )
+        .unwrap();
+
+        assert!(super::load_span_records(dir.path(), None).is_empty());
     }
 }

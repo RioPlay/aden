@@ -27,6 +27,7 @@ aden-heal = { version = "0.4.3", path = "../aden-heal" }
 aden-propose = { version = "0.4.3", path = "../aden-propose" }
 aden-policy = { version = "0.4.3", path = "../aden-policy" }
 regex = "1.11"
+memchr = "2"
 dirs = "7"
 toml_edit = "0.25"
 walkdir = "2"

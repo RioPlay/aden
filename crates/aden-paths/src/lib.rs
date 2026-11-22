@@ -68,6 +68,9 @@ const ROOT_MARKERS: &[&str] = &[
     "Makefile",
 ];
 
+/// Maximum cached `(canonical_start, resolved_root)` entries per request scope.
+const READ_ROOT_CACHE_LIMIT: usize = 16;
+
 /// Resolve the canonical project root containing `start` (ADR-003 §1).
 ///
 /// Order: `git rev-parse --show-toplevel` (when in a work tree) → root-marker
@@ -81,16 +84,27 @@ pub fn resolve_root(start: &Path) -> PathBuf {
     if let Some(hit) = READ_ROOT.with_borrow(|state| {
         state
             .as_ref()?
-            .as_ref()
-            .filter(|(key, _)| key == &canon)
+            .iter()
+            .find(|(key, _)| key == &canon)
             .map(|(_, root)| root.clone())
     }) {
         return hit;
     }
     let root = resolve_canonical_root(&canon, can_probe_git_markers);
     READ_ROOT.with_borrow_mut(|state| {
-        if let Some(entry) = state {
-            *entry = Some((canon, root.clone()));
+        if let Some(entries) = state {
+            if entries.len() < READ_ROOT_CACHE_LIMIT
+                && !entries.iter().any(|(key, _)| key == &canon)
+            {
+                entries.push((canon.clone(), root.clone()));
+            }
+            if entries.len() < READ_ROOT_CACHE_LIMIT
+                && let Ok(root_canon) = root.canonicalize()
+                && root_canon != canon
+                && !entries.iter().any(|(key, _)| key == &root_canon)
+            {
+                entries.push((root_canon, root.clone()));
+            }
         }
     });
     root
@@ -98,19 +112,19 @@ pub fn resolve_root(start: &Path) -> PathBuf {
 
 thread_local! {
     // Outer option enables reuse only inside a synchronous read request.
-    static READ_ROOT: std::cell::RefCell<Option<Option<(PathBuf, PathBuf)>>> =
+    static READ_ROOT: std::cell::RefCell<Option<Vec<(PathBuf, PathBuf)>>> =
         const { std::cell::RefCell::new(None) };
 }
 
-/// Reuse one root discovery within this read and discard it on return or unwind.
+/// Reuse root discoveries within this read and discard them on return or unwind.
 pub fn with_read_root_scope<T>(read: impl FnOnce() -> T) -> T {
-    struct Reset(Option<Option<(PathBuf, PathBuf)>>);
+    struct Reset(Option<Vec<(PathBuf, PathBuf)>>);
     impl Drop for Reset {
         fn drop(&mut self) {
             READ_ROOT.replace(self.0.take());
         }
     }
-    let _reset = Reset(READ_ROOT.replace(Some(None)));
+    let _reset = Reset(READ_ROOT.replace(Some(Vec::new())));
     read()
 }
 
@@ -847,6 +861,41 @@ mod tests {
             assert_eq!(resolve_root(&inner), root);
         });
         assert_eq!(with_read_root_scope(|| resolve_root(&inner)), inner);
+    }
+
+    #[test]
+    fn read_scope_caches_subdir_and_resolved_root_and_resets_on_drop() {
+        let dir = tempfile::tempdir().unwrap();
+        let outer = dir.path().canonicalize().unwrap();
+        let project = outer.join("project");
+        let inner = project.join("sub").join("inner");
+        std::fs::create_dir_all(&inner).unwrap();
+        std::fs::write(outer.join("Cargo.toml"), "").unwrap();
+        std::fs::write(project.join("Cargo.toml"), "").unwrap();
+
+        with_read_root_scope(|| {
+            let resolved = resolve_root(&inner);
+            assert_eq!(resolved, project);
+
+            // Mutate markers after the initial subdir resolution: both the
+            // subdir and its resolved root must hit the in-scope cache.
+            std::fs::remove_file(project.join("Cargo.toml")).unwrap();
+            std::fs::write(inner.join("Cargo.toml"), "").unwrap();
+            assert_eq!(resolve_root(&resolved), project);
+            assert_eq!(resolve_root(&inner), project);
+
+            READ_ROOT.with_borrow(|state| {
+                let entries = state.as_ref().expect("active read-root scope");
+                assert!(entries.iter().any(|(k, v)| k == &inner && v == &project));
+                assert!(entries.iter().any(|(k, v)| k == &project && v == &project));
+                assert!(entries.len() <= READ_ROOT_CACHE_LIMIT);
+            });
+        });
+
+        // Scope dropped: cache is cleared and fresh discovery observes disk state.
+        READ_ROOT.with_borrow(|state| assert!(state.is_none()));
+        assert_eq!(resolve_root(&project), outer);
+        assert_eq!(resolve_root(&inner), inner);
     }
 
     #[test]

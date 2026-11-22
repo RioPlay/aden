@@ -118,6 +118,28 @@ aden gen . --quiet
 intent. `--propose` writes review proposals for conflicts instead of mutating the
 store; `--force-regen` skips that merge gate entirely.
 
+==== Scope and exclusions
+
+Discovery keeps the project's own source and prunes everything else:
+
+- Built-in defaults skip VCS metadata, build output, and the dependency trees of
+  common ecosystems (`.git/`, `target/`, `node_modules/`, `vendor/`, ...).
+- A subdirectory carrying its own repository marker (a `.git` directory or
+  gitfile, `.hg`, `.svn`, `.jj`, `.pijul`) is a submodule, nested clone, or
+  linked worktree. Its files belong to another project, so indexing never
+  descends into it.
+- `.adenignore`/`.adenallow` add project-specific patterns without replacing the
+  built-in defaults.
+- Machine-wide patterns live outside the repository, so no project needs an Aden
+  file: `<data root>/ignore` uses the same syntax as `.adenignore` and applies to
+  every project, while `ADEN_EXCLUDES` (comma or newline separated) overrides it
+  for one run or CI. The data root is the parent of the `projects/` directory
+  reported by `aden store path`.
+
+When discovery selects more than 20,000 source files, `gen` reports the count and
+both exclusion routes, because a vendored or mirrored tree inside the checkout is
+the usual cause of an unexpectedly large graph.
+
 === regen
 
 Recompile the whole project into the knowledge graph from scratch. This is the
@@ -162,10 +184,29 @@ Validates:
 |Forbid |Fails CI gate
 |===
 
-This is the documentation-accuracy gate: CI runs `aden check . --severity Forbid`
-(and it is part of `ci-check` / the pre-push hook), so a doc that drifts from the
-code — a stale signature, a reference to a relocated symbol, or a link to a moved
-file — fails the build. `--json` emits `{ok, errors, warnings, info}`.
+Use `aden check . --severity Forbid` in CI to check references and recorded
+source integrity. A reference to a relocated symbol or moved file can fail the
+gate. Use <<findings-command,`aden findings --check`>> separately to check
+authored relationships between specific prose, code, and test passages.
+
+This excerpt shows the JSON summary for a successful `aden check --json`.
+Totals depend on the project.
+
+[source,json,id=check-json-summary]
+----
+{
+  "ok": true,
+  "counts": {
+    "errors": 0,
+    "warnings": 0,
+    "info": 7
+  }
+}
+----
+
+The link:../crates/aden-cli/tests/result_semantics.rs[CLI contract tests]
+compare this excerpt with live output and check that a broken reference yields
+`ok: false`, a positive `counts.errors`, and a failing exit status.
 
 === lint
 
@@ -347,6 +388,75 @@ referencers, regardless of edge type); narrow it to one relationship with
 `--edge-type`. `--impact` traverses downstream dependency edges (`Uses`, `Calls`,
 `Implements`, `Mutates`).
 
+[[findings-command]]
+=== findings
+
+Inspect authored relationships between exact source passages in a project. A
+finding identifies a claim and one or more passages the author says support,
+contradict, or test it. Either end may be prose or code. Use a prose line to
+find its implementation or a code line to find the claims tied to it.
+
+Create `aden-findings.toml` at the project root. For each range, take
+`source.source_hash` from `aden read FILE --start-line N --end-line M` and
+replace the example hash below with the returned value for that file.
+
+[source,toml]
+----
+version = 1
+
+[[findings]]
+id = "empty-input"
+
+[findings.claim]
+file = "docs/input.adoc"
+start_line = 12
+end_line = 13
+source_hash = "0000000000000000"
+
+[[findings.evidence]]
+relation = "supports"
+file = "src/input.rs"
+start_line = 42
+end_line = 45
+source_hash = "0000000000000000"
+----
+
+[source,bash]
+----
+aden findings
+aden findings --file docs/input.adoc --line 12
+aden findings --human --file src/input.rs --line 42
+aden findings --check
+----
+
+Use exact project-relative paths with forward slashes and inclusive, 1-based
+lines. Each finding ID must be unique and contain 1 to 64 ASCII letters,
+digits, hyphens, or underscores. Each evidence entry uses `supports`,
+`contradicts`, or `tests`. The manifest supports up to 128 claim and evidence
+spans and 64 KiB. Omit `--line` to match anywhere in a file. Pass a project
+directory as the optional positional argument when working outside the root.
+
+The JSON response records the authored direction from evidence to claim even
+when you search from the claim. `current` means the pinned whole-file hashes
+match and the ranges exist. An unrelated edit or a line-ending change in a
+pinned file can also invalidate the hash. An edited, unavailable, excluded, or
+out-of-range source marks the finding `needs_review`. Review both passages and
+their relationship before updating the hashes. `tests` records what a test is
+intended to cover. Findings are read directly from the manifest, independently
+of the generated graph used by `query` and `view`.
+
+Use `--check` in a script or CI job to require at least one matching finding,
+current source for each match, and zero authored `contradicts` links. File and
+line filters limit the check to their matches. The exit status is `0` when the
+check passes and `1` when a finding needs review, records a contradiction, or
+the selection is empty. A `contradicts` link blocks the check even if both
+passages are `current`. The JSON `gate` object reports `ok`, `matched`,
+`needs_review`, and `contradictions`. Each count is a count of findings. Human
+output includes the same counts and a verdict after the linked passages.
+Use the ordinary `aden findings` command to inspect the links without applying
+the gate. Pair the gate with executable assertions for claims about runtime
+behavior.
+
 === ask
 
 Natural-language question to subgraph assembly.
@@ -383,6 +493,13 @@ aden ask "Explain the parser" --model ollama:llama3
 aden ask "How does the parser work?" --explain
 ----
 
+For a question such as "Which guide explains the archive action?", `ask` searches
+authored guide passages. Put a label in backticks to require its words in the
+passage. If the candidates lack supporting prose, the result is empty.
+For a procedural question such as "How do I move a tab?", a matching
+walkthrough can supply the context. When the walkthrough search finds too
+little support, ordinary routing continues.
+
 Without `--human`, `ask` returns a versioned JSON object containing the selected
 anchor, source file, intent, effective budget, supporting anchors, assembled
 context, `question_fit`, and `routing_confidence`. This is the stable default for
@@ -397,6 +514,13 @@ symbol (`cmd_*`/`run_*` conventions) ahead of prose mentions. `--human` emits on
 narrowing guidance. `--strict` caps the complete serialized response in either mode; at
 very small JSON budgets, optional routing metadata is omitted before evidence is
 truncated.
+
+For an implementation question, name the action and the thing it affects.
+For example, ask where the application publishes a snapshot, or ask where it
+computes the snapshot filename. Those questions can lead to different functions.
+An ambiguous response includes a candidate to inspect. Check whether its source
+performs the requested action before relying on it. A usage question can lead
+directly to the instructions in the manual.
 
 [IMPORTANT]
 ====
@@ -1445,6 +1569,13 @@ directions. MCP uses `compact-v2` by default because its responses are repeatedl
 placed in model context; pass `profile=full` or `verbose=true` when diagnosing
 refresh/provenance behavior or inspecting the budget split. Stale, missing, and
 ambiguous results retain their actionable diagnostics in either profile.
+
+When available, `documentation` gives a project-relative manual or design
+document to open next. Inspect its `provenance`: an explicit documentation
+backlink is a graph relationship. A source-comment citation can come from the
+symbol itself or a same-file dependency. Its evidence identifies the citing
+symbol and dependency depth. A Markdown file citation points to the file;
+open the passage to verify that it explains the behavior.
 
 Returns in a single report:
 - Anchor resolution and definition location

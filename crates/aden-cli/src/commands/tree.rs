@@ -75,13 +75,14 @@ pub fn cmd_tree(
     let scope = std::fs::canonicalize(path)
         .map_err(|error| format!("Cannot inspect '{}': {error}", path.display()))?;
     // Windows: git root is often `C:/…` while canonicalize yields `\\?\C:\…`.
-    // Compare via aden_paths so those spellings of the same directory match.
-    if !aden_paths::is_under(&root, &scope) {
+    // One RelativeRoot covers that comparison; `is_under` plus `relative_to`
+    // would canonicalize both paths a second time.
+    let relative_root = aden_paths::RelativeRoot::new(&root);
+    let Some(relative_scope) = relative_root.relative_to(&scope) else {
         return Err(format!("Tree scope '{}' is outside project root", path.display()).into());
-    }
+    };
     super::ensure_fresh(&root);
     let mut files = discover_tree_scope_files(&root, &scope)?;
-    let relative_scope = aden_paths::relative_to(&root, &scope).unwrap_or_default();
     if files_only {
         files.sort_unstable();
         files.dedup();
@@ -126,7 +127,7 @@ pub fn cmd_tree(
                     "outline": outline.text,
                 }),
             );
-            println!("{}", serde_json::to_string(&payload)?);
+            crate::read_worker::emit_machine_body(serde_json::to_string(&payload)?);
         } else {
             print!("{}", outline.text);
             super::next_actions::print(&next_actions);
@@ -204,7 +205,7 @@ pub fn cmd_tree(
                     "outline": outline.text,
                 }),
             );
-            println!("{}", serde_json::to_string(&payload)?);
+            crate::read_worker::emit_machine_body(serde_json::to_string(&payload)?);
         } else {
             print!("{}", outline.text);
             super::next_actions::print(&next_actions);

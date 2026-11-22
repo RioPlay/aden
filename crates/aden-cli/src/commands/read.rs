@@ -5,6 +5,7 @@
 
 use super::AgentCliError;
 use aden_core::source::{SourceError, StoredSourceReader, read_direct_source};
+use memchr::memchr_iter;
 use serde_json::json;
 use std::path::Path;
 
@@ -51,14 +52,13 @@ pub fn cmd_read(
     let (root, real_path, content) = read_direct_source(path, file).map_err(source_error)?;
     // Change detection, not an authenticity or cryptographic security assertion.
     // Hash literal bytes so CRLF/LF differences remain observable.
-    let source_hash = aden_core::stable_hash(content.as_bytes());
-    if expected_hash
-        .as_deref()
-        .is_some_and(|expected| expected != source_hash)
-    {
+    let bytes = content.as_bytes();
+    let compute_source_hash = || aden_core::stable_hash(bytes);
+    let checked_hash = expected_hash.as_ref().map(|_| compute_source_hash());
+    if expected_hash != checked_hash {
         return Err(read_error("source_changed", "Source does not match expected_hash").into());
     }
-    if let Some(offset) = cursor {
+    let line_breaks = if let Some(offset) = cursor {
         if expected_hash.is_none() || offset > content.len() || !content.is_char_boundary(offset) {
             return Err(read_error(
                 "invalid_source_cursor",
@@ -66,12 +66,13 @@ pub fn cmd_read(
             )
             .into());
         }
-        start_line = content[..offset]
-            .bytes()
-            .filter(|byte| *byte == b'\n')
-            .count()
-            + 1;
-    }
+        let (prefix, suffix) = bytes.split_at(offset);
+        let preceding_breaks = memchr_iter(b'\n', prefix).count();
+        start_line = preceding_breaks + 1;
+        preceding_breaks + memchr_iter(b'\n', suffix).count()
+    } else {
+        memchr_iter(b'\n', bytes).count()
+    };
     if end_line.is_some_and(|end| end < start_line) {
         return Err(read_error(
             "invalid_read_range",
@@ -79,7 +80,7 @@ pub fn cmd_read(
         )
         .into());
     }
-    let total_lines = content.split_inclusive('\n').count();
+    let total_lines = line_breaks + usize::from(!bytes.is_empty() && !bytes.ends_with(b"\n"));
     if start_line > total_lines
         && !(total_lines == 0 && start_line == 1)
         && cursor != Some(content.len())
@@ -98,34 +99,24 @@ pub fn cmd_read(
         }
     });
     let selected_end = end_line.min(total_lines);
-    let mut text = String::new();
-    let mut actual_end = None;
+    let start_byte = cursor.unwrap_or_else(|| line_start(bytes, start_line));
+    let mut end_byte = start_byte;
+    let mut actual_end =
+        (cursor == Some(content.len()) && start_line <= selected_end).then_some(start_line);
     let mut truncated = false;
     let mut last_line_complete = true;
-    let mut start_byte = 0;
-    for (index, mut line) in content.split_inclusive('\n').enumerate() {
-        let number = index + 1;
-        if number < start_line {
-            start_byte += line.len();
-            continue;
-        }
+    for (index, line) in content[start_byte..].split_inclusive('\n').enumerate() {
+        let number = start_line + index;
         if number > selected_end {
             break;
         }
-        if number == start_line
-            && let Some(offset) = cursor
-        {
-            let skip = offset - start_byte;
-            line = &line[skip..];
-            start_byte = offset;
-        }
-        let available = max_bytes - text.len();
+        let available = max_bytes - (end_byte - start_byte);
         if line.len() > available {
             let mut cut = available;
             while !line.is_char_boundary(cut) {
                 cut -= 1;
             }
-            if cut == 0 && text.is_empty() {
+            if cut == 0 && end_byte == start_byte {
                 return Err(read_error(
                     "invalid_read_range",
                     "max_bytes cannot fit the next UTF-8 character; increase max_bytes to at least 4",
@@ -133,28 +124,43 @@ pub fn cmd_read(
                 .into());
             }
             if cut > 0 {
-                text.push_str(&line[..cut]);
+                end_byte += cut;
                 actual_end = Some(number);
                 last_line_complete = false;
             }
             truncated = true;
             break;
         }
-        text.push_str(line);
+        end_byte += line.len();
         actual_end = Some(number);
     }
+    let text = &content[start_byte..end_byte];
+    if !json_output {
+        print!("{text}");
+        if truncated {
+            let source_hash = checked_hash.unwrap_or_else(compute_source_hash);
+            eprintln!(
+                "Source excerpt clipped; use --json for hash-pinned continuation details (next byte {end_byte}, end line {end_line}, expected hash {source_hash}).",
+            );
+        }
+        return Ok(());
+    }
+
+    let source_hash = checked_hash.unwrap_or_else(compute_source_hash);
     let file_key = crate::util::project_relative_key(&root, &real_path);
+    let root = aden_paths::strip_verbatim(&root);
+    let root = root.to_string_lossy();
     let report = json!({
         "schema_version": 1,
         "result_state": if truncated { "truncated" } else { "complete" },
-        "root": aden_paths::strip_verbatim(&root).to_string_lossy(),
+        "root": root,
         "observation": "file_bytes_read",
         "truncated": truncated,
-        "next_byte": truncated.then_some(start_byte + text.len()),
+        "next_byte": truncated.then_some(end_byte),
         "continuation": truncated.then(|| json!({
             "file": file.to_string_lossy(),
-            "path": aden_paths::strip_verbatim(&root).to_string_lossy(),
-            "start_byte": start_byte + text.len(),
+            "path": root,
+            "start_byte": end_byte,
             "end_line": end_line,
             "expected_hash": source_hash,
             "max_bytes": max_bytes,
@@ -172,24 +178,35 @@ pub fn cmd_read(
             "start_line": actual_end.map(|_| start_line),
             "end_line": actual_end,
             "start_byte": start_byte,
-            "end_byte": start_byte + text.len(),
+            "end_byte": end_byte,
             "returned_bytes": text.len(),
             "last_line_complete": last_line_complete,
             "text": text,
         },
     });
-    if json_output {
-        println!("{}", serde_json::to_string(&report)?);
-    } else {
-        print!("{text}");
-        if truncated {
-            eprintln!(
-                "Source excerpt clipped; use --json for hash-pinned continuation details (next byte {}, end line {end_line}, expected hash {source_hash}).",
-                start_byte + text.len()
-            );
-        }
-    }
+    crate::read_worker::emit_machine_body(serde_json::to_string(&report)?);
     Ok(())
+}
+
+fn line_start(bytes: &[u8], line: usize) -> usize {
+    let mut remaining = line - 1;
+    if remaining == 0 {
+        return 0;
+    }
+
+    // Skip blocks using bulk newline counts and locate a single break in the target block.
+    const BLOCK_BYTES: usize = 4096;
+    for (index, block) in bytes.chunks(BLOCK_BYTES).enumerate() {
+        let breaks = memchr_iter(b'\n', block).count();
+        if remaining <= breaks {
+            let newline = memchr_iter(b'\n', block)
+                .nth(remaining - 1)
+                .expect("counted newline");
+            return index * BLOCK_BYTES + newline + 1;
+        }
+        remaining -= breaks;
+    }
+    unreachable!("requested line must be within the source")
 }
 
 fn source_error(error: SourceError) -> Box<dyn std::error::Error> {

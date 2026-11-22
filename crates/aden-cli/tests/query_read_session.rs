@@ -14,6 +14,10 @@ struct Fixture {
 
 impl Fixture {
     fn new(source: &str) -> Self {
+        Self::with_sources(&[("lib.rs", source)])
+    }
+
+    fn with_sources(sources: &[(&str, &str)]) -> Self {
         let root = tempfile::tempdir().unwrap();
         let data = tempfile::tempdir().unwrap();
         std::fs::write(
@@ -21,7 +25,9 @@ impl Fixture {
             "[package]\nname='query-session'\nversion='0.1.0'\n",
         )
         .unwrap();
-        std::fs::write(root.path().join("lib.rs"), source).unwrap();
+        for (path, source) in sources {
+            std::fs::write(root.path().join(path), source).unwrap();
+        }
         let fixture = Self { root, data };
         let generated = fixture.run(&["gen", ".", "--quiet"]);
         assert!(
@@ -33,14 +39,17 @@ impl Fixture {
     }
 
     fn run(&self, args: &[&str]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_aden"))
-            .args(args)
+        self.command().args(args).output().unwrap()
+    }
+
+    fn command(&self) -> Command {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_aden"));
+        command
             .current_dir(self.root.path())
             .env("ADEN_DATA_DIR", self.data.path())
             .env_remove("ADEN_STORE")
-            .env_remove("ADEN_SKIP_AUTO_GEN")
-            .output()
-            .unwrap()
+            .env_remove("ADEN_SKIP_AUTO_GEN");
+        command
     }
 
     fn query(&self, mode: &str, seed: &str, limit: usize) -> Value {
@@ -75,6 +84,24 @@ impl Fixture {
             .unwrap()
             .path()
             .join("store")
+    }
+
+    fn assembly_args(seed: &str) -> [&str; 8] {
+        [
+            "asm", "--from", seed, "--depth", "2", "--format", "json", ".",
+        ]
+    }
+
+    fn assembly(&self, seed: &str) -> Value {
+        let output = self.run(&Self::assembly_args(seed));
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(value["context_receipt"]["freshness"], "current");
+        value
     }
 }
 
@@ -221,4 +248,139 @@ fn next_query_observes_timestamp_preserving_symbol_replacement() {
     assert!(old.status.success());
     let old: Value = serde_json::from_slice(&old.stdout).unwrap();
     assert_eq!(old["total"], 0);
+}
+
+#[test]
+fn query_and_asm_agree_with_and_without_snapshot_and_under_writer_contention() {
+    let fixture = Fixture::new(CHAIN);
+    let store_path = fixture.store();
+    let snapshot = store_path.with_file_name("graph.snapshot");
+    let bytes = std::fs::read(&snapshot).unwrap();
+    let read = || {
+        (
+            fixture.query("--from", "entry", 100),
+            fixture.assembly("entry"),
+        )
+    };
+    let expected = read();
+    assert_eq!(expected.0["returned"], 3);
+    assert!(expected.1["documents"].as_array().unwrap().len() >= 3);
+
+    std::fs::remove_file(&snapshot).unwrap();
+    assert_eq!(read(), expected, "Fjall fallback");
+    std::fs::write(&snapshot, bytes).unwrap();
+
+    let _writer = aden_store::Storage::open_existing(store_path.to_str().unwrap()).unwrap();
+    assert_eq!(read(), expected, "writer-contended snapshot");
+}
+
+#[test]
+fn query_and_asm_reject_a_decodable_snapshot_with_the_wrong_revision() {
+    let fixture = Fixture::new(CHAIN);
+    let store_path = fixture.store();
+    let snapshot = store_path.with_file_name("graph.snapshot");
+    let expected_query = fixture.query("--from", "entry", 100);
+    let expected_asm = fixture.assembly("entry");
+
+    let (mut docs, mut edges) = aden_graph::snapshot::read_snapshot_file(&snapshot).unwrap();
+    let entry = expected_query["items"][0]["anchor"].as_str().unwrap();
+    assert!(docs.remove(entry).is_some());
+    edges.retain(|(source, target, _)| source != entry && target != entry);
+    let altered = aden_graph::snapshot::encode_snapshot(&docs, &edges).unwrap();
+    std::fs::write(&snapshot, altered).unwrap();
+    assert_eq!(fixture.query("--from", "entry", 100), expected_query);
+    assert_eq!(fixture.assembly("entry"), expected_asm);
+
+    // A rejected snapshot must not be retried unchecked when Fjall is locked.
+    // Use an anchor still in the altered snapshot so an unchecked read would succeed.
+    let _writer = aden_store::Storage::open_existing(store_path.to_str().unwrap()).unwrap();
+    assert!(
+        !fixture
+            .run(&Fixture::assembly_args("leaf"))
+            .status
+            .success()
+    );
+    assert!(
+        !fixture
+            .run(&["query", "--from", "leaf", "--format", "json"])
+            .status
+            .success()
+    );
+}
+
+#[test]
+fn asm_symbol_resolution_matches_query_and_is_independent_of_snapshot() {
+    let fixture = Fixture::with_sources(&[
+        ("lib.rs", CHAIN),
+        ("first.rs", "pub fn duplicate() {}\n"),
+        ("second.rs", "pub fn duplicate() {}\n"),
+    ]);
+    let canonical = fixture.query("--from", "entry", 100)["items"][0]["anchor"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(fixture.assembly("entry"), fixture.assembly(&canonical));
+
+    let errors = |input| {
+        let asm = fixture.run(&Fixture::assembly_args(input));
+        let query = fixture.run(&["query", "--from", input, "--format", "json"]);
+        assert!(!asm.status.success());
+        assert!(!query.status.success());
+        assert_eq!(asm.stderr, query.stderr);
+        String::from_utf8(asm.stderr).unwrap()
+    };
+    let ambiguous = errors("duplicate");
+    let missing = errors("this_symbol_does_not_exist");
+    assert!(
+        ambiguous.contains("Ambiguous symbol 'duplicate'")
+            || ambiguous.contains("ambiguous_symbol")
+    );
+    assert!(missing.contains("not found") || missing.contains("anchor_not_found"));
+
+    std::fs::remove_file(fixture.store().with_file_name("graph.snapshot")).unwrap();
+    assert_eq!(fixture.assembly("entry"), fixture.assembly(&canonical));
+    assert_eq!(errors("duplicate"), ambiguous);
+    assert_eq!(errors("this_symbol_does_not_exist"), missing);
+}
+
+#[test]
+fn warm_json_ask_reads_callers_and_fingerprints_before_and_after() {
+    let fixture = Fixture::new(CHAIN);
+    let read = || {
+        let output = fixture
+            .command()
+            .args([
+                "-j",
+                "ask",
+                "--from",
+                "leaf",
+                "--depth",
+                "1",
+                "--edge-types",
+                "Calls",
+                "What calls leaf?",
+            ])
+            .env("ADEN_READ_TRACE", "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(value["context_receipt"]["freshness"], "current");
+        assert!(value["context"].as_str().unwrap().contains("fn middle"));
+        let trace = String::from_utf8_lossy(&output.stderr)
+            .lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .find(|value| value["type"] == "aden_read_trace")
+            .unwrap();
+        assert_eq!(trace["counters"]["fingerprint_scans"], 2);
+        value
+    };
+
+    let expected = read();
+    std::fs::remove_file(fixture.store().with_file_name("graph.snapshot")).unwrap();
+    assert_eq!(read(), expected);
 }

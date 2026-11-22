@@ -5,7 +5,9 @@ use std::path::Path;
 
 use aden_core::AdenConfig;
 
-use crate::util::{fmt_score, load_or_build_index, query_index_with_navigation};
+use aden_graph::{AdenEdge, AdenGraph, DocumentNode};
+
+use crate::util::{fmt_score, load_or_build_index, query_index_with_navigation, sanitize_terminal};
 
 /// True if `anchor` belongs to the requested `--doc-type` (already lower-cased
 /// and validated by the caller). Matches the real anchor shapes: code symbols
@@ -232,7 +234,7 @@ pub fn cmd_search(opts: SearchOptions<'_>) -> Result<(), Box<dyn std::error::Err
                 "freshness": env["freshness"].clone(),
                 "index_stale": env["index_stale"].clone(),
             });
-            println!("{}", serde_json::to_string(&error)?);
+            crate::read_worker::emit_machine_body(serde_json::to_string(&error)?);
             return Ok(());
         }
 
@@ -256,7 +258,7 @@ pub fn cmd_search(opts: SearchOptions<'_>) -> Result<(), Box<dyn std::error::Err
             env["next_cursor"] = next_cursor.into();
             env["next_actions"] = serde_json::json!(action.into_iter().collect::<Vec<_>>());
         }
-        println!("{}", serde_json::to_string(&env)?);
+        crate::read_worker::emit_machine_body(serde_json::to_string(&env)?);
         return Ok(());
     }
 
@@ -277,12 +279,12 @@ pub fn cmd_search(opts: SearchOptions<'_>) -> Result<(), Box<dyn std::error::Err
     println!("| Anchor | Score | Snippet |");
     println!("|=== |");
     for r in &limited {
-        let snippet = if r.snippet.len() > 80 {
-            format!("{}...", &r.snippet[..80])
-        } else {
-            r.snippet.clone()
-        };
-        println!("| {} | {} | {} |", r.anchor, fmt_score(r.score), snippet);
+        println!(
+            "| {} | {} | {} |",
+            r.anchor,
+            fmt_score(r.score),
+            display_snippet(&r.snippet)
+        );
     }
 
     // Print semantic results if any
@@ -298,29 +300,50 @@ pub fn cmd_search(opts: SearchOptions<'_>) -> Result<(), Box<dyn std::error::Err
     Ok(())
 }
 
+/// Human table cell for a search snippet: at most 80 Unicode scalar values
+/// (never a byte slice inside a multi-byte char), with terminal controls escaped.
+fn display_snippet(snippet: &str) -> String {
+    const MAX_CHARS: usize = 80;
+    match snippet.char_indices().nth(MAX_CHARS) {
+        Some((cut, _)) => format!("{}...", sanitize_terminal(&snippet[..cut])),
+        None => sanitize_terminal(snippet),
+    }
+}
+
 /// Standard `*`/`?` glob match. `*` matches any sequence; `?` matches one char.
 /// Used by `cmd_list --filter` so callers can write `mod-aden-*` or `*asm*`.
+/// Greedy two-pointer match over chars: on a mismatch, the latest `*` absorbs
+/// one more char. Constant space, no allocation per anchor.
 fn glob_matches(pattern: &str, text: &str) -> bool {
-    let p: Vec<char> = pattern.chars().collect();
-    let t: Vec<char> = text.chars().collect();
-    let (pl, tl) = (p.len(), t.len());
-    let mut dp = vec![vec![false; tl + 1]; pl + 1];
-    dp[0][0] = true;
-    for i in 1..=pl {
-        if p[i - 1] == '*' {
-            dp[i][0] = dp[i - 1][0];
-        }
-    }
-    for i in 1..=pl {
-        for j in 1..=tl {
-            if p[i - 1] == '*' {
-                dp[i][j] = dp[i - 1][j] || dp[i][j - 1];
-            } else if p[i - 1] == '?' || p[i - 1] == t[j - 1] {
-                dp[i][j] = dp[i - 1][j - 1];
+    let (mut p, mut t) = (pattern, text);
+    // Pattern after the latest `*`, and the text that `*` has absorbed up to.
+    let mut star: Option<(&str, &str)> = None;
+    while let Some(tc) = t.chars().next() {
+        let mut rest = p.chars();
+        match rest.next() {
+            Some('*') => {
+                p = rest.as_str();
+                star = Some((p, t));
+                continue;
             }
+            Some(pc) if pc == '?' || pc == tc => {
+                p = rest.as_str();
+                t = &t[tc.len_utf8()..];
+                continue;
+            }
+            _ => {}
         }
+        let Some((star_p, star_t)) = star else {
+            return false;
+        };
+        // `star_t` trails `t`, so it still has a char to absorb.
+        let mut absorbed = star_t.chars();
+        absorbed.next();
+        p = star_p;
+        t = absorbed.as_str();
+        star = Some((p, t));
     }
-    dp[pl][tl]
+    p.chars().all(|c| c == '*')
 }
 
 /// Returns true when `anchor` satisfies `pattern`.
@@ -349,53 +372,42 @@ pub fn cmd_list(
     let _stale_hint = super::StaleHintGuard::new(path, json);
     super::ensure_fresh(path);
 
-    let graph = aden_graph::cache::build_from_directory_cached(path)?;
-
-    // If semantics_only, collect only nodes that are part of semantic relationships
-    let anchors: Vec<String> = if semantics_only {
-        let mut semantic_anchors: std::collections::HashSet<String> =
-            std::collections::HashSet::new();
-        for edge_idx in graph.graph.edge_indices() {
-            let edge_type = &graph.graph[edge_idx];
-            let semantic_types = [
-                aden_core::EdgeType::IsA,
-                aden_core::EdgeType::PartOf,
-                aden_core::EdgeType::RelatesTo,
-                aden_core::EdgeType::SimilarTo,
-                aden_core::EdgeType::Causes,
-                aden_core::EdgeType::Implies,
-                aden_core::EdgeType::SynonymOf,
-                aden_core::EdgeType::AntonymOf,
-                aden_core::EdgeType::AssociatedWith,
-                aden_core::EdgeType::PrerequisiteFor,
-                aden_core::EdgeType::Explains,
-                aden_core::EdgeType::IsEquivalentTo,
-            ];
-            if semantic_types.contains(&edge_type.edge_type) {
-                let (src, tgt) = graph.graph.edge_endpoints(edge_idx).expect("valid edge");
-                semantic_anchors.insert(graph.graph[src].doc.anchor.clone());
-                semantic_anchors.insert(graph.graph[tgt].doc.anchor.clone());
-            }
-        }
-        semantic_anchors.into_iter().collect()
+    // Only semantic edges and the verbose type/source columns need the
+    // materialized graph; a plain listing reads anchor keys alone.
+    let graph = if semantics_only || verbose {
+        Some(aden_graph::cache::build_from_directory_cached(path)?)
     } else {
-        graph
-            .graph
-            .node_indices()
-            .filter_map(|idx| graph.graph.node_weight(idx).map(|n| n.doc.anchor.clone()))
-            .collect()
+        None
     };
+    let mut anchors = match &graph {
+        Some(graph) if semantics_only => semantic_anchors(graph),
+        Some(graph) => graph_anchors(graph),
+        None => stored_anchors(path)?,
+    };
+    if let Some(f) = filter {
+        anchors.retain(|a| anchor_matches_filter(a, f));
+    }
+    // Graph and snapshot iteration order is unspecified; sort so offset
+    // pagination is stable across runs.
+    anchors.sort_unstable();
+    let total_count = anchors.len();
+    let limited: Vec<_> = anchors.into_iter().skip(offset).take(limit).collect();
 
-    let filtered: Vec<_> = match filter {
-        Some(f) => anchors
-            .iter()
-            .filter(|a| anchor_matches_filter(a, f))
+    // `(node-type, source)` for the verbose columns.
+    let node_info = |anchor: &str| {
+        let graph = graph.as_ref()?;
+        let node = graph
+            .anchor_to_index
+            .get(anchor)
+            .and_then(|idx| graph.graph.node_weight(*idx))?;
+        let node_type = node
+            .doc
+            .attributes
+            .get("node-type")
             .cloned()
-            .collect(),
-        None => anchors,
+            .unwrap_or_else(|| "unknown".to_string());
+        Some((node_type, node.source_path.to_string_lossy().into_owned()))
     };
-    let total_count = filtered.len();
-    let limited: Vec<_> = filtered.into_iter().skip(offset).take(limit).collect();
 
     // Machine-readable envelope for agents: counts + pagination, no table chrome.
     if json {
@@ -403,21 +415,8 @@ pub fn cmd_list(
             .iter()
             .map(|anchor| {
                 if verbose {
-                    let (node_type, source) = graph
-                        .anchor_to_index
-                        .get(anchor)
-                        .and_then(|idx| graph.graph.node_weight(*idx))
-                        .map(|n| {
-                            (
-                                n.doc
-                                    .attributes
-                                    .get("node-type")
-                                    .cloned()
-                                    .unwrap_or_else(|| "unknown".to_string()),
-                                n.source_path.to_string_lossy().to_string(),
-                            )
-                        })
-                        .unwrap_or_else(|| ("unknown".to_string(), String::new()));
+                    let (node_type, source) =
+                        node_info(anchor).unwrap_or_else(|| ("unknown".to_string(), String::new()));
                     serde_json::json!({"anchor": anchor, "type": node_type, "source": source})
                 } else {
                     serde_json::json!(anchor)
@@ -434,7 +433,7 @@ pub fn cmd_list(
                 "anchors": items,
             }),
         );
-        println!("{}", serde_json::to_string_pretty(&env)?);
+        println!("{}", serde_json::to_string(&env)?);
         return Ok(());
     }
 
@@ -456,16 +455,7 @@ pub fn cmd_list(
         println!("| Anchor | Type | Source File |");
         println!("|=== |");
         for anchor in &limited {
-            if let Some(idx) = graph.anchor_to_index.get(anchor)
-                && let Some(n) = graph.graph.node_weight(*idx)
-            {
-                let node_type = n
-                    .doc
-                    .attributes
-                    .get("node-type")
-                    .cloned()
-                    .unwrap_or_else(|| "unknown".to_string());
-                let source = n.source_path.to_string_lossy().to_string();
+            if let Some((node_type, source)) = node_info(anchor) {
                 println!("| {} | {} | {} |", anchor, node_type, source);
             }
         }
@@ -487,6 +477,56 @@ pub fn cmd_list(
     Ok(())
 }
 
+/// Every stored anchor, read from the graph snapshot or store without
+/// materializing documents and edges. Without a readable, populated graph this
+/// falls back to the cached build (which parses sources), as `list` always did.
+fn stored_anchors(path: &Path) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let reader = aden_graph::cache::GraphReadSession::open_snapshot_first(path);
+    if let Ok(anchors) = reader.anchors()
+        && !anchors.is_empty()
+    {
+        return Ok(anchors.to_vec());
+    }
+    let graph = aden_graph::cache::build_from_directory_cached(path)?;
+    Ok(graph_anchors(&graph))
+}
+
+fn graph_anchors(graph: &AdenGraph<DocumentNode, AdenEdge>) -> Vec<String> {
+    graph
+        .graph
+        .node_indices()
+        .filter_map(|idx| graph.graph.node_weight(idx).map(|n| n.doc.anchor.clone()))
+        .collect()
+}
+
+/// Anchors on either end of a semantic-relationship edge.
+fn semantic_anchors(graph: &AdenGraph<DocumentNode, AdenEdge>) -> Vec<String> {
+    let mut semantic_anchors = std::collections::HashSet::new();
+    for edge_idx in graph.graph.edge_indices() {
+        let edge_type = &graph.graph[edge_idx];
+        let semantic_types = [
+            aden_core::EdgeType::IsA,
+            aden_core::EdgeType::PartOf,
+            aden_core::EdgeType::RelatesTo,
+            aden_core::EdgeType::SimilarTo,
+            aden_core::EdgeType::Causes,
+            aden_core::EdgeType::Implies,
+            aden_core::EdgeType::SynonymOf,
+            aden_core::EdgeType::AntonymOf,
+            aden_core::EdgeType::AssociatedWith,
+            aden_core::EdgeType::PrerequisiteFor,
+            aden_core::EdgeType::Explains,
+            aden_core::EdgeType::IsEquivalentTo,
+        ];
+        if semantic_types.contains(&edge_type.edge_type) {
+            let (src, tgt) = graph.graph.edge_endpoints(edge_idx).expect("valid edge");
+            semantic_anchors.insert(graph.graph[src].doc.anchor.clone());
+            semantic_anchors.insert(graph.graph[tgt].doc.anchor.clone());
+        }
+    }
+    semantic_anchors.into_iter().collect()
+}
+
 #[cfg(test)]
 mod cursor_tests {
     use super::*;
@@ -506,5 +546,65 @@ mod cursor_tests {
         assert_ne!(base, search_scope_hash("other", Some("module"), false));
         assert_ne!(base, search_scope_hash("query", Some("adr"), false));
         assert_ne!(base, search_scope_hash("query", Some("module"), true));
+    }
+}
+
+#[cfg(test)]
+mod list_tests {
+    use super::*;
+
+    #[test]
+    fn display_snippet_truncates_utf8_by_chars_and_escapes_controls() {
+        // Each multi-byte char straddles byte 80, where `&snippet[..80]` panicked.
+        for wide in ['→', '—', '🚀'] {
+            let snippet = format!("{}{wide}{}", "x".repeat(79), "y".repeat(10));
+            let shown = display_snippet(&snippet);
+            assert_eq!(shown, format!("{}{wide}...", "x".repeat(79)));
+        }
+        let exact = "é".repeat(80);
+        assert_eq!(display_snippet(&exact), exact);
+        assert_eq!(display_snippet("a\u{1b}[31mb"), "a\\x1b[31mb");
+    }
+
+    #[test]
+    fn glob_matches_wildcards_and_utf8() {
+        let cases = [
+            ("mod-aden-*", "mod-aden-core", true),
+            ("mod-aden-*", "mod-adx-core", false),
+            ("*asm*", "aden://module/asm/run", true),
+            ("*", "", true),
+            ("**", "", true),
+            ("**", "anything", true),
+            ("a**b", "ab", true),
+            ("a**b", "axxb", true),
+            ("", "", true),
+            ("", "a", false),
+            ("?", "→", true),
+            ("?", "", false),
+            ("?", "ab", false),
+            ("é?ü", "é🚀ü", true),
+            ("*—*", "left—right", true),
+            ("*—", "left—right", false),
+            ("*ab*ac", "xabyabac", true),
+            ("a*b*c", "abxbxc", true),
+            ("a*bc", "abcbd", false),
+            ("*a", "ba", true),
+            ("*a", "ab", false),
+            ("*?*?", "x", false),
+            ("*?*?", "xy", true),
+        ];
+        for (pattern, text, expected) in cases {
+            assert_eq!(
+                glob_matches(pattern, text),
+                expected,
+                "{pattern:?} vs {text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn plain_filters_stay_substring_matches() {
+        assert!(anchor_matches_filter("aden://module/asm", "asm"));
+        assert!(!anchor_matches_filter("aden://module/asm", "asm*x"));
     }
 }

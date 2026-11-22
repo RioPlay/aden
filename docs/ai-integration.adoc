@@ -623,6 +623,7 @@ aden suggest "find all tests in the project"
 |Task |Command
 
 |Known source range |`aden read src/config.rs --start-line 20 --end-line 60`
+|Trace or check authored claims linked to a source line |CLI `aden findings --file src/config.rs --line 42`; add `--check` for a pass or fail verdict
 |Known unique symbol needing source and relationships |`aden understand X .`; inspect source verification and clipping
 |Discover an unknown implementation |`aden grep "X" .`; use `aden locate --symbol X .` when resolution is needed
 |Get bounded context after resolving a symbol |`aden asm --from <anchor> .`
@@ -643,14 +644,15 @@ aden suggest "find all tests in the project"
 == MCP Tools (for AI Platforms)
 
 When using Aden via MCP (OpenCode, Claude Code, Cursor, etc.), the server exposes
-its CLI as tools — one per `aden` subcommand. The surface is *tiered* so the
-default tool list stays focused on the navigation loop:
+selected Aden commands as tools. Use the CLI for
+<<findings-command,`aden findings`>>. The MCP surface is *tiered* so the default
+tool list stays focused on the navigation loop:
 
 * *Essential* (default) — the find→comprehend→blast-radius loop. The smallest
   set that delivers aden's core value.
 * *Standard* (`ADEN_MCP_SURFACE=standard`) — adds change-safety, verify, and
   orientation tools on top of Essential.
-* *Full* (`ADEN_MCP_SURFACE=full`) — all tools, including setup/admin commands.
+* *Full* (`ADEN_MCP_SURFACE=full`) — all MCP tools, including setup/admin commands.
   The legacy `ADEN_MCP_FULL=1` env var is an alias for this level.
 
 Tiering is both discovery and execution policy: a hidden Standard/Full tool is
@@ -805,7 +807,10 @@ Aden is designed with token scarcity in mind. Follow these rules:
 - Aden assumes contracts are build artifacts. Never commit `.aden/`.
 - Built-in exclusions skip common secrets, dependencies, and build output without
   a project file. `aden init --templates` adds a customizable `.adenignore` only
-  when that larger project footprint is explicitly wanted.
+  when that larger project footprint is explicitly wanted. Nested repositories
+  (submodule, clone, or worktree markers) are never indexed, and machine-wide
+  patterns in `<data root>/ignore` or `ADEN_EXCLUDES` cover vendored or mirrored
+  trees under any name without adding a file to the repository.
 - Include directives are bounded to the project root. Path traversal outside the repo is rejected at parse time.
 
 == Compact LLM System Prompt

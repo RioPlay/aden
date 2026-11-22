@@ -25,7 +25,6 @@ use aden_emit::check::{collect_anchors, collect_refs};
 use aden_graph::{GraphNode, cycles::find_cycles, integrity::check_hashes};
 use serde_json::Map;
 use std::collections::HashSet;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use crate::types::GenCache;
@@ -159,6 +158,26 @@ pub fn discover_source_files(root: &Path) -> Result<Vec<PathBuf>, Box<dyn std::e
     Ok(files)
 }
 
+/// Discover indexed source files under `root` alongside their normalized
+/// project-relative keys, avoiding per-file `canonicalize()` when the tree walk
+/// already derived the relative path.
+pub(crate) fn discover_source_files_with_relative(
+    root: &Path,
+) -> Result<Vec<(PathBuf, String)>, Box<dyn std::error::Error>> {
+    let mut files = Vec::new();
+    let mut relative_root: Option<aden_paths::RelativeRoot> = None;
+    walk_indexed_source_files_scoped(root, root, &mut |path, relative| {
+        let rel_path = relative.unwrap_or_else(|| {
+            relative_root
+                .get_or_insert_with(|| aden_paths::RelativeRoot::new(root))
+                .relative_to(&path)
+                .unwrap_or_else(|| path.strip_prefix(root).unwrap_or(&path).to_path_buf())
+        });
+        files.push((path, normalize_sep(&rel_path)));
+    })?;
+    Ok(files)
+}
+
 /// A discovered file plus the reason it will or will not be emitted. Unlike
 /// [`discover_source_files`], this deliberately retains ignored and unsupported
 /// files so generation can persist a complete coverage manifest.
@@ -280,9 +299,11 @@ fn walk_files_with_dispositions_inner(
                 .or_else(|| aden_paths::relative_to(root, &path))
         };
         if file_type.is_dir() {
+            // Policy exclusions and nested-repository boundaries both prune
+            // whole subtrees; a submodule or mirror is another project.
             if rel
                 .as_ref()
-                .is_some_and(|relative| filter.should_skip(relative))
+                .is_some_and(|relative| !filter.should_descend(relative, Some(&path)))
             {
                 continue;
             }
@@ -374,7 +395,11 @@ fn walk_supported_files_inner(
                 .or_else(|| aden_paths::relative_to(root, &p))
         };
         match rel {
-            Some(rel) if filter.should_skip(&rel) => continue,
+            Some(rel)
+                if !filter.should_descend(&rel, file_type.is_dir().then_some(p.as_path())) =>
+            {
+                continue;
+            }
             None => continue, // outside project root — never index
             Some(_) => {}
         }
@@ -672,47 +697,27 @@ pub fn resolve_node_type(node: &aden_graph::DocumentNode) -> String {
         .unwrap_or_else(|| format!("{:?}", node.doc.node_type))
 }
 
-/// Scan for contracts that have [must-complete] blocks that haven't been filled.
-/// Returns warnings for incomplete contracts.
-fn check_incomplete_contracts(path: &Path) -> Vec<String> {
-    let mut incomplete = Vec::new();
-
-    for entry in walkdir::WalkDir::new(path)
-        .follow_links(false)
-        .into_iter()
-        .filter_map(|e| e.ok())
-    {
-        let p = entry.path().to_path_buf();
-        if !p.is_file() {
-            continue;
-        }
-        let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
-        if ext != "adoc" && ext != "aden" {
-            continue;
-        }
-        let mut text = String::new();
-        if let Ok(mut file) = std::fs::File::open(&p) {
-            let _ = file.read_to_string(&mut text);
-            if text.contains("[must-complete]") {
-                let has_hint = text.contains("Hint:");
-                let has_content_after_marker = text
-                    .match_indices("[must-complete]")
-                    .last()
-                    .map(|(pos, _)| text[pos..].contains("===="))
-                    .unwrap_or(false);
-
-                if has_hint || !has_content_after_marker {
-                    let anchor = p.file_stem().and_then(|s| s.to_str()).unwrap_or("unknown");
-                    incomplete.push(format!(
-                        "WARNING: Incomplete contract: {} - run 'aden complete' to fill missing documentation",
-                        anchor
-                    ));
-                }
-            }
-        }
+/// Return a warning if a contract has `[must-complete]` blocks that haven't been filled.
+fn incomplete_contract_warning(p: &Path, text: &str) -> Option<String> {
+    if !text.contains("[must-complete]") {
+        return None;
     }
+    let has_hint = text.contains("Hint:");
+    let has_content_after_marker = text
+        .match_indices("[must-complete]")
+        .last()
+        .map(|(pos, _)| text[pos..].contains("===="))
+        .unwrap_or(false);
 
-    incomplete
+    if has_hint || !has_content_after_marker {
+        let anchor = p.file_stem().and_then(|s| s.to_str()).unwrap_or("unknown");
+        Some(format!(
+            "WARNING: Incomplete contract: {} - run 'aden complete' to fill missing documentation",
+            anchor
+        ))
+    } else {
+        None
+    }
 }
 
 /// Classify check messages by severity prefix.
@@ -837,7 +842,8 @@ pub fn perform_check(path: &Path) -> Result<Vec<String>, Box<dyn std::error::Err
                 .strip_prefix(path)
                 .map(|rel| {
                     rel.as_os_str().is_empty()
-                        || (!filter.should_skip(rel) && !is_aden_artifact(rel))
+                        || (filter.should_descend(rel, e.file_type().is_dir().then_some(e.path()))
+                            && !is_aden_artifact(rel))
                 })
                 .unwrap_or(true)
         })
@@ -852,22 +858,50 @@ pub fn perform_check(path: &Path) -> Result<Vec<String>, Box<dyn std::error::Err
         }
     }
 
-    // Collect anchors defined in on-disk docs not yet in the store.
-    for p in &doc_files {
-        let mut text = String::new();
-        std::fs::File::open(p)?.read_to_string(&mut text)?;
-        all_anchors.extend(collect_anchors(&text));
+    use rayon::prelude::*;
+
+    // Read each on-disk doc once in parallel to collect anchors, refs, and incomplete-contract checks.
+    // `collect_refs` (not a per-line `find_refs` loop) skips delimited
+    // listing/literal blocks so `<<x>>` examples inside ----/.... code blocks
+    // are not flagged as broken refs. Collecting from `par_iter()` preserves
+    // the exact input ordering of `doc_files` for deterministic reporting.
+    struct ParsedCheckDoc<'a> {
+        path: &'a PathBuf,
+        anchors: HashSet<String>,
+        refs: Vec<String>,
+        incomplete: Option<String>,
+    }
+    let parsed_docs = doc_files
+        .par_iter()
+        .map(|p| -> std::io::Result<ParsedCheckDoc<'_>> {
+            let text = std::fs::read_to_string(p)?;
+            let anchors = collect_anchors(&text);
+            let refs = collect_refs(&text);
+            let incomplete = incomplete_contract_warning(p, &text);
+            Ok(ParsedCheckDoc {
+                path: p,
+                anchors,
+                refs,
+                incomplete,
+            })
+        })
+        .collect::<std::io::Result<Vec<_>>>()?;
+
+    let mut doc_refs: Vec<(&PathBuf, Vec<String>)> = Vec::with_capacity(parsed_docs.len());
+    let mut incomplete_contracts: Vec<String> = Vec::new();
+    for doc in parsed_docs {
+        all_anchors.extend(doc.anchors);
+        if !doc.refs.is_empty() {
+            doc_refs.push((doc.path, doc.refs));
+        }
+        if let Some(msg) = doc.incomplete {
+            incomplete_contracts.push(msg);
+        }
     }
 
-    // Check for unresolved refs across every on-disk doc. `collect_refs` (not
-    // a per-line `find_refs` loop) so delimited listing/literal blocks are
-    // skipped — a previous version scanned line-by-line with no fence state,
-    // flagging `<<x>>` examples inside ----/.... code blocks as broken refs.
     let mut unresolved = Vec::new();
-    for p in &doc_files {
-        let mut text = String::new();
-        std::fs::File::open(p)?.read_to_string(&mut text)?;
-        for r in collect_refs(&text) {
+    for (p, refs) in doc_refs {
+        for r in refs {
             if !all_anchors.contains(&r) {
                 unresolved.push(format!("{}: unresolved <<{}>>", p.display(), r));
             }
@@ -946,7 +980,9 @@ pub fn perform_check(path: &Path) -> Result<Vec<String>, Box<dyn std::error::Err
         }
     }
 
-    let hash_issues = check_hashes(&graph, &find_project_root(path));
+    let root = find_project_root(path);
+
+    let hash_issues = check_hashes(&graph, &root);
     if hash_issues.is_empty() {
         messages.push("INFO: All source_hash values valid.".to_string());
     } else {
@@ -964,7 +1000,6 @@ pub fn perform_check(path: &Path) -> Result<Vec<String>, Box<dyn std::error::Err
         }
     }
 
-    let incomplete_contracts = check_incomplete_contracts(path);
     if incomplete_contracts.is_empty() {
         messages.push("INFO: All contracts complete.".to_string());
     } else {
@@ -976,7 +1011,7 @@ pub fn perform_check(path: &Path) -> Result<Vec<String>, Box<dyn std::error::Err
     // Documentation path references: catch prose docs that point at a repo file
     // which has MOVED or been renamed (the `aden://` anchor case is covered by
     // typed-edge/BrokenReference checks above; this covers raw path strings).
-    let doc_path_issues = check_doc_path_references(&find_project_root(path));
+    let doc_path_issues = check_doc_path_references(&root);
     if doc_path_issues.is_empty() {
         messages.push("INFO: All documentation path references resolve.".to_string());
     } else {
@@ -1021,52 +1056,70 @@ fn check_doc_path_references(root: &Path) -> Vec<String> {
     let _ = walk_supported_files(root, root, &doc_exts, &filter, &mut docs);
 
     // markdown `](target)`  and  adoc `xref:`/`link:`/`include::` target.
-    let md_link = regex::Regex::new(r"\]\(([^)\s]+)\)").expect("valid regex");
-    let adoc_link =
-        regex::Regex::new(r"(?:xref:|link:|include::)([^\[\s\]]+)").expect("valid regex");
+    static MD_LINK_RE: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"\]\(([^)\s]+)\)").expect("valid regex"));
+    static ADOC_LINK_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"(?:xref:|link:|include::)([^\[\s\]]+)").expect("valid regex")
+    });
 
-    let mut findings: Vec<String> = Vec::new();
-    let mut seen: HashSet<String> = HashSet::new();
-    for doc in &docs {
-        let Ok(content) = std::fs::read_to_string(doc) else {
-            continue;
-        };
-        let rel_doc = doc
-            .strip_prefix(root)
-            .unwrap_or(doc)
-            .to_string_lossy()
-            .to_string();
-        let doc_dir = doc.parent().unwrap_or(root);
-        let mut in_fence = false;
-        for (i, line) in content.lines().enumerate() {
-            let t = line.trim_start();
-            if t.starts_with("```") || t == "----" || t == "...." {
-                in_fence = !in_fence;
-                continue;
-            }
-            if in_fence || line.contains("aden:allow-path") {
-                continue;
-            }
-            let scan_line = strip_illustrative_spans(line);
-            let targets = md_link
-                .captures_iter(&scan_line)
-                .chain(adoc_link.captures_iter(&scan_line))
-                .filter_map(|c| c.get(1).map(|m| m.as_str().to_string()));
-            for target in targets {
-                if let Some(resolved) = resolve_doc_link(&target, doc_dir, root, &top_dirs)
-                    && !resolved.exists()
-                {
-                    let key = format!("{rel_doc}|{target}");
-                    if seen.insert(key) {
-                        findings.push(format!(
-                            "ERROR: {}:{} link references missing path '{}' (moved/renamed?)",
-                            rel_doc,
-                            i + 1,
-                            target
-                        ));
+    use rayon::prelude::*;
+    let per_doc: Vec<Vec<(String, String)>> = docs
+        .par_iter()
+        .map(|doc| {
+            let Ok(content) = std::fs::read_to_string(doc) else {
+                return Vec::new();
+            };
+            let rel_doc = doc
+                .strip_prefix(root)
+                .unwrap_or(doc)
+                .to_string_lossy()
+                .to_string();
+            let doc_dir = doc.parent().unwrap_or(root);
+            let mut in_fence = false;
+            let mut doc_seen: HashSet<String> = HashSet::new();
+            let mut doc_findings: Vec<(String, String)> = Vec::new();
+            for (i, line) in content.lines().enumerate() {
+                let t = line.trim_start();
+                if t.starts_with("```") || t == "----" || t == "...." {
+                    in_fence = !in_fence;
+                    continue;
+                }
+                if in_fence || line.contains("aden:allow-path") {
+                    continue;
+                }
+                let scan_line = strip_illustrative_spans(line);
+                let targets = MD_LINK_RE
+                    .captures_iter(&scan_line)
+                    .chain(ADOC_LINK_RE.captures_iter(&scan_line))
+                    .filter_map(|c| c.get(1).map(|m| m.as_str()));
+                for target in targets {
+                    if let Some(resolved) = resolve_doc_link(target, doc_dir, root, &top_dirs)
+                        && !resolved.exists()
+                    {
+                        let key = format!("{rel_doc}|{target}");
+                        if doc_seen.insert(key.clone()) {
+                            doc_findings.push((
+                                key,
+                                format!(
+                                    "ERROR: {}:{} link references missing path '{}' (moved/renamed?)",
+                                    rel_doc,
+                                    i + 1,
+                                    target
+                                ),
+                            ));
+                        }
                     }
                 }
             }
+            doc_findings
+        })
+        .collect();
+
+    let mut findings: Vec<String> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    for (key, finding) in per_doc.into_iter().flatten() {
+        if seen.insert(key) {
+            findings.push(finding);
         }
     }
     findings.sort();
@@ -1244,20 +1297,19 @@ fn index_text(doc: &aden_core::Document) -> String {
 /// The index merges on-disk `.adoc`/`.aden`/`.txt` files with contracts kept in
 /// the fjall store, so language-agnostic `gen --auto` output (which is
 /// store-first) is fully searchable.
-pub fn load_or_build_index(path: &Path) -> Result<aden_index::Index, Box<dyn std::error::Error>> {
+///
+/// A resident read worker shares one decoded cache across requests (see
+/// [`aden_index::try_load_shared`]); one-shot commands decode it per call.
+pub fn load_or_build_index(
+    path: &Path,
+) -> Result<std::sync::Arc<aden_index::Index>, Box<dyn std::error::Error>> {
     let cached = {
         let _trace = crate::read_trace::span(crate::read_trace::Stage::IndexLoad);
-        aden_index::try_load(path)
+        aden_index::try_load_shared(path)
     };
     crate::read_trace::index_cache_result(cached.is_some());
-    if let Some(mut cached) = cached {
-        // A cache built before a model was available carries no embeddings; fill
-        // them in now (and re-save) so hybrid retrieval activates without a full
-        // rebuild. No-op when the `dense` feature is off or no model is present.
-        if maybe_embed(&mut cached, path) {
-            let _ = aden_index::save(&cached, path);
-        }
-        return Ok(cached);
+    if let Some(cached) = cached {
+        return Ok(backfill_embeddings(cached, path));
     }
     let _trace = crate::read_trace::span(crate::read_trace::Stage::IndexBuild);
     let mut index = aden_index::Index::from_directory(path)?;
@@ -1284,7 +1336,42 @@ pub fn load_or_build_index(path: &Path) -> Result<aden_index::Index, Box<dyn std
     }
     maybe_embed(&mut index, path);
     let _ = aden_index::save(&index, path);
-    Ok(index)
+    Ok(std::sync::Arc::new(index))
+}
+
+/// A cache built before a model was available carries no embeddings; fill them
+/// in now (and re-save) so hybrid retrieval activates without a full rebuild.
+/// Returns the shared index untouched unless an embedder can actually add
+/// vectors, so the common path never copies or re-reads the cache.
+#[cfg(feature = "dense")]
+fn backfill_embeddings(
+    cached: std::sync::Arc<aden_index::Index>,
+    path: &Path,
+) -> std::sync::Arc<aden_index::Index> {
+    if cached.has_embeddings() || dense_embedder().is_none() {
+        return cached;
+    }
+    // `Index` is not `Clone`: take ownership when unshared, otherwise decode a
+    // private copy (the session cache keeps its own reference).
+    let mut owned = match std::sync::Arc::try_unwrap(cached) {
+        Ok(owned) => owned,
+        Err(shared) => match aden_index::try_load(path) {
+            Some(owned) => owned,
+            None => return shared,
+        },
+    };
+    if maybe_embed(&mut owned, path) {
+        let _ = aden_index::save(&owned, path);
+    }
+    std::sync::Arc::new(owned)
+}
+
+#[cfg(not(feature = "dense"))]
+fn backfill_embeddings(
+    cached: std::sync::Arc<aden_index::Index>,
+    _path: &Path,
+) -> std::sync::Arc<aden_index::Index> {
+    cached
 }
 
 /// Populate dense embeddings on the index when the `dense` feature is enabled and
@@ -1687,40 +1774,41 @@ fn navigation_terms(query: &str) -> Vec<String> {
 }
 
 fn conventional_file_rank(root: &Path, query: &str) -> Vec<String> {
+    use rayon::prelude::*;
     let terms = navigation_terms(query);
     if terms.is_empty() {
         return Vec::new();
     }
-    let Ok(files) = discover_source_files(root) else {
+    let Ok(files) = discover_source_files_with_relative(root) else {
         return Vec::new();
     };
-    let mut scored = Vec::new();
-    for file in files {
-        let Ok(content) = std::fs::read_to_string(&file) else {
-            continue;
-        };
-        let content = content.to_ascii_lowercase();
-        let key = source_key(&file, root);
-        let path_words: HashSet<&str> = key
-            .split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_')
-            .collect();
-        let distinct = terms
-            .iter()
-            .filter(|term| content.contains(term.as_str()))
-            .count();
-        if distinct == 0 {
-            continue;
-        }
-        let path_hits = terms
-            .iter()
-            .filter(|term| path_words.contains(term.as_str()))
-            .count();
-        let occurrences: usize = terms
-            .iter()
-            .map(|term| content.match_indices(term.as_str()).count())
-            .sum();
-        scored.push((key, distinct, path_hits, occurrences));
-    }
+    let mut scored: Vec<(String, usize, usize, usize)> = files
+        .par_iter()
+        .filter_map(|(file, rel)| {
+            let content = std::fs::read_to_string(file).ok()?;
+            let content = content.to_ascii_lowercase();
+            let key = rel.trim_start_matches("./").to_ascii_lowercase();
+            let path_words: HashSet<&str> = key
+                .split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_')
+                .collect();
+            let distinct = terms
+                .iter()
+                .filter(|term| content.contains(term.as_str()))
+                .count();
+            if distinct == 0 {
+                return None;
+            }
+            let path_hits = terms
+                .iter()
+                .filter(|term| path_words.contains(term.as_str()))
+                .count();
+            let occurrences: usize = terms
+                .iter()
+                .map(|term| content.match_indices(term.as_str()).count())
+                .sum();
+            Some((key, distinct, path_hits, occurrences))
+        })
+        .collect();
     scored.sort_by(|a, b| {
         b.1.cmp(&a.1)
             .then_with(|| b.2.cmp(&a.2))
@@ -2346,6 +2434,44 @@ mod tests {
         assert_eq!(scoped.len(), 1, "scoped walk sees only crate-a");
         assert!(scoped[0].ends_with("crate-a/src/lib.rs"));
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn discovery_prunes_nested_repository_boundaries() {
+        let dir = std::env::temp_dir().join(format!("aden-nested-walk-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let first_party = dir.join("src");
+        let submodule = dir.join("libs/dep/src");
+        let clone = dir.join("mirror/src");
+        std::fs::create_dir_all(&first_party).unwrap();
+        std::fs::create_dir_all(&submodule).unwrap();
+        std::fs::create_dir_all(&clone).unwrap();
+        std::fs::write(first_party.join("lib.rs"), "fn own() {}\n").unwrap();
+        std::fs::write(submodule.join("dep.rs"), "fn vendored() {}\n").unwrap();
+        std::fs::write(clone.join("copy.rs"), "fn mirrored() {}\n").unwrap();
+        // Submodule and worktree checkouts use a gitfile; a nested clone uses a
+        // directory. Both are separate projects, never first-party source.
+        std::fs::write(dir.join("libs/dep/.git"), "gitdir: ../../.git/modules/dep").unwrap();
+        std::fs::create_dir_all(dir.join("mirror/.git")).unwrap();
+
+        let found = discover_source_files(&dir).unwrap();
+        assert_eq!(found.len(), 1, "only first-party source: {found:?}");
+        assert!(found[0].ends_with("src/lib.rs"));
+
+        let dispositions = discover_file_dispositions(&dir).unwrap();
+        assert!(
+            dispositions
+                .iter()
+                .all(|file| !file.path.to_string_lossy().contains("dep.rs")),
+            "a submodule's files are not even classified as project files"
+        );
+        assert!(
+            dispositions
+                .iter()
+                .all(|file| !file.path.to_string_lossy().contains("copy.rs")),
+            "a nested clone's files are not project files"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

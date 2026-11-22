@@ -179,7 +179,10 @@ fn discover_tests(path: &Path) -> Result<Vec<TestInfo>, Box<dyn std::error::Erro
         .filter_entry(|e| {
             e.path()
                 .strip_prefix(path)
-                .map(|rel| rel.as_os_str().is_empty() || !filter.should_skip(rel))
+                .map(|rel| {
+                    rel.as_os_str().is_empty()
+                        || filter.should_descend(rel, e.file_type().is_dir().then_some(e.path()))
+                })
                 .unwrap_or(true)
         })
         .filter_map(|e| e.ok())
@@ -223,10 +226,7 @@ fn find_manifest_dir(start: &Path, manifest: &str) -> Option<PathBuf> {
         if dir.join(manifest).exists() {
             return Some(dir);
         }
-        match dir.parent() {
-            Some(p) => dir = p.to_path_buf(),
-            None => return None,
-        }
+        dir = dir.parent()?.to_path_buf();
     }
 }
 
@@ -252,10 +252,7 @@ fn find_manifest_dir_by_ext(start: &Path, ext: &str) -> Option<PathBuf> {
         if found {
             return Some(dir);
         }
-        match dir.parent() {
-            Some(p) => dir = p.to_path_buf(),
-            None => return None,
-        }
+        dir = dir.parent()?.to_path_buf();
     }
 }
 

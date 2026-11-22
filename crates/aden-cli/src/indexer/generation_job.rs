@@ -299,16 +299,82 @@ fn reconcile(paths: &Paths) -> Result<Option<JobStatus>> {
         return Ok(Some(s));
     }
     if s.active() && !live(paths, &s) {
+        // The last recorded phase is the only evidence of where a vanished
+        // worker stopped; keep it instead of overwriting it with the state.
+        let phase = s.phase.clone();
         s.state = "interrupted".into();
-        s.phase = "worker_exited".into();
-        s.error = Some(
-            "Worker exited before recording completion; restart reuses the last completed cache and reconciles interrupted work."
-                .into(),
-        );
+        s.error = Some(interrupted_error(paths, &s, &phase));
         s.updated_ms = now();
         save(paths, &s)?;
     }
     Ok(Some(s))
+}
+
+const WORKER_LOG_BYTES: usize = 32 * 1024;
+
+/// Bounded worker log. A detached worker's stderr is discarded, so the log is
+/// the only place a panic or shutdown reason can survive the process.
+fn append_worker_log(paths: &Paths, line: &str) -> io::Result<()> {
+    let mut bytes = std::fs::read(paths.file("worker.log")).unwrap_or_default();
+    bytes.extend_from_slice(format!("{} {}\n", now(), line.trim_end()).as_bytes());
+    if bytes.len() > WORKER_LOG_BYTES {
+        let cut = bytes.len() - WORKER_LOG_BYTES / 2;
+        bytes.drain(..cut);
+    }
+    atomic_write(paths, "worker.log", &bytes)
+}
+
+fn worker_log_tail(paths: &Paths, limit: usize) -> Option<String> {
+    let bytes = std::fs::read(paths.file("worker.log")).ok()?;
+    let text = String::from_utf8_lossy(&bytes);
+    let text = text.trim();
+    if text.is_empty() {
+        return None;
+    }
+    let start = text.len().saturating_sub(limit);
+    let start = (start..=text.len())
+        .find(|i| text.is_char_boundary(*i))
+        .unwrap_or(text.len());
+    Some(text[start..].to_string())
+}
+
+fn interrupted_error(paths: &Paths, status: &JobStatus, phase: &str) -> String {
+    let pid = status
+        .worker_pid
+        .map_or_else(|| "worker".to_string(), |pid| format!("worker pid {pid}"));
+    let mut message = format!(
+        "Generation {pid} stopped during phase '{phase}' at {}/{} files without recording an exit, so it was killed or aborted before it could report a reason. Restart reuses the last completed cache and reconciles interrupted work.",
+        status.completed_files, status.total_files
+    );
+    if let Some(tail) = worker_log_tail(paths, 1200) {
+        message.push_str("\nworker.log tail:\n");
+        message.push_str(&tail);
+    }
+    message
+}
+
+/// Record worker panics where a caller can read them. A detached worker has no
+/// stderr, so without this a panic is indistinguishable from an external kill.
+fn install_worker_panic_log(p: &Paths) {
+    let paths = p.clone();
+    std::panic::set_hook(Box::new(move |info| {
+        let location = info
+            .location()
+            .map(|l| format!(" at {}:{}", l.file(), l.line()))
+            .unwrap_or_default();
+        let _ = append_worker_log(
+            &paths,
+            &format!("panic{location}: {}", panic_detail(info.payload())),
+        );
+    }));
+}
+
+fn panic_detail(payload: &(dyn std::any::Any + Send)) -> String {
+    payload
+        .downcast_ref::<&str>()
+        .map(|s| (*s).to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "non-string panic payload".into())
 }
 pub fn status(path: &Path) -> Result<Option<JobStatus>> {
     let p = Paths::new(path);
@@ -498,6 +564,11 @@ pub fn run_worker(path: &Path, job_id: &str) -> Result<()> {
     }
     let p = Paths::new(path);
     p.validate()?;
+    install_worker_panic_log(&p);
+    let _ = append_worker_log(
+        &p,
+        &format!("started pid={} job={job_id}", std::process::id()),
+    );
     let lease = FileLock::acquire_timeout(p.file("worker.lock"), Duration::ZERO)?;
     let mut s;
     {
@@ -519,7 +590,7 @@ pub fn run_worker(path: &Path, job_id: &str) -> Result<()> {
         paths: p.clone(),
         status: s.clone(),
     });
-    let result = (|| -> Result<()> {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<()> {
         checkpoint("starting", None, None)?;
         #[cfg(debug_assertions)]
         if std::env::var_os("ADEN_TEST_GENERATION_HOLD").as_deref()
@@ -547,7 +618,10 @@ pub fn run_worker(path: &Path, job_id: &str) -> Result<()> {
             return Err("Generation finished without an authoritative current snapshot; sources may have changed or publication failed".into());
         }
         Ok(())
-    })();
+    }))
+    .unwrap_or_else(|panic| {
+        Err(format!("Generation worker panicked: {}", panic_detail(&*panic)).into())
+    });
     let mut context = CONTEXT
         .get()
         .unwrap()
@@ -576,6 +650,19 @@ pub fn run_worker(path: &Path, job_id: &str) -> Result<()> {
         .err()
         .map(|e| e.to_string().chars().take(2048).collect());
     save(&p, &s)?;
+    let _ = append_worker_log(
+        &p,
+        &format!(
+            "exit state={} completed={}/{}{}",
+            s.state,
+            s.completed_files,
+            s.total_files,
+            s.error
+                .as_deref()
+                .map(|e| format!(" error={}", e.lines().next().unwrap_or_default()))
+                .unwrap_or_default()
+        ),
+    );
     drop(lease);
     result
 }
@@ -938,6 +1025,39 @@ mod tests {
             error: None,
         }
     }
+    #[test]
+    fn interruption_preserves_phase_and_reports_worker_log() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            root: temp.path().to_path_buf(),
+            dir: temp.path().join("job"),
+        };
+        std::fs::create_dir_all(&paths.dir).unwrap();
+        let mut status = fixture_status(&paths, "running");
+        status.phase = "parse_prepare".into();
+        status.completed_files = 6559;
+        status.total_files = 30951;
+        status.worker_pid = Some(380);
+        save(&paths, &status).unwrap();
+        append_worker_log(&paths, "started pid=380 job=abcdef").unwrap();
+        append_worker_log(&paths, "panic at src/gen.rs:10: index out of bounds").unwrap();
+
+        let reconciled = reconcile(&paths).unwrap().unwrap();
+        assert_eq!(reconciled.state, "interrupted");
+        assert_eq!(
+            reconciled.phase, "parse_prepare",
+            "an interruption must not erase where the worker stopped"
+        );
+        let error = reconciled.error.unwrap();
+        assert!(error.contains("worker pid 380"), "{error}");
+        assert!(error.contains("parse_prepare"), "{error}");
+        assert!(error.contains("6559/30951"), "{error}");
+        assert!(
+            error.contains("panic at src/gen.rs:10: index out of bounds"),
+            "worker log evidence missing: {error}"
+        );
+    }
+
     #[test]
     fn metadata_publication_preserves_hardlink_targets_and_named_pending_files() {
         let temp = tempfile::tempdir().unwrap();

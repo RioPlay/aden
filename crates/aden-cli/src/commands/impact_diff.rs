@@ -4,18 +4,18 @@
 //! blast radius (everything that DEPENDS on the touched symbols — their
 //! transitive callers/referencers) before you commit.
 //!
-//! This reuses three pieces aden already has: the per-file symbol spans from the
-//! store (`grep::load_symbol_spans`), the smallest-enclosing-symbol resolver
+//! This reuses three pieces aden already has: symbol spans taken from the loaded
+//! graph (`grep::group_source_spans`), the smallest-enclosing-symbol resolver
 //! (`grep::enclosing_symbol`), and a dependents traversal over the typed-edge
 //! graph (same edge SET as `query --impact`, but walked in the opposite
 //! direction: `--impact` reports downstream reach / dependencies, while change
 //! risk needs upstream dependents). The only new logic is parsing unified diff
 //! hunk headers into changed line ranges.
 
-use crate::commands::grep::{enclosing_symbol, load_symbol_spans};
+use crate::commands::grep::{Span, enclosing_symbol, group_source_spans};
 use crate::util::{find_project_root, impact_edge_types};
 use aden_graph::Direction;
-use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::Path;
 
 /// The test symbols covering a blast set: every source of a `Tests` edge into
@@ -182,6 +182,30 @@ fn run_scope_gate(
     std::process::exit(verdict.exit_code());
 }
 
+/// Spans carried by the graph that `cmd_impact_diff` already loaded.
+///
+/// Anchor order matches the fjall source-span projection, so two equal-sized
+/// overlapping spans still pick the same enclosing symbol.
+fn spans_from_graph(
+    root: &Path,
+    graph: &aden_graph::AdenGraph<aden_graph::DocumentNode, aden_graph::AdenEdge>,
+) -> HashMap<String, Vec<Span>> {
+    let mut records = Vec::new();
+    for node in graph.graph.node_weights() {
+        let Some(span) = node
+            .doc
+            .source_span
+            .clone()
+            .or_else(|| aden_core::SourceSpan::from_attributes(&node.doc.attributes))
+        else {
+            continue;
+        };
+        records.push((node.doc.anchor.clone(), span));
+    }
+    records.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+    group_source_spans(root, records)
+}
+
 pub fn cmd_impact_diff(
     path: &Path,
     since: Option<&str>,
@@ -218,8 +242,9 @@ pub fn cmd_impact_diff(
         return Ok(());
     }
 
-    // Changed lines -> the smallest symbol enclosing each, from the store spans.
-    let spans_by_file = load_symbol_spans(&root);
+    // One graph load supplies both enclosing spans and the dependents walk.
+    let graph = aden_graph::cache::build_from_directory_cached(&root)?;
+    let spans_by_file = spans_from_graph(&root, &graph);
     let mut touched: BTreeSet<String> = BTreeSet::new();
     for (file, lines) in &changed {
         if let Some(spans) = spans_by_file.get(file) {
@@ -232,7 +257,6 @@ pub fn cmd_impact_diff(
     }
 
     // Dependents traversal per touched symbol over the typed-edge graph.
-    let graph = aden_graph::cache::build_from_directory_cached(&root)?;
     let impact_types = impact_edge_types();
 
     // Per touched symbol: its transitive dependent set (excluding itself).

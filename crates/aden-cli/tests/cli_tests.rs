@@ -586,6 +586,56 @@ fn ask_explain_keeps_json_parseable() {
 }
 
 #[test]
+fn ask_distinguishes_the_requested_operation_from_a_shared_topic() {
+    for (file, code, expected) in [
+        (
+            "ledger.py",
+            "def archive_invoice(invoice):\n    return invoice.archive()\n\ndef invoice_location(invoice):\n    return invoice.path\n",
+            "archive_invoice",
+        ),
+        (
+            "ledger.ts",
+            "export function archiveInvoice(invoice: Invoice) { return invoice.archive(); }\nexport function invoiceLocation(invoice: Invoice) { return invoice.path; }\n",
+            "archiveInvoice",
+        ),
+    ] {
+        let fixture = temp_project::TempProject::new();
+        std::fs::write(fixture.path().join(file), code).unwrap();
+        fixture.publish_graph();
+        let ask = |question| {
+            let output = fixture
+                .command()
+                .args(["ask", question])
+                .arg(fixture.path())
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap()
+        };
+        let found = ask("Where does the application archive an invoice?");
+        assert_eq!(
+            found["anchor"]
+                .as_str()
+                .and_then(|a| a.split('#').next_back()),
+            Some(expected),
+            "{found}"
+        );
+        let absent = ask("Where does the application refund an invoice?");
+        assert_eq!(absent["routing_confidence"], "ambiguous", "{absent}");
+        assert!(
+            absent["next_actions"]
+                .as_array()
+                .is_some_and(|a| !a.is_empty()),
+            "{absent}"
+        );
+    }
+}
+
+#[test]
 fn ask_definition_lookup_prefers_the_exact_production_symbol() {
     let fixture = temp_project::TempProject::new();
     let dir = fixture.path();
@@ -1663,5 +1713,51 @@ fn test_regen_prunes_renamed_symbol() {
     assert!(
         !anchors.contains("Foo.Bar"),
         "regen must prune the stale Foo.Bar anchor; got: {anchors}"
+    );
+}
+
+#[test]
+fn short_verified_guide_section_survives_context_assembly() {
+    let project = temp_project::TempProject::new();
+    let handbook = format!(
+        "# Handbook\n\n## Recall a receipt\n\nChoose **Recall receipt** to reopen a saved receipt.\n\n## Settings\n\n{}\n",
+        "You can customize the appearance of every panel in Settings. ".repeat(30)
+    );
+    std::fs::write(project.path().join("handbook.md"), handbook).unwrap();
+    std::fs::write(
+        project.path().join("README.md"),
+        "# Start\n\nSee [Settings](handbook.md#settings).\n",
+    )
+    .unwrap();
+    project.publish_graph();
+    let output = project
+        .command()
+        .args([
+            "ask",
+            "Which guide explains the `Recall receipt` action?",
+            ".",
+            "--explain",
+            "--require-fresh",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let response: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(response["anchor"], response["explain"]["primary_anchor"]);
+    assert!(
+        response["anchor"]
+            .as_str()
+            .unwrap()
+            .contains("recall-a-receipt")
+    );
+    assert!(
+        response["context"]
+            .as_str()
+            .unwrap()
+            .contains("reopen a saved receipt")
     );
 }
