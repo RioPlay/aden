@@ -125,8 +125,8 @@ impl LanguageExtractor for TypeScriptResolver {
 
 #[derive(Debug)]
 struct TsImport {
-    local_name: String,
-    source_path: String, // the raw string literal from the import/require
+    local_name: Option<String>,    // None for side-effect requires
+    source_path: String,           // the raw string literal from the import/require
     original_name: Option<String>, // None for default/namespace imports
 }
 
@@ -182,7 +182,7 @@ fn walk_program<'a>(
         "import_statement" | "import_declaration" => {
             extract_import_statement(node, source, imports);
         }
-        "expression_statement" => {
+        "expression_statement" | "variable_declarator" => {
             extract_require_statement(node, source, imports);
         }
         "export_statement" | "export_declaration" => {
@@ -453,17 +453,18 @@ fn extract_import_statement(node: tree_sitter::Node, source: &str, imports: &mut
                     let mut named_cursor = inner_child.walk();
                     for spec in inner_child.children(&mut named_cursor) {
                         if spec.kind() == "import_specifier" {
+                            let Some(orig_node) = spec.child_by_field_name("name") else {
+                                continue;
+                            };
+                            let original = node_text(orig_node, source).to_string();
                             let local = spec
-                                .child_by_field_name("name")
-                                .map(|n| node_text(n, source).to_string())
-                                .unwrap_or_default();
-                            let original = spec
                                 .child_by_field_name("alias")
-                                .map(|n| node_text(n, source).to_string());
+                                .map(|n| node_text(n, source).to_string())
+                                .unwrap_or_else(|| original.clone());
                             imports.push(TsImport {
-                                local_name: local.clone(),
+                                local_name: Some(local),
                                 source_path: source_path.clone(),
-                                original_name: Some(original.unwrap_or(local)),
+                                original_name: Some(original),
                             });
                         }
                     }
@@ -471,16 +472,20 @@ fn extract_import_statement(node: tree_sitter::Node, source: &str, imports: &mut
                     // default import: import x from './path'
                     let name = node_text(inner_child, source).to_string();
                     imports.push(TsImport {
-                        local_name: name,
+                        local_name: Some(name),
                         source_path: source_path.clone(),
                         original_name: None,
                     });
                 } else if inner_child.kind() == "namespace_import" {
                     // import * as x from './path'
-                    if let Some(name) = inner_child.child_by_field_name("name") {
+                    let mut namespace_cursor = inner_child.walk();
+                    if let Some(name) = inner_child
+                        .named_children(&mut namespace_cursor)
+                        .find(|n| n.kind() == "identifier")
+                    {
                         let local = node_text(name, source).to_string();
                         imports.push(TsImport {
-                            local_name: local,
+                            local_name: Some(local),
                             source_path: source_path.clone(),
                             original_name: None,
                         });
@@ -492,36 +497,82 @@ fn extract_import_statement(node: tree_sitter::Node, source: &str, imports: &mut
 }
 
 fn extract_require_statement(node: tree_sitter::Node, source: &str, imports: &mut Vec<TsImport>) {
-    // expression_statement → call_expression(require) → identifier
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        if child.kind() == "call_expression"
-            && let Some(func) = child.child_by_field_name("function")
-            && func.kind() == "identifier"
-            && node_text(func, source) == "require"
-            && let Some(args) = child.child_by_field_name("arguments")
+    if node.kind() == "expression_statement" {
+        let mut cursor = node.walk();
+        if let Some(path) = node
+            .named_children(&mut cursor)
+            .find_map(|child| require_path(child, source))
         {
-            let mut arg_cursor = args.walk();
-            for arg in args.children(&mut arg_cursor) {
-                if arg.kind() == "string" || arg.kind() == "string_fragment" {
-                    let raw = node_text(arg, source);
-                    let path = raw.trim_matches('"').trim_matches('\'').to_string();
-                    // Try to find the variable name from parent variable_declarator
-                    let local = node
-                        .parent()
-                        .and_then(|p| p.parent())
-                        .and_then(|gp| gp.child_by_field_name("name"))
-                        .map(|n| node_text(n, source).to_string())
-                        .unwrap_or_else(|| "require".to_string());
-                    imports.push(TsImport {
-                        local_name: local,
-                        source_path: path,
-                        original_name: None,
-                    });
+            imports.push(TsImport {
+                local_name: None,
+                source_path: path.to_string(),
+                original_name: None,
+            });
+        }
+        return;
+    }
+
+    // Both lexical declarations (let/const) and var declarations wrap each
+    // binding in a variable_declarator, including exported declarations.
+    let Some(path) = node
+        .child_by_field_name("value")
+        .and_then(|value| require_path(value, source))
+    else {
+        return;
+    };
+    let Some(binding) = node.child_by_field_name("name") else {
+        return;
+    };
+    let mut add_binding = |local: tree_sitter::Node, original: Option<tree_sitter::Node>| {
+        imports.push(TsImport {
+            local_name: Some(node_text(local, source).to_string()),
+            source_path: path.to_string(),
+            original_name: original
+                .map(|key| node_text(key, source).trim_matches(['"', '\'']).to_string()),
+        });
+    };
+    match binding.kind() {
+        "identifier" => add_binding(binding, None),
+        "object_pattern" => {
+            let mut cursor = binding.walk();
+            for child in binding.named_children(&mut cursor) {
+                match child.kind() {
+                    "shorthand_property_identifier_pattern" => add_binding(child, Some(child)),
+                    "pair_pattern" => {
+                        if let (Some(key), Some(value)) = (
+                            child.child_by_field_name("key"),
+                            child.child_by_field_name("value"),
+                        ) && matches!(key.kind(), "property_identifier" | "string")
+                            && value.kind() == "identifier"
+                        {
+                            add_binding(value, Some(key));
+                        }
+                    }
+                    _ => {}
                 }
             }
         }
+        _ => {}
     }
+}
+
+fn require_path<'a>(call: tree_sitter::Node<'a>, source: &'a str) -> Option<&'a str> {
+    if call.kind() != "call_expression" {
+        return None;
+    }
+    let func = call.child_by_field_name("function")?;
+    if func.kind() != "identifier" || node_text(func, source) != "require" {
+        return None;
+    }
+    let args = call.child_by_field_name("arguments")?;
+    let mut cursor = args.walk();
+    let mut arguments = args
+        .named_children(&mut cursor)
+        .filter(|arg| arg.kind() != "comment");
+    let path = arguments.next()?;
+    (path.kind() == "string" && arguments.next().is_none())
+        .then(|| node_text(path, source).trim_matches(['"', '\'']))
+        .filter(|path| !path.is_empty())
 }
 
 fn extract_ts_doc_comment(node: tree_sitter::Node, source: &str) -> Option<String> {
@@ -803,7 +854,7 @@ fn resolve_ts_callee(
             let name = node_text(node, source).trim().to_string();
             // Try import resolution
             for imp in imports {
-                if imp.local_name == name {
+                if imp.local_name.as_deref() == Some(name.as_str()) {
                     return format!(
                         "{}.{}",
                         imp.source_path,
@@ -830,7 +881,12 @@ fn resolve_ts_callee(
                         return format!("{}.{}", cls, p);
                     }
                     for imp in imports {
-                        if imp.local_name == o {
+                        if imp.local_name.as_deref() == Some(o.as_str()) {
+                            if let Some(orig) = &imp.original_name
+                                && orig != &p
+                            {
+                                return format!("{}.{}.{}", imp.source_path, orig, p);
+                            }
                             return format!("{}.{}", imp.source_path, p);
                         }
                     }
@@ -921,5 +977,116 @@ fn node_to_span<'a>(node: tree_sitter::Node<'a>, path: &Path) -> aden_core::Sour
         end_line: end.row + 1,
         start_byte: node.start_byte(),
         end_byte: node.end_byte(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn emitted_edges(source: &str) -> Vec<String> {
+        TypeScriptResolver::new()
+            .extract_documents(source, Path::new("src/caller.ts"))
+            .unwrap()
+            .into_iter()
+            .flat_map(|doc| doc.blocks)
+            .filter_map(|block| match block {
+                Block::Listing { code, .. } => Some(code),
+                _ => None,
+            })
+            .flat_map(|code| code.lines().map(str::to_owned).collect::<Vec<_>>())
+            .collect()
+    }
+
+    #[test]
+    fn es_imports_keep_exported_names_and_member_qualifiers() {
+        let edges = emitted_edges(
+            r#"
+            import { make as makeUser, User as U, Admin } from './user.js';
+            import { Method } from './method';
+            import * as helpers from './helpers';
+            import Default from './default';
+            function run() {
+                makeUser();
+                U.make();
+                Admin.make();
+                Method.Method();
+                helpers.make();
+                Default.make();
+            }
+            "#,
+        );
+        let calls: Vec<_> = edges
+            .iter()
+            .filter(|edge| edge.starts_with("edge::calls["))
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            calls,
+            [
+                "edge::calls[./user.js.make]",
+                "edge::calls[./user.js.User.make]",
+                "edge::calls[./user.js.Admin.make]",
+                "edge::calls[./method.Method]",
+                "edge::calls[./helpers.make]",
+                "edge::calls[./default.make]",
+            ]
+        );
+    }
+
+    #[test]
+    fn require_bindings_and_side_effects_emit_imports() {
+        let edges = emitted_edges(
+            r#"
+            const lib = require('./lib'), unused = require('./unused');
+            var { decode, encode: pack, 'Factory': F } = require("./codec");
+            export const helpers = require('./helpers');
+            require('./setup');
+            const dynamic = require(moduleName);
+            const other = client.require('./other');
+            function run() {
+                lib.make();
+                decode();
+                pack();
+                F.make();
+                helpers.make();
+                dynamic.make();
+                other.make();
+                require('./setup');
+            }
+            "#,
+        );
+        let imports: Vec<_> = edges
+            .iter()
+            .filter(|edge| edge.starts_with("edge::imports["))
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            imports,
+            [
+                "edge::imports[./lib]",
+                "edge::imports[./unused]",
+                "edge::imports[./codec]",
+                "edge::imports[./helpers]",
+                "edge::imports[./setup]",
+            ]
+        );
+        let calls: Vec<_> = edges
+            .iter()
+            .filter(|edge| edge.starts_with("edge::calls["))
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            calls,
+            [
+                "edge::calls[./lib.make]",
+                "edge::calls[./codec.decode]",
+                "edge::calls[./codec.encode]",
+                "edge::calls[./codec.Factory.make]",
+                "edge::calls[./helpers.make]",
+                "edge::calls[dynamic.make]",
+                "edge::calls[other.make]",
+            ]
+        );
     }
 }
