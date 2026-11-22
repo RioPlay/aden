@@ -8,14 +8,7 @@ use std::path::{Path, PathBuf};
 /// `arguments.path`, `cli.args`, and `command`. Non-Windows and relative paths
 /// are left unchanged.
 fn display_scope(path: &Path) -> PathBuf {
-    #[cfg(windows)]
-    {
-        aden_paths::strip_verbatim(path)
-    }
-    #[cfg(not(windows))]
-    {
-        path.to_path_buf()
-    }
+    aden_paths::strip_verbatim(path)
 }
 
 pub(crate) fn inspect(anchor: &str, path: &Path, reason: &str) -> Option<serde_json::Value> {
