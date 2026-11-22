@@ -612,10 +612,7 @@ fn condition_tokens<'a>(words: impl Iterator<Item = &'a str>) -> Vec<String> {
 // different circumstances. Keep its content words in order for passage ranking.
 fn guide_condition(topic_words: &str) -> Vec<String> {
     let mut words = topic_words.split_whitespace();
-    if words
-        .find(|word| matches!(*word, "while" | "when" | "if"))
-        .is_none()
-    {
+    if !words.any(|word| matches!(word, "while" | "when" | "if")) {
         return Vec::new();
     }
     let tokens = condition_tokens(words);
