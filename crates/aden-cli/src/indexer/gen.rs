@@ -673,6 +673,12 @@ fn cmd_gen_inner(
         let mut peak_batch_snapshot_bytes = 0;
         let mut peak_batch_documents = 0;
         let batch_limits = bounded::limits();
+        let mut coalesced = CoalescedDocBatch::default();
+        #[cfg(debug_assertions)]
+        let per_file = std::env::var_os("ADEN_TEST_FAIL_AFTER_FILE_WRITE").is_some()
+            || std::env::var_os("ADEN_TEST_HOLD_AFTER_FILE_WRITE").is_some();
+        #[cfg(not(debug_assertions))]
+        let per_file = false;
         while batch_start < sources.len() {
             let (batch_len, batch_bytes) = bounded::batch_len_with_limits(
                 sources[batch_start..].iter().map(|source| {
@@ -947,15 +953,18 @@ fn cmd_gen_inner(
 
             let mut batch_snapshot_bytes = 0;
             let mut batch_documents = 0;
+            let trace_enabled = trace.is_enabled();
             for item in &work_items {
                 if let WorkItem::Reindexed { docs, .. } = item {
                     batch_documents += docs.len();
-                    batch_snapshot_bytes += docs
-                        .iter()
-                        .map(|doc| {
-                            aden_store::serialize_document(doc).map_or(0, |bytes| bytes.len())
-                        })
-                        .sum::<usize>();
+                    if trace_enabled {
+                        batch_snapshot_bytes += docs
+                            .iter()
+                            .map(|doc| {
+                                aden_store::serialize_document(doc).map_or(0, |bytes| bytes.len())
+                            })
+                            .sum::<usize>();
+                    }
                 }
             }
             peak_batch_documents = peak_batch_documents.max(batch_documents);
@@ -992,12 +1001,6 @@ fn cmd_gen_inner(
                     recovery_journal_dirty = false;
                 }
             }
-            let mut coalesced = CoalescedDocBatch::default();
-            #[cfg(debug_assertions)]
-            let per_file = std::env::var_os("ADEN_TEST_FAIL_AFTER_FILE_WRITE").is_some()
-                || std::env::var_os("ADEN_TEST_HOLD_AFTER_FILE_WRITE").is_some();
-            #[cfg(not(debug_assertions))]
-            let per_file = false;
             for (completed, item) in work_items.into_iter().enumerate() {
                 super::generation_job::checkpoint(
                     "persist_prune",
@@ -1163,9 +1166,9 @@ fn cmd_gen_inner(
                 }
             }
 
-            coalesced.flush(&storage)?;
             batch_start += batch_len;
         }
+        coalesced.flush(&storage)?;
         trace.count("parse_batches", batch_count);
         trace.count("peak_parse_batch_files", peak_batch_files);
         trace.count("peak_parse_batch_source_bytes", peak_batch_bytes as usize);

@@ -1114,6 +1114,46 @@ impl GraphStorage for SqliteStorage {
         Ok(docs)
     }
 
+    fn visit_documents_ordered(
+        &self,
+        on_count: &mut dyn FnMut(usize) -> Result<(), StoreError>,
+        on_doc: &mut dyn FnMut(String, Document) -> Result<(), StoreError>,
+    ) -> Result<(), StoreError> {
+        let mut conn = self.lock_conn();
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Deferred)
+            .map_err(map_sqlite_err)?;
+        let count: i64 = tx
+            .query_row(
+                "SELECT COUNT(*) FROM nodes n \
+                 JOIN node_bodies nb ON nb.node_id = n.id \
+                 WHERE n.has_doc = 1",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(map_sqlite_err)?;
+        on_count(count.max(0) as usize)?;
+        {
+            let mut stmt = tx
+                .prepare_cached(
+                    "SELECT n.anchor, nb.doc_blob FROM nodes n \
+                     JOIN node_bodies nb ON nb.node_id = n.id \
+                     WHERE n.has_doc = 1 \
+                     ORDER BY n.anchor ASC",
+                )
+                .map_err(map_sqlite_err)?;
+            let mut rows = stmt.query([]).map_err(map_sqlite_err)?;
+            while let Some(row) = rows.next().map_err(map_sqlite_err)? {
+                let anchor: String = row.get(0).map_err(map_sqlite_err)?;
+                let blob: Vec<u8> = row.get(1).map_err(map_sqlite_err)?;
+                let raw = decompress_blob(&blob)?;
+                on_doc(anchor, deserialize_document(&raw)?)?;
+            }
+        }
+        tx.commit().map_err(map_sqlite_err)?;
+        Ok(())
+    }
+
     fn get_source_spans(&self) -> Result<Vec<(String, SourceSpan)>, StoreError> {
         let conn = self.lock_conn();
         let projection_populated: bool = conn
@@ -1552,18 +1592,37 @@ impl GraphStorage for SqliteStorage {
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(map_sqlite_err)?;
-        let mut id_cache = HashMap::new();
-        for (src, dst, edge_type) in edges {
-            let src_id = intern_node_cached(&tx, src, &mut id_cache)?;
-            let dst_id = intern_node_cached(&tx, dst, &mut id_cache)?;
-            let code = i64::from(edge_to_u8(*edge_type));
-            let mut stmt = tx
+        let mut id_cache = if edges.len() >= 1024 {
+            let mut map = HashMap::new();
+            {
+                let mut load_stmt = tx
+                    .prepare_cached("SELECT anchor, id FROM nodes")
+                    .map_err(map_sqlite_err)?;
+                let mut rows = load_stmt.query([]).map_err(map_sqlite_err)?;
+                while let Some(row) = rows.next().map_err(map_sqlite_err)? {
+                    let anchor: String = row.get(0).map_err(map_sqlite_err)?;
+                    let id: i64 = row.get(1).map_err(map_sqlite_err)?;
+                    map.insert(anchor, id);
+                }
+            }
+            map
+        } else {
+            HashMap::new()
+        };
+        {
+            let mut insert_edge = tx
                 .prepare_cached(
                     "INSERT OR IGNORE INTO edges (src_id, dst_id, edge_type) VALUES (?1, ?2, ?3)",
                 )
                 .map_err(map_sqlite_err)?;
-            stmt.execute(params![src_id, dst_id, code])
-                .map_err(map_sqlite_err)?;
+            for (src, dst, edge_type) in edges {
+                let src_id = intern_node_cached(&tx, src, &mut id_cache)?;
+                let dst_id = intern_node_cached(&tx, dst, &mut id_cache)?;
+                let code = i64::from(edge_to_u8(*edge_type));
+                insert_edge
+                    .execute(params![src_id, dst_id, code])
+                    .map_err(map_sqlite_err)?;
+            }
         }
         tx.commit().map_err(map_sqlite_err)?;
         Ok(())
@@ -2814,6 +2873,77 @@ mod tests {
             assert_eq!(file_count, 1, "superseded src/old.rs row must be pruned");
             assert_eq!(exact_rows, 1);
         }
+
+        drop(storage);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn visit_documents_ordered_matches_all_documents_and_propagates_errors() {
+        let path = test_store_path("visit-ordered");
+        let storage = SqliteStorage::new(path.to_str().unwrap()).unwrap();
+
+        let anchors = [
+            "aden://module/z.rs#zeta",
+            "aden://module/a.rs#alpha",
+            "aden://module/m.rs#mu",
+        ];
+        let mut docs = Vec::new();
+        for anchor in anchors {
+            let mut doc = symbol_doc(anchor);
+            doc.attributes.insert("tag".into(), anchor.into());
+            docs.push(doc);
+        }
+        storage.put_documents_bulk_canonical(&docs).unwrap();
+        // Also insert an edge-only node (has_doc = 0) to confirm it is excluded.
+        storage
+            .put_edge(
+                "aden://module/a.rs#alpha",
+                "unresolved_ext",
+                EdgeType::Calls,
+            )
+            .unwrap();
+
+        let expected = storage.get_all_documents().unwrap();
+        let mut reported_count = None;
+        let mut visited = Vec::new();
+        storage
+            .visit_documents_ordered(
+                &mut |count| {
+                    reported_count = Some(count);
+                    Ok(())
+                },
+                &mut |anchor, doc| {
+                    visited.push((anchor, doc));
+                    Ok(())
+                },
+            )
+            .unwrap();
+
+        assert_eq!(reported_count, Some(3));
+        let visited_anchors: Vec<&str> = visited.iter().map(|(a, _)| a.as_str()).collect();
+        assert_eq!(
+            visited_anchors,
+            vec![
+                "aden://module/a.rs#alpha",
+                "aden://module/m.rs#mu",
+                "aden://module/z.rs#zeta",
+            ]
+        );
+        for (anchor, doc) in &visited {
+            assert_eq!(expected.get(anchor), Some(doc));
+        }
+
+        let err = storage
+            .visit_documents_ordered(&mut |_| Ok(()), &mut |anchor, _| {
+                if anchor.ends_with("#mu") {
+                    Err(StoreError::Serialization("stop-here".into()))
+                } else {
+                    Ok(())
+                }
+            })
+            .unwrap_err();
+        assert!(err.to_string().contains("stop-here"));
 
         drop(storage);
         std::fs::remove_dir_all(path).unwrap();

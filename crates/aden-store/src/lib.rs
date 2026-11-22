@@ -171,6 +171,26 @@ pub trait GraphStorage: Send + Sync {
     /// Get all documents (for full graph rebuild).
     fn get_all_documents(&self) -> Result<HashMap<String, Document>, StoreError>;
 
+    /// Visit every stored document in ascending anchor order, keeping only one
+    /// decoded document alive at a time. `on_count` is invoked once with the
+    /// exact number of documents that will be passed to `on_doc`.
+    fn visit_documents_ordered(
+        &self,
+        on_count: &mut dyn FnMut(usize) -> Result<(), StoreError>,
+        on_doc: &mut dyn FnMut(String, Document) -> Result<(), StoreError>,
+    ) -> Result<(), StoreError> {
+        let mut anchors: Vec<String> = self.get_all_anchors()?.into_iter().collect();
+        anchors.sort_unstable();
+        on_count(anchors.len())?;
+        for anchor in anchors {
+            let doc = self
+                .get_document(&anchor)?
+                .ok_or_else(|| StoreError::NotFound(anchor.clone()))?;
+            on_doc(anchor, doc)?;
+        }
+        Ok(())
+    }
+
     /// Read only anchor + source-span projections. Implementations should stream
     /// documents rather than retaining full bodies; navigation commands need
     /// these four fields and should not pay full-graph memory for them.
